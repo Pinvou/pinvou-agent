@@ -10,7 +10,7 @@ const code = fs.readFileSync(logicPath, 'utf8')
   .replace(/\bexport\s+/g, '');
 const workScenePath = path.join(__dirname, '..', 'src', 'features', 'chat', 'work-scene-routes.js');
 const workSceneCode = fs.readFileSync(workScenePath, 'utf8')
-  .replace(/import[\s\S]+?from '\.\/personal-workbench-scene\.js';\n/, '')
+  .replace(/import[\s\S]+?from '\.\/personal-workbench-scene\.js';\r?\n/, '')
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 const personalWorkbenchPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'personal-workbench-scene.js');

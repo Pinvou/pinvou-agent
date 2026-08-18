@@ -1,16 +1,30 @@
 use super::attachments::{
-    build_message_with_attachments_in_dir, validate_staged_attachment_basename,
+    build_message_with_attachments_in_dir, prepare_native_user_message_in_dir,
+    validate_staged_attachment_basename,
 };
 use super::knowledge::build_kb_agentic_guide;
 use super::prelude::*;
 use crate::features::assistant::engine::TurnReservation;
 use crate::features::assistant::engine_pool::user_display_message;
+use crate::features::assistant::image_capability::{EffectiveImageCapability, ImageInputMode};
+
+/// 图片输入不受支持的稳定错误码(设计 §9.2 Unsupported):前端按码匹配,
+/// 码后为用户可操作指引。改码字符串必须同步前端匹配处
+/// (platform/tauri/bridge/chat.js、platform/web/bridge.js)。
+pub(crate) const IMAGE_INPUT_UNSUPPORTED_ERROR: &str = "image_input_unsupported: \
+     当前模型不支持图片。请切换到支持图片的模型,或在模型设置中配置视觉模型。";
+
+/// 能力未知(Unknown)时的拒绝文案:与"确认不支持"区分,给出显式确认的出口
+/// (设计 §6.3:Unknown 不冒充支持,但允许用户手工开启)。错误码前缀相同。
+pub(crate) const IMAGE_INPUT_UNKNOWN_ERROR: &str = "image_input_unsupported: \
+     当前模型的图片输入能力未知。如果它支持图片,请在模型设置中将图片输入能力\
+     设为“支持图片”后重试;也可以切换到支持图片的模型,或配置视觉模型。";
 
 /// 接收用户消息并转发给 Engine。
 /// 立即返回，LLM 流式输出通过 Tauri Event 异步推给前端。
 ///
 /// `attachments` 是前端已经过 `ingest_file` 处理后的 IngestResult 数组。
-/// 本函数把它们拼到 message 末尾，格式：
+/// 非图片附件拼到 message 末尾，格式：
 /// ```text
 /// ---
 /// 用户附上了以下文件：
@@ -19,6 +33,9 @@ use crate::features::assistant::engine_pool::user_display_message;
 /// {markdown 或 警告}
 /// ---
 /// ```
+/// 图片附件按当前模型能力路由(设计 §9.2):Native 走结构化 LocalImage 块,
+/// VisionToolFallback 维持上方文本拼接 + image_analyze 硬规则,
+/// Unsupported 发送前拒绝(稳定错误码 `image_input_unsupported`)。
 #[tauri::command]
 pub async fn chat(
     message: String,
@@ -36,9 +53,7 @@ pub async fn chat(
     }
     // 多 session 并发:消息显式路由到指定 session(前端传 session_id);兼容旧前端时
     // 回退到全局 active_id。每条消息按各自 session 取 mode/phase/skill,送到对应 engine。
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     if acp_pool.is_acp(&sid) {
         return Err("ACP 代码会话必须通过独立代码页面发送".to_string());
     }
@@ -129,35 +144,69 @@ pub(crate) async fn chat_with_reservation(
     } else {
         "attachments".to_string()
     };
-    let display_content =
-        display_chat_message(&message, attachments.as_deref().unwrap_or_default());
+    let attachments = attachments.unwrap_or_default();
+    // 普通会话图片输入路由(设计 §9.2,阶段 D):仅当消息含图片附件时按当前有效
+    // 模型算 Native/VisionToolFallback/Unsupported;纯文本与非图片附件行为零变化。
+    // scheduled 会话不路由,保持 image_analyze 工具兜底现状(其模型由任务 profile
+    // 固定,且无人值守场景无法在发送前向用户展示切换模型提示)。
+    let has_images = attachments.iter().any(|a| a.kind == "image");
+    // capability 仅在路由时需要一并取出:Unsupported 拒绝时据此区分
+    // "确认不支持"与"能力未知",给不同用户指引(Unknown 提供显式确认出口)。
+    let (image_mode, capability) = if has_images && !is_scheduled {
+        let bridge = pool
+            .fresh_bridge_for(&sid)
+            .await
+            .map_err(|error| format!("resolve image input route for {sid}: {error:#}"))?;
+        (
+            bridge.image_input_mode(),
+            bridge.effective_image_capability(),
+        )
+    } else if has_images {
+        (
+            ImageInputMode::VisionToolFallback,
+            EffectiveImageCapability::Unknown,
+        )
+    } else {
+        (ImageInputMode::Native, EffectiveImageCapability::Unknown)
+    };
+    if has_images && image_mode == ImageInputMode::Unsupported {
+        // 不创建 Engine turn:early return 时 reservation 随 Drop 自动释放
+        // (TurnReservation::drop → on_reservation_failed 归还 turn slot),
+        // 稳定错误码经 invoke Err 回传前端匹配展示。
+        log::info!(
+            "[pinvou3][chat] image input rejected sid={} (capability={capability:?})",
+            sid
+        );
+        return Err(match capability {
+            EffectiveImageCapability::Unknown => IMAGE_INPUT_UNKNOWN_ERROR.to_string(),
+            _ => IMAGE_INPUT_UNSUPPORTED_ERROR.to_string(),
+        });
+    }
+    // 展示/持久化文本统一用 JSON 数组形式(前端 attachment-message.js 契约,
+    // 无损表达含 ` · ` 等分隔符的合法文件名)。
+    let display_content = display_chat_message(&message, &attachments);
     let raw_message = message.clone();
     // 原生代码会话绑项目目录时，落盘根（会话私有目录）与引擎 cwd（项目目录）
     // 不同根，附件引用必须绝对路径；其余会话两根一致，维持相对路径引用。
     // 两个根由 SessionStore::session_roots 统一解析（与引擎执行根同一来源）。
     let reference_absolute = roots.ledger != roots.execution;
-    let mut full = build_message_with_attachments_in_dir(
-        message,
-        attachments.unwrap_or_default(),
-        &ledger_root,
-        &attachment_dir,
-        reference_absolute,
-    );
-    // 工作流 Phase 可视化:用户在工作流页"启用"卡片 = start_skill_session
-    // 新建一个绑定了 skill 的 session。该 session 第一条 chat 消息时,
-    // 把 skill body + phase 规则 prepend 一次,后续 turn 靠 LLM session 上下文保持。
-    //
-    // 另外 — 实测 Qwen3.6 在长上下文里对 system prompt 顶端的 phase marker
-    // MANDATORY 段遵循率衰减(legacy-ppt-workflow 跑到 p5+ 后频繁不出 `<phase id=".."/>`
-    // marker),每个 user turn 都重申一遍约束,把信号搬到距 LLM 最近的位置。
+    // Native(v0.9.5 官方标记方案):图片暂存后生成 `[Attached image: <path>]`
+    // 标记行,底座构建时展开为 ImageUrl 块,不注入"看不到图"硬规则;其余路径
+    // 维持现有文本拼接(Fallback 含 image_analyze 硬规则提示)。两分支互斥,
+    // 各自 consume message/attachments。图片暂存到引擎执行根;文本附件引用
+    // 走账本根,两根不同时引用取绝对路径。
+    let mut full = if has_images && image_mode == ImageInputMode::Native {
+        prepare_native_user_message_in_dir(message, attachments, &roots.execution, &attachment_dir)?
+    } else {
+        build_message_with_attachments_in_dir(
+            message,
+            attachments,
+            &ledger_root,
+            &attachment_dir,
+            reference_absolute,
+        )
+    };
     let pending_injections = store.take_pending_turn_injections(&sid);
-    if let Some(injected) = pending_injections.skill_instruction() {
-        full = format!("{injected}\n\n---\n\n{full}");
-    }
-    // [phase marker 下线] 原 active_skill 非工作流分支每 turn 注入 `<phase id=.../>`
-    // marker reminder,但消费链(底座抽取 → chat:phase_changed → 前端 chips)已整体拆除,
-    // marker 产出后无人消费。已删。active_skill 的 pending_instruction(skill body)仍走上面。
-
     // Side B 卡片池: 加持后首条消息一次性 prepend 完整人设 body(agency-agents-zh)。
     // 之后每 turn 只靠 equip_anchor 轻锚点维持身份(EnginePool 注入),不再重灌 body。
     if let Some(body) = pending_injections.persona_body() {
@@ -189,14 +238,19 @@ pub(crate) async fn chat_with_reservation(
     // 若 kb_search 当前仍不可用,不要注入“必须调用 kb_search”的提示,避免模型把提示/sudo
     // 状态当普通文本复述给用户。
     let mounted_collection_ids = store.mounted_collection_ids(&sid);
-    if !mounted_collection_ids.is_empty() {
+    let mounted_remote_collections = store
+        .mounted_remote_collections(&sid)
+        .into_iter()
+        .filter(|collection| collection.enabled)
+        .collect::<Vec<_>>();
+    if !mounted_collection_ids.is_empty() || !mounted_remote_collections.is_empty() {
         let disallowed = pool.compute_disallowed_tools();
         let kb_search_hidden = disallowed
             .iter()
             .any(|t| t.eq_ignore_ascii_case("kb_search"));
         pool.set_disallowed_all(disallowed).await;
         if !kb_search_hidden {
-            let collection_names = app
+            let mut collection_names = app
                 .try_state::<KnowledgeService>()
                 .map(|kb| {
                     mounted_collection_ids
@@ -207,6 +261,17 @@ pub(crate) async fn chat_with_reservation(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            if let Some(remote) =
+                app.try_state::<crate::features::remote_knowledge::RemoteKnowledgeService>()
+            {
+                collection_names.extend(mounted_remote_collections.iter().map(|collection| {
+                    let server = remote
+                        .connection(&collection.server_id)
+                        .map(|connection| connection.name)
+                        .unwrap_or_else(|_| collection.server_id.clone());
+                    format!("{server} / #{}", collection.collection_id)
+                }));
+            }
             full = format!(
                 "{}\n\n---\n\n{full}",
                 build_kb_agentic_guide(&collection_names)
@@ -217,13 +282,14 @@ pub(crate) async fn chat_with_reservation(
     let mode_state = store.mode_state(&sid);
     // 多智能体模式（ADR-0006）：所有产生模型 turn 的入口共用提醒组装；每轮
     // 重申而非首轮一次性教学，关掉开关即保持原消息不变。
-    full = super::multiagent::prepend_delegation_reminder(
+    let prepared_delegation = super::multiagent::prepare_delegation_turn(
         pool,
         &sid,
         mode_state.multi_agent,
         &raw_message,
         full,
     );
+    full = prepared_delegation.content;
     let mode = mode_state.mode;
     let send_started_at = std::time::Instant::now();
     crate::features::assistant::timing::start_turn(&sid);
@@ -240,6 +306,7 @@ pub(crate) async fn chat_with_reservation(
             user_display_message(display_content.clone()),
             mode.to_app_mode(),
             restrict_tools.unwrap_or(false),
+            prepared_delegation.expert_snapshot,
             reservation,
         )
         .await
@@ -278,16 +345,16 @@ pub(crate) async fn chat_with_reservation(
             crate::features::assistant::timing::finish_turn(
                 &sid,
                 "send_error",
-                Some(&format!("{e:?}")),
+                Some(&format!("{e:#}")),
             );
             log::error!(
-                "[pinvou3][chat] engine send failed sid={} send_elapsed_ms={} total_elapsed_ms={} error={:?}",
+                "[pinvou3][chat] engine send failed sid={} send_elapsed_ms={} total_elapsed_ms={} error={:#}",
                 sid,
                 send_started_at.elapsed().as_millis(),
                 chat_started_at.elapsed().as_millis(),
                 e
             );
-            Err(format!("send_user_message failed: {e:?}"))
+            Err(format!("send_user_message failed: {e:#}"))
         }
     }
 }

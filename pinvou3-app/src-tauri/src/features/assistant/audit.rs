@@ -1,4 +1,4 @@
-//! 工作流审计流水（edict「奏折归档」思路）：append-only JSONL。
+//! 助手审计流水：append-only JSONL。
 //!
 //! 一行 = 一个事件：{"ts":"<RFC3339>","kind":"...","role":"...","detail":{...}}
 //! 文件在 session workspace 根：`<ws>/workflow_audit.jsonl`。
@@ -29,18 +29,6 @@ pub fn append(ws: &Path, kind: &str, role: &str, detail: serde_json::Value) {
     if let Err(e) = r {
         eprintln!("[audit] append failed ({}): {e}", path.display());
     }
-}
-
-/// 审计字段截断（≤600 字节，UTF-8 char 边界安全）。
-pub fn clip(s: &str) -> &str {
-    if s.len() <= 600 {
-        return s;
-    }
-    let mut end = 600;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
 }
 
 #[cfg(test)]
@@ -96,14 +84,5 @@ mod tests {
         // 写失败只打日志不 panic —— 审计绝不能弄死工作流
         let dir = std::path::PathBuf::from("/nonexistent_dir_for_audit_test");
         append(&dir, "x", "y", serde_json::json!({}));
-    }
-
-    #[test]
-    fn clip_respects_utf8_boundary() {
-        let s = "中".repeat(300); // 900 字节
-        let c = clip(&s);
-        assert!(c.len() <= 600);
-        assert!(c.chars().all(|ch| ch == '中')); // 没切出半个字符
-        assert_eq!(clip("short"), "short");
     }
 }

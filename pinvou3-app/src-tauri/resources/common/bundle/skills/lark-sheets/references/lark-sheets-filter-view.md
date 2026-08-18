@@ -50,7 +50,7 @@ _公共四件套 · 系统：`--dry-run`_
 | --- | --- | --- | --- |
 | `--properties` | string + File + Stdin（复合 JSON） | required | 筛选视图规则 JSON，含 `rules?`（列级筛选规则数组）和 `filtered_columns?`。`range` 和 `view_name` 是独立 flag |
 | `--range` | string | required | 筛选视图作用的单元格范围（A1 表示法，如 `A1:F1000`）；优先级高于 `--properties` 中同名字段；create 必填，必须覆盖表头行 |
-| `--view-name` | string | optional | 筛选视图名称；create 不传时系统自动分配，update 不传时保留原名；优先级高于 `--properties` 中同名字段 |
+| `--view-name` | string | optional | 筛选视图名称；不传时系统自动分配；优先级高于 `--properties` 中同名字段 |
 
 ### `+filter-view-update`
 
@@ -108,6 +108,17 @@ lark-cli sheets +filter-view-create --url "..." --sheet-id "$SID" \
   --view-name "活跃用户" --range "A1:F1000" \
   --properties '{"rules":[{"column_index":"C","conditions":[{"type":"number","compare_type":"greaterThan","values":[100]}]}]}'
 ```
+
+**`conditions[].type` × `compare_type` 取值**（`type` 决定可用的 `compare_type`；两者均必填）：
+
+| `type` | 可用 `compare_type` | `values` |
+|---|---|---|
+| `text` | `contains` / `doesNotContain` / `beginsWith` / `doesNotBeginWith` / `endsWith` / `doesNotEndWith` / `equals` / `notEquals` | 字符串数组 |
+| `number` | `equal` / `notEqual` / `greaterThan` / `greaterThanOrEqual` / `lessThan` / `lessThanOrEqual` / `between` / `notBetween` | 数值（或数值字符串）数组；`between` / `notBetween` 传两个边界 |
+| `multiValue` | `equal` / `notEqual` | 字符串数组（精确匹配其中任一值） |
+| `color` | `backgroundColor` / `foregroundColor` | 不传 `values`（按单元格颜色筛选） |
+
+> ⚠️ `text` 用 `equals` / `notEquals`（**带 s**），`number` / `multiValue` 用 `equal` / `notEqual`（**不带 s**）——别混。完整 schema 跑 `+filter-view-create --print-schema --flag-name properties`。
 
 > `--range` **必须覆盖表头行**（如 `A1:F1000`），不能只包含数据行；`--view-name` 重名时服务端自动改名。
 

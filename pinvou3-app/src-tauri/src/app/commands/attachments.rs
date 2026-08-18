@@ -442,3 +442,103 @@ pub fn build_message_with_attachments(
 ) -> String {
     build_message_with_attachments_in_dir(text, attachments, workspace, "attachments", false)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 原生图片输入(设计 §9.1/§9.2,阶段 D)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Native 路径(v0.9.5 底座官方标记方案)消息构造:图片暂存到 workspace 后
+/// 在消息文本中生成 `[Attached image: <path>]` 标记行,由底座
+/// `image_attach::expand_attachment_blocks` 在构建时展开为
+/// `ContentBlock::ImageUrl`(data URL),并按 route 能力在请求前剥离。
+/// **不注入**"看不到图"硬规则、不引导 image_analyze;非图片附件沿用现有
+/// token 预算分流文本段(与 build_message_with_attachments_in_dir 同规则)。
+/// 标记使用暂存后的绝对路径(引擎以主进程 cwd 读文件,相对路径不可靠),
+/// 不带用户原始路径(设计 §10.1)。任一图片暂存失败即 Err——不静默降级
+/// 为纯文本(设计 §10.2)。
+pub(super) fn prepare_native_user_message_in_dir(
+    text: String,
+    attachments: Vec<crate::features::files::file_ingest::IngestResult>,
+    workspace: &std::path::Path,
+    attachment_dir: &str,
+) -> Result<String, String> {
+    let mut inline_spent: u32 = 0;
+    let mut segment = String::new();
+    if !text.trim().is_empty() {
+        segment.push_str(&text);
+        if !attachments.is_empty() {
+            segment.push_str("\n\n");
+        }
+    }
+    if !attachments.is_empty() {
+        segment.push_str("---\n用户附上了以下文件:\n\n");
+    }
+    for a in &attachments {
+        if a.kind == "image" {
+            // 暂存复用现有校验链(basename 白名单/symlink 防逃逸/create_new 防覆盖);
+            // 标记路径只来自暂存结果,不接受前端直给路径(设计 §11)。
+            let relative =
+                stage_image_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
+                    .ok_or_else(|| {
+                        format!(
+                            "图片 {} 暂存到 workspace 失败,无法原生发送。请重新选择图片。",
+                            a.basename
+                        )
+                    })?;
+            let abs = workspace.join(&relative);
+            segment.push_str(&format!(
+                "### {} (image, {} bytes)\n",
+                a.basename, a.byte_size
+            ));
+            // 官方标记:底座构建消息时按行解析并展开为 ImageUrl 块。
+            segment.push_str(&format!("[Attached image: {}]\n\n", abs.display()));
+            continue;
+        }
+        segment.push_str(&format!(
+            "### {} ({}, {} bytes",
+            a.basename, a.kind, a.byte_size
+        ));
+        if a.token_estimate > 0 {
+            segment.push_str(&format!(", ~{} tokens", a.token_estimate));
+        }
+        segment.push_str(")\n");
+        // 真实路径 —— AI 如果一定要 read_file 也能找到对的位置(与文本路径同行为)
+        segment.push_str(&format!("原始路径: `{}`\n", a.path));
+        if let Some(md) = &a.markdown {
+            let fits = a.token_estimate <= ATTACH_INLINE_MAX_TOKENS
+                && inline_spent.saturating_add(a.token_estimate) <= ATTACH_TOTAL_BUDGET_TOKENS;
+            if fits {
+                inline_spent = inline_spent.saturating_add(a.token_estimate);
+                segment.push_str(
+                    "**以下代码块是文件完整内容,可直接使用,不需要再调 `File(action=\"read\")` / \
+                     `File(action=\"search_name\")` 重新读取。**如需保存修改版本,用 `File(action=\"write\")` 写到 \
+                     PINVOU3_WORKSPACE 下;单个文件过大时拆分为多个有明确用途的文件。\n",
+                );
+                segment.push_str("```\n");
+                segment.push_str(md);
+                if !md.ends_with('\n') {
+                    segment.push('\n');
+                }
+                segment.push_str("```\n");
+            } else {
+                push_large_attachment_section(
+                    &mut segment,
+                    a,
+                    md,
+                    workspace,
+                    attachment_dir,
+                    attachment_dir != "attachments",
+                    // Native 分支图片/文件都暂存到执行根,落盘根与引擎 cwd 一致,相对引用。
+                    false,
+                );
+            }
+        } else if let Some(warning) = &a.warning {
+            segment.push_str(&format!("⚠️ {warning}\n"));
+        }
+        segment.push('\n');
+    }
+    if !attachments.is_empty() {
+        segment.push_str("---\n");
+    }
+    Ok(segment)
+}

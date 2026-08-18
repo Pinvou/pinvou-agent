@@ -8,6 +8,8 @@ mod macos;
 mod unsupported;
 #[cfg(target_os = "windows")]
 mod windows;
+#[cfg(any(target_os = "windows", test))]
+mod windows_install_text;
 
 #[cfg(target_os = "linux")]
 pub use linux::install_dependencies;

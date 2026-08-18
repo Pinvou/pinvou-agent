@@ -199,12 +199,14 @@ pub async fn install_marketplace_tool(
                 eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
                 continue;
             }
-            // 新装的 companion 技能默认加入 code 禁用集（外部能力显式开启，
-            // 与独立技能安装 install_marketplace_skill_sync 同语义）。
-            crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(&sid);
+            // 新装的 companion 技能默认加入 DenyAll scope（当前 code）禁用集
+            // （外部能力显式开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
+            crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
+                &sid,
+            );
         }
-        // 代码会话的 code scope 已初始化时,新装的连接器默认仍关闭(显式开启)。
-        crate::features::marketplace::sync_code_scope_after_install(&companion_tool_id);
+        // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id);
         Ok::<(), String>(())
     })
     .await
@@ -504,9 +506,9 @@ pub async fn install_marketplace_skill(
 pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .install(skill_id)?;
-    // 新装技能默认加入 code 禁用集（与连接器同语义：外部能力显式开启）；
-    // 组合目录由调用方在命令层重写（install_marketplace_skill）。
-    crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(skill_id);
+    // 新装技能默认加入 DenyAll scope（当前 code）禁用集（与连接器同语义：
+    // 外部能力显式开启）；组合目录由调用方在命令层重写（install_marketplace_skill）。
+    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(skill_id);
     Ok(())
 }
 
@@ -531,12 +533,73 @@ pub async fn import_skill_package(
         .into_path()
         .map_err(|e| format!("解析文件路径: {e}"))?;
     tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .import_package(&path.to_string_lossy())
+        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        let name = mgr.import_package(&path.to_string_lossy())?;
+        // 与商店安装同语义：上传技能默认加入 DenyAll scope（当前 code）禁用集
+        // （外部能力显式开启）。
+        crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&name);
+        Ok::<String, String>(name)
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
-    // 导入技能默认加入 code 禁用集（外部能力显式开启），并重写在线会话组合目录。
+    // 重写在线会话组合目录（下一轮 prompt 生效）。
+    pool.refresh_live_sessions_skills().await;
+    Ok(true)
+}
+
+/// 拖放导入:Windows WebView2 的 HTML5 文件拖放拿不到源文件路径
+/// (`dragDropEnabled=false`,契约测试锁定,附件系统同走字节通道),所以前端把
+/// zip 读成 base64 传这里,临时落盘后走 `import_package_named`。
+/// 与 `import_skill_package`(原生文件对话框)返回语义一致:true=已导入。
+#[tauri::command]
+pub async fn import_skill_package_bytes(
+    filename: String,
+    data_base64: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<bool, String> {
+    use base64::Engine as _;
+    if !filename.to_ascii_lowercase().ends_with(".zip") {
+        return Err("仅支持 .zip 技能包".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data_base64)
+        .map_err(|e| format!("解码 zip 数据失败: {e}"))?;
+    use crate::features::marketplace::skill_marketplace::MAX_SKILL_SIZE_BYTES;
+    if bytes.len() as u64 > MAX_SKILL_SIZE_BYTES {
+        return Err(format!(
+            "技能包超过 {} MiB 上限",
+            MAX_SKILL_SIZE_BYTES / 1024 / 1024
+        ));
+    }
+    // 展示名净化(仅写 .installed-from 标记用):去路径分隔符/控制字符,截 128
+    let safe_name: String = filename
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+        .take(128)
+        .collect();
+    let tmp = std::env::temp_dir().join(format!(
+        "pinvou3-skill-{}-{}.zip",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("写临时文件: {e}"))?;
+    let tmp_for_import = tmp.clone();
+    let name = tokio::task::spawn_blocking(move || {
+        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        let name = mgr.import_package_named(&tmp_for_import.to_string_lossy(), &safe_name)?;
+        // 与商店安装同语义：上传技能默认加入 DenyAll scope（当前 code）禁用集
+        // （外部能力显式开启）。
+        crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&name);
+        Ok::<String, String>(name)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))?;
+    let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
+    name?;
+    // 与对话框导入一致:重写在线会话组合目录(下一轮 prompt 生效)。
     pool.refresh_live_sessions_skills().await;
     Ok(true)
 }
@@ -560,5 +623,155 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
     // 已卸载的技能从两个 scope 的禁用集移除（避免残留 id，与连接器同语义）。
     crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(skill_id);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 能力包就绪态（修复方案 V1：统一 bundle_readiness，收敛五个连接器 status 命令）
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BundleReadinessResult {
+    pub bundle_id: String,
+    pub installed: bool,
+    pub ready: bool,
+    pub reason: Option<String>,
+    /// 原连接器 status 的完整 detail（CLI/ima 型透传，向前兼容）
+    pub detail: Option<serde_json::Value>,
+}
+
+/// 统一就绪态查询：
+/// - CLI 包（feishu/wecom/dingtalk/tmeet）→ 分派到各连接器 status，connected 即 ready；
+///   installed 取 status 的 installed/configured 真实字段
+/// - ima（凭据型技能包）→ ima_status：ready = connected（凭据齐且 companion 技能已装），
+///   installed = 凭据或技能任一已配置
+/// - MCP/技能/上传包 → 注册表 `readiness_for`（credentials 必填项查系统凭据现算）
+#[tauri::command]
+pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult, String> {
+    use crate::features::marketplace::bundle::{
+        keyring_target, readiness_for, BundleKind, BundleRegistry, Readiness,
+    };
+    let reg = BundleRegistry::new();
+    let Some(bundle) = reg.bundle(&bundle_id) else {
+        return Err(format!("未知能力包 '{bundle_id}'"));
+    };
+    // CLI/ima 包的 installed 在注册表是保守占位（恒 false），此处用连接器 status
+    // 的真实字段覆盖，避免对消费方产出 (installed=false, ready=true) 的矛盾组合。
+    let (installed, ready, reason, detail) = match bundle.kind {
+        BundleKind::Cli => {
+            let (connected, detail) = match bundle_id.as_str() {
+                "feishu" => {
+                    let v = crate::features::connectors::feishu::feishu_status().await?;
+                    (connected_of(&v), Some(v))
+                }
+                "wecom" => {
+                    let v = crate::features::connectors::wecom::wecom_status().await?;
+                    (connected_of(&v), Some(v))
+                }
+                "dingtalk" => {
+                    let v = crate::features::connectors::dingtalk::dingtalk_status().await?;
+                    (connected_of(&v), Some(v))
+                }
+                "tmeet" => {
+                    let v = crate::features::connectors::tmeet::tmeet_status().await?;
+                    (connected_of(&v), Some(v))
+                }
+                other => return Err(format!("未知 CLI 包 '{other}'")),
+            };
+            // wecom/dingtalk/tmeet 返回 installed（CLI 二进制在位），
+            // feishu 返回 configured（已配置）；都没有则退化为 connected。
+            let installed = detail
+                .as_ref()
+                .and_then(|v| {
+                    v.get("installed")
+                        .or_else(|| v.get("configured"))
+                        .and_then(|x| x.as_bool())
+                })
+                .unwrap_or(connected);
+            (
+                installed,
+                connected,
+                if connected {
+                    None
+                } else {
+                    Some("not_connected".to_string())
+                },
+                detail,
+            )
+        }
+        BundleKind::Skill if bundle.id == "ima" => {
+            let v = crate::features::connectors::ima::ima_status().await?;
+            let creds = v
+                .get("credentials_present")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            let skill = v
+                .get("skill_installed")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            // ready 与 ima_status.connected 同义：凭据齐且 companion 技能已装
+            let ready = creds && skill;
+            let reason = if ready {
+                None
+            } else if !creds {
+                Some("missing_credentials".to_string())
+            } else {
+                Some("skill_not_installed".to_string())
+            };
+            (creds || skill, ready, reason, Some(v))
+        }
+        _ => {
+            // keychain 读可能阻塞数秒甚至数分钟（macOS 首次访问弹授权窗），
+            // 与 ima/install 命令一致移出 async 线程：spawn_blocking 里按声明序
+            // 预查必填凭据（同 key 多 target 取首个声明，保持原 find-first 语义），
+            // has 闭包只读内存结果。
+            let mut specs: Vec<(String, &'static str)> = Vec::new();
+            for c in &bundle.credentials {
+                if c.required && !specs.iter().any(|(k, _)| k == &c.key) {
+                    specs.push((c.key.clone(), keyring_target(c.target)));
+                }
+            }
+            let id = bundle_id.clone();
+            let present: std::collections::HashSet<String> =
+                tokio::task::spawn_blocking(move || {
+                    let store = crate::platform::credential_store::SystemCredentialStore::new();
+                    specs
+                        .into_iter()
+                        .filter(|(key, target)| {
+                            store
+                                .get(
+                                    &crate::platform::credential_store::CredentialReference::for_mcp_secret(
+                                        &id, target, key,
+                                    ),
+                                )
+                                .ok()
+                                .flatten()
+                                .is_some()
+                        })
+                        .map(|(key, _)| key)
+                        .collect()
+                })
+                .await
+                .map_err(|e| format!("spawn_blocking: {e}"))?;
+            let has = |key: &str| present.contains(key);
+            let (ready, reason) = match readiness_for(&bundle, has) {
+                Readiness::Ready => (true, None),
+                Readiness::NotReady(reason) => (false, Some(reason.to_string())),
+            };
+            (bundle.installed, ready, reason, None)
+        }
+    };
+    Ok(BundleReadinessResult {
+        bundle_id,
+        installed,
+        ready,
+        reason,
+        detail,
+    })
+}
+
+fn connected_of(v: &serde_json::Value) -> bool {
+    v.get("connected")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false)
 }
 use super::prelude::*;

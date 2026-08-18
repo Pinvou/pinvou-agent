@@ -46,12 +46,10 @@ const commands = fs.readdirSync(commandsRoot)
   .map(name => fs.readFileSync(path.join(commandsRoot, name), 'utf8'))
   .join('\n');
 const remoteControlCommands = fs.readFileSync(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
-const workflowCommands = fs.readFileSync(path.join(commandsRoot, 'workflows.rs'), 'utf8');
 const settingsView = fs.readFileSync(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
 const artifactsPanel = fs.readFileSync(path.join(root, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
 const toolStoreView = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'ToolStoreView.jsx'), 'utf8');
 const toolRenderers = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
-const workflowView = fs.readFileSync(path.join(root, 'src', 'features', 'workflow', 'WorkflowView.jsx'), 'utf8');
 const knowledgeView = fs.readFileSync(path.join(root, 'src', 'features', 'knowledge', 'KnowledgeView.jsx'), 'utf8');
 const toolCommon = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-common.jsx'), 'utf8');
 const connectionStatus = fs.readFileSync(path.join(root, 'src', 'features', 'web', 'WebConnectionStatus.jsx'), 'utf8');
@@ -75,6 +73,8 @@ for (const command of [
   'install_marketplace_tool',
   'uninstall_marketplace_skill',
   'uninstall_marketplace_tool',
+  'import_skill_package',
+  'import_skill_package_bytes',
 ]) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }
@@ -89,6 +89,50 @@ for (const command of [
   'kb_index_failed_files',
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (KB import controls)`);
+}
+
+// 已授权连接器的只读状态查询属于 WebUI 业务面（ToolStoreView 挂载即调用 *_status，
+// SettingsView 的 composer 工具菜单调用 *_skills_state）。任一遗漏会让对应连接器在
+// Web 端永远显示未连接：卡片因 externalAuth 不可用而依赖 installed 徽标展示。
+// 连接器开关/装卸（set_*_enabled、*_ensure_cli、*_apply_skills 等）仍保持桌面专用。
+for (const command of [
+  'feishu_status',
+  'feishu_skills_state',
+  'wecom_status',
+  'wecom_skills_state',
+  'dingtalk_status',
+  'dingtalk_skills_state',
+  'tmeet_status',
+  'tmeet_skills_state',
+  'ima_status',
+]) {
+  assert.equal(allowed.has(command), true, `${command} must be allowed on Web (authorized connector status queries)`);
+}
+// 连接器变更面保持桌面专用：连接/断开（*_connect_begin/*_logout、ima_connect/ima_logout）、
+// 逐连接器开关（set_*_enabled）与全局清单写入（set_disabled_connectors）、原生 CLI 安装
+// （*_ensure_cli 触发下载物化）、技能装卸（*_apply_skills 向 ~/.pinvou3 物化技能包）、
+// OAuth 中断（*_cancel）、授权门重算（refresh_connector_auth_gates）。
+// 清单须与 lib.rs 连接器注册面保持同步。
+const deniedConnectorMutations = [];
+for (const connector of ["feishu", "wecom", "dingtalk", "tmeet"]) {
+  deniedConnectorMutations.push(
+    `${connector}_connect_begin`,
+    `${connector}_logout`,
+    `${connector}_ensure_cli`,
+    `${connector}_cancel`,
+    `${connector}_apply_skills`,
+    `set_${connector}_enabled`,
+  );
+}
+deniedConnectorMutations.push(
+  "ima_connect", "ima_logout", "set_disabled_connectors", "refresh_connector_auth_gates",
+  // 技能级停用清单与项目技能开关（settings 管理面，读写均桌面专用；
+  // 此前两头都不沾，加白名单不会触发测试——与「清单须与注册面同步」承诺矛盾）。
+  "set_disabled_skills", "get_disabled_skills",
+  "set_project_skills_enabled", "get_project_skills_enabled",
+);
+for (const command of deniedConnectorMutations) {
+  assert.equal(allowed.has(command), false, `${command} must remain desktop-only (connector mutations)`);
 }
 
 for (const command of [
@@ -211,8 +255,6 @@ assert.match(webBridge, /var draftComposer = realId \? "" : \(state\.composerDra
   'WebUI background session events must snapshot an unmaterialized draft');
 assert.match(webBridge, /if \(!realId\) restoreBuffer\.composerDraft = draftComposer/,
   'WebUI background session events must restore an unmaterialized draft');
-assert.match(workflowCommands, /start_skill_session\([\s\S]*?app: AppHandle[\s\S]*?emit_session_event\(&app, "session:list_changed", &sid, "created"\)/);
-assert.match(remoteControlCommands, /web_access_start_skill_session\([\s\S]*?app: AppHandle[\s\S]*?start_skill_session\(name, Some\(false\), app, store, pool\)/);
 for (const eventName of ['session:model_changed', 'session:persona_changed']) {
   assert.equal(allowedEvents.has(eventName), true, `${eventName} must reach both clients`);
   assert.match(webBridge, new RegExp(`listen\\("${eventName.replace(':', '\\:')}"`));
@@ -294,8 +336,6 @@ assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
 assert.match(toolStoreView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
 assert.ok((toolStoreView.match(/if \(!canMutateToolStore\) return;/g) || []).length >= 4,
   'all tool install, uninstall, and import handlers must fail closed in WebUI');
-assert.match(workflowView, /can\('artifactDownload'\)/);
-assert.match(workflowView, /can\('hostFilePicker'\)/);
 assert.match(knowledgeView, /const canDownloadArtifacts = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(knowledgeView, /const canPickHostFiles = !isWeb \|\| can\('hostFilePicker'\);/);
 assert.match(knowledgeView, /const outputSessionId = o\.sessionId \|\| o\.session_id \|\| null;/);

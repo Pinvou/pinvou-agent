@@ -12,10 +12,11 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
+use crate::features::connectors::skill_gate::ConnectorSkillGate;
 
 const ID: &str = "tmeet";
-const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.13";
-const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 13);
+const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.15";
+const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 15);
 
 const TMEET_CTX: CliCtx = CliCtx {
     cli_bin: "tmeet",
@@ -135,7 +136,7 @@ fn install_tmeet_cli() -> Result<bool, String> {
     cc::run_with_timeout(c, 180)
 }
 
-/// 引导:确保 tmeet 装好且版本不低于 1.0.13。
+/// 引导:确保 tmeet 装好且版本不低于 1.0.15。
 pub async fn tmeet_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if tmeet_cli_present() {
@@ -411,22 +412,33 @@ pub async fn tmeet_logout() -> Result<Value, String> {
 
 // ─────────────────────── 腾讯会议 skill 门控 ────────────────────────
 
-fn tmeet_disabled_path() -> std::path::PathBuf {
-    crate::platform::paths::pinvou3_home().join("tmeet_disabled")
+/// 腾讯会议技能门控:停用标志文件机制走 [`ConnectorSkillGate`] 默认实现,
+/// `apply_skills` 指向 `apply_tmeet_skills`。
+struct TmeetGate;
+impl ConnectorSkillGate for TmeetGate {
+    fn id(&self) -> &'static str {
+        ID
+    }
+    fn display_name(&self) -> &'static str {
+        "腾讯会议"
+    }
+    fn disabled_filename(&self) -> &'static str {
+        "tmeet_disabled"
+    }
+    fn apply_skills(&self, visible: bool) -> Result<(), String> {
+        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
+            .apply_tmeet_skills(visible)
+            .map_err(|e| format!("更新腾讯会议技能失败: {e}"))
+    }
 }
+const GATE: TmeetGate = TmeetGate;
 
 pub fn is_tmeet_disabled() -> bool {
-    tmeet_disabled_path().exists()
+    GATE.is_disabled()
 }
 
 fn set_tmeet_disabled_flag(disabled: bool) -> Result<(), String> {
-    let p = tmeet_disabled_path();
-    if disabled {
-        std::fs::write(&p, b"1").map_err(|e| format!("保存腾讯会议技能停用状态失败: {e}"))?;
-    } else if p.exists() {
-        std::fs::remove_file(&p).map_err(|e| format!("清除腾讯会议技能停用状态失败: {e}"))?;
-    }
-    Ok(())
+    GATE.set_disabled_flag(disabled)
 }
 
 pub fn tmeet_skills_should_show() -> bool {
@@ -436,9 +448,7 @@ pub fn tmeet_skills_should_show() -> bool {
 pub async fn tmeet_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
         let show = tmeet_skills_should_show();
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_tmeet_skills(show)
-            .map_err(|e| format!("更新腾讯会议技能失败: {e}"))?;
+        GATE.apply_skills(show)?;
         Ok(show)
     })
     .await
@@ -450,9 +460,7 @@ pub async fn set_tmeet_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         set_tmeet_disabled_flag(!enabled)?;
         let show = tmeet_skills_should_show();
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_tmeet_skills(show)
-            .map_err(|e| format!("更新腾讯会议技能失败: {e}"))?;
+        GATE.apply_skills(show)?;
         Ok(show)
     })
     .await
@@ -491,8 +499,8 @@ mod tests {
     #[test]
     fn parses_tmeet_versions() {
         assert_eq!(
-            parse_tmeet_version("tmeet version v1.0.13"),
-            Some((1, 0, 13))
+            parse_tmeet_version("tmeet version v1.0.15"),
+            Some((1, 0, 15))
         );
         assert_eq!(parse_tmeet_version("v2.3.4"), Some((2, 3, 4)));
         assert_eq!(parse_tmeet_version("tmeet version 1.2"), Some((1, 2, 0)));
@@ -501,9 +509,9 @@ mod tests {
 
     #[test]
     fn version_comparison_uses_semver_order() {
-        assert!(version_at_least((1, 0, 13), TMEET_MIN_VERSION));
+        assert!(version_at_least((1, 0, 15), TMEET_MIN_VERSION));
         assert!(version_at_least((1, 1, 0), TMEET_MIN_VERSION));
-        assert!(!version_at_least((1, 0, 12), TMEET_MIN_VERSION));
+        assert!(!version_at_least((1, 0, 14), TMEET_MIN_VERSION));
         assert!(!version_at_least((0, 9, 99), TMEET_MIN_VERSION));
     }
 

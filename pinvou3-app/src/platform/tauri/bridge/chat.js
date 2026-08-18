@@ -27,6 +27,7 @@
     var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     var isScheduledRunSession = context.isScheduledRunSession;
     var basename = context.basename;
+    var userMessageDisplayText = context.userMessageDisplayText;
     var extractArtifactPaths = context.extractArtifactPaths;
     var parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
     var autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
@@ -301,9 +302,19 @@
         });
         if (concurrentTurn && turnOwnerBuffer) markRemoteTurn(sid, turnOwnerBuffer);
         runSyncOnSession(sid, function () {
+          // 稳定错误码(如 image_input_unsupported)按码替换为三语指引,而非剥前缀
+          // 透传后端硬编码中文——英/日界面不该看到中文结论;文案与 ChatView
+          // 前置警告(t.uiAttachments.*)同源。与 web bridge displayTurnError
+          // 同一口径(chat.rs IMAGE_INPUT_*_ERROR)。
+          var errorText = String(err && err.toString ? err.toString() : err || "");
+          if (errorText.indexOf("image_input_unsupported") === 0) {
+            errorText = errorText.indexOf("能力未知") >= 0
+              ? bt("imageUnknown")
+              : bt("imageUnsupported");
+          }
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")
-            : "⚠️ " + (err && err.toString ? err.toString() : err), {
+            : "⚠️ " + errorText, {
             turnErrorNotice: true,
           });
         });
@@ -674,9 +685,12 @@
       var meta = state.sessions.find(function (s) { return s.id === state.activeSessionId; });
       if (meta && (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[state.activeSessionId])) {
         var firstUser = state.messages.find(function (m) { return m.role === "user"; });
-        var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
-        if (text && text.text) {
-          var newTitle = text.text.slice(0, 20);
+        // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
+        // sidebar。hideInternalEnvelope=true 剥离 turn_meta/system-reminder 元数据块，
+        // 否则普通消息的标题会拼入尾随 turn_meta（引擎持久化为独立 text block）。
+        var titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        if (titleText) {
+          var newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: state.activeSessionId, title: newTitle });
           meta.title = newTitle;
           delete personaPlaceholderTitles[state.activeSessionId]; // 已被对话内容命名,卸下占位标记

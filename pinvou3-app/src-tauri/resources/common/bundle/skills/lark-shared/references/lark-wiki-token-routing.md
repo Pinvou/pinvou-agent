@@ -36,7 +36,7 @@ lark-cli wiki spaces get_node --params '{"token":"<wiki_token>"}'
 | `docx` / `doc` | 文档内容走 `lark-doc`；评论、权限、导出等云空间能力走 `lark-drive` |
 | `sheet` | 表内数据走 `lark-sheets`；评论、权限、导出等云空间能力走 `lark-drive` |
 | `bitable` | 表内数据走 `lark-base`；评论、权限、导出等云空间能力走 `lark-drive` |
-| `slides` | 幻灯片内容编辑暂无随包 skill（`lark-slides` 未收录），告知用户暂不支持；评论、权限、导出等云空间能力走 `lark-drive` |
+| `slides` | 幻灯片技能未随包收录，用 `lark-cli slides --help` 查看命令后直给（如 `slides +xml-get` / `slides +update-slide`）；评论、权限、导出等云空间能力走 `lark-drive` |
 | `file` | 普通文件上传、下载、评论、权限等走 `lark-drive` |
-| `mindnote` | 思维笔记的移动、删除、快捷方式、权限、安全标签等云空间能力走 `lark-drive`；知识库节点层级操作走 `lark-wiki` |
+| `mindnote` | 思维笔记技能未随包收录：节点内容操作用 `lark-cli mindnotes nodes --help` 查看命令后直给（`nodes list` / `nodes create`）；移动、删除、快捷方式、权限、安全标签等云空间能力走 `lark-drive`；知识库节点层级操作走 `lark-wiki` |
 | wiki 节点层级 / 空间成员 | 走 `lark-wiki`，不要把底层对象 token 当节点 token |

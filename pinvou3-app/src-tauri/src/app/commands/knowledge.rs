@@ -1,6 +1,6 @@
 pub(super) fn build_kb_agentic_guide(collection_names: &[String]) -> String {
     let titles = if collection_names.is_empty() {
-        "《本地知识集》".to_string()
+        "《知识集》".to_string()
     } else {
         collection_names
             .iter()
@@ -10,7 +10,7 @@ pub(super) fn build_kb_agentic_guide(collection_names: &[String]) -> String {
     };
     format!(
         "<system-reminder>\n\
-         本会话启用了知识集{titles}。涉及用户本地资料/文档的问题,你**必须先调用 \
+         本会话启用了本地或远程知识集{titles}。涉及这些资料/文档的问题,你**必须先调用 \
          `kb_search` 工具**检索,再**严格基于返回的片段**作答并注明来源文件;检索不到相关\
          内容就如实告诉用户「未在知识集中找到」,**绝不凭记忆编造**。片段足够时直接回答;\
          只有需要同一来源的相邻内容时才用 `kb_open_source(source_ref=...)`,不要对 XLSX/\
@@ -48,11 +48,11 @@ pub async fn session_mount_collection(
 #[tauri::command]
 pub async fn session_set_mounted_collections(
     session_id: String,
-    collections: Vec<crate::core::mode_state::MountedCollection>,
+    collections: Vec<crate::features::sessions::MountedCollection>,
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
-) -> Result<Vec<crate::core::mode_state::MountedCollection>, String> {
+) -> Result<Vec<crate::features::sessions::MountedCollection>, String> {
     let coordinator = knowledge.mount_mutation_coordinator();
     let _mutation = coordinator.lock().await;
     let normalized =
@@ -69,10 +69,10 @@ pub async fn session_set_mounted_collections(
 }
 
 fn validate_mount_replacement<F>(
-    collections: Vec<crate::core::mode_state::MountedCollection>,
+    collections: Vec<crate::features::sessions::MountedCollection>,
     semantic_ready: bool,
     mut collection_exists: F,
-) -> Result<Vec<crate::core::mode_state::MountedCollection>, String>
+) -> Result<Vec<crate::features::sessions::MountedCollection>, String>
 where
     F: FnMut(i64) -> Result<bool, String>,
 {
@@ -83,7 +83,7 @@ where
         }
         if normalized
             .iter()
-            .any(|mounted: &crate::core::mode_state::MountedCollection| {
+            .any(|mounted: &crate::features::sessions::MountedCollection| {
                 mounted.collection_id == collection.collection_id
             })
         {
@@ -144,7 +144,7 @@ pub async fn session_add_mounted_collection(
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
-) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+) -> Result<crate::features::sessions::MountedCollectionsSnapshot, String> {
     let coordinator = knowledge.mount_mutation_coordinator();
     let _mutation = coordinator.lock().await;
     ensure_collection_mountable(&knowledge, collection_id)?;
@@ -162,7 +162,7 @@ pub async fn session_set_mounted_collection_enabled(
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
-) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+) -> Result<crate::features::sessions::MountedCollectionsSnapshot, String> {
     let coordinator = knowledge.mount_mutation_coordinator();
     let _mutation = coordinator.lock().await;
     if enabled {
@@ -181,7 +181,7 @@ pub async fn session_remove_mounted_collection(
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
-) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+) -> Result<crate::features::sessions::MountedCollectionsSnapshot, String> {
     let coordinator = knowledge.mount_mutation_coordinator();
     let _mutation = coordinator.lock().await;
     let snapshot = store.remove_mounted_collection(&session_id, collection_id);
@@ -196,7 +196,7 @@ pub async fn session_unmount_collection(
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
-) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+) -> Result<crate::features::sessions::MountedCollectionsSnapshot, String> {
     let coordinator = knowledge.mount_mutation_coordinator();
     let _mutation = coordinator.lock().await;
     let snapshot = store.set_mounted_collections(&session_id, Vec::new());
@@ -207,7 +207,7 @@ pub async fn session_unmount_collection(
 fn publish_kb_mount_change(
     app: &AppHandle,
     session_id: &str,
-    snapshot: &crate::core::mode_state::MountedCollectionsSnapshot,
+    snapshot: &crate::features::sessions::MountedCollectionsSnapshot,
 ) {
     let collection_id = snapshot
         .collections
@@ -250,7 +250,7 @@ pub fn session_mounted_collection(
 pub fn session_mounted_collections(
     session_id: String,
     store: State<'_, SessionStore>,
-) -> Vec<crate::core::mode_state::MountedCollection> {
+) -> Vec<crate::features::sessions::MountedCollection> {
     store.mounted_collections(&session_id)
 }
 
@@ -259,12 +259,13 @@ pub fn session_mounted_collections(
 pub fn session_mounted_collections_snapshot(
     session_id: String,
     store: State<'_, SessionStore>,
-) -> crate::core::mode_state::MountedCollectionsSnapshot {
+) -> crate::features::sessions::MountedCollectionsSnapshot {
     store.mounted_collections_snapshot(&session_id)
 }
 
 use crate::features::knowledge as knowledge_domain;
 use crate::features::knowledge::model_download as model_domain;
+use crate::features::remote_knowledge::RemoteKnowledgeService;
 use knowledge_domain::*;
 use model_domain::*;
 
@@ -304,17 +305,65 @@ sync_command_passthrough!(knowledge_domain, kb_embed_info(state: State<'_, Knowl
 async_command_passthrough!(knowledge_domain, kb_search(state: State<'_, KnowledgeService>, query: SearchQueryDto) -> Result<Vec<FileHit>, String>);
 async_command_passthrough!(knowledge_domain, kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, String>);
 
-sync_command_passthrough!(model_domain, kb_model_status(service: State<'_, KnowledgeService>) -> KbModelStatus);
+#[tauri::command]
+pub async fn kb_model_status(
+    app: AppHandle,
+    service: State<'_, KnowledgeService>,
+    pool: State<'_, EnginePool>,
+) -> Result<KbModelStatus, String> {
+    // The bundled host may finish installing the shared model after desktop
+    // startup and while its owner panel is closed. A normal local status query
+    // must therefore adopt the complete on-disk model instead of merely
+    // reporting `installed=true, ready=false` and asking the user to retry.
+    if model_domain::model_installed() && !service.semantic_ready() {
+        if let Err(error) =
+            model_domain::load_installed_embedder(service.inner(), pool.inner()).await
+        {
+            eprintln!("[knowledge] installed model hot-load during status refresh failed: {error}");
+        }
+    }
+    let status = model_domain::kb_model_status(service);
+    let _ = app.emit("kb_model:status", &status);
+    Ok(status)
+}
 sync_command_passthrough!(model_domain, kb_model_cancel());
 async_command_passthrough!(model_domain, kb_model_load_after_first_frame(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>) -> Result<bool, String>);
-async_command_passthrough!(model_domain, kb_model_download(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>, repair: Option<bool>) -> Result<KbModelStatus, String>);
+
+#[tauri::command]
+pub async fn kb_model_download(
+    app: AppHandle,
+    service: State<'_, KnowledgeService>,
+    pool: State<'_, EnginePool>,
+    remote: State<'_, RemoteKnowledgeService>,
+    repair: Option<bool>,
+) -> Result<KbModelStatus, String> {
+    let status = model_domain::kb_model_download(app, service, pool, repair).await?;
+
+    // If this desktop owns the bundled loopback host, tell that process to
+    // re-check the shared model directory. Its download endpoint takes the
+    // cross-process install lock and follows the disk fast path, so it loads
+    // this already-validated copy without downloading it a second time.
+    for connection in remote
+        .configured_connections()
+        .into_iter()
+        .filter(|item| item.scope.is_owner() && item.endpoint == "https://127.0.0.1:3210")
+    {
+        if let Err(error) = remote.download_model(&connection.server_id).await {
+            eprintln!(
+                "[knowledge] desktop model is ready, but shared host refresh failed: {error}"
+            );
+        }
+    }
+
+    Ok(status)
+}
 use super::prelude::*;
 
 #[cfg(test)]
 mod tests {
     use super::{validate_collection_mountable, validate_mount_replacement};
-    use crate::core::mode_state::MountedCollection;
     use crate::features::knowledge::KnowledgeService;
+    use crate::features::sessions::MountedCollection;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 

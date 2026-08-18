@@ -69,6 +69,8 @@ const SEARCH_API_KEY_SERVICE: &str = "pinvou3-search-api-key";
 const MCP_SECRET_SERVICE: &str = "pinvou3-mcp-secret";
 const IMA_SECRET_SERVICE: &str = "pinvou3-ima-secret";
 const ACP_PROVIDER_KEY_SERVICE: &str = "pinvou3-acp-provider-key";
+const REMOTE_KNOWLEDGE_TOKEN_SERVICE: &str = "pinvou3-remote-knowledge-token";
+const SHARED_KNOWLEDGE_BACKUP_SERVICE: &str = "pinvou3-shared-knowledge-backup";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CredentialReference {
@@ -115,6 +117,30 @@ impl CredentialReference {
         Self {
             service: ACP_PROVIDER_KEY_SERVICE.to_string(),
             account: format!("{agent}:{provider_id}"),
+            version: 1,
+        }
+    }
+
+    pub fn for_remote_knowledge(server_id: &str) -> Self {
+        Self {
+            service: REMOTE_KNOWLEDGE_TOKEN_SERVICE.to_string(),
+            account: format!("server:{server_id}"),
+            version: 1,
+        }
+    }
+
+    pub fn for_remote_knowledge_join(request_id: &str) -> Self {
+        Self {
+            service: REMOTE_KNOWLEDGE_TOKEN_SERVICE.to_string(),
+            account: format!("join:{request_id}"),
+            version: 1,
+        }
+    }
+
+    pub fn for_shared_knowledge_backup() -> Self {
+        Self {
+            service: SHARED_KNOWLEDGE_BACKUP_SERVICE.to_string(),
+            account: "local-restore-identity".to_string(),
             version: 1,
         }
     }
@@ -404,12 +430,14 @@ impl CredentialStore for SystemCredentialStore {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Default)]
 pub struct MemoryCredentialStore {
     values: Arc<Mutex<HashMap<(String, String), String>>>,
     fail: Arc<Mutex<Option<String>>>,
 }
 
+#[cfg(test)]
 impl MemoryCredentialStore {
     pub fn fail_with(&self, message: impl Into<String>) {
         *self.fail.lock().expect("memory credential fail lock") = Some(message.into());
@@ -428,6 +456,7 @@ impl MemoryCredentialStore {
     }
 }
 
+#[cfg(test)]
 impl CredentialStore for MemoryCredentialStore {
     fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
         self.maybe_fail()?;

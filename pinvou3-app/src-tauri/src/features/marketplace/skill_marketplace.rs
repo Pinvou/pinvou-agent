@@ -26,7 +26,8 @@ static MARKETPLACE_DIR: Dir =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/skill-marketplace");
 
 /// 单个 skill 子树未压缩大小上限(防御性,预置/上传都适用)。
-const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+/// `pub(crate)`:命令层 `import_skill_package_bytes` 复用同一上限。
+pub(crate) const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 
 /// 安装来源标记文件名。卸载时校验它存在,避免误删内置/手放的 skill。
 const INSTALLED_FROM_MARKER: &str = ".installed-from";
@@ -107,10 +108,11 @@ pub struct MarketplaceSkillInfo {
     pub user_uploaded: bool,
 }
 
-// 停用开关(双 scope 持久化)-----------------------------------------------------
+// 停用开关(按模式 scope 持久化)------------------------------------------------
 //
-// 技能停用按会话类型 scope 独立持久化到 `~/.pinvou3/disabled_skills.json`
-// (`{plain, code, code_initialized}`,与连接器双 scope 同构),过滤职责移交
+// 技能停用按会话模式 scope 独立持久化到 `~/.pinvou3/disabled_skills.json`
+// (`{scopes: {<mode>: [...]}, initialized: [...]}`,scope 键即模式名,与连接器
+// 开关同构),过滤职责移交
 // **按会话拼的组合 skills_dir**(`features/assistant/skill_materialization.rs`):
 // 组合目录内容 = 该会话 scope 的启用技能集,底座每轮重扫组合目录渲染
 // `## Skills`。全局进程级 `DISABLED_SKILLS` 已退役(`set_disabled_skills(vec![])`,
@@ -182,8 +184,10 @@ impl SkillMarketplaceManager {
                 out.push(MarketplaceSkillInfo {
                     id: name.clone(),
                     title: name.clone(),
-                    subtitle: "用户上传的技能".to_string(),
-                    description: String::new(),
+                    // 空 subtitle 让前端回退三语 localized 文案(上传技能无自有副标题)
+                    subtitle: String::new(),
+                    // 解析 SKILL.md frontmatter description 展示;缺失则空
+                    description: read_skill_description(&path.join("SKILL.md")).unwrap_or_default(),
                     icon: "Package".to_string(),
                     color: "bg-gradient-to-b from-slate-400 to-slate-600".to_string(),
                     installed: true,
@@ -294,7 +298,23 @@ impl SkillMarketplaceManager {
 
     /// 导入用户上传的 zip 技能包:解压找 SKILL.md → 安全校验 → 落盘到
     /// `bundle/skills/<name>/`。穿越/symlink/大小防护对齐底座 install.rs。
-    pub fn import_package(&self, zip_path: &str) -> Result<(), String> {
+    /// 返回落盘技能名(frontmatter name),供命令层同步 scope 禁用集。
+    pub fn import_package(&self, zip_path: &str) -> Result<String, String> {
+        let fname = Path::new(zip_path)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "package.zip".to_string());
+        self.import_package_named(zip_path, &fname)
+    }
+
+    /// `display_name` 仅写入 `.installed-from=upload:<display_name>` 标记
+    /// (保留用户原始 zip 名,便于卸载提示),其余行为与 `import_package` 一致。
+    /// 拖放字节通道落临时文件导入时,zip 名已丢,由命令层传入净化后的展示名。
+    pub fn import_package_named(
+        &self,
+        zip_path: &str,
+        display_name: &str,
+    ) -> Result<String, String> {
         let file = std::fs::File::open(zip_path).map_err(|e| format!("打开 zip: {e}"))?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip: {e}"))?;
 
@@ -409,13 +429,9 @@ impl SkillMarketplaceManager {
                     .map_err(|e| format!("读条目: {e}"))?;
                 std::fs::write(&target, buf).map_err(|e| format!("写文件: {e}"))?;
             }
-            let fname = Path::new(zip_path)
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "package.zip".to_string());
             std::fs::write(
                 staged.join(INSTALLED_FROM_MARKER),
-                format!("upload:{fname}"),
+                format!("upload:{display_name}"),
             )
             .map_err(|e| format!("写标记: {e}"))?;
             Ok(())
@@ -431,7 +447,7 @@ impl SkillMarketplaceManager {
             let _ = std::fs::remove_dir_all(&staged);
             format!("落盘: {e}")
         })?;
-        Ok(())
+        Ok(name)
     }
 }
 
@@ -440,10 +456,18 @@ impl SkillMarketplaceManager {
 /// 递归写出 `include_dir` 子目录到 `dest`,strip 掉 `source_dir` 前缀
 /// (`file.path()` 是相对最外层 include_dir 根的完整路径,如 "pua/SKILL.md")。
 /// 跳过 vendored 来源标注文件 SOURCE.md(非 skill 运行内容)。
+/// 同样排除 `__pycache__/` 与 `*.pyc`:include_dir! 按文件系统内嵌(不受
+/// .gitignore 约束),在仓库里直接运行技能脚本产生的 Python 编译缓存若不
+/// 排除,会在用户安装预置技能时物化到运行时目录(跨平台 cpython 版本耦合)。
+/// 与 runtime_bundle::platform 的 extract_dir 排除规则保持一致。
 fn extract_embedded_subdir(dir: &Dir<'_>, source_dir: &str, dest: &Path) -> std::io::Result<()> {
     let prefix = format!("{source_dir}/");
     for file in dir.files() {
-        let p = file.path().to_string_lossy();
+        let p = file.path();
+        if is_python_cache_path(p) {
+            continue;
+        }
+        let p = p.to_string_lossy();
         let rel = p.strip_prefix(&prefix).unwrap_or(&p);
         if Path::new(rel).file_name().and_then(|s| s.to_str()) == Some("SOURCE.md") {
             continue;
@@ -455,9 +479,25 @@ fn extract_embedded_subdir(dir: &Dir<'_>, source_dir: &str, dest: &Path) -> std:
         std::fs::write(&target, file.contents())?;
     }
     for sub in dir.dirs() {
+        if sub
+            .path()
+            .components()
+            .any(|c| c.as_os_str() == "__pycache__")
+        {
+            continue;
+        }
         extract_embedded_subdir(sub, source_dir, dest)?;
     }
     Ok(())
+}
+
+/// 相对 include_dir 根的路径是否属于 Python 编译缓存(`__pycache__/` 子树内
+/// 或任意层级的 `.pyc`,大小写不敏感)。纯函数便于单测。
+fn is_python_cache_path(rel: &std::path::Path) -> bool {
+    rel.components().any(|c| c.as_os_str() == "__pycache__")
+        || rel
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("pyc"))
 }
 
 fn read_skill_name(md_path: &Path) -> Option<String> {
@@ -480,6 +520,65 @@ fn read_skill_name_from_str(content: &str) -> Option<String> {
             if !v.is_empty() {
                 return Some(v.to_string());
             }
+        }
+    }
+    None
+}
+
+fn read_skill_description(md_path: &Path) -> Option<String> {
+    read_skill_description_from_str(&std::fs::read_to_string(md_path).ok()?)
+}
+
+/// 解析 SKILL.md frontmatter 的 `description:`(仅展示用)。支持单行(含引号)与
+/// `|`/`>` 块状(取块内非空行,折叠拼接为单行);缺失/空 → None;超 240 字截断。
+fn read_skill_description_from_str(content: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    // by_ref:块状分支里还要接着消费同一个迭代器
+    for line in lines.by_ref() {
+        let t = line.trim();
+        if t == "---" {
+            break;
+        }
+        if let Some(rest) = t.strip_prefix("description:") {
+            let v = rest.trim();
+            if v.is_empty() {
+                return None;
+            }
+            if v == "|" || v == ">" {
+                // 块状:收集后续缩进行,空行跳过,遇顶层字段(无缩进)结束
+                let mut parts: Vec<String> = Vec::new();
+                let mut total: usize = 0;
+                for l in lines {
+                    let lt = l.trim();
+                    if lt.is_empty() {
+                        continue;
+                    }
+                    let indent = l.len() - l.trim_start().len();
+                    if indent == 0 {
+                        break;
+                    }
+                    total += lt.chars().count();
+                    parts.push(lt.to_string());
+                    if total > 240 {
+                        break;
+                    }
+                }
+                let s = parts.join(" ");
+                return if s.trim().is_empty() {
+                    None
+                } else {
+                    Some(s.trim().chars().take(240).collect())
+                };
+            }
+            let v = v.trim_matches('"').trim_matches('\'').trim();
+            return if v.is_empty() {
+                None
+            } else {
+                Some(v.chars().take(240).collect())
+            };
         }
     }
     None
@@ -522,6 +621,23 @@ fn is_safe_skill_name(name: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// `extract_embedded_subdir` 的 Python 编译缓存排除与 runtime_bundle 的
+    /// `extract_dir` 同规则:仓库内跑技能脚本产生的 `__pycache__/`/`*.pyc`
+    /// 会被 include_dir! 内嵌,不得在用户安装预置技能时物化到运行时目录。
+    #[test]
+    fn python_cache_paths_are_excluded_from_extraction() {
+        assert!(is_python_cache_path(std::path::Path::new(
+            "visualizer/scripts/__pycache__/validate.cpython-311.pyc"
+        )));
+        assert!(is_python_cache_path(std::path::Path::new(
+            "visualizer/scripts/validate.PYC"
+        )));
+        assert!(!is_python_cache_path(std::path::Path::new(
+            "visualizer/scripts/validate_visualizer_html.py"
+        )));
+        assert!(!is_python_cache_path(std::path::Path::new("pua/SKILL.md")));
+    }
+
     #[test]
     fn parses_frontmatter_name() {
         let md = "---\nname: pua\ndescription: x\n---\n# h";
@@ -532,6 +648,47 @@ mod tests {
             Some("huashu-nuwa")
         );
         assert!(read_skill_name_from_str("no frontmatter").is_none());
+    }
+
+    #[test]
+    fn parses_frontmatter_description() {
+        // 单行
+        assert_eq!(
+            read_skill_description_from_str("---\nname: x\ndescription: 整理会议纪要\n---\n")
+                .as_deref(),
+            Some("整理会议纪要")
+        );
+        // 引号剥离
+        assert_eq!(
+            read_skill_description_from_str("---\ndescription: \"带 引号\"\n---\n").as_deref(),
+            Some("带 引号")
+        );
+        // | 块状:非空行折叠拼接,空行跳过,遇顶层字段结束
+        assert_eq!(
+            read_skill_description_from_str(
+                "---\ndescription: |\n  第一行\n\n  第二行\nname: x\n---\n"
+            )
+            .as_deref(),
+            Some("第一行 第二行")
+        );
+        // > 块状
+        assert_eq!(
+            read_skill_description_from_str("---\ndescription: >\n  fold\n  ed\n---\n").as_deref(),
+            Some("fold ed")
+        );
+        // 缺失 / 空 / 无 frontmatter
+        assert!(read_skill_description_from_str("---\nname: x\n---\n").is_none());
+        assert!(read_skill_description_from_str("---\ndescription: ''\n---\n").is_none());
+        assert!(read_skill_description_from_str("no frontmatter").is_none());
+        // 超长截断到 240 字符
+        let long = format!("---\ndescription: {}\n---\n", "字".repeat(300));
+        assert_eq!(
+            read_skill_description_from_str(&long)
+                .unwrap()
+                .chars()
+                .count(),
+            240
+        );
     }
 
     #[test]
@@ -739,10 +896,40 @@ mod tests {
         assert!(!dest.join(".git").exists(), ".git 等隐藏目录应跳过");
         let marker = std::fs::read_to_string(dest.join(".installed-from")).unwrap();
         assert!(marker.starts_with("upload:"), "标记应为 upload:");
-        assert!(mgr
+        let listed = mgr
             .list_skills()
-            .iter()
-            .any(|s| s.id == "my-test-skill" && s.user_uploaded && s.installed));
+            .into_iter()
+            .find(|s| s.id == "my-test-skill")
+            .expect("list 应含上传技能");
+        assert!(listed.user_uploaded && listed.installed);
+        // frontmatter description 应被解析展示;subtitle 留空交前端回退
+        assert_eq!(listed.description, "t");
+        assert!(listed.subtitle.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// `import_package_named` 用调用方给的 display_name 写 upload: 标记
+    /// (拖放字节通道的 zip 名经命令层净化后传入)。
+    #[test]
+    fn import_package_named_writes_upload_marker() {
+        use std::io::Write;
+        let tmp = fresh_dir("named");
+        let zip_path = tmp.join("pkg.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("my-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: named-skill\ndescription: d\n---\n# hi")
+                .unwrap();
+            zw.finish().unwrap();
+        }
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        mgr.import_package_named(zip_path.to_str().unwrap(), "my skill.zip")
+            .unwrap();
+        let marker =
+            std::fs::read_to_string(tmp.join("named-skill").join(".installed-from")).unwrap();
+        assert_eq!(marker.trim(), "upload:my skill.zip");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

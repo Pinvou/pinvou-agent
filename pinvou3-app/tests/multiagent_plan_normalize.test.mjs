@@ -17,6 +17,7 @@ import {
   projectSubagentTranscript,
   resolveSubagentIdentity,
   resolveSubagentPresentation,
+  resolveSubagentSpawnResult,
   subagentAncestorIds,
   subagentObjectiveName,
   splitSubagentTitle,
@@ -50,10 +51,126 @@ const interactionBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'inte
 const settingsSource = read('src', 'features', 'settings', 'SettingsView.jsx');
 const i18nSource = read('src', 'shared', 'i18n.js');
 const poolSource = read('src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs');
-const modeStateSource = read('src-tauri', 'src', 'core', 'mode_state.rs');
-const rosterSource = read('src-tauri', 'src', 'features', 'multiagent', 'roster.rs');
+// wave3 起多智能体状态注释随 SessionModeState 迁至 sessions 特性域
+// （core/mode_state.rs 只剩跨层协议类型），契约断言跟随定义位置。
+const modeStateSource = read('src-tauri', 'src', 'features', 'sessions', 'mode_state.rs');
+const rosterSource = read('src-tauri', 'src', 'features', 'assistant', 'expert_roster.rs');
 const personasSource = read('src-tauri', 'src', 'features', 'personas', 'mod.rs');
+test('多智能体第一阶段只在桌面宿主开放', () => {
+  const platform = read('src', 'shared', 'platform.js');
+  const bootstrap = read('src', 'platform', 'web', 'bootstrap.js');
+  const webBridge = read('src', 'platform', 'web', 'bridge.js');
+  const policy = JSON.parse(read('src', 'platform', 'web', 'access-policy.json'));
 
+  assert.match(platform, /\bmultiAgent:\s*true\b/, '桌面默认能力必须显式开放');
+  assert.doesNotMatch(bootstrap, /\bmultiAgent\s*:\s*true\b/, 'Web capability 不得提前开放');
+
+  for (const command of [
+    'set_multi_agent_mode',
+    'list_subagent_transcripts',
+    'read_subagent_transcript',
+  ]) {
+    assert.equal(policy.allowed_commands.includes(command), false, `${command} 必须保持桌面专属`);
+    assert.equal(webBridge.includes(command), false, `Web bridge 不得代理 ${command}`);
+  }
+});
+
+test('共享界面不订阅废弃运行态，并阻止 Web 续写多智能体会话', () => {
+  const main = read('src', 'app', 'main.jsx');
+  const detached = read('src', 'app', 'DetachedShell.jsx');
+  const tauriBridge = read('src', 'platform', 'tauri', 'bridge.js');
+  const remoteCommands = read('src-tauri', 'src', 'app', 'commands', 'remote_control.rs');
+
+  assert.doesNotMatch(
+    main,
+    /APP_BRIDGE_STATE_DOMAINS\s*=\s*\[[\s\S]{0,400}['"]multiAgent['"]/,
+    '多智能体投影由命令与 DOM 事件提供，不得订阅已退役的空运行态',
+  );
+  assert.doesNotMatch(detached, /useBridgeState\(\[[\s\S]{0,300}['"]multiAgent['"]/);
+  assert.doesNotMatch(tauriBridge, /activeRunId/, '旧 Workflow 运行台账状态不得残留');
+  assert.match(
+    chatViewSource,
+    /const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED\s*&& !!\(bs && bs\.modeState && bs\.modeState\.multiAgent\)/,
+    'Web 只读判定看会话级开关（modeState.multiAgent 双端同步）',
+  );
+  assert.match(chatViewSource, /data-testid="multiagent-desktop-only"/);
+  assert.match(settingsSource, /const canMultiAgent = can\('multiAgent'\)/, '开关行必须按 capability 门禁');
+  assert.match(panelSource, /listSubagentTranscripts\(sessionId\)/);
+  assert.match(
+    remoteCommands,
+    /ensure_web_chat_session_supported\(store\.mode_state\(&session_id\)\.multi_agent\)\?/,
+    'Web 续写必须校验多智能体开关（桌面专属）',
+  );
+  assert.equal((i18nSource.match(/uiMultiAgent:/g) || []).length, 3, '多智能体界面必须提供中英日文案');
+});
+
+test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope 独有断言回迁）', () => {
+  const codex = read('src', 'features', 'codex', 'CodexAcpView.jsx');
+  const settings = read('src', 'features', 'settings', 'SettingsView.jsx');
+  const appRoot = read('src-tauri', 'src', 'lib.rs');
+  const policy = read('src-tauri', 'src', 'features', 'assistant', 'session_policy.rs');
+  const bridge = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
+  const engine = read('src-tauri', 'src', 'features', 'assistant', 'engine.rs');
+  const builderStart = bridge.indexOf('pub(crate) fn build_engine_config_for_multi_agent');
+  const builderEnd = bridge.indexOf('pub fn ', builderStart + 10);
+  const multiAgentBuilder = bridge.slice(builderStart, builderEnd);
+
+  // 产品开关不得改写普通 Engine 的 subagents_enabled（#162 复审 P1：整体关闭会
+  // 误伤原生 Code 会话的底座 agent/agents/*/workflow 能力）。
+  assert.doesNotMatch(
+    bridge,
+    /subagents_enabled\s*&=\s*self\.session_policy/,
+    '不得把产品入口收缩当成禁用底座委派能力的开关',
+  );
+  assert.match(
+    policy,
+    /pub fn supports_multi_agent_mode\(&self\)[\s\S]{0,160}SessionMode::Plain \| SessionMode::Code/,
+    'Work/Plain 与原生 Code 都开放 Pinvou 多智能体产品能力',
+  );
+  assert.match(
+    bridge,
+    /pub fn multi_agent_mode_available[\s\S]{0,500}!external_acp && self\.session_policy\(session_id\)\.supports_multi_agent_mode\(\)/,
+    '最终能力必须同时检查产品模式与原生/外部 ACP 运行时轴',
+  );
+  assert.match(
+    appRoot,
+    /set_external_acp_session_predicate[\s\S]{0,300}acp_pool\.is_acp\(session_id\)/,
+    '外部 ACP 判定必须由进程内同一份 AcpPool 注入，不能靠前端隐藏入口',
+  );
+  assert.match(
+    bridge,
+    /cfg\.workspace = roots\.execution;[\s\S]{0,120}cfg\.subagent_state_root = Some\(roots\.ledger\);/,
+    '引擎执行根与 delegated-agent 状态根必须显式分离',
+  );
+  assert.ok(builderStart >= 0 && builderEnd > builderStart, '必须保留多智能体专用配置入口');
+  assert.doesNotMatch(
+    multiAgentBuilder,
+    /enroll_expert_roles|roots\.ledger/,
+    '多智能体配置不得再向会话 ledger 写入或从中加载专家 TOML',
+  );
+  assert.match(engine, /bridge\.multi_agent_mode_available\(session_id\)/);
+  assert.match(
+    codex,
+    /nativeMultiAgentEnabled\s*=\s*nativeMultiAgentAvailable\s*&&\s*nativeMultiAgentSelected/,
+    '旧状态不得绕过会话策略重新启用多智能体展示',
+  );
+  assert.match(settings, /multiAgentEnabled:\s*multiAgentEnabledProp/);
+  assert.match(settings, /if \(onToggleMultiAgent\) await onToggleMultiAgent\(!multiAgentOn\)/);
+  assert.match(
+    toolRenderersSource,
+    /detail: \{ agentId, sessionId: sessionId \|\| null \}/,
+  );
+  assert.match(
+    toolRenderersSource,
+    /if \(typeof window === 'undefined' \|\| !agentId\) return;/,
+    '子智能体面板轮询必须有宿主与 agentId 双守卫',
+  );
+  assert.match(
+    toolRenderersSource,
+    /listSubagentTranscripts\(sid\)/,
+    'tools 侧 transcript 拉取入口不得绕过底座投影',
+  );
+});
 test('空白新对话切换多智能体后立即通知界面，且不提前物化会话', async () => {
   const root = {};
   vm.runInNewContext(interactionBridgeSource, { window: root, globalThis: root });
@@ -120,10 +237,10 @@ test('桥不再维护运行状态机，只暴露发起与只读投影', () => {
   );
   assert.deepEqual(
     Object.keys(listeners).sort(),
-    ['workflow:agent_complete', 'workflow:agent_progress'],
+    ['multiagent:agent_complete', 'multiagent:agent_progress'],
     '只监听子智能体进展/完成，不重建运行状态机',
   );
-  assert.doesNotMatch(source, /workflow:approval_required/, '审批链已退役');
+  assert.doesNotMatch(source, /approval_required/, '审批链已退役');
   assert.doesNotMatch(source, /awaiting_approval/, '运行状态机已退役');
 });
 
@@ -147,10 +264,10 @@ test('详情读取把 offset/revision 游标原样交给后端', async () => {
 
 test('子智能体事件由共享桥转成 DOM 事件，是否投影由会话视图决定', () => {
   const { listeners, dispatched } = loadFeature();
-  listeners['workflow:agent_progress']({
+  listeners['multiagent:agent_progress']({
     payload: { session_id: 'chat-1', agent_id: 'agent_a1', role_id: 'scout', status: '检索中' },
   });
-  listeners['workflow:agent_complete']({
+  listeners['multiagent:agent_complete']({
     payload: { session_id: 'wf-2', agent_id: 'agent_b2', role_id: 'builder', failed: true },
   });
   assert.equal(dispatched.length, 2, '普通会话（非 wf-）的子智能体事件同样转发');
@@ -182,13 +299,12 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 // ── 会话级开关 + 每轮委派提醒（Rust 源结构契约） ─────────────────────────────
 
 test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
-  assert.doesNotMatch(commandSource, /start_workflow_run/, '独立入口命令已退役');
-  assert.match(commandSource, /pub\(crate\) fn delegation_reminder\(task: &str\)/, 'Work 多智能体按本轮任务生成委派提醒');
-  assert.match(commandSource, /pub\(crate\) fn prepend_delegation_reminder\(/, '普通发送、编辑重发与方案接受必须复用统一提醒组装');
-  assert.match(commandSource, /roster::available_role_lines\(task\)/, '名册必须按本轮任务筛选并随提醒带上');
+  assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>\)/, 'Work 与原生 Code 多智能体按同轮候选生成委派提醒');
+  assert.match(commandSource, /pub\(crate\) fn prepare_delegation_turn\(/, '普通发送与方案接受必须复用同一轮提醒/名册快照组装');
+  assert.match(commandSource, /snapshot\.available_role_lines\(task\)/, '候选提醒必须从本轮名册快照筛选，避免提示与实际派工错位');
   assert.match(rosterSource, /EXPERT_CANDIDATE_LIMIT:\s*usize\s*=\s*20/, '父模型每轮最多看到 20 位专家短候选');
-  assert.match(rosterSource, /personas::executable_summaries\(\)/, '每轮匹配必须只读取轻量摘要，不克隆全部专家正文');
-  assert.match(personasSource, /pub fn executable_summaries\(\)[\s\S]{0,900}filter\(\|card\| !card\.conversational_only\)/, '纯对话专家卡不得注册为执行型子智能体');
+  assert.match(rosterSource, /personas::executable_cards\(\)/, '每轮名册与候选必须一次读取可执行专家卡，不能逐张读取形成竞态');
+  assert.match(personasSource, /pub fn executable_cards\(\)[\s\S]{0,900}filter\(\|card\| !card\.conversational_only\)/, '纯对话专家卡不得注册为执行型子智能体');
   assert.match(rosterSource, /if card\.source == "user" \|\| score > 0/, '用户自创专家优先保留，内置专家按本轮相关性入选');
   assert.match(
     commandSource,
@@ -207,17 +323,17 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     chatCommandSource,
-    /prepend_delegation_reminder\([\s\S]{0,180}mode_state\.multi_agent,[\s\S]{0,80}&raw_message,[\s\S]{0,40}full/,
-    '开关开启时 chat 发送链按原始用户消息筛专家并拼提醒',
+    /prepare_delegation_turn\([\s\S]{0,180}mode_state\.multi_agent,[\s\S]{0,80}&raw_message,[\s\S]{0,40}full/,
+    '开关开启时 chat 发送链按原始用户消息构造同轮专家快照与提醒',
   );
   assert.match(
     memoryCommandSource,
-    /prepend_delegation_reminder\([\s\S]{0,180}mode_state\.multi_agent,[\s\S]{0,80}&new_message,[\s\S]{0,80}new_message\.clone\(\)/,
-    '编辑重发必须重新注入本轮委派提醒',
+    /prepend_delegation_replay_reminder\([\s\S]{0,180}mode_state\.multi_agent,[\s\S]{0,80}new_message\.clone\(\)/,
+    '编辑重发沿用底座上一轮 route，只注入不含动态候选的重放提醒',
   );
   assert.match(
     memoryCommandSource,
-    /reserve_turn\(&sid\)[\s\S]{0,220}mode_state\(&sid\)/,
+    /reserve_turn\(&sid\)[\s\S]{0,320}mode_state\(&sid\)/,
     '编辑重发必须先占 turn 槽再读取开关，不能与模式切换交错',
   );
   assert.match(
@@ -227,8 +343,8 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     interactionCommandSource,
-    /prepend_delegation_reminder\([\s\S]{0,180}accepted_mode_state\.multi_agent,[\s\S]{0,80}&plan_markdown,[\s\S]{0,80}accept_plan_instruction\(&plan_markdown\)/,
-    '接受方案触发执行时必须按批准后的开关状态注入委派提醒',
+    /prepare_delegation_turn\([\s\S]{0,180}accepted_mode_state\.multi_agent,[\s\S]{0,80}&plan_markdown,[\s\S]{0,80}accept_plan_instruction\(&plan_markdown\)/,
+    '接受方案触发执行时必须按批准后的开关状态构造同轮专家快照与提醒',
   );
   assert.match(
     interactionCommandSource,
@@ -252,18 +368,18 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /reconfigure_multi_agent_mode[\s\S]{0,500}\.reserve\(\)[\s\S]{0,700}create_dir_all[\s\S]{0,900}set_multi_agent\(session_id, enabled\)[\s\S]{0,300}evict_locked\(session_id\)/,
-    '生成中拒绝切换；名册装配、状态持久化与旧引擎回收必须和发送原子串行',
+    /reconfigure_multi_agent_mode[\s\S]{0,500}\.reserve\(\)[\s\S]{0,700}turn_lock\.lock\(\)\.await[\s\S]{0,300}set_multi_agent\(session_id, enabled\)[\s\S]{0,300}evict_locked\(session_id\)/,
+    '生成中拒绝切换；状态持久化与旧引擎回收必须和发送原子串行',
+  );
+  assert.doesNotMatch(
+    poolSource,
+    /Op::SetFleetRoster|enroll_expert_roles|has_expert_role_projection/,
+    '专家名册由每轮 route 的 fleet.profiles 提供，不得再走会被 spawn refresh 覆盖的热推或会话写盘',
   );
   assert.match(
-    poolSource,
-    /Op::SetFleetRoster \{ roster \}/,
-    'live 名册刷新走底座 SetFleetRoster，而不是改写工具列表',
-  );
-  assert.match(
-    poolSource,
-    /has_expert_role_projection\(&workspace\)[\s\S]{0,100}targets\.insert\(session_id\)/,
-    '已关闭开关但仍加载旧专家投影的在跑会话，也必须随专家增删改刷新',
+    commandSource,
+    /PreparedDelegationTurn[\s\S]{0,300}ExpertRosterSnapshot[\s\S]{0,700}snapshot\.available_role_lines\(task\)[\s\S]{0,300}expert_snapshot: Some\(snapshot\)/,
+    '候选提醒与实际 route 必须持有同一个专家快照',
   );
   assert.doesNotMatch(
     rosterSource,
@@ -281,7 +397,8 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*2/);
   assert.match(assistantBridgeSource, /MULTI_AGENT_WORK_MAX_CONCURRENT:\s*usize\s*=\s*4/);
   assert.match(assistantBridgeSource, /MULTI_AGENT_WORK_MAX_ADMITTED:\s*usize\s*=\s*8/);
-  assert.doesNotMatch(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_/);
+  assert.match(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_CONCURRENT:\s*usize\s*=\s*6/);
+  assert.match(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_ADMITTED:\s*usize\s*=\s*12/);
   assert.match(
     assistantBridgeSource,
     /build_multi_agent_send_message_op[\s\S]{0,700}build_multi_agent_hook_executor/,
@@ -321,20 +438,29 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /enroll_expert_roles\(&workspace\)[\s\S]{0,80}\.map_err/,
-    '专家名册写盘失败必须让开启失败，不得静默成功',
-  );
-  assert.match(
-    poolSource,
-    /reconfigure_multi_agent_mode[\s\S]{0,700}if enabled && !self\.multi_agent_mode_available\(session_id\)[\s\S]{0,900}self\.bridge\.session_workspace\(session_id\)/,
-    '开启前必须先执行能力门禁；允许开启的 Work 会话仍按实际 CodeWhale 工作区装配名册',
+    /reconfigure_multi_agent_mode[\s\S]{0,700}if enabled && !self\.multi_agent_mode_available\(session_id\)[\s\S]{0,900}self\.store\.set_multi_agent\(session_id, enabled\)/,
+    '开启前必须先执行能力门禁；开关只持久化会话策略，不再生成磁盘名册',
   );
   assert.match(
     assistantBridgeSource,
-    /enroll_expert_roles\(&cfg\.workspace\)[\s\S]{0,1800}FleetRoster::load\([\s\S]{0,160}&cfg\.workspace/,
-    '引擎启动时名册写入与读取必须共同遵循基座 workspace',
+    /build_multi_agent_dt_config[\s\S]{0,500}config\.fleet = Some\(snapshot\.fleet_config\(\)\.clone\(\)\)[\s\S]{0,9000}resolve_multi_agent_runtime_route_for_model/,
+    '多智能体启动和每轮 route 都必须通过底座原生 fleet.profiles 注入专家',
   );
-  const sessionsSource = read('src-tauri', 'src', 'features', 'sessions', 'mod.rs');
+  assert.match(
+    assistantBridgeSource,
+    /build_engine_config_for_multi_agent[\s\S]{0,2200}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
+    '初始名册必须把全局配置与实际 execution workspace 合并，允许项目同名 profile 按底座规则覆盖',
+  );
+  // Wave-2 拆分后 sessions 职责分散在 mod.rs 与 mode_state/store/retention 等
+  // 子模块。契约检查的是「sessions 模块整体」的行为不变式,故拼接整个目录;
+  // 未拆分时(仅 mod.rs)行为不变。
+  const sessionsDir = path.join(here, '..', 'src-tauri', 'src', 'features', 'sessions');
+  const sessionsSource = fs
+    .readdirSync(sessionsDir)
+    .filter((f) => f.endsWith('.rs'))
+    .sort()
+    .map((f) => fs.readFileSync(path.join(sessionsDir, f), 'utf8'))
+    .join('\n');
   assert.match(
     sessionsSource,
     /fn save_multi_agent_flags/,
@@ -342,7 +468,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     sessionsSource,
-    /load_skill_bindings\(\);\s*store\.load_multi_agent_flags\(\)/,
+    /store\.load_multi_agent_flags\(\)/,
     '启动时必须恢复开关清单',
   );
   assert.match(
@@ -376,16 +502,10 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
     '保留策略清理必须同步更新 _multi_agent.json（防幽灵 id）',
   );
   const personasCommandSource = read('src-tauri', 'src', 'app', 'commands', 'personas.rs');
-  const expertSyncCallCount = (personasCommandSource.match(/sync_expert_rosters\(&app, &pool\)\.await/g) || []).length;
-  assert.equal(
-    expertSyncCallCount,
-    3,
-    '专家卡增/改/删都要联动刷新开着开关的会话名册（否则 live 引擎报 profile 不存在）',
-  );
-  assert.match(
+  assert.doesNotMatch(
     personasCommandSource,
-    /multiagent:roster_sync_failed/,
-    '联动失败不改写卡操作结果（否则前端不刷新卡池、重试造重复卡），必须走警示事件如实提示',
+    /sync_expert_rosters|SetFleetRoster|enroll_expert_roles|multiagent:roster_sync_failed/,
+    '专家卡 CRUD 只修改唯一真身；下一次普通多智能体 turn 重新捕获快照，不取消在跑子代理也不写历史会话',
   );
 });
 
@@ -397,7 +517,7 @@ test('workflow 保持主线原状：不禁用；提醒不教它；快照供 work
   const bridgeSource = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
   assert.match(
     bridgeSource,
-    /pub fn build_engine_config_for_multi_agent\(/,
+    /pub\(crate\) fn build_engine_config_for_multi_agent\(/,
     '多智能体配置只装名册',
   );
   assert.doesNotMatch(
@@ -601,7 +721,15 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     /transition\.newly_active[\s\S]{0,400}emit_turn_started\(app, session_id\)/,
     '无 admission 的续跑轮（子智能体完成后的父汇总轮）必须发 turn_started——否则界面空闲、停止缺席、再发消息撞"已有运行中轮次"（复核 P1）',
   );
-  const managerSource = read('src-tauri', 'src', 'features', 'remote_control', 'manager.rs');
+  // Wave-2 拆分后 remote_control manager 拆成 manager/ 子目录(persistence/rpc/
+  // transfer 等),统一校验点与封禁表可能分布在子模块,故拼接整个目录。
+  const managerDir = path.join(here, '..', 'src-tauri', 'src', 'features', 'remote_control', 'manager');
+  const managerSource = fs
+    .readdirSync(managerDir)
+    .filter((f) => f.endsWith('.rs'))
+    .sort()
+    .map((f) => fs.readFileSync(path.join(managerDir, f), 'utf8'))
+    .join('\n');
   assert.match(
     managerSource,
     /MULTI_AGENT_WEB_EXECUTION_DENYLIST/,
@@ -650,24 +778,25 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     '实时事件不带 seq/blocked 等补字段，卡片状态必须字段合并，不得整包覆盖',
   );
   const personasBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'personas.js');
-  assert.match(
+  assert.doesNotMatch(
     personasBridgeSource,
-    /__PINVOU_SHARED_I18N__/,
-    '名册同步警示文案取自统一词典 src/shared/i18n.js，不在桥内表重复维护',
+    /multiagent:roster_sync_failed|__PINVOU_SHARED_I18N__/,
+    '专家卡 CRUD 不再逐会话刷新名册，前端不得保留已退役的失败事件与专用文案桥接',
   );
+  const tauriBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
   assert.match(
-    interactionBridgeSource,
+    tauriBridgeSource,
     /multiAgent: !!st\.multi_agent/,
-    'modeState 镜像必须带 multiAgent，模式事件不得把开关状态冲掉',
+    'modeState 权威写回收敛点（applyAuthoritativeModeState）必须带 multiAgent，模式事件不得把开关状态冲掉',
   );
 });
 
-test('transcripts 命令仅读取 Work 会话自己的 CodeWhale 工作区', () => {
-  assert.match(commandSource, /fn subagent_workspace\([\s\S]{0,100}pool: &EnginePool/);
+test('transcripts 命令仅读取会话私有的 CodeWhale 状态根', () => {
+  assert.match(commandSource, /fn subagent_state_root\([\s\S]{0,100}pool: &EnginePool/);
   assert.match(
     commandSource,
-    /fn subagent_workspace\([\s\S]{0,500}!pool\.multi_agent_mode_available\(session_id\)[\s\S]{0,220}pool\.session_workspace\(session_id\)/,
-    '读取工作区前必须拒绝 Code 会话，避免把项目共享 .codewhale 当成会话记录',
+    /fn subagent_state_root\([\s\S]{0,500}!pool\.multi_agent_mode_available\(session_id\)[\s\S]{0,220}pool\.session_state_root\(session_id\)/,
+    'Work 与 Code 都必须从会话 ledger 读取，不得把项目目录当成 transcript 根',
   );
   assert.doesNotMatch(commandSource, /resolve_workflow_approval/, '审批命令已退役');
 });
@@ -926,6 +1055,16 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
     /pinvou:open-subagent/,
     '点击整卡经 DOM 事件通知 ChatView 打开面板',
   );
+  assert.match(
+    toolRenderersSource,
+    /resolveSubagentSpawnResult\(item\)/,
+    '专家卡必须同时读取工具完成态与成功态，不能把失败的 done 当成派工成功',
+  );
+  assert.match(
+    toolRenderersSource,
+    /disabled=\{!canOpenTranscript\}[\s\S]{0,160}onClick=\{canOpenTranscript/,
+    '没有成功返回真实 agent_id 的卡片不得打开其他子智能体 transcript',
+  );
 });
 
 test('子智能体 ID 只接受 CodeWhale 实例格式，不把 agent_id 字段名当成实例', () => {
@@ -937,6 +1076,39 @@ test('子智能体 ID 只接受 CodeWhale 实例格式，不把 agent_id 字段�
   );
   assert.equal(extractSubagentId({ agent_id: 'agent_7A7D442F' }), 'agent_7A7D442F');
   assert.equal(extractSubagentId('agent_1234'), null, '非正式短 id 不得误绑卡片');
+  assert.equal(
+    extractSubagentId('Error: write-scope contention with agent_6282bd07'),
+    null,
+    '错误正文中的冲突方不得被认成新派出的实例',
+  );
+  assert.equal(
+    extractSubagentId('[sub-agent result summarized for parent context]\n- agent_fa6e55b5 (agent) status=running'),
+    'agent_fa6e55b5',
+    '上下文压缩后的正式成功摘要仍须可定位实例',
+  );
+});
+
+test('失败派工不绑定冲突方，成功重派只绑定自身', () => {
+  const failureOutput = 'Error: Failed to spawn sub-agent: write-scope contention with agent_6282bd07';
+  assert.deepEqual(
+    resolveSubagentSpawnResult({ state: 'done', success: false, output: failureOutput }),
+    { failed: true, agentId: null },
+    '实时 tool_end 的 done + success=false 必须显示启动失败且不可打开 transcript',
+  );
+  assert.deepEqual(
+    resolveSubagentSpawnResult({ state: 'failed', success: null, output: failureOutput }),
+    { failed: true, agentId: null },
+    '旧车道的显式 failed 状态也不得把冲突方绑定到失败卡',
+  );
+  assert.deepEqual(
+    resolveSubagentSpawnResult({
+      state: 'done',
+      success: true,
+      output: '[sub-agent result summarized for parent context]\n- agent_fa6e55b5 (agent) status=running',
+    }),
+    { failed: false, agentId: 'agent_fa6e55b5' },
+    '成功重派仍应打开真正的新实例',
+  );
 });
 
 test('ChatView 监听打开事件并为工作会话挂载只读面板，旧运行条带已退役', () => {
@@ -1035,6 +1207,35 @@ test('transcript 适配：tool_result 载体不开新轮，结果按 id 回填',
     turn.presentation.some((item) => item.type === 'tool_group'),
     '工具条目要折成 tool_group 紧凑组',
   );
+});
+
+test('transcript 适配：内部运行时信封不得渲染为任务指令气泡', () => {
+  const envelopeText = [
+    '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+    'This is an internal runtime event, not user input.',
+    'panel child completion summary',
+    '<codewhale:subagent.done>{"agent_id":"agent_1a2b3c4d","status":"completed"}</codewhale:subagent.done>',
+    '</codewhale:runtime_event>',
+  ].join('\n');
+  const { turns } = projectSubagentTranscript({
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '真实任务指令' }] },
+      { role: 'user', content: [
+        { type: 'text', text: envelopeText },
+        { type: 'text', text: '<turn_meta>\nInput provenance: subagent_handoff (non-authoritative)\n</turn_meta>' },
+      ] },
+      { role: 'assistant', content: [{ type: 'text', text: '继续执行' }] },
+      { role: 'user', content: [
+        { type: 'text', text: '<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>' },
+      ] },
+    ],
+    agent: { agentId: 'a3', role: 'builder', done: true, failed: false, error: null },
+  });
+  assert.equal(turns.length, 1, '内部信封不得切出假轮次');
+  assert.equal(turns[0].userText, '真实任务指令', '仅真实任务指令进入 userText');
+  assert.ok(!JSON.stringify(turns[0]).includes('child completion summary'), '信封正文不得上屏');
+  assert.ok(!JSON.stringify(turns[0]).includes('codewhale:runtime_event'), '信封 XML 不得进入展示');
+  assert.ok(!JSON.stringify(turns[0]).includes('shell_completion'), '仅-provenance 形态同样不上屏');
 });
 
 test('transcript 适配：文件工具归 file_change，终态后不留转圈条目', () => {
@@ -1266,4 +1467,244 @@ test('详情清单未解析或终态无 transcript 时不发起读取', async ()
     assert.equal(stop, undefined, `${testCase.name} 不应启动详情轮询`);
     assert.equal(reads, 0, `${testCase.name} 的详情读取次数必须为 0`);
   }
+});
+// ── modeState 竞态回归：陈旧读取不得覆盖权威改写（审计意见）────────
+// 装载 interaction 桥的 runtime 快照，用可控 invoke 精确编排异步返回顺序。
+// 场景：syncModeState 先发起 get_mode_state（将返回旧值），toggle 先落盘
+// （in-flight 清空）后旧读取才返回。只靠瞬时 in-flight 集合识别不了这种
+// 顺序——epoch 校验必须在场（审计 P1）。
+function loadInteractionRuntime() {
+  const root = {};
+  vm.runInNewContext(interactionBridgeSource, { window: root, globalThis: root });
+  const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.interaction;
+  const state = {
+    activeSessionId: 'chat-a',
+    modeState: { mode: 'yolo', multiAgent: false },
+    pendingDraftMultiAgent: false,
+    chatItems: [],
+    messages: [],
+    // 三分 lane：草稿态 mode = 本 lane 全局默认。
+    modeDefaults: { work: null, design: null, code: null },
+    modeLane: 'work',
+  };
+  const deferred = {};
+  const calls = [];
+  // 与 bridge.js 共享的 per-session epoch 表（评审 P1 收敛点）。
+  const modeStateEpochs = {};
+  const runtime = {
+    state,
+    calls,
+    notifyCount: 0,
+    defer(name) {
+      deferred[name] = deferred[name] || {};
+      deferred[name].promise = new Promise((resolve, reject) => {
+        deferred[name].resolve = resolve;
+        deferred[name].reject = reject;
+      });
+      return deferred[name];
+    },
+  };
+  runtime.api = factory({
+    state,
+    notify() { runtime.notifyCount += 1; },
+    bt(key) { return key; },
+    addSystemItem() {},
+    addAuthoritySyncNotice() {},
+    addChatItem() {},
+    timeStr() { return ''; },
+    runSyncOnSession(sid, fn) {
+      // 记录跨会话定向调用：sid !== active 时 fn 必须落在 sid 的 buffer 上，
+      // 不能直接改当前显示。本 mock 简化执行 fn 但保留调用证据。
+      if (sid !== state.activeSessionId) calls.push('runSyncOnSession:' + sid);
+      fn();
+    },
+    // 评审 P1：权威写回收敛点从 bridge.js 注入（生产同构实现）。interaction
+    // 模块不再自持 epoch 表，测试必须提供同一份共享表才能验证竞态语义。
+    modeStateEpochs,
+    bumpModeStateEpoch(sid) { if (sid) modeStateEpochs[sid] = (modeStateEpochs[sid] || 0) + 1; },
+    applyAuthoritativeModeState(sid, st) {
+      if (sid) modeStateEpochs[sid] = (modeStateEpochs[sid] || 0) + 1;
+      if (sid !== state.activeSessionId) calls.push('runSyncOnSession:' + sid);
+      state.modeState = { mode: st.mode || 'yolo', multiAgent: !!st.multi_agent };
+    },
+    getBuffer() { return null; },
+    // 与 bridge.js 同构的草稿态显示解析：当前 lane 全局默认，缺省 yolo。
+    currentDraftModeState() {
+      const lane = state.modeLane === 'design' ? 'design' : 'work';
+      const d = state.modeDefaults && state.modeDefaults[lane];
+      return { mode: d || 'yolo', multiAgent: false };
+    },
+    flushAssistantMessageToHistory() {},
+    resetPendingAssistant() {},
+    rerenderFromMessages() {},
+    ensureSession: async () => (state.activeSessionId || 'chat-a'),
+    sendMessage: async () => {},
+    reconcileRemoteTurn: async () => true,
+    isBusyFor() { return false; },
+    markRemoteTurn() {},
+    turnUsageDirty: {},
+    invoke(name, args) {
+      calls.push(name);
+      runtime.invokeArgs = runtime.invokeArgs || {};
+      runtime.invokeArgs[name] = args;
+      if (deferred[name] && deferred[name].promise) return deferred[name].promise;
+      return Promise.resolve({ mode: 'yolo', multi_agent: false });
+    },
+  });
+  return runtime;
+}
+
+test('陈旧 get_mode_state 不得覆盖已完成 toggle：set 先落盘、旧读取后返回', async () => {
+  const rt = loadInteractionRuntime();
+  const get = rt.defer('get_mode_state');
+  const set = rt.defer('set_multi_agent_mode');
+  const syncP = rt.api.syncModeState();                    // t0: get 挂起（将返回旧值 false）
+  const toggleP = rt.api.setMultiAgentMode(true);          // t1: 乐观翻转 true，set 在途
+  set.resolve({ mode: 'yolo', multi_agent: true });        // t2: toggle 先落盘，finally 清空 in-flight
+  await toggleP;
+  get.resolve({ mode: 'yolo', multi_agent: false });       // t3: 旧 get 最后返回
+  await syncP;
+  assert.equal(rt.state.modeState.multiAgent, true,
+    'toggle 已完成的权威值 true 不得被旧读取 false 覆盖（审计 P1 顺序）');
+});
+
+test('get_mode_state 返回时 toggle 仍在途：旧读取丢弃，乐观态保持', async () => {
+  const rt = loadInteractionRuntime();
+  const get = rt.defer('get_mode_state');
+  const set = rt.defer('set_multi_agent_mode');
+  const syncP = rt.api.syncModeState();
+  const toggleP = rt.api.setMultiAgentMode(true);          // 乐观翻转 true，set 在途
+  get.resolve({ mode: 'yolo', multi_agent: false });       // get 先返回（toggle 尚未落盘）
+  await syncP;
+  assert.equal(rt.state.modeState.multiAgent, true,
+    '在途 toggle 期间的旧读取不得把乐观态覆盖回去');
+  set.resolve({ mode: 'yolo', multi_agent: true });
+  await toggleP;
+});
+
+test('get_mode_state 失败且期间发生 toggle：默认值不得覆盖权威改写', async () => {
+  const rt = loadInteractionRuntime();
+  const get = rt.defer('get_mode_state');
+  const set = rt.defer('set_multi_agent_mode');
+  const syncP = rt.api.syncModeState();
+  const toggleP = rt.api.setMultiAgentMode(true);
+  set.resolve({ mode: 'yolo', multi_agent: true });
+  await toggleP;
+  get.reject(new Error('backend down'));                   // get 失败（旧值本不可信）
+  await syncP;
+  assert.equal(rt.state.modeState.multiAgent, true,
+    'get 失败也不得用 yolo/false 默认值把已完成的切换砸掉');
+});
+
+test('无权威改写时 syncModeState 正常写回后端值（epoch 不变）', async () => {
+  const rt = loadInteractionRuntime();
+  const get = rt.defer('get_mode_state');
+  const syncP = rt.api.syncModeState();
+  get.resolve({ mode: 'plan', multi_agent: true });
+  await syncP;
+  // 逐字段断言（vm 上下文的对象原型与主上下文不同，deepEqual 不可用）
+  assert.equal(rt.state.modeState.mode, 'plan');
+  assert.equal(rt.state.modeState.multiAgent, true,
+    '没有发生过 toggle 的普通读取必须照常生效');
+});
+
+// ── 评审 P1 敞口回归：chip 切换（exitPlanToYolo / setPlanModeNext）的权威
+// ── 写回必须作废在途 syncModeState 旧读取。此前这两个入口不 bump epoch，
+// ── 「切会话触发 get 在途 → 立刻点 chip → 旧 get 返回」会把刚切的模式砸回旧值。
+function enterPlanRuntime() {
+  const rt = loadInteractionRuntime();
+  rt.state.modeState = { mode: 'plan', multiAgent: false };
+  return rt;
+}
+
+test('exitPlanToYolo 权威写回作废在途旧读取：chip 切 Yolo 不被砸回 Plan（评审 P1）', async () => {
+  const rt = enterPlanRuntime();
+  const get = rt.defer('get_mode_state');
+  const set = rt.defer('exit_plan_to_yolo');
+  const syncP = rt.api.syncModeState();                  // t0: get 挂起（将返回旧值 plan）
+  const exitP = rt.api.exitPlanToYolo();                 // t1: 用户点 chip 切 Yolo，set 在途
+  set.resolve({ mode: 'yolo', multi_agent: false });     // t2: set 落盘并权威写回（bump epoch）
+  await exitP;
+  assert.equal(rt.state.modeState.mode, 'yolo', '权威值先显示');
+  get.resolve({ mode: 'plan', multi_agent: false });     // t3: 旧 get 才返回
+  await syncP;
+  assert.equal(rt.state.modeState.mode, 'yolo',
+    'chip 切换的权威值不得被在途旧读取砸回 Plan（P1 敞口）');
+});
+
+test('setPlanModeNext 权威写回作废在途旧读取：chip 切 Plan 不被砸回 Yolo（评审 P1）', async () => {
+  const rt = loadInteractionRuntime();                   // 默认 modeState=yolo
+  const get = rt.defer('get_mode_state');
+  const set = rt.defer('set_plan_mode_next');
+  const syncP = rt.api.syncModeState();                  // t0: get 挂起（旧值 yolo）
+  const planP = rt.api.setPlanModeNext();                // t1: 用户点 chip 切 Plan，set 在途
+  set.resolve({ mode: 'plan', multi_agent: false });     // t2: set 落盘并权威写回
+  await planP;
+  assert.equal(rt.state.modeState.mode, 'plan', '权威值先显示');
+  get.resolve({ mode: 'yolo', multi_agent: false });     // t3: 旧 get 才返回
+  await syncP;
+  assert.equal(rt.state.modeState.mode, 'plan',
+    'chip 切换的权威值不得被在途旧读取砸回 Yolo（P1 敞口）');
+});
+
+// ── 三分 lane 语义回归：草稿写全局默认、会话写自己、lane 各自独立 ─────
+test('草稿态切 Plan：写本 lane 全局默认且不物化会话、不调 per-session 命令', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.activeSessionId = null; // 草稿态
+  const set = rt.defer('set_mode_default');
+  const p = rt.api.setPlanModeNext();
+  set.resolve({ work: 'plan', design: null, code: null });
+  await p;
+  assert.ok(rt.calls.includes('set_mode_default'), '草稿切换必须写 lane 全局默认');
+  assert.equal(rt.invokeArgs.set_mode_default.lane, 'work');
+  assert.equal(rt.invokeArgs.set_mode_default.mode, 'plan');
+  assert.ok(!rt.calls.includes('set_plan_mode_next'), '草稿态不得调 per-session 命令');
+  assert.ok(!rt.calls.includes('create_session'), '草稿态不得物化会话');
+  assert.equal(rt.state.modeDefaults.work, 'plan');
+  assert.equal(rt.state.modeState.mode, 'plan', '草稿显示跟随新默认');
+});
+
+test('lane 切换即刷新草稿显示；草稿切换写当前 lane（work/design 互不影响）', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.activeSessionId = null;
+  rt.state.modeDefaults = { work: 'plan', design: null, code: null };
+  // work → design：草稿显示从 work 默认 plan 变为 design 缺省 yolo。
+  rt.api.setModeLane('design');
+  assert.equal(rt.state.modeState.mode, 'yolo');
+  rt.api.setModeLane('work');
+  assert.equal(rt.state.modeState.mode, 'plan');
+  // design lane 下切 plan：写 design 默认，work 默认不动。
+  rt.api.setModeLane('design');
+  const set = rt.defer('set_mode_default');
+  const p = rt.api.setDraftMode('plan');
+  set.resolve({ work: 'plan', design: 'plan', code: null });
+  await p;
+  assert.equal(rt.invokeArgs.set_mode_default.lane, 'design');
+  assert.equal(rt.state.modeDefaults.design, 'plan');
+  assert.equal(rt.state.modeDefaults.work, 'plan');
+  assert.equal(rt.state.modeState.mode, 'plan');
+});
+
+test('已生成会话切 mode：只走 per-session 命令，不碰任何全局 lane 默认', async () => {
+  const rt = loadInteractionRuntime(); // activeSessionId = 'chat-a'
+  const set = rt.defer('set_plan_mode_next');
+  const p = rt.api.setPlanModeNext();
+  set.resolve({ mode: 'plan', multi_agent: false });
+  await p;
+  assert.ok(rt.calls.includes('set_plan_mode_next'));
+  assert.ok(!rt.calls.includes('set_mode_default'), '会话切换不得写全局默认');
+  assert.equal(rt.state.modeDefaults.work, null);
+  assert.equal(rt.state.modeState.mode, 'plan');
+});
+
+test('refreshModeDefaults：草稿态按当前 lane 默认刷新显示', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.activeSessionId = null;
+  rt.state.modeLane = 'design';
+  const get = rt.defer('get_mode_defaults');
+  const p = rt.api.refreshModeDefaults();
+  get.resolve({ work: 'yolo', design: 'plan', code: 'plan' });
+  await p;
+  assert.equal(rt.state.modeDefaults.design, 'plan');
+  assert.equal(rt.state.modeState.mode, 'plan', 'design lane 草稿显示自己的全局默认');
 });

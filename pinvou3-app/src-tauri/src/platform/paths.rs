@@ -44,11 +44,6 @@ pub fn bundle_instructions() -> PathBuf {
 pub fn bundle_skills_dir() -> PathBuf {
     bundle_root().join("skills")
 }
-/// 工作流(Harness Loop)定义目录,跟 `skills/` 并列。
-/// skill = LLM 挂载的标准附件(pinvou-review-*);workflow = harness 读、LLM 不挂载(legacy-ppt-workflow)。
-pub fn bundle_workflow_dir() -> PathBuf {
-    bundle_root().join("workflow")
-}
 pub fn bundle_mcp_json() -> PathBuf {
     bundle_root().join("mcp.json")
 }
@@ -134,14 +129,6 @@ pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
 }
 
-/// `~/.pinvou3/web-template` —— 三省六部「网页类」差事的预置脚手架(Vite + React +
-/// vite-plugin-singlefile,含预装 node_modules,离线可 `npm run build` 出单文件 HTML)。
-/// 工部(gongbu)角色提示词硬编码此路径:`cp -r ~/.pinvou3/web-template deliverables/<站名>`。
-/// 由首次启动 seed(从只读 resource_dir 复制过来,见 lib.rs::seed_web_template)。
-pub fn web_template_dir() -> PathBuf {
-    pinvou3_home().join("web-template")
-}
-
 /// 拉起 python MCP server(present_artifact / pptx 等)用的解释器命令。
 ///
 /// - **Windows**:优先用安装器写入的 `PINVOU3_PYTHON`,其次用随安装包内置的
@@ -168,10 +155,9 @@ pub fn user_personas_dir() -> PathBuf {
     user_root().join("personas")
 }
 
-/// `~/.deepseek/skills/` — CodeWhale 标准用户 skills 目录,legacy-ppt-workflow /
-/// skill-creator 这种由 `/skill install` 装的 skill 都在这里。跟
-/// [`user_skills_dir`](pinvou3 私有 `~/.pinvou3/user/skills/`) 平行,工作流
-/// 视图 list_skills_v2 把两个目录合并去重展示 (user 覆盖 deepseek 覆盖 bundle)。
+/// `~/.deepseek/skills/` — CodeWhale 标准用户 skills 目录；通过
+/// `/skill install` 安装的 skill 都在这里。它与 Pinvou 私有的
+/// [`user_skills_dir`] 平行；会话物化时用户 Skill 覆盖同名 bundle Skill。
 pub fn deepseek_skills_dir() -> PathBuf {
     user_home_dir().join(".deepseek").join("skills")
 }
@@ -274,26 +260,6 @@ fn sanitize_memory_runtime_id(raw: &str) -> String {
     } else {
         sanitized
     }
-}
-
-/// `~/.pinvou3/workflows/` —— 工作流 run 第一公民的根目录（独立于 sessions/）。
-pub fn workflows_root() -> PathBuf {
-    pinvou3_home().join("workflows")
-}
-
-/// `~/.pinvou3/workflows/<run_id>/` —— 单个 run 的家（run.json + project/）。
-pub fn workflow_run_dir(run_id: &str) -> PathBuf {
-    workflows_root().join(run_id)
-}
-
-/// `~/.pinvou3/workflows/<run_id>/project/` —— 项目目录 = 该 run 的 engine workspace 本身。
-pub fn workflow_project_dir(run_id: &str) -> PathBuf {
-    workflow_run_dir(run_id).join("project")
-}
-
-/// `~/.pinvou3/workflows/index.json` —— 台账。纯缓存可丢弃，决策读取须与 _state 互证。
-pub fn workflows_index_path() -> PathBuf {
-    workflows_root().join("index.json")
 }
 
 /// `~/.pinvou3/updates/` —— 应用内升级下载的 deb 暂存目录。
@@ -493,34 +459,6 @@ pub(crate) mod tests {
     #[test]
     fn user_home_dir_reads_home_env() {
         assert!(!user_home_dir().as_os_str().is_empty());
-    }
-
-    /// workflow run 目录族必须落在 ~/.pinvou3/workflows/ 下（独立于 sessions/）。
-    #[test]
-    fn workflow_paths_layout() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-wf-paths-test");
-        let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-wf-paths-test");
-        assert_eq!(workflows_root(), root.join("workflows"));
-        assert_eq!(
-            workflow_run_dir("wf-20260610-1432-a3f9"),
-            root.join("workflows").join("wf-20260610-1432-a3f9")
-        );
-        assert_eq!(
-            workflow_project_dir("wf-20260610-1432-a3f9"),
-            root.join("workflows")
-                .join("wf-20260610-1432-a3f9")
-                .join("project")
-        );
-        assert_eq!(
-            workflows_index_path(),
-            root.join("workflows").join("index.json")
-        );
-        match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
-        }
     }
 
     #[test]

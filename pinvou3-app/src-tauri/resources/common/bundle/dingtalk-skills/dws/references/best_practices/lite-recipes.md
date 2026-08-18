@@ -25,7 +25,7 @@
 
 ### list-today-meetings
 
-**优先**：`python scripts/calendar_today_agenda.py [today|tomorrow|week]`
+**优先**：`python3 scripts/calendar_today_agenda.py [today|tomorrow|week]`
 备选：`dws calendar event list --start "<今日起始ISO>" --end "<今日结束ISO>"`（须加 `--format json`）
 
 ### check-users-busy
@@ -212,7 +212,7 @@ query 未提"听记"但任务产出依赖会议讨论内容时（报告/总结/�
 
 **搜人首选入口**。凡是“找人/搜人/找同事/谁负责/上级/下级/负责人/团队成员”均优先用 `aisearch person`：
 
-1. 从用户问题中提取 keyword（人名/业务关键词）和 dimension（维度），规则见 `aisearch`（开源版未引入，悟空内部产品）。
+1. 从用户问题中提取 keyword（人名/业务关键词）和 dimension（维度），规则见 [aisearch.md](../products/aisearch.md)。
 2. `aisearch person --keyword "<关键词>" --dimension <维度>`
 3. 结果中提取 `userId` 和 `title`（姓名）展示给用户。
 4. 若需要 userId 做后续操作（发消息/建待办），可直接使用结果中的 `userId`。

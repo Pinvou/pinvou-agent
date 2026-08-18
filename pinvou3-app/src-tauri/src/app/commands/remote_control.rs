@@ -661,16 +661,6 @@ pub async fn web_access_transcribe_voice_audio(
         .await
 }
 
-#[tauri::command]
-pub async fn web_access_start_skill_session(
-    name: String,
-    app: AppHandle,
-    store: State<'_, SessionStore>,
-    pool: State<'_, EnginePool>,
-) -> Result<super::workflows::StartSkillSessionResult, String> {
-    super::workflows::start_skill_session(name, Some(false), app, store, pool).await
-}
-
 /// Read a bounded chunk from a Session-owned artifact. The resolver rejects
 /// files outside that Session's isolated workspace/artifact authority.
 #[tauri::command]
@@ -701,79 +691,6 @@ fn scoped_artifact_path(
 ) -> Result<String, String> {
     file_access::resolve_session_artifact_path(store, session_id, path)
         .map(|resolved| resolved.to_string_lossy().into_owned())
-}
-
-fn scoped_workflow_project(store: &SessionStore, session_id: &str) -> Result<String, String> {
-    crate::features::sessions::validate_session_id(session_id)
-        .map_err(|error| format!("invalid workflow Session id: {error:#}"))?;
-    store
-        .load(session_id)
-        .map_err(|error| format!("load workflow Session {session_id}: {error:#}"))?;
-    let binding = store
-        .active_skill(session_id)
-        .ok_or_else(|| format!("Session {session_id} has no workflow binding"))?;
-    let configured = binding
-        .project_dir
-        .ok_or_else(|| format!("Session {session_id} is not a workflow Session"))?;
-    let project = std::path::PathBuf::from(configured)
-        .canonicalize()
-        .map_err(|error| format!("resolve workflow project: {error}"))?;
-    let workspace = store
-        .ledger_root(session_id)
-        .map_err(|error| format!("resolve workflow workspace: {error:#}"))?
-        .canonicalize()
-        .map_err(|error| format!("resolve workflow workspace root: {error}"))?;
-    if !project.starts_with(&workspace) {
-        return Err("workflow project is outside its Session workspace".to_string());
-    }
-    Ok(project.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-pub async fn web_access_list_deliverables(
-    session_id: String,
-    store: State<'_, SessionStore>,
-) -> Result<Value, String> {
-    super::artifacts::list_deliverables(scoped_workflow_project(&store, &session_id)?).await
-}
-
-#[tauri::command]
-pub async fn web_access_get_role_prompt(
-    role_id: String,
-    session_id: String,
-    store: State<'_, SessionStore>,
-) -> Result<super::workflows::RolePromptPayload, String> {
-    let project = scoped_workflow_project(&store, &session_id)?;
-    super::workflows::get_role_prompt(role_id, Some(project)).await
-}
-
-#[tauri::command]
-pub async fn web_access_get_role_outputs(
-    role_id: String,
-    session_id: String,
-    store: State<'_, SessionStore>,
-) -> Result<Vec<super::workflows::OutputFile>, String> {
-    super::workflows::get_role_outputs(role_id, scoped_workflow_project(&store, &session_id)?).await
-}
-
-#[tauri::command]
-pub async fn web_access_get_role_logs(
-    role_id: String,
-    session_id: String,
-    tail: Option<usize>,
-    store: State<'_, SessionStore>,
-) -> Result<Vec<Value>, String> {
-    super::workflows::get_role_logs(role_id, scoped_workflow_project(&store, &session_id)?, tail)
-        .await
-}
-
-#[tauri::command]
-pub async fn web_access_get_gate_report(
-    role_id: String,
-    session_id: String,
-    store: State<'_, SessionStore>,
-) -> Result<Option<Value>, String> {
-    super::workflows::get_gate_report(role_id, scoped_workflow_project(&store, &session_id)?).await
 }
 
 fn ensure_web_artifact_file_size(path: &str, max_bytes: u64) -> Result<(), String> {

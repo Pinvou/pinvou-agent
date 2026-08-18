@@ -33,11 +33,17 @@ const event = (seq, type, data, turnId = 'turn-1') => ({
 try {
   const {
     appendAcpEvent,
+    buildElicitationContent,
     commandExecutionDetails,
     projectAcpTimeline,
     resolveAcpSessionControls,
     stripTerminalControlSequences,
   } = await import(`${pathToFileURL(modulePath).href}?t=${Date.now()}`);
+  const {
+    collectToolWorkspaceResources,
+    toolWorkspaceResources,
+    workspaceMarkdownResource,
+  } = await import(`${pathToFileURL(path.join(conversationDir, 'conversation-model.js')).href}?t=${Date.now()}`);
   const events = [
     event(1, 'user_message', {
       content: [{ type: 'text', text: '修改 README' }],
@@ -193,6 +199,28 @@ try {
     'Unknown JSON field: \"baseRefOid\"\nworktree /workspace/pinvou3\n',
     'command output must not render ANSI colors or OSC hyperlinks as garbage',
   );
+
+  assert.equal(workspaceMarkdownResource('docs/report.md'), 'docs/report.md');
+  assert.equal(workspaceMarkdownResource('file:///workspace/report.md'), 'file:///workspace/report.md');
+  assert.equal(workspaceMarkdownResource('https://example.com/report.md'), '');
+  assert.deepEqual(toolWorkspaceResources({
+    locations: [{ path: '/workspace/docs/report.md' }],
+    content: [
+      { type: 'content', content: { type: 'resource_link', name: '/workspace/docs/diagram.svg', uri: '/workspace/docs/diagram.svg' } },
+      { type: 'diff', path: '/workspace/docs/generated.svg' },
+    ],
+  }), [
+    { path: '/workspace/docs/report.md', name: 'report.md' },
+    { path: '/workspace/docs/diagram.svg', name: 'diagram.svg' },
+    { path: '/workspace/docs/generated.svg', name: 'generated.svg' },
+  ]);
+  assert.deepEqual(collectToolWorkspaceResources([
+    { tool: { locations: [{ path: '/workspace/docs/report.md' }] } },
+    { tool: { locations: [{ path: '/workspace/docs/report.md' }, { path: '/workspace/docs/diagram.svg' }] } },
+  ]), [
+    { path: '/workspace/docs/report.md', name: 'report.md' },
+    { path: '/workspace/docs/diagram.svg', name: 'diagram.svg' },
+  ]);
   assert.equal(
     stripTerminalControlSequences('\u009b32m✓ passed\u009b0m'),
     '✓ passed',
@@ -291,6 +319,10 @@ try {
   assert.ok(codexCommands.includes('validate_codex_project_workspace'), 'project workspace must be validated before session creation');
 
   const runtime = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'mod.rs'), 'utf8');
+  // Wave 2 把登录态探测拆到 login.rs、Kimi 内省拆到 introspect.rs；auth/login 相关
+  // 断言需读对应子模块。
+  const loginMod = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'login.rs'), 'utf8');
+  const introspectMod = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'introspect.rs'), 'utf8');
   assert.ok(runtime.includes('self.session_store.touch_activity(session_id)'),
     'an accepted ACP turn must persist the session activity timestamp before it starts');
   assert.ok(runtime.includes('interrupt_orphaned_turns("application_restarted")')
@@ -311,10 +343,10 @@ try {
     && runtime.includes('command.arg("acp")')
     && runtime.includes('CLAUDE_ACP_PACKAGE'),
   'the shared ACP runtime must launch Claude through its adapter and Kimi through kimi acp');
-  assert.ok(runtime.includes('cli_status_success(claude, &["auth", "status"])')
-    && runtime.includes('kimi_authenticated')
+  assert.ok(loginMod.includes('cli_status_success(claude, &["auth", "status"])')
+    && introspectMod.includes('kimi_authenticated')
     && runtime.includes('run_agent_login')
-    && runtime.includes('capture_agent_login_output')
+    && loginMod.includes('capture_agent_login_output')
     && runtime.includes('submit_agent_login_code'),
   'ACP auth status and hosted login must be driven by the real Agent CLIs instead of credential-file existence alone');
   assert.ok(!runtime.includes('runtime.prompt(content, mode_id)'), 'prompt must not overwrite acknowledged config with local UI mode');
@@ -358,6 +390,12 @@ try {
     && conversationView.includes('max-h-80 max-w-full overflow-auto whitespace-pre'),
   'reasoning, plan, permission, and terminal content must stay within both timeline implementations');
   assert.ok(codexView.includes("directory: true"), 'new Codex sessions must expose a native directory picker');
+  assert.ok(codexView.includes("open_codex_workspace_resource")
+    && conversationView.includes('onOpenResource={onOpenResource}')
+    && codexWorkspace.includes("const loadedDirectories = ['', ...expanded]")
+    && codexWorkspace.includes("document.visibilityState !== 'visible'")
+    && codexWorkspace.includes("sessionId && tab === 'changes'"),
+  'ACP workspace resources must open in the preview and event refreshes must reload expanded directories');
   assert.ok(codexView.includes('workspacePath'), 'selected project directory must reach the Tauri command');
   assert.ok(!codexView.includes('data-testid="acp-agent-selector"')
     && codexView.includes('onCodeAgentChange={selectDraftAgent}')
@@ -450,9 +488,18 @@ try {
     && main.includes("setCurrentView('codex')"),
   'selecting Codex must continue to enter the existing Codex draft page');
   const acpAgentLogo = readFileSync(path.join(root, 'src', 'features', 'codex', 'AcpAgentLogo.jsx'), 'utf8');
+  // 契约（2026-08-12 更新）：Design 入口必须回到 ChatView design 模式；从 code
+  // 页切回时保留原工作会话（不强制 createNewSession，否则新建 plain 会话把
+  // 用户切过的 Plan 顶成 Yolo），仅草稿态才新建会话。
   assert.match(main,
-    /else if \(mode === 'design'\) \{[\s\S]*?savePinvouModeState\(\{ mode: 'design' \}\);[\s\S]*?bridge\.sessions\.createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
-  'selecting Design from the shared mode entry must return to ChatView design mode');
+    /else if \(mode === 'design'\) \{[\s\S]*?savePinvouModeState\(\{ mode: 'design' \}[^;]*;[\s\S]*?createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
+    'selecting Design from the shared mode entry must return to ChatView design mode');
+  assert.ok(
+    main.includes("if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();"),
+    '从 code 页切回 design 时保留原工作会话，仅草稿态新建');
+  assert.ok(
+    main.includes("createPinvouModeScopeKey(bridge.activeSessionId)"),
+    '切回 design 时 pinvou 模式按会话 scope 保存，ChatView 挂载才能读回');
   assert.ok(codexLogo.includes("brand-icons/openai.svg")
     && acpAgentLogo.includes('<CodexLogo')
     && acpAgentLogo.includes("brand-icons/claude.png")
@@ -566,11 +613,30 @@ try {
     && codexView.includes('<ComposerModelSelector')
     && codexView.includes('<ComposerKbSelector')
     && codexView.includes('<ComposerToolMenu')
+    && codexView.includes('multiAgentEnabled={nativeMultiAgentEnabled}')
+    && codexView.includes('multiAgentAvailable={nativeMultiAgentAvailable}')
+    && codexView.includes('onToggleMultiAgent={switchNativeMultiAgent}')
     && codexView.includes('triggerTestId="native-tools"')
     && codexView.includes('scope="code"')
     && codexView.includes('mountedId={nativeMountedId}')
     && codexView.includes('data-testid="codex-voice-input"'),
   'the native lane must mount the shared composer controls (work/design style) plus the voice input button behind the native-agent gate');
+  assert.ok(codexView.includes('renderToolItem={isNativeAgent')
+    && !codexView.includes('renderToolItem={isNativeAgent && nativeMultiAgentEnabled')
+    && codexView.includes('{subagentPanel && activeSession && isNativeAgent && (')
+    && !codexView.includes('{subagentPanel && activeSession && isNativeAgent && nativeMultiAgentEnabled && (')
+    && codexView.includes("if (typeof window === 'undefined' || !isNativeAgent) return undefined;")
+    && codexView.includes('<SubagentTranscriptPanel')
+    && codexView.includes("window.addEventListener('pinvou:open-subagent'")
+    && codexView.includes('<ToolCard'),
+  'the native lane must always expose factual delegated-agent cards and transcripts; product mode only controls the Pinvou roster and reminder');
+  const interactionCommands = readFileSync(
+    path.join(root, 'src-tauri', 'src', 'app', 'commands', 'interaction.rs'),
+    'utf8',
+  );
+  assert.ok(interactionCommands.includes('multi_agent_available: pool.multi_agent_mode_available(&session_id)')
+    && codexView.includes('multiAgentAvailable: Boolean(modeState && modeState.multi_agent_available)'),
+  'the native multi-agent control must consume the backend SessionPolicy availability instead of a literal UI capability');
   // 语音输入生命周期契约：bridge.voice 的写回守卫只绑定聊天侧 activeSessionId，
   // 代码页卸载（切模式/视图）前必须取消进行中的录音/转写，否则识别结果可能写回
   // 已卸载组件（草稿态 null→null 时守卫放行并显示「已完成」但文本丢失）。
@@ -599,6 +665,7 @@ try {
     && codexView.includes("invoke('get_mode_state'")
     && codexView.includes("invoke('set_plan_mode_next'")
     && codexView.includes("invoke('exit_plan_to_yolo'")
+    && codexView.includes("invoke('set_multi_agent_mode'")
     && codexView.includes("invoke('cancel_generation'"),
   'native composer controls must switch via per-session commands with an explicit sessionId');
   assert.ok(!codexView.includes('bridge.models.')
@@ -607,10 +674,17 @@ try {
     && !codexView.includes('bridge.chat.'),
   'the code lane must never call bridge chat-active-bound methods for composer controls');
   assert.ok(codexView.includes('nativeDraftControls')
-    && codexView.includes('applyNativeDraftControls'),
-  'draft-state control selections must be staged and applied after session creation');
+    && /applyNativeDraftControls\(sessionId\)[\s\S]{0,1400}set_multi_agent_mode[\s\S]{0,250}setNativeDraftControls\(\{\}\)/.test(codexView)
+    && /const created = await createSession\(draftWorkspacePath\)[\s\S]{0,180}await applyNativeDraftControls\(targetId\)/.test(codexView),
+  'draft-state control selections, including multi-agent mode, must be applied after session creation and before first send');
+  assert.ok(
+    /await applyNativeDraftControls\(targetId\);[\s\S]{0,520}await refreshNativeControls\(targetId\);[\s\S]{0,1800}await invoke\('chat'/.test(codexView),
+    'a newly created native session must refresh authoritative multi-agent state after applying draft controls and before its first turn',
+  );
   assert.ok(codexView.includes('nativeControlsSessionRef.current === activeId'),
   'session control state must be scoped to its owning session to avoid cross-session flashes');
+  assert.ok(/refreshNativeControls\(sessionId\)[\s\S]{0,900}sessionId !== activeIdRef\.current[\s\S]{0,100}return controls/.test(codexView),
+  'an async control refresh from the previous native session must not overwrite the newly selected session');
   assert.ok(chatView.includes("from './composer-controls.jsx'")
     && !chatView.includes('const ComposerKbSelector = ')
     && !chatView.includes('const ComposerModeChip = ')
@@ -619,14 +693,37 @@ try {
   assert.ok(composerControls.includes('mountedIdProp !== undefined')
     && composerControls.includes('modeProp != null')
     && composerControls.includes('busyProp !== undefined')
-    && composerControls.includes('if (onMount) { onMount(id); return; }')
+    && composerControls.includes('isTauriAvailable() && !explicitMountState')
+    && composerControls.includes("if (collection.source === 'remote') {")
+    && composerControls.includes('if (onMount) { onMount(collection.id); return; }')
     && composerControls.includes('if (onUnmount) { onUnmount(); return; }')
     && composerControls.includes('if (onSwitch) { onSwitch(target, { isPlan, busy }); return; }'),
-  'extracted controls must support explicit session-driven props while keeping the bridge fallback');
+  'extracted controls must keep explicit Code mounts local while preserving the bridge fallback');
   // 等值守卫：点击已激活模式必须早退，避免代码车道 onSwitch 路径每次点击都触发
   // 冗余 refreshNativeControls（3 次 invoke）；ChatView bridge 路径同样受益。
   assert.ok(composerControls.includes("(target === 'plan' && isPlan) || (target === 'yolo' && !isPlan)"),
   'ComposerModeChip must early-return when the clicked mode equals the active mode');
+
+  // ── buildElicitationContent：保留属性 answerKey 不被 Object.prototype 吞掉 ──
+  // requestedSchema 的 property key 后端仅校验非空，constructor/toString/__proto__ 是合法输入。
+  // 普通 {} 会让 __proto__ 赋值触发 setter（字段在 JSON 序列化时静默丢失）、constructor/toString
+  // 读/写命中 Object.prototype；无原型对象构造应保留全部字段。
+  {
+    const groups = [
+      { questionId: 'constructor', answerKey: 'constructor', otherAnswerKey: null, multiSelect: false, answers: [{ label: 'A', value: 'A', other: false }] },
+      { questionId: 'toString', answerKey: 'toString', otherAnswerKey: null, multiSelect: false, answers: [{ label: 'B', value: 'B', other: false }] },
+      { questionId: '__proto__', answerKey: '__proto__', otherAnswerKey: null, multiSelect: false, answers: [{ label: 'X', value: 'X', other: false }] },
+    ];
+    const content = buildElicitationContent(groups);
+    assert.equal(Object.prototype.hasOwnProperty.call(content, 'constructor'), true, 'constructor 作为 own property 保留');
+    assert.equal(Object.prototype.hasOwnProperty.call(content, 'toString'), true, 'toString 作为 own property 保留');
+    assert.equal(Object.prototype.hasOwnProperty.call(content, '__proto__'), true, '__proto__ 作为 own property 保留（普通 {} 会丢）');
+    assert.equal(content['constructor'], 'A');
+    assert.equal(content['toString'], 'B');
+    assert.equal(content['__proto__'], 'X');
+    assert.equal(JSON.stringify(content), '{"constructor":"A","toString":"B","__proto__":"X"}', 'JSON 序列化不得静默丢失保留键');
+    assert.equal(Array.isArray(Object.getPrototypeOf(content)), false, 'content 保持无原型对象，不得被 __proto__ 赋值改原型');
+  }
 
   console.log('codex_acp_timeline: ok');
 } finally {

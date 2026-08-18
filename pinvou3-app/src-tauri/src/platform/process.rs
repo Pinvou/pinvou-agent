@@ -14,10 +14,6 @@ impl HiddenCommand {
     }
 }
 
-pub(crate) fn python_command() -> Command {
-    HiddenCommand::new(crate::platform::paths::python_command())
-}
-
 fn is_windows_command_script(executable: &Path) -> bool {
     executable
         .extension()
@@ -61,9 +57,26 @@ pub(crate) fn external_tokio_command(executable: &Path) -> tokio::process::Comma
 }
 
 /// Capture a subprocess without pipe deadlocks and enforce a wall-clock timeout.
-pub(crate) fn output_with_timeout(
+pub(crate) fn output_with_timeout(command: Command, timeout: Duration) -> Result<Output, String> {
+    output_with_timeout_inner(command, timeout, false)
+}
+
+/// Capture a subprocess with a wall-clock timeout and terminate its process tree
+/// on timeout. Use this for helpers that can launch privileged descendants: killing
+/// only the wrapper can otherwise leave the real operation running with inherited
+/// stdout/stderr pipes after the caller has reported a timeout.
+pub(crate) fn output_with_timeout_and_kill_tree(
     mut command: Command,
     timeout: Duration,
+) -> Result<Output, String> {
+    std_process_group_leader(&mut command);
+    output_with_timeout_inner(command, timeout, true)
+}
+
+fn output_with_timeout_inner(
+    mut command: Command,
+    timeout: Duration,
+    kill_tree_on_timeout: bool,
 ) -> Result<Output, String> {
     let program = command.get_program().to_string_lossy().into_owned();
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -99,8 +112,22 @@ pub(crate) fn output_with_timeout(
                 std::thread::sleep(Duration::from_millis(50));
             }
             Ok(None) => {
+                if kill_tree_on_timeout {
+                    let _ = kill_process_tree(child.id());
+                }
                 let _ = child.kill();
                 let _ = child.wait();
+                if kill_tree_on_timeout {
+                    // A privileged descendant may be outside the caller's signal
+                    // permission even after its wrapper is gone. Never block the
+                    // timeout path by joining pipe readers that such a process kept.
+                    drop(stdout_reader);
+                    drop(stderr_reader);
+                    return Err(format!(
+                        "{program} timed out after {}s: subprocess tree termination requested",
+                        timeout.as_secs()
+                    ));
+                }
                 let stdout = stdout_reader.join().unwrap_or_default();
                 let stderr = stderr_reader.join().unwrap_or_default();
                 let detail = subprocess_output_detail(&stdout, &stderr);
@@ -110,8 +137,16 @@ pub(crate) fn output_with_timeout(
                 ));
             }
             Err(error) => {
+                if kill_tree_on_timeout {
+                    let _ = kill_process_tree(child.id());
+                }
                 let _ = child.kill();
                 let _ = child.wait();
+                if kill_tree_on_timeout {
+                    drop(stdout_reader);
+                    drop(stderr_reader);
+                    return Err(format!("{program} wait error: {error}"));
+                }
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
                 return Err(format!("{program} wait error: {error}"));
@@ -299,5 +334,19 @@ mod tests {
         let command = external_command_for(Path::new(r"C:\tools\kimi.exe"), true);
         assert_eq!(command.get_program(), r"C:\tools\kimi.exe");
         assert!(command.get_args().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_timeout_does_not_wait_for_a_descendant_holding_the_pipes() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & wait"]);
+        let started = Instant::now();
+
+        let error =
+            output_with_timeout_and_kill_tree(command, Duration::from_millis(100)).unwrap_err();
+
+        assert!(error.contains("timed out after"));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

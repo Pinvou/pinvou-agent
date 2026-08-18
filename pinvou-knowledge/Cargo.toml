@@ -1,0 +1,92 @@
+[package]
+name = "pinvou-knowledge"
+version = "0.8.4"
+description = "Pinvou 可复用知识库核心与自包含服务器"
+authors = ["pinvou"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.89"
+default-run = "pinvou-knowledge-server"
+
+[lib]
+name = "pinvou_knowledge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pinvou-knowledge-server"
+path = "src/main.rs"
+required-features = ["server"]
+
+[features]
+default = ["client", "local-embed", "server"]
+client = ["dep:futures-util", "dep:reqwest", "dep:rustls"]
+discovery = ["dep:mdns-sd"]
+local-embed = ["dep:fastembed"]
+server = [
+    "client",
+    "discovery",
+    "local-embed",
+    "dep:axum",
+    "dep:axum-server",
+    "dep:age",
+    "dep:clap",
+    "dep:flate2",
+    "dep:mime_guess",
+    "dep:rcgen",
+    "dep:tar",
+    "dep:tower-http",
+    "dep:wait-timeout",
+]
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+calamine = "0.36"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+encoding_rs = "0.8"
+parking_lot = "0.12"
+rand = "0.9"
+rusqlite = { version = "0.39", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+tempfile = "3"
+tokio = { version = "1.49", features = ["full"] }
+url = "2"
+
+axum = { version = "0.8", features = ["multipart"], optional = true }
+axum-server = { version = "=0.8.0", default-features = false, features = ["tls-rustls"], optional = true }
+age = { version = "=0.12.1", default-features = false, optional = true }
+clap = { version = "4", features = ["derive", "env"], optional = true }
+flate2 = { version = "1", optional = true }
+futures-util = { version = "0.3", optional = true }
+mime_guess = { version = "2", optional = true }
+mdns-sd = { version = "=0.20.3", optional = true }
+if-addrs = "=0.14.0"
+rcgen = { version = "=0.14.8", features = ["x509-parser"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "multipart", "stream"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"], optional = true }
+tar = { version = "0.4", optional = true }
+tower-http = { version = "0.6", features = ["catch-panic", "limit", "request-id", "trace"], optional = true }
+wait-timeout = { version = "0.2", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+fastembed = { version = "4", optional = true, default-features = false, features = ["ort-load-dynamic"] }
+
+[target.'cfg(not(windows))'.dependencies]
+fastembed = { version = "4", optional = true }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_imports = "deny"
+unused_variables = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+wildcard_dependencies = "deny"

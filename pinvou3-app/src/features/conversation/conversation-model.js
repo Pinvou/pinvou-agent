@@ -74,6 +74,50 @@ export function externalMarkdownUrl(value) {
   return /^https?:\/\/[^\s]+$/i.test(url) ? url : '';
 }
 
+export function workspaceMarkdownResource(value) {
+  const path = String(value || '').trim();
+  if (!path || path.startsWith('#') || /^(?:https?|mailto|tel|data|javascript):/i.test(path)) return '';
+  return path;
+}
+
+export function toolWorkspaceResources(tool) {
+  const resources = [];
+  const seen = new Set();
+  const add = (value, name = '') => {
+    const path = String(value || '').trim();
+    if (!path || seen.has(path)) return;
+    seen.add(path);
+    const basename = path.split(/[\\/]/).pop() || path;
+    const label = String(name || '').trim();
+    resources.push({ path, name: !label || label === path ? basename : label });
+  };
+  for (const location of tool && tool.locations || []) {
+    add(location && typeof location === 'object' ? location.path : location);
+  }
+  const visit = (value) => {
+    if (!value || typeof value !== 'object') return;
+    if (value.type === 'resource_link') add(value.uri, value.name);
+    if (value.type === 'diff') add(value.path);
+    if (Array.isArray(value)) value.forEach(visit);
+    else Object.values(value).forEach(visit);
+  };
+  visit(tool && tool.content);
+  return resources;
+}
+
+export function collectToolWorkspaceResources(items) {
+  const resources = [];
+  const seen = new Set();
+  for (const item of items || []) {
+    for (const resource of toolWorkspaceResources(item.tool)) {
+      if (seen.has(resource.path)) continue;
+      seen.add(resource.path);
+      resources.push(resource);
+    }
+  }
+  return resources;
+}
+
 export function isNearConversationBottom(element, threshold = 96) {
   if (!element) return true;
   return (element.scrollHeight - element.scrollTop - element.clientHeight) < threshold;

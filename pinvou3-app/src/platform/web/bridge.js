@@ -152,6 +152,14 @@
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo" },
+    // 三个工作区 lane（work/design/code）的全局默认 mode（null=该 lane 未显式
+    // 选过；缺省 code→plan、work/design→yolo）。草稿态 chip 显示与切换的事实源，
+    // 启动时经 get_mode_defaults 拉取；草稿切换经 set_mode_default 写回。
+    modeDefaults: { work: null, design: null, code: null },
+    // 当前聊天页所处 lane（work/design；code 页车道有自己的草稿控件逻辑）。
+    // lane 是纯前端概念，由 ChatView 随 pinvouMode 显式传入，bridge 不读
+    // localStorage。
+    modeLane: "work",
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -169,28 +177,6 @@
     tokens: { input: 0, max: 32768 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
     thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
-    // 工作流状态
-    workflow: {
-      skills: [],
-      loadState: "idle", // idle | loading | ready | error
-      activeSkillName: null,
-      phases: [],
-      currentPhaseId: null,
-      reachedPhaseIds: [],
-      bindings: {},      // session_id → skill_name
-      demo: null,        // { open, name, loading, kind, content, error, description, duration }
-      // 卡片流工作流运行态（无聊天，事件驱动看板）。详见 09-ui-plane 决策。
-      run: {
-        active: false,       // 是否有进行中的工作流
-        sessionId: null,
-        projectDir: null,
-        scenario: null,
-        status: "idle",      // idle | running | complete | blocked | stopped
-        agents: {},          // role_id → { id, name, status, last_gate_verdict, outputs_present, last_run_ts, depends_on }
-        cards: [],           // 底部交互卡片队列 [{ cardId, kind:'user_input'|'gate'|'system', resolved, ... }]
-        selectedRole: null,  // 右抽屉选中的角色
-      },
-    },
     // 卡片池: 专家面具。activePersona = 当前 session 加持的专家卡(完整对象)或 null,
     // 驱动聊天室右上角挂件。
     activePersona: null,
@@ -259,7 +245,7 @@
       startupLoading: false,
       startupReady: null,
       status: null,       // kb_model_status 返回 { installed, ready, loading, downloading, ... }
-      progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'extract'|'done', downloaded, total, ready }
+      progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'prepare'|'done', downloaded, total, ready }
       error: null,
     },
     scheduledTasks: [],
@@ -323,6 +309,11 @@
   var scheduledTaskPendingLoads = Object.create(null);
   var scheduledTaskAutoCreateInFlight = Object.create(null);
   var sessionSwitchRequestToken = 0;
+  // modeState 读取请求序号（评审 P1，定义前置供 syncSessionPresentationState
+  // 与权威写回收敛点共用）：任何权威 modeState 写回（invoke 返回 / 事件负载 /
+  // 会话切换状态恢复）都必须 bump 它，作废在途 syncModeState 的旧读取——
+  // 否则旧读返回时序号未变、校验通过，把刚写回的权威值覆盖回去。
+  var modeSyncSeq = 0;
 
   // ── bridge 层 UI 文案（系统消息/状态标签）──────────────────────
   // bridge 在事件回调里生成文案,拿不到 React 的 t;按 state.settings.language 取词,中文兜底。
@@ -333,6 +324,8 @@
       personaUnequipped: "🎴 Expert card removed: ",
       planHistorical: "📜 Past plan", planSuperseded: "📜 Superseded by a newer plan",
       attachStillParsing: "⚠️ Attachment still parsing, try again shortly",
+      imageUnsupported: "The current model does not support images. Switch to an image-capable model, or configure a vision model in model settings.",
+      imageUnknown: "Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.",
       attachStillUploading: "⚠️ Attachment still uploading, try again shortly",
       deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 20 MB attachment limit`,
       deviceUploadFailed: "⚠️ Upload failed: ",
@@ -372,14 +365,7 @@
       turnSyncRetry: "⚠️ This session is still syncing a turn completed elsewhere. Please try again shortly",
       pinvouNeedSession: "Start a chat first, then summon Pinvou for review.",
       remoteDoneUnsynced: "⚠️ The chat finished on the desktop, but the authoritative record is not synced yet. Retry after reconnecting.",
-      workflowComplete: "🎉 Workflow complete — final artifact ready",
-      workflowBlocked: "⚙️ Workflow stuck: ",
       unknownReason: "unknown reason",
-      workflowEnableFailed: "⚠️ Failed to enable workflow: ",
-      workflowKickFailed: "⚠️ kick_workflow failed: ",
-      workflowStartFailed: "⚠️ Failed to start workflow: ",
-      workflowNoneToStop: "No workflow to stop right now",
-      workflowSubmitFailed: "⚠️ Submit failed: ",
       materialsAdded: (count, names) => "✅ Added " + count + " materials to run materials: " + names.join(", "),
       folderPickerUnavailable: "The folder picker cannot be opened in this environment",
       pickFolderTitle: "Choose a working directory",
@@ -417,8 +403,8 @@
       attachNoData: "Attachment download returned no data",
       attachNoProgress: "Attachment download made no progress",
       artifactNoProgress: "Artifact download made no progress",
-      workflowRejectDefaultReason: "Sent back by the user. Please improve and try again.",
       newChatFallbackTitle: "New chat",
+      echoOtherPrefix: "(Other) ",
       mountCollectionFailed: "Failed to mount knowledge collection: ",
       depsNotInstallable: "The missing items cannot be installed automatically. Install the offline components per the dependency notes, then re-check.",
       voicePermissionDenied: "Microphone access was denied. Allow this app to use the microphone in system settings, then try again.",
@@ -445,6 +431,8 @@
       personaUnequipped: "🎴 エキスパートカードを外しました: ",
       planHistorical: "📜 過去のプラン", planSuperseded: "📜 新しいプランで上書きされました",
       attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
+      imageUnsupported: "現在のモデルは画像に対応していません。画像対応モデルに切り替えるか、モデル設定でビジョンモデルを構成してください。",
+      imageUnknown: "現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。",
       attachStillUploading: "⚠️ 添付ファイルをアップロード中です。少し待ってから送信してください",
       deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 20 MB を超えています`,
       deviceUploadFailed: "⚠️ アップロードに失敗: ",
@@ -484,14 +472,7 @@
       turnSyncRetry: "⚠️ このセッションは別端末で完了したターンをまだ同期中です。しばらくしてから再試行してください",
       pinvouNeedSession: "先にチャットを開始してから Pinvou レビューを呼び出してください。",
       remoteDoneUnsynced: "⚠️ チャットはデスクトップ側で完了しましたが、正式な記録がまだ同期されていません。接続回復後に再試行できます。",
-      workflowComplete: "🎉 ワークフローが完了し、成果物が生成されました",
-      workflowBlocked: "⚙️ ワークフローが停止：",
       unknownReason: "不明な原因",
-      workflowEnableFailed: "⚠️ ワークフローの有効化に失敗: ",
-      workflowKickFailed: "⚠️ kick_workflow に失敗: ",
-      workflowStartFailed: "⚠️ ワークフローの開始に失敗: ",
-      workflowNoneToStop: "現在停止できるワークフローはありません",
-      workflowSubmitFailed: "⚠️ 送信に失敗: ",
       materialsAdded: (count, names) => "✅ 素材を " + count + " 件、配套材料に追加しました：" + names.join("、"),
       folderPickerUnavailable: "現在の環境ではフォルダー選択を開けません",
       pickFolderTitle: "作業ディレクトリを選択",
@@ -529,8 +510,8 @@
       attachNoData: "添付ファイルのダウンロードがデータを返しませんでした",
       attachNoProgress: "添付ファイルのダウンロードが進みませんでした",
       artifactNoProgress: "成果物のダウンロードが進みませんでした",
-      workflowRejectDefaultReason: "ユーザーによる差し戻し。改善して再試行してください。",
       newChatFallbackTitle: "新しいチャット",
+      echoOtherPrefix: "(その他) ",
       mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
       depsNotInstallable: "不足項目はワンクリックでインストールできません。依存関係の案内に従ってオフラインコンポーネントをインストールし、再検出してください。",
       voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイク使用を許可してから再試行してください。",
@@ -557,6 +538,8 @@
       personaUnequipped: "🎴 已卸下专家卡牌: ",
       planHistorical: "📜 历史方案", planSuperseded: "📜 已被新方案覆盖",
       attachStillParsing: "⚠️ 附件还在解析,请稍后再发",
+      imageUnsupported: "当前模型不支持图片。请切换到支持图片的模型，或在模型设置中配置视觉模型。",
+      imageUnknown: "当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”后重试；也可以配置视觉模型。",
       attachStillUploading: "⚠️ 附件还在上传,请稍后再发",
       deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 20 MB 上限`,
       deviceUploadFailed: "⚠️ 上传失败: ",
@@ -596,14 +579,7 @@
       turnSyncRetry: "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试",
       pinvouNeedSession: "先开始一个对话,再召唤 Pinvou 检阅。",
       remoteDoneUnsynced: "⚠️ 对话已在桌面端完成，但权威记录暂未同步；恢复连接后可重试。",
-      workflowComplete: "🎉 工作流完成，成品已生成",
-      workflowBlocked: "⚙️ 工作流卡住：",
       unknownReason: "未知原因",
-      workflowEnableFailed: "⚠️ 启用工作流失败: ",
-      workflowKickFailed: "⚠️ kick_workflow 失败: ",
-      workflowStartFailed: "⚠️ 启动工作流失败: ",
-      workflowNoneToStop: "当前没有可停止的工作流",
-      workflowSubmitFailed: "⚠️ 提交失败: ",
       materialsAdded: (count, names) => "✅ 已添加 " + count + " 个素材到配套材料：" + names.join("、"),
       folderPickerUnavailable: "当前环境无法打开文件夹选择器",
       pickFolderTitle: "选择工作目录",
@@ -641,8 +617,8 @@
       attachNoData: "附件下载未返回数据",
       attachNoProgress: "附件下载没有进展",
       artifactNoProgress: "产物下载没有进展",
-      workflowRejectDefaultReason: "用户打回，请改进后重试",
       newChatFallbackTitle: "新对话",
+      echoOtherPrefix: "(其他) ",
       mountCollectionFailed: "挂载知识集失败: ",
       depsNotInstallable: "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。",
       voicePermissionDenied: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。",
@@ -1288,9 +1264,12 @@
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
-        var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
-        if (text && text.text) {
-          var newTitle = text.text.slice(0, 20);
+        // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
+        // sidebar。hideInternalEnvelope=true 剥离 turn_meta/system-reminder 元数据块，
+        // 否则普通消息的标题会拼入尾随 turn_meta（引擎持久化为独立 text block）。
+        var titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        if (titleText) {
+          var newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
           meta.title = newTitle;
           delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
@@ -2435,12 +2414,17 @@
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
     if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) {
       state.composerDraft = "";
+      // 草稿 mode 显示 = 当前 lane 全局默认（三分 lane 语义）。
+      state.modeState = currentDraftModeState();
       notify();
       return;
     }
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
+    // freshBuffer 的 modeState 是通用缺省（yolo）；草稿显示须覆盖为本 lane
+    // 全局默认（work/design 各自的 last_mode）。
+    state.modeState = currentDraftModeState();
     notify();
   }
   // 公开「新建对话」入口(侧边栏按钮)= 进草稿态。名字保留以兼容前端调用。
@@ -2461,6 +2445,23 @@
       getBuffer(meta.id).sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
       await refreshHistoryList();
       await syncModeState();
+      // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
+      // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
+      // 该会话自己的 per-session 记录，全局默认不受影响）。
+      var laneDefault = state.modeDefaults
+        && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
+      // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
+      // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
+      if (laneDefault === "plan") {
+        try {
+          var laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
+          applyAuthoritativeModeState(meta.id, laneModeState);
+        } catch (laneModeError) {
+          runSyncOnSession(meta.id, function () {
+            addSystemItem(bt("switchModeFailed") + laneModeError);
+          });
+        }
+      }
       await syncActivePersona();
       await syncMountedCollection();
       notify();
@@ -2502,6 +2503,10 @@
     ]);
     if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== sessionId) return false;
 
+    // 本链路的 modeState 写回同样 bump modeSyncSeq：与会话切换并发在途的
+    // syncModeState 读取互不感知（各自独立校验），不 bump 则两条读取链可
+    // 互相覆盖（评审 P1）。
+    modeSyncSeq += 1;
     var mode = results[0];
     var persona = results[1];
     var snapshot = results[2];
@@ -3162,6 +3167,35 @@
     return "";
   }
 
+  // CodeWhale may append model-only recovery guidance to a persisted tool result
+  // to preserve strict provider role ordering. Keep that guidance in durable/model
+  // context, but remove only the two known internal suffix kinds from tool cards.
+  function stripInternalToolRuntimeSuffix(value) {
+    var text = String(value == null ? "" : value);
+    var marker = "\n\n<codewhale:runtime_event";
+    while (true) {
+      var start = text.lastIndexOf(marker);
+      if (start < 0) return text;
+      var suffix = text.slice(start + 2);
+      var opening = suffix.match(/^<codewhale:runtime_event\b[^>]*>/i);
+      if (!opening || !/<\/codewhale:runtime_event>\s*$/i.test(suffix)) return text;
+      var tag = opening[0];
+      var knownKind = /\bkind=(["'])(?:stuck_guard|tool_error_degradation)\1/i.test(tag);
+      var internal = /\bvisibility=(["'])internal\1/i.test(tag);
+      if (!knownKind || !internal) return text;
+      text = text.slice(0, start);
+    }
+  }
+
+  function toolResultDisplayContent(content) {
+    if (typeof content === "string") return stripInternalToolRuntimeSuffix(content);
+    if (!Array.isArray(content)) return content;
+    return content.map(function (block) {
+      if (!block || typeof block.text !== "string") return block;
+      return Object.assign({}, block, { text: stripInternalToolRuntimeSuffix(block.text) });
+    });
+  }
+
   // plan 类工具结果格式："...updated:\n{json}"——切第一个换行后 parse（与 engine.rs 一致）。
   function parsePlanSnapshot(content) {
     var txt = toolResultText(content);
@@ -3172,16 +3206,23 @@
 
   // request_user_input 结果是纯 JSON {answers:[{id,label,value}]}（turn_loop.rs ToolResult::json）。
   // 按 question.id 匹配，还原成 UserInputCard 的 answers 数组（顺序对齐 questions）。
+  // multi_select 多选保留全部同 id 答案、不塌缩（与 code-native-lane parseNativeUserAnswers 对齐）。
   function parseUserAnswers(content, questions) {
     var ans;
     try { ans = JSON.parse(toolResultText(content)).answers; } catch (_) { return null; }
     if (!Array.isArray(ans)) return null;
-    var byId = {};
-    ans.forEach(function (a) { if (a && a.id != null) byId[a.id] = a; });
-    return questions.map(function (q) {
-      var a = byId[q.id];
-      return a ? { id: q.id, label: a.label, value: a.value } : null;
-    });
+    // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
+    // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
+    var byId = Object.create(null);
+    ans.forEach(function (a) { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
+    var out = [];
+    for (var qi = 0; qi < questions.length; qi++) {
+      var q = questions[qi];
+      var matches = byId[q.id];
+      if (!matches || !matches.length) { out.push(null); continue; }
+      matches.forEach(function (a) { out.push({ id: q.id, label: a.label, value: a.value }); });
+    }
+    return out;
   }
 
   // careful hook 拦截结果(shell.rs BLOCKED 固定格式)→ 反解出 careful_blocked 卡所需 metadata。
@@ -3204,15 +3245,21 @@
       if (!block || block.type !== "text") continue;
       var text = String(block.text || "").trim();
       if (text.indexOf("<turn_meta>") !== 0) continue;
-      var match = text.match(/(?:^|\n)Input provenance:\s*([^\r\n<]+)/);
-      if (match && match[1]) return match[1].trim();
+      // CodeWhale appends human-readable authority detail after the stable
+      // provenance identifier. Parse only that identifier so both the current
+      // one-line shape and legacy two-line metadata remain compatible.
+      var match = text.match(/(?:^|\n)Input provenance:\s*([a-z0-9_-]+)/i);
+      if (match && match[1]) return match[1].toLowerCase();
     }
     return "";
   }
 
   function isInternalUserMessageProvenance(provenance) {
-    return provenance === "runtime" || provenance === "subagent_handoff";
+    // shell_completion 同为 CodeWhale 非权威内部来源（SHELL_COMPLETION_HANDOFF_TURN_META）。
+    return provenance === "runtime" || provenance === "subagent_handoff" || provenance === "shell_completion";
   }
+  // isInternalRuntimeUserMessage（下方 live 路径同一判定）与本函数等价：
+  // 历史重载与实时事件两条展示路径共用同一信封判定，避免两处实现漂移。
 
   // Engine 的运行时恢复提示为了兼容模型协议会以 role=user 持久化，但它不是用户输入。
   // 子智能体完成交接同理：结果必须留在父模型上下文，但不能冒充用户消息上屏。
@@ -3222,6 +3269,7 @@
     var textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
+    if (textParts.some(isInternalRuntimeUserMessage)) return "";
     if (isInternalUserMessageProvenance(userMessageInputProvenance(blocks))) return "";
     if (!hideInternalEnvelope) return textParts.join("");
 
@@ -3326,14 +3374,16 @@
             // careful hook 拦截 → 还原 🛑 红卡(实时由 tool_end metadata 插,重载从文本反解)
             var blockedMd = parseCarefulBlocked(toolResultText(c.content));
             if (blockedMd) {
-              updateToolItem(c.tool_use_id, c.content, false); // 被拦=失败态,与实时一致
+              updateToolItem(c.tool_use_id, toolResultDisplayContent(c.content), false); // 被拦=失败态,与实时一致
               addChatItem({
                 type: "careful_blocked", toolCallId: c.tool_use_id,
                 args: tm.args, metadata: blockedMd, time: "",
               });
             } else {
               // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
-              var contentForCard = (tm.name === "load_skill") ? bt("skillContentHidden") : c.content;
+              var contentForCard = (tm.name === "load_skill")
+                ? bt("skillContentHidden")
+                : toolResultDisplayContent(c.content);
               updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
@@ -3899,6 +3949,18 @@
     } catch (_) { /* 桌宠是纯装饰,广播失败不影响对话 */ }
   }
 
+  // 后端命令错误的展示文本:稳定错误码(如 image_input_unsupported,与
+  // src-tauri chat.rs IMAGE_INPUT_*_ERROR 对应)按码替换为三语指引,而非剥前缀
+  // 透传后端硬编码中文——英/日界面不该看到中文结论;文案与 ChatView 前置警告
+  // (t.uiAttachments.*)同源语义。与 tauri bridge chat.js 同一口径。
+  function displayTurnError(err) {
+    var text = String(err && err.toString ? err.toString() : err || "");
+    if (text.indexOf("image_input_unsupported") === 0) {
+      return text.indexOf("能力未知") >= 0 ? bt("imageUnknown") : bt("imageUnsupported");
+    }
+    return text;
+  }
+
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
   function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
@@ -3983,7 +4045,7 @@
         runSyncOnSession(sid, function () {
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")
-            : "⚠️ " + (err && err.toString ? err.toString() : err), {
+            : "⚠️ " + displayTurnError(err), {
             turnErrorNotice: true,
           });
         });
@@ -4653,10 +4715,9 @@
           }
         });
         var acceptedMode = payload.mode_state || payload.modeState;
-        state.modeState = {
-          mode: String(acceptedMode && acceptedMode.mode || "yolo"),
-          multiAgent: !!(acceptedMode && acceptedMode.multi_agent),
-        };
+        // 事件负载的权威 mode 写回走收敛点（bump seq 防在途旧读覆盖；
+        // 此回调在 runSyncOnSession(sid) 内，sid 即触发会话）。
+        if (acceptedMode) applyAuthoritativeModeState(sid, acceptedMode);
       }
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
       if (!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage) {
@@ -5095,7 +5156,9 @@
     }
 
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
-    var outForCard = (meta && meta.name === "load_skill") ? bt("skillContentHidden") : p.output;
+    var outForCard = (meta && meta.name === "load_skill")
+      ? bt("skillContentHidden")
+      : toolResultDisplayContent(p.output);
     var updatedToolItem = updateToolItem(p.id, outForCard, p.success);
     var shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
     if (updatedToolItem && shellTaskId) {
@@ -5348,8 +5411,6 @@
   // payload: { id: tool_call_id, questions: [{header, id, question, options:[{label, description}]}] }
   listen("chat:user_input_required", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
-    if (state.workflow.run.status === "stopped" &&
-        state.workflow.run.sessionId && p.session_id === state.workflow.run.sessionId) return;
     var questions = p.questions || [];
     if (!Array.isArray(questions) || questions.length === 0) return;
     if (hasChatItemForTool("user_input", p.id)) return;
@@ -5412,11 +5473,25 @@
     notify();
   });
 
-  // 知识库 embedding 模型下载进度（download → verify → extract → done）
+  // 知识库 embedding 模型下载进度（download → verify → prepare → done）
   listen("kb_model:progress", function (e) {
     var p = e && e.payload;
     if (!p) return;
     state.kbModelSetup = Object.assign({}, state.kbModelSetup, { progress: p });
+    notify();
+  });
+
+  // A second local process (the bundled shared-knowledge host) can install the
+  // managed model after startup. Replace the cached snapshot when the backend
+  // publishes a newly observed status.
+  listen("kb_model:status", function (e) {
+    var status = e && e.payload;
+    if (!status) return;
+    state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+      startupLoading: !!status.loading,
+      startupReady: typeof status.ready === "boolean" ? status.ready : state.kbModelSetup.startupReady,
+      status: status,
+    });
     notify();
   });
 
@@ -5433,7 +5508,8 @@
     var p = e.payload || {};
     var planId = String(p.plan_id || p.planId || "").trim();
     var readyMode = p.mode_state || p.modeState;
-    if (readyMode) applyModeFromState(readyMode);
+    // 事件负载的权威 mode 写回走收敛点（bump seq 防在途旧读覆盖）。
+    if (readyMode) applyAuthoritativeModeState(state.activeSessionId, readyMode);
     if (planId && state.chatItems.some(function (item) {
       return item && item.type === "plan_card" && String(item.planId || "") === planId;
     })) return;
@@ -5472,236 +5548,9 @@
         }
       });
       var resolvedMode = p.mode_state || p.modeState;
-      if (resolvedMode) applyModeFromState(resolvedMode);
+      // 事件负载的权威 mode 写回走收敛点（bump seq 防在途旧读覆盖）。
+      if (resolvedMode) applyAuthoritativeModeState(sid, resolvedMode);
     });
-    notify();
-  });
-
-  // workflow:project_started —— start_workflow 后端建项目+绑定 session 后 emit。
-  // 必须真正 switchToSession 切过去（load 新 session 的空 messages + sync engine +
-  // syncSessionSkill），否则只设 activeSessionId 会让旧对话的 messages 残留在屏上，
-  // 顶部又叠加 PhaseChips，看起来像"旧对话被 append 了项目名"（Phase A 关键 bug）。
-  // refreshHistoryList 先跑让新 session 进 sidebar 列表 + 刷 bindings(🧭)。
-  // switchToSession 内部已调 syncSessionSkill，切完 App useEffect 自动 setCurrentView('chat')。
-  // [卡片流] start_workflow 后端建项目+绑定 session 后 emit。
-  // 新设计：**不再 switchToSession 跳聊天页** —— 用户停在工作流看板，
-  // 工作流 session 作为后台 session 跑，看板靠下面的 workflow:* 事件按 session_id 驱动。
-  listen("workflow:project_started", async function (e) {
-    var p = e.payload || {};
-    state.workflow.run = {
-      active: true, sessionId: p.session_id || null, projectDir: p.project_dir || null,
-      scenario: p.scenario || null, status: "running", agents: {}, cards: [], selectedRole: null,
-    };
-    await refreshHistoryList();
-    notify();
-  });
-
-  // ── 卡片流工作流：运行态 helper ──────────────────────────────────
-  // 事件只认本次 run 的 session（payload 无 session_id 时放行，兼容）。
-  function isRunSession(p) {
-    var s = state.workflow.run.sessionId;
-    return !p || !p.session_id || !s || p.session_id === s;
-  }
-  function applyAgentPatch(roleId, patch) {
-    if (!roleId) return;
-    var agents = state.workflow.run.agents;
-    agents[roleId] = Object.assign(agents[roleId] || { id: roleId }, patch);
-  }
-  function markWorkflowRunStopped() {
-    state.workflow.run.status = "stopped";
-    Object.keys(state.workflow.run.agents || {}).forEach(function (id) {
-      var agent = state.workflow.run.agents[id];
-      if (agent && (agent.status === "running" || agent.status === "reviewing" || agent.status === "briefing")) {
-        agent.status = "stopped";
-      }
-    });
-    (state.workflow.run.cards || []).forEach(function (card) {
-      if (!card.resolved) { card.resolved = true; card.cardState = "cancelled"; }
-    });
-  }
-  function mergeFullState(p) {
-    var run = state.workflow.run;
-    if (p.project_dir) run.projectDir = p.project_dir;
-    if (p.scenario) run.scenario = p.scenario;
-    // [工作流分离] 后端按 scenario 解析出 workflow_id + workflow.json 的 ui 块,
-    // 前端泳道/表单/标题/奏折全按 run.ui 渲染(不再硬编码各工作流)。
-    if (p.workflow_id) run.workflowId = p.workflow_id;
-    if (p.ui) run.ui = p.ui;
-    var roles = p.roles || {};
-    // [B2 修] full_state 是权威全量快照:快照里没有的角色条目要删——尚书省派单后
-    // 静态六部被差事节点取代,留着陈旧条目会让泳道误判"六部在场"而不插差事批次泳道
-    // (实测:六部卡全员显示"等待尚书省交付",而差事其实已经在跑)。
-    Object.keys(state.workflow.run.agents).forEach(function (rid) {
-      if (!(rid in roles)) delete state.workflow.run.agents[rid];
-    });
-    Object.keys(roles).forEach(function (rid) {
-      var r = roles[rid] || {};
-      applyAgentPatch(rid, {
-        id: rid, name: r.name || rid, status: r.status || "pending",
-        last_gate_verdict: r.last_gate_verdict || null,
-        outputs_present: r.outputs_present || 0,
-        last_run_ts: r.last_run_ts || null,
-        depends_on: r.depends_on || [],
-        wave: r.wave, bu: r.bu,   // [B2 E1] 差事分层 + 取头像/配色
-      });
-    });
-    // stop marker 是最终状态。迟到或手动刷新的 full_state 仍可能携带盘上旧的
-    // running/reviewing 状态，不能让已停止的角色卡回跳成“执行中”。
-    if (p.stopped) markWorkflowRunStopped();
-    else if (p.all_completed) run.status = "complete";
-  }
-  // [2026-06-06] 快照恢复：把前端 run 态挂回一个已存在的工作流 run（app 重启/切会话后）。
-  // 拉后端快照(get_workflow_state) → 点亮 run 态(复刻 project_started 结构) → mergeFullState
-  // 填角色 → 看板和「🔄 重跑」按钮全部恢复。非工作流会话(无 roles)返回 false、无副作用。
-  async function attachRun(sessionId, staleRunning) {
-    try {
-      var snap = await invoke("get_workflow_state", { sessionId: sessionId });
-      if (!snap || !snap.roles || Object.keys(snap.roles).length === 0) return false;
-      state.workflow.run = {
-        active: true, sessionId: sessionId, projectDir: snap.project_dir || null,
-        scenario: snap.scenario || null,
-        status: snap.stopped ? "stopped" : (snap.all_completed ? "complete" : "running"),
-        agents: {}, cards: [], selectedRole: null,
-      };
-      mergeFullState(snap);
-      // [恢复] app 重启后,盘上记 running/reviewing 的角色其 SubAgent 已随重启死亡 →
-      // 标记 stale(需要重跑),卡片才显示「🔄 重跑」按钮;否则卡在"在工作"无出口。
-      // staleRunning 只在启动恢复(resumeWorkflowOnBoot)传 true;app 内切活跃 run 不传。
-      if (staleRunning) {
-        var ag = state.workflow.run.agents;
-        Object.keys(ag).forEach(function (rid) {
-          var s = ag[rid] && ag[rid].status;
-          if (s === "running" || s === "reviewing" || s === "briefing") ag[rid].status = "stale";
-        });
-      }
-      notify();
-      return true;
-    } catch (e) { console.warn("attachRun failed", e); return false; }
-  }
-  // app 启动后自动恢复最近一个进行中的工作流 run（后端扫 binding 找）。
-  async function resumeWorkflowOnBoot() {
-    try {
-      var r = await invoke("find_resumable_run");
-      if (r && r.session_id) {
-        // [方案A] 不再 switchToSession 劫持聊天会话——启动恒落干净草稿页。
-        // 只把工作流看板挂回(attachRun 填 state.workflow.run,不动 activeSessionId
-        // 也不切 currentView),用户主动切「工作流」tab 才看到那个 run。
-        await attachRun(r.session_id, true); // 僵死 running → stale,露出重跑按钮
-      }
-    } catch (e) { console.warn("resumeWorkflowOnBoot failed", e); }
-  }
-  function pushRunCard(card) { card.cardId = ++itemIdSeq; state.workflow.run.cards.push(card); }
-  function resolveRunCard(cardId, cardState) {
-    state.workflow.run.cards.forEach(function (c) { if (c.cardId === cardId) { c.resolved = true; c.cardState = cardState; } });
-    notify();
-  }
-  // 按角色 resolve 所有未处理的 gate 卡(去重 + 兜底:即便 cardId 对不上也清干净)。
-  function resolveRunCardsForRole(roleId, cardState) {
-    if (!roleId) return;
-    state.workflow.run.cards.forEach(function (c) {
-      if (c.kind === "gate" && c.roleId === roleId && !c.resolved) { c.resolved = true; c.cardState = cardState; }
-    });
-  }
-  // 批准/打回后拉一次后端真实状态,把看板角色态(gate_waiting→completed/running)刷正确。
-  async function refreshRunState() {
-    try {
-      var sid = state.workflow.run.sessionId; if (!sid) return;
-      var snap = await invoke("get_workflow_state", { sessionId: sid });
-      if (snap && snap.roles) mergeFullState(snap);
-    } catch (e) { console.warn("refreshRunState failed", e); }
-  }
-
-  // ── 卡片流工作流：事件监听 ───────────────────────────────────────
-  listen("workflow:full_state", function (e) {
-    var p = e.payload || {}; if (!isRunSession(p)) return;
-    mergeFullState(p); notify();
-  });
-  listen("workflow:agent_state_changed", function (e) {
-    var p = e.payload || {}; if (!isRunSession(p)) return;
-    if (state.workflow.run.status === "stopped") return;
-    applyAgentPatch(p.role_id, { name: p.role_name || p.role_id, status: p.status || "running" });
-    notify();
-  });
-  // [per_page] fan-out 逐页状态 → 工作流界面把该节点展开成 N 个 SubAgent chip。
-  // payload: { base_role, pages:[{page,status}] }，status ∈ queued|running|done|retrying。
-  listen("workflow:fanout", function (e) {
-    var p = e.payload || {}; if (!isRunSession(p)) return;
-    if (state.workflow.run.status === "stopped") return;
-    if (!state.workflow.run.fanout) state.workflow.run.fanout = {};
-    var pages = p.pages || [];
-    state.workflow.run.fanout[p.base_role] = { total: pages.length, pages: pages };
-    notify();
-  });
-  listen("workflow:complete", function (e) {
-    var p = e.payload || {}; if (!isRunSession(p)) return;
-    if (state.workflow.run.status === "stopped") return;
-    state.workflow.run.status = "complete";
-    // [edict-obs] 后端带回成品路径 → 弹成品卡(一键打开 deck)
-    if (p.artifact) {
-      pushRunCard({ kind: "artifact", path: p.artifact, text: bt("workflowComplete"), resolved: false });
-    }
-    notify();
-  });
-  listen("workflow:blocked", function (e) {
-    var p = e.payload || {}; if (!isRunSession(p)) return;
-    if (state.workflow.run.status === "stopped") return;
-    state.workflow.run.status = "blocked";
-    // 后端 emit 的是 message(+warmup_report)，不是 reason/waiting_roles。
-    pushRunCard({ kind: "system", text: bt("workflowBlocked") + (p.message || p.reason || bt("unknownReason")), resolved: false });
-    notify();
-  });
-  listen("workflow:stopped", function (e) {
-    var p = e.payload || {}; if (!isRunSession(p)) return;
-    markWorkflowRunStopped();
-    notify();
-  });
-  listen("workflow:gate_approval", function (e) {
-    var p = e.payload || {}; if (!isRunSession(p)) return;
-    if (state.workflow.run.status === "stopped") return;
-    var findings = p.findings || (p.gate_description ? [p.gate_description] : []);
-    // 去重:同一角色已有未处理的 gate 卡 → 只更新 findings,不叠新卡(huizou 反复过闸会重复 emit)。
-    var dup = (state.workflow.run.cards || []).find(function (c) { return c.kind === "gate" && c.roleId === p.role_id && !c.resolved; });
-    if (dup) { dup.findings = findings; notify(); return; }
-    // 后端 emit 的是 gate_description(单串)，不是 findings —— 兜底收进 findings。
-    pushRunCard({ kind: "gate", roleId: p.role_id, roleName: p.role_name || p.role_id, findings: findings, resolved: false });
-    notify();
-  });
-  // [edict-obs] SubAgent 实时进展(底座每步/每个工具调用自动发)。
-  listen("workflow:agent_progress", function (e) {
-    var p = e.payload || {}; if (!isRunSession(p)) return;
-    if (state.workflow.run.status === "stopped") return;
-    if (!state.workflow.run.progress) state.workflow.run.progress = {};
-    var key = p.role_id || p.agent_id;
-    if (!key) return;
-    // per_page 成员 "<role>#p01" 归并到基础节点显示
-    var base = key.indexOf("#") > -1 ? key.split("#")[0] : key;
-    state.workflow.run.progress[base] = p.status || "";
-    notify();
-  });
-  // [edict-obs] per-role token 账本快照(每次 LLM 调用后推一次累计值)。
-  listen("workflow:token_usage", function (e) {
-    var p = e.payload || {}; if (!isRunSession(p)) return;
-    if (state.workflow.run.status === "stopped") return;
-    if (!state.workflow.run.tokens) state.workflow.run.tokens = {};
-    var key = p.role_id || p.agent_id;
-    if (!key) return;
-    var base = key.indexOf("#") > -1 ? key.split("#")[0] : key;
-    state.workflow.run.tokens[base] = {
-      input: p.input_tokens_total || 0, output: p.output_tokens_total || 0, calls: p.calls || 0,
-    };
-    notify();
-  });
-  // request_user_input：本次 run 的 session 弹问答卡到看板底部交互区
-  // （与上面 chat:user_input_required 的 chat 渲染并存，互不影响——工作流页看 run.cards）。
-  listen("chat:user_input_required", function (e) {
-    var p = e.payload || {};
-    if (!state.workflow.run.sessionId || p.session_id !== state.workflow.run.sessionId) return;
-    if (state.workflow.run.status === "stopped") return;
-    var qs = p.questions || []; if (!Array.isArray(qs) || !qs.length) return;
-    if ((state.workflow.run.cards || []).some(function (card) {
-      return card && card.kind === "user_input" && card.toolCallId === p.id;
-    })) return;
-    pushRunCard({ kind: "user_input", toolCallId: p.id, questions: qs, resolved: false });
     notify();
   });
 
@@ -6176,6 +6025,12 @@
       sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
     });
   }
+  // 当前有效模型的图片输入能力(普通会话选图即时警告用);后端按会话模型绑定解析。
+  async function getImageInputCapability(sessionId) {
+    return await invoke("get_image_input_capability", {
+      sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
+    });
+  }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
   async function loadModels() {
@@ -6189,11 +6044,16 @@
     notify();
   }
   // model 对象字段须是 snake_case(SavedModel serde):
-  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action}
+  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action,image_capability_override,vision_model_id}
  async function saveModel(model) {
-   await invoke("save_model", { model: model });
+   // probe_image_capability 是保存命令的独立参数(「自动探测」档),不落 SavedModel。
+   var probeImageCapability = !!model.probe_image_capability;
+   var clean = Object.assign({}, model);
+   delete clean.probe_image_capability;
+   var outcome = await invoke("save_model", { model: clean, probeImageCapability: probeImageCapability });
    await loadModels();
    await loadEffectiveModelConfig();
+   return outcome || null;
  }
  async function revealModelApiKey(id) {
    return await invoke("reveal_model_api_key", { id: id });
@@ -6244,6 +6104,11 @@
   async function testModelConnection(baseUrl, apiKey, modelId) {
     return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
   }
+  // 测试图片输入能力(设计 §7.3):用当前表单的 model/base_url/key 发一张内置纯色图,
+  // 仅由模型编辑弹窗主动点击触发,无任何启动/定时自动测试。
+  async function testImageInputCapability(model, baseUrl, apiKey, modelId) {
+    return await invoke("test_image_input_capability", { model: model, baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
+  }
   async function testSearchProvider(provider, apiKey) {
     return await invoke("test_search_provider", { provider: provider, apiKey: apiKey || null });
   }
@@ -6275,17 +6140,78 @@
   }
 
   // ── Mode state ───────────────────────────────────────────────────
+  // 会话级读取：await 挂起期间用户可能已切走，响应返回后必须校验发起时的
+  // sid 仍是 active，否则把结果定向写回 sid 自己的 buffer，不污染当前显示。
+  // 另加请求序号（modeSyncSeq 声明见文件顶部）：同一会话内并发读取乱序返回时，
+  // 旧响应不得覆盖新响应（A→B→A 快速切换时 #1 的慢响应覆盖 #3 的新值，审计；
+  // tauri 版 epoch 对齐）。权威写回一律 bump 该序号，见 applyAuthoritativeModeState。
   async function syncModeState() {
-    if (!state.activeSessionId) {
-      state.modeState = { mode: "yolo", multiAgent: false };
+    var sid = state.activeSessionId;
+    if (!sid) {
+      // 草稿态：显示当前 lane 的全局默认（三分 lane 语义），不再恒 yolo。
+      state.modeState = currentDraftModeState();
       return;
     }
+    var seq = ++modeSyncSeq;
     try {
       var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
+      if (seq !== modeSyncSeq) return; // 已有更新的读取发起，本响应陈旧
+      if (state.activeSessionId !== sid) {
+        runSyncOnSession(sid, function () {
+          state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+        });
+        return;
+      }
       state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
     } catch (e) {
+      if (seq !== modeSyncSeq) return;
+      if (state.activeSessionId !== sid) return;
       state.modeState = { mode: "yolo", multiAgent: false };
     }
+  }
+
+  // ── lane 全局默认（工作/设计/代码三分，与 tauri bridge 对齐）────────
+  // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认，缺省 yolo。
+  function currentDraftModeState() {
+    var lane = state.modeLane === "design" ? "design" : "work";
+    var d = state.modeDefaults && state.modeDefaults[lane];
+    return { mode: d || "yolo", multiAgent: false };
+  }
+  async function refreshModeDefaults() {
+    try {
+      var defaults = await invoke("get_mode_defaults");
+      if (defaults) state.modeDefaults = defaults;
+    } catch (e) { /* 读取失败保留旧值/缺省，不打扰交互 */ }
+    if (!state.activeSessionId) {
+      state.modeState = currentDraftModeState();
+      notify();
+    }
+  }
+  // ChatView 随 pinvouMode 传入当前 lane；草稿态立即按新 lane 默认刷新显示。
+  function setModeLane(lane) {
+    var next = lane === "design" ? "design" : "work";
+    if (state.modeLane === next) return;
+    state.modeLane = next;
+    if (!state.activeSessionId) {
+      state.modeState = currentDraftModeState();
+      notify();
+    }
+  }
+  // 草稿态 chip 切换：写本 lane 全局默认（不物化会话——物化时由
+  // ensureSession 把 lane 默认应用到新会话）。
+  async function setDraftMode(target) {
+    var lane = state.modeLane === "design" ? "design" : "work";
+    try {
+      var defaults = await invoke("set_mode_default", { lane: lane, mode: target });
+      if (defaults) state.modeDefaults = defaults;
+      if (!state.activeSessionId) {
+        state.modeState = {
+          mode: target,
+          multiAgent: !!(state.modeState && state.modeState.multiAgent),
+        };
+      }
+    } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
+    notify();
   }
 
   // ── 卡片动作辅助 ─────────────────────────────────────────────────
@@ -6411,20 +6337,72 @@
   }
 
   function applyMemoryOverview(overview) {
+    var previous = state.memory || {};
+    var sourceStates = overview && overview.sources || {};
+    // stateKey:后端 source 名与前端 state 字段名通常一致,但 snapshot 源对应
+    // state.memory.snapshot_path,两者不同;保留上次值时按 state 字段名查找。
+    function sourceValue(source, value, fallback, stateKey) {
+      var status = sourceStates[source];
+      if (status && status.available === false) {
+        var key = stateKey || source;
+        return Object.prototype.hasOwnProperty.call(previous, key) ? previous[key] : fallback;
+      }
+      return value;
+    }
     state.memory = {
       loading: false,
       error: null,
-      profile: overview && overview.profile || null,
-      preferences: overview && Array.isArray(overview.preferences) ? overview.preferences : [],
-      work_context: overview && Array.isArray(overview.work_context) ? overview.work_context : [],
-      current_focus: overview && Array.isArray(overview.current_focus) ? overview.current_focus : [],
-      recent_activity: overview && Array.isArray(overview.recent_activity) ? overview.recent_activity : [],
-      recent_work: overview && Array.isArray(overview.recent_work) ? overview.recent_work : [],
-      pending: overview && Array.isArray(overview.pending) ? overview.pending : [],
-      never: overview && Array.isArray(overview.never) ? overview.never : [],
-      runtime: overview && overview.runtime || null,
-      snapshot_path: overview && overview.snapshot_path || "",
+      profile: sourceValue("profile", overview && overview.profile || null, null),
+      preferences: sourceValue("preferences", overview && Array.isArray(overview.preferences) ? overview.preferences : [], []),
+      work_context: sourceValue("work_context", overview && Array.isArray(overview.work_context) ? overview.work_context : [], []),
+      current_focus: sourceValue("current_focus", overview && Array.isArray(overview.current_focus) ? overview.current_focus : [], []),
+      recent_activity: sourceValue("recent_activity", overview && Array.isArray(overview.recent_activity) ? overview.recent_activity : [], []),
+      recent_work: sourceValue("recent_work", overview && Array.isArray(overview.recent_work) ? overview.recent_work : [], []),
+      pending: sourceValue("pending", overview && Array.isArray(overview.pending) ? overview.pending : [], []),
+      never: sourceValue("never", overview && Array.isArray(overview.never) ? overview.never : [], []),
+      runtime: sourceValue("runtime", overview && overview.runtime || null, null),
+      snapshot_path: sourceValue("snapshot", overview && overview.snapshot_path || "", "", "snapshot_path"),
+      warnings: orderedMemoryWarnings(overview && overview.warnings),
+      sources: sourceStates,
     };
+  }
+  function orderedMemoryWarnings(warnings) {
+    var items = Array.isArray(warnings) ? warnings : [];
+    return items.filter(function (warning) {
+      return warning && warning.code === "memory_topic_cleanup_required";
+    }).concat(items.filter(function (warning) {
+      return !warning || warning.code !== "memory_topic_cleanup_required";
+    }));
+  }
+  function applyMemoryProfileState(result) {
+    if (!result || !result.profile) return;
+    state.memory = Object.assign({}, state.memory, {
+      loading: false,
+      error: null,
+      profile: result.profile,
+      runtime: result.runtime || null,
+      warnings: orderedMemoryWarnings(result.warnings),
+    });
+  }
+  function applyMemoryWriteState(result, update) {
+    if (!result) return;
+    var next = Object.assign({}, state.memory, {
+      loading: false,
+      error: null,
+      runtime: result.runtime || null,
+      warnings: orderedMemoryWarnings(result.warnings),
+    });
+    if (update) update(next, result.value);
+    state.memory = next;
+    notify();
+  }
+  function upsertMemoryValue(items, value, replacedId) {
+    if (!value) return items || [];
+    var next = (items || []).filter(function (item) {
+      return item && item.id !== value.id && item.id !== replacedId;
+    });
+    next.push(value);
+    return next;
   }
   function upsertPendingMemoryCandidate(item) {
     if (!item || item.status !== "pending_confirm") return;
@@ -6476,8 +6454,11 @@
   async function saveMemoryProfilePatch(patch) {
     if (!invoke) return null;
     try {
-      await invoke("update_memory_profile", { patch: patch || {}, sessionId: state.activeSessionId });
-      return await loadMemoryOverview();
+      var result = await invoke("update_memory_profile", { patch: patch || {}, sessionId: state.activeSessionId });
+      applyMemoryProfileState(result);
+      notify();
+      var overview = await loadMemoryOverview();
+      return overview || result;
     } catch (e) {
       state.memory = Object.assign({}, state.memory, { error: String(e) });
       notify();
@@ -6488,6 +6469,9 @@
     if (!id || !invoke) return false;
     try {
       var res = await invoke("delete_memory_preference", { id: id, sessionId: state.activeSessionId });
+      applyMemoryWriteState(res, function (next, changed) {
+        if (changed) next.preferences = (next.preferences || []).filter(function (item) { return item.id !== id; });
+      });
       await loadMemoryOverview();
       return !!(res && res.value);
     } catch (e) {
@@ -6507,6 +6491,11 @@
       var args = { id: id, patch: patch || {}, sessionId: state.activeSessionId };
       if (command === "update_timed_memory") args.kind = kind;
       var res = await invoke(command, args);
+      applyMemoryWriteState(res, function (next, value) {
+        if (!value) return;
+        var source = kind === "preference" ? "preferences" : kind;
+        next[source] = upsertMemoryValue(next[source], value, id);
+      });
       await loadMemoryOverview();
       return res && res.value;
     } catch (e) {
@@ -6526,6 +6515,11 @@
       var args = { id: id, sessionId: state.activeSessionId };
       if (command === "delete_timed_memory") args.kind = kind;
       var res = await invoke(command, args);
+      applyMemoryWriteState(res, function (next, changed) {
+        if (!changed) return;
+        var source = kind === "preference" ? "preferences" : kind;
+        next[source] = (next[source] || []).filter(function (item) { return item.id !== id; });
+      });
       await loadMemoryOverview();
       return !!(res && res.value);
     } catch (e) {
@@ -6538,6 +6532,9 @@
     if (!id || !invoke) return false;
     try {
       var res = await invoke("archive_recent_work_memory", { id: id, sessionId: state.activeSessionId });
+      applyMemoryWriteState(res, function (next, changed) {
+        if (changed) next.recent_work = (next.recent_work || []).filter(function (item) { return item.id !== id; });
+      });
       await loadMemoryOverview();
       return !!(res && res.value);
     } catch (e) {
@@ -6550,7 +6547,10 @@
     if (!memoryId) return;
     var sid = state.activeSessionId;
     try {
-      await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
+      var result = await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
+      applyMemoryWriteState(result, function (next) {
+        next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
+      });
       if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已记住" });
       await loadMemoryOverview();
       notify();
@@ -6562,7 +6562,10 @@
     if (!memoryId) return;
     var sid = state.activeSessionId;
     try {
-      await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
+      var result = await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
+      applyMemoryWriteState(result, function (next) {
+        next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
+      });
       if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已忽略" });
       await loadMemoryOverview();
       notify();
@@ -6574,7 +6577,10 @@
     if (!memoryId) return;
     var sid = state.activeSessionId;
     try {
-      await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
+      var result = await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
+      applyMemoryWriteState(result, function (next) {
+        next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
+      });
       if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "不再提示" });
       await loadMemoryOverview();
       notify();
@@ -6589,6 +6595,15 @@
   function stopThinking() { state.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 }; }
   function applyModeFromState(st) {
     state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
+  }
+
+  // 权威 modeState 写回收敛点（评审 P1，与 tauri 端对齐）：任何「invoke 返回 /
+  // 事件负载」带来的权威 modeState 更新都必须走这里——bump modeSyncSeq 作废
+  // 在途 syncModeState 读取，再定向写回触发会话（await 期间用户可能已切走）。
+  // 散点直写漏 bump 一处，就重现「旧读取覆盖权威值」竞态。
+  function applyAuthoritativeModeState(sid, st) {
+    modeSyncSeq += 1;
+    runOnSession(sid, function () { applyModeFromState(st); });
   }
 
   function isActionablePlanCard(sid, itemId, planId) {
@@ -6642,7 +6657,7 @@
         planId: planTicket,
       });
       if (planBuffer) planBuffer.deferredRemoteUserEvent = null;
-      runOnSession(sid, function () { applyModeFromState(st); });
+      applyAuthoritativeModeState(sid, st);
     } catch (e) {
       var errorText = String(e && e.message ? e.message : e || "");
       var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
@@ -6665,7 +6680,7 @@
       if (concurrentTurn && planBuffer && !deferredApplied) markRemoteTurn(sid, planBuffer);
       try {
         var currentMode = await invoke("get_mode_state", { sessionId: sid });
-        runOnSession(sid, function () { applyModeFromState(currentMode); });
+        applyAuthoritativeModeState(sid, currentMode);
       } catch (_) {}
       addSystemItemFor(sid, bt("acceptPlanFailed") + e);
     }
@@ -6684,7 +6699,7 @@
     notify();
     try {
       var st = await invoke("discard_plan", { sessionId: sid, planId: planTicket });
-      runOnSession(sid, function () { applyModeFromState(st); });
+      applyAuthoritativeModeState(sid, st);
     } catch (e) {
       var errorText = String(e && e.message ? e.message : e || "");
       var planNotActive = errorText.indexOf("plan_not_active") >= 0;
@@ -6707,7 +6722,7 @@
       if (planNotActive) {
         try {
           var currentMode = await invoke("get_mode_state", { sessionId: sid });
-          runOnSession(sid, function () { applyModeFromState(currentMode); });
+          applyAuthoritativeModeState(sid, currentMode);
         } catch (_) {}
       }
       addSystemItemFor(sid, bt("discardPlanFailed") + e);
@@ -6715,23 +6730,27 @@
     notify();
   }
   async function exitPlanToYolo() {
-    if (!state.activeSessionId) return;
+    var sid = state.activeSessionId;
+    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义）。
+    if (!sid) { await setDraftMode("yolo"); return; }
     try {
+      // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
+      // 计算）；await 返回后按发起时 sid 定向写回并 bump modeSyncSeq。
       var st = await invoke("exit_plan_to_yolo", { sessionId: state.activeSessionId });
-      applyModeFromState(st);
-    } catch (e) { addSystemItem(bt("exitPlanFailed") + e); }
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
     notify();
   }
   // 灯泡 toggle：plan ↔ yolo
   async function setPlanModeNext() {
-    // 草稿态(无 session)先物化:mode 是 per-session 状态,进 Plan 必须先有 session,
-    // 否则草稿页点 Plan 会静默 return 不切换(composer chip 入口暴露的缺陷)。
-    var sid = await ensureSession();
-    if (!sid) return;
+    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义；旧实现会先
+    // ensureSession 物化——草稿页点 Plan 凭空造出空会话）。
+    var sid = state.activeSessionId;
+    if (!sid) { await setDraftMode("plan"); return; }
     try {
       var st = await invoke("set_plan_mode_next", { sessionId: sid });
-      applyModeFromState(st);
-    } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
     notify();
   }
   // plan-stuck / fallback / execution-stuck 卡片动作
@@ -6746,25 +6765,46 @@
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
+  // 卡片动作链路有 await 边界：entry 先捕获触发会话 sid，invoke 与后续全部 UI 写入
+  // 都定向到 sid（runOnSession / patchItemByIdFor），避免用户提交期间切会话导致
+  // echo/restoredAnswers 漏写触发会话或污染当前会话（与 acceptPlan 同一约定）。
   async function submitUserInput(itemId, toolCallId, answers, questions) {
-    patchItemById(itemId, { submitting: true }); notify();
+    var sid = state.activeSessionId;
+    if (!sid) return;
+    patchItemByIdFor(sid, itemId, { submitting: true }); notify();
     try {
-      await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.activeSessionId });
-      var summary = answers.map(function (a, i) {
-        var text = a.label === "其他" ? "(其他) " + a.value : a.label;
-        return (questions[i].header || ("Q" + (i + 1))) + ": " + text;
-      }).join(" · ");
-      pushUserEcho("✓ " + summary, false);
-      flushAssistantMessageToHistory();
-      patchItemById(itemId, { resolved: true, cardState: "submitted", submitting: false });
+      await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: sid });
+      // 摘要按 question 分组拼接：answers 是按选项展开的（multi_select 时同一题多条），
+      // 不能按 answers 索引一一对应 questions（会越界抛 TypeError，复核 P1）。
+      // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
+      // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
+      var byId = Object.create(null);
+      answers.forEach(function (a) { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
+      var summary = questions.map(function (q, qi) {
+        var list = byId[q.id];
+        if (!list || !list.length) return null;
+        var header = q.header || ("Q" + (qi + 1));
+        return header + ": " + list.map(function (a) {
+          var text = (a.other || a.label === "其他") ? bt("echoOtherPrefix") + a.value : a.label;
+          return text;
+        }).join(" · ");
+      }).filter(Boolean).join(" · ");
+      runOnSession(sid, function () {
+        pushUserEcho("✓ " + summary, false);
+        flushAssistantMessageToHistory();
+      });
+      // 提交时即存答案：切走视图再切回（ChatView 重挂载但 bridge state 保留）时，
+      // QuestionChoiceCard 用 restoredAnswers 恢复选中态；会话级 rerender 另有解析。
+      patchItemByIdFor(sid, itemId, { resolved: true, cardState: "submitted", submitting: false, restoredAnswers: answers });
     } catch (e) {
-      patchItemById(itemId, { submitting: false, error: String(e) });
+      patchItemByIdFor(sid, itemId, { submitting: false, error: String(e) });
     }
     notify();
   }
   async function cancelUserInput(itemId, toolCallId) {
-    try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: state.activeSessionId }); } catch (_) {}
-    patchItemById(itemId, { resolved: true, cardState: "cancelled" });
+    var sid = state.activeSessionId;
+    try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: sid }); } catch (_) {}
+    patchItemByIdFor(sid, itemId, { resolved: true, cardState: "cancelled" });
     notify();
   }
 
@@ -6909,12 +6949,6 @@
     } catch (_) {
       return Promise.reject(new Error("invalid external link"));
     }
-  }
-  // 奏折宝箱:列 run 成品文档(deliverables/ 下文件,二进制成品排前)
-  function listDeliverables(projectDir, sessionId) {
-    var command = IS_WEB ? "web_access_list_deliverables" : "list_deliverables";
-    var args = IS_WEB ? { sessionId: sessionId || state.workflow.run.sessionId } : { projectDir: projectDir };
-    return invoke(command, args).catch(function () { return []; });
   }
   function deliverableCategory(path) {
     var ext = (String(path || "").split(".").pop() || "").toLowerCase();
@@ -8182,146 +8216,6 @@
     return true;
   }
 
-  // ── skill 工作流：动作（invoke 包装）[2026-06-06 恢复] ────────────
-  // 合并 973a6f0 把这 6 个函数定义弄丢了(导出/UI调用/后端命令都在,独缺定义)→
-  // 导出对象构建撞 ReferenceError(loadSkills undefined)→ window.TauriBridge 整个没装上。
-  // 从 943af78 原样恢复。
-  function setCurrentPhase(phaseId, source) {
-    if (!phaseId) return;
-    var wf = state.workflow;
-    // 大小写归一匹配 phases
-    var match = wf.phases.find(function (p) { return String(p.id).toLowerCase() === String(phaseId).toLowerCase(); });
-    var canonical = match ? match.id : phaseId;
-    wf.currentPhaseId = canonical;
-    if (wf.reachedPhaseIds.indexOf(canonical) < 0) wf.reachedPhaseIds.push(canonical);
-    notify();
-  }
-  async function loadSkills() {
-    state.workflow.loadState = "loading"; notify();
-    try {
-      state.workflow.skills = await invoke("list_skills_v2");
-      state.workflow.loadState = "ready";
-    } catch (e) { state.workflow.skills = []; state.workflow.loadState = "error"; }
-    notify();
-  }
-  async function activateSkill(name) {
-    try {
-      var res = await invoke(IS_WEB ? "web_access_start_skill_session" : "start_skill_session", { name: name, setActive: !IS_WEB });
-      var skill = res.skill || {};
-      var meta = res.session || res.metadata || {};
-      state.activeSessionId = meta.id || state.activeSessionId;
-      state.messages = []; state.chatItems = []; resetPendingAssistant();
-      state.workflow.activeSkillName = skill.name || name;
-      state.workflow.phases = skill.phases || [];
-      state.workflow.currentPhaseId = skill.current_phase_id || (skill.phases && skill.phases[0] && skill.phases[0].id) || null;
-      state.workflow.reachedPhaseIds = state.workflow.currentPhaseId ? [state.workflow.currentPhaseId] : [];
-      if (meta.id) state.workflow.bindings[meta.id] = skill.name || name;
-      await refreshHistoryList();
-      await syncModeState();
-      notify();
-      return res;
-    } catch (e) { addSystemItem(bt("workflowEnableFailed") + e); notify(); return null; }
-  }
-  async function deactivateSkill() {
-    if (state.activeSessionId) {
-      try { await invoke("unbind_session_skill", { sessionId: state.activeSessionId }); } catch (_) {}
-      delete state.workflow.bindings[state.activeSessionId];
-    }
-    state.workflow.activeSkillName = null;
-    state.workflow.phases = [];
-    state.workflow.currentPhaseId = null;
-    state.workflow.reachedPhaseIds = [];
-    notify();
-  }
-  async function openDemo(name) {
-    state.workflow.demo = { open: true, name: name, loading: true, kind: null, content: null, error: null, description: null, duration: null };
-    notify();
-    try {
-      var d = await invoke("read_skill_demo", { name: name });
-      state.workflow.demo = {
-        open: true, name: name, loading: false,
-        kind: d.file_kind, path: d.file_path, content: d.content,
-        error: null, description: d.description, duration: d.duration,
-      };
-    } catch (e) {
-      state.workflow.demo = { open: true, name: name, loading: false, kind: null, content: null, error: String(e) };
-    }
-    notify();
-  }
-  function closeDemo() { state.workflow.demo = null; notify(); }
-
-  // ── 卡片流工作流：动作（invoke 包装）────────────────────────────
-  // 新建任务：建项目（project_started 事件设 run 态）→ kick 派发首个 agent（无聊天）。
-  async function startWorkflowTask(scenario, brief) {
-    try {
-      var res = await invoke("start_workflow", { scenario: scenario, briefInit: brief || null });
-      try { await invoke("kick_workflow", { sessionId: res.session_id }); }
-      catch (e) { addSystemItem(bt("workflowKickFailed") + e); }
-      return res;
-    } catch (e) { addSystemItem(bt("workflowStartFailed") + e); return null; }
-  }
-  // 停止整个 run：后端先落 stop marker 再取消所有后台 SubAgent；返回旧 brief，
-  // 供工作流页打开“修改需求并重新开始”的预填表单。
-  async function stopWorkflowTask(reason) {
-    var sid = state.workflow.run.sessionId;
-    if (!sid) throw new Error(bt("workflowNoneToStop"));
-    var result = await invoke("stop_workflow", {
-      sessionId: sid,
-      reason: reason || "user_stopped",
-    });
-    markWorkflowRunStopped();
-    notify();
-    return result || {};
-  }
-  // 模板页数据源:已发现且 enabled 的工作流(含 ui 块)。失败回空数组(模板页显示空态)。
-  async function listWorkflows() {
-    try { return (await invoke("list_workflows")) || []; }
-    catch (e) { console.warn("list_workflows failed", e); return []; }
-  }
-  function selectWorkflowRole(roleId) { state.workflow.run.selectedRole = roleId; notify(); }
-  function closeWorkflowDrawer() { state.workflow.run.selectedRole = null; notify(); }
-  function resetWorkflowRun() {
-    state.workflow.run = { active: false, sessionId: null, projectDir: null, scenario: null, status: "idle", agents: {}, cards: [], selectedRole: null };
-    notify();
-  }
-  // 抽屉数据：按 role 拉产出 / gate / 日志（projectDir 来自 run）。
-  function workflowReadArgs(roleId, projectDir, extra) {
-    return Object.assign(
-      IS_WEB
-        ? { roleId: roleId, sessionId: state.workflow.run.sessionId }
-        : { roleId: roleId, projectDir: projectDir || state.workflow.run.projectDir || null },
-      extra || {}
-    );
-  }
-  function getRolePrompt(roleId, projectDir) {
-    return invoke(IS_WEB ? "web_access_get_role_prompt" : "get_role_prompt", workflowReadArgs(roleId, projectDir));
-  }
-  function getRoleOutputs(roleId) {
-    return invoke(IS_WEB ? "web_access_get_role_outputs" : "get_role_outputs", workflowReadArgs(roleId));
-  }
-  function getGateReport(roleId) {
-    return invoke(IS_WEB ? "web_access_get_gate_report" : "get_gate_report", workflowReadArgs(roleId));
-  }
-  function getRoleLogs(roleId, tail) {
-    return invoke(IS_WEB ? "web_access_get_role_logs" : "get_role_logs", workflowReadArgs(roleId, null, { tail: tail || 50 }));
-  }
-  // 交互卡动作
-  async function submitWorkflowUserInput(cardId, toolCallId, answers) {
-    try { await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.workflow.run.sessionId }); resolveRunCard(cardId, "submitted"); }
-    catch (e) { addSystemItem(bt("workflowSubmitFailed") + e); }
-  }
-  // [2026-06-06] 素材上传：复用系统文件选择器(dialogOpen) → 拷进当前 run 的 配套材料/。
-  // 返回落盘文件名数组(含同名去重);失败 throw 给调用方(卡片上报错)。
-  async function pickAndAddMaterials() {
-    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
-    var selected = await dialogOpen({ multiple: true });
-    if (!selected) return [];
-    var paths = Array.isArray(selected) ? selected : [selected];
-    var added = await invoke("add_run_materials", { sessionId: state.workflow.run.sessionId, paths: paths });
-    addSystemItem(bt("materialsAdded")(added.length, added));
-    return added;
-  }
-  // [新建任务模态] 只弹系统选择器拿路径,不拷贝(run 还没建)。返回路径数组。
   async function pickFiles() {
     if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
     var selected = await dialogOpen({ multiple: true });
@@ -8358,39 +8252,6 @@
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
   }
-  // [新建任务模态] start_workflow 建好 run 后,把已选路径拷进该 session 的配套材料/。
-  async function addMaterialsToSession(sessionId, paths) {
-    if (!paths || !paths.length) return [];
-    return invoke("add_run_materials", { sessionId: sessionId, paths: paths });
-  }
-  // cardId 可为 null:看板 agent 卡上的"确认通过"只有 roleId(刷新后内存 gate 卡已清空)。
-  // 批准只需 roleId + sessionId,绝不依赖前端那张内存卡是否存在(那正是"按钮点了没反应"的 bug)。
-  async function approveWorkflowGate(cardId, roleId) {
-    try {
-      await invoke("approve_workflow_gate", { roleId: roleId, sessionId: state.workflow.run.sessionId });
-      if (cardId) resolveRunCard(cardId, "approved");
-      resolveRunCardsForRole(roleId, "approved");
-      await refreshRunState();   // 刷新真实状态:huizou gate_waiting→completed,看板按钮随之消失
-      notify();
-    } catch (e) { addSystemItem(bt("gateApproveFailed") + e); }
-  }
-  async function rejectWorkflowGate(cardId, roleId, reason) {
-    try {
-      await invoke("reject_workflow_gate", { roleId: roleId, reason: reason || bt("workflowRejectDefaultReason"), sessionId: state.workflow.run.sessionId });
-      if (cardId) resolveRunCard(cardId, "rejected");
-      resolveRunCardsForRole(roleId, "rejected");
-      await refreshRunState();
-      notify();
-    } catch (e) { addSystemItem(bt("gateRejectFailed") + e); }
-  }
-  // 从失败节点续跑:重置该角色为 pending(清重试)后重新调度,上游已完成节点不重跑。
-  async function retryWorkflowRole(roleId) {
-    try {
-      const r = await invoke("retry_workflow_role", { roleId: roleId, sessionId: state.workflow.run.sessionId });
-      addSystemItem(bt("roleRetried")(roleId, r));
-    } catch (e) { addSystemItem(bt("roleRetryFailed") + e); }
-  }
-
   // ── Init ─────────────────────────────────────────────────────────
   function disarmWebInitRetry() {
     if (!webInitRetryArmed || !webInitRetryHandler) return;
@@ -8437,6 +8298,8 @@
       window.PinvouWebClient.markStateReady();
     }
     if (hasCapability("superPermission")) await refreshSuperPerm();
+    // lane 全局默认（work/design/code）是草稿态 mode chip 的事实源，启动即拉取。
+    refreshModeDefaults().catch(function () {});
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
@@ -8445,7 +8308,6 @@
       checkForUpdateSilently();
     }
     if (hasCapability("webAccessAdmin")) refreshWebAccessStatus();
-    await resumeWorkflowOnBoot(); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
     notify();
     })();
     initPromise = attempt.then(function (result) {
@@ -8539,6 +8401,8 @@
    saveModel: saveModel,
    revealModelApiKey: revealModelApiKey,
    deleteModel: deleteModel,
+    getImageInputCapability: getImageInputCapability,
+    testImageInputCapability: testImageInputCapability,
     setActiveModel: setActiveModel,
     loadSessionModel: loadSessionModel,
     switchModel: switchModel,
@@ -8553,11 +8417,16 @@
     getWebRelaySettings: getWebRelaySettings,
     setWebRelayAddress: setWebRelayAddress,
     resetWebRelayAddress: resetWebRelayAddress,
+    // modeState 权威读取（评审 P1 后纳入公开面，与 tauri 端对齐）
+    syncModeState: syncModeState,
     // Plan/YOLO
     acceptPlan: acceptPlan,
     discardPlan: discardPlan,
     exitPlanToYolo: exitPlanToYolo,
     setPlanModeNext: setPlanModeNext,
+    setDraftMode: setDraftMode,
+    setModeLane: setModeLane,
+    refreshModeDefaults: refreshModeDefaults,
     planStuckReplan: planStuckReplan,
     planStuckGo: planStuckGo,
     // 用户交互
@@ -8583,7 +8452,6 @@
     openInSystem: openInSystem,
     openArtifactExternal: openArtifactExternal,
     downloadArtifact: downloadArtifact,
-    listDeliverables: listDeliverables,
     listDeliverableIndex: listDeliverableIndex,
     openExternalUrl: openExternalUrl,
     openUserExternalUrl: openUserExternalUrl,
@@ -8598,35 +8466,10 @@
     openConversationAttachment: openConversationAttachment,
     revealConversationAttachment: revealConversationAttachment,
     markResolved: markResolved,
-    // 工作流
-    loadSkills: loadSkills,
-    activateSkill: activateSkill,
-    deactivateSkill: deactivateSkill,
-    openDemo: openDemo,
-    closeDemo: closeDemo,
-    setCurrentPhase: setCurrentPhase,
-    // 卡片流工作流
-    startWorkflowTask: startWorkflowTask,
-    stopWorkflowTask: stopWorkflowTask,
-    listWorkflows: listWorkflows,
-    resetWorkflowRun: resetWorkflowRun,
-    selectWorkflowRole: selectWorkflowRole,
-    closeWorkflowDrawer: closeWorkflowDrawer,
-    getRolePrompt: getRolePrompt,
-    getRoleOutputs: getRoleOutputs,
-    getGateReport: getGateReport,
-    getRoleLogs: getRoleLogs,
-    submitWorkflowUserInput: submitWorkflowUserInput,
-    pickAndAddMaterials: pickAndAddMaterials,
+    // 通用宿主文件选择器（知识库、反馈等功能继续复用）。
     pickFiles: pickFiles,
     pickFolders: pickFolders,
     pickFeedbackFiles: pickFeedbackFiles,
-    addMaterialsToSession: addMaterialsToSession,
-    attachRun: attachRun,
-    resumeWorkflowOnBoot: resumeWorkflowOnBoot,
-    approveWorkflowGate: approveWorkflowGate,
-    rejectWorkflowGate: rejectWorkflowGate,
-    retryWorkflowRole: retryWorkflowRole,
     // 卡片池: 专家面具
     loadPersonas: loadPersonas,
     getPersonas: function () { return personaPoolCache; }, // 返回引用(只读),不进 notify 快照

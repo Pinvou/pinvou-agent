@@ -10,7 +10,7 @@ import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layou
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
-import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
+import { dict, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
@@ -20,7 +20,7 @@ import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
 import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
-import { savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
+import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
@@ -53,7 +53,6 @@ const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
 import { ToolStoreView } from '../features/tools/ToolStoreView.jsx';
 import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from '../features/personas/Personas.jsx';
-import { WorkflowView } from '../features/workflow/WorkflowView.jsx';
 import { SearchView } from '../features/search/SearchView.jsx';
 import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
 import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
@@ -67,7 +66,7 @@ let appFirstRenderMarked = false;
 
 const APP_BRIDGE_STATE_DOMAINS = [
   'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
-  'settings', 'models', 'vllm', 'interaction', 'personas', 'workflow',
+  'settings', 'models', 'vllm', 'interaction', 'personas',
   'memory', 'remoteControl', 'updater', 'dependencies',
 ];
 
@@ -310,11 +309,12 @@ function workspaceDisplayName(path) {
       }, [platformCapabilities.localVllmSupported]);
       const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState(() => {
-        if (!isWeb) return 'zh';
+        const systemLanguage = initialSystemLanguage();
+        if (!isWeb) return systemLanguage;
         try {
           const value = window.localStorage.getItem('pinvou.web.language');
-          return value && dict[value] ? value : 'zh';
-        } catch (_) { return 'zh'; }
+          return value && dict[value] ? value : systemLanguage;
+        } catch (_) { return systemLanguage; }
       });
       const [superPerm, setSuperPerm] = useState(false);
       const defaultTaskCompletedNotif = platformCapabilities.taskCompletionNotificationsDefault !== false;
@@ -534,7 +534,7 @@ function workspaceDisplayName(path) {
           scheduledTaskAutoOpenSeenRef.current = bs.scheduledTaskAutoOpenId;
           setCurrentView('scheduled');
         }
-        // UI 语言/主题:启动时从落盘 settings 恢复一次(此前只写不读,重启即回中文+深色)
+        // UI 语言/主题:启动时从落盘 settings 恢复一次；无语言配置时后端已按系统 locale 补齐。
         if (!uiPrefsInitRef.current && bs.settings) {
           if (isWeb) {
             bootedLanguageRef.current = language;
@@ -542,7 +542,7 @@ function workspaceDisplayName(path) {
             const lang = TAG_TO_LANG[bs.settings.language];
             if (lang && lang !== language) setLanguage(lang);
             // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
-            bootedLanguageRef.current = lang || 'zh';
+            bootedLanguageRef.current = lang || language;
             // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
             const th = bs.settings.theme === 'liquid-light' ? 'light' : 'dark';
             if (th !== activeTheme) setActiveTheme(th);
@@ -611,8 +611,6 @@ function workspaceDisplayName(path) {
       useEffect(() => {
         if (!SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled') {
           setCurrentView('chat');
-        } else if (currentView === 'workflow') {
-          setCurrentView('cardpool');
         }
       }, [currentView]);
 
@@ -679,7 +677,6 @@ function workspaceDisplayName(path) {
       const languageNeedsRestart = !!bootedLanguageRef.current && language !== bootedLanguageRef.current;
 
       // Build chat history from sessions
-      const skillBindings = (bs && bs.workflow && bs.workflow.bindings) || {};
       const sessionBusy = (bs && bs.sessionBusy) || {};
       const chatHistory = bs && bs.sessions ? bs.sessions.map(s => {
         const isPlaceholder = !s.title || DEFAULT_CHAT_TITLES.has(s.title);
@@ -697,7 +694,6 @@ function workspaceDisplayName(path) {
           updatedAt: s.updated_at || s.created_at || '',
           pinned: !!s.pinned,
           pinnedAt: s.pinned_at || '',
-          skill: skillBindings[s.id] || null,
           working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
           leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
           testId: 'regular-sidebar-item',
@@ -997,12 +993,32 @@ function workspaceDisplayName(path) {
           setCodexDraftEpoch(value => value + 1);
           setCurrentView('codex');
         } else if (mode === 'design') {
-          savePinvouModeState({ mode: 'design' });
-          if (bridge.available) bridge.sessions.createNewSession();
+          // 仅草稿态（无活跃会话）才开新会话：从 code 页切回时 bridge 的
+          // activeSessionId 仍是原工作会话，强制 createNewSession 会新建一个
+          // plain 会话（默认 Yolo），把用户切过的 Plan 顶掉——表现为「从代码
+          // 切回工作/设计，审批模式变回 Yolo」。保留原会话，ChatView 挂载后
+          // 显示其实测 mode。与 ChatView 内 work↔design 本地切换（不建会话）
+          // 行为保持一致。
+          const scopeKey = bridge.activeSessionId
+            ? createPinvouModeScopeKey(bridge.activeSessionId)
+            : undefined;
+          savePinvouModeState({ mode: 'design' }, undefined, scopeKey);
+          if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();
+          // code 页期间原工作会话的 mode 可能已被修改（code 页独立链路），
+          // 切回前拉一次实测值，避免 ChatView 挂载后显示旧 modeState。
+          if (bridge.available && bridge.activeSessionId) {
+            bridge.interaction.syncModeState().catch(() => {});
+          }
           setCurrentView('chat');
         } else if (mode === 'work') {
-          savePinvouModeState({ mode: 'work' });
-          if (bridge.available) bridge.sessions.createNewSession();
+          const scopeKey = bridge.activeSessionId
+            ? createPinvouModeScopeKey(bridge.activeSessionId)
+            : undefined;
+          savePinvouModeState({ mode: 'work' }, undefined, scopeKey);
+          if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();
+          if (bridge.available && bridge.activeSessionId) {
+            bridge.interaction.syncModeState().catch(() => {});
+          }
           setCurrentView('chat');
         }
         closeMobileSidebar();
@@ -1576,7 +1592,7 @@ function workspaceDisplayName(path) {
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
           ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
-        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
+        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
         navigateFromScheduledRun(view, beforeNavigate);
@@ -1699,6 +1715,7 @@ function workspaceDisplayName(path) {
           {isWeb && isSidebarOpen && (
             <button
               type="button"
+              data-testid="mobile-navigation-close"
               aria-label={t.uiMainApp.closeNavigation}
               onClick={() => setIsSidebarOpen(false)}
               className="fixed inset-0 z-30 hidden bg-black/40 max-sm:block"
@@ -2086,7 +2103,6 @@ function workspaceDisplayName(path) {
                 />
               </SettingsErrorBoundary>
             )}
-            {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}

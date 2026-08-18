@@ -6,7 +6,6 @@ use tokio::process::Command;
 pub(super) const NODE_EXECUTABLE_NAME: &str = "node";
 pub(super) const SYSTEM_CODEX_NAME: &str = "codex";
 pub(super) const MANAGED_ADAPTER_NAME: &str = "codex-acp";
-pub(super) const BUNDLED_ADAPTER_NAME: &str = "codex-acp";
 
 pub(super) fn development_bridge_root(manifest_dir: &Path) -> PathBuf {
     manifest_dir

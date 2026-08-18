@@ -52,10 +52,13 @@ if (!fs.existsSync(webIndex)) {
 }
 const webPolicy = JSON.parse(fs.readFileSync(path.join(webDist, 'platform', 'web', 'access-policy.json'), 'utf8'));
 
-const port = 30_000 + Math.floor(Math.random() * 10_000);
+// 端口在 main() 开头让 OS 分配空闲端口(见 allocatePort)。此前在 30000-39999
+// 随机取值,与 Linux 临时端口段(ip_local_port_range 默认 32768 起)重叠,
+// CI 上会与其它连接 EADDRINUSE 撞车。
+let port = 0;
 const basePath = '/pinvou3/remote';
-const httpBase = `http://127.0.0.1:${port}${basePath}/`;
-const wsUrl = `ws://127.0.0.1:${port}${basePath}/ws`;
+let httpBase = '';
+let wsUrl = '';
 const endpointId = `endpoint_webui_${Date.now()}`;
 const accessToken = `access_webui_${Date.now()}_0123456789`;
 const desktopSecret = `desktop_webui_${Date.now()}_0123456789`;
@@ -74,6 +77,17 @@ let browser;
 let desktop;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function allocatePort() {
+  return new Promise((resolve, reject) => {
+    const probe = require('node:net').createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port: freePort } = probe.address();
+      probe.close(() => resolve(freePort));
+    });
+  });
+}
 
 function record(name, pass, detail = '') {
   results.push({ name, pass });
@@ -348,6 +362,9 @@ async function waitForSharedUi(page, width, height) {
 }
 
 async function main() {
+  port = await allocatePort();
+  httpBase = `http://127.0.0.1:${port}${basePath}/`;
+  wsUrl = `ws://127.0.0.1:${port}${basePath}/ws`;
   // Instrument Node's HTTP request listener in the child process. Puppeteer's
   // high-level navigation URL intentionally preserves the document fragment,
   // although the fragment is not sent on the wire; req.url is the actual HTTP
@@ -727,7 +744,7 @@ async function main() {
     { timeout: 5_000 },
   );
 
-  await mobilePage.click('[data-testid="mobile-top-bar"] button[aria-label="打开导航"]');
+  await mobilePage.click('[data-testid="mobile-navigation-open"]');
   await mobilePage.waitForFunction(
     () => document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width > 0,
     { timeout: 5_000 },
@@ -759,7 +776,10 @@ async function main() {
       && mobileSidebarLayout.primaryBottom <= 400
       && mobileSidebarLayout.recentsTop <= 405,
     JSON.stringify(mobileSidebarLayout));
-  await mobilePage.evaluate(() => document.querySelector('button[aria-label="关闭导航"]').click());
+  // The z-40 sidebar covers the center of the z-30 full-screen overlay. A
+  // Puppeteer coordinate click would hit a sidebar session instead of closing
+  // the drawer, so invoke the overlay's click handler directly.
+  await mobilePage.evaluate(() => document.querySelector('[data-testid="mobile-navigation-close"]').click());
   await mobilePage.waitForFunction(
     () => document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width === 0,
     { timeout: 5_000 },

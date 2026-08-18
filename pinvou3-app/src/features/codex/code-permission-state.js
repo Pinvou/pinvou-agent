@@ -1,6 +1,8 @@
 // code 会话权限模式（Plan/Yolo）的 UI 侧纯逻辑。产品语义（已拍板）：
 // 1. 用户从未用过 code 模式时，新建品悟原生 code 会话默认 Plan（只读）；
-// 2. 新建 code 会话的默认 mode = 上次在 code 会话显式使用的 mode（后端全局记忆）；
+// 2. 新建 code 会话的默认 mode = code lane 全局 last_mode——只由 code 页
+//    **草稿态**显式切换写入；已生成会话的切换只写会话自己的记录，不渗全局
+//    （三分 lane 语义：工作/设计/代码各记各的）；
 // 3. 首次切 yolo 弹一次性确认卡（"全自动读写项目目录、可执行 shell、无逐步审批"），
 //    确认后全局记住，之后任何会话 Plan↔yolo 切换不再弹。
 // 事实源在后端（get_mode_state / get_code_permission_prefs / confirm_code_yolo），
@@ -9,7 +11,8 @@
 /// 无记录 / 读取失败时的兜底 mode：Plan（只读方向是安全侧）。
 export const CODE_MODE_FALLBACK = 'plan';
 
-/// 全局默认 mode：上次在 code 会话显式使用的 mode；无记录（首次使用）→ Plan。
+/// 全局默认 mode：code lane 的 last_mode（草稿态显式切换时写入）；无记录
+/// （首次使用）→ Plan。
 /// prefs 为 get_code_permission_prefs 的返回（{ last_mode, yolo_confirmed }），
 /// 可能为 null（尚未拉到或读取失败）。
 export function nativeModeFallback(prefs) {

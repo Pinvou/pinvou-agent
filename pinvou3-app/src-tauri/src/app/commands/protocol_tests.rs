@@ -54,7 +54,6 @@ command_protocol!(
         "read_artifact_text",
         "write_artifact_text",
         "list_deliverable_index",
-        "list_deliverables",
         "artifact_info",
         "read_artifact_image_b64",
         "read_artifact_thumbnail",
@@ -70,6 +69,11 @@ command_protocol!(
     ]
 );
 command_protocol!(attachments_protocol, "attachments.rs", []);
+command_protocol!(
+    assistant_response_protocol,
+    "assistant_response.rs",
+    ["export_assistant_response", "open_assistant_share_target"]
+);
 command_protocol!(
     behavior_telemetry_protocol,
     "behavior_telemetry.rs",
@@ -153,6 +157,8 @@ command_protocol!(
         "get_mode_state",
         "get_code_permission_prefs",
         "confirm_code_yolo",
+        "get_mode_defaults",
+        "set_mode_default",
         "set_plan_mode_next",
         "exit_plan_to_yolo",
         "set_multi_agent_mode",
@@ -162,7 +168,6 @@ command_protocol!(
         "read_skill_body",
         "discard_plan",
         "submit_user_input",
-        "add_run_materials",
         "cancel_user_input",
         "get_pending_user_inputs",
         "restart_engine",
@@ -229,7 +234,9 @@ command_protocol!(
         "list_marketplace_skills",
         "install_marketplace_skill",
         "import_skill_package",
-        "uninstall_marketplace_skill"
+        "import_skill_package_bytes",
+        "uninstall_marketplace_skill",
+        "bundle_readiness"
     ]
 );
 command_protocol!(
@@ -341,14 +348,8 @@ command_protocol!(
         "web_access_chat",
         "web_access_save_session_messages_chunk",
         "web_access_transcribe_voice_audio",
-        "web_access_start_skill_session",
         "web_access_read_artifact_chunk",
         "web_access_update_settings",
-        "web_access_list_deliverables",
-        "web_access_get_role_prompt",
-        "web_access_get_role_outputs",
-        "web_access_get_role_logs",
-        "web_access_get_gate_report",
         "web_access_artifact_info",
         "web_access_read_artifact_text",
         "web_access_write_artifact_text",
@@ -411,8 +412,10 @@ command_protocol!(
         "set_active_model",
         "set_session_model",
         "get_session_model_id",
+        "get_image_input_capability",
         "test_search_provider",
         "test_model_connection",
+        "test_image_input_capability",
         "update_settings",
         "update_search_settings",
         "save_settings_and_restart",
@@ -451,34 +454,6 @@ command_protocol!(
         "voice_asr_status",
         "install_voice_asr",
         "cancel_voice_asr"
-    ]
-);
-command_protocol!(
-    workflows_protocol,
-    "workflows.rs",
-    [
-        "list_skills_v2",
-        "read_skill_demo",
-        "start_skill_session",
-        "start_workflow",
-        "kick_workflow",
-        "retry_workflow_role",
-        "get_role_prompt",
-        "get_role_outputs",
-        "get_role_logs",
-        "get_gate_report",
-        "save_project_config",
-        "save_agent_overrides",
-        "cancel_workflow_role",
-        "stop_workflow",
-        "approve_workflow_gate",
-        "reject_workflow_gate",
-        "get_workflow_state",
-        "find_resumable_run",
-        "list_workflows",
-        "unbind_session_skill",
-        "get_session_active_skill",
-        "list_session_skill_bindings"
     ]
 );
 // 多智能体（会话内主动委派，ADR-0006）。独立入口/台账/审批命令已随收缩

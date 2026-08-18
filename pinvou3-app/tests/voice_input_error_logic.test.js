@@ -121,7 +121,7 @@ vm.runInContext(
   assert.match(
     source.slice(permissionCatchAt, permissionCatchAt + 900),
     /await invoke\("reset_microphone_permission"\)/,
-    "Windows WebView2 microphone denial must reset the saved permission before retry",
+    "microphone denial must reset the saved permission before retry",
   );
   assert.match(
     source.slice(permissionCatchAt, permissionCatchAt + 900),

@@ -72,7 +72,7 @@ function injectSource() {
     var settings = {
       theme: 'liquid-light',
       language: 'zh-Hans',
-      memory_enabled: false,
+      memory_enabled: true,
       notifications: { enabled: true, task_completed: true },
       pet: { enabled: false },
       search: {
@@ -101,6 +101,20 @@ function injectSource() {
         preset: 'deepseek',
         model: 'deepseek-v4-flash',
         base_url: 'https://api.deepseek.com',
+        // doSave 会把 provider_kind 写回 settings;官方 API 组未显式声明 baseUrl,
+        // 曾导致 findCloudProviderForModel 失配、编辑弹窗隐藏配置区与测试连接。
+        provider_kind: 'official_api',
+        has_secret: true,
+        credential_state: 'configured',
+      },
+      {
+        id: 'cloud-kimi-global-custom',
+        name: 'Kimi 国际版',
+        preset: 'kimi',
+        model: 'custom-kimi-id',
+        base_url: 'https://api.moonshot.ai/v1',
+        vendor: 'kimi',
+        reasoning_effort: 'off',
         has_secret: true,
         credential_state: 'configured',
       },
@@ -110,7 +124,26 @@ function injectSource() {
     var calls = [];
     var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
     var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
+    var imageTestResponse = { status: 'supported', verified: true, summary: '红色', http_status: 200 };
+    var imageTestDelay = 0; // 模拟探测耗时,便于断言行内忙转态
+    // 自动探测保存回填 mock:null=不模拟探测(直接保存 auto);设置后 save_model
+    // 按该结果回填 override 并返回 SaveModelOutcome(模拟后端 probe_and_fill)。
+    var imageProbeResponse = null;
+    // save_model 失败注入:非 null 时 reject 该错误,模拟连接/写盘失败。
+    var saveModelError = null;
     var dependencyCheckResponse = [];
+    var memoryOverview = {
+      profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: 'PINVOU' }, conventions: {} },
+      preferences: [], work_context: [], current_focus: [], recent_activity: [], recent_work: [], pending: [], never: [],
+      runtime: null, snapshot_path: '', warnings: [],
+      sources: {
+        profile: { available: true }, preferences: { available: true }, work_context: { available: true },
+        current_focus: { available: true }, recent_activity: { available: true }, recent_work: { available: true },
+        pending: { available: true }, never: { available: true },
+      },
+    };
+    var failMemoryOverview = false;
+    var failMemoryUpdate = false;
     var pendingDownloadResolve = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
     window.alert = function (message) { record('window_alert', { message: message }); };
@@ -147,17 +180,33 @@ function injectSource() {
         case 'list_models': return Promise.resolve({ models: models.slice(), active_model_id: activeModelId });
         case 'reveal_model_api_key': return Promise.resolve(args.id === 'cloud-deepseek' ? 'sk-saved-deepseek' : null);
         case 'save_model':
-          models = models.filter(function (model) { return model.id !== args.model.id; }).concat(Object.assign({}, args.model, {
+          if (saveModelError) return Promise.reject(new Error(saveModelError));
+          var savedModel = Object.assign({}, args.model, {
             has_secret: !!args.model.api_key,
             credential_state: args.model.preset === 'local_vllm' ? 'missing' : 'configured',
-          }));
-          return Promise.resolve(null);
+          });
+          // 模拟后端「自动探测」:auto + probe 请求 → 按 imageProbeResponse 回填。
+          if (imageProbeResponse && args.model.image_capability_override === 'auto' && args.probeImageCapability) {
+            if (imageProbeResponse.applied_override) savedModel.image_capability_override = imageProbeResponse.applied_override;
+            // 明确不支持(unsupported/unverified):后端不写盘,返回待决策信号。
+            if (imageProbeResponse.status === 'unsupported' || imageProbeResponse.status === 'unverified') {
+              return Promise.resolve({ image_probe: imageProbeResponse });
+            }
+            models = models.filter(function (model) { return model.id !== savedModel.id; }).concat(savedModel);
+            return Promise.resolve({ image_probe: imageProbeResponse });
+          }
+          models = models.filter(function (model) { return model.id !== savedModel.id; }).concat(savedModel);
+          return Promise.resolve({ image_probe: null });
         case 'delete_model':
           models = models.filter(function (model) { return model.id !== args.id; });
           if (activeModelId === args.id) activeModelId = models[0] && models[0].id;
           return Promise.resolve(null);
         case 'set_active_model': activeModelId = args.id; return Promise.resolve(null);
         case 'test_model_connection': return Promise.resolve(Object.assign({}, modelTestResponse));
+        case 'test_image_input_capability':
+          return new Promise(function (resolve) {
+            setTimeout(function () { resolve(Object.assign({}, imageTestResponse)); }, imageTestDelay);
+          });
         case 'discover_local_vllm': return Promise.resolve({ candidates: [
           {
             provider: 'ollama',
@@ -195,11 +244,24 @@ function injectSource() {
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({ mode: 'yolo', plan_phase: 'none' });
         case 'get_active_persona': return Promise.resolve(null);
-        case 'list_workflows': return Promise.resolve([]);
         case 'list_workspace_files': return Promise.resolve([]);
         case 'list_scheduled_tasks': return Promise.resolve([]);
         case 'list_scheduled_task_recent_runs': return Promise.resolve([]);
         case 'get_app_version': return Promise.resolve('0.6.1');
+        case 'get_memory_overview':
+          return failMemoryOverview ? Promise.reject(new Error('snapshot locked')) : Promise.resolve(memoryOverview);
+        case 'update_memory_profile':
+          if (failMemoryUpdate) return Promise.reject(new Error('profile write failed'));
+          memoryOverview = Object.assign({}, memoryOverview, {
+            profile: Object.assign({}, memoryOverview.profile, {
+              identity: Object.assign({}, memoryOverview.profile.identity, args.patch || {}),
+            }),
+          });
+          return Promise.resolve({
+            profile: memoryOverview.profile,
+            runtime: null,
+            warnings: [{ code: 'runtime_refresh_failed', source: 'runtime', detail: 'runtime cache locked' }],
+          });
         default: return Promise.resolve(null);
       }
     }
@@ -211,7 +273,16 @@ function injectSource() {
       activeModelId: function () { return activeModelId; },
       setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
       setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
+      setImageTestResponse: function (next) { imageTestResponse = Object.assign({}, next || {}); },
+      setImageTestDelay: function (ms) { imageTestDelay = Number(ms) || 0; },
+      setImageProbeResponse: function (next) { imageProbeResponse = next || null; },
+      setSaveModelError: function (message) { saveModelError = message || null; },
+      setModelImageCapability: function (id, override) {
+        models = models.map(function (m) { return m.id === id ? Object.assign({}, m, { image_capability_override: override }) : m; });
+      },
       setDependencyCheckResponse: function (next) { dependencyCheckResponse = (next || []).slice(); },
+      setFailMemoryOverview: function (value) { failMemoryOverview = !!value; },
+      setFailMemoryUpdate: function (value) { failMemoryUpdate = !!value; },
       resolveDownload: function () {
         if (pendingDownloadResolve) {
           var resolve = pendingDownloadResolve;
@@ -369,6 +440,42 @@ async function modalWidth(page, headingText) {
   await sleep(400);
   rec('① 设置页可打开且无错误边界', await page.evaluate(() => document.body.innerText.includes('通用') && !document.body.innerText.includes('设置页加载失败')));
 
+  await page.click('[data-testid="settings-section-memory"]');
+  await page.waitForFunction(() => (document.querySelector('[data-testid="memory-profile-call-name"]')?.textContent || '').includes('升级前称呼'));
+  rec('①a 升级后的记忆资料从权威 profile 正常回显', await page.evaluate(() =>
+    (document.querySelector('[data-testid="memory-profile-call-name"]')?.textContent || '').includes('升级前称呼')));
+  await page.evaluate(() => window.__SETTINGS_TEST__.setFailMemoryOverview(true));
+  await page.click('[data-testid="memory-profile-call-name"] button');
+  await page.click('[data-testid="memory-editor-input"]', { clickCount: 3 });
+  await page.type('[data-testid="memory-editor-input"]', '升级后称呼');
+  await page.click('[data-testid="memory-editor-save"]');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="memory-editor-input"]'));
+  rec('①b 派生概览刷新失败不吞掉已保存的称呼', await page.evaluate(() =>
+    (document.querySelector('[data-testid="memory-profile-call-name"]')?.textContent || '').includes('升级后称呼')));
+  rec('①c 记忆加载失败有明确提示且不伪装成未设置', await page.evaluate(() =>
+    document.querySelector('[data-testid="memory-settings-error"]')?.getAttribute('role') === 'alert'
+      && document.querySelector('[data-testid="memory-settings-error"]')?.getAttribute('aria-live') === 'polite'));
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setFailMemoryOverview(false);
+    window.__SETTINGS_TEST__.setFailMemoryUpdate(true);
+  });
+  await page.click('[data-testid="memory-profile-call-name"] button');
+  await page.click('[data-testid="memory-editor-input"]', { clickCount: 3 });
+  await page.type('[data-testid="memory-editor-input"]', '不会保存');
+  await page.click('[data-testid="memory-editor-save"]');
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-editor-error"]'));
+  rec('①d 源资料保存失败时保留编辑器并展示错误', await page.evaluate(() =>
+    !!document.querySelector('[data-testid="memory-editor-input"]')
+      && document.querySelector('[data-testid="memory-editor-error"]')?.getAttribute('role') === 'alert'
+      && document.querySelector('[data-testid="memory-editor-error"]')?.getAttribute('aria-live') === 'assertive'));
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setFailMemoryUpdate(false);
+    const input = document.querySelector('[data-testid="memory-editor-input"]');
+    const dialog = input && input.closest('.fixed');
+    const buttons = dialog ? [...dialog.querySelectorAll('button')] : [];
+    if (buttons.length) buttons[0].click();
+  });
+
   await clickSettingsSection(page, '更新');
   await page.evaluate(async () => {
     window.__SETTINGS_TEST__.setUpdateResponse({
@@ -446,6 +553,8 @@ async function modalWidth(page, headingText) {
       revealCall: window.__SETTINGS_TEST__.calls.some(call => call.cmd === 'reveal_model_api_key' && call.args.id === 'cloud-deepseek'),
       keyRevealed: !!input,
       sameProviderOnlyClosed: !text.includes('kimi-k3') && !text.includes('glm-5.2'),
+      // 带 provider_kind 的官方模型必须仍能找到目录组,配置区与测试连接不被隐藏。
+      testConnectionVisible: text.includes('测试连接'),
     };
   });
   await clickExact(page, '更换');
@@ -492,6 +601,38 @@ async function modalWidth(page, headingText) {
     remaining: window.__SETTINGS_TEST__.models().map(model => model.id),
   }));
   rec('⑤ 确认后才调用删除模型并刷新列表', deleted.calls.includes('cloud-deepseek') && !deleted.remaining.includes('cloud-deepseek'), JSON.stringify(deleted));
+
+  // 思考深度档位迁移：编辑 Kimi Global 自定义模型（已存 off），手输改 ID 为 kimi-k3 后
+  // 档位表由 off/high 变为 low/high/max，off 不在其中，必须按新 route 归一为 low——
+  // 否则界面无高亮、保存仍写旧值（底座 K3 实际按 low 执行）。
+  await clickRowAction(page, 'custom-kimi-id', '编辑');
+  await sleep(300);
+  await page.evaluate(() => {
+    const input = document.querySelector('[data-testid="model-form-dialog"] input[placeholder="输入模型 ID"]');
+    if (!input) return;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'kimi-k3');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(300);
+  const kimiEffortMigration = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    if (!dialog) return { found: false, labels: [], selected: [] };
+    const label = [...dialog.querySelectorAll('span')].find(node => (node.textContent || '').trim() === '思考深度');
+    const row = label && label.parentElement;
+    const buttons = row ? [...row.querySelectorAll('button')] : [];
+    const selected = buttons.filter(node => (node.className || '').includes('bg-[#007AFF]')).map(node => (node.textContent || '').trim());
+    return { found: !!row, labels: buttons.map(node => (node.textContent || '').trim()), selected };
+  });
+  rec('⑥ 自定义模型 ID 手输 kimi-k3 后思考深度归一为 low（关闭残留 off）',
+    kimiEffortMigration.found
+      && kimiEffortMigration.labels.includes('低')
+      && !kimiEffortMigration.labels.includes('关闭')
+      && kimiEffortMigration.selected.length === 1
+      && kimiEffortMigration.selected[0] === '低',
+    JSON.stringify(kimiEffortMigration));
+  await clickExact(page, '取消');
+  await sleep(200);
 
   await clickExact(page, '添加模型');
   await sleep(300);
@@ -714,6 +855,24 @@ async function modalWidth(page, headingText) {
     };
   });
   rec('⑥.5 手动添加本地模型表单保持 iOS 分组且默认无需 Key，不强制显示名', Object.values(manualLocalForm).every(Boolean), JSON.stringify(manualLocalForm));
+  // 思考深度残留：新建草稿默认 DeepSeek 初始化为 high，切到「手动添加本地模型」
+  // 必须把思考深度重置为 vLLM 默认 off（关闭），否则保存会显式写入 high，绕过桥接层
+  // vllm→off 的 SSE timeout 约束。此处断言真实 UI 选中「关闭」。
+  const manualLocalEffort = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    if (!dialog) return { found: false, labels: [], selected: [] };
+    const label = [...dialog.querySelectorAll('span')].find(node => (node.textContent || '').trim() === '思考深度');
+    const row = label && label.parentElement;
+    const buttons = row ? [...row.querySelectorAll('button')] : [];
+    const selected = buttons.filter(node => (node.className || '').includes('bg-[#007AFF]')).map(node => (node.textContent || '').trim());
+    return { found: !!row, labels: buttons.map(node => (node.textContent || '').trim()), selected };
+  });
+  rec('⑥.5b 手动添加本地模型思考深度重置为 vLLM 默认「关闭」（不残留 high）',
+    manualLocalEffort.found
+      && manualLocalEffort.labels.includes('关闭')
+      && manualLocalEffort.selected.length === 1
+      && manualLocalEffort.selected[0] === '关闭',
+    JSON.stringify(manualLocalEffort));
   await clickExact(page, '取消');
   await sleep(200);
 
@@ -756,6 +915,428 @@ async function modalWidth(page, headingText) {
       && savedModel.name === 'deepseek-v4-pro'
       && savedModel.api_key === 'sk-model-test',
     JSON.stringify(savedModel));
+
+  // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  const imageSectionDefault = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const text = root ? root.innerText : '';
+    const capabilityToggle = root && root.querySelector('[data-testid="image-capability-toggle"]');
+    const visionToggle = root && root.querySelector('[data-testid="vision-model-toggle"]');
+    return {
+      hasCapabilityRow: !!capabilityToggle && (capabilityToggle.textContent || '').includes('保存时检测'),
+      hasVisionRow: !!visionToggle && (visionToggle.textContent || '').includes('无'),
+      hasHelpText: text.includes('当前模型不能看图时，用该模型分析图片'),
+      // §11.8/§11.9 静态隐私说明:云端外发/本地不离机。
+      hasPrivacyText: text.includes('使用云端模型时，图片会发送给你选择的模型服务商') && text.includes('本地模型图片不离开本机'),
+    };
+  });
+  rec('⑦.img.1 编辑模型展示图片输入能力/视觉模型控件、默认保存时检测/无及静态隐私说明', Object.values(imageSectionDefault).every(Boolean), JSON.stringify(imageSectionDefault));
+  // 图片能力四档:保存时检测/支持图片/不支持图片/自动处理。
+  await page.click('[data-testid="image-capability-toggle"]');
+  await sleep(200);
+  const imageCapabilityOptions4 = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return root ? [...root.querySelectorAll('[data-testid^="image-capability-option-"]')].map(node => node.getAttribute('data-testid')) : [];
+  });
+  await page.click('[data-testid="image-capability-toggle"]');
+  await sleep(200);
+  rec('⑦.img.1b 图片能力四档齐全(auto/enabled/disabled/pinvou)',
+    imageCapabilityOptions4.includes('image-capability-option-auto')
+      && imageCapabilityOptions4.includes('image-capability-option-enabled')
+      && imageCapabilityOptions4.includes('image-capability-option-disabled')
+      && imageCapabilityOptions4.includes('image-capability-option-pinvou'),
+    JSON.stringify(imageCapabilityOptions4));
+  await page.click('[data-testid="image-capability-toggle"]');
+  await sleep(200);
+  await page.click('[data-testid="image-capability-option-enabled"]');
+  await sleep(200);
+  await page.click('[data-testid="vision-model-toggle"]');
+  await sleep(200);
+  const visionOptions = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const options = root ? [...root.querySelectorAll('[data-testid^="vision-model-option-"]')].map(node => node.getAttribute('data-testid')) : [];
+    const editing = window.__SETTINGS_TEST__.models().find(model => model.model === 'deepseek-v4-pro');
+    return {
+      hasNone: options.includes('vision-model-option-none'),
+      hasLocalQwen: options.includes('vision-model-option-local-qwen'),
+      excludesSelf: !!editing && !options.includes(`vision-model-option-${editing.id}`),
+    };
+  });
+  rec('⑦.img.2 视觉模型下拉含「无」与其他模型且排除当前模型自身', Object.values(visionOptions).every(Boolean), JSON.stringify(visionOptions));
+  // 视觉模型候选不做 disabled 过滤:disabled 可能是历史探测误判残留
+  // (如 kimi-for-coding 曾因探测链路 400 被回填),应由选择时的识图探测
+  // 验证(supported 才可选),而不是提前隐藏。
+  // mock 修改后必须走 TauriBridge.loadModels() 刷新 bridge state,React 才会
+  // 以新 savedModels 重渲染弹窗的视觉候选。
+  const toggleVision = async () => { await page.click('[data-testid="vision-model-toggle"]'); await sleep(150); };
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setModelImageCapability('local-qwen', 'disabled');
+    return window.TauriBridge.models.loadModels();
+  });
+  await toggleVision(); // 关闭再打开,按新候选渲染
+  await toggleVision();
+  const visionWithDisabled = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return root ? [...root.querySelectorAll('[data-testid^="vision-model-option-"]')].map(node => node.getAttribute('data-testid')) : [];
+  });
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setModelImageCapability('local-qwen', 'auto');
+    return window.TauriBridge.models.loadModels();
+  });
+  await toggleVision(); await toggleVision();
+  const visionAfterRestore = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return root ? [...root.querySelectorAll('[data-testid^="vision-model-option-"]')].map(node => node.getAttribute('data-testid')) : [];
+  });
+  rec('⑦.img.2b 视觉模型候选不因 disabled 标记隐藏(由选择探测验证)',
+    visionWithDisabled.includes('vision-model-option-local-qwen')
+      && visionAfterRestore.includes('vision-model-option-local-qwen'),
+    JSON.stringify({ visionWithDisabled, visionAfterRestore }));
+  // ⑦.img.2c/2d 视觉模型选择探测:点击不收起列表,该行右侧显示忙转圈
+  // 「正在检测识图能力」;探测未通过拒绝选择并提示排查,通过后按结果收起列表。
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setImageTestResponse({ status: 'unsupported', verified: false, summary: 'this model does not support image input', http_status: 400 });
+    window.__SETTINGS_TEST__.setImageTestDelay(400);
+  });
+  await page.click('[data-testid="vision-model-option-local-qwen"]');
+  await sleep(150);
+  const visionProbing = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const probing = root && root.querySelector('[data-testid="vision-model-probing"]');
+    return {
+      probingShown: !!(probing && (probing.textContent || '').includes('正在测试图片能力')),
+      spinning: !!(probing && probing.querySelector('.animate-spin')),
+      listStillOpen: !!root.querySelector('[data-testid="vision-model-option-local-qwen"]'),
+    };
+  });
+  rec('⑦.img.2c 视觉模型探测中:列表不收起,该行右侧显示忙转圈', Object.values(visionProbing).every(Boolean), JSON.stringify(visionProbing));
+  await sleep(500);
+  const visionRejected = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const toggle = root && root.querySelector('[data-testid="vision-model-toggle"]');
+    const error = root && root.querySelector('[data-testid="vision-model-probe-error"]');
+    return {
+      stillNone: !!(toggle && (toggle.textContent || '').includes('无')),
+      errorShown: !!(error && (error.textContent || '').includes('无法作为视觉模型')),
+      probingCleared: !root.querySelector('[data-testid="vision-model-probing"]'),
+      listStillOpen: !!root.querySelector('[data-testid="vision-model-option-local-qwen"]'),
+    };
+  });
+  rec('⑦.img.2d 视觉模型探测未通过:拒绝选择、提示排查且列表保持展开', Object.values(visionRejected).every(Boolean), JSON.stringify(visionRejected));
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setImageTestResponse({ status: 'supported', verified: true, summary: '红色', http_status: 200 });
+    window.__SETTINGS_TEST__.setImageTestDelay(0);
+  });
+  await page.click('[data-testid="vision-model-option-local-qwen"]');
+  await sleep(400);
+  const visionAccepted = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const toggle = root && root.querySelector('[data-testid="vision-model-toggle"]');
+    return {
+      selected: !!(toggle && (toggle.textContent || '').includes('本地 vLLM')),
+      listClosed: !root.querySelector('[data-testid="vision-model-option-local-qwen"]'),
+    };
+  });
+  rec('⑦.img.2e 视觉模型探测通过:按结果收起列表并选中', Object.values(visionAccepted).every(Boolean), JSON.stringify(visionAccepted));
+  await clickExact(page, '保存');
+  await sleep(500);
+  const savedImageConfig = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑦.img.3 保存写入图片能力 override 与视觉模型引用',
+    savedImageConfig
+      && savedImageConfig.image_capability_override === 'enabled'
+      && savedImageConfig.vision_model_id === 'local-qwen',
+    JSON.stringify(savedImageConfig && { override: savedImageConfig.image_capability_override, vision: savedImageConfig.vision_model_id }));
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  const imageSectionRoundTrip = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const capabilityToggle = root && root.querySelector('[data-testid="image-capability-toggle"]');
+    const visionToggle = root && root.querySelector('[data-testid="vision-model-toggle"]');
+    return {
+      capabilityEcho: !!capabilityToggle && (capabilityToggle.textContent || '').includes('支持图片'),
+      visionEcho: !!visionToggle && (visionToggle.textContent || '').includes('本地 vLLM'),
+    };
+  });
+  rec('⑦.img.4 重新打开编辑表单回显已保存的图片能力与视觉模型', Object.values(imageSectionRoundTrip).every(Boolean), JSON.stringify(imageSectionRoundTrip));
+  await page.click('[data-testid="vision-model-toggle"]');
+  await sleep(200);
+  await page.click('[data-testid="vision-model-option-none"]');
+  await sleep(200);
+  await clickExact(page, '保存');
+  await sleep(500);
+  const clearedVision = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑦.img.5 视觉模型选回「无」保存为 null 且能力 override 保留',
+    clearedVision
+      && clearedVision.vision_model_id === null
+      && clearedVision.image_capability_override === 'enabled',
+    JSON.stringify(clearedVision && { override: clearedVision.image_capability_override, vision: clearedVision.vision_model_id }));
+
+  // ⑦.img.6-11 测试图片能力(设计 §7.3):按钮渲染、supported/unsupported/error 分态、表单变更清除结果。
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  const imageTestInitial = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const button = root && root.querySelector('[data-testid="image-capability-test"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    return {
+      hasButton: !!button && (button.textContent || '').includes('测试图片能力'),
+      buttonEnabled: !!button && !button.disabled,
+      hintShown: !!result && (result.textContent || '').includes('纯色测试图'),
+    };
+  });
+  rec('⑦.img.6 编辑模型展示「测试图片能力」按钮且默认显示提示文案', Object.values(imageTestInitial).every(Boolean), JSON.stringify(imageTestInitial));
+  await page.click('[data-testid="image-capability-test"]');
+  await sleep(300);
+  const imageTestSupported = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    const text = result ? (result.textContent || '') : '';
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'test_image_input_capability');
+    return {
+      text: text,
+      args: call && call.args,
+      showsSupported: text.includes('支持图片'),
+      showsReply: text.includes('模型回复：红色'),
+      // 当前档位已是「支持图片」(⑦.img.3 保存),不应再提示设置。
+      noEnableHint: !text.includes('可在上方将图片输入能力设为'),
+    };
+  });
+  rec('⑦.img.7 supported 结果展示模型回复摘要且按当前表单值发起测试',
+    imageTestSupported.showsSupported
+      && imageTestSupported.showsReply
+      && imageTestSupported.noEnableHint
+      && imageTestSupported.args
+      && imageTestSupported.args.model === 'deepseek-v4-pro'
+      && imageTestSupported.args.baseUrl === 'https://api.deepseek.com'
+      && imageTestSupported.args.apiKey === '',
+    JSON.stringify(imageTestSupported));
+  // 档位切回「自动判断」,supported 结果应提示可设为「支持图片」。
+  await page.click('[data-testid="image-capability-toggle"]');
+  await sleep(200);
+  await page.click('[data-testid="image-capability-option-auto"]');
+  await sleep(200);
+  await page.click('[data-testid="image-capability-test"]');
+  await sleep(300);
+  const imageTestAutoHint = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    const text = result ? (result.textContent || '') : '';
+    return { text: text, showsEnableHint: text.includes('可在上方将图片输入能力设为') };
+  });
+  rec('⑦.img.8 档位为自动时 supported 结果提示可设为「支持图片」', imageTestAutoHint.showsEnableHint, imageTestAutoHint.text);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setImageTestResponse({ status: 'unsupported', verified: false, summary: 'this model does not support image input', http_status: 400 }));
+  await page.click('[data-testid="image-capability-test"]');
+  await sleep(300);
+  const imageTestUnsupported = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    const text = result ? (result.textContent || '') : '';
+    return {
+      text: text,
+      showsUnsupported: text.includes('不支持图像识别'),
+      showsProvider: text.includes('does not support image input'),
+    };
+  });
+  rec('⑦.img.9 unsupported 结果展示 provider 错误摘要', imageTestUnsupported.showsUnsupported && imageTestUnsupported.showsProvider, imageTestUnsupported.text);
+  // 审阅缺口 #104:未识别出测试色(2xx 无关回复 / 400 非图片拒绝)统一显示
+  // 「未能正确识别图像，原因未知」,不宣称支持也不宣称不支持。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setImageTestResponse({ status: 'unverified', verified: false, summary: '未能正确识别图像，原因未知（模型回复：一张正方形图片）', http_status: 200 }));
+  await page.click('[data-testid="image-capability-test"]');
+  await sleep(300);
+  const imageTestUnverified = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    const text = result ? (result.textContent || '') : '';
+    return {
+      text: text,
+      showsUnverified: text.includes('未能正确识别图像，原因未知'),
+      showsProvider: text.includes('正方形图片'),
+      noEnableHint: !text.includes('可在上方将图片输入能力设为'),
+      notClaimingUnsupported: !text.includes('不支持图像识别'),
+    };
+  });
+  rec('⑦.img.9b 未识别态:原因未知,不宣称支持或不支持,展示摘要且不提示设档', Object.values(imageTestUnverified).every(Boolean), imageTestUnverified.text);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setImageTestResponse({ status: 'error', verified: false, summary: '连接超时', http_status: null }));
+  await page.click('[data-testid="image-capability-test"]');
+  await sleep(300);
+  const imageTestError = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    const text = result ? (result.textContent || '') : '';
+    return { text: text, showsError: text.includes('测试失败') && !text.includes('不支持图像识别') && !text.includes('支持图片') };
+  });
+  rec('⑦.img.10 error 结果与「不支持」严格区分', imageTestError.showsError, imageTestError.text);
+  // 表单值变化后上一次测试结果应清除(恢复提示文案)。已存 Key 的模型占位符是掩码,按类型选择。
+  const imageTestKeyInput = await page.$('[data-testid="model-form-dialog"] input[type="password"]');
+  await imageTestKeyInput.type('k');
+  await sleep(200);
+  const imageTestCleared = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const result = root && root.querySelector('[data-testid="image-capability-test-result"]');
+    const text = result ? (result.textContent || '') : '';
+    return { text: text, backToHint: text.includes('纯色测试图') };
+  });
+  rec('⑦.img.11 表单值变化后清除上一次测试结果', imageTestCleared.backToHint, imageTestCleared.text);
+  await clickExact(page, '取消');
+  await sleep(200);
+
+  // ⑦.img.12-14 「保存时检测」:检测支持 → 直接回填关闭;明确不支持 →
+  // 弹窗保持三选一决策(再次检测/去配置视觉模型/直接保存落自动处理);
+  // error/连接不通 → 落「自动处理」直接关闭。
+  const setCapabilityAndProbe = async (optionKey, probeResponse) => {
+    await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+    await sleep(300);
+    await page.click('[data-testid="image-capability-toggle"]');
+    await sleep(200);
+    await page.click(`[data-testid="image-capability-option-${optionKey}"]`);
+    await sleep(200);
+    await page.evaluate(response => window.__SETTINGS_TEST__.setImageProbeResponse(response), probeResponse);
+  };
+  const probeSavedState = () => page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return {
+      dialogClosed: !document.querySelector('[data-testid="model-form-dialog"]'),
+      probed: !!(call && call.args && call.args.probeImageCapability === true),
+      savedWithAuto: !!(call && call.args && call.args.model.image_capability_override === 'auto'),
+    };
+  });
+  const echoOverride = async () => {
+    await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+    await sleep(300);
+    const state = await page.evaluate(() => {
+      const root = document.querySelector('[data-testid="model-form-dialog"]');
+      const toggle = root && root.querySelector('[data-testid="image-capability-toggle"]');
+      return toggle ? (toggle.textContent || '') : '';
+    });
+    await clickExact(page, '取消');
+    await sleep(200);
+    return state;
+  };
+  // 明确不支持:后端不写盘,弹窗保持 + 三选一;直接保存落「自动处理」。
+  await setCapabilityAndProbe('auto', { status: 'unsupported', applied_override: null, summary: 'this model does not support image input', http_status: 400 });
+  // 快照已保存模型:探测 unsupported 时后端跳过写盘,mock 同口径,保存后应逐字节不变。
+  const modelsBeforeDecision = await page.evaluate(() => JSON.stringify(window.__SETTINGS_TEST__.models()));
+  await page.click('[data-testid="model-form-save"]');
+  await sleep(400);
+  const decisionShown = await page.evaluate(before => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const decision = root && root.querySelector('[data-testid="image-probe-decision"]');
+    const decisionText = decision ? (decision.textContent || '') : '';
+    const saveCall = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return {
+      dialogOpen: !!root,
+      decisionShown: !!(decision && decisionText.includes('检测到该模型未能识别图片')),
+      decisionHasDetail: decisionText.includes('this model does not support image input'),
+      noDuplicatedPrefix: !decisionText.includes('检测到该模型未能识别图片（检测到'),
+      retestBtn: !!root.querySelector('[data-testid="image-probe-retest"]'),
+      configureBtn: !!root.querySelector('[data-testid="image-probe-configure-vision"]'),
+      saveAutoBtn: !!root.querySelector('[data-testid="image-probe-save-auto"]'),
+      probed: !!(saveCall && saveCall.args && saveCall.args.probeImageCapability === true),
+      savedWithAuto: !!(saveCall && saveCall.args && saveCall.args.model.image_capability_override === 'auto'),
+      // 后端 unsupported 不写盘:已保存模型列表与保存前快照完全一致
+      // (mock 在 unsupported 分支不落 models,与后端 save_model 跳过写盘同口径)。
+      modelListUnchanged: JSON.stringify(window.__SETTINGS_TEST__.models()) === before,
+    };
+  }, modelsBeforeDecision);
+  rec('⑦.img.12 保存时检测明确不支持:弹窗保持、文案不重复并给出三选一决策',
+    decisionShown.dialogOpen && decisionShown.decisionShown && decisionShown.decisionHasDetail
+      && decisionShown.noDuplicatedPrefix
+      && decisionShown.retestBtn && decisionShown.configureBtn && decisionShown.saveAutoBtn
+      && decisionShown.probed && decisionShown.savedWithAuto,
+    JSON.stringify(decisionShown));
+  await page.click('[data-testid="image-probe-save-auto"]');
+  await sleep(400);
+  const savedAsAuto = await page.evaluate(() => {
+    const saveCall = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return {
+      dialogClosed: !document.querySelector('[data-testid="model-form-dialog"]'),
+      savedWithPinvou: !!(saveCall && saveCall.args && saveCall.args.model.image_capability_override === 'pinvou'),
+      notProbed: !(saveCall && saveCall.args && saveCall.args.probeImageCapability),
+    };
+  });
+  rec('⑦.img.12b 直接保存落「自动处理」且不再检测并关闭弹窗',
+    savedAsAuto.dialogClosed && savedAsAuto.savedWithPinvou && savedAsAuto.notProbed,
+    JSON.stringify(savedAsAuto));
+  const echoAuto = await echoOverride();
+  rec('⑦.img.12c 重开表单显示「自动处理」', echoAuto.includes('自动处理'), echoAuto);
+
+  // 连接通且识别出测试色 → 直接回填「支持图片」并关闭。
+  await setCapabilityAndProbe('auto', { status: 'supported', applied_override: 'enabled', summary: '红色', http_status: 200 });
+  await page.click('[data-testid="model-form-save"]');
+  await sleep(400);
+  const probeSupported = await probeSavedState();
+  rec('⑦.img.13 保存时检测通过回填「支持图片」且弹窗直接关闭',
+    probeSupported.probed && probeSupported.savedWithAuto && probeSupported.dialogClosed,
+    JSON.stringify(probeSupported));
+  const echoEnabled = await echoOverride();
+  rec('⑦.img.13b 检测回填持久化:重开表单显示「支持图片」', echoEnabled.includes('支持图片'), echoEnabled);
+
+  // 连接不通/瞬时故障 → 无法确认 → 落「自动处理」直接关闭。
+  await setCapabilityAndProbe('auto', { status: 'unknown', applied_override: 'pinvou', summary: 'connection refused', http_status: null });
+  await page.click('[data-testid="model-form-save"]');
+  await sleep(400);
+  const probeUnknown = await probeSavedState();
+  rec('⑦.img.14 保存时检测连接不通回填「自动处理」且弹窗直接关闭',
+    probeUnknown.probed && probeUnknown.savedWithAuto && probeUnknown.dialogClosed,
+    JSON.stringify(probeUnknown));
+  const echoAuto2 = await echoOverride();
+  rec('⑦.img.14b 检测回填持久化:重开表单显示「自动处理」', echoAuto2.includes('自动处理'), echoAuto2);
+
+  // 未决策即取消不写盘:先把已保存档位固化为「支持图片」(enabled,非 auto 档
+  // 保存不探测、直接落盘),再改 auto 档探测「未能正确识别」→ 后端不落盘、
+  // 弹窗保持 → 点「取消」放弃 → 重开表单仍显示基线「支持图片」(而非被探测
+  // 结果污染成别的档位)。注:必须先固化基线,否则上一轮(⑦.img.14)已把
+  // 已保存值落成「自动处理」,取消后回显「自动处理」与「不写盘」不可区分。
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  await page.click('[data-testid="image-capability-toggle"]');
+  await sleep(200);
+  await page.click('[data-testid="image-capability-option-enabled"]');
+  await sleep(200);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setImageProbeResponse(null));
+  await page.click('[data-testid="model-form-save"]');
+  await sleep(400);
+  await setCapabilityAndProbe('auto', { status: 'unverified', applied_override: null, summary: '未能正确识别图像，原因未知（模型回复：unknown）', http_status: 200 });
+  await page.click('[data-testid="model-form-save"]');
+  await sleep(400);
+  await page.click('[data-testid="model-form-cancel"]');
+  await sleep(200);
+  const echoAfterAbort = await echoOverride();
+  rec('⑦.img.12d 未决策即取消不写盘:重开表单仍显示基线「支持图片」',
+    echoAfterAbort.includes('支持图片') && !echoAfterAbort.includes('保存时检测'),
+    echoAfterAbort);
+
+  // 保存失败(连接/写盘错误):弹窗保持 + 行内错误提示,表单输入不丢弃;
+  // 修正后重试成功正常关闭(不再依赖不存在的"调用链处理")。
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelError('磁盘写入失败'));
+  await page.click('[data-testid="model-form-save"]');
+  await sleep(400);
+  const saveFailed = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const error = root && root.querySelector('[data-testid="model-form-save-error"]');
+    return {
+      dialogOpen: !!root,
+      errorShown: !!(error && (error.textContent || '').includes('磁盘写入失败')),
+    };
+  });
+  rec('⑦.img.15 保存失败:弹窗保持并显示行内错误',
+    saveFailed.dialogOpen && saveFailed.errorShown,
+    JSON.stringify(saveFailed));
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelError(null));
+  await page.click('[data-testid="model-form-save"]');
+  await sleep(400);
+  const retrySaved = await page.evaluate(() => !document.querySelector('[data-testid="model-form-dialog"]'));
+  rec('⑦.img.15b 修正后重试保存成功关闭弹窗', retrySaved, String(retrySaved));
 
   await clickSettingsSection(page, '搜索');
   const searchList = await page.evaluate(() => {

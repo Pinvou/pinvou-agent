@@ -16,6 +16,8 @@
     var stopThinking = context.stopThinking;
     var rerenderFromMessages = context.rerenderFromMessages;
     var syncModeState = context.syncModeState;
+    var applyAuthoritativeModeState = context.applyAuthoritativeModeState;
+    var currentDraftModeState = context.currentDraftModeState;
     var syncActivePersona = context.syncActivePersona;
     var syncMountedCollection = context.syncMountedCollection;
     var reconcileArtifacts = context.reconcileArtifacts;
@@ -421,20 +423,22 @@
     state.scheduledTaskPendingGuide = null; // 换了对话,未发送的定时任务引导词作废
     // 新草稿从关闭状态开始：寄存意图作废，开关行显示同步复位。
     state.pendingDraftMultiAgent = false;
-    if (state.modeState && state.modeState.multiAgent) {
-      state.modeState = { mode: state.modeState.mode || "yolo", multiAgent: false };
-    }
 
     // 已在干净草稿态 → 只 notify(epoch 已自增)。注意要连 chatItems 一起判空:messages 与 chatItems
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
     if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) {
       state.composerDraft = "";
+      // 草稿 mode 显示 = 当前 lane 全局默认（三分 lane 语义）。
+      state.modeState = currentDraftModeState();
       notify();
       return;
     }
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
+    // freshBuffer 的 modeState 是通用缺省（yolo）；草稿显示须覆盖为本 lane
+    // 全局默认（work/design 各自的 last_mode）。
+    state.modeState = currentDraftModeState();
     notify();
   }
   // 公开「新建对话」入口(侧边栏按钮)= 进草稿态。名字保留以兼容前端调用。
@@ -486,6 +490,23 @@
       }
       await refreshHistoryList();
       await syncModeState();
+      // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
+      // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
+      // 该会话自己的 per-session 记录，全局默认不受影响）。
+      var laneDefault = state.modeDefaults
+        && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
+      // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
+      // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
+      if (laneDefault === "plan") {
+        try {
+          var laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
+          applyAuthoritativeModeState(meta.id, laneModeState);
+        } catch (laneModeError) {
+          runSyncOnSession(meta.id, function () {
+            addSystemItem(bt("switchModeFailed") + laneModeError);
+          });
+        }
+      }
       await syncActivePersona();
       await syncMountedCollection();
       notify();

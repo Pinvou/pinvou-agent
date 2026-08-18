@@ -168,7 +168,6 @@ pub fn view_title(kind: &str) -> &'static str {
         "session" => "对话",
         "codex-session" => "Coding 对话",
         "persona" => "专家",
-        "workflow" => "工作流",
         "monitor" => "系统监控",
         "toolstore" => "工具商店",
         "cardpool" => "专家卡牌池",
@@ -362,7 +361,7 @@ mod tests {
         );
         assert_ne!(
             detached_label("session", Some("a")),
-            detached_label("workflow", Some("a"))
+            detached_label("persona", Some("a"))
         );
         assert_ne!(
             detached_label("monitor", None),
@@ -372,7 +371,7 @@ mod tests {
 
     #[test]
     fn view_title_known_and_fallback() {
-        assert_eq!(view_title("workflow"), "工作流");
+        assert_eq!(view_title("persona"), "专家");
         assert_eq!(view_title("codex-session"), "Coding 对话");
         assert_eq!(view_title("outputs"), "产出物");
         assert_eq!(view_title("???"), "PINVOU");
@@ -390,15 +389,5 @@ mod tests {
         assert!(!point_in_rect(100, 10, 0, 0, 100, 100)); // 右边界开区间
         assert!(!point_in_rect(-1, 10, 0, 0, 100, 100));
         assert!(point_in_rect(2000, 50, 1920, 0, 1920, 1080)); // 第二屏
-    }
-
-    #[test]
-    fn detached_url_contract_uses_ui_cache_schema() {
-        let query = format!(
-            "ui={}&detached=1&kind={}",
-            crate::platform::ui_cache::UI_CACHE_SCHEMA,
-            urlencode("workflow")
-        );
-        assert_eq!(query, "ui=vite-react-1&detached=1&kind=workflow");
     }
 }

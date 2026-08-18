@@ -24,6 +24,12 @@ lark-cli task +create \
 lark-cli task +create \
   --summary "Buy milk"
 
+# Create a milestone by passing an API field without a named flag
+lark-cli task +create \
+  --summary "Release v2.0" \
+  --due "2026-08-15" \
+  --data '{"is_milestone":true}'
+
 # Preview the API call without executing
 lark-cli task +create --summary "Test Task" --dry-run
 ```
@@ -39,14 +45,32 @@ lark-cli task +create --summary "Test Task" --dry-run
 | `--due <time>` | No | Due date. Supports ISO 8601, `YYYY-MM-DD`, relative time (e.g., `+2d`), or ms timestamp. `YYYY-MM-DD` and relative time will automatically set it as an all-day task. |
 | `--tasklist-id <id>` | No | The GUID of the tasklist, or a full AppLink URL (the CLI will automatically extract the `guid` parameter from the URL). |
 | `--idempotency-key <key>` | No | Client token to ensure idempotency of the request. |
+| `--data <json>` | No | JSON object merged into the task create request for API fields without dedicated flags, such as `{"is_milestone":true}`. Explicit named flags override same-named fields in this object. |
 | `--dry-run` | No | Preview the API call (JSON payload) without actually creating the task. |
+
+> **Required:** If `task +create` has no dedicated flag for a field requested by the user, first inspect `lark-cli schema task.tasks.create`, then add that field to `--data` using the exact field name, type, and nesting from the Meta API request-body schema. Do not omit requested fields or guess their JSON shape. Keep fields already supplied through dedicated flags out of `--data`.
+
+Prefer this shortcut over the raw `tasks create` command when `--data` can express the request. Do not assume that other shortcuts support `--data`; check each shortcut's `--help` output first.
 
 ## Workflow
 
 1. Confirm with the user: task summary, due date, assignee, and tasklist if necessary.
    - **Crucial Rule for Assignee**: If the user explicitly or implicitly says "create a task for me" (给我创建一个任务), or "help me create a task" (帮我新建/创建一个任务), you MUST assign the task to the current logged-in user. You can get the current user's `open_id` by executing `lark-cli auth status` (it already outputs JSON by default, so do not add `--json`) or `lark-cli contact +get-user` first, extracting `.identities.user.openId` (from `auth status`) or `.data.user.open_id` (from `contact +get-user`), and then passing it to the `--assignee` parameter.
 2. Execute `lark-cli task +create --summary "..." ...`
-3. Report the result: task ID and summary.
+3. Judge success by `ok == true` in the stdout JSON (the success envelope has no `code` field — do not test `code == 0`), then report the result: task ID (`data.guid`) and summary.
+
+Example success response:
+
+```json
+{
+  "ok": true,
+  "identity": "user",
+  "data": {
+    "guid": "e297d3d0-4b60-4a5f-a4d4-xxxxxxxxxxxx",
+    "url": "https://applink.larkoffice.com/client/todo/detail?guid=e297d3d0-4b60-4a5f-a4d4-xxxxxxxxxxxx"
+  }
+}
+```
 
 > [!CAUTION]
 > This is a **Write Operation** -- You must confirm the user's intent before executing.

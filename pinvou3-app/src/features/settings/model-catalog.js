@@ -38,6 +38,16 @@ const MODEL_PRESET_DEFS = {
 const PROVIDER_KIND_CODING_PLAN = 'coding_plan';
 const PROVIDER_KIND_OFFICIAL_API = 'official_api';
 const PROVIDER_KIND_CUSTOM = 'custom';
+// 模型拼写约定：凡底座（CodeWhale）route 目录收录的模型，列表项 `model` 一律
+// 使用底座 models_dev.bundled.json 目录行的原样拼写——z.ai 直连（GLM Coding
+// Plan 国际版）当前为 `GLM-5.2` / `GLM-5-Turbo` / `glm-5.1`，资产自身大小写
+// 不统一（agent 层 ModelInfo 目录行则统一大写），新增条目须逐行核对资产行拼写，
+// 不可套用大小写规律；自定义兼容端点（bigmodel.cn Coding Plan、开放平台）与
+// modelstudio 目录（qwen_token_plan）保持各自的小写 wire id。resolver 目录匹配
+// 是精确比较，拼写偏离目录行的 id（如小写 glm-5.2）会命中其他 provider 的裸
+// wire id 而被严格直连误拒——大小写不敏感回退已回馈上游审核、未随当前 gitlink
+// 发布，故新保存配置必须用目录行原样拼写；凡目录行拼写发生变更（含大小写），
+// 旧拼写须登记到该项 legacyAliases 以兼容存量配置，其余情况保持精确比较。
 const MODEL_CATALOG_SECTIONS = {
   coding_plan: 'Coding Plan',
   official_api: '官方 API',
@@ -119,6 +129,8 @@ const MODEL_CATALOG = {
       vendor: 'glm',
       baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
       endpointAliases: ['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions'],
+      // bigmodel 是底座 zai kind 的自定义端点：模型名原样透传，必须用厂商
+      // 文档的小写 wire id（glm-5.2），不要对齐 z.ai 直连目录的大写拼写。
       items: [
         { model: 'glm-5.2', title: 'GLM-5.2', desc: '旗舰编码模型' },
         { model: 'glm-5-turbo', title: 'GLM-5-Turbo', desc: '高性能编码模型' },
@@ -137,9 +149,11 @@ const MODEL_CATALOG = {
       vendor: 'glm',
       baseUrl: 'https://api.z.ai/api/coding/paas/v4',
       endpointAliases: ['https://api.z.ai/api/coding/paas/v4/chat/completions'],
+      // legacyAliases：本组目录行曾是旧小写拼写（glm-5.2 / glm-5-turbo），存量
+      // 配置可能保存旧值，目录命中时兼容识别；其余目录项一律精确比较。
       items: [
-        { model: 'glm-5.2', title: 'GLM-5.2', desc: '旗舰编码模型' },
-        { model: 'glm-5-turbo', title: 'GLM-5-Turbo', desc: '高性能编码模型' },
+        { model: 'GLM-5.2', legacyAliases: ['glm-5.2'], title: 'GLM-5.2', desc: '旗舰编码模型' },
+        { model: 'GLM-5-Turbo', legacyAliases: ['glm-5-turbo'], title: 'GLM-5-Turbo', desc: '高性能编码模型' },
         { model: 'glm-4.7', title: 'GLM-4.7', desc: '日常编码模型' },
         { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
@@ -507,7 +521,7 @@ function findCloudProviderForModel(model) {
       .map(url => provider.endpointMode === 'full_chat_completions' ? normalizeEndpointUrl(url) : normalizeOpenAiBaseUrl(url));
     const compareBase = provider.endpointMode === 'full_chat_completions' ? base : normalizeOpenAiBaseUrl(base);
     if (compareBase && urls.includes(compareBase)) return true;
-    return !providerKind && !vendor && provider.preset === model.preset && provider.items.some(item => !item.custom && item.model === model.model);
+    return !providerKind && !vendor && provider.preset === model.preset && provider.items.some(item => !item.custom && catalogItemMatchesModel(item, model.model));
   }) || null;
 }
 function providerLabelForModel(model, t) {
@@ -527,17 +541,26 @@ function isCodingPlanModel(model) {
 // ── 模型选择器:预设/自定义分组与可区分标注(纯函数,显示期计算) ─────
 // 分类判据:模型是否命中其实际 provider 的非 custom 目录项。自定义兼容接口即使
 // 使用目录中已有的模型 ID,也必须保持为自定义,避免多个聚合服务模型再次同名。
+// 目录命中默认精确比较:本地 vLLM 等服务的模型 ID 是不透明字符串、可能区分
+// 大小写,case-only 的自定义 ID 必须保持自定义。大小写兼容只对发生过「目录
+// 拼写迁移」的目录项生效,且以 legacyAliases 显式列出历史拼写(存量值只能
+// 来自旧目录行的精确值,精确别名即可覆盖),不做全量 case-insensitive。
+function catalogItemMatchesModel(item, model) {
+  if (typeof item.model !== 'string' || typeof model !== 'string') return false;
+  return item.model === model || (item.legacyAliases || []).includes(model);
+}
+
 function isPresetModel(m) {
   if (!m || !m.model) return false;
   if (m.preset === 'local_vllm') {
     return (MODEL_CATALOG.local || []).some(group =>
-      (group.items || []).some(item => !item.custom && item.model === m.model));
+      (group.items || []).some(item => !item.custom && catalogItemMatchesModel(item, m.model)));
   }
   const providerKind = m.provider_kind || m.providerKind;
   if (providerKind === PROVIDER_KIND_CUSTOM) return false;
   const provider = findCloudProviderForModel(m);
   return !!provider && provider.providerKind !== PROVIDER_KIND_CUSTOM
-    && (provider.items || []).some(item => !item.custom && item.model === m.model);
+    && (provider.items || []).some(item => !item.custom && catalogItemMatchesModel(item, m.model));
 }
 
 // 保留各组在入参中的原顺序。
@@ -585,6 +608,277 @@ function selectorSubLabel(m, t) {
   return provider ? providerLabelForModel(m, t) : presetProviderLabel('openai_compatible', t);
 }
 
+// ── 思考深度（reasoning effort）档位 ─────────────────────────────
+// 每个 provider 只暴露底座 wire 层有实际区别的档位（归一后无区别的档位
+// 不展示，避免用户选到"看起来不同、实际相同"的值）。语义与品悟 Rust 侧
+// provider() 判定对齐（vendor 优先 + preset 兜底）。
+const REASONING_EFFORT_TIERS = {
+  // vllm：off/low/medium/high 四档；max 被底座降级为 high，不重复暴露。
+  vllm: ['off', 'low', 'medium', 'high'],
+  // deepseek：wire 文档只认 low/high/max（无 medium），底座 apply_reasoning_effort
+  // 把 low 保留为更便宜档位、medium 归一为 high，故暴露 off/low/high/max。
+  deepseek: ['off', 'low', 'high', 'max'],
+  // volcengine：底座把 low/medium 归一为 high，仅 off/high/max 有区别。
+  volcengine: ['off', 'high', 'max'],
+  // 只有 thinking 开关的 provider：off/high。
+  moonshot: ['off', 'high'],
+  zai: ['off', 'high'],
+  minimax: ['off', 'high'],
+  'xiaomi-mimo': ['off', 'high'],
+  // anthropic native：off 不注入（等价默认），暴露 low/medium/high/max。
+  anthropic: ['low', 'medium', 'high', 'max'],
+  // openai：仅 gpt-5.x reasoning 系模型底座会注入，off=none。
+  openai: ['off', 'low', 'medium', 'high', 'max'],
+};
+
+// OpenAI 官方 API 支持「自定义模型」手输模型 ID，因此 reasoning 家族判定必须
+// 对齐底座 CodeWhale `model_is_openai_reasoning_family`（models.rs）的完整
+// predicate，而不是只覆盖品悟目录收录的 4 个 ID：用户手输 gpt-5.6 / gpt-5.5-pro /
+// 日期快照 / gpt-5.3-codex 等模型时底座仍会注入多档 reasoning_effort，前端若
+// 返回 null 会隐藏切换，造成「后端注入、前端不可控」的不一致。
+function isOpenaiReasoningFamilyModel(model) {
+  const lower = String((model && model.model) || '').trim().toLowerCase();
+  return isOpenaiGpt55ApiModel(lower)
+    || isOpenaiGpt56ApiModel(lower)
+    || isOpenaiCodexModel(lower);
+}
+
+// 对齐 models.rs `is_openai_gpt_55_api_model`：gpt-5.5 / gpt-5.5-pro 及其日期快照。
+function isOpenaiGpt55ApiModel(lower) {
+  return lower === 'gpt-5.5' || lower === 'gpt-5.5-pro'
+    || hasOpenaiDateSnapshotSuffix(lower, 'gpt-5.5-')
+    || hasOpenaiDateSnapshotSuffix(lower, 'gpt-5.5-pro-');
+}
+
+// 对齐 models.rs `is_openai_gpt_56_api_model`。
+function isOpenaiGpt56ApiModel(lower) {
+  return lower === 'gpt-5.6' || lower === 'gpt-5.6-sol'
+    || lower === 'gpt-5.6-terra' || lower === 'gpt-5.6-luna';
+}
+
+// 对齐 models.rs `is_openai_codex_model`。
+const OPENAI_CODEX_MODELS = new Set([
+  'gpt-5-codex', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5.1-codex-max',
+  'gpt-5.2-codex', 'gpt-5.3-codex', 'codex-gpt-5.5', 'chatgpt-gpt-5.5',
+  'gpt-5.5-codex', 'gpt-5.5-codex-preview', 'codex-gpt-5.5-preview', 'chatgpt-gpt-5.5-preview',
+]);
+
+function isOpenaiCodexModel(lower) {
+  return OPENAI_CODEX_MODELS.has(lower);
+}
+
+// 对齐 models.rs `has_date_snapshot_suffix`：prefix 后须紧跟 YYYY-MM-DD（10 字符，
+// 第 5 / 8 位为 '-'，其余为数字），否则不视为日期快照。
+function hasOpenaiDateSnapshotSuffix(lower, prefix) {
+  if (!lower.startsWith(prefix)) return false;
+  const rest = lower.slice(prefix.length);
+  if (rest.length !== 10 || rest[4] !== '-' || rest[7] !== '-') return false;
+  for (let i = 0; i < 10; i += 1) {
+    if (i === 4 || i === 7) continue;
+    if (rest[i] < '0' || rest[i] > '9') return false;
+  }
+  return true;
+}
+
+// 品悟 provider 判定（对齐 bridge.rs `provider()`：base_url(deepseek) 优先，
+// vendor 优先 + preset 兜底）。
+//
+// 与 Rust `provider()` 的结构性差异（均为前端「只暴露底座有实际档位区别的
+// provider」的刻意裁剪）：
+// 1. env(DEEPSEEK_PROVIDER)：Rust 支持环境变量覆盖 provider；前端无 env 概念
+//    （GUI 场景极少使用该 env，视为等价）。
+// 2. xai 返回：Rust 返回 "xai"（底座有 provider 身份，wire 层需要）；前端返回
+//    null——底座对 xai 的 reasoning_effort 是空操作，无档位可切。
+// 3. qwen/gemini 归类：Rust 将 qwen/tencent/openai/gemini/google 归入 "openai"
+//    （wire route 身份）；前端对 qwen/tencent/gemini/google 返回 null（底座无档位），
+//    仅 openai vendor 的 reasoning 家族返回 "openai"（对齐底座
+//    `model_is_openai_reasoning_family`）。
+// 4. zai/moonshot 路由级档位：底座按「精确 first-party base_url + 模型名」判定
+//    tiered effort（zai GLM-5.2/5.3、moonshot K3）；前端同样按精确端点身份判定
+//    （见 reasoningEffortTiersForModel 与 is_exact_*_base_url）。兼容网关/中国端点
+//    误配同型号时底座 fail-closed（不注入），前端回落通用档位，与底座行为对齐。
+// 对齐 bridge.rs `is_official_deepseek_base_url`：官方 DeepSeek 端点判定
+// （trim 尾斜杠 + /beta + /v1，小写比较）。
+function isOfficialDeepseekBaseUrl(baseUrl) {
+  const normalized = String(baseUrl || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/beta$/, '')
+    .replace(/\/v1$/, '')
+    .toLowerCase();
+  return normalized === 'https://api.deepseek.com' || normalized === 'https://api.deepseeki.com';
+}
+
+// 底座对 moonshot/zai/minimax 的 tiered effort 只按「精确 first-party base_url + 模型名」
+// 路由（CodeWhale config::is_exact_direct_moonshot_k3_route / is_exact_kimi_code_k3_route /
+// is_exact_zai_tiered_effort_route / is_exact_minimax_m3_route）。复刻底座 `is_exact_https_route`
+// 的比较语义：scheme/host ASCII 大小写不敏感、path 大小写敏感、只容忍一个尾斜杠——不多删
+// 斜杠、也不整段转小写（不同大小写的 path 是相邻路由，不是官方端点）。中国端点 / 兼容网关
+// 误配同型号时底座 fail-closed（不注入），前端据此收窄档位暴露。
+function isExactHttpsRoute(baseUrl, expectedAuthority, expectedPath) {
+  const trimmed = String(baseUrl || '').trim();
+  // 对齐底座 strip_suffix('/')：只去掉一个尾斜杠，剩下的斜杠仍参与 path 比较。
+  const normalized = trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+  const schemeSep = normalized.indexOf('://');
+  if (schemeSep === -1) return false;
+  const scheme = normalized.slice(0, schemeSep);
+  const authorityAndPath = normalized.slice(schemeSep + 3);
+  const slash = authorityAndPath.indexOf('/');
+  if (slash === -1) return false;
+  const authority = authorityAndPath.slice(0, slash);
+  const path = authorityAndPath.slice(slash + 1);
+  return scheme.toLowerCase() === 'https'
+    && authority.toLowerCase() === expectedAuthority.toLowerCase()
+    && path === expectedPath;
+}
+// Moonshot 直连平台（国际站）端点：https://api.moonshot.ai/v1
+function isExactMoonshotPlatformBaseUrl(baseUrl) {
+  return isExactHttpsRoute(baseUrl, 'api.moonshot.ai', 'v1');
+}
+// Kimi Code 会员计划端点：https://api.kimi.com/coding/v1（裸 k3）
+function isExactKimiCodeBaseUrl(baseUrl) {
+  return isExactHttpsRoute(baseUrl, 'api.kimi.com', 'coding/v1');
+}
+// z.ai first-party Chat 端点（Coding Plan / 普通平台）。
+function isExactZaiChatBaseUrl(baseUrl) {
+  return isExactHttpsRoute(baseUrl, 'api.z.ai', 'api/paas/v4')
+    || isExactHttpsRoute(baseUrl, 'api.z.ai', 'api/coding/paas/v4');
+}
+// MiniMax first-party OpenAI Chat 端点（国际 api.minimax.io / 国内 api.minimaxi.com）。
+function isExactMinimaxChatBaseUrl(baseUrl) {
+  return isExactHttpsRoute(baseUrl, 'api.minimax.io', 'v1')
+    || isExactHttpsRoute(baseUrl, 'api.minimaxi.com', 'v1');
+}
+
+function reasoningProviderForModel(model) {
+  if (!model) return null;
+  // 对齐 Rust provider() 优先级：官方 deepseek base_url 优先（即使 preset 是
+  // openai_compatible 且无 vendor，只要指向官方 deepseek 端点即按 deepseek 暴露档位）。
+  if (isOfficialDeepseekBaseUrl(model.base_url)) return 'deepseek';
+  const vendor = (model.vendor || '').trim().toLowerCase();
+  const preset = model.preset || '';
+  if (preset === 'local_vllm') return 'vllm';
+  if (vendor) {
+    if (vendor === 'deepseek') return 'deepseek';
+    if (vendor === 'kimi' || vendor === 'moonshot') return 'moonshot';
+    if (vendor === 'glm' || vendor === 'zai' || vendor === 'zhipu') return 'zai';
+    if (vendor === 'minimax') return 'minimax';
+    if (vendor === 'mimo' || vendor === 'xiaomi' || vendor === 'xiaomi-mimo') return 'xiaomi-mimo';
+    if (vendor === 'doubao' || vendor === 'volcengine') return 'volcengine';
+    if (vendor === 'anthropic' || vendor === 'claude') return 'anthropic';
+    if (vendor === 'xai' || vendor === 'grok') return null; // 底座空操作，不提供切换
+    if (vendor === 'openai') return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
+    return null; // qwen / tencent / gemini / google 无档位
+  }
+  switch (preset) {
+    case 'deepseek': return 'deepseek';
+    case 'kimi': return 'moonshot';
+    case 'glm': return 'zai';
+    case 'minimax': return 'minimax';
+    case 'mimo': return 'xiaomi-mimo';
+    case 'doubao': return 'volcengine';
+    case 'anthropic': return 'anthropic';
+    case 'openai': return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
+    default: return null;
+  }
+}
+
+// 该模型可切换的思考深度档位（无则 null = 不提供切换）。
+// 路由/模型级细分（仅品悟目录收录的模型）：
+// - zai：first-party z.ai 端点上 GLM-5.2/5.3 提供 tiered effort（off/high/max），
+//   GLM-5.1/GLM-5-Turbo 只有 generic thinking 开关（off/high）；中国 open.bigmodel.cn、
+//   兼容网关、未验证模型底座会删除 thinking/reasoning_effort（两档等效）→ 不提供切换。
+// - moonshot：K3（kimi-k3 / k3，always-thinking）提供 low/high/max（off 归一为 low）；
+//   其余 moonshot 模型按 generic thinking 开关暴露 off/high。
+// - minimax：仅 first-party MiniMax-M3 提供 off（disabled）/high（adaptive）；M2.7/M2.5
+//   与兼容网关底座清空控制字段（两档等效）→ 不提供切换。
+// 与底座 `is_exact_zai_tiered_effort_route` / `is_exact_direct_moonshot_k3_route` /
+// `is_exact_kimi_code_k3_route` / `is_exact_minimax_m3_route` 对齐：中国端点 / 兼容网关
+// 误配同型号时底座 fail-closed，前端不再暴露无效或彼此等效的选项。
+function reasoningEffortTiersForModel(model) {
+  const provider = reasoningProviderForModel(model);
+  if (!provider) return null;
+  const tiers = REASONING_EFFORT_TIERS[provider];
+  if (!tiers) return null;
+  const modelName = String((model && model.model) || '').trim().toLowerCase();
+  const baseUrl = (model && model.base_url) || '';
+  if (provider === 'zai') {
+    if (!isExactZaiChatBaseUrl(baseUrl)) return null;
+    if (modelName === 'glm-5.2' || modelName === 'glm-5.3') return ['off', 'high', 'max'];
+    if (modelName === 'glm-5.1' || modelName === 'glm-5-turbo') return ['off', 'high'];
+    return null;
+  }
+  if (provider === 'moonshot' && isExactMoonshotK3Route(model, modelName)) {
+    return ['low', 'high', 'max'];
+  }
+  if (provider === 'minimax') {
+    if (!isExactMinimaxChatBaseUrl(baseUrl)) return null;
+    if (modelName !== 'minimax-m3') return null;
+    return ['off', 'high'];
+  }
+  return tiers;
+}
+
+// 底座 K3（always-thinking）精确路由：直连平台 kimi-k3 与 Kimi Code 裸 k3。
+// 仅这两个「精确端点 + 模型名」组合会进入 tiered low/high/max 路由。
+function isExactMoonshotK3Route(model, modelName) {
+  const baseUrl = (model && model.base_url) || '';
+  if (modelName === 'kimi-k3') return isExactMoonshotPlatformBaseUrl(baseUrl);
+  if (modelName === 'k3') return isExactKimiCodeBaseUrl(baseUrl);
+  return false;
+}
+
+// 当前模型是否走底座 always-thinking K3 tiered 路由（档位表为 low/high/max）。
+function isAlwaysThinkingK3Route(model) {
+  if (!model || reasoningProviderForModel(model) !== 'moonshot') return false;
+  const modelName = String((model && model.model) || '').trim().toLowerCase();
+  return isExactMoonshotK3Route(model, modelName);
+}
+
+// 该模型的默认思考深度档位：本地 vLLM 保持 off（防 SSE timeout），其余 high。
+function defaultReasoningEffortForModel(model) {
+  if (reasoningProviderForModel(model) === 'vllm') return 'off';
+  return reasoningEffortTiersForModel(model) ? 'high' : null;
+}
+
+// 切换模型时的思考深度重置：丢弃旧档位，按新 model 的 route 回落到默认档位
+// （vllm→off，其余支持档位的模型→high；无档位模型→null = 未显式设置）。K2.6 选 off 后
+// 切 K3，off 不在 K3 档位表（low/high/max）内，必须重置为 high，否则界面无高亮且保存
+// 仍写旧值。单独成函数以便对「模型切换归一」这一状态迁移做行为测试。
+function reasoningEffortForModelSwitch(model) {
+  return defaultReasoningEffortForModel(model) || null;
+}
+
+// 底座 ReasoningEffort::parse_strict 接受的别名 → 规范档位（对齐 as_setting()）。
+// 只收录会映射到档位表内档位的别名；auto/automatic 不在 UI 暴露，不收录（回落默认）。
+const REASONING_EFFORT_CANONICAL = {
+  off: 'off', disabled: 'off', none: 'off', false: 'off',
+  low: 'low', minimum: 'low', minimal: 'low', light: 'low',
+  medium: 'medium', mid: 'medium',
+  high: 'high',
+  max: 'max', maximum: 'max', xhigh: 'max', ultra: 'max', ultracode: 'max',
+};
+
+// 存量档位归一：用户可能保存过底座归一前的旧值（别名或不在档位表内的档位，
+// 如 deepseek 的 medium → 底座归一为 high）。展示与表单初始值都取归一后的档位，
+// 避免「档位表不含该值 → 下拉无高亮 / 残留无法选中的脏值」；无档位模型返回 null。
+function normalizeStoredReasoningEffort(model, stored) {
+  const tiers = reasoningEffortTiersForModel(model) || [];
+  if (!tiers.length) return null;
+  let canonical = stored
+    ? (REASONING_EFFORT_CANONICAL[String(stored).trim().toLowerCase()] || null)
+    : null;
+  // always-thinking K3：off 在底座 K3 路由里等价于最低档 low（thinking.effort=low /
+  // reasoning_effort=low），medium 等价于 high。按路由真实等价值归一，否则 UI 高亮
+  // high、请求实际 low，且点击已高亮的 high 会被相等判断短路、无法纠正。
+  if (isAlwaysThinkingK3Route(model)) {
+    if (canonical === 'off') canonical = 'low';
+    else if (canonical === 'medium') canonical = 'high';
+  }
+  if (canonical && tiers.includes(canonical)) return canonical;
+  return defaultReasoningEffortForModel(model) || tiers[0] || null;
+}
+
 export {
   MODEL_PRESET_DEFS,
   PROVIDER_KIND_CODING_PLAN,
@@ -601,9 +895,14 @@ export {
   findCloudProviderForModel,
   providerLabelForModel,
   isCodingPlanModel,
+  catalogItemMatchesModel,
   isPresetModel,
   groupModelsForSelector,
   localUserNamed,
   selectorMainLabel,
   selectorSubLabel,
+  reasoningEffortTiersForModel,
+  defaultReasoningEffortForModel,
+  reasoningEffortForModelSwitch,
+  normalizeStoredReasoningEffort,
 };

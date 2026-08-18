@@ -16,16 +16,13 @@ use crate::features::sessions::{ScheduledRunProfile, SessionStore};
 
 pub(super) fn maybe_notify_task_completed(
     app: &AppHandle,
-    store: &SessionStore,
+    _store: &SessionStore,
     session_id: &str,
     turn_id: Option<String>,
     status: TurnOutcomeStatus,
     error: Option<&str>,
 ) {
     if status != TurnOutcomeStatus::Completed || error.is_some() {
-        return;
-    }
-    if store.mode_state(session_id).active_skill.is_some() {
         return;
     }
     if !crate::platform::notifications::task_completion_enabled() {

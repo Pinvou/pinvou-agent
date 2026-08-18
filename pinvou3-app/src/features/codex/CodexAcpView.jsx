@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { can } from '../../shared/platform.js';
@@ -8,6 +8,7 @@ import {
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
+import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
 import {
   classifyAcpServiceFailure,
   isAcpAuthenticationFailure,
@@ -19,6 +20,7 @@ import {
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import {
   appendAcpEvent,
+  buildElicitationContent,
   commandExecutionDetails,
   projectAcpTimeline,
   resolveAcpSessionControls,
@@ -42,6 +44,7 @@ import {
   ConversationActivityIndicator,
   ConversationMarkdown,
   ConversationTurn,
+  WorkspaceResourceButtons,
 } from '../conversation/ConversationTimeline.jsx';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
@@ -56,9 +59,17 @@ import {
 } from '../chat/composer-controls.jsx';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
-import { isNearConversationBottom } from '../conversation/conversation-model.js';
+import {
+  captureConversationScrollPosition,
+  collectToolWorkspaceResources,
+  isFetchTool,
+  isNearConversationBottom,
+  isSearchTool,
+  restoreConversationScrollPosition,
+  toolWorkspaceResources,
+} from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
-import { PlanLayer, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
+import { PlanLayer, ToolCard, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import { bridge } from '../../hooks/useBridge.js';
@@ -388,30 +399,23 @@ function CommandExecutionItem({ item, now, copy }) {
   );
 }
 
-function GenericToolItem({ item, now, copy, cv }) {
+function GenericToolItem({ item, now, copy, cv, onOpenResource }) {
   const tool = item.tool || {};
   const state = terminalStatus(item.status);
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const label = item.type === 'file_change' ? copy.fileChange : (tool.kind || cv.codexTool);
+  const resources = toolWorkspaceResources(tool);
   return (
     <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
       <CompactItemRow icon={<Wrench size={13} />} title={tool.title || label}
         meta={`${label} · ${state === 'running' ? `${copy.inProgress} · ${duration}` : state === 'failed' ? copy.failed : `${cv.ended} · ${duration}`}`}
         status={state} open={open} controlsId={detailsId}
         onToggle={() => setOpen(value => !value)} />
+      <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
       {open && (
         <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
-          {tool.locations && tool.locations.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {tool.locations.map((location, index) => (
-                <span key={index} className="px-2 py-1 rounded-lg bg-blue-500/8 text-[10px] text-blue-600 dark:text-blue-300 font-mono">
-                  {location.path || String(location)}
-                </span>
-              ))}
-            </div>
-          )}
           <StructuredValue label={copy.arguments} value={tool.rawInput} />
           <StructuredValue label={copy.result} value={tool.rawOutput != null ? tool.rawOutput : tool.content} />
         </div>
@@ -420,7 +424,7 @@ function GenericToolItem({ item, now, copy, cv }) {
   );
 }
 
-function ToolGroup({ group, now, copy, cv }) {
+function ToolGroup({ group, now, copy, cv, onOpenResource }) {
   const items = group.items || [];
   const running = items.some(item => terminalStatus(item.status) === 'running');
   const failed = items.some(item => terminalStatus(
@@ -430,6 +434,7 @@ function ToolGroup({ group, now, copy, cv }) {
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const hasDetails = items.length > 0;
+  const resources = collectToolWorkspaceResources(items);
   return (
     <div className="min-w-0 max-w-full">
       <button type="button" onClick={() => setOpen(value => !value)}
@@ -441,11 +446,12 @@ function ToolGroup({ group, now, copy, cv }) {
         <span>{running ? copy.executing : failed ? cv.stepsFailed : copy.executionSteps} · {items.length}</span>
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
+      <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
       {open && hasDetails && (
         <div id={detailsId} data-testid="conversation-tool-group-content" className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
           {items.map(item => item.type === 'command_execution'
             ? <CommandExecutionItem key={item.id} item={item} now={now} copy={copy} />
-            : <GenericToolItem key={item.id} item={item} now={now} copy={copy} cv={cv} />)}
+            : <GenericToolItem key={item.id} item={item} now={now} copy={copy} cv={cv} onOpenResource={onOpenResource} />)}
         </div>
       )}
     </div>
@@ -581,17 +587,10 @@ function ElicitationCard({ elicitation, pending, onRespond, responding, copy, co
   });
 
   function submit(groups) {
-    const content = {};
-    for (const group of groups) {
-      const custom = group.answers.find(answer => answer.other);
-      if (custom && group.otherAnswerKey) {
-        content[group.otherAnswerKey] = custom.value;
-      } else if (group.multiSelect) {
-        content[group.answerKey] = group.answers.map(answer => answer.value);
-      } else if (group.answers[0]) {
-        content[group.answerKey] = group.answers[0].value;
-      }
-    }
+    // content 用无原型对象构造（见 buildElicitationContent）：answerKey 为
+    // constructor/toString/__proto__ 时普通 {} 会命中 Object.prototype，字段在
+    // JSON 序列化时静默丢失。
+    const content = buildElicitationContent(groups);
     onRespond(elicitation.elicitationId, 'accept', content);
   }
 
@@ -674,6 +673,9 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
       id: group.questionId,
       label: answer.other ? (conversationCopy && conversationCopy.otherAnswer) || answer.label : answer.label,
       value: String(answer.value),
+      // 保留 other 标记：QuestionChoiceCard 还原历史答案时据此把“其他”与预设选项区分开，
+      // 避免“其他值 == 预设 value”被误判为预设（评审 P2）。
+      other: answer.other,
     })));
     onSubmitAnswers(item.toolCallId, answers);
   }
@@ -682,6 +684,7 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
     <QuestionChoiceCard
       title={copy.choiceTitle}
       questions={questions}
+      initialAnswers={item.restoredAnswers || []}
       resolved={!actionable}
       submitting={responding}
       submitLabel={copy.submit}
@@ -822,9 +825,10 @@ function TurnItem({
   onRespondElicitation,
   responding,
   onOpenExternal,
+  onOpenResource,
 }) {
   if (item.type === 'reasoning') return <ReasoningItem item={item} now={now} copy={copy} />;
-  if (item.type === 'tool_group') return <ToolGroup group={item} now={now} copy={copy} cv={cv} />;
+  if (item.type === 'tool_group') return <ToolGroup group={item} now={now} copy={copy} cv={cv} onOpenResource={onOpenResource} />;
   if (item.type === 'plan') return <PlanBlock plan={item.plan} copy={copy} />;
   if (item.type === 'permission') {
     return (
@@ -844,9 +848,9 @@ function TurnItem({
   if (item.type === 'agent_message') {
     const commentary = item.phase === 'commentary';
     return commentary
-      ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal}
+      ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
           className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
-      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} />;
+      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource} />;
   }
   return null;
 }
@@ -864,6 +868,7 @@ function Turn({
   onRespondElicitation,
   responding,
   onOpenExternal,
+  onOpenResource,
 }) {
   const waitingPermission = turn.permissions.some(permission => !permission.resolved);
   const waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
@@ -906,7 +911,7 @@ function Turn({
               agentName={agentName} copy={copy} cv={cv}
               pendingByTool={pendingByTool} pendingByElicitation={pendingByElicitation}
               onRespond={onRespond} onRespondElicitation={onRespondElicitation}
-              responding={responding} onOpenExternal={onOpenExternal} />
+              responding={responding} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource} />
           ))}
           {!running && (assistantAvailable || turn.completedAt || turn.error) && <AssistantMessageFooter>
             {assistantAvailable && (
@@ -1209,6 +1214,7 @@ export function CodexAcpView({
   const [attachmentDrafts, setAttachmentDrafts] = useState({});
   const [workspaceReferenceDrafts, setWorkspaceReferenceDrafts] = useState({});
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [subagentPanel, setSubagentPanel] = useState(null);
   const [workspaceChangeCount, setWorkspaceChangeCount] = useState(0);
   const [now, setNow] = useState(Date.now());
   const useUnifiedConversationUi = unifiedConversationUiEnabled();
@@ -1234,6 +1240,7 @@ export function CodexAcpView({
   const [draftConfigSelections, setDraftConfigSelections] = useState({});
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const scroller = useRef(null);
+  const rightPanelScrollRef = useRef(null);
   const autoScrollRef = useRef(true);
   const lastScrollTopRef = useRef(0);
   const attachmentIdRef = useRef(0);
@@ -1326,7 +1333,7 @@ export function CodexAcpView({
   const nativeMemoryItems = isNativeAgent && activeNativeLane && activeNativeLane.memory
     ? activeNativeLane.memory.items
     : [];
-  // 原生车道底栏控件（模型/工具/知识库/模式）的会话态：按 activeId 经 invoke 自查，
+  // 原生车道底栏控件（模型/工具/知识库/模式/多智能体）的会话态：按 activeId 经 invoke 自查，
   // 不读 bridge 聊天 active 绑定（bs.currentSessionModelId/modeState/mountedCollection
   // 都绑聊天 active）。草稿态暂存 nativeDraftControls，建会话成功后再应用。
   // mode 由后端 get_mode_state 驱动（code 会话首次默认 Plan），不写死初值。
@@ -1334,10 +1341,16 @@ export function CodexAcpView({
     modelId: null,
     mountedId: null,
     mode: CODE_MODE_FALLBACK,
+    multiAgent: false,
+    multiAgentAvailable: false,
   });
   const [nativeDraftControls, setNativeDraftControls] = useState({});
   // nativeControls 的会话归属：切会话后、refresh 返回前不展示上一会话的控件值。
   const nativeControlsSessionRef = useRef(null);
+  // refreshNativeControls 请求序号：快速切会话时多个 get_* invoke 并发在途，
+  // 后发起的请求应胜出。没有它，先发起的慢响应会晚返回并把控件值/归属 ref 覆盖
+  // 成旧会话——mode chip 随即显示全局 fallback 而非新会话实测值（串台/陈旧覆盖，
+  // 与聊天页 modeState epoch 修复同款竞态）。
   // code 会话权限模式全局偏好（{ last_mode, yolo_confirmed }，null=未拉到）：
   // 驱动草稿态/刷新途中的默认 mode 展示，以及首次切 yolo 的一次性确认门。
   const [codePermPrefs, setCodePermPrefs] = useState(null);
@@ -1378,11 +1391,73 @@ export function CodexAcpView({
   const nativeMountedId = activeId
     ? (nativeControlsSessionRef.current === activeId ? nativeControls.mountedId : null)
     : (nativeDraftControls.mountedId ?? null);
+  const nativeMultiAgentSelected = activeId
+    ? (nativeControlsSessionRef.current === activeId && Boolean(nativeControls.multiAgent))
+    : Boolean(nativeDraftControls.multiAgent);
+  // Existing sessions use the backend SessionPolicy result. A Pinvou draft is
+  // known to become a native Code session, so it may stage the same control
+  // before a session id exists.
+  const nativeMultiAgentAvailable = activeId
+    ? (nativeControlsSessionRef.current === activeId && Boolean(nativeControls.multiAgentAvailable))
+    : isNativeAgent;
+  const nativeMultiAgentEnabled = nativeMultiAgentAvailable && nativeMultiAgentSelected;
   const activeAgentName = activeSession?.agent_name
     || agents.find(agent => agent.agent_id === activeAgentId)?.agent_name
     || (activeAgentId === 'pinvou' ? '品悟' : activeAgentId === 'claude' ? 'Claude Code' : activeAgentId === 'kimi' ? 'Kimi' : 'Codex');
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
+  const rememberScrollBeforeRightPanelChange = useCallback(() => {
+    rightPanelScrollRef.current = captureConversationScrollPosition(
+      scroller.current,
+      autoScrollRef.current,
+    );
+  }, []);
+  const closeSubagentPanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setSubagentPanel(null);
+  }, [rememberScrollBeforeRightPanelChange]);
+  const toggleWorkspacePanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setSubagentPanel(null);
+    setWorkspaceOpen(value => !value);
+  }, [rememberScrollBeforeRightPanelChange]);
+  const closeWorkspacePanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setWorkspaceOpen(false);
+  }, [rememberScrollBeforeRightPanelChange]);
+  useLayoutEffect(() => {
+    const snapshot = rightPanelScrollRef.current;
+    if (!snapshot) return;
+    rightPanelScrollRef.current = null;
+    const element = scroller.current;
+    if (!element) return;
+    restoreConversationScrollPosition(element, snapshot);
+    lastScrollTopRef.current = element.scrollTop;
+    if (snapshot.stickToBottom) {
+      autoScrollRef.current = true;
+      setShowScrollBottom(false);
+    }
+  }, [subagentPanel, workspaceOpen]);
+  useEffect(() => {
+    setSubagentPanel(null);
+  }, [activeId]);
+  useEffect(() => {
+    if (typeof window === 'undefined' || !isNativeAgent) return undefined;
+    const onOpen = (event) => {
+      const detail = event && event.detail;
+      const sessionId = detail && detail.sessionId;
+      if (!detail?.agentId || !activeIdRef.current) return;
+      if (sessionId && sessionId !== activeIdRef.current) return;
+      rememberScrollBeforeRightPanelChange();
+      setWorkspaceOpen(false);
+      setSubagentPanel(current => ({
+        agentId: detail.agentId,
+        selectionRequestId: (current?.selectionRequestId || 0) + 1,
+      }));
+    };
+    window.addEventListener('pinvou:open-subagent', onOpen);
+    return () => window.removeEventListener('pinvou:open-subagent', onOpen);
+  }, [isNativeAgent, rememberScrollBeforeRightPanelChange]);
   const activeStatus = status?.agent_id === activeAgentId ? status : null;
   const activeRuntimeOperation = runtimeOperationFor(runtimeOperations, activeAgentId);
   const activeRuntimeBusy = Boolean(activeRuntimeOperation);
@@ -1486,13 +1561,19 @@ export function CodexAcpView({
       invoke('session_mounted_collection', { sessionId }).catch(() => null),
       invoke('get_mode_state', { sessionId }).catch(() => null),
     ]);
-    setNativeControls({
+    const controls = {
       modelId: modelId || null,
       mountedId: mountedId ?? null,
       // 读取失败兜底走全局默认（首次使用 → Plan 只读），不回退写死 yolo。
       mode: (modeState && modeState.mode) || nativeModeFallback(codePermPrefs),
-    });
+      multiAgent: Boolean(modeState && modeState.multi_agent),
+      multiAgentAvailable: Boolean(modeState && modeState.multi_agent_available),
+    };
+    // 请求期间可能切换会话；旧响应不得覆盖新会话的模型/模式/多智能体展示。
+    if (sessionId !== activeIdRef.current) return controls;
+    setNativeControls(controls);
     nativeControlsSessionRef.current = sessionId;
+    return controls;
   }
 
   /// 拉取全局 code 权限偏好（last_mode / yolo_confirmed）：草稿态默认 mode
@@ -1509,10 +1590,13 @@ export function CodexAcpView({
     // 仅挂载拉取一次；后续由切换/确认路径就地刷新。
   }, []);
 
-  /// 草稿态暂存的控件选择在新会话上应用；失败报错不静默（逐个应用，mode 最后）。
+  /// 草稿态暂存的控件选择在新会话上应用；失败报错不静默（逐个应用，多智能体最后）。
+  /// 任一步失败即整体失败：清空暂存并上抛，由 sendNative 外层 catch 兜住（会话已创建，
+  /// 保留半份暂存会在下次创建会话时把过期的部分选择悄悄应用，形成孤儿暂存）。
   async function applyNativeDraftControls(sessionId) {
     const staged = nativeDraftControls;
-    const hasStaged = staged.modelId || staged.mountedId != null || staged.mode;
+    const hasMultiAgentSelection = Object.prototype.hasOwnProperty.call(staged, 'multiAgent');
+    const hasStaged = staged.modelId || staged.mountedId != null || staged.mode || hasMultiAgentSelection;
     if (!hasStaged) return;
     try {
       if (staged.modelId) {
@@ -1528,10 +1612,25 @@ export function CodexAcpView({
       } else if (staged.mode === 'yolo') {
         await invoke('exit_plan_to_yolo', { sessionId });
       }
+      if (hasMultiAgentSelection) {
+        await invoke('set_multi_agent_mode', {
+          sessionId,
+          enabled: Boolean(staged.multiAgent),
+        });
+      }
       setNativeDraftControls({});
     } catch (err) {
-      showError(err);
+      // 会话已经创建且部分配置可能已生效：清空暂存避免未来复用过期选择，
+      // 错误继续上抛，由 sendNative 的 catch 提示用户并恢复输入框文本。
+      setNativeDraftControls({});
+      throw err;
     }
+    // 暂存落地后必须再刷新一次实测值：会话物化时 effect 触发的
+    // refreshNativeControls 通常在暂存应用链（mode 排最后）落地前就带着
+    // 后端默认值返回了，chip 停在旧 mode（如 plan），要重进对话才刷新。
+    // 此处以应用后的实测值收口；refreshNativeControls 的请求序号保证在途
+    // 旧读返回时被丢弃，不会反向覆盖。
+    await refreshNativeControls(sessionId);
   }
 
   /// 切模型：set_session_model 会 evict 该会话 engine，lane busy 时由控件禁用兜底。
@@ -1545,6 +1644,35 @@ export function CodexAcpView({
       await invoke('set_session_model', { sessionId, modelId });
       await refreshNativeControls(sessionId);
     } catch (err) { showError(err); }
+  }
+
+  async function switchNativeMultiAgent(enabled) {
+    if (!nativeMultiAgentAvailable) return;
+    if (!activeId) {
+      setNativeDraftControls(current => ({ ...current, multiAgent: Boolean(enabled) }));
+      return;
+    }
+    if (busy || working) return;
+    const targetSessionId = activeId;
+    const previous = nativeMultiAgentEnabled;
+    setError('');
+    setWorking(true);
+    setConfigApplying('multiagent');
+    setNativeControls(current => ({ ...current, multiAgent: Boolean(enabled) }));
+    try {
+      await invoke('set_multi_agent_mode', { sessionId: targetSessionId, enabled: Boolean(enabled) });
+      await refreshNativeControls(targetSessionId);
+    } catch (err) {
+      // 请求期间可能已切换会话：只有仍是目标会话时才回滚旧值，否则交给
+      // 新会话自身的 refresh 覆盖，避免把上一会话的值串写进当前会话。
+      if (targetSessionId === activeIdRef.current) {
+        setNativeControls(current => ({ ...current, multiAgent: previous }));
+      }
+      showError(err);
+    } finally {
+      setWorking(false);
+      setConfigApplying('');
+    }
   }
 
   async function mountNativeKb(collectionId) {
@@ -1588,10 +1716,19 @@ export function CodexAcpView({
     await performNativeModeSwitch(target, { isPlan, chipBusy });
   }
 
+  /// 草稿态暂存 mode 选择：本地暂存（新建会话时应用）+ 刷新 code lane 全局
+  /// 默认（三分 lane 语义：草稿切换写全局；已生成会话的切换不碰全局）。
+  function stageDraftMode(target) {
+    setNativeDraftControls(current => ({ ...current, mode: target }));
+    invoke('set_mode_default', { lane: 'code', mode: target })
+      .then(() => refreshCodePermPrefs())
+      .catch(err => showError(err));
+  }
+
   /// mode chip 切换的实际执行路径（不含 yolo 确认门）。
   async function performNativeModeSwitch(target, { isPlan, chipBusy } = {}) {
     if (!activeId) {
-      setNativeDraftControls(current => ({ ...current, mode: target }));
+      stageDraftMode(target);
       return;
     }
     setError('');
@@ -1603,8 +1740,6 @@ export function CodexAcpView({
         await invoke('exit_plan_to_yolo', { sessionId: activeId });
       }
       await refreshNativeControls(activeId);
-      // 显式切 mode 会更新全局 code_last_mode：刷新草稿态默认展示。
-      refreshCodePermPrefs().catch(() => {});
     } catch (err) { showError(err); }
   }
 
@@ -1618,7 +1753,7 @@ export function CodexAcpView({
       if (prefs) setCodePermPrefs(prefs);
       setPendingYoloSwitch(null);
       if (pending.draft) {
-        setNativeDraftControls(current => ({ ...current, mode: 'yolo' }));
+        stageDraftMode('yolo');
       } else {
         await performNativeModeSwitch('yolo', { isPlan: true, chipBusy: pending.chipBusy });
       }
@@ -2400,8 +2535,12 @@ export function CodexAcpView({
       if (!targetId) {
         const created = await createSession(draftWorkspacePath);
         targetId = created.id;
-        // 草稿态暂存的模型/知识库/模式选择先落到新会话（失败会显式报错）。
+        // 草稿态暂存的模型/知识库/模式/多智能体选择先落到新会话（失败会显式报错）。
         await applyNativeDraftControls(targetId);
+        // createSession 内的首次 load 发生在草稿控件落盘之前；若用户在草稿态
+        // 开启了多智能体，那次 load 读到的是旧的 false。首条消息发送前必须
+        // 再读一次后端权威状态，保证输入框开关及时反映刚落盘的会话配置。
+        await refreshNativeControls(targetId);
         setAttachmentDrafts(current => {
           const draftAttachments = current[DRAFT_ATTACHMENT_KEY] || [];
           const next = { ...current, [targetId]: draftAttachments };
@@ -2434,7 +2573,7 @@ export function CodexAcpView({
           sessionId: targetId,
           // 逐轮工具白名单入口（R-2）：参数链路对 code 会话已贯通（后端 op
           // allowed_tools 按此生效），本期恒 false 不限制；S-1 安全分化落地时
-          // 按 SessionPolicy 逐轮驱动（docs/code-plain-decoupling-改动说明.md）。
+          // 按 SessionPolicy 逐轮驱动（docs/code-mode-解耦与权限持久化-改动说明.md）。
           restrictTools: false,
         });
       } catch (sendError) {
@@ -2467,32 +2606,44 @@ export function CodexAcpView({
   /// cancel_user_input（显式 sessionId，不经过 bridge 全局 activeSession）。
   async function respondNativeInput(toolCallId, answers) {
     if (!activeId) return;
+    // entry 捕获 sid：invoke 挂起期间用户切到别的原生会话时，await 后重新读
+    // activeId 会把 restoredAnswers 写进（或找不到卡而漏写）错误 lane——与 bridge
+    // submitUserInput 的 sid 捕获同一约定。
+    const sid = activeId;
     setResponding(true); setError('');
     try {
-      await invoke('submit_user_input', { toolCallId, answers, sessionId: activeId });
-      markNativeInputResolved(toolCallId, 'submitted');
+      await invoke('submit_user_input', { toolCallId, answers, sessionId: sid });
+      markNativeInputResolved(sid, toolCallId, 'submitted', answers);
     } catch (err) { showError(err); }
     finally { setResponding(false); }
   }
 
   async function cancelNativeInput(toolCallId) {
     if (!activeId) return;
+    const sid = activeId;
     setResponding(true); setError('');
     try {
-      await invoke('cancel_user_input', { toolCallId, sessionId: activeId });
-      markNativeInputResolved(toolCallId, 'cancelled');
+      await invoke('cancel_user_input', { toolCallId, sessionId: sid });
+      markNativeInputResolved(sid, toolCallId, 'cancelled');
     } catch (err) { showError(err); }
     finally { setResponding(false); }
   }
 
-  function markNativeInputResolved(toolCallId, cardState) {
-    const lane = getNativeLane(activeId);
+  function markNativeInputResolved(sessionId, toolCallId, cardState, answers) {
+    const lane = getNativeLane(sessionId);
+    // 无条件按 type + toolCallId 定位：chat:tool_end（applyNativeChatEvent 同样按
+    // !item.resolved 查找）可能先于 invoke 返回把卡置为 resolved，若这里仍要求
+    // !item.resolved 会因竞态漏写 restoredAnswers，重挂载时历史卡丢失选中态。
     const card = [...lane.items].reverse().find(item => (
-      item && item.type === 'user_input' && item.toolCallId === toolCallId && !item.resolved
+      item && item.type === 'user_input' && item.toolCallId === toolCallId
     ));
     if (card) {
       card.resolved = true;
       card.cardState = cardState;
+      // 提交后立即记住答案：即使不切会话、仅组件重挂载，历史卡也能恢复选中态。
+      if (cardState === 'submitted' && Array.isArray(answers) && answers.length) {
+        card.restoredAnswers = answers;
+      }
     }
     setNativeLaneTick(tick => tick + 1);
   }
@@ -2608,6 +2759,7 @@ export function CodexAcpView({
         <ConversationMarkdown
           text={item.legacyItem.text}
           onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+          onOpenResource={openWorkspaceResource}
         />
       );
     }
@@ -2661,6 +2813,18 @@ export function CodexAcpView({
       return <div className="px-1 text-[11px] text-gray-400">{legacy.text}</div>;
     }
     return undefined;
+  }
+
+  async function openWorkspaceResource(resourcePath) {
+    if (!activeId || !resourcePath) return;
+    try {
+      await invoke('open_codex_workspace_resource', {
+        sessionId: activeId,
+        resourcePath: String(resourcePath),
+      });
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function respond(toolCallId, optionId) {
@@ -2746,7 +2910,7 @@ export function CodexAcpView({
           {busy && <StatusBadge status="running" copy={t.uiConversation} />}
           <button
             type="button"
-            onClick={() => setWorkspaceOpen(value => !value)}
+            onClick={toggleWorkspacePanel}
             className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
               workspaceOpen
                 ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
@@ -2769,7 +2933,7 @@ export function CodexAcpView({
           <button
             type="button"
             data-testid="codex-workspace-toggle"
-            onClick={() => setWorkspaceOpen(value => !value)}
+            onClick={toggleWorkspacePanel}
             className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
               workspaceOpen
                 ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
@@ -2887,8 +3051,24 @@ export function CodexAcpView({
                             />
                           )
                         : undefined}
+                    renderToolItem={isNativeAgent
+                      ? (item) => item.legacyItem
+                        && !isSearchTool(item.tool)
+                        && !isFetchTool(item.tool)
+                        ? (
+                            <ToolCard
+                              item={{ ...item.legacyItem, sessionId: activeId }}
+                              sessionId={activeId}
+                              theme={theme}
+                              t={t}
+                              variant="timeline"
+                            />
+                          )
+                        : undefined
+                      : undefined}
                     agentLabel={activeAgentName}
                     onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+                    onOpenResource={openWorkspaceResource}
                   />
                 )
               : (
@@ -2901,7 +3081,8 @@ export function CodexAcpView({
                     onRespond={respond}
                     onRespondElicitation={respondElicitation}
                     responding={responding}
-                    onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)} />
+                    onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+                    onOpenResource={openWorkspaceResource} />
                 ))}
           </div>
         </div>
@@ -3150,6 +3331,9 @@ export function CodexAcpView({
                           sessionModelId={nativeSessionModelId}
                           busy={busy || working}
                           onSwitchModel={(sessionId, modelId) => switchNativeModel(sessionId, String(modelId))}
+                          multiAgentEnabled={nativeMultiAgentEnabled}
+                          multiAgentAvailable={nativeMultiAgentAvailable}
+                          onToggleMultiAgent={switchNativeMultiAgent}
                         />
                       )}
                       <ComposerToolMenu
@@ -3396,17 +3580,27 @@ export function CodexAcpView({
           </div>
         </div>
         </div>
-        {(activeSession || draftWorkspacePath) && (
+        {!subagentPanel && (activeSession || draftWorkspacePath) && (
           <CodexWorkspacePanel
             session={activeSession}
             workspacePath={activeSession ? '' : (draftWorkspacePath || '')}
             visible={workspaceOpen}
-            onClose={() => setWorkspaceOpen(false)}
+            onClose={closeWorkspacePanel}
             references={workspaceReferences}
             onAddReference={addWorkspaceReference}
             refreshToken={isNativeAgent ? nativeLaneTick : events.length}
             onChangeCount={setWorkspaceChangeCount}
             copy={t.uiCodexWorkspace}
+          />
+        )}
+        {subagentPanel && activeSession && isNativeAgent && (
+          <SubagentTranscriptPanel
+            sessionId={activeSession.id}
+            initialAgentId={subagentPanel.agentId}
+            selectionRequestId={subagentPanel.selectionRequestId}
+            t={t}
+            theme={theme}
+            onClose={closeSubagentPanel}
           />
         )}
         </div>

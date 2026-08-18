@@ -1,10 +1,11 @@
 // 本文件为命令层测试,借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;跨 await 持有无竞争者,不会死锁。
+// architecture-guard: allow-target-cfg -- artifact 调用链回归需用 Windows 独占句柄模拟 ReplaceFileW 1177 布局
 #![allow(clippy::await_holding_lock)]
 
 use super::prelude::*;
 use super::{
     artifacts::*, attachments::*, files::*, interaction::*, knowledge::*, marketplace::*,
-    personas::*, sessions::*, voice::*, workflows::*,
+    personas::*, sessions::*, voice::*,
 };
 use crate::platform::filesystem::tests::{remove_dir_link, try_link_dir, try_link_file};
 use crate::platform::path_policy::validate_user_path;
@@ -117,66 +118,6 @@ fn write_json(path: &Path, value: serde_json::Value) {
         std::fs::create_dir_all(parent).unwrap();
     }
     std::fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
-}
-
-#[test]
-fn role_logs_merge_real_jsonl_files_and_append_authoritative_failure() {
-    let root = std::env::temp_dir().join(format!(
-        "pinvou3-role-logs-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let state = root.join("_state");
-    std::fs::create_dir_all(&state).unwrap();
-    std::fs::write(
-            state.join("flow_log.jsonl"),
-            concat!(
-                "{\"timestamp\":\"2026-07-21T10:00:00+08:00\",\"event\":\"dispatch\",\"role_id\":\"taizi\"}\n",
-                "{\"timestamp\":\"2026-07-21T10:01:00+08:00\",\"event\":\"agent_failed\",\"role_id\":\"taizi\",\"detail\":\"HTTP 503 upstream unavailable\"}\n",
-                "{\"timestamp\":\"2026-07-21T10:02:00+08:00\",\"event\":\"agent_failed\",\"role_id\":\"zhongshu\"}\n"
-            ),
-        )
-        .unwrap();
-    std::fs::write(
-            state.join("agent_log.jsonl"),
-            "{\"timestamp\":\"2026-07-21T10:00:30+08:00\",\"event\":\"tool_call\",\"role_id\":\"taizi\",\"tool\":\"web_search\"}\n",
-        )
-        .unwrap();
-    write_json(
-        &state.join("workflow_progress.json"),
-        serde_json::json!({
-            "updated_at": "2026-07-21T10:03:00+08:00",
-            "roles": {
-                "taizi": {
-                    "status": "failed",
-                    "error": "subagent 执行失败: HTTP 503 upstream unavailable"
-                }
-            }
-        }),
-    );
-
-    let logs = read_role_logs_from_project(&root, "taizi", 60).unwrap();
-    let events = logs
-        .iter()
-        .filter_map(|record| record.get("event").and_then(serde_json::Value::as_str))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        events,
-        vec!["dispatch", "tool_call", "agent_failed", "failure_state"]
-    );
-    assert_eq!(
-        logs.last()
-            .and_then(|record| record.get("reason"))
-            .and_then(serde_json::Value::as_str),
-        Some("subagent 执行失败: HTTP 503 upstream unavailable")
-    );
-    assert!(!logs
-        .iter()
-        .any(|record| record.get("role_id") == Some(&serde_json::json!("zhongshu"))));
-    let _ = std::fs::remove_dir_all(root);
 }
 
 fn write_test_oauth_marketplace_files(server_name: &str, mcp_server: serde_json::Value) {
@@ -800,6 +741,150 @@ fn write_artifact_text_cleans_temp_file_on_error() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+#[test]
+fn artifact_public_read_prefers_newer_cross_pid_backup_group() {
+    let root =
+        std::env::temp_dir().join(format!("pinvou3-artifact-cross-pid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let target = root.join("note.md");
+    let older_temp = root.join(".note.md.tmp-9001-100");
+    let newer_temp = root.join(".note.md.tmp-12-300");
+    let newer_backup = root.join(".note.md.bak-12-300");
+    std::fs::write(&older_temp, "uncommitted older temp").unwrap();
+    std::fs::write(&newer_temp, "uncommitted newer replacement").unwrap();
+    std::fs::write(&newer_backup, "authoritative backup").unwrap();
+
+    let restored = read_artifact_text_impl(target.to_str().unwrap()).unwrap();
+
+    assert_eq!(restored, "authoritative backup");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), restored);
+    assert!(!older_temp.exists());
+    assert!(!newer_temp.exists());
+    assert!(!newer_backup.exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn artifact_public_read_uses_metadata_when_tokens_are_not_parseable() {
+    let root = std::env::temp_dir().join(format!(
+        "pinvou3-artifact-token-fallback-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let target = root.join("note.md");
+    let older_backup = root.join(".note.md.bak-invalid-old");
+    let newer_backup = root.join(".note.md.bak-invalid-new");
+    std::fs::write(&older_backup, "older authority").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&newer_backup, "newer authority").unwrap();
+
+    assert_eq!(
+        read_artifact_text_impl(target.to_str().unwrap()).unwrap(),
+        "newer authority"
+    );
+    assert!(!older_backup.exists());
+    assert!(!newer_backup.exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(windows)]
+#[test]
+fn artifact_read_recovers_an_occupied_1177_layout_after_release() {
+    use std::cell::RefCell;
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    let _home = test_pinvou_home("pinvou3-artifact-1177-recovery");
+    let md = session_artifact_path("s1", "note.md");
+    std::fs::write(&md, "old").unwrap();
+    let occupied = RefCell::new(None);
+
+    let error = atomic_write_utf8_unlocked_with(&md, "new", |replacement, target, backup| {
+        crate::platform::filesystem::replace_file_atomically_with(
+            replacement,
+            target,
+            backup,
+            |target, _, backup| {
+                std::fs::rename(target, backup)?;
+                *occupied.borrow_mut() = Some(
+                    std::fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(0)
+                        .open(backup)?,
+                );
+                Err(std::io::Error::from_raw_os_error(1177))
+            },
+        )
+    })
+    .unwrap_err();
+
+    assert!(error.to_string().contains("RecoveryRequired"));
+    assert!(!md.exists());
+    let leftovers_while_occupied: Vec<_> = std::fs::read_dir(md.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.contains(".note.md.tmp-") || name.contains(".note.md.bak-")
+        })
+        .collect();
+    assert_eq!(leftovers_while_occupied.len(), 2);
+
+    drop(occupied.borrow_mut().take());
+    assert_eq!(
+        read_artifact_text_impl(md.to_str().unwrap()).unwrap(),
+        "old"
+    );
+    let leftovers_after_recovery: Vec<_> = std::fs::read_dir(md.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.contains(".note.md.tmp-") || name.contains(".note.md.bak-")
+        })
+        .collect();
+    assert!(leftovers_after_recovery.is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn artifact_writes_never_expose_partial_utf8_to_concurrent_readers() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let _home = test_pinvou_home("pinvou3-artifact-concurrent-read");
+    let md = session_artifact_path("s1", "note.md");
+    let old = "a".repeat(32 * 1024);
+    let new = "b".repeat(32 * 1024);
+    std::fs::write(&md, &old).unwrap();
+    let running = Arc::new(AtomicBool::new(true));
+    let reader_running = Arc::clone(&running);
+    let reader_path = md.clone();
+    let old_for_reader = old.clone();
+    let new_for_reader = new.clone();
+    let reader = std::thread::spawn(move || {
+        // Bound the loop so a writer panic cannot leave the reader spinning
+        // forever and hang the test runner.
+        let mut spins = 0;
+        while reader_running.load(Ordering::Acquire) && spins < 1_000_000 {
+            spins += 1;
+            if let Ok(value) = std::fs::read_to_string(&reader_path) {
+                assert!(value == old_for_reader || value == new_for_reader);
+            }
+        }
+    });
+
+    for index in 0..16 {
+        let content = if index % 2 == 0 { &new } else { &old };
+        write_artifact_text_impl(md.to_str().unwrap(), content).unwrap();
+    }
+    running.store(false, Ordering::Release);
+    reader.join().unwrap();
+}
+
 /// accept_plan 切 Yolo 后注入的执行指令必须裹住方案全文 + 带"立即执行"信号——
 /// 否则切了模式但 AI 收到一句空指令,不知道要执行什么(切了白切)。
 #[test]
@@ -821,7 +906,7 @@ fn agentic_guide_mentions_collection_and_kb_search() {
     assert!(g.contains("不要对 XLSX/"));
     assert!(g.contains("绝不凭记忆编造"));
     assert!(g.contains("《团队规范》"));
-    assert!(build_kb_agentic_guide(&[]).contains("《本地知识集》"));
+    assert!(build_kb_agentic_guide(&[]).contains("《知识集》"));
 }
 
 #[test]
@@ -1318,32 +1403,6 @@ fn pick_vault_path_prefers_open_then_latest() {
     assert_eq!(pick_vault_path(j).as_deref(), Some("/A"));
 }
 
-/// 成品归属推断:成品词出现在质检节时必须归被审对象,不归审核者
-/// (天真就近归因实测把成品判给 xingbu——刑部节里"对礼部整合的最终报告
-/// 进行审核"的关键词全在审核者章节内)。
-#[test]
-fn infer_product_bu_attributes_to_audited_not_auditor() {
-    let report = "\
-## 各部成果\n\n\
-### 4. 礼部（libu_1.md）—— 报告撰写与方案整合\n\n\
-核心产出：将各部数据整合为完整的研究报告\n\n\
-### 5. 刑部（xingbu_1.md）—— 方案质量审核验收\n\n\
-核心产出：对礼部整合的最终报告进行全面质量审核\n\n\
-## 结果对账\n\n\
-| 具体方案交付 | ✅ 达成 | 礼部报告提供三套完整方案 |\n";
-    let (bu, score) = infer_product_bu(report).expect("应有推断结果");
-    assert_eq!(bu, "libu", "成品应归被审的礼部,不归审核者刑部");
-    assert!(score >= 8, "多路信号应汇聚到可信阈值,实得 {score}");
-}
-
-/// libu_ 前缀不得误吃 libu_renshi_N.md(后随数字才算点名)。
-#[test]
-fn infer_product_bu_no_prefix_confusion() {
-    let report = "### 吏部（libu_renshi_1.md）—— 流程规范\n\n整合完整的最终成品汇总\n";
-    let (bu, _) = infer_product_bu(report).expect("应有推断结果");
-    assert_eq!(bu, "libu_renshi");
-}
-
 /// L2-1: A 方案放宽 — /tmp 下任意文件可校验通过（不强 $HOME 限制）。
 #[test]
 fn validate_user_path_allows_tmp() {
@@ -1373,7 +1432,7 @@ fn validate_user_path_blocks_ssh() {
 /// L2-3: 系统级敏感前缀拦截 — /etc/shadow 等被列在 BLOCKED_PREFIXES。
 #[test]
 fn validate_user_path_blocks_etc_shadow() {
-    if !crate::platform::capabilities::is_unix() {
+    if !cfg!(unix) {
         return;
     }
     let result = validate_user_path("/etc/shadow");
@@ -1415,6 +1474,226 @@ fn image_attachment_stages_and_guides_image_analyze() {
     assert!(!prompt.contains("没有视觉能力"), "不应再出现无视觉提示");
 
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// ── Native 图片输入(设计 §9.2,阶段 D)─────────────────────────────────
+
+fn mk_image_attachment(
+    basename: &str,
+    path: &Path,
+    byte_size: u64,
+) -> crate::features::files::file_ingest::IngestResult {
+    crate::features::files::file_ingest::IngestResult {
+        kind: "image".into(),
+        basename: basename.into(),
+        path: path.to_string_lossy().to_string(),
+        markdown: None,
+        token_estimate: 0,
+        byte_size,
+        warning: None,
+    }
+}
+
+/// Native(v0.9.5 官方标记方案):文字 + 多图 + 文本附件 → 消息文本含图片
+/// `[Attached image: <path>]` 标记行(按用户选择顺序);不注入"看不到图"
+/// 硬规则、不引导 image_analyze;文本附件 markdown 内联行为与 Fallback
+/// 路径一致;标记路径只来自暂存结果(不接受前端直给路径)。
+#[test]
+fn native_image_message_builds_marker_lines_in_order() {
+    let tmp = std::env::temp_dir().join(format!("pinvou3-native-test-{}", std::process::id()));
+    let ws = tmp.join("workspace");
+    std::fs::create_dir_all(&ws).expect("建 workspace");
+    let src_a = tmp.join("a.png");
+    let src_b = tmp.join("b.jpg");
+    std::fs::write(&src_a, b"\x89PNG\r\n\x1a\nfake-a").expect("写假 png");
+    std::fs::write(&src_b, b"\xff\xd8\xfffake-b").expect("写假 jpg");
+    let text_attachment = mk_attachment("text", "notes.txt", 2, 10);
+
+    let segment = prepare_native_user_message_in_dir(
+        "这几张图和笔记说明了什么？".to_string(),
+        vec![
+            mk_image_attachment("a.png", &src_a, 15),
+            text_attachment,
+            mk_image_attachment("b.jpg", &src_b, 11),
+        ],
+        &ws,
+        "attachments",
+    )
+    .expect("Native 构造应成功");
+
+    assert!(segment.contains("这几张图和笔记说明了什么？"));
+    assert!(
+        !segment.contains("看不到这张图") && !segment.contains("image_analyze"),
+        "Native 不得注入 image_analyze 硬规则提示,得到:\n{segment}"
+    );
+    assert!(
+        !segment.contains(src_a.to_string_lossy().as_ref()),
+        "图片的 workspace 外绝对路径不得进模型消息(设计 §10.1)"
+    );
+    assert!(
+        segment.contains("### a.png (image, 15 bytes)")
+            && segment.contains("### b.jpg (image, 11 bytes)"),
+        "附件清单应保留图片条目"
+    );
+    assert!(
+        segment.contains("row-1,value-1"),
+        "文本附件 markdown 应照旧内联"
+    );
+    // 官方标记行按用户选择顺序出现,路径为暂存后的 workspace 路径。
+    let marker_a = format!(
+        "[Attached image: {}]",
+        ws.join("attachments/a.png").display()
+    );
+    let marker_b = format!(
+        "[Attached image: {}]",
+        ws.join("attachments/b.jpg").display()
+    );
+    let marker_a_pos = segment.find(&marker_a).expect("a.png 标记行必须存在");
+    let marker_b_pos = segment.find(&marker_b).expect("b.jpg 标记行必须存在");
+    assert!(
+        marker_a_pos < marker_b_pos,
+        "标记行按用户选择顺序(先 a 后 b):\n{segment}"
+    );
+    // 暂存产物真实落盘,路径来自暂存结果。
+    assert!(ws.join("attachments/a.png").exists());
+    assert!(ws.join("attachments/b.jpg").exists());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Native: 纯图片消息(空文字 + 图片)允许发送,不伪造用户文字(设计 §9.4)。
+#[test]
+fn native_image_message_allows_pure_image() {
+    let tmp = std::env::temp_dir().join(format!("pinvou3-native-pure-{}", std::process::id()));
+    let ws = tmp.join("workspace");
+    std::fs::create_dir_all(&ws).expect("建 workspace");
+    let src = tmp.join("only.png");
+    std::fs::write(&src, b"\x89PNG\r\n\x1a\nfake").expect("写假 png");
+
+    let segment = prepare_native_user_message_in_dir(
+        String::new(),
+        vec![mk_image_attachment("only.png", &src, 13)],
+        &ws,
+        "attachments",
+    )
+    .expect("纯图片消息应允许");
+
+    // 只有附件清单与标记行,没有伪造的用户文字。
+    assert!(segment.contains("用户附上了以下文件"));
+    assert!(
+        segment.contains(&format!(
+            "[Attached image: {}]",
+            ws.join("attachments/only.png").display()
+        )),
+        "图片标记行必须存在:\n{segment}"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Native: 任一图片暂存失败 → 整条消息 Err,不静默降级为纯文本(设计 §10.2)。
+#[test]
+fn native_image_message_stage_failure_is_error_not_silent_text() {
+    let tmp = std::env::temp_dir().join(format!("pinvou3-native-fail-{}", std::process::id()));
+    let ws = tmp.join("workspace");
+    std::fs::create_dir_all(&ws).expect("建 workspace");
+    let missing = tmp.join("missing.png"); // 故意不创建
+
+    let result = prepare_native_user_message_in_dir(
+        "看图".to_string(),
+        vec![mk_image_attachment("missing.png", &missing, 0)],
+        &ws,
+        "attachments",
+    );
+    let error = result.expect_err("暂存失败必须报错");
+    assert!(
+        error.contains("missing.png") && error.contains("暂存"),
+        "错误应指明哪张图暂存失败: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Native 构造函数对纯文本/非图片附件的回归:与文本拼接路径结果一致。
+#[test]
+fn native_prepare_text_only_and_non_image_regression() {
+    let ws = mk_test_ws("native-regression");
+
+    let text_only =
+        prepare_native_user_message_in_dir("你好".to_string(), Vec::new(), &ws, "attachments")
+            .expect("纯文本");
+    assert_eq!(text_only, "你好");
+
+    let with_text = prepare_native_user_message_in_dir(
+        "查全文".to_string(),
+        vec![mk_attachment("text", "a.txt", 3, 10)],
+        &ws,
+        "attachments",
+    )
+    .expect("文本附件");
+    let legacy = build_message_with_attachments(
+        "查全文".to_string(),
+        vec![mk_attachment("text", "a.txt", 3, 10)],
+        &ws,
+    );
+    assert_eq!(
+        with_text, legacy,
+        "非图片附件路径必须与现有文本拼接结果一致"
+    );
+
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// Unsupported 路径的稳定错误码(设计 §9.2):前端按码匹配,码后必须带
+/// 用户可操作指引。钉住格式防手滑改码。
+#[test]
+fn image_input_unsupported_error_keeps_stable_code() {
+    assert!(super::chat::IMAGE_INPUT_UNSUPPORTED_ERROR.starts_with("image_input_unsupported"));
+    assert!(super::chat::IMAGE_INPUT_UNSUPPORTED_ERROR.contains("不支持图片"));
+    assert!(super::chat::IMAGE_INPUT_UNSUPPORTED_ERROR.contains("视觉模型"));
+}
+
+/// Unknown 与确认不支持共用稳定错误码前缀,但 Unknown 文案必须给出显式确认出口
+/// (设计 §6.3:Unknown 不冒充支持,允许用户手工开启)。
+#[test]
+fn image_input_unknown_error_offers_explicit_confirm_path() {
+    assert!(super::chat::IMAGE_INPUT_UNKNOWN_ERROR.starts_with("image_input_unsupported"));
+    assert!(super::chat::IMAGE_INPUT_UNKNOWN_ERROR.contains("能力未知"));
+    assert!(super::chat::IMAGE_INPUT_UNKNOWN_ERROR.contains("支持图片"));
+}
+
+/// `get_image_input_capability` 返回体的 wire 形状:前端按字段名与字符串值匹配
+/// (选图即时警告),钉住防手滑改字段。
+#[test]
+fn image_input_capability_info_serializes_stable_fields() {
+    let info = super::settings::ImageInputCapabilityInfo {
+        capability: "unknown".to_string(),
+        image_mode: "vision_tool_fallback".to_string(),
+        has_vision_model: true,
+        is_local_endpoint: false,
+        vision_is_local_endpoint: Some(false),
+    };
+    let value = serde_json::to_value(&info).expect("serialize ImageInputCapabilityInfo");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "capability": "unknown",
+            "image_mode": "vision_tool_fallback",
+            "has_vision_model": true,
+            "is_local_endpoint": false,
+            "vision_is_local_endpoint": false,
+        })
+    );
+    // 未配置视觉模型时字段仍稳定出现(为 null),前端按 fail-open 处理。
+    let no_vision = super::settings::ImageInputCapabilityInfo {
+        capability: "unsupported".to_string(),
+        image_mode: "unsupported".to_string(),
+        has_vision_model: false,
+        is_local_endpoint: true,
+        vision_is_local_endpoint: None,
+    };
+    let value = serde_json::to_value(&no_vision).expect("serialize without vision model");
+    assert_eq!(value["vision_is_local_endpoint"], serde_json::Value::Null);
 }
 
 /// 造一个指定 kind / token 估算的 IngestResult,markdown 是 `rows` 行可定位文本。
@@ -1805,7 +2084,7 @@ fn post_reservation_failure_never_unlinks_the_current_path() {
     let _ = std::fs::remove_dir_all(replacement_workspace);
 }
 
-/// 小附件维持全量内联:内容在代码块里,且明确告知无需 File.read。
+/// 小附件维持全量内联:内容在代码块里,且明确告知无需 read_file。
 #[test]
 fn small_attachment_stays_inline() {
     let ws = mk_test_ws("inline");
@@ -1817,7 +2096,7 @@ fn small_attachment_stays_inline() {
     assert!(prompt.contains("row-10,value-10"), "小附件应全量内联");
     assert!(
         prompt.contains("不需要再调 `File(action=\"read\")`"),
-        "内联段应声明无需 File.read"
+        "内联段应声明无需 read_file"
     );
     assert!(!ws.join("attachments").exists(), "小附件不应落盘");
     let _ = std::fs::remove_dir_all(&ws);

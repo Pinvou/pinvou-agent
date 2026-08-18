@@ -2,7 +2,7 @@
 
 > 分支：`feat/code-native-agent`（PR #138，已 rebase 至最新 `main`）
 > 周期：2026-08-01 单日完成，共 19 个开发节点（squash 为 PR 的 6 个提交，见 §4）。
-> 关联文档：`codex-acp.md`（使用与验证）、`multi-agent-acp.md`（多 agent 单一真相源）、`code-plain-decoupling-改动说明.md`（2026-08-05 模式解耦与能力回补）；原 `Codex-ACP-整体架构决策.md` 的决策变更记录由本文第 3 节承接（该文档已随主线清理下线）。
+> 关联文档：`codex-acp.md`（使用与验证）、`multi-agent-acp.md`（多 agent 单一真相源）、`code-mode-解耦与权限持久化-改动说明.md`（模式解耦、能力回补与 mode 持久化的合并留档）；原 `Codex-ACP-整体架构决策.md` 的决策变更记录由本文第 3 节承接（该文档已随主线清理下线）。
 
 ## 1. 背景与目标
 
@@ -43,8 +43,8 @@
 绑项目目录的核心安全设计：
 
 - **执行根**（LLM 面向）：engine cwd、文件工具相对路径根、shell 执行目录。经 `Pinvou3Bridge` 注入的执行根解析器（共享 AcpPool 那份 `SessionAgentStore` 实例）推导；engine spawn（`engine.rs`）与 shell_workspace（`engine_pool.rs`）两个消费点经 `bridge.session_workspace` 自动同源。
-- **账本根**（应用面向）：附件、暂存、审计、产物、远程授权，恒为 `~/.pinvou3/sessions/<sid>/`（`SessionStore::execution_workspace` **一行未改**，25+ 调用点全是账本语义）。
-- 效果：项目目录零污染（无 `attachments/`、`.pinvou3/`、`workflow_audit.jsonl` 写入）、删会话零残留、远程下载授权面不扩大、产物面板不误扫项目。
+- **账本根**（应用面向）：附件、暂存、审计、产物、远程授权，恒为 `~/.pinvou3/sessions/<sid>/`（`SessionStore::execution_workspace` **一行未改**，25+ 调用点全是账本语义）。CodeWhale delegated-agent 的账本、transcript 与协调锁通过 `subagent_state_root` 使用该会话的 `workspace/`；Pinvou 专家由全局专家池生成内存 `fleet.profiles`，不写入账本根。
+- 效果：项目目录零污染（无 `attachments/`、`.pinvou3/`、`workflow_audit.jsonl` 或 Pinvou 专家名册写入）、删会话零残留、远程下载授权面不扩大、产物面板不误扫项目。
 - 例外适配：附件引用在绑项目会话改用绝对路径（相对路径会相对项目根解析落空）。
 
 ### 3.3 前端双车道而非复用 bridge
@@ -61,13 +61,13 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 3.5 配置控件复用策略
 
-聊天页输入框底栏四控件（Plan/Yolo、模型、工具菜单、知识库挂载）搬入代码模块原生车道，视觉对齐 ACP 配置组（`CodexComposerConfigSelect` pill 形态）。关键约束：bridge 的 models/knowledge/interaction 方法绑聊天 active 且草稿态会物化聊天会话，代码车道一律直调 per-session Tauri 命令显式传 sessionId；草稿态选择暂存，建会话后按序应用（model → kb → mode），失败显式报错。
+聊天页输入框底栏四类常驻控件（Plan/Yolo、模型、工具菜单、知识库挂载）搬入代码模块原生车道，模型选择列表中的多智能体会话开关一并复用，视觉对齐 ACP 配置组（`CodexComposerConfigSelect` pill 形态）。关键约束：bridge 的 models/knowledge/interaction 方法绑聊天 active 且草稿态会物化聊天会话，代码车道一律直调 per-session Tauri 命令显式传 sessionId；草稿态选择暂存，建会话后按序应用（model → kb → mode → multi-agent），任一步失败都中止首发并显式报错。
 
 ### 3.6 模式策略对象（2026-08-05 解耦，D-2/D-3）
 
-- `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：`connector_scope()`（连接器禁用集 scope）、`extra_hidden_tools()`（code 恒追加 `present_artifact`；`load_skill` 不在此列——skill 双 scope 治理后按组合目录空否动态决定，见 §8.6）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。
+- `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：模式能力差量查编译期静态表 `MODE_TABLE`（`unavailable_tools`——code 恒追加 `present_artifact`；`load_skill` 不在此列——按组合目录空否动态决定，由表字段 `skills_empty_hides_load_skill` 驱动，见 §8.6；连接器禁用集 scope 即 `policy.mode()` 本身，scope 键 = 模式名）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。能力面分化是编译期常量（能力档案 JSON + 统一解析器已退役，见 `docs/capability-governance.md`）。
 - 共享链路按策略取数：`shape_disallowed_tools` 与 `build_send_message_op`（新增 `session_id` 参数）不再散 `is_code_session` 裸判断；统一查询入口为 `SessionAgentStore::session_mode()` 与 `Pinvou3Bridge::session_policy()`。
-- 效果：改一个模式的策略取值不经过另一个模式的代码路径；新增模式取值时编译器强制审查分支。详细背景与验收见 `code-plain-decoupling-改动说明.md`。
+- 效果：改一个模式的策略取值不经过另一个模式的代码路径；新增模式取值时编译器强制审查分支。详细背景与验收见 `code-mode-解耦与权限持久化-改动说明.md`。
 
 ## 4. 开发节点记录（19 个提交）
 
@@ -197,22 +197,30 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   目录，其余会话与 execution 相同。
 - `session_workspace()` 与 `audit_workspace()` 收敛为该接口的字段，调用方按用途
   显式选择，避免新增调用点时把执行根误当账本根写盘（或反之）。
+- Engine 配置把 `workspace` 设为 `execution`，把 `subagent_state_root` 设为 `ledger`；
+  delegated-agent transcript 与协调状态只读写 `ledger`。多智能体专家名册由全局专家池转换为
+  原生 `fleet.profiles` 随配置提供，不在项目或会话目录生成 `.codewhale/agents/`；个人与项目
+  profile 仍按 CodeWhale 原生优先级加载并允许同名覆盖，而子智能体始终在真实项目目录完成任务。
 
-### 8.3 代码会话工具开关（双 scope）
+### 8.3 代码会话工具开关（按模式 scope）
 
-- 连接器禁用列表按会话类型分开持久化（`disabled_connectors.json` 存
-  `{ plain, code, code_initialized }`，旧版裸数组兼容迁移为 plain）。
-- **安全默认**：code scope 未初始化时（用户从未改过代码会话开关），代码会话默认
-  禁用**所有已安装连接器**（外部能力显式开启）；一旦用户改过 code 开关
-  （`code_initialized=true`），以落盘列表为准。
-- 安装连接器后：code 已初始化时新装连接器默认仍关闭（自动加入 code 禁用集）；
-  未初始化无需落盘（读取时按「默认全禁已装连接器」兜底）。卸载连接器时从
-  plain/code 两个禁用集移除残留 id（含运行时清理路径）。
+- 连接器禁用列表按会话模式 scope 分开持久化（`disabled_connectors.json` 存
+  `{ "scopes": { "<mode>": [...] }, "initialized": [...] }`，scope 键即
+  `SessionMode` 的 kebab-case 名；旧版裸数组与 `{ plain, code,
+  code_initialized }` 对象读时自动迁移）。
+- **安全默认**：某 scope 未初始化时（用户从未改过该类会话开关），按其模式的
+  包默认策略兜底（`SessionMode::pack_default_policy`）——code 为 DenyAll：
+  默认禁用**所有已安装连接器**（外部能力显式开启）；plain 为 AllowAll：
+  默认全开。一旦用户改过该 scope 开关（进入 `initialized`），以落盘列表为准。
+- 安装连接器后：DenyAll 且已初始化的 scope 中新装连接器默认仍关闭（自动加入
+  禁用集）；未初始化无需落盘（读取时按「默认全禁已装连接器」兜底）。卸载
+  连接器时从所有 scope 禁用集移除残留 id（含运行时清理路径）。
 - 前端工具菜单按会话类型传 `scope`（普通 = `plain` / 代码 = `code`），读写各自
   scope；`shape_disallowed_tools` 经 `SessionPolicy` 策略化（§3.6）：code 会话
-  按 `policy.connector_scope()` 取 code scope 禁用集替换 plain scope 的（非连接器
-  禁用如 `kb_search` 保留），并按 `policy.extra_hidden_tools()` 恒隐藏
-  `present_artifact`；`load_skill` 按该会话组合目录是否为空动态决定（§8.6）。
+  按 `policy.mode()` 取 code scope 禁用集替换 plain scope 的（非连接器
+  禁用如 `kb_search` 保留），并按模式能力静态表 `MODE_TABLE` 的
+  `unavailable_tools` 恒隐藏 `present_artifact`；`load_skill` 按该会话组合
+  目录是否为空动态决定（表字段 `skills_empty_hides_load_skill` 驱动，§8.6）。
 
 ### 8.4 远程端过滤原生代码会话事件
 
@@ -250,11 +258,12 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 8.6 skill 按 scope 治理（双 scope 持久化 + 组合目录）
 
-- **开关双 scope 持久化**：`~/.pinvou3/disabled_skills.json` 存
-  `{ plain, code, code_initialized, project_skills_enabled }`（与
-  `disabled_connectors.json` 同构）；旧数据迁移——裸数组 → plain scope，
+- **开关按模式 scope 持久化**：`~/.pinvou3/disabled_skills.json` 存
+  `{ "scopes": { "<mode>": [...] }, "initialized": [...], project_skills_enabled }`
+  （与 `disabled_connectors.json` 同构）；旧数据迁移——裸数组 → plain scope，
   旧版借道 `disabled_connectors.json` 的 `skill:<id>` 条目 → 提取进 plain 并
-  清除连接器文件残留。**安全默认**：code scope 未初始化时默认禁用所有已安装
+  清除连接器文件残留，旧 `{ plain, code, code_initialized }` 对象 → 新 map。
+  **安全默认**：DenyAll 模式（code）scope 未初始化时默认禁用所有已安装
   技能（外部能力显式开启）——这一步同时封闭 P1 泄露面（code 默认 catalogue
   为空）。
 - **组合目录物化**：`EngineConfig.skills_dir` 按会话指向
@@ -280,7 +289,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   `.pinvou/skills` 为 pinvou3 自有约定）在**策略开关默认关**
   下经同一物化通道拷入组合目录；开启路径有注入风险警告（项目内文本是
   prompt-injection 面）。catalogue 显示组合目录路径而非 bundle 内部结构。
-- 详细设计、验收矩阵与遗留见 `docs/skill-scope-governance-改动说明.md`。
+- 治理机制的当前形态见 `docs/capability-governance.md`。
 
 ### 8.7 权限默认值与两层持久化（2026-08-06）
 
@@ -333,13 +342,12 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
    建议逐步上提为 `code_sessions` / `CodeView`，两条链路分别做 adapter/hook。
 2. CI 增强：正式 `rust-test` 目前 skipped（Windows 只 `--no-run`），建议加
    `ci:full-rust` 让完整测试成为该 head 的正式 check。
-3. 代码会话工具/技能 profile（审阅建议②，恢复登记）：代码会话当前继承全集
+3. 代码会话工具/技能分化（审阅建议②，已定论）：代码会话当前继承全集
    工具，已落地的隔离有——连接器工具按 scope 整形（§8.3）、隐藏
    `present_artifact`、skill 双 scope 治理（§8.6：组合目录过滤 catalogue +
    `load_skill` 按目录空否放行），且上述差异已收编进 `SessionPolicy` 策略对象
-   （§3.6，profile 的载体与挂载点）。skill 维度已由
-   `docs/skill-scope-governance-改动说明.md` 落地（原 X-1 标记项关闭）；其余
-   工具维度的 profile 化（如代码会话专用工具面）待后续评审一并实施。
+   （§3.6）。工具面进一步分化的形态已定为**编译期常量**（能力档案 JSON 方案
+   评审后退役，见 `docs/capability-governance.md`），原 X-1 标记项关闭。
 
 ## 11. 过程产物
 

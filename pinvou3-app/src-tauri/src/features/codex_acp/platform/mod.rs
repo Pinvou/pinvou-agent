@@ -39,10 +39,6 @@ pub(super) fn managed_adapter_name() -> &'static str {
     current::MANAGED_ADAPTER_NAME
 }
 
-pub(super) fn bundled_adapter_name() -> &'static str {
-    current::BUNDLED_ADAPTER_NAME
-}
-
 pub(super) fn bridge_node_relative_path() -> PathBuf {
     current::bridge_node_relative_path()
 }

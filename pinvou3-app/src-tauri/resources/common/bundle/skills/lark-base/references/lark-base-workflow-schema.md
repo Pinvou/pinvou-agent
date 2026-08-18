@@ -696,7 +696,7 @@ $.{stepId}.{pathId}.{childPathId}.{grandChildPathId}
 
 条件限制：
 
-- 若场景为单聊（`receive_scene = "Chat"`），则 `SenderGroup` 和 `MessageLink` 不可用
+- 若场景为单聊（`receive_scene = "chat"`），则 `SenderGroup` 和 `MessageLink` 不可用
 
 ---
 
@@ -944,7 +944,7 @@ $.{stepId}.{fieldId}.fileToken    → 文件 Token 列表（array<string>，仅�
 }
 ```
 
-**operator 可选值：** `is` / `isNot` / `containsAny` / `doesNotContainAny` / /`containsAll`/ `isEmpty` / `isNotEmpty` / `isGreater` / `isGreaterEqual` / `isLess` / `isLessEqual`
+**operator 可选值：** `is` / `isNot` / `containsAny` / `doesNotContainAny` / `containsAll` / `isEmpty` / `isNotEmpty` / `isGreater` / `isGreaterEqual` / `isLess` / `isLessEqual`
 
 ### RecordFilterInfo
 ** 由于 conjunction 只支持 and，若需要实现 字段X 等于 A 或 B，你可以使用 containsAny

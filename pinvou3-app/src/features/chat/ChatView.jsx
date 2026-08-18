@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Palette, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Palette, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -575,6 +575,15 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const chatItems = bs ? bs.chatItems : [];
       const activeSessionId = bs ? bs.activeSessionId : null;
       const busy = bs ? bs.busy : false;
+      // 停止按钮 single-flight:busy 在首次 cancel_generation 返回前就复位,
+      // 双击会发第二个并发取消请求。cancellingSessionIds 在 invoke 完成前禁用
+      // **对应 session** 的按钮（按 session 集合记录而非全局布尔或单个 sid：
+      // ChatView 在切换 active session 时不 remount，全局 single-flight 会阻断
+      // 新会话的停止，直到旧会话的 invoke 返回；单个 sid 无法表示多个会话
+      // 并发取消——A 取消中切到 B 发起取消再切回 A，A 的标记会被 B 覆盖导致
+      // 按钮误启用。Set 让各会话独立记录，配合后端 turn generation 守护，
+      // 消除跨轮误取消窗口）。
+      const [cancellingSessionIds, setCancellingSessionIds] = useState(() => new Set());
       const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
@@ -642,6 +651,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         pinvouModeStateRef.current = restored;
         setPinvouModeState(restored);
       }, [activeSessionId, chatItems.length]);
+      // 把当前工作区 lane（work/design）同步给 bridge：草稿态 mode 的全局默认
+      // 按 lane 三分（工作/设计/代码各记各的），lane 是纯前端概念，bridge
+      // 自身不读 localStorage。
+      useEffect(() => {
+        if (bridge.available && bridge.interaction && bridge.interaction.setModeLane) {
+          bridge.interaction.setModeLane(pinvouMode);
+        }
+      }, [pinvouMode]);
       useEffect(() => {
         setSelectedDesignElement(null);
         updatePinvouModeState({ type: 'set-selected-design-element', elementId: undefined });
@@ -825,7 +842,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               ? chatViewCopy.placeholderWorkDocument
               : t.placeholder
         : t.placeholder;
-      const hasSkill = !!(bs && bs.workflow && bs.workflow.activeSkillName);
       const isScheduledTaskCreationChat = !!(bs && bs.scheduledTaskCreationSessionId && bs.activeSessionId === bs.scheduledTaskCreationSessionId);
       const scheduledRunContext = bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === bs.activeSessionId
         ? bs.scheduledRunContext
@@ -859,7 +875,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         return () => window.clearInterval(timer);
       }, [busy, useUnifiedConversationUi, bs && bs.thinking && bs.thinking.startedAt]);
 
-      // 工作流启用时预填输入框
+      // 外部入口可预填输入框并把焦点移到末尾。
       useEffect(() => {
         if (prefill) {
           setInputText(prefill);
@@ -1257,6 +1273,41 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (bridge.available) bridge.models.loadSessionModel(activeSessionId);
       }, [activeSessionId]);
 
+      // 普通会话选图即时警告(阶段 G):当前模型图片路由为 unsupported 时在附件区提示,
+      // 仅提示不拦截,发送时后端仍按同一路径复核(chat 命令 image_input_unsupported)。
+      // scheduled 会话发送时不做图片路由(固定工具兜底),这里同样不提示。
+      const hasImageAttachment = attachments.some(a => !!(a && a.result && a.result.kind === 'image'));
+      const isScheduledSession = !!(scheduledRunContext || isScheduledTaskCreationChat);
+      const sessionModelKey = (bs && bs.currentSessionModelId) || (bs && bs.activeModelId) || '';
+      const [imageInputInfo, setImageInputInfo] = useState(null);
+      useEffect(() => {
+        if (!hasImageAttachment || isScheduledSession || !bridge.available
+          || !bridge.models || typeof bridge.models.getImageInputCapability !== 'function') {
+          setImageInputInfo(null);
+          return undefined;
+        }
+        let cancelled = false;
+        bridge.models.getImageInputCapability(activeSessionId)
+          .then(info => { if (!cancelled) setImageInputInfo(info || null); })
+          // 查询失败(如凭据未备/旧后端无此命令)按无警告处理,绝不误报。
+          .catch(() => { if (!cancelled) setImageInputInfo(null); });
+        return () => { cancelled = true; };
+      }, [hasImageAttachment, isScheduledSession, activeSessionId, sessionModelKey, bs && bs.savedModels]);
+      const imageInputWarning = imageInputInfo && imageInputInfo.image_mode === 'unsupported'
+        ? (imageInputInfo.capability === 'unknown' ? t.uiAttachments.imageUnknown : t.uiAttachments.imageUnsupported)
+        : '';
+      // 云上传隐私提示(§11.8/§11.9):图片字节离开本机时告知去向——native 直发看主模型
+      // 端点,fallback 看兜底视觉模型端点(图片实际发给视觉模型);本机 loopback 不显示
+      // 任何云上传字样;查询失败或旧后端无对应字段时 fail-open 不显示。
+      const imagePrivacyHint = imageInputInfo && (
+        (imageInputInfo.image_mode === 'native' && imageInputInfo.is_local_endpoint === false)
+        || (imageInputInfo.image_mode === 'vision_tool_fallback' && imageInputInfo.vision_is_local_endpoint === false)
+      )
+        ? (imageInputInfo.image_mode === 'vision_tool_fallback'
+          ? t.uiAttachments.imageCloudUploadVision
+          : t.uiAttachments.imageCloudUpload)
+        : '';
+
       async function handleSend() {
         // 不再因 busy 拦截:bridge.chat.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
         if (isMultiAgentReadOnly || !canSend) return;
@@ -1282,8 +1333,26 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
       }
 
-      function handleCancel() {
-        if (bridge.available) bridge.chat.cancelGeneration();
+      async function handleCancel() {
+        // single-flight:同一 session 已在取消中则忽略后续点击，避免并发
+        // cancel_generation。按 session 集合记录（而非全局布尔或单个 sid）——
+        // 多个会话可以同时处于取消中（取消 A 期间切到 B 发起取消，再切回 A，
+        // A 的标记不能被 B 覆盖）。各自 Promise 完成时只删除对应 sid。
+        if (!bridge.available || cancellingSessionIds.has(activeSessionId)) return;
+        const cancellingSid = activeSessionId;
+        setCancellingSessionIds(prev => new Set(prev).add(cancellingSid));
+        try {
+          await bridge.chat.cancelGeneration();
+        } finally {
+          // 只清当前 session 自己的取消标记；若期间已切到别的会话并开始了
+          // 新的取消（cancellingSessionIds 里已有其他 sid），不要误清对方。
+          setCancellingSessionIds(prev => {
+            if (!prev.has(cancellingSid)) return prev;
+            const next = new Set(prev);
+            next.delete(cancellingSid);
+            return next;
+          });
+        }
       }
 
       function finishFloatingVoicePointer(pointerId, event, releaseCapture, reason) {
@@ -1487,7 +1556,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               空态不滚动，仍需 paddingBottom 让欢迎语在悬浮输入框上方居中。 */}
           <div ref={scrollRef} data-testid="chat-scroll"
             style={hasMessages ? undefined : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }}
-            className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+            className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col pt-20 max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
@@ -1733,6 +1802,19 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               formatError={formatAttachmentError}
               className="mb-2 px-2"
             />
+            {imageInputWarning && (
+              <div data-testid="image-capability-warning"
+                className="flex items-center gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] leading-5 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                <AlertTriangle size={14} className="shrink-0 text-amber-500" />
+                <span className="min-w-0">{imageInputWarning}</span>
+              </div>
+            )}
+            {imagePrivacyHint && (
+              <div data-testid="image-privacy-hint"
+                className="mb-2 px-3 text-[11px] leading-4 text-black/45 dark:text-white/45">
+                {imagePrivacyHint}
+              </div>
+            )}
             {voiceNotice && (
               <div className={`flex items-center justify-between gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] ${
                 voiceInput.status === 'failed'
@@ -1913,8 +1995,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   </button>
                 )}
                 {busy ? (
-                  <button onClick={handleCancel}
-                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 transition-colors">
+                  <button onClick={handleCancel} disabled={cancellingSessionIds.has(activeSessionId)}
+                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                     <StopCircle size={20} />
                   </button>
                 ) : (() => {

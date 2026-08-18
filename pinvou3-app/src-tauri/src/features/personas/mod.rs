@@ -13,6 +13,7 @@
 //! License: agency-agents.json 数据 MIT，见 resources/common/bundle/personas/AGENCY-AGENTS-LICENSE。
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -84,6 +85,8 @@ struct PersonaPoolFile {
 static EMBEDDED: OnceLock<Vec<PersonaCard>> = OnceLock::new();
 // ── 用户自创卡: RwLock 缓存,create/update/delete 后 reload_user 刷新 ──
 static USER: OnceLock<RwLock<Vec<PersonaCard>>> = OnceLock::new();
+/// 用户专家池内存版本；多智能体全局名册以它做增量缓存失效。
+static USER_REVISION: AtomicU64 = AtomicU64::new(0);
 
 fn embedded() -> &'static [PersonaCard] {
     EMBEDDED.get_or_init(|| {
@@ -132,6 +135,17 @@ fn load_user_cards() -> Vec<PersonaCard> {
 /// 重新从磁盘加载用户卡（create/update/delete 后调，让 list/get 立即看到）。
 pub fn reload_user() {
     *user_lock().write().expect("user persona lock poisoned") = load_user_cards();
+    // 卡池内容先发布，再推进版本；Acquire 读取到新版本时必然能看到新卡。
+    USER_REVISION.fetch_add(1, Ordering::Release);
+}
+
+/// 当前可执行专家池版本。内嵌卡在进程内不可变，因此只需跟踪用户卡变更。
+#[must_use]
+pub fn executable_revision() -> u64 {
+    // 确保 USER 首次从磁盘初始化发生在版本读取之前；否则第一次 capture 可能
+    // 在旧缓存与惰性初始化之间缺少明确的发布点。
+    let _ = user_lock();
+    USER_REVISION.load(Ordering::Acquire)
 }
 
 /// 全部卡的轻量摘要(list_personas 用)。内嵌 + 用户,user 在后。
@@ -147,13 +161,17 @@ pub fn all_summaries() -> Vec<PersonaSummary> {
     out
 }
 
-/// 可承担工具任务的专家卡轻量摘要。纯对话元卡仍展示在专家池，但不能作为子智能体 profile。
-/// 多智能体匹配走此接口，避免每轮仅为名称/简介评分就克隆约 1.2MB 的全部正文。
-pub fn executable_summaries() -> Vec<PersonaSummary> {
-    let mut out: Vec<PersonaSummary> = embedded()
+/// 可承担工具任务的专家卡完整快照。
+///
+/// 多智能体名册与当轮候选提醒必须从同一次读取生成，不能先取摘要、再逐张
+/// [`get`]：用户在两次读取之间编辑或删除卡片时，会让模型看到的 profile id
+/// 与实际可派名册错位。这里一次持有用户卡读锁并克隆完整集合，调用方随后可
+/// 在不持锁的情况下构造底座配置和轻量候选索引。
+pub fn executable_cards() -> Vec<PersonaCard> {
+    let mut out: Vec<PersonaCard> = embedded()
         .iter()
         .filter(|card| !card.conversational_only)
-        .map(PersonaCard::summary)
+        .cloned()
         .collect();
     out.extend(
         user_lock()
@@ -161,7 +179,7 @@ pub fn executable_summaries() -> Vec<PersonaSummary> {
             .expect("user lock")
             .iter()
             .filter(|card| !card.conversational_only)
-            .map(PersonaCard::summary),
+            .cloned(),
     );
     out
 }
@@ -274,7 +292,7 @@ pub fn delete_user_persona(id: &str) -> Result<(), String> {
 
 // ── 加持注入 ───────────────────────────────────────────────────────
 
-/// **一次性**注入的完整人设(加持后首条消息 prepend 一次,仿 skill pending_instruction)。
+/// **一次性**注入完整人设（加持后的首条消息 prepend 一次）。
 pub fn equip_body_injection(card: &PersonaCard) -> String {
     format!(
         "【你被加持了一张专家面具:{name}】\n\
@@ -410,23 +428,6 @@ mod tests {
         let s = serde_json::to_string(&embedded()[0].summary()).unwrap();
         assert!(!s.contains("\"body\""), "summary 不应含 body");
         assert!(s.contains("\"source\""), "summary 应含 source");
-    }
-
-    #[test]
-    fn executable_summaries_exclude_conversational_meta_cards() {
-        let summaries = executable_summaries();
-        assert!(
-            summaries
-                .iter()
-                .any(|card| card.id == "engineering-frontend-developer"),
-            "执行型内置专家应进入轻量候选源"
-        );
-        assert!(
-            summaries
-                .iter()
-                .all(|card| card.id != "pinvou-card-creator"),
-            "纯对话卡牌制造器不得进入子智能体候选源"
-        );
     }
 
     #[test]

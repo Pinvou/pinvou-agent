@@ -13,6 +13,10 @@
     var bt = context.bt;
     var onSessionEvent = context.onSessionEvent;
     var runSyncOnSession = context.runSyncOnSession;
+    // 权威 modeState 写回收敛点（bridge.js 共享，评审 P1）：事件负载携带的
+    // modeState 更新也必须 bump epoch，否则在途 syncModeState 旧读会覆盖
+    // 事件写回的权威值。
+    var applyAuthoritativeModeState = context.applyAuthoritativeModeState;
     var addChatItem = context.addChatItem;
     var toolCallAlreadyStarted = context.toolCallAlreadyStarted;
     var toolCallAlreadyFinished = context.toolCallAlreadyFinished;
@@ -238,11 +242,7 @@
   // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
-  function isInternalRuntimeUserMessage(value) {
-    var text = String(value || "").trim();
-    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
-      /<\/codewhale:runtime_event>\s*$/i.test(text);
-  }
+  var isInternalRuntimeUserMessage = context.isInternalRuntimeUserMessage;
 
   function applyRemoteUserMessageEvent(e, force) {
     var payload = e && e.payload || {};
@@ -292,10 +292,9 @@
           }
         });
         var acceptedMode = payload.mode_state || payload.modeState;
-        state.modeState = {
-          mode: String(acceptedMode && acceptedMode.mode || "yolo"),
-          multiAgent: !!(acceptedMode && acceptedMode.multi_agent),
-        };
+        // 事件按 sid 定向写回 + bump epoch（此回调在 runSyncOnSession(sid) 内，
+        // sid 即触发会话；不能用 active 兜底，await 竞态下两者可能不同）。
+        if (acceptedMode) applyAuthoritativeModeState(sid, acceptedMode);
       }
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
       if (!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage) {
@@ -628,7 +627,9 @@
     }
 
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
-    var outForCard = (meta && meta.name === "load_skill") ? bt("skillContentHidden") : p.output;
+    var outForCard = (meta && meta.name === "load_skill")
+      ? bt("skillContentHidden")
+      : context.toolResultDisplayContent(p.output);
     var updatedToolItem = updateToolItem(p.id, outForCard, p.success);
     var shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
     if (updatedToolItem && shellTaskId) {
@@ -883,8 +884,6 @@
   listen("chat:user_input_required", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
     if (hasChatItemForTool("user_input", p.id)) return;
-    if (state.workflow.run.status === "stopped" &&
-        state.workflow.run.sessionId && p.session_id === state.workflow.run.sessionId) return;
     var questions = p.questions || [];
     if (!Array.isArray(questions) || questions.length === 0) return;
     addChatItem({
@@ -985,6 +984,20 @@
       return { collectionId: collectionId, enabled: typeof entry === "object" ? entry.enabled !== false : true };
     }).filter(Boolean);
   }
+  function normalizeMountedRemoteCollections(value) {
+    if (!Array.isArray(value)) return [];
+    var seen = Object.create(null);
+    return value.map(function (entry) {
+      if (!entry || typeof entry !== "object") return null;
+      var serverId = entry.serverId != null ? entry.serverId : entry.server_id;
+      var collectionId = entry.collectionId != null ? entry.collectionId : entry.collection_id;
+      if (!serverId || collectionId == null) return null;
+      var key = String(serverId) + ":" + String(collectionId);
+      if (seen[key]) return null;
+      seen[key] = true;
+      return { serverId: serverId, collectionId: collectionId, enabled: entry.enabled !== false };
+    }).filter(Boolean);
+  }
   listen("remote_control:kb_mount_changed", function (e) {
     var p = e && e.payload;
     if (!p || !state.activeSessionId) return;
@@ -1011,6 +1024,26 @@
       state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
       notify();
     }
+    function commitRemote(value) {
+      if (generation !== kbMountSyncGeneration || state.activeSessionId !== sessionId) return;
+      if (!Array.isArray(value)) return;
+      state.mountedRemoteCollections = normalizeMountedRemoteCollections(value);
+      notify();
+    }
+    var payloadRemote = Array.isArray(p.remote_collections)
+      ? p.remote_collections
+      : (Array.isArray(p.remoteCollections) ? p.remoteCollections : null);
+    if (payloadRemote) {
+      // Collection deletion carries the post-cascade list, so the composer drops its chip
+      // synchronously instead of waiting for another IPC round trip.
+      commitRemote(payloadRemote);
+    } else {
+      // Older producers omit remote mounts. Re-read the session fact source so this shared event
+      // still converges both local and remote mount state.
+      invoke("session_mounted_remote_collections", { sessionId: sessionId })
+        .then(function (collections) { commitRemote(collections); })
+        .catch(function () {});
+    }
     // 事件可能由并发命令乱序发出；重新读取后端事实源，并以 generation 防止旧请求晚回覆盖。
     invoke("session_mounted_collections_snapshot", { sessionId: sessionId })
       .then(function (snapshot) { commit(snapshot); })
@@ -1036,7 +1069,7 @@
     notify();
   });
 
-  // 知识库 embedding 模型下载进度（download → verify → extract → done）
+  // 知识库 embedding 模型下载进度（download → verify → prepare → done）
   listen("kb_model:progress", function (e) {
     var p = e && e.payload;
     if (!p) return;
@@ -1057,7 +1090,9 @@
     var p = e.payload || {};
     var planId = String(p.plan_id || p.planId || "").trim();
     var readyMode = p.mode_state || p.modeState;
-    if (readyMode) state.modeState = { mode: readyMode.mode || "yolo", multiAgent: !!readyMode.multi_agent };
+    // 事件负载的权威 mode 写回走收敛点（bump epoch 防在途旧读覆盖；
+    // sid 取事件 payload，onSessionEvent 内与 state.activeSessionId 一致）。
+    if (readyMode) applyAuthoritativeModeState(state.activeSessionId, readyMode);
     if (planId && state.chatItems.some(function (item) {
       return item && item.type === "plan_card" && String(item.planId || "") === planId;
     })) return;
@@ -1092,29 +1127,13 @@
           item.statusLabel = bt("planDiscarded");
         }
       });
+      var resolvedMode = p.mode_state || p.modeState;
+      // 事件负载的权威 mode 写回走收敛点（bump epoch 防在途旧读覆盖），
+      // 与 web 版对齐：方案在别处（另一窗口/远端）被 discard 时 chip 须刷新。
+      if (resolvedMode) applyAuthoritativeModeState(sid, resolvedMode);
     });
     notify();
   });
-
-  // workflow:project_started —— start_workflow 后端建项目+绑定 session 后 emit。
-  // 必须真正 switchToSession 切过去（load 新 session 的空 messages + sync engine +
-  // syncSessionSkill），否则只设 activeSessionId 会让旧对话的 messages 残留在屏上，
-  // 顶部又叠加 PhaseChips，看起来像"旧对话被 append 了项目名"（Phase A 关键 bug）。
-  // refreshHistoryList 先跑让新 session 进 sidebar 列表 + 刷 bindings(🧭)。
-  // switchToSession 内部已调 syncSessionSkill，切完 App useEffect 自动 setCurrentView('chat')。
-  // [卡片流] start_workflow 后端建项目+绑定 session 后 emit。
-  // 新设计：**不再 switchToSession 跳聊天页** —— 用户停在工作流看板，
-  // 工作流 session 作为后台 session 跑，看板靠下面的 workflow:* 事件按 session_id 驱动。
-  listen("workflow:project_started", async function (e) {
-    var p = e.payload || {};
-    state.workflow.run = {
-      active: true, sessionId: p.session_id || null, projectDir: p.project_dir || null,
-      scenario: p.scenario || null, status: "running", agents: {}, cards: [], selectedRole: null,
-    };
-    await refreshHistoryList();
-    notify();
-  });
-
 
     return {
       latestTimelineCompletion: latestTimelineCompletion,

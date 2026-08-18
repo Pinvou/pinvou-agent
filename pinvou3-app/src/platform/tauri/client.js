@@ -48,6 +48,14 @@ export function openTauriDialog(options) {
   return open(options);
 }
 
+export function saveTauriDialog(options) {
+  const save = runtime()?.dialog?.save;
+  if (typeof save !== 'function') {
+    return Promise.reject(new Error('Tauri dialog.save is unavailable'));
+  }
+  return save(options);
+}
+
 function windowApi() {
   const api = runtime()?.window;
   if (!api) throw new Error('Tauri window API is unavailable');

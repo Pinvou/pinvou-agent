@@ -34,7 +34,7 @@
 - **日期/空值比较必须防空**：用户说"过期的标红"时，除了 `TODAY()`，公式必须排除空单元格，否则空白格也会被误判为"早于今天"而全表标红。正确公式：`=AND(E1<>"", E1<=TODAY())`；错误公式：`=E1<=TODAY()`（空值会被当作 0 判为过期）
 - **公式条件注意引用方式**：自定义公式条件中的单元格引用需要根据实际场景选择相对/绝对引用（如 `=E1<=TODAY()` 而非 `=$E$1<=TODAY()`，后者只比较一个格）
 
-⚠️ **用户明确要求"辅助列+条件格式"两步走时，禁止用 `expression` 绕过（高频致命错误）**：当用户说以下任意一种表达时，必须按两步走（先建辅助列 → 再基于辅助列做条件格式），**禁止**直接用一个 `rule_type: "expression"` 公式一步完成：
+⚠️ **用户明确要求"辅助列+条件格式"两步走时，禁止用 `expression` 绕过**：当用户说以下任意一种表达时，必须按两步走（先建辅助列 → 再基于辅助列做条件格式），**禁止**直接用一个 `rule_type: "expression"` 公式一步完成：
 
 - "**增加辅助列**，再/然后标记……"
 - "**先计算/判断** XX **是否** YY，**再**标记……"
@@ -42,6 +42,8 @@
 - 明确要求用 "辅助列"、"辅助字段"、"判断列"、"标记列"
 
 **正确做法（两步走）**：
+
+Step 1 的 `+cells-set` 及 `--copy-to-range` 等 flag 以 `lark-sheets-write-cells` 为准。
 
 ```
 Step 1: `+cells-set` 在新列写判断公式（形成"是/否"或布尔辅助列）
@@ -170,7 +172,7 @@ lark-cli sheets +cond-format-create --url "..." --sheet-id "$SID" \
 lark-cli sheets +cond-format-delete --url "..." --sheet-id "$SID" --rule-id "$RULE_ID" --yes
 ```
 
-> 一次只删一个 `--rule-id`。要删**多个**条件格式时，先 `+cond-format-list` 拿到各 `rule-id`，再用 `+batch-update` 把多个 `+cond-format-delete` 合并为单次原子提交，不要逐个调用。
+> 一次只删一个 `--rule-id`。要删**多个**条件格式时，先 `+cond-format-list` 拿到各 `rule-id`，再用 `+batch-update` 把多个 `+cond-format-delete` 合并为单次批量提交（fail-fast、不回滚），不要逐个调用。
 
 ### Validate / DryRun / Execute 约束
 

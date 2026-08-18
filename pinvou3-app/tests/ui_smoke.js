@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * pinvou3 前端 UI 冒烟回归测试 — headless chromium + mock TauriBridge,加载真 src/index.html。
- * 覆盖三条易回归的前端通路:
- *   ① resumeWorkflowOnBoot:有僵尸 run 时启动仍落草稿页(activeSessionId=null)+ 只挂看板,不劫持聊天会话。
+ * 覆盖易回归的前端通路:
+ *   ① 启动保持在草稿页(activeSessionId=null)。
  *   ② 工具商店渲染出 Obsidian 与钉钉连接器卡。
  *   ③ 聊天流产物卡(artifact_card)挂出「品/悟」召唤 pinvou 按钮。
  *   ④ 记忆候选事件渲染卡片，且确认/忽略/不再提示分别调用正确后端命令。
@@ -41,17 +41,14 @@ const CHROME = process.env.CHROME ||
 if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome,可用 env CHROME=/path/to/chromium 指定'); process.exit(2); }
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-smoke-'));
 
-// mock TauriBridge:find_resumable_run 返回僵尸 run;会话同时覆盖 write_file、
-// MCP producer 和含 path 的 exec_shell 诊断结果，验证只有真实 producer 触发 artifact。
+// mock TauriBridge 会话同时覆盖 write_file、MCP producer 和含 path 的
+// exec_shell 诊断结果，验证只有真实 producer 触发 artifact。
 function injectSource() {
   return `(function(){
     window.__TAURI_EVENT_HANDLERS__={};
     window.__TAURI_INVOKES__=[];
     window.__KB_MODEL_STATUS__={installed:true,ready:true,loading:false};
     window.__KB_MODEL_DOWNLOAD_ARGS__=[];
-    const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
-    const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
-    const WF_TEMPLATE={id:'sansheng-liubu',name:'三省六部帮你办',enabled:true,scenarios:['sansheng_liubu'],ui:{header:'🏛️ 三省六部帮你办',template:{title:'🏛️ 三省六部帮你办',badge:'11 agent',desc:'太子接旨 → 中书省起草 → 门下省审议 → 尚书省派单 → 六部并行办差 → 回奏呈报。'},agentDefs:[{id:'taizi',name:'太子',color:'#C9A227'},{id:'zhongshu',name:'中书省',color:'#4285F4'}],lanes:[{lane:0,title:'接旨',agents:['taizi']},{lane:1,title:'起草',agents:['zhongshu']}]}};
     let SESSIONS=[
       {id:'s-pinned-old',title:'置顶旧会话',created_at:'2026-06-01T08:00:00Z',updated_at:'2026-06-01T08:00:00Z',pinned:true,pinned_at:'2026-07-20T08:00:00Z'},
       {id:'s-attachment',title:'看看这个\\n\\n📎 PINV',title_attachment_names:['PINVOU-M0-开源决策基线.md'],created_at:Date.now()-2000,updated_at:Date.now()-2000},
@@ -117,17 +114,6 @@ function injectSource() {
         case 'ignore_pending_memory': return Promise.resolve({value:true});
         case 'never_pending_memory': return Promise.resolve({value:true});
         case 'check_for_update': return Promise.resolve({available:false});
-        case 'find_resumable_run': return Promise.resolve(ZOMBIE);
-        case 'get_workflow_state': return Promise.resolve(WF_STATE);
-        case 'get_role_logs': return Promise.resolve([
-          {timestamp:'2026-07-21T10:00:00+08:00',event:'agent_failed',role_id:'taizi',agent_id:'agent_diag01',category:'permission',reason:'未产出任何文件；最后一次工具错误: tool write_file failed: access denied',detail:'Tool write_file is not permitted for the read-only custom role'},
-          {timestamp:'2026-07-21T10:00:01+08:00',event:'agent_failure_terminal',role_id:'taizi',reason:'重试次数已用尽',attempt:'3',max_retries:'3'},
-        ]);
-        case 'start_workflow': return Promise.resolve({session_id:'s-kick-fail',project_dir:'/x/kick-fail'});
-        case 'kick_workflow': return window.__KICK_WORKFLOW_ERROR__
-          ? Promise.reject(new Error('模型服务预检失败：HTTP 401'))
-          : Promise.resolve('spawning');
-        case 'stop_workflow': window.__STOP_WORKFLOW_ARGS__=args; return Promise.resolve({ok:true,session_id:'s-zombie',scenario:'sansheng_liubu',brief:{user_request_raw:'原始三省六部需求'}});
         case 'check_dependencies': return Promise.resolve([]);
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'create_session': return Promise.resolve({id:'s-new',metadata:{id:'s-new'}});
@@ -175,7 +161,6 @@ function injectSource() {
           {id:7,name:'项目资料',docCount:3},
           {id:8,name:'团队规范',docCount:5},
         ]);
-        case 'list_workflows': return Promise.resolve([WF_TEMPLATE]);
         case 'list_workspace_files': return Promise.resolve([]);
         case 'get_session_persona_events': return Promise.resolve([]);
         case 'get_session_pinvou_reviews': return Promise.resolve([]);
@@ -589,12 +574,12 @@ async function expand(page) {
     JSON.stringify(markdownHighlight),
   );
 
-  // ① 启动落草稿页(僵尸 run 不劫持)
+  // ① 启动落草稿页。
   const st = await page.evaluate(() => {
-    const s = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']);
-    return { activeSessionId: s.activeSessionId, wfActive: !!(s.workflow && s.workflow.run && s.workflow.run.active), wfSid: s.workflow && s.workflow.run && s.workflow.run.sessionId };
+    const s = window.TauriBridge.state.getMany(['chat', 'vllm']);
+    return { activeSessionId: s.activeSessionId };
   });
-  rec('① 僵尸run不劫持启动(落草稿页+挂看板)', (st.activeSessionId == null) && st.wfActive === true && st.wfSid === 's-zombie', JSON.stringify(st));
+  rec('① 启动保持草稿页', st.activeSessionId == null, JSON.stringify(st));
 
   await expand(page); await sleep(300);
   const sidebarTaskShell = await page.evaluate(() => ({
@@ -896,8 +881,6 @@ async function expand(page) {
     JSON.stringify(codexBatchArchive));
   await page.evaluate(() => document.querySelector('button[aria-label="取消"]')?.click());
 
-  // ①b 工作流入口已合入专家池：从「专家池 > 专家团队」进入三省六部运行态，
-  // 仍可停止并预填原需求重开。
   // 模型表单可能包含尚未保存的名称、地址和密钥，点击遮罩层不能意外丢失草稿；
   // 只有显式点击“取消”才关闭。
   const modelModalOpened = await page.evaluate(() => {
@@ -941,183 +924,6 @@ async function expand(page) {
     JSON.stringify(modelModalOutsideClick),
   );
 
-  // ①b 工作流运行中可停止；停止后原需求自动进入新任务编辑框。
-  page.on('dialog', async dialog => { await dialog.accept(); });
-  await expand(page); await sleep(300);
-  await page.evaluate(() => document.querySelector('[data-nav="cardpool"]')?.click()); await sleep(700);
-  const expertPoolShell = await page.evaluate(() => {
-    const text = document.body.innerText;
-    return {
-      hasWorkflowNav: !!document.querySelector('[data-nav="workflow"]'),
-      hasExpertPool: text.includes('专家池'),
-      hasIndividualTab: text.includes('个人专家'),
-      hasTeamTab: text.includes('专家团队'),
-      view: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view'),
-    };
-  });
-  rec('①b-0 工作流入口合入专家池并显示双 Tab',
-    !expertPoolShell.hasWorkflowNav && expertPoolShell.hasExpertPool && expertPoolShell.hasIndividualTab &&
-    expertPoolShell.hasTeamTab && expertPoolShell.view === 'cardpool',
-    JSON.stringify(expertPoolShell));
-  const myPersonasToggle = await page.evaluate(async () => {
-    const button = document.querySelector('[data-testid="my-personas-toggle"]');
-    if (!button) return { found: false };
-    button.click();
-    await new Promise(resolve => setTimeout(resolve, 50));
-    return { found: true, active: button.getAttribute('data-active') };
-  });
-  await clickText(page, '专家团队'); await sleep(700);
-  const myPersonasFromTeam = await page.evaluate(async () => {
-    const button = document.querySelector('[data-testid="my-personas-toggle"]');
-    if (!button) return { found: false };
-    button.click();
-    await new Promise(resolve => setTimeout(resolve, 50));
-    const current = document.querySelector('[data-testid="my-personas-toggle"]');
-    return { found: true, active: current?.getAttribute('data-active') };
-  });
-  rec('①b-1 从专家团队返回“我的专家”保持筛选开启',
-    myPersonasToggle.found && myPersonasToggle.active === 'true' &&
-    myPersonasFromTeam.found && myPersonasFromTeam.active === 'true',
-    JSON.stringify({ initial: myPersonasToggle, fromTeam: myPersonasFromTeam }));
-  await clickText(page, '专家团队'); await sleep(700);
-  const stopButton = await page.evaluate(() => {
-    const button = document.querySelector('[data-testid="workflow-stop-restart"]');
-    if (!button) return false;
-    button.click();
-    return true;
-  });
-  await sleep(700);
-  const stopped = await page.evaluate(() => ({
-    status: window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).workflow.run.status,
-    sessionId: window.__STOP_WORKFLOW_ARGS__ && window.__STOP_WORKFLOW_ARGS__.sessionId,
-    brief: (document.querySelector('textarea') || {}).value || '',
-  }));
-  rec('①b 工作流可停止并预填原需求重开', stopButton && stopped.status === 'stopped' && stopped.sessionId === 's-zombie' && stopped.brief === '原始三省六部需求', JSON.stringify(stopped));
-
-  const workflowModalCoverage = await page.evaluate(() => {
-    const modal = document.querySelector('[data-testid="workflow-new-task-modal"]');
-    const sidebar = document.querySelector('[data-testid="app-sidebar"]');
-    if (!modal || !sidebar) return { found: !!modal, sidebarFound: !!sidebar };
-    const modalRect = modal.getBoundingClientRect();
-    const sidebarRect = sidebar.getBoundingClientRect();
-    const coveredElement = document.elementFromPoint(
-      sidebarRect.left + sidebarRect.width / 2,
-      sidebarRect.top + sidebarRect.height / 2,
-    );
-    return {
-      found: true,
-      sidebarFound: true,
-      mountedAtBody: modal.parentElement === document.body,
-      position: getComputedStyle(modal).position,
-      coversViewport: Math.abs(modalRect.left) < 1 && Math.abs(modalRect.top) < 1
-        && Math.abs(modalRect.width - window.innerWidth) < 1
-        && Math.abs(modalRect.height - window.innerHeight) < 1,
-      coversSidebar: !!coveredElement?.closest('[data-testid="workflow-new-task-modal"]'),
-    };
-  });
-  rec(
-    '①b-2 工作流新建任务弹窗遮罩覆盖包括左侧导航在内的整个窗口',
-    workflowModalCoverage.found && workflowModalCoverage.sidebarFound
-      && workflowModalCoverage.mountedAtBody && workflowModalCoverage.position === 'fixed'
-      && workflowModalCoverage.coversViewport && workflowModalCoverage.coversSidebar,
-    JSON.stringify(workflowModalCoverage),
-  );
-
-  // ①c stop marker 是最终状态：迟到快照即使仍带 running/reviewing，也不能让角色卡回跳。
-  const stoppedAfterLateSnapshot = await page.evaluate(async () => {
-    const handlers = window.__TAURI_EVENT_HANDLERS__['workflow:full_state'] || [];
-    for (const handler of handlers) {
-      await handler({ payload: {
-        session_id: 's-zombie', stopped: true, project_dir: '/x/wf', scenario: 'sansheng_liubu',
-        roles: { taizi: { name: '太子', status: 'running' }, zhongshu: { name: '中书', status: 'reviewing' } },
-      } });
-    }
-    const run = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).workflow.run;
-    return { status: run.status, taizi: run.agents.taizi.status, zhongshu: run.agents.zhongshu.status };
-  });
-  rec(
-    '①c 已停止工作流不被迟到快照恢复为执行中',
-    stoppedAfterLateSnapshot.status === 'stopped'
-      && stoppedAfterLateSnapshot.taizi === 'stopped'
-      && stoppedAfterLateSnapshot.zhongshu === 'stopped',
-    JSON.stringify(stoppedAfterLateSnapshot),
-  );
-  await clickText(page, '取消'); await sleep(300);
-
-  // ①d kick 失败必须 reject 给新建任务弹窗，不能把“项目已创建”误当成启动成功。
-  const kickFailure = await page.evaluate(async () => {
-    window.__KICK_WORKFLOW_ERROR__ = true;
-    let error = '';
-    try {
-      await window.TauriBridge.workflow.startWorkflowTask('sansheng_liubu', { user_request_raw: '测试启动失败' });
-    } catch (e) {
-      error = String((e && e.message) || e);
-    }
-    window.__KICK_WORKFLOW_ERROR__ = false;
-    return {
-      error,
-      calls: window.__TAURI_INVOKES__.filter(call => call.cmd === 'start_workflow' || call.cmd === 'kick_workflow').map(call => call.cmd),
-    };
-  });
-  rec(
-    '①d kick失败向调用方透传具体错误',
-    kickFailure.error.includes('HTTP 401')
-      && kickFailure.calls.slice(-2).join(',') === 'start_workflow,kick_workflow',
-    JSON.stringify(kickFailure),
-  );
-
-  // ①e 后端 blocked 事件和持久化 full_state 都必须把看板置为 blocked，并显示原因。
-  const blockedState = await page.evaluate(async () => {
-    for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:project_started'] || [])) {
-      await handler({ payload: { session_id: 's-blocked', project_dir: '/x/blocked', scenario: 'sansheng_liubu' } });
-    }
-    for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:blocked'] || [])) {
-      await handler({ payload: { session_id: 's-blocked', status: 'blocked', stage: 'warmup', message: 'HTTP 401: authorization failed' } });
-    }
-    for (const handler of (window.__TAURI_EVENT_HANDLERS__['workflow:full_state'] || [])) {
-      await handler({ payload: {
-        session_id: 's-blocked', blocked: true, blocked_reason: 'HTTP 401: authorization failed',
-        ui: { agentDefs: [{ id: 'taizi', name: '太子', desc: '接旨', color: '#8a1c1c' }], lanes: [{ title: '接旨', agents: ['taizi'] }] },
-        roles: { taizi: { name: '太子', status: 'failed', error: '模型服务鉴权失败：HTTP 401 authorization failed' } },
-      } });
-    }
-    const run = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).workflow.run;
-    return {
-      status: run.status,
-      agentError: run.agents.taizi && run.agents.taizi.error,
-      blockedCards: (run.cards || []).filter(card => card.workflowBlocked).map(card => card.text),
-    };
-  });
-  rec(
-    '①e 预热失败显示权威阻塞状态且不重复错误卡',
-    blockedState.status === 'blocked'
-      && blockedState.blockedCards.length === 1
-      && String(blockedState.blockedCards[0] || '').includes('HTTP 401')
-      && String(blockedState.agentError || '').includes('HTTP 401'),
-    JSON.stringify(blockedState),
-  );
-
-  // ①f 失败角色详情必须同时展示权威 error 和可读的结构化运行日志。
-  const failureDiagnostics = await page.evaluate(async () => {
-    window.TauriBridge.workflow.selectWorkflowRole('taizi');
-    await new Promise(resolve => setTimeout(resolve, 100));
-    return {
-      reason: (document.querySelector('[data-testid="workflow-failure-reason"]') || {}).textContent || '',
-      card: (document.querySelector('[data-testid="workflow-agent-error-taizi"]') || {}).textContent || '',
-      body: document.body.innerText,
-    };
-  });
-  rec(
-    '①f 失败角色展示具体原因和结构化运行日志',
-    failureDiagnostics.reason.includes('HTTP 401')
-      && failureDiagnostics.card.includes('HTTP 401')
-      && failureDiagnostics.body.includes('Tool write_file is not permitted')
-      && failureDiagnostics.body.includes('类型: 工具权限')
-      && failureDiagnostics.body.includes('Agent: agent_diag01')
-      && failureDiagnostics.body.includes('重试: 3/3'),
-    JSON.stringify(failureDiagnostics),
-  );
-  await page.evaluate(() => window.TauriBridge.workflow.closeWorkflowDrawer()); await sleep(100);
 
   // 手机先向尚未在桌面打开的后台 session 发消息：hydration 必须先把磁盘 messages
   // 重建成 chatItems；否则桌面随后切入时只剩这条手机消息，历史和产物卡都像“丢了”。
@@ -1153,10 +959,10 @@ async function expand(page) {
     .filter(o => o.t.includes('查错') || o.t.includes('发散') || /品|悟/.test(o.x)).length);
   const restored = await page.evaluate(() => {
     const text = document.body.innerText;
-    const artifactPaths = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).chatItems
+    const artifactPaths = window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems
       .filter(item => item.type === 'artifact_card')
       .map(item => item.path);
-    const restoredShellCards = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).chatItems.filter(item =>
+    const restoredShellCards = window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems.filter(item =>
       item.type === 'tool' && item.name === 'exec_shell' && item.args && item.args.command === 'history-shell');
     return {
       history: text.includes('整理纪要'),
@@ -1306,6 +1112,128 @@ async function expand(page) {
     assistantCopy.singleAction && assistantCopy.sharedFooter && assistantCopy.sameRow,
     JSON.stringify(assistantCopy));
 
+  const assistantExportShare = await page.evaluate(async () => {
+    const action = [...document.querySelectorAll('[data-testid="assistant-message-actions"]')]
+      .find(node => node.closest('[data-conversation-turn]')?.innerText.includes('已生成会议纪要'));
+    const exportButton = action?.querySelector('[data-testid="assistant-message-export"]');
+    const shareButton = action?.querySelector('[data-testid="assistant-message-share"]');
+    if (!exportButton || !shareButton) return { found: false };
+
+    exportButton.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const exportMenu = document.querySelector('[data-testid="assistant-message-export-menu"]');
+    const markdownOption = exportMenu?.querySelector('[data-testid="assistant-export-md"]');
+    const htmlOption = exportMenu?.querySelector('[data-testid="assistant-export-html"]');
+    const markdownDefault = (markdownOption?.querySelectorAll('svg').length || 0) === 2;
+    const exportAriaLinked = exportButton.getAttribute('aria-controls') === exportMenu?.id &&
+      exportMenu?.getAttribute('aria-labelledby') === exportButton.id &&
+      exportButton.getAttribute('aria-haspopup') === 'menu' &&
+      exportButton.getAttribute('aria-expanded') === 'true';
+    const exportInitialFocus = document.activeElement === markdownOption;
+    exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    const exportArrowDown = document.activeElement === htmlOption;
+    exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    const exportArrowWrap = document.activeElement === markdownOption;
+    exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    const exportArrowUpWrap = document.activeElement === htmlOption;
+    exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    const exportHome = document.activeElement === markdownOption;
+    exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    const exportEnd = document.activeElement === htmlOption;
+    exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const exportEscapeRestored = !document.querySelector('[data-testid="assistant-message-export-menu"]') &&
+      document.activeElement === exportButton && exportButton.getAttribute('aria-expanded') === 'false';
+
+    exportButton.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    document.querySelector('[data-testid="assistant-export-html"]')?.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const exportInvoke = [...window.__TAURI_INVOKES__]
+      .reverse()
+      .find(call => call.cmd === 'export_assistant_response');
+    const exportSelectionRestored = document.activeElement === exportButton;
+
+    shareButton.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    let shareMenu = document.querySelector('[data-testid="assistant-message-share-menu"]');
+    const targets = ['wechat', 'wecom', 'feishu', 'dingtalk', 'qq'];
+    const allTargets = targets.every(target => shareMenu?.querySelector(`[data-testid="assistant-share-${target}"]`));
+    const systemShare = shareMenu?.querySelector('[data-testid="assistant-share-system"]');
+    const qqShare = shareMenu?.querySelector('[data-testid="assistant-share-qq"]');
+    const shareAriaLinked = shareButton.getAttribute('aria-controls') === shareMenu?.id &&
+      shareMenu?.getAttribute('aria-labelledby') === shareButton.id &&
+      shareButton.getAttribute('aria-expanded') === 'true';
+    const shareInitialFocus = document.activeElement === systemShare;
+    const shareStructure = shareMenu?.querySelector('[role="separator"]') &&
+      shareMenu?.querySelector('[role="group"][aria-labelledby]') &&
+      [...shareMenu.querySelectorAll('[role="menuitem"]')].every(item => item.getAttribute('aria-label'));
+    shareMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    const shareEnd = document.activeElement === qqShare;
+    shareMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    const shareArrowWrap = document.activeElement === systemShare;
+    shareMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    const shareArrowUpWrap = document.activeElement === qqShare;
+    shareMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const tabClosedWithoutRestore = !document.querySelector('[data-testid="assistant-message-share-menu"]') &&
+      document.activeElement !== shareButton;
+
+    shareButton.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    shareMenu = document.querySelector('[data-testid="assistant-message-share-menu"]');
+    shareMenu?.querySelector('[data-testid="assistant-share-feishu"]')?.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const shareInvoke = [...window.__TAURI_INVOKES__]
+      .reverse()
+      .find(call => call.cmd === 'open_assistant_share_target');
+    return {
+      found: true,
+      exportMenu: Boolean(exportMenu),
+      markdownDefault,
+      exportAriaLinked,
+      exportInitialFocus,
+      exportArrowDown,
+      exportArrowWrap,
+      exportArrowUpWrap,
+      exportHome,
+      exportEnd,
+      exportEscapeRestored,
+      exportSelectionRestored,
+      exportFormat: exportInvoke?.args?.format || '',
+      exportName: exportInvoke?.args?.defaultName || '',
+      htmlStandalone: exportInvoke?.args?.content?.startsWith('<!doctype html>') || false,
+      htmlSafe: !/<script>/i.test(exportInvoke?.args?.content || ''),
+      shareMenu: Boolean(shareMenu),
+      allTargets,
+      shareAriaLinked,
+      shareInitialFocus,
+      shareStructure: Boolean(shareStructure),
+      shareEnd,
+      shareArrowWrap,
+      shareArrowUpWrap,
+      tabClosedWithoutRestore,
+      shareSelectionRestored: document.activeElement === shareButton,
+      shareTarget: shareInvoke?.args?.target || '',
+      shareFeedback: action.innerText,
+    };
+  });
+  rec('③a-4 回复可默认导出 Markdown、选择 HTML，并复制后打开常见通信应用',
+    assistantExportShare.found && assistantExportShare.exportMenu && assistantExportShare.markdownDefault &&
+    assistantExportShare.exportAriaLinked && assistantExportShare.exportInitialFocus &&
+    assistantExportShare.exportArrowDown && assistantExportShare.exportArrowWrap &&
+    assistantExportShare.exportArrowUpWrap && assistantExportShare.exportHome && assistantExportShare.exportEnd &&
+    assistantExportShare.exportEscapeRestored && assistantExportShare.exportSelectionRestored &&
+    assistantExportShare.exportFormat === 'html' && assistantExportShare.exportName.endsWith('.html') &&
+    assistantExportShare.htmlStandalone && assistantExportShare.htmlSafe && assistantExportShare.shareMenu &&
+    assistantExportShare.allTargets && assistantExportShare.shareAriaLinked &&
+    assistantExportShare.shareInitialFocus && assistantExportShare.shareStructure &&
+    assistantExportShare.shareEnd && assistantExportShare.shareArrowWrap && assistantExportShare.shareArrowUpWrap &&
+    assistantExportShare.tabClosedWithoutRestore && assistantExportShare.shareSelectionRestored &&
+    assistantExportShare.shareTarget === 'feishu' &&
+    assistantExportShare.shareFeedback.includes('请粘贴发送'),
+    JSON.stringify(assistantExportShare));
+
   // 会话输入框是页面条件渲染的：跳工具商店会卸载 ChatView，返回同一 session
   // 必须恢复未发送内容，不得因组件重建清空。
   const composerDraft = '这是尚未发送的 session 草稿';
@@ -1393,7 +1321,7 @@ async function expand(page) {
   });
   await sleep(200);
   const liveShell = await page.evaluate(() => {
-    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).chatItems.find(item => item.toolId === 'live-shell');
+    const item = window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems.find(item => item.toolId === 'live-shell');
     return {
       running: item && item.state === 'running',
       output: item && item.output,
@@ -1411,7 +1339,7 @@ async function expand(page) {
   });
   await sleep(100);
   const liveShellWait = await page.evaluate(() => {
-    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).chatItems.find(item => item.toolId === 'live-shell-wait');
+    const item = window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems.find(item => item.toolId === 'live-shell-wait');
     return {
       running: item && item.state === 'running',
       output: item && item.output,
@@ -1433,7 +1361,7 @@ async function expand(page) {
   });
   await sleep(100);
   const splitTerminal = await page.evaluate(() => {
-    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).chatItems.find(item => item.toolId === 'split-terminal');
+    const item = window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems.find(item => item.toolId === 'split-terminal');
     return item && item.output;
   });
   rec('terminal parser preserves CRLF and ANSI state across live chunks',
@@ -1450,7 +1378,7 @@ async function expand(page) {
     await emit('chat:tool_delta', { session_id:'s1', id:'split-terminal-stderr', stream:'stderr', content:'m' });
   });
   const splitTerminalStderr = await page.evaluate(() => {
-    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).chatItems.find(item => item.toolId === 'split-terminal-stderr');
+    const item = window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems.find(item => item.toolId === 'split-terminal-stderr');
     return item && item.output;
   });
   rec('terminal parser preserves stderr ANSI state across live chunks',
@@ -1471,7 +1399,7 @@ async function expand(page) {
   });
   await sleep(150);
   const backgroundShell = await page.evaluate(() => {
-    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).chatItems.find(item => item.toolId === 'background-shell');
+    const item = window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems.find(item => item.toolId === 'background-shell');
     const button = document.querySelector('[data-testid="cancel-shell-task"][data-shell-task-id="shell-bg-1"]');
     if (button) button.click();
     return {
@@ -1498,7 +1426,7 @@ async function expand(page) {
     }});
   });
   const backgroundKilled = await page.evaluate(() => {
-    const item = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).chatItems.find(item => item.toolId === 'background-shell');
+    const item = window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems.find(item => item.toolId === 'background-shell');
     return {
       terminal: item && item.state === 'failed' && item.shellStatus === 'Killed' && item.background === false,
       output: item && item.output,
@@ -1518,7 +1446,7 @@ async function expand(page) {
     await emit('chat:tool_start', { session_id:'s1', id:'live-mcp', name:'mcp_gongwen_make_gongwen', args:{} });
     await emit('chat:tool_end', { session_id:'s1', id:'live-mcp', success:true, output:'{"path":"live-report.docx"}' });
   });
-  const liveArtifacts = await page.evaluate(() => window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).artifacts.map(item => item.path));
+  const liveArtifacts = await page.evaluate(() => window.TauriBridge.state.getMany(['chat', 'vllm']).artifacts.map(item => item.path));
   rec('③b 实时 tool_end 不跟踪 shell path、保留 MCP 产物', liveArtifacts.includes('live-report.docx') && !liveArtifacts.includes('live-validator-fake.html'), JSON.stringify(liveArtifacts));
 
   // ④ 后端 pending 事件必须直达 React 候选卡；三个决策按钮必须调用各自命令。
@@ -1572,13 +1500,13 @@ async function expand(page) {
   });
   await sleep(700);
   const shellRunning = await page.evaluate(() => {
-    const item=window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).chatItems.find(it=>it.taskId==='task-live-1');
+    const item=window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems.find(it=>it.taskId==='task-live-1');
     return item && {state:item.state,taskId:item.taskId,output:item.output};
   });
   await page.evaluate(() => window.TauriBridge.chat.cancelShellTask('s1','task-live-1'));
   await sleep(700);
   const shellCancelled = await page.evaluate(() => {
-    const item=window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).chatItems.find(it=>it.taskId==='task-live-1');
+    const item=window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems.find(it=>it.taskId==='task-live-1');
     return {item:item&&{state:item.state,exitCode:item.exitCode,output:item.output},args:window.__CANCEL_SHELL_ARGS__};
   });
   rec('③c Shell 实时 tail、省略标记、task_id 取消与退出码',
@@ -1605,7 +1533,7 @@ async function expand(page) {
   });
   await sleep(700);
   const ambiguousBeforeEnd = await page.evaluate(() => {
-    const items=window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).chatItems;
+    const items=window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems;
     return ['dup-tool-a','dup-tool-b'].map(id => {
       const item=items.find(it=>it.toolId===id); return item && item.taskId;
     });
@@ -1619,7 +1547,7 @@ async function expand(page) {
   });
   await sleep(500);
   const shellIdentity = await page.evaluate(() => {
-    const items=window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).chatItems;
+    const items=window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems;
     const a=items.filter(it=>it.taskId==='task-dup-a');
     const b=items.filter(it=>it.taskId==='task-dup-b');
     const done=items.find(it=>it.taskId==='task-detached-done');
@@ -1748,7 +1676,7 @@ async function expand(page) {
   });
   await sleep(3300);
   const timedOutSetup = await page.evaluate(() => {
-    const setup = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']).vllmSetup || {};
+    const setup = window.TauriBridge.state.getMany(['chat', 'vllm']).vllmSetup || {};
     return {
       popup: document.body.innerText.includes('启用本地大模型'),
       state: setup.engine_state,

@@ -4,7 +4,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PINVOU_CODEWHALE_PATH="CodeWhale"
 PINVOU_CODEWHALE_URL="https://github.com/Pinvou/CodeWhale.git"
-PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r5"
+PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r7"
 
 actual_path="$(git -C "$REPO" config -f .gitmodules --get submodule.CodeWhale.path)"
 actual_url="$(git -C "$REPO" config -f .gitmodules --get submodule.CodeWhale.url)"

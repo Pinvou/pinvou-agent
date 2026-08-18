@@ -31,7 +31,7 @@ When an owner-level action is needed and the owner is unknown, infer in this ord
 If the query shows that the owner is a third-party user (`owner_id` is neither the currently authorized user nor the bot), the current identity does not have owner privileges. In that case:
 
 - **Permission/setting changes:** if the bot is an admin of the group, `--as bot` can still perform admin-level operations such as renaming the group or changing permissions.
-- **Owner-only actions such as owner transfer:** require the actual owner to complete UAT authorization via `lark-cli auth login`, then perform the action as that owner.
+- **Owner-only actions such as owner transfer:** require the actual owner to complete UAT authorization via the on-demand flow in [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) (`auth login --scope ...`), then perform the action as that owner.
 - Explain the limitation clearly to the user instead of retrying blindly.
 
 ## Common Pitfalls

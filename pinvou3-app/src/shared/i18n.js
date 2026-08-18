@@ -17,6 +17,8 @@ const conversationZh = {
   allowOnce:'允许一次', allowSession:'本会话允许', reject:'拒绝', handled:'已处理', expired:'该请求已过期',
   usage:(input,output)=>`输入 ${input} · 输出 ${output}`, contextUsage:(used,size)=>`上下文 ${used} / ${size}`,
   attachment:'附件', operations:(count,failedCount)=>`执行 ${count} 项${failedCount?` · ${failedCount} 项失败`:''}`, copyReply:'复制回复', copyReplySuccess:'已复制', copyReplyFailed:'复制失败',
+  exportReply:'导出', exportReplyTitle:'导出回复', exportMarkdown:'Markdown 文档', exportMarkdownHint:'默认，保留原始排版', exportHtml:'HTML 文档', exportHtmlHint:'适合在浏览器中查看', exportSuccess:'导出成功', exportFailed:'导出失败', exportTooLarge:'回复内容超出导出大小限制',
+  shareReply:'分享', shareReplyTitle:'分享回复', shareSystem:'系统分享', shareSystemHint:'选择系统中已安装的通信应用', shareApps:'复制内容并打开应用', shareSuccess:'已分享', shareCopiedOpen:app=>`内容已复制，已尝试打开${app}，请粘贴发送`, shareCopiedWeb:app=>`内容已复制，请打开${app}粘贴发送`, shareFailed:'分享失败', shareUnavailable:'系统分享不可用，内容已复制', shareTargets:{wechat:'微信',wecom:'企业微信',feishu:'飞书',dingtalk:'钉钉',qq:'QQ'},
 };
 
 const conversationEn = {
@@ -37,6 +39,8 @@ const conversationEn = {
   allowOnce:'Allow once', allowSession:'Allow for this session', reject:'Reject', handled:'Handled', expired:'This request has expired',
   usage:(input,output)=>`Input ${input} · Output ${output}`, contextUsage:(used,size)=>`Context ${used} / ${size}`,
   attachment:'Attachment', operations:(count,failedCount)=>`${count} operations${failedCount?` · ${failedCount} failed`:''}`, copyReply:'Copy response', copyReplySuccess:'Copied', copyReplyFailed:'Copy failed',
+  exportReply:'Export', exportReplyTitle:'Export response', exportMarkdown:'Markdown document', exportMarkdownHint:'Default; preserves source formatting', exportHtml:'HTML document', exportHtmlHint:'Best for viewing in a browser', exportSuccess:'Exported', exportFailed:'Export failed', exportTooLarge:'The response exceeds the export size limit',
+  shareReply:'Share', shareReplyTitle:'Share response', shareSystem:'System share', shareSystemHint:'Choose an installed communication app', shareApps:'Copy content and open app', shareSuccess:'Shared', shareCopiedOpen:app=>`Content copied. ${app} was opened when available; paste to send.`, shareCopiedWeb:app=>`Content copied. Open ${app} and paste to send.`, shareFailed:'Share failed', shareUnavailable:'System share is unavailable; content was copied', shareTargets:{wechat:'WeChat',wecom:'WeCom',feishu:'Feishu',dingtalk:'DingTalk',qq:'QQ'},
 };
 
 const conversationJa = {
@@ -57,6 +61,8 @@ const conversationJa = {
   allowOnce:'今回のみ許可', allowSession:'このセッションで許可', reject:'拒否', handled:'処理済み', expired:'このリクエストは期限切れです',
   usage:(input,output)=>`入力 ${input} · 出力 ${output}`, contextUsage:(used,size)=>`コンテキスト ${used} / ${size}`,
   attachment:'添付ファイル', operations:(count,failedCount)=>`${count} 件実行${failedCount?` · ${failedCount} 件失敗`:''}`, copyReply:'返信をコピー', copyReplySuccess:'コピーしました', copyReplyFailed:'コピーに失敗しました',
+  exportReply:'エクスポート', exportReplyTitle:'返信をエクスポート', exportMarkdown:'Markdown 文書', exportMarkdownHint:'既定。元の書式を保持', exportHtml:'HTML 文書', exportHtmlHint:'ブラウザーでの閲覧に最適', exportSuccess:'エクスポートしました', exportFailed:'エクスポートに失敗しました', exportTooLarge:'返信がエクスポートのサイズ上限を超えています',
+  shareReply:'共有', shareReplyTitle:'返信を共有', shareSystem:'システム共有', shareSystemHint:'インストール済みの通信アプリを選択', shareApps:'内容をコピーしてアプリを開く', shareSuccess:'共有しました', shareCopiedOpen:app=>`内容をコピーし、${app}を開きました。貼り付けて送信してください`, shareCopiedWeb:app=>`内容をコピーしました。${app}を開いて貼り付けてください`, shareFailed:'共有に失敗しました', shareUnavailable:'システム共有を利用できないため、内容をコピーしました', shareTargets:{wechat:'WeChat',wecom:'WeCom',feishu:'Feishu',dingtalk:'DingTalk',qq:'QQ'},
 };
 
 const codexZh = {
@@ -370,19 +376,29 @@ const dict = {
       zh: {
         langTag: 'zh',
         acpAgent: 'ACP Agent',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', workflow: '工作流', multiAgent: '多智能体', multiAgentDesktopOnly: '此多智能体对话当前仅在桌面端可用。', toolStore: '工具商店', cardPool: '专家池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterCode: '代码', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', sidebarViewAll: '查看全部', sidebarSection: '任务列表', sidebarDateGrouping: '按日期折叠', sidebarDateGroupingDesc: '任务列表按日期分组，今天默认展开', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口', mobileMore: '更多',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', multiAgent: '多智能体', multiAgentDesktopOnly: '此多智能体对话当前仅在桌面端可用。', toolStore: '工具商店', cardPool: '专家池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterCode: '代码', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', sidebarViewAll: '查看全部', sidebarSection: '任务列表', sidebarDateGrouping: '按日期折叠', sidebarDateGroupingDesc: '任务列表按日期分组，今天默认展开', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口', mobileMore: '更多',
         previewTaskDailyBrief: '每日早报', previewTaskFollowUp: '事项督办', previewTaskSalesWeekly: '销售线索周报',
         archiveSession: '收纳', archiveConfirmTitle: '确认收纳任务', archiveConfirmMessage: '将该任务移出任务列表，存入【对话管理-已收纳】，需要时可找回。', archiveConfirmDetail: '', archiveConfirmAction: '确认收纳',
         archiveSuccess: '已收纳到【对话管理-已收纳】', archiveSuccessView: '前往查看',
         sessionBatchFailed: n => `${n} 个任务操作失败，请重试`,
         archivedTasks: '任务收纳', archivedTasksDesc: '', archivedEmpty: '暂无收纳任务', restoreArchived: '恢复到任务列表',
         archivedDeleteTitle: '删除收纳任务？', archivedDeleteMessage: '此操作会永久删除该任务及其内容，无法撤销。', archivedDeleteAction: '删除',
-        knowledge: '本地知识',
+        knowledge: '知识库', remoteKnowledge: '共享知识库',
+        remoteKbHeroTitle: '共享知识库', remoteKbHeroStep1: '连接知识服务器', remoteKbHeroStep2: '集中管理文档', remoteKbHeroStep3: '多设备共享使用', remoteKbHeroClient: 'PINVOU 客户端', remoteKbHeroNetwork: '安全网络', remoteKbHeroServer: '知识服务器', remoteKbHeroDevices: '授权设备',
+        remoteKbDesc: '在自己的设备上创建，或加入团队已有的共享知识库。', remoteKbRefresh: '刷新', remoteKbConnectTitle: '加入共享知识库', remoteKbInvitePlaceholder: '粘贴 pinvou-knowledge:// 邀请链接', remoteKbDeviceName: '输入姓名', remoteKbConnect: '连接', remoteKbConnected: '已加入共享知识库', remoteKbServers: '共享知识库', remoteKbNoServers: '还没有共享知识库', remoteKbReady: '可用', remoteKbNotReady: '检索不可用', remoteKbOffline: '离线', remoteKbManage: '可管理', remoteKbReadOnly: '只读', remoteKbSelectServer: '请先加入或选择一个共享知识库', remoteKbShowTrash: '显示回收站', remoteKbDisconnect: '断开', remoteKbRemoveConfirm: '断开后将移除本机连接和所有对话挂载，确定继续吗？', remoteKbCollections: '共享知识集', remoteKbCollectionName: '新知识集名称', remoteKbCreate: '创建', remoteKbCollectionCreated: '知识集已创建', remoteKbNoCollections: '暂无知识集', remoteKbDocuments: '份文档', remoteKbChunks: '片段', remoteKbRestore: '恢复', remoteKbTrash: '移入回收站', remoteKbTrashConfirm: '将该知识集移入回收站？文档会保留，可恢复。', remoteKbFiles: '文档', remoteKbUpload: '上传文件', remoteKbUploaded: '文档已上传', remoteKbNoDocuments: '该知识集暂无文档', remoteKbStatusPending: '处理中', remoteKbStatusReady: '可用', remoteKbStatusFailed: '处理失败', remoteKbStatusUnknown: '状态未知', remoteKbDownload: '下载原文件', remoteKbDownloaded: '文件已下载', remoteKbTestSearch: '测试检索', remoteKbSearchPlaceholder: '输入问题或关键词', remoteKbSearch: '检索', remoteKbDesktopOnly: '共享知识库需要 PINVOU 桌面端。',
+        remoteKbAddServer: '加入共享知识库', remoteKbHideConnect: '收起连接', remoteKbNewCollection: '新建知识集', remoteKbCancel: '取消', remoteKbClose: '关闭', remoteKbCollapse: '收起', remoteKbDone: '完成', remoteKbUploading: '处理中…', remoteKbUploadTitle: '上传文档', remoteKbStartUpload: '上传', remoteKbRetryFailed: '重试失败项', remoteKbUploadingFile: '上传中', remoteKbUploadDone: '已完成', remoteKbUploadPendingIndex: '处理中', remoteKbUploadStillIndexing: '仍在处理', remoteKbUploadIndexFailed: '处理失败', remoteKbUploadFailed: '上传失败', remoteKbUploadSuccess: '{count} 个文档已上传', remoteKbUploadSummary: '已完成 {done} · 处理中 {processing} · 失败 {failed}', remoteKbUploadRefreshFailed: '列表刷新失败：{error}', remoteKbFileName: '名称', remoteKbStatus: '状态', remoteKbSize: '大小',
+        remoteKbReplace: '更新文档', remoteKbReplaced: '文档已更新', remoteKbLoadMoreDocuments: '加载更多', remoteKbLoadingMoreDocuments: '正在加载…',
+        remoteKbNearby: '附近的共享知识库', remoteKbDiscovering: '正在安全检测附近的共享知识库…', remoteKbNearbyEmpty: '暂未发现可连接的局域网知识库', remoteKbManualConnect: '手动连接', remoteKbVerify: '检测身份', remoteKbVerifyIdentityDesc: '请在共享知识库主机的“服务与维护”中核对身份码。只有完全一致时才申请加入。', remoteKbIdentityCode: '服务身份码', remoteKbConfirmIdentity: '身份码一致，申请加入', remoteKbBack: '返回', remoteKbLan: '局域网', remoteKbTailnet: 'Tailscale', remoteKbHostIdentity: '服务身份', remoteKbHostIdentityDesc: '新设备首次连接时，请在两台设备上核对这个身份码。', remoteKbPublishLocal: '发布本地知识集', remoteKbPublishDesc: '复制所选知识集及其源文档。发布后，本地与共享副本互不影响。', remoteKbPublishChoose: '选择本地知识集', remoteKbPublishContinue: '准备发布', remoteKbPublishEmpty: '这个本地知识集还没有文档', remoteKbNoLocalCollections: '还没有可发布的本地知识集',
+        remoteKbJoinSource: '共享链接或私网地址', remoteKbJoinSourcePlaceholder: '粘贴共享链接，或输入 192.168.1.20:3210', remoteKbJoinHint: '支持局域网地址、Tailscale 100.x 地址或 *.ts.net:端口；私网直连需先核对服务身份。', remoteKbShareLinkOnly: '请粘贴由所有者生成的 pinvou-knowledge://share… 共享链接。', remoteKbJoinRequested: '加入申请已发送', remoteKbPendingTitle: '等待加入确认', remoteKbPendingDesc: '所有者批准后会自动加入。', remoteKbCancelRequest: '取消申请', remoteKbOwner: '所有者', remoteKbGovern: '管理', remoteKbGovernTitle: '共享与成员', remoteKbPeopleTab: '成员与邀请', remoteKbServiceTab: '服务与维护',
+        remoteKbShareTitle: '邀请团队加入', remoteKbShareDesc: '共享链接默认 24 小时有效，可供多人提交申请。', remoteKbCreateShare: '生成链接', remoteKbAutoApproveRead: '链接有效期内自动批准只读加入', remoteKbCopy: '复制链接', remoteKbLinkCopied: '共享链接已复制', remoteKbRecoveryCopied: '恢复码已复制', remoteKbCopyFailed: '复制失败，请手动选择并复制', remoteKbActiveShares: '{count} 个分享链接有效', remoteKbRequestsTitle: '加入申请', remoteKbNoRequests: '暂无待处理申请', remoteKbApproveRead: '只读加入', remoteKbApproveManage: '管理加入', remoteKbReject: '拒绝', remoteKbStopShare: '停止', remoteKbAutoReadShort: '自动只读', remoteKbMembersTitle: '成员', remoteKbThisDevice: '本设备', remoteKbRevoked: '已撤销', remoteKbRestoreAccess: '恢复', remoteKbRevokeAccess: '撤销', remoteKbMemberAccess: '成员权限', remoteKbRemoveMember: '移除成员“{name}”', remoteKbRemoveMemberAction: '移除成员', remoteKbRemoveMemberConfirm: '永久移除成员“{name}”？',
+        remoteKbPromoteOwner: '设为所有者', remoteKbDemoteOwner: '取消所有者', remoteKbPromoteOwnerConfirm: '将“{name}”设为所有者？该成员将可以管理共享与成员。', remoteKbDemoteOwnerConfirm: '取消“{name}”的所有者权限？', remoteKbModelTitle: '语义检索模型', remoteKbModelReady: '已可用', remoteKbModelMissing: '尚未下载', remoteKbModelDownloading: '正在下载，关闭 PINVOU 后仍会继续', remoteKbDownloadModel: '下载', remoteKbModelDownloadingAction: '下载中', remoteKbPermanentDelete: '永久删除', remoteKbPermanentDeleteConfirm: '永久删除“{name}”？此操作无法撤销。',
+        remoteKbOtherNetwork: '其他网络地址（可选）', remoteKbOtherNetworkPlaceholder: '例如 100.64.12.34:3210 或 cube.ts.net:3210',
+        remoteKbCreateHost: '创建共享知识库', remoteKbHostCreated: '共享知识库已创建', remoteKbReconnectHost: '重新连接本机服务', remoteKbHostReconnected: '已恢复本机管理连接', remoteKbUpgradeHost: '升级服务', remoteKbHostUpgraded: '共享知识库服务已升级', remoteKbClientOutdatedTitle: '请先升级 PINVOU', remoteKbClientOutdatedDesc: '当前 PINVOU {appVersion} 低于本机服务 {serviceVersion}。为保护数据，不会降级服务。', remoteKbHostProgressCreateTitle: '正在创建共享知识库', remoteKbHostProgressReconnectTitle: '正在恢复本机连接', remoteKbHostProgressUpgradeTitle: '正在升级共享知识库', remoteKbHostProgressPrepare: '正在准备安装资源', remoteKbHostProgressInstall: '等待系统授权并安装服务', remoteKbHostProgressConnect: '正在连接本机服务', remoteKbHostProgressComplete: '已完成', remoteKbHostProgressFailed: '操作未完成', remoteKbHostProgressHint: '如系统弹出授权窗口，请完成授权。此过程通常需要几十秒。', remoteKbHostProgressRetry: '重试', remoteKbNoLanEndpoint: '未找到可供团队访问的局域网地址，请连接局域网后重试', remoteKbHostSettings: '主机设置', remoteKbHostSettingsDesc: '备份、恢复或管理本机托管服务。', remoteKbDangerZone: '停用与删除', remoteKbDangerZoneDesc: '停止托管会保留现有数据；删除服务和数据后无法恢复。', remoteKbBackup: '创建备份', remoteKbRestoreBackup: '恢复备份', remoteKbRecoveryTitle: '保存恢复码', remoteKbRecoveryDesc: '备份已加密。本机恢复无需恢复码；换一台主机时需要此恢复码。请与备份文件分开保存。', remoteKbCopyRecovery: '复制恢复码', remoteKbRestoreTitle: '恢复共享知识库', remoteKbRestoreDesc: '留空恢复码表示恢复到当前主机；输入恢复码表示迁移到这台主机。', remoteKbRecoveryPlaceholder: '换机迁移时粘贴恢复码（本机恢复请留空）', remoteKbSameHostMode: '本机恢复会保留当前服务身份和成员，仅恢复知识内容。', remoteKbMigrationMode: '换机迁移只导入知识内容，并创建新的服务身份；原成员需要重新加入。', remoteKbRestoreAction: '开始恢复', remoteKbRestoreConfirm: '恢复当前主机的知识内容？当前内容会被备份中的内容替换，服务身份和成员保持不变。', remoteKbMigrateConfirm: '将备份迁移到这台主机？当前内容会被替换，并创建新的服务身份和所有者。', remoteKbRestored: '共享知识库已恢复', remoteKbMigrated: '共享知识库内容已迁移到当前主机', remoteKbRemoveHost: '停止托管', remoteKbDeleteHost: '删除服务和数据', remoteKbRemoveHostConfirm: '停止本机的共享知识库服务？已有数据会保留，之后可以重新启用。', remoteKbDeleteHostConfirm: '永久删除本机的共享知识库服务和全部数据？此操作无法撤销。', remoteKbHostRemoved: '共享知识库服务已停止，数据已保留', remoteKbHostDeleted: '共享知识库服务和数据已删除',
         outputs: '产出物',
-        kbMount: '知识库', kbMountTitle: '管理本对话挂载的知识集', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，去「本地知识」创建', kbMountRemove: '移除全部', kbMountRemoveOne: '移除此知识集', kbMountEnable: '启用', kbMountDisable: '停用', kbMountEnabled: '已启用', kbMountDisabled: '已停用', kbMountCount: n => `${n} 个知识库`, kbMountedTag: '已挂载', kbMountNoModel: '需先安装 Embedding 模型：去「本地知识 → 知识库」下载后即可挂载', kbMountNotReady: 'Embedding 模型正在加载或加载失败，暂时无法挂载知识集',
+        kbMount: '知识库', kbMountTitle: '管理本对话挂载的知识集', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，前往「知识库」创建或连接', kbMountRemove: '移除全部', kbMountRemoveOne: '移除此知识集', kbMountEnable: '启用', kbMountDisable: '停用', kbMountEnabled: '已启用', kbMountDisabled: '已停用', kbMountCount: n => `${n} 个知识库`, kbMountedTag: '已挂载', kbMountNoModel: '需先安装 Embedding 模型：前往「知识库 → 本地知识库」下载后即可挂载', kbMountNotReady: 'Embedding 模型正在加载或加载失败，暂时无法挂载知识集',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: '切换工作模式', modeYoloDesc: '直接动手执行', modePlanDesc: '先出方案，确认后执行',
         modeYoloConfirmTitle: '切换到 YOLO 模式？', modeYoloConfirmBody: '该模式下模型将对你的项目目录全自动读写、可执行 shell 命令，无逐步审批。', modeYoloConfirmHint: '确认后全局记住，以后切换不再提示。', modeYoloConfirmOk: '确认切换', modeYoloConfirmCancel: '取消',
-        kbTitle: '本地知识', kbDesc: '全系统秒搜 + 去重 · 仅索引元数据，不读内容',
+        kbTitle: '知识库', kbDesc: '统一管理本地知识库与共享知识库',
         kbRescan: '重新扫描', kbScanning: '扫描中', kbDeduping: '去重中', kbScanNow: '扫描本机',
         kbTotalFiles: '已索引文件', kbDupFiles: '重复文件', kbWasted: '可回收',
         kbTabSearch: '搜索', kbTabDups: '重复文件',
@@ -392,8 +408,8 @@ const dict = {
         kbBuildDups: '扫描重复', kbDupHint: '尚未建立去重数据，点「扫描重复」按需读取文件算指纹。',
         kbDupNote: '内容完全相同的文件（删除动作将在后续版本支持）', kbNoDups: '没有发现重复文件', kbDupCopies: '份',
         kbOpen: '打开', kbOpenFolder: '所在文件夹',
-        kbPageTitle: '本地文件与知识库', kbFilesSub: '检索、分类本地文件，并把它们沉淀为 AI 可引用的专属知识库。', kbKbSub: '把本地文件沉淀为 AI 可引用的专属知识库，问答时自动标注出处。',
-        kbSubFiles: '本地文件管理', kbSubKb: '知识库', kbSubOutput: '产出物',
+        kbPageTitle: '知识库', kbFilesSub: '检索、分类本地文件，并把它们沉淀为 AI 可引用的专属知识库。', kbKbSub: '把本地文件沉淀为 AI 可引用的专属知识库，问答时自动标注出处。',
+        kbSubFiles: '本地文件管理', kbSubKb: '本地知识库', kbSubRemote: '共享知识库', kbSubOutput: '产出物',
         kbOutSub: '你和 PINVOU 一起做出来的东西，都在这里。',
         kbOutSearch: '搜索产出物', kbOutSearchList: '按名称 / 来源会话搜索',
         kbOutCatAll: '全部', kbOutCatWeb: '网页', kbOutCatDoc: '文档', kbOutCatImg: '海报', kbOutCatPpt: 'PPT',
@@ -417,7 +433,7 @@ const dict = {
         kbImportProgress: '文件进度', kbCurrentFile: '当前文件：', kbChunkProgress: '分块进度', kbFailedFiles: '失败文件', kbRetryFile: '重试', kbImportErrors: '失败', kbImportDoneWithErrors: '导入完成，部分文件失败',
         kbResumeImportFailed: '继续导入失败', kbCancelImportFailed: '取消导入失败', kbRetryImportFailed: '重试文件失败',
         kbLoadMoreFailedFiles: '加载更多失败文件', kbLoadingFailedFiles: '加载中…', kbLoadFailedFilesFailed: '加载失败文件失败',
-        kbDeleteColl: '删除知识集', kbRemove: '移除', kbCollEmpty: '还没有文档，点「添加文件」加入。', kbNoCollFiles: '知识库里还没有文件', kbAllColls: '全部', kbDelCollConfirm: '确定删除知识集「{n}」？', kbDelCollWarn: '仅移除该知识集的索引（{c} 个文档的解析数据）；你磁盘上的原文件不会被删除。', kbDelete: '删除', kbRemoveDocConfirm: '从知识库移除「{n}」？', kbRemoveDocWarn: '仅删除该文件在知识库中的索引；磁盘上的原文件不受影响。', kbRemoveQ: '删除?',
+        kbDeleteColl: '删除知识集', kbRemove: '移除', kbCollEmpty: '还没有文档，点「添加文件」加入。', kbNoCollFiles: '知识库里还没有文件', kbAllColls: '全部', kbDelCollConfirm: '确定删除知识集「{n}」？', kbDelCollWarn: '仅移除该知识集的索引（{c} 个文档的解析数据）；你磁盘上的原文件不会被删除。', kbDelete: '删除', kbRemoveDocConfirm: '从知识库移除「{n}」？', kbRemoveDocWarn: '仅删除该文件在知识库中的索引；磁盘上的原文件不受影响。', kbRemoveFailed: '移除失败', kbRemoveQ: '删除?',
         kbRetrPlaceholder: '在这个知识集里检索内容…', kbModeSearch: '检索', kbModeAsk: '问答', kbAskPlaceholder: '问这个知识集…（AI 基于内容回答并标注来源）', kbAskBtn: '提问', kbAsking: '思考中…', kbAnswer: '回答', kbSources: '来源', kbNoContext: '这个知识集还没有可检索的内容，先加文件并等索引完成。', kbAskError: '回答失败，请确认本地模型服务可用。', kbCollNamePh: '知识集名称', kbCollCatPh: '分类（可选）', kbCancel: '取消', kbCreate: '创建',
         kbEmbedOn: '语义检索已启用', kbEmbedOff: '语义检索未配置 · 全文模式',
         kbModelTitle: '还未安装 Embedding 模型', kbModelDesc: '知识库的向量化与语义检索依赖本地 Embedding 模型。下载部署后即可创建知识库，让 AI 基于你的本地文件作答。',
@@ -427,7 +443,7 @@ const dict = {
         kbModelItem1: 'bge-m3 多语言向量模型（int8 量化 ONNX）', kbModelItem2: '分词器与模型配置文件', kbModelItem3: 'CPU 推理，无需联网与显卡',
         kbModelDownloadBtn: '下载并部署资源包', kbModelFoot: '一次安装，后续离线可用 · 下载期间可继续使用其他功能',
         kbModelRetryBtn: '重试加载', kbModelRepairBtn: '重新下载并修复', kbModelLoading: '正在加载模型…',
-        kbModelStageDownload: '正在下载资源包…', kbModelStageVerify: '正在校验完整性…', kbModelStageExtract: '正在解压部署…', kbModelStageDone: '部署完成',
+        kbModelStageDownload: '正在下载模型文件…', kbModelStageVerify: '正在校验完整性…', kbModelStagePrepare: '正在准备模型…', kbModelStageDone: '部署完成',
         sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
         cpu: '处理器 (CPU)', cpuUnavail: 'CPU 信息不可用', cpuTotal: '总体使用率', cpuProcess: '应用占用', cpuLogical: '逻辑处理器',
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
@@ -494,6 +510,8 @@ const dict = {
         testConnection: '测试连接', testingConn: '测试中…', modelSaveBtn: '保存', manageModels: '管理模型…',
         switchModelTitle: '切换模型', modelSwitchBusy: '生成中，无法切换', modelNonePick: '选择模型', modelDeleteMin: '至少保留一个模型',
         modelGroupPreset: '预设', modelGroupCustom: '自定义',
+        thinkingDepth: '思考深度', thinkingDepthTiers: { off: '关闭', low: '低', medium: '中', high: '高', max: '最深' },
+        saveModelFailed: '思考深度保存失败，请重试',
         modelEnvLocked: f => `环境变量已锁定：${f}，设置页改动不生效`, deleteModelConfirm: n => `删除模型「${n}」？`,
         modelDirtyHint: '配置已修改，保存后应用将重启',
         langRestartHint: '界面语言已切换；助手回复语言需重启应用后生效',
@@ -512,9 +530,8 @@ const dict = {
         uiScheduled: { title:'定时任务', subtitle:'让 PINVOU 按计划自动完成重复工作', newTask:'新建任务', templates:'推荐模板', myTasks:'我的任务', loading:'正在读取定时任务…', empty:'没有匹配的定时任务', view:n=>`查看定时任务：${n}`, useTemplate:n=>`使用${n}模板`, running:'任务正在运行', unread:'有未查看的运行对话', navUnreadAria:'定时任务有未查看的运行对话', closeError:'关闭错误提示', deleteTitle:'删除定时任务？', deleteDescription:n=>`“${n}”将被删除，此操作无法撤销。`, cancel:'取消', delete:'删除', save:'保存', filterAll:'全部', filterActive:'已开启', filterPaused:'已暂停', active:'活跃', paused:'已暂停', enabled:'已开启', unknown:'未知', notScheduled:'未安排', noSchedule:'暂无计划', waitingDispatch:'等待调度', soon:'即将执行', nextRun:(time,remaining)=>`下次 ${time}（${remaining}）`, date:(month,day)=>`${month}月${day}日 `, daysAfter:(days,hours)=>`${days}天${hours ? `${hours}小时` : ''}后`, hoursAfter:(hours,minutes)=>`${hours}小时${minutes ? `${minutes}分` : ''}后`, minutesAfter:(minutes,seconds)=>`${minutes}分${seconds}秒后`, secondsAfter:seconds=>`${seconds}秒后`, runStatus:{ queued:'等待中', running:'运行中', completed:'已完成', failed:'失败', canceled:'已取消' }, weekdays:[['星期一','周一'],['星期二','周二'],['星期三','周三'],['星期四','周四'],['星期五','周五'],['星期六','周六'],['星期日','周日']], hourCount:n=>`${n} 小时`, choose:'请选择', autoModel:'自动选择', currentModel:'当前模型', reselectModel:n=>`重新选择模型 · ${n}`, repeatOptions:{ workdays:'工作日', daily:'每天', weekly:'每周', hourly:'每小时', custom:'自定义' }, everyHours:n=>`每 ${n} 小时`, startsAt:time=>`${time} 起`, repeat:'重复', interval:'间隔', dateLabel:'日期', startTime:'起始时间', time:'时间', chooseRepeat:'选择重复频率', chooseInterval:'选择小时间隔', chooseDate:'选择运行日期', chooseStartTime:'选择起始时间', chooseRunTime:'选择运行时间', setStart:'设置起点', createFromTemplate:'基于模板创建任务', closeCreate:'关闭新建任务', taskName:'任务名称', taskNamePlaceholder:'例如：每日数据备份', taskPrompt:'执行内容', taskPromptPlaceholder:'描述每次运行时需要完成的工作…', saveTask:'保存任务', editTask:'编辑任务', closeDetail:'关闭任务详情', taskNameAria:'定时任务名称', taskPromptAria:'定时任务说明', aiModel:'AI 模型', chooseModel:'选择定时任务模型', runningStatus:'运行状态', nextExecution:'下次执行', enableTask:'启用任务', runNow:'立即运行', openFolder:'打开文件夹', runHistory:'执行历史', records:n=>`${n} 条记录`, noRecords:'暂无记录', openRun:'打开运行会话', noOpenRun:'此运行记录还没有可打开的会话', openRunLabel:s=>`打开运行记录：${s}`, runInProgress:'运行正在进行', viewRunResult:'打开对应会话查看结果', noRunSession:'暂无可打开的会话', noRunHistory:'还没有运行记录', saveState:{ saving:'正在保存…', saved:'已保存', invalid:'名称和说明不能为空', error:'保存失败' }, pause:n=>`暂停${n}`, resume:n=>`恢复${n}`, templateMap:{ 'daily-brief':{name:'每日早报',schedule:'每天 8:00',description:'汇总重要新闻、行业动态和已连接办公系统中的公司公告',prompt:'整理过去 24 小时的重要新闻和行业动态，注明来源和链接；已连接飞书或企微时，补充公司公告。不要扫描用户目录，结果保存到任务工作间。'}, 'follow-up-monitor':{name:'事项督办',schedule:'工作日 9:00',description:'整理逾期与临期事项，突出风险和建议下一步',prompt:'汇总已连接飞书或企微中的逾期、今日到期和未来 3 个工作日临期事项，按优先级给出风险与下一步。仅查询整理，不发送、审批或修改；不要扫描用户目录。'}, 'weekly-review':{name:'工作周报',schedule:'星期五 16:00',description:'根据本周办公记录生成结构清晰的工作周报',prompt:'根据已连接飞书或企微中的本周日程、待办和办公消息生成工作周报，包含进展、遗留、风险和下周计划。不要扫描用户目录或自动发送。'} } },
         uiChat: { ready:'系统已就绪', sceneModes:{ personalWorkbench:'个人工作台', documentWriting:'公文写作', poster:'海报', dataVisualization:'数据可视化', pptDesign:'PPT设计', pptUnavailable:'PPT 生成能力修复中', clear:label=>`取消${label}`, designGeneralPlaceholder:'描述你想生成或调整的内容' }, askMe:'试试问我', naturalQuestion:'自然语言提问即可。', backRuns:'返回定时任务运行历史', scheduledRun:'定时任务运行', runRecords:'运行记录', asrUnavailable:'语音识别组件尚未安装，请先在桌面端完成安装后再试。', gotIt:'知道了', asrDownloadTitle:'下载语音识别模型', asrEnableTitle:'启用本地语音识别', asrRuntimeMissing:'本地语音识别运行时缺失，请修复或重新安装应用；仅缺模型时可在这里下载。', asrFirstUse:(size,ffmpeg)=>`首次使用需要下载语音识别模型（${size}${ffmpeg ? ' + ffmpeg' : ''}），完全本地运行、语音不上传云端。`, sizeModelOnly:'约 254MB', sizeFull:'约 174-254MB', asrStages:{ ffmpeg:'正在安装 ffmpeg（可能弹系统授权框）…', verify:'正在校验模型完整性…', cancelling:'正在取消下载…', done:'完成', cancelled:'已取消', failed:'下载失败，可重试', preparing:'准备中…' }, downloadingModel:p=>`正在下载模型 ${p}`, cancelling:'正在取消…', cancelDownload:'取消下载', cancel:'取消', repairInstall:'需要修复安装', downloadModel:'下载模型', install:'安装', designingCard:'🃏 正在设计卡牌…', recordedRecent:'已记录近期动态', viewMemory:'可在记忆中心查看', memoryUpdated:'记忆已更新', processed:'已处理', candidate:'记忆候选', remember:'记住', ignoreOnce:'这次忽略', neverAsk:'不再提示', memoryMeta:{ current_focus:{label:'当前关注',prompt:'我可以记住这个当前关注',hint:'以后我会用它理解你最近正在推进的工作。',notice:'后续对话会参考这个近期事项。'}, recent_activity:{label:'近期动态',prompt:'我可以记住这个近期动态',hint:'以后我会用它理解你刚完成的工作。',notice:'后续对话会参考这次完成的事情。'}, work_context:{label:'工作背景',prompt:'我可以记住这条工作背景',hint:'以后我会用它理解你的长期工作上下文。',notice:'后续对话会参考这条长期背景。'}, profile:{label:'称呼',prompt:'我可以记住这个称呼',hint:'以后我会按这个称呼和你交流。',notice:'后续对话会按这个称呼交流。'}, preference:{label:'偏好',prompt:'我可以记住这条偏好',hint:'以后我会按这个偏好调整回复方式。',notice:'后续对话会参考这条偏好。'} } },
         uiChatExtra: { transferRevision:type=>`Pinvou · ${type} · 转交修订`, draftingScheduled:'⏰ 正在整理定时任务草稿…' },
-        expertPoolIndividualTab:'个人专家', expertPoolTeamTab:'专家团队',
-        uiWorkflow: { pick:'选择一个工作流模板开始', empty:'没有可用的工作流（请检查工作流资源）', workflow:'工作流', stopFailed:e=>`停止工作流失败：${e}`, completed:'🎉 工作流完成' },
-        uiToolStore: { title:'工具商店', search:'搜索连接器、技能、插件等', card:'卡片', list:'列表', myTools:'我的工具', featured:'精选连接器', skills:'独家技能', results:'检索结果', back:'返回商店', internal:'集团内部 · 员工专属', internalTitle:'H3C 办公生态\n一键接入', internalDesc:'以你本人 SSO 身份直连集团内部系统，全程不填 key', internalTools:'H3C 集团内部工具', internalCount:n=>`${n} 个工具 · 需内网`, view:'查看' },
+        artifactPreview: { download:'↓ 下载', openExternal:'↗ 外部打开', loading:'加载中…', fileMissing:'文件不存在或已被删除', readFailed:e=>`读取失败: ${e}`, imageReadFailed:e=>`图片读取失败: ${e}`, previewUnsupported:'此类型暂不支持预览', downloadArtifact:'↓ 下载产物', openExternalArtifact:'↗ 外部打开' },
+        uiToolStore: { title:'工具商店', search:'搜索连接器、技能、插件等', myTools:'我的工具', results:'检索结果', back:'返回商店', internal:'集团内部 · 员工专属', internalTitle:'H3C 办公生态\n一键接入', internalDesc:'以你本人 SSO 身份直连集团内部系统，全程不填 key', internalTools:'H3C 集团内部工具', internalCount:n=>`${n} 个工具 · 需内网`, view:'查看' },
         uiToolDetails: { tools:{
           ima:{ title:'腾讯 ima', subtitle:'用 OpenAPI 操作 ima 笔记与知识库', latency:'云端', desc:'接入腾讯 ima OpenAPI Skill，可搜索、读取、创建和追加笔记，也可搜索、浏览知识库并导入网页或内容。凭据只保存在本机。', configTitle:'连接腾讯 ima', configDescription:'凭据只保存在本机，用于启用 IMA OpenAPI Skill。', configDocLabel:'获取 Client ID / API Key', welcomeQueries:['搜索我的 ima 知识库','列出我有哪些 ima 笔记','把这段内容新建为 ima 笔记','在 ima 知识库里查产品方案'] },
           tmeet:{ title:'腾讯会议', subtitle:'以本人身份管理会议、录制、纪要和参会报告', type:'CLI + 官方技能', latency:'云端', desc:'接入腾讯会议官方 CLI 和技能，可创建、查询、修改和取消会议，查询参会报告、录制、转写与智能纪要。连接时会打开授权页扫码登录。', welcomeQueries:['帮我创建一个腾讯会议','查一下我的腾讯会议录制','看看最近会议的智能纪要','查询这场腾讯会议的参会人'] },
@@ -533,7 +550,6 @@ const dict = {
           agentsListSummary:(roots,total)=>roots === total ? `${total} 个` : `${roots} 个直属 · 共 ${total} 个`,
           childAgentCount:count=>`${count} 个下级`, expandChildren:name=>`展开 ${name} 的下级`, collapseChildren:name=>`收起 ${name} 的下级`,
           coordinationRow:action=>`协调 · ${action}`,
-          rosterSyncFailed:'⚠️ 专家卡操作已生效，但部分会话的专家名册刷新失败: ',
           roleCards:{ scout:'调研专家', manager:'规划专家', builder:'执行专家', reviewer:'审查专家', general:'通用执行者' },
           blockedTag:'受阻', pendingTag:'排队中',
           agentPending:'子智能体在排队/启动中，还没有对话记录。',
@@ -720,19 +736,29 @@ const dict = {
       en: {
         langTag: 'en',
         acpAgent: 'ACP Agent',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Runtime', workflow: 'Workflow', multiAgent: 'Multi-agent', multiAgentDesktopOnly: 'This multi-agent conversation is currently available only in the desktop app.', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', sidebarTaskList: 'Tasks', sidebarTaskFilter: 'Filter', sidebarTaskFilterAll: 'All', sidebarTaskFilterPinned: 'Pinned', sidebarTaskFilterCode: 'Code', sidebarTaskFilterScheduled: 'Scheduled tasks', sidebarTaskSort: 'Sort', sidebarTaskSortPinnedFirst: 'Pinned first', sidebarTaskSortRecent: 'Recent', sidebarTaskEmpty: 'No tasks', sidebarViewAll: 'View all', sidebarSection: 'Task list', sidebarDateGrouping: 'Group by date', sidebarDateGroupingDesc: 'Group tasks by date; today stays expanded', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window', mobileMore: 'More',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Runtime', multiAgent: 'Multi-agent', multiAgentDesktopOnly: 'This multi-agent conversation is currently available only in the desktop app.', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', sidebarTaskList: 'Tasks', sidebarTaskFilter: 'Filter', sidebarTaskFilterAll: 'All', sidebarTaskFilterPinned: 'Pinned', sidebarTaskFilterCode: 'Code', sidebarTaskFilterScheduled: 'Scheduled tasks', sidebarTaskSort: 'Sort', sidebarTaskSortPinnedFirst: 'Pinned first', sidebarTaskSortRecent: 'Recent', sidebarTaskEmpty: 'No tasks', sidebarViewAll: 'View all', sidebarSection: 'Task list', sidebarDateGrouping: 'Group by date', sidebarDateGroupingDesc: 'Group tasks by date; today stays expanded', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window', mobileMore: 'More',
         previewTaskDailyBrief: 'Daily Brief', previewTaskFollowUp: 'Follow-ups', previewTaskSalesWeekly: 'Sales Leads Weekly',
         archiveSession: 'Hide', archiveConfirmTitle: 'Hide this task?', archiveConfirmMessage: 'This task will leave the sidebar.', archiveConfirmDetail: 'The conversation and artifacts stay saved, and can be restored on the chat manager page.', archiveConfirmAction: 'Hide',
         archiveSuccess: 'Hidden', archiveSuccessView: 'View',
         sessionBatchFailed: n => `${n} task operation${n === 1 ? '' : 's'} failed. Please retry.`,
         archivedTasks: 'Tasks hidden in Settings', archivedTasksDesc: '', archivedEmpty: 'No hidden tasks yet', restoreArchived: 'Restore to list',
         archivedDeleteTitle: 'Delete hidden task?', archivedDeleteMessage: 'This permanently deletes the task and its contents. This cannot be undone.', archivedDeleteAction: 'Delete',
-        knowledge: 'Local Knowledge',
+        knowledge: 'Knowledge', remoteKnowledge: 'Shared Knowledge',
+        remoteKbHeroTitle: 'Shared knowledge', remoteKbHeroStep1: 'Connect a knowledge server', remoteKbHeroStep2: 'Manage documents in one place', remoteKbHeroStep3: 'Use them across devices', remoteKbHeroClient: 'PINVOU client', remoteKbHeroNetwork: 'Secure network', remoteKbHeroServer: 'Knowledge server', remoteKbHeroDevices: 'Authorized devices',
+        remoteKbDesc: 'Create shared knowledge on this device, or join your team’s existing library.', remoteKbRefresh: 'Refresh', remoteKbConnectTitle: 'Join shared knowledge', remoteKbInvitePlaceholder: 'Paste a pinvou-knowledge:// invitation', remoteKbDeviceName: 'Enter your name', remoteKbConnect: 'Connect', remoteKbConnected: 'Joined shared knowledge', remoteKbServers: 'Shared knowledge', remoteKbNoServers: 'No shared knowledge yet', remoteKbReady: 'Available', remoteKbNotReady: 'Search unavailable', remoteKbOffline: 'Offline', remoteKbManage: 'Manage', remoteKbReadOnly: 'Read only', remoteKbSelectServer: 'Join or select shared knowledge first', remoteKbShowTrash: 'Show trash', remoteKbDisconnect: 'Disconnect', remoteKbRemoveConfirm: 'Disconnecting removes this connection and all chat attachments on this device. Continue?', remoteKbCollections: 'Shared collections', remoteKbCollectionName: 'New collection name', remoteKbCreate: 'Create', remoteKbCollectionCreated: 'Collection created', remoteKbNoCollections: 'No collections yet', remoteKbDocuments: 'documents', remoteKbChunks: 'chunks', remoteKbRestore: 'Restore', remoteKbTrash: 'Move to trash', remoteKbTrashConfirm: 'Move this collection to trash? Its documents remain recoverable.', remoteKbFiles: 'Documents', remoteKbUpload: 'Upload files', remoteKbUploaded: 'Documents uploaded', remoteKbNoDocuments: 'No documents in this collection', remoteKbStatusPending: 'Processing', remoteKbStatusReady: 'Available', remoteKbStatusFailed: 'Processing failed', remoteKbStatusUnknown: 'Unknown status', remoteKbDownload: 'Download original', remoteKbDownloaded: 'File downloaded', remoteKbTestSearch: 'Test search', remoteKbSearchPlaceholder: 'Enter a question or keywords', remoteKbSearch: 'Search', remoteKbDesktopOnly: 'Shared knowledge requires the PINVOU desktop app.',
+        remoteKbAddServer: 'Join shared knowledge', remoteKbHideConnect: 'Hide connection', remoteKbNewCollection: 'New collection', remoteKbCancel: 'Cancel', remoteKbClose: 'Close', remoteKbCollapse: 'Hide', remoteKbDone: 'Done', remoteKbUploading: 'Processing…', remoteKbUploadTitle: 'Upload documents', remoteKbStartUpload: 'Upload', remoteKbRetryFailed: 'Retry failed', remoteKbUploadingFile: 'Uploading', remoteKbUploadDone: 'Done', remoteKbUploadPendingIndex: 'Processing', remoteKbUploadStillIndexing: 'Still processing', remoteKbUploadIndexFailed: 'Processing failed', remoteKbUploadFailed: 'Upload failed', remoteKbUploadSuccess: '{count} documents uploaded', remoteKbUploadSummary: '{done} done · {processing} processing · {failed} failed', remoteKbUploadRefreshFailed: 'Could not refresh the list: {error}', remoteKbFileName: 'Name', remoteKbStatus: 'Status', remoteKbSize: 'Size',
+        remoteKbReplace: 'Update document', remoteKbReplaced: 'Document updated', remoteKbLoadMoreDocuments: 'Load more', remoteKbLoadingMoreDocuments: 'Loading…',
+        remoteKbNearby: 'Nearby shared knowledge', remoteKbDiscovering: 'Securely checking nearby shared knowledge…', remoteKbNearbyEmpty: 'No available LAN knowledge servers found', remoteKbManualConnect: 'Connect manually', remoteKbVerify: 'Check identity', remoteKbVerifyIdentityDesc: 'Compare this code with “Service and maintenance” on the host. Request access only when the codes match exactly.', remoteKbIdentityCode: 'Service identity code', remoteKbConfirmIdentity: 'Codes match — request access', remoteKbBack: 'Back', remoteKbLan: 'LAN', remoteKbTailnet: 'Tailscale', remoteKbHostIdentity: 'Service identity', remoteKbHostIdentityDesc: 'When a new device connects for the first time, compare this code on both devices.', remoteKbPublishLocal: 'Publish local collection', remoteKbPublishDesc: 'Copy the selected collection and its source documents. Local and shared copies remain independent.', remoteKbPublishChoose: 'Choose a local collection', remoteKbPublishContinue: 'Prepare', remoteKbPublishEmpty: 'This local collection has no documents yet', remoteKbNoLocalCollections: 'No local collections are available to publish',
+        remoteKbJoinSource: 'Share link or private address', remoteKbJoinSourcePlaceholder: 'Paste a share link or enter 192.168.1.20:3210', remoteKbJoinHint: 'Supports LAN addresses, Tailscale 100.x addresses, and *.ts.net:port. Private direct connections require identity verification first.', remoteKbShareLinkOnly: 'Paste a pinvou-knowledge://share… link generated by the owner.', remoteKbJoinRequested: 'Join request sent', remoteKbPendingTitle: 'Waiting for approval', remoteKbPendingDesc: 'PINVOU joins automatically after owner approval.', remoteKbCancelRequest: 'Cancel', remoteKbOwner: 'Owner', remoteKbGovern: 'Manage', remoteKbGovernTitle: 'Sharing and members', remoteKbPeopleTab: 'People and invites', remoteKbServiceTab: 'Service and maintenance',
+        remoteKbShareTitle: 'Invite your team', remoteKbShareDesc: 'Share links are valid for 24 hours by default and can accept multiple requests.', remoteKbCreateShare: 'Create link', remoteKbAutoApproveRead: 'Auto-approve read-only requests while this link is active', remoteKbCopy: 'Copy link', remoteKbLinkCopied: 'Share link copied', remoteKbRecoveryCopied: 'Recovery code copied', remoteKbCopyFailed: 'Copy failed. Select the text and copy it manually.', remoteKbActiveShares: '{count} active share links', remoteKbRequestsTitle: 'Join requests', remoteKbNoRequests: 'No pending requests', remoteKbApproveRead: 'Read only', remoteKbApproveManage: 'Manage', remoteKbReject: 'Reject', remoteKbStopShare: 'Stop', remoteKbAutoReadShort: 'Auto read-only', remoteKbMembersTitle: 'Members', remoteKbThisDevice: 'This device', remoteKbRevoked: 'Revoked', remoteKbRestoreAccess: 'Restore', remoteKbRevokeAccess: 'Revoke', remoteKbMemberAccess: 'Member access', remoteKbRemoveMember: 'Remove member “{name}”', remoteKbRemoveMemberAction: 'Remove member', remoteKbRemoveMemberConfirm: 'Permanently remove “{name}”?',
+        remoteKbPromoteOwner: 'Make owner', remoteKbDemoteOwner: 'Remove owner', remoteKbPromoteOwnerConfirm: 'Make “{name}” an owner? They can manage sharing and members.', remoteKbDemoteOwnerConfirm: 'Remove owner access from “{name}”?', remoteKbModelTitle: 'Semantic search model', remoteKbModelReady: 'Available', remoteKbModelMissing: 'Not downloaded', remoteKbModelDownloading: 'Downloading; this continues after PINVOU closes', remoteKbDownloadModel: 'Download', remoteKbModelDownloadingAction: 'Downloading', remoteKbPermanentDelete: 'Delete permanently', remoteKbPermanentDeleteConfirm: 'Permanently delete “{name}”? This cannot be undone.',
+        remoteKbOtherNetwork: 'Other network address (optional)', remoteKbOtherNetworkPlaceholder: 'For example, 100.64.12.34:3210 or cube.ts.net:3210',
+        remoteKbCreateHost: 'Create shared knowledge', remoteKbHostCreated: 'Shared knowledge created', remoteKbReconnectHost: 'Reconnect this host', remoteKbHostReconnected: 'Local owner access restored', remoteKbUpgradeHost: 'Upgrade service', remoteKbHostUpgraded: 'Shared knowledge service upgraded', remoteKbClientOutdatedTitle: 'Update PINVOU first', remoteKbClientOutdatedDesc: 'PINVOU {appVersion} is older than the host service {serviceVersion}. Service downgrade is blocked to protect your data.', remoteKbHostProgressCreateTitle: 'Creating shared knowledge', remoteKbHostProgressReconnectTitle: 'Restoring the local connection', remoteKbHostProgressUpgradeTitle: 'Upgrading shared knowledge', remoteKbHostProgressPrepare: 'Preparing installation files', remoteKbHostProgressInstall: 'Waiting for system approval and updating local access', remoteKbHostProgressConnect: 'Connecting to the local service', remoteKbHostProgressComplete: 'Complete', remoteKbHostProgressFailed: 'Operation did not finish', remoteKbHostProgressHint: 'Approve the system prompt if it appears. This usually takes less than a minute.', remoteKbHostProgressRetry: 'Retry', remoteKbNoLanEndpoint: 'No team-accessible LAN address was found. Connect this computer to the LAN and retry.', remoteKbHostSettings: 'Host settings', remoteKbHostSettingsDesc: 'Back up, restore, or manage this computer\'s host service.', remoteKbDangerZone: 'Stop or delete', remoteKbDangerZoneDesc: 'Stopping hosting keeps existing data. Deleting the service and data cannot be undone.', remoteKbBackup: 'Create backup', remoteKbRestoreBackup: 'Restore backup', remoteKbRecoveryTitle: 'Save recovery code', remoteKbRecoveryDesc: 'The backup is encrypted. Restoring on this computer needs no code; moving to another host requires this code. Store it separately from the backup.', remoteKbCopyRecovery: 'Copy recovery code', remoteKbRestoreTitle: 'Restore shared knowledge', remoteKbRestoreDesc: 'Leave the recovery code blank to restore on this host, or enter it to migrate to this host.', remoteKbRecoveryPlaceholder: 'Paste the recovery code for migration (leave blank on this host)', remoteKbSameHostMode: 'A same-host restore keeps the current service identity and members, and restores knowledge content only.', remoteKbMigrationMode: 'Migration imports knowledge content under a new service identity. Existing members must join again.', remoteKbRestoreAction: 'Restore', remoteKbRestoreConfirm: 'Restore knowledge content on this host? Current content will be replaced while the service identity and members stay unchanged.', remoteKbMigrateConfirm: 'Migrate this backup to the current host? Current content will be replaced and a new service identity and owner will be created.', remoteKbRestored: 'Shared knowledge restored', remoteKbMigrated: 'Shared knowledge migrated to this host', remoteKbRemoveHost: 'Stop hosting', remoteKbDeleteHost: 'Delete service and data', remoteKbRemoveHostConfirm: 'Stop the shared knowledge service on this computer? Existing data will be kept for a later reinstall.', remoteKbDeleteHostConfirm: 'Permanently delete the shared knowledge service and all data on this computer? This cannot be undone.', remoteKbHostRemoved: 'Shared knowledge hosting stopped; data was kept', remoteKbHostDeleted: 'Shared knowledge service and data deleted',
         outputs: 'Outputs',
-        kbMount: 'Knowledge', kbMountTitle: 'Manage collections attached to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create one in Local Knowledge', kbMountRemove: 'Remove all', kbMountRemoveOne: 'Remove this collection', kbMountEnable: 'Enable', kbMountDisable: 'Disable', kbMountEnabled: 'Enabled', kbMountDisabled: 'Disabled', kbMountCount: n => `${n} knowledge bases`, kbMountedTag: 'Mounted', kbMountNoModel: 'Install the embedding model first (Local Knowledge → Knowledge) to attach a collection', kbMountNotReady: 'The embedding model is still loading or failed to load, so collections cannot be attached yet',
+        kbMount: 'Knowledge', kbMountTitle: 'Manage collections attached to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create or connect one in Knowledge', kbMountRemove: 'Remove all', kbMountRemoveOne: 'Remove this collection', kbMountEnable: 'Enable', kbMountDisable: 'Disable', kbMountEnabled: 'Enabled', kbMountDisabled: 'Disabled', kbMountCount: n => `${n} knowledge bases`, kbMountedTag: 'Mounted', kbMountNoModel: 'Install the embedding model first (Knowledge → Local Knowledge) to attach a local collection', kbMountNotReady: 'The embedding model is still loading or failed to load, so collections cannot be attached yet',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'Switch mode', modeYoloDesc: 'Act directly', modePlanDesc: 'Plan first, then execute',
         modeYoloConfirmTitle: 'Switch to YOLO mode?', modeYoloConfirmBody: 'In this mode the model reads and writes your project directory fully automatically and can run shell commands, without step-by-step approvals.', modeYoloConfirmHint: 'Remembered globally once confirmed — you will not be asked again.', modeYoloConfirmOk: 'Confirm', modeYoloConfirmCancel: 'Cancel',
-        kbTitle: 'Local Knowledge', kbDesc: 'Whole-system instant search + dedup · metadata only, content not read',
+        kbTitle: 'Knowledge', kbDesc: 'Manage local and shared knowledge in one place',
         kbRescan: 'Rescan', kbScanning: 'Scanning', kbDeduping: 'Deduping', kbScanNow: 'Scan this PC',
         kbTotalFiles: 'Indexed files', kbDupFiles: 'Duplicates', kbWasted: 'Reclaimable',
         kbTabSearch: 'Search', kbTabDups: 'Duplicates',
@@ -742,8 +768,8 @@ const dict = {
         kbBuildDups: 'Find duplicates', kbDupHint: 'No dedup data yet. Click "Find duplicates" to scan — reads files on demand to fingerprint.',
         kbDupNote: 'Files with identical content (delete action coming in a later version)', kbNoDups: 'No duplicates found', kbDupCopies: 'copies',
         kbOpen: 'Open', kbOpenFolder: 'Open folder',
-        kbPageTitle: 'Local Files & Knowledge', kbFilesSub: 'Search and browse local files, and turn them into an AI-citable knowledge base.', kbKbSub: 'Turn local files into AI-citable knowledge; answers cite their sources.',
-        kbSubFiles: 'File Manager', kbSubKb: 'Knowledge', kbSubOutput: 'Outputs',
+        kbPageTitle: 'Knowledge', kbFilesSub: 'Search and browse local files, and turn them into an AI-citable knowledge base.', kbKbSub: 'Turn local files into AI-citable knowledge; answers cite their sources.',
+        kbSubFiles: 'Local Files', kbSubKb: 'Local Knowledge', kbSubRemote: 'Shared Knowledge', kbSubOutput: 'Outputs',
         kbOutSub: 'Everything you and PINVOU have made, all in one place.',
         kbOutSearch: 'Search outputs', kbOutSearchList: 'Search by name / source chat',
         kbOutCatAll: 'All', kbOutCatWeb: 'Web', kbOutCatDoc: 'Docs', kbOutCatImg: 'Poster', kbOutCatPpt: 'PPT',
@@ -767,7 +793,7 @@ const dict = {
         kbImportProgress: 'File progress', kbCurrentFile: 'Current file:', kbChunkProgress: 'Chunk progress', kbFailedFiles: 'Failed files', kbRetryFile: 'Retry', kbImportErrors: 'failed', kbImportDoneWithErrors: 'Import finished with errors',
         kbResumeImportFailed: 'Failed to continue import', kbCancelImportFailed: 'Failed to cancel import', kbRetryImportFailed: 'Failed to retry file',
         kbLoadMoreFailedFiles: 'Load more failed files', kbLoadingFailedFiles: 'Loading…', kbLoadFailedFilesFailed: 'Failed to load failed files',
-        kbDeleteColl: 'Delete collection', kbRemove: 'Remove', kbCollEmpty: 'No documents yet. Click "Add files".', kbNoCollFiles: 'No files in any knowledge base yet', kbAllColls: 'All', kbDelCollConfirm: 'Delete collection "{n}"?', kbDelCollWarn: 'Only removes the index for its {c} documents. Your original files on disk are NOT deleted.', kbDelete: 'Delete', kbRemoveDocConfirm: 'Remove "{n}" from the knowledge base?', kbRemoveDocWarn: 'Only deletes its index here. Your original file on disk is not affected.', kbRemoveQ: 'Remove?',
+        kbDeleteColl: 'Delete collection', kbRemove: 'Remove', kbCollEmpty: 'No documents yet. Click "Add files".', kbNoCollFiles: 'No files in any knowledge base yet', kbAllColls: 'All', kbDelCollConfirm: 'Delete collection "{n}"?', kbDelCollWarn: 'Only removes the index for its {c} documents. Your original files on disk are NOT deleted.', kbDelete: 'Delete', kbRemoveDocConfirm: 'Remove "{n}" from the knowledge base?', kbRemoveDocWarn: 'Only deletes its index here. Your original file on disk is not affected.', kbRemoveFailed: 'Could not remove document', kbRemoveQ: 'Remove?',
         kbRetrPlaceholder: 'Search inside this collection…', kbModeSearch: 'Search', kbModeAsk: 'Ask AI', kbAskPlaceholder: 'Ask this collection… (AI answers from its content, with citations)', kbAskBtn: 'Ask', kbAsking: 'Thinking…', kbAnswer: 'Answer', kbSources: 'Sources', kbNoContext: 'Nothing indexed in this collection yet — add files and wait for indexing.', kbAskError: 'Failed to answer — check the local model service.', kbCollNamePh: 'Collection name', kbCollCatPh: 'Category (optional)', kbCancel: 'Cancel', kbCreate: 'Create',
         kbEmbedOn: 'Semantic search on', kbEmbedOff: 'Semantic off · full-text only',
         kbModelTitle: 'Embedding model not installed', kbModelDesc: 'Vectorizing and semantic search rely on a local embedding model. Download and deploy it to start building knowledge bases the AI can answer from.',
@@ -777,7 +803,7 @@ const dict = {
         kbModelItem1: 'bge-m3 multilingual vector model (int8 ONNX)', kbModelItem2: 'Tokenizer & model config files', kbModelItem3: 'CPU inference, no network or GPU',
         kbModelDownloadBtn: 'Download & deploy', kbModelFoot: 'Install once, then offline · keep using other features while it downloads',
         kbModelRetryBtn: 'Retry loading', kbModelRepairBtn: 'Download & repair', kbModelLoading: 'Loading model…',
-        kbModelStageDownload: 'Downloading…', kbModelStageVerify: 'Verifying…', kbModelStageExtract: 'Deploying…', kbModelStageDone: 'Done',
+        kbModelStageDownload: 'Downloading model files…', kbModelStageVerify: 'Verifying…', kbModelStagePrepare: 'Preparing model…', kbModelStageDone: 'Done',
         sysStatus: 'System Status', sysDesc: 'Real-time performance metrics', gpu: 'GPU', gpuUnavail: 'Unavailable', noSmi: 'nvidia-smi not found',
         cpu: 'CPU', cpuUnavail: 'CPU info unavailable', cpuTotal: 'Total Usage', cpuProcess: 'App Usage', cpuLogical: 'logical processors',
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
@@ -844,6 +870,8 @@ const dict = {
         testConnection: 'Test Connection', testingConn: 'Testing…', modelSaveBtn: 'Save', manageModels: 'Manage models…',
         switchModelTitle: 'Switch model', modelSwitchBusy: 'Busy generating, cannot switch', modelNonePick: 'Select model', modelDeleteMin: 'Keep at least one model',
         modelGroupPreset: 'Presets', modelGroupCustom: 'Custom',
+        thinkingDepth: 'Thinking depth', thinkingDepthTiers: { off: 'Off', low: 'Low', medium: 'Medium', high: 'High', max: 'Max' },
+        saveModelFailed: 'Failed to save thinking depth. Please try again',
         modelEnvLocked: f => `Locked by env vars: ${f}; settings won't apply`, deleteModelConfirm: n => `Delete model "${n}"?`,
         modelDirtyHint: 'Configuration changed — saving will restart the app',
         langRestartHint: 'Interface language switched; restart the app to apply it to the assistant',
@@ -862,12 +890,11 @@ const dict = {
         uiScheduled: { title:'Scheduled Tasks', subtitle:'Let PINVOU automatically handle recurring work', newTask:'New Task', templates:'Recommended Templates', myTasks:'My Tasks', loading:'Loading scheduled tasks…', empty:'No matching scheduled tasks', view:n=>`View scheduled task: ${n}`, useTemplate:n=>`Use ${n} template`, running:'Task is running', unread:'Unviewed run conversation', navUnreadAria:'Scheduled tasks have unviewed run conversations', closeError:'Dismiss error', deleteTitle:'Delete scheduled task?', deleteDescription:n=>`“${n}” will be deleted. This cannot be undone.`, cancel:'Cancel', delete:'Delete', save:'Save', filterAll:'All', filterActive:'Enabled', filterPaused:'Paused', active:'Active', paused:'Paused', enabled:'Enabled', unknown:'Unknown', notScheduled:'Not scheduled', noSchedule:'No schedule', waitingDispatch:'Waiting to run', soon:'Starting soon', nextRun:(time,remaining)=>`Next: ${time} (${remaining})`, date:(month,day)=>`${month}/${day} `, daysAfter:(days,hours)=>`in ${days}d${hours ? ` ${hours}h` : ''}`, hoursAfter:(hours,minutes)=>`in ${hours}h${minutes ? ` ${minutes}m` : ''}`, minutesAfter:(minutes,seconds)=>`in ${minutes}m ${seconds}s`, secondsAfter:seconds=>`in ${seconds}s`, runStatus:{ queued:'Queued', running:'Running', completed:'Completed', failed:'Failed', canceled:'Canceled' }, weekdays:[['Monday','Mon'],['Tuesday','Tue'],['Wednesday','Wed'],['Thursday','Thu'],['Friday','Fri'],['Saturday','Sat'],['Sunday','Sun']], hourCount:n=>`${n} hour${n === 1 ? '' : 's'}`, choose:'Choose', autoModel:'Auto select', currentModel:'Current model', reselectModel:n=>`Choose another model · ${n}`, repeatOptions:{ workdays:'Weekdays', daily:'Daily', weekly:'Weekly', hourly:'Hourly', custom:'Custom' }, everyHours:n=>`Every ${n} hours`, startsAt:time=>`from ${time}`, repeat:'Repeat', interval:'Interval', dateLabel:'Days', startTime:'Start time', time:'Time', chooseRepeat:'Choose repeat frequency', chooseInterval:'Choose hourly interval', chooseDate:'Choose run days', chooseStartTime:'Choose start time', chooseRunTime:'Choose run time', setStart:'Set start', createFromTemplate:'Create from template', closeCreate:'Close new task', taskName:'Task name', taskNamePlaceholder:'For example: Daily data backup', taskPrompt:'Instructions', taskPromptPlaceholder:'Describe what should be done on each run…', saveTask:'Save task', editTask:'Edit task', closeDetail:'Close task details', taskNameAria:'Scheduled task name', taskPromptAria:'Scheduled task instructions', aiModel:'AI model', chooseModel:'Choose scheduled task model', runningStatus:'Status', nextExecution:'Next run', enableTask:'Enable task', runNow:'Run now', openFolder:'Open folder', runHistory:'Run history', records:n=>`${n} record${n === 1 ? '' : 's'}`, noRecords:'No records', openRun:'Open run conversation', noOpenRun:'This run has no conversation to open', openRunLabel:s=>`Open run: ${s}`, runInProgress:'Run in progress', viewRunResult:'Open the conversation to view results', noRunSession:'No conversation available', noRunHistory:'No run history yet', saveState:{ saving:'Saving…', saved:'Saved', invalid:'Name and instructions are required', error:'Save failed' }, pause:n=>`Pause ${n}`, resume:n=>`Resume ${n}`, templateMap:{ 'daily-brief':{name:'Daily Briefing',schedule:'Daily at 8:00',description:'Summarize important news, industry updates, and connected workplace announcements',prompt:'Summarize important news and industry updates from the past 24 hours with sources and links; when Lark or WeCom is connected, include company announcements. Do not scan user directories; save results to the task workspace.'}, 'follow-up-monitor':{name:'Follow-up Monitor',schedule:'Weekdays at 9:00',description:'Review overdue and upcoming items, highlighting risks and next steps',prompt:'Summarize overdue, due-today, and upcoming (next 3 workdays) items from connected Lark or WeCom, with risks and next steps by priority. Query and organize only — do not send, approve, or modify; do not scan user directories.'}, 'weekly-review':{name:'Weekly Review',schedule:'Friday at 16:00',description:'Create a structured weekly report from this week’s workplace activity',prompt:'Create a weekly report from this week’s calendar, to-dos, and workplace messages in connected Lark or WeCom, covering progress, leftovers, risks, and next week’s plan. Do not scan user directories or send automatically.'} } },
         uiChat: { ready:'Ready', sceneModes:{ personalWorkbench:'Personal workbench', documentWriting:'Document writing', poster:'Poster', dataVisualization:'Data visualization', pptDesign:'PPT design', pptUnavailable:'PPT generation is being repaired', clear:label=>`Clear ${label}`, designGeneralPlaceholder:'Describe what you want to create or adjust' }, askMe:'Try asking', naturalQuestion:'Ask in natural language.', backRuns:'Back to scheduled task run history', scheduledRun:'Scheduled task run', runRecords:'Run history', asrUnavailable:'Speech recognition is not installed. Install it in the desktop app and try again.', gotIt:'Got it', asrDownloadTitle:'Download speech recognition model', asrEnableTitle:'Enable local speech recognition', asrRuntimeMissing:'The local speech runtime is missing. Repair or reinstall the app; models can only be downloaded when the runtime is present.', asrFirstUse:(size,ffmpeg)=>`First use requires a speech recognition download (${size}${ffmpeg ? ' + ffmpeg' : ''}). Processing stays on this device.`, sizeModelOnly:'about 254 MB', sizeFull:'about 174–254 MB', asrStages:{ ffmpeg:'Installing ffmpeg (a system authorization dialog may appear)…', verify:'Verifying model integrity…', cancelling:'Canceling download…', done:'Done', cancelled:'Canceled', failed:'Download failed. Try again.', preparing:'Preparing…' }, downloadingModel:p=>`Downloading model ${p}`, cancelling:'Canceling…', cancelDownload:'Cancel download', cancel:'Cancel', repairInstall:'Repair installation', downloadModel:'Download model', install:'Install', designingCard:'🃏 Designing card…', recordedRecent:'Recent activity recorded', viewMemory:'View it in Memory', memoryUpdated:'Memory updated', processed:'Processed', candidate:'Memory suggestion', remember:'Remember', ignoreOnce:'Ignore this time', neverAsk:'Do not ask again', memoryMeta:{ current_focus:{label:'Current focus',prompt:'I can remember this current focus',hint:'I’ll use it to understand the work you are currently advancing.',notice:'Future chats can refer to this recent item.'}, recent_activity:{label:'Recent activity',prompt:'I can remember this recent activity',hint:'I’ll use it to understand what you just completed.',notice:'Future chats can refer to this completed work.'}, work_context:{label:'Work context',prompt:'I can remember this work context',hint:'I’ll use it to understand your longer-term work context.',notice:'Future chats can refer to this long-term context.'}, profile:{label:'Name',prompt:'I can remember this name',hint:'I’ll use this name when talking with you.',notice:'Future chats will use this name.'}, preference:{label:'Preference',prompt:'I can remember this preference',hint:'I’ll adjust future responses using this preference.',notice:'Future chats can refer to this preference.'} } },
         uiChatExtra: { transferRevision:type=>`Pinvou · ${type} · Revision handoff`, draftingScheduled:'⏰ Preparing scheduled task draft…' },
-        expertPoolIndividualTab:'Individual Experts', expertPoolTeamTab:'Expert Teams',
-        uiWorkflow: { pick:'Choose a workflow template to begin', empty:'No workflows are available. Check the bundled workflow resources.', workflow:'Workflow', stopFailed:e=>`Failed to stop workflow: ${e}`, completed:'🎉 Workflow complete' },
-        uiToolStore: { title:'Tool Store', search:'Search connectors, skills, and plugins', card:'Cards', list:'List', myTools:'My Tools', featured:'Featured Connectors', skills:'Exclusive Skills', results:'Search Results', back:'Back to Store', internal:'Internal · Employees only', internalTitle:'H3C Workplace\nOne-click Access', internalDesc:'Connect to internal systems with your SSO identity—no key required', internalTools:'H3C Internal Tools', internalCount:n=>`${n} tools · Intranet required`, view:'View' },
+        artifactPreview: { download:'↓ Download', openExternal:'↗ Open externally', loading:'Loading…', fileMissing:'File does not exist or has been deleted', readFailed:e=>`Read failed: ${e}`, imageReadFailed:e=>`Image read failed: ${e}`, previewUnsupported:'Preview is not supported for this type', downloadArtifact:'↓ Download artifact', openExternalArtifact:'↗ Open externally' },
+        uiToolStore: { title:'Tool Store', search:'Search connectors, skills, and plugins', myTools:'My Tools', results:'Search Results', back:'Back to Store', internal:'Internal · Employees only', internalTitle:'H3C Workplace\nOne-click Access', internalDesc:'Connect to internal systems with your SSO identity—no key required', internalTools:'H3C Internal Tools', internalCount:n=>`${n} tools · Intranet required`, view:'View' },
         uiToolDetails: { tools:{
           ima:{ title:'Tencent ima', subtitle:'Manage ima notes and knowledge bases through OpenAPI', latency:'Cloud', desc:'Connect the Tencent ima OpenAPI Skill to search, read, create, and append notes, or search and browse knowledge bases and import web pages or content. Credentials stay on this device.', configTitle:'Connect Tencent ima', configDescription:'Credentials stay on this device and are used only to enable the IMA OpenAPI Skill.', configDocLabel:'Get Client ID / API Key', welcomeQueries:['Search my ima knowledge bases','List my ima notes','Create an ima note from this content','Find the product plan in my ima knowledge base'] },
-          tmeet:{ title:'Tencent Meeting', subtitle:'Manage meetings, recordings, minutes, and attendance reports as yourself', type:'CLI + Official Skill', latency:'Cloud', desc:'Connect the official Tencent Meeting CLI and skill to create, query, update, and cancel meetings, and access attendance reports, recordings, transcripts, and AI minutes. Connecting opens the authorization page for QR-code sign-in.', welcomeQueries:['Create a Tencent Meeting for me','Show my Tencent Meeting recordings','Show the latest meeting minutes','List the attendees of this Tencent Meeting'] },
+          tmeet:{ title:'Tencent Meeting', subtitle:'Manage meetings, recordings, minutes, and attendance reports as yourself', type:'CLI + Official Skill', latency:'Cloud', desc:'Connect the official Tencent Meeting CLI and skill to create, query, update, and cancel meetings, and access attendance reports, recordings, transcripts, and AI minutes. Connecting opens the authorization page for QR-code sign-in.', welcomeQueries:['Create a Tencent Meeting for me','Show my Tencent Meeting recordings','Show the latest AI meeting minutes','List the attendees of this Tencent Meeting'] },
         } },
         uiPet: { waiting:'Input needed', failed:'Needs attention', review:'Ready to review', running:'Working', sendFailed:'Send failed', noMain:'Cannot connect to the main window', scheduledDone:'Scheduled task complete', done:'Completed', reply:'Reply', collapseReply:'Collapse reply', expandReply:'Expand reply', collapse:'Collapse', expand:'Expand', replyPlaceholder:'Type a reply…', sendReply:'Send reply', back:'Back to PINVOU', ready:n=>`${n} is ready`, backHint:'Click to return to PINVOU', drag:n=>`Click to return to PINVOU; drag ${n} to move`, openScheduled:n=>`Open the latest run of scheduled task ${n}`, closeScheduled:'Dismiss scheduled task completion', openChat:n=>`Open ${n} chat`, closeNotice:n=>`Dismiss ${n} notification`, replyTo:n=>`Reply to ${n}`, expandActivities:n=>`Expand ${n} activities`, collapseActivities:'Collapse activity cards', expandActivity:'Expand activities', collapseActivity:'Collapse activities', loadFailed:'Companion failed to load', retry:'Click to retry', resize:'Drag to resize companion', resizeTitle:'Drag to resize', hide:'Hide Companion' },
         uiWebConnection: { idle:['Preparing remote control','Initializing browser connection…'], connecting:['Connecting to desktop','Interrupted connections retry automatically; unconfirmed actions are not repeated.'], desktop_offline:['Desktop is offline','Keep this page open; it will reconnect when the desktop returns.'], credentials_missing:['Incomplete link','Enable remote control on the desktop and paste the complete link.'], denied:['Access denied','The link is invalid or was refreshed. Copy a new link from the desktop.'], revoked:['Access stopped','The desktop stopped this remote control link.'], replaced:['Taken over by another browser','Only one active browser is allowed. Refresh this page to take over again.'], incompatible_desktop:['Desktop version incompatible','Update the desktop app, then reopen this link.'], error:['Connection error','Remote control will keep trying to reconnect.'] },
@@ -883,7 +910,6 @@ const dict = {
           agentsListSummary:(roots,total)=>roots === total ? `${total} total` : `${roots} direct · ${total} total`,
           childAgentCount:count=>`${count} child${count === 1 ? '' : 'ren'}`, expandChildren:name=>`Expand children of ${name}`, collapseChildren:name=>`Collapse children of ${name}`,
           coordinationRow:action=>`Coordination · ${action}`,
-          rosterSyncFailed:'⚠️ The expert card change was applied, but refreshing the roster failed for some conversations: ',
           roleCards:{ scout:'Research expert', manager:'Planning expert', builder:'Build expert', reviewer:'Review expert', general:'General worker' },
           blockedTag:'Blocked', pendingTag:'Queued',
           agentPending:'This subagent is queued or starting; no conversation has been recorded yet.',
@@ -1070,19 +1096,29 @@ const dict = {
       ja: {
         langTag: 'ja',
         acpAgent: 'ACP Agent',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定時タスク', monitor: '稼働状態', workflow: 'ワークフロー', multiAgent: 'マルチエージェント', multiAgentDesktopOnly: 'このマルチエージェント会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'コード', sidebarTaskFilterScheduled: '定時タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す', mobileMore: 'その他',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定時タスク', monitor: '稼働状態', multiAgent: 'マルチエージェント', multiAgentDesktopOnly: 'このマルチエージェント会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'コード', sidebarTaskFilterScheduled: '定時タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す', mobileMore: 'その他',
         previewTaskDailyBrief: 'デイリー速報', previewTaskFollowUp: 'フォローアップ管理', previewTaskSalesWeekly: '営業リード週報',
         archiveSession: '隠す', archiveConfirmTitle: 'このタスクを隠しますか？', archiveConfirmMessage: 'このタスクはサイドバーから外れます。', archiveConfirmDetail: '会話と成果物は削除されず、チャット管理ページから戻せます。', archiveConfirmAction: '隠す',
         archiveSuccess: '隠しました', archiveSuccessView: '表示',
         sessionBatchFailed: n => `${n} 件のタスク操作に失敗しました。再試行してください。`,
         archivedTasks: '設定に隠したタスク', archivedTasksDesc: '', archivedEmpty: '隠したタスクはありません', restoreArchived: '一覧に戻す',
         archivedDeleteTitle: '隠したタスクを削除しますか？', archivedDeleteMessage: 'このタスクと内容は完全に削除され、元に戻せません。', archivedDeleteAction: '削除',
-        knowledge: 'ローカル知識',
+        knowledge: 'ナレッジ', remoteKnowledge: '共有ナレッジ',
+        remoteKbHeroTitle: '共有ナレッジ', remoteKbHeroStep1: '知識サーバーに接続', remoteKbHeroStep2: '文書をまとめて管理', remoteKbHeroStep3: '複数端末で利用', remoteKbHeroClient: 'PINVOU クライアント', remoteKbHeroNetwork: '安全なネットワーク', remoteKbHeroServer: '知識サーバー', remoteKbHeroDevices: '許可済み端末',
+        remoteKbDesc: 'この端末で作成するか、チームの共有ナレッジに参加します。', remoteKbRefresh: '更新', remoteKbConnectTitle: '共有ナレッジに参加', remoteKbInvitePlaceholder: 'pinvou-knowledge:// 招待を貼り付け', remoteKbDeviceName: '名前を入力', remoteKbConnect: '接続', remoteKbConnected: '共有ナレッジに参加しました', remoteKbServers: '共有ナレッジ', remoteKbNoServers: '共有ナレッジはありません', remoteKbReady: '利用可能', remoteKbNotReady: '検索できません', remoteKbOffline: 'オフライン', remoteKbManage: '管理可能', remoteKbReadOnly: '読み取り専用', remoteKbSelectServer: '共有ナレッジに参加または選択してください', remoteKbShowTrash: 'ゴミ箱を表示', remoteKbDisconnect: '切断', remoteKbRemoveConfirm: 'この端末の接続とチャットへの追加をすべて解除します。続行しますか？', remoteKbCollections: '共有コレクション', remoteKbCollectionName: '新しいコレクション名', remoteKbCreate: '作成', remoteKbCollectionCreated: 'コレクションを作成しました', remoteKbNoCollections: 'コレクションはありません', remoteKbDocuments: '文書', remoteKbChunks: 'チャンク', remoteKbRestore: '復元', remoteKbTrash: 'ゴミ箱へ', remoteKbTrashConfirm: 'このコレクションをゴミ箱へ移動しますか？文書は復元できます。', remoteKbFiles: '文書', remoteKbUpload: 'ファイル追加', remoteKbUploaded: '文書を追加しました', remoteKbNoDocuments: '文書はありません', remoteKbStatusPending: '処理中', remoteKbStatusReady: '利用可能', remoteKbStatusFailed: '処理に失敗', remoteKbStatusUnknown: '状態不明', remoteKbDownload: '原本をダウンロード', remoteKbDownloaded: 'ダウンロードしました', remoteKbTestSearch: '検索テスト', remoteKbSearchPlaceholder: '質問またはキーワード', remoteKbSearch: '検索', remoteKbDesktopOnly: '共有ナレッジには PINVOU デスクトップ版が必要です。',
+        remoteKbAddServer: '共有ナレッジに参加', remoteKbHideConnect: '接続欄を閉じる', remoteKbNewCollection: '新規コレクション', remoteKbCancel: 'キャンセル', remoteKbClose: '閉じる', remoteKbCollapse: '閉じる', remoteKbDone: '完了', remoteKbUploading: '処理中…', remoteKbUploadTitle: '文書をアップロード', remoteKbStartUpload: 'アップロード', remoteKbRetryFailed: '失敗項目を再試行', remoteKbUploadingFile: 'アップロード中', remoteKbUploadDone: '完了', remoteKbUploadPendingIndex: '処理中', remoteKbUploadStillIndexing: '処理を継続中', remoteKbUploadIndexFailed: '処理に失敗', remoteKbUploadFailed: 'アップロード失敗', remoteKbUploadSuccess: '{count} 件の文書をアップロードしました', remoteKbUploadSummary: '完了 {done} · 処理中 {processing} · 失敗 {failed}', remoteKbUploadRefreshFailed: '一覧を更新できませんでした：{error}', remoteKbFileName: '名前', remoteKbStatus: '状態', remoteKbSize: 'サイズ',
+        remoteKbReplace: '文書を更新', remoteKbReplaced: '文書を更新しました', remoteKbLoadMoreDocuments: 'さらに読み込む', remoteKbLoadingMoreDocuments: '読み込み中…',
+        remoteKbNearby: '近くの共有ナレッジ', remoteKbDiscovering: '近くの共有ナレッジを安全に確認しています…', remoteKbNearbyEmpty: '接続可能な LAN ナレッジサーバーが見つかりません', remoteKbManualConnect: '手動接続', remoteKbVerify: 'ID を確認', remoteKbVerifyIdentityDesc: 'ホストの「サービスと保守」に表示されるコードと比較し、完全に一致する場合のみ参加を申請してください。', remoteKbIdentityCode: 'サービス ID コード', remoteKbConfirmIdentity: 'コード一致 — 参加を申請', remoteKbBack: '戻る', remoteKbLan: 'LAN', remoteKbTailnet: 'Tailscale', remoteKbHostIdentity: 'サービス ID', remoteKbHostIdentityDesc: '新しい端末が初めて接続するときは、両方の端末でこのコードを照合してください。', remoteKbPublishLocal: 'ローカルコレクションを公開', remoteKbPublishDesc: '選択したコレクションと元文書をコピーします。公開後、ローカルと共有のコピーは独立します。', remoteKbPublishChoose: 'ローカルコレクションを選択', remoteKbPublishContinue: '準備', remoteKbPublishEmpty: 'このローカルコレクションにはまだ文書がありません', remoteKbNoLocalCollections: '公開できるローカルコレクションがありません',
+        remoteKbJoinSource: '共有リンクまたはプライベートアドレス', remoteKbJoinSourcePlaceholder: '共有リンク、または 192.168.1.20:3210 を入力', remoteKbJoinHint: 'LAN、Tailscale の 100.x、*.ts.net:ポートに対応します。プライベート直結では先にサービス ID を確認します。', remoteKbShareLinkOnly: '所有者が作成した pinvou-knowledge://share… 共有リンクを貼り付けてください。', remoteKbJoinRequested: '参加申請を送信しました', remoteKbPendingTitle: '承認待ち', remoteKbPendingDesc: '所有者の承認後、自動的に参加します。', remoteKbCancelRequest: '申請を取消', remoteKbOwner: '所有者', remoteKbGovern: '管理', remoteKbGovernTitle: '共有とメンバー', remoteKbPeopleTab: 'メンバーと招待', remoteKbServiceTab: 'サービスと保守',
+        remoteKbShareTitle: 'チームを招待', remoteKbShareDesc: '共有リンクは既定で24時間有効で、複数人が申請できます。', remoteKbCreateShare: 'リンク作成', remoteKbAutoApproveRead: 'リンク有効中は読み取り専用申請を自動承認', remoteKbCopy: 'リンクをコピー', remoteKbLinkCopied: '共有リンクをコピーしました', remoteKbRecoveryCopied: '復旧コードをコピーしました', remoteKbCopyFailed: 'コピーできませんでした。テキストを選択して手動でコピーしてください。', remoteKbActiveShares: '有効な共有リンク {count} 件', remoteKbRequestsTitle: '参加申請', remoteKbNoRequests: '保留中の申請はありません', remoteKbApproveRead: '読み取り', remoteKbApproveManage: '管理', remoteKbReject: '拒否', remoteKbStopShare: '停止', remoteKbAutoReadShort: '自動読取', remoteKbMembersTitle: 'メンバー', remoteKbThisDevice: 'この端末', remoteKbRevoked: '無効', remoteKbRestoreAccess: '復元', remoteKbRevokeAccess: '無効化', remoteKbMemberAccess: 'メンバー権限', remoteKbRemoveMember: 'メンバー「{name}」を削除', remoteKbRemoveMemberAction: 'メンバーを削除', remoteKbRemoveMemberConfirm: '「{name}」を完全に削除しますか？',
+        remoteKbPromoteOwner: '所有者にする', remoteKbDemoteOwner: '所有者を解除', remoteKbPromoteOwnerConfirm: '「{name}」を所有者にしますか？', remoteKbDemoteOwnerConfirm: '「{name}」の所有者権限を解除しますか？', remoteKbModelTitle: 'セマンティック検索モデル', remoteKbModelReady: '利用可能', remoteKbModelMissing: '未ダウンロード', remoteKbModelDownloading: 'ダウンロード中。PINVOU 終了後も続行します', remoteKbDownloadModel: 'ダウンロード', remoteKbModelDownloadingAction: 'ダウンロード中', remoteKbPermanentDelete: '完全に削除', remoteKbPermanentDeleteConfirm: '「{name}」を完全に削除しますか？この操作は取り消せません。',
+        remoteKbOtherNetwork: '別のネットワークアドレス（任意）', remoteKbOtherNetworkPlaceholder: '例：100.64.12.34:3210 または cube.ts.net:3210',
+        remoteKbCreateHost: '共有ナレッジを作成', remoteKbHostCreated: '共有ナレッジを作成しました', remoteKbReconnectHost: 'このホストに再接続', remoteKbHostReconnected: 'ローカル管理接続を復元しました', remoteKbUpgradeHost: 'サービスを更新', remoteKbHostUpgraded: '共有ナレッジサービスを更新しました', remoteKbClientOutdatedTitle: '先に PINVOU を更新してください', remoteKbClientOutdatedDesc: 'PINVOU {appVersion} はホストサービス {serviceVersion} より古いため、データ保護のためサービスをダウングレードしません。', remoteKbHostProgressCreateTitle: '共有ナレッジを作成中', remoteKbHostProgressReconnectTitle: 'ローカル接続を復元中', remoteKbHostProgressUpgradeTitle: '共有ナレッジを更新中', remoteKbHostProgressPrepare: 'インストールファイルを準備しています', remoteKbHostProgressInstall: 'システム承認を待ち、ローカルアクセスを更新しています', remoteKbHostProgressConnect: 'ローカルサービスに接続しています', remoteKbHostProgressComplete: '完了しました', remoteKbHostProgressFailed: '操作を完了できませんでした', remoteKbHostProgressHint: 'システムの承認画面が表示された場合は許可してください。通常は1分以内に完了します。', remoteKbHostProgressRetry: '再試行', remoteKbNoLanEndpoint: 'チームから接続できる LAN アドレスが見つかりません。LAN に接続して再試行してください。', remoteKbHostSettings: 'ホスト設定', remoteKbHostSettingsDesc: 'このホストのバックアップ、復元、サービス管理を行います。', remoteKbDangerZone: '停止と削除', remoteKbDangerZoneDesc: 'ホストを停止してもデータは保持されます。サービスとデータを削除すると元に戻せません。', remoteKbBackup: 'バックアップを作成', remoteKbRestoreBackup: 'バックアップを復元', remoteKbRecoveryTitle: '復旧コードを保存', remoteKbRecoveryDesc: 'バックアップは暗号化されています。同じ端末での復元にはコードは不要ですが、別のホストへの移行には必要です。バックアップとは別に保管してください。', remoteKbCopyRecovery: '復旧コードをコピー', remoteKbRestoreTitle: '共有ナレッジを復元', remoteKbRestoreDesc: '同じホストでは復旧コードを空欄にし、このホストへ移行する場合は入力します。', remoteKbRecoveryPlaceholder: '移行時の復旧コード（同じホストでは空欄）', remoteKbSameHostMode: '同じホストでは現在のサービス ID とメンバーを保持し、ナレッジ内容だけを復元します。', remoteKbMigrationMode: '移行ではナレッジ内容だけを読み込み、新しいサービス ID を作成します。既存メンバーは再参加が必要です。', remoteKbRestoreAction: '復元を開始', remoteKbRestoreConfirm: 'このホストのナレッジ内容を復元しますか？現在の内容は置き換わりますが、サービス ID とメンバーは維持されます。', remoteKbMigrateConfirm: 'このバックアップを現在のホストへ移行しますか？現在の内容を置き換え、新しいサービス ID と所有者を作成します。', remoteKbRestored: '共有ナレッジを復元しました', remoteKbMigrated: '共有ナレッジをこのホストへ移行しました', remoteKbRemoveHost: 'ホストを停止', remoteKbDeleteHost: 'サービスとデータを削除', remoteKbRemoveHostConfirm: 'このコンピューターの共有ナレッジサービスを停止しますか？データは再開できるよう保持されます。', remoteKbDeleteHostConfirm: 'このコンピューターの共有ナレッジサービスと全データを完全に削除しますか？この操作は元に戻せません。', remoteKbHostRemoved: '共有ナレッジのホストを停止し、データを保持しました', remoteKbHostDeleted: '共有ナレッジサービスとデータを削除しました',
         outputs: '成果物',
-        kbMount: 'ナレッジ', kbMountTitle: 'このチャットのコレクションを管理', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ローカル知識」で作成', kbMountRemove: 'すべて解除', kbMountRemoveOne: 'このコレクションを解除', kbMountEnable: '有効化', kbMountDisable: '無効化', kbMountEnabled: '有効', kbMountDisabled: '無効', kbMountCount: n => `${n} 個のナレッジ`, kbMountedTag: 'リンク中', kbMountNoModel: 'まず Embedding モデルをインストール（ローカル知識 → ナレッジ）するとリンクできます', kbMountNotReady: 'Embedding モデルを読み込み中、または読み込みに失敗したため、まだリンクできません',
+        kbMount: 'ナレッジ', kbMountTitle: 'このチャットのコレクションを管理', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ナレッジ」で作成または接続してください', kbMountRemove: 'すべて解除', kbMountRemoveOne: 'このコレクションを解除', kbMountEnable: '有効化', kbMountDisable: '無効化', kbMountEnabled: '有効', kbMountDisabled: '無効', kbMountCount: n => `${n} 個のナレッジ`, kbMountedTag: 'リンク中', kbMountNoModel: 'まず「ナレッジ → ローカル知識」で Embedding モデルをインストールするとリンクできます', kbMountNotReady: 'Embedding モデルを読み込み中、または読み込みに失敗したため、まだリンクできません',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'モード切替', modeYoloDesc: 'すぐ実行', modePlanDesc: '計画してから実行',
         modeYoloConfirmTitle: 'YOLO モードに切り替えますか？', modeYoloConfirmBody: 'このモードでは、モデルがプロジェクトディレクトリを全自動で読み書きし、shell コマンドを実行できます。段階的な承認はありません。', modeYoloConfirmHint: '確認後はグローバルに記憶され、今後は表示されません。', modeYoloConfirmOk: '確認', modeYoloConfirmCancel: 'キャンセル',
-        kbTitle: 'ローカル知識', kbDesc: '全システム高速検索 + 重複検出 · メタデータのみ、内容は読まない',
+        kbTitle: 'ナレッジ', kbDesc: 'ローカル知識と共有ナレッジを一か所で管理',
         kbRescan: '再スキャン', kbScanning: 'スキャン中', kbDeduping: '重複検出中', kbScanNow: 'このPCをスキャン',
         kbTotalFiles: 'インデックス済み', kbDupFiles: '重複ファイル', kbWasted: '回収可能',
         kbTabSearch: '検索', kbTabDups: '重複ファイル',
@@ -1092,8 +1128,8 @@ const dict = {
         kbBuildDups: '重複をスキャン', kbDupHint: '重複データがありません。「重複をスキャン」で必要に応じてファイルを読み取り指紋化します。',
         kbDupNote: '内容が完全に同じファイル（削除操作は今後のバージョンで対応）', kbNoDups: '重複は見つかりませんでした', kbDupCopies: '個',
         kbOpen: '開く', kbOpenFolder: 'フォルダを開く',
-        kbPageTitle: 'ローカルファイルと知識', kbFilesSub: 'ローカルファイルを検索・分類し、AI が引用できる専用知識ベースにします。', kbKbSub: 'ローカルファイルを AI 引用可能な知識に。回答時に出典を明記。',
-        kbSubFiles: 'ファイル管理', kbSubKb: '知識ベース', kbSubOutput: '成果物',
+        kbPageTitle: 'ナレッジ', kbFilesSub: 'ローカルファイルを検索・分類し、AI が引用できる専用知識ベースにします。', kbKbSub: 'ローカルファイルを AI 引用可能な知識に。回答時に出典を明記。',
+        kbSubFiles: 'ローカルファイル', kbSubKb: 'ローカル知識', kbSubRemote: '共有ナレッジ', kbSubOutput: '成果物',
         kbOutSub: 'PINVOU と一緒に作ったものをここにまとめます。',
         kbOutSearch: '成果物を検索', kbOutSearchList: '名前 / 元チャットで検索',
         kbOutCatAll: 'すべて', kbOutCatWeb: 'Web', kbOutCatDoc: '文書', kbOutCatImg: 'ポスター', kbOutCatPpt: 'PPT',
@@ -1116,7 +1152,7 @@ const dict = {
         kbModelItem1: 'bge-m3 多言語ベクトルモデル（int8 ONNX）', kbModelItem2: 'トークナイザーとモデル設定ファイル', kbModelItem3: 'CPU 推論・ネットワークと GPU 不要',
         kbModelDownloadBtn: 'ダウンロードして配置', kbModelFoot: '一度インストールすればオフラインで利用可 · ダウンロード中も他機能を利用可能',
         kbModelRetryBtn: '再読み込み', kbModelRepairBtn: '再ダウンロードして修復', kbModelLoading: 'モデルを読み込み中…',
-        kbModelStageDownload: 'ダウンロード中…', kbModelStageVerify: '検証中…', kbModelStageExtract: '配置中…', kbModelStageDone: '完了',
+        kbModelStageDownload: 'モデルファイルをダウンロード中…', kbModelStageVerify: '検証中…', kbModelStagePrepare: 'モデルを準備中…', kbModelStageDone: '完了',
         kbStep1: 'ローカルファイル選択', kbStep2: 'AI 解析とインデックス', kbStep3: '会話で自動引用',
         kbMyColls: 'マイコレクション', kbNoColls: 'コレクションがありません。「新規コレクション」で開始。', kbNoCollsShort: 'コレクションがありません。まず作成してください。',
         kbDocs: '文書', kbUncat: '未分類', kbCollFiles: '知識内のファイル', kbBlocks: 'ブロック', kbSkipped: 'スキップ',
@@ -1125,7 +1161,7 @@ const dict = {
         kbImportProgress: 'ファイル進捗', kbCurrentFile: '現在のファイル：', kbChunkProgress: 'ブロック進捗', kbFailedFiles: '失敗したファイル', kbRetryFile: '再試行', kbImportErrors: '失敗', kbImportDoneWithErrors: '一部のファイルでインポート失敗',
         kbResumeImportFailed: 'インポートの再開に失敗しました', kbCancelImportFailed: 'インポートのキャンセルに失敗しました', kbRetryImportFailed: 'ファイルの再試行に失敗しました',
         kbLoadMoreFailedFiles: '失敗したファイルをさらに読み込む', kbLoadingFailedFiles: '読み込み中…', kbLoadFailedFilesFailed: '失敗したファイルの読み込みに失敗しました',
-        kbDeleteColl: 'コレクション削除', kbRemove: '削除', kbCollEmpty: '文書がありません。「ファイル追加」で追加。', kbNoCollFiles: 'ナレッジにファイルがありません', kbAllColls: 'すべて', kbDelCollConfirm: 'コレクション「{n}」を削除しますか？', kbDelCollWarn: 'このコレクションの索引（{c} 件の文書）のみ削除します。ディスク上の元ファイルは削除されません。', kbDelete: '削除', kbRemoveDocConfirm: 'ナレッジから「{n}」を削除しますか？', kbRemoveDocWarn: 'ナレッジ内の索引のみ削除します。ディスク上の元ファイルは影響を受けません。', kbRemoveQ: '削除?',
+        kbDeleteColl: 'コレクション削除', kbRemove: '削除', kbCollEmpty: '文書がありません。「ファイル追加」で追加。', kbNoCollFiles: 'ナレッジにファイルがありません', kbAllColls: 'すべて', kbDelCollConfirm: 'コレクション「{n}」を削除しますか？', kbDelCollWarn: 'このコレクションの索引（{c} 件の文書）のみ削除します。ディスク上の元ファイルは削除されません。', kbDelete: '削除', kbRemoveDocConfirm: 'ナレッジから「{n}」を削除しますか？', kbRemoveDocWarn: 'ナレッジ内の索引のみ削除します。ディスク上の元ファイルは影響を受けません。', kbRemoveFailed: '文書を削除できませんでした', kbRemoveQ: '削除?',
         kbRetrPlaceholder: 'このコレクション内を検索…', kbModeSearch: '検索', kbModeAsk: 'AI 質問', kbAskPlaceholder: 'このコレクションに質問…（AI が内容に基づき出典付きで回答）', kbAskBtn: '質問', kbAsking: '考え中…', kbAnswer: '回答', kbSources: '出典', kbNoContext: 'このコレクションにはまだ索引済みの内容がありません。ファイルを追加してください。', kbAskError: '回答に失敗しました。ローカルモデルサービスを確認してください。', kbCollNamePh: 'コレクション名', kbCollCatPh: 'カテゴリ（任意）', kbCancel: 'キャンセル', kbCreate: '作成',
         sysStatus: 'システム状態', sysDesc: 'リアルタイムの性能・リソース指標', gpu: 'GPU', gpuUnavail: '状態を取得できません', noSmi: 'nvidia-smi が見つかりません',
         cpu: 'CPU', cpuUnavail: 'CPU 情報を取得できません', cpuTotal: '全体使用率', cpuProcess: 'アプリ使用率', cpuLogical: '論理プロセッサ',
@@ -1193,6 +1229,8 @@ const dict = {
         testConnection: '接続テスト', testingConn: 'テスト中…', modelSaveBtn: '保存', manageModels: 'モデルを管理…',
         switchModelTitle: 'モデルを切り替え', modelSwitchBusy: '生成中のため切り替え不可', modelNonePick: 'モデルを選択', modelDeleteMin: 'モデルは最低 1 つ必要です',
         modelGroupPreset: 'プリセット', modelGroupCustom: 'カスタム',
+        thinkingDepth: '思考の深さ', thinkingDepthTiers: { off: 'オフ', low: '低', medium: '中', high: '高', max: '最大' },
+        saveModelFailed: '思考深度の保存に失敗しました。もう一度お試しください',
         modelEnvLocked: f => `環境変数でロック中：${f}（設定は反映されません）`, deleteModelConfirm: n => `モデル「${n}」を削除しますか？`,
         modelDirtyHint: '設定が変更されました。保存するとアプリが再起動します',
         langRestartHint: 'UI言語を切り替えました。アシスタントに反映するにはアプリの再起動が必要です',
@@ -1211,12 +1249,11 @@ const dict = {
         uiScheduled: { title:'定期タスク', subtitle:'繰り返し作業を PINVOU に自動実行させます', newTask:'新規タスク', templates:'おすすめテンプレート', myTasks:'マイタスク', loading:'定期タスクを読み込み中…', empty:'一致する定期タスクはありません', view:n=>`定期タスクを表示: ${n}`, useTemplate:n=>`${n} テンプレートを使用`, running:'タスク実行中', unread:'未確認の実行会話', navUnreadAria:'定期タスクに未確認の実行会話があります', closeError:'エラーを閉じる', deleteTitle:'定期タスクを削除しますか？', deleteDescription:n=>`「${n}」を削除します。この操作は取り消せません。`, cancel:'キャンセル', delete:'削除', save:'保存', filterAll:'すべて', filterActive:'有効', filterPaused:'一時停止', active:'有効', paused:'一時停止', enabled:'有効', unknown:'不明', notScheduled:'未設定', noSchedule:'予定なし', waitingDispatch:'実行待ち', soon:'まもなく実行', nextRun:(time,remaining)=>`次回 ${time}（${remaining}）`, date:(month,day)=>`${month}月${day}日 `, daysAfter:(days,hours)=>`${days}日${hours ? `${hours}時間` : ''}後`, hoursAfter:(hours,minutes)=>`${hours}時間${minutes ? `${minutes}分` : ''}後`, minutesAfter:(minutes,seconds)=>`${minutes}分${seconds}秒後`, secondsAfter:seconds=>`${seconds}秒後`, runStatus:{ queued:'待機中', running:'実行中', completed:'完了', failed:'失敗', canceled:'キャンセル済み' }, weekdays:[['月曜日','月'],['火曜日','火'],['水曜日','水'],['木曜日','木'],['金曜日','金'],['土曜日','土'],['日曜日','日']], hourCount:n=>`${n} 時間`, choose:'選択してください', autoModel:'自動選択', currentModel:'現在のモデル', reselectModel:n=>`モデルを再選択 · ${n}`, repeatOptions:{ workdays:'平日', daily:'毎日', weekly:'毎週', hourly:'毎時', custom:'カスタム' }, everyHours:n=>`${n} 時間ごと`, startsAt:time=>`${time} から`, repeat:'繰り返し', interval:'間隔', dateLabel:'曜日', startTime:'開始時刻', time:'時刻', chooseRepeat:'繰り返し頻度を選択', chooseInterval:'時間間隔を選択', chooseDate:'実行曜日を選択', chooseStartTime:'開始時刻を選択', chooseRunTime:'実行時刻を選択', setStart:'開始時刻を設定', createFromTemplate:'テンプレートから作成', closeCreate:'新規タスクを閉じる', taskName:'タスク名', taskNamePlaceholder:'例：毎日のデータバックアップ', taskPrompt:'実行内容', taskPromptPlaceholder:'実行ごとに行う作業を入力…', saveTask:'タスクを保存', editTask:'タスクを編集', closeDetail:'タスク詳細を閉じる', taskNameAria:'定期タスク名', taskPromptAria:'定期タスクの説明', aiModel:'AI モデル', chooseModel:'定期タスクのモデルを選択', runningStatus:'実行状態', nextExecution:'次回実行', enableTask:'タスクを有効化', runNow:'今すぐ実行', openFolder:'フォルダーを開く', runHistory:'実行履歴', records:n=>`${n} 件`, noRecords:'記録なし', openRun:'実行会話を開く', noOpenRun:'この実行には開ける会話がありません', openRunLabel:s=>`実行記録を開く：${s}`, runInProgress:'実行中', viewRunResult:'会話を開いて結果を確認', noRunSession:'開ける会話がありません', noRunHistory:'実行履歴はありません', saveState:{ saving:'保存中…', saved:'保存しました', invalid:'名前と実行内容を入力してください', error:'保存に失敗しました' }, pause:n=>`${n} を一時停止`, resume:n=>`${n} を再開`, templateMap:{ 'daily-brief':{name:'デイリーブリーフ',schedule:'毎日 8:00',description:'重要ニュース、業界動向、接続済み業務システムの社内通知をまとめます',prompt:'過去24時間の重要ニュースと業界動向を出典・リンク付きでまとめます。Lark または WeCom 接続時は社内通知も追加します。ユーザーのディレクトリはスキャンせず、結果はタスクのワークスペースに保存します。'}, 'follow-up-monitor':{name:'フォローアップ確認',schedule:'平日 9:00',description:'期限超過・期限間近の項目を整理し、リスクと次の対応を示します',prompt:'接続済みの Lark または WeCom から、期限超過・本日期限・今後3営業日以内の項目をまとめ、優先度別にリスクと次の対応を示します。確認と整理のみで、送信・承認・変更は行いません。ユーザーのディレクトリはスキャンしません。'}, 'weekly-review':{name:'週間レポート',schedule:'金曜日 16:00',description:'今週の業務記録から構造化された週間レポートを作成します',prompt:'接続済みの Lark または WeCom の今週の予定・ToDo・業務メッセージから週間レポートを作成し、進捗・残課題・リスク・来週の計画を含めます。ユーザーのディレクトリのスキャンや自動送信は行いません。'} } },
         uiChat: { ready:'準備完了', sceneModes:{ personalWorkbench:'パーソナルワークベンチ', documentWriting:'公文書作成', poster:'ポスター', dataVisualization:'データ可視化', pptDesign:'PPT デザイン', pptUnavailable:'PPT 生成機能を修復中です', clear:label=>`${label}を解除`, designGeneralPlaceholder:'作成または調整したい内容を入力' }, askMe:'質問例', naturalQuestion:'自然な言葉で質問できます。', backRuns:'定期タスクの実行履歴に戻る', scheduledRun:'定期タスクの実行', runRecords:'実行履歴', asrUnavailable:'音声認識がインストールされていません。デスクトップアプリでインストールしてから再試行してください。', gotIt:'了解', asrDownloadTitle:'音声認識モデルをダウンロード', asrEnableTitle:'ローカル音声認識を有効化', asrRuntimeMissing:'ローカル音声認識ランタイムがありません。アプリを修復または再インストールしてください。モデルのみ不足している場合はここからダウンロードできます。', asrFirstUse:(size,ffmpeg)=>`初回利用時に音声認識モデル（${size}${ffmpeg ? ' + ffmpeg' : ''}）をダウンロードします。音声処理は端末内で行われます。`, sizeModelOnly:'約 254 MB', sizeFull:'約 174～254 MB', asrStages:{ ffmpeg:'ffmpeg をインストール中（システムの認証画面が表示される場合があります）…', verify:'モデルの整合性を確認中…', cancelling:'ダウンロードをキャンセル中…', done:'完了', cancelled:'キャンセル済み', failed:'ダウンロードに失敗しました。再試行してください。', preparing:'準備中…' }, downloadingModel:p=>`モデルをダウンロード中 ${p}`, cancelling:'キャンセル中…', cancelDownload:'ダウンロードをキャンセル', cancel:'キャンセル', repairInstall:'インストールを修復', downloadModel:'モデルをダウンロード', install:'インストール', designingCard:'🃏 カードを設計中…', recordedRecent:'最近のアクティビティを記録しました', viewMemory:'メモリセンターで確認できます', memoryUpdated:'メモリを更新しました', processed:'処理済み', candidate:'メモリ候補', remember:'記憶する', ignoreOnce:'今回は無視', neverAsk:'今後表示しない', memoryMeta:{ current_focus:{label:'現在の注目事項',prompt:'この注目事項を記憶できます',hint:'現在進めている作業の理解に利用します。',notice:'今後の会話でこの最近の事項を参照します。'}, recent_activity:{label:'最近のアクティビティ',prompt:'このアクティビティを記憶できます',hint:'直前に完了した作業の理解に利用します。',notice:'今後の会話でこの完了内容を参照します。'}, work_context:{label:'業務コンテキスト',prompt:'この業務コンテキストを記憶できます',hint:'長期的な業務コンテキストの理解に利用します。',notice:'今後の会話でこの長期コンテキストを参照します。'}, profile:{label:'呼び名',prompt:'この呼び名を記憶できます',hint:'今後この呼び名で会話します。',notice:'今後の会話でこの呼び名を使用します。'}, preference:{label:'設定',prompt:'この設定を記憶できます',hint:'今後の応答をこの設定に合わせます。',notice:'今後の会話でこの設定を参照します。'} } },
         uiChatExtra: { transferRevision:type=>`Pinvou · ${type} · 修正を引き継ぎ`, draftingScheduled:'⏰ 定期タスクの下書きを準備中…' },
-        expertPoolIndividualTab:'個人エキスパート', expertPoolTeamTab:'エキスパートチーム',
-        uiWorkflow: { pick:'ワークフローテンプレートを選択してください', empty:'利用可能なワークフローがありません。リソースを確認してください。', workflow:'ワークフロー', stopFailed:e=>`ワークフローの停止に失敗: ${e}`, completed:'🎉 ワークフロー完了' },
-        uiToolStore: { title:'ツールストア', search:'コネクター、スキル、プラグインを検索', card:'カード', list:'リスト', myTools:'マイツール', featured:'注目のコネクター', skills:'限定スキル', results:'検索結果', back:'ストアに戻る', internal:'社内限定 · 従業員向け', internalTitle:'H3C オフィス連携\nワンクリック接続', internalDesc:'本人の SSO ID で社内システムに接続。キー入力は不要です', internalTools:'H3C 社内ツール', internalCount:n=>`${n} 個のツール · 社内ネットワーク必須`, view:'表示' },
+        artifactPreview: { download:'↓ ダウンロード', openExternal:'↗ 外部で開く', loading:'読み込み中…', fileMissing:'ファイルが存在しないか削除されました', readFailed:e=>`読み取りに失敗: ${e}`, imageReadFailed:e=>`画像の読み取りに失敗: ${e}`, previewUnsupported:'このタイプはプレビューに対応していません', downloadArtifact:'↓ 成果物をダウンロード', openExternalArtifact:'↗ 外部で開く' },
+        uiToolStore: { title:'ツールストア', search:'コネクター、スキル、プラグインを検索', myTools:'マイツール', results:'検索結果', back:'ストアに戻る', internal:'社内限定 · 従業員向け', internalTitle:'H3C オフィス連携\nワンクリック接続', internalDesc:'本人の SSO ID で社内システムに接続。キー入力は不要です', internalTools:'H3C 社内ツール', internalCount:n=>`${n} 個のツール · 社内ネットワーク必須`, view:'表示' },
         uiToolDetails: { tools:{
           ima:{ title:'Tencent ima', subtitle:'OpenAPI で ima のノートとナレッジベースを操作', latency:'クラウド', desc:'Tencent ima OpenAPI Skill に接続し、ノートの検索、閲覧、作成、追記や、ナレッジベースの検索、閲覧、Web ページとコンテンツの追加ができます。認証情報はこの端末だけに保存されます。', configTitle:'Tencent ima に接続', configDescription:'認証情報はこの端末だけに保存され、IMA OpenAPI Skill の有効化にのみ使用されます。', configDocLabel:'Client ID / API Key を取得', welcomeQueries:['ima のナレッジベースを検索','ima のノート一覧を表示','この内容から ima ノートを作成','ima のナレッジベースで製品案を検索'] },
-          tmeet:{ title:'Tencent Meeting', subtitle:'本人として会議、録画、議事録、参加レポートを管理', type:'CLI + 公式 Skill', latency:'クラウド', desc:'Tencent Meeting 公式 CLI と Skill に接続し、会議の作成、検索、変更、キャンセルや、参加レポート、録画、文字起こし、AI 議事録の取得ができます。接続時は認証ページで QR コードによりログインします。', welcomeQueries:['Tencent Meeting を作成','Tencent Meeting の録画を検索','最近の会議の AI 議事録を表示','Tencent Meeting の参加者を確認'] },
+          tmeet:{ title:'Tencent Meeting', subtitle:'本人として会議、録画、議事録、参加レポートを管理', type:'CLI + 公式 Skill', latency:'クラウド', desc:'Tencent Meeting 公式 CLI と Skill に接続し、会議の作成、検索、変更、キャンセルや、参加レポート、録画、文字起こし、AI 議事録の取得ができます。接続すると認証ページが開き、QR コードでログインします。', welcomeQueries:['Tencent Meeting を作成','Tencent Meeting の録画を検索','最近の会議の AI 議事録を表示','Tencent Meeting の参加者を確認'] },
         } },
         uiPet: { waiting:'入力が必要', failed:'問題が発生', review:'確認できます', running:'処理中', sendFailed:'送信失敗', noMain:'メインウィンドウに接続できません', scheduledDone:'定期タスク完了', done:'完了', reply:'返信', collapseReply:'返信を閉じる', expandReply:'返信を展開', collapse:'閉じる', expand:'展開', replyPlaceholder:'返信を入力…', sendReply:'返信を送信', back:'PINVOU に戻る', ready:n=>`${n} の準備ができました`, backHint:'クリックして PINVOU に戻る', drag:n=>`クリックして PINVOU に戻る、${n} をドラッグして移動`, openScheduled:n=>`定期タスク「${n}」の今回の実行を開く`, closeScheduled:'定期タスク完了通知を閉じる', openChat:n=>`${n} の会話を開く`, closeNotice:n=>`${n} の通知を閉じる`, replyTo:n=>`${n} に返信`, expandActivities:n=>`${n} 件のアクティビティを展開`, collapseActivities:'アクティビティカードを閉じる', expandActivity:'アクティビティを展開', collapseActivity:'アクティビティを閉じる', loadFailed:'コンパニオンの読み込みに失敗', retry:'クリックして再試行', resize:'ドラッグしてコンパニオンのサイズを変更', resizeTitle:'ドラッグしてサイズ変更', hide:'コンパニオンを非表示' },
         uiWebConnection: { idle:['遠隔操作を準備中','ブラウザー接続を初期化中…'], connecting:['デスクトップに接続中','中断時は自動再接続し、未確認の操作は重複実行しません。'], desktop_offline:['デスクトップはオフラインです','このページを開いたままにすると、復帰後に自動再接続します。'], credentials_missing:['リンクが不完全です','デスクトップで遠隔操作を有効にし、完全なリンクを貼り付けてください。'], denied:['アクセスできません','リンクが無効または更新済みです。デスクトップから新しいリンクをコピーしてください。'], revoked:['アクセス停止','デスクトップがこの遠隔操作リンクを停止しました。'], replaced:['別のブラウザーが接続中','同時に利用できるブラウザーは 1 つです。再取得するにはページを更新してください。'], incompatible_desktop:['デスクトップのバージョンが非互換','デスクトップアプリを更新してからリンクを開き直してください。'], error:['接続エラー','遠隔操作は再接続を続けます。'] },
@@ -1232,7 +1269,6 @@ const dict = {
           agentsListSummary:(roots,total)=>roots === total ? `合計 ${total}` : `直属 ${roots} · 合計 ${total}`,
           childAgentCount:count=>`下位 ${count}`, expandChildren:name=>`${name} の下位を展開`, collapseChildren:name=>`${name} の下位を折りたたむ`,
           coordinationRow:action=>`連携 · ${action}`,
-          rosterSyncFailed:'⚠️ エキスパートカードの変更は反映されましたが、一部の会話で名簿の更新に失敗しました: ',
           roleCards:{ scout:'調査エキスパート', manager:'計画エキスパート', builder:'実行エキスパート', reviewer:'レビューエキスパート', general:'汎用ワーカー' },
           blockedTag:'ブロック', pendingTag:'待機中',
           agentPending:'このサブエージェントは待機/起動中で、まだ会話記録がありません。',
@@ -1462,7 +1498,7 @@ const dict = {
       card5:{ title:'乐享文档连接器', subtitle:'企业知识文档全量检索', desc:'支持通过 API 搜索、创建和管理乐享知识库中的文档。支持批量导入 Markdown、按标签整理内容、实时订阅团队文档的更新动态。' },
       card6:{ title:'腾讯文档 MCP', subtitle:'多人实时在线协作协议', desc:'将腾讯文档能力接入 AI。允许大模型读取、分析甚至辅助编写在线表格、文档和幻灯片，轻松完成跨维度的内容查询与数据分析。' },
       card8:{ title:'企微 Bot Hook', subtitle:'连接企业内部与外部生态', desc:'深度对接企业微信。支持机器人主动推送图文消息、查询通讯录架构、联动审批流与日程管理。' },
-      feishu:{ title:'飞书（Lark）', subtitle:'以你本人身份操作飞书文档/日历/表格/消息', type:'CLI + 官方技能', latency:'云端', desc:'接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。', welcomeQueries:['读飞书文档帮我做一份 PPT','把飞书文档整理成摘要','查我今天的飞书日历','看看我飞书里的待办任务'] },
+      feishu:{ title:'飞书（Lark）', subtitle:'以你本人身份操作飞书文档/日历/表格/消息', type:'CLI + 官方技能', latency:'云端', desc:'接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）与电子表格、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。', welcomeQueries:['读飞书文档帮我做一份 PPT','把飞书文档整理成摘要','查我今天的飞书日历','看看我飞书里的待办任务'] },
       wecom:{ title:'企业微信', subtitle:'以你本人身份操作企微消息/文档/会议/日程', type:'CLI + 官方技能', latency:'云端', desc:'接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、读写文档与智能表格、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。', welcomeQueries:['把这段内容写成企微智能文档','读一下我企微某篇文档的内容','在企微智能表格里新建一张子表','查一下企微智能表格里的数据'] },
       dingtalk:{ title:'钉钉', subtitle:'以你本人身份操作钉钉文档/日历/表格/消息', type:'CLI + 官方技能', latency:'云端', desc:'接入钉钉官方 DingTalk Workspace CLI（dws，Apache-2.0）+ 官方技能：让 AI 以你本人身份读写钉钉文档、查改日历、操作 AI 表格/在线表格、收发群聊消息、处理待办/审批/日志/邮箱等。点「连接」用钉钉 App 扫码授权，全程不填 key。', welcomeQueries:['读一下我的钉钉文档','查我今天的钉钉日程','在钉钉 AI 表格里查数据','看看我的钉钉待办'] },
       card11:{ title:'TAPD 敏捷研发', subtitle:'缺陷与迭代的自动化追踪', desc:'研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。' },
@@ -1482,7 +1518,7 @@ const dict = {
       card5:{ title:'Lexiang Docs Connector', subtitle:'Full-text search across enterprise knowledge docs', desc:'Search, create, and manage documents in Lexiang knowledge bases through the API. Supports batch Markdown import, tag-based organization, and real-time subscriptions to team document updates.' },
       card6:{ title:'Tencent Docs MCP', subtitle:'Multi-user real-time online collaboration protocol', desc:'Brings Tencent Docs capabilities to AI. Lets the model read, analyze, and even help write online spreadsheets, documents, and slides, making cross-dimensional content queries and data analysis easy.' },
       card8:{ title:'WeCom Bot Hook', subtitle:'Connecting internal and external ecosystems', desc:'Deep integration with WeCom. Bots can proactively push rich-text messages, query the organizational directory, and connect approval flows and schedule management.' },
-      feishu:{ title:'Feishu (Lark)', subtitle:'Manage Feishu docs, calendars, Bases, and messages as yourself', type:'CLI + Official Skill', latency:'Cloud', desc:'Connect the official Feishu CLI and official domain skills (MIT): let AI read and write cloud docs, view and edit calendars, work with Bases, send and receive messages, and manage knowledge bases and tasks as yourself. Click \u201cConnect Feishu\u201d to authorize in the browser with one click\u2014no key required. Data goes through the Feishu cloud OpenAPI (optional online feature, opt-in).', welcomeQueries:['Read a Feishu doc and make a PPT for me','Summarize my Feishu docs','Check my Feishu calendar today','Show my Feishu to-do tasks'] },
+      feishu:{ title:'Feishu (Lark)', subtitle:'Manage Feishu docs, calendars, Bases, spreadsheets, and messages as yourself', type:'CLI + Official Skill', latency:'Cloud', desc:'Connect the official Feishu CLI and official domain skills (MIT): let AI read and write cloud docs, view and edit calendars, work with Bases and spreadsheets, send and receive messages, and manage knowledge bases and tasks as yourself. Click \u201cConnect Feishu\u201d to authorize in the browser with one click\u2014no key required. Data goes through the Feishu cloud OpenAPI (optional online feature, opt-in).', welcomeQueries:['Read a Feishu doc and make a PPT for me','Summarize my Feishu docs','Check my Feishu calendar today','Show my Feishu to-do tasks'] },
       wecom:{ title:'WeCom', subtitle:'Manage WeCom messages, docs, meetings, and schedules as yourself', type:'CLI + Official Skill', latency:'Cloud', desc:'Connect the official WeCom CLI (@wecom/cli, MIT) and official domain skills: let AI send and receive messages, read and write docs and smart sheets, create and query meetings and schedules, manage to-dos, and look up contacts as yourself. Click \u201cConnect\u201d and authorize by scanning a QR code with the WeCom app\u2014no key required. Data goes through the WeCom cloud (optional online feature, opt-in).', welcomeQueries:['Turn this content into a WeCom smart doc','Read the content of one of my WeCom docs','Create a new sub-sheet in a WeCom smart sheet','Query data in a WeCom smart sheet'] },
       dingtalk:{ title:'DingTalk', subtitle:'Manage DingTalk docs, calendars, sheets, and messages as yourself', type:'CLI + Official Skill', latency:'Cloud', desc:'Connect the official DingTalk Workspace CLI (dws, Apache-2.0) and official skills: let AI read and write DingTalk docs, view and edit calendars, work with AI sheets and online sheets, send and receive group messages, and handle to-dos, approvals, logs, and mail as yourself. Click \u201cConnect\u201d and authorize by scanning a QR code with the DingTalk app\u2014no key required.', welcomeQueries:['Read my DingTalk docs','Check my DingTalk schedule today','Query data in a DingTalk AI sheet','Show my DingTalk to-dos'] },
       card11:{ title:'TAPD Agile R&D', subtitle:'Automated tracking of defects and iterations', desc:'A core R&D management tool. Lets AI query project iteration progress, automatically break down requirement items, and update defect status, digitizing the full R&D lifecycle from requirements to release.' },
@@ -1493,7 +1529,7 @@ const dict = {
       obsidian:{ title:'Obsidian Knowledge Base', subtitle:'Search and manage local Obsidian notes; read and write your personal knowledge', desc:'Connect your local Obsidian vault to the model. Supports full-text search, reading, creating, editing, renaming (with automatic wikilink fixing), and deletion\u2014so AI can build on and maintain the knowledge you have accumulated. The currently open vault is detected automatically; no manual setup. Notes stay on this device and so does the model; your knowledge and compute never leave the device.', welcomeQueries:['Search my notes','Create a note to record today\u2019s ideas','What documents are in my knowledge base?','Summarize my notes'] },
       'yuandian-mcp':{ title:'Huayu Yuandian Legal Data', subtitle:'Laws and regulations, case documents, and corporate judicial risk queries', latency:'Cloud', desc:'Connect the Huayu Yuandian open platform remote MCP. Search legal data such as laws and regulations, adjudicated cases, and corporate judicial risks; clicking \u201cConnect\u201d opens the browser to authorize with your Yuandian account\u2014no API Key required.', welcomeQueries:['Search cases about labor contract termination','Look up regulations on corporate equity liability','Analyze a company\u2019s judicial risks','Find recent adjudication viewpoints'] },
       pptx:{ title:'PPT Generation', subtitle:'Editable PowerPoint generated locally, with theme templates, real charts, and covers', latency:'Local', desc:'Say \u201cmake a PPT / report\u201d and the AI drafts an outline for your confirmation, then picks a theme (9 available) and generates an editable .pptx\u2014real charts, with a cover thumbnail, fully local and your data never leaves the device. The first install downloads the python-pptx dependency (requires network).', welcomeQueries:['Make a Q2 quarterly report PPT','Make a product intro PPT','Make a project proposal presentation','Make a company intro PPT'] },
-      gongwen:{ title:'Official Document Writing', subtitle:'Party/government official documents as GB/T 9704-compliant .docx', latency:'Local', desc:'Say \\u201cwrite a notice / draft an opinion\\u201d and the AI writes the content following the document-type structure and fixed phrasing, then the renderer applies the national standard format for party/government documents (FangZheng XiaoBiaoSong title, FangSong_GB2312 body, standard margins, red header and red separator line) to produce a .docx\\u2014fully local, your data never leaves the device. Works best with the \\u201cOfficial Document Writing\\u201d skill. The first install downloads the python-docx dependency (requires network).', welcomeQueries:['Draft a notice on issuing management measures','Write an implementation opinion on strengthening certain work','Draft a meeting notice','Write a situation report'] },
+      gongwen:{ title:'Official Document Writing', subtitle:'Party/government official documents as GB/T 9704-compliant .docx', latency:'Local', desc:'Say \u201cwrite a notice / draft an opinion\u201d and the AI writes the content following the document-type structure and fixed phrasing, then the renderer applies the national standard format for party/government documents (FangZheng XiaoBiaoSong title, FangSong_GB2312 body, standard margins, red header and red separator line) to produce a .docx\u2014fully local, your data never leaves the device. Works best with the \u201cOfficial Document Writing\u201d skill. The first install downloads the python-docx dependency (requires network).', welcomeQueries:['Draft a notice on issuing management measures','Write an implementation opinion on strengthening certain work','Draft a meeting notice','Write a situation report'] },
     });
     Object.assign(dict.ja.uiToolDetails.tools, {
       weather:{ title:'Amap 天気', subtitle:'Amap 地図のリアルタイム天気と多日予報', desc:'Amap Web サービス API で全国の都市のリアルタイム天気と今後数日の予報を照会します。自分の Amap Web サービス API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'Amap 天気 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'Web サービス Key を作成', configFields:[{key:'AMAP_KEY', label:'API Key', helpText:'「Web サービス」タイプを選択してください。', placeholder:'Amap Web サービス Key を貼り付け'}], welcomeQueries:['杭州の今日の天気','北京は今週雨が降る？','上海の明日の服装'] },
@@ -1501,8 +1537,8 @@ const dict = {
       card3:{ title:'QQ メール API', subtitle:'スマートなメール送受信とスレッド要約', desc:'メールの送受信、検索、整理のための標準インターフェースを提供します。大規模モデルと組み合わせて、自然言語でのメール閲覧、長いスレッドの要約、フォルダーの自動アーカイブ管理が可能です。' },
       card5:{ title:'Lexiang ドキュメントコネクター', subtitle:'企業ナレッジドキュメントの全文検索', desc:'API で Lexiang ナレッジベースのドキュメントを検索、作成、管理できます。Markdown の一括インポート、タグによる整理、チームドキュメント更新のリアルタイム購読に対応します。' },
       card6:{ title:'Tencent Docs MCP', subtitle:'複数人リアルタイムオンラインコラボレーションプロトコル', desc:'Tencent Docs の機能を AI に接続します。大規模モデルがオンラインスプレッドシート、ドキュメント、スライドの閲覧、分析、作成補助を行い、多次元のコンテンツ照会とデータ分析を簡単に行えます。' },
-      card8:{ title:'WeCom Bot Hook', subtitle:'企業の内外エコシステムを接続', desc:'WeCom（企業微信）と深く連携します。ボットによるリッチテキストメッセージのプッシュ、アドレス帳の組織構造照会、承認フローやスケジュール管理との連携に対応します。' },
-      feishu:{ title:'Feishu (Lark)', subtitle:'本人として Feishu のドキュメント、カレンダー、Base、メッセージを操作', type:'CLI + 公式 Skill', latency:'クラウド', desc:'Feishu 公式 CLI と公式ドメイン Skill（MIT）に接続：AI が本人としてクラウドドキュメントの読み書き、カレンダーの確認・変更、Base（多次元表）の操作、メッセージの送受信、ナレッジベースとタスクの管理を行えます。「Feishu に接続」を押すとブラウザーでワンクリック認証。キー入力は不要です。データは Feishu クラウド OpenAPI を経由します（任意のオンライン機能、opt-in）。', welcomeQueries:['Feishu ドキュメントを読んで PPT を作成','Feishu ドキュメントを要約','今日の Feishu カレンダーを確認','Feishu の ToDo タスクを表示'] },
+      card8:{ title:'WeCom Bot Hook', subtitle:'企業の内外エコシステムを接続', desc:'WeCom と深く連携します。ボットによるリッチテキストメッセージのプッシュ、アドレス帳の組織構造照会、承認フローやスケジュール管理との連携に対応します。' },
+      feishu:{ title:'Feishu (Lark)', subtitle:'本人として Feishu のドキュメント、カレンダー、Base、スプレッドシート、メッセージを操作', type:'CLI + 公式 Skill', latency:'クラウド', desc:'Feishu 公式 CLI と公式ドメイン Skill（MIT）に接続：AI が本人としてクラウドドキュメントの読み書き、カレンダーの確認・変更、Base（多次元表）とスプレッドシートの操作、メッセージの送受信、ナレッジベースとタスクの管理を行えます。「Feishu に接続」を押すとブラウザーでワンクリック認証。キー入力は不要です。データは Feishu クラウド OpenAPI を経由します（任意のオンライン機能、opt-in）。', welcomeQueries:['Feishu ドキュメントを読んで PPT を作成','Feishu ドキュメントを要約','今日の Feishu カレンダーを確認','Feishu の ToDo タスクを表示'] },
       wecom:{ title:'WeCom', subtitle:'本人として WeCom のメッセージ、ドキュメント、会議、スケジュールを操作', type:'CLI + 公式 Skill', latency:'クラウド', desc:'WeCom 公式 CLI（@wecom/cli、MIT）と公式ドメイン Skill に接続：AI が本人としてメッセージの送受信、ドキュメントとスマートシートの読み書き、会議とスケジュールの作成・照会、ToDo 管理、アドレス帳の照会を行えます。「接続」を押して WeCom アプリで QR コード認証。キー入力は不要です。データは WeCom クラウドを経由します（任意のオンライン機能、opt-in）。', welcomeQueries:['この内容を WeCom スマートドキュメントに変換','WeCom のドキュメントを読む','WeCom スマートシートに子シートを作成','WeCom スマートシートのデータを照会'] },
       dingtalk:{ title:'DingTalk', subtitle:'本人として DingTalk のドキュメント、カレンダー、表、メッセージを操作', type:'CLI + 公式 Skill', latency:'クラウド', desc:'DingTalk 公式 DingTalk Workspace CLI（dws、Apache-2.0）と公式 Skill に接続：AI が本人として DingTalk ドキュメントの読み書き、カレンダーの確認・変更、AI 表・オンライン表の操作、グループメッセージの送受信、ToDo・承認・日誌・メールの処理を行えます。「接続」を押して DingTalk アプリで QR コード認証。キー入力は不要です。', welcomeQueries:['DingTalk ドキュメントを読む','今日の DingTalk スケジュールを確認','DingTalk AI 表のデータを照会','DingTalk の ToDo を表示'] },
       card11:{ title:'TAPD アジャイル開発', subtitle:'不具合とイテレーションの自動追跡', desc:'開発管理の中核ツール。AI がプロジェクトのイテレーション進捗を照会し、要件項目を自動分割し、不具合ステータスを更新することで、要件からリリースまでの開発ライフサイクル全体をデジタル化します。' },
@@ -1523,6 +1559,25 @@ const dict = {
     // 这里 / dict / Rust prefs.rs Language 枚举
     const LANG_TO_TAG = { zh: 'zh-Hans', en: 'en', ja: 'ja' };
     const TAG_TO_LANG = { 'zh-Hans': 'zh', 'en': 'en', 'ja': 'ja' };
+    function languageFromLocaleTags(localeTags, fallback = 'en') {
+      const locales = Array.isArray(localeTags) ? localeTags : [localeTags];
+      const locale = locales.find((value) => typeof value === 'string' && value.trim());
+      if (!locale) return fallback;
+      const primary = locale.trim().split(/[-_.@:]/, 1)[0].toLowerCase();
+      if (primary === 'zh') return 'zh';
+      if (primary === 'ja') return 'ja';
+      if (primary === 'en') return 'en';
+      // 当前只提供中、英、日；系统首选语言不受支持时使用英文。
+      return 'en';
+    }
+    // 首帧系统语言探测:主窗口与各辅助窗口(桌宠/阅读器/分离窗口)在落盘
+    // settings 到达前共用;之后仍以 get_settings/bs.settings 的显式配置为准。
+    function initialSystemLanguage() {
+      if (typeof navigator === 'undefined') return 'en';
+      return languageFromLocaleTags(
+        navigator.languages?.length ? navigator.languages : navigator.language,
+      );
+    }
     const SEARCH_KEY_PROVIDERS = ['metaso', 'bocha', 'baidu', 'tavily'];
 
     /* ==========================================
@@ -1866,132 +1921,6 @@ dict.ja.uiPlatformMisc = {
   },
 };
 
-Object.assign(dict.zh.uiWorkflow, {
-  states:{ PENDING:'等待中', EXECUTING:'执行中', GATE_PENDING:'等待确认', COMPLETED:'已完成' },
-  waveBatch:w=>`第${w}批`, listSep:'、',
-  log:{
-    events:{ agent_failed:'❌ Agent 执行失败', agent_failure_terminal:'🛑 失败已达终态', agent_retry_scheduled:'🔄 已安排自动重试', runtime_failure:'❌ 运行时失败', scheduler_failure:'❌ 调度器失败', failure_state:'🛑 当前失败状态', dispatch:'▶️ 开始派发', complete:'✅ 执行完成', gate_fail:'⚠️ 交付检查未通过', gate_pass:'✅ 交付检查通过', rollback:'↩️ 工作流回滚' },
-    categories:{ model_auth:'模型鉴权', permission:'工具权限', timeout:'超时', rate_limit:'限流', tool:'工具调用', network:'网络', model:'模型服务' },
-    role:'角色', agent:'Agent', stage:'阶段', category:'类型', retry:'重试', reason:'原因', detail:'详情',
-  },
-  statusLabels:{ pending:'待机休息', ready:'准备就绪', running:'正在工作…', reviewing:'品悟评审中', gate_waiting:'等待你确认', gate_approval:'等待你确认', waiting_human:'等待你确认', completed:'已完成', complete:'已完成', failed:'执行失败', stale:'需要重跑', skipped:'已跳过', blocked:'已阻塞', 'blocked-upstream':'上游阻塞', stopped:'已停止' },
-  idle:'待机', waitingFor:names=>`等待 ${names} 交付`, cardApprove:'确认通过', rerun:'🔄 重跑',
-  callsText:n=>`${n} 次调用`, fanoutProgress:(done,total,running)=>`${done}/${total} 页完成 · ${running} 个 SubAgent 在写`, fanoutRunning:'写',
-  download:'↓ 下载', openExternal:'↗ 外部', loading:'加载中…', fileMissing:'文件不存在或已被删除',
-  readFailed:e=>`读取失败: ${e}`, imageReadFailed:e=>`图片读取失败: ${e}`,
-  previewUnsupported:'此类型暂不支持预览', downloadArtifact:'↓ 下载产物', openExternalArtifact:'↗ 外部打开',
-  memorialTitle:'奏　折', memorialSubtitle:'三省六部办差完毕 · 回奏呈报', memorialStamp:'准奏',
-  memorialLoading:'展卷中…', memorialReadFailed:e=>`奏折读取失败：${e}`, memorialEmpty:'尚无回奏内容',
-  chipTable:'表格', chipWeb:'网页', chipImage:'图', chipDoc:'文书',
-  openTitle:title=>`打开:${title}`, productBadge:'成品', chestClose:'收箱', chestOpenTitle:'点击开箱', chestAlt:'成品箱',
-  chestCollapse:'▲ 收箱', chestExpand:n=>`▼ 点击开箱 · 文书 ${n} 件`, memorialEnd:'钦　此', memorialClose:'朕已阅 · 收卷',
-  recentFailure:'❌ 最近失败原因', roleInfo:'🛠 角色说明', noRoleInfo:'暂无角色信息', nameLabel:'名称：',
-  tools:'🔧 工具', inputReq:'⬇ 输入要求', outputLabel:'⬆ 输出', viewFullPrompt:'📜 查看完整提示词',
-  outputFiles:'📄 产出文件', noOutputs:'暂无产出', clickPreview:'点击预览', unnamed:'(未命名)', openExternalTitle:'外部打开',
-  reviewResult:'📋 评审结果', noReview:'尚无评审记录', runLogs:n=>`📋 运行日志（尾 ${n} 条）`, noLogs:'暂无日志',
-  aiQuestions:'🤔 AI 想问你几个问题', questionHeader:n=>`问题 ${n}`, cancelled:'✕ 已取消', submitted:'✓ 已提交',
-  uploading:'上传中…', uploadMaterials:'上传素材文件', uploaded:n=>`已上传 ${n} 个：`,
-  otherOption:'💬 其他(自己写)', otherPlaceholder:'写下你想说的...', submit:'提交',
-  pendingConfirm:'产出待确认', approved:'✓ 已通过', rejected:'✕ 已打回',
-  noReviewNotes:'无评审备注', rejectPlaceholder:'打回原因(可选)…', viewOutputs:'📄 查看产出',
-  cancel:'取消', confirmReject:'✕ 确认打回', reject:'✕ 打回', gateApprove:'✓ 通过',
-  openFolder:'📁 打开所在文件夹', openProduct:'▶ 打开成品',
-  pickFailed:e=>`选文件失败: ${e}`, startFailed:'启动失败,请重试', newTaskTitle:name=>`新建「${name}」任务`,
-  scenario:'场景', briefLabel:'初始需求', briefHint:'留空也能开始,但写清楚 AI 办得更准。',
-  attachments:'附件(可选)', picking:'选择中…', pickDesktopFiles:'选择桌面端文件', uploadAttachments:'上传附件',
-  attachHintWeb:'从桌面主机选择的文件会作为素材交给六部参考。', attachHint:'上传的文件会作为素材交给六部参考。',
-  starting:'启动中…', start:'开始',
-  templateDesc:'选择模板后创建一个新的工作流任务。', open:'打开', templateBadge:'工作流模板', expertTeam:'专家团队',
-  runComplete:'✅ 已完成', runStopped:'⏹ 已停止', runBlocked:'⚫ 阻塞', runRunning:'🔵 运行中',
-  runIdle:'未开始（点"新建任务"启动）', cardFlow:'卡片流',
-  stopConfirm:'停止后，当前任务不会再继续派发。已生成的文件会保留，你可以修改原需求后重新开始。',
-  memorialBtn:'📜 奏折', editAndRestart:'✏️ 修改需求并重新开始', stopping:'停止中…', stopAndEdit:'⏹ 停止并修改',
-  backToTemplates:'← 模板页', newTask:'+ 新建任务',
-});
-Object.assign(dict.en.uiWorkflow, {
-  states:{ PENDING:'Pending', EXECUTING:'Running', GATE_PENDING:'Awaiting confirmation', COMPLETED:'Completed' },
-  waveBatch:w=>`Batch ${w}`, listSep:', ',
-  log:{
-    events:{ agent_failed:'❌ Agent execution failed', agent_failure_terminal:'🛑 Failure is terminal', agent_retry_scheduled:'🔄 Automatic retry scheduled', runtime_failure:'❌ Runtime failure', scheduler_failure:'❌ Scheduler failure', failure_state:'🛑 Current failure state', dispatch:'▶️ Dispatch started', complete:'✅ Execution complete', gate_fail:'⚠️ Delivery check failed', gate_pass:'✅ Delivery check passed', rollback:'↩️ Workflow rollback' },
-    categories:{ model_auth:'Model auth', permission:'Tool permission', timeout:'Timeout', rate_limit:'Rate limit', tool:'Tool call', network:'Network', model:'Model service' },
-    role:'Role', agent:'Agent', stage:'Stage', category:'Category', retry:'Retry', reason:'Reason', detail:'Detail',
-  },
-  statusLabels:{ pending:'Resting', ready:'Ready', running:'Working…', reviewing:'Under review', gate_waiting:'Awaiting your confirmation', gate_approval:'Awaiting your confirmation', waiting_human:'Awaiting your confirmation', completed:'Completed', complete:'Completed', failed:'Failed', stale:'Needs rerun', skipped:'Skipped', blocked:'Blocked', 'blocked-upstream':'Blocked upstream', stopped:'Stopped' },
-  idle:'Idle', waitingFor:names=>`Waiting for ${names} to deliver`, cardApprove:'Approve', rerun:'🔄 Rerun',
-  callsText:n=>`${n} calls`, fanoutProgress:(done,total,running)=>`${done}/${total} pages done · ${running} SubAgents writing`, fanoutRunning:'✎',
-  download:'↓ Download', openExternal:'↗ External', loading:'Loading…', fileMissing:'File does not exist or has been deleted',
-  readFailed:e=>`Read failed: ${e}`, imageReadFailed:e=>`Image read failed: ${e}`,
-  previewUnsupported:'Preview is not supported for this type', downloadArtifact:'↓ Download artifact', openExternalArtifact:'↗ Open externally',
-  memorialTitle:'Memorial', memorialSubtitle:'All ministries have completed their work · Final report', memorialStamp:'Approved',
-  memorialLoading:'Unrolling…', memorialReadFailed:e=>`Failed to read the memorial: ${e}`, memorialEmpty:'No report yet',
-  chipTable:'Sheet', chipWeb:'Web', chipImage:'Image', chipDoc:'Document',
-  openTitle:title=>`Open: ${title}`, productBadge:'Final', chestClose:'Close chest', chestOpenTitle:'Click to open', chestAlt:'Deliverables chest',
-  chestCollapse:'▲ Close chest', chestExpand:n=>`▼ Click to open · ${n} documents`, memorialEnd:'By Imperial Order', memorialClose:'Reviewed · Roll up',
-  recentFailure:'❌ Latest failure reason', roleInfo:'🛠 Role details', noRoleInfo:'No role info', nameLabel:'Name: ',
-  tools:'🔧 Tools', inputReq:'⬇ Input requirements', outputLabel:'⬆ Outputs', viewFullPrompt:'📜 View full prompt',
-  outputFiles:'📄 Output files', noOutputs:'No outputs yet', clickPreview:'Click to preview', unnamed:'(unnamed)', openExternalTitle:'Open externally',
-  reviewResult:'📋 Review result', noReview:'No review records yet', runLogs:n=>`📋 Run logs (last ${n})`, noLogs:'No logs yet',
-  aiQuestions:'🤔 The AI has a few questions for you', questionHeader:n=>`Q${n}`, cancelled:'✕ Cancelled', submitted:'✓ Submitted',
-  uploading:'Uploading…', uploadMaterials:'Upload material files', uploaded:n=>`${n} uploaded: `,
-  otherOption:'💬 Other (write your own)', otherPlaceholder:'Write what you want to say...', submit:'Submit',
-  pendingConfirm:'Output pending confirmation', approved:'✓ Approved', rejected:'✕ Rejected',
-  noReviewNotes:'No review notes', rejectPlaceholder:'Rejection reason (optional)…', viewOutputs:'📄 View outputs',
-  cancel:'Cancel', confirmReject:'✕ Confirm rejection', reject:'✕ Reject', gateApprove:'✓ Approve',
-  openFolder:'📁 Open containing folder', openProduct:'▶ Open deliverable',
-  pickFailed:e=>`Failed to pick files: ${e}`, startFailed:'Failed to start. Please retry', newTaskTitle:name=>`New "${name}" task`,
-  scenario:'Scenario', briefLabel:'Initial requirements', briefHint:'You can start with it empty, but the clearer you write, the better the AI performs.',
-  attachments:'Attachments (optional)', picking:'Picking…', pickDesktopFiles:'Pick desktop files', uploadAttachments:'Upload attachments',
-  attachHintWeb:'Files picked from the desktop host are handed to the ministries as reference material.', attachHint:'Uploaded files are handed to the ministries as reference material.',
-  starting:'Starting…', start:'Start',
-  templateDesc:'Pick a template to create a new workflow task.', open:'Open', templateBadge:'Workflow template', expertTeam:'Expert team',
-  runComplete:'✅ Completed', runStopped:'⏹ Stopped', runBlocked:'⚫ Blocked', runRunning:'🔵 Running',
-  runIdle:'Not started (click "New Task" to start)', cardFlow:'card flow',
-  stopConfirm:'Once stopped, the current task will no longer be dispatched. Generated files are kept, and you can edit the original requirements and start over.',
-  memorialBtn:'📜 Memorial', editAndRestart:'✏️ Edit requirements and restart', stopping:'Stopping…', stopAndEdit:'⏹ Stop and edit',
-  backToTemplates:'← Templates', newTask:'+ New Task',
-});
-Object.assign(dict.ja.uiWorkflow, {
-  states:{ PENDING:'待機中', EXECUTING:'実行中', GATE_PENDING:'確認待ち', COMPLETED:'完了' },
-  waveBatch:w=>`第${w}バッチ`, listSep:'、',
-  log:{
-    events:{ agent_failed:'❌ Agent の実行に失敗', agent_failure_terminal:'🛑 失敗が終了状態に達しました', agent_retry_scheduled:'🔄 自動リトライを予約しました', runtime_failure:'❌ ランタイム失敗', scheduler_failure:'❌ スケジューラー失敗', failure_state:'🛑 現在の失敗状態', dispatch:'▶️ 割り当て開始', complete:'✅ 実行完了', gate_fail:'⚠️ 成果チェック不合格', gate_pass:'✅ 成果チェック合格', rollback:'↩️ ワークフローのロールバック' },
-    categories:{ model_auth:'モデル認証', permission:'ツール権限', timeout:'タイムアウト', rate_limit:'レート制限', tool:'ツール呼び出し', network:'ネットワーク', model:'モデルサービス' },
-    role:'ロール', agent:'Agent', stage:'ステージ', category:'種別', retry:'リトライ', reason:'原因', detail:'詳細',
-  },
-  statusLabels:{ pending:'待機中', ready:'準備完了', running:'作業中…', reviewing:'レビュー中', gate_waiting:'確認をお待ちしています', gate_approval:'確認をお待ちしています', waiting_human:'確認をお待ちしています', completed:'完了', complete:'完了', failed:'実行失敗', stale:'再実行が必要', skipped:'スキップ済み', blocked:'ブロック中', 'blocked-upstream':'上流でブロック', stopped:'停止済み' },
-  idle:'待機', waitingFor:names=>`${names} の成果を待機中`, cardApprove:'承認', rerun:'🔄 再実行',
-  callsText:n=>`${n} 回呼び出し`, fanoutProgress:(done,total,running)=>`${done}/${total} ページ完了 · ${running} 個の SubAgent が実行中`, fanoutRunning:'書',
-  download:'↓ ダウンロード', openExternal:'↗ 外部', loading:'読み込み中…', fileMissing:'ファイルが存在しないか削除されました',
-  readFailed:e=>`読み取りに失敗: ${e}`, imageReadFailed:e=>`画像の読み取りに失敗: ${e}`,
-  previewUnsupported:'このタイプはプレビューに対応していません', downloadArtifact:'↓ 成果物をダウンロード', openExternalArtifact:'↗ 外部で開く',
-  memorialTitle:'奏　折', memorialSubtitle:'三省六部の公事が完了 · 結果のご報告', memorialStamp:'准奏',
-  memorialLoading:'巻物を開いています…', memorialReadFailed:e=>`奏折の読み取りに失敗：${e}`, memorialEmpty:'報告内容はまだありません',
-  chipTable:'表', chipWeb:'Web', chipImage:'画像', chipDoc:'文書',
-  openTitle:title=>`開く: ${title}`, productBadge:'完成品', chestClose:'箱を閉じる', chestOpenTitle:'クリックで開ける', chestAlt:'完成品の箱',
-  chestCollapse:'▲ 箱を閉じる', chestExpand:n=>`▼ クリックで開ける · 文書 ${n} 件`, memorialEnd:'以　上', memorialClose:'読了 · 巻物を閉じる',
-  recentFailure:'❌ 最近の失敗理由', roleInfo:'🛠 ロール説明', noRoleInfo:'ロール情報がありません', nameLabel:'名前：',
-  tools:'🔧 ツール', inputReq:'⬇ 入力要件', outputLabel:'⬆ 出力', viewFullPrompt:'📜 完全なプロンプトを表示',
-  outputFiles:'📄 出力ファイル', noOutputs:'出力はまだありません', clickPreview:'クリックでプレビュー', unnamed:'(無題)', openExternalTitle:'外部で開く',
-  reviewResult:'📋 レビュー結果', noReview:'レビュー記録はまだありません', runLogs:n=>`📋 実行ログ（末尾 ${n} 件）`, noLogs:'ログはまだありません',
-  aiQuestions:'🤔 AI からいくつか質問があります', questionHeader:n=>`質問 ${n}`, cancelled:'✕ キャンセル済み', submitted:'✓ 送信済み',
-  uploading:'アップロード中…', uploadMaterials:'素材ファイルをアップロード', uploaded:n=>`${n} 件アップロード済み：`,
-  otherOption:'💬 その他（自由入力）', otherPlaceholder:'入力してください...', submit:'送信',
-  pendingConfirm:'成果物の確認待ち', approved:'✓ 承認済み', rejected:'✕ 差し戻し済み',
-  noReviewNotes:'レビューメモはありません', rejectPlaceholder:'差し戻し理由（任意）…', viewOutputs:'📄 成果物を見る',
-  cancel:'キャンセル', confirmReject:'✕ 差し戻しを確定', reject:'✕ 差し戻し', gateApprove:'✓ 承認',
-  openFolder:'📁 保存先フォルダーを開く', openProduct:'▶ 完成品を開く',
-  pickFailed:e=>`ファイルの選択に失敗: ${e}`, startFailed:'起動に失敗しました。再試行してください', newTaskTitle:name=>`新しい「${name}」タスク`,
-  scenario:'シナリオ', briefLabel:'初期要件', briefHint:'空欄でも開始できますが、詳しく書くほど AI の精度が上がります。',
-  attachments:'添付ファイル（任意）', picking:'選択中…', pickDesktopFiles:'デスクトップのファイルを選択', uploadAttachments:'添付ファイルをアップロード',
-  attachHintWeb:'デスクトップホストで選択したファイルは参考素材として六部に渡されます。', attachHint:'アップロードしたファイルは参考素材として六部に渡されます。',
-  starting:'起動中…', start:'開始',
-  templateDesc:'テンプレートを選んで新しいワークフロータスクを作成します。', open:'開く', templateBadge:'ワークフローテンプレート', expertTeam:'専門家チーム',
-  runComplete:'✅ 完了', runStopped:'⏹ 停止済み', runBlocked:'⚫ ブロック', runRunning:'🔵 実行中',
-  runIdle:'未開始（「新規タスク」で開始）', cardFlow:'カードフロー',
-  stopConfirm:'停止すると、現在のタスクはこれ以上割り当てられません。生成済みのファイルは保持されるので、要件を修正してやり直せます。',
-  memorialBtn:'📜 奏折', editAndRestart:'✏️ 要件を修正して再開', stopping:'停止中…', stopAndEdit:'⏹ 停止して修正',
-  backToTemplates:'← テンプレート一覧', newTask:'+ 新規タスク',
-});
 // features/settings SettingsView 漏网文案（记忆中心卡片、Composer 技能/服务菜单、模型表单零散兜底）
 dict.zh.uiSettingsView = {
   profileCallName: name => `称呼：${name}`,
@@ -2298,7 +2227,7 @@ Object.assign(dict.ja.uiAttachments, { uploading:pct=>`アップロード中 ${p
 // uiToolStore 词条补充（ToolStoreView / oauth-marketplace-logic）：命名空间已在 dict 主体定义，这里增量合并。
 Object.assign(dict.zh.uiToolStore, {
   toolNames:{ feishu:'飞书', wecom:'企业微信', dingtalk:'钉钉', tmeet:'腾讯会议', ima:'腾讯 ima' },
-  connected:'已连接', installed:'已安装', builtin:'内置', skillLabel:'技能', internalDirect:'内网直连', keyRequired:'需密钥', localLatency:'本地',
+  connected:'已连接', installed:'已安装', builtin:'内置', internalDirect:'内网直连', keyRequired:'需密钥', localLatency:'本地',
   cancel:'取消', ok:'知道了', newChat:'新建会话',
   installHint:'新工具需要在新会话中生效', removeHint:'已移除，新会话将不再加载该工具', firstUseOnlineInstall:'首次连接会联网下载并校验官方 CLI',
   configTitle:name=>`配置「${name}」`, configConnect:'连接', configInstall:'安装', configDocDefault:'查看配置说明', configHelpFeishu:'不会建应用？去飞书开放平台建一个 →',
@@ -2322,6 +2251,7 @@ Object.assign(dict.zh.uiToolStore, {
   waitingBrowserAuth:'正在等待浏览器授权完成。', browserOpenedWaiting:'已打开浏览器，正在等待授权…',
   operationFailedWith:e=>`操作失败：${e}`,
   importingSkill:'正在导入技能包…', validatingSkillPackage:'校验并解压中', skillImported:'技能包已导入', importFailedWith:e=>`导入失败：${e}`,
+  uploadSkillPackage:'上传技能包', dropSkillZipHere:'松开以导入技能包 (zip)', invalidSkillZipDrop:'仅支持 .zip 技能包',
   notConnectedYet:name=>`尚未连接「${name}」。`,
   loginFrameTitle:name=>`${name}登录`, loginPageLoadFailed:'登录页加载失败，请用下方浏览器授权', waitingAuth:'等待授权中…', openInBrowser:'在浏览器打开',
   mini:{ scan:'待扫码', install:pct=>`装 ${pct}%`, extract:pct=>`解压 ${pct}%`, connecting:'接入中', title:'点开查看进度' },
@@ -2342,9 +2272,9 @@ Object.assign(dict.zh.uiToolStore, {
     { key:'qr', label:'扫码登录', sub:'钉钉 App 扫一扫' },
   ],
   connFailed:'连接失败', dingtalkSkillsFailed:err=>`钉钉已授权，但技能启用失败：${err}`, tmeetAuthIncomplete:'腾讯会议授权未完成，请完成浏览器登录后重试',
-  emptyNoMatch:'未找到匹配的工具', emptyNoInstalled:'还没有已安装的工具', emptyNoSkills:'没有技能', emptyNoTools:'未检索到工具',
+  emptyNoMatch:'未找到匹配的工具', emptyNoInstalled:'还没有已安装的工具', emptyNoTools:'未检索到工具',
   emptyNoMatchHint:'换个关键词试试，或检查一下拼写。', emptyNoInstalledHint:'去商店安装连接器或技能后，会出现在这里。', emptyNoInstalledHintReadonly:'桌面端尚未安装工具或技能。',
-  emptyNoSkillsHint:'点右上「上传技能包」导入 zip。', emptyNoSkillsHintReadonly:'当前没有可浏览的技能。', emptyNoToolsHint:'请尝试修改搜索词或查阅 API 开发文档。',
+  emptyNoToolsHint:'请尝试修改搜索词或查阅 API 开发文档。',
   detailInterfaceType:'接口类型', detailOfficialSupport:'官方支持', detailVersion:'当前版本', detailStableRelease:'稳定版发布', detailLatency:'平均延迟', detailGlobalAccel:'全球加速',
   aboutTitle:'关于此能力',
   oauthOutcome:{
@@ -2355,7 +2285,7 @@ Object.assign(dict.zh.uiToolStore, {
 });
 Object.assign(dict.en.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },
-  connected:'Connected', installed:'Installed', builtin:'Built-in', skillLabel:'Skill', internalDirect:'Direct intranet', keyRequired:'Key required', localLatency:'Local',
+  connected:'Connected', installed:'Installed', builtin:'Built-in', internalDirect:'Direct intranet', keyRequired:'Key required', localLatency:'Local',
   cancel:'Cancel', ok:'Got it', newChat:'New Chat',
   installHint:'New tools take effect in a new conversation', removeHint:'Removed; new conversations will no longer load this tool', firstUseOnlineInstall:'The first connection downloads and verifies the official CLI',
   configTitle:name=>`Configure ${name}`, configConnect:'Connect', configInstall:'Install', configDocDefault:'View setup guide', configHelpFeishu:'No app yet? Create one on the Feishu Open Platform →',
@@ -2368,8 +2298,8 @@ Object.assign(dict.en.uiToolStore, {
   connectedTool:name=>`${name} connected`, disconnectedTool:name=>`${name} disconnected`,
   connectedQuoted:name=>`${name} connected`, installedQuoted:name=>`${name} installed`, uninstalledQuoted:name=>`${name} uninstalled`,
   connectFailed:name=>`${name} connection failed`, connectTitle:name=>`Connect ${name}`,
-  connectedBanner:name=>`${name} connected · official skill enabled; you can direct it right away`,
-  connectedBannerIma:'Tencent ima connected · OpenAPI Skill enabled; you can direct it right away',
+  connectedBanner:name=>`${name} connected · official skill enabled; you can give it instructions right away`,
+  connectedBannerIma:'Tencent ima connected · OpenAPI Skill enabled; you can give it instructions right away',
   uploadedSkill:'User-uploaded skill',
   oauthBrowserTimeout:'No browser authorization callback received. Confirm whether authorization finished, or try again later.',
   stoppingAuth:'Stopping the browser authorization wait…', authWaitCancelled:'Stopped waiting for browser authorization; you can authorize again later.', cancelFailed:'Cancel failed—retry available; the authorization wait is still running.',
@@ -2379,6 +2309,7 @@ Object.assign(dict.en.uiToolStore, {
   waitingBrowserAuth:'Waiting for browser authorization to complete.', browserOpenedWaiting:'Browser opened; waiting for authorization…',
   operationFailedWith:e=>`Operation failed: ${e}`,
   importingSkill:'Importing skill package…', validatingSkillPackage:'Validating and extracting', skillImported:'Skill package imported', importFailedWith:e=>`Import failed: ${e}`,
+  uploadSkillPackage:'Upload Skill Package', dropSkillZipHere:'Drop to import a skill package (zip)', invalidSkillZipDrop:'Only .zip skill packages are supported',
   notConnectedYet:name=>`"${name}" is not connected yet.`,
   loginFrameTitle:name=>`${name} sign-in`, loginPageLoadFailed:'Failed to load the sign-in page—use browser authorization below', waitingAuth:'Waiting for authorization…', openInBrowser:'Open in browser',
   mini:{ scan:'Scan pending', install:pct=>`Installing ${pct}%`, extract:pct=>`Extracting ${pct}%`, connecting:'Connecting', title:'Tap to view progress' },
@@ -2398,10 +2329,10 @@ Object.assign(dict.en.uiToolStore, {
     { key:'cli', label:'Install connector', sub:'dws · about 40 seconds on first use' },
     { key:'qr', label:'Scan to sign in', sub:'Scan with the DingTalk app' },
   ],
-  connFailed:'Connection failed', dingtalkSkillsFailed:err=>`DingTalk authorized, but enabling the skill failed: ${err}`, tmeetAuthIncomplete:'Tencent Meeting authorization is incomplete—finish signing in in the browser and retry',
-  emptyNoMatch:'No matching tools found', emptyNoInstalled:'No tools installed yet', emptyNoSkills:'No skills', emptyNoTools:'No tools found',
+  connFailed:'Connection failed', dingtalkSkillsFailed:err=>`DingTalk authorized, but enabling the skill failed: ${err}`, tmeetAuthIncomplete:'Tencent Meeting authorization is incomplete—finish the browser sign-in and retry',
+  emptyNoMatch:'No matching tools found', emptyNoInstalled:'No tools installed yet', emptyNoTools:'No tools found',
   emptyNoMatchHint:'Try a different keyword, or check the spelling.', emptyNoInstalledHint:'Install connectors or skills from the store and they will appear here.', emptyNoInstalledHintReadonly:'No tools or skills installed on the desktop yet.',
-  emptyNoSkillsHint:'Import a zip via "Upload Skill Package" at the top right.', emptyNoSkillsHintReadonly:'No skills available to browse.', emptyNoToolsHint:'Try another search term or check the API documentation.',
+  emptyNoToolsHint:'Try another search term or check the API documentation.',
   detailInterfaceType:'Interface Type', detailOfficialSupport:'Official support', detailVersion:'Version', detailStableRelease:'Stable release', detailLatency:'Avg Latency', detailGlobalAccel:'Global acceleration',
   aboutTitle:'About',
   oauthOutcome:{
@@ -2412,7 +2343,7 @@ Object.assign(dict.en.uiToolStore, {
 });
 Object.assign(dict.ja.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },
-  connected:'接続済み', installed:'インストール済み', builtin:'内蔵', skillLabel:'スキル', internalDirect:'社内ネットワーク直結', keyRequired:'キーが必要', localLatency:'ローカル',
+  connected:'接続済み', installed:'インストール済み', builtin:'内蔵', internalDirect:'社内ネットワーク直結', keyRequired:'キーが必要', localLatency:'ローカル',
   cancel:'キャンセル', ok:'了解', newChat:'新しいチャット',
   installHint:'新しいツールは新しい会話で有効になります', removeHint:'削除しました。新しい会話ではこのツールは読み込まれません', firstUseOnlineInstall:'初回接続時に公式 CLI をダウンロードして検証します',
   configTitle:name=>`「${name}」の設定`, configConnect:'接続', configInstall:'インストール', configDocDefault:'設定ガイドを見る', configHelpFeishu:'アプリの作成方法が分からない場合は Feishu オープンプラットフォームで作成 →',
@@ -2436,6 +2367,7 @@ Object.assign(dict.ja.uiToolStore, {
   waitingBrowserAuth:'ブラウザーでの認証完了を待機しています。', browserOpenedWaiting:'ブラウザーを開きました。認証を待機しています…',
   operationFailedWith:e=>`操作に失敗しました：${e}`,
   importingSkill:'スキルパッケージをインポート中…', validatingSkillPackage:'検証・展開中', skillImported:'スキルパッケージをインポートしました', importFailedWith:e=>`インポートに失敗しました：${e}`,
+  uploadSkillPackage:'スキルパッケージをアップロード', dropSkillZipHere:'離してスキルパッケージ (zip) をインポート', invalidSkillZipDrop:'対応するのは .zip スキルパッケージのみです',
   notConnectedYet:name=>`「${name}」はまだ接続されていません。`,
   loginFrameTitle:name=>`${name} ログイン`, loginPageLoadFailed:'ログインページを読み込めませんでした。下のブラウザー認証をご利用ください', waitingAuth:'認証を待機中…', openInBrowser:'ブラウザーで開く',
   mini:{ scan:'スキャン待ち', install:pct=>`インストール ${pct}%`, extract:pct=>`展開 ${pct}%`, connecting:'接続中', title:'タップして進捗を表示' },
@@ -2456,9 +2388,9 @@ Object.assign(dict.ja.uiToolStore, {
     { key:'qr', label:'スキャンしてログイン', sub:'DingTalk アプリでスキャン' },
   ],
   connFailed:'接続に失敗しました', dingtalkSkillsFailed:err=>`DingTalk は認証されましたが、スキルの有効化に失敗しました：${err}`, tmeetAuthIncomplete:'Tencent Meeting の認証が完了していません。ブラウザーでログインを完了してから再試行してください',
-  emptyNoMatch:'一致するツールが見つかりません', emptyNoInstalled:'インストール済みのツールはまだありません', emptyNoSkills:'スキルがありません', emptyNoTools:'ツールが見つかりません',
+  emptyNoMatch:'一致するツールが見つかりません', emptyNoInstalled:'インストール済みのツールはまだありません', emptyNoTools:'ツールが見つかりません',
   emptyNoMatchHint:'別のキーワードを試すか、綴りを確認してください。', emptyNoInstalledHint:'ストアでコネクターやスキルをインストールすると、ここに表示されます。', emptyNoInstalledHintReadonly:'デスクトップにツールやスキルはまだインストールされていません。',
-  emptyNoSkillsHint:'右上の「スキルパッケージをアップロード」から zip をインポートしてください。', emptyNoSkillsHintReadonly:'閲覧できるスキルは現在ありません。', emptyNoToolsHint:'検索語を変更するか、API 開発ドキュメントをご確認ください。',
+  emptyNoToolsHint:'検索語を変更するか、API 開発ドキュメントをご確認ください。',
   detailInterfaceType:'インターフェース種別', detailOfficialSupport:'公式サポート', detailVersion:'現在のバージョン', detailStableRelease:'安定版リリース', detailLatency:'平均レイテンシー', detailGlobalAccel:'グローバルアクセラレーション',
   aboutTitle:'この機能について',
   oauthOutcome:{
@@ -2473,62 +2405,92 @@ Object.assign(dict.zh.uiChatView, { memStatusRemembered:'已记住', memStatusAr
 Object.assign(dict.en.uiChatView, { memStatusRemembered:'Remembered', memStatusArchived:'Archived', memStatusDeleted:'Deleted', memStatusArchivedNotice:'Memory archived', memStatusDeletedNotice:'Memory deleted' });
 Object.assign(dict.ja.uiChatView, { memStatusRemembered:'記憶しました', memStatusArchived:'アーカイブしました', memStatusDeleted:'削除しました', memStatusArchivedNotice:'メモリをアーカイブしました', memStatusDeletedNotice:'メモリを削除しました' });
 
-// tool-common.jsx 内容数据（tsSkillsData / tsCategories / tsFeaturedCollections）的三语 overlay：
-// ToolStoreView 渲染处按 localizeTool() 同款模式消费（localizeSkill / localizeCategory / localizeCollection），数据文件本身不改。
+// tool-common.jsx 内容数据（tsSkillsData / tsCategories）的三语 overlay：
+// ToolStoreView 渲染处按 localizeTool() 同款模式消费（localizeSkill / localizeCategory），数据文件本身不改。
 Object.assign(dict.zh.uiToolStore, { storeData: {
   skills: {
-    'government-writing': { title:'党政机关公文写作', subtitle:'通知/意见等法定文种，套话术、层级序号、自检', desc:'撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', todayLabel:'编辑之选 · 专业辅助', todayTitle:'规范公文\n一键起草', latency:'本地' },
-    pptx: { title:'PPT 生成', subtitle:'本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', desc:'本地直出可编辑 PowerPoint:套主题模板、真图表、带封面,输入主题即可快速生成结构化演示文稿。', todayLabel:'演示利器', todayTitle:'一句话\n做完\nPPT', latency:'本地' },
-    visualizer: { title:'数据分析可视化', subtitle:'Chart.js 仪表盘 / 图表分析 / HTML 可视化', desc:'将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。', todayLabel:'数据洞察', todayTitle:'一段数据\n生成\n仪表盘', latency:'本地' },
-    s5: { title:'视觉设计', subtitle:'设计系统直出网页 / banner / 海报 / 简历', desc:'内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', todayLabel:'创意探索', todayTitle:'视觉设计\n信手拈来', version:'内置', latency:'本地' },
+    'government-writing': { title:'党政机关公文写作', subtitle:'通知/意见等法定文种，套话术、层级序号、自检', desc:'撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', latency:'本地' },
+    pptx: { title:'PPT 生成', subtitle:'本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', desc:'本地直出可编辑 PowerPoint:套主题模板、真图表、带封面,输入主题即可快速生成结构化演示文稿。', latency:'本地' },
+    visualizer: { title:'数据分析可视化', subtitle:'Chart.js 仪表盘 / 图表分析 / HTML 可视化', desc:'将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。', latency:'本地' },
+    s5: { title:'视觉设计', subtitle:'设计系统直出网页 / banner / 海报 / 简历', desc:'内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', version:'内置', latency:'本地' },
   },
   categories: { all:'全部', collab:'沟通协作', docs:'文档知识', dev:'研发', finance:'金融数据', life:'生活实用', skill:'技能' },
-  featuredCollections: {
-    f6: { label:'即装即用', title:'实时天气随口问', subtitle:'接入高德天气 API，自然语言查全国城市实时天气与多日预报，零配置一键安装。' },
-    f4: { label:'数据引擎', title:'打造智能投研助理', subtitle:'集成同花顺问财 12 项金融工具，利用大模型快速输出深度个股诊断报告。' },
-    f7: { label:'企业数据', title:'一键查透企业全貌', subtitle:'接入企查查 182 个工具，工商/风控/知产/经营数据信手拈来，免配置即装即用。' },
-    f1: { label:'即时沟通', title:'打通企业微信', subtitle:'以你本人身份操作企微消息、文档、会议与日程，扫码授权、全程不填 key。' },
-    f2: { label:'个人知识', title:'激活你的本地笔记', subtitle:'接入本机 Obsidian 笔记库，全文检索、读写与维护双链，让 AI 基于你的知识作答。' },
-    f3: { label:'效率编排', title:'跨平台消息中转', subtitle:'无缝打通企微、飞书与钉钉，实现重要告警与工作流消息的自动化流转。' },
-  },
 } });
 Object.assign(dict.en.uiToolStore, { storeData: {
   skills: {
-    'government-writing': { title:'Official Document Writing', subtitle:'Statutory document types like notices and opinions, with phrasing templates, hierarchical numbering, and self-checks', desc:'Draft standardized party and government official documents (notices, opinions, …): built-in document-type skeletons, a fixed phrasing library, hierarchical numbering, and ledger-style self-checks produce structured official content. Pair with the "Official Document Writing" tool in the Tool Store to export GB/T 9704-compliant .docx directly.', todayLabel:"Editor's Choice · Professional Aid", todayTitle:'Compliant documents,\ndrafted in one click', latency:'Local' },
-    pptx: { title:'PPT Generation', subtitle:'Generate editable PowerPoint locally, with theme templates, real charts, and covers', desc:'Generate editable PowerPoint locally: theme templates, real charts, and covers included—enter a topic to quickly produce a structured presentation.', todayLabel:'Presentation Powerhouse', todayTitle:'Finish a PPT\nin one\nsentence', latency:'Local' },
-    visualizer: { title:'Data Visualization', subtitle:'Chart.js dashboards / chart analysis / HTML visualization', desc:'Turn structured data, table summaries, and business metrics into HTML visualization dashboards that match the Pinvou host experience. Chart.js, accessible canvas, custom legends, and flat colors by default, delivered as .html artifact cards.', todayLabel:'Data Insights', todayTitle:'One dataset,\none\ndashboard', latency:'Local' },
-    s5: { title:'Visual Design', subtitle:'Design-system-grade webpages / banners / posters / resumes', desc:'Built-in automatic skill: the model loads it on demand to produce webpages, banners, posters, resumes, and more with design-system-grade aesthetics. No installation needed—always available.', todayLabel:'Creative Exploration', todayTitle:'Visual design,\neffortlessly', version:'Built-in', latency:'Local' },
+    'government-writing': { title:'Official Document Writing', subtitle:'Statutory document types like notices and opinions, with phrasing templates, hierarchical numbering, and self-checks', desc:'Draft standardized party and government official documents (notices, opinions, …): built-in document-type skeletons, a fixed phrasing library, hierarchical numbering, and ledger-style self-checks produce structured official content. Pair with the "Official Document Writing" tool in the Tool Store to export GB/T 9704-compliant .docx directly.', latency:'Local' },
+    pptx: { title:'PPT Generation', subtitle:'Generate editable PowerPoint locally, with theme templates, real charts, and covers', desc:'Generate editable PowerPoint locally: theme templates, real charts, and covers included—enter a topic to quickly produce a structured presentation.', latency:'Local' },
+    visualizer: { title:'Data Visualization', subtitle:'Chart.js dashboards / chart analysis / HTML visualization', desc:'Turn structured data, table summaries, and business metrics into HTML visualization dashboards that match the Pinvou host experience. Chart.js, accessible canvas, custom legends, and flat colors by default, delivered as .html artifact cards.', latency:'Local' },
+    s5: { title:'Visual Design', subtitle:'Design-system-grade webpages / banners / posters / resumes', desc:'Built-in automatic skill: the model loads it on demand to produce webpages, banners, posters, resumes, and more with design-system-grade aesthetics. No installation needed—always available.', version:'Built-in', latency:'Local' },
   },
   categories: { all:'All', collab:'Collaboration', docs:'Docs & Knowledge', dev:'Development', finance:'Financial Data', life:'Daily Life', skill:'Skills' },
-  featuredCollections: {
-    f6: { label:'Ready to Install', title:'Ask for Real-Time Weather', subtitle:'Powered by the Amap Weather API—ask in natural language for real-time weather and multi-day forecasts in cities nationwide. Zero configuration, one-click install.' },
-    f4: { label:'Data Engine', title:'Build a Smart Investment Research Assistant', subtitle:'Integrates 12 financial tools from THS iWencai, using LLMs to quickly produce in-depth stock diagnostic reports.' },
-    f7: { label:'Enterprise Data', title:'See Through Any Company in One Click', subtitle:'Connects 182 Qichacha tools—business registration, risk control, IP, and operations data at your fingertips. No configuration; install and use.' },
-    f1: { label:'Instant Messaging', title:'Connect WeCom', subtitle:'Act as yourself across WeCom messages, docs, meetings, and calendars—scan to authorize, no keys required.' },
-    f2: { label:'Personal Knowledge', title:'Activate Your Local Notes', subtitle:'Connect your local Obsidian vault—full-text search, read/write, and backlink maintenance, so AI answers based on your knowledge.' },
-    f3: { label:'Workflow Orchestration', title:'Cross-Platform Message Relay', subtitle:'Seamlessly connect WeCom, Feishu, and DingTalk to automate the flow of critical alerts and workflow messages.' },
-  },
 } });
 Object.assign(dict.ja.uiToolStore, { storeData: {
   skills: {
-    'government-writing': { title:'党政機関の公文作成', subtitle:'通知・意見などの法定文種。定型表現・階層番号・セルフチェック付き', desc:'規範的な党政機関の公文（通知、意見…）を作成：文種別の構造テンプレート、定型表現ライブラリ、階層番号体系、帳票照合のセルフチェックを内蔵し、構造化された公文内容を生成します。ツールストアの「公文作成」ツールと併用すれば、GB/T 9704 準拠の .docx を直接出力できます。', todayLabel:'編集部のおすすめ · プロ向け補助', todayTitle:'規範公文を\nワンクリックで起草', latency:'ローカル' },
-    pptx: { title:'PPT 生成', subtitle:'編集可能な PowerPoint をローカルで直接生成。テーマテンプレート・本物のグラフ・表紙付き', desc:'編集可能な PowerPoint をローカルで直接生成：テーマテンプレート・本物のグラフ・表紙付き。テーマを入力するだけで構造化されたプレゼン資料をすばやく作成できます。', todayLabel:'プレゼンの利器', todayTitle:'一言で\nPPT を\n完成', latency:'ローカル' },
-    visualizer: { title:'データ分析の可視化', subtitle:'Chart.js ダッシュボード / グラフ分析 / HTML 可視化', desc:'構造化データ・表の集計・ビジネス指標を、Pinvou のホスト体験に合った HTML 可視化ダッシュボードに変換します。デフォルトで Chart.js、アクセシブルな canvas、カスタム凡例、フラット配色を使用し、.html アーティファクトカードとして提供します。', todayLabel:'データインサイト', todayTitle:'データから\nダッシュボードを\n生成', latency:'ローカル' },
-    s5: { title:'ビジュアルデザイン', subtitle:'デザインシステム級の Web ページ / バナー / ポスター / レジュメを直接生成', desc:'内蔵の自動スキル：モデルが必要に応じて自動で読み込み、デザインシステム級の美観で Web ページ / バナー / ポスター / レジュメなどを直接生成します。インストール不要でいつでも利用できます。', todayLabel:'クリエイティブ探索', todayTitle:'ビジュアルデザインを\n手軽に', version:'内蔵', latency:'ローカル' },
+    'government-writing': { title:'党政機関の公文作成', subtitle:'通知・意見などの法定文種。定型表現・階層番号・セルフチェック付き', desc:'規範的な党政機関の公文（通知、意見…）を作成：文種別の構造テンプレート、定型表現ライブラリ、階層番号体系、帳票照合のセルフチェックを内蔵し、構造化された公文内容を生成します。ツールストアの「公文作成」ツールと併用すれば、GB/T 9704 準拠の .docx を直接出力できます。', latency:'ローカル' },
+    pptx: { title:'PPT 生成', subtitle:'編集可能な PowerPoint をローカルで直接生成。テーマテンプレート・本物のグラフ・表紙付き', desc:'編集可能な PowerPoint をローカルで直接生成：テーマテンプレート・本物のグラフ・表紙付き。テーマを入力するだけで構造化されたプレゼン資料をすばやく作成できます。', latency:'ローカル' },
+    visualizer: { title:'データ分析の可視化', subtitle:'Chart.js ダッシュボード / グラフ分析 / HTML 可視化', desc:'構造化データ・表の集計・ビジネス指標を、Pinvou のホスト体験に合った HTML 可視化ダッシュボードに変換します。デフォルトで Chart.js、アクセシブルな canvas、カスタム凡例、フラット配色を使用し、.html アーティファクトカードとして提供します。', latency:'ローカル' },
+    s5: { title:'ビジュアルデザイン', subtitle:'デザインシステム級の Web ページ / バナー / ポスター / レジュメを直接生成', desc:'内蔵の自動スキル：モデルが必要に応じて自動で読み込み、デザインシステム級の美観で Web ページ / バナー / ポスター / レジュメなどを直接生成します。インストール不要でいつでも利用できます。', version:'内蔵', latency:'ローカル' },
   },
   categories: { all:'すべて', collab:'連携・コラボ', docs:'ドキュメント・ナレッジ', dev:'開発', finance:'金融データ', life:'生活・実用', skill:'スキル' },
-  featuredCollections: {
-    f6: { label:'すぐに使える', title:'リアルタイムの天気を気軽に', subtitle:'高徳地図（Amap）天気 API に接続。自然言語で全国の都市のリアルタイム天気と多日予報を確認できます。設定不要でワンクリックインストール。' },
-    f4: { label:'データエンジン', title:'スマート投資リサーチアシスタントを構築', subtitle:'同花順 iWencai の 12 の金融ツールを統合し、大規模モデルで個別株の詳細な診断レポートをすばやく出力します。' },
-    f7: { label:'企業データ', title:'ワンクリックで企業の全貌を把握', subtitle:'企查查（Qichacha）の 182 のツールに接続。工商登記・リスク管理・知的財産・経営データを自在に取得。設定不要でインストール後すぐ使えます。' },
-    f1: { label:'インスタントコミュニケーション', title:'WeCom と連携', subtitle:'本人のIDで WeCom のメッセージ・ドキュメント・会議・スケジュールを操作。スキャン認証でキー入力は一切不要。' },
-    f2: { label:'個人ナレッジ', title:'ローカルノートを活性化', subtitle:'本機の Obsidian 保管庫に接続。全文検索・読み書き・バックリンクの保守ができ、AI があなたの知識に基づいて回答します。' },
-    f3: { label:'効率オーケストレーション', title:'クロスプラットフォームのメッセージ中継', subtitle:'WeCom・Feishu・DingTalk をシームレスに連携し、重要なアラートやワークフローメッセージの自動転送を実現します。' },
-  },
 } });
 
+// 工具商店列表视图双维度分组(按类型/按业务 + 分组筛选)词条,三语齐全。
+Object.assign(dict.zh.uiToolStore, {
+  groupByType:'按类型', groupByBusiness:'按业务',
+  typeGroups:{ bundle:'工具包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook', upcoming:'即将上线' },
+});
+Object.assign(dict.en.uiToolStore, {
+  groupByType:'By Type', groupByBusiness:'By Domain',
+  typeGroups:{ bundle:'Tool Bundles', mcp:'MCP', skill:'Skills', cli:'CLI Integrations', api:'API & Webhook', upcoming:'Coming Soon' },
+});
+Object.assign(dict.ja.uiToolStore, {
+  groupByType:'タイプ別', groupByBusiness:'業務別',
+  typeGroups:{ bundle:'ツールパック', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook', upcoming:'近日公開' },
+});
+
+Object.assign(dict.zh, {
+  remoteKbAddContent:'添加', remoteKbUploadFolder:'添加文件夹',
+  remoteKbDocumentTrashConfirm:'将“{name}”移入回收站？', remoteKbDocumentTrashHint:'可在“显示回收站”中恢复。', remoteKbDocumentTrashed:'已移入回收站', remoteKbDocumentRestored:'文档已恢复',
+  remoteKbUploadExisting:'已存在', remoteKbUploadExistingIndexing:'已存在，处理中', remoteKbUploadExistingStillIndexing:'已存在，仍在处理', remoteKbUploadExistingFailed:'已存在，处理失败',
+  remoteKbUploadSuccess:'已上传 {count}', remoteKbUploadExistingSummary:'已存在 {count}', remoteKbUploadProcessingSummary:'处理中 {count}', remoteKbUploadFailedSummary:'失败 {count}',
+  remoteKbFolderSummary:'找到 {count} 份文档', remoteKbFolderSkipped:'已跳过 {count} 个', remoteKbFolderEmpty:'文件夹中没有可导入的文档', remoteKbFolderLimitExceeded:'单次最多从文件夹导入 10000 份文档',
+});
+Object.assign(dict.en, {
+  remoteKbAddContent:'Add', remoteKbUploadFolder:'Add folders',
+  remoteKbDocumentTrashConfirm:'Move “{name}” to trash?', remoteKbDocumentTrashHint:'You can restore it from “Show trash”.', remoteKbDocumentTrashed:'Moved to trash', remoteKbDocumentRestored:'Document restored',
+  remoteKbUploadExisting:'Already exists', remoteKbUploadExistingIndexing:'Already exists, processing', remoteKbUploadExistingStillIndexing:'Already exists, still processing', remoteKbUploadExistingFailed:'Already exists, processing failed',
+  remoteKbUploadSuccess:'Uploaded: {count}', remoteKbUploadExistingSummary:'Already exists: {count}', remoteKbUploadProcessingSummary:'Processing: {count}', remoteKbUploadFailedSummary:'Failed: {count}',
+  remoteKbFolderSummary:'{count} documents found', remoteKbFolderSkipped:'{count} skipped', remoteKbFolderEmpty:'No supported documents were found in this folder', remoteKbFolderLimitExceeded:'A folder import can contain at most 10,000 documents',
+});
+Object.assign(dict.ja, {
+  remoteKbAddContent:'追加', remoteKbUploadFolder:'フォルダ追加',
+  remoteKbDocumentTrashConfirm:'「{name}」をゴミ箱へ移動しますか？', remoteKbDocumentTrashHint:'「ゴミ箱を表示」から復元できます。', remoteKbDocumentTrashed:'ゴミ箱へ移動しました', remoteKbDocumentRestored:'文書を復元しました',
+  remoteKbUploadExisting:'登録済み', remoteKbUploadExistingIndexing:'登録済み・処理中', remoteKbUploadExistingStillIndexing:'登録済み・処理継続中', remoteKbUploadExistingFailed:'登録済み・処理失敗',
+  remoteKbUploadSuccess:'アップロード: {count}', remoteKbUploadExistingSummary:'登録済み: {count}', remoteKbUploadProcessingSummary:'処理中: {count}', remoteKbUploadFailedSummary:'失敗: {count}',
+  remoteKbFolderSummary:'{count} 件の文書を検出', remoteKbFolderSkipped:'{count} 件をスキップ', remoteKbFolderEmpty:'インポート可能な文書がありません', remoteKbFolderLimitExceeded:'1 回のフォルダインポートは 10,000 件までです',
+});
 // 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，
 // personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。
+dict.zh.uiSettingsDetail.memoryLoadFailed = '记忆资料加载失败，请重试';
+dict.zh.uiSettingsDetail.memorySaveFailed = '记忆资料保存失败，请重试';
+dict.zh.uiSettingsDetail.memorySourceUnavailable = '部分记忆资料暂时不可用，已保留上次成功加载的内容';
+dict.zh.uiSettingsDetail.memoryRuntimeRefreshFailed = '记忆已保存，但当前会话的记忆上下文暂未刷新';
+dict.zh.uiSettingsDetail.memorySnapshotRefreshFailed = '记忆资料已加载，但概览快照暂未刷新';
+dict.zh.uiSettingsDetail.memoryTopicCleanupRequired = '记忆已更新，旧主题资料将在解除占用后自动清理';
+dict.en.uiSettingsDetail.memoryLoadFailed = 'Failed to load memory profile. Please try again.';
+dict.en.uiSettingsDetail.memorySaveFailed = 'Failed to save memory profile. Please try again.';
+dict.en.uiSettingsDetail.memorySourceUnavailable = 'Some memory sources are temporarily unavailable. The last successfully loaded content is preserved.';
+dict.en.uiSettingsDetail.memoryRuntimeRefreshFailed = 'Memory was saved, but the current session context could not be refreshed.';
+dict.en.uiSettingsDetail.memorySnapshotRefreshFailed = 'Memory was loaded, but the overview snapshot could not be refreshed.';
+dict.en.uiSettingsDetail.memoryTopicCleanupRequired = 'Memory was updated. The previous topic data will be cleaned up automatically after it is released.';
+dict.ja.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み込みに失敗しました。再試行してください。';
+dict.ja.uiSettingsDetail.memorySaveFailed = 'メモリプロフィールの保存に失敗しました。再試行してください。';
+dict.ja.uiSettingsDetail.memorySourceUnavailable = '一部のメモリ情報を一時的に利用できません。前回正常に読み込んだ内容を保持しています。';
+dict.ja.uiSettingsDetail.memoryRuntimeRefreshFailed = 'メモリは保存されましたが、現在のセッションのメモリコンテキストを更新できませんでした。';
+dict.ja.uiSettingsDetail.memorySnapshotRefreshFailed = 'メモリ情報は読み込まれましたが、概要スナップショットを更新できませんでした。';
+dict.ja.uiSettingsDetail.memoryTopicCleanupRequired = 'メモリは更新されました。以前のトピック情報は使用中でなくなった後に自動的に整理されます。';
+
 if (typeof window !== 'undefined') window.__PINVOU_SHARED_I18N__ = dict;
 
-export { dict, LANG_TO_TAG, TAG_TO_LANG, SEARCH_KEY_PROVIDERS };
+export { dict, LANG_TO_TAG, TAG_TO_LANG, languageFromLocaleTags, initialSystemLanguage, SEARCH_KEY_PROVIDERS };

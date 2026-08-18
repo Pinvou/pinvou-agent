@@ -76,9 +76,9 @@ JSONML 模式下这些元素的节点结构见 [doc-jsonml-schema.md](../format/
 |----------|----------|----------|
 | 单块精修（首选）| `doc block list --node <id> --content-format jsonml` → 拿 uuid → `doc block list --node <id> --content-format jsonml --block-id <uuid>` 读子树 | 节点结构见 [doc-jsonml-schema.md](../format/doc-jsonml-schema.md) |
 | 多处保真改写 / 改 root sectPr | `doc read --node <id> --content-format jsonml --output /tmp/doc.json` | 解析 JSON，按 schema 操作；担心并发覆盖时记下 `revision` 供 update 透传 |
-| 整篇按新骨架重写（纯文本场景）| `doc read --node <id>`（markdown 输出）| 直接处理 markdown 全文，定位用 `grep -n "<章节关键词>"` |
+| 整篇按新骨架重写（纯文本场景）| `doc read --node <id>`（markdown 输出）| 直接处理 markdown 全文，模型按章节关键词定位（Windows 等环境不保证本地 grep，不要拼 shell 管道） |
 | 末尾追加纯文本章节 | 不必读全文，直接 §4.2 append | 必要时 `doc read` 看末尾衔接 |
-| 老接口快速找 BLOCK_ID（无需 jsonml 时）| `doc block list --node <id>` | 默认输出 JSON；用 `grep -B2 -A2 "<关键词>"` 在 children 里定位（结构 `{"blocks":[{...,"children":[...]}]}`，jq 需 `..\|.text? // empty` 递归查文本） |
+| 老接口快速找 BLOCK_ID（无需 jsonml 时）| `doc block list --node <id>` | 默认输出 JSON；模型直接读 JSON 在 children 里定位（结构 `{"blocks":[{...,"children":[...]}]}`）。需过滤时用内置 `--jq '.. \| .text? // empty'` 递归取全部文本（Windows 等环境不保证本地 jq/grep 可用，不要拼 shell 管道） |
 
 读取后，把改写计划告诉用户（要改哪几节、走 JSONML 还是 markdown、改成什么形态），等用户确认后再写。
 

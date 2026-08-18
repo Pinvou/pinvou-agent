@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.8.0"
+version = "0.8.4"
 description = "品悟智能助手桌面应用后端"
 authors = ["pinvou"]
 license = "MIT"
@@ -28,18 +28,20 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = ["local-embed"]
-local-embed = ["dep:fastembed"]
+local-embed = ["pinvou-knowledge/local-embed"]
 dev-tools = []
 
 [build-dependencies]
 tauri-build = { version = "2.6.1", features = [] }
 
 [dependencies]
+pinvou-knowledge = { path = "../../pinvou-knowledge", default-features = false, features = ["client", "discovery"] }
 # workflow 整目录内嵌(含二进制),include_str 撑不住
 include_dir = "0.7"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.8.23"
+semver = "1"
+toml = "1"
 log = "0.4"
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
@@ -88,12 +90,13 @@ wait-timeout = "0.2"
 # 选定进程级 CryptoProvider(见上方 panic 根因)。只声明 aws-lc-rs;ring 由传递依赖启用。
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 
-# Updater 用：sha256 校验；Windows OTA 包使用 MD5；产物卡封面读 .pptx 里的 thumbnail。
+# Updater 用：sha256 校验；产物卡封面读 .pptx 里的 thumbnail。
 # 0.11 与 CodeWhale 子模块对齐。digest 的 Output 不实现 LowerHex,统一用 hex_lower 编码
 # (见 src/platform/encoding.rs)。
 sha2 = "0.11"
-zip = { version = "2", default-features = false, features = ["deflate"] }
-md5 = "0.7"
+# 8.x 与 calamine 传递引入的 zip 8.6.0 收敛为单一版本（消除旧 zip 2.x + 连带传递依赖）。
+# 仅 deflate（读 .pptx / 写技能 zip 包），关默认 feature 去掉 bzip2/lzma/zstd 等。
+zip = { version = "8", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
 
@@ -106,7 +109,13 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 
 # File watcher：监听 ~/.pinvou3/sessions/*/workspace/ 新文件产出，
 # 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
-notify = "6"
+# 8.x：把 mio 收敛到 1.x、连带消除 windows-sys 0.48.0，并修 Windows
+# FILE_NOTIFY_INFORMATION 未对齐 UB。
+# 注意：这不解决 windows-targets 0.48.5（+ 7 个 win 二进制 crate）——那条链由
+# device_query 2.1.0 → windows 0.48.0 持有，与 notify 无关，需单独处理 device_query。
+# 项目仅用稳定高层 API（recommended_watcher / Watcher::watch / EventKind / RecursiveMode），
+# 6→8 公开签名零变化，watcher.rs / file_watcher.rs 源码无需改动。
+notify = "8"
 msg_parser = "0.3.0"
 
 # 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重（docs/本地知识底座-产品形态与架构.md）
@@ -135,6 +144,8 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["c
 futures-util = "0.3"
 rand = "0.9"
 base64 = "0.22"
+age = { version = "=0.12.1", default-features = false }
+tempfile = "3"
 
 # keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
 # macOS 桌伴窗口策略补丁(pet_window.rs):
@@ -173,13 +184,11 @@ objc2-speech = { version = "0.3", default-features = false, features = [
 ] }
 
 [target.'cfg(windows)'.dependencies]
-fastembed = { version = "4", optional = true, default-features = false, features = ["ort-load-dynamic"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 webview2-com = "0.38.2"
 windows = "0.61.3"
 
 [target.'cfg(not(windows))'.dependencies]
-fastembed = { version = "4", optional = true }
 
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。
@@ -252,7 +261,13 @@ wildcard_dependencies = "deny"
 # 改 abort 会破坏「单次工具 panic 不拖垮整个会话」的设计。
 [profile.release]
 opt-level = 3
-lto = "fat"
+# Thin LTO 替代 fat:fat 在 ubuntu 16GB runner 上编译 codewhale-tui + tauri 全图
+# 会 link 越线被 SIGTERM(merge_group run 实证)。thin 内存峰值与耗时远低于 fat,
+# 运行时优化损失可忽略(官方:大型项目 thin 常优于 fat)。
+# 注:cargo 在 lto="thin" 时给依赖 crate 传 -C linker-plugin-lto(生成 LLVM bitcode,
+# 把跨 crate LTO 推迟到 link 阶段),故 release 构建 link 阶段必须用支持 LLVM bitcode
+# 的链接器(lld);release-packages 的 Linux 发布 job 已注入 -fuse-ld=lld。
+lto = "thin"
 codegen-units = 1
 # macOS 27+ 发布链路会注入 CARGO_PROFILE_RELEASE_STRIP=none 绕过 dyld 对齐 bug,
 # 本设置主要作用于 Linux deb / Windows MSI 产物。
@@ -264,7 +279,7 @@ incremental = false
 # 专为 Release 测试/CI 用的轻量 profile:不 LTO、不禁 incremental,编译快但仍走 release 优化。
 # mac-build.yml 的编译冒烟与 universal bundle 冒烟均用此 profile,
 # 两者产物可互相复用(同 profile 同 target dir),避免 CI 里两套 profile 重复编译全图。
-# 真正发版的 fat-LTO 产物由 scripts/release-macos.sh(走真 --release)产出。
+# 真正发版的 thin-LTO 产物由 scripts/release-macos.sh(走真 --release)产出。
 [profile.release-fast]
 inherits = "release"
 lto = false

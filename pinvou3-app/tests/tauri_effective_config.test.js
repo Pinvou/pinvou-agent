@@ -123,6 +123,17 @@ assert.deepEqual(
   [linuxStartupOverlay, explicitOverlay],
   "explicit Linux dev overlays must override the automatic cold-start overlay",
 );
+const linuxKnowledgeHostDevOverlay = JSON.stringify({
+  bundle: { resources: { "target/knowledge-host-dev/": "runtime/knowledge-host" } },
+});
+assert.deepEqual(
+  configSpecs(prepareTauriArgs(["dev", "-c", explicitOverlay], {
+    platform: "linux",
+    additionalConfigs: [linuxKnowledgeHostDevOverlay],
+  })),
+  [linuxStartupOverlay, linuxKnowledgeHostDevOverlay, explicitOverlay],
+  "Linux dev host resources must be injected before caller overrides",
+);
 assert.deepEqual(
   prepareTauriArgs(["dev"], { platform: "darwin" }),
   ["dev", "--config", platformConfigPath("darwin")],
@@ -182,15 +193,17 @@ assert.doesNotMatch(
   "release build must not rely on a globally installed Vite binary",
 );
 assert.match(linux.build.beforeBundleCommand, /require-wrapper\.js bundle/);
-assert.ok(linux.bundle.resources["resources/common/web-template/"]);
 assert.equal(linux.bundle.resources["resources/platforms/linux/asr/"], "runtime/asr");
+assert.equal(
+  linux.bundle.resources["resources/platforms/linux/knowledge-host/"],
+  "runtime/knowledge-host",
+);
 assert.equal(
   linux.bundle.resources["resources/platforms/linux/codex-bridge/"],
   "runtime/codex-bridge",
 );
 const linuxManifest = buildResourceManifest(linux, { platform: "linux" });
 assert.ok(linuxManifest.resourceFileCount > 0);
-assert.ok(linuxManifest.files.some((file) => file.destination.startsWith("web-template/")));
 assert.ok(linuxManifest.files.some((file) => file.destination.startsWith("runtime/asr/")));
 assert.ok(
   linuxManifest.files.some((file) => file.destination.startsWith("runtime/codex-bridge/")),
@@ -227,7 +240,6 @@ assert.equal(
 
 const macos = composeEffectiveConfig([platformConfigPath("darwin")]).effectiveConfig;
 assert.deepEqual(macos.bundle.targets, ["app", "dmg"]);
-assert.ok(macos.bundle.resources["resources/common/web-template/"]);
 assert.equal(
   macos.bundle.resources["resources/platforms/macos/codex-bridge/"],
   "runtime/codex-bridge",

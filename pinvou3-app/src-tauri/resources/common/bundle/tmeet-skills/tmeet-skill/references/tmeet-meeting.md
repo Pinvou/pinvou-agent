@@ -4,6 +4,31 @@
 
 时间参数格式：`2026-03-12T14:00:00+08:00` 或 `2026-03-12T14:00+08:00`（必须包含时区）。
 
+## 目录
+
+- [查询命令选择准则](#查询命令选择准则)
+- [create — 创建会议](#create--创建会议)
+- [update — 更新会议](#update--更新会议)
+- [cancel — 取消会议](#cancel--取消会议)
+- [get — 获取会议详情](#get--获取会议详情)
+- [list — 获取待开始/进行中的会议列表](#list--获取待开始进行中的会议列表)
+- [list-ended — 获取已结束会议列表](#list-ended--获取已结束会议列表)
+- [search — 搜索会议](#search--搜索会议)
+- [invitees-list — 获取会议受邀者](#invitees-list--获取会议受邀者)
+- [invitees-add — 添加受邀成员](#invitees-add--添加受邀成员)
+- [invitees-remove — 移除受邀成员](#invitees-remove--移除受邀成员)
+- [invitees-replace — 替换受邀成员列表](#invitees-replace--替换受邀成员列表)
+- [常见错误](#常见错误)
+- [参考](#参考)
+
+---
+
+## 查询命令选择准则
+
+> 📌 **仅时间范围** → `meeting list`（待开始/进行中）/ `meeting list-ended`（已结束）； **已知会议号 / 会议 ID** → `meeting get`； **含关键词**（主题 / 创建人 / 备注）→ `meeting search`（可与时间范围组合）。
+>
+> 完整规则（含“不得在 list 上硬塞关键词”、“不得把关键词当时间使用”、“歧义时先澄清”等）见 [SKILL.md 「查询命令选择准则」](../SKILL.md#查询命令选择准则list-vs-search)。
+
 ---
 
 ## create — 创建会议
@@ -92,6 +117,12 @@ tmeet meeting create \
 
 ## update — 更新会议
 
+> ⚠️ **写操作，执行前请确认用户意图。** 会议信息（时间、主题、入会限制、邀请列表、周期规则等）的变更会影响所有参会人，必须先向用户明确列出**将变更的字段及前后值**并获得确认后再执行。
+
+> ⚠️ **周期性会议注意**：修改周期性会议时，如果没有修改会议类型，**必须传 `--meeting-type 1`**，否则系统会将其修改为普通会议，导致周期规则丢失。
+
+> ⚠️ **邀请变更**：`--invitees` 与 `--invitees-type` 必须同时使用。`--invitees` 单次最多 100 人。
+
 ```bash
 # 修改会议主题
 tmeet meeting update --meeting-id "100000000" --subject "新主题"
@@ -149,10 +180,6 @@ tmeet meeting update \
   --audio-watermark=false \
   --auto-asr=false
 ```
-
-> ⚠️ **周期性会议注意**：修改周期性会议时，如果没有修改会议类型，**必须传 `--meeting-type 1`**，否则系统会将其修改为普通会议，导致周期规则丢失。
-
-> ⚠️ **邀请变更**：`--invitees` 与 `--invitees-type` 必须同时使用。`--invitees` 单次最多 100 人。
 
 ### 参数
 
@@ -229,6 +256,44 @@ tmeet meeting get --meeting-code "123456789"
 
 > `--meeting-id` 和 `--meeting-code` 必须提供其中一个。
 
+### 响应关键字段
+
+响应 `data.meeting_info_list[]` 中每条会议含录制相关字段：
+
+| 字段路径 | 说明 |
+|---------|------|
+| `records[]` | 录制列表（⚠️ 仅返回最近若干条，见下方分页限制） |
+| `records[].permission_status` | 权限状态（取值见下方决策规则） |
+| `records[].state` | 录制状态（如 `转码完成，可根据录制文件权限进行下一步`；录制/转码过程中会有相应中间状态） |
+| `records[].meeting_record_id` | 会议录制 ID |
+| `records[].record_file_id` | 录制文件 ID |
+| `records[].subject` | 录制标题 |
+| `records[].duration` | 录制时长 |
+| `records[].url` | 录制播放地址 |
+| `records[].type` | 录制类型（如 `云录制`） |
+| `records[].media_start_time` | 录制开始时间 |
+| `records[].record_file_count` | 录制文件数量 |
+| `records_total_count` | 录制总数（可能远大于 `records[]` 实际返回条数） |
+| `sub_meetings[]` | 子会议列表（仅周期性会议返回） |
+| `sub_meetings[].sub_meeting_id` | 子会议 ID |
+| `sub_meetings[].start_time` / `end_time` | 子会议起止时间 |
+| `sub_meetings[].status` | 子会议状态 |
+| `current_sub_meeting_id` | 当前/下一场子会议 ID（周期性会议） |
+| `has_more_sub_meeting` | 是否还有更多子会议（0=已全部返回） |
+
+> **注意**：`sub_meetings[]` 仅含 `sub_meeting_id` / `start_time` / `end_time` / `status` 四个基本字段，**不含 `records[]`**。周期性会议的录制统一在顶层 `records[]` 中返回；`records[]` 条目**不含 `sub_meeting_id`**，需按 `media_start_time` 与子会议的起止时间对齐归属到具体子会议。
+
+> **⚠️ records 分页限制**：`meeting get` **不支持分页参数**（无 `--page-token`/`--page-size`）。当 `records_total_count` 大于实际返回条数时（`records[]` 仅返回最近若干条），**无法通过 `meeting get` 翻页获取全部录制**。如需完整录制列表，按时间范围 `meeting list-ended` 分批查询（含 `permission_status`）；`record list` 虽支持分页，但只返回已有权限的录制、无 `permission_status`，仅适用于查自己的录制。
+
+> **`permission_status` 决策规则**：
+> - `can_view`：直接展示录制信息（标题、时长、播放地址），可继续获取智能纪要/转写
+> - `can_apply`：需申请权限，询问是否发起申请（走 `permission-apply-prepare` → 用户确认 → `permission-apply-commit` 流程）
+> - `closed`：告知用户录制已被关闭，无法查看
+> - `deleted`：告知用户录制已被删除，无法查看
+> - `password_required`：告知用户需要密码，请用户提供密码后重试
+
+> **`--compact` 不影响 `permission_status`**：启用 `--compact` 时 `records[]` 仍保留 `permission_status` 及全部字段，可放心使用。
+
 ---
 
 ## list — 获取待开始/进行中的会议列表
@@ -284,15 +349,76 @@ tmeet meeting list-ended \
 
 | 参数 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
-| `--start <time>` | 否 | — | 查询起始时间（ISO 8601，含时区） |
-| `--end <time>` | 否 | — | 查询结束时间（ISO 8601，含时区） |
+| `--start <time>` | 否 | — | 查询起始时间（ISO 8601，含时区）。**与 `--end` 的区间不得超过 90 天**，超出返回 `190004` |
+| `--end <time>` | 否 | — | 查询结束时间（ISO 8601，含时区）。**与 `--start` 的区间不得超过 90 天**，超出返回 `190004` |
 | `--page-token <token>` | 否 | — | 分页游标，首页不传；后续翻页传入上一次响应的 `next_page_token` |
 | `--page-size <n>` | 否 | `30` | 每页数量，默认 30，最大 30 |
 | `--page <n>` | 否 | — | ⚠️ **已弃用**：页码（从 1 开始），请改用 `--page-token` |
 
+> **⚠️ 90 天区间上限**：`--start` 与 `--end` 的跨度**超过 90 天时返回 `190004`**，需查更长时间范围时，**主动拆成多个 ≤90 天的区间顺序查询**，不要先撞错误再拆。拆段时相邻区间的端点应连续（前段 `--end` = 后段 `--start`），避免漏查。
+
+### 响应关键字段
+
+`meeting list-ended` 的响应结构与 `meeting get` 一致，`meeting_info_list[].records[]` 同样含 `permission_status` / `state` / `record_file_id` / `url` 等字段。**批量查询录制时无需逐场调 `meeting get`，一步获取。**
+
+> **与 `record list` 的区别**：`record list` 返回 `record_meetings[]`，**不含顶层 `permission_status` / `url`**（`record_file_id` 不在顶层，仅在部分条目的 `record_files[]` 内）；`list-ended` 返回 `meeting_info_list[].records[]`，每条**含** `permission_status` / `record_file_id` / `url`。需权限状态时用 `list-ended`，找用户已有权限的录制用 `record list`。
+
+> **分页**：当 `has_more` 为 `true` 或 `next_page_token` 非空时，使用 `--page-token` 翻页获取完整列表。首次查询不传 `--page-token`，翻页时传入上一次响应的 `next_page_token`。`meeting list-ended` 支持 `--page-token` / `--page-size` 分页参数（注意：`meeting get` **不支持**分页参数）。
+
+---
+
+## search — 搜索会议
+
+按关键词、会议号、时间范围等条件搜索会议。所有过滤参数均为可选，可任意组合。**当用户带关键词（会议主题/创建人/备注）查会议时用本命令，而非在 `list` 上硬塞关键词。**
+
+```bash
+# 按主题关键词搜索
+tmeet meeting search --query "周例会" --query-field subject
+
+# 按创建者昵称搜索
+tmeet meeting search --query "张三" --query-field creator
+
+# 按会议号精确搜索
+tmeet meeting search --meeting-code "931945029"
+
+# 按时间范围搜索
+tmeet meeting search \
+  --start "2026-04-01T00:00+08:00" \
+  --end "2026-04-30T23:59+08:00"
+
+# 关键词 + 时间范围组合
+tmeet meeting search \
+  --query "项目评审" --query-field subject \
+  --start "2026-04-01T00:00+08:00" \
+  --end "2026-04-30T23:59+08:00"
+
+# 翻下一页
+tmeet meeting search \
+  --query "项目评审" \
+  --page-token "<next_page_token>" --page-size 30
+```
+
+### 参数
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `--query <text>` | string | 否 | — | 搜索关键词 |
+| `--query-field <f>` | string | 否 | `all` | `--query` 的搜索字段：`subject`-会议主题；`creator`-创建者昵称/备注名；`note`-用户对会议的备注；`all`-搜索所有字段 |
+| `--meeting-code <code>` | string | 否 | — | 按会议号过滤（精确匹配，仅数字，无短横线） |
+| `--start <time>` | string | 否 | — | 搜索时间窗下限（ISO 8601）。匹配条件：会议预约开始时间、实际开始时间或当前用户加入时间任一落在窗口内 |
+| `--end <time>` | string | 否 | — | 搜索时间窗上限（ISO 8601），语义同上 |
+| `--page-token <token>` | string | 否 | — | 分页游标，首页不传；翻页时传入上一次响应的 `next_page_token` |
+| `--page-size <n>` | int | 否 | `30` | 每页大小，默认 30，最大 30 |
+
+> **`meeting search` vs `record search` 的分流**：按**会议级线索**（会议主题 / 创建人 / 会议号）找会议或其录制 → `meeting search` / `meeting get`；按**录制内容**检索（转写原文 / 纪要关键词）→ `record search`（见 [`tmeet-record.md`](tmeet-record.md)）。
+
 ---
 
 ## invitees-list — 获取会议受邀者
+
+> ⚠️ **适用场景**：获取会议已邀请用户名单。本命令仅会议创建者可调用，若收到相关提示，无需重试直接告知用户。
+
+> ⚠️ **成员回显格式（强约束）**：向用户展示受邀成员列表时，每一名成员**必须**严格遵循 [SKILL.md 「响应处理规则」](../SKILL.md#响应处理规则)中「成员回显格式」，即按 `姓名（<标识>）` 的格式回显（标识从 `部门` / `职位` / `open_id` 中任选一项，优先级 `部门` > `职位` > `open_id`）；**严禁**用 `open_id` / `ms_open_id` / `userid` / 邮箱前缀 / 花名 替代姓名。
 
 ```bash
 # 获取会议受邀者列表
@@ -318,8 +444,11 @@ tmeet meeting invitees-list \
 
 ## invitees-add — 添加受邀成员
 
-> ⚠️ **写操作，执行前请确认用户意图。被邀请者会收到会议通知。**
-> ⚠️ **成功后必须按本文档末尾《成员变更后的回复模板》输出结果；「已邀请成员」**仅限展示通讯录姓名**，严禁直接展示 `open_id` / `userid` / `ms_open_id` / 花名 / 邮箱前缀等任何内部标识。
+> ⚠️ **高风险写操作（被邀请者会收到会议通知）：执行前必须按 [SKILL.md 「响应处理规则」](../SKILL.md#响应处理规则)中「受邀人管理类写操作的二次确认模板」向用户展示并获得明确确认。**
+
+> ⚠️ **适用场景**：本命令仅会议创建者在会议开始前可调用，若收到相关提示，无需重试直接告知用户。
+
+> ⚠️ **成功后按 [SKILL.md 「响应处理规则」](../SKILL.md#响应处理规则)中「会议成员变更操作的回复模板」输出结果**。
 
 向已存在的会议中追加受邀成员。受邀成员通过用户 `open_id` 指定，可通过 `contact search` 命令查询获得。
 
@@ -347,8 +476,11 @@ tmeet meeting invitees-add \
 
 ## invitees-remove — 移除受邀成员
 
-> ⚠️ **写操作，执行前请确认用户意图。**
-> ⚠️ **成功后必须按本文档末尾《成员变更后的回复模板》输出结果；「已邀请成员」**仅限展示通讯录姓名**，严禁直接展示 `open_id` / `userid` / `ms_open_id` / 花名 / 邮箱前缀等任何内部标识。
+> ⚠️ **高风险写操作：执行前必须按 [SKILL.md 「响应处理规则」](../SKILL.md#响应处理规则)中「受邀人管理类写操作的二次确认模板」向用户展示并获得明确确认。**
+
+> ⚠️ **适用场景**：本命令仅会议创建者在会议开始前可调用，若收到相关提示，无需重试直接告知用户。
+
+> ⚠️ **成功后按 [SKILL.md 「响应处理规则」](../SKILL.md#响应处理规则)中「会议成员变更操作的回复模板」输出结果**。
 
 从已存在的会议中移除指定的受邀成员。
 
@@ -369,8 +501,11 @@ tmeet meeting invitees-remove \
 
 ## invitees-replace — 替换受邀成员列表
 
-> ⚠️ **高风险写操作：会以传入的列表整体覆盖当前受邀成员列表，未在 `--invitees` 中的成员会被移除。执行前必须向用户明确列出最终列表并获得确认。**
-> ⚠️ **成功后必须按本文档末尾《成员变更后的回复模板》输出结果；「已邀请成员」**仅限展示通讯录姓名**，严禁直接展示 `open_id` / `userid` / `ms_open_id` / 花名 / 邮箱前缀等任何内部标识。
+> ⚠️ **高风险写操作（以传入的列表整体覆盖当前受邀成员列表，未在 `--invitees` 中的成员会被移除）：执行前必须按 [SKILL.md 「响应处理规则」](../SKILL.md#响应处理规则)中「受邀人管理类写操作的二次确认模板」向用户展示最终完整列表并获得明确确认。**
+
+> ⚠️ **适用场景**：本命令仅会议创建者在会议开始前可调用，若收到相关提示，无需重试直接告知用户。
+
+> ⚠️ **成功后按 [SKILL.md 「响应处理规则」](../SKILL.md#响应处理规则)中「会议成员变更操作的回复模板」输出结果**。
 
 ```bash
 tmeet meeting invitees-replace \
@@ -387,26 +522,6 @@ tmeet meeting invitees-replace \
 
 ---
 
-## 成员变更后的回复模板（适用于 invitees-add / invitees-remove / invitees-replace）
-
-以上三个命令成功执行后，**必须**按下列模板回复用户，**字段顺序固定、不得增删**：
-
-- **会议主题**：<subject>
-- **会议时间**：<start> ~ <end>（含时区）
-- **会议号**：<meeting_code>（严禁展示 meeting_id）
-- **入会链接**：<join_url>
-- **已邀请成员**：<姓名1>、<姓名2>、…
-
-### 「已邀请成员」展示规则（强约束）
-
-1. **必须以通讯录中的姓名展示**（如 `张三`）；**严禁**直接展示 `open_id` / `userid` / `ms_open_id` / 花名（如 `zhangsan`） / 邮箱前缀等任何内部标识。
-2. **信息不足时的兑底动作**：若手头没有 `open_id → 姓名` 映射，先调用 `meeting invitees-list --meeting-id <id>` 拉取变更后的完整受邀列表，再依次使用 `contact search`（仅在该场景下允许，遵循 SKILL.md 中的「通讯录搜索仅限特定场景使用」规则）将每个 `open_id` 解析为姓名后再回复。
-3. **解析失败的兑底**：某个 `open_id` 无法解析为姓名时，标注为 `未知成员`，**禁止**回退到打印 `open_id` 本身。
-4. **仅在用户明确要求**“展示 ID / 原始字段”时，才可附带展示 `open_id`。
-5. **基础字段补齐**：会议主题 / 会议号 / 入会链接 若变更接口未返回，使用 `meeting get --meeting-id <id>` 补齐，不得遗漏字段或用 `-` / `N/A` 占位。
-
----
-
 ## 常见错误
 
 | 错误现象 | 原因 | 解决方案 |
@@ -414,6 +529,15 @@ tmeet meeting invitees-replace \
 | `--subject is required` | 缺少必填参数 | 补充 `--subject` |
 | `--start format error` | 时间格式不合法（如缺少时区） | 改用 `2026-03-12T14:00:00+08:00` 格式 |
 | `--meeting-id is required` | 缺少必填参数 | 补充 `--meeting-id` |
+| 执行`invitees-list / invitees-add / invitees-remove / invitees-replace`命令报`1000009042 无权限操作` | 操作者非会议创建者 | 仅会议创建者可调用 |
+| 执行`invitees-list / invitees-add / invitees-remove / invitees-replace`命令报`1000190004 meeting_id必须是整型` | meeting-id参数非法 | 参数非法，请检查meeting-id是否正确 |
+| 执行`invitees-list / invitees-add / invitees-remove / invitees-replace`命令报`1000190457 会议不存在, 请核对meetingId` | meeting-id没有对应会议 | 会议不存在，请检查meeting-id是否正确 |
+| 执行`invitees-add / invitees-replace`报会议室已满 | 会议人数已达上限 | 请前往腾讯会议客户端/APP进行扩容 |
+| 执行`invitees-remove`报人员不在"已邀请名单中" | 操作对象不在已邀请名单中 | 无需继续操作 |
+| 执行`invitees-add / invitees-remove / invitees-replace`命令报open_id非法 | 参数非法 | 请检查openid是否正确 |
+| `500273 会议已开始，无法修改受邀人` | 会议不存在，无法修改受邀人 | 会议不存在，无法修改受邀人 |
+| `500274 会议已取消，无法修改受邀人` | 会议已取消，无法修改受邀人 | 会议已取消，无法修改受邀人 |
+| `500275 会议不存在，无法修改受邀人` | 会议已取消，无法修改受邀人 | 会议已取消，无法修改受邀人 |
 
 ## 参考
 

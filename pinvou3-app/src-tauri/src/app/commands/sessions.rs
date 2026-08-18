@@ -28,7 +28,7 @@ pub(super) fn ensure_chat_session(
 ) -> Result<(), String> {
     match store
         .session_kind(id)
-        .map_err(|error| format!("{action}({id}): {error:?}"))?
+        .map_err(|error| format!("{action}({id}): {error:#}"))?
     {
         SessionKind::Chat => Ok(()),
         SessionKind::ScheduledRun => Err(format!(
@@ -131,24 +131,19 @@ pub async fn clear_session() -> Result<(), String> {
 
 /// 列出所有 session 元数据，按 updated_at 倒序。前端历史面板渲染用。
 /// 返回 SessionMetadata 数组（id/title/时间/token/model/workspace 等字段）。
-/// [2026-06-04 白浪:chat 与工作流彻底分开] 过滤工作流宿主 session(绑定带 project_dir
-/// 即是,bindings 开机回灌持久化)——它们仅作 SubAgent 运行时,不进 chat 侧栏。
 /// 代码会话(ACP 与品悟原生)同样不进 chat 侧栏,由 list_codex_acp_sessions 单独提供。
 #[tauri::command]
 pub async fn list_sessions(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<Vec<SessionListItem>, String> {
-    let mut metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
+    let mut metas = store.list().map_err(|e| format!("list_sessions: {e:#}"))?;
     metas.retain(|m| {
         matches!(store.session_kind(&m.id), Ok(SessionKind::Chat))
             && !acp_pool.is_acp_metadata(m)
             // 原生代码会话（code_session 绑定）归属代码列表，不进 chat 侧栏
             && !acp_pool.agents().is_code_session(&m.id)
             && !store.is_hidden(&m.id)
-            && store
-                .active_skill(&m.id)
-                .is_none_or(|b| b.project_dir.is_none())
     });
     Ok(metas
         .into_iter()
@@ -304,18 +299,13 @@ pub async fn list_archived_sessions(
 ) -> Result<Vec<HiddenSessionListItem>, String> {
     let mut metas = store
         .list()
-        .map_err(|e| format!("list_archived_sessions: {e:?}"))?;
+        .map_err(|e| format!("list_archived_sessions: {e:#}"))?;
     metas.extend(
         store
             .list_scheduled()
-            .map_err(|e| format!("list_archived_sessions: {e:?}"))?,
+            .map_err(|e| format!("list_archived_sessions: {e:#}"))?,
     );
-    metas.retain(|m| {
-        store.is_hidden(&m.id)
-            && store
-                .active_skill(&m.id)
-                .is_none_or(|b| b.project_dir.is_none())
-    });
+    metas.retain(|m| store.is_hidden(&m.id));
     metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(metas
         .into_iter()
@@ -343,7 +333,7 @@ pub(super) fn create_session_record(
     let workspace = pool.bridge.workspace.clone();
     let session = store
         .create_new(model, model_id, workspace)
-        .map_err(|e| format!("create_session: {e:?}"))?;
+        .map_err(|e| format!("create_session: {e:#}"))?;
     if set_active {
         store.set_active(Some(session.metadata.id.clone()));
     }
@@ -385,7 +375,7 @@ pub async fn load_session(
 ) -> Result<DesktopSavedSession, String> {
     let session = store
         .load(&id)
-        .map_err(|e| format!("load_session({id}): {e:?}"))?;
+        .map_err(|e| format!("load_session({id}): {e:#}"))?;
     if set_active.unwrap_or(true) {
         store.set_active(Some(id.clone()));
     }
@@ -393,7 +383,7 @@ pub async fn load_session(
     // 有自己独立的 engine(已起则持有自己的上下文、还在跑就继续跑;未起则下次 chat 时
     // lazy spawn 并注水这里返回的 messages)。本命令只切 active 指针 + 返回 messages 给前端渲染。
     let revision = crate::features::sessions::transcript_revision(&session.messages)
-        .map_err(|e| format!("load_session({id}) revision: {e:?}"))?;
+        .map_err(|e| format!("load_session({id}) revision: {e:#}"))?;
     Ok(DesktopSavedSession {
         session,
         transcript_revision: revision,
@@ -412,7 +402,7 @@ pub async fn delete_session(
 ) -> Result<(), String> {
     let result = match store
         .session_kind(&id)
-        .map_err(|e| format!("delete_session({id}): {e:?}"))?
+        .map_err(|e| format!("delete_session({id}): {e:#}"))?
     {
         SessionKind::Chat => {
             acp_pool.evict(&id).await;
@@ -454,7 +444,7 @@ pub async fn rename_session(
 ) -> Result<(), String> {
     store
         .set_title(&id, title)
-        .map_err(|e| format!("rename_session({id}): {e:?}"))?;
+        .map_err(|e| format!("rename_session({id}): {e:#}"))?;
     emit_session_event(&app, "session:list_changed", &id, "renamed");
     Ok(())
 }
@@ -470,7 +460,7 @@ pub async fn set_session_pinned(
     // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
     store
         .load(&id)
-        .map_err(|e| format!("set_session_pinned({id}): {e:?}"))?;
+        .map_err(|e| format!("set_session_pinned({id}): {e:#}"))?;
     store.set_pinned(&id, pinned);
     let action = if pinned { "pinned" } else { "unpinned" };
     emit_session_event(&app, "session:list_changed", &id, action);
@@ -488,7 +478,7 @@ pub async fn set_session_archived(
     // 先 load 一次确认 session 存在,避免收起表残留无效 id。
     store
         .load(&id)
-        .map_err(|e| format!("set_session_archived({id}): {e:?}"))?;
+        .map_err(|e| format!("set_session_archived({id}): {e:#}"))?;
     store.set_hidden(&id, archived);
     let action = if archived { "archived" } else { "restored" };
     emit_session_event(&app, "session:list_changed", &id, action);
@@ -512,7 +502,7 @@ pub async fn save_session_messages(
     ensure_chat_session(&store, &id, "save_session_messages")?;
     store
         .update_messages(&id, messages)
-        .map_err(|e| format!("save_session_messages({id}): {e:?}"))
+        .map_err(|e| format!("save_session_messages({id}): {e:#}"))
 }
 
 /// 落盘 session 的产物 paths 列表。前端跟踪 File.write / File.edit 调用后调用,
@@ -527,7 +517,7 @@ pub async fn save_session_artifacts(
     ensure_chat_session(&store, &id, "save_session_artifacts")?;
     store
         .update_artifacts(&id, paths)
-        .map_err(|e| format!("save_session_artifacts({id}): {e:?}"))
+        .map_err(|e| format!("save_session_artifacts({id}): {e:#}"))
 }
 
 fn normalize_pinvou_scene_events(events: serde_json::Value) -> Result<serde_json::Value, String> {

@@ -1,19 +1,10 @@
-//! pinvou3-app Tauri 后端入口（Week 1 骨架）。
-//!
-//! 启动流程：
-//!  1. 注册 `chat` 命令（前端 invoke 入口）
-//!  2. setup 钩子里异步 spawn CodeWhale Engine + 启动事件转发 task
-//!  3. 把 AppEngine 放进 Tauri State，命令通过 `State<AppEngine>` 拿
-//!
-//! Engine 事件（MessageDelta / ToolCallStarted / ToolCallComplete / TurnComplete）
-//! 由 `engine::spawn_event_forwarder` 转译成 Tauri 事件推到前端。
+//! Pinvou Agent Tauri 后端入口。
 
 mod app;
 mod core;
 pub mod features;
 pub mod platform;
-// L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
-// 暴露注入收口函数 + file_ingest。
+
 pub use app::commands::attachments::build_message_with_attachments;
 
 use tauri::Manager;
@@ -27,69 +18,11 @@ use crate::features::{
     monitor::MonitorState,
     pet::{pet_window, selected_pet},
     remote_control::RemoteControlManager,
+    remote_knowledge::RemoteKnowledgeService,
     scheduled::tasks as scheduled_tasks,
     sessions::SessionStore,
 };
 use crate::platform::{notifications, startup};
-
-/// 把三省六部「网页类」预置模板 seed 到 `~/.pinvou3/web-template`（工部提示词硬编码此路径,
-/// 要在副本里 `npm run build` 写盘,而随 deb 的 resource_dir 是只读安装目录,故首次启动复制一份)。
-/// 已就位则跳过；用「临时目录 + 原子 rename」防半截复制留下残缺模板。失败只警告——网页类差事
-/// 不可用,但不连累其余工作流。
-fn seed_web_template(src: Option<std::path::PathBuf>) {
-    let dst = crate::platform::paths::web_template_dir();
-    if dst.join("package.json").exists() {
-        return; // 已就位
-    }
-    let Some(src) = src else {
-        eprintln!(
-            "[pinvou3-app] web-template 源缺失(resource_dir / PINVOU3_WEB_TEMPLATE_DIR 都没找到),网页类差事不可用"
-        );
-        return;
-    };
-    if let Some(parent) = dst.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let tmp = dst.with_file_name("web-template.seeding");
-    let _ = std::fs::remove_dir_all(&tmp); // 清上次中断的残留
-    match copy_dir_all(&src, &tmp).and_then(|()| std::fs::rename(&tmp, &dst)) {
-        Ok(()) => eprintln!("[pinvou3-app] web-template seeded -> {}", dst.display()),
-        Err(e) => {
-            eprintln!("[pinvou3-app] web-template seed 失败: {e}");
-            let _ = std::fs::remove_dir_all(&tmp);
-        }
-    }
-}
-
-/// 递归复制目录,保留 symlink(node_modules/.bin/* 是相对 symlink,原样重建才不悬空)。
-fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ft = entry.file_type()?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if ft.is_symlink() {
-            let target = std::fs::read_link(&from)?;
-            #[cfg(unix)]
-            {
-                // 已存在的目标(重试场景)先删,symlink 才能重建
-                let _ = std::fs::remove_file(&to);
-                std::os::unix::fs::symlink(&target, &to)?;
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = target;
-                std::fs::copy(&from, &to)?;
-            }
-        } else if ft.is_dir() {
-            copy_dir_all(&from, &to)?;
-        } else {
-            std::fs::copy(&from, &to)?;
-        }
-    }
-    Ok(())
-}
 
 const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     // —— vLLM 后端：BASE_URL/MODEL/API_KEY 已在 bridge/mod.rs 有默认常量，
@@ -98,15 +31,17 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     //   （env 优先级高于 preset），在「添加模型」多 provider 方案下钉死路由——
     //   切到 kimi/openai/qwen 等仍被当 vllm，且设置页误报「环境变量已锁定 provider」。
     //   provider 现由 active_model.preset 决定（LocalVllm→vllm 默认仍成立）。
-    ("DEEPSEEK_REASONING_EFFORT", "off"),
     ("DEEPSEEK_ALLOW_INSECURE_HTTP", "1"),
     ("DEEPSEEK_FORCE_HTTP1", "1"),
-    ("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576"),
+    // 不再注入 DEEPSEEK_MAX_OUTPUT_TOKENS：它会把所有模型（含云端）的输出上限
+    // 钉死在 24576。底座对 ≥500K 窗口模型默认 64K（API_MAX_OUTPUT_TOKENS），
+    // 云端模型应落到底座兜底；本地 vLLM 的 24K 预算由 route_limits_for_model
+    // 的 is_local_vllm 分支显式携带，不依赖该 env。
     // 与 CodeWhale 的 stream_chunk_timeout 默认值保持一致。
     ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300"),
     // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。
-    // 本地 GB10 大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent
-    // (真机实锤:三省六部 libu~1 首发死于 45s,重派才过)。280s 与
+    // 本地 GB10 大上下文 SubAgent 请求首 token TTFT 偶发 >45s → 误杀子 agent。
+    // 280s 与
     // ~/.deepseek config 的 subagent api_timeout=300 对齐(步级超时须更大)。
     ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
 ];
@@ -344,15 +279,13 @@ pub fn run() {
                 }
             }
 
-            // run 实体化一次性迁移：必须在 SessionStore boot **之前**跑
-            // （迁移会动 _skill_bindings.json 和 sessions/ 目录，boot 之后再动
-            // 会跟内存态打架）。失败只警告不 panic——app 仍可用，下次 boot 续跑。
-            startup::mark("workflow_migrate:start");
-            if let Err(e) = crate::features::workflow::workflow_migrate::migrate_if_needed() {
-                eprintln!("[pinvou3-app] workflow migrate failed (will retry next boot): {e}");
-                startup::mark_with_detail("rust", "workflow_migrate:error", &e.to_string());
+            // 必须早于 SessionStore boot：归档退役宿主并清除绑定，避免内存态与磁盘态打架。
+            startup::mark("retired_features:start");
+            if let Err(error) = crate::features::retirement::retire_removed_features() {
+                eprintln!("[pinvou3-app] retired feature cleanup failed (will retry next boot): {error}");
+                startup::mark_with_detail("rust", "retired_features:error", &error.to_string());
             }
-            startup::mark("workflow_migrate:done");
+            startup::mark("retired_features:done");
 
             // 多对话历史 store：用 ~/.pinvou3/sessions/ 隔离 deepseek-tui 全局目录。
             // 必须先 boot 这个，engine forwarder 需要它跟踪 active session 的 mode_state
@@ -360,7 +293,6 @@ pub fn run() {
             startup::mark("session_store:start");
             let session_store = match SessionStore::boot_for_process_startup() {
                 Ok(store) => {
-                    store.load_skill_bindings();
                     store.load_session_models();
                     store.load_pinned_sessions();
                     store.load_hidden_sessions();
@@ -368,7 +300,7 @@ pub fn run() {
                     Some(store)
                 }
                 Err(e) => {
-                    eprintln!("[pinvou3-app] session store boot failed: {e:?}");
+                    eprintln!("[pinvou3-app] session store boot failed: {e:#}");
                     None
                 }
             };
@@ -394,14 +326,15 @@ pub fn run() {
             });
             // 原生代码会话的执行根解析需要共享 AcpPool 持有的 SessionAgentStore
             // （多实例各自读盘，只有这份 clone 与 AcpPool 同一份 Arc）。
-            let code_session_agents =
+            let (code_session_agents, acp_pool_for_capabilities) =
                 match crate::features::codex_acp::AcpPool::new(handle.clone(), store_for_engine.clone())
                 {
                     Ok(pool) => {
                         let agents = pool.agents().clone();
+                        let capability_pool = pool.clone();
                         handle.manage(pool);
                         eprintln!("[pinvou3-app] Codex ACP pool ready (lazy spawn per session)");
-                        agents
+                        (agents, capability_pool)
                     }
                     Err(error) => {
                         panic!("failed to init Codex ACP pool: {error:#}");
@@ -427,7 +360,11 @@ pub fn run() {
                     let kb_usable = app
                         .try_state::<knowledge::KnowledgeService>()
                         .map(|service| service.has_indexed_content() && service.semantic_ready())
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                        || app
+                            .try_state::<RemoteKnowledgeService>()
+                            .map(|service| service.has_connections())
+                            .unwrap_or(false);
                     if !kb_usable {
                         tools.push("kb_search".to_string());
                         tools.push("kb_open_source".to_string());
@@ -457,6 +394,11 @@ pub fn run() {
                         let agents = code_session_agents.clone();
                         move |session_id: &str| agents.is_code_session(session_id)
                     }));
+                    pool.bridge
+                        .set_external_acp_session_predicate(std::sync::Arc::new({
+                            let acp_pool = acp_pool_for_capabilities.clone();
+                            move |session_id: &str| acp_pool.is_acp(session_id)
+                        }));
                     // sessions feature 自己的 code 判定（mode 默认值解析 + 仅 code
                     // 持久化），与 bridge 共用同一份 SessionAgentStore 闭包。
                     store_for_engine.set_code_session_predicate(std::sync::Arc::new({
@@ -482,7 +424,7 @@ pub fn run() {
                             eprintln!("[pinvou3-app] scheduled tasks runtime ready");
                         }
                         Err(e) => {
-                            eprintln!("[pinvou3-app] scheduled tasks runtime init failed: {e:?}");
+                            eprintln!("[pinvou3-app] scheduled tasks runtime init failed: {e:#}");
                         }
                     }
                     handle.manage(pool);
@@ -496,7 +438,7 @@ pub fn run() {
                     }
                 }
                 Err(e) => {
-                    eprintln!("[pinvou3-app] failed to init engine pool: {e:?}");
+                    eprintln!("[pinvou3-app] failed to init engine pool: {e:#}");
                 }
             }
             startup::mark("engine_pool:done");
@@ -528,10 +470,6 @@ pub fn run() {
             // 飞书 / 企微共用,供 *_connect_begin / *_cancel 用。
             app.handle().manage(connector_cli::ConnectorConn::default());
 
-            // 工作流 Phase 可视化:skill 绑定挂在 SessionStore.mode_state 上,
-            // per-session 隔离(start_skill_session 命令负责新建 session + bind)。
-            // 不再需要全局 ActiveSkillStore。
-
             // File watcher: 监听 ~/.pinvou3/sessions/ 树,新文件 emit artifact:disk
             file_watcher::spawn(app.handle().clone(), bridge::paths::sessions_root());
             startup::mark("file_watcher:spawned");
@@ -562,36 +500,19 @@ pub fn run() {
                     app.handle().manage(svc);
                     eprintln!("[pinvou3-app] knowledge service ready");
                 }
-                Err(e) => eprintln!("[pinvou3-app] knowledge service init failed: {e:?}"),
+                Err(e) => eprintln!("[pinvou3-app] knowledge service init failed: {e:#}"),
             }
             startup::mark("knowledge_service:done");
 
-            // 三省六部「网页类」预置模板 seed(工部 `cp -r ~/.pinvou3/web-template ...` 的母版)。
-            // dev 走 env PINVOU3_WEB_TEMPLATE_DIR(run-dev.sh 注入 ~/models/web-template);prod 从
-            // 随 deb 的 resource_dir 容错三布局取(对齐上面 bge-m3 那段)。69M/2904 文件,放后台
-            // 线程复制,不阻塞启动；已就位则秒跳过。
-            {
-                let web_tpl_src = std::env::var_os("PINVOU3_WEB_TEMPLATE_DIR")
-                    .map(std::path::PathBuf::from)
-                    .filter(|d| d.join("package.json").exists())
-                    .or_else(|| {
-                        app.path().resource_dir().ok().and_then(|res| {
-                            [
-                                res.join("web-template"),
-                                res.join("resources/web-template"),
-                                res.join("resources").join("web-template"),
-                            ]
-                            .into_iter()
-                            .find(|d| d.join("package.json").exists())
-                        })
-                    });
-                std::thread::spawn(move || {
-                    startup::mark("web_template_seed:start");
-                    seed_web_template(web_tpl_src);
-                    startup::mark("web_template_seed:done");
-                });
+            match RemoteKnowledgeService::load(RemoteKnowledgeService::default_path()) {
+                Ok(service) => {
+                    app.handle().manage(service);
+                    eprintln!("[pinvou3-app] remote knowledge service ready");
+                }
+                Err(error) => {
+                    eprintln!("[pinvou3-app] remote knowledge service init failed: {error}")
+                }
             }
-
             // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
             pet_window::spawn_if_enabled(app.handle());
 
@@ -609,6 +530,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
             commands::behavior_telemetry::track_behavior_event,
+            commands::assistant_response::export_assistant_response,
+            commands::assistant_response::open_assistant_share_target,
             commands::startup::report_frontend_startup,
             commands::startup::reveal_startup_window,
             commands::connectors::refresh_connector_auth_gates,
@@ -669,6 +592,7 @@ pub fn run() {
             commands::settings::set_active_model,
             commands::settings::set_session_model,
             commands::settings::get_session_model_id,
+            commands::settings::get_image_input_capability,
             commands::codex::get_codex_acp_status,
             commands::codex::list_acp_agents,
             commands::codex::get_acp_agent_status,
@@ -710,6 +634,7 @@ pub fn run() {
             commands::codex::list_codex_workspace,
             commands::codex::search_codex_workspace,
             commands::codex::preview_codex_workspace_file,
+            commands::codex::open_codex_workspace_resource,
             commands::codex::get_codex_workspace_changes,
             commands::codex::get_codex_workspace_diff,
             commands::codex::open_codex_workspace_file,
@@ -717,6 +642,7 @@ pub fn run() {
             commands::codex::open_code_reader,
             commands::codex::take_code_reader_pending,
             commands::settings::test_model_connection,
+            commands::settings::test_image_input_capability,
             commands::settings::test_search_provider,
             commands::voice::transcribe_voice_audio,
             commands::voice::reset_microphone_permission,
@@ -778,7 +704,6 @@ pub fn run() {
             commands::remote_control::web_access_chat,
             commands::remote_control::web_access_save_session_messages_chunk,
             commands::remote_control::web_access_transcribe_voice_audio,
-            commands::remote_control::web_access_start_skill_session,
             commands::remote_control::web_access_read_artifact_chunk,
             commands::remote_control::web_access_update_settings,
             commands::remote_control::web_access_artifact_info,
@@ -787,11 +712,6 @@ pub fn run() {
             commands::remote_control::web_access_read_artifact_image_b64,
             commands::remote_control::web_access_read_artifact_thumbnail,
             commands::remote_control::web_access_render_artifact_visual,
-            commands::remote_control::web_access_list_deliverables,
-            commands::remote_control::web_access_get_role_prompt,
-            commands::remote_control::web_access_get_role_outputs,
-            commands::remote_control::web_access_get_role_logs,
-            commands::remote_control::web_access_get_gate_report,
             commands::connectors::set_disabled_connectors,
             commands::connectors::get_disabled_connectors,
             commands::connectors::set_disabled_skills,
@@ -819,7 +739,6 @@ pub fn run() {
             commands::memory::edit_last_turn,
             commands::artifacts::read_artifact_text,
             commands::artifacts::write_artifact_text,
-            commands::artifacts::list_deliverables,
             commands::artifacts::list_deliverable_index,
             commands::artifacts::artifact_info,
             commands::artifacts::render_artifact_visual,
@@ -859,39 +778,18 @@ pub fn run() {
             commands::interaction::get_mode_state,
             commands::interaction::get_code_permission_prefs,
             commands::interaction::confirm_code_yolo,
+            commands::interaction::get_mode_defaults,
+            commands::interaction::set_mode_default,
             commands::interaction::set_plan_mode_next,
             commands::interaction::exit_plan_to_yolo,
             commands::interaction::set_multi_agent_mode,
             commands::interaction::accept_plan,
             commands::interaction::discard_plan,
             commands::interaction::read_skill_body,
-            commands::workflows::list_skills_v2,
-            commands::workflows::read_skill_demo,
-            commands::workflows::start_skill_session,
-            commands::workflows::unbind_session_skill,
-            commands::workflows::list_workflows,
-            commands::workflows::start_workflow,
-            commands::workflows::kick_workflow,
-            commands::workflows::retry_workflow_role,
-            commands::workflows::get_role_prompt,
-            commands::workflows::get_role_outputs,
-            commands::workflows::get_role_logs,
-            commands::workflows::get_gate_report,
-            commands::workflows::save_project_config,
-            commands::workflows::save_agent_overrides,
-            commands::workflows::cancel_workflow_role,
-            commands::workflows::stop_workflow,
-            commands::workflows::approve_workflow_gate,
-            commands::workflows::reject_workflow_gate,
-            commands::workflows::get_workflow_state,
-            commands::workflows::find_resumable_run,
-            commands::workflows::get_session_active_skill,
-            commands::workflows::list_session_skill_bindings,
-            // 多智能体执行记录投影（与上方既有调度器无数据交集，见 docs/adr/0006-*）
+            // 多智能体执行记录投影。
             commands::multiagent::list_subagent_transcripts,
             commands::multiagent::read_subagent_transcript,
             commands::interaction::submit_user_input,
-            commands::interaction::add_run_materials,
             commands::interaction::cancel_user_input,
             commands::interaction::get_pending_user_inputs,
             commands::interaction::restart_engine,
@@ -958,10 +856,64 @@ pub fn run() {
             commands::knowledge::session_mounted_collection,
             commands::knowledge::session_mounted_collections,
             commands::knowledge::session_mounted_collections_snapshot,
+            commands::remote_knowledge::remote_kb_connections,
+            commands::remote_knowledge::remote_kb_request_join,
+            commands::remote_knowledge::remote_kb_probe_private_endpoint,
+            commands::remote_knowledge::remote_kb_request_join_confirmed,
+            commands::remote_knowledge::remote_kb_connection_identity,
+            commands::remote_knowledge::remote_kb_pending_joins,
+            commands::remote_knowledge::remote_kb_refresh_join,
+            commands::remote_knowledge::remote_kb_cancel_join,
+            commands::remote_knowledge::remote_kb_create_share,
+            commands::remote_knowledge::remote_kb_shares,
+            commands::remote_knowledge::remote_kb_stop_share,
+            commands::remote_knowledge::remote_kb_join_requests,
+            commands::remote_knowledge::remote_kb_approve_join_request,
+            commands::remote_knowledge::remote_kb_reject_join_request,
+            commands::remote_knowledge::remote_kb_model_status,
+            commands::remote_knowledge::remote_kb_download_model,
+            commands::remote_knowledge::remote_kb_devices,
+            commands::remote_knowledge::remote_kb_update_device,
+            commands::remote_knowledge::remote_kb_remove_device,
+            commands::remote_knowledge::remote_kb_trashed_collections,
+            commands::remote_knowledge::remote_kb_trashed_documents,
+            commands::remote_knowledge::remote_kb_permanently_delete_collection,
+            commands::remote_knowledge::remote_kb_permanently_delete_document,
+            commands::shared_knowledge_host::shared_kb_host_status,
+            commands::shared_knowledge_host::shared_kb_host_lan_endpoints,
+            commands::shared_knowledge_host::shared_kb_discover_nearby,
+            commands::shared_knowledge_host::shared_kb_host_install,
+            commands::shared_knowledge_host::shared_kb_host_upgrade,
+            commands::shared_knowledge_host::shared_kb_host_reconnect,
+            commands::shared_knowledge_host::shared_kb_host_set_owner_device,
+            commands::shared_knowledge_host::shared_kb_host_remove,
+            commands::shared_knowledge_host::shared_kb_host_backup,
+            commands::shared_knowledge_host::shared_kb_host_restore,
+            commands::remote_knowledge::remote_kb_remove_connection,
+            commands::remote_knowledge::remote_kb_collections,
+            commands::remote_knowledge::remote_kb_create_collection,
+            commands::remote_knowledge::remote_kb_update_collection,
+            commands::remote_knowledge::remote_kb_delete_collection,
+            commands::remote_knowledge::remote_kb_restore_collection,
+            commands::remote_knowledge::remote_kb_documents,
+            commands::remote_knowledge::remote_kb_document_statuses,
+            commands::remote_knowledge::remote_kb_discover_folder_files,
+            commands::remote_knowledge::remote_kb_upload_files,
+            commands::remote_knowledge::remote_kb_replace_document,
+            commands::remote_knowledge::remote_kb_delete_document,
+            commands::remote_knowledge::remote_kb_restore_document,
+            commands::remote_knowledge::remote_kb_download_document,
+            commands::remote_knowledge::remote_kb_search,
+            commands::remote_knowledge::session_mounted_remote_collections,
+            commands::remote_knowledge::session_add_mounted_remote_collection,
+            commands::remote_knowledge::session_set_mounted_remote_collection_enabled,
+            commands::remote_knowledge::session_remove_mounted_remote_collection,
             commands::marketplace::list_marketplace_skills,
             commands::marketplace::install_marketplace_skill,
             commands::marketplace::import_skill_package,
+            commands::marketplace::import_skill_package_bytes,
             commands::marketplace::uninstall_marketplace_skill,
+            commands::marketplace::bundle_readiness,
             commands::files::verify_upload,
         ]);
 
@@ -1071,55 +1023,109 @@ mod navigation_policy_tests {
 }
 
 #[cfg(test)]
-mod web_template_seed {
-    #[cfg(unix)]
-    use std::fs;
-    use std::path::PathBuf;
+mod release_env_defaults_guard {
+    /// PR #210 守卫：release/boot 不得重新注入 DEEPSEEK_MAX_OUTPUT_TOKENS。
+    /// 该 env 会被底座 effective_max_output_tokens() 优先读取，一旦回归会重新把
+    /// 所有模型（含云端）输出上限钉死 24576——正是本 PR 移除的根因。此守卫在
+    /// CHANGES_REQUESTED 后新增：clean env 云端落底座 64K 兜底的前提，就是
+    /// release 安装包启动路径（.deb 双击等）不再注入该变量。
+    ///
+    /// 两层检查（评审修正 2026-08-11）：
+    /// 1. 常量表本身不含这两个 key（防常量里重新出现）；
+    /// 2. 走**实际注入路径** `ensure_release_env`（run() 启动路径的 release env
+    ///    注入函数，无写盘副作用）后断言进程 env 仍无这两个 key——即使未来有人在
+    ///    注入函数里绕过常量表直接 set_var，这里也能抓到。
+    ///
+    /// 第三轮评审修正 2026-08-11：本测试此前直接删进程级 env 且不还原，未借 crate
+    /// 级唯一 ENV_LOCK（会与 bridge.rs 等 env 写测试并发竞态），也不还原
+    /// ensure_release_env 写入的 RELEASE_ENV_DEFAULTS / PATH / 平台 UI env（串行 CI
+    /// 下造成后续测试顺序依赖）。现改为：先取 ENV_LOCK 再全量快照 env，退出（含
+    /// panic）时按快照完整还原。bridge boot 侧的 env 注入源头由 bridge.rs
+    /// `forkguard_boot_env_must_not_pin_global_output_cap` 单独守卫（boot 不直接
+    /// 进单测：会 mutate PINVOU3_HOME 写盘 + 全量解包 bundle，见
+    /// `engine_config_workspace_follows_bridge_field` 注释）。
+    ///
+    /// 进程 env 全量快照：ensure_release_env 会 set RELEASE_ENV_DEFAULTS、重写 PATH、
+    /// Linux 上还会 set GDK_BACKEND 等 UI env——只有全量快照才能完整还原，且不随
+    /// 各常量表增删漂移。
+    ///
+    /// 第四轮评审修正（2026-08-12）：此前用 `String` + `std::env::vars()`——`vars()`
+    /// 对任何非 UTF-8 的合法环境变量值（POSIX 允许任意字节）会直接 panic，且 Drop 中
+    /// 的二次枚举同样 panic；测试断言失败展开 panic 期间再 panic 会中止整个测试进程。
+    /// 现改用 `OsString` + `vars_os()`，非 UTF-8 环境变量也能完整快照/还原。
+    struct EnvSnapshot(std::collections::HashMap<std::ffi::OsString, Option<std::ffi::OsString>>);
 
-    fn tmp_root(tag: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("pinvou3-wt-{tag}-{}", std::process::id()))
+    impl EnvSnapshot {
+        fn take() -> Self {
+            let mut map = std::collections::HashMap::new();
+            for (k, v) in std::env::vars_os() {
+                map.insert(k, Some(v));
+            }
+            // 显式记录"当前不存在"的 key，还原时统一按快照恢复原状（set / remove）。
+            for key in ["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"] {
+                map.entry(std::ffi::OsString::from(key)).or_insert(None);
+            }
+            Self(map)
+        }
     }
 
-    /// copy_dir_all 的关键不变量:递归复制文件 + **保留 symlink**。
-    /// web-template 的 node_modules/.bin/* 全是相对 symlink,被解引用成普通文件会撑爆体积
-    /// 且破坏 npm 可执行入口 → `npm run build` 失败。
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            for (k, v) in &self.0 {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+            // ensure_release_env 可能 set 了快照中原本不存在的 key（PATH 分支、Linux
+            // UI env 等）——全部移除，回到快照状态，杜绝后续测试的顺序依赖。
+            let keep: std::collections::HashSet<&std::ffi::OsString> = self.0.keys().collect();
+            let stale: Vec<std::ffi::OsString> = std::env::vars_os()
+                .map(|(k, _)| k)
+                .filter(|k| !keep.contains(k))
+                .collect();
+            for k in stale {
+                std::env::remove_var(&k);
+            }
+        }
+    }
+
     #[test]
-    #[cfg(unix)]
-    fn copy_dir_all_preserves_files_and_symlinks() {
-        let root = tmp_root("copy");
-        let _ = fs::remove_dir_all(&root);
-        let src = root.join("src");
-        let dst = root.join("dst");
-        fs::create_dir_all(src.join("sub")).unwrap();
-        fs::write(src.join("a.txt"), b"hello").unwrap();
-        fs::write(src.join("sub/b.txt"), b"world").unwrap();
-        std::os::unix::fs::symlink("sub/b.txt", src.join("link")).unwrap();
+    fn release_env_defaults_must_not_pin_global_output_cap() {
+        // crate 级唯一 env 锁：与所有 env 写测试串行（同 bridge.rs locked_env 约定），
+        // 避免与 DEEPSEEK_* / PINVOU3_HOME 写测试并发竞态。
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _snapshot = EnvSnapshot::take();
 
-        super::copy_dir_all(&src, &dst).unwrap();
-
-        assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"hello");
-        assert_eq!(fs::read(dst.join("sub/b.txt")).unwrap(), b"world");
-        let meta = fs::symlink_metadata(dst.join("link")).unwrap();
+        // 第一层：常量表
         assert!(
-            meta.file_type().is_symlink(),
-            "symlink 必须保留为 symlink,不能解引用"
+            !super::RELEASE_ENV_DEFAULTS
+                .iter()
+                .any(|(k, _)| *k == "DEEPSEEK_MAX_OUTPUT_TOKENS"),
+            "RELEASE_ENV_DEFAULTS 不得包含 DEEPSEEK_MAX_OUTPUT_TOKENS（PR #210 移除全局注入）"
         );
-        assert_eq!(
-            fs::read_link(dst.join("link")).unwrap(),
-            PathBuf::from("sub/b.txt"),
-            "symlink target 不变"
-        );
-        assert_eq!(
-            fs::read(dst.join("link")).unwrap(),
-            b"world",
-            "跟随 symlink 仍读到内容"
+        assert!(
+            !super::RELEASE_ENV_DEFAULTS
+                .iter()
+                .any(|(k, _)| *k == "PINVOU3_MAX_OUTPUT_TOKENS"),
+            "RELEASE_ENV_DEFAULTS 不得包含 PINVOU3_MAX_OUTPUT_TOKENS（品悟侧上限仅经 prefs/route 携带）"
         );
 
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn web_template_dir_named_web_template() {
-        assert!(crate::platform::paths::web_template_dir().ends_with("web-template"));
+        // 第二层：实际注入路径（ensure_release_env 是 run() 启动路径的 release env
+        // 注入函数）。先清掉外部可能残留的 env，确保断言的是注入函数自身的行为。
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+        super::ensure_release_env();
+        assert!(
+            std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none(),
+            "ensure_release_env 不得重新注入 DEEPSEEK_MAX_OUTPUT_TOKENS（会重新钉死云端）"
+        );
+        assert!(
+            std::env::var_os("PINVOU3_MAX_OUTPUT_TOKENS").is_none(),
+            "ensure_release_env 不得重新注入 PINVOU3_MAX_OUTPUT_TOKENS（品悟上限仅经 prefs/route 携带）"
+        );
+        // 退出时 EnvSnapshot::drop 按快照完整还原（含 PATH / UI env / 常量表变量）。
     }
 }

@@ -1,5 +1,12 @@
 use super::prelude::*;
+use crate::features::deliverables::DeliverableItem;
 use crate::platform::path_policy::validate_user_path;
+use std::sync::OnceLock;
+
+fn artifact_lifecycle_lock() -> &'static parking_lot::Mutex<()> {
+    static LOCK: OnceLock<parking_lot::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| parking_lot::Mutex::new(()))
+}
 
 /// 产物文件元数据。前端右栏 list 用。
 #[derive(Debug, Clone, Serialize)]
@@ -19,6 +26,9 @@ pub async fn read_artifact_text(path: String) -> Result<String, String> {
 
 pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
     let p = validate_user_path(path)?;
+    let _lifecycle = artifact_lifecycle_lock().lock();
+    recover_interrupted_artifact_write(&p)
+        .map_err(|e| format!("recover_artifact_text({}): {e}", p.display()))?;
     std::fs::read_to_string(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
 }
 
@@ -32,6 +42,9 @@ pub async fn write_artifact_text(path: String, content: String) -> Result<(), St
 
 pub(crate) fn write_artifact_text_impl(path: &str, content: &str) -> Result<(), String> {
     let p = validate_user_path(path)?;
+    let _lifecycle = artifact_lifecycle_lock().lock();
+    recover_interrupted_artifact_write(&p)
+        .map_err(|e| format!("recover_artifact_text({}): {e}", p.display()))?;
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
@@ -50,7 +63,8 @@ pub(crate) fn write_artifact_text_impl(path: &str, content: &str) -> Result<(), 
         return Err("markdown artifact is too large to save".into());
     }
 
-    atomic_write_utf8(&p, content).map_err(|e| format!("write_artifact_text({}): {e}", p.display()))
+    atomic_write_utf8_unlocked(&p, content)
+        .map_err(|e| format!("write_artifact_text({}): {e}", p.display()))
 }
 
 fn ensure_editable_artifact_path(path: &std::path::Path) -> Result<(), String> {
@@ -90,6 +104,30 @@ fn ensure_editable_artifact_path(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 pub(super) fn atomic_write_utf8(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    let _lifecycle = artifact_lifecycle_lock().lock();
+    atomic_write_utf8_unlocked(path, content)
+}
+
+fn atomic_write_utf8_unlocked(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    atomic_write_utf8_unlocked_with(
+        path,
+        content,
+        crate::platform::filesystem::replace_file_atomically,
+    )
+}
+
+pub(super) fn atomic_write_utf8_unlocked_with<F>(
+    path: &std::path::Path,
+    content: &str,
+    replace: F,
+) -> std::io::Result<()>
+where
+    F: FnOnce(
+        &std::path::Path,
+        &std::path::Path,
+        &std::path::Path,
+    ) -> crate::platform::filesystem::ReplaceResult,
+{
     use std::io::Write;
 
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -97,24 +135,18 @@ pub(super) fn atomic_write_utf8(path: &std::path::Path, content: &str) -> std::i
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("artifact.md");
-    let tmp = parent.join(format!(
-        ".{file_name}.tmp-{}-{}",
+    let token = format!(
+        "{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos()
-    ));
-    let backup = parent.join(format!(
-        ".{file_name}.bak-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
+    );
+    let tmp = parent.join(format!(".{file_name}.tmp-{token}"));
+    let backup = parent.join(format!(".{file_name}.bak-{token}"));
 
-    let write_result = (|| -> std::io::Result<()> {
+    let stage_result = (|| -> std::io::Result<()> {
         let mut f = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -122,479 +154,173 @@ pub(super) fn atomic_write_utf8(path: &std::path::Path, content: &str) -> std::i
         f.write_all(content.as_bytes())?;
         f.sync_all()?;
         drop(f);
-
-        crate::platform::filesystem::replace_file_atomically(&tmp, path, &backup)?;
-
-        if let Ok(dir) = std::fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
         Ok(())
     })();
-
-    if write_result.is_err() {
+    if let Err(error) = stage_result {
         let _ = std::fs::remove_file(&tmp);
-        let _ = std::fs::remove_file(&backup);
+        return Err(error);
     }
-    write_result
+
+    match replace(&tmp, path, &backup) {
+        Ok(crate::platform::filesystem::ReplaceState::Committed) => {
+            let _ = std::fs::remove_file(&backup);
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+            Ok(())
+        }
+        Ok(state) => Err(std::io::Error::other(format!(
+            "unexpected successful replacement state: {state:?}"
+        ))),
+        Err(error) => {
+            if error.state() == crate::platform::filesystem::ReplaceState::RolledBack {
+                let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(&backup);
+            } else if error.state() == crate::platform::filesystem::ReplaceState::RecoveryRequired
+                && path.exists()
+            {
+                // A target that still exists (e.g. a directory occupying its
+                // path) is a permanent failure: recovery can never promote a
+                // candidate over it, so the staged tmp/backup are garbage. A
+                // truly missing target keeps its candidates for
+                // recover_interrupted_artifact_write.
+                let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(&backup);
+            }
+            Err(error.into_io_error())
+        }
+    }
 }
 
-/// 题目转安全文件名:去掉路径分隔/非法字符,截长,空了给兜底。
-fn sanitize_title_filename(title: &str, fallback: &str) -> String {
-    let cleaned: String = title
-        .chars()
-        .filter(|c| {
-            !matches!(
-                c,
-                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\0'
+fn recover_interrupted_artifact_write(path: &std::path::Path) -> std::io::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+        return Ok(());
+    };
+    let tmp_prefix = format!(".{file_name}.tmp-");
+    let bak_prefix = format!(".{file_name}.bak-");
+    let mut candidates = std::collections::BTreeMap::<
+        String,
+        (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
+    >::new();
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            if !std::fs::symlink_metadata(&candidate)
+                .is_ok_and(|metadata| metadata.file_type().is_file())
+            {
+                continue;
+            }
+            let Some(name) = candidate
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if let Some(token) = name.strip_prefix(&tmp_prefix) {
+                candidates.entry(token.to_string()).or_default().0 = Some(candidate);
+            } else if let Some(token) = name.strip_prefix(&bak_prefix) {
+                candidates.entry(token.to_string()).or_default().1 = Some(candidate);
+            }
+        }
+    }
+
+    if path.is_file() {
+        cleanup_artifact_recovery_candidates(candidates.values());
+        return Ok(());
+    }
+
+    let mut ordered = candidates
+        .iter()
+        .map(|(token, (tmp, backup))| {
+            (
+                artifact_recovery_sort_key(token, tmp.as_deref(), backup.as_deref()),
+                token.clone(),
+                tmp.clone(),
+                backup.clone(),
             )
         })
-        .collect::<String>()
-        .trim()
-        .chars()
-        .take(48)
-        .collect();
-    if cleaned.is_empty() {
-        fallback.to_string()
-    } else {
-        cleaned
-    }
-}
-
-/// 从结案呈报解析「成品清单/工件清单」段申报的成品相对路径。
-/// 与引擎 validate_deliverable.check_artifact_manifest 同一约定:
-/// 标题段内的列表项,路径写在反引号里(无反引号则取首个空白分隔 token),
-/// 到下一个标题为止。
-fn parse_product_manifest(report_text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut in_section = false;
-    for line in report_text.lines() {
-        let t = line.trim_start();
-        if t.starts_with('#') {
-            let h = t.trim_start_matches('#').trim();
-            in_section = h.starts_with("成品清单") || h.starts_with("工件清单");
-            continue;
-        }
-        if !in_section {
-            continue;
-        }
-        let s = line.trim();
-        if !(s.starts_with('-') || s.starts_with('*')) {
-            continue;
-        }
-        let item = s.trim_start_matches(['-', '*', ' ']).trim();
-        let rel = if let Some(a) = item.find('`') {
-            item[a + 1..].split('`').next().unwrap_or("")
-        } else {
-            item.split_whitespace().next().unwrap_or("")
-        };
-        if !rel.is_empty() {
-            out.push(rel.to_string());
-        }
-    }
-    out
-}
-
-/// 旧奏折(无成品清单段)的成品推断:语义归因,三路信号给六部计分。
-/// ① 本部章节(### 标题点名 <bu>_N.md)含成品描述词(整合/最终/成品/完整/汇总);
-/// ② **被质检对象**——质检章节(标题含审核/校验/验收)里「对〈X部〉…的」的 X
-///   (质检节内的成品词描述被审对象,绝不归审核者——天真就近归因实测翻车);
-/// ③ 对账表「交付」达成行点名的部。
-/// 返回 (bu_id, 得分);得分 <8(单一信号)不可信,调用方回退。
-pub(super) fn infer_product_bu(report: &str) -> Option<(String, i32)> {
-    const BU: &[(&str, &str)] = &[
-        ("兵部", "bingbu"),
-        ("户部", "hubu"),
-        ("礼部", "libu"),
-        ("刑部", "xingbu"),
-        ("工部", "gongbu"),
-        ("吏部", "libu_renshi"),
-    ];
-    const QA_WORDS: &[&str] = &["审核", "校验", "验收", "质检"];
-    const PRODUCT_WORDS: &[(&str, i32)] = &[
-        ("整合", 3),
-        ("最终", 3),
-        ("成品", 4),
-        ("完整", 2),
-        ("汇总", 2),
-    ];
-    let mut scores: std::collections::HashMap<&str, i32> = Default::default();
-    // 按 markdown 标题分节
-    let mut sections: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for line in report.lines() {
-        if line.starts_with("##") && !cur.is_empty() {
-            sections.push(std::mem::take(&mut cur));
-        }
-        cur.push_str(line);
-        cur.push('\n');
-    }
-    sections.push(cur);
-    for sec in &sections {
-        let head = sec.lines().next().unwrap_or("");
-        if QA_WORDS.iter().any(|w| head.contains(w)) {
-            // 质检节:只认「对〈X部〉」归因(中文部名或拼音 id 都认)
-            for (cn, en) in BU {
-                if sec.contains(&format!("对{cn}")) || sec.contains(&format!("对{en}")) {
-                    *scores.entry(en).or_default() += 5;
-                }
+        .collect::<Vec<_>>();
+    ordered.sort_by_key(|(key, _, _, _)| *key);
+    for (_, token, tmp, backup) in ordered.into_iter().rev() {
+        let replacement = tmp.unwrap_or_else(|| parent.join(format!("{tmp_prefix}{token}")));
+        let backup = backup.unwrap_or_else(|| parent.join(format!("{bak_prefix}{token}")));
+        match crate::platform::filesystem::recover_interrupted_replace(&replacement, path, &backup)
+        {
+            Ok(crate::platform::filesystem::ReplaceState::Committed) => {
+                cleanup_artifact_recovery_candidates(candidates.values());
+                return Ok(());
             }
-            continue;
-        }
-        // 标题点名 <bu>_<数字>(后随数字才算,防 libu_ 误吃 libu_renshi_1.md)
-        let names_bu = |head: &str, en: &str| {
-            let pat = format!("{en}_");
-            head.match_indices(&pat).any(|(i, _)| {
-                head[i + pat.len()..]
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_digit())
-            })
-        };
-        if let Some((_, en)) = BU.iter().rev().find(|(_, en)| names_bu(head, en)) {
-            let pts: i32 = PRODUCT_WORDS
-                .iter()
-                .filter(|(k, _)| sec.contains(k))
-                .map(|(_, w)| w)
-                .sum();
-            *scores.entry(en).or_default() += pts;
-        }
-    }
-    for line in report.lines() {
-        if line.contains("交付") && (line.contains('✅') || line.contains("达成")) {
-            for (cn, en) in BU {
-                if line.contains(cn) {
-                    *scores.entry(en).or_default() += 3;
-                }
+            Ok(_) => unreachable!("recovery success is always committed"),
+            Err(error)
+                if error.state() == crate::platform::filesystem::ReplaceState::RolledBack
+                    && path.is_file() =>
+            {
+                cleanup_artifact_recovery_candidates(candidates.values());
+                return Ok(());
             }
+            Err(error)
+                if error.state() == crate::platform::filesystem::ReplaceState::RecoveryRequired =>
+            {
+                return Err(error.into_io_error());
+            }
+            Err(error) => return Err(error.into_io_error()),
         }
     }
-    scores
-        .into_iter()
-        .max_by_key(|(_, s)| *s)
-        .map(|(b, s)| (b.to_string(), s))
+    Ok(())
 }
 
-/// md 首个一级/二级标题做客户可读的展示标题(客户看不懂 libu_1.md 这种衙门名)。
-fn md_display_title(bytes: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(8192)]);
-    text.lines().find_map(|l| {
-        let t = l.trim_start();
-        t.strip_prefix("## ")
-            .or_else(|| t.strip_prefix("# "))
-            .map(|h| h.trim().chars().take(60).collect::<String>())
-    })
+fn artifact_recovery_sort_key(
+    token: &str,
+    tmp: Option<&std::path::Path>,
+    backup: Option<&std::path::Path>,
+) -> (bool, u128) {
+    let timestamp = token
+        .rsplit_once('-')
+        .and_then(|(_, nanos)| nanos.parse::<u128>().ok())
+        .or_else(|| {
+            [backup, tmp]
+                .into_iter()
+                .flatten()
+                .filter_map(|path| {
+                    std::fs::metadata(path)
+                        .and_then(|value| value.modified())
+                        .ok()
+                })
+                .filter_map(|modified| {
+                    modified
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|duration| duration.as_nanos())
+                })
+                .max()
+        })
+        .unwrap_or_default();
+    (backup.is_some(), timestamp)
+}
+
+fn cleanup_artifact_recovery_candidates<'a>(
+    candidates: impl Iterator<Item = &'a (Option<std::path::PathBuf>, Option<std::path::PathBuf>)>,
+) {
+    for (tmp, backup) in candidates {
+        if let Some(tmp) = tmp {
+            let _ = std::fs::remove_file(tmp);
+        }
+        if let Some(backup) = backup {
+            let _ = std::fs::remove_file(backup);
+        }
+    }
 }
 
 /// 「产出物」跨会话索引:遍历 `~/.pinvou3/sessions/*.json`,把每个会话跟踪的
 /// artifacts 汇成一张扁平表(供「产出物」一级入口用)。只走磁盘真相:
 /// 文件已被删则跳过;mtime/size 现取 fs。
-#[derive(Debug, Deserialize)]
-struct DvSessionView {
-    metadata: DvMeta,
-    #[serde(default)]
-    artifacts: Vec<DvArtifact>,
-}
-#[derive(Debug, Deserialize)]
-struct DvMeta {
-    #[serde(default)]
-    id: String,
-    #[serde(default)]
-    title: String,
-}
-#[derive(Debug, Deserialize)]
-struct DvArtifact {
-    storage_path: std::path::PathBuf,
-    #[serde(default)]
-    byte_size: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DeliverableItem {
-    name: String,
-    path: String,
-    ext: String,
-    category: String,
-    #[serde(rename = "sessionId")]
-    session_id: String,
-    source: String,
-    mtime: i64,
-    size: u64,
-}
-
-const DELIVERABLE_EXTS: &[&str] = &[
-    "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls", "md", "csv", "png", "jpg",
-    "jpeg", "svg", "gif", "webp", "zip",
-];
-
-fn deliverable_category(ext: &str) -> &'static str {
-    match ext {
-        "html" | "htm" | "mhtml" | "mht" => "web",
-        "ppt" | "pptx" | "odp" | "dps" => "ppt",
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "heic" => "img",
-        _ => "doc",
-    }
-}
-
 #[tauri::command]
 pub async fn list_deliverable_index() -> Result<Vec<DeliverableItem>, String> {
-    let sessions_dir = crate::platform::paths::sessions_root();
-    let entries = match std::fs::read_dir(&sessions_dir) {
-        Ok(e) => e,
-        Err(_) => return Ok(Vec::new()),
-    };
-    let mut by_path: std::collections::HashMap<String, DeliverableItem> =
-        std::collections::HashMap::new();
-
-    for entry in entries.flatten() {
-        let file = entry.path();
-        if !file.is_file() || file.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(raw) = std::fs::read_to_string(&file) else {
-            continue;
-        };
-        let Ok(view) = serde_json::from_str::<DvSessionView>(&raw) else {
-            continue;
-        };
-
-        for art in view.artifacts {
-            let p = &art.storage_path;
-            let Ok(meta) = std::fs::metadata(p) else {
-                continue;
-            };
-            if !meta.is_file() {
-                continue;
-            }
-            let name = p
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            if name.is_empty() {
-                continue;
-            }
-            let ext = p
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            if !DELIVERABLE_EXTS.contains(&ext.as_str()) {
-                continue;
-            }
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            let path = p.to_string_lossy().to_string();
-            let item = DeliverableItem {
-                name,
-                path: path.clone(),
-                ext: ext.clone(),
-                category: deliverable_category(&ext).to_string(),
-                session_id: view.metadata.id.clone(),
-                source: view.metadata.title.clone(),
-                mtime,
-                size: if meta.len() > 0 {
-                    meta.len()
-                } else {
-                    art.byte_size
-                },
-            };
-            by_path
-                .entry(path)
-                .and_modify(|cur| {
-                    if item.mtime >= cur.mtime {
-                        *cur = item.clone();
-                    }
-                })
-                .or_insert(item);
-        }
-    }
-
-    let mut out: Vec<DeliverableItem> = by_path.into_values().collect();
-    out.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.name.cmp(&b.name)));
-    Ok(out)
-}
-
-/// 奏折「成品箱」:**宝箱内容 = 奏折申报的成品**(白浪定的原则,后端不猜)。
-/// - products:回奏官在 final_report.md「## 成品清单」段申报的文件(硬闸已核验
-///   存在)。衙门式文件名(如 libu_1.md)物化成**以题目命名**的副本给客户——
-///   题目取太子立项 zhiyi.json 的 title;非 md 成品(.pptx 等,名字本来就达意)
-///   原样装箱。旧 run 没有成品清单段 → 回退:题目命名的 final_report 副本 +
-///   deliverables/ 非 md 二进制成品。
-/// - papers:deliverables/ 下未被申报为成品的 md = 六部过程文书,折叠降级。
-#[tauri::command]
-pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value, String> {
-    let p = validate_user_path(&project_dir)?;
-    let canon_root = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
-    let title = std::fs::read_to_string(p.join("_state").join("zhiyi.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("title").and_then(|t| t.as_str()).map(str::to_string));
-    let title_base = sanitize_title_filename(title.as_deref().unwrap_or(""), "最终成品");
-
-    let report_text = std::fs::read_to_string(p.join("final_report.md")).unwrap_or_default();
-    let declared = parse_product_manifest(&report_text);
-
-    let mut products: Vec<serde_json::Value> = Vec::new();
-    let mut product_canon: Vec<std::path::PathBuf> = Vec::new();
-
-    if !declared.is_empty() {
-        // 奏折申报路线:逐件解析,衙门式 md 文件名 → 题目命名副本
-        let mut md_idx = 0usize;
-        for rel in &declared {
-            let cand = p.join(rel);
-            let Ok(canon) = std::fs::canonicalize(&cand) else {
-                continue;
-            };
-            if !canon.starts_with(&canon_root) || !canon.is_file() {
-                continue;
-            }
-            let orig_name = canon
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            let is_md = orig_name.to_lowercase().ends_with(".md");
-            let bytes = std::fs::read(&canon).unwrap_or_default();
-            if is_md {
-                md_idx += 1;
-                let fname = if md_idx == 1 {
-                    format!("{title_base}.md")
-                } else {
-                    format!("{title_base}·{md_idx}.md")
-                };
-                let dst = p.join(&fname);
-                let stale = std::fs::read(&dst).map(|b| b != bytes).unwrap_or(true);
-                if stale {
-                    let _ = std::fs::write(&dst, &bytes);
-                }
-                let title = md_display_title(&bytes)
-                    .unwrap_or_else(|| fname.trim_end_matches(".md").to_string());
-                products.push(serde_json::json!({
-                    "name": fname, "title": title, "path": dst.to_string_lossy(), "size": bytes.len(),
-                }));
-            } else {
-                let stem = orig_name
-                    .rsplit_once('.')
-                    .map(|(a, _)| a)
-                    .unwrap_or(&orig_name);
-                products.push(serde_json::json!({
-                    "name": orig_name, "title": stem, "path": canon.to_string_lossy(), "size": bytes.len(),
-                }));
-            }
-            product_canon.push(canon);
-        }
-    }
-    if products.is_empty() && !report_text.is_empty() {
-        // 回退1(旧奏折没写成品清单):语义推断成品归属部——得分≥8(多路信号
-        // 汇聚)才可信;取该部序号最大的 deliverable(整合终稿通常是末批)。
-        let inferred = infer_product_bu(&report_text)
-            .filter(|(_, score)| *score >= 8)
-            .and_then(|(bu, _)| {
-                let mut best: Option<(u32, std::path::PathBuf)> = None;
-                if let Ok(entries) = std::fs::read_dir(p.join("deliverables")) {
-                    for e in entries.flatten() {
-                        let path = e.path();
-                        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                        if let Some(seq) = name
-                            .strip_prefix(&format!("{bu}_"))
-                            .and_then(|r| r.strip_suffix(".md"))
-                            .and_then(|n| n.parse::<u32>().ok())
-                        {
-                            if best.as_ref().is_none_or(|(s, _)| seq > *s) {
-                                best = Some((seq, path));
-                            }
-                        }
-                    }
-                }
-                best.map(|(_, path)| path)
-            });
-        if let Some(src) = inferred {
-            let bytes = std::fs::read(&src).unwrap_or_default();
-            let fname = format!("{title_base}.md");
-            let dst = p.join(&fname);
-            let stale = std::fs::read(&dst).map(|b| b != bytes).unwrap_or(true);
-            if stale {
-                let _ = std::fs::write(&dst, &bytes);
-            }
-            let title = md_display_title(&bytes)
-                .unwrap_or_else(|| fname.trim_end_matches(".md").to_string());
-            products.push(serde_json::json!({
-                "name": fname, "title": title, "path": dst.to_string_lossy(), "size": bytes.len(),
-            }));
-            if let Ok(canon) = std::fs::canonicalize(&src) {
-                product_canon.push(canon);
-            }
-        }
-    }
-    if products.is_empty() && !report_text.is_empty() {
-        // 回退2(推断也不可信):题目命名的 final_report 副本,不至于空箱
-        let fname = format!("{title_base}.md");
-        let dst = p.join(&fname);
-        let stale = std::fs::read(&dst)
-            .map(|b| b != report_text.as_bytes())
-            .unwrap_or(true);
-        if stale {
-            let _ = std::fs::write(&dst, report_text.as_bytes());
-        }
-        products.push(serde_json::json!({
-            "name": fname, "title": title_base.clone(), "path": dst.to_string_lossy(), "size": report_text.len(),
-        }));
-    }
-
-    // deliverables/:非 md 且未申报 → 也算成品(工件清单核验过的二进制);
-    // md 且未申报 → 过程文书
-    let mut papers: Vec<serde_json::Value> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(p.join("deliverables")) {
-        let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-        paths.sort();
-        for path in paths {
-            if !path.is_file() {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            if name.is_empty()
-                || name.starts_with('.')
-                || name.ends_with(".tmp")
-                || name.ends_with('~')
-            {
-                continue;
-            }
-            let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-            if product_canon.contains(&canon) {
-                continue; // 已申报装箱,不重复列
-            }
-            let size = path.metadata().map(|m| m.len()).unwrap_or(0);
-            let is_md = name.to_lowercase().ends_with(".md");
-            let title = if is_md {
-                std::fs::read(&path).ok().and_then(|b| md_display_title(&b))
-            } else {
-                None
-            }
-            .unwrap_or_else(|| {
-                name.rsplit_once('.')
-                    .map(|(a, _)| a)
-                    .unwrap_or(&name)
-                    .to_string()
-            });
-            let item = serde_json::json!({
-                "name": name, "title": title, "path": path.to_string_lossy(), "size": size,
-            });
-            if is_md {
-                papers.push(item);
-            } else {
-                products.push(item);
-            }
-        }
-    }
-    Ok(serde_json::json!({ "products": products, "papers": papers }))
+    Ok(crate::features::deliverables::list_deliverable_index_impl())
 }
 
 /// 读 artifact 元数据：大小 / 类型 / 是否存在。
@@ -1122,7 +848,7 @@ pub async fn reveal_session_folder(
     }
     store
         .load(&session_id)
-        .map_err(|e| format!("load_session({session_id}): {e:?}"))?;
+        .map_err(|e| format!("load_session({session_id}): {e:#}"))?;
     // 定时运行会话没有独立 runtime 目录，打开它所属任务的共享工作间。
     if store.scheduled_profile(&session_id).is_some() {
         let dir = store

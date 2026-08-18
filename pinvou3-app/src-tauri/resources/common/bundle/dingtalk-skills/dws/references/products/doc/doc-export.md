@@ -1,6 +1,6 @@
-# doc export（在线文档导出为 docx）
+# doc export（在线文档导出为 docx / markdown / pdf）
 
-> **前置条件（MUST READ）：** 执行本命令前，必须先用 Read 工具读取以下文件：
+> **前置条件（MUST READ）：** 执行本命令前，必须先用 File(action="read") 读取以下文件：
 > 1. [`../doc.md`](../doc.md) — 命令路由 + 场景索引 + 意图判断 + 工作流
 
 > **路由前置判断**：用户说「下载/导出」时**必须**先用 [`./doc-info.md`](./doc-info.md) `info --node <ID> --format json` 查 `contentType`：
@@ -19,14 +19,15 @@ Usage:
 Example:
   dws doc export --node "https://alidocs.dingtalk.com/i/nodes/xxx" --output ./exported.docx
   dws doc export --node <DOC_ID> --output ~/downloads/
+  dws doc export --node <DOC_ID> --export-format markdown --output ./exported.md
 Flags:
       --node string           要导出的文档标识，支持文档 URL 或 dentryUuid (必填)
       --output string         本地保存路径，文件路径或目录 (必填)
-      --export-format string  导出格式，当前仅支持 docx (默认)
+      --export-format string  导出格式: docx (默认) / markdown (或 md) / pdf
 ```
 
 CLI 内部自动完成：提交导出任务 → 渐进式退避轮询（最多约 5 分钟）→ 成功后自动下载文件。
-**只需一条命令，无需手动轮询。**
+**只需一条命令，无需手动轮询。**`--output` 传入目录时，根据 `--export-format` 自动追加扩展名。
 
 ---
 
@@ -47,8 +48,8 @@ Flags:
 
 - `export` 是一体化命令，一条命令自动完成提交→轮询→下载，**无需手动编排轮询**。CLI 内部使用渐进式退避轮询（最多约 5 分钟）。
 - `export` 超时或中断后，CLI 会输出 `jobId`，可用 `dws doc export get --job-id <jobId>` 手动查询任务状态。
-- `export` 当前仅支持钉钉在线文档（alidocs，`contentType=ALIDOC`）导出为 `docx`，**在线表格导出请使用其他命令**。
-- `--output` 既可以是文件完整路径，也可以是目录（CLI 自动按文档名生成 `.docx`）。
+- `export` 仅作用于钉钉在线文档（alidocs，`contentType=ALIDOC`），格式由 `--export-format` 决定：`docx`（默认）/ `markdown` (`.md`) / `pdf`；在线表格（axls）导出走 [`dws sheet export`](../sheet.md)。
+- `--output` 既可以是文件完整路径，也可以是目录（CLI 自动按文档名生成扩展名，按 `--export-format` 为 `.docx`/`.md`/`.pdf`）。
 
 ## 上下文传递
 

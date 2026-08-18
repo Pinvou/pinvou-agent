@@ -35,7 +35,7 @@ def validate_resource_id(resource_id: str) -> bool:
 def run_dws(dws_bin: str, args: list[str], timeout_sec: int = 120) -> Tuple[int, str, str]:
     cmd = [dws_bin] + args
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+        result = subprocess.run(cmd, capture_output=True, text=True, errors='replace', timeout=timeout_sec)
         return result.returncode, result.stdout.strip(), result.stderr.strip()
     except subprocess.TimeoutExpired:
         return 124, "", f"dws command timeout after {timeout_sec}s"

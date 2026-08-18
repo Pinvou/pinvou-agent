@@ -12,7 +12,7 @@
 
 | 不支持的操作 | 说明 |
 |------------|------|
-| 文档权限管理 | ⚠️ 已通过 transitional helper 部分支持：`dws doc permission add/update/list` 可用（调 `add_permission`/`update_permission`/`list_permission` MCP tool）；待 mse 注册对应 toolOverride 后此条删除 |
+| 文档权限管理 | ✅ 已支持：节点级协作者管理走 `dws drive permission add/update/list/remove`（仅适用于文档空间节点，不适用于钉盘文件）；按姓名批量授权走 `dws doc +access-grant` / `+access-change` / `+access-revoke` |
 | 删除整篇文档/文件 | ⚠️ 已通过 transitional helper 支持：`dws doc delete --node <ID> --yes`（调 `delete_document`）；待 mse 注册后此条删除 |
 | 文档导出为 docx | ⚠️ 已通过 transitional helper 支持：`dws doc export --node <ID> --output ./x.docx`（内置渐进式退避轮询 + 自动下载，调 `submit_export_job` / `query_export_job` MCP tool）；待 mse 注册对应 toolOverride 后此条删除 |
 | 媒体附件下载/插入 | ⚠️ 已通过 transitional helper 支持：`dws doc media download/insert`（前者调 `download_doc_attachment`，后者 3 步流水线）；待 mse 注册后 download 条可删，insert 因含本地 HTTP PUT 永久 helper |
@@ -22,7 +22,7 @@
 | 不支持的操作 | 说明 |
 |------------|------|
 | 创建公式/查找引用等高级字段类型 | 部分高级字段类型暂不支持 API 创建 |
-| 自己 PUT 文件到 OSS 时 Content-Type 处理 | OSS 签名对 PUT 请求的 `Content-Type` 头有严格要求，处理不当会 `SignatureDoesNotMatch` / HTTP 403。这**不是 dws 限制**，是阿里云 OSS 行为。解决：直接用 `python scripts/aitable_import_via_task.py <baseId> <file>`，脚本已内置 prepare→PUT→import data 全流程和正确的头处理，**不要自己写 curl PUT**。（注意：`aitable import upload` 命令没有 `--file` flag、也不代做 PUT，只准备导入；能自动 PUT 的是上面的脚本。） |
+| 自己 PUT 文件到 OSS 时 Content-Type 处理 | OSS 签名对 PUT 请求的 `Content-Type` 头有严格要求，处理不当会 `SignatureDoesNotMatch` / HTTP 403。这**不是 dws 限制**，是阿里云 OSS 行为。解决：直接用 `python3 scripts/aitable_import_via_task.py <baseId> <file>`，脚本已内置 prepare→PUT→import data 全流程和正确的头处理，**不要自己写 curl PUT**。（注意：`aitable import upload` 命令没有 `--file` flag、也不代做 PUT，只准备导入；能自动 PUT 的是上面的脚本。） |
 
 ## minutes
 

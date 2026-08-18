@@ -3,7 +3,7 @@
 假期余额 Excel 导出脚本。
 
 [AI Agent 强制门禁] 调用本脚本前必须先阅读：
-  dingtalk-workspace/references/products/attendance-vacation.md
+  ../references/products/attendance-vacation.md
 
 本脚本负责：
   1. 通过 dws attendance vacation types 获取假期规则列表，用于确定列顺序

@@ -7,8 +7,9 @@
 //!
 //! 设计对照 `.luzeyang/code-plain-decoupling/skill-scope-governance-实施方案.md`
 //! （已归档，按 §2.1/§2.2/§2.3/§2.4 实现）：
-//!   - 开关落 `~/.pinvou3/disabled_skills.json`（`{plain, code, code_initialized}`，
-//!     与 `disabled_connectors.json` 同构；旧裸数组/旧借道 `skill:` 条目迁移为 plain）；
+//!   - 开关落 `~/.pinvou3/disabled_skills.json`（`{scopes: {<mode>: [...]},
+//!     "initialized": [...]}`，scope 键即模式名，与 `disabled_connectors.json`
+//!     同构；旧裸数组/旧借道 `skill:` 条目/旧双 scope 对象迁移为 plain/新 map）；
 //!   - code scope 未初始化时默认全禁已装技能（外部能力显式开启，封泄露面）；
 //!   - 组合目录 = 来源（用户 skills 目录 + bundle/skills）中**启用**的技能，first-wins
 //!     同名去重，另排除该 scope 被禁用连接器的 companion skills（保持现状联动语义）；
@@ -40,16 +41,17 @@ pub use crate::features::marketplace::skill_scope::*;
 /// 技能来源目录（除项目级），**first-wins 顺序（高优先级在前）**。与底座并集
 /// 语义一致：同名技能按高优先级来源入组合目录、低优先级跳过（底座发现时同名
 /// 不重复加入）。用户手放技能（`~/.pinvou3/user/skills/`）覆盖市场安装
-/// （`bundle/skills/`），与工作流视图 list_skills_v2 的合并顺序一致。
+/// （`bundle/skills/`），用户目录中的同名 Skill 优先。
 fn skill_source_dirs() -> Vec<PathBuf> {
     vec![paths::user_skills_dir(), paths::bundle_skills_dir()]
 }
 
 /// 项目技能来源目录（workspace 内工具约定，按底座上游 #432 优先级降序，
 /// `.pinvou/skills` 为 pinvou3 自有约定，插在 `.agents/skills` 之后）。
-/// 仅当项目级 skills 开关开启且 scope 为 code 时使用（§2.4：项目内文本是
-/// prompt-injection 面，显式开启才扫描；fork #41 已砍断 workspace 并集发现，
-/// 这里在 app 侧按同一来源顺序补上，经组合目录通道物化）。
+/// 仅当项目级 skills 开关开启且该 scope 的 `project_skills_opt_in` 表字段为
+/// true（当前仅 code）时使用（§2.4：项目内文本是 prompt-injection 面，显式
+/// 开启才扫描；fork #41 已砍断 workspace 并集发现，这里在 app 侧按同一来源
+/// 顺序补上，经组合目录通道物化）。
 fn project_skill_source_dirs(project_workspace: &Path) -> Vec<PathBuf> {
     [
         ".agents/skills",
@@ -67,10 +69,11 @@ fn project_skill_source_dirs(project_workspace: &Path) -> Vec<PathBuf> {
 
 /// 该 scope 的启用技能集合（目录名 → 来源路径），按来源优先级排序。
 ///
-/// 排除两类：本 scope 禁用集中的技能（含未初始化 code 的默认全禁）+ 被禁用
-/// 连接器声明的 companion skills（保持「关 MCP → 关联技能一并隐藏」的既有联动）。
-/// `project_workspace` 仅在 code scope 且项目级 skills 开关开启时被扫描（排在
-/// 用户/市场来源之前，项目本地覆盖语义与底座 workspace 目录优先一致）。
+/// 排除两类：本 scope 禁用集中的技能（含未初始化 DenyAll 模式的默认全禁）+
+/// 被禁用连接器声明的 companion skills（保持「关 MCP → 关联技能一并隐藏」的
+/// 既有联动）。`project_workspace` 仅在该 scope 的 `project_skills_opt_in` 表
+/// 字段为 true 且项目级 skills 开关开启时被扫描（排在用户/市场来源之前，
+/// 项目本地覆盖语义与底座 workspace 目录优先一致）。
 pub fn enabled_skills_for(
     scope: ConnectorScope,
     project_workspace: Option<&Path>,
@@ -78,8 +81,11 @@ pub fn enabled_skills_for(
     let disabled = disabled_skill_names_for(scope);
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<(String, PathBuf)> = Vec::new();
-    // 项目技能优先（workspace 目录 > 全局来源，与底座 first-wins 一致）
-    if scope == ConnectorScope::Code && project_skills_enabled() {
+    // 项目技能优先（workspace 目录 > 全局来源，与底座 first-wins 一致）；
+    // 项目门由模式能力表字段驱动（当前仅 code 为 true）。
+    if crate::features::assistant::session_policy::project_skills_opt_in_for(scope)
+        && project_skills_enabled()
+    {
         if let Some(workspace) = project_workspace {
             for src in project_skill_source_dirs(workspace) {
                 collect_source_skills(&src, &disabled, &mut seen, &mut out);
@@ -518,19 +524,6 @@ mod tests {
     }
 
     #[test]
-    fn materialize_uses_session_private_dir() {
-        with_temp_home(|| {
-            seed_sources();
-            let sid = "session-test-3";
-            materialize_session_skills(sid, ConnectorScope::Plain, None).unwrap();
-            assert_eq!(
-                paths::session_skills_dir(sid),
-                paths::sessions_root().join(sid).join("skills")
-            );
-        });
-    }
-
-    #[test]
     fn project_skills_follow_gate_and_priority() {
         with_temp_home(|| {
             // bundle 基线：市场装 visualizer
@@ -620,6 +613,7 @@ mod tests {
 
     #[test]
     fn session_skills_dir_uses_session_private_root() {
+        // 会话技能物化(materialize_session_skills)落点即本目录(两个原测试断言同一等式)。
         let dir = paths::session_skills_dir("abc-123");
         assert_eq!(dir, paths::sessions_root().join("abc-123").join("skills"));
     }

@@ -114,7 +114,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
     const ScheduledSelect = ({
       value, options, onChange, testId, ariaLabel, theme, minWidth = 180,
       multiple = false, minSelected = 0, onClose, emptyLabel = '—', separator = '、',
-      footerAction,
+      footerAction, alwaysCommit = false,
     }) => {
       const [open, setOpen] = useState(false);
       const [menuStyle, setMenuStyle] = useState(null);
@@ -208,7 +208,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 onClick={() => {
                   if (!multiple) {
                     closeMenu();
-                    if (!active) onChange(option.value);
+                    // 模型配置可被原地编辑（wire name 变化但配置 id 不变），
+                    // 重选同一选项也要重新提交，治愈 EnginePool 的过期绑定快照。
+                    if (alwaysCommit || !active) onChange(option.value);
                     return;
                   }
                   const nextValues = new Set(selectedValues);
@@ -1357,7 +1359,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                     <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{scheduledCopy.aiModel}</span>
                     <div className="flex items-center gap-1.5">
                       <ScheduledSelect value={detailForm.modelId || ''} options={modelOptions}
-                        onChange={value => editModel(value)}
+                        onChange={value => editModel(value)} alwaysCommit
                         testId="scheduled-live-model" ariaLabel={scheduledCopy.chooseModel} theme={theme} minWidth={220} emptyLabel={scheduledCopy.choose} footerAction={modelManageAction} />
                       <ChevronRight className={`h-3.5 w-3.5 text-[#C5C5C7] dark:text-[#EBEBF5]/30`} />
                     </div>

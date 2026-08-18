@@ -71,7 +71,7 @@ import {
   resolvePet,
 } from './pet-registry.js';
 import { useReducedMotion } from '../../hooks/useReducedMotion.js';
-import { dict, TAG_TO_LANG } from '../../shared/i18n.js';
+import { dict, initialSystemLanguage, TAG_TO_LANG } from '../../shared/i18n.js';
 import './pet.css';
 
 const TICK_MS = 600;
@@ -157,7 +157,7 @@ export default function PetWindow({
     ? Math.min(MAX_SCALE, Math.max(DEFAULT_SCALE, configuredScale))
     : DEFAULT_SCALE;
   const stateRef = useRef(createPetState());
-  const [language, setLanguage] = useState('zh');
+  const [language, setLanguage] = useState(initialSystemLanguage);
   const t = dict[language] || dict.zh;
   const petCopy = t.uiPet;
   // pet.html 的 <title>/<html lang> 是静态中文,按当前语言同步一次。
@@ -210,7 +210,6 @@ export default function PetWindow({
   const activateSelectedPet = async (id, startup = false) => {
     const committed = await loadActivePet(id, {
       state: petActivationRef.current,
-      startup,
       defaultPetId: DEFAULT_PET_ID,
       normalizeId: normalizePetId,
       resolvePet,
@@ -283,7 +282,7 @@ export default function PetWindow({
     let disposed = false;
     let unlisten = null;
     invokeTauri('get_settings').then((settings) => {
-      if (!disposed) setLanguage(TAG_TO_LANG[settings?.language] || 'zh');
+      if (!disposed) setLanguage(TAG_TO_LANG[settings?.language] || initialSystemLanguage());
     }).catch(() => {});
     tauriEvents.listen('ui:language_changed', (event) => {
       const next = event.payload?.language;

@@ -5,15 +5,6 @@ cd "$(dirname "$0")"
 
 OS_NAME="$(uname -s)"
 
-# 注:源 workflows/ → bundle 嵌入快照的同步已移入 build.rs(任何 cargo build/打包都同步,
-# 不再只覆盖 dev 启动,改完直接 build 也不漂移)。
-
-# ── 工作流预检开关 ───────────────────────────────────────────────
-# warmup_check 已对齐 app 配置(endpoint 由 harness 注入 / REQUIRED_ENVS 精简为 base_url),
-# 默认启用预检、与客户机一致,尽早暴露 warmup 类问题。要跳过(省 vLLM 冷启动探活 ~30s)
-# export PINVOU3_SKIP_WARMUP=1。
-export PINVOU3_SKIP_WARMUP="${PINVOU3_SKIP_WARMUP:-0}"
-
 # ── 自托管 vLLM 连接(明文 HTTP,仅可信内网)────────────────────────
 # 底座默认拒绝对非 loopback 的明文 http:// 发请求(client.rs validate_base_url_security),
 # 且 reqwest 默认协议协商在某些网关下会 502。连接可信内网端点时
@@ -24,19 +15,10 @@ if [ "$OS_NAME" = "Linux" ]; then
   export DEEPSEEK_FORCE_HTTP1="${DEEPSEEK_FORCE_HTTP1:-1}"
 fi
 
-# ── L1 知识库语义检索：本地 embedding 模型目录 ──────────────────────
-# 配了就启用 fastembed 进程内向量化(bge-m3 int8 单文件
-# onnx/model_int8.onnx 或 model.onnx),知识库检索
-# 升级为 fts+向量 RRF 混合;不配/加载失败则降级为纯全文 fts。模型目录需含
-# 单文件 ONNX + tokenizer.json/config.json/special_tokens_map.json/tokenizer_config.json。
-# (生产 deb 的模型下载/配置入口=设置页"知识库模型"卡,Phase 3 收尾待做。)
-# 三平台共用(bge-m3 是工具模型非 LLM,Mac/Win/Linux 完全等效)。
-export PINVOU3_KB_EMBED_MODEL_DIR="${PINVOU3_KB_EMBED_MODEL_DIR:-$HOME/models/bge-m3}"
-
-# ── 三省六部「网页类」预置模板 seed 源(dev)──────────────────────────
-# 工部角色 `cp -r ~/.pinvou3/web-template ...` 的母版,首次启动从此处复制(prod 走随 deb 的
-# resource_dir)。目录需含 package.json + 预装 node_modules(离线可 npm run build 出单文件)。
-export PINVOU3_WEB_TEMPLATE_DIR="${PINVOU3_WEB_TEMPLATE_DIR:-$HOME/models/web-template}"
+# ── L1 知识库语义检索：默认与正式版共用应用托管目录 ──────────────────
+# 本地知识库和共享知识库宿主复用 ~/.pinvou3/knowledge/models/bge-m3。
+# 仅需要外部只读模型夹具时，才在启动前显式设置
+# PINVOU3_KB_EMBED_MODEL_DIR；开发入口不再覆盖应用的托管目录选择。
 
 # ── 完整 WebUI v2 relay ──────────────────────────────────────────
 # 社区版默认连接本机自托管 Relay；跨设备测试时同时覆盖 public 与 WebSocket 地址。
@@ -55,11 +37,10 @@ export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-ws://127.0.0.1:
 # 平台选择由 scripts/rustc-stack-wrapper-select.sh 统一决定(run-dev.sh
 # 与 CI smoke 共用同一 selector,避免入口与验证漂移):
 #   - Darwin/Linux:注入 sh 版 wrapper(macOS 有 SIGBUS 实测,Linux 同源);
-#   - Windows (MINGW*/MSYS*/CYGWIN*):**不设置** RUSTC_WRAPPER。Windows
-#     无 SIGBUS 触发(仅 macOS 实测),且无扩展名 Unix shell 文件无法被
-#     Windows 原生 Cargo 执行(CreateProcess → os error 193,会阻断本地
-#     所有 Cargo 命令);如需统一 16 MiB 行为,CI 的 Windows job 显式
-#     注入 .cmd 版(见 pr-check.yml windows-rust-test)。
+#   - Windows (MINGW*/MSYS*/CYGWIN*):selector 幂等编译并注入 .exe 版
+#     wrapper(栈溢出根因三端同源,Windows 本地 dev 同样需要 16 MiB 栈;
+#     .exe 经 CreateProcess 直启规避 cmd /C 的 8191 字符命令行上限,
+#     无扩展名 sh 会 os error 193)。
 # 契约测试 tests/compiler_stack_contract.rs 守护"运行时进程不继承"。
 RUSTC_WRAPPER_VALUE="$(src-tauri/scripts/rustc-stack-wrapper-select.sh)"
 if [ -n "$RUSTC_WRAPPER_VALUE" ]; then

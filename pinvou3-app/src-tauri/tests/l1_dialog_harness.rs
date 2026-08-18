@@ -3,7 +3,7 @@
 //! 直接用 bridge + engine 跑端到端对话，断言 LLM 工具调用 / 落盘文件 / 输出关键词,
 //! 防本轮 INSTRUCTIONS_MD / bridge / blocklist 修改后 quality 静默回归。
 //!
-//! 真模型 scenario 标 `#[ignore]`，默认 `cargo test` 不跑；少量纯函数回归仍会执行。跑法:
+//! 全部 scenario 标 `#[ignore]`，默认 `cargo test` 不会执行任何测试。跑法:
 //!
 //! ```text
 //! cargo test --test l1_dialog_harness -- --ignored --test-threads=1
@@ -22,7 +22,6 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
-use deepseek_tui::error_taxonomy::ErrorEnvelope;
 use deepseek_tui::tui::app::AppMode;
 use pinvou3_lib::features::assistant::engine::AppEngine;
 use pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge;
@@ -418,69 +417,11 @@ fn record_transcript(
     path
 }
 
-#[test]
-fn strict_mode_rejects_runtime_engine_error() {
-    let timeline = vec![(
-        0.1,
-        Event::error(ErrorEnvelope::classify(
-            "stream read error: response body decode failed".to_string(),
-            true,
-        )),
-    )];
-    let summary = summarize(&timeline, Duration::from_millis(100), false);
-
-    assert_eq!(summary.engine_errors.len(), 1);
-    assert!(summary.engine_errors[0].contains("stream read error"));
-    assert!(validate_engine_errors(&summary.engine_errors, true).is_err());
-    assert!(validate_engine_errors(&summary.engine_errors, false).is_ok());
-    assert!(validate_engine_errors(&[], true).is_ok());
-}
-
-#[test]
-fn strict_mode_rejects_failed_turn_without_error_event() {
-    use deepseek_tui::models::Usage;
-
-    let timeline = vec![(
-        0.1,
-        Event::TurnComplete {
-            usage: Usage::default(),
-            status: TurnOutcomeStatus::Failed,
-            error: Some("engine task panicked".to_string()),
-            tool_catalog: None,
-            base_url: None,
-        },
-    )];
-    let summary = summarize(&timeline, Duration::from_millis(100), false);
-
-    assert!(summary.engine_errors.is_empty());
-    assert_eq!(summary.terminal_status, Some(TurnOutcomeStatus::Failed));
-    assert_eq!(
-        summary.terminal_error.as_deref(),
-        Some("engine task panicked")
-    );
-    assert!(validate_terminal_outcome(&summary, true).is_err());
-    assert!(validate_terminal_outcome(&summary, false).is_ok());
-}
-
-#[test]
-fn strict_mode_waits_for_turn_complete_after_error() {
-    use deepseek_tui::models::Usage;
-
-    let error = Event::error(ErrorEnvelope::classify(
-        "temporary stream error".to_string(),
-        true,
-    ));
-    let complete = Event::TurnComplete {
-        usage: Usage::default(),
-        status: TurnOutcomeStatus::Failed,
-        error: Some("stream recovery failed".to_string()),
-        tool_catalog: None,
-        base_url: None,
-    };
-
-    assert!(!is_authoritative_turn_complete(&error));
-    assert!(is_authoritative_turn_complete(&complete));
-}
+// strict_mode_ 的三个确定性测试已移入 src/features/assistant/strict_mode_validation_tests.rs
+// (pinvou3_lib 单测模块):它们只依赖 deepseek_tui 类型,却因本文件 import
+// AppEngine/Pinvou3Bridge 被迫链接 fastembed/tauri/aws-lc-sys 全树,在 ubuntu 16GB
+// runner 上 link OOM(exit 143)。此处保留的同名 helper 副本仍被真模型
+// scenario(#[ignore])使用,改动需两边同步。
 
 fn render_timeline(timeline: &[(f64, Event)]) -> String {
     let mut s = String::new();
@@ -590,10 +531,11 @@ fn ensure_runtime_env() {
     // context_window_for_model 派生 256K 窗口,B2 preflight 才生效)。
     // export DEEPSEEK_MODEL=... 仍可覆盖,这里只改默认。
     set_var_if_unset("DEEPSEEK_MODEL", "qwen36_35b_256k");
-    set_var_if_unset("DEEPSEEK_REASONING_EFFORT", "off");
     // 允许开发者通过 DEEPSEEK_BASE_URL 接入非 loopback 的本地网络 vLLM。
     set_var_if_unset("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
     set_var_if_unset("DEEPSEEK_FORCE_HTTP1", "1");
+    // L1 是本地 vLLM headless 测试：24576 与 route_limits_for_model 的 is_local_vllm
+    // 分支显式携带的 24K 预算一致（正式 App 已不再全局注入该 env，此处仅测本地预算）。
     set_var_if_unset("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
     // 与正式 App 和底座默认值保持一致，避免 L1 仍用旧 90s 配置，
     // 把慢速本地模型的正常长生成误判为运行时回归。
@@ -1246,42 +1188,9 @@ async fn tool_error_recovery() {
 }
 
 // ============================================================================
-// C 系列(r2):subagent 评估 scenario - 临时启用 blocklist 工具
-// 用 PINVOU3_BLOCKLIST_OVERRIDE env 解锁 agent_*/delegate_to_agent,场景跑完
-// 自动复原。Judge 用 rubric r2 维度 5(任务拆分)+6(结果综合)评。
+// C 系列(r2):subagent 评估 scenario
+// Judge 用 rubric r2 维度 5(任务拆分)+6(结果综合)评。
 // ============================================================================
-
-const SUBAGENT_TOOLS: &str = "agent_open,agent_spawn,agent_eval,agent_result,\
-                              agent_cancel,agent_close,agent_list,resume_agent,\
-                              delegate_to_agent";
-
-/// RAII guard 临时 set PINVOU3_BLOCKLIST_OVERRIDE,drop 时复原。
-/// scenario 用 `let _g = SubagentEnv::enable();` 锁定生命周期。
-struct SubagentEnv {
-    prev: Option<String>,
-}
-
-impl SubagentEnv {
-    fn enable() -> Self {
-        let prev = std::env::var("PINVOU3_BLOCKLIST_OVERRIDE").ok();
-        // SAFETY: 单线程测试 (--test-threads=1),不存在 race
-        unsafe {
-            std::env::set_var("PINVOU3_BLOCKLIST_OVERRIDE", SUBAGENT_TOOLS);
-        }
-        Self { prev }
-    }
-}
-
-impl Drop for SubagentEnv {
-    fn drop(&mut self) {
-        unsafe {
-            match &self.prev {
-                Some(v) => std::env::set_var("PINVOU3_BLOCKLIST_OVERRIDE", v),
-                None => std::env::remove_var("PINVOU3_BLOCKLIST_OVERRIDE"),
-            }
-        }
-    }
-}
 
 /// C-0 subagent_single_simple (诊断): **1 个 subagent 做简单任务**,隔离"多 subagent 并发"
 /// 跟"subagent 链路本身" 两个变量。
@@ -1294,7 +1203,6 @@ async fn subagent_single_simple() {
     if !require_vllm(scenario).await {
         return;
     }
-    let _env_guard = SubagentEnv::enable();
     let (engine, _ws) = spawn_for_scenario(scenario).await;
 
     let mut expect = Expect::default();
@@ -1302,7 +1210,7 @@ async fn subagent_single_simple() {
 
     run_turn(
         &engine,
-        "用 1 个 subagent (delegate_to_agent) 帮我做一件简单事:\
+        "用 1 个 subagent (`agent` 工具) 帮我做一件简单事:\
          写一段不超过 100 字的中文,解释什么是 Rust 的 ownership。\
          主 agent 不要自己回答,把任务委托给 subagent,等结果后转述。",
         AppMode::Yolo,
@@ -1352,7 +1260,6 @@ async fn subagent_compare_3_libs() {
     if !require_vllm(scenario).await {
         return;
     }
-    let _env_guard = SubagentEnv::enable();
     let (engine, _ws) = spawn_for_scenario(scenario).await;
 
     let mut expect = Expect::default();
@@ -1362,8 +1269,7 @@ async fn subagent_compare_3_libs() {
         &engine,
         "对比 Rust 异步运行时 tokio / async-std / smol 三个候选,每个研究:\
          (1) 核心架构特点; (2) 用户量与生态; (3) 维护活跃度。最后给一个推荐和理由。\
-         请用 subagent 并行研究每个候选 (例如 `delegate_to_agent` 或 \
-         `agent_spawn` + `agent_eval` + `agent_result`),不要自己在主 agent 里硬干。",
+         请用 subagent 并行研究每个候选 (用 `agent` 工具逐个派出),不要自己在主 agent 里硬干。",
         AppMode::Yolo,
         &expect,
         scenario,
@@ -1381,7 +1287,6 @@ async fn subagent_research_topic() {
     if !require_vllm(scenario).await {
         return;
     }
-    let _env_guard = SubagentEnv::enable();
     let (engine, _ws) = spawn_for_scenario(scenario).await;
 
     let mut expect = Expect::default();
@@ -1391,7 +1296,7 @@ async fn subagent_research_topic() {
         &engine,
         "整理一份 RAG (Retrieval-Augmented Generation) 在 2025-2026 年的最新进展\
          和工程实践综述,要覆盖:学术新方向 / 工业落地案例 / 主流开源工具 / \
-         踩坑经验。用 subagent 并行研究各方向 (建议 `delegate_to_agent`),\
+         踩坑经验。用 subagent 并行研究各方向 (用 `agent` 工具),\
          主 agent 只负责拆任务 + 综合,**不要自己直接调 web_search 搜任何内容**。",
         AppMode::Yolo,
         &expect,
@@ -1410,7 +1315,6 @@ async fn subagent_no_need() {
     if !require_vllm(scenario).await {
         return;
     }
-    let _env_guard = SubagentEnv::enable();
     let (engine, _ws) = spawn_for_scenario(scenario).await;
 
     let mut expect = Expect::default();
@@ -1438,7 +1342,6 @@ async fn subagent_one_fails() {
     if !require_vllm(scenario).await {
         return;
     }
-    let _env_guard = SubagentEnv::enable();
     let (engine, _ws) = spawn_for_scenario(scenario).await;
 
     let mut expect = Expect::default();

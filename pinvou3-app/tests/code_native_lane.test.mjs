@@ -11,12 +11,14 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-code-native-lane-'));
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
-mkdirSync(path.join(temp, 'conversation'), { recursive: true });
-mkdirSync(path.join(temp, 'codex'), { recursive: true });
+mkdirSync(path.join(temp, 'features', 'conversation'), { recursive: true });
+mkdirSync(path.join(temp, 'features', 'codex'), { recursive: true });
+mkdirSync(path.join(temp, 'shared'), { recursive: true });
 for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
-  copyFileSync(path.join(root, 'src', 'features', 'conversation', file), path.join(temp, 'conversation', file));
+  copyFileSync(path.join(root, 'src', 'features', 'conversation', file), path.join(temp, 'features', 'conversation', file));
 }
-copyFileSync(path.join(root, 'src', 'features', 'codex', 'code-native-lane.js'), path.join(temp, 'codex', 'code-native-lane.js'));
+copyFileSync(path.join(root, 'src', 'features', 'codex', 'code-native-lane.js'), path.join(temp, 'features', 'codex', 'code-native-lane.js'));
+copyFileSync(path.join(root, 'src', 'shared', 'internal-message.mjs'), path.join(temp, 'shared', 'internal-message.mjs'));
 
 try {
   const {
@@ -29,7 +31,7 @@ try {
     parseNativePlanSnapshot,
     projectNativeLane,
     removeLocalUserMessage,
-  } = await import(`${pathToFileURL(path.join(temp, 'codex', 'code-native-lane.js')).href}?t=${Date.now()}`);
+  } = await import(`${pathToFileURL(path.join(temp, 'features', 'codex', 'code-native-lane.js')).href}?t=${Date.now()}`);
 
   // ── 发送 + 流式回合 ─────────────────────────────────────────────
   const lane = createNativeLane();
@@ -66,6 +68,61 @@ try {
   assert.equal(toolItems[0].status, 'completed');
   const reasoningItems = turn.items.filter(item => item.type === 'reasoning');
   assert.equal(reasoningItems[0].text, '先看代码');
+
+  // ── agent 启动失败：tool_end 的完成态与成功态必须分别保留 ────────────
+  const failedAgentLane = createNativeLane();
+  applyNativeChatEvent(failedAgentLane, 'chat:tool_start', {
+    session_id: 'agent-live',
+    id: 'agent-call-failed',
+    name: 'agent',
+    args: { action: 'start', prompt: '「国际AI新闻采集」只读调研' },
+  });
+  applyNativeChatEvent(failedAgentLane, 'chat:tool_end', {
+    session_id: 'agent-live',
+    id: 'agent-call-failed',
+    name: 'agent',
+    success: false,
+    output: 'Error: write-scope contention with agent_6282bd07',
+  });
+  const failedAgentLive = failedAgentLane.items.find(item => item.toolId === 'agent-call-failed');
+  assert.equal(failedAgentLive.state, 'done', 'tool 调用已收口，不应残留执行中');
+  assert.equal(failedAgentLive.success, false, '失败事实必须独立于完成态保留');
+
+  // ── 产品专家模式关闭时，底座裸 agent 仍是事实委派 ────────────────
+  // 底座允许省略 action/profile（缺省 action=start）。这类调用不能因为
+  // Pinvou 专家名册未开启而折进普通工具组，否则卡片与 transcript 入口会消失。
+  const bareAgentLane = createNativeLane();
+  appendLocalUserMessage(bareAgentLane, '向子智能体问你好');
+  applyNativeChatEvent(bareAgentLane, 'chat:tool_start', {
+    session_id: 'bare-agent-session',
+    id: 'bare-agent-call',
+    name: 'agent',
+    args: { prompt: '向子智能体问你好' },
+  });
+  applyNativeChatEvent(bareAgentLane, 'chat:tool_end', {
+    session_id: 'bare-agent-session',
+    id: 'bare-agent-call',
+    name: 'agent',
+    success: true,
+    output: '{"agent_id":"agent_1234"}',
+  });
+  applyNativeChatEvent(bareAgentLane, 'chat:done', {
+    session_id: 'bare-agent-session',
+    status: 'Completed',
+  });
+  const bareAgentTurn = projectNativeLane(bareAgentLane, 'bare-agent-session').turns[0];
+  const bareAgentPresentation = bareAgentTurn.presentation.find(
+    item => item.legacyItem?.toolId === 'bare-agent-call',
+  );
+  assert.equal(bareAgentPresentation?.type, 'tool', '裸 agent spawn 必须保持为一等子智能体卡');
+  assert.equal(
+    bareAgentTurn.presentation.some(item => (
+      item.type === 'tool_group'
+      && item.items.some(child => child.legacyItem?.toolId === 'bare-agent-call')
+    )),
+    false,
+    '裸 agent spawn 不得折入默认收起的普通工具组',
+  );
 
   // ── 选择确认卡：请求 → 提交后 tool_end 收口 ─────────────────────
   const lane2 = createNativeLane();
@@ -135,6 +192,78 @@ try {
   assert.equal(hydratedTool.success, true);
   const hydratedInput = lane4.items.find(item => item.type === 'user_input');
   assert.equal(hydratedInput.resolved, true, '历史 request_user_input 还原为已处理卡');
+
+  // ── hydrate 还原用户已选答案：单选 + 多选（multi_select 不塌缩）────
+  const lane4d = createNativeLane();
+  hydrateNativeLane(lane4d, {
+    messages: [
+      {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use', id: 'c3', name: 'request_user_input',
+          input: { questions: [
+            { id: 'q1', header: '语言', question: '用什么语言？', options: [{ label: 'Python', description: '' }, { label: 'Go', description: '' }], multi_select: false },
+            { id: 'q2', header: '技能', question: '擅长哪些？', options: [{ label: '前端', description: '' }, { label: '后端', description: '' }, { label: '运维', description: '' }], multi_select: true },
+          ] },
+        }],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result', tool_use_id: 'c3', is_error: false,
+          content: JSON.stringify({ answers: [
+            { id: 'q1', label: 'Python', value: 'Python' },
+            { id: 'q2', label: '前端', value: '前端' },
+            { id: 'q2', label: '运维', value: '运维' },
+          ] }),
+        }],
+      },
+    ],
+  }, []);
+  const restoredInput = lane4d.items.find(item => item.type === 'user_input');
+  assert.equal(restoredInput.resolved, true);
+  assert.deepEqual(
+    restoredInput.restoredAnswers,
+    [
+      { id: 'q1', label: 'Python', value: 'Python' },
+      { id: 'q2', label: '前端', value: '前端' },
+      { id: 'q2', label: '运维', value: '运维' },
+    ],
+    '单选/多选答案按 id 全量还原，multi_select 不塌缩为最后一项',
+  );
+
+  // ── hydrate 特殊 question id（constructor/toString/__proto__）不抛错 ──
+  // question id 后端仅校验非空，这些保留属性名是合法输入；parseNativeUserAnswers
+  // 用 Object.create(null) 分组后不得命中 Object.prototype（复核 P1）。
+  for (const specialId of ['constructor', 'toString', '__proto__']) {
+    const lane4s = createNativeLane();
+    hydrateNativeLane(lane4s, {
+      messages: [
+        {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use', id: 'cs', name: 'request_user_input',
+            input: { questions: [{ id: specialId, header: '选择', question: '选？', options: [{ label: 'A', description: '' }] }] },
+          }],
+        },
+        {
+          role: 'user',
+          content: [{
+            type: 'tool_result', tool_use_id: 'cs', is_error: false,
+            content: JSON.stringify({ answers: [{ id: specialId, label: 'A', value: 'A' }] }),
+          }],
+        },
+      ],
+    }, []);
+    const restoredSpecial = lane4s.items.find(item => item.type === 'user_input');
+    assert.equal(restoredSpecial.resolved, true, `特殊 id "${specialId}" hydrate 不得抛错`);
+    assert.deepEqual(
+      restoredSpecial.restoredAnswers,
+      [{ id: specialId, label: 'A', value: 'A' }],
+      `特殊 id "${specialId}" 答案按 id 还原`,
+    );
+  }
+
   const hydratedReasoning = lane4.items.find(item => item.type === 'reasoning');
   assert.equal(hydratedReasoning.text, '先想目录结构');
   assert.equal(
@@ -142,11 +271,112 @@ try {
     '好的|已完成',
   );
 
+  const failedAgentHydratedLane = createNativeLane();
+  hydrateNativeLane(failedAgentHydratedLane, {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '采集 AI 新闻' }] },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'agent-call-hydrated-failed',
+          name: 'agent',
+          input: { action: 'start', prompt: '「国际AI新闻采集」只读调研' },
+        }],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'agent-call-hydrated-failed',
+          content: 'Error: write-scope contention with agent_6282bd07',
+          is_error: true,
+        }],
+      },
+    ],
+  }, []);
+  const failedAgentHydrated = failedAgentHydratedLane.items.find(
+    item => item.toolId === 'agent-call-hydrated-failed',
+  );
+  assert.equal(failedAgentHydrated.state, 'done', '重开会话后失败工具卡仍是已收口状态');
+  assert.equal(failedAgentHydrated.success, false, '重开会话后必须恢复 is_error 事实');
+
   // ── 切回正在跑的会话：hydration 保留 live busy ──────────────────
   applyNativeChatEvent(lane4, 'chat:turn_started', { session_id: 's4', turn_id: 't2' });
   assert.equal(lane4.busy, true);
   hydrateNativeLane(lane4, { messages: [] }, []);
   assert.equal(lane4.busy, true, '已有 live turn 时 hydration 不得清 busy');
+
+  // ── hydration + live：内部运行时信封不上屏（对齐 bridge 过滤）─────
+  const laneEnvelope = createNativeLane();
+  hydrateNativeLane(laneEnvelope, {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '真实用户提问' }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: [
+            '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+            'This is an internal runtime event, not user input.',
+            'child completion summary',
+            '<codewhale:subagent.done>{"agent_id":"a1","status":"completed"}</codewhale:subagent.done>',
+            '</codewhale:runtime_event>',
+          ].join('\n') },
+          { type: 'text', text: '<turn_meta>\nInput provenance: subagent_handoff (non-authoritative)\n</turn_meta>' },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: [
+            '<codewhale:runtime_event kind="background_shell_completion" visibility="internal">',
+            'internal shell completion payload',
+            '</codewhale:runtime_event>',
+          ].join('\n') },
+          { type: 'text', text: '<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>' },
+        ],
+      },
+      { role: 'assistant', content: [{ type: 'text', text: '父智能体汇总' }] },
+    ],
+  }, []);
+  assert.ok(laneEnvelope.items.some(item => item.type === 'user' && item.text.includes('真实用户提问')),
+    '真实用户消息仍渲染');
+  assert.ok(!laneEnvelope.items.some(item => item.type === 'user' && item.text.includes('child completion summary')),
+    'hydrate 必须隐藏 subagent 交接信封');
+  assert.ok(!laneEnvelope.items.some(item => item.type === 'user' && item.text.includes('internal shell completion payload')),
+    'hydrate 必须隐藏 shell 完成信封');
+  assert.ok(!JSON.stringify(laneEnvelope.items).includes('codewhale:runtime_event'),
+    'hydrate 内部信封 XML 不得进入 lane 展示');
+
+  // live 实时路径同样不上屏。
+  const laneLiveEnvelope = createNativeLane();
+  const liveChanged = applyNativeChatEvent(laneLiveEnvelope, 'chat:user_message', {
+    session_id: 's-env',
+    content: [
+      '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+      'live child completion',
+      '</codewhale:runtime_event>',
+    ].join('\n'),
+  });
+  assert.equal(liveChanged, false, 'live 内部信封不产生可视变化');
+  assert.equal(laneLiveEnvelope.items.some(item => item.type === 'user'), false,
+    'live 内部信封不得 push 用户气泡');
+
+  // hydrate 仅-provenance（无信封）遗留形态：白名单必须单独兜住。
+  const laneProvenanceOnly = createNativeLane();
+  hydrateNativeLane(laneProvenanceOnly, {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '真实任务正文' }] },
+      { role: 'user', content: [
+        { type: 'text', text: '<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>' },
+      ] },
+      { role: 'assistant', content: [{ type: 'text', text: '父汇总' }] },
+    ],
+  }, []);
+  assert.ok(laneProvenanceOnly.items.some(item => item.type === 'user' && item.text.includes('真实任务正文')),
+    '真实任务正文仍渲染');
+  assert.ok(!JSON.stringify(laneProvenanceOnly.items).includes('shell_completion'),
+    '仅-provenance 内部消息不得进入 lane 展示');
 
   // ── hydration：request_user_input 的 tool_use 无 tool_result ──────
   // 快照可能落在 turn 进行中（底座 add_session_message 每次落盘）：此时

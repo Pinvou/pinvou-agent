@@ -253,6 +253,14 @@
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo" },
+    // 三个工作区 lane（work/design/code）的全局默认 mode（null=该 lane 未显式
+    // 选过；缺省 code→plan、work/design→yolo）。草稿态 chip 显示与切换的事实源，
+    // 启动时经 get_mode_defaults 拉取；草稿切换经 set_mode_default 写回。
+    modeDefaults: { work: null, design: null, code: null },
+    // 当前聊天页所处 lane（work/design；code 页车道有自己的草稿控件逻辑）。
+    // lane 是纯前端概念，由 ChatView 随 pinvouMode 显式传入，bridge 不读
+    // localStorage。
+    modeLane: "work",
     // 草稿态寄存的多智能体开关意图：不物化会话，首条消息创建会话时落后端。
     pendingDraftMultiAgent: false,
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
@@ -272,28 +280,6 @@
     tokens: { input: 0, max: 32768 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
     thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
-    // 工作流状态
-    workflow: {
-      skills: [],
-      loadState: "idle", // idle | loading | ready | error
-      activeSkillName: null,
-      phases: [],
-      currentPhaseId: null,
-      reachedPhaseIds: [],
-      bindings: {},      // session_id → skill_name
-      demo: null,        // { open, name, loading, kind, content, error, description, duration }
-      // 卡片流工作流运行态（无聊天，事件驱动看板）。详见 09-ui-plane 决策。
-      run: {
-        active: false,       // 是否有进行中的工作流
-        sessionId: null,
-        projectDir: null,
-        scenario: null,
-        status: "idle",      // idle | running | complete | blocked | stopped
-        agents: {},          // role_id → { id, name, status, last_gate_verdict, outputs_present, last_run_ts, depends_on }
-        cards: [],           // 底部交互卡片队列 [{ cardId, kind:'user_input'|'gate'|'system', resolved, ... }]
-        selectedRole: null,  // 右抽屉选中的角色
-      },
-    },
     // 卡片池: 专家面具。activePersona = 当前 session 加持的专家卡(完整对象)或 null,
     // 驱动聊天室右上角挂件。
     activePersona: null,
@@ -301,6 +287,7 @@
     // 仅驻内存(后端也只驻内存),重启回到未挂载。名字由前端用知识集列表解析。
     mountedCollection: null,
     mountedCollections: [],
+    mountedRemoteCollections: [],
     mountedCollectionsRevision: 0,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
     // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
@@ -364,7 +351,7 @@
       startupLoading: false, // 已安装模型在首帧后的后台加载状态
       startupReady: null, // null=未知；true=当前进程可用；false=未安装或加载失败
       status: null,       // kb_model_status 返回 { installed, ready, loading, downloading, ... }
-      progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'extract'|'done', downloaded, total, ready }
+      progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'prepare'|'done', downloaded, total, ready }
       error: null,
     },
     scheduledTasks: [],
@@ -414,6 +401,8 @@
       personaUnequipped: "🎴 Expert card removed: ",
       planHistorical: "📜 Past plan", planSuperseded: "📜 Superseded by a newer plan",
       attachStillParsing: "⚠️ Attachment still parsing, try again shortly",
+      imageUnsupported: "The current model does not support images. Switch to an image-capable model, or configure a vision model in model settings.",
+      imageUnknown: "Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.",
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
@@ -447,7 +436,7 @@
       voiceRecognitionFailed: "Speech recognition failed. Please try again later.",
       voiceInputFailed: "Voice input failed. Check the microphone and try again.",
       voiceCancelled: "Voice input cancelled",
-      voiceDeviceTimeout: "Microphone detection timed out; no recording device found. Check the device connection and Windows microphone settings, then try again.",
+      voiceDeviceTimeout: "Microphone detection timed out; no recording device found. Check the device connection and the system microphone settings, then try again.",
       voiceTranscribing: "Transcribing…",
       voiceRecordingTooShort: "Recording is too short. Please try again.",
       voiceWrittenBack: "Transcribed text inserted into the input box",
@@ -457,31 +446,16 @@
       voiceWebviewNoRecording: "This WebView does not support audio recording.",
       voiceNoDeviceConnect: "No available microphone detected. Connect or enable a recording device, then try again.",
       voiceRecording: "Recording… tap again to finish",
-      voicePermissionDeniedRetry: "Microphone permission was denied. Tap voice input again and choose Allow in the prompt; if it still fails, check Windows microphone settings.",
+      voicePermissionDeniedRetry: "Microphone permission was denied. Tap voice input again and choose Allow in the prompt; if it still fails, check the system microphone settings.",
       scheduledDraftInvalid: "The scheduled task draft is missing a name, task description, or schedule rule",
       scheduledCreateFailed: "Failed to create scheduled task: ",
       scheduledTaskFallbackName: "Scheduled task",
       scheduledActionBusy: "Another scheduled task operation is still in progress",
       scheduledCreateNoId: "Failed to create scheduled task: backend returned no task ID",
       scheduledChatPrefill: "I want to create a scheduled task: ",
-      workflowBlockedPrefix: "⚙️ Workflow blocked: ",
-      workflowBlockedUnknown: "unknown reason",
-      workflowCompleteArtifact: "🎉 Workflow complete — deliverable generated",
-      workflowActivateFailed: "⚠️ Failed to activate workflow: ",
-      workflowCreateFailed: "⚠️ Failed to create workflow: ",
-      workflowStartFailed: "⚠️ Failed to start workflow: ",
-      workflowNoStoppableRun: "There is no workflow run to stop",
-      workflowSubmitFailed: "⚠️ Submit failed: ",
-      workflowMaterialsAdded: (count, names) => "✅ Added " + count + " material(s) to materials folder: " + names.join(", "),
-      workflowFolderPickerUnavailable: "Cannot open the folder picker in this environment",
-      workflowPickWorkDirTitle: "Choose a working directory",
+      pickFolderTitle: "Choose a working directory",
+      fileMediaFilterName: "Images and videos",
       kbPickFolderTitle: "Choose folders to import into the knowledge base",
-      workflowMediaFilterName: "Images and videos",
-      workflowApproveFailed: "⚠️ Approve failed: ",
-      workflowRejectFailed: "⚠️ Reject failed: ",
-      workflowRejectDefaultReason: "Sent back by the user. Please improve and try again.",
-      workflowRerunPrefix: "🔄 Rerun ",
-      workflowRerunFailed: "⚠️ Rerun failed: ",
       memoryWriteFailed: "Memory write failed: ", memoryIgnoreFailed: "Failed to ignore memory: ", memoryNeverFailed: "Failed to set \"never ask\": ",
       attachNeedSession: "⚠️ Start a new chat before adding attachments", attachTooLarge: "Attachment exceeds the 20 MiB limit", attachEmptyFile: "Empty files cannot be added", attachAddCancelled: "Attachment add canceled", attachInvalidResult: "Attachment add returned no valid result",
       planTicketInvalid: "⚠️ The plan credential is no longer valid. Regenerate the plan before executing.",
@@ -501,6 +475,8 @@
       personaUnequipped: "🎴 エキスパートカードを外しました: ",
       planHistorical: "📜 過去のプラン", planSuperseded: "📜 新しいプランで上書きされました",
       attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
+      imageUnsupported: "現在のモデルは画像に対応していません。画像対応モデルに切り替えるか、モデル設定でビジョンモデルを構成してください。",
+      imageUnknown: "現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。",
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
@@ -534,7 +510,7 @@
       voiceRecognitionFailed: "音声認識に失敗しました。しばらくしてから再試行してください。",
       voiceInputFailed: "音声入力に失敗しました。マイクを確認して再試行してください。",
       voiceCancelled: "音声入力をキャンセルしました",
-      voiceDeviceTimeout: "マイク検出がタイムアウトし、録音デバイスが見つかりませんでした。デバイスの接続と Windows のマイク設定を確認して再試行してください。",
+      voiceDeviceTimeout: "マイク検出がタイムアウトし、録音デバイスが見つかりませんでした。デバイスの接続とシステムのマイク設定を確認して再試行してください。",
       voiceTranscribing: "音声を認識中…",
       voiceRecordingTooShort: "録音時間が短すぎます。再試行してください。",
       voiceWrittenBack: "音声を入力ボックスに書き込みました",
@@ -544,31 +520,16 @@
       voiceWebviewNoRecording: "この WebView は音声録音に対応していません。",
       voiceNoDeviceConnect: "利用可能なマイクが見つかりません。録音デバイスを接続または有効にして再試行してください。",
       voiceRecording: "録音中です。もう一度タップすると終了します",
-      voicePermissionDeniedRetry: "マイクの権限が拒否されています。もう一度音声入力をタップし、許可を選択してください。それでも失敗する場合は Windows のマイク設定を確認してください。",
+      voicePermissionDeniedRetry: "マイクの権限が拒否されています。もう一度音声入力をタップし、許可を選択してください。それでも失敗する場合はシステムのマイク設定を確認してください。",
       scheduledDraftInvalid: "スケジュールタスクの下書きに名前・タスク説明・時間ルールのいずれかが不足しています",
       scheduledCreateFailed: "スケジュールタスクの作成に失敗：",
       scheduledTaskFallbackName: "スケジュールタスク",
       scheduledActionBusy: "別のスケジュールタスク操作がまだ実行中です",
       scheduledCreateNoId: "スケジュールタスクの作成に失敗：バックエンドがタスク ID を返しませんでした",
       scheduledChatPrefill: "スケジュールタスクを作成したい：",
-      workflowBlockedPrefix: "⚙️ ワークフローが停止：",
-      workflowBlockedUnknown: "原因不明",
-      workflowCompleteArtifact: "🎉 ワークフロー完了、成果物が生成されました",
-      workflowActivateFailed: "⚠️ ワークフローの有効化に失敗: ",
-      workflowCreateFailed: "⚠️ ワークフローの作成に失敗: ",
-      workflowStartFailed: "⚠️ ワークフローの開始に失敗: ",
-      workflowNoStoppableRun: "停止できるワークフローがありません",
-      workflowSubmitFailed: "⚠️ 送信に失敗: ",
-      workflowMaterialsAdded: (count, names) => "✅ 素材を " + count + " 件、付属資料に追加しました：" + names.join("、"),
-      workflowFolderPickerUnavailable: "現在の環境ではフォルダー選択を開けません",
-      workflowPickWorkDirTitle: "作業ディレクトリを選択",
+      pickFolderTitle: "作業ディレクトリを選択",
+      fileMediaFilterName: "画像と動画",
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
-      workflowMediaFilterName: "画像と動画",
-      workflowApproveFailed: "⚠️ 承認に失敗: ",
-      workflowRejectFailed: "⚠️ 差し戻しに失敗: ",
-      workflowRejectDefaultReason: "ユーザーによる差し戻し。改善して再試行してください。",
-      workflowRerunPrefix: "🔄 再実行 ",
-      workflowRerunFailed: "⚠️ 再実行に失敗: ",
       memoryWriteFailed: "メモリの書き込みに失敗: ", memoryIgnoreFailed: "メモリの無視に失敗: ", memoryNeverFailed: "「今後表示しない」の設定に失敗: ",
       attachNeedSession: "⚠️ 添付ファイルを追加する前に新しいチャットを開始してください", attachTooLarge: "添付ファイルが 20 MiB の上限を超えています", attachEmptyFile: "空のファイルは追加できません", attachAddCancelled: "添付ファイルの追加はキャンセルされました", attachInvalidResult: "添付ファイルの追加で有効な結果が返されませんでした",
       planTicketInvalid: "⚠️ プランの資格情報が無効になりました。プランを再生成してから実行してください。",
@@ -588,6 +549,8 @@
       personaUnequipped: "🎴 已卸下专家卡牌: ",
       planHistorical: "📜 历史方案", planSuperseded: "📜 已被新方案覆盖",
       attachStillParsing: "⚠️ 附件还在解析,请稍后再发",
+      imageUnsupported: "当前模型不支持图片。请切换到支持图片的模型，或在模型设置中配置视觉模型。",
+      imageUnknown: "当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”后重试；也可以配置视觉模型。",
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
@@ -621,7 +584,7 @@
       voiceRecognitionFailed: "语音识别失败，请稍后重试。",
       voiceInputFailed: "语音输入失败，请检查麦克风后重试。",
       voiceCancelled: "已取消语音输入",
-      voiceDeviceTimeout: "麦克风检测超时，未发现可用录音设备。请检查设备连接和 Windows 麦克风设置后重试。",
+      voiceDeviceTimeout: "麦克风检测超时，未发现可用录音设备。请检查设备连接和系统麦克风设置后重试。",
       voiceTranscribing: "正在识别语音…",
       voiceRecordingTooShort: "录音时间过短，请重试。",
       voiceWrittenBack: "语音已写入输入框",
@@ -631,31 +594,16 @@
       voiceWebviewNoRecording: "当前 WebView 不支持音频录制。",
       voiceNoDeviceConnect: "未检测到可用麦克风，请连接或启用录音设备后重试。",
       voiceRecording: "正在录音，再点一次结束",
-      voicePermissionDeniedRetry: "麦克风权限已被拒绝，请再次点击语音输入并在授权提示中选择允许；若仍失败，请检查 Windows 麦克风设置。",
+      voicePermissionDeniedRetry: "麦克风权限已被拒绝，请再次点击语音输入并在授权提示中选择允许；若仍失败，请检查系统麦克风设置。",
       scheduledDraftInvalid: "定时任务草稿缺少名称、任务说明或时间规则",
       scheduledCreateFailed: "定时任务创建失败：",
       scheduledTaskFallbackName: "定时任务",
       scheduledActionBusy: "另一个定时任务操作仍在进行中",
       scheduledCreateNoId: "创建定时任务失败：后端未返回任务 ID",
       scheduledChatPrefill: "我想创建一个定时任务：",
-      workflowBlockedPrefix: "⚙️ 工作流卡住：",
-      workflowBlockedUnknown: "未知原因",
-      workflowCompleteArtifact: "🎉 工作流完成，成品已生成",
-      workflowActivateFailed: "⚠️ 启用工作流失败: ",
-      workflowCreateFailed: "⚠️ 创建工作流失败: ",
-      workflowStartFailed: "⚠️ 启动工作流失败: ",
-      workflowNoStoppableRun: "当前没有可停止的工作流",
-      workflowSubmitFailed: "⚠️ 提交失败: ",
-      workflowMaterialsAdded: (count, names) => "✅ 已添加 " + count + " 个素材到配套材料：" + names.join("、"),
-      workflowFolderPickerUnavailable: "当前环境无法打开文件夹选择器",
-      workflowPickWorkDirTitle: "选择工作目录",
+      pickFolderTitle: "选择工作目录",
+      fileMediaFilterName: "图片和视频",
       kbPickFolderTitle: "选择要导入知识库的文件夹",
-      workflowMediaFilterName: "图片和视频",
-      workflowApproveFailed: "⚠️ 通过失败: ",
-      workflowRejectFailed: "⚠️ 打回失败: ",
-      workflowRejectDefaultReason: "用户打回，请改进后重试",
-      workflowRerunPrefix: "🔄 重跑 ",
-      workflowRerunFailed: "⚠️ 重跑失败: ",
       memoryWriteFailed: "记忆写入失败：", memoryIgnoreFailed: "忽略记忆失败：", memoryNeverFailed: "设置不再提示失败：",
       attachNeedSession: "⚠️ 请先新建会话再添加附件", attachTooLarge: "附件超过 20 MiB 上限", attachEmptyFile: "空文件无法添加", attachAddCancelled: "附件添加已取消", attachInvalidResult: "附件添加未返回有效结果",
       planTicketInvalid: "⚠️ 方案凭证已失效，请重新生成方案后再执行",
@@ -837,6 +785,7 @@
     discardManagedAttachment: discardManagedAttachment,
     isScheduledRunSession: function () { return isScheduledRunSession.apply(null, arguments); },
     basename: basename,
+    userMessageDisplayText: userMessageDisplayText,
     extractArtifactPaths: extractArtifactPaths,
     fileMutationAction: fileMutationAction,
     parseScheduledTaskDraftFromText: function () { return parseScheduledTaskDraftFromText.apply(null, arguments); },
@@ -896,6 +845,8 @@
     stopThinking: function () { return stopThinking.apply(null, arguments); },
     rerenderFromMessages: rerenderFromMessages,
     syncModeState: function () { return syncModeState.apply(null, arguments); },
+    applyAuthoritativeModeState: applyAuthoritativeModeState,
+    currentDraftModeState: currentDraftModeState,
     syncActivePersona: function () { return syncActivePersona(); },
     syncMountedCollection: function () { return syncMountedCollection(); },
     reconcileArtifacts: reconcileArtifacts,
@@ -979,8 +930,12 @@
     var bg = sessionStates[sid]; if (!bg) return;
     touchSessionBuffer(sid, bg, isScheduledRunSession(sid));
     var realId = state.activeSessionId;
-    var draftComposer = realId ? "" : (state.composerDraft || "");
-    saveWorkingSetTo(getBuffer(realId));
+    // 进入时就把【当前完整工作集】落进 restoreBuffer：realId 为 null（草稿态）
+    // 时也要保存——草稿态可能已含乐观的 modeState（如刚打开的多智能体开关）、
+    // 未发送文本，finally 里不能拿全新 freshBuffer 覆盖（否则开关状态被后台
+    // 会话事件冲掉，表现为"打开开关后被正在运行的对话覆盖成关"）。
+    var restoreBuffer = realId ? getBuffer(realId) : freshBuffer();
+    saveWorkingSetTo(restoreBuffer);
     loadWorkingSetFrom(bg);
     state.activeSessionId = sid;
     var prev = suppressNotify; suppressNotify = true;
@@ -989,15 +944,37 @@
       suppressNotify = prev;
       saveWorkingSetTo(bg);
       state.activeSessionId = realId;
-      // realId 为 null(草稿态)时 getBuffer(null)=null、loadWorkingSetFrom(null) 是 no-op,
-      // 会把刚处理的后台 session 工作集泄漏进草稿视图(activeSessionId=null 却带着它的 chatItems),
-      // 召唤检阅等依赖 activeSessionId 的操作随之错乱。草稿态须切回干净工作集，
-      // 但要保留用户正在输入的未发送文本。
-      var restoreBuffer = realId ? getBuffer(realId) : freshBuffer();
-      if (!realId) restoreBuffer.composerDraft = draftComposer;
+      // 恢复的是进入时的同一工作集对象（草稿态下保留乐观 modeState /
+      // 未发送文本——saveWorkingSetTo 已含 composerDraft），不是全新 buffer。
       loadWorkingSetFrom(restoreBuffer);
     }
   }
+  // ── modeState 权威写回收敛点（评审 P1）────────────────────────────
+  // 任何「invoke 返回 / 事件负载」带来的权威 modeState 更新都必须走
+  // applyAuthoritativeModeState：内部统一 bump per-session epoch（作废
+  // 在途 syncModeState 的旧读取）+ 定向写回触发会话（await 期间用户可能
+  // 已切走）。interaction / chat-events 两个 feature 共享同一份 epoch 表，
+  // 散点手工 bump+写漏一处就会重现「旧读取覆盖权威值」竞态。
+  var modeStateEpochs = {};
+  function bumpModeStateEpoch(sid) {
+    if (!sid) return;
+    modeStateEpochs[sid] = (modeStateEpochs[sid] || 0) + 1;
+  }
+  function applyAuthoritativeModeState(sid, st) {
+    bumpModeStateEpoch(sid);
+    runSyncOnSession(sid || state.activeSessionId, function () {
+      state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
+    });
+  }
+
+  // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认，缺省 yolo
+  // （与后端 plain 缺省方向一致）。三分 lane 语义：草稿显示 = 本 lane 全局默认。
+  function currentDraftModeState() {
+    var lane = state.modeLane === "design" ? "design" : "work";
+    var d = state.modeDefaults && state.modeDefaults[lane];
+    return { mode: d || "yolo", multiAgent: false };
+  }
+
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
   function markRemoteTurn(sid, buf, preserveCommittedRevision) {
     if (!sid || !buf || buf.localTurnOwned) return;
@@ -1063,9 +1040,12 @@
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
-        var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
-        if (text && text.text) {
-          var newTitle = text.text.slice(0, 20);
+        // 自动标题复用展示层过滤（与 web 侧一致）：内部信封/子智能体交接不参与
+        // 命名；hideInternalEnvelope=true 同时剥离 turn_meta/system-reminder 元数据
+        // 块，避免 XML 痕迹进 sidebar 标题。
+        var titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        if (titleText) {
+          var newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
           meta.title = newTitle;
           delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
@@ -1234,7 +1214,7 @@
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
     chat: ["activeSkill", "artifacts", "artifactChange", "attachmentDragActive", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
-    knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedCollectionsRevision"],
+    knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedRemoteCollections", "mountedCollectionsRevision"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
     monitor: ["monitor", "monitorError"],
     settings: ["settings", "selectedPet"],
@@ -1242,7 +1222,6 @@
     vllm: ["vllmBootstrapDone", "vllmBootstrapError", "vllmBootstrapping", "vllmSetup", "vllmSetupAttempt", "vllmSetupDismissed", "vllmSetupPhase"],
     interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
     personas: ["activePersona", "personaEvents", "personaPool"],
-    workflow: ["workflow"],
     memory: ["memory"],
     remoteControl: ["webAccess"],
     updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
@@ -1426,6 +1405,35 @@
     return "";
   }
 
+  // CodeWhale may append model-only recovery guidance to a persisted tool result
+  // to preserve strict provider role ordering. Keep that guidance in durable/model
+  // context, but remove only the two known internal suffix kinds from tool cards.
+  function stripInternalToolRuntimeSuffix(value) {
+    var text = String(value == null ? "" : value);
+    var marker = "\n\n<codewhale:runtime_event";
+    while (true) {
+      var start = text.lastIndexOf(marker);
+      if (start < 0) return text;
+      var suffix = text.slice(start + 2);
+      var opening = suffix.match(/^<codewhale:runtime_event\b[^>]*>/i);
+      if (!opening || !/<\/codewhale:runtime_event>\s*$/i.test(suffix)) return text;
+      var tag = opening[0];
+      var knownKind = /\bkind=(["'])(?:stuck_guard|tool_error_degradation)\1/i.test(tag);
+      var internal = /\bvisibility=(["'])internal\1/i.test(tag);
+      if (!knownKind || !internal) return text;
+      text = text.slice(0, start);
+    }
+  }
+
+  function toolResultDisplayContent(content) {
+    if (typeof content === "string") return stripInternalToolRuntimeSuffix(content);
+    if (!Array.isArray(content)) return content;
+    return content.map(function (block) {
+      if (!block || typeof block.text !== "string") return block;
+      return Object.assign({}, block, { text: stripInternalToolRuntimeSuffix(block.text) });
+    });
+  }
+
   // plan 类工具结果格式："...updated:\n{json}"——切第一个换行后 parse（与 engine.rs 一致）。
   function parsePlanSnapshot(content) {
     var txt = toolResultText(content);
@@ -1436,16 +1444,23 @@
 
   // request_user_input 结果是纯 JSON {answers:[{id,label,value}]}（turn_loop.rs ToolResult::json）。
   // 按 question.id 匹配，还原成 UserInputCard 的 answers 数组（顺序对齐 questions）。
+  // multi_select 多选保留全部同 id 答案、不塌缩（与 code-native-lane parseNativeUserAnswers 对齐）。
   function parseUserAnswers(content, questions) {
     var ans;
     try { ans = JSON.parse(toolResultText(content)).answers; } catch (_) { return null; }
     if (!Array.isArray(ans)) return null;
-    var byId = {};
-    ans.forEach(function (a) { if (a && a.id != null) byId[a.id] = a; });
-    return questions.map(function (q) {
-      var a = byId[q.id];
-      return a ? { id: q.id, label: a.label, value: a.value } : null;
-    });
+    // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
+    // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
+    var byId = Object.create(null);
+    ans.forEach(function (a) { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
+    var out = [];
+    for (var qi = 0; qi < questions.length; qi++) {
+      var q = questions[qi];
+      var matches = byId[q.id];
+      if (!matches || !matches.length) { out.push(null); continue; }
+      matches.forEach(function (a) { out.push({ id: q.id, label: a.label, value: a.value }); });
+    }
+    return out;
   }
 
   // careful hook 拦截结果(shell.rs BLOCKED 固定格式)→ 反解出 careful_blocked 卡所需 metadata。
@@ -1468,14 +1483,24 @@
       if (!block || block.type !== "text") continue;
       var text = String(block.text || "").trim();
       if (text.indexOf("<turn_meta>") !== 0) continue;
-      var match = text.match(/(?:^|\n)Input provenance:\s*([^\r\n<]+)/);
-      if (match && match[1]) return match[1].trim();
+      // CodeWhale appends human-readable authority detail after the stable
+      // provenance identifier. Parse only that identifier so both the current
+      // one-line shape and legacy two-line metadata remain compatible.
+      var match = text.match(/(?:^|\n)Input provenance:\s*([a-z0-9_-]+)/i);
+      if (match && match[1]) return match[1].toLowerCase();
     }
     return "";
   }
 
   function isInternalUserMessageProvenance(provenance) {
-    return provenance === "runtime" || provenance === "subagent_handoff";
+    // shell_completion 同为 CodeWhale 非权威内部来源（SHELL_COMPLETION_HANDOFF_TURN_META）。
+    return provenance === "runtime" || provenance === "subagent_handoff" || provenance === "shell_completion";
+  }
+
+  function isInternalRuntimeEnvelopeText(value) {
+    var text = String(value || "").trim();
+    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
+      /<\/codewhale:runtime_event>\s*$/i.test(text);
   }
 
   // Engine 的运行时恢复提示为了兼容模型协议会以 role=user 持久化，但它不是用户输入。
@@ -1486,6 +1511,7 @@
     var textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
+    if (textParts.some(isInternalRuntimeEnvelopeText)) return "";
     if (isInternalUserMessageProvenance(userMessageInputProvenance(blocks))) return "";
     if (!hideInternalEnvelope) return textParts.join("");
 
@@ -1590,11 +1616,13 @@
             // careful hook 拦截 → 还原 🛑 红卡(实时由 tool_end metadata 插,重载从文本反解)
             var blockedMd = parseCarefulBlocked(toolResultText(c.content));
             if (blockedMd) {
-              updateToolItem(c.tool_use_id, c.content, false); // 被拦=失败态,与实时一致
+              updateToolItem(c.tool_use_id, toolResultDisplayContent(c.content), false); // 被拦=失败态,与实时一致
               addChatItem({ type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" });
             } else {
               // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
-              var contentForCard = (tm.name === "load_skill") ? bt("skillContentHidden") : c.content;
+              var contentForCard = (tm.name === "load_skill")
+                ? bt("skillContentHidden")
+                : toolResultDisplayContent(c.content);
               updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
@@ -1791,6 +1819,10 @@
     state: state, listen: listen, invoke: invoke, turnUsageDirty: turnUsageDirty,
     sessionStates: sessionStates, renderMarkdown: renderMarkdown, bt: bt,
     notify: notify, onSessionEvent: onSessionEvent, runSyncOnSession: runSyncOnSession,
+    // 与历史重载路径共用同一信封判定（userMessageDisplayText 的 isInternalRuntimeEnvelopeText），
+    // 避免 live/restore 两处守卫实现漂移。
+    isInternalRuntimeUserMessage: isInternalRuntimeEnvelopeText,
+    applyAuthoritativeModeState: applyAuthoritativeModeState,
     addChatItem: addChatItem, addSystemItem: addSystemItem,
     addAuthoritySyncNotice: addAuthoritySyncNotice, timeStr: timeStr,
     toolCallAlreadyStarted: toolCallAlreadyStarted,
@@ -1840,6 +1872,7 @@
     markScheduledInitialTurnTerminal: markScheduledInitialTurnTerminal,
     isAbsPath: isAbsPath,
     addOrMergePruneCompaction: addOrMergePruneCompaction,
+    toolResultDisplayContent: toolResultDisplayContent,
     get currentStreamText() { return currentStreamText; },
     set currentStreamText(value) { currentStreamText = value; },
     get currentStreamId() { return currentStreamId; },
@@ -1853,24 +1886,6 @@
     get toolMeta() { return toolMeta; },
     set toolMeta(value) { toolMeta = value; },
   });
-
-  var workflowRuntimeFeature = installBridgeFeature("workflow-runtime", {
-    state: state, invoke: invoke, listen: listen, notify: notify, bt: bt,
-    refreshHistoryList: refreshHistoryList,
-    get itemIdSeq() { return itemIdSeq; },
-    set itemIdSeq(value) { itemIdSeq = value; },
-  });
-  var isRunSession = workflowRuntimeFeature.isRunSession;
-  var applyAgentPatch = workflowRuntimeFeature.applyAgentPatch;
-  var markWorkflowRunStopped = workflowRuntimeFeature.markWorkflowRunStopped;
-  var markWorkflowRunBlocked = workflowRuntimeFeature.markWorkflowRunBlocked;
-  var mergeFullState = workflowRuntimeFeature.mergeFullState;
-  var attachRun = workflowRuntimeFeature.attachRun;
-  var resumeWorkflowOnBoot = workflowRuntimeFeature.resumeWorkflowOnBoot;
-  var pushRunCard = workflowRuntimeFeature.pushRunCard;
-  var resolveRunCard = workflowRuntimeFeature.resolveRunCard;
-  var resolveRunCardsForRole = workflowRuntimeFeature.resolveRunCardsForRole;
-  var refreshRunState = workflowRuntimeFeature.refreshRunState;
 
   var monitorFeature = installBridgeFeature("monitor", { state: state, notify: notify, invoke: invoke, bt: bt, safeConsoleInfo: safeConsoleInfo, sessionStates: sessionStates });
   var startMonitorPolling = monitorFeature.startMonitorPolling;
@@ -1901,6 +1916,8 @@
   var loadSessionModel = settingsFeature.loadSessionModel;
   var switchModel = settingsFeature.switchModel;
   var testModelConnection = settingsFeature.testModelConnection;
+  var getImageInputCapability = settingsFeature.getImageInputCapability;
+  var testImageInputCapability = settingsFeature.testImageInputCapability;
   var testSearchProvider = settingsFeature.testSearchProvider;
 
   var interactionFeature = installBridgeFeature("interaction", {
@@ -1908,11 +1925,13 @@
     addSystemItem: addSystemItem, addAuthoritySyncNotice: addAuthoritySyncNotice,
     addChatItem: addChatItem, timeStr: timeStr,
     runSyncOnSession: runSyncOnSession,
+    modeStateEpochs: modeStateEpochs, bumpModeStateEpoch: bumpModeStateEpoch,
+    applyAuthoritativeModeState: applyAuthoritativeModeState,
+    currentDraftModeState: currentDraftModeState,
     flushAssistantMessageToHistory: flushAssistantMessageToHistory,
     resetPendingAssistant: resetPendingAssistant,
     rerenderFromMessages: rerenderFromMessages,
     turnUsageDirty: turnUsageDirty,
-    ensureSession: ensureSession,
     sendMessage: sendMessage,
     getBuffer: getBuffer,
     reconcileRemoteTurn: reconcileRemoteTurn,
@@ -1938,11 +1957,13 @@
   var thinkingTool = interactionFeature.thinkingTool;
   var thinkingIdle = interactionFeature.thinkingIdle;
   var stopThinking = interactionFeature.stopThinking;
-  var applyModeFromState = interactionFeature.applyModeFromState;
   var acceptPlan = interactionFeature.acceptPlan;
   var discardPlan = interactionFeature.discardPlan;
   var exitPlanToYolo = interactionFeature.exitPlanToYolo;
   var setPlanModeNext = interactionFeature.setPlanModeNext;
+  var setDraftMode = interactionFeature.setDraftMode;
+  var setModeLane = interactionFeature.setModeLane;
+  var refreshModeDefaults = interactionFeature.refreshModeDefaults;
   var setMultiAgentMode = interactionFeature.setMultiAgentMode;
   var planStuckReplan = interactionFeature.planStuckReplan;
   var planStuckGo = interactionFeature.planStuckGo;
@@ -1975,7 +1996,6 @@
   var openInSystem = artifactsFeature.openInSystem;
   var openArtifactExternal = artifactsFeature.openArtifactExternal;
   var downloadArtifact = artifactsFeature.downloadArtifact;
-  var listDeliverables = artifactsFeature.listDeliverables;
   var listDeliverableIndex = artifactsFeature.listDeliverableIndex;
   var openExternalUrl = artifactsFeature.openExternalUrl;
   var openUserExternalUrl = artifactsFeature.openUserExternalUrl;
@@ -2002,6 +2022,9 @@
   var setCollectionEnabled = personasFeature.setCollectionEnabled;
   var removeCollection = personasFeature.removeCollection;
   var unmountCollection = personasFeature.unmountCollection;
+  var mountRemoteCollection = personasFeature.mountRemoteCollection;
+  var setRemoteCollectionEnabled = personasFeature.setRemoteCollectionEnabled;
+  var removeRemoteCollection = personasFeature.removeRemoteCollection;
   var syncMountedCollection = personasFeature.syncMountedCollection;
   var updaterFeature = installBridgeFeature("updater", { state: state, notify: notify, invoke: invoke, refreshHistoryList: refreshHistoryList, listen: listen, publishRemoteLiveSnapshot: publishRemoteLiveSnapshot, getBuffer: getBuffer, bt: bt });
   var loadAppVersion = updaterFeature.loadAppVersion;
@@ -2040,40 +2063,40 @@
   var clearVoiceInput = voiceFeature.clearVoiceInput;
   var appendVoiceText = voiceFeature.appendVoiceText;
   var runVoiceInputDebugAssertions = voiceFeature.runVoiceInputDebugAssertions;
-  var knowledgeModelFeature = installBridgeFeature("knowledge-model", { state: state, notify: notify, invoke: invoke });
+  var knowledgeModelFeature = installBridgeFeature("knowledge-model", { state: state, notify: notify, invoke: invoke, listen: listen });
   var downloadKbModel = knowledgeModelFeature.downloadKbModel;
   var cancelKbModel = knowledgeModelFeature.cancelKbModel;
 
   var multiAgentFeature = installBridgeFeature("multiagent", { state: state, notify: notify, invoke: invoke, listen: listen });
   var listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
   var readMultiAgentSubagent = multiAgentFeature.readSubagentTranscript;
-  var workflowFeature = installBridgeFeature("workflow", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, dialogOpen: dialogOpen, resetPendingAssistant: resetPendingAssistant, syncModeState: syncModeState, refreshHistoryList: refreshHistoryList, markWorkflowRunStopped: markWorkflowRunStopped, refreshRunState: refreshRunState, resolveRunCard: resolveRunCard, resolveRunCardsForRole: resolveRunCardsForRole });
-  var setCurrentPhase = workflowFeature.setCurrentPhase;
-  var loadSkills = workflowFeature.loadSkills;
-  var activateSkill = workflowFeature.activateSkill;
-  var deactivateSkill = workflowFeature.deactivateSkill;
-  var openDemo = workflowFeature.openDemo;
-  var closeDemo = workflowFeature.closeDemo;
-  var startWorkflowTask = workflowFeature.startWorkflowTask;
-  var stopWorkflowTask = workflowFeature.stopWorkflowTask;
-  var listWorkflows = workflowFeature.listWorkflows;
-  var selectWorkflowRole = workflowFeature.selectWorkflowRole;
-  var closeWorkflowDrawer = workflowFeature.closeWorkflowDrawer;
-  var resetWorkflowRun = workflowFeature.resetWorkflowRun;
-  var getRolePrompt = workflowFeature.getRolePrompt;
-  var getRoleOutputs = workflowFeature.getRoleOutputs;
-  var getGateReport = workflowFeature.getGateReport;
-  var getRoleLogs = workflowFeature.getRoleLogs;
-  var submitWorkflowUserInput = workflowFeature.submitWorkflowUserInput;
-  var pickAndAddMaterials = workflowFeature.pickAndAddMaterials;
-  var pickFiles = workflowFeature.pickFiles;
-  var pickFolder = workflowFeature.pickFolder;
-  var pickFolders = workflowFeature.pickFolders;
-  var pickFeedbackFiles = workflowFeature.pickFeedbackFiles;
-  var addMaterialsToSession = workflowFeature.addMaterialsToSession;
-  var approveWorkflowGate = workflowFeature.approveWorkflowGate;
-  var rejectWorkflowGate = workflowFeature.rejectWorkflowGate;
-  var retryWorkflowRole = workflowFeature.retryWorkflowRole;
+  async function pickFiles() {
+    if (!dialogOpen) return [];
+    var selected = await dialogOpen({ multiple: true });
+    if (!selected) return [];
+    return Array.isArray(selected) ? selected : [selected];
+  }
+  async function pickFolder() {
+    if (!dialogOpen) return null;
+    var selected = await dialogOpen({ directory: true, multiple: false, title: bt("pickFolderTitle") });
+    if (!selected) return null;
+    return Array.isArray(selected) ? (selected[0] || null) : selected;
+  }
+  async function pickFolders() {
+    if (!dialogOpen) return [];
+    var selected = await dialogOpen({ directory: true, multiple: true, title: bt("kbPickFolderTitle") });
+    if (!selected) return [];
+    return Array.isArray(selected) ? selected : [selected];
+  }
+  async function pickFeedbackFiles() {
+    if (!dialogOpen) return [];
+    var selected = await dialogOpen({
+      multiple: true,
+      filters: [{ name: bt("fileMediaFilterName"), extensions: ["png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"] }],
+    });
+    if (!selected) return [];
+    return Array.isArray(selected) ? selected : [selected];
+  }
   // ── Init ─────────────────────────────────────────────────────────
   async function init() {
     if (initPromise) return initPromise;
@@ -2107,6 +2130,8 @@
     var needsSessionRuntime = !isDetachedWindow || detachedWindowKind === "session";
     if (needsSessionRuntime) {
       await startupAwait("bridge:refresh_super_permission", refreshSuperPerm);
+      // lane 全局默认（work/design/code）是草稿态 mode chip 的事实源，启动即拉取。
+      startupAwait("bridge:refresh_mode_defaults", refreshModeDefaults);
     }
     if (!isDetachedWindow || detachedWindowKind === "session" || detachedWindowKind === "cardpool") {
       loadPersonas(); // 会话和卡池需要本窗口自己的卡牌投影，fire-and-forget
@@ -2122,9 +2147,6 @@
     }
     startupMark("bridge:background_checks_started");
     if (!isDetachedWindow) refreshRemoteControlStatus(); // 权威主窗口独占桌面 Web 代理状态
-    if (!isDetachedWindow || detachedWindowKind === "workflow") {
-      await startupAwait("bridge:resume_workflow", resumeWorkflowOnBoot); // 工作流窗口需要恢复后端共享 run
-    }
     notify();
     startupMark("bridge:init_done");
     if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
@@ -2175,6 +2197,9 @@
       setCollectionEnabled: setCollectionEnabled,
       removeCollection: removeCollection,
       unmountCollection: unmountCollection,
+      mountRemoteCollection: mountRemoteCollection,
+      setRemoteCollectionEnabled: setRemoteCollectionEnabled,
+      removeRemoteCollection: removeRemoteCollection,
       listCollections: function () { return invoke("kb_collection_list"); },
       kbModelStatus: function () { return invoke("kb_model_status"); },
     },
@@ -2241,13 +2266,21 @@
       loadSessionModel: loadSessionModel,
       switchModel: switchModel,
       testModelConnection: testModelConnection,
+      getImageInputCapability: getImageInputCapability,
+      testImageInputCapability: testImageInputCapability,
     },
     interaction: { toggleSuperPerm: toggleSuperPerm,
+      // modeState 权威读取（评审 P1 后纳入公开面：main.jsx 从 code 页切回
+      // 工作/设计时拉一次实测值，避免 ChatView 挂载后显示旧 modeState）
+    syncModeState: syncModeState,
       // Plan/YOLO
     acceptPlan: acceptPlan,
     discardPlan: discardPlan,
     exitPlanToYolo: exitPlanToYolo,
     setPlanModeNext: setPlanModeNext,
+    setDraftMode: setDraftMode,
+    setModeLane: setModeLane,
+    refreshModeDefaults: refreshModeDefaults,
     setMultiAgentMode: setMultiAgentMode,
     planStuckReplan: planStuckReplan,
     planStuckGo: planStuckGo,
@@ -2285,7 +2318,6 @@
       openInSystem: openInSystem,
       openArtifactExternal: openArtifactExternal,
       downloadArtifact: downloadArtifact,
-      listDeliverables: listDeliverables,
       listDeliverableIndex: listDeliverableIndex,
       openExternalUrl: openExternalUrl,
       openUserExternalUrl: openUserExternalUrl,
@@ -2305,32 +2337,6 @@
     multiAgent: {
       listSubagentTranscripts: listMultiAgentSubagents,
       readSubagentTranscript: readMultiAgentSubagent,
-    },
-    workflow: {
-      loadSkills: loadSkills,
-      activateSkill: activateSkill,
-      deactivateSkill: deactivateSkill,
-      openDemo: openDemo,
-      closeDemo: closeDemo,
-      setCurrentPhase: setCurrentPhase,
-      startWorkflowTask: startWorkflowTask,
-      stopWorkflowTask: stopWorkflowTask,
-      listWorkflows: listWorkflows,
-      resetWorkflowRun: resetWorkflowRun,
-      selectWorkflowRole: selectWorkflowRole,
-      closeWorkflowDrawer: closeWorkflowDrawer,
-      getRolePrompt: getRolePrompt,
-      getRoleOutputs: getRoleOutputs,
-      getGateReport: getGateReport,
-      getRoleLogs: getRoleLogs,
-      submitWorkflowUserInput: submitWorkflowUserInput,
-      pickAndAddMaterials: pickAndAddMaterials,
-      addMaterialsToSession: addMaterialsToSession,
-      attachRun: attachRun,
-      resumeWorkflowOnBoot: resumeWorkflowOnBoot,
-      approveWorkflowGate: approveWorkflowGate,
-      rejectWorkflowGate: rejectWorkflowGate,
-      retryWorkflowRole: retryWorkflowRole,
     },
     files: {
       pickFiles: pickFiles,

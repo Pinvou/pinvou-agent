@@ -15,6 +15,7 @@
 
 pub(crate) mod acp_providers;
 pub(crate) mod artifacts;
+pub(crate) mod assistant_response;
 pub(crate) mod attachments;
 pub(crate) mod behavior_telemetry;
 pub(crate) mod chat;
@@ -33,15 +34,16 @@ pub(crate) mod personas;
 pub(crate) mod pet;
 mod prelude;
 pub(crate) mod remote_control;
+pub(crate) mod remote_knowledge;
 pub(crate) mod runtime;
 pub(crate) mod scheduled;
 pub(crate) mod sessions;
 pub(crate) mod settings;
+pub(crate) mod shared_knowledge_host;
 pub(crate) mod startup;
 pub(crate) mod timeline;
 pub(crate) mod updater;
 pub(crate) mod voice;
-pub(crate) mod workflows;
 
 #[cfg(test)]
 mod protocol_tests;

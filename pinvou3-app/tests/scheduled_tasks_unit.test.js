@@ -19,7 +19,7 @@ const indexHtml = [
 ].map(file => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8')).join('\n');
 const tauriBridgeFeatureNames = [
   'artifact-tracker', 'chat', 'chat-events', 'sessions', 'terminal', 'scheduled', 'monitor', 'settings', 'memory', 'artifacts', 'personas', 'updater',
-  'remote-control', 'dependencies', 'voice', 'knowledge-model', 'interaction', 'workflow-runtime', 'workflow',
+  'remote-control', 'dependencies', 'voice', 'knowledge-model', 'interaction',
   'multiagent'
 ];
 const bridgeMessages = fs.readFileSync(
@@ -36,6 +36,8 @@ const webBridge = [
   fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8'),
 ].join('\n');
 const scheduledTasksRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'tasks.rs'), 'utf8');
+// Wave 2 把版本化存储层拆到 stores.rs；read-state 迁移（migrate→default）落该子模块。
+const scheduledStoresRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'stores.rs'), 'utf8');
 const enginePoolRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs'), 'utf8');
 const scheduledTaskPromptRust = scheduledTasksRust.slice(
   scheduledTasksRust.indexOf('const SCHEDULED_TASK_CHAT_PROMPT'),
@@ -248,7 +250,7 @@ assert.ok(
 );
 assert.ok(
   /SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION:\s*u32\s*=\s*2/.test(scheduledTasksRust) &&
-    /registry\.schema_version < SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION[\s\S]{0,220}ScheduledRunReadRegistry::default\(\)/.test(scheduledTasksRust),
+    /impl VersionedRegistry for ScheduledRunReadRegistry[\s\S]{0,700}?fn migrate\([\s\S]*?Self::default\(\)/.test(scheduledStoresRust),
   'legacy read receipts must be reset because they may have been written before completion'
 );
 assert.ok(
@@ -399,6 +401,15 @@ assert.ok(
   /label:\s*selectorMainLabel\(model, t\)/.test(indexHtml) &&
     !/label:\s*model\.name && model\.name !== model\.model \?/.test(indexHtml),
   'scheduled model selection should display the wire model instead of stale display names'
+);
+assert.ok(
+  /footerAction, alwaysCommit = false,/.test(indexHtml) &&
+    /if \(alwaysCommit \|\| !active\) onChange\(option\.value\);/.test(indexHtml) &&
+    /onChange=\{value => editModel\(value\)\} alwaysCommit/.test(indexHtml) &&
+    (indexHtml.match(/alwaysCommit/g) || []).length === 3,
+  're-selecting the already-active model option must re-commit the binding: ' +
+    'an in-place edited model config keeps its id while its wire name changes, ' +
+    'and the engine rejects the stale binding snapshot until the task is re-saved'
 );
 assert.ok(
   !/data-testid="scheduled-task-pin"/.test(indexHtml) &&
@@ -802,8 +813,8 @@ async function deepSeekTurnTimelineLifecycleBehavior() {
   assert.strictEqual(completed[3].error, "模型失败");
 }
 
-async function internalSubagentHandoffStaysOutOfPresentation() {
-  var harness = createBridgeHarness();
+async function internalSubagentHandoffStaysOutOfPresentation(bridgeKind) {
+  var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
   var sessionId = "chat-subagent-handoff";
   var completionText = [
     '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
@@ -812,14 +823,31 @@ async function internalSubagentHandoffStaysOutOfPresentation() {
     '<codewhale:subagent.done>{"agent_id":"agent_7fb1c7be","status":"completed"}</codewhale:subagent.done>',
     '</codewhale:runtime_event>',
   ].join('\n');
+  var persistedToolOutput = [
+    'Error: deterministic provider failure',
+    '',
+    '<codewhale:runtime_event kind="stuck_guard" visibility="internal">',
+    'Change strategy instead of repeating the same tool call.',
+    '</codewhale:runtime_event>',
+    '',
+    '<codewhale:runtime_event kind="tool_error_degradation" visibility="internal">',
+    'Switch to an alternate tool or source.',
+    '</codewhale:runtime_event>',
+  ].join('\n');
   harness.handlers.load_session = function () {
     return {
-      metadata: { id: sessionId, title: "Sub-agent handoff", message_count: 3 },
+      metadata: { id: sessionId, title: "Sub-agent handoff", message_count: 5 },
       messages: [
         { role: "user", content: [{ type: "text", text: "请调研这个问题" }] },
         { role: "user", content: [
           { type: "text", text: completionText },
           { type: "text", text: "<turn_meta>\nInput provenance: subagent_handoff\nInput authority: non_authoritative\n</turn_meta>" },
+        ] },
+        { role: "assistant", content: [
+          { type: "tool_use", id: "tool-runtime-guidance", name: "host_failure_probe", input: {} },
+        ] },
+        { role: "user", content: [
+          { type: "tool_result", tool_use_id: "tool-runtime-guidance", content: persistedToolOutput, is_error: true },
         ] },
         { role: "assistant", content: [{ type: "text", text: "这是父智能体的最终汇总" }] },
       ],
@@ -837,6 +865,11 @@ async function internalSubagentHandoffStaysOutOfPresentation() {
   assert.ok(!visible.includes("codewhale:runtime_event"), "internal runtime XML must stay out of the presentation");
   assert.ok(raw.includes("child-only completion summary"), "sub-agent completion must remain in the parent model context");
   assert.ok(raw.includes("subagent_handoff"), "handoff provenance must remain durable");
+  assert.ok(visible.includes("Error: deterministic provider failure"), "real tool output must remain visible");
+  assert.ok(!visible.includes("Change strategy instead"), "stuck guidance must stay out of restored tool cards");
+  assert.ok(!visible.includes("Switch to an alternate tool"), "degradation guidance must stay out of restored tool cards");
+  assert.ok(raw.includes("Change strategy instead"), "stuck guidance must remain durable for the model");
+  assert.ok(raw.includes("Switch to an alternate tool"), "degradation guidance must remain durable for the model");
 
   await harness.emit("chat:user_message", {
     session_id: sessionId,
@@ -846,6 +879,210 @@ async function internalSubagentHandoffStaysOutOfPresentation() {
   visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
   assert.ok(!visible.includes("child-only completion summary"), "live handoff event must not render as a user bubble");
   assert.ok(!visible.includes("codewhale:runtime_event"), "live runtime XML must stay out of the presentation");
+
+  await harness.emit("chat:tool_start", {
+    session_id: sessionId,
+    id: "tool-live-runtime-guidance",
+    name: "host_failure_probe",
+    args: {},
+  });
+  await harness.emit("chat:tool_end", {
+    session_id: sessionId,
+    id: "tool-live-runtime-guidance",
+    success: false,
+    output: persistedToolOutput,
+  });
+  visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+  raw = JSON.stringify(harness.bridge.state.get("chat").messages);
+  assert.ok(visible.includes("Error: deterministic provider failure"), bridgeKind + " live tool output must remain visible");
+  assert.ok(!visible.includes("Change strategy instead"), bridgeKind + " live stuck guidance must stay out of tool cards");
+  assert.ok(!visible.includes("Switch to an alternate tool"), bridgeKind + " live degradation guidance must stay out of tool cards");
+  assert.ok(raw.includes("Change strategy instead"), bridgeKind + " live stuck guidance must remain durable");
+  assert.ok(raw.includes("Switch to an alternate tool"), bridgeKind + " live degradation guidance must remain durable");
+}
+
+async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
+  var completionText = [
+    '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+    'This is an internal runtime event, not user input.',
+    'current child-only completion summary',
+    '<codewhale:subagent.done>{"agent_id":"agent_current","status":"completed"}</codewhale:subagent.done>',
+    '</codewhale:runtime_event>',
+  ].join('\n');
+  var shellCompletionText = [
+    '<codewhale:runtime_event kind="background_shell_completion" visibility="internal">',
+    'internal shell completion payload',
+    '</codewhale:runtime_event>',
+  ].join('\n');
+
+  for (var bridgeIndex = 0; bridgeIndex < 2; bridgeIndex++) {
+    var bridgeKind = bridgeIndex === 0 ? "tauri" : "web";
+    var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+    var sessionId = "chat-current-internal-provenance-" + bridgeKind;
+    harness.handlers.load_session = function () {
+      return {
+        metadata: { id: sessionId, title: "Current internal provenance", message_count: 5 },
+        messages: [
+          { role: "user", content: [{ type: "text", text: "real user request" }] },
+          { role: "user", content: [
+            { type: "text", text: completionText },
+            { type: "text", text: [
+              "<turn_meta>",
+              "Current local date: 2026-08-12",
+              "Current workspace: /private/workspace",
+              "Current permission posture: Full Access",
+              "Input provenance: subagent_handoff (non-authoritative)",
+              "</turn_meta>",
+            ].join("\n") },
+          ] },
+          { role: "user", content: [
+            { type: "text", text: "current runtime recovery hint" },
+            { type: "text", text: "<turn_meta>\nInput provenance: runtime (non-authoritative)\n</turn_meta>" },
+          ] },
+          { role: "user", content: [
+            { type: "text", text: shellCompletionText },
+            { type: "text", text: "<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>" },
+          ] },
+          // 无信封、仅 turn_meta 的 shell_completion：白名单必须单独兜住（遗留双行/裁剪会话形态）。
+          { role: "user", content: [
+            { type: "text", text: "<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>" },
+          ] },
+          { role: "assistant", content: [{ type: "text", text: "parent final answer" }] },
+        ],
+        artifacts: [],
+      };
+    };
+
+    assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+    var state = harness.bridge.state.get("chat");
+    var visible = JSON.stringify(state.chatItems);
+    var raw = JSON.stringify(state.messages);
+    assert.ok(visible.includes("real user request"), bridgeKind + " must retain real user input");
+    assert.ok(visible.includes("parent final answer"), bridgeKind + " must retain the parent answer");
+    [
+      "current child-only completion summary",
+      "current runtime recovery hint",
+      "internal shell completion payload",
+      "codewhale:runtime_event",
+      "Current workspace:",
+      "Input provenance: shell_completion",
+    ].forEach(function (hiddenText) {
+      assert.ok(!visible.includes(hiddenText),
+        bridgeKind + " must hide internal payload: " + hiddenText);
+    });
+    assert.ok(raw.includes("current child-only completion summary"),
+      bridgeKind + " must preserve the child handoff in model context");
+    assert.ok(raw.includes("current runtime recovery hint"),
+      bridgeKind + " must preserve runtime recovery context");
+    assert.ok(raw.includes("internal shell completion payload"),
+      bridgeKind + " must preserve shell completion context");
+    assert.ok(raw.includes("subagent_handoff (non-authoritative)"),
+      bridgeKind + " must preserve current provenance metadata");
+    assert.ok(raw.includes("shell_completion (non-authoritative)"),
+      bridgeKind + " must preserve shell_completion provenance metadata");
+  }
+}
+
+async function autoTitleSkipsInternalAndStripsTurnMeta() {
+  for (var bridgeIndex = 0; bridgeIndex < 2; bridgeIndex++) {
+    var bridgeKind = bridgeIndex === 0 ? "tauri" : "web";
+    var envelopeText = [
+      '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+      'This is an internal runtime event, not user input.',
+      'auto-title child completion summary',
+      '</codewhale:runtime_event>',
+    ].join('\n');
+
+    // 场景 1：首条 user 消息为内部信封 → 不得 rename（XML 不得进 sidebar 标题）。
+    var h1 = createBridgeHarness(null, { bridgeKind: bridgeKind });
+    var sid1 = "chat-title-internal-" + bridgeKind;
+    h1.handlers.list_sessions = function () {
+      return [{ id: sid1, title: "New chat" }];
+    };
+    h1.handlers.load_session = function () {
+      return {
+        metadata: { id: sid1, title: "New chat" },
+        messages: [
+          { role: "user", content: [
+            { type: "text", text: envelopeText },
+            { type: "text", text: "<turn_meta>\nInput provenance: subagent_handoff (non-authoritative)\n</turn_meta>" },
+          ] },
+          { role: "assistant", content: [{ type: "text", text: "父汇总" }] },
+        ],
+        artifacts: [],
+      };
+    };
+    assert.strictEqual(await h1.bridge.sessions.switchToSession(sid1), true);
+    await h1.emit("session:list_changed", {});
+    await new Promise(function (r) { setTimeout(r, 50); });
+    await h1.emit("chat:done", { session_id: sid1, status: "Completed" });
+    await new Promise(function (r) { setTimeout(r, 150); });
+    assert.ok(h1.calls.some(function (c) { return c.cmd === "save_session_artifacts"; }),
+      bridgeKind + " persistMessagesFor 应执行（前置条件成立，防止假绿）");
+    var rename1 = h1.calls.filter(function (c) { return c.cmd === "rename_session"; });
+    assert.strictEqual(rename1.length, 0,
+      bridgeKind + " 首条内部信封不得触发自动命名（信封 XML 不得进 sidebar）：" + JSON.stringify(rename1));
+
+    // 场景 2：首条 user 消息为普通消息（引擎标准布局：正文 + 尾随 turn_meta block）
+    // → 标题应为正文，不得拼入 turn_meta/workspace XML。
+    var h2 = createBridgeHarness(null, { bridgeKind: bridgeKind });
+    var sid2 = "chat-title-normal-" + bridgeKind;
+    h2.handlers.list_sessions = function () {
+      return [{ id: sid2, title: "New chat" }];
+    };
+    h2.handlers.load_session = function () {
+      return {
+        metadata: { id: sid2, title: "New chat" },
+        messages: [
+          { role: "user", content: [
+            { type: "text", text: "帮我修登录页" },
+            { type: "text", text: "<turn_meta>\nCurrent workspace: /private/ws\n</turn_meta>" },
+          ] },
+          { role: "assistant", content: [{ type: "text", text: "好的" }] },
+        ],
+        artifacts: [],
+      };
+    };
+    assert.strictEqual(await h2.bridge.sessions.switchToSession(sid2), true);
+    await h2.emit("session:list_changed", {});
+    await new Promise(function (r) { setTimeout(r, 50); });
+    await h2.emit("chat:done", { session_id: sid2, status: "Completed" });
+    await new Promise(function (r) { setTimeout(r, 150); });
+    var rename2 = h2.calls.filter(function (c) { return c.cmd === "rename_session"; });
+    assert.strictEqual(rename2.length, 1,
+      bridgeKind + " 普通首条消息应触发自动命名");
+    var title2 = String(rename2[0] && rename2[0].args && rename2[0].args.title || "");
+    assert.ok(title2.indexOf("帮我修登录页") === 0,
+      bridgeKind + " 标题应以真实正文开头：" + JSON.stringify(title2));
+    assert.ok(title2.indexOf("<turn_meta>") < 0 && title2.indexOf("Current workspace") < 0,
+      bridgeKind + " 标题不得包含 turn_meta/workspace XML：" + JSON.stringify(title2));
+  }
+}
+
+async function webLiveEnvelopeStaysOutOfPresentation() {
+  var bridgeKind = "web";
+  var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+  var sessionId = "chat-web-live-envelope";
+  var envelopeText = [
+    '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+    'This is an internal runtime event, not user input.',
+    'web live child completion summary',
+    '</codewhale:runtime_event>',
+  ].join('\n');
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: sessionId, title: "Web live", message_count: 1 },
+      messages: [{ role: "assistant", content: [{ type: "text", text: "既有回答" }] }],
+      artifacts: [],
+    };
+  };
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+  await harness.emit("chat:user_message", { session_id: sessionId, content: envelopeText, operation: "append" });
+  var visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+  assert.ok(!visible.includes("web live child completion summary"),
+    "web live 内部信封不得渲染为用户气泡");
+  assert.ok(!visible.includes("codewhale:runtime_event"),
+    "web live 内部信封 XML 不得进入展示");
 }
 
 async function draftToggleFailureAbortsFirstSend() {
@@ -4005,6 +4242,7 @@ async function multipleKnowledgeMountBehavior() {
   var bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-multi-kb"), true);
   var serverMounted = [];
+  var serverRemoteMounted = [];
   var revision = 0;
   function snapshot() {
     revision += 1;
@@ -4026,6 +4264,20 @@ async function multipleKnowledgeMountBehavior() {
     return snapshot();
   };
   harness.handlers.session_unmount_collection = function () { serverMounted = []; return snapshot(); };
+  harness.handlers.session_add_mounted_remote_collection = function (args) {
+    var existing = serverRemoteMounted.find(function (entry) {
+      return entry.serverId === args.serverId && entry.collectionId === args.collectionId;
+    });
+    if (existing) existing.enabled = true;
+    else serverRemoteMounted.push({ serverId: args.serverId, collectionId: args.collectionId, enabled: true });
+    return serverRemoteMounted;
+  };
+  harness.handlers.session_remove_mounted_remote_collection = function (args) {
+    serverRemoteMounted = serverRemoteMounted.filter(function (entry) {
+      return entry.serverId !== args.serverId || entry.collectionId !== args.collectionId;
+    });
+    return serverRemoteMounted;
+  };
 
   await bridge.knowledge.mountCollection(7);
   await bridge.knowledge.mountCollection(8);
@@ -4052,13 +4304,27 @@ async function multipleKnowledgeMountBehavior() {
   assert.strictEqual(mounted.mountedCollection, null, "a disabled-only mount list has no legacy active id");
 
   await bridge.knowledge.mountCollection(7);
+  await bridge.knowledge.mountRemoteCollection("cube", 101);
   mounted = bridge.state.get('knowledge');
   assert.strictEqual(mounted.mountedCollections[0].enabled, true, "mounting again re-enables in place");
   assert.strictEqual(mounted.mountedCollection, 7);
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)),
+    [{ serverId: "cube", collectionId: 101, enabled: true }],
+    "remote and local mounts must coexist before clearing all"
+  );
 
   await bridge.knowledge.unmountCollection();
   mounted = bridge.state.get('knowledge');
   assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedCollections)), []);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)), [],
+    "clearing all mounts must also remove remote collections");
+  assert.deepStrictEqual(serverRemoteMounted, [], "the remote mount fact source must be cleared");
+  var remoteRemove = harness.calls.find(function (call) {
+    return call.cmd === "session_remove_mounted_remote_collection";
+  });
+  assert.strictEqual(remoteRemove.args.sessionId, "chat-multi-kb",
+    "remove-all must keep remote cleanup bound to the clicked session");
   assert.strictEqual(mounted.mountedCollection, null, "clearing all mounts updates both state shapes");
 }
 
@@ -4151,6 +4417,65 @@ async function remoteKnowledgeMountSnapshotDeduplicatesCollections() {
   assert.strictEqual(mounted.mountedCollectionsRevision, 2);
 }
 
+async function remoteKnowledgeDeletionEventRefreshesRemoteMounts() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var serverRemoteMounted = [
+    { serverId: "cube", collectionId: 7, enabled: true },
+    { serverId: "cube", collectionId: 8, enabled: true },
+    { serverId: "other", collectionId: 7, enabled: false },
+  ];
+  harness.handlers.session_mounted_remote_collections = function () {
+    return serverRemoteMounted;
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-remote-delete"), true);
+  var readsBeforePayload = harness.calls.filter(function (call) {
+    return call.cmd === "session_mounted_remote_collections";
+  }).length;
+
+  await harness.emit("remote_control:kb_mount_changed", {
+    session_id: "chat-kb-remote-delete",
+    revision: 0,
+    collections: [],
+    remote_collections: [
+      { serverId: "cube", collectionId: 8, enabled: true },
+      { serverId: "other", collectionId: 7, enabled: false },
+    ],
+  });
+
+  var mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)),
+    [
+      { serverId: "cube", collectionId: 8, enabled: true },
+      { serverId: "other", collectionId: 7, enabled: false },
+    ],
+    "the post-delete event must immediately remove only the exact server and collection mount"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) {
+      return call.cmd === "session_mounted_remote_collections";
+    }).length,
+    readsBeforePayload,
+    "an authoritative event payload must take priority over an extra IPC read"
+  );
+
+  serverRemoteMounted = [{ serverId: "other", collectionId: 7, enabled: false }];
+  await harness.emit("remote_control:kb_mount_changed", {
+    session_id: "chat-kb-remote-delete",
+    revision: 0,
+    collections: [],
+  });
+  await tick();
+  await tick();
+  mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)),
+    [{ serverId: "other", collectionId: 7, enabled: false }],
+    "events from older producers must re-read the remote mount fact source"
+  );
+}
+
 async function draftKnowledgeMountsCreateOneSession() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -4229,10 +4554,15 @@ Promise.resolve()
   .then(queuedKnowledgeMountKeepsOriginalSession)
   .then(staleKnowledgeSnapshotDoesNotCrossSessions)
   .then(remoteKnowledgeMountSnapshotDeduplicatesCollections)
+  .then(remoteKnowledgeDeletionEventRefreshesRemoteMounts)
   .then(draftKnowledgeMountsCreateOneSession)
   .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
   .then(deepSeekTurnTimelineLifecycleBehavior)
-  .then(internalSubagentHandoffStaysOutOfPresentation)
+  .then(function () { return internalSubagentHandoffStaysOutOfPresentation("tauri"); })
+  .then(function () { return internalSubagentHandoffStaysOutOfPresentation("web"); })
+  .then(currentInternalProvenanceAndEnvelopeStayOutOfPresentation)
+  .then(autoTitleSkipsInternalAndStripsTurnMeta)
+  .then(webLiveEnvelopeStaysOutOfPresentation)
   .then(multiAgentToggleFailureIsRoutedToTriggerSession)
   .then(draftToggleFailureAbortsFirstSend)
   .then(scheduledRunViewExitBehavior)

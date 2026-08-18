@@ -188,12 +188,14 @@ dws aitable view update timebar --view-id GANTT_ID \
   --timeline-scale quarter --official-holiday=true
 ```
 
-### 用 dws 脚本批量替换 Kanban 封面字段
+### 用 dws 命令逐个视图替换 Kanban 封面字段
+
+逐个视图执行，用内置 `--jq` 只看 status（无需 shell 循环或本地 jq）：
 
 ```bash
-for v in viw1 viw2 viw3; do
-  dws aitable view update card --view-id $v --cover-field-id fldNewCover --cover-resize-mode cover --format json | jq .status
-done
+dws aitable view update card --view-id viw1 --cover-field-id fldNewCover --cover-resize-mode cover --jq .status
+dws aitable view update card --view-id viw2 --cover-field-id fldNewCover --cover-resize-mode cover --jq .status
+dws aitable view update card --view-id viw3 --cover-field-id fldNewCover --cover-resize-mode cover --jq .status
 ```
 
 ### 一次性多属性更新（仍走 legacy --config）

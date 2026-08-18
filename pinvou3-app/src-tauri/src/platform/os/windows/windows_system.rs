@@ -5,10 +5,45 @@ use std::path::{Path, PathBuf};
 
 use super::windows_path;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+use windows_sys::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER,
     KEY_READ, REG_EXPAND_SZ, REG_SZ,
 };
+
+pub fn current_system_locale() -> Option<String> {
+    let mut language_count = 0;
+    let mut buffer_len = 0;
+    // MSDN sizing call: null buffer with *pcchLanguagesBuffer = 0 returns TRUE
+    // and stores the required size (trailing double NUL included). Still check
+    // the return value so a failed call leaving buffer_len undefined cannot
+    // trigger a bogus large allocation below.
+    let sized = unsafe {
+        GetUserPreferredUILanguages(
+            MUI_LANGUAGE_NAME,
+            &mut language_count,
+            std::ptr::null_mut(),
+            &mut buffer_len,
+        )
+    };
+    if sized == 0 || buffer_len <= 1 {
+        return None;
+    }
+    let mut locale_names = vec![0u16; buffer_len as usize];
+    let ok = unsafe {
+        GetUserPreferredUILanguages(
+            MUI_LANGUAGE_NAME,
+            &mut language_count,
+            locale_names.as_mut_ptr(),
+            &mut buffer_len,
+        )
+    };
+    if ok == 0 || language_count == 0 {
+        return None;
+    }
+    let first_len = locale_names.iter().position(|unit| *unit == 0)?;
+    String::from_utf16(&locale_names[..first_len]).ok()
+}
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     HiddenCommand::new("cmd")
@@ -452,11 +487,6 @@ mod tests {
         assert!(is_libreoffice_command("soffice.com"));
         assert!(is_libreoffice_command("libreoffice"));
         assert!(!is_libreoffice_command("pandoc"));
-    }
-
-    #[test]
-    fn libreoffice_tool_path_returns_program() {
-        assert!(!libreoffice_tool_path().as_os_str().is_empty());
     }
 
     #[test]

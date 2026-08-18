@@ -231,7 +231,7 @@ pub async fn codex_acp_prompt(
             crate::features::assistant::timing::finish_turn(
                 &session_id,
                 "send_error",
-                Some(&format!("{error:?}")),
+                Some(&format!("{error:#}")),
             );
             format!("ACP Agent send failed: {error:#}")
         })
@@ -310,6 +310,21 @@ pub async fn preview_codex_workspace_file(
     })
     .await
     .map_err(|error| format!("预览 Codex 工作区文件任务失败: {error}"))?
+}
+
+#[tauri::command]
+pub async fn open_codex_workspace_resource(
+    session_id: String,
+    resource_path: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<(), String> {
+    let root = codex_workspace_root(Some(&session_id), None, &acp_pool)?;
+    let path = workspace::resolve_workspace_resource(&root, &resource_path)
+        .map_err(|error| format!("打开 Codex 工作区资源失败: {error:#}"))?;
+    crate::platform::os::open_target(
+        crate::platform::os::external_application_path(&path),
+        "Codex 工作区资源",
+    )
 }
 
 #[tauri::command]
@@ -524,7 +539,7 @@ pub async fn list_codex_acp_sessions(
 ) -> Result<Vec<CodexAcpSessionListItem>, String> {
     let mut metas = store
         .list()
-        .map_err(|error| format!("list_codex_acp_sessions: {error:?}"))?;
+        .map_err(|error| format!("list_codex_acp_sessions: {error:#}"))?;
     metas.retain(|metadata| {
         matches!(store.session_kind(&metadata.id), Ok(SessionKind::Chat))
             && (acp_pool.is_acp_metadata(metadata)
@@ -577,7 +592,7 @@ pub async fn create_codex_acp_session(
             None,
             metadata_workspace,
         )
-        .map_err(|error| format!("create_codex_acp_session: {error:?}"))?;
+        .map_err(|error| format!("create_codex_acp_session: {error:#}"))?;
     let kind = if project_workspace.is_some() {
         CodexWorkspaceKind::Project
     } else {
@@ -651,7 +666,7 @@ async fn create_code_native_session(
             None,
             metadata_workspace,
         )
-        .map_err(|error| format!("create_codex_acp_session: {error:?}"))?;
+        .map_err(|error| format!("create_codex_acp_session: {error:#}"))?;
     if let Err(error) = acp_pool.agents().bind_code_native_session(
         &session.metadata.id,
         kind,

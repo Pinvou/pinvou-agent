@@ -11,23 +11,34 @@ pub async fn compact_now(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     pool.compact_now(&sid)
         .await
-        .map_err(|e| format!("compact_now: {e:?}"))
+        .map_err(|e| format!("compact_now: {e:#}"))
 }
 
 // ===================== 阶段 D: Plan / YOLO 双模式 =====================
 
 /// 查询当前 session 的 mode 状态（前端启动 / 切换 session 时拉一次）。
+#[derive(Serialize)]
+pub struct SessionModeStateView {
+    #[serde(flatten)]
+    state: SessionModeState,
+    /// Whether the product-level multi-agent mode is available for this session.
+    /// This is resolved by SessionPolicy instead of inferred by the frontend.
+    multi_agent_available: bool,
+}
+
 #[tauri::command]
 pub async fn get_mode_state(
     session_id: String,
     store: State<'_, SessionStore>,
-) -> Result<SessionModeState, String> {
-    Ok(store.mode_state(&session_id))
+    pool: State<'_, EnginePool>,
+) -> Result<SessionModeStateView, String> {
+    Ok(SessionModeStateView {
+        state: store.mode_state(&session_id),
+        multi_agent_available: pool.multi_agent_mode_available(&session_id),
+    })
 }
 
 /// code 会话权限模式的全局偏好：新建 code 会话的默认 mode（`last_mode`，
@@ -47,6 +58,30 @@ pub async fn confirm_code_yolo(
     store: State<'_, SessionStore>,
 ) -> Result<crate::platform::prefs::CodePermissionPrefs, String> {
     store.confirm_code_yolo()
+}
+
+/// 三个工作区 lane（work/design/code）的全局默认 mode。前端启动/进草稿时
+/// 拉取驱动草稿态 chip 显示；None = 该 lane 从未显式选过（缺省 code→plan、
+/// work/design→yolo）。
+#[tauri::command]
+pub async fn get_mode_defaults(
+    store: State<'_, SessionStore>,
+) -> Result<crate::core::mode_state::ModeDefaultsView, String> {
+    Ok(store.mode_defaults())
+}
+
+/// 草稿态显式切换 mode：写入对应 lane 的全局默认（新建会话默认跟随）。
+/// 已生成会话的切换不走这里（`set_plan_mode_next`/`exit_plan_to_yolo`
+/// 只写 per-session 记录）——三分 lane 语义：草稿写全局，会话写自己。
+#[tauri::command]
+pub async fn set_mode_default(
+    lane: String,
+    mode: SerializableMode,
+    store: State<'_, SessionStore>,
+) -> Result<crate::core::mode_state::ModeDefaultsView, String> {
+    let lane = crate::core::mode_state::ModeLane::parse(&lane)?;
+    store.set_mode_default(lane, mode);
+    Ok(store.mode_defaults())
 }
 
 // ===================== 卡片池: 专家面具 =====================
@@ -91,16 +126,15 @@ pub async fn set_multi_agent_mode(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeState, String> {
-    // 任何副作用（建目录、写角色文件）之前先过两道门：id 形状
-    // 校验（paths::session_workspace_dir 只是 join，`../` 会把副作用落到
-    // 预期目录之外）+ 会话确实存在（防 IPC 直调对不存在的 id 造孤儿目录）。
+    // 持久化开关并回收旧引擎之前先过两道门：id 形状校验（避免非法 id
+    // 逃逸会话边界）+ 会话确实存在（防 IPC 直调给不存在的 id 造孤儿状态）。
     crate::features::sessions::validate_session_id(&session_id)
         .map_err(|error| format!("set_multi_agent_mode: {error:#}"))?;
     store
         .load(&session_id)
         .map_err(|error| format!("set_multi_agent_mode({session_id}): 会话不存在: {error:#}"))?;
     // EngineConfig 的深度、并发、准入上限不能完整热切；同时 SendMessage 会覆盖
-    // engine 级 hook。名册装配、状态持久化与旧引擎回收必须和发送共用同一个
+    // engine 级 hook。内存名册装配、状态持久化与旧引擎回收必须和发送共用同一个
     // lifecycle + turn gate，避免切换/发送竞态。关闭也必须回收，否则普通对话
     // 会继续背着多智能体限制。生成中 reserve 会直接拒绝，不会打断当前回复。
     pool.reconfigure_multi_agent_mode(&session_id, enabled)
@@ -142,7 +176,7 @@ pub async fn accept_plan(
             accepted_mode_state.clone(),
         ))
         .map_err(|error| format!("prepare accept_plan admission: {error:#}"))?;
-    let instruction = super::multiagent::prepend_delegation_reminder(
+    let prepared_delegation = super::multiagent::prepare_delegation_turn(
         pool.inner(),
         &session_id,
         accepted_mode_state.multi_agent,
@@ -156,19 +190,20 @@ pub async fn accept_plan(
     if let Err(error) = pool
         .send_reserved_user_message(
             &session_id,
-            instruction,
+            prepared_delegation.content,
             user_display_message(display_content),
             SerializableMode::Yolo.to_app_mode(),
             false,
+            prepared_delegation.expert_snapshot,
             reservation,
         )
         .await
     {
         let rollback = plan_claim.rollback();
         return Err(match rollback {
-            Ok(()) => format!("accept_plan send_user_message: {error:?}"),
+            Ok(()) => format!("accept_plan send_user_message: {error:#}"),
             Err(rollback_error) => format!(
-                "accept_plan send_user_message: {error:?}; restore plan claim failed: {rollback_error:#}"
+                "accept_plan send_user_message: {error:#}; restore plan claim failed: {rollback_error:#}"
             ),
         });
     }
@@ -217,15 +252,7 @@ pub async fn read_skill_body(name: String) -> Result<String, String> {
     if safe_name != name || safe_name.is_empty() {
         return Err(format!("invalid skill name: {name}"));
     }
-    // legacy-ppt-workflow 在 workflow/,review 等 skill 在 skills/;先查 workflow 再 fallback skills。
-    let wf_path = paths::bundle_workflow_dir()
-        .join(&safe_name)
-        .join("SKILL.md");
-    let path = if wf_path.is_file() {
-        wf_path
-    } else {
-        paths::bundle_skills_dir().join(&safe_name).join("SKILL.md")
-    };
+    let path = paths::bundle_skills_dir().join(&safe_name).join("SKILL.md");
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("read SKILL.md ({}): {e}", path.display()))?;
     // 剥 frontmatter ---\n...\n---\n
@@ -284,57 +311,11 @@ pub async fn submit_user_input(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let response = UserInputResponse { answers };
     pool.submit_user_input(&sid, tool_call_id, response)
         .await
-        .map_err(|e| format!("submit_user_input: {e:?}"))
-}
-
-/// [2026-06-06] 工作流素材上传：把用户选的文件拷进当前 run 的 配套材料/ 目录。
-/// 前端素材收集卡片「📎 上传素材」按钮 → dialogOpen 选文件 → 调此命令落盘。
-/// materials_auditor 重扫 配套材料/ 即可识别。返回实际落盘的文件名（含同名去重后的名）。
-#[tauri::command]
-pub async fn add_run_materials(
-    session_id: Option<String>,
-    paths: Vec<String>,
-    store: State<'_, SessionStore>,
-) -> Result<Vec<String>, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
-    let workspace = store
-        .ledger_root(&sid)
-        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
-    let project = crate::features::assistant::harness::find_project_dir(&workspace)
-        .ok_or_else(|| "当前 session 无工作流项目".to_string())?;
-    let dst_dir = project.join("配套材料");
-    std::fs::create_dir_all(&dst_dir).map_err(|e| format!("建配套材料目录失败: {e}"))?;
-    let mut added = Vec::new();
-    for p in &paths {
-        let src = std::path::Path::new(p);
-        let base = src
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| format!("非法路径: {p}"))?;
-        // 同名去重（参照 attach_file 的命名逻辑）
-        let (stem, ext) = match base.rsplit_once('.') {
-            Some((s, e)) => (s.to_string(), format!(".{e}")),
-            None => (base.to_string(), String::new()),
-        };
-        let mut candidate = base.to_string();
-        let mut n = 1;
-        while dst_dir.join(&candidate).exists() {
-            candidate = format!("{stem}-{n}{ext}");
-            n += 1;
-        }
-        std::fs::copy(src, dst_dir.join(&candidate))
-            .map_err(|e| format!("拷贝 {base} 失败: {e}"))?;
-        added.push(candidate);
-    }
-    Ok(added)
+        .map_err(|e| format!("submit_user_input: {e:#}"))
 }
 
 /// 前端 ✕ 按钮 / 切换 session 时调用：取消 request_user_input。
@@ -346,12 +327,10 @@ pub async fn cancel_user_input(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     pool.cancel_user_input(&sid, tool_call_id)
         .await
-        .map_err(|e| format!("cancel_user_input: {e:?}"))
+        .map_err(|e| format!("cancel_user_input: {e:#}"))
 }
 
 /// 会话当前的挂起输入请求与 turn 状态。
@@ -374,9 +353,6 @@ pub async fn get_pending_user_inputs(
         pending: crate::features::assistant::pending_user_input::list(&session_id),
     })
 }
-
-// (render_surface 回流 / cloud_keys 云模型配置是独立 feature,不在本 PR——
-//  本 PR 只含工作流基座 + 三省六部)
 
 #[tauri::command]
 pub async fn restart_engine(
@@ -405,12 +381,10 @@ pub async fn summon_pinvou(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<crate::features::review::PinvouReview, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let session = store
         .load(&sid)
-        .map_err(|e| format!("summon_pinvou load({sid}): {e:?}"))?;
+        .map_err(|e| format!("summon_pinvou load({sid}): {e:#}"))?;
     let bridge = pool
         .fresh_bridge_for(&sid)
         .await
@@ -427,5 +401,5 @@ pub async fn summon_pinvou(
         mode.as_deref(),
     )
     .await
-    .map_err(|e| format!("summon_pinvou: {e:?}"))
+    .map_err(|e| format!("summon_pinvou: {e:#}"))
 }

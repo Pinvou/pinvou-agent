@@ -5,8 +5,6 @@ import { dict } from '../src/shared/i18n.js';
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
 
 for (const language of ['zh', 'en', 'ja']) {
-  assert.ok(dict[language].expertPoolIndividualTab, `${language}.expertPoolIndividualTab must exist`);
-  assert.ok(dict[language].expertPoolTeamTab, `${language}.expertPoolTeamTab must exist`);
   for (const section of [
     'uiRemote',
     'uiMonitor',
@@ -17,7 +15,7 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiChat',
     'uiChatExtra',
     'uiChatScenes',
-    'uiWorkflow',
+    'artifactPreview',
     'uiToolStore',
     'uiPet',
     'uiWebConnection',
@@ -78,7 +76,7 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const role of ['scout', 'manager', 'builder', 'reviewer', 'general']) {
     assert.ok(multiAgent.roleCards[role], `${language}.uiMultiAgent.roleCards.${role} must exist`);
   }
-  for (const key of ['toggleLabel', 'toggleHint', 'close', 'loadingTranscript', 'emptyTranscript', 'blockedTag', 'panelResize', 'panelResizeHint', 'agentsListTitle', 'agentsEmpty', 'backToAgents', 'rosterSyncFailed']) {
+  for (const key of ['toggleLabel', 'toggleHint', 'close', 'loadingTranscript', 'emptyTranscript', 'blockedTag', 'panelResize', 'panelResizeHint', 'agentsListTitle', 'agentsEmpty', 'backToAgents']) {
     assert.ok(multiAgent[key], `${language}.uiMultiAgent.${key} must exist`);
   }
   for (const cardKey of ['spawning', 'working', 'completed', 'failed', 'spawnFailed', 'interrupted']) {
@@ -110,7 +108,6 @@ assert.match(scheduledTasks, /const scheduledCopy = t\.uiScheduled/);
 assert.match(scheduledTasks, /scheduledCopy\.taskName/);
 assert.match(scheduledTasks, /scheduledCopy\.runHistory/);
 assert.doesNotMatch(scheduledTasks, />立即运行</);
-assert.match(source('features/workflow/WorkflowView.jsx'), /t\.uiWorkflow/);
 assert.match(source('features/tools/ToolStoreView.jsx'), /const storeCopy = t\.uiToolStore/);
 assert.match(source('features/tools/ToolStoreView.jsx'), /localizeTool\(baseTool, t\)/);
 const settings = source('features/settings/SettingsView.jsx');
@@ -157,7 +154,7 @@ const codexViewProviders = source('features/codex/CodexAcpView.jsx');
 assert.match(codexViewProviders, /set_codex_acp_session_provider/);
 assert.match(codexViewProviders, /t\.uiAcpProviders/);
 const personas = source('features/personas/Personas.jsx');
-assert.match(personas, /label: t\.expertPoolIndividualTab/);
-assert.doesNotMatch(personas, /expertPoolIndividualTab \|\|/);
+assert.match(personas, /\{t\.cpMyCards\}/);
+assert.doesNotMatch(personas, /ExpertTeamsPanel|expertPoolTeamTab|expertPoolIndividualTab/);
 
 console.log('UI language coverage tests passed');

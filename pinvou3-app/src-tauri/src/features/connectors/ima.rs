@@ -307,11 +307,12 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
                 .set(&api_key_ref(), api_key.trim())
                 .map_err(|e| e.user_message())?;
             SkillMarketplaceManager::new().install(IMA_SKILL_ID)?;
-            // 新装技能默认加入 code 禁用集（外部能力显式开启）；在线会话组合目录
+            // 新装技能默认加入 DenyAll scope（当前 code）禁用集（外部能力显式
+            // 开启）；在线会话组合目录
             // 由命令层（connectors::ima_connect）重写。
             // 注意引用 marketplace::skill_scope（持久化层）而非 assistant：避免
             // connectors → assistant 依赖环（架构守卫 rust_feature_cycles）。
-            crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(
+            crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
                 IMA_SKILL_ID,
             );
             Ok(())
@@ -346,7 +347,7 @@ pub async fn ima_logout() -> Result<Value, String> {
         let client_result = store.delete(&client_id_ref());
         let api_key_result = store.delete(&api_key_ref());
         let _ = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID);
-        // 已卸载技能从两个 scope 禁用集清除残留；在线会话组合目录由命令层
+        // 已卸载技能从各 scope 禁用集清除残留；在线会话组合目录由命令层
         // （connectors::ima_logout）重写。引用 marketplace::skill_scope 避免
         // connectors → assistant 依赖环。
         crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(IMA_SKILL_ID);

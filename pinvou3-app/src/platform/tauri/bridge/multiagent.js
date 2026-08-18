@@ -17,7 +17,7 @@
 
     /**
      * 子智能体列表（底座 worker ledger 为主表、transcripts 为附表的只读投影）。
-     * 仅工作模式多智能体会话可用；重启后依然可查。读取失败返回 null 而不是 []：权限错误/
+     * 工作模式与品悟原生 Code 多智能体会话可用；重启后依然可查。读取失败返回 null 而不是 []：权限错误/
      * 文件损坏/命令失败若降级成空表，界面会把故障伪装成"没有子智能体"
      * （复核 P2）。调用方保留上次有效数据并显示重试提示，轮询自动重试。
      */
@@ -55,7 +55,7 @@
       }
     }
 
-    listen("workflow:agent_progress", function (e) {
+    listen("multiagent:agent_progress", function (e) {
       var p = e.payload || {};
       if (!p.session_id || !p.agent_id) return;
       dispatchSubagentUpdate({
@@ -68,7 +68,7 @@
       });
     });
 
-    listen("workflow:agent_complete", function (e) {
+    listen("multiagent:agent_complete", function (e) {
       var p = e.payload || {};
       if (!p.session_id || !p.agent_id) return;
       dispatchSubagentUpdate({

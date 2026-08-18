@@ -5,9 +5,9 @@ name: rustc-wrapper-smoke
 #   因 .cargo/config.toml 残留 wrapper 配置而 os error 193;config.toml 不配置
 #   [build] rustc-wrapper(全局键无法按平台条件化),默认三端直接可用。
 # - run-dev.sh 的 wrapper 平台选择(scripts/rustc-stack-wrapper-select.sh):
-#   Darwin/Linux 注入 sh 版;Windows (MINGW*/MSYS*/CYGWIN*) 透传不注入,
+#   Darwin/Linux 注入 sh 版;Windows (MINGW*/MSYS*/CYGWIN*) 编译并注入 .exe 版,
 #   导出的 RUSTC_WRAPPER 不得指向无扩展名 Unix 文件(os error 193)。
-# - 按平台注入 RUSTC_WRAPPER 后(windows → .cmd 版,unix → sh 版),Cargo 必须
+# - 按平台注入 RUSTC_WRAPPER 后(windows → .exe 版,unix → sh 版),Cargo 必须
 #   能执行 wrapper;编译器进程 env 含 RUST_MIN_STACK=16777216。
 # - 契约:运行时进程(cargo run / cargo test 目标)不继承 RUST_MIN_STACK,
 #   默认线程栈语义(约 2 MiB)不变。
@@ -19,29 +19,64 @@ on:
     paths:
       - 'pinvou3-app/src-tauri/.cargo/config.toml'
       - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper'
-      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs'
       - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh'
       - 'pinvou3-app/run-dev.sh'
+      - '.github/workflows/rustc-wrapper-smoke.yml'
   merge_group:
   push:
     branches: [main]
+    paths:
+      - 'pinvou3-app/src-tauri/.cargo/config.toml'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh'
+      - 'pinvou3-app/run-dev.sh'
+      - '.github/workflows/rustc-wrapper-smoke.yml'
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: rustc-wrapper-smoke-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # merge_group 不支持事件级 paths 过滤，先在一个轻量 Linux job 中判断组合
+  # diff；无关 PR 入队时跳过后续三个平台 runner。PR/push 的事件级 paths 仍
+  # 保留，避免这些事件连轻量路由 job 都启动。
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      wrapper: ${{ steps.filter.outputs.wrapper }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            wrapper:
+              - 'pinvou3-app/src-tauri/.cargo/config.toml'
+              - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper'
+              - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs'
+              - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh'
+              - 'pinvou3-app/run-dev.sh'
+              - '.github/workflows/rustc-wrapper-smoke.yml'
+
   smoke:
+    needs: changes
+    if: ${{ needs.changes.outputs.wrapper == 'true' }}
     strategy:
       fail-fast: false
       matrix:
         os: [macos-15, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -70,10 +105,10 @@ jobs:
 
       # 2) run-dev.sh 的 wrapper 平台选择(单一真相源 rustc-stack-wrapper-select.sh):
       #    验证 run-dev.sh 实际使用的 selector 在 Windows(Git Bash/MSYS,
-      #    uname -s 为 MINGW*/MSYS*/CYGWIN*)下输出空、不指向无扩展名 Unix
-      #    文件——否则本地开发经 run-dev.sh 注入后会 os error 193,阻断
-      #    Windows 上所有 Cargo 命令。
-      - name: run-dev.sh selector —— Windows 不注入 Unix wrapper
+      #    uname -s 为 MINGW*/MSYS*/CYGWIN*)下编译并输出 .exe 版、不指向
+      #    无扩展名 Unix 文件——否则本地开发经 run-dev.sh 注入后会 os error 193,
+      #    阻断 Windows 上所有 Cargo 命令。
+      - name: run-dev.sh selector —— Windows 编译并注入 .exe 版 wrapper
         shell: bash
         run: |
           set -euxo pipefail
@@ -85,12 +120,14 @@ jobs:
             echo "FAIL: run-dev.sh 仍直接无条件 export 无扩展名 Unix wrapper"
             exit 1
           fi
-          # selector 平台行为:Windows 输出空(透传),Unix 输出存在的 sh 文件。
+          # selector 平台行为:Windows 编译并输出 .exe 版(Windows 原生路径),
+          # Unix 输出存在的 sh 文件。
           out="$(bash "$select_script")"
           case "$(uname -s)" in
             MINGW*|MSYS*|CYGWIN*)
-              [ -z "$out" ] || { echo "FAIL: Windows selector 应输出空, got: $out"; exit 1; }
-              echo "OK: Windows selector 输出空(透传,不注入)"
+              [ -n "$out" ] || { echo "FAIL: Windows selector 应输出 .exe wrapper"; exit 1; }
+              echo "$out" | grep -qi '\.exe$' || { echo "FAIL: Windows selector 应指向 .exe 版, got: $out"; exit 1; }
+              echo "OK: Windows selector → $out"
               ;;
             Darwin|Linux)
               [ -n "$out" ] || { echo "FAIL: Unix selector 应输出 sh wrapper"; exit 1; }
@@ -101,7 +138,7 @@ jobs:
 
       # 3) 按平台注入 wrapper 后:与正式入口(run-dev.sh / CI job env)一致,
       #    wrapper 必须被 Cargo 真正调用,且编译器进程获得 16MiB 栈。
-      #    wrapper 是"export RUST_MIN_STACK + exec 原命令",用 wrapper 执行
+      #    wrapper 是"注入 RUST_MIN_STACK + 转发原命令",用 wrapper 执行
       #    `env` 可直接观测注入结果(不经 cargo,验证 wrapper 自身逻辑)。
       - name: 按平台注入 wrapper —— 编译期获得 16 MiB
         shell: bash
@@ -112,24 +149,21 @@ jobs:
           cargo init --name wrapper_smoke
           mkdir -p .cargo scripts
           cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper" scripts/ 2>/dev/null || true
-          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd" scripts/ 2>/dev/null || true
-          chmod +x scripts/rustc-stack-wrapper scripts/rustc-stack-wrapper.cmd 2>/dev/null || true
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            wrapper="scripts/rustc-stack-wrapper.cmd"
-          else
-            wrapper="scripts/rustc-stack-wrapper"
-          fi
+          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs" scripts/ 2>/dev/null || true
+          chmod +x scripts/rustc-stack-wrapper 2>/dev/null || true
           # 直接执行 wrapper,第一个参数是 env:输出应包含注入后的 RUST_MIN_STACK
           unset RUST_MIN_STACK
           if [ "$RUNNER_OS" = "Windows" ]; then
-            # cmd //c 的嵌套引号在 Git Bash/MSYS 下会被路径转换破坏,
-            # 改用静态断言注入逻辑 + 由下一步契约测试经 RUSTC_WRAPPER
-            # 驱动真实执行(cargo test 成功即证明 Windows 上 .cmd wrapper
-            # 可被 Cargo 执行,且注入逻辑存在)。
-            grep -q "set RUST_MIN_STACK=16777216" scripts/rustc-stack-wrapper.cmd
+            # 编译 .exe 版 wrapper(与 selector 同一命令),再直接执行它跑 env
+            # 观测注入结果(.exe 是原生二进制,可直接运行,无 .cmd 嵌套引号问题)。
+            rustc -O scripts/rustc-stack-wrapper.rs -o scripts/rustc-stack-wrapper.exe
+            out="$(scripts/rustc-stack-wrapper.exe env)"
           else
-            "$wrapper" env | grep -q "^RUST_MIN_STACK=16777216$"
+            out="$(scripts/rustc-stack-wrapper env)"
           fi
+          # 用命令替换(非管道)避免 grep -q 提前关闭管道导致 env SIGPIPE
+          # (set -o pipefail 下 SIGPIPE 会让 step flaky 失败)。
+          echo "$out" | grep -q "^RUST_MIN_STACK=16777216$"
 
       # 4) 运行时契约:不继承编译器栈覆盖。
       #    复制仓库契约测试到最小 crate,按正式入口方式注入 wrapper 后跑
@@ -143,11 +177,12 @@ jobs:
           cd "$tmp"
           cargo init --name wrapper_smoke
           mkdir -p .cargo tests
-          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd" . 2>/dev/null || true
           if [ "$RUNNER_OS" = "Windows" ]; then
-            export RUSTC_WRAPPER="$tmp/rustc-stack-wrapper.cmd"
+            cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs" .
+            rustc -O rustc-stack-wrapper.rs -o rustc-stack-wrapper.exe
+            export RUSTC_WRAPPER="$tmp/rustc-stack-wrapper.exe"
           else
-            cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper" . 2>/dev/null || true
+            cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper" .
             chmod +x "$tmp/rustc-stack-wrapper" 2>/dev/null || true
             export RUSTC_WRAPPER="$tmp/rustc-stack-wrapper"
           fi
@@ -155,3 +190,28 @@ jobs:
           CARGO_TERM_COLOR=never cargo test 2>&1 | tee cargo-test.log
           grep -q "compiler_stack_contract" cargo-test.log
           grep -q "test result: ok" cargo-test.log
+
+      # 5) 链式 wrapper(RUSTC_WRAPPER_CHAIN):验证 wrapper 先注入 RUST_MIN_STACK、
+      #    再委托给链上命令执行。注意:sccache 等 client-server 型 wrapper 不会把
+      #    env 传给 server 派生的编译器,故 CI 的 rust-test / windows-rust-test 不接
+      #    sccache 链;此处用 `env` 这类直接 exec 的命令验证链机制本身。
+      - name: 链式 wrapper —— 委托链上命令且仍注入 16 MiB
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper" . 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs" . 2>/dev/null || true
+          chmod +x rustc-stack-wrapper 2>/dev/null || true
+          unset RUST_MIN_STACK
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            rustc -O rustc-stack-wrapper.rs -o rustc-stack-wrapper.exe
+            out="$(RUSTC_WRAPPER_CHAIN=env ./rustc-stack-wrapper.exe env)"
+          else
+            # `env env`:链上命令 `env` 执行参数中的 `env`(无参),打印当前环境,
+            # 应包含经 wrapper 注入的 RUST_MIN_STACK=16777216。
+            out="$(RUSTC_WRAPPER_CHAIN=env ./rustc-stack-wrapper env)"
+          fi
+          # 命令替换(非管道)避免 grep -q 提前关闭管道导致 env SIGPIPE(同上)。
+          echo "$out" | grep -q "^RUST_MIN_STACK=16777216$"

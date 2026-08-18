@@ -45,7 +45,7 @@ pub(super) fn trim_url_tail(value: &str) -> String {
     value.trim().trim_end_matches('/').to_string()
 }
 
-pub(super) fn strip_chat_completions_suffix(value: &str) -> String {
+pub(crate) fn strip_chat_completions_suffix(value: &str) -> String {
     let trimmed = trim_url_tail(value);
     let lower = trimmed.to_ascii_lowercase();
     if lower.ends_with("/chat/completions") {

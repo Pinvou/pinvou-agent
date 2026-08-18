@@ -75,28 +75,26 @@ const protocolSources = {
   settings: ['bridge/settings.js'],
   updater: ['bridge/updater.js'],
   voice: ['bridge/voice.js'],
-  workflow: ['bridge/workflow-runtime.js', 'bridge/workflow.js'],
   multiAgent: ['bridge/multiagent.js'],
 };
 
 const expectedProtocolHashes = {
-  multiAgent: 'b123eece32980d80787ab9cd7315f3566b0943ab366a2358a1ff0cb247b65491',
+  multiAgent: '6896409bb406f1ba54ca496dd78c04549cc78ff5490ae771d9cf60586368a8a8',
   orchestration: 'e5e333aca4d1fb7e8ed32f879d3b310c01cd0845d0e5cdc2b5ed1e95aee3ea31',
-  artifacts: '9de646442d1192440abd14046e75ec402afc2c8bea1a8a88ff9667aab5e6ac4c',
-  chat: 'b2a4deeef4b444d2b82f78cb1008ada4330da6a83f750d7b7d2f2eace1175d5f',
+  artifacts: '8ea6cbffcc1a768f79cd218dc02d2f211456fe09c7f2aa233587603ba34c4f4e',
+  chat: '1bd570648c0f41376edb1909ede9345ddfb717e4b7c61c6afb14ae49a8ad2de4',
   dependencies: '257468e4f9e2e9270de6ef75f685d5eafcd000226d44cfb81a1b04c0e7615707',
-  interaction: 'dc75ecf05e5b015833c08ffa4e3de4319f657de5ce300b68f873e966236a4898',
-  knowledge: '3ae1fb7f8b4909601edb91ec1b2df83d37a3a6cc302911517c5913b557b716ca',
+  interaction: '255474b88418fcaf371b77b27545fbfb529fbbceb1af9010ac49881082384270',
+  knowledge: '96d4f6a1534f0aedf10714e7b945e0a29579b224ec98cbf27659237b5aac59b6',
   memory: 'd92cbabf27c277a64b743e7af25b48d8b8b65513e33aeb0f38c906d4b300616b',
   monitor: '01bf9a7c9b9b3f313cf49e975e6503627ff373caed0f4b3be07a6a98492a7c43',
-  personas: '120fe92020f81ed7551b9f2e6efa7e95266ea41871bc0ca012bbec4ae46009d9',
+  personas: '75845688a405c5dc3590e176238969d846d61810eaeb3d632a0a741d30370239',
   remoteControl: '3e8d54d1051d1f59d5b9f41440b73444b82594391e47f4cbce56904afd72fb81',
   scheduled: '239292d75c308973053cc0091e0ac9437191bf2375fd5fd8181ea26f4f749900',
-  sessions: '67b309b75cc8efe80f37df48b39b146a79795dbedd9bd2d1325a269aaafb046e',
-  settings: '624810915759a0b46f3524e1b401f65b13d44368639e1bc2887fea4168a0e16d',
+  sessions: '43be5b929743f00818492d51d7a725860c71b9a52e7fdcbe72606426472409c0',
+  settings: 'ea86f1145e200d58de340bf76650eee96fd8169168872ed71def166d42ef2208',
   updater: '53562c8fe6547a6c422d112d34769d3ac79abeec27633c32b5658605072c9fe2',
   voice: '281399c4de7cdc3adf2f50a422ea5725cb98cbf175e1de8beb0d610655d0028a',
-  workflow: 'c92e92ed3dc3850bae17f451810184fad2cadbfda6bf9f565a8b2862ad0595a1',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {
