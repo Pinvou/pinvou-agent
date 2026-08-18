@@ -41,6 +41,12 @@
     }
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
   }
+  function webTurnTerminal() {
+    return window.PinvouWebTurnTerminal || {};
+  }
+  function bridgeMessages() {
+    return window.PinvouBridgeMessages || {};
+  }
 
   // ── Markdown rendering (vendor scripts loaded in index.html) ─────
   // 抹平裸 <script>/<style>/<iframe> 等危险标签:它们一旦被 marked 透传成真 HTML,
@@ -5256,29 +5262,38 @@
     runSyncOnSession(sid, function () {
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       var error = e.payload && e.payload.error;
-      window.PinvouWebTurnTerminal.recordCompleted(
-        state,
-        latestOpenTimelineStart(),
-        e.payload || {}
-      );
+      var terminal = webTurnTerminal();
+      if (typeof terminal.recordCompleted === "function") {
+        terminal.recordCompleted(
+          state,
+          latestOpenTimelineStart(),
+          e.payload || {}
+        );
+      }
       // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
       // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
       if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
       if (error) {
-        var finalNotice = "⚠️ " + error;
-        var finalNoticeItem = state.chatItems.find(function (item) {
-          return item && item.turnErrorNotice && item.text === finalNotice;
-        });
-        if (finalNoticeItem) {
-          finalNoticeItem.legacyConversationOnly = true;
-        } else {
-          addSystemItem(finalNotice, {
-            turnErrorNotice: true,
-            legacyConversationOnly: true,
+        var messages = bridgeMessages();
+        if (!(typeof messages.addModelServiceErrorNotice === "function" && messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, true))) {
+          var finalNotice = "⚠️ " + error;
+          var finalNoticeItem = state.chatItems.find(function (item) {
+            return item && item.turnErrorNotice && item.text === finalNotice;
           });
+          if (finalNoticeItem) {
+            finalNoticeItem.legacyConversationOnly = true;
+          } else {
+            addSystemItem(finalNotice, {
+              turnErrorNotice: true,
+              legacyConversationOnly: true,
+            });
+          }
         }
       }
-      window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      var shellMessages = bridgeMessages();
+      if (typeof shellMessages.showShellCleanupFailure === "function") {
+        shellMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      }
       var terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       var interrupted = terminalStatus === "interrupted" ||
         terminalStatus === "cancelled" || terminalStatus === "canceled";
@@ -5427,11 +5442,14 @@
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     var error = e.payload && e.payload.error;
     if (error) {
-      var notice = "⚠️ " + error;
-      var duplicate = state.chatItems.some(function (item) {
-        return item && item.turnErrorNotice && item.text === notice;
-      });
-      if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+      var messages = bridgeMessages();
+      if (!(typeof messages.addModelServiceErrorNotice === "function" && messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false))) {
+        var notice = "⚠️ " + error;
+        var duplicate = state.chatItems.some(function (item) {
+          return item && item.turnErrorNotice && item.text === notice;
+        });
+        if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+      }
     }
     // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
     // 兜底启动检测被绕过/中途删 key 的场景。

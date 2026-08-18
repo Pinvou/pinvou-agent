@@ -62,6 +62,10 @@
         .catch(function () {});
     }
 
+    function bridgeMessages() {
+      return window.PinvouBridgeMessages || {};
+    }
+
     function visibleUserTurnIndex() {
       var count = state.chatItems.filter(function (item) { return item && item.type === "user"; }).length;
       return Math.max(0, count - 1);
@@ -105,6 +109,16 @@
       var openStart = latestOpenTimelineStart();
       var turnId = state.activeTurnTimelineId || (openStart && openStart.turn_id);
       if (!turnId) return;
+      if (payload && payload.error && !(payload.user_error || payload.userError)) {
+        var messages = bridgeMessages();
+        var userError = typeof messages.modelServiceUserError === "function"
+          ? messages.modelServiceUserError(payload, state)
+          : null;
+        if (userError) {
+          payload.user_error = userError;
+          payload.userError = userError;
+        }
+      }
       var timestamp = Date.now();
       var start = openStart || (state.turnTimeline || []).find(function (event) {
         return event && event.turn_id === turnId && event.event === "user_start";
@@ -116,6 +130,7 @@
         ts: new Date(timestamp).toISOString(),
         status: payload && payload.status || (payload && payload.error ? "Failed" : "Completed"),
         error: payload && payload.error || null,
+        user_error: payload && (payload.user_error || payload.userError) || null,
         ui_turn_index: start && start.ui_turn_index,
       }]);
       state.activeTurnTimelineId = null;
@@ -734,20 +749,28 @@
       recordTurnCompleted(e.payload || {});
       refreshEffectiveModelConfigAfterAuthError(error);
       if (error) {
-        var finalNotice = "⚠️ " + error;
-        var finalNoticeItem = state.chatItems.find(function (item) {
-          return item && item.turnErrorNotice && item.text === finalNotice;
-        });
-        if (finalNoticeItem) {
-          finalNoticeItem.legacyConversationOnly = true;
-        } else {
-          addSystemItem(finalNotice, {
-            turnErrorNotice: true,
-            legacyConversationOnly: true,
+        var messages = bridgeMessages();
+        var addedModelServiceNotice = typeof messages.addModelServiceErrorNotice === "function" &&
+          messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, true);
+        if (!addedModelServiceNotice) {
+          var finalNotice = "⚠️ " + error;
+          var finalNoticeItem = state.chatItems.find(function (item) {
+            return item && item.turnErrorNotice && item.text === finalNotice;
           });
+          if (finalNoticeItem) {
+            finalNoticeItem.legacyConversationOnly = true;
+          } else {
+            addSystemItem(finalNotice, {
+              turnErrorNotice: true,
+              legacyConversationOnly: true,
+            });
+          }
         }
       }
-      window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      var shellMessages = bridgeMessages();
+      if (typeof shellMessages.showShellCleanupFailure === "function") {
+        shellMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      }
       var terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       var interrupted = terminalStatus === "interrupted" ||
         terminalStatus === "cancelled" || terminalStatus === "canceled";
@@ -900,11 +923,16 @@
     var error = e.payload && e.payload.error;
     refreshEffectiveModelConfigAfterAuthError(error);
     if (error) {
-      var notice = "⚠️ " + error;
-      var duplicate = state.chatItems.some(function (item) {
-        return item && item.turnErrorNotice && item.text === notice;
-      });
-      if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+      var messages = bridgeMessages();
+      var addedModelServiceNotice = typeof messages.addModelServiceErrorNotice === "function" &&
+        messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false);
+      if (!addedModelServiceNotice) {
+        var notice = "⚠️ " + error;
+        var duplicate = state.chatItems.some(function (item) {
+          return item && item.turnErrorNotice && item.text === notice;
+        });
+        if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+      }
     }
   }); });
 

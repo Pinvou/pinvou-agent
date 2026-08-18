@@ -133,11 +133,28 @@ function timelineUsage(usage) {
   };
 }
 
+function timelineUserError(event, options = {}) {
+  const existing = event && (event.user_error || event.userError);
+  if (existing && typeof existing === 'object') return existing;
+  const error = event && event.error;
+  const helper = globalThis.PinvouModelServiceErrors;
+  if (!error || !helper || typeof helper.build !== 'function') return null;
+  if (typeof helper.isModelServiceError === 'function' && !helper.isModelServiceError(error)) return null;
+  const providerLabel = options.providerLabel
+    || (typeof helper.providerLabelFromState === 'function'
+      ? helper.providerLabelFromState(options.modelServiceState)
+      : '');
+  return helper.build(error, {
+    language: options.language,
+    providerLabel,
+  });
+}
+
 /**
  * timing_events.jsonl 是 DeepSeek 回合生命周期的事实源。这里把
  * user_start / assistant_done 配成只读 Turn 元数据，不改写消息历史。
  */
-export function pairDeepSeekTimeline(events = []) {
+export function pairDeepSeekTimeline(events = [], options = {}) {
   const ordered = [...events]
     .filter(event => event && event.turn_id && ['user_start', 'assistant_done'].includes(event.event))
     .sort((left, right) => Number(left.timestamp || 0) - Number(right.timestamp || 0));
@@ -155,6 +172,7 @@ export function pairDeepSeekTimeline(events = []) {
         status: 'incomplete',
         rawStatus: '',
         error: null,
+        userError: null,
         usage: null,
       };
       byId.set(id, record);
@@ -168,6 +186,7 @@ export function pairDeepSeekTimeline(events = []) {
       record.rawStatus = String(event.status || '');
       record.status = normalizeTurnStatus(event.status, true);
       record.error = event.error || null;
+      record.userError = timelineUserError(event, options);
       record.usage = timelineUsage(event.usage);
     }
   }
@@ -187,6 +206,9 @@ export function projectDeepSeekConversation({
   sessionId = null,
   timelineEvents = [],
   allowScheduledTaskDraft = false,
+  language = 'zh-Hans',
+  providerLabel = '',
+  modelServiceState = null,
 } = {}) {
   const turns = [];
   const userTurns = [];
@@ -233,7 +255,7 @@ export function projectDeepSeekConversation({
     ));
   }
 
-  const timeline = pairDeepSeekTimeline(timelineEvents);
+  const timeline = pairDeepSeekTimeline(timelineEvents, { language, providerLabel, modelServiceState });
   const assigned = new Set();
   for (const record of timeline) {
     if (!Number.isInteger(record.turnIndex) || !userTurns[record.turnIndex]) continue;
@@ -241,6 +263,7 @@ export function projectDeepSeekConversation({
     Object.assign(turn, {
       status: record.status,
       error: record.error,
+      userError: record.userError,
       startedAt: record.startedAt,
       completedAt: record.completedAt,
       usage: record.usage,
@@ -257,6 +280,7 @@ export function projectDeepSeekConversation({
     Object.assign(trailingTurns[index], {
       status: record.status,
       error: record.error,
+      userError: record.userError,
       startedAt: record.startedAt,
       completedAt: record.completedAt,
       usage: record.usage,

@@ -16,6 +16,61 @@
   }
 
   window.PinvouBridgeMessages = Object.freeze({
+    modelServiceUserError: function (payload, state) {
+      payload = payload || {};
+      state = state || {};
+      var raw = payload && (payload.user_error || payload.userError);
+      var error = payload && payload.error;
+      if (!raw && !error) return null;
+      var helper = window.PinvouModelServiceErrors;
+      if (!helper || typeof helper.build !== "function") return null;
+      if (!raw && typeof helper.isModelServiceError === "function" && !helper.isModelServiceError(error)) {
+        return null;
+      }
+      var language = state.settings && state.settings.language;
+      return helper.build(raw || error, {
+        language: language,
+        providerLabel: helper.providerLabelFromState(state, null, language),
+        terminal: payload.terminal !== false,
+      });
+    },
+
+    addModelServiceErrorNotice: function (payload, state, addSystemItem, legacyConversationOnly) {
+      payload = payload || {};
+      state = state || {};
+      var helper = window.PinvouModelServiceErrors;
+      payload.terminal = !!legacyConversationOnly;
+      var userError = window.PinvouBridgeMessages.modelServiceUserError(payload, state);
+      if (!helper || !userError) return false;
+      var notice = helper.noticeText(userError);
+      var chatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
+      var nextDetail = userError && userError.technicalDetail;
+      // 去重按错误身份(kind+技术详情),不按最终措辞:同一回合先 transient
+      // (recoverable 文案)后 done(terminal 文案)时措辞必然不同,按文本全等
+      // 去重会漏,导致同一错误双气泡且措辞互相矛盾。
+      var existing = chatItems.find(function (item) {
+        if (!item || !item.turnErrorNotice || !item.userError) return false;
+        if (item.userError.kind !== userError.kind) return false;
+        var existingDetail = item.userError.technicalDetail;
+        if (existingDetail || nextDetail) return existingDetail === nextDetail;
+        return true;
+      });
+      if (existing) {
+        existing.text = notice;
+        existing.userError = userError;
+        if (legacyConversationOnly) existing.legacyConversationOnly = true;
+      } else {
+        addSystemItem(notice, {
+          turnErrorNotice: true,
+          legacyConversationOnly: !!legacyConversationOnly,
+          userError: userError,
+        });
+      }
+      payload.user_error = userError;
+      payload.userError = userError;
+      return true;
+    },
+
     showShellCleanupFailure: function (payload, state, addSystemItem) {
       if (!payload || !payload.shell_cleanup_failed) return;
       var notice = shellCleanupFailedText(state.settings && state.settings.language);
