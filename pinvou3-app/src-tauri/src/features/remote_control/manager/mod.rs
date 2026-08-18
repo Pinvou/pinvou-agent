@@ -63,7 +63,7 @@ use transfer::{
     append_web_attachment_upload_chunk, clear_web_attachments, discard_web_attachment_upload,
     ensure_web_session_download_capacity, finish_web_attachment_reservation_inner,
     prune_expired_web_session_transfers, remove_web_attachment_upload_dir,
-    request_web_attachment_discard,
+    request_web_attachment_discard, take_web_session_download,
 };
 pub(crate) use transfer::{sweep_stale_web_attachment_uploads, web_attachment_uploads_base};
 
@@ -1306,6 +1306,7 @@ impl RemoteControlManager {
     pub fn begin_web_session_download(
         &self,
         session_id: &str,
+        requested_download_id: Option<&str>,
         reserved_bytes: usize,
     ) -> Result<WebSessionDownloadReservation, String> {
         if reserved_bytes > MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES {
@@ -1314,16 +1315,34 @@ impl RemoteControlManager {
                 MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
             ));
         }
-        let download_id = format!(
-            "download_{}",
-            crate::features::remote_control::short_token(32)
-        );
+        let download_id = match requested_download_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            Some(download_id)
+                if download_id.len() >= 8
+                    && download_id.len() <= 128
+                    && download_id.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+                    }) =>
+            {
+                download_id.to_string()
+            }
+            Some(_) => return Err("invalid requested Session download id".into()),
+            None => format!(
+                "download_{}",
+                crate::features::remote_control::short_token(32)
+            ),
+        };
         let download_dir = paths::pinvou3_home().join("web-session-downloads");
         std::fs::create_dir_all(&download_dir)
             .map_err(|error| format!("创建远程控制会话下载目录失败：{error}"))?;
         let path = download_dir.join(format!("{download_id}.json"));
         let mut inner = self.inner.lock();
         prune_expired_web_session_transfers(&mut inner);
+        if inner.web_session_downloads.contains_key(&download_id) {
+            return Err("requested Session download id is already active".into());
+        }
         ensure_web_session_download_capacity(&inner, reserved_bytes)?;
         inner
             .web_session_download_order
@@ -1423,6 +1442,35 @@ impl RemoteControlManager {
             // entry was concurrently cleared closes the cancellation/crash
             // race where Windows could not unlink an open writer earlier.
             let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Release an incomplete browser Session download explicitly. The opaque
+    /// token remains bound to its Session so one browser context cannot cancel
+    /// another Session's transfer even if it supplies a mismatched id.
+    pub fn cancel_web_session_download(
+        &self,
+        download_id: &str,
+        session_id: &str,
+    ) -> Result<bool, String> {
+        let removed = {
+            let mut inner = self.inner.lock();
+            take_web_session_download(&mut inner, download_id, session_id)?
+        };
+        if let Some(download) = removed {
+            let _ = std::fs::remove_file(&download.path);
+            crate::features::sessions::diagnostics::record_backend(
+                "web_session_download_cancelled",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "download_id": download_id,
+                    "total_bytes": download.total,
+                    "ready": download.ready,
+                }),
+            );
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
@@ -3194,6 +3242,7 @@ mod tests {
             "web_access_abort_attachment_upload",
             "web_access_discard_attachment",
             "web_access_read_conversation_attachment_chunk",
+            "web_access_cancel_session_download",
             "web_access_load_session_chunk",
         ] {
             assert!(
@@ -3481,6 +3530,7 @@ mod tests {
     fn session_scoped_commands_use_the_central_validator() {
         let scoped_commands = [
             ("get_session_timeline", "sessionId"),
+            ("web_access_cancel_session_download", "id"),
             ("web_access_load_session_chunk", "id"),
             ("web_access_artifact_info", "sessionId"),
             ("web_access_read_artifact_chunk", "sessionId"),
@@ -3584,6 +3634,7 @@ mod tests {
         for command in [
             "get_session_timeline",
             "get_mode_state",
+            "web_access_cancel_session_download",
             "web_access_load_session_chunk",
         ] {
             assert!(
@@ -3965,6 +4016,44 @@ mod tests {
             .extend([download("large", MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES - 1)]);
         assert!(ensure_web_session_download_capacity(&by_bytes, 2).is_err());
         assert!(by_bytes.web_session_downloads.contains_key("large"));
+    }
+
+    #[test]
+    fn cancelled_session_download_releases_only_the_matching_lease() {
+        let mut inner = Inner::default();
+        inner.web_session_download_order =
+            VecDeque::from(["download_keep".to_string(), "download_cancel".to_string()]);
+        for (download_id, session_id) in [
+            ("download_keep", "session_keep"),
+            ("download_cancel", "session_cancel"),
+        ] {
+            inner.web_session_downloads.insert(
+                download_id.to_string(),
+                WebSessionDownload {
+                    session_id: session_id.to_string(),
+                    path: PathBuf::from(format!("{download_id}.json")),
+                    reserved_bytes: 1,
+                    total: 1,
+                    ready: true,
+                    last_touched: Instant::now(),
+                },
+            );
+        }
+
+        assert!(take_web_session_download(&mut inner, "download_cancel", "session_other").is_err());
+        assert!(inner.web_session_downloads.contains_key("download_cancel"));
+
+        let removed =
+            take_web_session_download(&mut inner, "download_cancel", "session_cancel").unwrap();
+        assert!(removed.is_some());
+        assert!(!inner.web_session_downloads.contains_key("download_cancel"));
+        assert!(inner.web_session_downloads.contains_key("download_keep"));
+        assert_eq!(inner.web_session_download_order, ["download_keep"]);
+        assert!(
+            take_web_session_download(&mut inner, "download_cancel", "session_cancel")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

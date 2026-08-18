@@ -383,8 +383,42 @@ pub(crate) fn emit_chat_terminal(
         "error": error,
         "shell_cleanup_failed": shell_cleanup_failed,
     });
+    crate::features::sessions::diagnostics::record_backend(
+        "chat_done_emitting",
+        json!({
+            "session_id": session_id,
+            "terminal_status": format!("{status:?}"),
+            "terminal_has_error": error.is_some(),
+            "error": error,
+            "shell_cleanup_failed": shell_cleanup_failed,
+        }),
+    );
     let _ = app.emit("chat:done", payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:done", payload);
+}
+
+pub(crate) fn emit_transcript_committed(
+    app: &AppHandle,
+    session_id: &str,
+    revision: String,
+    persistence_path: &str,
+    message_count: usize,
+) {
+    crate::features::sessions::diagnostics::record_backend(
+        "transcript_committed_emitting",
+        json!({
+            "session_id": session_id,
+            "transcript_revision": revision,
+            "persistence_path": persistence_path,
+            "message_count": message_count,
+        }),
+    );
+    let payload = json!({
+        "session_id": session_id,
+        "transcript_revision": revision,
+    });
+    let _ = app.emit("chat:transcript_committed", payload.clone());
+    crate::features::remote_control::forward_app_event(app, "chat:transcript_committed", payload);
 }
 
 fn emit_turn_started(app: &AppHandle, session_id: &str) {
@@ -1082,15 +1116,12 @@ async fn finish_reclaimed_lifecycle_turn(
         match saved {
             Ok(Ok(saved)) => match transcript_revision(&saved.messages) {
                 Ok(revision) => {
-                    let payload = json!({
-                        "session_id": session_id,
-                        "transcript_revision": revision,
-                    });
-                    let _ = app.emit("chat:transcript_committed", payload.clone());
-                    crate::features::remote_control::forward_app_event(
+                    emit_transcript_committed(
                         app,
-                        "chat:transcript_committed",
-                        payload,
+                        session_id,
+                        revision,
+                        "reclaimed_fallback",
+                        saved.messages.len(),
                     );
                 }
                 Err(revision_error) => {

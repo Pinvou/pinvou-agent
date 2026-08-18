@@ -683,7 +683,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
         var encoded = Buffer.from(JSON.stringify(saved), "utf8");
         var offset = Number(args.offset || 0);
         return Promise.resolve({
-          download_id: "test-download-" + args.id,
+          download_id: args.downloadId || args.requestedDownloadId || "test-download-" + args.id,
           offset: offset,
           total: encoded.length,
           data_base64: encoded.subarray(offset).toString("base64"),
@@ -715,6 +715,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     },
     addEventListener: function () {},
     localStorage: storage,
+    sessionStorage: storage,
     location: { search: "" },
     atob: function (value) { return Buffer.from(String(value), "base64").toString("binary"); },
     btoa: function (value) { return Buffer.from(String(value), "binary").toString("base64"); },
@@ -734,6 +735,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     window: window,
     document: document,
     localStorage: storage,
+    sessionStorage: storage,
     console: { log: function () {}, warn: function () {}, error: function () {} },
     setTimeout: runtimeOptions.setTimeout || setTimeout,
     clearTimeout: runtimeOptions.clearTimeout || clearTimeout,
@@ -780,6 +782,122 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
       return Promise.all(listeners[name].map(function (listener) { return listener(event); }));
     },
   };
+}
+
+async function interruptedWebSessionDownloadReleasesItsLease() {
+  var sharedStorage = Object.create(null);
+  var harness = createBridgeHarness(sharedStorage, { bridgeKind: "web" });
+  var sessionId = "chat-download-cancel";
+  var saved = {
+    metadata: { id: sessionId, title: "Download cancel", message_count: 0 },
+    messages: [],
+    artifacts: [],
+  };
+  var encoded = Buffer.from(JSON.stringify(saved), "utf8");
+  var chunkCalls = 0;
+  var interruptedDownloadId = "";
+  harness.handlers.web_access_load_session_chunk = function (args) {
+    chunkCalls += 1;
+    if (chunkCalls === 1) {
+      interruptedDownloadId = args.requestedDownloadId;
+      assert.ok(interruptedDownloadId && interruptedDownloadId.indexOf("download_web_") === 0);
+      var first = encoded.subarray(0, Math.max(1, Math.floor(encoded.length / 2)));
+      return {
+        download_id: interruptedDownloadId,
+        offset: 0,
+        total: encoded.length,
+        data_base64: first.toString("base64"),
+        eof: false,
+      };
+    }
+    if (chunkCalls === 2) throw new Error("relay connection dropped");
+    return {
+      download_id: args.requestedDownloadId,
+      offset: 0,
+      total: encoded.length,
+      data_base64: encoded.toString("base64"),
+      eof: true,
+    };
+  };
+  var cancelCalls = 0;
+  harness.handlers.web_access_cancel_session_download = function (args) {
+    cancelCalls += 1;
+    assert.strictEqual(args.id, sessionId);
+    assert.strictEqual(args.downloadId, interruptedDownloadId);
+    if (cancelCalls === 1) throw new Error("relay still disconnected");
+    return true;
+  };
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), false);
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "web_access_cancel_session_download"; }).length,
+    1,
+    "an interrupted chunk transfer must attempt to release its desktop lease immediately"
+  );
+  assert.ok(sharedStorage["pinvou.web_session_download_leases.v1"],
+    "a failed cancellation must remain durable for the reconnect attempt");
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+  assert.strictEqual(cancelCalls, 2, "the reconnect must retry the abandoned lease cancellation");
+  assert.strictEqual(sharedStorage["pinvou.web_session_download_leases.v1"], undefined);
+
+  sharedStorage["pinvou.web_session_download_leases.v1"] = JSON.stringify([{
+    download_id: "download_reload_12345678",
+    session_id: "chat-download-reload",
+  }]);
+  var reloaded = createBridgeHarness(sharedStorage, { bridgeKind: "web" });
+  reloaded.handlers.web_access_cancel_session_download = function () { return false; };
+  assert.strictEqual(await reloaded.bridge.sessions.switchToSession("chat-download-reload"), true);
+  var transferCalls = reloaded.calls.filter(function (call) {
+    return call.cmd === "web_access_cancel_session_download" || call.cmd === "web_access_load_session_chunk";
+  });
+  assert.deepStrictEqual(
+    transferCalls.slice(0, 2).map(function (call) { return call.cmd; }),
+    ["web_access_cancel_session_download", "web_access_load_session_chunk"],
+    "a page reload must cancel its persisted abandoned lease before opening a replacement download"
+  );
+  assert.strictEqual(sharedStorage["pinvou.web_session_download_leases.v1"], undefined);
+}
+
+async function lostFirstWebSessionChunkStillHasCancellableLease() {
+  var sharedStorage = Object.create(null);
+  var harness = createBridgeHarness(sharedStorage, { bridgeKind: "web" });
+  var sessionId = "chat-download-first-response-lost";
+  var requestedId = "";
+  var loadCalls = 0;
+  harness.handlers.web_access_load_session_chunk = function (args) {
+    loadCalls += 1;
+    if (loadCalls === 1) {
+      requestedId = args.requestedDownloadId;
+      throw new Error("first Relay response was lost");
+    }
+    var saved = {
+      metadata: { id: sessionId, title: "Recovered", message_count: 0 },
+      messages: [],
+      artifacts: [],
+    };
+    var encoded = Buffer.from(JSON.stringify(saved), "utf8");
+    return {
+      download_id: args.requestedDownloadId,
+      offset: 0,
+      total: encoded.length,
+      data_base64: encoded.toString("base64"),
+      eof: true,
+    };
+  };
+  var cancelCalls = 0;
+  harness.handlers.web_access_cancel_session_download = function (args) {
+    cancelCalls += 1;
+    assert.strictEqual(args.downloadId, requestedId);
+    if (cancelCalls === 1) throw new Error("connection unavailable for cancellation");
+    return true;
+  };
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), false);
+  assert.ok(requestedId, "the browser must choose and persist the lease id before the first RPC");
+  assert.ok(sharedStorage["pinvou.web_session_download_leases.v1"]);
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+  assert.strictEqual(cancelCalls, 2);
+  assert.strictEqual(sharedStorage["pinvou.web_session_download_leases.v1"], undefined);
 }
 
 async function subscriptionSnapshotsAvoidTranscriptDeepClone() {
@@ -4888,6 +5006,8 @@ Promise.resolve()
   .then(remoteKnowledgeDeletionEventRefreshesRemoteMounts)
   .then(draftKnowledgeMountsCreateOneSession)
   .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
+  .then(interruptedWebSessionDownloadReleasesItsLease)
+  .then(lostFirstWebSessionChunkStillHasCancellableLease)
   .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(function () { return internalSubagentHandoffStaysOutOfPresentation("tauri"); })
   .then(function () { return internalSubagentHandoffStaysOutOfPresentation("web"); })

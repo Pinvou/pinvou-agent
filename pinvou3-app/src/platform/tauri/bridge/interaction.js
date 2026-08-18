@@ -4,6 +4,8 @@
   var registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.interaction = function (context) {
     var state = context.state;
+    var recordAuthoritySyncDiagnostic = context.recordAuthoritySyncDiagnostic || function () {};
+    var authoritySyncBufferSnapshot = context.authoritySyncBufferSnapshot || function () { return {}; };
     var invoke = context.invoke;
     var notify = context.notify;
     var bt = context.bt;
@@ -205,6 +207,9 @@
     }
     var planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
+        operation: "accept_plan",
+      }, authoritySyncBufferSnapshot(sid, planBuffer)));
       addAuthoritySyncNoticeFor(sid, bt("remoteTurnSyncing"));
       notify();
       return;
@@ -247,7 +252,9 @@
         state.busy = false;
         stopThinking();
       });
-      if (concurrentTurn && planBuffer) markRemoteTurn(sid, planBuffer);
+      if (concurrentTurn && planBuffer) {
+        markRemoteTurn(sid, planBuffer, false, "accept_plan_concurrent_turn");
+      }
       try {
         var currentMode = await invoke("get_mode_state", { sessionId: sid });
         applyAuthoritativeModeState(sid, currentMode);
@@ -457,6 +464,9 @@
     // 编辑前先收敛远端对账(与 web bridge 的 editLastTurn 对齐):失败对账
     // 状态下编辑会被陈旧 committed 事件重武装旧 revision,污染新一轮。
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
+        operation: "edit_last_turn",
+      }, authoritySyncBufferSnapshot(sid, editBuffer)));
       addAuthoritySyncNoticeFor(sid, bt("remoteTurnSyncing"));
       notify();
       return;

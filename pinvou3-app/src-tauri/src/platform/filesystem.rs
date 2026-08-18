@@ -178,6 +178,20 @@ pub(crate) fn create_secret_file(path: &Path) -> io::Result<std::fs::File> {
     options.open(path)
 }
 
+/// Open a private append-only data file without introducing a world-readable
+/// creation window on Unix. Windows relies on the owning profile directory's
+/// ACL, consistent with the rest of the application data tree.
+pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
 #[cfg(windows)]
 fn replace_file_atomically_impl(tmp: &Path, target: &Path, backup: &Path) -> ReplaceResult {
     replace_file_atomically_with(tmp, target, backup, system_replace_file)

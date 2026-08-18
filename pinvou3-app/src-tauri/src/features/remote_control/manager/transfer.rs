@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use super::Inner;
 use super::{
-    CachedWebAttachment, WebAttachmentUpload, MAX_WEB_ATTACHMENT_UPLOADS,
+    CachedWebAttachment, WebAttachmentUpload, WebSessionDownload, MAX_WEB_ATTACHMENT_UPLOADS,
     MAX_WEB_ATTACHMENT_UPLOAD_TOTAL_BYTES, MAX_WEB_SESSION_DOWNLOADS,
     MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES, WEB_ATTACHMENT_UPLOAD_DIR_PREFIX,
     WEB_SESSION_TRANSFER_TTL,
@@ -293,4 +293,22 @@ pub(super) fn ensure_web_session_download_capacity(
         ));
     }
     Ok(())
+}
+
+pub(super) fn take_web_session_download(
+    inner: &mut Inner,
+    download_id: &str,
+    session_id: &str,
+) -> Result<Option<WebSessionDownload>, String> {
+    prune_expired_web_session_transfers(inner);
+    let Some(download) = inner.web_session_downloads.get(download_id) else {
+        return Ok(None);
+    };
+    if download.session_id != session_id {
+        return Err("Session download token belongs to another Session".into());
+    }
+    inner
+        .web_session_download_order
+        .retain(|id| id != download_id);
+    Ok(inner.web_session_downloads.remove(download_id))
 }

@@ -142,6 +142,7 @@ for (const command of [
   'web_access_upload_attachment_chunk',
   'web_access_abort_attachment_upload',
   'web_access_discard_attachment',
+  'web_access_cancel_session_download',
   'web_access_load_session_chunk',
   'web_access_transcribe_voice_audio',
 ]) {
@@ -304,6 +305,9 @@ assert.match(toolRenderers, /discardPlan\(item\.id, item\.planId\)/);
 assert.match(bridge, /restoreUiTurnState\(preparation\.snapshot\)/);
 assert.match(bridge, /attachmentHandles:/);
 assert.match(bridge, /web_access_load_session_chunk/);
+assert.match(bridge, /web_access_cancel_session_download/);
+assert.match(bridge, /requestedDownloadId/,
+  'the browser must choose a cancellable lease id before requesting the first Session chunk');
 assert.doesNotMatch(
   webBridge,
   /web_access_load_session_chunk[\s\S]{0,220}\blimit\s*:/,

@@ -373,17 +373,53 @@ pub async fn load_session(
     set_active: Option<bool>,
     store: State<'_, SessionStore>,
 ) -> Result<DesktopSavedSession, String> {
-    let session = store
-        .load(&id)
-        .map_err(|e| format!("load_session({id}): {e:#}"))?;
+    let started = std::time::Instant::now();
+    let session = match store.load(&id) {
+        Ok(session) => session,
+        Err(error) => {
+            crate::features::sessions::diagnostics::record_backend(
+                "desktop_load_session_failed",
+                serde_json::json!({
+                    "session_id": id,
+                    "set_active": set_active.unwrap_or(true),
+                    "elapsed_ms": started.elapsed().as_millis(),
+                    "error": format!("{error:#}"),
+                }),
+            );
+            return Err(format!("load_session({id}): {error:#}"));
+        }
+    };
     if set_active.unwrap_or(true) {
         store.set_active(Some(id.clone()));
     }
     // 多 session 并发:切换不再 SyncSession 替换全局引擎(那是旧单引擎模型)。该 session
     // 有自己独立的 engine(已起则持有自己的上下文、还在跑就继续跑;未起则下次 chat 时
     // lazy spawn 并注水这里返回的 messages)。本命令只切 active 指针 + 返回 messages 给前端渲染。
-    let revision = crate::features::sessions::transcript_revision(&session.messages)
-        .map_err(|e| format!("load_session({id}) revision: {e:#}"))?;
+    let revision = match crate::features::sessions::transcript_revision(&session.messages) {
+        Ok(revision) => revision,
+        Err(error) => {
+            crate::features::sessions::diagnostics::record_backend(
+                "desktop_load_session_revision_failed",
+                serde_json::json!({
+                    "session_id": id,
+                    "message_count": session.messages.len(),
+                    "elapsed_ms": started.elapsed().as_millis(),
+                    "error": format!("{error:#}"),
+                }),
+            );
+            return Err(format!("load_session({id}) revision: {error:#}"));
+        }
+    };
+    crate::features::sessions::diagnostics::record_backend(
+        "desktop_load_session_succeeded",
+        serde_json::json!({
+            "session_id": id,
+            "set_active": set_active.unwrap_or(true),
+            "transcript_revision": revision,
+            "message_count": session.messages.len(),
+            "elapsed_ms": started.elapsed().as_millis(),
+        }),
+    );
     Ok(DesktopSavedSession {
         session,
         transcript_revision: revision,
