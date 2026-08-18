@@ -20,7 +20,7 @@
 
 ### r7 逐轮评测工具安全扩展（PR 候选）
 
-> CodeWhale PR #15 候选提交 `1eca6103a` + 安全修复 `169c24cc5`：为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖、最终执行前精确白名单门禁，并封闭排队控制操作、Hook 与日志旁路。快速 guard 仅额外接受这条登记的 PR 候选链；公开标签校验仍固定为 `pinvou-v0.9.5-r7`。
+> CodeWhale PR #15 候选提交 `1eca6103a` + 安全修复 `169c24cc5` + 只读分发与受限面收口 `21e5f661a`：为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖、最终执行前精确白名单门禁、只读 `File` action 投影与最终分发复检，并封闭排队控制操作、排队续轮/MCP reload、Hook 与日志旁路；受限审计保留非私有身份字段。快速 guard 仅额外接受这条登记的 PR 候选链（当前 head `21e5f661a`，v0.9.5 之上 13 个提交）。父仓 CI 已启用严格公开标签校验：合并前须将本候选链合并、打不可变标签 `pinvou-v0.9.5-r8` 并把 gitlink 与 `PINVOU_CODEWHALE_TAG` 一并对齐 r8。
 
 ### 本次会话修复（已验证并发布）
 
@@ -79,10 +79,11 @@
   - schema 约束的 JSON 容器兼容、工具续轮 provider 角色顺序和已知内部 runtime suffix 展示清理继续沿用 r6 行为。
   - registry-first 提示只引用 canonical action；Custom SubAgent 的显式旧 action allowlist 通过 alias 映射解析到 canonical family，不扩大实际工具权限。
   - 当前工具面不恢复已退役的独立追加文件工具，也没有改动 `request_user_input`。
-  - PR #15 候选在 catalog 与最终 dispatch 共用 exact allowlist；显式受限轮次可清空 trusted roots，并禁止 MCP 初始化、控制面 shell、动态工具和子 Agent。控制面限制保持到下一条消息出队，Hook 默认关闭，受限日志与审计固定脱敏；`None` 保持现有 GUI 行为。
-- **上游计划**：逐轮权限、可信根覆盖和最终 dispatch 门禁是通用嵌入能力，将在本 PR 安全回归稳定后整理为独立上游贡献；Pinvou profile 名称与 GAIA 工具名单继续留在 app。上游接收后删除 fork 对应实现和本地指纹。
+  - PR #15 候选在 catalog 与最终 dispatch 共用 exact allowlist；显式受限轮次可清空 trusted roots，并禁止 MCP 初始化、控制面 shell、动态工具和子 Agent。控制面限制保持到下一条消息出队，受限排队续轮（goal self-continuation）与 MCP reload 同样拒绝，Hook 默认关闭；受限审计保留 event 与 tool_name 等非私有身份字段，输入/输出/路径固定脱敏；`None` 保持现有 GUI 行为。
+  - GAIA 后续候选在同一逐轮策略上显式启用 read-only dispatch：catalog 改用只读 `File` action schema，规划与最终执行前均再次拒绝写动作，不能只依赖 approval。
+- **上游计划**：逐轮权限、可信根覆盖、只读 action 投影和最终 dispatch 门禁是通用嵌入能力。当前 fork 版本是 GAIA 发布前的临时 host seam，需先随 Pinvou 的公开 fork 发布以解除父仓 merge queue；随后从最新 `Hmbown/CodeWhale` main 提交独立上游 PR。Pinvou profile 名称与 GAIA 工具名单继续留在 app；上游接收后删除 fork 对应实现和本地指纹。
 - **边界**：不包含 Skill 来源、Automation 或产品角色协议。
-- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、registry prompt、Custom allowlist alias、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`、`forkguard_queued_control_op_keeps_restricted_turn_authority` 以及受限 Hook/日志脱敏回归。
+- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、registry prompt、Custom allowlist alias、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`、`forkguard_read_only_turn_rejects_write_action_at_final_dispatch`、`forkguard_restricted_agent_uses_read_only_file_schema`、`forkguard_queued_control_op_keeps_restricted_turn_authority`、`forkguard_queued_goal_continuation_and_mcp_reload_keeps_restricted_turn_authority`、`forkguard_restricted_turn_hooks_require_explicit_host_opt_in`、`forkguard_restricted_tool_audit_redacts_private_sentinel`。
 
 ### T3：嵌入上下文与技能来源
 

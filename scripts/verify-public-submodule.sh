@@ -5,7 +5,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PINVOU_CODEWHALE_PATH="CodeWhale"
 PINVOU_CODEWHALE_URL="https://github.com/Pinvou/CodeWhale.git"
 PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r7"
-LOCAL_SECURITY_HEAD="169c24cc50223b73c7a7b775e3090c649f74dfa1"
+LOCAL_SECURITY_HEAD="21e5f661abc522ecf36bf2ee6d6aabe93b4bf365"
 
 allow_registered_candidate=0
 case "${1:-}" in
