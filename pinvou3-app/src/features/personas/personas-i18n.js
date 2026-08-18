@@ -1381,7 +1381,7 @@ window.PERSONA_I18N = {
    "description": "ガバナンス優先の業務自動化アーキテクト（n8n ファースト）。実装の前に価値・リスク・保守性を監査。"
   }
  },
- "blockchain-security-auditor": {
+ "security-blockchain-security-auditor": {
   "en": {
    "name": "Blockchain Security Auditor",
    "description": "Security audit expert focused on smart-contract vulnerability detection, formal verification, exploit analysis, and audit-report writing for DeFi protocols and blockchain applications."
@@ -1391,7 +1391,7 @@ window.PERSONA_I18N = {
    "description": "スマートコントラクトの脆弱性検出・形式検証・エクスプロイト分析・監査レポート作成に特化したセキュリティ監査の専門家。DeFi プロトコルやブロックチェーンアプリケーションを対象。"
   }
  },
- "compliance-auditor": {
+ "security-compliance-auditor": {
   "en": {
    "name": "Compliance Auditor",
    "description": "Professional technical compliance auditor skilled in SOC 2, ISO 27001, HIPAA, and PCI-DSS audits — from readiness assessment and evidence collection through to certification."
@@ -2009,6 +2009,676 @@ window.PERSONA_I18N = {
   "ja": {
    "name": "ワークフロー最適化専門家",
    "description": "プロセス分析と最適化に特化した効率化の専門家。ボトルネックの除去・プロセスの簡素化・自動化の導入により、チームがより速く・ミスを減らし・より快適に働けるようにする。"
+  }
+ },
+ "design-persona-walkthrough": {
+  "en": {
+   "name": "Persona Walkthrough Expert",
+   "description": "Simulates cognitive walkthroughs of web pages from the psychological perspective of defined personas — capturing emotional reactions and rational thinking at every scroll position, then producing structured CRO reports grounded in the LIFT, Cialdini, and Fogg frameworks."
+  },
+  "ja": {
+   "name": "ペルソナウォークスルー専門家",
+   "description": "定義済みペルソナの心理的視点から Web ページの認知ウォークスルーをシミュレート——各スクロール位置での感情反応と合理的思考を捉え、LIFT・Cialdini・Fogg フレームワークに基づく構造化された CRO レポートを出力。"
+  }
+ },
+ "engineering-drupal-shopping-cart": {
+  "en": {
+   "name": "Drupal Cart Engineer",
+   "description": "Senior Drupal e-commerce engineer fluent in Drupal Commerce — product catalog management, payment gateway integration, checkout flow design, order management, tax and promotion configuration, and delivering highly reliable storefronts on Drupal 10/11."
+  },
+  "ja": {
+   "name": "Drupal カートエンジニア",
+   "description": "Drupal Commerce に精通するシニア Drupal EC エンジニア——商品カタログ管理・決済ゲートウェイ統合・checkout フロー設計・注文管理・税とプロモーション設定を担い、Drupal 10/11 上で高信頼のストアフロントを提供。"
+  }
+ },
+ "engineering-it-service-manager": {
+  "en": {
+   "name": "IT Service Manager",
+   "description": "Senior ITSM expert applying the ITIL 4 framework to service catalog design, incident and problem management, change control, SLA governance, CMDB maintenance, and continual service improvement — ensuring IT delivers reliable, measurable business value at any organizational scale."
+  },
+  "ja": {
+   "name": "IT サービスマネージャー",
+   "description": "ITIL 4 フレームワークを活用するシニア ITSM 専門家——サービスカタログ設計・インシデントと問題の管理・変更制御・SLA ガバナンス・CMDB 保守・継続的サービス改善を担い、あらゆる規模の組織で IT が信頼でき測定可能なビジネス価値を提供するようにする。"
+  }
+ },
+ "engineering-multi-agent-systems-architect": {
+  "en": {
+   "name": "Multi-Agent Systems Architect",
+   "description": "Systems architect specializing in the design, coordination, and governance of multi-agent AI pipelines — topology selection, context management, inter-agent trust, failure recovery, human-in-the-loop gating, and observability for production-grade agent systems."
+  },
+  "ja": {
+   "name": "マルチエージェントシステムアーキテクト",
+   "description": "マルチエージェント AI パイプラインの設計・調整・ガバナンスを専門とするシステムアーキテクト——トポロジ選定・コンテキスト管理・エージェント間信頼・障害復旧・ヒューマンインザループ制御・本番級エージェントシステムの可観測性をカバー。"
+  }
+ },
+ "engineering-network-engineer-china": {
+  "en": {
+   "name": "China Network Engineer",
+   "description": "Enterprise network engineering expert for domestic Chinese network equipment — fluent in Huawei VRP, H3C Comware, and Ruijie RGOS, covering VLAN, STP, OSPF, IS-IS, BGP, MPLS, VXLAN, and SDN design and troubleshooting across campus, data center, and WAN networks, with familiarity in xinchuang domestic substitution and MLPS 2.0 compliant networking."
+  },
+  "ja": {
+   "name": "中国国内ネットワークエンジニア",
+   "description": "中国国産ネットワーク機器を対象とするエンタープライズネットワークのエンジニア——華為 VRP・H3C Comware・Ruijie RGOS に精通し、キャンパス/データセンター/広域ネットワークの VLAN・STP・OSPF・IS-IS・BGP・MPLS・VXLAN・SDN の設計と障害対応をカバーし、信創による国産化代替や等保 2.0 準拠のネットワーク構築にも精通。"
+  }
+ },
+ "engineering-orgscript-engineer": {
+  "en": {
+   "name": "OrgScript Engineer",
+   "description": "Fluent in the design, parsing, and implementation of OrgScript syntax, skilled at AST validation and business logic definition."
+  },
+  "ja": {
+   "name": "OrgScript エンジニア",
+   "description": "OrgScript 構文の設計・解析・実装に精通し、AST 検証とビジネスロジック定義を得意とする。"
+  }
+ },
+ "engineering-prompt-engineer": {
+  "en": {
+   "name": "Prompt Engineer",
+   "description": "Expert in polishing, testing, and systematically optimizing prompts for LLMs — turning vague instructions into reliable, production-ready AI behavior."
+  },
+  "ja": {
+   "name": "プロンプトエンジニア",
+   "description": "LLM 向けプロンプトの研磨・テスト・体系的最適化を専門とする専門家——曖昧な指示を信頼できる本番対応の AI 挙動に変える。"
+  }
+ },
+ "engineering-wordpress-shopping-cart": {
+  "en": {
+   "name": "WordPress Cart Engineer",
+   "description": "WordPress e-commerce expert engineer specializing in WooCommerce — product catalog management, payment gateway integration, checkout customization, order management, tax and coupon configuration, and delivering conversion-driven stores on WordPress."
+  },
+  "ja": {
+   "name": "WordPress カートエンジニア",
+   "description": "WooCommerce を専門とする WordPress EC エンジニア——商品カタログ管理・決済ゲートウェイ統合・checkout カスタマイズ・注文管理・税とクーポン設定を担い、WordPress 上でコンバージョン主導のストアを提供。"
+  }
+ },
+ "finance-hk-stock-compliance-reviewer": {
+  "en": {
+   "name": "HK Stock Compliance Reviewer",
+   "description": "Senior Hong Kong stock market compliance reviewer fluent in HKEX Listing Rules, SFC regulations, the Companies Ordinance, and the Securities and Futures Ordinance — providing listing application compliance review, continuing obligations oversight, connected transaction compliance, disclosure review, and corporate governance advisory."
+  },
+  "ja": {
+   "name": "香港株式市場コンプライアンス審査専門家",
+   "description": "HKEX 上場規則・SFC 規則・会社条例・証券先物条例に精通する香港株式市場コンプライアンス審査の専門家——上場申請コンプライアンス審査・継続的義務監督・関連取引コンプライアンス・開示義務審査・コーポレートガバナンス助言を提供。"
+  }
+ },
+ "blender-addon-engineer": {
+  "en": {
+   "name": "Blender Add-on Engineer",
+   "description": "Blender tooling expert — builds Python add-ons, asset validators, export tools, and pipeline automation, turning repetitive DCC work into reliable one-click workflows."
+  },
+  "ja": {
+   "name": "Blender アドオンエンジニア",
+   "description": "Blender ツールの専門家——Python アドオン・アセット検証ツール・エクスポートツール・パイプライン自動化を構築し、反復的な DCC 作業を信頼できるワンクリックワークフローに変える。"
+  }
+ },
+ "godot-gameplay-scripter": {
+  "en": {
+   "name": "Godot Gameplay Scripter",
+   "description": "Composition and signal integrity expert — fluent in GDScript 2.0, C# integration, node-based architecture, and type-safe signal design for Godot 4 projects."
+  },
+  "ja": {
+   "name": "Godot ゲームプレイスクリプター",
+   "description": "合成とシグナル整合性の専門家——GDScript 2.0・C# 統合・ノードベースアーキテクチャ・型安全シグナル設計に精通し、Godot 4 プロジェクトに対応。"
+  }
+ },
+ "godot-multiplayer-engineer": {
+  "en": {
+   "name": "Godot Multiplayer Engineer",
+   "description": "Godot 4 networking expert — fluent in MultiplayerAPI, scene replication, ENet/WebRTC transports, RPCs, and authority models for real-time multiplayer games."
+  },
+  "ja": {
+   "name": "Godot マルチプレイヤーエンジニア",
+   "description": "Godot 4 ネットワーキングの専門家——MultiplayerAPI・シーン複製・ENet/WebRTC トランスポート・RPC・権威モデルに精通し、リアルタイムマルチプレイヤーゲームに対応。"
+  }
+ },
+ "godot-shader-developer": {
+  "en": {
+   "name": "Godot Shader Developer",
+   "description": "Godot 4 visual effects expert — fluent in the Godot shading language (GLSL-like), the VisualShader editor, CanvasItem and Spatial shaders, post-processing, and performance optimization for 2D/3D effects."
+  },
+  "ja": {
+   "name": "Godot シェーダー開発者",
+   "description": "Godot 4 ビジュアルエフェクトの専門家——Godot シェーディング言語（GLSL 類似）・VisualShader エディタ・CanvasItem と Spatial シェーダー・ポストプロセス・パフォーマンス最適化に精通し、2D/3D エフェクトに対応。"
+  }
+ },
+ "roblox-avatar-creator": {
+  "en": {
+   "name": "Roblox Avatar Creator",
+   "description": "Roblox UGC and avatar pipeline expert — fluent in the Roblox avatar system, UGC item creation, accessory rigging, texture standards, and Creator Marketplace submission flows."
+  },
+  "ja": {
+   "name": "Roblox アバタークリエイター",
+   "description": "Roblox UGC とアバターパイプラインの専門家——Roblox アバターシステム・UGC アイテム制作・アクセサリーバインディング・テクスチャ規格・Creator Marketplace 提出フローに精通。"
+  }
+ },
+ "roblox-experience-designer": {
+  "en": {
+   "name": "Roblox Experience Designer",
+   "description": "Roblox platform UX and monetization expert — fluent in engagement loop design, DataStore-driven progression systems, Roblox monetization (passes, developer products, UGC), and player retention."
+  },
+  "ja": {
+   "name": "Roblox エクスペリエンスデザイナー",
+   "description": "Roblox プラットフォームの UX と収益化の専門家——エンゲージメントループ設計・DataStore 駆動の進行システム・Roblox 収益化（パス・デベロッパー製品・UGC）・プレイヤー維持に精通。"
+  }
+ },
+ "roblox-systems-scripter": {
+  "en": {
+   "name": "Roblox Systems Scripter",
+   "description": "Roblox platform engineering expert — fluent in Luau, the client-server security model, RemoteEvent/RemoteFunction, DataStore, and modular architecture for scalable Roblox experiences."
+  },
+  "ja": {
+   "name": "Roblox システムスクリプター",
+   "description": "Roblox プラットフォームエンジニアリングの専門家——Luau・クライアント/サーバーセキュリティモデル・RemoteEvent/RemoteFunction・DataStore・モジュールアーキテクチャに精通し、スケーラブルな Roblox エクスペリエンスに対応。"
+  }
+ },
+ "unity-architect": {
+  "en": {
+   "name": "Unity Architect",
+   "description": "Data-driven modularity expert — fluent in ScriptableObjects, decoupled systems, and single-responsibility component design for scalable Unity projects."
+  },
+  "ja": {
+   "name": "Unity アーキテクト",
+   "description": "データ駆動モジュール化の専門家——ScriptableObject・疎結合システム・単一責任コンポーネント設計に精通し、スケーラブルな Unity プロジェクトに対応。"
+  }
+ },
+ "unity-editor-tool-developer": {
+  "en": {
+   "name": "Unity Editor Tool Developer",
+   "description": "Unity editor automation expert — fluent in custom EditorWindows, PropertyDrawers, AssetPostprocessors, ScriptedImporters, and pipeline automation, saving teams hours every week."
+  },
+  "ja": {
+   "name": "Unity エディタツール開発者",
+   "description": "Unity エディタ自動化の専門家——カスタム EditorWindow・PropertyDrawer・AssetPostprocessor・ScriptedImporter・パイプライン自動化に精通し、チームの毎週の作業時間を削減。"
+  }
+ },
+ "unity-multiplayer-engineer": {
+  "en": {
+   "name": "Unity Multiplayer Engineer",
+   "description": "Networked games expert — fluent in Netcode for GameObjects, Unity Gaming Services (Relay/Lobby), client-server authority, lag compensation, and state synchronization."
+  },
+  "ja": {
+   "name": "Unity マルチプレイヤーエンジニア",
+   "description": "ネットワークゲームの専門家——Netcode for GameObjects・Unity Gaming Services（Relay/Lobby）・クライアント/サーバー権威・遅延補償・状態同期に精通。"
+  }
+ },
+ "unity-shader-graph-artist": {
+  "en": {
+   "name": "Unity Shader Graph Artist",
+   "description": "Visual effects and materials expert — fluent in Unity Shader Graph, HLSL, URP/HDRP render pipelines, and custom render passes for real-time visual effects."
+  },
+  "ja": {
+   "name": "Unity Shader Graph アーティスト",
+   "description": "ビジュアルエフェクトとマテリアルの専門家——Unity Shader Graph・HLSL・URP/HDRP レンダーパイプライン・カスタムレンダーパスに精通し、リアルタイム視覚効果を制作。"
+  }
+ },
+ "unreal-multiplayer-architect": {
+  "en": {
+   "name": "Unreal Multiplayer Architect",
+   "description": "Unreal Engine networking expert — fluent in Actor replication, GameMode/GameState architecture, server-authoritative gameplay, network prediction, and UE5 dedicated server configuration."
+  },
+  "ja": {
+   "name": "Unreal マルチプレイヤーアーキテクト",
+   "description": "Unreal Engine ネットワーキングの専門家——Actor レプリケーション・GameMode/GameState アーキテクチャ・サーバー権威ゲームプレイ・ネットワーク予測・UE5 専用サーバー構成に精通。"
+  }
+ },
+ "unreal-systems-engineer": {
+  "en": {
+   "name": "Unreal Systems Engineer",
+   "description": "Performance and hybrid architecture expert — fluent in the C++/Blueprint boundary, Nanite geometry, Lumen GI, and the Gameplay Ability System for AAA Unreal Engine projects."
+  },
+  "ja": {
+   "name": "Unreal システムエンジニア",
+   "description": "パフォーマンスとハイブリッドアーキテクチャの専門家——C++/Blueprint の境界・Nanite ジオメトリ・Lumen GI・Gameplay Ability System に精通し、AAA 級 Unreal Engine プロジェクトに対応。"
+  }
+ },
+ "unreal-technical-artist": {
+  "en": {
+   "name": "Unreal Technical Artist",
+   "description": "Unreal Engine visual pipeline expert — fluent in the material editor, Niagara effects, procedural content generation, and the art-to-engine pipeline for UE5 projects."
+  },
+  "ja": {
+   "name": "Unreal テクニカルアーティスト",
+   "description": "Unreal Engine ビジュアルパイプラインの専門家——マテリアルエディタ・Niagara エフェクト・手続き型コンテンツ生成・UE5 プロジェクトのアートからエンジンへのパイプラインに精通。"
+  }
+ },
+ "unreal-world-builder": {
+  "en": {
+   "name": "Unreal World Builder",
+   "description": "Open world and environment expert — fluent in UE5 World Partition, Landscape, procedural foliage, HLOD, and large-scale level streaming for seamless open world experiences."
+  },
+  "ja": {
+   "name": "Unreal ワールドビルダー",
+   "description": "オープンワールドと環境の専門家——UE5 World Partition・Landscape・手続き型植生・HLOD・大規模レベルストリーミングに精通し、シームレスなオープンワールド体験を構築。"
+  }
+ },
+ "gis-3d-scene-developer": {
+  "en": {
+   "name": "3D Scene Developer",
+   "description": "Web 3D visualization expert using Cesium, ArcGIS Scene Viewer, and modern 3D web frameworks to build immersive 3D scenes, terrain models, point cloud visualizations, and interactive web experiences."
+  },
+  "ja": {
+   "name": "3D シーン開発者",
+   "description": "Cesium・ArcGIS Scene Viewer・最新の 3D Web フレームワークを用いる Web 3D 可視化の専門家——没入型 3D シーン・地形モデル・点群可視化・インタラクティブな Web 体験を構築。"
+  }
+ },
+ "gis-analyst": {
+  "en": {
+   "name": "GIS Analyst",
+   "description": "Day-to-day GIS operator handling cartography, layer management, and spatial queries, maintaining geospatial data integrity across desktop and web environments."
+  },
+  "ja": {
+   "name": "GIS アナリスト",
+   "description": "日常的な GIS オペレーター——製図・レイヤー管理・空間クエリを担当し、デスクトップと Web 環境で地理空間データの整合性を維持。"
+  }
+ },
+ "gis-bim-specialist": {
+  "en": {
+   "name": "BIM/GIS Specialist",
+   "description": "Integration expert bridging BIM and GIS — Revit/IFC data conversion, indoor mapping, digital twin architecture, and facility management data models."
+  },
+  "ja": {
+   "name": "BIM/GIS スペシャリスト",
+   "description": "BIM と GIS をつなぐ統合の専門家——Revit/IFC データ変換・屋内マッピング・デジタルツインアーキテクチャ・施設管理データモデルを担当。"
+  }
+ },
+ "gis-cartography-designer": {
+  "en": {
+   "name": "Cartography Designer",
+   "description": "Map aesthetics expert designing beautiful, readable, effective maps — color theory, typography, label placement, basemap selection, and visual hierarchy for print and web."
+  },
+  "ja": {
+   "name": "地図デザインデザイナー",
+   "description": "美しく読みやすく効果的な地図をデザインする地図美学の専門家——色彩理論・タイポグラフィ・ラベル配置・ベースマップ選定・印刷と Web の視覚階層をカバー。"
+  }
+ },
+ "gis-drone-reality-mapping": {
+  "en": {
+   "name": "Drone Reality Mapping Expert",
+   "description": "Photogrammetry and reality capture expert turning drone imagery into orthomosaics, digital terrain models, point clouds, and 3D meshes — bridging field capture and GIS-ready deliverables."
+  },
+  "ja": {
+   "name": "ドローン実景測量の専門家",
+   "description": "写真測量とリアリティキャプチャの専門家——ドローン画像をオルソモザイク・数値地形モデル・点群・3D メッシュに変換し、現場撮影から GIS 利用可能な成果物までの導線をつなぐ。"
+  }
+ },
+ "gis-geoai-ml-engineer": {
+  "en": {
+   "name": "GeoAI/ML Engineer",
+   "description": "Geospatial machine learning expert building models for feature extraction, object detection, image segmentation, and land cover classification from satellite and aerial imagery."
+  },
+  "ja": {
+   "name": "GeoAI/ML エンジニア",
+   "description": "地理空間機械学習の専門家——衛星・航空画像から特徴抽出・物体検出・画像分割・土地被覆分類を行うモデルを構築。"
+  }
+ },
+ "gis-geoprocessing-specialist": {
+  "en": {
+   "name": "Geoprocessing Specialist",
+   "description": "Automation expert fluent in ArcPy and Python toolboxes, focused on spatial workflow automation — building .pyt toolboxes, Model Builder flows, batch geoprocessing, and custom analysis scripts for ArcGIS Pro."
+  },
+  "ja": {
+   "name": "ジオプロセシングスペシャリスト",
+   "description": "ArcPy と Python ツールボックスに精通する自動化の専門家——空間ワークフロー自動化に特化し、.pyt ツールボックス・Model Builder フロー・バッチジオプロセシング・ArcGIS Pro 向けカスタム分析スクリプトを構築。"
+  }
+ },
+ "gis-qa-engineer": {
+  "en": {
+   "name": "GIS QA Engineer",
+   "description": "Quality assurance expert validating geospatial data integrity — topology checks, metadata audits, CRS consistency, accuracy assessment, and compliance verification."
+  },
+  "ja": {
+   "name": "GIS QA エンジニア",
+   "description": "地理空間データの整合性を検証する品質保証の専門家——トポロジ検査・メタデータ監査・CRS 整合性・精度評価・コンプライアンス検証を担当。"
+  }
+ },
+ "gis-solution-engineer": {
+  "en": {
+   "name": "GIS Solution Engineer",
+   "description": "Hands-on GIS prototype builder taking the technical consultant's strategy into runnable demos, proofs of concept, and technical validation across the full Esri and open source stack."
+  },
+  "ja": {
+   "name": "GIS ソリューションエンジニア",
+   "description": "技術顧問の戦略を実行可能なデモ・PoC・技術検証に落とし込む実践型 GIS プロトタイプビルダー——Esri とオープンソースの技術スタック全体をカバー。"
+  }
+ },
+ "gis-spatial-data-engineer": {
+  "en": {
+   "name": "Spatial Data Engineer",
+   "description": "ETL expert turning messy geospatial data from any source into clean, standardized, production-ready datasets — format conversion, CRS reprojection, attribute normalization, and automated pipelines."
+  },
+  "ja": {
+   "name": "空間データエンジニア",
+   "description": "あらゆる出所の雑然とした地理空間データをクリーンで標準化され本番利用可能なデータセットに変える ETL の専門家——形式変換・座標系再投影・属性正規化・自動化パイプラインを担当。"
+  }
+ },
+ "gis-spatial-data-scientist": {
+  "en": {
+   "name": "Spatial Data Scientist",
+   "description": "Advanced spatial analysis expert applying statistical modeling, spatial econometrics, clustering, and predictive analytics to geospatial data — surfacing patterns maps alone cannot show."
+  },
+  "ja": {
+   "name": "空間データサイエンティスト",
+   "description": "統計モデリング・空間計量経済学・クラスタリング・予測分析を地理空間データに適用する高度な空間分析の専門家——地図だけでは見えないパターンを発見。"
+  }
+ },
+ "gis-technical-consultant": {
+  "en": {
+   "name": "GIS Technical Consultant",
+   "description": "Strategic GIS advisor translating business problems into geospatial solutions — gap analysis, technology roadmaps, RFP responses, and digital transformation strategy across Esri and open source ecosystems."
+  },
+  "ja": {
+   "name": "GIS 技術顧問",
+   "description": "ビジネス課題を地理空間ソリューションに変換する戦略型 GIS 顧問——ギャップ分析・技術ロードマップ・RFP 回答・Esri とオープンソース双方にわたるデジタル変革戦略を担当。"
+  }
+ },
+ "gis-web-gis-developer": {
+  "en": {
+   "name": "Web GIS Developer",
+   "description": "Full-stack Web GIS engineer building interactive map applications — MapLibre GL JS, ArcGIS JS API, Leaflet, real-time dashboards, REST API integration, and geospatial web services."
+  },
+  "ja": {
+   "name": "Web GIS 開発エンジニア",
+   "description": "インタラクティブな地図アプリケーションを構築するフルスタック Web GIS エンジニア——MapLibre GL JS・ArcGIS JS API・Leaflet・リアルタイムダッシュボード・REST API 統合・地理空間 Web サービスを担当。"
+  }
+ },
+ "marketing-aeo-foundations": {
+  "en": {
+   "name": "AEO Foundations Architect",
+   "description": "AI engine optimization infrastructure expert — implementing llms.txt, AI-aware robots.txt, token-budgeted content, structured Markdown usability, and agent discovery files so AI crawlers, citation engines, and browsing agents can find, parse, and act on your site content."
+  },
+  "ja": {
+   "name": "AEO 基盤アーキテクト",
+   "description": "AI エンジン最適化インフラの専門家——llms.txt・AI 対応 robots.txt・トークン予算化コンテンツ・構造化 Markdown のユーザビリティ・エージェント発見ファイルを実装し、AI クローラ・引用エンジン・閲覧型エージェントがサイト内容を発見・解析・実行できるようにする。"
+  }
+ },
+ "marketing-email-strategist": {
+  "en": {
+   "name": "Email Marketing Strategist",
+   "description": "Senior email marketing strategist focused on CRM-driven campaigns, lifecycle automation, segmentation architecture, and deliverability — designing welcome, nurture, reactivation, win-back, review, and referral sequences grounded in 2025-2026 benchmarks, AI-driven personalization, and post-Apple-MPP measurement."
+  },
+  "ja": {
+   "name": "Eメールマーケティングストラテジスト",
+   "description": "CRM 駆動キャンペーン・ライフサイクル自動化・セグメンテーション設計・到達性に注力するシニア Eメールマーケティングストラテジスト——2025-2026 のベンチマーク・AI 駆動パーソナライゼーション・Apple MPP 後の計測体系に基づき、ウェルカム・ナーチャリング・リアクティベーション・ウィンバック・レビュー・紹介の各シーケンスを設計。"
+  }
+ },
+ "marketing-global-podcast-strategist": {
+  "en": {
+   "name": "Global Podcast Strategist",
+   "description": "Senior podcast growth expert focused on show positioning, audience development, content strategy, and monetization — polishing rough ideas into authoritative audio brands with compounding listenership and revenue on Spotify, Apple Podcasts, and YouTube."
+  },
+  "ja": {
+   "name": "グローバルポッドキャストストラテジスト",
+   "description": "番組ポジショニング・オーディエンス育成・コンテンツ戦略・収益化に注力するシニアポッドキャスト成長の専門家——荒いアイデアを権威あるオーディオブランドに磨き、Spotify・Apple Podcasts・YouTube でリスナーと収益の複利成長を実現。"
+  }
+ },
+ "marketing-multi-platform-publisher": {
+  "en": {
+   "name": "Multi-Platform Publishing Orchestrator",
+   "description": "Expert orchestrator for one-click Chinese blog publishing — routing the same article via Wechatsync (primary channel) to Zhihu, Xiaohongshu, CSDN, Bilibili, WeChat Official Accounts, and Juejin, with xhs-mcp and biliup as dedicated fallbacks. Handles per-platform content adaptation, draft-first publishing, frequency control, and risk avoidance — never auto-publishes, always stopping at drafts for human review."
+  },
+  "ja": {
+   "name": "マルチプラットフォーム公開オーケストレーター",
+   "description": "中国語ブログのワンクリック公開を専門とするオーケストレーター——同一記事を Wechatsync（主チャネル）で知乎・小紅書・CSDN・Bilibili・微信公衆号・掘金へルーティングし、xhs-mcp と biliup を専用フォールバックとする。プラットフォーム別コンテンツ適応・ドラフト優先公開・頻度制御・リスク回避を担当——自動公開は絶対せず、常にドラフト段階で止めて人間のレビューに委ねる。"
+  }
+ },
+ "marketing-pr-communications-manager": {
+  "en": {
+   "name": "PR & Communications Manager",
+   "description": "Strategic public relations and communications expert covering media relations, press releases, crisis communications, executive thought leadership, brand reputation management, and integrated communications planning — building and protecting reputation through earned media, storytelling, and proactive narrative control."
+  },
+  "ja": {
+   "name": "PR・コミュニケーションマネージャー",
+   "description": "メディアリレーション・プレスリリース・危機コミュニケーション・経営層 thought leadership・ブランド評判管理・統合コミュニケーション計画を担う戦略的広報の専門家——獲得型メディア・ストーリーテリング・主体的なナラティブ管理を通じて評判を構築・保護。"
+  }
+ },
+ "marketing-x-twitter-intelligence-analyst": {
+  "en": {
+   "name": "X/Twitter Intelligence Analyst",
+   "description": "Social intelligence expert covering X/Twitter research, trend identification, and account monitoring — producing evidence-backed audience insights from public signals and structured data workflows."
+  },
+  "ja": {
+   "name": "X/Twitter インテリジェンスアナリスト",
+   "description": "X/Twitter 調査・トレンド特定・アカウント監視を担うソーシャルインテリジェンスの専門家——公開シグナルと構造化データのワークフローから証拠に基づくオーディエンスインサイトを産出。"
+  }
+ },
+ "project-management-meeting-notes-specialist": {
+  "en": {
+   "name": "Meeting Notes Specialist",
+   "description": "Extracts structured decisions, action items, and open questions from meeting transcripts or scattered notes into a clear four-part summary."
+  },
+  "ja": {
+   "name": "議事録スペシャリスト",
+   "description": "会議の逐字記録や散在するメモから構造化された決定・アクションアイテム・未解決課題を抽出し、明快な 4 部構成のサマリーに整理。"
+  }
+ },
+ "sales-offer-lead-gen-strategist": {
+  "en": {
+   "name": "Offer & Lead Gen Strategist",
+   "description": "Top-of-funnel architect designing irresistible offers and lead magnets that attract quality buyers at scale — specializing in value-equation offer construction, lead magnet typology, multi-channel lead generation, and compounding reach through customers, staff, agencies, and affiliates."
+  },
+  "ja": {
+   "name": "オファー・リードジェネストラテジスト",
+   "description": "抵抗できないオファーとリードマグネットを設計し質の高い買い手を規模化して引き寄せるファネル上部のアーキテクト——価値方程式に基づくオファー構築・リードマグネット類型・マルチチャネルリード獲得・顧客/社員/代理店/アフィリエイトによる複利的リーチを専門。"
+  }
+ },
+ "security-appsec-engineer": {
+  "en": {
+   "name": "Application Security Engineer",
+   "description": "AppSec expert making secure coding the default through threat modeling, secure code review, SAST/DAST integration, and developer security education — safeguarding the entire software development lifecycle."
+  },
+  "ja": {
+   "name": "アプリケーションセキュリティエンジニア",
+   "description": "脅威モデリング・セキュアコードレビュー・SAST/DAST 統合・開発者セキュリティ教育を通じて安全なコードを書くことを既定にする AppSec の専門家——ソフトウェア開発ライフサイクル全体を守る。"
+  }
+ },
+ "security-architect": {
+  "en": {
+   "name": "Security Architect",
+   "description": "Senior security architect specializing in threat modeling, secure-by-design architecture, trust boundary analysis, defense in depth, and risk-based security reviews for web, API, cloud-native, and distributed systems — designs security models; leaves code-level SAST/DAST and SDLC work to AppSec engineers."
+  },
+  "ja": {
+   "name": "セキュリティアーキテクト",
+   "description": "脅威モデリング・secure-by-design アーキテクチャ・信頼境界分析・多層防御・Web/API/クラウドネイティブ/分散システム向けのリスクベースセキュリティレビューを専門とするシニアセキュリティアーキテクト——セキュリティモデルを設計し、コードレベルの SAST/DAST と SDLC 業務は AppSec エンジニアに委ねる。"
+  }
+ },
+ "security-cloud-security-architect": {
+  "en": {
+   "name": "Cloud Security Architect",
+   "description": "Cloud-native security expert designing zero trust architectures, implementing defense in depth across AWS, Azure, and GCP, and safeguarding infrastructure-as-code pipelines from day one."
+  },
+  "ja": {
+   "name": "クラウドセキュリティアーキテクト",
+   "description": "ゼロトラストアーキテクチャを設計し、AWS・Azure・GCP に多層防御を実装し、初日から IaC パイプラインを保護するクラウドネイティブセキュリティの専門家。"
+  }
+ },
+ "security-incident-responder": {
+  "en": {
+   "name": "Incident Responder",
+   "description": "Digital forensics and incident response expert leading data breach investigations, containing active threats, coordinating crisis response, and writing post-incident reviews that prevent recurrence."
+  },
+  "ja": {
+   "name": "インシデントレスポンダー",
+   "description": "データ漏洩調査の主導・アクティブな脅威の封じ込め・危機対応の調整・再発防止に資する事後振り返り報告の作成を担うデジタルフォレンジックとインシデント対応の専門家。"
+  }
+ },
+ "security-penetration-tester": {
+  "en": {
+   "name": "Penetration Tester",
+   "description": "Offensive security expert conducting authorized penetration tests, red team engagements, and vulnerability assessments against networks, web applications, and cloud infrastructure."
+  },
+  "ja": {
+   "name": "ペネトレーションテスター",
+   "description": "認可されたペネトレーションテスト・レッドチーム演習・ネットワーク/Web アプリ/クラウドインフラ向け脆弱性評価を実施する攻撃的セキュリティの専門家。"
+  }
+ },
+ "security-senior-secops": {
+  "en": {
+   "name": "Senior SecOps Engineer",
+   "description": "Defensive application security expert — scans every commit for secret leakage and sensitive data exposure before anything else, then implements or audits security controls per organizational standards across authentication, authorization, tokens, cookies, HTTP headers, CORS, rate limiting, CSP, key management, input validation, and security logging."
+  },
+  "ja": {
+   "name": "シニア SecOps エンジニア",
+   "description": "防御型アプリケーションセキュリティの専門家——他の作業の前に毎回のコミットをスキャンしてシークレット漏洩と機密データ露出を検査し、その後、認証・認可・トークン・Cookie・HTTP ヘッダー・CORS・レート制限・CSP・鍵管理・入力検証・セキュリティログにわたり組織のセキュリティ基準に従い各統制を実装または監査。"
+  }
+ },
+ "security-threat-detection-engineer": {
+  "en": {
+   "name": "Threat Detection Engineer (SecOps)",
+   "description": "Senior detection engineer focused on SIEM rule development, MITRE ATT&CK coverage mapping, threat hunting, alert tuning, and detection-as-code pipelines for security operations teams."
+  },
+  "ja": {
+   "name": "脅威検知エンジニア（セキュリティ運用）",
+   "description": "SIEM ルール開発・MITRE ATT&CK カバレッジマッピング・脅威ハンティング・アラート調整・セキュリティ運用チーム向け detection-as-code パイプラインに注力するシニア検知エンジニア。"
+  }
+ },
+ "security-threat-intelligence-analyst": {
+  "en": {
+   "name": "Threat Intelligence Analyst",
+   "description": "Cyber threat intelligence expert tracking adversary groups, mapping campaigns to MITRE ATT&CK, producing actionable intelligence reports, and building detection rules that catch real threats."
+  },
+  "ja": {
+   "name": "脅威インテリジェンスアナリスト",
+   "description": "敵対グループの追跡・攻撃キャンペーンの MITRE ATT&CK マッピング・実行可能なインテリジェンス報告の作成・実際の脅威を捉える検知ルールの構築を担うサイバー脅威インテリジェンスの専門家。"
+  }
+ },
+ "business-strategist": {
+  "en": {
+   "name": "Business Strategist",
+   "description": "Senior management consulting expert focused on competitive analysis, market entry strategy, business model design, growth planning, organizational strategy, and strategic decision-making — turning complex market dynamics into clear, actionable strategies that create sustainable competitive advantage."
+  },
+  "ja": {
+   "name": "ビジネスストラテジスト",
+   "description": "競合分析・市場参入戦略・ビジネスモデル設計・成長計画・組織戦略・戦略的意思決定に注力するシニア経営コンサルタント——複雑な市場動態を明晰で実行可能な持続的競争優位を生む戦略に変換。"
+  }
+ },
+ "change-management-consultant": {
+  "en": {
+   "name": "Change Management Consultant",
+   "description": "Senior change management expert applying ADKAR, Kotter, and Prosci frameworks to guide organizations through technology rollouts, reorganizations, cultural transformation, and M&A integration — managing resistance, driving adoption, and making change stick long after go-live."
+  },
+  "ja": {
+   "name": "チェンジマネジメントコンサルタント",
+   "description": "ADKAR・Kotter・Prosci フレームワークを用い、技術導入・組織再編・文化変革・M&A 統合を組織が円滑に遂行できるよう導くシニア変革管理の専門家——抵抗を管理し受容を推進し、本番稼働後も長く定着させる。"
+  }
+ },
+ "chief-financial-officer": {
+  "en": {
+   "name": "Chief Financial Officer",
+   "description": "Strategic finance executive owning capital allocation, treasury operations, financial planning, M&A finance, investor relations, and board reporting — turning financial complexity into clear decisions that drive performance and stakeholder confidence."
+  },
+  "ja": {
+   "name": "最高財務責任者（CFO）",
+   "description": "資本配分・資金運用・財務計画・M&A 財務・投資家関係・取締役会報告を統括する戦略財務エグゼクティブ——財務の複雑さを明晰な意思決定に変え、業績とステークホルダーの信頼を高める。"
+  }
+ },
+ "customer-success-manager": {
+  "en": {
+   "name": "Customer Success Manager",
+   "description": "Strategic customer success expert covering onboarding, health scoring, QBR facilitation, churn prevention, expansion opportunity identification, and renewal management — driving net revenue retention by turning customers into long-term partners with measurable outcomes."
+  },
+  "ja": {
+   "name": "カスタマーサクセスマネージャー",
+   "description": "オンボーディング・健全性スコアリング・QBR 運営・解約防止・拡張機会の発見・更新管理を担う戦略型カスタマーサクセスの専門家——顧客を測定可能な成果を上げる長期パートナーに変え、純収益維持率（NRR）を高める。"
+  }
+ },
+ "data-privacy-officer": {
+  "en": {
+   "name": "Data Privacy Officer",
+   "description": "Enterprise data privacy expert and DPO building GDPR, CCPA, and global privacy compliance programs — covering data mapping, privacy impact assessments, consent management, breach response, vendor due diligence, and regulator engagement."
+  },
+  "ja": {
+   "name": "データプライバシー責任者",
+   "description": "GDPR・CCPA・世界のプライバシー遵守体系を構築する企業データプライバシー専門家兼 DPO——データマッピング・プライバシー影響評価・同意管理・漏洩対応・ベンダーデューデリジェンス・規制当局との対話をカバー。"
+  }
+ },
+ "esg-sustainability-officer": {
+  "en": {
+   "name": "ESG & Sustainability Officer",
+   "description": "Corporate sustainability strategist and ESG disclosure specialist building environmental, social, and governance programs, managing disclosures, driving decarbonization, and aligning business strategy with stakeholder and regulatory expectations."
+  },
+  "ja": {
+   "name": "ESG・サステナビリティ責任者",
+   "description": "環境・社会・ガバナンス（ESG）プログラムの構築、開示管理、脱炭素の推進、ビジネス戦略とステークホルダー・規制期待の整合を担う企業サステナビリティ戦略の専門家兼 ESG 開示担当。"
+  }
+ },
+ "grant-writer": {
+  "en": {
+   "name": "Grant Writer",
+   "description": "Senior grant writing expert serving nonprofits, research institutions, and social enterprises — covering prospect research, letters of inquiry, full proposal development, budget narratives, federal and foundation grants, and post-award reporting to maximize funding success."
+  },
+  "ja": {
+   "name": "グラントライター",
+   "description": "非営利団体・研究機関・ソーシャルエンタープライズに奉仕するシニア助成金申請執筆の専門家——助成団体調査・問い合わせレター・本申請書開発・予算ナラティブ・連邦・財団グラント・受給後報告をカバーし、獲得成功率を最大化。"
+  }
+ },
+ "ma-integration-manager": {
+  "en": {
+   "name": "M&A Integration Manager",
+   "description": "M&A integration expert designing and executing post-merger integration (PMI) programs — Day 1 readiness, hundred-day plans, synergy tracking, culture integration, functional workstream coordination, and transition services agreement (TSA) management."
+  },
+  "ja": {
+   "name": "M&A 統合マネージャー",
+   "description": "統合後（PMI）プログラムの設計・実行を担う M&A 統合の専門家——初日対応・百日計画・シナジー追跡・文化統合・職能ワークストリーム調整・移行サービス契約（TSA）管理をカバー。"
+  }
+ },
+ "medical-billing-coding-specialist": {
+  "en": {
+   "name": "Medical Billing & Coding Specialist",
+   "description": "Medical billing and coding expert fluent in ICD-10-CM/PCS, CPT, and HCPCS coding — skilled in claim submission, denial management, revenue cycle optimization, compliance audits, and payer contract analysis to maximize clean claim rates and revenue recovery for providers of all sizes."
+  },
+  "ja": {
+   "name": "医療請求・コーディングスペシャリスト",
+   "description": "ICD-10-CM/PCS・CPT・HCPCS コーディングに精通する医療請求・コーディングの専門家——請求提出・拒否管理・収益サイクル最適化・コンプライアンス監査・支払者契約分析を得意とし、あらゆる規模の医療機関のクリーン請求率と収益回収を最大化。"
+  }
+ },
+ "operations-manager": {
+  "en": {
+   "name": "Operations Manager",
+   "description": "Business operations expert applying Lean, Six Sigma, and systems thinking to process mapping, capacity planning, KPI governance, vendor management, and organizational efficiency — turning operational complexity into repeatable, measurable performance."
+  },
+  "ja": {
+   "name": "オペレーションズマネージャー",
+   "description": "リーン・シックスシグマ・システム思考をプロセス整理・キャパシティ計画・KPI ガバナンス・ベンダー管理・組織効率向上に適用する業務運営の専門家——運営の複雑さを再現可能で測定可能な業績に変える。"
+  }
+ },
+ "organizational-psychologist": {
+  "en": {
+   "name": "Organizational Psychologist",
+   "description": "Applied organizational psychologist diagnosing team dynamics, psychological safety, burnout risk, and cultural health — using evidence-based frameworks to help leaders build high-performing, resilient, psychologically safe organizations."
+  },
+  "ja": {
+   "name": "組織心理学者",
+   "description": "チームダイナミクス・心理的安全性・燃え尽きリスク・文化健全性を診断する応用組織心理学者——証拠に基づくフレームワークでリーダーが高業績でレジリエントかつ心理的に安全な組織を築くのを支援。"
+  }
+ },
+ "personal-growth-mentor": {
+  "en": {
+   "name": "Personal Growth Mentor",
+   "description": "Cross-domain personal development mentor focused on goal clarification, habit design, strategic decisions, and accountability — no chicken soup."
+  },
+  "ja": {
+   "name": "個人成長メンター",
+   "description": "目標の明確化・習慣デザイン・戦略的意思決定・アカウンタビリティに注力する領域横断型の自己成長メンター——根拠のない励ましはしない。"
+  }
+ },
+ "specialized-pricing-analyst": {
+  "en": {
+   "name": "Pricing Analyst",
+   "description": "Specialized pricing analyst building optimal pricing models through market research, competitive analysis, cost structure assessment, and margin optimization — turning pricing from gut feeling into a data-driven competitive advantage."
+  },
+  "ja": {
+   "name": "プライシングアナリスト",
+   "description": "市場調査・競合分析・コスト構造評価・マージン最適化を通じて最適な価格モデルを構築する価格設定専門家——価格設定を勘からデータ駆動の競争優位に変える。"
+  }
+ },
+ "specialized-strategy-duel-agent": {
+  "en": {
+   "name": "Strategy Duel Agent",
+   "description": "Runs real-time strategy duels and wargames using game theory and the Thirty-Six Stratagems."
+  },
+  "ja": {
+   "name": "戦略決闘推演師",
+   "description": "ゲーム理論と三十六計を用いてリアルタイムの戦略対決推演を実施。"
   }
  }
 };

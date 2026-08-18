@@ -683,7 +683,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       };
       useEffect(() => { refreshFeishu(); }, []);
 
-      // 企业微信(CLI 路线)连接态:同飞书,由 wecom-cli auth show 判定
+      // 企业微信(CLI 路线)连接态:同飞书,由 wecom-cli auth show --status 判定
       const [wecomConnected, setWecomConnected] = useState(false);
       const [wecomQr, setWecomQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗(单段)
       const [wecomFlow, setWecomFlow] = useState(wecomConn.flow); // 企微连接流程卡(跨视图水合)

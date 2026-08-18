@@ -21,19 +21,30 @@ if [ -z "$CLI" ]; then echo "找不到 wecom-cli(先 npm i -g @wecom/cli 并扫�
 echo "wecom-cli = $CLI"
 echo
 
-echo "[1] 版本可执行"
-if "$CLI" --version >/dev/null 2>&1; then ok "--version 退出 0"; else no "--version 失败"; fi
+echo "[1] 版本可执行且 ≥1.1.0(命令模型基线)"
+VER="$("$CLI" --version 2>/dev/null || true)"
+VNUM="$(echo "$VER" | awk '{print $2}')"
+if [ -n "$VER" ]; then
+  ok "--version 退出 0: $(echo "$VER" | head -1)"
+  if [ "$(printf '%s\n' "1.1.0" "$VNUM" | sort -V | head -1)" = "1.1.0" ]; then
+    ok "版本 ≥1.1.0"
+  else
+    no "版本低于 1.1.0(命令模型不匹配): $VNUM"
+  fi
+else
+  no "--version 失败"
+fi
 
-echo "[2] 连接状态(auth show 含非空 id = 已授权)"
-AUTH="$("$CLI" auth show 2>/dev/null || true)"
-if echo "$AUTH" | grep -Eq '"id"[[:space:]]*:[[:space:]]*"[^"]+"'; then
-  ok "已连接(auth show 返回非空 id)"
+echo "[2] 连接状态(auth show --status 输出 authorized = 已授权)"
+AUTH="$("$CLI" auth show --status 2>/dev/null || true)"
+if echo "$AUTH" | grep -qx 'authorized'; then
+  ok "已连接(auth show --status 返回 authorized)"
 else
   no "未连接/未授权(先扫码): $(echo "$AUTH" | tr -d '\n' | head -c 120)"
 fi
 
 echo "[3] 各域授权探测(只读;授权域应响应,未授权域报权限错)"
-for d in contact doc msg schedule meeting todo; do
+for d in contact doc doc-manage mail disk media message meeting sheet smartpage smartsheet calendar todo; do
   OUT="$("$CLI" "$d" --help 2>&1 || true)"
   if echo "$OUT" | grep -Eq '权限|暂不支持|未授权'; then sk "$d 域未授权"
   elif echo "$OUT" | grep -qi 'Usage'; then ok "$d 域可用"
@@ -42,8 +53,8 @@ done
 
 echo "[4] 真实读文档(可选,需 WECOM_TEST_DOCID)"
 if [ -n "${WECOM_TEST_DOCID:-}" ]; then
-  R="$("$CLI" doc get_doc_content --json "{\"docid\":\"$WECOM_TEST_DOCID\"}" 2>&1 || true)"
-  if [ -n "$R" ] && ! echo "$R" | grep -Eqi 'error|错误|失败|权限'; then
+  R="$("$CLI" doc contents get --docid "$WECOM_TEST_DOCID" 2>&1 || true)"
+  if [ -n "$R" ] && ! echo "$R" | grep -Eqi '"error"|错误|失败|权限'; then
     ok "读到文档内容(${#R} 字节)"
   else
     no "读文档失败: $(echo "$R" | tr -d '\n' | head -c 160)"

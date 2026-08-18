@@ -51,16 +51,30 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
-/// 7 个企微域技能目录名(门控写 / 删共用)。
-const WECOM_SKILL_DIRS: [&str; 7] = [
-    "wecomcli-msg",
-    "wecomcli-doc",
-    "wecomcli-meeting",
-    "wecomcli-schedule",
-    "wecomcli-todo",
+/// 14 个企微域技能目录名(门控写 / 删共用)。wecom-cli 1.1.0 起上游按服务模型
+/// 重排(`msg`→`message`、`schedule`→`calendar`,新增 disk/doc-manage/email/media/
+/// sheet/smartpage/shared),本地结构跟随上游,不再维持 0.1.9 时代的「sheet/smartpage
+/// 并入 doc」合并形态。
+const WECOM_SKILL_DIRS: [&str; 14] = [
+    "wecomcli-calendar",
     "wecomcli-contact",
+    "wecomcli-disk",
+    "wecomcli-doc",
+    "wecomcli-doc-manage",
+    "wecomcli-email",
+    "wecomcli-media",
+    "wecomcli-meeting",
+    "wecomcli-message",
+    "wecomcli-shared",
+    "wecomcli-sheet",
+    "wecomcli-smartpage",
     "wecomcli-smartsheet",
+    "wecomcli-todo",
 ];
+
+/// 0.1.9 时代的旧技能目录名:1.1.0 重排后已不存在于包内,但存量用户解包目录里
+/// 可能残留,继续加载会教模型已死的命令(`msg`/`schedule` 服务),每次门控时清理。
+const WECOM_LEGACY_SKILL_DIRS: [&str; 2] = ["wecomcli-msg", "wecomcli-schedule"];
 
 const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
 const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
@@ -91,7 +105,10 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.22: 连接器技能全量同步（lark 1.0.87 / dws 1.0.58 / tmeet 1.0.15 / wecom 适配）。
 ///       四棵技能树不参与内容哈希，须 bump 语义版本让已连接用户启动即同步刷新
 ///       （否则要等首帧后 refresh_connector_auth_gates 补刷）
-pub const BUNDLE_VERSION: &str = concat!("0.22-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.23: wecom-cli 升 1.1.0：技能树按上游服务模型重排为 14 个（msg→message、
+///       schedule→calendar，新增 disk/doc-manage/email/media/shared/sheet/smartpage），
+///       旧目录（wecomcli-msg/wecomcli-schedule）启动门控时清理。
+pub const BUNDLE_VERSION: &str = concat!("0.23-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：

@@ -297,13 +297,17 @@ impl Pinvou3Bundle {
                 .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
     }
 
-    /// 企微域技能门控:`show` → 解包 7 个 wecomcli 技能到 `skills_dir`;否则**删掉**它们。
+    /// 企微域技能门控:`show` → 解包 14 个 wecomcli 技能到 `skills_dir`;否则**删掉**它们。
     /// 幂等。与飞书门控正交(各自的连接 / 停用状态独立)。
     /// 注:`WECOM_SKILLS_DIR` 根 = `wecom-skills/`,内含 `wecomcli-<域>/SKILL.md`(+ NOTICE.md);
     /// 直接铺到 `skills_dir`,引擎 `SkillRegistry` 扫每个含 `SKILL.md` 的子目录。
     /// 出处声明用 `NOTICE-wecom.md`(避开飞书的 `NOTICE.md`,两者解包到同一 skills_dir
-    /// 不会互相覆盖)。隐藏时一并删掉。
+    /// 不会互相覆盖)。隐藏时一并删掉。0.1.9 时代的旧目录(服务改名前)无论显示与否
+    /// 都清掉,防残留技能教已死的命令(`msg`/`schedule`)。
     pub fn apply_wecom_skills(&self, show: bool) -> std::io::Result<()> {
+        for d in WECOM_LEGACY_SKILL_DIRS {
+            let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+        }
         if show {
             Self::extract_dir(&WECOM_SKILLS_DIR, &self.skills_dir)?;
         } else {

@@ -22,12 +22,12 @@
     },
     {
       "name": "wecom-cli",
-      "version": "0.1.9",
+      "version": "1.1.0",
       "license": "MIT",
       "source": "https://github.com/WecomTeam/wecom-cli",
-      "url": "https://registry.npmjs.org/@wecom/cli-win32-x64/-/cli-win32-x64-0.1.9.tgz",
-      "archiveSha256": "9803e8deab1e5ad6877fc21679a07c562fda0d3b389c4839dfdaf0ea49ef549c",
-      "binarySha256": "ae74ff825cba1aa198d6e9d8fb2e967c4f67fa38bd7f4ba8b5a34551abb5ed92"
+      "url": "https://registry.npmjs.org/@wecom/cli-win32-x64/-/cli-win32-x64-1.1.0.tgz",
+      "archiveSha256": "1e7f24cccdc9d61706a717f8765e114663b3911e11b1e22814dea855ae77d313",
+      "binarySha256": "51cccba7a9f84e1995c0ab284dd664a2f79e9aba0c1ff8782ab9b93540297f1b"
     }
   ]
 }
