@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -12,6 +13,8 @@ REQUIRED_WORKFLOWS = (
     ROOT / ".github/workflows/dependency-review.yml",
     PR_WORKFLOW,
 )
+PUBLIC_SUBMODULE_VERIFIER = ROOT / "scripts/verify-public-submodule.sh"
+FORK_GUARD = ROOT / "scripts/fork-guard.sh"
 
 
 def _extract_quoted_paths(block):
@@ -84,6 +87,22 @@ class CiGatePolicyTests(unittest.TestCase):
             '"release-contract-test:$RELEASE_CONTRACT_RESULT"',
             required_gate,
         )
+
+    def test_pr_submodule_verifier_only_allows_the_registered_security_candidate(self):
+        verifier = PUBLIC_SUBMODULE_VERIFIER.read_text(encoding="utf-8")
+        fork_guard = FORK_GUARD.read_text(encoding="utf-8")
+        candidate_pattern = re.compile(r'^LOCAL_SECURITY_HEAD="([0-9a-f]{40})"$', re.M)
+        verifier_candidate = candidate_pattern.search(verifier)
+        guard_candidate = candidate_pattern.search(fork_guard)
+
+        self.assertIsNotNone(verifier_candidate)
+        self.assertIsNotNone(guard_candidate)
+        self.assertEqual(verifier_candidate.group(1), guard_candidate.group(1))
+        self.assertIn("args+=(--allow-registered-candidate)", self.pr_workflow)
+        self.assertIn('github.event_name }}" == "pull_request"', self.pr_workflow)
+        self.assertIn('github.event_name }}" == "merge_group"', self.pr_workflow)
+        self.assertIn('[[ "$gitlink" == "$LOCAL_SECURITY_HEAD" ]]', verifier)
+        self.assertIn("unknown argument", verifier)
 
     def test_pr_modes_and_stacked_pr_triggers_are_explicit(self):
         trigger = self.pr_workflow.split("\non:", maxsplit=1)[1].split(
