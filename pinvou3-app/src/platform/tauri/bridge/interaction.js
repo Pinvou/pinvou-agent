@@ -393,25 +393,46 @@
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
+  // 卡片动作链路有 await 边界：entry 先捕获触发会话 sid，invoke 与后续全部 UI 写入
+  // 都定向到 sid（runOnSession / patchItemByIdFor），避免用户提交期间切会话导致
+  // echo/restoredAnswers 漏写触发会话或污染当前会话（与 acceptPlan 同一约定）。
   async function submitUserInput(itemId, toolCallId, answers, questions) {
-    patchItemById(itemId, { submitting: true }); notify();
+    var sid = state.activeSessionId;
+    if (!sid) return;
+    patchItemByIdFor(sid, itemId, { submitting: true }); notify();
     try {
-      await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.activeSessionId });
-      var summary = answers.map(function (a, i) {
-        var text = (a.other || a.label === "其他") ? bt("echoOtherPrefix") + a.value : a.label;
-        return (questions[i].header || ("Q" + (i + 1))) + ": " + text;
-      }).join(" · ");
-      pushUserEcho("✓ " + summary, false);
-      flushAssistantMessageToHistory();
-      patchItemById(itemId, { resolved: true, cardState: "submitted", submitting: false });
+      await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: sid });
+      // 摘要按 question 分组拼接：answers 是按选项展开的（multi_select 时同一题多条），
+      // 不能按 answers 索引一一对应 questions（会越界抛 TypeError，复核 P1）。
+      // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
+      // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
+      var byId = Object.create(null);
+      answers.forEach(function (a) { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
+      var summary = questions.map(function (q, qi) {
+        var list = byId[q.id];
+        if (!list || !list.length) return null;
+        var header = q.header || ("Q" + (qi + 1));
+        return header + ": " + list.map(function (a) {
+          var text = (a.other || a.label === "其他") ? bt("echoOtherPrefix") + a.value : a.label;
+          return text;
+        }).join(" · ");
+      }).filter(Boolean).join(" · ");
+      runOnSession(sid, function () {
+        pushUserEcho("✓ " + summary, false);
+        flushAssistantMessageToHistory();
+      });
+      // 提交时即存答案：切走视图再切回（ChatView 重挂载但 bridge state 保留）时，
+      // QuestionChoiceCard 用 restoredAnswers 恢复选中态；会话级 rerender 另有解析。
+      patchItemByIdFor(sid, itemId, { resolved: true, cardState: "submitted", submitting: false, restoredAnswers: answers });
     } catch (e) {
-      patchItemById(itemId, { submitting: false, error: String(e) });
+      patchItemByIdFor(sid, itemId, { submitting: false, error: String(e) });
     }
     notify();
   }
   async function cancelUserInput(itemId, toolCallId) {
-    try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: state.activeSessionId }); } catch (_) {}
-    patchItemById(itemId, { resolved: true, cardState: "cancelled" });
+    var sid = state.activeSessionId;
+    try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: sid }); } catch (_) {}
+    patchItemByIdFor(sid, itemId, { resolved: true, cardState: "cancelled" });
     notify();
   }
 

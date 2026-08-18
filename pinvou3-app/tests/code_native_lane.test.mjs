@@ -192,6 +192,78 @@ try {
   assert.equal(hydratedTool.success, true);
   const hydratedInput = lane4.items.find(item => item.type === 'user_input');
   assert.equal(hydratedInput.resolved, true, '历史 request_user_input 还原为已处理卡');
+
+  // ── hydrate 还原用户已选答案：单选 + 多选（multi_select 不塌缩）────
+  const lane4d = createNativeLane();
+  hydrateNativeLane(lane4d, {
+    messages: [
+      {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use', id: 'c3', name: 'request_user_input',
+          input: { questions: [
+            { id: 'q1', header: '语言', question: '用什么语言？', options: [{ label: 'Python', description: '' }, { label: 'Go', description: '' }], multi_select: false },
+            { id: 'q2', header: '技能', question: '擅长哪些？', options: [{ label: '前端', description: '' }, { label: '后端', description: '' }, { label: '运维', description: '' }], multi_select: true },
+          ] },
+        }],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result', tool_use_id: 'c3', is_error: false,
+          content: JSON.stringify({ answers: [
+            { id: 'q1', label: 'Python', value: 'Python' },
+            { id: 'q2', label: '前端', value: '前端' },
+            { id: 'q2', label: '运维', value: '运维' },
+          ] }),
+        }],
+      },
+    ],
+  }, []);
+  const restoredInput = lane4d.items.find(item => item.type === 'user_input');
+  assert.equal(restoredInput.resolved, true);
+  assert.deepEqual(
+    restoredInput.restoredAnswers,
+    [
+      { id: 'q1', label: 'Python', value: 'Python' },
+      { id: 'q2', label: '前端', value: '前端' },
+      { id: 'q2', label: '运维', value: '运维' },
+    ],
+    '单选/多选答案按 id 全量还原，multi_select 不塌缩为最后一项',
+  );
+
+  // ── hydrate 特殊 question id（constructor/toString/__proto__）不抛错 ──
+  // question id 后端仅校验非空，这些保留属性名是合法输入；parseNativeUserAnswers
+  // 用 Object.create(null) 分组后不得命中 Object.prototype（复核 P1）。
+  for (const specialId of ['constructor', 'toString', '__proto__']) {
+    const lane4s = createNativeLane();
+    hydrateNativeLane(lane4s, {
+      messages: [
+        {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use', id: 'cs', name: 'request_user_input',
+            input: { questions: [{ id: specialId, header: '选择', question: '选？', options: [{ label: 'A', description: '' }] }] },
+          }],
+        },
+        {
+          role: 'user',
+          content: [{
+            type: 'tool_result', tool_use_id: 'cs', is_error: false,
+            content: JSON.stringify({ answers: [{ id: specialId, label: 'A', value: 'A' }] }),
+          }],
+        },
+      ],
+    }, []);
+    const restoredSpecial = lane4s.items.find(item => item.type === 'user_input');
+    assert.equal(restoredSpecial.resolved, true, `特殊 id "${specialId}" hydrate 不得抛错`);
+    assert.deepEqual(
+      restoredSpecial.restoredAnswers,
+      [{ id: specialId, label: 'A', value: 'A' }],
+      `特殊 id "${specialId}" 答案按 id 还原`,
+    );
+  }
+
   const hydratedReasoning = lane4.items.find(item => item.type === 'reasoning');
   assert.equal(hydratedReasoning.text, '先想目录结构');
   assert.equal(

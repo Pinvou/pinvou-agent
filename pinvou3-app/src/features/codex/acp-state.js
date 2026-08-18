@@ -383,6 +383,25 @@ export function resolveAcpSessionControls(info) {
   };
 }
 
+// ACP elicitation 提交内容构造：answerKey / otherAnswerKey 是 requestedSchema 的 property key，
+// 后端仅校验非空，constructor/toString/__proto__ 是合法输入。普通 {} 会让这些键命中
+// Object.prototype（尤其 __proto__ 赋值触发 setter，字段在 JSON 序列化时静默丢失）；
+// 统一用无原型对象构造，确保 payload 保留全部字段。
+export function buildElicitationContent(groups) {
+  const content = Object.create(null);
+  for (const group of groups) {
+    const custom = group.answers.find(answer => answer.other);
+    if (custom && group.otherAnswerKey) {
+      content[group.otherAnswerKey] = custom.value;
+    } else if (group.multiSelect) {
+      content[group.answerKey] = group.answers.map(answer => answer.value);
+    } else if (group.answers[0]) {
+      content[group.answerKey] = group.answers[0].value;
+    }
+  }
+  return content;
+}
+
 export {
   commandExecutionDetails,
   contentText,
