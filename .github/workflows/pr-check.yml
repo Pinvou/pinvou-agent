@@ -125,6 +125,7 @@ jobs:
       rust_dependencies: ${{ steps.filter.outputs.rust_dependencies }}
       knowledge_rust: ${{ steps.filter.outputs.knowledge_rust }}
       knowledge_dependencies: ${{ steps.filter.outputs.knowledge_dependencies }}
+      benchmark: ${{ steps.filter.outputs.benchmark }}
       release_contract: ${{ steps.filter.outputs.release_contract }}
       pet: ${{ steps.filter.outputs.pet }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -166,6 +167,16 @@ jobs:
               - 'pinvou-knowledge/Cargo.toml'
               - 'pinvou-knowledge/Cargo.lock'
               - 'pinvou3-app/src-tauri/deny.toml'
+              - '.github/workflows/pr-check.yml'
+            benchmark:
+              - 'pinvou-cli/**'
+              - 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/headless_bridge.rs'
+              - 'pinvou3-app/src-tauri/tests/headless_bridge_contract.rs'
+              - 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/**'
+              - 'pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs'
+              - 'pinvou3-app/src-tauri/Cargo.toml'
+              - 'pinvou3-app/src-tauri/Cargo.lock'
+              - 'CodeWhale'
               - '.github/workflows/pr-check.yml'
             release_contract:
               - 'VERSION'
@@ -293,12 +304,7 @@ jobs:
           python3 scripts/architecture-guard.py --base-ref "origin/$base_ref"
 
       - name: 公开底座 gitlink 可达性
-        run: |
-          args=()
-          if [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "merge_group" ]]; then
-            args+=(--allow-registered-candidate)
-          fi
-          ./scripts/verify-public-submodule.sh "${args[@]}"
+        run: ./scripts/verify-public-submodule.sh
 
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
@@ -1003,6 +1009,48 @@ jobs:
       - name: macOS Codex 与 Claude Runtime 原生打包冒烟
         run: npm --prefix pinvou3-app run test:codex-acp-macos-runtime
 
+  benchmark-test:
+    name: benchmark-test
+    needs: changes
+    if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.benchmark == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: 初始化公共底座 submodule
+        shell: bash
+        run: git submodule update --init --recursive -- CodeWhale
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pinvou-cli
+            pinvou3-app/src-tauri
+          shared-key: benchmark-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: benchmark workspace 全特性测试
+        shell: bash
+        run: cargo test --manifest-path pinvou-cli/Cargo.toml --all-features
+
+      - name: benchmark workspace 无 product-backend 测试
+        shell: bash
+        run: cargo test --manifest-path pinvou-cli/Cargo.toml --no-default-features
+
+      - name: headless benchmark 契约测试
+        shell: bash
+        run: >-
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
+          --features benchmark-hooks --test headless_bridge_contract
+
   required-gate:
     name: required-gate
     needs:
@@ -1014,6 +1062,7 @@ jobs:
       - relay-test
       - release-contract-test
       - knowledge-rust
+      - benchmark-test
       - rust-lint
       - rust-test
       - macos-codex-runtime-test
@@ -1032,6 +1081,7 @@ jobs:
           RELAY_RESULT: ${{ needs.relay-test.result }}
           RELEASE_CONTRACT_RESULT: ${{ needs.release-contract-test.result }}
           KNOWLEDGE_RUST_RESULT: ${{ needs.knowledge-rust.result }}
+          BENCHMARK_TEST_RESULT: ${{ needs.benchmark-test.result }}
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
@@ -1055,6 +1105,7 @@ jobs:
             "relay-test:$RELAY_RESULT" \
             "release-contract-test:$RELEASE_CONTRACT_RESULT" \
             "knowledge-rust:$KNOWLEDGE_RUST_RESULT" \
+            "benchmark-test:$BENCHMARK_TEST_RESULT" \
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
