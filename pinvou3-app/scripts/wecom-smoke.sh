@@ -5,10 +5,11 @@
 #   bash scripts/wecom-smoke.sh
 #   WECOM_TEST_DOCID=<docid> bash scripts/wecom-smoke.sh   # 额外真实读一篇已有文档
 #
-# 退出码:有硬性检查(版本/连接)失败则非 0,可挂 CI(但需先扫码授权,故默认手动跑)。
+# 退出码:有硬性检查(版本/连接)失败则非 0,可挂 CI(但需先扫码授权,故默认手动跑);
+# 全部域探测被跳过(瞬态首调)时 exit 3 —— 「没验证到」不等于「验证通过」。
 set -u
 
-pass=0; fail=0; skip=0
+pass=0; fail=0; skip=0; dom_ok=0
 ok(){ echo "  [PASS] $1"; pass=$((pass+1)); }
 no(){ echo "  [FAIL] $1"; fail=$((fail+1)); }
 sk(){ echo "  [SKIP] $1"; skip=$((skip+1)); }
@@ -24,10 +25,11 @@ echo
 echo "[1] 版本可执行且 ≥1.1.0(命令模型基线)"
 VER="$("$CLI" --version 2>/dev/null || true)"
 VNUM="$(echo "$VER" | awk '{print $2}')"
-# 与 wecom.rs parse_wecom_version 同口径:取输出前三个数字段逐段数值比较;
-# 不用 sort -V——它对 1.1.0-rc.1/两段版本的判定与 Rust 侧三段解析不一致。
+# 与 wecom.rs parse_wecom_version 同口径:取输出前三个数字段逐段数值比较、
+# 不足三段补 0(两段 `2.0` → 2.0.0,与 parse_semver3 一致);
+# 不用 sort -V——它对 prerelease/两段版本的判定与 Rust 侧三段解析不一致。
 TRI="$(echo "$VER" | grep -oE '[0-9]+' | head -3 | paste -sd. -)"
-GE="$(printf '%s\n' "$TRI" | awk -F. 'NF==3 && ($1*10000+$2*100+$3 >= 10100) {print "yes"}')"
+GE="$(printf '%s\n' "$TRI" | awk -F. '($1*10000+$2*100+$3 >= 10100) {print "yes"}')"
 if [ -n "$VER" ]; then
   ok "--version 可执行: $(echo "$VER" | head -1)"
   if [ "$GE" = yes ]; then
@@ -56,7 +58,7 @@ for d in contact doc chat mail disk media message meeting sheet smartpage smarts
   OUT="$("$CLI" "$d" --help 2>&1)"; d_rc=$?
   if echo "$OUT" | grep -Eq '权限|暂不支持|未授权'; then sk "$d 域未授权"
   elif echo "$OUT" | grep -q 'unrecognized subcommand'; then no "$d 域不存在(CLI 无此子命令)"
-  elif [ "$d_rc" -eq 0 ]; then ok "$d 域可用"
+  elif [ "$d_rc" -eq 0 ]; then ok "$d 域可用"; dom_ok=$((dom_ok+1))
   else sk "$d 域结果未知(exit $d_rc): $(echo "$OUT" | tr -d '\n' | head -c 60)"; fi
 done
 
@@ -74,4 +76,8 @@ fi
 
 echo
 echo "结果: PASS=$pass  FAIL=$fail  SKIP=$skip"
+if [ "$fail" -eq 0 ] && [ "$dom_ok" -eq 0 ]; then
+  echo "警告: 所有域探测均被跳过,本次未验证任何命令面(多为 service discovery 瞬态,重跑一次)"
+  exit 3
+fi
 [ "$fail" -eq 0 ]

@@ -43,9 +43,12 @@ fn wecom(args: &[&str]) -> std::process::Command {
 
 /// 解析 `wecom-cli --version` 输出(1.1.0 起格式为
 /// `wecom-cli 1.1.0 (wecom 2026-08-17T03:14:38Z 889c555)`)。
-/// `wecom-cli` 程序名不含数字,输出中首个数字段序列即版本号。
+/// 按 [`cc::parse_semver3`] 的契约先自行切片:只解析程序名 `wecom-cli`
+/// 后随的那一段,构建时间戳等数字噪声不参与解析。
 fn parse_wecom_version(s: &str) -> Option<(u64, u64, u64)> {
-    cc::parse_semver3(s)
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    let idx = tokens.iter().position(|t| t.contains("wecom-cli"))?;
+    cc::parse_semver3(tokens.get(idx + 1).copied().unwrap_or(""))
 }
 
 fn wecom_cli_version() -> Option<(u64, u64, u64)> {
@@ -98,27 +101,28 @@ pub async fn wecom_ensure_cli() -> Result<Value, String> {
 }
 
 /// 查询当前企微连接状态:`wecom-cli auth show --status`。
-/// 装了但低于 [`WECOM_MIN_VERSION`] 时回 `upgrade_required:true`(tmeet 同款三态,
-/// 供前端显示「待升级」而非「未安装」);未装则 `installed:false`。
+/// 装了但低于 [`WECOM_MIN_VERSION`] 时回 `upgrade_required:true`(tmeet 同款三态;
+/// 前端 ToolStoreView 暂只读 connected,该字段待 tmeet/wecom 统一做「待升级」UI 后消费)。
 pub async fn wecom_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
-        // 没装就别 spawn auth show —— 省掉没装连接器的用户每次白等一次子进程。
-        if wecom_cli_version().is_none() {
-            return Ok::<Value, String>(json!({
+        // 没装就别 spawn auth show —— 省掉没装连接器的用户每次白等一次子进程;
+        // 装了则同一次 --version 判 installed 与 upgrade_required 两态,不重复 spawn。
+        match wecom_cli_version() {
+            None => Ok::<Value, String>(json!({
                 "ok": false, "connected": false, "installed": false, "upgrade_required": false
-            }));
-        }
-        if !wecom_cli_present() {
-            return Ok::<Value, String>(json!({
+            })),
+            Some(v) if v < WECOM_MIN_VERSION => Ok::<Value, String>(json!({
                 "ok": false, "connected": false, "installed": true, "upgrade_required": true
-            }));
+            })),
+            Some(_) => {
+                let (ok, so, se) = cc::run(wecom(&["auth", "show", "--status"]))?;
+                let connected = ok && (status_is_authorized(&so) || status_is_authorized(&se));
+                // 只回布尔:--status 单行输出虽不含身份信息,保持最小回传面
+                Ok::<Value, String>(json!({
+                    "ok": ok, "connected": connected, "installed": true, "upgrade_required": false
+                }))
+            }
         }
-        let (ok, so, se) = cc::run(wecom(&["auth", "show", "--status"]))?;
-        let connected = ok && (status_is_authorized(&so) || status_is_authorized(&se));
-        // 只回布尔:--status 单行输出虽不含身份信息,保持最小回传面
-        Ok::<Value, String>(json!({
-            "ok": ok, "connected": connected, "installed": true, "upgrade_required": false
-        }))
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
@@ -327,9 +331,16 @@ mod tests {
             parse_wecom_version("wecom-cli 1.1.0 (wecom 2026-08-17T03:14:38Z 889c555)"),
             Some((1, 1, 0)),
         );
+        assert_eq!(
+            parse_wecom_version("wecom-cli 1.1.0 (wecom 2026-08-17T03:14:38Z 889c555)\r\n"),
+            Some((1, 1, 0)),
+        );
         assert_eq!(parse_wecom_version("wecom-cli 0.1.9"), Some((0, 1, 9)));
         assert_eq!(parse_wecom_version("wecom-cli 2.0"), Some((2, 0, 0)));
         assert_eq!(parse_wecom_version("hello"), None);
+        // 遵守 parse_semver3「调用方先切片」契约:程序名外的数字噪声不当版本。
+        assert_eq!(parse_wecom_version("error: something 404"), None);
+        assert_eq!(parse_wecom_version("node 22 wecom-cli"), None);
     }
 
     /// `auth show --status` 输出 → 已授权判定(仅整行 authorized,大小写不敏感)。
@@ -337,6 +348,7 @@ mod tests {
     fn status_is_authorized_detects_authorization() {
         assert!(status_is_authorized("authorized"));
         assert!(status_is_authorized("authorized\n"));
+        assert!(status_is_authorized("authorized\r\n")); // Windows npm shim 的 CRLF
         assert!(status_is_authorized("  Authorized "));
         assert!(!status_is_authorized("unauthorized")); // 前缀相同不能误判
         assert!(!status_is_authorized("Status: unauthorized"));
