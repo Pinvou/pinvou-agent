@@ -36,8 +36,6 @@ my-plugin.zip
 ├── skills/<name>/              ← SKILL.md 目录（可多个）
 │   ├── SKILL.md
 │   └── references/…            ← 可选，渐进披露用的参考文档
-├── skills/<name>/   ← 可执行技能：SKILL.md frontmatter `tools[]` + `runtime` 段（替代旧 spanner，见 §8）
-│   └── main.py
 └── icon.svg | icon.png         ← 可选图标（缺省自动生成默认图标）
 ```
 
@@ -65,9 +63,6 @@ my-plugin.zip
   "description": "聚合天气查询与解读",     // 可选，功能事实
   "icon": "icon.svg",                   // 可选，相对 zip 根（icon.svg / icon.png）
 
-  // 单扳手插件（与 components 可并存 = 组合包）
-  "spanner": { "entry": "main.py", "input_schema": { "type": "object" } },
-
   // 多组件声明（mcp_servers / skills）
   "components": {
     "mcp_servers": [
@@ -90,7 +85,6 @@ my-plugin.zip
 | `version` | 可选 | 语义版本，缺省按 `1.0.0` 处理 |
 | `description` | 可选 | 功能事实，进卡片副标题 |
 | `icon` | 可选 | 图标文件，相对 zip 根，仅 `icon.svg`/`icon.png` |
-| `spanner` | 可选 | 扳手插件声明，见 §7 |
 | `components` | 可选 | 多组件声明，见下 |
 
 `components` 两个子表（当前版本仅这两类）：
@@ -113,8 +107,10 @@ my-plugin.zip
 | mcp 非空 && skills 非空 | `Bundle`（组合包） |
 | 仅 mcp 非空 | `Mcp`（纯 MCP） |
 | 仅 skills 非空 | `Skill`（纯技能） |
-（旧 `Spanner` 变体已移除：可执行能力并入 skill 包，经 SKILL.md frontmatter `tools[]` + `runtime` 段声明，由 skill_marketplace::install 后置 hook 注册 skill-run wrapper）
 | 全空 | 拒收（空包） |
+
+（旧 `Spanner` 变体已移除；可执行能力方向是 SKILL.md frontmatter `tools[]` + `runtime`
+段声明 + skill-run wrapper——该方向为 **RFC 草案，执行通路未实施**，本文不展开。）
 
 （内置 `Cli` 连接器不走插件包上传，v1 不开放。）
 
@@ -172,15 +168,15 @@ MCP server 的启动真相源。本地 stdio server 的必填与常用字段：
 
 可选字段全量：`env`、`secret_env`、`secret_headers`、`validate_on_install`、
 `config_fields`、`routing_rules`、`tool_table_entries`、`pip_dependencies`、
-`servers`、`companion_skills`、`spanner_entry`。
+`servers`、`companion_skills`。
 
 ---
 
 ## 7. ~~spanner 组件（扳手插件）~~（已移除）
 
-> 2026-08：spanner 独立组件模型已移除。脚本可执行能力并入 skill 包：
-> SKILL.md frontmatter `tools[]` + `runtime` 段声明可执行入口，安装后置 hook 注册
-> `skill-run` wrapper（`resources/common/bin/skill-run`）。旧包中的 `spanner` 字段
+> 2026-08：spanner 独立组件模型已移除。脚本可执行能力的演进方向是 skill 包
+> SKILL.md frontmatter `tools[]` + `runtime` 段 + `skill-run` wrapper——
+> **该方向为 RFC 草案，执行通路未实施**（详见 `plugin-protocol.md`）。旧包中的 `spanner` 字段
 > 经 plugin.json `extra` 保留、deser 不炸，但不再合成 mcp/manifest.json。
 
 介于「脚本 skill」与「MCP」之间：声明式 schema + 无状态单次进程 + 自带运行时。
@@ -269,8 +265,7 @@ metadata:                       # 可选
 3. 体积：解压累计 ≤ 200 MiB。
 4. 名字安全（§10）。
 5. 组件声明与实际一致（声明的 `dir` 必须存在；skill 目录必须有 `SKILL.md`）。
-6. spanner 入口合法 + 安装前 smoke test（§7）。
-7. 凭据不落盘（§6）。
+6. 凭据不落盘（§6）。
 
 ---
 

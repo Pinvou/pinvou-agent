@@ -1,9 +1,9 @@
 # 插件协议（Plugin Protocol）设计
 
-> 状态：**设计草案（未实施）**。本文定义「应用商店」用户上传 zip 插件包的
-> 包格式、自动识别、落盘与读取协议。落地基线为当前分支
-> `feat/tool-market-integrated` 已完成的能力包统一模型（`docs/marketplace-unification.md`
-> §3/§4/§6，Phase 2 全部 12 刀已合入）。
+> 状态：**v1 子集已实施**（MCP / 技能 / 组合包，落地版见 `plugin-package-spec.md`），
+> 其余仍为设计草案。本文定义「应用商店」用户上传 zip 插件包的
+> 包格式、自动识别、落盘与读取协议。落地基线为能力包统一模型
+> （`docs/marketplace-unification.md` §3/§4/§6，Phase 2 全部 12 刀已合入）。
 > 本文是 `marketplace-unification.md` §7「插件化路径」的首个落地切片：把
 > **组合式插件包**（components 向量扩展）从「预留」推进到「协议定稿」，
 > 但**不含**进程内代码插件（dsh 形态）——那条路径仍需底座缝 + 信任模型
@@ -22,7 +22,7 @@
 | 组件类型 | v1 是否识别 | 说明 |
 |---|---|---|
 | `mcp_servers` | ✅ | 本地 stdio / 远程 OAuth MCP，复用现有 `ToolManifest` |
-| `spanner` | ✅ | **扳手插件**：声明式 schema + 无状态单次进程 + 自带运行时（语言不限），经内置 `spanner_runner` 包装成 MCP 工具，作者只写 stdin→stdout（§15） |
+| `spanner` | ⛔ 已移除 | 扳手插件独立组件模型已从 v1 移除，原声明式 one-shot 设计保留为历史记录（§15）；可执行能力的演进方向是 skill 包 `tools[]`/`runtime` + skill-run wrapper，**该方向为 RFC 草案，执行通路未实施** |
 | `skills` | ✅ | SKILL.md 目录（挂载给 LLM 的 markdown 指令），复用现有技能落盘与物化 |
 | `workflows` | ❌ v2 | harness loop 多智能体编排；识别/落盘可行，但治理通道需 harness 侧 scenario 过滤缝（§11/§12-B），v1 不做 |
 | `cli_connectors` | ⏳ 未实现（草案） | zip 只放「下载声明」（URL + SHA-256 + 版本 + 配套技能），安装时下载二进制到 `assets/cli/`（lock 表）；不内嵌原生二进制，详见 §14.3 |
@@ -448,9 +448,10 @@ workflows 非空                              → Workflow
 
 ## 15. ~~扳手插件 `spanner`（one-shot）~~（已移除）
 
-> 2026-08：spanner 独立组件模型已移除（向 skill-with-runtime 协议迁移）：
-> 可执行能力经 SKILL.md frontmatter `tools[]` + `runtime` 段声明，由
-> `skill_marketplace::install` 后置 hook 注册 skill-run wrapper。本节历史内容仅存档。
+> 2026-08：spanner 独立组件模型已移除。可执行能力的演进方向是 skill-with-runtime
+> 协议（SKILL.md frontmatter `tools[]` + `runtime` 段声明 + skill-run wrapper）——
+> **该方向为 RFC 草案，执行通路未实施**（无 install 后置 hook、无 priority_paths、
+> 无 skill-run wrapper 二进制）。本节历史内容仅存档。
 
 **定位**：介于「脚本 skill（太自由）」和「MCP（太重）」之间。声明式 schema +
 无状态单次进程 + 自带运行时，语言不限。作者只写「读 stdin JSON → 写 stdout
