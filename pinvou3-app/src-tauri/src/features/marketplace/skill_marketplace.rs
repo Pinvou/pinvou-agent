@@ -106,7 +106,7 @@ fn preset_manifests() -> &'static [SkillManifest] {
             source_dir: "package-author",
             title: "插件包标准化",
             subtitle: "把技能/MCP/函数整理成可上传的标准插件包",
-            description: "把散乱的技能（SKILL.md）、MCP 服务、扳手插件（spanner）或它们的组合整理成 Pinvou 商店可导入的标准插件包：补 plugin.json、补 mcp/manifest.json、补 SKILL.md frontmatter、生成图标、校验命名与布局，最后产出目录或 zip。",
+            description: "把散乱的技能（SKILL.md）、MCP 服务或它们的组合整理成 Pinvou 商店可导入的标准插件包：补 plugin.json、补 mcp/manifest.json、补 SKILL.md frontmatter、生成图标、校验命名与布局，最后产出目录或 zip。",
             icon: "Package",
             color: "bg-gradient-to-b from-emerald-500 to-teal-700",
         },
@@ -212,15 +212,21 @@ impl SkillMarketplaceManager {
             .join(skill_name)
     }
 
-    /// 已装技能目录定位：仅新布局（按包聚合 `bundles/<pkg>/skills/<name>`）。
-    /// 旧扁平布局 `bundle/skills/` 已退役，不再回退读取（强制迁移后删除）。
+    /// 已装技能目录定位：新布局（按包聚合 `bundles/<pkg>/skills/<name>`）优先；
+    /// 旧扁平布局 `bundle/skills/<name>` 回退读取——一次性迁移
+    /// （`migrate_flat_skills_layout`）失败或目标已存在时保留旧位置，读路径在此
+    /// 兜底，避免迁移失败后 is_installed / list / uninstall 与技能失联（迁移
+    /// 下个启动周期自愈）。
     pub(crate) fn find_skill_dir(&self, skill_name: &str) -> Option<PathBuf> {
         let new_path = self.package_skill_dir(skill_name);
         if new_path.is_dir() {
-            Some(new_path)
-        } else {
-            None
+            return Some(new_path);
         }
+        let legacy_path = self.legacy_skills_dir.join(skill_name);
+        if legacy_path.is_dir() {
+            return Some(legacy_path);
+        }
+        None
     }
 
     /// 前端列表:预置技能(带 installed 状态) + 用户上传的技能（BundleStore 里
@@ -389,16 +395,6 @@ impl SkillMarketplaceManager {
             format!("落盘: {e}")
         })?;
 
-        // Super-skill 协议后置 hook：扫描 SKILL.md frontmatter 的 `runtime` + `tools` 段。
-        // 若完整声明，把 `skills/<name>/scripts/**` 加进 priority_paths（execpolicy 通道
-        // 硬兜底），让 skill-run wrapper 能从沙箱列表外进入。
-        if let Err(e) = self.register_skill_exec_priority_paths(&dest, m.skill_name) {
-            log::warn!(
-                "[skill-marketplace] skill-run 注册失败（install {}）: {e}",
-                m.id
-            );
-        }
-
         // 登记（预置 source=Preset + 内容指纹；更新走同一 install 管线，
         // upsert_preserving 保留首次安装时间）。失败只记日志，目录落盘仍是权威。
         let mut record =
@@ -410,59 +406,6 @@ impl SkillMarketplaceManager {
                 m.id
             );
         }
-        Ok(())
-    }
-
-    /// 把已装 skill 目录（`dest`）下的 SKILL.md frontmatter 中声明的可执行能力
-    /// 注册到 priority_paths，并刷新 execpolicy 规则集（in-flight 引擎的双向兜底）。
-    /// 内容-only skill（无 runtime + tools 段）→ 静默跳过。
-    fn register_skill_exec_priority_paths(
-        &self,
-        skill_dir: &Path,
-        skill_name: &str,
-    ) -> Result<(), String> {
-        let md = skill_dir.join("SKILL.md");
-        if !md.is_file() {
-            return Ok(()); // 不存在 SKILL.md 一定是裸技能，无 exec 段
-        }
-        let content = std::fs::read_to_string(&md).map_err(|e| format!("读 SKILL.md: {e}"))?;
-        let exec = read_skill_exec_from_str(&content)?;
-        if !exec.is_executable() {
-            return Ok(()); // 内容-only skill
-        }
-        // 收集该 skill 下所有 entry 路径（基于 runtime.dir 与 tools[].entry）
-        let runtime_dir = exec
-            .runtime
-            .as_ref()
-            .and_then(|r| r.dir.as_deref())
-            .map(|d| skill_dir.join(d));
-        let mut paths: Vec<PathBuf> = Vec::new();
-        if let Some(rd) = runtime_dir.as_ref() {
-            if rd.is_dir() {
-                paths.push(rd.clone());
-            }
-        }
-        for tool in &exec.tools {
-            let entry = tool.entry.trim_start_matches("./");
-            let entry_path = skill_dir.join(entry);
-            if entry_path.exists() {
-                if let Some(parent) = entry_path.parent() {
-                    paths.push(parent.to_path_buf());
-                }
-            }
-        }
-        if paths.is_empty() {
-            return Err(format!(
-                "skill '{skill_name}' 声明 runtime+tools 但未找到 entry/runtime 目录"
-            ));
-        }
-        // 把这些路径加进 priority_paths（execpolicy 已知可执行白名单，
-        // 引擎 spawn 时绕过常规 deny 名单——本 skill 自身的能力面）。
-        crate::platform::paths::add_skill_priority_paths(&paths);
-        log::info!(
-            "[skill-marketplace] skill '{skill_name}' 已注册 {} 个 priority path",
-            paths.len()
-        );
         Ok(())
     }
 
@@ -687,6 +630,12 @@ impl SkillMarketplaceManager {
         let Ok(rd) = std::fs::read_dir(&self.legacy_skills_dir) else {
             return report;
         };
+        // 迁移期 companion 归属兜底：技能迁移早于自定义 MCP 布局迁移（extraction
+        // 顺序：import_legacy → 技能迁移 → migrate_custom_mcp_layout），此时
+        // `available_tools` 还看不到 `bundle/mcp-servers/` 下的自定义 MCP manifest，
+        // companion 声明需直接从旧目录现算，否则 companion 技能会被错迁为独立包
+        // （owner = 技能名自身），与「companion 物理归属所属包目录」的设计意图相悖。
+        let legacy_companions = legacy_companion_owners();
         for entry in rd.flatten() {
             let dir = entry.path();
             if !dir.is_dir() {
@@ -696,6 +645,7 @@ impl SkillMarketplaceManager {
             if !is_safe_skill_name(&name) {
                 continue;
             }
+            let target = self.migration_skill_dir(&name, &legacy_companions);
             let marker = std::fs::read_to_string(dir.join(INSTALLED_FROM_MARKER))
                 .unwrap_or_default()
                 .trim()
@@ -703,7 +653,7 @@ impl SkillMarketplaceManager {
             if marker.is_empty() {
                 if let Some(cli) = super::bundle::cli_bundle_of_skill(&name) {
                     if crate::platform::connector_state::skills_visible_for(cli) {
-                        self.move_skill_dir(&dir, &name, &mut report);
+                        self.move_skill_dir(&dir, &name, &target, &mut report);
                     } else {
                         let _ = std::fs::remove_dir_all(&dir);
                         report.removed_stale.push(name);
@@ -714,10 +664,10 @@ impl SkillMarketplaceManager {
                 continue;
             }
             let is_preset = marker.starts_with("pinvou3-marketplace:");
-            if self.move_skill_dir(&dir, &name, &mut report) && is_preset {
+            if self.move_skill_dir(&dir, &name, &target, &mut report) && is_preset {
                 // 补写指纹到既有记录（import_legacy 先跑，记录应已存在；
                 // 不存在则不擅自新建——异常态留给下一周期）
-                if let Ok(fp) = dir_fingerprint(&self.package_skill_dir(&name)) {
+                if let Ok(fp) = dir_fingerprint(&target) {
                     match self.bundle_store.get(&name) {
                         Ok(Some(mut record)) => {
                             record.content_fingerprint = Some(fp);
@@ -738,9 +688,35 @@ impl SkillMarketplaceManager {
         report
     }
 
+    /// 迁移目标目录：`bundles/<owner>/skills/<skill-name>`。属主推导复用
+    /// `bundle::skill_owner_package`；推导结果为「独立成包」（owner = 技能名自身）
+    /// 时回退查迁移期的旧布局 companion 映射（自定义 MCP 此刻尚未搬到新布局，
+    /// 见 `migrate_flat_skills_layout` 注释）。
+    fn migration_skill_dir(
+        &self,
+        skill_name: &str,
+        legacy_companions: &std::collections::HashMap<String, String>,
+    ) -> PathBuf {
+        let mut owner = super::bundle::skill_owner_package(skill_name);
+        if owner == skill_name {
+            if let Some(legacy_owner) = legacy_companions.get(skill_name) {
+                owner = legacy_owner.clone();
+            }
+        }
+        self.packages_root
+            .join(owner)
+            .join("skills")
+            .join(skill_name)
+    }
+
     /// 移动单个技能目录到所属包目录。返回是否完成移动。
-    fn move_skill_dir(&self, dir: &Path, name: &str, report: &mut SkillsMigrationReport) -> bool {
-        let target = self.package_skill_dir(name);
+    fn move_skill_dir(
+        &self,
+        dir: &Path,
+        name: &str,
+        target: &Path,
+        report: &mut SkillsMigrationReport,
+    ) -> bool {
         if target.exists() {
             log::warn!(
                 "[skill-marketplace] 迁移跳过 {name}：目标已存在（{}），保留旧位置 {}",
@@ -751,7 +727,7 @@ impl SkillMarketplaceManager {
             return false;
         }
         let parent = target.parent().expect("包目录必有父级");
-        let result = std::fs::create_dir_all(parent).and_then(|()| std::fs::rename(dir, &target));
+        let result = std::fs::create_dir_all(parent).and_then(|()| std::fs::rename(dir, target));
         match result {
             Ok(()) => {
                 report.moved.push(name.to_string());
@@ -782,6 +758,32 @@ pub struct SkillsMigrationReport {
 }
 
 // 辅助 ------------------------------------------------------------------------
+
+/// 迁移期 companion 归属映射：扫描旧布局 `bundle/mcp-servers/<id>/manifest.json`
+/// 的 `companion_skills` 声明，产出 技能名 → 所属 MCP 包 id。仅供
+/// `migrate_flat_skills_layout` 使用——技能迁移先于自定义 MCP 布局迁移执行，
+/// 此刻 `available_tools` 尚看不到旧目录下的自定义 MCP（旧布局在查询层已退役，
+/// 不回退读取）。manifest 缺失/损坏的目录跳过（其技能按独立包迁移，下个启动
+/// 周期自愈）。
+fn legacy_companion_owners() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let Ok(rd) = std::fs::read_dir(paths::bundle_mcp_servers_dir()) else {
+        return map;
+    };
+    for entry in rd.flatten() {
+        let manifest_path = entry.path().join("manifest.json");
+        let Ok(content) = std::fs::read_to_string(&manifest_path) else {
+            continue;
+        };
+        let Ok(manifest) = serde_json::from_str::<super::types::ToolManifest>(&content) else {
+            continue;
+        };
+        for skill in &manifest.companion_skills {
+            map.insert(skill.clone(), manifest.id.clone());
+        }
+    }
+    map
+}
 
 /// 收集嵌入资源子树的 `(相对路径, 内容)` 列表,供更新检测比对。
 /// 口径与 [`extract_embedded_subdir`] 一致:strip `source_dir` 前缀、跳过 SOURCE.md。
@@ -1027,473 +1029,6 @@ pub(crate) fn sanitize_skill_name(name: &str) -> String {
         "skill".to_string()
     } else {
         trimmed.to_string()
-    }
-}
-
-// =====================================================================
-// Super-skill 协议：SKILL.md frontmatter 增加可选 `runtime` + `tools[]` 段，
-// 让 skill 包承载可执行能力（取代老的 spanner 独立组件模型）。模型读完 SKILL.md
-// 后看到「本 skill 有 tools：通过 skill-run <tool-name> '<json-args>' 调用」，
-// stdout 必为合法 JSON。
-//
-// 已下线（保留作旧 plugin.json 反序列化兜底字段）：plugin.json 中的 `spanner` 字段
-// 在 plugin_import.rs 通过 `extra` map 兜住，丢给类型丢弃——旧上传包的 legacy data
-// 不会炸。仅作前向兼容读取，不再有对应的执行通路。
-
-/// Skill 运行时声明（语言不限）。对应 SKILL.md frontmatter `runtime:` 段：
-/// ```yaml
-/// runtime:
-///   kind: python        # python | python3 | node | nodejs | deno | ...
-///   dir: runtime        # 可选，自带运行时目录相对 skill 根
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillRuntimeSpec {
-    pub kind: String,
-    #[serde(default)]
-    pub dir: Option<String>,
-}
-
-/// Skill 可执行工具声明。对应 frontmatter `tools:` 数组元素：
-/// ```yaml
-/// tools:
-///   - name: generate_html
-///     entry: scripts/generate.py
-///     input_schema: {type: object, properties: {prompt: {type: string}}, required: [prompt]}
-///     output_schema: {type: object}              # 可选
-///     timeout_secs: 30                         # 可选，默认 20
-///     background: false                        # 可选
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillToolSpec {
-    pub name: String,
-    pub entry: String,
-    #[serde(default)]
-    pub input_schema: Option<serde_json::Value>,
-    #[serde(default)]
-    pub output_schema: Option<serde_json::Value>,
-    #[serde(default)]
-    pub timeout_secs: Option<u64>,
-    #[serde(default)]
-    pub background: Option<bool>,
-}
-
-/// skill 包的「可执行能力」声明集合。对应 frontmatter `runtime` + `tools` 段；
-/// 两个同时存在才算完整（缺 runtime 的 tools 不可调用，缺 tools 的 runtime 无意义）。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillExecSpec {
-    #[serde(default)]
-    pub runtime: Option<SkillRuntimeSpec>,
-    #[serde(default)]
-    pub tools: Vec<SkillToolSpec>,
-}
-
-impl SkillExecSpec {
-    /// 是否声明了可执行能力（=runtime + 非空 tools）。
-    pub fn is_executable(&self) -> bool {
-        self.runtime.is_some() && !self.tools.is_empty()
-    }
-}
-
-/// 解析 SKILL.md YAML frontmatter 中 `runtime` 与 `tools` 段。
-///
-/// 这是 YAML 1.2 的最小子集解析器（不引 serde_yaml），理由：避免额外依赖、代码可
-/// 控、格式由本协议定义。前后由 `\n---\n` 标记包裹；frontmatter 不存在或这两段都不存
-/// 在 → 返回 Ok(Default)（"无 exec 段"是合法）。
-pub fn read_skill_exec_from_str(content: &str) -> Result<SkillExecSpec, String> {
-    // 1) 抽取 frontmatter 段
-    let mut lines = content.lines();
-    if lines.next().map(str::trim) != Some("---") {
-        return Ok(SkillExecSpec::default());
-    }
-    let mut yaml_lines: Vec<&str> = Vec::new();
-    let mut closed = false;
-    for line in lines {
-        if line.trim_start() == "---" {
-            closed = true;
-            break;
-        }
-        yaml_lines.push(line);
-    }
-    if !closed {
-        return Ok(SkillExecSpec::default());
-    }
-    if yaml_lines.is_empty() {
-        return Ok(SkillExecSpec::default());
-    }
-
-    // 2) 极简 YAML：找到 `runtime:` 与 `tools:` 顶层段，裁出原始行（YAML 是缩进敏感
-    //    的，我们只识别顶层无缩进 `key:` 与 `  - entry:` / `  - name:` 等）。
-    let mut runtime: Option<SkillRuntimeSpec> = None;
-    let mut tools: Vec<SkillToolSpec> = Vec::new();
-    let mut i = 0;
-    while i < yaml_lines.len() {
-        let line = yaml_lines[i];
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            i += 1;
-            continue;
-        }
-        // 顶层段 = 行首非空白 + 以 `key:` 结尾
-        if line.starts_with(char::is_whitespace) == false && trimmed.ends_with(':') {
-            let key = trimmed.trim_end_matches(':').trim();
-            i += 1;
-            if key == "runtime" {
-                // 收集后续缩进行直到下一个顶层段或 EOF
-                let mut block: Vec<&str> = Vec::new();
-                while i < yaml_lines.len() {
-                    let cur = yaml_lines[i];
-                    if !cur.starts_with(' ') && !cur.starts_with('\t') && cur.trim().ends_with(':')
-                    {
-                        break;
-                    }
-                    if !cur.trim().is_empty() {
-                        block.push(cur);
-                    }
-                    i += 1;
-                }
-                runtime = parse_runtime_block(&block)?;
-            } else if key == "tools" {
-                // tools 是数组：扫描 `- ` 起始项，每项收集缩进行直到下一个 `- `
-                let mut item: Vec<String> = Vec::new();
-                while i < yaml_lines.len() {
-                    let cur = yaml_lines[i];
-                    if cur.trim_start().starts_with("- ") {
-                        if !item.is_empty() {
-                            let parsed = parse_tool_item(&item)?;
-                            tools.push(parsed);
-                            item.clear();
-                        }
-                        item.push(cur.to_string());
-                    } else if cur.starts_with(' ') || cur.starts_with('\t') {
-                        if !item.is_empty() {
-                            item.push(cur.to_string());
-                        } else {
-                            break;
-                        }
-                    } else if cur.trim().is_empty() {
-                        i += 1;
-                        continue;
-                    } else {
-                        break;
-                    }
-                    i += 1;
-                }
-                if !item.is_empty() {
-                    let parsed = parse_tool_item(&item)?;
-                    tools.push(parsed);
-                }
-            } else {
-                // 未关注的段，跳过其缩进体
-                while i < yaml_lines.len() {
-                    let cur = yaml_lines[i];
-                    if !cur.starts_with(' ') && !cur.starts_with('\t') && cur.trim().ends_with(':')
-                    {
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-        } else {
-            i += 1;
-        }
-    }
-
-    Ok(SkillExecSpec { runtime, tools })
-}
-
-fn parse_runtime_block(lines: &[&str]) -> Result<Option<SkillRuntimeSpec>, String> {
-    let mut kind: Option<String> = None;
-    let mut dir: Option<String> = None;
-    for line in lines {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("kind:") {
-            kind = Some(unquote_yaml_scalar(rest.trim()));
-        } else if let Some(rest) = trimmed.strip_prefix("dir:") {
-            dir = Some(unquote_yaml_scalar(rest.trim()));
-        }
-    }
-    let kind = match kind {
-        Some(k) if !k.is_empty() => k,
-        _ => return Ok(None), // 无 runtime 段 → Ok(None)，不是错
-    };
-    Ok(Some(SkillRuntimeSpec { kind, dir }))
-}
-
-fn parse_tool_item(lines: &[String]) -> Result<SkillToolSpec, String> {
-    let mut name: Option<String> = None;
-    let mut entry: Option<String> = None;
-    let mut input_schema: Option<serde_json::Value> = None;
-    let mut output_schema: Option<serde_json::Value> = None;
-    let mut timeout_secs: Option<u64> = None;
-    let mut background: Option<bool> = None;
-    for raw in lines {
-        let trimmed = raw.trim();
-        // 去掉 `- ` 列表前缀
-        let body = if let Some(stripped) = trimmed.strip_prefix("- ") {
-            stripped
-        } else {
-            trimmed
-        };
-        if let Some(rest) = body.strip_prefix("name:") {
-            name = Some(unquote_yaml_scalar(rest.trim()));
-        } else if let Some(rest) = body.strip_prefix("entry:") {
-            entry = Some(unquote_yaml_scalar(rest.trim()));
-        } else if let Some(rest) = body.strip_prefix("input_schema:") {
-            input_schema = Some(parse_inline_yaml_value(rest.trim())?);
-        } else if let Some(rest) = body.strip_prefix("output_schema:") {
-            output_schema = Some(parse_inline_yaml_value(rest.trim())?);
-        } else if let Some(rest) = body.strip_prefix("timeout_secs:") {
-            timeout_secs = rest.trim().parse::<u64>().ok();
-        } else if let Some(rest) = body.strip_prefix("background:") {
-            background = rest.trim().parse::<bool>().ok();
-        }
-    }
-    let name = name.ok_or_else(|| "tools[] 缺 name".to_string())?;
-    let entry = entry.ok_or_else(|| format!("tool '{name}' 缺 entry"))?;
-    Ok(SkillToolSpec {
-        name,
-        entry,
-        input_schema,
-        output_schema,
-        timeout_secs,
-        background,
-    })
-}
-
-fn unquote_yaml_scalar(s: &str) -> String {
-    s.trim().trim_matches('"').trim_matches('\'').to_string()
-}
-
-/// 极简 YAML 标量解析：支持 `null` / `true` / `false` / 整数 / 字符串。
-/// 复杂结构（多行 mapping / 嵌套）不支持——本协议规定 input_schema/output_schema
-/// 写一行 JSON 字面量最简单。
-fn parse_inline_yaml_value(s: &str) -> Result<serde_json::Value, String> {
-    let trimmed = s.trim();
-    if trimmed == "null" || trimmed == "~" || trimmed.is_empty() {
-        return Ok(serde_json::Value::Null);
-    }
-    if trimmed == "true" {
-        return Ok(serde_json::Value::Bool(true));
-    }
-    if trimmed == "false" {
-        return Ok(serde_json::Value::Bool(false));
-    }
-    if let Ok(n) = trimmed.parse::<i64>() {
-        return Ok(serde_json::Value::Number(n.into()));
-    }
-    // 否则按裸字符串
-    Ok(serde_json::Value::String(unquote_yaml_scalar(trimmed)))
-}
-
-#[cfg(test)]
-mod super_skill_tests {
-    use super::*;
-    use crate::platform::paths;
-
-    fn sample_md(body: &str) -> String {
-        format!("---\nname: pua\n{body}\n---\n# skill body\n")
-    }
-
-    // ----------------------------------------------------------------------
-    // Commit 3 集成测试：用 3 个真实 skill 的 frontmatter 形式（visualizer /
-    // package-author / image-resize-demo），各建一份临时 SKILL.md，跑
-    // `register_skill_exec_priority_paths` 模拟 super-skill install 钩子。
-    // 注：只测 *配置面*（frontmatter 解析 + priority_paths 写入 + 幂等），不
-    // 实际执行 skill-run wrapper——后者需要 wrapper 与 entry 在真机本地（与
-    // 分支 DLL 问题同源，参见 .luzeyang/PR302-review-fixes/super-skill-RFC.md §6）。
-    // ----------------------------------------------------------------------
-
-    fn run_install_hook(md_text: &str, skill_dir: &std::path::Path) {
-        std::fs::write(skill_dir.join("SKILL.md"), md_text).unwrap();
-        let _ = std::fs::create_dir_all(skill_dir.join("scripts"));
-        std::fs::write(
-            skill_dir.join("scripts").join("entry.py"),
-            b"import json,sys\njson.dump({'ok': True}, sys.stdout)",
-        )
-        .unwrap();
-        // 模拟 SkillMarketplaceManager::install 后置 hook（私有 fn，同模块内可访问）。
-        let mgr = SkillMarketplaceManager::new();
-        let skill_name = read_skill_name_from_str(md_text).unwrap_or_else(|| "demo".into());
-        let _ = mgr.register_skill_exec_priority_paths(skill_dir, &skill_name);
-    }
-
-    /// Test 1: visualizer 类（python + 单一 tool，runtime.dir 自带）
-    #[test]
-    fn super_skill_visualizer_like_skills_register_priority_paths() {
-        let _g = paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou3-super-skill-visualizer-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PINVOU3_HOME", &dir);
-
-        let md = sample_md(
-            "runtime:\n  kind: python\n  dir: runtime\ntools:\n  - name: render_dashboard\n    entry: scripts/render.py\n    timeout_secs: 30\n",
-        );
-        let skill_dir = dir.join("skills").join("visualizer");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        run_install_hook(&md, &skill_dir);
-
-        let listed = paths::skill_priority_paths();
-        assert!(
-            listed
-                .iter()
-                .any(|p| p.to_string_lossy().contains("visualizer")),
-            "priority_paths 应含 visualizer 路径：{:?}",
-            listed
-        );
-
-        match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Test 2: package-author 类（node + 多个 tools）
-    #[test]
-    fn super_skill_package_author_like_skills_register_priority_paths() {
-        let _g = paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou3-super-skill-pkgauthor-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PINVOU3_HOME", &dir);
-
-        let md = sample_md(
-            "runtime:\n  kind: node\ntools:\n  - name: synthesize\n    entry: scripts/synth.mjs\n  - name: validate\n    entry: scripts/validate.mjs\n",
-        );
-        let skill_dir = dir.join("skills").join("package-author");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        run_install_hook(&md, &skill_dir);
-
-        let listed = paths::skill_priority_paths();
-        assert!(
-            listed
-                .iter()
-                .any(|p| p.to_string_lossy().contains("package-author")),
-            "priority_paths 应含 package-author 路径"
-        );
-
-        match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Test 3: 内容-only skill（runtime + tools 都不声明）不写 priority_paths
-    #[test]
-    fn content_only_skill_does_not_register_priority_paths() {
-        let _g = paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou3-super-skill-content-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PINVOU3_HOME", &dir);
-
-        let md = sample_md("description: content only\n");
-        let skill_dir = dir.join("skills").join("content-only");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        run_install_hook(&md, &skill_dir);
-
-        let listed = paths::skill_priority_paths();
-        assert!(
-            !listed
-                .iter()
-                .any(|p| p.to_string_lossy().contains("content-only")),
-            "内容-only skill 不应触发 priority_paths：{:?}",
-            listed
-        );
-
-        match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn read_skill_exec_no_frontmatter() {
-        // 无 frontmatter → Default
-        let md = "# just body\n";
-        let exec = read_skill_exec_from_str(md).unwrap();
-        assert!(!exec.is_executable());
-    }
-
-    #[test]
-    fn read_skill_exec_runtime_only_no_tools() {
-        let md = sample_md("runtime:\n  kind: python\n");
-        let exec = read_skill_exec_from_str(&md).unwrap();
-        assert!(!exec.is_executable(), "缺 tools 不算可执行");
-        assert_eq!(exec.runtime.as_ref().unwrap().kind, "python");
-    }
-
-    #[test]
-    fn read_skill_exec_full() {
-        let md = sample_md(
-            "runtime:\n  kind: python\n  dir: runtime\ntools:\n  - name: generate_html\n    entry: scripts/generate.py\n    input_schema: {type: object, properties: {prompt: {type: string}}}\n    timeout_secs: 30\n  - name: render\n    entry: scripts/render.py\n",
-        );
-        let exec = read_skill_exec_from_str(&md).unwrap();
-        assert!(exec.is_executable());
-        assert_eq!(exec.runtime.as_ref().unwrap().kind, "python");
-        assert_eq!(
-            exec.runtime.as_ref().unwrap().dir.as_deref(),
-            Some("runtime")
-        );
-        assert_eq!(exec.tools.len(), 2);
-        assert_eq!(exec.tools[0].name, "generate_html");
-        assert_eq!(exec.tools[0].entry, "scripts/generate.py");
-        assert_eq!(exec.tools[0].timeout_secs, Some(30));
-        assert_eq!(exec.tools[1].name, "render");
-    }
-
-    #[test]
-    fn read_skill_exec_malformed_returns_err() {
-        let md = "---\ntools:\n  - entry: x.py\n---\n"; // 缺 name
-        let err = read_skill_exec_from_str(&md).unwrap_err();
-        assert!(err.contains("name"), "err: {err}");
-    }
-
-    #[test]
-    fn priority_paths_roundtrip() {
-        use std::path::PathBuf;
-        let _g = paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var(
-            "PINVOU3_HOME",
-            std::env::temp_dir().join(format!("pinvou3-skill-paths-{}", std::process::id())),
-        );
-        // 初始为空
-        assert!(paths::skill_priority_paths().is_empty());
-        // 加两个 + 重复一个（去重）
-        paths::add_skill_priority_paths(&[
-            PathBuf::from("/tmp/a"),
-            PathBuf::from("/tmp/b"),
-            PathBuf::from("/tmp/a"),
-        ]);
-        let got = paths::skill_priority_paths();
-        assert_eq!(got.len(), 2);
-        assert!(got.contains(&PathBuf::from("/tmp/a")));
-        assert!(got.contains(&PathBuf::from("/tmp/b")));
-        match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
-        }
     }
 }
 
