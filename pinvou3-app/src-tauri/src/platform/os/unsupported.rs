@@ -9,6 +9,12 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+// macOS 侧由 `macos_system::current_system_locale` 显式实现阴影本符号,该目标下
+// unused(unused_imports=deny 会拦);其余 unsupported 平台它是唯一来源,保留。
+#[cfg(not(target_os = "macos"))]
+pub(crate) use super::locale::current_system_locale;
+
 pub fn open_target(_target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     Err(format!("当前平台不支持系统打开: {label}"))
 }

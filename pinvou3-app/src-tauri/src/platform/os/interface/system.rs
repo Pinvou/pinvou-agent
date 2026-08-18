@@ -14,6 +14,10 @@ pub fn command_exists(command: &str) -> bool {
     super::super::platform::command_exists(command)
 }
 
+pub fn current_system_locale() -> Option<String> {
+    super::super::platform::current_system_locale()
+}
+
 #[cfg(target_os = "windows")]
 pub fn bios_serial_number() -> Result<String, String> {
     super::super::platform::bios_serial_number()

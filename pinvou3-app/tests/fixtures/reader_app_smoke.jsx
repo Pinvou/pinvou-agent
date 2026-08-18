@@ -6,6 +6,12 @@ import { ReaderApp } from '../../src/features/reader/ReaderApp.jsx';
 window.__invokeLog = [];
 window.__readerOpenHandler = null;
 
+// 标签/工具栏断言依赖中文文案：把系统语言固定为中文，使初始语言即 zh，
+// get_settings 解析后 setLanguage 同值短路，拉取 pending 的 effect 不会因
+// 语言状态变化而重跑（重跑会触发第二次 take_code_reader_pending）。
+Object.defineProperty(window.navigator, 'languages', { get: () => ['zh-CN'] });
+Object.defineProperty(window.navigator, 'language', { get: () => 'zh-CN' });
+
 const PENDING = [
   { sessionId: null, workspacePath: 'D:/proj/demo', relativePath: 'main.py' },
 ];
@@ -16,7 +22,8 @@ window.__TAURI__ = {
       window.__invokeLog.push({ command, args });
       switch (command) {
         case 'get_settings':
-          throw new Error('fixture: 无设置后端，回退默认语言');
+          // 固定中文，断言不随运行环境系统语言漂移（与 ui_smoke.js 惯例一致）。
+          return { theme: 'liquid-light', language: 'zh-Hans' };
         case 'take_code_reader_pending':
           return PENDING;
         case 'preview_codex_workspace_file':

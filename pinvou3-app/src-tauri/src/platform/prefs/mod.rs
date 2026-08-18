@@ -61,6 +61,24 @@ pub enum Language {
     Ja,
 }
 impl Language {
+    fn from_system_locale(locale: Option<&str>) -> Self {
+        let Some(locale) = locale.map(str::trim).filter(|locale| !locale.is_empty()) else {
+            return Language::En;
+        };
+        let primary = locale
+            .split(|ch: char| matches!(ch, '-' | '_' | '.' | '@' | ':'))
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        match primary.as_str() {
+            "zh" => Language::ZhHans,
+            "ja" => Language::Ja,
+            "en" => Language::En,
+            // 品悟当前只提供中、英、日；其它系统语言使用英文，而不是误显示中文。
+            _ => Language::En,
+        }
+    }
+
     pub fn locale_tag(self) -> &'static str {
         match self {
             Language::ZhHans => "zh-Hans",
@@ -462,22 +480,84 @@ pub struct UserPrefs {
     pub advanced: AdvancedPrefs,
 }
 
+struct ParsedSettings {
+    prefs: UserPrefs,
+    allow_normalization_persist: bool,
+}
+
+fn should_persist_normalization(allow_persist: bool, requested: bool, changed: bool) -> bool {
+    requested && changed && allow_persist
+}
+
 impl UserPrefs {
-    /// 从 `~/.pinvou3/settings.json` 读。文件不存在或 JSON 解析失败时返回默认。
+    /// 从 `~/.pinvou3/settings.json` 读。没有有效语言配置时跟随当前系统语言。
     pub fn load() -> Self {
         let _guard = lock_user_prefs();
         Self::load_unlocked(true)
     }
 
+    fn defaults_for_system_locale(locale: Option<&str>) -> Self {
+        Self {
+            language: Language::from_system_locale(locale),
+            ..Self::default()
+        }
+    }
+
+    fn parse_settings_with_state(raw: Option<&str>, system_locale: Option<&str>) -> ParsedSettings {
+        let Some(raw) = raw else {
+            return ParsedSettings {
+                prefs: Self::defaults_for_system_locale(system_locale),
+                allow_normalization_persist: false,
+            };
+        };
+        let value: serde_json::Value = match serde_json::from_str(raw) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "[pinvou3-app] settings.json parse failed ({error}), using system-language defaults"
+                );
+                return ParsedSettings {
+                    prefs: Self::defaults_for_system_locale(system_locale),
+                    allow_normalization_persist: false,
+                };
+            }
+        };
+        let has_language = value
+            .as_object()
+            .is_some_and(|settings| settings.contains_key("language"));
+        let mut prefs: Self = match serde_json::from_value(value) {
+            Ok(prefs) => prefs,
+            Err(error) => {
+                eprintln!(
+                    "[pinvou3-app] settings.json parse failed ({error}), using system-language defaults"
+                );
+                return ParsedSettings {
+                    prefs: Self::defaults_for_system_locale(system_locale),
+                    allow_normalization_persist: false,
+                };
+            }
+        };
+        if !has_language {
+            prefs.language = Language::from_system_locale(system_locale);
+        }
+        ParsedSettings {
+            prefs,
+            allow_normalization_persist: true,
+        }
+    }
+
+    #[cfg(test)]
+    fn parse_settings(raw: Option<&str>, system_locale: Option<&str>) -> Self {
+        Self::parse_settings_with_state(raw, system_locale).prefs
+    }
+
     fn load_unlocked(persist_normalized: bool) -> Self {
         let path = super::paths::settings_path();
-        let mut prefs = match std::fs::read_to_string(&path) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
-                eprintln!("[pinvou3-app] settings.json parse failed ({e}), using defaults");
-                Self::default()
-            }),
-            Err(_) => Self::default(),
-        };
+        let raw = std::fs::read_to_string(&path).ok();
+        let system_locale = crate::platform::os::current_system_locale();
+        let mut parsed = Self::parse_settings_with_state(raw.as_deref(), system_locale.as_deref());
+        let allow_normalization_persist = parsed.allow_normalization_persist;
+        let prefs = &mut parsed.prefs;
         // 必须在 migrate_models/normalize 改写前记录；否则只能修正本次运行的内存值，
         // save gate 看不到变化，旧域名会永久留在 settings.json 中、每次启动重复迁移。
         let minimax_endpoint_changed = prefs
@@ -494,15 +574,19 @@ impl UserPrefs {
         prefs.normalize_saved_model_metadata();
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
-        if persist_normalized
-            && (minimax_endpoint_changed || migration.settings_sanitized || memory_policy_changed)
-        {
+        let normalization_changed =
+            minimax_endpoint_changed || migration.settings_sanitized || memory_policy_changed;
+        if should_persist_normalization(
+            allow_normalization_persist,
+            persist_normalized,
+            normalization_changed,
+        ) {
             if let Err(e) = prefs.save_unlocked() {
                 eprintln!("[pinvou3-app] settings normalization save failed: {e:#}");
             }
         }
         prefs.sanitize_plaintext_api_keys();
-        prefs
+        parsed.prefs
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -1366,6 +1450,94 @@ mod tests {
             assert!(prefs.notifications.task_completed);
         }
         assert!(prefs.advanced.allow_shell.is_none());
+    }
+
+    #[test]
+    fn system_locale_maps_to_supported_language() {
+        assert_eq!(
+            Language::from_system_locale(Some("zh_CN.UTF-8")),
+            Language::ZhHans
+        );
+        assert_eq!(
+            Language::from_system_locale(Some("zh-Hant-TW")),
+            Language::ZhHans
+        );
+        assert_eq!(Language::from_system_locale(Some("ja-JP")), Language::Ja);
+        assert_eq!(Language::from_system_locale(Some("en-US")), Language::En);
+        assert_eq!(Language::from_system_locale(Some("fr-FR")), Language::En);
+        assert_eq!(Language::from_system_locale(None), Language::En);
+    }
+
+    #[test]
+    fn missing_settings_uses_system_language() {
+        let prefs = UserPrefs::parse_settings(None, Some("ja-JP"));
+        assert_eq!(prefs.language, Language::Ja);
+    }
+
+    #[test]
+    fn invalid_settings_uses_system_language() {
+        let prefs = UserPrefs::parse_settings(Some("{broken"), Some("en-US"));
+        assert_eq!(prefs.language, Language::En);
+    }
+
+    #[test]
+    fn invalid_settings_never_allow_normalization_persist() {
+        for (raw, locale, expected_language) in [
+            ("{broken", "en-US", Language::En),
+            (r#"{"language":42}"#, "ja-JP", Language::Ja),
+        ] {
+            let mut parsed = UserPrefs::parse_settings_with_state(Some(raw), Some(locale));
+            assert_eq!(parsed.prefs.language, expected_language);
+            assert!(!parsed.allow_normalization_persist);
+            parsed.prefs.memory_enabled = true;
+            let normalization_changed = parsed.prefs.enforce_memory_locale_policy();
+            assert!(normalization_changed);
+            assert!(!should_persist_normalization(
+                parsed.allow_normalization_persist,
+                true,
+                normalization_changed,
+            ));
+        }
+    }
+
+    #[test]
+    fn missing_settings_do_not_allow_normalization_persist() {
+        let parsed = UserPrefs::parse_settings_with_state(None, Some("en-US"));
+        assert!(!parsed.allow_normalization_persist);
+        assert!(!should_persist_normalization(
+            parsed.allow_normalization_persist,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn valid_settings_allow_existing_normalization_persist() {
+        let mut parsed = UserPrefs::parse_settings_with_state(
+            Some(r#"{"language":"en","memory_enabled":true}"#),
+            Some("ja-JP"),
+        );
+        assert!(parsed.allow_normalization_persist);
+        let normalization_changed = parsed.prefs.enforce_memory_locale_policy();
+        assert!(normalization_changed);
+        assert!(should_persist_normalization(
+            parsed.allow_normalization_persist,
+            true,
+            normalization_changed,
+        ));
+    }
+
+    #[test]
+    fn settings_without_language_uses_system_language() {
+        let prefs = UserPrefs::parse_settings(Some(r#"{"theme":"genesis"}"#), Some("ja-JP"));
+        assert_eq!(prefs.theme, Theme::Genesis);
+        assert_eq!(prefs.language, Language::Ja);
+    }
+
+    #[test]
+    fn explicit_language_overrides_system_language() {
+        let prefs = UserPrefs::parse_settings(Some(r#"{"language":"zh-Hans"}"#), Some("en-US"));
+        assert_eq!(prefs.language, Language::ZhHans);
     }
 
     #[test]

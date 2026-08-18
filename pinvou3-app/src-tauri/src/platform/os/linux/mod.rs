@@ -2,6 +2,8 @@ mod linux_path;
 mod linux_permission;
 mod linux_system;
 
+pub(crate) use super::locale::current_system_locale;
+
 pub use linux_path::{
     apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command,
     filesystem_path_identity_key, kill_pid_tree, obsidian_config_path, path_component_eq,

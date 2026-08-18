@@ -744,7 +744,7 @@ async function main() {
     { timeout: 5_000 },
   );
 
-  await mobilePage.click('[data-testid="mobile-top-bar"] button[aria-label="打开导航"]');
+  await mobilePage.click('[data-testid="mobile-navigation-open"]');
   await mobilePage.waitForFunction(
     () => document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width > 0,
     { timeout: 5_000 },
@@ -776,7 +776,10 @@ async function main() {
       && mobileSidebarLayout.primaryBottom <= 400
       && mobileSidebarLayout.recentsTop <= 405,
     JSON.stringify(mobileSidebarLayout));
-  await mobilePage.evaluate(() => document.querySelector('button[aria-label="关闭导航"]').click());
+  // The z-40 sidebar covers the center of the z-30 full-screen overlay. A
+  // Puppeteer coordinate click would hit a sidebar session instead of closing
+  // the drawer, so invoke the overlay's click handler directly.
+  await mobilePage.evaluate(() => document.querySelector('[data-testid="mobile-navigation-close"]').click());
   await mobilePage.waitForFunction(
     () => document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width === 0,
     { timeout: 5_000 },
