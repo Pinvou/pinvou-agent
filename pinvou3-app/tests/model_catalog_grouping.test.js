@@ -74,17 +74,33 @@ test('z.ai 直连存量小写配置仍命中大写目录行 -> 预设', () => {
   // 目录拼写以底座为准（GLM-5.2），存量配置可能保存旧小写 glm-5.2。
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://api.z.ai/api/coding/paas/v4', model: 'glm-5.2' })), true);
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://api.z.ai/api/coding/paas/v4', model: 'GLM-5.2' })), true);
+  // 另一迁移项 GLM-5-Turbo（旧拼写 glm-5-turbo）同样兼容。
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://api.z.ai/api/coding/paas/v4', model: 'glm-5-turbo' })), true);
 });
-test('catalogItemMatchesModel 大小写不敏感(编辑弹窗存量小写命中目录行)', () => {
+test('catalogItemMatchesModel 精确比较+legacyAliases 兼容迁移拼写', () => {
   // SettingsView 编辑弹窗的 initialCatalogMatch/known/active 均复用此比较:
-  // 存量小写 glm-5.2 必须命中 z.ai 直连目录行 GLM-5.2,不得误判为自定义。
+  // 存量小写 glm-5.2 必须命中 z.ai 直连目录行 GLM-5.2(经 legacyAliases),
+  // 不得误判为自定义;除显式登记的历史拼写外一律精确比较。
   const zaiGroup = MODEL_CATALOG.cloud.find(group => group.key === 'glm_coding_plan_global');
   const glm52 = zaiGroup.items.find(item => item.model === 'GLM-5.2');
   assert.ok(glm52, 'z.ai 直连目录应含 GLM-5.2 规范拼写行');
   assert.strictEqual(catalogItemMatchesModel(glm52, 'glm-5.2'), true);
   assert.strictEqual(catalogItemMatchesModel(glm52, 'GLM-5.2'), true);
+  assert.strictEqual(catalogItemMatchesModel(glm52, 'Glm-5.2'), false);
   assert.strictEqual(catalogItemMatchesModel(glm52, 'glm-5.3'), false);
   assert.strictEqual(catalogItemMatchesModel(glm52, undefined), false);
+});
+test('本地 case-only 模型 ID 仍为自定义(vLLM ID 大小写敏感)', () => {
+  // 本地 OpenAI-compatible 服务的模型 ID 是不透明字符串、可能区分大小写:
+  // 与目录默认项 qwen36_35b_256k 仅大小写不同的 ID 是另一个模型,必须保持自定义。
+  assert.strictEqual(isPresetModel(mk({ preset: 'local_vllm', model: 'QWEN36_35B_256K' })), false);
+  assert.strictEqual(isPresetModel(mk({ preset: 'local_vllm', model: 'qwen36_35b_256k' })), true);
+});
+test('云端 case-only 模型 ID 仍为自定义(无拼写迁移的目录精确比较)', () => {
+  // minimax 目录行 MiniMax-M3 从未变更过拼写,case-only 变体不是存量迁移值,
+  // 不得命中预设;同 provider 未收录 ID 也保持自定义。
+  assert.strictEqual(isPresetModel(mk({ preset: 'minimax', provider_kind: 'official_api', vendor: 'minimax', base_url: 'https://api.minimaxi.com/v1', model: 'minimax-m3' })), false);
+  assert.strictEqual(isPresetModel(mk({ preset: 'minimax', provider_kind: 'official_api', vendor: 'minimax', base_url: 'https://api.minimaxi.com/v1', model: 'MiniMax-M3' })), true);
 });
 test('Coding Plan 手填 ID -> 自定义', () => {
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://open.bigmodel.cn/api/coding/paas/v4', model: 'my-custom-glm' })), false);

@@ -46,7 +46,8 @@ const PROVIDER_KIND_CUSTOM = 'custom';
 // modelstudio 目录（qwen_token_plan）保持各自的小写 wire id。resolver 目录匹配
 // 是精确比较，拼写偏离目录行的 id（如小写 glm-5.2）会命中其他 provider 的裸
 // wire id 而被严格直连误拒——大小写不敏感回退已回馈上游审核、未随当前 gitlink
-// 发布，故新保存配置必须用目录行原样拼写。
+// 发布，故新保存配置必须用目录行原样拼写；凡目录行拼写发生变更（含大小写），
+// 旧拼写须登记到该项 legacyAliases 以兼容存量配置，其余情况保持精确比较。
 const MODEL_CATALOG_SECTIONS = {
   coding_plan: 'Coding Plan',
   official_api: '官方 API',
@@ -148,9 +149,11 @@ const MODEL_CATALOG = {
       vendor: 'glm',
       baseUrl: 'https://api.z.ai/api/coding/paas/v4',
       endpointAliases: ['https://api.z.ai/api/coding/paas/v4/chat/completions'],
+      // legacyAliases：本组目录行曾是旧小写拼写（glm-5.2 / glm-5-turbo），存量
+      // 配置可能保存旧值，目录命中时兼容识别；其余目录项一律精确比较。
       items: [
-        { model: 'GLM-5.2', title: 'GLM-5.2', desc: '旗舰编码模型' },
-        { model: 'GLM-5-Turbo', title: 'GLM-5-Turbo', desc: '高性能编码模型' },
+        { model: 'GLM-5.2', legacyAliases: ['glm-5.2'], title: 'GLM-5.2', desc: '旗舰编码模型' },
+        { model: 'GLM-5-Turbo', legacyAliases: ['glm-5-turbo'], title: 'GLM-5-Turbo', desc: '高性能编码模型' },
         { model: 'glm-4.7', title: 'GLM-4.7', desc: '日常编码模型' },
         { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
@@ -538,11 +541,13 @@ function isCodingPlanModel(model) {
 // ── 模型选择器:预设/自定义分组与可区分标注(纯函数,显示期计算) ─────
 // 分类判据:模型是否命中其实际 provider 的非 custom 目录项。自定义兼容接口即使
 // 使用目录中已有的模型 ID,也必须保持为自定义,避免多个聚合服务模型再次同名。
-// 目录命中比较大小写不敏感:目录拼写以底座(CodeWhale)为准,存量配置可能保存
-// 旧拼写(如 z.ai 直连的 glm-5.2 vs 目录行 GLM-5.2),不得因此误判为自定义。
+// 目录命中默认精确比较:本地 vLLM 等服务的模型 ID 是不透明字符串、可能区分
+// 大小写,case-only 的自定义 ID 必须保持自定义。大小写兼容只对发生过「目录
+// 拼写迁移」的目录项生效,且以 legacyAliases 显式列出历史拼写(存量值只能
+// 来自旧目录行的精确值,精确别名即可覆盖),不做全量 case-insensitive。
 function catalogItemMatchesModel(item, model) {
-  return typeof item.model === 'string' && typeof model === 'string'
-    && item.model.toLowerCase() === model.toLowerCase();
+  if (typeof item.model !== 'string' || typeof model !== 'string') return false;
+  return item.model === model || (item.legacyAliases || []).includes(model);
 }
 
 function isPresetModel(m) {
