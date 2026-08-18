@@ -23,6 +23,8 @@ const voiceHookSource = fs.readFileSync(voiceHookPath, "utf8");
 const settingsPath = path.join(__dirname, "..", "src", "features", "settings", "SettingsView.jsx");
 const settingsSource = fs.readFileSync(settingsPath, "utf8");
 const webBridgeSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "web", "bridge.js"), "utf8");
+const rustShortcutPlatformPath = path.join(__dirname, "..", "src-tauri", "src", "features", "voice_shortcut", "platform", "mod.rs");
+const rustShortcutPlatformSource = fs.existsSync(rustShortcutPlatformPath) ? fs.readFileSync(rustShortcutPlatformPath, "utf8") : "";
 // voice.js 的文案走 bridge.js 的 BT_TABLE（bt(key)，按语言取词、中文兜底）；
 // 这里从 bridge.js 抽出 zh 表构造 bt，保持断言面向真实文案。
 const bridgeMainSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "tauri", "bridge.js"), "utf8");
@@ -338,6 +340,47 @@ assert.match(
   webBridgeSource,
   /function normalizeVoiceMode\(mode\) \{[\s\S]*?mode === "edit" \? "edit"/,
   "web bridge must preserve edit mode instead of folding it into dictation",
+);
+// Web 车道无 LLM 后处理，writeback 前必须把 edit 降级为追加听写，
+// 否则未纠错的 ASR 原文会经替换预览整体覆盖草稿。
+assert.match(
+  webBridgeSource,
+  /finishVoiceInput[\s\S]*?if \(mode === "edit"\) mode = "dictation";[\s\S]*?session\.writeback/,
+  "web voice writeback must downgrade edit to dictation instead of replacing the draft with raw ASR",
+);
+// edit 的 writeback 只设置待确认预览、并未落盘，完成态必须用 PreviewReady 而非 Applied。
+assert.match(
+  source,
+  /mode === "edit" \? bt\("voiceEditPreviewReady"\)/,
+  "edit completion notice must say the result is ready to review, not applied",
+);
+assert.doesNotMatch(
+  source,
+  /mode === "edit" \? bt\("voiceEditApplied"\)/,
+  "edit writeback only opens a preview, so the applied notice must not fire at writeback time",
+);
+// 预览 apply/cancel 收尾后清掉已完成通知，避免残留的「待确认」文案误导用户。
+assert.match(
+  voiceHookSource,
+  /const applyVoiceEditPreview[\s\S]*?setEditPreview\(null\);[\s\S]*?closeVoice\(\);[\s\S]*?if \(!options\.send\) return true;/,
+  "applying or canceling the voice edit preview must clear the stale voice notice",
+);
+// Windows LL 钩子回调受 LowLevelHooksTimeout 约束，禁止同步 stderr 打印。
+assert.doesNotMatch(
+  rustShortcutPlatformSource,
+  /eprintln!/,
+  "voice shortcut hook callbacks must not write to stderr synchronously",
+);
+// voice 的 reasoning dialect 与 review/memory 一样委托 core，不再手抄第 4 份。
+assert.match(
+  rustVoiceSource,
+  /crate::core::reasoning_dialect::reasoning_dialect_from_base_url\(base_url, model\)/,
+  "voice reasoning dialect must delegate to core/reasoning_dialect.rs",
+);
+assert.doesNotMatch(
+  rustVoiceSource,
+  /fn voice_reasoning_dialect_from_base_url|fn voice_kimi_supports_disabled_thinking/,
+  "voice must not keep its own copy of the shared reasoning dialect sniffing",
 );
 assert.doesNotMatch(
   voiceControlsSource,

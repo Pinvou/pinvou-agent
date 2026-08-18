@@ -7946,6 +7946,9 @@
     }
 
     var mode = normalizeVoiceMode(session.mode);
+    // Web 车道没有 LLM 后处理（web_asr_only），edit 指令无从执行；降级为追加听写，
+    // 避免未纠错的 ASR 原文经替换预览整体覆盖草稿。
+    if (mode === "edit") mode = "dictation";
     setVoiceInputStatus("transcribing", { message: bt("voiceTranscribing"), stage: "transcribing", mode: mode });
     cleanupVoiceInputSession(session);
 

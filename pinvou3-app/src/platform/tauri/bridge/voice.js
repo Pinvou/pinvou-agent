@@ -657,7 +657,7 @@
             ? bt("voiceEditNoChange")
             : diagnostic.task_send_blocked
             ? bt("voiceWrittenBack")
-            : mode === "task" ? bt("voiceTaskSent") : mode === "edit" ? bt("voiceEditApplied") : bt("voiceWrittenBack"),
+            : mode === "task" ? bt("voiceTaskSent") : mode === "edit" ? bt("voiceEditPreviewReady") : bt("voiceWrittenBack"),
         completedAt: Date.now(),
         mode: mode,
         diagnostic: diagnostic,

@@ -63,16 +63,18 @@ function useComposerVoiceInput(adapter) {
 
   const cancelVoiceEditPreview = useCallback(() => {
     setEditPreview(null);
-  }, []);
+    closeVoice();
+  }, [closeVoice]);
 
   const cancelVoiceOrPreview = useCallback(() => {
     if (editPreviewRef.current) {
       setEditPreview(null);
+      closeVoice();
       return;
     }
     const current = adapterRef.current || {};
     if (current.bridge && current.bridge.available) current.bridge.voice.cancelVoiceInput();
-  }, []);
+  }, [closeVoice]);
 
   const applyVoiceEditPreview = useCallback(async (options = {}) => {
     const current = adapterRef.current || {};
@@ -85,6 +87,7 @@ function useComposerVoiceInput(adapter) {
     }
     current.setDraft(next);
     setEditPreview(null);
+    closeVoice();
     if (!options.send) return true;
     if (typeof current.canSendTask === 'function' && !current.canSendTask(next, { mode: 'edit', preview })) {
       if (typeof current.onTaskBlocked === 'function') current.onTaskBlocked('gate', next, { mode: 'edit', preview });
@@ -94,7 +97,7 @@ function useComposerVoiceInput(adapter) {
     const accepted = await current.sendTask(next, { mode: 'edit', preview });
     if (accepted && typeof current.onTaskAccepted === 'function') current.onTaskAccepted(next, { mode: 'edit', preview });
     return !!accepted;
-  }, [editPreview]);
+  }, [editPreview, closeVoice]);
 
   const clearStaleVoiceState = useCallback((targetId, sessionId) => {
     const current = adapterRef.current || {};

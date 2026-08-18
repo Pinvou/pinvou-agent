@@ -43,10 +43,10 @@ pub(super) fn install(app: AppHandle) {
     std::thread::spawn(|| unsafe {
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), 0 as HINSTANCE, 0);
         if hook.is_null() {
-            eprintln!("[pinvou3-app] failed to install voice shortcut keyboard hook");
+            log::warn!("failed to install voice shortcut keyboard hook");
             return;
         }
-        eprintln!("[pinvou3-app] voice shortcut keyboard hook installed");
+        log::debug!("voice shortcut keyboard hook installed");
         let mut msg = std::mem::zeroed::<MSG>();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
     });
@@ -173,8 +173,8 @@ fn log_shortcut_decision(
         key,
         VoiceShortcutKey::Alt | VoiceShortcutKey::Space | VoiceShortcutKey::Escape
     ) {
-        eprintln!(
-            "[pinvou3-app] voice shortcut key={:?} down={} up={} foreground={} alt_pressed={} event={:?} suppress={}",
+        log::debug!(
+            "voice shortcut key={:?} down={} up={} foreground={} alt_pressed={} event={:?} suppress={}",
             key, key_down, key_up, foreground, alt_pressed, event, suppress
         );
     }
@@ -191,10 +191,10 @@ fn send_event(event: VoiceShortcutEvent) {
     if let Some(sender) = guard.as_ref() {
         match sender.send(event) {
             Ok(()) => {
-                eprintln!("[pinvou3-app] voice shortcut queued event={:?}", event);
+                log::debug!("voice shortcut queued event={:?}", event);
             }
             Err(error) => {
-                eprintln!("[pinvou3-app] voice shortcut queue failed: {}", error);
+                log::warn!("voice shortcut queue failed: {}", error);
             }
         }
     }

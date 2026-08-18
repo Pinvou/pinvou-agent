@@ -605,6 +605,18 @@ enum VoiceReasoningDialect {
     Minimax,
 }
 
+impl From<crate::core::reasoning_dialect::ReasoningDialect> for VoiceReasoningDialect {
+    fn from(d: crate::core::reasoning_dialect::ReasoningDialect) -> Self {
+        use crate::core::reasoning_dialect::ReasoningDialect as D;
+        match d {
+            D::None => VoiceReasoningDialect::None,
+            D::ThinkingDisabled => VoiceReasoningDialect::ThinkingDisabled,
+            D::QwenEnableThinking => VoiceReasoningDialect::QwenEnableThinking,
+            D::Minimax => VoiceReasoningDialect::Minimax,
+        }
+    }
+}
+
 fn apply_voice_reasoning_controls(
     body: &mut Value,
     preset: crate::platform::prefs::ModelPreset,
@@ -645,7 +657,7 @@ fn voice_reasoning_dialect(
 
     match preset {
         crate::platform::prefs::ModelPreset::Kimi => {
-            if voice_kimi_supports_disabled_thinking(model) {
+            if crate::core::reasoning_dialect::kimi_supports_disabled_thinking(model) {
                 VoiceReasoningDialect::ThinkingDisabled
             } else {
                 VoiceReasoningDialect::None
@@ -663,51 +675,10 @@ fn voice_reasoning_dialect(
         | crate::platform::prefs::ModelPreset::Anthropic
         | crate::platform::prefs::ModelPreset::Gemini
         | crate::platform::prefs::ModelPreset::Xai => {
-            voice_reasoning_dialect_from_base_url(base_url, model)
+            crate::core::reasoning_dialect::reasoning_dialect_from_base_url(base_url, model)
+                .into()
         }
     }
-}
-
-#[allow(clippy::if_same_then_else)]
-fn voice_reasoning_dialect_from_base_url(base_url: &str, model: &str) -> VoiceReasoningDialect {
-    let normalized = base_url
-        .trim()
-        .trim_end_matches('/')
-        .trim_end_matches("/chat/completions")
-        .trim_end_matches("/v1")
-        .to_ascii_lowercase();
-
-    if normalized.contains("api.deepseek.com") || normalized.contains("api.deepseeki.com") {
-        VoiceReasoningDialect::ThinkingDisabled
-    } else if normalized.contains("dashscope.aliyuncs.com") {
-        VoiceReasoningDialect::QwenEnableThinking
-    } else if normalized.contains("moonshot.cn") || normalized.contains("moonshot.ai") {
-        if voice_kimi_supports_disabled_thinking(model) {
-            VoiceReasoningDialect::ThinkingDisabled
-        } else {
-            VoiceReasoningDialect::None
-        }
-    } else if normalized.contains("volces.com")
-        || normalized.contains("volcengine")
-        || normalized.contains("byteplus.com")
-    {
-        VoiceReasoningDialect::ThinkingDisabled
-    } else if normalized.contains("minimax.chat") || normalized.contains("minimaxi.com") {
-        VoiceReasoningDialect::Minimax
-    } else if normalized.contains("bigmodel.cn") || normalized.contains("z.ai") {
-        VoiceReasoningDialect::ThinkingDisabled
-    } else if normalized.contains("xiaomimimo.com") {
-        VoiceReasoningDialect::ThinkingDisabled
-    } else {
-        VoiceReasoningDialect::None
-    }
-}
-
-fn voice_kimi_supports_disabled_thinking(model: &str) -> bool {
-    let model = model.to_ascii_lowercase();
-    (model.contains("kimi-k2.5") || model.contains("kimi-k2.6"))
-        && !model.contains("thinking")
-        && !model.contains("k2.7")
 }
 
 fn voice_chat_message_text(value: &Value) -> String {

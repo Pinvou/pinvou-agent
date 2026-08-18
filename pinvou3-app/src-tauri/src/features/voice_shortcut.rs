@@ -115,20 +115,14 @@ fn emit_shortcut_event(app: &AppHandle, event: VoiceShortcutEvent) {
                     source: "native",
                 },
             );
-            eprintln!(
-                "[pinvou3-app] voice shortcut emitted event=TriggerDictation ok={}",
-                result.is_ok()
-            );
+            log::debug!("voice shortcut emitted event=TriggerDictation ok={}", result.is_ok());
         }
         VoiceShortcutEvent::Cancel => {
             let result = app.emit(
                 "voice-shortcut:cancel",
                 VoiceShortcutCancelPayload { source: "native" },
             );
-            eprintln!(
-                "[pinvou3-app] voice shortcut emitted event=Cancel ok={}",
-                result.is_ok()
-            );
+            log::debug!("voice shortcut emitted event=Cancel ok={}", result.is_ok());
         }
     }
 }
