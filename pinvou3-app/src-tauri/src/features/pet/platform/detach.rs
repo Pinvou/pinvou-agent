@@ -73,8 +73,9 @@ fn poll_global_mouse(dev: &X11Pointer) -> GlobalMouse {
             &mut win_y,
             &mut mask,
         );
-        // 读 root_x/root_y(真·全局虚拟桌面坐标),而非 win_x/win_y(相对子窗口)。
-        // 对撕离落位(PhysicalPosition 跨屏)而言全局坐标才是正确语义。
+        // 读 root_x/root_y(真·全局虚拟桌面坐标)。device_query 同样以 root 窗口调
+        // XQueryPointer,其 win_x/win_y 在 w=root 时与 root_x/root_y 恒等——
+        // 坐标语义与旧实现一致,直连只是去掉中间封装。
         GlobalMouse {
             x: root_x,
             y: root_y,
