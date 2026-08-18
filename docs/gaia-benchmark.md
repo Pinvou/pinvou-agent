@@ -75,7 +75,10 @@ pinvou benchmark run gaia --split validation --level 1
 
 - 每道题有 600 秒超时限制。
 - 代理使用 `pinvou-gaia-public-web/v1` 工具策略，可访问公开 web 资源。
-- 输出契约为 `gaia-final/v1`；预测以 `utf8-text/v1` 持久化，直到显式 purge。
+- 输出契约为 `gaia-final/v1`：题目 prompt 会注入最终答案格式指令
+  （`FINAL ANSWER: <answer>`），持久化前从末轮输出提取最后一个非空标记；
+  缺失或为空时该任务以 `missing_final_answer` 终态计为失败，不进入全文比对。
+  预测以 `utf8-text/v1` 持久化，直到显式 purge。
 - **验证集污染警告**：validation split 的参考答案用于评分。在运行期间不要向代理泄露参考答案、不要用 validation 题目做 prompt 调试，否则评分无效且不可复现。
 - 未启用 product-backend 时返回 `product_backend_not_enabled`。
 - Windows 当前无法安全挂载 headless 附件：含附件任务在执行前返回 `attachments_platform_security_unsupported`。在该门禁解除并完成真机验证前，不应把 Windows 描述为支持 GAIA 端到端实跑。
@@ -85,7 +88,8 @@ pinvou benchmark run gaia --split validation --level 1
 ```bash
 pinvou benchmark list                          # 列出注册的 benchmark
 pinvou benchmark status <run-id>               # 查看运行状态
-pinvou benchmark report <run-id>               # 查看评分报告
+pinvou benchmark score gaia --run-id <run-id>  # 评分并落 report.md / score.json
+pinvou benchmark report <run-id>               # 查看 report.md（需先完成 score）
 pinvou benchmark resume <run-id>               # 恢复未完成的运行（product-backend）
 ```
 

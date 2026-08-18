@@ -1,10 +1,10 @@
 # GAIA NativeTurn 工具与权限安全规范
 
-状态：拟实施
+状态：已实施（canonical 家族名 + action 级只读 dispatch）
 
-版本：v1
+版本：v1.1
 
-日期：2026-08-13
+日期：2026-08-13（v1.1 更新于 2026-08-18）
 
 ## 目标
 
@@ -32,9 +32,10 @@ CodeWhale 路径保护还有两个旁路：用户持久化的 `trusted_external_
 - 不让 adapter 直接提交工具名数组、hook 或 `EngineConfig`。
 - 不用提示词代替权限校验。
 - 不修改普通 GUI 的工具策略、审批设置或 mode 语义。
-- 优先在 app 的 hook/config/runtime seam 完成，不修改 CodeWhale fork。
-- 若 app 层不能实现硬门禁，必须另立提案，遵循 `docs/fork-policy.md`、更新
-  `docs/fork-modifications.md`、指纹和行为测试，并运行 fork guard。
+- 优先在 app 的 hook/config/runtime seam 完成；确需进入底座生命周期的
+  （exact dispatch、read-only 投影）随 CodeWhale PR #15 落地，并遵循
+  `docs/fork-policy.md`、更新 `docs/fork-modifications.md`、指纹和行为测试，
+  运行 fork guard。
 - 不声称公网 profile 能保护输入机密性。
 
 ## 安全不变量
@@ -57,36 +58,28 @@ CodeWhale 路径保护还有两个旁路：用户持久化的 `trusted_external_
 仅适用于公开 GAIA 数据。允许 session workspace 只读和公网检索。搜索 query、请求 URL、
 网页内容及图片可能发送到配置的外部 provider；入口和报告必须披露。
 
-候选 exact allowlist：
+exact allowlist（canonical 家族名，与底座 agent 注册面逐字一致）：
 
 ```text
-read_file
-list_dir
-grep_files
-file_search
-retrieve_tool_result
-web_search
-fetch_url
+File
+Web
 image_analyze
 ```
 
-这只是待验证候选。发布前必须对真实产品 tool catalog 验证每个精确名称、能力和 alias，
-并将 snapshot 测试作为 v1 权威清单。名字不存在时删除，不得换成更宽工具补偿。
+`File` 在受限轮启用 read-only dispatch：模型可见 schema 投影为只读
+（read/list/search 类 action），写动作在最终分发前再次拒绝，不依赖审批。
+`Web` 为家族级粒度，受既有 `fetch_url` SSRF 防护约束。
 
 ### `pinvou-gaia-offline/v1`
 
 适用于私人、客户或未公开数据，只允许 session workspace 本地只读：
 
 ```text
-read_file
-list_dir
-grep_files
-file_search
-retrieve_tool_result
+File
 ```
 
-不得暴露 `web_search`、`fetch_url` 或远程 `image_analyze`。只有经验证完全本地执行的 vision
-backend 才能加入 offline profile，否则图片分析固定返回能力错误。
+同样启用 read-only dispatch。不得暴露 `Web` 或远程 `image_analyze`。只有经验证完全本地执行的
+vision backend 才能加入 offline profile，否则图片分析固定返回能力错误。
 
 ### 公共拒绝面
 
@@ -182,4 +175,6 @@ Schema allowlist、dispatch 和 hook 能阻止附件/网页诱导 shell、home �
 6. Public-web 可访问合规公网；offline 无网络 schema 且伪造网络调用失败。
 7. 恶意 prompt/附件不能获得 shell、写入、外部文件、子智能体或动态工具权限。
 8. 生命周期终止有界清理，且不泄漏 secret。
-9. CodeWhale fork 无改动；若必须改，进入独立 fork 审查流程。
+9. 底座改动（exact dispatch、read-only File schema 投影与最终分发复检、
+   排队控制操作受限继承、Hook 默认关闭、受限日志/审计脱敏）落在 CodeWhale
+   PR #15，按 fork 流程登记指纹并计划回馈上游。
