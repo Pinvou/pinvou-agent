@@ -22,6 +22,7 @@ const voiceHookPath = path.join(__dirname, "..", "src", "features", "voice-compo
 const voiceHookSource = fs.readFileSync(voiceHookPath, "utf8");
 const settingsPath = path.join(__dirname, "..", "src", "features", "settings", "SettingsView.jsx");
 const settingsSource = fs.readFileSync(settingsPath, "utf8");
+const webBridgeSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "web", "bridge.js"), "utf8");
 // voice.js 的文案走 bridge.js 的 BT_TABLE（bt(key)，按语言取词、中文兜底）；
 // 这里从 bridge.js 抽出 zh 表构造 bt，保持断言面向真实文案。
 const bridgeMainSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "tauri", "bridge.js"), "utf8");
@@ -92,8 +93,8 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   ruleContext.classifyVoiceText("今天天气怎么样？", "dictation").strategy,
-  "run_llm",
-  "non-empty dictation should run LLM even when short and clear",
+  "use_asr",
+  "short clear dictation should keep ASR text instead of running LLM",
 );
 assert.deepStrictEqual(
   ruleContext.classifyVoiceText("查一下今日进价，并生成数据分析图标。", "task").strategy,
@@ -122,6 +123,12 @@ assert.strictEqual(
 assert.strictEqual(
   ruleContext.applyVoiceDeterministicCorrections("嗯，做一张海报，这个海报有长方形，的需要联网下的图片。用于公司的下午茶需要有一些文字的内容。", ""),
   "做一张海报，这个海报是长方形，需要联网下载的图片。用于公司的下午茶需要有一些文字的内容。",
+);
+assert.match(source, /var candidateText = postprocessResult\.text;/);
+assert.doesNotMatch(
+  source,
+  /applyVoiceDeterministicCorrections\(postprocessResult\.text/,
+  "LLM postprocess output must not receive a second deterministic ASR correction pass",
 );
 assert.strictEqual(ruleContext.voicePostprocessTimeoutMs("task", "查一下今日金价。"), 8000);
 assert.strictEqual(ruleContext.voicePostprocessTimeoutMs("structured", "整理一下今天的会议待办。"), 3000);
@@ -299,8 +306,8 @@ assert.ok(voiceRecordingStopAt >= 0 && voiceBeforeStartAt > voiceRecordingStopAt
   "recording stop must run before the ASR-ready shortcut intro gate");
 assert.match(
   voiceHookSource,
-  /if \(mode === 'edit'\) \{[\s\S]*?current\.setDraft\(next\);[\s\S]*?setEditPreview\(null\);[\s\S]*?return;/,
-  "edit mode must directly replace the draft after LLM succeeds",
+  /if \(mode === 'edit'\) \{[\s\S]*?setEditPreview\(\{[\s\S]*?original,[\s\S]*?next,[\s\S]*?instruction:[\s\S]*?context,[\s\S]*?\}\);[\s\S]*?return;/,
+  "edit mode must show a confirmation preview after LLM succeeds",
 );
 assert.match(
   voiceHookSource,
@@ -326,6 +333,23 @@ assert.match(
   chatSource,
   /<VoiceEditPreview[\s\S]*?onApply=\{\(\) => chatVoice\.applyVoiceEditPreview\(\)\}[\s\S]*?onApplyAndSend=\{\(\) => chatVoice\.applyVoiceEditPreview\(\{ send: true \}\)\}/,
   "chat composer must render the voice edit confirmation preview",
+);
+assert.match(
+  webBridgeSource,
+  /function normalizeVoiceMode\(mode\) \{[\s\S]*?mode === "edit" \? "edit"/,
+  "web bridge must preserve edit mode instead of folding it into dictation",
+);
+assert.doesNotMatch(
+  voiceControlsSource,
+  /voiceEdit(?:PreviewTitle|Apply|ApplyAndSend|Cancel|Original|Result)[^;\n]*\|\| '[^']+'/,
+  "voice edit preview must not add single-language fallback copy in the component",
+);
+assert.match(rustVoiceSource, /struct VoiceTempWav/);
+assert.match(rustVoiceSource, /impl Drop for VoiceTempWav/);
+const committedAudioDir = path.join(__dirname, "fixtures", "voice-audio-samples");
+assert.ok(
+  !fs.existsSync(committedAudioDir) || fs.readdirSync(committedAudioDir).filter(file => file.endsWith(".wav")).length === 0,
+  "voice audio fixture binaries must not be committed when tests only consume text fixtures",
 );
 assert.doesNotMatch(
   chatSource,

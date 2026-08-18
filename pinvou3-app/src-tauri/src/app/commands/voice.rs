@@ -113,6 +113,26 @@ fn voice_temp_wav_path() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("pinvou3-voice-{}-{stamp}.wav", std::process::id()))
 }
 
+struct VoiceTempWav {
+    path: std::path::PathBuf,
+}
+
+impl VoiceTempWav {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for VoiceTempWav {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 struct LocalAsrOutput {
     text: String,
     /// 识别后端来源（system_speech / pinvou-webview-sensevoice-local / local_cli），
@@ -323,7 +343,8 @@ pub async fn transcribe_voice_audio(
     let wav_path = voice_temp_wav_path();
     let audio_bytes = request.audio_bytes;
     let asr_output = tokio::task::spawn_blocking(move || {
-        std::fs::write(&wav_path, &audio_bytes).map_err(|e| {
+        let wav_file = VoiceTempWav::new(wav_path);
+        std::fs::write(wav_file.path(), &audio_bytes).map_err(|e| {
             VoiceCommandError::new(
                 "recording_failed",
                 "recording",
@@ -341,7 +362,7 @@ pub async fn transcribe_voice_audio(
             let locale_tag = crate::platform::prefs::UserPrefs::load()
                 .language
                 .speech_recognition_locale();
-            let native = crate::features::voice::recognize_native(&wav_path, locale_tag);
+            let native = crate::features::voice::recognize_native(wav_file.path(), locale_tag);
             match native {
                 Some(Ok(text)) => Ok(LocalAsrOutput {
                     text,
@@ -349,7 +370,7 @@ pub async fn transcribe_voice_audio(
                 }),
                 Some(Err(e)) => {
                     if has_explicit_asr_cli_fallback() {
-                        run_local_asr_cli(&wav_path)
+                        run_local_asr_cli(wav_file.path())
                     } else {
                         Err(VoiceCommandError::new(
                             "recognition_failed",
@@ -358,10 +379,9 @@ pub async fn transcribe_voice_audio(
                         ))
                     }
                 }
-                None => run_local_asr_cli(&wav_path),
+                None => run_local_asr_cli(wav_file.path()),
             }
         };
-        let _ = std::fs::remove_file(&wav_path);
         result
     })
     .await

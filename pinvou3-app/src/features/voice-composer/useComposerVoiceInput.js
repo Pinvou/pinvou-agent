@@ -130,8 +130,12 @@ function useComposerVoiceInput(adapter) {
         }
         return;
       }
-      current.setDraft(next);
-      setEditPreview(null);
+      setEditPreview({
+        original,
+        next,
+        instruction: trimDraft(context && context.rawText),
+        context,
+      });
       return;
     }
 

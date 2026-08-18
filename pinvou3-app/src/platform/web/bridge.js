@@ -36,7 +36,7 @@
     return !IS_WEB || (typeof PLATFORM.canInvoke === "function" && PLATFORM.canInvoke(command) === true);
   }
   function normalizeVoiceMode(mode) {
-    return mode === "task" ? "task" : "dictation";
+    return mode === "task" ? "task" : mode === "edit" ? "edit" : "dictation";
   }
   function webRequestId(prefix) {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {

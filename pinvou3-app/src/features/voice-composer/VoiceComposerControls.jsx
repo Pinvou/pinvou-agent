@@ -117,10 +117,10 @@ function VoiceEditPreview({ preview, copy, onApply, onApplyAndSend, onCancel }) 
   if (!preview) return null;
   const original = String(preview.original || '').trim();
   const next = String(preview.next || '').trim();
-  const title = copy.voiceEditPreviewTitle || '语音编辑预览';
-  const applyLabel = copy.voiceEditApply || '应用修改';
-  const applyAndSendLabel = copy.voiceEditApplyAndSend || '应用并发送';
-  const cancelLabel = copy.voiceEditCancel || copy.voiceCancel || '取消';
+  const title = copy.voiceEditPreviewTitle;
+  const applyLabel = copy.voiceEditApply;
+  const applyAndSendLabel = copy.voiceEditApplyAndSend;
+  const cancelLabel = copy.voiceEditCancel || copy.voiceCancel;
   return (
     <div
       data-testid="voice-edit-preview"
@@ -140,11 +140,11 @@ function VoiceEditPreview({ preview, copy, onApply, onApplyAndSend, onCancel }) 
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <div className="min-w-0 rounded-xl bg-white px-2.5 py-2 dark:bg-[#17181A]">
-          <div className="mb-1 text-[10px] font-medium uppercase text-[#80868B]">{copy.voiceEditOriginal || '原文'}</div>
+          <div className="mb-1 text-[10px] font-medium uppercase text-[#80868B]">{copy.voiceEditOriginal}</div>
           <div className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words leading-5">{original}</div>
         </div>
         <div className="min-w-0 rounded-xl bg-white px-2.5 py-2 ring-1 ring-[#A8C7FA] dark:bg-[#17181A] dark:ring-[#3B6EA8]">
-          <div className="mb-1 text-[10px] font-medium uppercase text-[#1A73E8] dark:text-[#A8C7FA]">{copy.voiceEditResult || '修改后'}</div>
+          <div className="mb-1 text-[10px] font-medium uppercase text-[#1A73E8] dark:text-[#A8C7FA]">{copy.voiceEditResult}</div>
           <div className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words leading-5">{next}</div>
         </div>
       </div>

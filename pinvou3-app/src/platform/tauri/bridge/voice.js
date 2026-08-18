@@ -114,9 +114,16 @@
         suspicious_terms: suspicious,
       };
     }
+    if (isShortClearVoiceText(text, normalizedMode)) {
+      return {
+        strategy: "use_asr",
+        reason: "dictation_short_clear",
+        suspicious_terms: suspicious,
+      };
+    }
     return {
       strategy: "run_llm",
-      reason: isShortClearVoiceText(text, normalizedMode) ? "dictation_short_clear" : (suspicious.length ? "suspicious_asr" : "dictation_llm"),
+      reason: suspicious.length ? "suspicious_asr" : "dictation_llm",
       suspicious_terms: suspicious,
     };
   }
@@ -599,7 +606,7 @@
           voicePostprocessTimeoutMs(mode, ruleText)
         );
       }
-      var candidateText = applyVoiceDeterministicCorrections(postprocessResult.text, ruleText);
+      var candidateText = postprocessResult.text;
       var outputValid = validateVoicePostprocessOutput(text, ruleText, candidateText, mode);
       if (mode === "edit" && postprocessResult.fallbackReason) outputValid = false;
       var finalText = outputValid ? candidateText : (mode === "edit" ? "" : ruleText);

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Palette, Paperclip, Presentation, RefreshCw, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Monitor, Package, Palette, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -1729,6 +1729,19 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               formatError={formatAttachmentError}
               className="mb-2 px-2"
             />
+            {imageInputWarning && (
+              <div data-testid="image-capability-warning"
+                className="flex items-center gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] leading-5 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                <AlertTriangle size={14} className="shrink-0 text-amber-500" />
+                <span className="min-w-0">{imageInputWarning}</span>
+              </div>
+            )}
+            {imagePrivacyHint && (
+              <div data-testid="image-privacy-hint"
+                className="mb-2 px-3 text-[11px] leading-4 text-black/45 dark:text-white/45">
+                {imagePrivacyHint}
+              </div>
+            )}
             <VoiceComposerStatus
               voiceInput={voiceInput}
               voiceMode={voiceMode}
