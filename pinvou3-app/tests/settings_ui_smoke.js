@@ -762,16 +762,15 @@ async function modalWidth(page, headingText) {
   await sleep(250);
   await page.evaluate(() => document.querySelector('[data-testid="model-form-backdrop"]')?.click());
   await sleep(200);
-  const addPickerOutsideClick = await page.evaluate(() => ({
-    closedByOutside: !document.querySelector('[data-testid="model-form-dialog"]'),
-  }));
-  await clickExact(page, '添加模型');
-  await sleep(250);
-  await page.evaluate(() => document.querySelector('[data-testid="model-form-cancel"]')?.click());
+  const addPickerOutsideClick = await page.evaluate(() => {
+    const stayedOpen = !!document.querySelector('[data-testid="model-form-dialog"]');
+    document.querySelector('[data-testid="model-form-cancel"]')?.click();
+    return { stayedOpen };
+  });
   await sleep(200);
   const addPickerClosedByCancel = await page.evaluate(() => !document.querySelector('[data-testid="model-form-dialog"]'));
-  rec('⑥.1c 添加模型选择弹窗点击外部区域可关闭且取消可关闭',
-    addPickerOutsideClick.closedByOutside && addPickerClosedByCancel,
+  rec('⑥.1c 添加模型选择弹窗点击外部区域不关闭且取消可关闭',
+    addPickerOutsideClick.stayedOpen && addPickerClosedByCancel,
     JSON.stringify({ ...addPickerOutsideClick, closedByCancel: addPickerClosedByCancel }));
 
   await clickExact(page, '添加模型');
