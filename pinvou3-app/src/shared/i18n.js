@@ -18,7 +18,8 @@ const conversationZh = {
   usage:(input,output)=>`输入 ${input} · 输出 ${output}`, contextUsage:(used,size)=>`上下文 ${used} / ${size}`,
   attachment:'附件', operations:(count,failedCount)=>`执行 ${count} 项${failedCount?` · ${failedCount} 项失败`:''}`, copyReply:'复制回复', copyReplySuccess:'已复制', copyReplyFailed:'复制失败',
   exportReply:'导出', exportReplyTitle:'导出回复', exportMarkdown:'Markdown 文档', exportMarkdownHint:'默认，保留原始排版', exportHtml:'HTML 文档', exportHtmlHint:'适合在浏览器中查看', exportSuccess:'导出成功', exportFailed:'导出失败', exportTooLarge:'回复内容超出导出大小限制',
-  shareReply:'分享', shareReplyTitle:'分享回复', shareSystem:'系统分享', shareSystemHint:'选择系统中已安装的通信应用', shareApps:'复制内容并打开应用', shareSuccess:'已分享', shareCopiedOpen:app=>`内容已复制，已尝试打开${app}，请粘贴发送`, shareCopiedWeb:app=>`内容已复制，请打开${app}粘贴发送`, shareFailed:'分享失败', shareUnavailable:'系统分享不可用，内容已复制', shareTargets:{wechat:'微信',wecom:'企业微信',feishu:'飞书',dingtalk:'钉钉',qq:'QQ'}, technicalDetails:'技术详情',
+  shareReply:'分享', shareReplyTitle:'分享回复', shareSystem:'系统分享', shareSystemHint:'选择系统中已安装的通信应用', shareApps:'复制内容并打开应用', shareSuccess:'已分享', shareCopiedOpen:app=>`内容已复制，已尝试打开${app}，请粘贴发送`, shareCopiedWeb:app=>`内容已复制，请打开${app}粘贴发送`, shareFailed:'分享失败', shareUnavailable:'系统分享不可用，内容已复制', shareTargets:{wechat:'微信',wecom:'企业微信',feishu:'飞书',dingtalk:'钉钉',qq:'QQ'},
+  technicalDetails:'技术详情',
 };
 
 const conversationEn = {
@@ -40,7 +41,8 @@ const conversationEn = {
   usage:(input,output)=>`Input ${input} · Output ${output}`, contextUsage:(used,size)=>`Context ${used} / ${size}`,
   attachment:'Attachment', operations:(count,failedCount)=>`${count} operations${failedCount?` · ${failedCount} failed`:''}`, copyReply:'Copy response', copyReplySuccess:'Copied', copyReplyFailed:'Copy failed',
   exportReply:'Export', exportReplyTitle:'Export response', exportMarkdown:'Markdown document', exportMarkdownHint:'Default; preserves source formatting', exportHtml:'HTML document', exportHtmlHint:'Best for viewing in a browser', exportSuccess:'Exported', exportFailed:'Export failed', exportTooLarge:'The response exceeds the export size limit',
-  shareReply:'Share', shareReplyTitle:'Share response', shareSystem:'System share', shareSystemHint:'Choose an installed communication app', shareApps:'Copy content and open app', shareSuccess:'Shared', shareCopiedOpen:app=>`Content copied. ${app} was opened when available; paste to send.`, shareCopiedWeb:app=>`Content copied. Open ${app} and paste to send.`, shareFailed:'Share failed', shareUnavailable:'System share is unavailable; content was copied', shareTargets:{wechat:'WeChat',wecom:'WeCom',feishu:'Feishu',dingtalk:'DingTalk',qq:'QQ'}, technicalDetails:'Technical details',
+  shareReply:'Share', shareReplyTitle:'Share response', shareSystem:'System share', shareSystemHint:'Choose an installed communication app', shareApps:'Copy content and open app', shareSuccess:'Shared', shareCopiedOpen:app=>`Content copied. ${app} was opened when available; paste to send.`, shareCopiedWeb:app=>`Content copied. Open ${app} and paste to send.`, shareFailed:'Share failed', shareUnavailable:'System share is unavailable; content was copied', shareTargets:{wechat:'WeChat',wecom:'WeCom',feishu:'Feishu',dingtalk:'DingTalk',qq:'QQ'},
+  technicalDetails:'Technical details',
 };
 
 const conversationJa = {
@@ -62,7 +64,8 @@ const conversationJa = {
   usage:(input,output)=>`入力 ${input} · 出力 ${output}`, contextUsage:(used,size)=>`コンテキスト ${used} / ${size}`,
   attachment:'添付ファイル', operations:(count,failedCount)=>`${count} 件実行${failedCount?` · ${failedCount} 件失敗`:''}`, copyReply:'返信をコピー', copyReplySuccess:'コピーしました', copyReplyFailed:'コピーに失敗しました',
   exportReply:'エクスポート', exportReplyTitle:'返信をエクスポート', exportMarkdown:'Markdown 文書', exportMarkdownHint:'既定。元の書式を保持', exportHtml:'HTML 文書', exportHtmlHint:'ブラウザーでの閲覧に最適', exportSuccess:'エクスポートしました', exportFailed:'エクスポートに失敗しました', exportTooLarge:'返信がエクスポートのサイズ上限を超えています',
-  shareReply:'共有', shareReplyTitle:'返信を共有', shareSystem:'システム共有', shareSystemHint:'インストール済みの通信アプリを選択', shareApps:'内容をコピーしてアプリを開く', shareSuccess:'共有しました', shareCopiedOpen:app=>`内容をコピーし、${app}を開きました。貼り付けて送信してください`, shareCopiedWeb:app=>`内容をコピーしました。${app}を開いて貼り付けてください`, shareFailed:'共有に失敗しました', shareUnavailable:'システム共有を利用できないため、内容をコピーしました', shareTargets:{wechat:'WeChat',wecom:'WeCom',feishu:'Feishu',dingtalk:'DingTalk',qq:'QQ'}, technicalDetails:'技術詳細',
+  shareReply:'共有', shareReplyTitle:'返信を共有', shareSystem:'システム共有', shareSystemHint:'インストール済みの通信アプリを選択', shareApps:'内容をコピーしてアプリを開く', shareSuccess:'共有しました', shareCopiedOpen:app=>`内容をコピーし、${app}を開きました。貼り付けて送信してください`, shareCopiedWeb:app=>`内容をコピーしました。${app}を開いて貼り付けてください`, shareFailed:'共有に失敗しました', shareUnavailable:'システム共有を利用できないため、内容をコピーしました', shareTargets:{wechat:'WeChat',wecom:'WeCom',feishu:'Feishu',dingtalk:'DingTalk',qq:'QQ'},
+  technicalDetails:'技術詳細',
 };
 
 const codexZh = {

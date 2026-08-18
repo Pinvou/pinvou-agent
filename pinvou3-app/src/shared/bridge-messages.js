@@ -27,9 +27,11 @@
       if (!raw && typeof helper.isModelServiceError === "function" && !helper.isModelServiceError(error)) {
         return null;
       }
+      var language = state.settings && state.settings.language;
       return helper.build(raw || error, {
-        language: state.settings && state.settings.language,
-        providerLabel: helper.providerLabelFromState(state),
+        language: language,
+        providerLabel: helper.providerLabelFromState(state, null, language),
+        terminal: payload.terminal !== false,
       });
     },
 
@@ -37,15 +39,17 @@
       payload = payload || {};
       state = state || {};
       var helper = window.PinvouModelServiceErrors;
+      payload.terminal = !!legacyConversationOnly;
       var userError = window.PinvouBridgeMessages.modelServiceUserError(payload, state);
       if (!helper || !userError) return false;
       var notice = helper.noticeText(userError);
       var chatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
       var existing = chatItems.find(function (item) {
-        return item && item.turnErrorNotice && (
-          item.text === notice ||
-          (item.userError && item.userError.technicalDetail === userError.technicalDetail)
-        );
+        if (!item || !item.turnErrorNotice || item.text !== notice) return false;
+        var existingDetail = item.userError && item.userError.technicalDetail;
+        var nextDetail = userError && userError.technicalDetail;
+        if (existingDetail || nextDetail) return existingDetail === nextDetail;
+        return true;
       });
       if (existing) {
         if (legacyConversationOnly) existing.legacyConversationOnly = true;

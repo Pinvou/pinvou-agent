@@ -32,13 +32,32 @@ assert.equal(modelErrors.classify('SSE stream request failed: HTTP 402 insuffici
 assert.equal(modelErrors.classify('HTTP 429 quota exceeded').kind, 'quota');
 assert.equal(modelErrors.classify('HTTP 429 insufficient_quota').kind, 'quota');
 assert.equal(modelErrors.classify('insufficient_quota').kind, 'quota');
+assert.equal(modelErrors.classify('quota exhausted').kind, 'quota');
 assert.equal(modelErrors.classify('HTTP 429 too many requests').kind, 'rate_limit');
 assert.equal(modelErrors.classify('HTTP 500 insufficient balance').kind, 'billing');
+assert.equal(modelErrors.classify('ECONNREFUSED').kind, 'network');
 assert.equal(modelErrors.classify('permission denied while reading local file').kind, 'unknown');
 assert.equal(modelErrors.isModelServiceError('permission denied while reading local file'), false);
+assert.equal(modelErrors.isModelServiceError('Error: claude.config.json: permission denied'), false);
+assert.equal(modelErrors.isModelServiceError('read llm_cache.db failed'), false);
 assert.equal(modelErrors.isModelServiceError('insufficient_quota'), true);
+assert.equal(modelErrors.isModelServiceError('timeout'), true);
+assert.equal(modelErrors.isModelServiceError('ECONNREFUSED'), true);
+assert.equal(modelErrors.isModelServiceError('quota exhausted'), true);
+assert.equal(modelErrors.isModelServiceError('HTTP 503 Service Unavailable'), true);
+assert.doesNotMatch(
+  modelErrors.build('HTTP 402 payment required', {
+    language: 'en',
+    provider: { preset: 'openai_compatible' },
+  }).title,
+  /当前模型服务/,
+);
 assert.match(
   modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123 api_key=sk-abc12345&token=demo'),
+  /\[敏感信息已隐藏\]/,
+);
+assert.match(
+  modelErrors.redactTechnicalDetail('{"key":"sk-proj-secret123XYZ"} Authorization=sk-abcdefghijklmnopqrstuvwxyz'),
   /\[敏感信息已隐藏\]/,
 );
 const cleanupState = { settings: { language: 'ja' }, chatItems: [] };
@@ -86,6 +105,24 @@ messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
   true,
 );
 assert.equal(modelErrorState.chatItems.length, 1, 'model service notices must be deduplicated');
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: 'HTTP 500 OpenAI internal abc' },
+  modelErrorState,
+  addModelErrorItem,
+  true,
+);
+assert.equal(modelErrorState.chatItems.length, 2);
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: 'HTTP 500 OpenAI internal xyz' },
+  modelErrorState,
+  addModelErrorItem,
+  true,
+);
+assert.equal(
+  modelErrorState.chatItems.length,
+  3,
+  'same friendly title with different technical details must not be deduplicated',
+);
 assert.equal(
   messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
     { error: 'permission denied while reading local file' },
@@ -96,7 +133,15 @@ assert.equal(
   false,
   'non-model-service errors must fall back to the raw chat error notice',
 );
-assert.equal(modelErrorState.chatItems.length, 1, 'non-model-service errors must not add model service notices');
+assert.equal(modelErrorState.chatItems.length, 3, 'non-model-service errors must not add model service notices');
+const transientState = { settings: { language: 'zh-Hans' }, chatItems: [] };
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: 'HTTP 503 Service Unavailable' },
+  transientState,
+  (text, metadata) => transientState.chatItems.push({ text, ...metadata }),
+  false,
+);
+assert.doesNotMatch(transientState.chatItems[0].text, /已停止/);
 
 const terminalSandbox = { window: {}, Date };
 vm.runInNewContext(modelServiceErrorsSource, terminalSandbox, { filename: 'model-service-errors.js' });
@@ -254,8 +299,10 @@ assert.match(
   /legacyConversationOnly: true/,
 );
 assert.match(bridgeMessagesSource, /payload\.shell_cleanup_failed/);
-assert.match(webBridgeSource, /PinvouBridgeMessages\.showShellCleanupFailure/);
-assert.match(webBridgeSource, /PinvouBridgeMessages\.addModelServiceErrorNotice/);
+assert.match(webBridgeSource, /function bridgeMessages\(\)/);
+assert.match(webBridgeSource, /typeof messages\.addModelServiceErrorNotice === "function"/);
+assert.match(webBridgeSource, /typeof shellMessages\.showShellCleanupFailure === "function"/);
+assert.match(webBridgeSource, /typeof terminal\.recordCompleted === "function"/);
 assert.equal(
   (bridgeMessagesSource.match(/^    (zh|en|ja):/gm) || []).length,
   3,
