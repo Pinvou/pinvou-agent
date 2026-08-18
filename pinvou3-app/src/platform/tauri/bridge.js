@@ -1296,9 +1296,10 @@
             session_id: sid,
             attempt: attempt + 1,
             reason: "load_session_error",
+            error_category: "snapshot_load_failed",
+            error_present: true,
             elapsed_ms: Date.now() - attemptStartedAt,
             expected_committed_revision: expectedCommittedRevision,
-            error: String(error && error.message ? error.message : error || "unknown error"),
           });
         }
       }

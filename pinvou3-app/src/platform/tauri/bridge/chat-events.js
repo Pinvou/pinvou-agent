@@ -732,7 +732,7 @@
       completed_local_turn: completedLocalTurn,
       requires_authority_reconcile: requiresAuthorityReconcile,
       terminal_status: String(e.payload && e.payload.status || ""),
-      terminal_has_error: !!(e.payload && e.payload.error),
+      terminal_error_present: !!(e.payload && e.payload.error),
     }, authoritySyncBufferSnapshot(sid, doneBuffer)));
     if (requiresAuthorityReconcile && doneBuffer && !doneBuffer.localTurnOwned) {
       // transcript_committed is emitted before chat:done. A client that joins

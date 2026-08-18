@@ -223,7 +223,7 @@ pub async fn web_access_load_session_chunk(
                 requested_download_id.as_deref(),
                 reserved_bytes,
             )?;
-            let output_path = reservation.path().to_path_buf();
+            let output_file = reservation.try_clone_writer()?;
             let store = store.inner().clone();
             let session_id = id.clone();
             let revision = tokio::task::spawn_blocking(move || -> Result<String, String> {
@@ -234,12 +234,7 @@ pub async fn web_access_load_session_chunk(
                     .map_err(|error| {
                         format!("compute Session {session_id} transcript revision: {error:#}")
                     })?;
-                let file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&output_path)
-                    .map_err(|error| format!("create serialized Session download: {error}"))?;
-                let mut writer = BufWriter::new(file);
+                let mut writer = BufWriter::new(output_file);
                 serde_json::to_writer(
                     &mut writer,
                     &WebSavedSession {

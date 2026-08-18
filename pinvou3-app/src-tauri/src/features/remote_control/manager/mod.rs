@@ -4,8 +4,7 @@ mod transfer;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,7 +18,6 @@ use super::protocol::{
     WebAccessConfig, WebAccessInfo, WebAccessStatus, WebAccessStatusKind, PROTOCOL_VERSION,
 };
 use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
-use crate::platform::paths;
 
 // Host filesystem browsing (`list_host_files` / `read_artifact_chunk` /
 // `ArtifactChunk` / `HostFileListing`) lives in `super::file_access`, extracted
@@ -62,8 +60,10 @@ use rpc::{
 use transfer::{
     append_web_attachment_upload_chunk, clear_web_attachments, discard_web_attachment_upload,
     ensure_web_session_download_capacity, finish_web_attachment_reservation_inner,
-    prune_expired_web_session_transfers, remove_web_attachment_upload_dir,
-    request_web_attachment_discard, take_web_session_download,
+    is_owned_session_download_id, open_web_session_downloads_base,
+    prune_expired_web_session_transfers, read_web_session_download_chunk,
+    remove_web_attachment_upload_dir, request_web_attachment_discard,
+    sweep_stale_web_session_downloads, take_web_session_download,
 };
 pub(crate) use transfer::{sweep_stale_web_attachment_uploads, web_attachment_uploads_base};
 
@@ -149,6 +149,7 @@ const MAX_PENDING_REVOCATIONS_FILE_BYTES: usize = 256 * 1024;
 const MAX_WEB_SESSION_UPLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const WEB_SESSION_TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
+const WEB_SESSION_TRANSFER_REAPER_INTERVAL: Duration = Duration::from_secs(60);
 
 /// 从事件 payload 提取会话 id（不同事件用不同字段名）。
 fn event_session_id(payload: &Value) -> Option<&str> {
@@ -289,7 +290,8 @@ struct WebAttachmentUpload {
 #[derive(Debug)]
 struct WebSessionDownload {
     session_id: String,
-    path: PathBuf,
+    reservation_id: String,
+    file: File,
     reserved_bytes: usize,
     total: usize,
     ready: bool,
@@ -300,20 +302,23 @@ pub struct WebSessionDownloadReservation {
     manager: RemoteControlManager,
     download_id: String,
     session_id: String,
-    path: PathBuf,
+    reservation_id: String,
+    writer: File,
     committed: bool,
 }
 
 impl WebSessionDownloadReservation {
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn try_clone_writer(&self) -> Result<File, String> {
+        self.writer
+            .try_clone()
+            .map_err(|error| format!("clone serialized Session download handle: {error}"))
     }
 
     pub fn commit(mut self) -> Result<String, String> {
         let result = self.manager.commit_web_session_download(
             &self.download_id,
             &self.session_id,
-            &self.path,
+            &self.reservation_id,
         );
         if result.is_ok() {
             self.committed = true;
@@ -326,7 +331,7 @@ impl Drop for WebSessionDownloadReservation {
     fn drop(&mut self) {
         if !self.committed {
             self.manager
-                .remove_web_session_download(&self.download_id, Some(&self.path));
+                .remove_web_session_download(&self.download_id, Some(&self.reservation_id));
         }
     }
 }
@@ -740,19 +745,20 @@ impl RemoteControlManager {
                 (AccessPolicy::default(), Some(error))
             }
         };
-        Self {
+        let manager = Self {
             app,
             inner: Arc::new(Mutex::new(Inner::default())),
             lifecycle: Arc::new(Mutex::new(())),
             policy: Arc::new(policy),
             policy_error,
-        }
+        };
+        manager.start_web_session_transfer_reaper();
+        manager
     }
 
     /// Resume the persistent endpoint after all authoritative application
     /// state (notably `EnginePool`) has been managed by Tauri.
     pub fn resume(&self) -> Result<bool, String> {
-        std::thread::spawn(sweep_stale_web_attachment_uploads);
         let _lifecycle = self.lifecycle.lock();
         self.ensure_policy()?;
         self.ensure_process_ownership()?;
@@ -930,7 +936,23 @@ impl RemoteControlManager {
         }
         let lock = acquire_process_lock(&process_lock_path())?;
         inner.process_lock = Some(lock);
+        drop(inner);
+        // Run only after acquiring the single-process authority. A second app
+        // instance must never delete snapshots owned by the active process.
+        sweep_stale_web_attachment_uploads();
+        sweep_stale_web_session_downloads();
         Ok(())
+    }
+
+    fn start_web_session_transfer_reaper(&self) {
+        let inner = Arc::downgrade(&self.inner);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(WEB_SESSION_TRANSFER_REAPER_INTERVAL);
+            let Some(inner) = inner.upgrade() else {
+                break;
+            };
+            prune_expired_web_session_transfers(&mut inner.lock());
+        });
     }
 
     /// Start independent retry workers for every retired endpoint. A queue
@@ -1319,13 +1341,7 @@ impl RemoteControlManager {
             .map(str::trim)
             .filter(|id| !id.is_empty())
         {
-            Some(download_id)
-                if download_id.len() >= 8
-                    && download_id.len() <= 128
-                    && download_id.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
-                    }) =>
-            {
+            Some(download_id) if is_owned_session_download_id(download_id) => {
                 download_id.to_string()
             }
             Some(_) => return Err("invalid requested Session download id".into()),
@@ -1334,16 +1350,20 @@ impl RemoteControlManager {
                 crate::features::remote_control::short_token(32)
             ),
         };
-        let download_dir = paths::pinvou3_home().join("web-session-downloads");
-        std::fs::create_dir_all(&download_dir)
-            .map_err(|error| format!("创建远程控制会话下载目录失败：{error}"))?;
-        let path = download_dir.join(format!("{download_id}.json"));
+        let download_dir = open_web_session_downloads_base()?;
         let mut inner = self.inner.lock();
         prune_expired_web_session_transfers(&mut inner);
         if inner.web_session_downloads.contains_key(&download_id) {
             return Err("requested Session download id is already active".into());
         }
         ensure_web_session_download_capacity(&inner, reserved_bytes)?;
+        let file = download_dir
+            .create_delete_on_close_file(&format!("{download_id}.json"))
+            .map_err(|error| format!("create serialized Session download: {error}"))?;
+        let writer = file
+            .try_clone()
+            .map_err(|error| format!("clone serialized Session download handle: {error}"))?;
+        let reservation_id = crate::features::remote_control::short_token(24);
         inner
             .web_session_download_order
             .push_back(download_id.clone());
@@ -1351,7 +1371,8 @@ impl RemoteControlManager {
             download_id.clone(),
             WebSessionDownload {
                 session_id: session_id.to_string(),
-                path: path.clone(),
+                reservation_id: reservation_id.clone(),
+                file,
                 reserved_bytes,
                 total: 0,
                 ready: false,
@@ -1362,7 +1383,8 @@ impl RemoteControlManager {
             manager: self.clone(),
             download_id,
             session_id: session_id.to_string(),
-            path,
+            reservation_id,
+            writer,
             committed: false,
         })
     }
@@ -1371,9 +1393,20 @@ impl RemoteControlManager {
         &self,
         download_id: &str,
         session_id: &str,
-        path: &Path,
+        reservation_id: &str,
     ) -> Result<(), String> {
-        let total = std::fs::metadata(path)
+        let mut inner = self.inner.lock();
+        prune_expired_web_session_transfers(&mut inner);
+        let reserved = inner
+            .web_session_downloads
+            .get(download_id)
+            .ok_or_else(|| "远程控制会话下载预留已过期".to_string())?;
+        if reserved.session_id != session_id || reserved.reservation_id != reservation_id {
+            return Err("远程控制会话下载预留已变化".into());
+        }
+        let total = reserved
+            .file
+            .metadata()
             .map_err(|error| format!("检查远程控制会话下载数据失败：{error}"))?
             .len();
         let total = usize::try_from(total).map_err(|_| "远程控制会话下载数据过大".to_string())?;
@@ -1382,16 +1415,6 @@ impl RemoteControlManager {
                 "会话数据超过远程控制 {} MiB 上限",
                 MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
             ));
-        }
-
-        let mut inner = self.inner.lock();
-        prune_expired_web_session_transfers(&mut inner);
-        let reserved = inner
-            .web_session_downloads
-            .get(download_id)
-            .ok_or_else(|| "远程控制会话下载预留已过期".to_string())?;
-        if reserved.session_id != session_id || reserved.path != path {
-            return Err("远程控制会话下载预留已变化".into());
         }
         let other_bytes = inner
             .web_session_downloads
@@ -1416,14 +1439,19 @@ impl RemoteControlManager {
         Ok(())
     }
 
-    fn remove_web_session_download(&self, download_id: &str, expected_path: Option<&Path>) {
-        let removed = {
+    fn remove_web_session_download(
+        &self,
+        download_id: &str,
+        expected_reservation_id: Option<&str>,
+    ) {
+        let _removed = {
             let mut inner = self.inner.lock();
             let matches = inner
                 .web_session_downloads
                 .get(download_id)
                 .is_some_and(|download| {
-                    expected_path.is_none_or(|path| download.path.as_path() == path)
+                    expected_reservation_id
+                        .is_none_or(|reservation_id| download.reservation_id == reservation_id)
                 });
             if matches {
                 inner
@@ -1434,15 +1462,6 @@ impl RemoteControlManager {
                 None
             }
         };
-        if let Some(path) = removed
-            .map(|download| download.path)
-            .or_else(|| expected_path.map(Path::to_path_buf))
-        {
-            // The reservation path is unique. Removing it even when the map
-            // entry was concurrently cleared closes the cancellation/crash
-            // race where Windows could not unlink an open writer earlier.
-            let _ = std::fs::remove_file(path);
-        }
     }
 
     /// Release an incomplete browser Session download explicitly. The opaque
@@ -1458,7 +1477,6 @@ impl RemoteControlManager {
             take_web_session_download(&mut inner, download_id, session_id)?
         };
         if let Some(download) = removed {
-            let _ = std::fs::remove_file(&download.path);
             crate::features::sessions::diagnostics::record_backend(
                 "web_session_download_cancelled",
                 serde_json::json!({
@@ -1481,45 +1499,13 @@ impl RemoteControlManager {
         offset: usize,
         limit: usize,
     ) -> Result<WebSessionDownloadChunk, String> {
-        let mut inner = self.inner.lock();
-        prune_expired_web_session_transfers(&mut inner);
-        let download = inner
-            .web_session_downloads
-            .get_mut(download_id)
-            .ok_or_else(|| "远程控制会话下载不存在或已过期".to_string())?;
-        if download.session_id != session_id {
-            return Err("远程控制会话下载属于另一个会话".into());
-        }
-        if !download.ready {
-            return Err("远程控制会话下载仍在准备中".into());
-        }
-        if offset > download.total {
-            return Err(format!(
-                "Session offset {offset} exceeds payload size {}",
-                download.total
-            ));
-        }
-        let total = download.total;
-        let end = offset.saturating_add(limit).min(total);
-        let path = download.path.clone();
-        let mut file =
-            File::open(&path).map_err(|error| format!("打开远程控制会话下载失败：{error}"))?;
-        file.seek(SeekFrom::Start(offset as u64))
-            .map_err(|error| format!("定位远程控制会话下载失败：{error}"))?;
-        let mut data = vec![0_u8; end.saturating_sub(offset)];
-        file.read_exact(&mut data)
-            .map_err(|error| format!("读取远程控制会话下载失败：{error}"))?;
-        drop(file);
-        download.last_touched = Instant::now();
-        let eof = end == total;
-        if eof {
-            inner.web_session_downloads.remove(download_id);
-            inner
-                .web_session_download_order
-                .retain(|id| id != download_id);
-            let _ = std::fs::remove_file(path);
-        }
-        Ok(WebSessionDownloadChunk { total, data, eof })
+        read_web_session_download_chunk(
+            &mut self.inner.lock(),
+            download_id,
+            session_id,
+            offset,
+            limit,
+        )
     }
 
     pub fn status(&self) -> WebAccessStatus {
@@ -3982,7 +3968,8 @@ mod tests {
                 id.to_string(),
                 WebSessionDownload {
                     session_id: format!("session_{id}"),
-                    path: PathBuf::from(format!("{id}.json")),
+                    reservation_id: format!("reservation_{id}"),
+                    file: tempfile::tempfile().unwrap(),
                     reserved_bytes,
                     total: reserved_bytes,
                     ready: true,
@@ -4031,7 +4018,8 @@ mod tests {
                 download_id.to_string(),
                 WebSessionDownload {
                     session_id: session_id.to_string(),
-                    path: PathBuf::from(format!("{download_id}.json")),
+                    reservation_id: format!("reservation_{download_id}"),
+                    file: tempfile::tempfile().unwrap(),
                     reserved_bytes: 1,
                     total: 1,
                     ready: true,

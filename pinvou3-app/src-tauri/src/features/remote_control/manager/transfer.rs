@@ -4,15 +4,17 @@
 //! (or inspects them via `&Inner`). They never acquire the mutex themselves:
 //! the facade in `mod.rs` holds the `parking_lot::Mutex` guard and lends the
 //! state, preserving the single-lock concurrency contract.
+// architecture-guard: allow-target-cfg -- Unix-only symlink regression proves startup cleanup never follows a linked snapshot root; OS metadata checks live in platform::filesystem
 
 use std::collections::HashSet;
+use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::PathBuf;
 use std::time::Instant;
 
 use super::Inner;
 use super::{
-    CachedWebAttachment, WebAttachmentUpload, WebSessionDownload, MAX_WEB_ATTACHMENT_UPLOADS,
-    MAX_WEB_ATTACHMENT_UPLOAD_TOTAL_BYTES, MAX_WEB_SESSION_DOWNLOADS,
+    CachedWebAttachment, WebAttachmentUpload, WebSessionDownload, WebSessionDownloadChunk,
+    MAX_WEB_ATTACHMENT_UPLOADS, MAX_WEB_ATTACHMENT_UPLOAD_TOTAL_BYTES, MAX_WEB_SESSION_DOWNLOADS,
     MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES, WEB_ATTACHMENT_UPLOAD_DIR_PREFIX,
     WEB_SESSION_TRANSFER_TTL,
 };
@@ -34,9 +36,7 @@ pub(super) fn clear_web_attachments(inner: &mut Inner) {
     inner.web_attachment_upload_order.clear();
     inner.web_session_uploads.clear();
     inner.web_session_upload_order.clear();
-    for (_, download) in inner.web_session_downloads.drain() {
-        let _ = std::fs::remove_file(download.path);
-    }
+    inner.web_session_downloads.clear();
     inner.web_session_download_order.clear();
 }
 
@@ -224,8 +224,64 @@ pub(crate) fn sweep_stale_web_attachment_uploads() {
     }
 }
 
+/// Session snapshots live in a dedicated process-owned directory so startup
+/// recovery can remove every crash remnant without inspecting user data.
+pub(crate) fn web_session_downloads_base() -> PathBuf {
+    paths::pinvou3_home().join("web-session-downloads")
+}
+
+pub(crate) fn open_web_session_downloads_base(
+) -> Result<crate::platform::filesystem::PrivateFileDirectory, String> {
+    let base = web_session_downloads_base();
+    crate::platform::filesystem::open_private_file_directory(&base)
+        .map_err(|error| format!("prepare remote-control Session download directory: {error}"))
+}
+
+pub(crate) fn sweep_stale_web_session_downloads() {
+    let Ok(directory) = open_web_session_downloads_base() else {
+        return;
+    };
+    sweep_stale_web_session_downloads_in(&directory);
+}
+
+fn is_owned_session_snapshot_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let Some(download_id) = name.strip_suffix(".json") else {
+        return false;
+    };
+    is_owned_session_download_id(download_id)
+}
+
+pub(super) fn is_owned_session_download_id(download_id: &str) -> bool {
+    download_id.starts_with("download_")
+        && download_id.len() > "download_".len()
+        && download_id.len() <= 128
+        && download_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn sweep_stale_web_session_downloads_in(
+    directory: &crate::platform::filesystem::PrivateFileDirectory,
+) {
+    let Ok(entries) = directory.entry_names() else {
+        return;
+    };
+    for name in entries {
+        if !is_owned_session_snapshot_name(&name) {
+            continue;
+        }
+        let _ = directory.remove_plain_file(&name);
+    }
+}
+
 pub(super) fn prune_expired_web_session_transfers(inner: &mut Inner) {
-    let now = Instant::now();
+    prune_expired_web_session_transfers_at(inner, Instant::now());
+}
+
+fn prune_expired_web_session_transfers_at(inner: &mut Inner, now: Instant) {
     inner.web_attachment_uploads.retain(|_, upload| {
         now.saturating_duration_since(upload.last_touched) <= WEB_SESSION_TRANSFER_TTL
     });
@@ -257,9 +313,7 @@ pub(super) fn prune_expired_web_session_transfers(inner: &mut Inner) {
         .map(|(id, _)| id.clone())
         .collect::<Vec<_>>();
     for id in expired_downloads {
-        if let Some(download) = inner.web_session_downloads.remove(&id) {
-            let _ = std::fs::remove_file(download.path);
-        }
+        inner.web_session_downloads.remove(&id);
     }
     let active_downloads = inner
         .web_session_downloads
@@ -311,4 +365,289 @@ pub(super) fn take_web_session_download(
         .web_session_download_order
         .retain(|id| id != download_id);
     Ok(inner.web_session_downloads.remove(download_id))
+}
+
+pub(super) fn read_web_session_download_chunk(
+    inner: &mut Inner,
+    download_id: &str,
+    session_id: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<WebSessionDownloadChunk, String> {
+    prune_expired_web_session_transfers(inner);
+    let (total, end, mut file) = {
+        let download = inner
+            .web_session_downloads
+            .get(download_id)
+            .ok_or_else(|| "远程控制会话下载不存在或已过期".to_string())?;
+        if download.session_id != session_id {
+            return Err("远程控制会话下载属于另一个会话".into());
+        }
+        if !download.ready {
+            return Err("远程控制会话下载仍在准备中".into());
+        }
+        if offset > download.total {
+            return Err(format!(
+                "Session offset {offset} exceeds payload size {}",
+                download.total
+            ));
+        }
+        let total = download.total;
+        let end = offset.saturating_add(limit).min(total);
+        let file = download
+            .file
+            .try_clone()
+            .map_err(|error| format!("克隆远程控制会话下载句柄失败：{error}"))?;
+        (total, end, file)
+    };
+    file.seek(SeekFrom::Start(offset as u64))
+        .map_err(|error| format!("定位远程控制会话下载失败：{error}"))?;
+    let mut data = vec![0_u8; end.saturating_sub(offset)];
+    file.read_exact(&mut data)
+        .map_err(|error| format!("读取远程控制会话下载失败：{error}"))?;
+    let eof = end == total;
+    if eof {
+        inner.web_session_downloads.remove(download_id);
+        inner
+            .web_session_download_order
+            .retain(|id| id != download_id);
+    } else if let Some(download) = inner.web_session_downloads.get_mut(download_id) {
+        download.last_touched = Instant::now();
+    }
+    Ok(WebSessionDownloadChunk { total, data, eof })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prune_expired_web_session_transfers_at;
+    #[cfg(any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    use super::sweep_stale_web_session_downloads_in;
+    use crate::features::remote_control::manager::{
+        Inner, WebSessionDownload, WEB_SESSION_TRANSFER_TTL,
+    };
+    use std::time::{Duration, Instant};
+    #[cfg(any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    fn test_directory(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "pinvou-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn ttl_pruning_releases_only_the_expired_snapshot_handle() {
+        let now = Instant::now();
+        let mut inner = Inner::default();
+        for (id, last_touched) in [
+            (
+                "expired",
+                now - WEB_SESSION_TRANSFER_TTL - Duration::from_secs(1),
+            ),
+            ("fresh", now),
+        ] {
+            inner.web_session_download_order.push_back(id.to_string());
+            inner.web_session_downloads.insert(
+                id.to_string(),
+                WebSessionDownload {
+                    session_id: format!("session_{id}"),
+                    reservation_id: format!("reservation_{id}"),
+                    file: tempfile::tempfile().unwrap(),
+                    reserved_bytes: 1,
+                    total: 1,
+                    ready: true,
+                    last_touched,
+                },
+            );
+        }
+
+        prune_expired_web_session_transfers_at(&mut inner, now);
+
+        assert!(!inner.web_session_downloads.contains_key("expired"));
+        assert!(inner.web_session_downloads.contains_key("fresh"));
+        assert_eq!(inner.web_session_download_order, ["fresh"]);
+    }
+
+    #[cfg(any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    #[test]
+    fn startup_sweep_removes_owned_snapshot_and_preserves_unknown_entries() {
+        let directory = test_directory("session-download-startup");
+        let unknown_directory = directory.join("download_unknown.json");
+        std::fs::create_dir_all(&unknown_directory).unwrap();
+        let owned_snapshot = directory.join("download_orphan.json");
+        let unknown_json = directory.join("orphan.json");
+        let unknown_file = directory.join("notes.txt");
+        std::fs::write(&owned_snapshot, b"orphan").unwrap();
+        std::fs::write(&unknown_json, b"unknown").unwrap();
+        std::fs::write(&unknown_file, b"unknown").unwrap();
+        std::fs::write(unknown_directory.join("nested.txt"), b"unknown").unwrap();
+
+        let stable = crate::platform::filesystem::open_private_file_directory(&directory).unwrap();
+        sweep_stale_web_session_downloads_in(&stable);
+        drop(stable);
+
+        assert!(!owned_snapshot.exists());
+        assert!(unknown_json.exists());
+        assert!(unknown_file.exists());
+        assert!(unknown_directory.join("nested.txt").exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    #[test]
+    fn private_download_directory_is_created_as_a_real_directory() {
+        let parent = test_directory("session-download-private");
+        let directory = parent.join("web-session-downloads");
+
+        let stable = crate::platform::filesystem::open_private_file_directory(&directory).unwrap();
+
+        let metadata = std::fs::symlink_metadata(&directory).unwrap();
+        assert!(metadata.is_dir());
+        assert!(!metadata.file_type().is_symlink());
+        drop(stable);
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(any(
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    #[test]
+    fn startup_sweep_refuses_a_symlink_download_root() {
+        use std::os::unix::fs::symlink;
+
+        let parent = test_directory("session-download-symlink-root");
+        let external = parent.join("external");
+        let linked = parent.join("web-session-downloads");
+        std::fs::create_dir_all(&external).unwrap();
+        let external_snapshot = external.join("download_external.json");
+        std::fs::write(&external_snapshot, b"must survive").unwrap();
+        symlink(&external, &linked).unwrap();
+
+        assert!(crate::platform::filesystem::open_private_file_directory(&linked).is_err());
+
+        assert!(external_snapshot.exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(any(
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    #[test]
+    fn rooted_handles_survive_directory_replacement_for_read_cancel_and_reap() {
+        use super::{read_web_session_download_chunk, take_web_session_download};
+        use std::io::Write as _;
+        use std::os::unix::fs::symlink;
+
+        let parent = test_directory("session-download-root-replaced");
+        let base = parent.join("web-session-downloads");
+        let retired = parent.join("retired-downloads");
+        let replacement = parent.join("replacement");
+        let directory = crate::platform::filesystem::open_private_file_directory(&base).unwrap();
+        let now = Instant::now();
+        let mut inner = Inner::default();
+        for (id, session_id, content, last_touched) in [
+            (
+                "download_read",
+                "session_read",
+                b"original-read".as_slice(),
+                now,
+            ),
+            (
+                "download_cancel",
+                "session_cancel",
+                b"original-cancel".as_slice(),
+                now,
+            ),
+            (
+                "download_reap",
+                "session_reap",
+                b"original-reap".as_slice(),
+                now - WEB_SESSION_TRANSFER_TTL - Duration::from_secs(1),
+            ),
+        ] {
+            let mut file = directory
+                .create_delete_on_close_file(&format!("{id}.json"))
+                .unwrap();
+            file.write_all(content).unwrap();
+            inner.web_session_download_order.push_back(id.to_string());
+            inner.web_session_downloads.insert(
+                id.to_string(),
+                WebSessionDownload {
+                    session_id: session_id.to_string(),
+                    reservation_id: format!("reservation_{id}"),
+                    file,
+                    reserved_bytes: content.len(),
+                    total: content.len(),
+                    ready: true,
+                    last_touched,
+                },
+            );
+        }
+
+        std::fs::rename(&base, &retired).unwrap();
+        std::fs::create_dir_all(&replacement).unwrap();
+        for id in ["download_read", "download_cancel", "download_reap"] {
+            std::fs::write(replacement.join(format!("{id}.json")), b"replacement").unwrap();
+        }
+        symlink(&replacement, &base).unwrap();
+
+        let chunk = read_web_session_download_chunk(
+            &mut inner,
+            "download_read",
+            "session_read",
+            0,
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(chunk.data, b"original-read");
+        assert!(chunk.eof);
+        assert!(!inner.web_session_downloads.contains_key("download_read"));
+
+        let cancelled =
+            take_web_session_download(&mut inner, "download_cancel", "session_cancel").unwrap();
+        assert!(cancelled.is_some());
+        drop(cancelled);
+
+        prune_expired_web_session_transfers_at(&mut inner, now);
+        assert!(!inner.web_session_downloads.contains_key("download_reap"));
+        assert_eq!(std::fs::read_dir(&retired).unwrap().count(), 0);
+        for id in ["download_read", "download_cancel", "download_reap"] {
+            assert_eq!(
+                std::fs::read(replacement.join(format!("{id}.json"))).unwrap(),
+                b"replacement"
+            );
+        }
+
+        drop(directory);
+        std::fs::remove_file(&base).unwrap();
+        std::fs::remove_dir_all(parent).unwrap();
+    }
 }

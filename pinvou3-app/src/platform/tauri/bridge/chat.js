@@ -302,7 +302,8 @@
         recordAuthoritySyncDiagnostic("local_turn_admission_failed", Object.assign({
           operation: "send",
           concurrent_turn: concurrentTurn,
-          error: errorText,
+          error_category: concurrentTurn ? "session_turn_in_progress" : "command_rejected",
+          error_present: true,
         }, authoritySyncBufferSnapshot(sid, turnOwnerBuffer)));
         if (turnOwnerBuffer) turnOwnerBuffer.localTurnOwned = false;
         runSyncOnSession(sid, function () {

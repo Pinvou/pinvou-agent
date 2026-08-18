@@ -388,8 +388,7 @@ pub(crate) fn emit_chat_terminal(
         json!({
             "session_id": session_id,
             "terminal_status": format!("{status:?}"),
-            "terminal_has_error": error.is_some(),
-            "error": error,
+            "terminal_error_present": error.is_some(),
             "shell_cleanup_failed": shell_cleanup_failed,
         }),
     );
@@ -409,7 +408,7 @@ pub(crate) fn emit_transcript_committed(
         json!({
             "session_id": session_id,
             "transcript_revision": revision,
-            "persistence_path": persistence_path,
+            "persistence_target": if persistence_path.is_empty() { "unknown" } else { "session_store" },
             "message_count": message_count,
         }),
     );

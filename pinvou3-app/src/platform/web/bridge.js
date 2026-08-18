@@ -35,6 +35,69 @@
   function canInvoke(command) {
     return !IS_WEB || (typeof PLATFORM.canInvoke === "function" && PLATFORM.canInvoke(command) === true);
   }
+  var WEB_CAPABILITIES_WAIT_TIMEOUT_MS = 10_000;
+  function webInvokeCapabilitiesReady() {
+    if (!IS_WEB) return true;
+    if (typeof PLATFORM.areInvokeCapabilitiesReady === "function") {
+      return PLATFORM.areInvokeCapabilitiesReady() === true;
+    }
+    return !!(window.PinvouWebClient && window.PinvouWebClient.desktopCapabilitiesReady === true);
+  }
+  function webConnectionState() {
+    if (typeof PLATFORM.getConnectionState !== "function") return null;
+    try {
+      return PLATFORM.getConnectionState();
+    } catch (_) {
+      return null;
+    }
+  }
+  function webInvokeCapabilitiesUnavailable(connection) {
+    return !!(connection && connection.desktop_online === false && connection.status !== "connecting");
+  }
+  function unavailableWebCapabilitiesError() {
+    var error = new Error("desktop disconnected before command capabilities were ready");
+    error.code = "desktop_capabilities_unavailable";
+    return error;
+  }
+  function waitForWebInvokeCapabilities() {
+    if (webInvokeCapabilitiesReady()) return Promise.resolve();
+    if (webInvokeCapabilitiesUnavailable(webConnectionState())) {
+      return Promise.reject(unavailableWebCapabilitiesError());
+    }
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timeout = null;
+      function finish(error) {
+        if (settled) return;
+        settled = true;
+        if (timeout != null) clearTimeout(timeout);
+        window.removeEventListener("pinvou:web-capabilities", onCapabilities);
+        window.removeEventListener("pinvou:web-connection", onConnection);
+        if (error) reject(error); else resolve();
+      }
+      function onCapabilities() {
+        if (webInvokeCapabilitiesReady()) finish();
+      }
+      function onConnection(event) {
+        var connection = event && event.detail;
+        if (webInvokeCapabilitiesUnavailable(connection)) finish(unavailableWebCapabilitiesError());
+      }
+      window.addEventListener("pinvou:web-capabilities", onCapabilities);
+      window.addEventListener("pinvou:web-connection", onConnection);
+      timeout = setTimeout(function () {
+        var error = new Error("desktop command capability snapshot timed out");
+        error.code = "desktop_capabilities_timeout";
+        finish(error);
+      }, WEB_CAPABILITIES_WAIT_TIMEOUT_MS);
+      // Close the race where the snapshot arrives between the initial check
+      // and listener registration, and the equivalent race where a disconnect
+      // happens before its event listener is attached.
+      if (webInvokeCapabilitiesReady()) finish();
+      else if (webInvokeCapabilitiesUnavailable(webConnectionState())) {
+        finish(unavailableWebCapabilitiesError());
+      }
+    });
+  }
   function webRequestId(prefix) {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
       return prefix + "_" + window.crypto.randomUUID();
@@ -1168,7 +1231,6 @@
     if (!entries.length) return;
     diagnostics.cleanup_requested_count = entries.length;
     var failed = [];
-    var lastError = null;
     for (var index = 0; index < entries.length; index++) {
       var entry = entries[index];
       try {
@@ -1176,12 +1238,10 @@
         forgetSessionDownloadLease(entry.download_id);
       } catch (error) {
         failed.push(entry.download_id);
-        lastError = error;
       }
     }
     diagnostics.cleanup_failed_count = failed.length;
     diagnostics.cleanup_succeeded_count = entries.length - failed.length;
-    if (lastError) throw lastError;
   }
   function newSessionDownloadId() {
     var token = "";
@@ -1204,25 +1264,39 @@
       diagnostics.elapsed_ms = Date.now() - diagnostics.started_at_ms;
       return localSaved;
     }
-    await cleanupAbandonedSessionDownloads(diagnostics);
+    // New WebUI can run against an older desktop. The cancel command is the
+    // capability boundary for client-selected/persisted leases: older
+    // desktops keep their server-generated download id protocol and must not
+    // be blocked by cleanup RPCs they do not implement.
+    await waitForWebInvokeCapabilities();
+    var supportsSessionDownloadCancellation = canInvoke("web_access_cancel_session_download");
+    if (supportsSessionDownloadCancellation) {
+      await cleanupAbandonedSessionDownloads(diagnostics);
+    }
     var offset = 0;
     var total = null;
     var payload = null;
-    var downloadId = newSessionDownloadId();
+    var downloadId = supportsSessionDownloadCancellation ? newSessionDownloadId() : "";
     var maxSessionBytes = 256 * 1024 * 1024;
-    activeSessionDownloads[downloadId] = true;
-    rememberSessionDownloadLease(downloadId, sid);
-    diagnostics.download_id = downloadId;
+    diagnostics.cancellable_lease = supportsSessionDownloadCancellation;
+    if (supportsSessionDownloadCancellation) {
+      activeSessionDownloads[downloadId] = true;
+      rememberSessionDownloadLease(downloadId, sid);
+      diagnostics.download_id = downloadId;
+    }
     try {
       while (true) {
-        var chunk = await invoke("web_access_load_session_chunk", {
+        var chunkArgs = {
           id: sid,
           downloadId: offset ? downloadId : null,
-          requestedDownloadId: offset ? null : downloadId,
           offset: offset,
           // 不传 limit，由桌面端按自身版本上限决定块大小；新 WebUI
           // 先于桌面部署时也不会因为块大小超过旧桌面上限而被拒绝。
-        });
+        };
+        if (supportsSessionDownloadCancellation && !offset) {
+          chunkArgs.requestedDownloadId = downloadId;
+        }
+        var chunk = await invoke("web_access_load_session_chunk", chunkArgs);
         diagnostics.chunk_count += 1;
         var chunkOffset = Number(chunk && chunk.offset);
         var chunkTotal = Number(chunk && chunk.total);
@@ -1232,6 +1306,7 @@
             !chunkDownloadId || (downloadId && chunkDownloadId !== downloadId)) {
           throw new Error(bt("sessionChunkInvalid"));
         }
+        if (!downloadId) downloadId = chunkDownloadId;
         diagnostics.download_id = downloadId;
         if (total === null) {
           total = chunkTotal;
@@ -1247,14 +1322,16 @@
         offset += data.length;
         if (chunk.eof) {
           if (offset !== total) throw new Error(bt("sessionChunkEarlyEnd"));
-          delete activeSessionDownloads[downloadId];
-          forgetSessionDownloadLease(downloadId);
+          if (supportsSessionDownloadCancellation) {
+            delete activeSessionDownloads[downloadId];
+            forgetSessionDownloadLease(downloadId);
+          }
           break;
         }
         if (!data.length) throw new Error(bt("sessionChunkNoProgress"));
       }
     } catch (error) {
-      if (downloadId) {
+      if (supportsSessionDownloadCancellation && downloadId) {
         delete activeSessionDownloads[downloadId];
         diagnostics.cancel_requested = true;
         try {
@@ -1263,9 +1340,7 @@
           diagnostics.cancel_succeeded = true;
         } catch (cancelError) {
           diagnostics.cancel_succeeded = false;
-          diagnostics.cancel_error = String(cancelError && cancelError.message
-            ? cancelError.message
-            : cancelError || "unknown cancellation error");
+          diagnostics.error_category = "cancel_rpc_failed";
         }
       }
       throw error;
@@ -1640,9 +1715,10 @@
             session_id: sid,
             attempt: attempt + 1,
             reason: "load_session_error",
+            error_category: "snapshot_load_failed",
+            error_present: true,
             elapsed_ms: Date.now() - attemptStartedAt,
             expected_committed_revision: expectedCommittedRevision,
-            error: String(error && error.message ? error.message : error || "unknown error"),
             transport: transfer,
           });
         }
@@ -4416,7 +4492,8 @@
         recordAuthoritySyncDiagnostic("local_turn_admission_failed", Object.assign({
           operation: "send",
           concurrent_turn: concurrentTurn,
-          error: errorText,
+          error_category: concurrentTurn ? "session_turn_in_progress" : "command_rejected",
+          error_present: true,
         }, authoritySyncBufferSnapshot(sid, turnOwnerBuffer)));
         if (turnOwnerBuffer) turnOwnerBuffer.localTurnOwned = false;
         emitPetEvent("pet:turn_end", sid);
@@ -5655,7 +5732,7 @@
       completed_local_turn: completedLocalTurn,
       requires_authority_reconcile: !isScheduledRunSession(sid),
       terminal_status: String(e.payload && e.payload.status || ""),
-      terminal_has_error: !!(e.payload && e.payload.error),
+      terminal_error_present: !!(e.payload && e.payload.error),
     }, authoritySyncBufferSnapshot(sid, doneBuffer)));
     if (doneBuffer && !doneBuffer.localTurnOwned) {
       // transcript_committed precedes chat:done. Preserve its revision when a

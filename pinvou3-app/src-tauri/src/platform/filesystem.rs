@@ -1,6 +1,104 @@
 use std::fs::File;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+// The anchored directory ABI below is intentionally limited to the Unix
+// targets shipped by the desktop app. Other targets are rejected explicitly
+// instead of guessing their libc `dirent` layout or using unsafe path fallback.
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+mod libc {
+    use std::os::raw::{c_char, c_int};
+
+    #[repr(C)]
+    pub(crate) struct DIR {
+        _private: [u8; 0],
+    }
+
+    #[cfg(target_os = "macos")]
+    #[repr(C)]
+    pub(crate) struct Dirent {
+        pub(crate) d_ino: u64,
+        pub(crate) d_seekoff: u64,
+        pub(crate) d_reclen: u16,
+        pub(crate) d_namlen: u16,
+        pub(crate) d_type: u8,
+        pub(crate) d_name: [c_char; 1024],
+    }
+
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    #[repr(C)]
+    pub(crate) struct Dirent {
+        pub(crate) d_ino: u64,
+        pub(crate) d_off: i64,
+        pub(crate) d_reclen: u16,
+        pub(crate) d_type: u8,
+        pub(crate) d_name: [c_char; 256],
+    }
+
+    #[cfg(target_os = "macos")]
+    const _: () = {
+        assert!(std::mem::offset_of!(Dirent, d_name) == 21);
+        assert!(std::mem::size_of::<Dirent>() == 1048);
+    };
+
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    const _: () = {
+        assert!(std::mem::offset_of!(Dirent, d_name) == 19);
+        assert!(std::mem::size_of::<Dirent>() == 280);
+    };
+
+    pub(crate) const O_RDONLY: c_int = 0;
+    pub(crate) const O_RDWR: c_int = 2;
+    #[cfg(target_os = "macos")]
+    pub(crate) const O_CREAT: c_int = 0x0200;
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) const O_CREAT: c_int = 0x0040;
+    #[cfg(target_os = "macos")]
+    pub(crate) const O_EXCL: c_int = 0x0800;
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) const O_EXCL: c_int = 0x0080;
+    #[cfg(target_os = "macos")]
+    pub(crate) const O_CLOEXEC: c_int = 0x0100_0000;
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) const O_CLOEXEC: c_int = 0x0008_0000;
+    #[cfg(target_os = "macos")]
+    pub(crate) const O_NOFOLLOW: c_int = 0x0100;
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) const O_NOFOLLOW: c_int = 0x0002_0000;
+    #[cfg(target_os = "macos")]
+    pub(crate) const O_DIRECTORY: c_int = 0x0010_0000;
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) const O_DIRECTORY: c_int = 0x0001_0000;
+    #[cfg(target_os = "macos")]
+    pub(crate) const O_NONBLOCK: c_int = 0x0004;
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) const O_NONBLOCK: c_int = 0x0800;
+
+    unsafe extern "C" {
+        pub(crate) fn open(path: *const c_char, flags: c_int, ...) -> c_int;
+        pub(crate) fn openat(directory: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
+        pub(crate) fn unlinkat(directory: c_int, path: *const c_char, flags: c_int) -> c_int;
+        pub(crate) fn close(fd: c_int) -> c_int;
+        #[cfg_attr(
+            all(target_os = "macos", target_arch = "x86_64"),
+            link_name = "fdopendir$INODE64"
+        )]
+        pub(crate) fn fdopendir(fd: c_int) -> *mut DIR;
+        #[cfg_attr(
+            all(target_os = "macos", target_arch = "x86_64"),
+            link_name = "readdir$INODE64"
+        )]
+        pub(crate) fn readdir(directory: *mut DIR) -> *mut Dirent;
+        pub(crate) fn closedir(directory: *mut DIR) -> c_int;
+
+        #[cfg_attr(target_os = "linux", link_name = "__errno_location")]
+        #[cfg_attr(target_os = "macos", link_name = "__error")]
+        pub(crate) fn errno_location() -> *mut c_int;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReplaceState {
@@ -192,6 +290,697 @@ pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File>
     options.open(path)
 }
 
+#[derive(Clone)]
+pub(crate) struct RealDirectoryIdentity {
+    #[cfg(any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    canonical_path: PathBuf,
+    #[cfg(any(
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    device: u64,
+    #[cfg(any(
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    inode: u64,
+    #[cfg(windows)]
+    creation_time: u64,
+}
+
+/// A private directory whose concrete filesystem object stays stable for
+/// relative file operations. macOS and 64-bit Linux anchor operations to an
+/// open directory fd; Windows holds non-delete-shared handles for every
+/// canonical path component. Other targets reject this capability.
+pub(crate) struct PrivateFileDirectory {
+    #[cfg(windows)]
+    canonical_path: PathBuf,
+    #[cfg(any(
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    directory_handle: File,
+    #[cfg(windows)]
+    _component_handles: Vec<File>,
+}
+
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+pub(crate) fn open_private_file_directory(path: &Path) -> io::Result<PrivateFileDirectory> {
+    let expected = ensure_private_real_directory(path)?;
+    open_private_file_directory_impl(expected)
+}
+
+// unsupported-private-file-directory:start
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+)))]
+fn private_file_directory_unsupported<T>() -> io::Result<T> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "private snapshot directory is unsupported on this platform",
+    ))
+}
+
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+)))]
+pub(crate) fn open_private_file_directory(_path: &Path) -> io::Result<PrivateFileDirectory> {
+    private_file_directory_unsupported()
+}
+
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+)))]
+pub(crate) fn ensure_private_real_directory(_path: &Path) -> io::Result<RealDirectoryIdentity> {
+    private_file_directory_unsupported()
+}
+
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+)))]
+impl PrivateFileDirectory {
+    pub(crate) fn entry_names(&self) -> io::Result<Vec<std::ffi::OsString>> {
+        private_file_directory_unsupported()
+    }
+
+    pub(crate) fn create_delete_on_close_file(&self, _name: &str) -> io::Result<File> {
+        private_file_directory_unsupported()
+    }
+
+    pub(crate) fn remove_plain_file(&self, _name: &std::ffi::OsStr) -> io::Result<bool> {
+        private_file_directory_unsupported()
+    }
+}
+// unsupported-private-file-directory:end
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn open_private_file_directory_impl(
+    expected: RealDirectoryIdentity,
+) -> io::Result<PrivateFileDirectory> {
+    use std::os::fd::{FromRawFd as _, RawFd};
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::MetadataExt as _;
+
+    let path = std::ffi::CString::new(expected.canonical_path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "directory path contains NUL"))?;
+    let fd: RawFd = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let directory_handle = unsafe { File::from_raw_fd(fd) };
+    let metadata = directory_handle.metadata()?;
+    if !metadata.is_dir() || metadata.dev() != expected.device || metadata.ino() != expected.inode {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private directory changed while acquiring its stable handle",
+        ));
+    }
+    Ok(PrivateFileDirectory { directory_handle })
+}
+
+#[cfg(windows)]
+fn open_private_file_directory_impl(
+    expected: RealDirectoryIdentity,
+) -> io::Result<PrivateFileDirectory> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut current = PathBuf::new();
+    let mut handles = Vec::new();
+    for component in expected.canonical_path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            std::path::Component::RootDir => current.push(Path::new(r"\")),
+            std::path::Component::Normal(name) => {
+                current.push(name);
+                let mut options = std::fs::OpenOptions::new();
+                options
+                    .read(true)
+                    // Omitting FILE_SHARE_DELETE keeps the canonical chain
+                    // from being renamed or replaced while path-based Win32
+                    // leaf creation/enumeration is in progress.
+                    .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+                let handle = options.open(&current)?;
+                let metadata = handle.metadata()?;
+                if !metadata_is_real_directory(&metadata) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "private directory chain contains a reparse point: {}",
+                            current.display()
+                        ),
+                    ));
+                }
+                handles.push(handle);
+            }
+            std::path::Component::CurDir | std::path::Component::ParentDir => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "private directory path must be normalized",
+                ));
+            }
+        }
+    }
+    let final_handle = handles.last().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private directory cannot be a volume root",
+        )
+    })?;
+    use std::os::windows::fs::MetadataExt as _;
+    if final_handle.metadata()?.creation_time() != expected.creation_time {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private directory changed while acquiring its stable handles",
+        ));
+    }
+    Ok(PrivateFileDirectory {
+        canonical_path: expected.canonical_path,
+        _component_handles: handles,
+    })
+}
+
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+impl PrivateFileDirectory {
+    pub(crate) fn entry_names(&self) -> io::Result<Vec<std::ffi::OsString>> {
+        entry_names_impl(self)
+    }
+
+    /// Create a private read/write file and immediately remove its directory
+    /// entry (Unix) or mark the exact file handle delete-pending (Windows).
+    /// The returned handle is therefore the sole authority for its lifetime.
+    pub(crate) fn create_delete_on_close_file(&self, name: &str) -> io::Result<File> {
+        validate_private_file_name(std::ffi::OsStr::new(name))?;
+        create_delete_on_close_file_impl(self, name)
+    }
+
+    pub(crate) fn remove_plain_file(&self, name: &std::ffi::OsStr) -> io::Result<bool> {
+        validate_private_file_name(name)?;
+        remove_plain_file_impl(self, name)
+    }
+}
+
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn validate_private_file_name(name: &std::ffi::OsStr) -> io::Result<()> {
+    let path = Path::new(name);
+    if path.components().count() != 1
+        || !matches!(
+            path.components().next(),
+            Some(std::path::Component::Normal(_))
+        )
+        || path.file_name() != Some(name)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private file name must be one normal path component",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+struct UnixDirectoryStream(*mut libc::DIR);
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+impl Drop for UnixDirectoryStream {
+    fn drop(&mut self) {
+        unsafe { libc::closedir(self.0) };
+    }
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn next_unix_directory_entry_with<ClearErrno, ReadEntry, ReadErrno>(
+    clear_errno: ClearErrno,
+    read_entry: ReadEntry,
+    read_errno: ReadErrno,
+) -> io::Result<Option<std::ffi::OsString>>
+where
+    ClearErrno: FnOnce(),
+    ReadEntry: FnOnce() -> Option<std::ffi::OsString>,
+    ReadErrno: FnOnce() -> i32,
+{
+    clear_errno();
+    match read_entry() {
+        Some(name) => Ok(Some(name)),
+        None => match read_errno() {
+            0 => Ok(None),
+            errno => Err(io::Error::from_raw_os_error(errno)),
+        },
+    }
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn next_unix_directory_entry(
+    stream: &UnixDirectoryStream,
+) -> io::Result<Option<std::ffi::OsString>> {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    next_unix_directory_entry_with(
+        || unsafe { *libc::errno_location() = 0 },
+        || {
+            let entry = unsafe { libc::readdir(stream.0) };
+            if entry.is_null() {
+                None
+            } else {
+                let bytes =
+                    unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+                Some(std::ffi::OsString::from_vec(bytes.to_vec()))
+            }
+        },
+        || unsafe { *libc::errno_location() },
+    )
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi::OsString>> {
+    use std::os::fd::AsRawFd as _;
+
+    let current = std::ffi::CString::new(".").expect("literal contains no NUL");
+    let duplicate = unsafe {
+        libc::openat(
+            directory.directory_handle.as_raw_fd(),
+            current.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if duplicate < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let stream = unsafe { libc::fdopendir(duplicate) };
+    if stream.is_null() {
+        let error = io::Error::last_os_error();
+        unsafe { libc::close(duplicate) };
+        return Err(error);
+    }
+    let stream = UnixDirectoryStream(stream);
+    let mut names = Vec::new();
+    while let Some(name) = next_unix_directory_entry(&stream)? {
+        if name != "." && name != ".." {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
+#[cfg(windows)]
+fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi::OsString>> {
+    std::fs::read_dir(&directory.canonical_path)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect()
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn unix_name(name: &std::ffi::OsStr) -> io::Result<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt as _;
+    std::ffi::CString::new(name.as_bytes()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private file name contains NUL",
+        )
+    })
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn unix_named_file_matches(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::CString,
+    file: &File,
+) -> io::Result<bool> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    use std::os::unix::fs::MetadataExt as _;
+
+    let named_fd = unsafe {
+        libc::openat(
+            directory.directory_handle.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if named_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let named = unsafe { File::from_raw_fd(named_fd) }.metadata()?;
+    let opened = file.metadata()?;
+    Ok(opened.file_type().is_file()
+        && opened.nlink() == 1
+        && opened.dev() == named.dev()
+        && opened.ino() == named.ino())
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn create_delete_on_close_file_impl(
+    directory: &PrivateFileDirectory,
+    name: &str,
+) -> io::Result<File> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+
+    let name = unix_name(std::ffi::OsStr::new(name))?;
+    let fd = unsafe {
+        libc::openat(
+            directory.directory_handle.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    if !unix_named_file_matches(directory, &name, &file)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "created private file changed before unlink",
+        ));
+    }
+    if unsafe { libc::unlinkat(directory.directory_handle.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn create_delete_on_close_file_impl(
+    directory: &PrivateFileDirectory,
+    name: &str,
+) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let path = directory.canonical_path.join(name);
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .write(true)
+        .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
+        .create_new(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = options.open(path)?;
+    if !metadata_is_plain_file(&file.metadata()?) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "created private file is a reparse point or non-file",
+        ));
+    }
+    mark_windows_file_handle_for_deletion(&file)?;
+    Ok(file)
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn remove_plain_file_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<bool> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+
+    let name = unix_name(name)?;
+    let fd = unsafe {
+        libc::openat(
+            directory.directory_handle.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        let error = io::Error::last_os_error();
+        return if error.kind() == io::ErrorKind::NotFound {
+            Ok(false)
+        } else {
+            Err(error)
+        };
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    if !unix_named_file_matches(directory, &name, &file)? {
+        return Ok(false);
+    }
+    if unsafe { libc::unlinkat(directory.directory_handle.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+        let error = io::Error::last_os_error();
+        return if error.kind() == io::ErrorKind::NotFound {
+            Ok(false)
+        } else {
+            Err(error)
+        };
+    }
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn remove_plain_file_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<bool> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .access_mode(FILE_GENERIC_READ | DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = match options.open(directory.canonical_path.join(name)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if !metadata_is_plain_file(&file.metadata()?) {
+        return Ok(false);
+    }
+    mark_windows_file_handle_for_deletion(&file)?;
+    drop(file);
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn mark_windows_file_handle_for_deletion(file: &File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
+    };
+
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfo,
+            (&raw const disposition).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Create an app-owned directory without a permissive Unix creation window,
+/// then reject symlink, junction, or other Windows reparse-point roots.
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+pub(crate) fn ensure_private_real_directory(path: &Path) -> io::Result<RealDirectoryIdentity> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let builder = private_directory_builder();
+            match builder.create(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(error) => return Err(error),
+    }
+
+    let identity = real_directory_identity(path)?;
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        let expected = std::fs::canonicalize(parent)?.join(name);
+        if identity.canonical_path != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "private directory resolves outside its app-owned parent: {}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    #[cfg(any(
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.mode() & 0o777 != 0o700 {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    Ok(identity)
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn private_directory_builder() -> std::fs::DirBuilder {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder
+}
+
+#[cfg(windows)]
+fn private_directory_builder() -> std::fs::DirBuilder {
+    std::fs::DirBuilder::new()
+}
+
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn real_directory_identity(path: &Path) -> io::Result<RealDirectoryIdentity> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata_is_real_directory(&metadata) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("path is not a real directory: {}", path.display()),
+        ));
+    }
+    Ok(RealDirectoryIdentity {
+        canonical_path: std::fs::canonicalize(path)?,
+        #[cfg(any(
+            target_os = "macos",
+            all(target_os = "linux", target_pointer_width = "64")
+        ))]
+        device: {
+            use std::os::unix::fs::MetadataExt as _;
+            metadata.dev()
+        },
+        #[cfg(any(
+            target_os = "macos",
+            all(target_os = "linux", target_pointer_width = "64")
+        ))]
+        inode: {
+            use std::os::unix::fs::MetadataExt as _;
+            metadata.ino()
+        },
+        #[cfg(windows)]
+        creation_time: {
+            use std::os::windows::fs::MetadataExt as _;
+            metadata.creation_time()
+        },
+    })
+}
+
+#[cfg(windows)]
+fn metadata_is_plain_file(metadata: &std::fs::Metadata) -> bool {
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return false;
+    }
+    use std::os::windows::fs::MetadataExt as _;
+    windows_attributes_are_not_reparse(metadata.file_attributes())
+}
+
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn metadata_is_real_directory(metadata: &std::fs::Metadata) -> bool {
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        return windows_attributes_are_not_reparse(metadata.file_attributes());
+    }
+    #[cfg(not(windows))]
+    true
+}
+
+#[cfg(windows)]
+fn windows_attributes_are_not_reparse(attributes: u32) -> bool {
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+}
+
 #[cfg(windows)]
 fn replace_file_atomically_impl(tmp: &Path, target: &Path, backup: &Path) -> ReplaceResult {
     replace_file_atomically_with(tmp, target, backup, system_replace_file)
@@ -354,6 +1143,168 @@ pub(crate) mod tests {
     use std::path::Path;
 
     use super::atomic_write;
+    #[cfg(any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    use super::{ensure_private_real_directory, open_private_file_directory};
+
+    #[test]
+    fn darwin_x86_64_directory_symbols_are_inode64_qualified() {
+        let source = include_str!("filesystem.rs");
+        let inode64 = ["$", "INODE64"].concat();
+        for function in ["fdopendir", "readdir"] {
+            let binding = format!("link_name = \"{function}{inode64}\"");
+            assert_eq!(source.matches(&binding).count(), 1, "missing {binding}");
+        }
+        let x86_64_cfg = [
+            "all(target_os = \"mac",
+            "os\", target_arch = \"x86_",
+            "64\")",
+        ]
+        .concat();
+        assert_eq!(source.matches(&x86_64_cfg).count(), 2);
+        let darwin_errno = ["__err", "or"].concat();
+        let linux_errno = ["__errno_", "location"].concat();
+        for errno_symbol in [darwin_errno, linux_errno] {
+            let binding = format!("link_name = \"{errno_symbol}\"");
+            assert_eq!(source.matches(&binding).count(), 1, "missing {binding}");
+        }
+    }
+
+    #[test]
+    fn unsupported_private_directory_contract_has_no_path_mutations() {
+        let source = include_str!("filesystem.rs");
+        let start = ["// unsupported-private-file-directory:", "start"].concat();
+        let end = ["// unsupported-private-file-directory:", "end"].concat();
+        let block = source
+            .split_once(&start)
+            .and_then(|(_, rest)| rest.split_once(&end).map(|(block, _)| block))
+            .expect("unsupported private directory contract block");
+
+        assert_eq!(block.matches("io::ErrorKind::Unsupported").count(), 1);
+        assert_eq!(
+            block
+                .matches("private_file_directory_unsupported()")
+                .count(),
+            5
+        );
+        for forbidden in [
+            "std::fs::",
+            "OpenOptions",
+            ".create_new(",
+            "remove_file(",
+            "read_dir(",
+            ".join(",
+        ] {
+            assert!(
+                !block.contains(forbidden),
+                "forbidden fallback: {forbidden}"
+            );
+        }
+    }
+
+    #[cfg(any(
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    #[test]
+    fn readdir_null_propagates_errno_after_clearing_it() {
+        let cleared = std::cell::Cell::new(false);
+        let error = super::next_unix_directory_entry_with(
+            || cleared.set(true),
+            || {
+                assert!(cleared.get(), "errno must be cleared before readdir");
+                None
+            },
+            || 5,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.raw_os_error(), Some(5));
+    }
+
+    #[cfg(any(
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    #[test]
+    fn readdir_null_with_clear_errno_is_eof() {
+        let result = super::next_unix_directory_entry_with(|| {}, || None, || 0).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[cfg(any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    #[test]
+    fn delete_on_close_file_round_trips_only_through_its_handle() {
+        use std::io::{Read as _, Seek as _, Write as _};
+
+        let parent = std::env::temp_dir().join(format!(
+            "pinvou3-delete-on-close-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let directory_path = parent.join("owned");
+        let directory = open_private_file_directory(&directory_path).unwrap();
+        let mut file = directory
+            .create_delete_on_close_file("download_round_trip.json")
+            .unwrap();
+        file.write_all(b"handle-only").unwrap();
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let mut content = String::new();
+        file.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "handle-only");
+
+        drop(file);
+        drop(directory);
+        assert!(!directory_path.join("download_round_trip.json").exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_pointer_width = "64")
+    ))]
+    #[test]
+    fn private_real_directory_is_created_without_a_link_root() {
+        let parent = std::env::temp_dir().join(format!(
+            "pinvou3-private-dir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let directory = parent.join("owned");
+
+        ensure_private_real_directory(&directory).unwrap();
+
+        let metadata = std::fs::symlink_metadata(&directory).unwrap();
+        assert!(metadata.is_dir());
+        assert!(!metadata.file_type().is_symlink());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        }
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reparse_attribute_is_rejected() {
+        assert!(!super::windows_attributes_are_not_reparse(0x400));
+        assert!(super::windows_attributes_are_not_reparse(0));
+    }
 
     #[test]
     fn atomic_write_round_trips_content() {

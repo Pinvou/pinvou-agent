@@ -306,8 +306,25 @@ assert.match(bridge, /restoreUiTurnState\(preparation\.snapshot\)/);
 assert.match(bridge, /attachmentHandles:/);
 assert.match(bridge, /web_access_load_session_chunk/);
 assert.match(bridge, /web_access_cancel_session_download/);
-assert.match(bridge, /requestedDownloadId/,
-  'the browser must choose a cancellable lease id before requesting the first Session chunk');
+assert.match(bootstrap, /areInvokeCapabilitiesReady\(\) \{ return client\.desktopCapabilitiesReady === true; \}/,
+  'the shared bridge must reuse bootstrap capability-handshake state');
+assert.match(bridge, /await waitForWebInvokeCapabilities\(\);[\s\S]{0,120}supportsSessionDownloadCancellation = canInvoke/,
+  'session downloads must not choose new or legacy protocol before the desktop snapshot');
+assert.match(bridge, /pinvou:web-capabilities/);
+assert.match(bridge, /desktop_capabilities_timeout/);
+assert.match(bridge, /desktop_capabilities_unavailable/);
+assert.match(bridge, /supportsSessionDownloadCancellation = canInvoke\("web_access_cancel_session_download"\)/,
+  'new lease behavior must be gated by the installed desktop command capability');
+assert.match(bridge, /if \(supportsSessionDownloadCancellation\) \{[\s\S]{0,120}await cleanupAbandonedSessionDownloads/,
+  'legacy desktops must skip persisted lease cleanup they cannot implement');
+assert.match(bridge, /downloadId = supportsSessionDownloadCancellation \? newSessionDownloadId\(\) : ""/,
+  'legacy desktops must begin without a client-selected download id');
+assert.match(bridge, /if \(supportsSessionDownloadCancellation && !offset\) \{[\s\S]{0,100}chunkArgs\.requestedDownloadId = downloadId/,
+  'requestedDownloadId must only be sent to desktops that support cancellable leases');
+assert.match(bridge, /if \(!downloadId\) downloadId = chunkDownloadId/,
+  'the legacy path must adopt the server-generated first-chunk download id');
+assert.match(bridge, /if \(supportsSessionDownloadCancellation && downloadId\) \{[\s\S]{0,160}cancelSessionDownloadLease/,
+  'legacy failures must not invoke the unavailable cancel command');
 assert.doesNotMatch(
   webBridge,
   /web_access_load_session_chunk[\s\S]{0,220}\blimit\s*:/,

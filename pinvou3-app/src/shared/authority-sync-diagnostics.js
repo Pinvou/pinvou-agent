@@ -14,6 +14,44 @@
   var MAX_QUEUE_ENTRIES = 256;
   var MAX_BATCH_ENTRIES = 32;
   var MAX_STRING_CHARS = 2048;
+  var ALLOWED_EVENTS = new Set([
+    "authority_sync_notice_shown", "browser_network_offline", "browser_network_online",
+    "chat_done_classified", "connection_state_changed", "diagnostics_initialized",
+    "document_visibility_changed", "local_send_blocked_by_remote_sync",
+    "local_turn_admission_failed", "local_turn_admitted", "local_turn_claimed",
+    "reconcile_attempt_failed", "reconcile_attempt_rejected", "reconcile_deferred_busy",
+    "reconcile_exhausted", "reconcile_joined_inflight", "reconcile_started",
+    "reconcile_succeeded", "remote_sync_blocked_action", "remote_turn_marked",
+    "transcript_committed_event_received",
+  ]);
+  var IDENTIFIER_FIELDS = new Set(["session_id", "active_session_id", "trace_id", "download_id"]);
+  var REVISION_FIELDS = new Set([
+    "session_revision", "committed_revision", "expected_committed_revision", "saved_revision", "event_revision",
+  ]);
+  var NUMBER_FIELDS = new Set([
+    "message_count", "chat_item_count", "queued_count", "expected_assistant_key_length",
+    "baseline_message_count", "minimum_terminal_message_count", "attempt", "attempts", "elapsed_ms",
+    "saved_message_count", "chunk_count", "bytes_received", "declared_total_bytes",
+    "cleanup_requested_count", "cleanup_failed_count", "cleanup_succeeded_count", "restored_queue_count",
+  ]);
+  var BOOLEAN_FIELDS = new Set([
+    "buffer_present", "local_turn_owned", "remote_turn_active", "remote_terminal_seen",
+    "loaded_from_disk", "buffer_busy", "ui_busy", "baseline_trusted", "preserve_committed_revision",
+    "snapshot_present", "completed_local_turn", "requires_authority_reconcile", "terminal_error_present",
+    "terminal_seen_before_event",
+    "concurrent_turn", "error_present", "cancellable_lease", "cancel_requested", "cancel_succeeded",
+    "desktop_online",
+  ]);
+  var ENUM_FIELDS = {
+    reason: new Set(["assistant_identity_missing", "invalid_snapshot", "load_session_error", "message_count_short", "revision_mismatch"]),
+    error_category: new Set(["cancel_rpc_failed", "command_rejected", "session_turn_in_progress", "snapshot_load_failed"]),
+    operation: new Set(["accept_plan", "edit_last_turn", "send", "send_to_session"]),
+    notice: new Set(["desktop_done_sync_pending", "remote_done_unsynced"]),
+    terminal_status: new Set(["Cancelled", "Canceled", "Completed", "Failed", "Interrupted", "cancelled", "canceled", "completed", "failed", "interrupted"]),
+    transport_kind: new Set(["desktop_invoke", "web_chunked_rpc"]),
+    status: new Set(["connected", "connecting", "desktop_offline", "error", "idle", "local", "unknown"]),
+    visibility: new Set(["hidden", "prerender", "unknown", "visible"]),
+  };
   var queue = [];
   var sequence = 0;
   var flushing = false;
@@ -32,16 +70,26 @@
   var clientRunId = randomId("authority_sync_client");
 
   function isSensitiveKey(key) {
-    var normalized = String(key || "").toLowerCase();
-    return /^(access_token|authorization|body|content|cookie|message|output|password|prompt|secret|text|token)$/.test(normalized) ||
-      /(_secret|_password|_access_token)$/.test(normalized);
+    var normalized = String(key || "").toLowerCase().replace(/-/g, "_");
+    return /^(access_token|api_key|authorization|body|content|cookie|credential|credentials|cwd|directory|error|file_path|id_token|local_path|message|output|password|path|prompt|refresh_token|request|response|secret|text|token|user_input)$/.test(normalized) ||
+      /(_access_token|_api_key|_authorization|_body|_content|_cookie|_credential|_credentials|_directory|_error|_file_path|_id_token|_local_path|_message|_output|_password|_path|_prompt|_refresh_token|_request|_response|_secret|_user_input)$/.test(normalized);
   }
 
   function cleanString(value) {
     return String(value == null ? "" : value)
+      .replace(/\b(?:Cookie|Set-Cookie)\s*:[^\r\n]*/gi, "Cookie: [REDACTED]")
       .replace(/[\r\n\t]+/g, " ")
       .replace(/\bBearer\s+\S+/gi, "Bearer [REDACTED]")
-      .replace(/([?&](?:access_token|token|secret|password)=)[^&#\s]+/gi, "$1[REDACTED]")
+      .replace(/\bBasic\s+\S+/gi, "Basic [REDACTED]")
+      .replace(/([?&](?:access_token|api_key|token|secret|password)=)[^&#\s]+/gi, "$1[REDACTED]")
+      .replace(/\b(?:access_token|api_key|authorization|cookie|token|secret|password)\s*=\s*[^\s;,]+/gi, function (match) {
+        return match.slice(0, match.indexOf("=") + 1) + "[REDACTED]";
+      })
+      .replace(/\bfile:\/\/\/?[^\s]+/gi, "[LOCAL_PATH]")
+      .replace(/\b[A-Za-z]:[\\/][^\s]+/g, "[LOCAL_PATH]")
+      .replace(/\\{2}[^\\\s]+\\[^\s]+/g, "[LOCAL_PATH]")
+      .replace(/(^|\s)~[\\/][^\s]+/g, "$1[LOCAL_PATH]")
+      .replace(/\/(?:Users|home|tmp|private\/var|var\/folders)\/[^\s]+/g, "[LOCAL_PATH]")
       .slice(0, MAX_STRING_CHARS);
   }
 
@@ -60,6 +108,59 @@
       return result;
     }
     return cleanString(value);
+  }
+
+  function allowedCause(value) {
+    if (new Set([
+      "accept_plan_concurrent_turn", "chat_done_without_local_owner", "edit_last_turn_concurrent_turn",
+      "local_send_concurrent_turn", "remote_user_message_event",
+    ]).has(value)) return true;
+    return /^event:chat:(delta|reasoning_delta|reasoning_done|reasoning_start|tool_end|tool_start|transient_error|turn_started|user_input_required|user_message)$/.test(value);
+  }
+
+  function normalizeDetails(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    var output = {};
+    Object.keys(value).forEach(function (key) {
+      var candidate = value[key];
+      if (key === "transport") {
+        output.transport = normalizeDetails(candidate);
+      } else if (IDENTIFIER_FIELDS.has(key) && typeof candidate === "string" &&
+          candidate.length <= 256 && /^[A-Za-z0-9_.:-]*$/.test(candidate)) {
+        output[key] = candidate;
+      } else if (REVISION_FIELDS.has(key) && typeof candidate === "string" &&
+          (candidate === "" || /^[A-Fa-f0-9]{64}$/.test(candidate))) {
+        output[key] = candidate.toLowerCase();
+      } else if (NUMBER_FIELDS.has(key) && (candidate === null ||
+          (Number.isSafeInteger(candidate) && candidate >= 0))) {
+        output[key] = candidate;
+      } else if (BOOLEAN_FIELDS.has(key) && typeof candidate === "boolean") {
+        output[key] = candidate;
+      } else if (key === "cause" && typeof candidate === "string" && allowedCause(candidate)) {
+        output.cause = candidate;
+      } else if (ENUM_FIELDS[key] && typeof candidate === "string" && ENUM_FIELDS[key].has(candidate)) {
+        output[key] = candidate;
+      } else if (key === "saved_roles" && Array.isArray(candidate) && candidate.length <= 12 &&
+          candidate.every(function (role) { return /^(assistant|invalid|system|tool|user)$/.test(role); })) {
+        output.saved_roles = candidate.slice();
+      }
+    });
+    return sanitize(output, 0);
+  }
+
+  function normalizeConnection(snapshot) {
+    snapshot = snapshot || {};
+    var output = {};
+    if (/^(desktop|unknown|web)$/.test(snapshot.platform_kind)) output.platform_kind = snapshot.platform_kind;
+    if (typeof snapshot.browser_online === "boolean") output.browser_online = snapshot.browser_online;
+    if (/^(hidden|prerender|unknown|visible)$/.test(snapshot.visibility)) output.visibility = snapshot.visibility;
+    if (/^(connected|connecting|credentials_missing|denied|desktop_offline|error|idle|incompatible_desktop|local|replaced|revoked|unknown)$/.test(snapshot.connection_status)) {
+      output.connection_status = snapshot.connection_status;
+    }
+    if (typeof snapshot.desktop_online === "boolean") output.desktop_online = snapshot.desktop_online;
+    if (typeof snapshot.endpoint_id === "string" && snapshot.endpoint_id.length <= 256 &&
+        /^[A-Za-z0-9_.:-]*$/.test(snapshot.endpoint_id)) output.endpoint_id = snapshot.endpoint_id;
+    return output;
   }
 
   function connectionSnapshot() {
@@ -141,16 +242,14 @@
   }
 
   function record(event, details) {
+    event = cleanString(event).replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 160);
+    if (!ALLOWED_EVENTS.has(event)) return "";
     var snapshot = connectionSnapshot();
     var entry = {
-      schema_version: 1,
-      occurred_at: new Date().toISOString(),
-      source: snapshot.platform_kind === "web" ? "web-ui" : "desktop-ui",
-      event: cleanString(event).replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 160),
+      event: event,
       event_id: clientRunId + "_" + (++sequence),
-      client_run_id: clientRunId,
-      connection: snapshot,
-      details: sanitize(details || {}, 0),
+      connection: normalizeConnection(snapshot),
+      details: normalizeDetails(details || {}),
     };
     queue.push(entry);
     if (queue.length > MAX_QUEUE_ENTRIES) queue.splice(0, queue.length - MAX_QUEUE_ENTRIES);

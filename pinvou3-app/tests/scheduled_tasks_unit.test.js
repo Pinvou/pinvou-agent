@@ -613,6 +613,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   runtimeOptions = runtimeOptions || {};
   var bridgeKind = runtimeOptions.bridgeKind === "web" ? "web" : "tauri";
   var listeners = Object.create(null);
+  var windowListeners = Object.create(null);
   var handlers = Object.create(null);
   var calls = [];
   var dialogCalls = [];
@@ -620,6 +621,10 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   var createdSession = 0;
   var structuredCloneCalls = 0;
   var storageData = sharedStorage || Object.create(null);
+  var webSupportedCommands = new Set(runtimeOptions.webSupportedCommands || []);
+  var webCapabilitiesReady = runtimeOptions.webCapabilitiesReady !== false;
+  var webConnectionState = Object.assign({ status: "connected", desktop_online: true }, runtimeOptions.webConnectionState || {});
+  var webConnectionStateReader = null;
   var storage = {
     getItem: function (key) { return Object.prototype.hasOwnProperty.call(storageData, key) ? storageData[key] : null; },
     setItem: function (key, value) { storageData[key] = String(value); },
@@ -713,7 +718,19 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
         },
       },
     },
-    addEventListener: function () {},
+    addEventListener: function (name, listener) {
+      if (!windowListeners[name]) windowListeners[name] = [];
+      windowListeners[name].push(listener);
+    },
+    removeEventListener: function (name, listener) {
+      windowListeners[name] = (windowListeners[name] || []).filter(function (candidate) {
+        return candidate !== listener;
+      });
+    },
+    dispatchEvent: function (event) {
+      (windowListeners[event.type] || []).slice().forEach(function (listener) { listener(event); });
+      return true;
+    },
     localStorage: storage,
     sessionStorage: storage,
     location: { search: "" },
@@ -726,7 +743,11 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
       isWeb: true,
       capabilities: {},
       can: function () { return false; },
-      canInvoke: function () { return false; },
+      canInvoke: function (command) { return webCapabilitiesReady && webSupportedCommands.has(command); },
+      areInvokeCapabilitiesReady: function () { return webCapabilitiesReady; },
+      getConnectionState: function () {
+        return webConnectionStateReader ? webConnectionStateReader(webConnectionState) : webConnectionState;
+      },
     };
   }
   window.window = window;
@@ -781,12 +802,30 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
       var event = { payload: payload || {} };
       return Promise.all(listeners[name].map(function (listener) { return listener(event); }));
     },
+    setWebCapabilities: function (commands) {
+      webSupportedCommands = new Set(commands || []);
+      webCapabilitiesReady = true;
+      window.dispatchEvent({
+        type: "pinvou:web-capabilities",
+        detail: { commands: Array.from(webSupportedCommands), events: [] },
+      });
+    },
+    setWebConnection: function (state) {
+      webConnectionState = Object.assign({}, webConnectionState, state || {});
+      window.dispatchEvent({ type: "pinvou:web-connection", detail: webConnectionState });
+    },
+    setWebConnectionStateReader: function (reader) {
+      webConnectionStateReader = typeof reader === "function" ? reader : null;
+    },
   };
 }
 
 async function interruptedWebSessionDownloadReleasesItsLease() {
   var sharedStorage = Object.create(null);
-  var harness = createBridgeHarness(sharedStorage, { bridgeKind: "web" });
+  var harness = createBridgeHarness(sharedStorage, {
+    bridgeKind: "web",
+    webSupportedCommands: ["web_access_cancel_session_download"],
+  });
   var sessionId = "chat-download-cancel";
   var saved = {
     metadata: { id: sessionId, title: "Download cancel", message_count: 0 },
@@ -844,7 +883,10 @@ async function interruptedWebSessionDownloadReleasesItsLease() {
     download_id: "download_reload_12345678",
     session_id: "chat-download-reload",
   }]);
-  var reloaded = createBridgeHarness(sharedStorage, { bridgeKind: "web" });
+  var reloaded = createBridgeHarness(sharedStorage, {
+    bridgeKind: "web",
+    webSupportedCommands: ["web_access_cancel_session_download"],
+  });
   reloaded.handlers.web_access_cancel_session_download = function () { return false; };
   assert.strictEqual(await reloaded.bridge.sessions.switchToSession("chat-download-reload"), true);
   var transferCalls = reloaded.calls.filter(function (call) {
@@ -860,7 +902,10 @@ async function interruptedWebSessionDownloadReleasesItsLease() {
 
 async function lostFirstWebSessionChunkStillHasCancellableLease() {
   var sharedStorage = Object.create(null);
-  var harness = createBridgeHarness(sharedStorage, { bridgeKind: "web" });
+  var harness = createBridgeHarness(sharedStorage, {
+    bridgeKind: "web",
+    webSupportedCommands: ["web_access_cancel_session_download"],
+  });
   var sessionId = "chat-download-first-response-lost";
   var requestedId = "";
   var loadCalls = 0;
@@ -1219,6 +1264,155 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   assert.strictEqual(finalAssistant.text.length, 4000, "subscription snapshot optimization must not lose text");
   unsubscribe();
   unsubscribeSecond();
+}
+
+async function olderDesktopUsesServerGeneratedSessionDownloadId() {
+  var harness = createBridgeHarness(null, { bridgeKind: "web", webSupportedCommands: [] });
+  var sessionId = "chat-legacy-download";
+  var saved = {
+    metadata: { id: sessionId, title: "Legacy download", message_count: 0 },
+    messages: [],
+    artifacts: [],
+  };
+  var encoded = Buffer.from(JSON.stringify(saved), "utf8");
+  var split = Math.max(1, Math.floor(encoded.length / 2));
+  var calls = 0;
+  harness.handlers.web_access_load_session_chunk = function (args) {
+    calls += 1;
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(args, "requestedDownloadId"), false,
+      "legacy first chunk must not send the new requestedDownloadId argument");
+    if (calls === 1) {
+      assert.strictEqual(args.downloadId, null);
+      return {
+        download_id: "download_server_legacy",
+        offset: 0,
+        total: encoded.length,
+        data_base64: encoded.subarray(0, split).toString("base64"),
+        eof: false,
+      };
+    }
+    assert.strictEqual(args.downloadId, "download_server_legacy",
+      "legacy follow-up chunks must use the desktop-generated id");
+    return {
+      download_id: "download_server_legacy",
+      offset: split,
+      total: encoded.length,
+      data_base64: encoded.subarray(split).toString("base64"),
+      eof: true,
+    };
+  };
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+  assert.strictEqual(calls, 2);
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_cancel_session_download"; }),
+    false,
+    "legacy success must not invoke the unsupported cancel command"
+  );
+}
+
+async function sessionDownloadWaitsForCapabilitySnapshot() {
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+  });
+  var sessionId = "chat-capabilities-late";
+  var pending = harness.bridge.sessions.switchToSession(sessionId);
+  await tick();
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false,
+    "connected-before-snapshot must not guess the legacy protocol"
+  );
+  harness.setWebCapabilities(["web_access_cancel_session_download"]);
+  assert.strictEqual(await pending, true);
+  var load = harness.calls.find(function (call) { return call.cmd === "web_access_load_session_chunk"; });
+  assert.ok(load.args.requestedDownloadId,
+    "the post-snapshot request must select the newly advertised cancellable protocol");
+}
+
+async function sessionDownloadCapabilityWaitStopsOnDisconnect() {
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+  });
+  var pending = harness.bridge.sessions.switchToSession("chat-capabilities-disconnected");
+  await tick();
+  harness.setWebConnection({ status: "desktop_offline", desktop_online: false });
+  assert.strictEqual(await pending, false);
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false,
+    "disconnect before the snapshot must reject without issuing a protocol-ambiguous load"
+  );
+}
+
+async function sessionDownloadCapabilityWaitRejectsAlreadyOfflineDesktop() {
+  var capabilityTimeouts = 0;
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+    webConnectionState: { status: "desktop_offline", desktop_online: false },
+    setTimeout: function (callback, delay) {
+      if (delay === 10_000) capabilityTimeouts += 1;
+      return setTimeout(callback, delay);
+    },
+  });
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession("chat-capabilities-already-offline"), false);
+  assert.strictEqual(capabilityTimeouts, 0,
+    "an already-offline desktop must reject before installing the 10 second timeout");
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false
+  );
+}
+
+async function sessionDownloadCapabilityWaitClosesLostDisconnectEventRace() {
+  var capabilityTimeouts = 0;
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+    setTimeout: function (callback, delay) {
+      if (delay === 10_000) capabilityTimeouts += 1;
+      return setTimeout(callback, delay);
+    },
+  });
+  var reads = 0;
+  harness.setWebConnectionStateReader(function () {
+    reads += 1;
+    return reads === 1
+      ? { status: "connected", desktop_online: true }
+      : { status: "desktop_offline", desktop_online: false };
+  });
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession("chat-capabilities-lost-disconnect"), false);
+  assert.ok(reads >= 2, "connection state must be checked before and after listener registration");
+  assert.strictEqual(capabilityTimeouts, 1,
+    "the race-closing check may install the timeout but must cancel it immediately");
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false
+  );
+}
+
+async function sessionDownloadCapabilityWaitHasTimeout() {
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+    setTimeout: function (callback, delay) {
+      if (delay === 10_000) {
+        queueMicrotask(callback);
+        return 1;
+      }
+      return setTimeout(callback, delay);
+    },
+  });
+  assert.strictEqual(await harness.bridge.sessions.switchToSession("chat-capabilities-timeout"), false);
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false
+  );
 }
 
 async function deepSeekTurnTimelineLifecycleBehavior() {
@@ -5008,6 +5202,12 @@ Promise.resolve()
   .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
   .then(interruptedWebSessionDownloadReleasesItsLease)
   .then(lostFirstWebSessionChunkStillHasCancellableLease)
+  .then(olderDesktopUsesServerGeneratedSessionDownloadId)
+  .then(sessionDownloadWaitsForCapabilitySnapshot)
+  .then(sessionDownloadCapabilityWaitStopsOnDisconnect)
+  .then(sessionDownloadCapabilityWaitRejectsAlreadyOfflineDesktop)
+  .then(sessionDownloadCapabilityWaitClosesLostDisconnectEventRace)
+  .then(sessionDownloadCapabilityWaitHasTimeout)
   .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(function () { return internalSubagentHandoffStaysOutOfPresentation("tauri"); })
   .then(function () { return internalSubagentHandoffStaysOutOfPresentation("web"); })

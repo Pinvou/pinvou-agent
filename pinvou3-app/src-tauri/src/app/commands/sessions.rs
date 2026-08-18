@@ -383,7 +383,8 @@ pub async fn load_session(
                     "session_id": id,
                     "set_active": set_active.unwrap_or(true),
                     "elapsed_ms": started.elapsed().as_millis(),
-                    "error": format!("{error:#}"),
+                    "error_category": "session_load_failed",
+                    "error_present": true,
                 }),
             );
             return Err(format!("load_session({id}): {error:#}"));
@@ -404,7 +405,8 @@ pub async fn load_session(
                     "session_id": id,
                     "message_count": session.messages.len(),
                     "elapsed_ms": started.elapsed().as_millis(),
-                    "error": format!("{error:#}"),
+                    "error_category": "revision_compute_failed",
+                    "error_present": true,
                 }),
             );
             return Err(format!("load_session({id}) revision: {error:#}"));

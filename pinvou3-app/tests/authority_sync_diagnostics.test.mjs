@@ -45,35 +45,78 @@ function harness({ web = false, available = true, fail = false } = {}) {
   return { window, storage, calls, connectionListener: () => connectionListener };
 }
 
-test('diagnostics redact content and flush one centralized batch', async () => {
+test('diagnostics allow-list metadata and drop privacy-sensitive fields', async () => {
   const { window, calls } = harness();
-  window.PinvouAuthoritySyncDiagnostics.record('reconcile_attempt', {
+  window.PinvouAuthoritySyncDiagnostics.record('reconcile_attempt_failed', {
     session_id: 'chat-safe',
     message_count: 3,
     message: 'private user text',
     access_token: 'private-token',
-    error: 'relay rejected Bearer inline-secret https://x.test/?token=query-secret',
+    error: 'private provider error response',
+    cancel_error: 'private cancellation response',
+    api_key: 'sk-private',
+    refresh_token: 'refresh-private',
+    id_token: 'id-private',
+    credential: 'credential-private',
+    user_input: 'private input',
+    request_prompt: 'private user prompt',
+    response_body: 'private model response',
+    local_path: 'C:\\Users\\alice\\session.json',
+    error_category: 'snapshot_load_failed',
+    reason_detail: 'Basic cHJpdmF0ZQ== Bearer inline-secret Cookie: sid=private\n' +
+      'https://x.test/?token=query-secret /home/alice/private.json',
   });
   await window.PinvouAuthoritySyncDiagnostics.flush();
   assert.ok(calls.length >= 1);
   const entries = calls.flatMap(call => call.args.entries);
-  const attempt = entries.find(entry => entry.event === 'reconcile_attempt');
+  const attempt = entries.find(entry => entry.event === 'reconcile_attempt_failed');
   assert.equal(attempt.details.session_id, 'chat-safe');
   assert.equal(attempt.details.message_count, 3);
-  assert.equal(attempt.details.message, '[REDACTED]');
-  assert.equal(attempt.details.access_token, '[REDACTED]');
-  assert.equal(attempt.details.error.includes('inline-secret'), false);
-  assert.equal(attempt.details.error.includes('query-secret'), false);
+  assert.equal(attempt.details.message, undefined);
+  assert.equal(attempt.details.access_token, undefined);
+  for (const key of [
+    'error', 'cancel_error', 'api_key', 'refresh_token', 'id_token', 'credential', 'user_input',
+    'request_prompt', 'response_body', 'local_path', 'reason_detail',
+  ]) {
+    assert.equal(attempt.details[key], undefined, `${key} must be dropped by the client schema`);
+  }
+  assert.equal(attempt.details.error_category, 'snapshot_load_failed');
+  const serialized = JSON.stringify(attempt);
+  for (const secret of [
+    'private provider', 'private cancellation', 'sk-private', 'private user prompt',
+    'private model response', 'refresh-private', 'id-private', 'credential-private', 'private input',
+    'alice', 'cHJpdmF0ZQ', 'inline-secret', 'sid=private',
+    'query-secret',
+  ]) {
+    assert.equal(serialized.includes(secret), false, `diagnostic leaked ${secret}`);
+  }
+  assert.deepEqual(Object.keys(attempt).sort(), ['connection', 'details', 'event', 'event_id']);
   assert.ok(calls.every(call => call.command === 'record_authority_sync_diagnostics'));
 });
 
 test('web diagnostics remain queued while unavailable', async () => {
   const { window, calls, storage } = harness({ web: true, available: false });
-  window.PinvouAuthoritySyncDiagnostics.record('reconcile_failed', { reason: 'load_error' });
+  window.PinvouAuthoritySyncDiagnostics.record('reconcile_attempt_failed', {
+    reason: 'load_session_error',
+    error_category: 'snapshot_load_failed',
+    error_present: true,
+  });
   await window.PinvouAuthoritySyncDiagnostics.flush();
   assert.equal(calls.length, 0);
   assert.ok(window.PinvouAuthoritySyncDiagnostics.pendingCount() >= 2);
   assert.ok(storage.get('pinvou.authority_sync.diagnostics.v1'));
+});
+
+test('unknown frontend diagnostic events are rejected before queueing', () => {
+  const { window } = harness({ web: true, available: false });
+  const before = window.PinvouAuthoritySyncDiagnostics.pendingCount();
+  assert.equal(
+    window.PinvouAuthoritySyncDiagnostics.record('forged_rust_backend_event', {
+      refresh_token: 'private',
+    }),
+    '',
+  );
+  assert.equal(window.PinvouAuthoritySyncDiagnostics.pendingCount(), before);
 });
 
 test('authority reconciliation lifecycle is covered by the centralized diagnostics', () => {
