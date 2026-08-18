@@ -41,10 +41,38 @@ assert.equal(modelErrors.isModelServiceError('permission denied while reading lo
 assert.equal(modelErrors.isModelServiceError('Error: claude.config.json: permission denied'), false);
 assert.equal(modelErrors.isModelServiceError('read llm_cache.db failed'), false);
 assert.equal(modelErrors.isModelServiceError('insufficient_quota'), true);
-assert.equal(modelErrors.isModelServiceError('timeout'), true);
-assert.equal(modelErrors.isModelServiceError('ECONNREFUSED'), true);
+// 裸泛化词不再无条件接管:本地工具错误(git/ssh/npm/docker/redis/脚本退出码)
+// 同样会说 timeout/connection refused/server error,只有底座模型调用前缀
+// (SSE stream/Chat API)或 API 上下文才判定为模型服务错误。
+assert.equal(modelErrors.isModelServiceError('timeout'), false);
+assert.equal(modelErrors.isModelServiceError('ECONNREFUSED'), false);
+assert.equal(modelErrors.isModelServiceError('curl: (28) Operation timed out after 30000ms'), false);
+assert.equal(modelErrors.isModelServiceError('tool exec failed: git clone https://example.com/repo.git: curl 28 timeout'), false);
+assert.equal(modelErrors.isModelServiceError('ssh: connect to host github.com port 22: Connection refused'), false);
+assert.equal(modelErrors.isModelServiceError('npm ERR! network request failed ECONNREFUSED 127.0.0.1:4873'), false);
+assert.equal(modelErrors.isModelServiceError('redis: Error 111 connecting to 127.0.0.1:6379. Connection refused.'), false);
+assert.equal(modelErrors.isModelServiceError('exit status 500'), false);
+assert.equal(modelErrors.isModelServiceError('mcp server httpbin returned HTTP 500'), false);
+assert.equal(modelErrors.isModelServiceError('local vllm health probe failed: HTTP 500'), false);
+assert.equal(modelErrors.isModelServiceError('HTTP 500: worker killed 内存耗尽 (OOM)'), false);
+// 第三方支付/托管平台的计费词带 "API" 上下文时仍会命中(计费语义本身正确,
+// 只是 provider 名可能不准);无 API 上下文的纯本地计费串不接管。
+assert.equal(modelErrors.isModelServiceError('Stripe API error: HTTP 402 payment required'), true);
+// "GitHub API:" 的裸 "API" 不是 api key/model service 级别的上下文信号,
+// 第三方平台限流保持原始错误展示。
+assert.equal(modelErrors.isModelServiceError('GitHub API: HTTP 403 rate limit exceeded'), false);
+assert.equal(modelErrors.isModelServiceError('billing service rejected the request'), false);
+// 底座固定前缀与 API 上下文仍必须命中。
+assert.equal(modelErrors.isModelServiceError('SSE stream request failed: HTTP 402'), true);
+assert.equal(modelErrors.isModelServiceError('SSE stream idle timeout after 30s — no data received'), true);
+assert.equal(modelErrors.isModelServiceError('Stream read error: connection reset by peer'), true);
+assert.equal(modelErrors.isModelServiceError('Failed to call DeepSeek Chat API: HTTP 401'), true);
+assert.equal(modelErrors.isModelServiceError('invalid api key'), true);
 assert.equal(modelErrors.isModelServiceError('quota exhausted'), true);
-assert.equal(modelErrors.isModelServiceError('HTTP 503 Service Unavailable'), true);
+assert.equal(modelErrors.isModelServiceError('model service HTTP 503 Service Unavailable'), true);
+// 裸 503 无模型上下文不接管(本地 MCP/vllm/脚本也可能 5xx);底座真实串
+// 必带 SSE stream/Chat API 前缀,不受影响。
+assert.equal(modelErrors.isModelServiceError('HTTP 503 Service Unavailable'), false);
 assert.doesNotMatch(
   modelErrors.build('HTTP 402 payment required', {
     language: 'en',
@@ -52,12 +80,33 @@ assert.doesNotMatch(
   }).title,
   /当前模型服务/,
 );
+// provider 标签优先取错误文本里的厂商信号,而非当前会话模型配置
+// (历史回合重建时两者可能不同)。
 assert.match(
-  modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123 api_key=sk-abc12345&token=demo'),
+  modelErrors.build('SSE stream request failed: connect to api.deepseek.com: HTTP 402', { language: 'zh-Hans' }).title,
+  /DeepSeek/,
+);
+// 分类顺序:OOM(内存耗尽)不再落到 quota;403+rate limit 共存按频控分。
+assert.equal(modelErrors.classify('HTTP 500: worker killed 内存耗尽 (OOM)').kind, 'server');
+assert.equal(modelErrors.classify('HTTP 403 forbidden: rate limit exceeded').kind, 'rate_limit');
+// 脱敏:除占位符存在外,原始凭证实文必须消失。
+const basicRedacted = modelErrors.redactTechnicalDetail('Authorization: Basic dXNlcjpwYXNzd29yZA==');
+assert.match(basicRedacted, /\[敏感信息已隐藏\]/);
+assert.doesNotMatch(basicRedacted, /dXNlcjpwYXNzd29yZA==/, 'Basic credentials must be redacted');
+const skRedacted = modelErrors.redactTechnicalDetail('request failed with key sk-proj-abc123defGHIxyz');
+assert.doesNotMatch(skRedacted, /sk-proj-abc123defGHIxyz/, 'bare sk- keys must be redacted');
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('input token: 15000 exceeds maximum context length of 8192'),
   /\[敏感信息已隐藏\]/,
+  'token usage counters must not be redacted',
+);
+assert.doesNotMatch(
+  modelErrors.redactTechnicalDetail('monkey:bar unrelated'),
+  /\[敏感信息已隐藏\]/,
+  'words merely ending in "key" must not trigger redaction',
 );
 assert.match(
-  modelErrors.redactTechnicalDetail('{"key":"sk-proj-secret123XYZ"} Authorization=sk-abcdefghijklmnopqrstuvwxyz'),
+  modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123 api_key=sk-abc12345&token=demo'),
   /\[敏感信息已隐藏\]/,
 );
 const cleanupState = { settings: { language: 'ja' }, chatItems: [] };
@@ -136,12 +185,36 @@ assert.equal(
 assert.equal(modelErrorState.chatItems.length, 3, 'non-model-service errors must not add model service notices');
 const transientState = { settings: { language: 'zh-Hans' }, chatItems: [] };
 messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
-  { error: 'HTTP 503 Service Unavailable' },
+  { error: 'SSE stream request failed: HTTP 503 Service Unavailable' },
   transientState,
   (text, metadata) => transientState.chatItems.push({ text, ...metadata }),
   false,
 );
 assert.doesNotMatch(transientState.chatItems[0].text, /已停止/);
+// 同一回合 transient → done 连续序列:transient 先以 recoverable 措辞入列,
+// done 到达时必须按错误身份(kind+technicalDetail)升级同一条目,而不是因
+// terminal 措辞不同新增第二条(旧实现按文本全等去重,必然双气泡且措辞矛盾)。
+const transientThenDoneState = { settings: { language: 'zh-Hans' }, chatItems: [] };
+const pushToSeqState = (text, metadata) => transientThenDoneState.chatItems.push({ text, ...metadata });
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: 'SSE stream request failed: HTTP 402 insufficient balance' },
+  transientThenDoneState,
+  pushToSeqState,
+  false,
+);
+assert.equal(transientThenDoneState.chatItems.length, 1);
+assert.match(transientThenDoneState.chatItems[0].text, /继续重试/, 'transient notice uses recoverable wording');
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: 'SSE stream request failed: HTTP 402 insufficient balance' },
+  transientThenDoneState,
+  pushToSeqState,
+  true,
+);
+assert.equal(transientThenDoneState.chatItems.length, 1, 'terminal notice must upgrade the transient item, not add a second bubble');
+const upgraded = transientThenDoneState.chatItems[0];
+assert.match(upgraded.text, /本次回复已停止/, 'upgraded item switches to terminal wording');
+assert.equal(upgraded.legacyConversationOnly, true, 'upgraded item is hidden from the unified timeline');
+assert.equal(upgraded.userError.kind, 'billing');
 
 const terminalSandbox = { window: {}, Date };
 vm.runInNewContext(modelServiceErrorsSource, terminalSandbox, { filename: 'model-service-errors.js' });

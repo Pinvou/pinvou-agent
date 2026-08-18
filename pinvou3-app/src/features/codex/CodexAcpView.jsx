@@ -1280,10 +1280,15 @@ export function CodexAcpView({
   // （kb_collection_list / kb_model_status，全局只读、不带会话）自行加载，代码页
   // 不再重复拉取（PR #214 统一底栏控件时移除 nativeKb* 本地变量）。
   const nativeProjection = useMemo(
-    () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId) : null),
+    () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId, {
+      // 与主聊天 ChatView 同款:时间线错误卡的友好文案按界面语言构建,
+      // provider 标签从 bridge state 推导(内部仍以错误文本里的厂商信号优先)。
+      language: bs && bs.settings && bs.settings.language,
+      modelServiceState: bs,
+    }) : null),
     // nativeLaneTick 是 lane 内容变化的版本号（lane 本体是可变对象，靠 tick 触发重投影）。
     // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the version counter of the mutable lane object; it must stay in deps to trigger re-projection
-    [isNativeAgent, activeNativeLane, activeId, nativeLaneTick],
+    [isNativeAgent, activeNativeLane, activeId, nativeLaneTick, bs],
   );
   const visibleTurns = useMemo(
     () => (isNativeAgent
