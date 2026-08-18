@@ -304,7 +304,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   assert.match(commandSource, /snapshot\.available_role_lines\(task\)/, '候选提醒必须从本轮名册快照筛选，避免提示与实际派工错位');
   assert.match(rosterSource, /EXPERT_CANDIDATE_LIMIT:\s*usize\s*=\s*20/, '父模型每轮最多看到 20 位专家短候选');
   assert.match(rosterSource, /personas::executable_cards\(\)/, '每轮名册与候选必须一次读取可执行专家卡，不能逐张读取形成竞态');
-  assert.match(personasSource, /pub fn executable_summaries\(\)[\s\S]{0,900}filter\(\|card\| !card\.conversational_only\)/, '纯对话专家卡不得注册为执行型子智能体');
+  assert.match(personasSource, /pub fn executable_cards\(\)[\s\S]{0,900}filter\(\|card\| !card\.conversational_only\)/, '纯对话专家卡不得注册为执行型子智能体');
   assert.match(rosterSource, /if card\.source == "user" \|\| score > 0/, '用户自创专家优先保留，内置专家按本轮相关性入选');
   assert.match(
     commandSource,

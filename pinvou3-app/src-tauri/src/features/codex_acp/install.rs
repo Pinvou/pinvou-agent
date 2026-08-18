@@ -1363,39 +1363,6 @@ pub(super) fn stale_official_target(target: &Path, resolved_ok: Option<&Path>) -
     !is_working_file || !resolved_ok.is_some_and(|path| path == target)
 }
 
-pub(super) fn stale_official_target_detects_broken_residual() {
-    let root = std::env::temp_dir().join(format!(
-        "pinvou3-acp-stale-target-test-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-
-    let target = root.join("claude");
-    std::fs::write(&target, "not a real binary").unwrap();
-    // 探测没解析到任何路径 → 坏残留。
-    assert!(stale_official_target(&target, None));
-    // 探测解析到另一份拷贝 → 该路径文件仍是不可用残留。
-    assert!(stale_official_target(
-        &target,
-        Some(Path::new("/elsewhere/claude"))
-    ));
-    // 探测解析到同一路径（版本可用）→ 正常安装，不拦截。
-    assert!(!stale_official_target(&target, Some(&target)));
-    // 0 字节半成品（下载中断）→ 坏残留。
-    let empty = root.join("kimi");
-    std::fs::write(&empty, "").unwrap();
-    assert!(stale_official_target(&empty, None));
-    // 目录占据文件路径（脚本失败遗留）→ 挡住脚本写入，坏残留。
-    let dir = root.join("codex");
-    std::fs::create_dir_all(&dir).unwrap();
-    assert!(stale_official_target(&dir, None));
-    // 目标不存在 → 全新安装，不拦截。
-    assert!(!stale_official_target(&root.join("absent"), None));
-
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
 pub(super) async fn stream_install_lines<R: AsyncRead + Unpin>(
     app: &AppHandle,
     backend: AgentBackend,

@@ -178,12 +178,6 @@ mod type_tests {
         assert!(json.contains("\"pending_plan_id\":\"plan-1\""));
         assert!(!json.contains("plan_claim_in_flight"));
     }
-
-    #[test]
-    fn pinvou_review_default_off() {
-        let s = SessionModeState::default();
-        assert!(!s.pinvou_review_enabled);
-    }
 }
 
 // ── SessionStore 行为 impl ──
@@ -423,13 +417,6 @@ impl SessionStore {
         Ok(entry.clone())
     }
 
-    pub fn set_pinvou_review(&self, id: &str, enabled: bool) {
-        let default_mode = self.resolved_default_mode(id);
-        let mut m = self.mode_states.write();
-        let entry = Self::mode_state_entry(&mut m, id, default_mode);
-        entry.pinvou_review_enabled = enabled;
-    }
-
     pub fn reset_mode_state(&self, id: &str) {
         self.mode_states.write().remove(id);
         if self.session_mode_states.write().remove(id).is_some() {
@@ -483,14 +470,6 @@ impl SessionStore {
         let default_mode = self.resolved_default_mode(id);
         Self::mode_state_entry(&mut self.mode_states.write(), id, default_mode)
             .pending_persona_body = body;
-    }
-
-    pub fn take_pending_persona_body(&self, id: &str) -> Option<String> {
-        self.mode_states
-            .write()
-            .get_mut(id)?
-            .pending_persona_body
-            .take()
     }
 
     pub fn set_mounted_collection(&self, id: &str, collection_id: Option<i64>) {

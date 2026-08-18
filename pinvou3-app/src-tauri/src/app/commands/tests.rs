@@ -1432,7 +1432,7 @@ fn validate_user_path_blocks_ssh() {
 /// L2-3: 系统级敏感前缀拦截 — /etc/shadow 等被列在 BLOCKED_PREFIXES。
 #[test]
 fn validate_user_path_blocks_etc_shadow() {
-    if !crate::platform::capabilities::is_unix() {
+    if !cfg!(unix) {
         return;
     }
     let result = validate_user_path("/etc/shadow");

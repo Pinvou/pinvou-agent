@@ -390,14 +390,4 @@ mod tests {
         assert!(!point_in_rect(-1, 10, 0, 0, 100, 100));
         assert!(point_in_rect(2000, 50, 1920, 0, 1920, 1080)); // 第二屏
     }
-
-    #[test]
-    fn detached_url_contract_uses_ui_cache_schema() {
-        let query = format!(
-            "ui={}&detached=1&kind={}",
-            crate::platform::ui_cache::UI_CACHE_SCHEMA,
-            urlencode("session")
-        );
-        assert_eq!(query, "ui=vite-react-1&detached=1&kind=session");
-    }
 }

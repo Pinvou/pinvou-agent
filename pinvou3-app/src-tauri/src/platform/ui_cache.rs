@@ -199,3 +199,15 @@ mod tests {
             .any(|(key, _)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE"));
     }
 }
+
+#[cfg(test)]
+mod schema_tests {
+    use super::UI_CACHE_SCHEMA;
+
+    // 钉住 schema 值本身：它同时拼进主窗口与撕离窗口的入口 URL（见
+    // pet/platform/detach.rs 与 tauri.conf.json），改动必须有意识。
+    #[test]
+    fn ui_cache_schema_is_pinned() {
+        assert_eq!(UI_CACHE_SCHEMA, "vite-react-1");
+    }
+}

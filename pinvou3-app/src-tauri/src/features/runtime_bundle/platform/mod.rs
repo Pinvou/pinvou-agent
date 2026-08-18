@@ -110,7 +110,7 @@ fn work_layer_sections() -> (&'static str, &'static str) {
 }
 
 /// work 模式完整 instructions（共享骨架 + work 层占位替换）。
-/// 与拆分前 instructions.md 逐字节相等（golden 测试 `work_instructions_render_byte_identical_to_legacy` 锁定）。
+/// 与拆分前 instructions.md 逐字节相等。
 pub fn instructions_md() -> &'static str {
     static RENDERED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     RENDERED.get_or_init(|| {

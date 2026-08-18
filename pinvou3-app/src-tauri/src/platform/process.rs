@@ -14,10 +14,6 @@ impl HiddenCommand {
     }
 }
 
-pub(crate) fn python_command() -> Command {
-    HiddenCommand::new(crate::platform::paths::python_command())
-}
-
 fn is_windows_command_script(executable: &Path) -> bool {
     executable
         .extension()
