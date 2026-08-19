@@ -1,0 +1,6 @@
+{"monotonic_ns":1000000,"channel":"client_to_server","line":"{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"capture-fixture\",\"version\":\"0.0.0\"}}}"}
+{"monotonic_ns":1000100,"channel":"server_to_client","line":"{\"method\":\"server/status\",\"params\":{\"phase\":\"starting\"}}"}
+{"monotonic_ns":1000200,"channel":"stderr","line":"fixture diagnostic only"}
+{"monotonic_ns":1000300,"channel":"server_to_client","line":"{\"id\":1,\"result\":{\"serverInfo\":{\"name\":\"fixture-server\",\"version\":\"0.0.0\"}}}"}
+{"monotonic_ns":1000400,"channel":"server_to_client","line":"{\"method\":\"fixture/unknown-notification\",\"params\":{\"ignored\":true}}"}
+{"monotonic_ns":1000500,"channel":"client_to_server","line":"{\"method\":\"initialized\",\"params\":{}}"}
