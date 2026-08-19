@@ -98,7 +98,7 @@ pub struct L1Store {
     /// `set_embedder` 热加载,所有 L1Store clone(含已在跑的后台线程/会话)立即见新,免重启。
     embedder: Arc<RwLock<Option<Arc<Embedder>>>>,
     /// embedder 空闲卸载巡检的活动时钟（UNIX 秒）：取用模型的路径（向量化、
-    /// 检索向量、远程查询嵌入）经 [`Self::embedder`] 刷新，模型热加载经
+    /// 检索向量）经 [`Self::embedder`] 刷新，模型热加载经
     /// [`Self::note_embed_activity`] 重置。KnowledgeService 的后台巡检据此
     /// 判定空闲并 `set_embedder(None)` 卸载 ~570MB 模型。u64 秒 + MAX 起始
     /// 值 → 「从未活动」= 永不触发卸载（保守）。

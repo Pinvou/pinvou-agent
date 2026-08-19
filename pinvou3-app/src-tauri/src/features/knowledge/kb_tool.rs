@@ -322,6 +322,19 @@ impl ToolSpec for KbSearchTool {
 
         if !collection_ids.is_empty() {
             if let Some(kb) = self.app.try_state::<KnowledgeService>() {
+                // 模型可能已被空闲卸载（卸载不刷新工具门控，门控只在发消息时快
+                // 照式重算）：挂载存在即真实使用意图，先在后台线程重载模型再检
+                // 索，本会话后续轮次恢复语义检索。租约内并发调用会等待先行加载
+                // 后短路返回；加载失败保持纯全文降级，不阻断本次检索。
+                if !kb.semantic_ready() && super::model_download::model_installed() {
+                    let service = kb.inner().clone();
+                    if let Err(error) =
+                        tauri::async_runtime::spawn_blocking(move || service.reload_embedder())
+                            .await
+                    {
+                        eprintln!("[knowledge] kb_search 前重载模型失败（降级纯全文）: {error}");
+                    }
+                }
                 let l1 = kb.l1().clone();
                 let q = query.clone();
                 let local_ids = collection_ids.clone();

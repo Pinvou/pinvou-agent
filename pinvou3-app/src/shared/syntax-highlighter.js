@@ -68,13 +68,17 @@ function genericLog(hljsApi) {
   };
 }
 
+// 别名表是反查表(LAZY_ALIAS_TO_CANONICAL)与注册后别名注册(registerAliasesFor)
+// 的单一真相源:核心语言的常用别名 + 懒语言的 hljs 内建别名(注册前围栏写这些
+// 别名也必须能触发懒加载,否则永久回落纯文本)。内建别名清单来自 highlight.js
+// 11.11.1 各语言模块自带 aliases(注册后回读核验)。
 const EXPLICIT_ALIASES = {
   javascript: ['js', 'jsx', 'mjs', 'cjs'],
   typescript: ['ts', 'tsx', 'mts', 'cts'],
   python: ['py', 'py3'],
   csharp: ['cs', 'c#'],
   cpp: ['c++', 'cc', 'cxx', 'hpp'],
-  objectivec: ['objc', 'objective-c'],
+  objectivec: ['objc', 'objective-c', 'mm', 'obj-c', 'obj-c++', 'objective-c++'],
   fsharp: ['fs', 'f#'],
   bash: ['sh', 'zsh'],
   powershell: ['ps1', 'pwsh'],
@@ -83,13 +87,35 @@ const EXPLICIT_ALIASES = {
   markdown: ['md', 'mdown'],
   protobuf: ['proto'],
   dockerfile: ['docker'],
-  makefile: ['make'],
+  makefile: ['make', 'mk', 'mak'],
   x86asm: ['asm', 'assembly'],
   xml: ['html', 'xhtml', 'svg', 'vue', 'svelte'],
   plaintext: ['text', 'txt', 'plain'],
   pgsql: ['postgres', 'postgresql'],
   properties: ['props'],
-  handlebars: ['hbs'],
+  handlebars: ['hbs', 'html.hbs', 'html.handlebars', 'htmlbars'],
+  apache: ['apacheconf'],
+  clojure: ['clj', 'edn'],
+  cmake: ['cmake.in'],
+  coffeescript: ['coffee', 'cson', 'iced'],
+  dns: ['bind', 'zone'],
+  elixir: ['ex', 'exs'],
+  erlang: ['erl'],
+  graphql: ['gql'],
+  haskell: ['hs'],
+  kotlin: ['kt', 'kts'],
+  latex: ['tex'],
+  lua: ['pluto'],
+  mipsasm: ['mips'],
+  ocaml: ['ml'],
+  perl: ['pl', 'pm'],
+  q: ['k', 'kdb'],
+  qml: ['qt'],
+  reasonml: ['re'],
+  scheme: ['scm'],
+  stata: ['do', 'ado'],
+  tcl: ['tk'],
+  vbnet: ['vb'],
 };
 const LANGUAGE_DEFINITIONS = [
   ['bash', bash], ['c', c], ['cpp', cpp], ['csharp', csharp], ['css', css], ['diff', diff], ['dockerfile', dockerfile], ['go', go], ['http', http], ['ini', ini], ['java', java], ['javascript', javascript], ['json', json], ['markdown', markdown], ['nginx', nginx], ['php', php], ['plaintext', plaintext], ['powershell', powershell], ['python', python], ['ruby', ruby], ['rust', rust], ['shell', shell], ['sql', sql], ['typescript', typescript], ['xml', xml], ['yaml', yaml],

@@ -1,8 +1,9 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore } from 'react';
 import { Check, Sparkles, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { createTurndownService } from '../../shared/turndown-factory.js';
+import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 
 const markdownFenceFor = (text) => {
   const runs = String(text || '').match(/`{3,}/g) || [];
@@ -47,6 +48,8 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   const applyingHtmlRef = useRef(false);
   const turndownRef = useRef(null);
   const turndownReadyRef = useRef(null);
+  // applyMarkdownToDom 定义在下方;懒语言重放 effect 声明在其前,经 ref 取用。
+  const applyMarkdownToDomRef = useRef(null);
 
   const [draft, setDraft] = useState(initialText || '');
   const [saveState, setSaveState] = useState('idle');
@@ -54,6 +57,14 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   const [selectionUi, setSelectionUi] = useState(null);
   const [aiInputOpen, setAiInputOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState('');
+  // 懒语言注册完成后 bump 版本号:仅在没有未保存编辑时把当前草稿重新渲染进
+  // DOM 恢复高亮;有编辑时不重放,避免覆盖 DOM 里尚未投影的修改。
+  const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
+  useEffect(() => {
+    if (latestDraftRef.current === lastSavedRef.current) {
+      applyMarkdownToDomRef.current?.(latestDraftRef.current);
+    }
+  }, [syntaxVersion]);
 
   // turndown 就绪前 handleInput 不做 DOM→Markdown 投影,这段编辑只留在 DOM 里;
   // 就绪回调补一次投影,避免 blur/unmount 保存时丢失。加载失败(如动态 import
@@ -92,6 +103,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
       applyingHtmlRef.current = false;
     });
   }, []);
+  applyMarkdownToDomRef.current = applyMarkdownToDom;
 
   useEffect(() => {
     const text = initialText || '';

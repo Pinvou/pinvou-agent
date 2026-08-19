@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, Plus, Sparkles, User, X } from '../../components/icons.jsx';
 import { IosSearchField } from '../../components/IosControls.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 
 // 共享小件(部门配色/头像块/多语言取名)抽到 persona-shared.jsx:ChatView 等
 // 主 chunk 消费方直接从那里 import,卡池视图才可能独立懒加载 chunk。
@@ -14,6 +15,8 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
     const PersonaDetailModal = ({ card, originRect, equipped, onClose, onEquip, t }) => {
       const panelRef = useRef(null);
       const [body, setBody] = useState(null); // null=loading
+      // 懒语言注册完成后 bump 版本号:人设正文是一次性 innerHTML,重算恢复高亮。
+      const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
       useEffect(() => {
         const panel = panelRef.current;
         if (panel && originRect) {
@@ -53,7 +56,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
               <p className="text-[12px] uppercase mb-2" style={{ color:'#8E8E93' }}>{t.cpFullBody}</p>
               {body===null
                 ? <div className="text-[14px] py-8 text-center" style={{ color:'#8E8E93' }}>{t.cpBodyLoading}</div>
-                : <div className="persona-body text-[14px] leading-relaxed light-code dark-code text-[#1C1C1E] dark:text-[#C7C7CC]" dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown ? bridge.rendering.renderMarkdown(body) : body }} />}
+                : <div key={`syntax-${syntaxVersion}`} className="persona-body text-[14px] leading-relaxed light-code dark-code text-[#1C1C1E] dark:text-[#C7C7CC]" dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown ? bridge.rendering.renderMarkdown(body) : body }} />}
             </div>
             {/* 加持/取消 */}
             <div className="p-4 shrink-0 border-t border-[rgba(198,198,200,.5)] dark:border-[#38383A]">

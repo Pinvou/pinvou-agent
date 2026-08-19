@@ -61,6 +61,9 @@ pub struct ScanState {
 }
 
 /// 知识服务：L0 元数据库 + 后台扫描状态 + L1 知识库(共享同一连接)。Tauri managed state。
+/// Clone 是句柄语义（内部全 Arc/连接池）：后台导入线程持 clone 补载模型并
+/// 经 `install_embedder` 启动空闲巡检，与 managed state 共享同一份运行时状态。
+#[derive(Clone)]
 pub struct KnowledgeService {
     store: Store,
     l1: l1::L1Store,
@@ -240,11 +243,39 @@ impl KnowledgeService {
         });
     }
 
-    /// 后台索引启动前调用：模型在但被空闲卸载时，先同步尝试热加载（阻塞读
-    /// ONNX ~570MB，只在导入线程，不占 UI）。索引需要向量化，模型缺位会让
-    /// 整个导入静默降级为纯全文（chunks.vec 全 NULL，事后无法补）。
-    pub fn reload_embedder_if_idle_unloaded_blocking(&self) {
-        reload_if_idle_unloaded(&self.l1);
+    /// 后台索引入口的补载：模型被空闲卸载或被首帧门控跳过（deferred）后，导入
+    /// 线程在向量化开始前同步重载（阻塞读 ONNX ~570MB，只在导入线程，不占 UI）。
+    /// 索引需要向量化，模型缺位会让整个导入静默降级为纯全文（chunks.vec 全
+    /// NULL，事后无法补）。必须经 `install_embedder` 落位：补载是首帧门控主干
+    /// 路径（deferred→导入）上的**首次也是唯一**一次加载，绕过它会让空闲卸载
+    /// 巡检永不启动，~570MB 常驻直到退出。
+    fn reload_embedder_if_import_needed(&self) {
+        self.reload_embedder_if_import_needed_with(model_download::model_installed(), || {
+            Self::load_embedder(Some(&model_dir()))
+        });
+    }
+
+    /// 上一方法的可测核心：`model_installed` 与加载器注入，便于断言门控与
+    /// 失败路径不落 embedder、不误起巡检。成功路径经 install_embedder 语义
+    /// 由既有 KbModelStatus/deferred 契约测试覆盖。
+    fn reload_embedder_if_import_needed_with(
+        &self,
+        model_installed: bool,
+        load: impl FnOnce() -> Result<Arc<embed::Embedder>, String>,
+    ) {
+        if self.l1.has_embedder() || !model_installed {
+            return;
+        }
+        match load() {
+            Ok(embedder) => {
+                self.install_embedder(embedder);
+                eprintln!("[knowledge] 导入前重载 embedding 模型完成（向量化解锁）");
+            }
+            Err(error) => {
+                // 与首帧加载同语义：加载失败保持全文降级，不阻断导入。
+                eprintln!("[knowledge] 导入前重载 embedding 模型失败（降级仅全文）: {error}");
+            }
+        }
     }
 
     /// 热加载 embedding 模型（按需下载完成后调）：按 dev-env 优先 / 下载落点兜底重新定位并加载，
@@ -361,7 +392,9 @@ impl KnowledgeService {
     fn launch_import(&self, job_id: String) {
         self.index_cancel.store(false, Ordering::Relaxed);
         let imports = self.imports.clone();
-        let l1 = self.l1.clone();
+        // 服务句柄（Clone 共享同一份 embedder 槽/巡检状态）：导入线程用它补载
+        // 模型，必须经 install_embedder 语义落位，否则空闲卸载巡检不会启动。
+        let service = self.clone();
         let cancel = self.index_cancel.clone();
         let active = self.active_import.clone();
         // panic 兜底需要一份不被闭包 move 走的句柄，否则 panic 后无法清理。
@@ -373,9 +406,11 @@ impl KnowledgeService {
             // 进程死亡已由启动时的 recover_interrupted 兜底，但进程内线程 panic 不会
             // 触发它：若不在此兜住，active_import 会永久卡在已死的任务上，直到完全重启。
             let outcome = catch_unwind(AssertUnwindSafe(move || {
-                // 模型可能已被空闲卸载：索引需要向量化，模型缺位会让整个导入
-                // 静默降级为纯全文（chunks.vec 全 NULL，事后无法补），先补载。
-                reload_if_idle_unloaded(&l1);
+                // 模型可能已被空闲卸载或被首帧门控跳过：索引需要向量化，模型缺位
+                // 会让整个导入静默降级为纯全文（chunks.vec 全 NULL，事后无法补），
+                // 先经 install_embedder 补载。
+                service.reload_embedder_if_import_needed();
+                let l1 = service.l1().clone();
                 let state = match imports.state(&job_id) {
                     Ok(v) => v,
                     Err(_) => {
@@ -535,24 +570,9 @@ impl KnowledgeService {
     }
 }
 
-/// 后台索引入口的补载：模型被空闲卸载后，导入线程在向量化开始前同步重载
-/// （阻塞读 ONNX ~570MB，只占导入线程）。模型缺位会让整个导入静默降级为纯
-/// 全文（chunks.vec 全 NULL，事后无法补），必须先补。失败保持全文降级不阻断。
-fn reload_if_idle_unloaded(l1: &l1::L1Store) {
-    if !l1.has_embedder() && model_download::model_installed() {
-        match KnowledgeService::load_embedder(Some(&model_dir())) {
-            Ok(embedder) => {
-                l1.note_embed_activity();
-                l1.set_embedder(Some(embedder));
-                eprintln!("[knowledge] 导入前重载 embedding 模型完成（向量化解锁）");
-            }
-            Err(error) => {
-                // 与首帧加载同语义：加载失败保持全文降级，不阻断导入。
-                eprintln!("[knowledge] 导入前重载 embedding 模型失败（降级仅全文）: {error}");
-            }
-        }
-    }
-}
+/// 后台索引入口的补载实现已上收到 `KnowledgeService::
+/// reload_embedder_if_import_needed`（导入线程持有服务句柄，补载必须经
+/// install_embedder 启动空闲巡检，自由函数直写 l1 槽会绕过巡检启动）。
 
 fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
     let ex = Excluder::default();
@@ -847,4 +867,45 @@ pub async fn kb_search(
 pub async fn kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, String> {
     let store = state.store.clone();
     spawn_db(move || store.stats().map_err(|e| e.to_string())).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn service() -> KnowledgeService {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3_kb_import_reload_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        KnowledgeService::new(&dir.join("index.db")).expect("KnowledgeService::new")
+    }
+
+    /// 导入补载的门控契约：模型未安装或已在位时不发起加载（加载器注入计数
+    /// 验证门控短路），加载失败不落 embedder、不误起空闲巡检（补载失败走
+    /// 纯全文降级，起巡检只会空转）。
+    #[test]
+    fn import_reload_skips_when_installed_or_ready_and_survives_load_failure() {
+        let svc = service();
+        let mut calls = 0;
+        svc.reload_embedder_if_import_needed_with(false, || {
+            calls += 1;
+            unreachable!("模型未安装不应触发加载")
+        });
+        assert_eq!(calls, 0);
+        assert!(!svc.semantic_ready());
+
+        let svc = service();
+        svc.reload_embedder_if_import_needed_with(true, || Err("模拟加载失败".into()));
+        assert!(!svc.semantic_ready(), "加载失败不得落入 embedder 槽");
+        assert!(
+            svc.embedder_reaper.lock().is_none(),
+            "加载失败不应启动空闲巡检"
+        );
+
+        let svc = service();
+        svc.reload_embedder_if_import_needed_with(true, || Err("再次失败".into()));
+        assert!(!svc.semantic_ready(), "失败后再次导入仍应重试补载");
+    }
 }

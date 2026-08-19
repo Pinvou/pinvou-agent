@@ -316,4 +316,17 @@ unsubscribe();
 await waitForLazyHighlight('asm', 'mov eax, 1\nret\n');
 assert.equal(notified, 1, 'unsubscribed listener must not be called again');
 
+// hljs 内建别名(EXPLICIT_ALIASES 之外、语言模块自带 aliases):修复前反查表
+// 不含这些别名,```tex/```clj 等围栏永不触发懒加载、永久纯文本;并入
+// EXPLICIT_ALIASES 单一真相源后与自定义别名同路径恢复。
+const texBefore = highlightCode('\\documentclass{article}\n', 'tex');
+assert.equal(texBefore.highlighted, false, 'builtin alias must fall back to plaintext before loading');
+assert.equal(normalizeSyntaxLanguage('tex'), 'tex', 'builtin alias must keep its token before loading (same contract as custom aliases)');
+const texAfter = await waitForLazyHighlight('tex', '\\documentclass{article}\n');
+assert.equal(texAfter.highlighted, true, 'builtin alias tex must highlight after latex loads');
+assert.equal(texAfter.language, 'latex', 'tex alias must normalize to latex after loading');
+const cljAfter = await waitForLazyHighlight('clj', '(defn probe [x] x)\n');
+assert.equal(cljAfter.highlighted, true, 'builtin alias clj must highlight after clojure loads');
+assert.equal(cljAfter.language, 'clojure', 'clj alias must normalize to clojure after loading');
+
 console.log('Markdown syntax highlighting contract: ok');

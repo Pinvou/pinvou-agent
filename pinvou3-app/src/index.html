@@ -210,7 +210,12 @@
       s.setAttribute('data-personas-i18n', '1');
       s.src = '%BASE_URL%features/personas/personas-i18n.js';
       s.onload = function () { __PINVOU_STARTUP__.mark('app:personas_i18n_loaded'); };
-      s.onerror = function () { __PINVOU_STARTUP__.mark('app:personas_i18n_error'); };
+      // 加载失败必须移除元素:main.jsx 的 UI 语言兜底靠 querySelector 找在途
+      // 脚本,元素残留会让兜底只挂一个永不触发的 load 监听,形成死路。
+      s.onerror = function () {
+        __PINVOU_STARTUP__.mark('app:personas_i18n_error');
+        s.remove();
+      };
       document.head.appendChild(s);
     })();
   </script>
