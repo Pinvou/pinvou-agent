@@ -444,6 +444,7 @@ command_protocol!(
     voice_protocol,
     "voice.rs",
     [
+        "set_voice_shortcut_enabled",
         "transcribe_voice_audio",
         "postprocess_voice_text",
         "reset_microphone_permission",

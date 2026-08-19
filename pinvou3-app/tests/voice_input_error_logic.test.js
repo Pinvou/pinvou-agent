@@ -142,6 +142,22 @@ assert.strictEqual(
   ruleContext.applyVoiceDeterministicCorrections("pin voltage", ""),
   "pin voltage",
 );
+assert.strictEqual(
+  ruleContext.applyVoiceDeterministicCorrections("产品名config 是什么", ""),
+  "产品名config 是什么",
+  "产品名con 备选必须有尾部边界，不得吃半截英文单词",
+);
+assert.strictEqual(
+  ruleContext.applyVoiceDeterministicCorrections("产品名con 是什么", ""),
+  "产品名 Pinvou 是什么",
+  "产品名con 误识别仍应被纠正",
+);
+const evalScriptSource = fs.readFileSync(path.join(__dirname, "..", "scripts", "voice-normalize-eval.mjs"), "utf8");
+assert.match(
+  evalScriptSource,
+  /产品名con\(\?!\[a-zA-Z\]\)/,
+  "eval copy of the Pinvou correction must not lag behind the bounded production rule",
+);
 assert.match(source, /var candidateText = postprocessResult\.text;/);
 assert.doesNotMatch(
   source,
@@ -520,6 +536,40 @@ vm.runInContext(
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.strictEqual(stoppedTracks, 1, "late microphone stream must be stopped after timeout");
+
+  // 权限挂起期间用户取消：cancelPromise 先把会话收尾（cancelled + activeVoiceInput=null），
+  // 随后到达的 startVoiceInput catch 必须靠 session 早退退出，不得把状态覆盖成 failed。
+  getUserMedia = () => new Promise(() => {});
+  const cancelSession = {};
+  mediaContext.activeVoiceInput = cancelSession;
+  const cancelCase = mediaContext.requestVoiceMedia(cancelSession, { audio: true }, 60);
+  cancelSession.cancelPermissionRequest();
+  await assert.rejects(
+    cancelCase,
+    (error) => error && error.category === "cancelled",
+  );
+  mediaContext.activeVoiceInput = null;
+  const webStartAt = webBridgeSource.indexOf("  async function startVoiceInput(");
+  const webCatch = webBridgeSource.slice(
+    webBridgeSource.indexOf("} catch (err) {", webStartAt),
+    webBridgeSource.indexOf("  async function cancelVoiceInput", webStartAt),
+  );
+  assert.ok(webStartAt >= 0, "web startVoiceInput must exist");
+  assert.match(
+    webCatch,
+    /if \(activeVoiceInput !== session\) return;/,
+    "web startVoiceInput catch must exit early when the session was already cancelled",
+  );
+  // requestVoiceMedia 超时引用 bt("voiceDeviceTimeout")，web 车道三语表都必须定义该 key。
+  for (const lang of ["en", "ja", "zh"]) {
+    const tableMatch = webBridgeSource.match(new RegExp(`^    ${lang}: \\{([\\s\\S]*?)\\r?\\n    \\},`, "m"));
+    assert.notStrictEqual(tableMatch, null, `web BT_TABLE ${lang} block must exist`);
+    assert.match(
+      tableMatch[1],
+      /voiceDeviceTimeout:\s*"/,
+      `web BT_TABLE ${lang} must define voiceDeviceTimeout used by requestVoiceMedia`,
+    );
+  }
 
   assert.match(chatSource, /const voiceBusy = isVoiceBusy\(voiceInput\)/);
   assert.match(

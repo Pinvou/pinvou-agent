@@ -175,7 +175,7 @@
       .replace(/四零一/g, "401")
       .replace(/talken/gi, "token")
       .replace(/过期处里/g, "过期处理")
-      .replace(/产品民\s*pin\s+vo\b|产品名con|\bpin\s+vo\b/gi, "产品名 Pinvou")
+      .replace(/产品民\s*pin\s+vo\b|产品名con(?![a-zA-Z])|\bpin\s+vo\b/gi, "产品名 Pinvou")
       .replace(/rest\s*a\s*p\s*i/gi, "REST API")
       .replace(/认正/g, "认证")
       .replace(/错误马/g, "错误码")

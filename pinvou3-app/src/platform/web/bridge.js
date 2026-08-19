@@ -412,6 +412,7 @@
       depsNotInstallable: "The missing items cannot be installed automatically. Install the offline components per the dependency notes, then re-check.",
       voicePermissionDenied: "Microphone access was denied. Allow this app to use the microphone in system settings, then try again.",
       voiceNoDevice: "No available microphone detected. Check that the recording device is enabled and not in use.",
+      voiceDeviceTimeout: "Microphone detection timed out; no recording device found. Check the device connection and the system microphone settings, then try again.",
       voiceConstraintUnsupported: "Could not start recording: the current microphone or WebView does not support the required audio configuration. Try again; if it still fails, check microphone settings or update system components.",
       voiceEmptyResult: "No speech recognized. Move closer to the microphone and try again.",
       voiceContextMismatch: "Recognition finished, but the active session changed, so the result was not inserted.",
@@ -520,6 +521,7 @@
       depsNotInstallable: "不足項目はワンクリックでインストールできません。依存関係の案内に従ってオフラインコンポーネントをインストールし、再検出してください。",
       voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイク使用を許可してから再試行してください。",
       voiceNoDevice: "利用可能なマイクが検出されませんでした。録音デバイスが有効か、他で使用されていないか確認してください。",
+      voiceDeviceTimeout: "マイク検出がタイムアウトし、録音デバイスが見つかりませんでした。デバイスの接続とシステムのマイク設定を確認して再試行してください。",
       voiceConstraintUnsupported: "録音を開始できません：現在のマイクまたは WebView が必要な録音設定に対応していません。再試行し、それでも失敗する場合はマイク設定を確認するかシステムコンポーネントを更新してください。",
       voiceEmptyResult: "音声を認識できませんでした。マイクに近づいて再試行してください。",
       voiceContextMismatch: "認識は完了しましたが、セッションが切り替わったため結果は自動入力されませんでした。",
@@ -628,6 +630,7 @@
       depsNotInstallable: "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。",
       voicePermissionDenied: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。",
       voiceNoDevice: "未检测到可用麦克风，请检查录音设备是否启用或被占用。",
+      voiceDeviceTimeout: "麦克风检测超时，未发现可用录音设备。请检查设备连接和系统麦克风设置后重试。",
       voiceConstraintUnsupported: "无法启动录音：当前麦克风或 WebView 不支持所需的录音配置。请重试；若仍失败，请检查麦克风设置或更新系统组件。",
       voiceEmptyResult: "未识别到语音内容，请靠近麦克风后重试。",
       voiceContextMismatch: "识别已完成，但当前会话已切换，结果未自动写入。",
@@ -7819,7 +7822,8 @@
       return { category: "permission_denied", stage: "permission", message: bt("voicePermissionDenied") };
     }
     if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
-      return { category: "device_unavailable", stage: "device", message: bt("voiceNoDevice") };
+      // 带自定义 message 的 device_unavailable（如检测超时）优先展示原文，与 tauri 车道一致。
+      return { category: "device_unavailable", stage: "device", message: rawMessage || bt("voiceNoDevice") };
     }
     // WebKitGTK 可能把不支持的音频约束报为 OverconstrainedError / "Invalid constraint"。
     // 这和没有录音设备不同：设备可能存在，只是不支持 channelCount、降噪等配置。
@@ -8231,7 +8235,10 @@
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);
-      if (activeVoiceInput === session) activeVoiceInput = null;
+      // finishVoiceInput(cancelled) 已把会话收尾为 cancelled 并清掉 activeVoiceInput；
+      // 权限挂起期间用户取消时本 catch 会在其后到达，不带 session 早退会把取消覆盖成 failed。
+      if (activeVoiceInput !== session) return;
+      activeVoiceInput = null;
       var normalized = normalizeVoiceError(err, "recording");
       setVoiceInputStatus("failed", {
         message: normalized.message,
