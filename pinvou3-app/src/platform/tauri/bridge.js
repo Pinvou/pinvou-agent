@@ -1973,7 +1973,7 @@
   var editLastTurn = interactionFeature.editLastTurn;
   var compactNow = interactionFeature.compactNow;
 
-  var memoryFeature = installBridgeFeature("memory", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, runSyncOnSession: runSyncOnSession, patchItemById: patchItemById, runOnSession: runOnSession, addChatItem: addChatItem, timeStr: timeStr });
+  var memoryFeature = installBridgeFeature("memory", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, runSyncOnSession: runSyncOnSession, patchItemById: patchItemById, patchItemByIdFor: patchItemByIdFor, runOnSession: runOnSession, addChatItem: addChatItem, timeStr: timeStr });
   var handleMemoryWrite = memoryFeature.handleMemoryWrite;
   var loadMemoryOverview = memoryFeature.loadMemoryOverview;
   var saveMemoryProfilePatch = memoryFeature.saveMemoryProfilePatch;
@@ -2009,14 +2009,14 @@
   var resolveConversationAttachment = artifactsFeature.resolveConversationAttachment;
   var openConversationAttachment = artifactsFeature.openConversationAttachment;
   var revealConversationAttachment = artifactsFeature.revealConversationAttachment;
-  var personasFeature = installBridgeFeature("personas", { state: state, notify: notify, invoke: invoke, listen: listen, bt: bt, isDefaultChatTitle: isDefaultChatTitle, addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr, ensureSession: ensureSession, personaPlaceholderTitles: personaPlaceholderTitles });
+  var personasFeature = installBridgeFeature("personas", { state: state, notify: notify, invoke: invoke, listen: listen, bt: bt, isDefaultChatTitle: isDefaultChatTitle, addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr, ensureSession: ensureSession, runOnSession: runOnSession, personaPlaceholderTitles: personaPlaceholderTitles });
   var loadPersonas = personasFeature.loadPersonas;
   var getPersonas = personasFeature.getPersonas;
   var createPersona = personasFeature.createPersona;
   var updatePersona = personasFeature.updatePersona;
   var deletePersona = personasFeature.deletePersona;
-  var recordPersonaEvent = personasFeature.recordPersonaEvent;
   var equipPersona = personasFeature.equipPersona;
+  var postCardCreatorIntro = personasFeature.postCardCreatorIntro;
   var unequipPersona = personasFeature.unequipPersona;
   var syncActivePersona = personasFeature.syncActivePersona;
   var mountCollection = personasFeature.mountCollection;
@@ -2350,7 +2350,7 @@
       readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); },
       equipPersona: equipPersona,
       unequipPersona: unequipPersona,
-      postCardCreatorIntro: function () { addChatItem({ type: "card_creator_intro", time: "" }); recordPersonaEvent({ kind: "card_creator_intro" }); notify(); },
+      postCardCreatorIntro: postCardCreatorIntro,
       createPersona: createPersona,
       updatePersona: updatePersona,
       deletePersona: deletePersona,
