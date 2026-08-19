@@ -443,6 +443,13 @@
       session.zeroGain.connect(session.audioContext.destination);
       session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
       setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording" });
+      invoke("track_behavior_event", {
+        request: {
+          eventName: "voice_started",
+          sessionId: session.sessionId,
+          stage: "recording",
+        },
+      }).catch(function () {});
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);

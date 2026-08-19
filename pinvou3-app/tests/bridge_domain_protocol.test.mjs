@@ -82,7 +82,7 @@ const expectedProtocolHashes = {
   multiAgent: '6896409bb406f1ba54ca496dd78c04549cc78ff5490ae771d9cf60586368a8a8',
   orchestration: 'e5e333aca4d1fb7e8ed32f879d3b310c01cd0845d0e5cdc2b5ed1e95aee3ea31',
   artifacts: '8ea6cbffcc1a768f79cd218dc02d2f211456fe09c7f2aa233587603ba34c4f4e',
-  chat: '090ca99a3aaf1977bf8274ddbaa22f863ae77e50ae72cea6ad0724ea5167c28a',
+  chat: '1bd570648c0f41376edb1909ede9345ddfb717e4b7c61c6afb14ae49a8ad2de4',
   dependencies: '257468e4f9e2e9270de6ef75f685d5eafcd000226d44cfb81a1b04c0e7615707',
   interaction: '255474b88418fcaf371b77b27545fbfb529fbbceb1af9010ac49881082384270',
   knowledge: '96d4f6a1534f0aedf10714e7b945e0a29579b224ec98cbf27659237b5aac59b6',
@@ -94,7 +94,7 @@ const expectedProtocolHashes = {
   sessions: '43be5b929743f00818492d51d7a725860c71b9a52e7fdcbe72606426472409c0',
   settings: 'ea86f1145e200d58de340bf76650eee96fd8169168872ed71def166d42ef2208',
   updater: '53562c8fe6547a6c422d112d34769d3ac79abeec27633c32b5658605072c9fe2',
-  voice: '2e6789eca3969f27e8e0fd9f034bd82e0b0e1f302152efc65c5714839fbf5b72',
+  voice: '281399c4de7cdc3adf2f50a422ea5725cb98cbf175e1de8beb0d610655d0028a',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {
