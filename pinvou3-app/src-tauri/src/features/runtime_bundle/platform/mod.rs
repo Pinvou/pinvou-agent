@@ -433,15 +433,30 @@ mod tests {
             "present server key 应为 pinvou3、旧 pinvou 不残留,实际={:?}",
             server_keys.keys().collect::<Vec<_>>()
         );
-        let canva_dir = paths::bundle_mcp_servers_dir().join("canva-mcp");
-        let canva_manifest = canva_dir.join("manifest.json");
-        assert!(canva_manifest.is_file(), "Canva 可画 manifest 应被解包");
+        // 市场 MCP 包按「能力包」模型按需释放（§4）：启动不再全量释放，未安装的
+        // canva-mcp 在旧布局（bundle/mcp-servers/）与新布局（bundles/<id>/mcp/）
+        // 都不应占盘。
+        assert!(
+            !paths::bundle_mcp_servers_dir().join("canva-mcp").exists(),
+            "未安装包不应释放到旧布局"
+        );
+        let canva_pkg_mcp = crate::features::marketplace::mcp_catalog::package_mcp_dir("canva-mcp");
+        assert!(!canva_pkg_mcp.exists(), "未安装包不应释放到新布局");
+        // 安装后释放到新布局：bundles/<id>/mcp/manifest.json。
+        crate::features::marketplace::MarketplaceManager::new()
+            .install("canva-mcp", &std::collections::HashMap::new())
+            .unwrap();
+        let canva_manifest = canva_pkg_mcp.join("manifest.json");
+        assert!(
+            canva_manifest.is_file(),
+            "Canva 可画 manifest 应释放到包目录"
+        );
         let canva_json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&canva_manifest).unwrap()).unwrap();
         assert_eq!(canva_json["id"], "canva-mcp");
         assert_eq!(canva_json["servers"][0]["name"], "canva_mcp");
         assert!(
-            !canva_dir.join("server.py").exists(),
+            !canva_pkg_mcp.join("server.py").exists(),
             "Canva 远程 MCP 不应解包本地 server.py"
         );
         // 已下线 skills(legacy-ppt-workflow / pinvou-review-*)不应再被写出。
@@ -542,7 +557,9 @@ mod tests {
         let tmp = tempdir();
         std::env::set_var("PINVOU3_HOME", &tmp);
         let bundle = Pinvou3Bundle::paths();
-        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+        // 连接器技能现按包聚合落盘：bundles/<pkg>/skills/<dir>（§4 新布局）。
+        let pkg_skills = |id: &str| paths::bundles_root().join(id).join("skills");
+        std::fs::create_dir_all(pkg_skills("feishu")).unwrap();
 
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
@@ -550,22 +567,22 @@ mod tests {
         assert!(!bundle.cached_tmeet_skills_visible());
 
         for dir in LARK_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = pkg_skills("feishu").join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
         for dir in WECOM_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = pkg_skills("wecom").join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
         for dir in DINGTALK_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = pkg_skills("dingtalk").join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
         for dir in TMEET_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = pkg_skills("tmeet").join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
@@ -587,16 +604,30 @@ mod tests {
         std::fs::remove_file(paths::pinvou3_home().join("dingtalk_disabled")).unwrap();
         std::fs::remove_file(paths::pinvou3_home().join("tmeet_disabled")).unwrap();
 
-        std::fs::remove_file(bundle.skills_dir.join(LARK_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
-        std::fs::remove_file(bundle.skills_dir.join(WECOM_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
         std::fs::remove_file(
-            bundle
-                .skills_dir
+            pkg_skills("feishu")
+                .join(LARK_SKILL_DIRS[0])
+                .join("SKILL.md"),
+        )
+        .unwrap();
+        std::fs::remove_file(
+            pkg_skills("wecom")
+                .join(WECOM_SKILL_DIRS[0])
+                .join("SKILL.md"),
+        )
+        .unwrap();
+        std::fs::remove_file(
+            pkg_skills("dingtalk")
                 .join(DINGTALK_SKILL_DIRS[0])
                 .join("SKILL.md"),
         )
         .unwrap();
-        std::fs::remove_file(bundle.skills_dir.join(TMEET_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
+        std::fs::remove_file(
+            pkg_skills("tmeet")
+                .join(TMEET_SKILL_DIRS[0])
+                .join("SKILL.md"),
+        )
+        .unwrap();
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
@@ -988,17 +1019,19 @@ mod tests {
         let bundle = Pinvou3Bundle::paths();
 
         bundle.apply_dingtalk_skills(true).unwrap();
-        let skill = bundle.skills_dir.join("dws");
+        // 新布局：钉钉 mono skill 解包到包目录 bundles/dingtalk/skills/。
+        let pkg_skills = paths::bundles_root().join("dingtalk").join("skills");
+        let skill = pkg_skills.join("dws");
         assert!(skill.join("SKILL.md").is_file());
         assert!(skill
             .join("references")
             .join("global-reference.md")
             .is_file());
-        assert!(bundle.skills_dir.join("NOTICE-dingtalk.md").is_file());
+        assert!(pkg_skills.join("NOTICE-dingtalk.md").is_file());
 
         bundle.apply_dingtalk_skills(false).unwrap();
         assert!(!skill.exists());
-        assert!(!bundle.skills_dir.join("NOTICE-dingtalk.md").exists());
+        assert!(!pkg_skills.join("NOTICE-dingtalk.md").exists());
 
         cleanup(&tmp);
     }

@@ -81,6 +81,48 @@ impl Pinvou3Bundle {
         crate::platform::startup::mark("bundle_extract:write_builtin_skills:start");
         self.write_builtin_skills()?;
         crate::platform::startup::mark("bundle_extract:write_builtin_skills:done");
+        // 首启一次性导入旧布局安装态到 BundleStore（marketplace-unification §9）。
+        // 位置：cleanups 之后（退役目录不导入）、技能迁移与 gates 之前（迁移按 import
+        // 的登记反推归属；gates 会把 CLI companion 技能解包到新布局，见下）；manifest
+        // 清单取自内嵌目录，不再依赖 write_mcp_servers 的落盘。必须在
+        // `if !bundle_changed` 提前返回之前——bundle 版本不变的老用户首次跑到新版本时
+        // 也要完成导入；`legacy_imported` 闸使后续启动成为读一次的廉价 no-op。
+        Self::import_legacy_bundle_store();
+        // 强制迁移自定义 MCP（不在内嵌目录）到新布局：bundle/mcp-servers/<id>/ →
+        // bundles/<id>/mcp/。排在技能迁移之前（四轮评审 M-7）：迁完后 available_tools
+        // 才能从新布局读到自定义 MCP manifest 的 companion_skills 声明，技能迁移的
+        // companion 归属（条件认领）才有直接依据，不必只靠旧布局现算兜底。沿用原
+        // write_mcp_servers 的门控：明文密钥迁移失败时不搬动旧目录（保留可救援副本），
+        // 此时技能迁移回退旧布局现算映射（legacy_companion_owners），口径一致。幂等。
+        if mcp_secret_migration_ok {
+            match crate::features::marketplace::migrate_custom_mcp_layout() {
+                Ok((moved, kept)) => {
+                    if moved > 0 || kept > 0 {
+                        log::info!("[runtime-bundle] 自定义 MCP 迁移: moved={moved} kept={kept}");
+                    }
+                }
+                Err(e) => log::warn!("[runtime-bundle] 自定义 MCP 迁移失败: {e}"),
+            }
+        }
+        // 扁平技能布局 → 按包聚合的一次性物理迁移（§9.1，刀十）。排在 import 之后
+        // （import 按旧布局反推登记，迁移随后把目录搬进 bundles/<pkg>/skills/ 并补写
+        // 预置技能指纹）、gates 之前：已连接 CLI 的存量用户首启时，若 gates 先把技能
+        // 解包到新布局，迁移会撞 move_skill_dir 的 target.exists()，每次启动都留下
+        // warn 与双份物理拷贝；先迁移则 gates 的防御性重写天然幂等。单个目录失败
+        // 保留旧位置（读路径 find_skill_dir 回退）。
+        let migration =
+            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                .migrate_flat_skills_layout();
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:skills_migration:done",
+            &format!(
+                "moved={} stale={} kept={}",
+                migration.moved.len(),
+                migration.removed_stale.len(),
+                migration.kept.len()
+            ),
+        );
         // 飞书 / 企微 / 钉钉鉴权 CLI 不得阻塞 Tauri setup。启动阶段只沿用上次落盘的完整
         // 技能目录作为缓存；React 首屏提交后调用 refresh_connector_auth_gates 并行
         // 实时探测，再按真实状态修正目录。bundle 升级时仅刷新当前可见的缓存目录。
@@ -122,29 +164,6 @@ impl Pinvou3Bundle {
             self.apply_tmeet_skills(tmeet_show)?;
         }
         crate::platform::startup::mark("bundle_extract:apply_skill_gates:done");
-        // 首启一次性导入旧布局安装态到 BundleStore（marketplace-unification §9）。
-        // 位置：cleanups 之后（退役目录不导入）、write_mcp_servers 之前（该步骤按
-        // 已装记录补齐包目录，依赖 import 的登记）；manifest 清单取自内嵌目录，
-        // 不再依赖 write_mcp_servers 的落盘。必须在 `if !bundle_changed` 提前返回
-        // 之前——bundle 版本不变的老用户首次跑到新版本时也要完成导入；
-        // `legacy_imported` 闸使后续启动成为读一次的廉价 no-op。
-        Self::import_legacy_bundle_store();
-        // 扁平技能布局 → 按包聚合的一次性物理迁移（§9.1，刀十）。排在 import 之后：
-        // import 按旧布局反推登记，迁移随后把目录搬进 bundles/<pkg>/skills/ 并补写
-        // 预置技能指纹。幂等；单个目录失败保留旧位置（读路径 find_skill_dir 回退）。
-        let migration =
-            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-                .migrate_flat_skills_layout();
-        crate::platform::startup::mark_with_detail(
-            "rust",
-            "bundle_extract:skills_migration:done",
-            &format!(
-                "moved={} stale={} kept={}",
-                migration.moved.len(),
-                migration.removed_stale.len(),
-                migration.kept.len()
-            ),
-        );
 
         // MCP server scripts are immutable as well, but wait for secret migration to avoid
         // deleting legacy plaintext before it has been copied into the credential store.
@@ -612,16 +631,9 @@ impl Pinvou3Bundle {
                 log::warn!("[runtime-bundle] BundleStore 读取失败，跳过 MCP 包资源校验: {e}")
             }
         }
-        // 强制迁移自定义 MCP（不在内嵌目录）到新布局：bundle/mcp-servers/<id>/ →
-        // bundles/<id>/mcp/。幂等；旧布局随后只保留 present_artifact_server.py。
-        match crate::features::marketplace::migrate_custom_mcp_layout() {
-            Ok((moved, kept)) => {
-                if moved > 0 || kept > 0 {
-                    log::info!("[runtime-bundle] 自定义 MCP 迁移: moved={moved} kept={kept}");
-                }
-            }
-            Err(e) => log::warn!("[runtime-bundle] 自定义 MCP 迁移失败: {e}"),
-        }
+        // 自定义 MCP 布局迁移（bundle/mcp-servers/<id>/ → bundles/<id>/mcp/）已提前到
+        // import_legacy 之后、技能迁移之前（ensure_extracted 内，M-7 排序），此处不再
+        // 重复；旧布局随后只保留 present_artifact_server.py。
         // 存量 mcp.json 条目路径迁移：旧布局前缀 → 新包目录（幂等，只改本 app 写的文件）
         if let Err(e) = crate::features::marketplace::migrate_mcp_json_paths() {
             log::warn!("[runtime-bundle] mcp.json 路径迁移失败: {e}");
