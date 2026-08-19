@@ -22,12 +22,12 @@
     },
     {
       "name": "wecom-cli",
-      "version": "0.1.9",
+      "version": "1.1.0",
       "license": "MIT",
       "source": "https://github.com/WecomTeam/wecom-cli",
-      "url": "https://registry.npmjs.org/@wecom/cli-darwin-x64/-/cli-darwin-x64-0.1.9.tgz",
-      "archiveSha256": "031bab15f91ae19b4e741de1918bd5f166a71397424b2ec9b8d2965e62692b57",
-      "binarySha256": "f1e0624c6191b2505b28c0596f9fb53873067273316273aba31bfbb13d8ea72f"
+      "url": "https://registry.npmjs.org/@wecom/cli-darwin-x64/-/cli-darwin-x64-1.1.0.tgz",
+      "archiveSha256": "bfb65abaed9d30531e098c2bcac99128fd6fd2dc11fb3aa3c88124bc4e0bf9b9",
+      "binarySha256": "512d8f7f5b6fceb6961b9906f6f34e0007ef3c39a5b71068aef0f1b30096a811"
     }
   ]
 }

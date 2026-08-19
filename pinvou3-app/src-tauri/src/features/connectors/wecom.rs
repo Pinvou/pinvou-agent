@@ -4,9 +4,12 @@
 //! **纯扫码**接入(不需管理员建自建应用、不需手填 CorpID/Secret)。
 //! 公共管道见 [`crate::features::connectors::connector_cli`];本文件只有企微特有的薄声明 + 单段连接编排。
 //!
-//! 连接:`wecom-cli init --noninteractive --no-open` 长驻 → 抓二维码 URL → 用户扫码 →
-//! 进程退出后 `auth show` 判 ready。进度走事件 `wecom:qr` / `wecom:connected` / `wecom:error`。
+//! 连接(wecom-cli ≥1.1.0):`wecom-cli auth init --noninteractive --no-browser` 长驻 →
+//! 抓二维码 URL → 用户扫码 → 进程退出后 `auth show --status` 判 ready。
+//! 进度走事件 `wecom:qr` / `wecom:connected` / `wecom:error`。
 //! 凭证落 `~/.config/wecom`(Win:`%USERPROFILE%\.config\wecom`),断开即删该目录。
+//! 1.1.0 起命令模型重构(`msg`→`message`、`schedule`→`calendar`、入参改 flags),
+//! 技能与判定都以 1.1.0 为基线,故 [`WECOM_MIN_VERSION`] 以下的旧安装会被替换升级。
 
 use std::process::Stdio;
 use std::sync::mpsc;
@@ -30,39 +33,58 @@ const WECOM_CTX: CliCtx = CliCtx {
     auth_domains: &["work.weixin.qq.com", "weixin.qq.com"],
 };
 
+/// 技能与鉴权命令面基线:1.1.0 重构了命令模型(`init`→`auth init`、
+/// `msg`→`message`、`schedule`→`calendar`、入参 JSON→flags),旧安装必须替换。
+const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 1, 0);
+
 fn wecom(args: &[&str]) -> std::process::Command {
     WECOM_CTX.cli(args)
 }
 
-/// wecom-cli 是否已在 PATH(快速,~秒级)。
-fn wecom_cli_present() -> bool {
-    matches!(cc::run(wecom(&["--version"])), Ok((true, _, _)))
+/// 解析 `wecom-cli --version` 输出(1.1.0 起格式为
+/// `wecom-cli 1.1.0 (wecom 2026-08-17T03:14:38Z 889c555)`)。
+/// 按 [`cc::parse_semver3`] 的契约先自行切片:只解析程序名 `wecom-cli`
+/// 后随的那一段,构建时间戳等数字噪声不参与解析。
+fn parse_wecom_version(s: &str) -> Option<(u64, u64, u64)> {
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    let idx = tokens.iter().position(|t| t.contains("wecom-cli"))?;
+    cc::parse_semver3(tokens.get(idx + 1).copied().unwrap_or(""))
 }
 
-/// `wecom-cli auth show` 输出里是否含非空 `id`(= 已授权)。
-/// 等价 WorkBuddy cli.json 的 `statusMatch: "id"\s*:\s*"`。
-fn status_has_id(s: &str) -> bool {
-    if let Some(v) = cc::parse_json(s) {
-        if let Some(id) = v.get("id").and_then(|v| v.as_str()) {
-            return !id.is_empty();
-        }
+fn wecom_cli_version() -> Option<(u64, u64, u64)> {
+    let Ok((ok, so, se)) = cc::run(wecom(&["--version"])) else {
+        return None;
+    };
+    if !ok {
+        return None;
     }
-    // 回退:去掉空白后子串匹配(输出非纯 JSON 时)。
-    let compact: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    compact.contains("\"id\":\"")
+    parse_wecom_version(&so).or_else(|| parse_wecom_version(&se))
 }
 
-/// `auth show` 判当前是否已连接(已授权)。会 spawn wecom-cli。
+/// wecom-cli 是否已装且 ≥ 1.1.0(命令模型基线);旧版视为未装,触发在线替换升级。
+fn wecom_cli_present() -> bool {
+    wecom_cli_version()
+        .map(|v| v >= WECOM_MIN_VERSION)
+        .unwrap_or(false)
+}
+
+/// `wecom-cli auth show --status` 是否输出 `authorized`(已扫码授权)。
+fn status_is_authorized(s: &str) -> bool {
+    s.trim().eq_ignore_ascii_case("authorized")
+}
+
+/// `auth show --status` 判当前是否已连接(已授权)。会 spawn wecom-cli。
 fn is_ready() -> bool {
-    if let Ok((_, so, se)) = cc::run(wecom(&["auth", "show"])) {
-        return status_has_id(&so) || status_has_id(&se);
+    if let Ok((ok, so, se)) = cc::run(wecom(&["auth", "show", "--status"])) {
+        return ok && (status_is_authorized(&so) || status_is_authorized(&se));
     }
     false
 }
 
 // ───────────────────────────── Tauri commands ─────────────────────────────
 
-/// 引导:首次使用时下载并校验锁定版本的 wecom-cli，已装则秒返回。
+/// 引导:首次使用(或安装低于 1.1.0 命令模型基线)时下载并校验锁定版本的 wecom-cli,
+/// 已装且达标则秒返回;托管目录中的旧版按 lock 哈希不一致直接替换升级。
 pub async fn wecom_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if wecom_cli_present() {
@@ -78,21 +100,29 @@ pub async fn wecom_ensure_cli() -> Result<Value, String> {
     .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
-/// 查询当前企微连接状态:`wecom-cli auth show`。未装则 `installed:false`。
+/// 查询当前企微连接状态:`wecom-cli auth show --status`。
+/// 装了但低于 [`WECOM_MIN_VERSION`] 时回 `upgrade_required:true`(tmeet 同款三态;
+/// 前端 ToolStoreView 暂只读 connected,该字段待 tmeet/wecom 统一做「待升级」UI 后消费)。
 pub async fn wecom_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
-        // 没装就别 spawn auth show —— 省掉没装连接器的用户每次白等一次子进程。
-        if !wecom_cli_present() {
-            return Ok::<Value, String>(json!({
-                "ok": false, "connected": false, "installed": false
-            }));
+        // 没装就别 spawn auth show —— 省掉没装连接器的用户每次白等一次子进程;
+        // 装了则同一次 --version 判 installed 与 upgrade_required 两态,不重复 spawn。
+        match wecom_cli_version() {
+            None => Ok::<Value, String>(json!({
+                "ok": false, "connected": false, "installed": false, "upgrade_required": false
+            })),
+            Some(v) if v < WECOM_MIN_VERSION => Ok::<Value, String>(json!({
+                "ok": false, "connected": false, "installed": true, "upgrade_required": true
+            })),
+            Some(_) => {
+                let (ok, so, se) = cc::run(wecom(&["auth", "show", "--status"]))?;
+                let connected = ok && (status_is_authorized(&so) || status_is_authorized(&se));
+                // 只回布尔:--status 单行输出虽不含身份信息,保持最小回传面
+                Ok::<Value, String>(json!({
+                    "ok": ok, "connected": connected, "installed": true, "upgrade_required": false
+                }))
+            }
         }
-        let (ok, so, se) = cc::run(wecom(&["auth", "show"]))?;
-        let connected = status_has_id(&so) || status_has_id(&se);
-        // 只回布尔:auth show 的 stdout/stderr 含身份信息,不进 webview
-        Ok::<Value, String>(json!({
-            "ok": ok, "connected": connected, "installed": true
-        }))
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
@@ -116,15 +146,15 @@ fn run_connect_flow(app: &AppHandle) {
     }
 }
 
-/// 单段:`init --noninteractive --no-open` 长驻 → 抓 URL 出二维码 → 等进程退出 → 查 ready。
+/// 单段:`auth init --noninteractive --no-browser` 长驻 → 抓 URL 出二维码 → 等进程退出 → 查 ready。
 fn phase_scan(app: &AppHandle) -> Result<(), String> {
-    let mut cmd = wecom(&["init", "--noninteractive", "--no-open"]);
+    let mut cmd = wecom(&["auth", "init", "--noninteractive", "--no-browser"]);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("wecom-cli init 启动失败: {e}(需要先完成企微 CLI 在线安装)"))?;
+        .map_err(|e| format!("wecom-cli auth init 启动失败: {e}(需要先完成企微 CLI 在线安装)"))?;
     let conn = app.state::<ConnectorConn>();
     conn.set_pid(ID, Some(child.id()));
 
@@ -293,19 +323,36 @@ mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
 
-    /// `auth show` 输出 → 已授权判定。空 id 不能被回退子串匹配误判为已连接。
+    /// `--version` 输出 → 三段版本号。1.1.0 起输出带构建信息尾巴。
+    /// 两段式按共享口径补 0(不因假想的「2.0」误判未装触发降级重装)。
     #[test]
-    fn status_has_id_detects_authorization() {
-        // 纯 JSON,非空 id = 已授权
-        assert!(status_has_id(r#"{"id":"abc-123"}"#));
-        // 纯 JSON,空 id = 未授权
-        assert!(!status_has_id(r#"{"id":""}"#));
-        // 无 id 字段 = 未授权
-        assert!(!status_has_id(r#"{"create_time":1}"#));
-        // 非纯 JSON,但含 "id":"x" 子串 → 回退匹配命中
-        assert!(status_has_id("noise {\"id\": \"x\"} tail"));
-        // 空输出 = 未授权
-        assert!(!status_has_id(""));
+    fn parses_wecom_versions() {
+        assert_eq!(
+            parse_wecom_version("wecom-cli 1.1.0 (wecom 2026-08-17T03:14:38Z 889c555)"),
+            Some((1, 1, 0)),
+        );
+        assert_eq!(
+            parse_wecom_version("wecom-cli 1.1.0 (wecom 2026-08-17T03:14:38Z 889c555)\r\n"),
+            Some((1, 1, 0)),
+        );
+        assert_eq!(parse_wecom_version("wecom-cli 0.1.9"), Some((0, 1, 9)));
+        assert_eq!(parse_wecom_version("wecom-cli 2.0"), Some((2, 0, 0)));
+        assert_eq!(parse_wecom_version("hello"), None);
+        // 遵守 parse_semver3「调用方先切片」契约:程序名外的数字噪声不当版本。
+        assert_eq!(parse_wecom_version("error: something 404"), None);
+        assert_eq!(parse_wecom_version("node 22 wecom-cli"), None);
+    }
+
+    /// `auth show --status` 输出 → 已授权判定(仅整行 authorized,大小写不敏感)。
+    #[test]
+    fn status_is_authorized_detects_authorization() {
+        assert!(status_is_authorized("authorized"));
+        assert!(status_is_authorized("authorized\n"));
+        assert!(status_is_authorized("authorized\r\n")); // Windows npm shim 的 CRLF
+        assert!(status_is_authorized("  Authorized "));
+        assert!(!status_is_authorized("unauthorized")); // 前缀相同不能误判
+        assert!(!status_is_authorized("Status: unauthorized"));
+        assert!(!status_is_authorized(""));
     }
 
     /// 手动停用标志:文件存在=停用,与连接状态正交。写/删一轮。
