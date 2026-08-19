@@ -64,7 +64,8 @@ vm.runInContext(
   assert.ok(installingGuard < statusCheck, "active download guard must run before dependency detection");
   assert.match(
     bridgeSource.slice(installingGuard, statusCheck),
-    /Object\.assign\(\{\}, state\.voiceAsrSetup, \{ open: true \}\);[\s\S]*?notify\(\);[\s\S]*?return;/,
+    /notify\(\);[\s\S]*?return;/,
+    "active ASR download guard must preserve the existing setup open state",
   );
 
   console.log("voice_asr_cancel_logic: ok");

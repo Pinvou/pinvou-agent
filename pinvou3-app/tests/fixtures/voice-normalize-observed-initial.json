@@ -1,0 +1,16 @@
+[
+  {
+    "id": "gold_price_chart",
+    "mode": "dictation",
+    "raw_text": "帮我搜索一下今日的惊吓，变成变，并且做一个数据分析格式化的图标。",
+    "final_text": "查一下今天的进价，然后做成数据，可以做数据分析可视化的表格。",
+    "llm_ms": null
+  },
+  {
+    "id": "stock_volatility_chart",
+    "mode": "dictation",
+    "raw_text": "嗯，查一下最近的股票波动生成数据分析，只是发了一个图表吧。",
+    "final_text": "嗯，查一下最近的股票波动生成数据分析，只是发了一个图表吧。",
+    "llm_ms": null
+  }
+]

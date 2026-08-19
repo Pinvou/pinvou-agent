@@ -26,6 +26,13 @@ import {
   buildArtifactPreviewDocument,
 } from '../artifacts/artifact-preview-navigation.js';
 import { ProvidersSection } from './ProvidersSection.jsx';
+import {
+  VOICE_SHORTCUT_SETTINGS_EVENT,
+  setVoiceShortcutEnabled,
+  setVoiceShortcutIntroSeen,
+  voiceShortcutEnabled,
+} from '../chat/voice-shortcut-settings.mjs';
+import { VoiceShortcutIntroModal } from '../voice-composer/VoiceShortcutIntroModal.jsx';
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -2375,6 +2382,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const versionUpdateRef = useRef(null);
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const memorySettingsVisible = !!(bs && bs.settings && bs.settings.language === 'zh-Hans');
+      const [voiceShortcutsEnabled, setVoiceShortcutsEnabled] = useState(() => voiceShortcutEnabled());
+      const [voiceShortcutIntroOpen, setVoiceShortcutIntroOpen] = useState(false);
       const feedbackTypes = [
         { key: 'issue', label: t.feedbackIssue },
         { key: 'suggestion', label: t.feedbackSuggestion },
@@ -2406,6 +2415,44 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         const timer = window.setTimeout(() => setFeedbackNotice(''), 2600);
         return () => window.clearTimeout(timer);
       }, [feedbackNotice]);
+      useEffect(() => {
+        function syncVoiceShortcutSetting(event) {
+          if (event && event.detail && typeof event.detail.enabled === 'boolean') {
+            setVoiceShortcutsEnabled(event.detail.enabled);
+            return;
+          }
+          setVoiceShortcutsEnabled(voiceShortcutEnabled());
+        }
+        window.addEventListener(VOICE_SHORTCUT_SETTINGS_EVENT, syncVoiceShortcutSetting);
+        window.addEventListener('storage', syncVoiceShortcutSetting);
+        return () => {
+          window.removeEventListener(VOICE_SHORTCUT_SETTINGS_EVENT, syncVoiceShortcutSetting);
+          window.removeEventListener('storage', syncVoiceShortcutSetting);
+        };
+      }, []);
+      function handleVoiceShortcutsEnabledChange(enabled) {
+        setVoiceShortcutsEnabled(!!enabled);
+        setVoiceShortcutEnabled(!!enabled);
+      }
+      function markVoiceShortcutIntroSeen() {
+        setVoiceShortcutIntroSeen(true);
+      }
+      function handleVoiceShortcutInfoOpen(event) {
+        if (event) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        setVoiceShortcutIntroOpen(true);
+      }
+      function handleVoiceShortcutInfoClose() {
+        markVoiceShortcutIntroSeen();
+        setVoiceShortcutIntroOpen(false);
+      }
+      function handleVoiceShortcutInfoEnable(enabled) {
+        handleVoiceShortcutsEnabledChange(!!enabled);
+        markVoiceShortcutIntroSeen();
+        setVoiceShortcutIntroOpen(false);
+      }
       const resetFeedback = () => {
         setFeedbackDraft({ type: 'issue', title: '', description: '', attachments: [] });
         setFeedbackStatus({ state: 'idle', message: '', receipt: null });
@@ -2730,7 +2777,25 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         if (!bridge.available || !bridge.settings.setSelectedPet) return Promise.resolve();
         return bridge.settings.setSelectedPet(id);
       };
-      const renderGeneral = () => (
+      const renderGeneral = () => {
+        const voiceShortcutLabel = (
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            <span className="truncate">{t.uiSettings.voiceShortcutEnable}</span>
+            <button
+              type="button"
+              data-testid="voice-shortcut-info"
+              aria-label={t.uiSettings.voiceShortcutHelp}
+              title={t.uiSettings.voiceShortcutHelp}
+              onClick={handleVoiceShortcutInfoOpen}
+              className={`inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full text-[12px] font-semibold leading-none transition-colors ${
+                'bg-[#E5E5EA] text-[#6E6E73] hover:bg-[#D1D1D6] active:bg-[#C7C7CC] dark:bg-white/[0.10] dark:text-[#C7C7CC] dark:hover:bg-white/[0.16] dark:active:bg-white/[0.20]'
+              }`}
+            >
+              ?
+            </button>
+          </span>
+        );
+        return (
         <>
           <IOSSection title={t.uiSettings.appearance}>
             <IOSRow label={t.uiSettings.language} desc={t.uiSettings.languageDesc}>
@@ -2751,6 +2816,22 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
               <IOSSwitch checked={taskCompletedNotif} onChange={setTaskCompletedNotif} />
             </IOSRow>
           </IOSSection>
+          )}
+          <IOSSection title={t.uiSettings.voiceShortcuts}>
+            <IOSRow label={voiceShortcutLabel} desc={t.uiSettings.voiceShortcutEnableDesc}>
+              <IOSSwitch checked={voiceShortcutsEnabled} onChange={handleVoiceShortcutsEnabledChange} />
+            </IOSRow>
+          </IOSSection>
+          {voiceShortcutIntroOpen && (
+            <VoiceShortcutIntroModal
+              isDark={activeTheme === 'dark'}
+              copy={t}
+              shortcutEnabled={voiceShortcutsEnabled}
+              closeLabel={t.voiceIntroDone}
+              primaryLabel={voiceShortcutsEnabled ? t.voiceIntroDone : (t.voiceShortcutEnableTitle || t.uiSettings.voiceShortcutEnable)}
+              onClose={handleVoiceShortcutInfoClose}
+              onToggleShortcut={handleVoiceShortcutInfoEnable}
+            />
           )}
           {canUsePet && (
           <section className="mb-6">
@@ -2779,7 +2860,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           </section>
           )}
         </>
-      );
+        );
+      };
       const renderModels = () => (
         <>
           {acpProvidersTabVisible && (

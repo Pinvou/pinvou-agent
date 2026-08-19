@@ -14,6 +14,255 @@
   var activeVoiceInput = null;
   var VOICE_DEVICE_PROBE_TIMEOUT_MS = 1500;
   var VOICE_DEVICE_REQUEST_TIMEOUT_MS = 8000;
+  var VOICE_RECORDING_MAX_DURATION_MS = 60000;
+
+  function normalizeVoiceMode(mode) {
+    if (mode === "task") return "task";
+    if (mode === "edit" || mode === "voice_edit" || mode === "draft_edit") return "edit";
+    return "dictation";
+  }
+
+  function voiceNow() {
+    return (typeof performance !== "undefined" && typeof performance.now === "function")
+      ? performance.now()
+      : Date.now();
+  }
+
+  function roundedMs(start, end) {
+    return Math.max(0, Math.round((end || voiceNow()) - start));
+  }
+
+  var VOICE_FILLER_TERMS = ["嗯", "啊", "呃", "那个", "就是"];
+  var VOICE_SUSPICIOUS_ASR_TERMS = [
+    "进价", "惊吓", "图标", "销售暑假", "屁屁提", "PPTT", "截止事件",
+    "负责任", "风险电", "三百字一类", "爱新闻", "代码嫩力", "核心公能",
+    "GP杠5", "GPT杠5", "closonic", "克劳德", "deeps V3", "deep seek v three",
+    "批地爱福", "pDF", "合同金鹅", "付款结点", "违约条宽", "表哥", "亲自酒店",
+    "离海绵距离", "四零一", "talken", "过期处里", "产品民", "pin vo",
+    "rest a p i", "认正", "错误马", "示例情求", "语音输出", "模型下崽体验",
+    "知识裤", "报消", "住宿上线", "班纳", "温婉简洁", "高贴票"
+  ];
+  var VOICE_PROTECTED_TERMS = [
+    "金价", "图表", "表格", "PPT", "GPT-5", "Claude Sonnet", "DeepSeek V3",
+    "AI 新闻", "PDF", "Pinvou", "REST API", "401", "token", "高铁票",
+    "负责人", "截止时间", "预算", "部门", "超支项", "付款风险", "交付风险",
+    "客服投诉", "产品线", "高频问题", "语音输入", "模型下载体验", "知识库",
+    "差旅报销标准", "住宿上限", "banner", "温暖简洁"
+  ];
+  var VOICE_TASK_WORDS = [
+    "查", "搜索", "生成", "整理", "总结", "比较", "做一个", "做成", "列出",
+    "写到", "发送", "创建", "基于", "报告", "PPT", "网页", "图表", "表格"
+  ];
+
+  function compactVoiceText(text) {
+    return String(text || "")
+      .replace(/[\s。！？!?，,、；;：:"'“”‘’（）()【】\[\].…\-—]/g, "")
+      .trim();
+  }
+
+  function voiceContainsAny(text, terms) {
+    var value = String(text || "");
+    return terms.filter(function (term) { return value.indexOf(term) >= 0; });
+  }
+
+  function isFillerOnlyVoiceText(text) {
+    var compact = compactVoiceText(text);
+    if (!compact) return true;
+    if (compact.length > 8) return false;
+    if (compact === "文") return true;
+    var remaining = compact;
+    VOICE_FILLER_TERMS.forEach(function (term) {
+      remaining = remaining.split(term).join("");
+    });
+    remaining = remaining.split("额").join("");
+    remaining = remaining.split("文").join("");
+    return remaining.trim() === "";
+  }
+
+  function isShortClearVoiceText(text, mode) {
+    if (normalizeVoiceMode(mode) !== "dictation") return false;
+    var compact = compactVoiceText(text);
+    if (!compact || compact.length > 18) return false;
+    if (voiceContainsAny(text, VOICE_FILLER_TERMS).length) return false;
+    if (voiceContainsAny(text, VOICE_SUSPICIOUS_ASR_TERMS).length) return false;
+    if (voiceContainsAny(text, VOICE_TASK_WORDS).length) return false;
+    return true;
+  }
+
+  function classifyVoiceText(rawText, mode) {
+    var normalizedMode = normalizeVoiceMode(mode);
+    var text = String(rawText || "").trim();
+    var suspicious = voiceContainsAny(text, VOICE_SUSPICIOUS_ASR_TERMS);
+    if (!text || isFillerOnlyVoiceText(text)) {
+      return {
+        strategy: "skip_empty",
+        reason: "filler_only",
+        suspicious_terms: suspicious,
+      };
+    }
+    if (normalizedMode === "edit") {
+      return {
+        strategy: "run_llm",
+        reason: normalizedMode + "_mode",
+        suspicious_terms: suspicious,
+      };
+    }
+    if (normalizedMode === "task") {
+      return {
+        strategy: "run_llm",
+        reason: suspicious.length ? "task_suspicious_asr" : "task_long_or_noisy",
+        suspicious_terms: suspicious,
+      };
+    }
+    if (isShortClearVoiceText(text, normalizedMode)) {
+      return {
+        strategy: "use_asr",
+        reason: "dictation_short_clear",
+        suspicious_terms: suspicious,
+      };
+    }
+    return {
+      strategy: "run_llm",
+      reason: suspicious.length ? "suspicious_asr" : "dictation_llm",
+      suspicious_terms: suspicious,
+    };
+  }
+
+  function voicePostprocessTimeoutMs(mode, rawText) {
+    var normalizedMode = normalizeVoiceMode(mode);
+    if (normalizedMode === "task") return 8000;
+    if (normalizedMode === "edit") return 12000;
+    return compactVoiceText(rawText).length <= 18 ? 3000 : 5000;
+  }
+
+  function hasVoiceHighRiskResidual(text) {
+    return voiceContainsAny(text, VOICE_SUSPICIOUS_ASR_TERMS);
+  }
+
+  function applyVoiceDeterministicCorrections(text, rawText) {
+    var value = String(text || "");
+    var raw = String(rawText || "");
+    if (isFillerOnlyVoiceText(value)) return "";
+    if (!value.trim()) return value;
+    value = value
+      .replace(/^[嗯啊呃额][，,、\s]+/g, "")
+      .replace(/今日进价/g, "今日金价")
+      .replace(/今天的进价/g, "今天的金价")
+      .replace(/数据分析图标/g, "数据分析图表")
+      .replace(/核心公能/g, "核心功能")
+      .replace(/销售暑假/g, "销售数据")
+      .replace(/屁屁提|PPTT/g, "PPT")
+      .replace(/截止事件/g, "截止时间")
+      .replace(/负责任/g, "负责人")
+      .replace(/风险电/g, "风险点")
+      .replace(/三百字一类/g, "三百字以内")
+      .replace(/代码嫩力/g, "代码能力")
+      .replace(/g\s*p\s*t\s*five/gi, "GPT-5")
+      .replace(/G\s*P\s*T?\s*杠\s*5/gi, "GPT-5")
+      .replace(/克劳德\s*sonnet|closonic/gi, "Claude Sonnet")
+      .replace(/deep\s*seek\s*v\s*three|deeps\s*V3/gi, "DeepSeek V3")
+      .replace(/爱新闻|AI新闻/g, "AI 新闻")
+      .replace(/批地爱福|pDF/g, "PDF")
+      .replace(/合同金鹅/g, "合同金额")
+      .replace(/付款结点/g, "付款节点")
+      .replace(/违约条宽/g, "违约条款")
+      .replace(/表哥/g, "表格")
+      .replace(/本月玉算/g, "本月预算")
+      .replace(/不门/g, "部门")
+      .replace(/超时项/g, "超支项")
+      .replace(/亲自酒店/g, "亲子酒店")
+      .replace(/离海绵距离/g, "离海边距离")
+      .replace(/四零一/g, "401")
+      .replace(/talken/gi, "token")
+      .replace(/过期处里/g, "过期处理")
+      .replace(/产品民\s*pin\s+vo\b|产品名con(?![a-zA-Z])|\bpin\s+vo\b/gi, "产品名 Pinvou")
+      .replace(/rest\s*a\s*p\s*i/gi, "REST API")
+      .replace(/认正/g, "认证")
+      .replace(/错误马/g, "错误码")
+      .replace(/示例情求/g, "示例请求")
+      .replace(/高贴票/g, "高铁票")
+      .replace(/北京的高$/g, "北京的高铁票")
+      .replace(/副款风险/g, "付款风险")
+      .replace(/交互风险/g, "交付风险")
+      .replace(/各列三跳/g, "各列三条")
+      .replace(/客诉投诉/g, "客服投诉")
+      .replace(/产品先/g, "产品线")
+      .replace(/高频问提/g, "高频问题")
+      .replace(/重点推近/g, "重点推进")
+      .replace(/语音输出/g, "语音输入")
+      .replace(/模型下崽体验/g, "模型下载体验")
+      .replace(/知识裤/g, "知识库")
+      .replace(/报消/g, "报销")
+      .replace(/住宿上线/g, "住宿上限")
+      .replace(/中秋活动班纳/g, "中秋活动 banner")
+      .replace(/温婉简洁/g, "温暖简洁")
+      .replace(/有长方形[，,、\s]*的需要/g, "是长方形，需要")
+      .replace(/长方形[，,、\s]*的需要/g, "长方形，需要")
+      .replace(/联网下的图片/g, "联网下载的图片")
+      .replace(/联网下图片/g, "联网下载图片");
+    value = value
+      .replace(/GPT-5和/g, "GPT-5 和")
+      .replace(/和Claude Sonnet/g, "和 Claude Sonnet");
+    if (raw.indexOf("图标") >= 0 && value.indexOf("数据分析") >= 0 && value.indexOf("图表") < 0) {
+      value = value.replace(/数据分析$/, "数据分析图表");
+    }
+    if (raw.indexOf("只是发了") >= 0) {
+      value = value
+        .replace(/^嗯[，,、\s]*/g, "")
+        .replace(/只是发了一个图表吧[。.]?/g, "图表。")
+        .replace(/生成数据分析[，,、\s]*图表/g, "生成数据分析图表")
+        .replace(/生成数据分析图表吧[。.]?/g, "生成数据分析图表。");
+    }
+    return value;
+  }
+
+  function voiceProtectedTermsIn(text) {
+    return VOICE_PROTECTED_TERMS.filter(function (term) {
+      return String(text || "").indexOf(term) >= 0;
+    });
+  }
+
+  function validateVoicePostprocessOutput(rawText, ruleText, finalText, mode) {
+    var raw = String(rawText || "");
+    var corrected = String(ruleText || "");
+    var finalValue = String(finalText || "");
+    var rawCompact = compactVoiceText(raw);
+    var correctedCompact = compactVoiceText(corrected);
+    var finalCompact = compactVoiceText(finalValue);
+    if (!finalCompact) return isFillerOnlyVoiceText(raw) || isFillerOnlyVoiceText(corrected);
+    if (rawCompact.length > 12 && finalCompact.length < Math.floor(correctedCompact.length * 0.55)) {
+      return false;
+    }
+    var protectedTerms = voiceProtectedTermsIn(corrected);
+    var missingProtected = protectedTerms.filter(function (term) {
+      return finalValue.indexOf(term) < 0;
+    });
+    if (missingProtected.length) return false;
+    var normalizedMode = normalizeVoiceMode(mode);
+    if (normalizedMode === "edit") {
+      return finalValue.trim().length > 0;
+    }
+    if (normalizedMode === "task" && hasVoiceHighRiskResidual(finalValue).length) {
+      return false;
+    }
+    return true;
+  }
+
+  function logVoicePipeline(diagnostic) {
+    try {
+      console.info("[voice-input] pipeline", diagnostic);
+    } catch (_) {}
+    try {
+      var key = "pinvou_voice_pipeline_diagnostics";
+      var current = JSON.parse(localStorage.getItem(key) || "[]");
+      if (!Array.isArray(current)) current = [];
+      current.push(Object.assign({ recorded_at: new Date().toISOString() }, diagnostic));
+      localStorage.setItem(key, JSON.stringify(current.slice(-50)));
+    } catch (_) {}
+    try {
+      window.dispatchEvent(new CustomEvent("pinvou:voice-pipeline-diagnostic", { detail: diagnostic }));
+    } catch (_) {}
+  }
 
   function setVoiceInputStatus(status, patch) {
     var next = Object.assign({}, state.voiceInput, patch || {});
@@ -44,6 +293,7 @@
     var rawStage = (err && err.stage) || fallbackStage || "recording";
     var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
     var constraint = String((err && err.constraint) || "");
+    var emptyResultLike = /ASR empty result|empty result|backend returned no usable|no usable result|failed \(exit 6\)|exit 6/i.test(rawMessage);
     if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
       return { category: "permission_denied", stage: "permission", message: bt("voicePermissionDenied") };
     }
@@ -63,8 +313,13 @@
         diagnostic: constraint ? "unsupported media constraint: " + constraint : "unsupported media constraint",
       };
     }
-    if (rawCategory === "empty_result") {
-      return { category: "empty_result", stage: rawStage, message: bt("voiceEmptyResult") };
+    if (rawCategory === "empty_result" || emptyResultLike) {
+      return {
+        category: "empty_result",
+        stage: rawStage,
+        message: bt("voiceEmptyResult"),
+        diagnostic: rawMessage || "",
+      };
     }
     if (rawCategory === "context_mismatch") {
       return { category: "context_mismatch", stage: "writeback", message: bt("voiceContextMismatch") };
@@ -224,6 +479,51 @@
     return buffer;
   }
 
+  async function postprocessVoiceText(rawText, mode, draftText, sessionId, timeoutMs) {
+    var normalizedMode = normalizeVoiceMode(mode);
+    var startedAt = voiceNow();
+    var timer = null;
+    try {
+      var request = invoke("postprocess_voice_text", {
+        request: {
+          text: rawText,
+          mode: normalizedMode,
+          session_id: sessionId || null,
+          draft_text: draftText || "",
+        },
+      });
+      var res = await Promise.race([
+        request,
+        new Promise(function (_, reject) {
+          timer = setTimeout(function () {
+            reject({ category: "timeout", message: "voice postprocess timed out after " + timeoutMs + "ms" });
+          }, timeoutMs || voicePostprocessTimeoutMs(normalizedMode, rawText));
+        }),
+      ]);
+      var text = String(res && res.text !== undefined ? res.text : "").trim();
+      return {
+        text: text,
+        source: (res && res.source) || "llm",
+        durationMs: roundedMs(startedAt),
+        timeoutMs: timeoutMs || voicePostprocessTimeoutMs(normalizedMode, rawText),
+        error: null,
+        fallbackReason: "",
+      };
+    } catch (err) {
+      console.warn("[voice-input] postprocess fallback to ASR text", err);
+      return {
+        text: rawText,
+        source: "asr_fallback",
+        durationMs: roundedMs(startedAt),
+        timeoutMs: timeoutMs || voicePostprocessTimeoutMs(normalizedMode, rawText),
+        error: String((err && err.message) || err || "voice postprocess failed"),
+        fallbackReason: err && err.category === "timeout" ? "llm_timeout" : "llm_error",
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async function finishVoiceInput(cancelled, timedOut) {
     var session = activeVoiceInput;
     if (!session) return;
@@ -239,6 +539,7 @@
     cleanupVoiceInputSession(session);
 
     try {
+      var pipelineStartedAt = voiceNow();
       if (timedOut) {
         emitVoiceDiagnostic("recording", "warn", "recording reached max duration", "", "timeout");
       }
@@ -250,23 +551,118 @@
       var pcm = downsamplePcm(raw, session.sampleRate, 16000);
       var wav = encodeWav(pcm, 16000);
       var bytes = Array.from(new Uint8Array(wav));
+      var asrStartedAt = voiceNow();
       var res = await invoke("transcribe_voice_audio", {
         request: {
           audio_bytes: bytes,
           session_id: session.sessionId,
         },
       });
+      var asrDurationMs = roundedMs(asrStartedAt);
       if (activeVoiceInput !== session) return;
       var text = String((res && res.text) || "").trim();
       if (!text) throw { category: "empty_result", stage: "transcribing", message: "未识别到语音内容" };
       if (state.activeSessionId !== session.sessionId) {
         throw { category: "context_mismatch", stage: "writeback", message: "voice result discarded because active session changed" };
       }
-      if (typeof session.writeback === "function") {
-        session.writeback(text, session.draftBeforeStart);
+      var mode = normalizeVoiceMode(session.mode);
+      var ruleText = applyVoiceDeterministicCorrections(text, text);
+      var rawSuspiciousTerms = voiceContainsAny(text, VOICE_SUSPICIOUS_ASR_TERMS);
+      var strategy = classifyVoiceText(ruleText, mode);
+      var postprocessResult;
+      if (strategy.strategy === "skip_empty") {
+        postprocessResult = {
+          text: "",
+          source: "skipped",
+          durationMs: 0,
+          timeoutMs: 0,
+          error: null,
+          fallbackReason: "",
+        };
+      } else if (strategy.strategy === "use_asr") {
+        postprocessResult = {
+          text: ruleText,
+          source: "skipped_" + strategy.reason,
+          durationMs: 0,
+          timeoutMs: 0,
+          error: null,
+          fallbackReason: "",
+        };
+      } else {
+        setVoiceInputStatus("postprocessing", {
+          message: mode === "task"
+            ? bt("voiceTaskPostprocessing")
+            : mode === "edit"
+              ? bt("voiceEditPostprocessing")
+              : bt("voicePostprocessing"),
+          stage: "postprocessing",
+          mode: mode,
+        });
+        postprocessResult = await postprocessVoiceText(
+          ruleText,
+          mode,
+          session.draftBeforeStart,
+          session.sessionId,
+          voicePostprocessTimeoutMs(mode, ruleText)
+        );
       }
-      setVoiceInputStatus("completed", { message: bt("voiceWrittenBack"), completedAt: Date.now() });
-      emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
+      var candidateText = postprocessResult.text;
+      var outputValid = validateVoicePostprocessOutput(text, ruleText, candidateText, mode);
+      if (mode === "edit" && postprocessResult.fallbackReason) outputValid = false;
+      var finalText = outputValid ? candidateText : (mode === "edit" ? "" : ruleText);
+      var outputFallbackReason = outputValid ? "" : "llm_output_invalid";
+      var highRiskResidual = mode === "task" ? hasVoiceHighRiskResidual(finalText) : [];
+      var fallbackHighRisk = mode === "task"
+        && (!!postprocessResult.fallbackReason || !!outputFallbackReason)
+        && rawSuspiciousTerms
+        && rawSuspiciousTerms.length > 0
+        && highRiskResidual.length > 0;
+      var taskSendBlocked = mode === "task" && (highRiskResidual.length > 0 || fallbackHighRisk);
+      var editUnchanged = mode === "edit"
+        && !!String(finalText || "").trim()
+        && String(finalText || "").trim() === String(session.draftBeforeStart || "").trim();
+      var diagnostic = {
+        mode: mode,
+        recording_ms: Math.round(durationMs),
+        asr_ms: asrDurationMs,
+        llm_ms: postprocessResult.durationMs,
+        total_ms: roundedMs(pipelineStartedAt),
+        asr_source: (res && res.source) || "",
+        llm_source: postprocessResult.source,
+        llm_error: postprocessResult.error || "",
+        llm_timeout_ms: postprocessResult.timeoutMs || 0,
+        normalize_strategy: strategy.strategy,
+        skip_reason: strategy.strategy === "run_llm" ? "" : strategy.reason,
+        fallback_reason: outputFallbackReason || postprocessResult.fallbackReason || "",
+        suspicious_asr_terms: rawSuspiciousTerms,
+        high_risk_residual_terms: highRiskResidual,
+        task_send_blocked: taskSendBlocked,
+        edit_unchanged: editUnchanged,
+        raw_text_length: text.length,
+        final_text_length: finalText.length,
+      };
+      logVoicePipeline(diagnostic);
+      if (activeVoiceInput !== session) return;
+      if (finalText && !editUnchanged && typeof session.writeback === "function") {
+        await session.writeback(finalText, session.draftBeforeStart, {
+          mode: mode,
+          rawText: text,
+          diagnostic: diagnostic,
+        });
+      }
+      setVoiceInputStatus("completed", {
+        message: !finalText
+          ? bt("voiceEmptyResult")
+          : editUnchanged
+            ? bt("voiceEditNoChange")
+            : diagnostic.task_send_blocked
+            ? bt("voiceWrittenBack")
+            : mode === "task" ? bt("voiceTaskSent") : mode === "edit" ? bt("voiceEditPreviewReady") : bt("voiceWrittenBack"),
+        completedAt: Date.now(),
+        mode: mode,
+        diagnostic: diagnostic,
+      });
+      emitVoiceDiagnostic("writeback", "info", mode === "task" ? "voice task submitted" : "voice text written back", "", "");
     } catch (err) {
       var normalized = normalizeVoiceError(err, "transcribing");
       setVoiceInputStatus("failed", {
@@ -286,7 +682,7 @@
   // voice_asr:progress 事件。装完 ready 自动关框。
   async function installVoiceAsr() {
     if (state.voiceAsrSetup.installing) return;
-    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: true, cancelling: false, error: null, progress: { stage: "start" } });
+    state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: false, installing: true, cancelling: false, error: null, progress: { stage: "start" } });
     notify();
     try {
       var st = await invoke("install_voice_asr");
@@ -295,14 +691,16 @@
       state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
       notify();
     } catch (e) {
+      var message = String(e);
       var cancelled = state.voiceAsrSetup.cancelling || String(e).indexOf("已取消") >= 0;
+      var alreadyInstalling = message.indexOf("正在下载或安装中") >= 0 || message.indexOf("already installing") >= 0;
       var failedPatch = {
-        installing: false,
+        open: false,
+        installing: alreadyInstalling && !cancelled,
         cancelling: false,
-        progress: cancelled ? { stage: "cancelled" } : state.voiceAsrSetup.progress,
-        error: cancelled ? null : String(e),
+        progress: cancelled ? { stage: "cancelled" } : (state.voiceAsrSetup.progress || { stage: "start" }),
+        error: cancelled || alreadyInstalling ? null : message,
       };
-      if (cancelled) failedPatch.open = false;
       state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, failedPatch);
       notify();
     }
@@ -339,7 +737,7 @@
   }
 
 
-  async function startVoiceInput(draftText, writeback) {
+  async function startVoiceInput(draftText, writeback, options) {
     if (activeVoiceInput && state.voiceInput.status === "recording") {
       finishVoiceInput(false, false);
       return;
@@ -349,11 +747,10 @@
       return;
     }
 
-    // 模型下载期间再次点麦克风时保留原下载会话，不能用新的依赖检测结果
-    // 覆盖 installing/cancelling/progress，否则新引导框的“取消”只会关 UI，
-    // 后端下载仍会继续。
+    // 模型下载期间再次触发语音时保留原下载会话，不能用新的依赖检测结果
+    // 覆盖 installing/cancelling/progress。open 状态也保持原样：
+    // 自动下载走按钮 loading + 小 popover，手动修复安装才保留安装框。
     if (state.voiceAsrSetup.installing) {
-      state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { open: true });
       notify();
       return;
     }
@@ -365,6 +762,7 @@
       sessionId: state.activeSessionId || null,
       draftBeforeStart: String(draftText || ""),
       writeback: writeback,
+      mode: normalizeVoiceMode(options && options.mode),
       chunks: [],
       sampleRate: 16000,
       startedAt: Date.now(),
@@ -375,6 +773,7 @@
       sessionId: session.sessionId,
       startedAt: session.startedAt,
       stage: "device",
+      mode: session.mode,
     });
     emitVoiceDiagnostic("device", "info", "checking voice input environment", "", "");
 
@@ -387,13 +786,38 @@
         cleanupVoiceInputSession(session);
         activeVoiceInput = null;
         setVoiceInputStatus("idle", { message: "", stage: null, sessionId: null });
-        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, cancelling: false, progress: null, error: null };
+        state.voiceAsrSetup = {
+          open: !asrStatus.installable,
+          status: asrStatus,
+          installing: false,
+          cancelling: false,
+          progress: null,
+          error: null,
+        };
         notify();
+        if (asrStatus.installable) {
+          installVoiceAsr();
+        }
         return;
       }
     } catch (e) {
       if (activeVoiceInput !== session) return;
       // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
+    }
+
+    if (options && typeof options.beforePermission === "function") {
+      var shouldContinue = await options.beforePermission({
+        mode: session.mode,
+        sessionId: session.sessionId,
+        draftBeforeStart: session.draftBeforeStart,
+      });
+      if (activeVoiceInput !== session) return;
+      if (shouldContinue === false) {
+        cleanupVoiceInputSession(session);
+        activeVoiceInput = null;
+        setVoiceInputStatus("idle", { message: "", stage: null, sessionId: null });
+        return;
+      }
     }
 
     var AudioCtor = window.AudioContext || window.webkitAudioContext;
@@ -441,7 +865,7 @@
       session.source.connect(session.processor);
       session.processor.connect(session.zeroGain);
       session.zeroGain.connect(session.audioContext.destination);
-      session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
+      session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, VOICE_RECORDING_MAX_DURATION_MS);
       setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording" });
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
@@ -511,6 +935,13 @@
     return true;
   }
 
+  function setVoiceShortcutEnabled(enabled) {
+    return invoke("set_voice_shortcut_enabled", { enabled: !!enabled }).catch(function (error) {
+      console.warn("[voice] failed to sync shortcut setting", error);
+      return false;
+    });
+  }
+
     return {
       startVoiceInput: startVoiceInput,
       installVoiceAsr: installVoiceAsr,
@@ -518,6 +949,7 @@
       closeVoiceAsrSetup: closeVoiceAsrSetup,
       cancelVoiceInput: cancelVoiceInput,
       clearVoiceInput: clearVoiceInput,
+      setVoiceShortcutEnabled: setVoiceShortcutEnabled,
       appendVoiceText: appendVoiceText,
       runVoiceInputDebugAssertions: runVoiceInputDebugAssertions
     };

@@ -328,7 +328,7 @@
     vllmBootstrapError: null, // 失败原因(pkexec stderr / 超时透传)
     vllmSetupDismissed: false,// 本次会话内点了「跳过」,不再弹(不写持久标记)
     voiceInput: {
-      status: "idle",         // idle | requesting_permission | recording | transcribing | completed | cancelled | failed
+      status: "idle",         // idle | requesting_permission | recording | transcribing | postprocessing | completed | cancelled | failed
       message: "",
       error: null,
       category: null,
@@ -438,8 +438,14 @@
       voiceCancelled: "Voice input cancelled",
       voiceDeviceTimeout: "Microphone detection timed out; no recording device found. Check the device connection and the system microphone settings, then try again.",
       voiceTranscribing: "Transcribing…",
+      voicePostprocessing: "Polishing voice text…",
+      voiceTaskPostprocessing: "Rewriting voice task…",
+      voiceStructuredPostprocessing: "Structuring voice text…",
+      voiceEditPostprocessing: "Editing current input…",
       voiceRecordingTooShort: "Recording is too short. Please try again.",
       voiceWrittenBack: "Transcribed text inserted into the input box",
+      voiceTaskSent: "Voice task sent",
+      voiceEditPreviewReady: "Voice edit ready to review",
       voiceCheckingDevice: "Checking microphone…",
       voiceRequestingPermission: "Requesting microphone permission…",
       voiceWebviewNoMic: "This WebView does not support microphone capture.",
@@ -512,8 +518,14 @@
       voiceCancelled: "音声入力をキャンセルしました",
       voiceDeviceTimeout: "マイク検出がタイムアウトし、録音デバイスが見つかりませんでした。デバイスの接続とシステムのマイク設定を確認して再試行してください。",
       voiceTranscribing: "音声を認識中…",
+      voicePostprocessing: "音声テキストを整えています…",
+      voiceTaskPostprocessing: "音声タスクを整理しています…",
+      voiceStructuredPostprocessing: "リストに整理中…",
+      voiceEditPostprocessing: "現在の入力を編集しています…",
       voiceRecordingTooShort: "録音時間が短すぎます。再試行してください。",
       voiceWrittenBack: "音声を入力ボックスに書き込みました",
+      voiceTaskSent: "音声タスクを送信しました",
+      voiceEditPreviewReady: "音声編集を確認してください",
       voiceCheckingDevice: "マイクデバイスを確認中…",
       voiceRequestingPermission: "マイクの権限をリクエスト中…",
       voiceWebviewNoMic: "この WebView はマイク入力に対応していません。",
@@ -586,8 +598,14 @@
       voiceCancelled: "已取消语音输入",
       voiceDeviceTimeout: "麦克风检测超时，未发现可用录音设备。请检查设备连接和系统麦克风设置后重试。",
       voiceTranscribing: "正在识别语音…",
+      voicePostprocessing: "正在整理语音文本…",
+      voiceTaskPostprocessing: "正在整理语音任务…",
+      voiceStructuredPostprocessing: "正在整理成条目…",
+      voiceEditPostprocessing: "正在编辑当前输入…",
       voiceRecordingTooShort: "录音时间过短，请重试。",
       voiceWrittenBack: "语音已写入输入框",
+      voiceTaskSent: "语音任务已发送",
+      voiceEditPreviewReady: "语音编辑待确认",
       voiceCheckingDevice: "正在检测麦克风设备…",
       voiceRequestingPermission: "正在请求麦克风权限…",
       voiceWebviewNoMic: "当前 WebView 不支持麦克风采集。",
@@ -2061,6 +2079,7 @@
   var closeVoiceAsrSetup = voiceFeature.closeVoiceAsrSetup;
   var cancelVoiceInput = voiceFeature.cancelVoiceInput;
   var clearVoiceInput = voiceFeature.clearVoiceInput;
+  var setVoiceShortcutEnabled = voiceFeature.setVoiceShortcutEnabled;
   var appendVoiceText = voiceFeature.appendVoiceText;
   var runVoiceInputDebugAssertions = voiceFeature.runVoiceInputDebugAssertions;
   var knowledgeModelFeature = installBridgeFeature("knowledge-model", { state: state, notify: notify, invoke: invoke, listen: listen });
@@ -2186,6 +2205,7 @@
       closeVoiceAsrSetup: closeVoiceAsrSetup,
       cancelVoiceInput: cancelVoiceInput,
       clearVoiceInput: clearVoiceInput,
+      setVoiceShortcutEnabled: setVoiceShortcutEnabled,
       appendVoiceText: appendVoiceText,
       runVoiceInputDebugAssertions: runVoiceInputDebugAssertions,
     },

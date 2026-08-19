@@ -181,6 +181,7 @@ function injectSource() {
         case 'artifact_info': return Promise.resolve({exists:true,kind:'md',size:2048,modified:1});
         case 'read_artifact_text': return Promise.resolve('# 会议纪要');
         case 'render_artifact_visual': return Promise.resolve({mode:'unsupported'});
+        case 'voice_asr_status': return Promise.resolve({ready:false,installable:false,missing:['model']});
         case 'detect_local_vllm_setup': {
           const engineState = window.__VLLM_STATE__ || 'stopped';
           return Promise.resolve(window.__VLLM_ELIGIBLE__ && engineState !== 'starting'
@@ -261,211 +262,60 @@ async function expand(page) {
     JSON.stringify(visualShell),
   );
 
-  // Windows 平板尺寸会展示浮动语音按钮。用浏览器输入通道覆盖鼠标、触控笔与触摸，
-  // 并动态验证 capture 丢失、pointercancel、窗口失焦后的视觉态和点击语义。
+  // 语音入口收敛到 composer：平板尺寸也不渲染页面级悬浮球；
+  // 麦克风保留在发送按钮旁，录音反馈由 composer 内胶囊承载。
   await page.setViewport({ width: 1000, height: 800, deviceScaleFactor: 1 });
   await sleep(350);
-  await page.evaluate(() => {
-    const button = document.querySelector('[data-testid="floating-voice-button"]');
-    window.__FLOATING_VOICE_COMPAT_CLICKS__ = 0;
-    if (button) button.addEventListener('click', () => { window.__FLOATING_VOICE_COMPAT_CLICKS__ += 1; });
-  });
-  const floatingVoiceSnapshot = () => page.evaluate(() => {
-    const button = document.querySelector('[data-testid="floating-voice-button"]');
-    if (!button) return null;
-    const rect = button.getBoundingClientRect();
-    const wrapRect = button.parentElement.getBoundingClientRect();
+  const composerVoiceEntry = await page.evaluate(() => {
+    const floatingButton = document.querySelector('[data-testid="floating-voice-button"]');
+    const composerButton = document.querySelector('[data-testid="composer-voice-button"]');
+    const sendButton = document.querySelector('[aria-label="发送"]') || document.querySelector('[title="发送"]');
+    if (!composerButton || !sendButton) {
+      return {
+        floatingFound: !!floatingButton,
+        composerFound: !!composerButton,
+        sendFound: !!sendButton,
+        composerVisible: false,
+        besideSend: false,
+      };
+    }
+    const voiceRect = composerButton.getBoundingClientRect();
+    const sendRect = sendButton.getBoundingClientRect();
     return {
-      x: rect.left + rect.width / 2,
-      y: rect.top + rect.height / 2,
-      left: wrapRect.left,
-      top: wrapRect.top,
-      pressed: button.getAttribute('data-pressed'),
-      voiceCalls: window.__TAURI_INVOKES__.filter(call => call.cmd === 'voice_asr_status').length,
-      clicks: window.__FLOATING_VOICE_COMPAT_CLICKS__,
+      floatingFound: !!floatingButton,
+      composerFound: true,
+      sendFound: true,
+      composerVisible: voiceRect.width > 0 && voiceRect.height > 0,
+      besideSend: voiceRect.right <= sendRect.left + 2 && Math.abs((voiceRect.top + voiceRect.bottom) / 2 - (sendRect.top + sendRect.bottom) / 2) <= 6,
     };
   });
-  const floatingVoiceStart = await floatingVoiceSnapshot();
-  let floatingVoiceDrag = { found: false };
-  if (floatingVoiceStart) {
-    await page.mouse.move(floatingVoiceStart.x, floatingVoiceStart.y);
-    await page.mouse.down();
-    await page.mouse.move(floatingVoiceStart.x + 12, floatingVoiceStart.y);
-    await sleep(60);
-    const mouseDuring = await floatingVoiceSnapshot();
-    await page.mouse.up();
-    await sleep(60);
-    const mouseAfter = await floatingVoiceSnapshot();
-
-    const lostStart = mouseAfter;
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      window.__FLOATING_VOICE_POINTER_ID__ = null;
-      button?.addEventListener('pointerdown', event => { window.__FLOATING_VOICE_POINTER_ID__ = event.pointerId; }, { once: true });
-    });
-    await page.mouse.move(lostStart.x, lostStart.y);
-    await page.mouse.down();
-    await page.mouse.move(lostStart.x + 12, lostStart.y);
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const pointerId = window.__FLOATING_VOICE_POINTER_ID__;
-      if (button && pointerId !== null && button.hasPointerCapture(pointerId)) button.releasePointerCapture(pointerId);
-      if (button && pointerId !== null) {
-        button.dispatchEvent(new PointerEvent('lostpointercapture', {
-          bubbles: true, pointerId, pointerType: 'mouse', isPrimary: true,
-        }));
-      }
-    });
-    await sleep(30);
-    const lostCapture = await floatingVoiceSnapshot();
-    await page.mouse.up();
-    await sleep(60);
-    const lostAfter = await floatingVoiceSnapshot();
-
-    const input = await page.createCDPSession();
-    const penStart = lostAfter;
-    await input.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: penStart.x, y: penStart.y, buttons: 0, pointerType: 'pen' });
-    await input.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: penStart.x, y: penStart.y, button: 'left', buttons: 1, clickCount: 1, pointerType: 'pen' });
-    const penPressed = await floatingVoiceSnapshot();
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const rect = button.getBoundingClientRect();
-      const init = {
-        bubbles: true, pointerId: 302, pointerType: 'touch', isPrimary: true, button: 0,
-        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-      };
-      button.dispatchEvent(new PointerEvent('pointerdown', { ...init, buttons: 1 }));
-      button.dispatchEvent(new PointerEvent('pointerup', { ...init, buttons: 0 }));
-    });
-    await sleep(20);
-    const penAfterTouch = await floatingVoiceSnapshot();
-    await input.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: penStart.x + 12, y: penStart.y, buttons: 1, pointerType: 'pen' });
-    const penDuring = await floatingVoiceSnapshot();
-    await input.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: penStart.x + 12, y: penStart.y, button: 'left', buttons: 0, clickCount: 1, pointerType: 'pen' });
-    await sleep(60);
-    const penAfter = await floatingVoiceSnapshot();
-
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const rect = button.getBoundingClientRect();
-      button.dispatchEvent(new PointerEvent('pointerdown', {
-        bubbles: true, pointerId: 301, pointerType: 'pen', isPrimary: false, button: 0, buttons: 1,
-        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-      }));
-    });
-    await sleep(20);
-    const nonPrimaryPen = await floatingVoiceSnapshot();
-
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const rect = button.getBoundingClientRect();
-      const init = {
-        bubbles: true, pointerType: 'touch', button: 0, buttons: 1,
-        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-      };
-      button.dispatchEvent(new PointerEvent('pointerdown', { ...init, pointerId: 401, isPrimary: true }));
-      button.dispatchEvent(new PointerEvent('pointerdown', { ...init, pointerId: 402, isPrimary: false }));
-      button.dispatchEvent(new PointerEvent('pointerup', { ...init, pointerId: 402, isPrimary: false, buttons: 0 }));
-    });
-    await sleep(20);
-    const multiTouchSecondaryEnded = await floatingVoiceSnapshot();
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const rect = button.getBoundingClientRect();
-      button.dispatchEvent(new PointerEvent('pointercancel', {
-        bubbles: true, pointerId: 401, pointerType: 'touch', isPrimary: true, button: 0, buttons: 0,
-        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-      }));
-    });
-    await sleep(20);
-    const multiTouchCancelled = await floatingVoiceSnapshot();
-
-    const touchStart = penAfter;
-    await input.send('Input.dispatchTouchEvent', {
-      type: 'touchStart',
-      touchPoints: [{ x: touchStart.x, y: touchStart.y, id: 41, radiusX: 1, radiusY: 1, force: 1 }],
-    });
-    await input.send('Input.dispatchTouchEvent', {
-      type: 'touchMove',
-      touchPoints: [{ x: touchStart.x + 12, y: touchStart.y, id: 41, radiusX: 1, radiusY: 1, force: 1 }],
-    });
-    const touchDuring = await floatingVoiceSnapshot();
-    await input.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
-    await sleep(40);
-    const touchCancelled = await floatingVoiceSnapshot();
-
-    const composerBefore = touchCancelled;
-    const composerCenter = await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="composer-voice-button"]');
-      if (!button) return null;
-      const rect = button.getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    });
-    if (composerCenter) await page.mouse.click(composerCenter.x, composerCenter.y);
-    await sleep(80);
-    const composerAfter = await floatingVoiceSnapshot();
-    await page.evaluate(() => window.TauriBridge.voice.clearVoiceInput());
-    await sleep(20);
-
-    const blurStart = touchCancelled;
-    await page.mouse.move(blurStart.x, blurStart.y);
-    await page.mouse.down();
-    await page.mouse.move(blurStart.x + 12, blurStart.y);
-    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-    await sleep(30);
-    const blurred = await floatingVoiceSnapshot();
-    await page.mouse.move(1, 1);
-    await page.mouse.up();
-    await sleep(40);
-    const blurAfter = await floatingVoiceSnapshot();
-
-    await page.evaluate(() => document.querySelector('[data-testid="floating-voice-button"]')?.focus());
-    await page.keyboard.press('Enter');
-    await sleep(80);
-    const keyboardAfter = await floatingVoiceSnapshot();
-    await page.evaluate(() => window.TauriBridge.voice.clearVoiceInput());
-
-    floatingVoiceDrag = {
-      found: true,
-      mouseMovedImmediately: mouseDuring.pressed === 'true'
-        && (Math.abs(mouseDuring.left - floatingVoiceStart.left) > 4 || Math.abs(mouseDuring.top - floatingVoiceStart.top) > 4),
-      mouseCompatibleClickSuppressed: mouseAfter.pressed === 'false'
-        && mouseAfter.clicks > floatingVoiceStart.clicks
-        && mouseAfter.voiceCalls === floatingVoiceStart.voiceCalls,
-      lostCaptureCleared: lostCapture.pressed === 'false',
-      lostCaptureClickSuppressed: lostAfter.clicks > mouseAfter.clicks
-        && lostAfter.voiceCalls === mouseAfter.voiceCalls,
-      penPathPassed: penPressed.pressed === 'true'
-        && penAfterTouch.pressed === 'true'
-        && penDuring.pressed === 'true'
-        && (Math.abs(penDuring.left - penStart.left) > 4 || Math.abs(penDuring.top - penStart.top) > 4)
-        && penAfter.pressed === 'false'
-        && penAfter.voiceCalls === lostAfter.voiceCalls,
-      nonPrimaryPenIgnored: nonPrimaryPen.pressed === 'false',
-      secondTouchIgnored: multiTouchSecondaryEnded.pressed === 'true' && multiTouchCancelled.pressed === 'false',
-      touchCancelCleared: touchDuring.pressed === 'true'
-        && touchCancelled.pressed === 'false'
-        && touchCancelled.voiceCalls === penAfter.voiceCalls,
-      composerClickWorked: !!composerCenter && composerAfter.voiceCalls > composerBefore.voiceCalls,
-      blurCleared: blurred.pressed === 'false' && blurAfter.voiceCalls === composerAfter.voiceCalls,
-      keyboardClickWorked: keyboardAfter.voiceCalls > blurAfter.voiceCalls,
-    };
-  }
   rec(
-    '⓪b 浮动语音按钮 mouse/touch/pen 拖动及异常终止行为',
-    floatingVoiceDrag.found
-      && floatingVoiceDrag.mouseMovedImmediately
-      && floatingVoiceDrag.mouseCompatibleClickSuppressed
-      && floatingVoiceDrag.lostCaptureCleared
-      && floatingVoiceDrag.lostCaptureClickSuppressed
-      && floatingVoiceDrag.penPathPassed
-      && floatingVoiceDrag.nonPrimaryPenIgnored
-      && floatingVoiceDrag.secondTouchIgnored
-      && floatingVoiceDrag.touchCancelCleared
-      && floatingVoiceDrag.composerClickWorked
-      && floatingVoiceDrag.blurCleared
-      && floatingVoiceDrag.keyboardClickWorked,
-    JSON.stringify(floatingVoiceDrag),
+    '⓪b composer 麦克风位于发送按钮旁且不渲染悬浮语音球',
+    !composerVoiceEntry.floatingFound
+      && composerVoiceEntry.composerFound
+      && composerVoiceEntry.sendFound
+      && composerVoiceEntry.composerVisible
+      && composerVoiceEntry.besideSend,
+    JSON.stringify(composerVoiceEntry),
+  );
+  const composerVoiceInvoke = await page.evaluate(async () => {
+    window.__TAURI_INVOKES__ = [];
+    const composerButton = document.querySelector('[data-testid="composer-voice-button"]');
+    if (!composerButton) return { clicked: false, invoked: false };
+    composerButton.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    if (window.TauriBridge && window.TauriBridge.voice && window.TauriBridge.voice.closeVoiceAsrSetup) {
+      window.TauriBridge.voice.closeVoiceAsrSetup();
+    }
+    return {
+      clicked: true,
+      invoked: window.__TAURI_INVOKES__.some(call => call.cmd === 'voice_asr_status'),
+    };
+  });
+  rec(
+    '⓪b-2 composer 麦克风点击进入语音能力探测',
+    composerVoiceInvoke.clicked && composerVoiceInvoke.invoked,
+    JSON.stringify(composerVoiceInvoke),
   );
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
   await sleep(250);
