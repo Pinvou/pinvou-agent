@@ -468,9 +468,9 @@ const MODEL_CATALOG = {
       vendor: 'xai',
       baseUrl: 'https://api.x.ai/v1',
       items: [
-        { model: 'grok-4.20-0309-reasoning', imageCapable: true, title: 'grok-4.20-0309-reasoning', desc: '4.20 推理' },
-        { model: 'grok-4.20-0309-non-reasoning', imageCapable: true, title: 'grok-4.20-0309-non-reasoning', desc: '4.20 非推理' },
-        { model: 'grok-4.5', imageCapable: true, title: 'grok-4.5', desc: '旗舰编码与 Agent' },
+        { model: 'grok-4.20-0309-reasoning', title: 'grok-4.20-0309-reasoning', desc: '4.20 推理' },
+        { model: 'grok-4.20-0309-non-reasoning', title: 'grok-4.20-0309-non-reasoning', desc: '4.20 非推理' },
+        { model: 'grok-4.5', title: 'grok-4.5', desc: '旗舰编码与 Agent' },
         { model: 'grok-4.3', imageCapable: true, title: 'grok-4.3', desc: '通用推理，默认推荐' },
         { model: 'grok-build-0.1', imageCapable: true, title: 'grok-build-0.1', desc: '代码 Agent' },
         { model: '', title: '自定义 Grok 模型', desc: '手动填写模型 ID', custom: true },
@@ -558,6 +558,8 @@ function catalogItemMatchesModel(item, model) {
 // 现有标注于 2026-08 按各厂商官方文档/发布信息逐条联网核查;kimi-k3 等
 // Kimi 官方已宣布视觉能力的模型以 platform.kimi.com 视觉文档为准(晚于
 // 后端内置表「kimi 文本模型不收」的旧口径,内置表仅作非目录模型的兜底)。
+// grok-4.3/grok-build-0.1 有 OpenRouter 输入模态与 AWS Bedrock 模型卡佐证;
+// grok-4.5/grok-4.20-0309-* 未找到可复现的官方口径,按「拿不准不标」回退。
 // 返回 true/false(条目显式标注)/null(未命中或未标注)。
 function catalogImageCapableForModel(model) {
   if (typeof model !== 'string' || !model) return null;

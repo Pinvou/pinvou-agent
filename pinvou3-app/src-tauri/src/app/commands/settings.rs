@@ -670,8 +670,7 @@ pub async fn test_model_connection(
 }
 
 /// 连接探测核心:GET models probe URL 验证服务可达与凭据可用。
-/// 复用方:设置页「测试连接」按钮与「自动探测」保存回填(连接不通 → 未知 →
-/// 回填 pinvou 决策,不做识图探测)。
+/// 复用方:设置页「测试连接」按钮。
 pub async fn probe_model_connection(
     base_url: &str,
     api_key: &str,
@@ -815,7 +814,7 @@ fn image_capability_test_payload(model: &str) -> serde_json::Value {
                 },
             ],
         }],
-        // always-thinking 模型:thinking 输出吃 token,上限提到 1024;
+        // always-thinking 模型:thinking 输出吃 token,上限用 thinking 档常量;
         // 其余模型保持 64(回答「红色」绰绰有余)。
         "max_tokens": if thinking_model {
             IMAGE_CAPABILITY_TEST_MAX_TOKENS_THINKING
@@ -1091,7 +1090,7 @@ fn image_probe_base_url(base_url: &str) -> String {
 /// 识图探测核心(设计 §7.3):POST {base_url}/chat/completions 携带内置纯色 PNG,
 /// 返回 `ImageCapabilityTestResult`(不发 Result 错误——连接失败等也收敛为结果)。
 /// 入参与凭据解析和 test_model_connection 一致:表单新填 key 优先,否则读已保存凭据。
-/// 复用方:设置页「测试图片能力」按钮与「自动探测」保存回填。
+/// 复用方:设置页「测试图片能力」按钮。
 pub async fn run_image_capability_probe(
     model: &str,
     base_url: &str,

@@ -1209,9 +1209,14 @@ async function modalWidth(page, headingText) {
   const echoPinvou = await echoOverride();
   rec('⑦.img.12b 重开表单回显「自动处理」', echoPinvou.includes('自动处理'), echoPinvou);
 
-  // 存量「保存时检测」(auto)档残留:重开表单按「自动处理」回显。
+  // 存量「保存时检测」(auto)档残留:重开表单按「自动处理」回显。生产链路里
+  // "auto" 由 Rust serde 迁移为 pinvou 后前端才收到,此处直灌 auto 只测前端
+  // 防御层(serde 迁移另有 settings 单测覆盖);mock 改档后必须 loadModels()
+  // 刷新 bridge state,React 才会以新 savedModels 渲染(同 ⑦.img.2b)。
   await page.evaluate(() => window.__SETTINGS_TEST__.setModelImageCapability(
     window.__SETTINGS_TEST__.models().find(model => model.model === 'deepseek-v4-pro').id, 'auto'));
+  await page.evaluate(() => window.TauriBridge.models.loadModels());
+  await sleep(200);
   const echoLegacyAuto = await echoOverride();
   rec('⑦.img.12c 存量 auto 档残留按「自动处理」回显',
     echoLegacyAuto.includes('自动处理') && !echoLegacyAuto.includes('保存时检测'),

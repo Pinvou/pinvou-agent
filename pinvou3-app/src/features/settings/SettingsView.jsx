@@ -2322,7 +2322,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
               <button data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.cpCancel}</button>
               <button data-testid="model-form-save" onClick={() => doSave()} disabled={!canSave || savingModel}
                 className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">
-                {savingModel ? t.saving : t.modelSaveBtn}
+                {savingModel ? settingsCopy.saving : t.modelSaveBtn}
               </button>
             </div>
           </div>
@@ -3196,7 +3196,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           {canManageModels && editingModel && (
             <ModelFormModal isDark={activeTheme === 'dark'} t={t} initial={editingModel} bs={bs} models={userModels}
               onCancel={() => setEditingModel(null)}
-              // 保存/探测结果由弹窗内部控制关闭(自动探测有结论时保持打开展示)。
+              // 保存/错误提示由弹窗内部控制关闭(保存失败保持打开展示行内错误)。
               onSave={async m => onSaveModel(m)} />
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} />}
