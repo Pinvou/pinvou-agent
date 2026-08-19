@@ -336,7 +336,7 @@
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
       acceptPlanFailed: "⚠️ accept_plan failed: ",
-      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
+      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ", planContinueFailed: "⚠️ Failed to send continue instruction: ",
       replanRequested: "📋 Asking the AI to re-plan…",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
@@ -443,7 +443,7 @@
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
       acceptPlanFailed: "⚠️ accept_plan に失敗: ",
-      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
+      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ", planContinueFailed: "⚠️ 継続指示の送信に失敗: ",
       replanRequested: "📋 AI にプランを出し直させています…",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
@@ -550,7 +550,7 @@
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
       acceptPlanFailed: "⚠️ accept_plan 失败: ",
-      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
+      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ", planContinueFailed: "⚠️ 发送继续执行指令失败: ",
       replanRequested: "📋 让 AI 重出方案…",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
@@ -4032,6 +4032,9 @@
         if (turnOwnerBuffer) turnOwnerBuffer.localTurnOwned = false;
         emitPetEvent("pet:turn_end", sid);
         runSyncOnSession(sid, function () {
+          // 按引用移除本地乐观提交：buffer 权威重载后引用自然消失，无需按位置
+          // 二次限定（位置过滤在"引用仍在但位置移动"时会残留本地消息，且与
+          // tauri 端纯身份过滤分叉——审计后回退该谓词微调）。
           state.messages = state.messages.filter(function (message) { return message !== submittedMessage; });
           state.chatItems = state.chatItems.filter(function (item) {
             return item.id !== submittedUserItemId && item.id !== submittedStreamId;
@@ -6633,7 +6636,8 @@
       notify();
       return;
     }
-    if (state.activeSessionId !== sid || isBusyFor(sid) || !isActionablePlanCard(sid, itemId, planTicket)) return;
+    // sid 前缀省略：isActionablePlanCard 首判已校验 sid === active（审计清理）。
+    if (isBusyFor(sid) || !isActionablePlanCard(sid, itemId, planTicket)) return;
     if (planBuffer) {
       planBuffer.localTurnOwned = true;
       planBuffer.remoteTurnActive = false;
@@ -6759,9 +6763,17 @@
     await sendMessage("请用 todo_write 工具输出完整方案步骤,不要直接调写工具。");
   }
   async function planStuckGo(itemId) {
+    var sid = state.activeSessionId;
+    if (!sid) return;
     patchItemById(itemId, { resolved: true }); notify();
     await exitPlanToYolo();
-    await sendMessage("按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
+    // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
+    // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
+    // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并
+    // 定向提示，否则成为 React onClick 上的 unhandled rejection，用户无感知。
+    try {
+      await sendMessageToSession(sid, "按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
+    } catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
@@ -6803,6 +6815,7 @@
   }
   async function cancelUserInput(itemId, toolCallId) {
     var sid = state.activeSessionId;
+    if (!sid) return;
     try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: sid }); } catch (_) {}
     patchItemByIdFor(sid, itemId, { resolved: true, cardState: "cancelled" });
     notify();
@@ -6816,7 +6829,8 @@
     var sid = state.activeSessionId;
     var editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addAuthoritySyncNotice(bt("turnSyncRetry"));
+      // 对账失败通知定向触发会话：await 期间切走后不得落进当前显示（与 acceptPlan 同）。
+      runOnSession(sid, function () { addAuthoritySyncNotice(bt("turnSyncRetry")); });
       notify();
       return;
     }
@@ -6885,7 +6899,9 @@
     }
   }
   async function compactNow() {
-    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItem(bt("compactFail") + ": " + e); }
+    var sid = state.activeSessionId;
+    if (!sid) return;
+    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItemFor(sid, bt("compactFail") + ": " + e); }
   }
 
   // ── 产物面板 ─────────────────────────────────────────────────────

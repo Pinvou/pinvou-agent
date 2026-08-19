@@ -21,6 +21,7 @@
     var reconcileRemoteTurn = context.reconcileRemoteTurn;
     var isBusyFor = context.isBusyFor;
     var markRemoteTurn = context.markRemoteTurn;
+    var sendMessageToSession = context.sendMessageToSession;
     // 共享的 modeState epoch 表与权威写回收敛点（bridge.js 注入，评审 P1）：
     // interaction 与 chat-events 必须用同一份 epoch 表，否则事件直写与
     // 本模块的读取校验互不感知，竞态照样敞口。
@@ -208,7 +209,8 @@
       notify();
       return;
     }
-    if (state.activeSessionId !== sid || isBusyFor(sid) || !isActionablePlanCard(sid, itemId, planTicket)) return;
+    // sid 前缀省略：isActionablePlanCard 首判已校验 sid === active（审计清理）。
+    if (isBusyFor(sid) || !isActionablePlanCard(sid, itemId, planTicket)) return;
     if (planBuffer) {
       planBuffer.localTurnOwned = true;
       planBuffer.remoteTurnActive = false;
@@ -387,9 +389,17 @@
     await sendMessage("请用 todo_write 工具输出完整方案步骤,不要直接调写工具。");
   }
   async function planStuckGo(itemId) {
+    var sid = state.activeSessionId;
+    if (!sid) return;
     patchItemById(itemId, { resolved: true }); notify();
     await exitPlanToYolo();
-    await sendMessage("按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
+    // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
+    // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
+    // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并
+    // 定向提示，否则成为 React onClick 上的 unhandled rejection，用户无感知。
+    try {
+      await sendMessageToSession(sid, "按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
+    } catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
@@ -431,6 +441,7 @@
   }
   async function cancelUserInput(itemId, toolCallId) {
     var sid = state.activeSessionId;
+    if (!sid) return;
     try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: sid }); } catch (_) {}
     patchItemByIdFor(sid, itemId, { resolved: true, cardState: "cancelled" });
     notify();
@@ -446,7 +457,7 @@
     // 编辑前先收敛远端对账(与 web bridge 的 editLastTurn 对齐):失败对账
     // 状态下编辑会被陈旧 committed 事件重武装旧 revision,污染新一轮。
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addAuthoritySyncNotice(bt("remoteTurnSyncing"));
+      addAuthoritySyncNoticeFor(sid, bt("remoteTurnSyncing"));
       notify();
       return;
     }
@@ -460,6 +471,16 @@
       editBuffer.remoteTerminalSeen = false;
       editBuffer.remoteCommittedRevision = "";
     }
+    // 失败回滚快照（与 web bridge 的 editLastTurn 对齐）：await 期间可能
+    // 切走，恢复必须定向回 sid 的 buffer，不能直接改全局显示。
+    var previous = {
+      messages: state.messages.slice(),
+      chatItems: state.chatItems.slice(),
+      busy: state.busy,
+      thinking: Object.assign({}, state.thinking),
+      currentStreamText: context.currentStreamText,
+      currentStreamId: context.currentStreamId,
+    };
     // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
     var cut = -1;
     for (var i = state.messages.length - 1; i >= 0; i--) {
@@ -476,17 +497,29 @@
     context.currentStreamId = ++context.itemIdSeq;
     state.chatItems.push({ id: context.currentStreamId, type: "assistant", text: "", html: "", time: timeStr(), streaming: true });
     notify();
-    turnUsageDirty[state.activeSessionId] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护
+    turnUsageDirty[sid] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护（用捕获的 sid，web 对齐）
     try {
       await invoke("edit_last_turn", { newMessage: newText, sessionId: state.activeSessionId });
     } catch (e) {
-      addSystemItem("⚠️ " + e);
-      state.busy = false;
+      // 失败恢复必须定向触发会话（web 对齐）：直接写全局会把 busy/错误提示
+      // 砸进别的会话（编辑是在 sid 上发起的）。
+      if (editBuffer) editBuffer.localTurnOwned = false;
+      runSyncOnSession(sid, function () {
+        state.messages = previous.messages;
+        state.chatItems = previous.chatItems;
+        state.busy = previous.busy;
+        state.thinking = previous.thinking;
+        context.currentStreamText = previous.currentStreamText;
+        context.currentStreamId = previous.currentStreamId;
+        addSystemItem("⚠️ " + e);
+      });
       notify();
     }
   }
   async function compactNow() {
-    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItem(bt("compactFail") + ": " + e); }
+    var sid = state.activeSessionId;
+    if (!sid) return;
+    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItemFor(sid, bt("compactFail") + ": " + e); }
   }
 
 
