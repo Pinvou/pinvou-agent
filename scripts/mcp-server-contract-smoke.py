@@ -173,8 +173,9 @@ def main():
         "yuandian-mcp",
         "canva-mcp",
         "patsnap-search",
+        "wecom-bot",
     }
-    print("✅ manifest: 9 个可安装 MCP 清单完整且目录 ID 一致")
+    print("✅ manifest: 10 个可安装 MCP 清单完整且目录 ID 一致")
 
     expected = {
         "weather": {"get_weather"},
@@ -187,6 +188,7 @@ def main():
         "obsidian": {"search", "read_note", "list", "create_note", "edit_note", "rename_note", "delete_note"},
         "pptx": {"make_pptx"},
         "gongwen": {"make_gongwen"},
+        "wecom-bot": {"send_text", "send_markdown", "send_news", "send_image", "send_file"},
     }
     for tool_id, names in expected.items():
         check_protocol(tool_id, names)
@@ -195,6 +197,11 @@ def main():
         result = content_json(rpc.call("tools/call", {"name": "get_weather", "arguments": {"city": "杭州"}}))
         assert result == {"error": "AMAP_KEY 未配置"}
     print("✅ weather: 未配置凭据返回稳定错误，不发起外网请求")
+
+    with RpcServer(MCP_ROOT / "wecom-bot", {"WECOM_BOT_KEY": ""}) as rpc:
+        result = content_json(rpc.call("tools/call", {"name": "send_text", "arguments": {"content": "测试"}}))
+        assert result == {"error": "WECOM_BOT_KEY 未配置，请在工具详情里填写群机器人 webhook key"}
+    print("✅ wecom-bot: 未配置凭据返回稳定错误，不发起外网请求")
 
     with RpcServer(MCP_ROOT / "iwencai", {"IWENCAI_API_KEY": ""}) as rpc:
         response = rpc.call("tools/call", {"name": "news_search", "arguments": {"query": "黄金价格"}})
@@ -263,6 +270,17 @@ def main():
         "secret": True,
     }]
     print("✅ iwencai: 用户自填问财 API Key 清单契约")
+
+    wecom_bot = manifests["wecom-bot"]
+    assert wecom_bot["secret_env"] == [{"key": "WECOM_BOT_KEY", "provider": "wecom-bot", "required": True}]
+    assert wecom_bot["config_fields"] == [{
+        "key": "WECOM_BOT_KEY",
+        "label": "群机器人 Webhook Key",
+        "required": True,
+        "target": "env",
+        "secret": True,
+    }]
+    print("✅ wecom-bot: 用户自填群机器人 Webhook Key 清单契约")
 
     qcc = manifests["qcc"]
     assert qcc.get("secret_headers") in (None, [])
