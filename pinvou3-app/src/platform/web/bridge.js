@@ -373,6 +373,9 @@
   var scheduledTaskAutoCreateInFlight = Object.create(null);
   var sessionSwitchRequestToken = 0;
   var pendingCapabilitySessionSwitch = null;
+  // 能力快照迟到时的切换宽限：等待期间不向用户报错，快照到达即自动重试；
+  // 宽限期内快照仍未到达才报错并按失败收口（见 switchToSessionInternal 的 catch）。
+  var WEB_CAPABILITY_SWITCH_RETRY_GRACE_MS = 5000;
   // modeState 读取请求序号（评审 P1，定义前置供 syncSessionPresentationState
   // 与权威写回收敛点共用）：任何权威 modeState 写回（invoke 返回 / 事件负载 /
   // 会话切换状态恢复）都必须 bump 它，作废在途 syncModeState 的旧读取——
@@ -3228,7 +3231,7 @@
 
   async function switchToSessionInternal(id, preserveScheduledRunContext, errorScope, options) {
     var requestToken = ++sessionSwitchRequestToken;
-    pendingCapabilitySessionSwitch = null;
+    settlePendingCapabilitySessionSwitch(false);
     var forceDurableLoad = !!(options && options.forceDurableLoad);
     var hydrateLiveSession = !!(options && options.hydrateLiveSession);
     if (!id) {
@@ -3285,13 +3288,30 @@
     } catch (e) {
       if (IS_WEB && e && e.code === "desktop_capabilities_timeout" &&
           requestToken === sessionSwitchRequestToken) {
-        pendingCapabilitySessionSwitch = {
-          id: id,
-          preserveScheduledRunContext: preserveScheduledRunContext,
-          errorScope: errorScope,
-          options: options,
-          requestToken: requestToken,
+        // 能力快照迟到的切换进入宽限等待：快照到达就自动重试，并让原调用方
+        // await 到重试的最终结果——scheduled 收尾（terminal 标记/已查看回执/
+        // 返回上下文）与 UI 错误状态始终与最终结果一致；宽限期内快照仍未到
+        // 达才报错并按失败收口，避免“先报错、后台静默重试成功”的状态分裂。
+        var capabilityRetry = {
+          spec: {
+            id: id,
+            preserveScheduledRunContext: preserveScheduledRunContext,
+            errorScope: errorScope,
+            options: options,
+            requestToken: requestToken,
+          },
+          resolve: null,
+          timer: null,
         };
+        return await new Promise(function (resolve) {
+          capabilityRetry.resolve = resolve;
+          capabilityRetry.timer = setTimeout(function () {
+            if (pendingCapabilitySessionSwitch !== capabilityRetry) return;
+            reportSessionSwitchFailure(e, errorScope);
+            settlePendingCapabilitySessionSwitch(false);
+          }, WEB_CAPABILITY_SWITCH_RETRY_GRACE_MS);
+          pendingCapabilitySessionSwitch = capabilityRetry;
+        });
       }
       if (requestToken === sessionSwitchRequestToken) reportSessionSwitchFailure(e, errorScope);
       return false;
@@ -3364,20 +3384,31 @@
     reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
     return true;
   }
-  function retryCapabilityBlockedSessionSwitch() {
-    if (!webInvokeCapabilitiesReady() || !pendingCapabilitySessionSwitch) return;
+  function settlePendingCapabilitySessionSwitch(outcome) {
     var pending = pendingCapabilitySessionSwitch;
-    if (pending.requestToken !== sessionSwitchRequestToken) {
-      pendingCapabilitySessionSwitch = null;
+    if (!pending) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    pendingCapabilitySessionSwitch = null;
+    pending.resolve(outcome);
+  }
+  function retryCapabilityBlockedSessionSwitch() {
+    var pending = pendingCapabilitySessionSwitch;
+    if (!pending || !webInvokeCapabilitiesReady()) return;
+    if (pending.spec.requestToken !== sessionSwitchRequestToken) {
+      // 已有更新的切换请求：按失败收口旧调用方，不让其悬停等待。
+      settlePendingCapabilitySessionSwitch(false);
       return;
     }
+    if (pending.timer) clearTimeout(pending.timer);
     pendingCapabilitySessionSwitch = null;
     switchToSessionInternal(
-      pending.id,
-      pending.preserveScheduledRunContext,
-      pending.errorScope,
-      pending.options
-    ).catch(function () {});
+      pending.spec.id,
+      pending.spec.preserveScheduledRunContext,
+      pending.spec.errorScope,
+      pending.spec.options
+    ).catch(function () { return false; }).then(function (switched) {
+      pending.resolve(switched);
+    });
   }
 
   async function switchToSession(id) {

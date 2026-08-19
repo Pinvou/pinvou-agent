@@ -304,5 +304,6 @@
     connectionSnapshot: connectionSnapshot,
     pendingCount: function () { return queue.length; },
   });
-  record("diagnostics_initialized", { restored_queue_count: Math.max(0, queue.length - 1) });
+  // 恢复条数在本次 record 入队前度量，此刻 queue.length 即恢复规模。
+  record("diagnostics_initialized", { restored_queue_count: queue.length });
 })(window);

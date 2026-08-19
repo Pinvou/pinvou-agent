@@ -1441,6 +1441,10 @@ async function sessionDownloadCapabilityWaitClosesLostDisconnectEventRace() {
 }
 
 async function sessionDownloadCapabilityWaitHasTimeout() {
+  // 能力超时的切换进入宽限等待（5s 内快照到达即自动重试），期间不报错、
+  // 不落失败。能力超时（10s）压成微任务立即触发；宽限 timer（5s）只登记
+  // 不自动触发，模拟真实时序中快照先于宽限到期到达。
+  var graceTimers = [];
   var harness = createBridgeHarness(null, {
     bridgeKind: "web",
     webCapabilitiesReady: false,
@@ -1449,16 +1453,20 @@ async function sessionDownloadCapabilityWaitHasTimeout() {
         queueMicrotask(callback);
         return 1;
       }
+      if (delay === 5_000) {
+        graceTimers.push(callback);
+        return 10 + graceTimers.length;
+      }
       return setTimeout(callback, delay);
     },
   });
-  assert.strictEqual(await harness.bridge.sessions.switchToSession("chat-capabilities-timeout"), false);
-  assert.strictEqual(
-    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
-    false
-  );
+  var switchedPromise = harness.bridge.sessions.switchToSession("chat-capabilities-timeout");
+  for (var waitAttempt = 0; waitAttempt < 4; waitAttempt++) await tick();
+  assert.strictEqual(graceTimers.length, 1,
+    "the capability timeout must arm exactly one grace timer");
   harness.setWebCapabilities(["web_access_cancel_session_download"]);
-  for (var attempt = 0; attempt < 4; attempt++) await tick();
+  assert.strictEqual(await switchedPromise, true,
+    "the retried switch must resolve through to its final outcome");
   assert.strictEqual(
     harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
     true,
@@ -1467,6 +1475,42 @@ async function sessionDownloadCapabilityWaitHasTimeout() {
   assert.strictEqual(
     harness.bridge.state.get("sessions").activeSessionId,
     "chat-capabilities-timeout"
+  );
+}
+
+async function sessionDownloadCapabilityGraceExpiryFailsOnce() {
+  // 宽限期内快照始终未到：切换按失败收口且只报一次错；随后快照到达也不得
+  // 复活已被取代的等待（无新切换请求时不产生多余 RPC）。
+  var graceFired = false;
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+    setTimeout: function (callback, delay) {
+      if (delay === 10_000) {
+        queueMicrotask(callback);
+        return 1;
+      }
+      if (delay === 5_000) {
+        graceFired = true;
+        queueMicrotask(callback);
+        return 2;
+      }
+      return setTimeout(callback, delay);
+    },
+  });
+  assert.strictEqual(await harness.bridge.sessions.switchToSession("chat-capabilities-grace"), false,
+    "the switch must fail once the grace period expires without a snapshot");
+  assert.ok(graceFired, "the grace timer must fire when no snapshot arrives");
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false
+  );
+  harness.setWebCapabilities(["web_access_cancel_session_download"]);
+  for (var settleAttempt = 0; settleAttempt < 4; settleAttempt++) await tick();
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false,
+    "an expired grace wait must not be revived by a later snapshot"
   );
 }
 
@@ -5264,6 +5308,7 @@ Promise.resolve()
   .then(sessionDownloadCapabilityWaitRejectsAlreadyOfflineDesktop)
   .then(sessionDownloadCapabilityWaitClosesLostDisconnectEventRace)
   .then(sessionDownloadCapabilityWaitHasTimeout)
+  .then(sessionDownloadCapabilityGraceExpiryFailsOnce)
   .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(function () { return internalSubagentHandoffStaysOutOfPresentation("tauri"); })
   .then(function () { return internalSubagentHandoffStaysOutOfPresentation("web"); })

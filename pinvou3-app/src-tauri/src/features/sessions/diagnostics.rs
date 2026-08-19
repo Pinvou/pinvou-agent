@@ -71,7 +71,8 @@ pub(crate) fn log_path() -> PathBuf {
 
 pub(crate) fn record_backend(event: &str, details: Value) {
     let Some(details) = normalize_backend_details(event, &details) else {
-        eprintln!("[authority-sync] rejected unknown or malformed backend diagnostic");
+        // 事件名是编译期常量、须命中白名单才落盘，此处带名打印便于定位拼写漂移。
+        eprintln!("[authority-sync] rejected unknown or malformed backend diagnostic: {event}");
         return;
     };
     let entry = json!({
