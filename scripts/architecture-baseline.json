@@ -5,7 +5,7 @@
     "common_platform_binaries": {},
     "frontend_feature_imports_app": {},
     "frontend_tauri_global_outside_platform": {
-      "pinvou3-app/src/index.html": 7
+      "pinvou3-app/src/index.html": 3
     },
     "frontend_user_agent_platform_detection": {},
     "rust_cyclic_feature_dependencies": {},

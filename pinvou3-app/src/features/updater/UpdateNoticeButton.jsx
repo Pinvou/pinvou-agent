@@ -4,7 +4,10 @@ import { RefreshCw, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 
 export const UpdateNoticeButton = ({ theme, bs, t, onShowChangelog }) => {
+  // update-notice-logic.js 是 index.html 经典脚本;若未来改为延迟注入,这里
+  // 必须容忍未就绪(无更新 UI 缺席一轮渲染即可),不能白屏。
   const logic = window.UpdateNoticeLogic;
+  if (!logic) return null;
   const isPreview = !bridge.available && logic.previewEnabled(window.location);
   const updateInfo = logic.updateInfoFor(bs, { preview: isPreview });
   const [closed, setClosed] = useState(false);
