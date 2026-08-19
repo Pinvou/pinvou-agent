@@ -1,3 +1,4 @@
+pub(crate) mod attachments;
 pub(crate) mod audit;
 pub mod engine;
 pub(crate) mod engine_pool;

@@ -21,6 +21,9 @@ use deepseek_tui::tui::app::AppMode;
 use tauri::Manager;
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::features::assistant::attachments::{
+    build_message_with_attachments, stage_file_in_workspace,
+};
 use crate::features::assistant::engine_pool::{EnginePool, EngineToolFactory, ToolPolicy};
 use crate::features::assistant::platform::headless_attachments::ensure_staged_attachments_supported;
 use crate::features::assistant::product_runtime::eval_tool_policy::{
@@ -149,7 +152,7 @@ fn prepare_product_attachment_content(
         if !file_type.is_file() || file_type.is_symlink() {
             return Err(fixed_error());
         }
-        let staged_path = crate::stage_file_in_workspace(
+        let staged_path = stage_file_in_workspace(
             entry.path().to_string_lossy().as_ref(),
             &basename,
             &execution_root,
@@ -160,7 +163,7 @@ fn prepare_product_attachment_content(
             &execution_root.join(staged_path),
         ));
     }
-    Ok(crate::build_message_with_attachments(
+    Ok(build_message_with_attachments(
         prompt,
         attachments,
         &execution_root,
@@ -596,10 +599,14 @@ fn backend_error(code: &'static str) -> AgentBackendError {
 
 fn extract_final_answer(output: &str) -> Option<String> {
     const MARKER: &str = "FINAL ANSWER:";
+    if !output.contains(MARKER) {
+        return None;
+    }
     output
-        .rfind(MARKER)
-        .map(|index| output[index + MARKER.len()..].trim())
+        .rsplit(MARKER)
+        .map(str::trim)
         .filter(|answer| !answer.is_empty())
+        .next()
         .map(ToOwned::to_owned)
 }
 
@@ -620,7 +627,8 @@ mod final_answer_contract_tests {
 
     #[test]
     fn gaia_contract_uses_the_last_non_empty_final_answer_marker() {
-        let output = "analysis\nFINAL ANSWER: stale\nmore analysis\nFINAL ANSWER: 42\n";
+        let output =
+            "analysis\nFINAL ANSWER: stale\nmore analysis\nFINAL ANSWER: 42\nFINAL ANSWER:   \n";
         assert_eq!(extract_final_answer(output), Some("42".to_owned()));
     }
 

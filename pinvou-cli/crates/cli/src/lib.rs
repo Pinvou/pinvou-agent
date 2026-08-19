@@ -804,6 +804,8 @@ fn publish_gaia_score_artifacts(
         "level": report.level(),
         "evaluated": report.evaluated(),
         "correct": report.correct(),
+        "complete": report.is_complete(),
+        "official_dataset_compatible": report.is_official_dataset_compatible(),
     });
     if let Some(accuracy) = comparable_accuracy {
         score["comparable_accuracy"] = serde_json::json!(accuracy);
@@ -817,7 +819,9 @@ fn publish_gaia_score_artifacts(
         .map(|value| format!("{value:.6}"))
         .unwrap_or_else(|| "不可比较".to_owned());
     let markdown = format!(
-        "# GAIA Level 1 评测报告\n\n- Run ID: `{run_id}`\n- 状态: `{status}`\n- Split: `{}`\n- Level: `{}`\n- 完成评分: {}\n- 正确: {} / {}\n- Comparable accuracy: {accuracy}\n",
+        "# GAIA Level 1 评测报告\n\n- Run ID: `{run_id}`\n- 状态: `{status}`\n- Complete: {}\n- Official dataset compatible: {}\n- Split: `{}`\n- Level: `{}`\n- 完成评分: {}\n- 正确: {} / {}\n- Comparable accuracy: {accuracy}\n",
+        report.is_complete(),
+        report.is_official_dataset_compatible(),
         report.split(),
         report.level(),
         report.evaluated(),
@@ -1322,8 +1326,12 @@ mod tests {
         assert_eq!(score["evaluated"], 53);
         assert_eq!(score["correct"], 31);
         assert_eq!(score["status"], "official_compatible_local");
+        assert_eq!(score["complete"], true);
+        assert_eq!(score["official_dataset_compatible"], true);
         let markdown = std::fs::read_to_string(store.run_dir().join("report.md")).unwrap();
         assert!(markdown.contains("# GAIA Level 1 评测报告"));
+        assert!(markdown.contains("Complete: true"));
+        assert!(markdown.contains("Official dataset compatible: true"));
         assert!(markdown.contains("31 / 53"));
 
         std::fs::remove_dir_all(base).unwrap();
