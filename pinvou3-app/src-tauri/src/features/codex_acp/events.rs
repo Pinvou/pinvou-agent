@@ -303,6 +303,10 @@ fn sanitize_web_value(value: Value) -> Value {
                     }
                     continue;
                 }
+                if web_path_key(&key) {
+                    projected.insert(key, sanitize_web_path_value(value));
+                    continue;
+                }
                 projected.insert(key, sanitize_web_value(value));
             }
             Value::Object(projected)
@@ -312,6 +316,40 @@ fn sanitize_web_value(value: Value) -> Value {
         }
         scalar => scalar,
     }
+}
+
+fn web_path_key(key: &str) -> bool {
+    ["cwd", "path", "filePath", "workspacePath"]
+        .iter()
+        .any(|candidate| key.eq_ignore_ascii_case(candidate))
+}
+
+fn sanitize_web_path_value(value: Value) -> Value {
+    match value {
+        Value::String(path) => {
+            let display = if absolute_host_path(&path) {
+                path.trim_end_matches(['/', '\\'])
+                    .rsplit(['/', '\\'])
+                    .find(|component| !component.is_empty())
+                    .unwrap_or("workspace")
+            } else {
+                &path
+            };
+            Value::String(crate::platform::credential_store::redact_secret(display))
+        }
+        other => sanitize_web_value(other),
+    }
+}
+
+fn absolute_host_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    std::path::Path::new(path).is_absolute()
+        || path.starts_with("\\\\")
+        || path.starts_with("//")
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\'))
 }
 
 fn sanitize_web_schema(value: Value) -> Value {
@@ -1155,6 +1193,8 @@ mod tests {
                         "title": "Read file",
                         "rawInput": {
                             "path": "README.md",
+                            "cwd": "/home/alice/secret-project",
+                            "filePath": "C:\\Users\\alice\\secret-project\\src\\main.rs",
                             "environment": { "HOME": "/private/home" },
                             "apiKey": "must-not-cross-web",
                             "access_token": "must-not-cross-web",
@@ -1166,6 +1206,9 @@ mod tests {
                             "aws_secret_access_key": "must-not-cross-web",
                             "request-headers": { "authorization": "must-not-cross-web" }
                         },
+                        "locations": [
+                            { "path": "/home/alice/secret-project/src/lib.rs", "line": 7 }
+                        ],
                         "rawOutput": {
                             "text": "visible\n  output",
                             "message": "request used sk-web-secret-1234567890"
@@ -1185,6 +1228,18 @@ mod tests {
         assert_eq!(
             projected["event"]["data"]["update"]["rawInput"]["path"],
             "README.md"
+        );
+        assert_eq!(
+            projected["event"]["data"]["update"]["rawInput"]["cwd"],
+            "secret-project"
+        );
+        assert_eq!(
+            projected["event"]["data"]["update"]["rawInput"]["filePath"],
+            "main.rs"
+        );
+        assert_eq!(
+            projected["event"]["data"]["update"]["locations"][0]["path"],
+            "lib.rs"
         );
         assert!(projected["event"]["data"]["update"]["rawInput"]
             .get("environment")

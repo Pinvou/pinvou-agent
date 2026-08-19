@@ -642,8 +642,7 @@ pub async fn list_codex_acp_sessions_for_web(
         .into_iter()
         .filter(|metadata| {
             matches!(store.session_kind(&metadata.id), Ok(SessionKind::Chat))
-                && (acp_pool.is_acp_metadata(metadata)
-                    || acp_pool.agents().is_code_session(&metadata.id))
+                && acp_pool.is_acp_metadata(metadata)
                 && !store.is_hidden(&metadata.id)
         })
         .map(|metadata| {

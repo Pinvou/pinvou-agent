@@ -214,36 +214,14 @@ async fn remove_dir_if_present(path: &Path) -> Result<(), String> {
     }
 }
 
-fn stale_upload_directory(path: &Path, metadata: &std::fs::Metadata, now: SystemTime) -> bool {
-    if !metadata.file_type().is_dir() {
-        return false;
-    }
-    let latest_file_modified = std::fs::read_dir(path).ok().and_then(|entries| {
-        entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| std::fs::symlink_metadata(entry.path()).ok())
-            .filter(|metadata| metadata.file_type().is_file())
-            .filter_map(|metadata| metadata.modified().ok())
-            .max()
-    });
-    latest_file_modified
-        .or_else(|| metadata.modified().ok())
-        .and_then(|modified| now.duration_since(modified).ok())
-        .is_some_and(|age| age >= STALE_ATTACHMENT_AGE)
-}
-
 fn sweep_stale_upload_root(root: &Path, now: SystemTime) -> usize {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return 0;
-    };
-    entries
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            std::fs::symlink_metadata(entry.path())
-                .is_ok_and(|metadata| stale_upload_directory(&entry.path(), &metadata, now))
-        })
-        .filter(|entry| std::fs::remove_dir_all(entry.path()).is_ok())
-        .count()
+    super::platform::stale_attachment_cleanup::sweep_stale_upload_root(
+        root,
+        now,
+        STALE_ATTACHMENT_AGE,
+        |name| validate_upload_id(name).is_ok(),
+        |name| validate_filename(name).is_ok(),
+    )
 }
 
 fn sweep_stale_draft_attachment_workspace(workspace: &Path, now: SystemTime) -> usize {
@@ -614,6 +592,65 @@ mod tests {
         std::fs::remove_dir_all(workspace).unwrap();
     }
 
+    #[test]
+    fn startup_sweep_preserves_unknown_entries_and_shapes() {
+        let workspace = test_workspace("startup-sweep-unknown");
+        let root = super::completed_root(&workspace);
+        let managed = root.join("desktop_attach_managed_old");
+        let unknown_name = root.join("unknown.dir");
+        let unknown_shape = root.join("desktop_attach_unexpected_shape");
+        let unknown_file = root.join("README.txt");
+        for directory in [&managed, &unknown_name, &unknown_shape] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(managed.join("managed.txt"), b"managed").unwrap();
+        std::fs::write(unknown_name.join("keep.txt"), b"keep").unwrap();
+        std::fs::write(unknown_shape.join("one.txt"), b"one").unwrap();
+        std::fs::write(unknown_shape.join("two.txt"), b"two").unwrap();
+        std::fs::write(&unknown_file, b"keep").unwrap();
+
+        let after_ttl = SystemTime::now() + STALE_ATTACHMENT_AGE + Duration::from_secs(1);
+        assert_eq!(
+            sweep_stale_draft_attachment_workspace(&workspace, after_ttl),
+            1
+        );
+        assert!(!managed.exists());
+        assert!(unknown_name.join("keep.txt").exists());
+        assert!(unknown_shape.join("one.txt").exists());
+        assert!(unknown_shape.join("two.txt").exists());
+        assert!(unknown_file.exists());
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn startup_sweep_rejects_replaced_root_without_touching_external_data() {
+        let workspace = test_workspace("startup-sweep-link-root");
+        let outside = test_workspace("startup-sweep-link-outside");
+        let outside_upload = outside.join("desktop_attach_external_old");
+        let outside_file = outside_upload.join("outside.txt");
+        std::fs::create_dir_all(&outside_upload).unwrap();
+        std::fs::write(&outside_file, b"must survive").unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let replaced_root = super::completed_root(&workspace);
+        crate::features::files::platform::stale_attachment_cleanup::create_test_directory_link(
+            &outside,
+            &replaced_root,
+        );
+
+        let after_ttl = SystemTime::now() + STALE_ATTACHMENT_AGE + Duration::from_secs(1);
+        assert_eq!(
+            sweep_stale_draft_attachment_workspace(&workspace, after_ttl),
+            0
+        );
+        assert_eq!(std::fs::read(&outside_file).unwrap(), b"must survive");
+
+        crate::features::files::platform::stale_attachment_cleanup::remove_test_directory_link(
+            &replaced_root,
+        );
+        std::fs::remove_dir_all(workspace).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
     #[tokio::test]
     async fn later_upload_keeps_stale_but_still_active_completed_draft() {
         let workspace = test_workspace("long-lived-composer");
@@ -627,12 +664,6 @@ mod tests {
                 .checked_sub(STALE_ATTACHMENT_AGE + Duration::from_secs(1))
                 .unwrap(),
         );
-        assert!(super::stale_upload_directory(
-            &active_upload,
-            &std::fs::symlink_metadata(&active_upload).unwrap(),
-            SystemTime::now()
-        ));
-
         let new_bytes = b"new upload";
         append_draft_chunk_in_workspace(
             &workspace,

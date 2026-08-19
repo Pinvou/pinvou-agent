@@ -166,6 +166,12 @@ function loadAgentSelection() {
   }
 }
 
+function initialDraftAgentSelection() {
+  const saved = loadAgentSelection();
+  if (isWeb) return saved && saved !== 'pinvou' ? saved : 'codex';
+  return saved || 'pinvou';
+}
+
 function saveAgentSelection(agentId) {
   if (!agentId) return;
   try {
@@ -970,7 +976,7 @@ export function CodexAcpView({
 }) {
   const codexCopy = t.uiCodex;
   const [agents, setAgents] = useState(null); // null=加载中，[] 才允许回退当前 Agent。
-  const [draftAgentId, setDraftAgentId] = useState(loadAgentSelection() || 'pinvou');
+  const [draftAgentId, setDraftAgentId] = useState(initialDraftAgentSelection);
   const [status, setStatus] = useState(null);
   const [events, setEvents] = useState([]);
   const [pending, setPending] = useState([]);

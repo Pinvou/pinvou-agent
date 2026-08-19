@@ -9,7 +9,7 @@ use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::codex_acp::workspace::{WorkspaceEntry, WorkspaceListing, WorkspacePreview};
 use crate::features::codex_acp::{
     project_acp_elicitation_request_for_web, project_acp_permission_request_for_web,
-    AcpEventEnvelope, AcpPool, CodexAcpPendingElicitation, CodexAcpPendingPermission,
+    AcpEventEnvelope, AcpPool, AgentBackend, CodexAcpPendingElicitation, CodexAcpPendingPermission,
     CodexAcpSessionInfo,
 };
 use crate::features::remote_control::{file_access, manager, MAX_TRANSFER_CHUNK_BYTES};
@@ -26,6 +26,22 @@ const MAX_WEB_ACP_TIMELINE_PAGE_EVENTS: usize = 256;
 // Keep ample room for the RPC envelope below manager::MAX_RPC_RESPONSE_BYTES.
 const MAX_WEB_ACP_TIMELINE_PAGE_BYTES: usize = 1024 * 1024;
 const MAX_WEB_ACP_TIMELINE_EVENT_BYTES: usize = MAX_WEB_ACP_TIMELINE_PAGE_BYTES;
+
+fn web_acp_agent_id(agent_id: Option<String>) -> Result<String, String> {
+    let backend = AgentBackend::parse(agent_id.as_deref().or(Some("codex")))
+        .map_err(|error| format!("Unsupported Web ACP agent: {error:#}"))?;
+    backend
+        .agent_id()
+        .map(str::to_owned)
+        .ok_or_else(|| "Web code sessions support ACP agents only".to_string())
+}
+
+fn web_workspace_result<T>(operation: &str, result: Result<T, String>) -> Result<T, String> {
+    result.map_err(|error| {
+        log::warn!("[remote_control] Web code workspace {operation} failed: {error}");
+        format!("Web code workspace {operation} failed")
+    })
+}
 
 fn require_main_webview(window: &WebviewWindow) -> Result<(), String> {
     if window.label() == "main" {
@@ -261,9 +277,10 @@ pub async fn web_access_load_session_chunk(
             let store = store.inner().clone();
             let session_id = id.clone();
             let revision = tokio::task::spawn_blocking(move || -> Result<String, String> {
-                let saved = store
+                let mut saved = store
                     .load(&session_id)
                     .map_err(|error| format!("load Session {session_id}: {error:#}"))?;
+                saved.metadata = super::codex::redact_session_metadata_for_web(saved.metadata);
                 let revision = crate::features::sessions::transcript_revision(&saved.messages)
                     .map_err(|error| {
                         format!("compute Session {session_id} transcript revision: {error:#}")
@@ -536,14 +553,22 @@ pub async fn web_access_create_codex_acp_session(
     pool: State<'_, EnginePool>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<deepseek_tui::session_manager::SessionMetadata, String> {
+    // Validate before consuming the one-shot workspace grant. A malformed or
+    // desktop-only request must not burn a capability that the user selected.
+    let agent_id = web_acp_agent_id(agent_id)?;
     let workspace_path = workspace_handle
         .as_deref()
         .map(|handle| manager.consume_web_workspace_grant(handle))
         .transpose()?
         .map(|path| path.to_string_lossy().into_owned());
-    let metadata =
-        super::codex::create_codex_acp_session(workspace_path, agent_id, store, pool, acp_pool)
-            .await?;
+    let metadata = super::codex::create_codex_acp_session(
+        workspace_path,
+        Some(agent_id),
+        store,
+        pool,
+        acp_pool,
+    )
+    .await?;
     Ok(super::codex::redact_session_metadata_for_web(metadata))
 }
 
@@ -556,7 +581,9 @@ pub async fn web_access_list_codex_workspace(
     relative_path: Option<String>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<WorkspaceListing, String> {
-    super::codex::list_codex_workspace(Some(session_id), relative_path, None, acp_pool).await
+    let result =
+        super::codex::list_codex_workspace(Some(session_id), relative_path, None, acp_pool).await;
+    web_workspace_result("listing", result)
 }
 
 #[tauri::command]
@@ -565,7 +592,9 @@ pub async fn web_access_search_codex_workspace(
     query: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<WorkspaceEntry>, String> {
-    super::codex::search_codex_workspace(Some(session_id), query, None, acp_pool).await
+    let result =
+        super::codex::search_codex_workspace(Some(session_id), query, None, acp_pool).await;
+    web_workspace_result("search", result)
 }
 
 #[tauri::command]
@@ -574,8 +603,10 @@ pub async fn web_access_preview_codex_workspace_file(
     relative_path: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<WorkspacePreview, String> {
-    super::codex::preview_codex_workspace_file(Some(session_id), relative_path, None, acp_pool)
-        .await
+    let result =
+        super::codex::preview_codex_workspace_file(Some(session_id), relative_path, None, acp_pool)
+            .await;
+    web_workspace_result("preview", result)
 }
 
 /// Web-safe ACP prompt entry point. Browser and host-picked attachments are
@@ -1208,12 +1239,33 @@ pub async fn web_access_render_artifact_visual(
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_web_chat_session_supported;
+    use super::{ensure_web_chat_session_supported, web_acp_agent_id, web_workspace_result};
 
     #[test]
     fn web_chat_rejects_desktop_only_multiagent_sessions() {
         assert!(ensure_web_chat_session_supported(false).is_ok());
         // 桌面开了多智能体开关的普通会话同样拒绝：Web 看不到也停不掉子智能体。
         assert!(ensure_web_chat_session_supported(true).is_err());
+    }
+
+    #[test]
+    fn web_code_sessions_accept_only_acp_agents() {
+        assert_eq!(web_acp_agent_id(None).unwrap(), "codex");
+        assert_eq!(web_acp_agent_id(Some("claude".into())).unwrap(), "claude");
+        assert_eq!(web_acp_agent_id(Some("kimi-acp".into())).unwrap(), "kimi");
+        assert!(web_acp_agent_id(Some("pinvou".into())).is_err());
+        assert!(web_acp_agent_id(Some("deepseek".into())).is_err());
+    }
+
+    #[test]
+    fn web_workspace_errors_do_not_expose_host_paths() {
+        let private_path = r#"C:\Users\alice\secret-project"#;
+        let error = web_workspace_result::<()>(
+            "preview",
+            Err(format!("workspace unavailable: {private_path}")),
+        )
+        .unwrap_err();
+        assert_eq!(error, "Web code workspace preview failed");
+        assert!(!error.contains(private_path));
     }
 }

@@ -452,9 +452,10 @@ try {
     && runtimeStatus.includes('listAcpAgents()'),
   'the top code tabs must be the only Agent selector and bind the selected Agent on first send');
   assert.ok(codexView.includes("const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection'")
-    && codexView.includes("useState(loadAgentSelection() || 'pinvou')")
+    && codexView.includes("if (isWeb) return saved && saved !== 'pinvou' ? saved : 'codex'")
+    && codexView.includes('useState(initialDraftAgentSelection)')
     && codexView.includes('saveAgentSelection(agentId)'),
-  'code draft agent must default to Pinwu and persist the user-selected agent across reopens');
+  'desktop drafts must keep the native default while Web clamps the default to an ACP agent');
   assert.ok(codexView.includes("invoke('login_acp_agent'")
     && codexView.includes("invoke('open_acp_agent_login_url'")
     && codexView.includes("invoke('submit_acp_agent_login_code'")

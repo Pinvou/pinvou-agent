@@ -278,6 +278,18 @@ assert.match(remoteControlCommands,
   'the Web agent-status projection must strip install command and output lines');
 assert.match(remoteControlCommands, /redact_workspace_path_for_web|list_codex_acp_sessions_for_web/,
   'the Web session list must redact host workspace paths to a directory name');
+assert.match(remoteControlCommands,
+  /fn web_acp_agent_id[\s\S]*?or\(Some\("codex"\)\)[\s\S]*?support ACP agents only[\s\S]*?pub async fn web_access_create_codex_acp_session[\s\S]*?web_acp_agent_id\(agent_id\)\?/,
+  'Web session creation must default to ACP and reject the desktop-only native agent before consuming a workspace grant');
+assert.match(commands,
+  /pub async fn list_codex_acp_sessions_for_web[\s\S]*?acp_pool\.is_acp_metadata\(metadata\)[\s\S]*?redact_codex_session_list_item_for_web/,
+  'the Web code-session list must contain ACP sessions only');
+assert.match(remoteControlCommands,
+  /let mut saved = store[\s\S]*?redact_session_metadata_for_web\(saved\.metadata\)[\s\S]*?WebSavedSession/,
+  'chunked Web session downloads must redact the SavedSession workspace before serialization');
+assert.match(remoteControlCommands,
+  /fn web_workspace_result[\s\S]*?Web code workspace \{operation\} failed[\s\S]*?web_access_list_codex_workspace[\s\S]*?web_workspace_result\("listing", result\)[\s\S]*?web_access_search_codex_workspace[\s\S]*?web_workspace_result\("search", result\)[\s\S]*?web_access_preview_codex_workspace_file[\s\S]*?web_workspace_result\("preview", result\)/,
+  'Web workspace RPC failures must not return host paths embedded in native errors');
 
 assert.match(bootstrap, /sendRaw\(\{ \.\.\.value, v: protocolVersion, lease_id: this\.leaseId \}\)/);
 assert.match(bootstrap, /desktopCapabilitiesReady/);
