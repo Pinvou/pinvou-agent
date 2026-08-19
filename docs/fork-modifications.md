@@ -15,7 +15,7 @@
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
 | drift | r7 公开基线 `46 files changed, +1852/-269`；净增 1583 行 |
-| 守护 | 23 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试 |
+| 守护 | 26 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
 
 ### 本次会话修复（已验证并发布）
@@ -59,8 +59,9 @@
   - 保留宿主需要的 runtime thread / Automation 接口和 `EngineConfig` 注入边界。
   - 将无副作用的运行时 session snapshot 与已知进程重启后的显式 tool history recovery 分开，避免嵌入宿主把仍在执行的工具调用误判为崩溃。
   - 提供通用的宿主批量取消操作和失败终态标记，供会话停止与 Engine 回收安全收敛后台子智能体。
+  - `Op::EditLastTurn` 以"真实用户回合"谓词（`is_user_turn_prompt`，根级重导出）定位截断点：工具结果与内部运行时信封同样以 `role = "user"` 持久化，裸 role 扫描会把编辑截断落在 tool_result 上，导致旧 prompt 与工具往返残留；找不到真实用户消息时发送 error 事件且不发送。宿主落盘兜底（`persist_admitted_chat_display`）复用同一谓词。
 - **边界**：不实现 Pinvou 产品工具策略或专用编排完成语义。
-- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，以及父仓启动恢复、resolved-route、取消级联和 compaction 合约测试。
+- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`、`forkguard_is_user_turn_prompt_separates_prompts_from_tool_results_and_envelopes`、`forkguard_edit_last_turn_cuts_at_user_prompt_before_tool_results`、`forkguard_edit_last_turn_without_user_prompt_errors_and_sends_nothing`，以及父仓启动恢复、resolved-route、取消级联、compaction 合约和 `forkguard_admitted_display_fallback_edit_cuts_before_trailing_tool_result` 测试。
 
 ### T2：工具兼容与命令执行安全
 

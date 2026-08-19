@@ -21,6 +21,7 @@
     var reconcileRemoteTurn = context.reconcileRemoteTurn;
     var isBusyFor = context.isBusyFor;
     var markRemoteTurn = context.markRemoteTurn;
+    var userMessageDisplayText = context.userMessageDisplayText;
     // 共享的 modeState epoch 表与权威写回收敛点（bridge.js 注入，评审 P1）：
     // interaction 与 chat-events 必须用同一份 epoch 表，否则事件直写与
     // 本模块的读取校验互不感知，竞态照样敞口。
@@ -460,10 +461,13 @@
       editBuffer.remoteTerminalSeen = false;
       editBuffer.remoteCommittedRevision = "";
     }
-    // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
+    // 删除末尾最近的真实用户消息及之后所有，push 新 user，重渲染。
+    // 工具结果与内部运行时信封同样以 role="user" 存储，裸 role 扫描会把
+    // 截断点落在 tool_result 上；用展示口径(userMessageDisplayText 非空)判定。
     var cut = -1;
     for (var i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === "user") { cut = i; break; }
+      var candidate = state.messages[i];
+      if (candidate.role === "user" && userMessageDisplayText(candidate.content)) { cut = i; break; }
     }
     if (cut >= 0) state.messages.splice(cut);
     state.messages.push({ role: "user", content: [{ type: "text", text: newText }] });

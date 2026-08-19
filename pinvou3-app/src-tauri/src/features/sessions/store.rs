@@ -544,10 +544,13 @@ impl SessionStore {
             return Ok(session);
         }
         if edit_last {
+            // Same predicate as the engine's EditLastTurn: tool results and
+            // runtime-owned internal envelopes also persist with role "user",
+            // so the cut must land on a genuine user prompt.
             if let Some(index) = session
                 .messages
                 .iter()
-                .rposition(|message| message.role == "user")
+                .rposition(deepseek_tui::is_user_turn_prompt)
             {
                 session.messages.truncate(index);
             }

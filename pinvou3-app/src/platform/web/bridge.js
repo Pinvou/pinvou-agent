@@ -6839,10 +6839,13 @@
       editBuffer.remoteTerminalSeen = false;
       editBuffer.remoteCommittedRevision = "";
     }
-    // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
+    // 删除末尾最近的真实用户消息及之后所有，push 新 user，重渲染。
+    // 工具结果与内部运行时信封同样以 role="user" 存储，裸 role 扫描会把
+    // 截断点落在 tool_result 上；用展示口径(userMessageDisplayText 非空)判定。
     var cut = -1;
     for (var i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === "user") { cut = i; break; }
+      var editCandidate = state.messages[i];
+      if (editCandidate.role === "user" && userMessageDisplayText(editCandidate.content)) { cut = i; break; }
     }
     if (cut >= 0) state.messages.splice(cut);
     state.messages.push({ role: "user", content: [{ type: "text", text: newText }] });
