@@ -762,11 +762,12 @@ const IMAGE_CAPABILITY_TEST_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABA
 /// 视觉探针提示词:让模型用一个词说出主体颜色,回复短、可校验。
 const IMAGE_CAPABILITY_TEST_PROMPT: &str = "这张图片的主体颜色是什么？用一个词回答。";
 const IMAGE_CAPABILITY_TEST_MAX_TOKENS: u32 = 64;
-/// always-thinking 模型(kimi-for-coding 等)的探测上限:thinking 开启时先输出
-/// 大量 reasoning 再输出答案,64 token 会被 thinking 吃掉或触发网关 max_tokens
-/// 下限 400,导致识图探测误判(2026-08 kimi-for-coding 二次实测)。1024 足够
-/// reasoning 起步 + 一句「红色」答案。
-const IMAGE_CAPABILITY_TEST_MAX_TOKENS_THINKING: u32 = 1024;
+/// always-thinking 模型(kimi k3/kimi-for-coding 等)的探测上限:thinking 开启时
+/// 先输出大量 reasoning 再输出答案,64 token 会被 thinking 吃掉或触发网关
+/// max_tokens 下限 400,导致识图探测误判(2026-08 kimi-for-coding 二次实测)。
+/// k3 的思考更长,1024 仍可能被吃满、最终答案被截断——上限提到 4096,
+/// 保证 reasoning 之后留得下一个词的回答(2026-08 k3 实测)。
+const IMAGE_CAPABILITY_TEST_MAX_TOKENS_THINKING: u32 = 4096;
 
 fn image_capability_result(
     status: &str,
@@ -866,10 +867,18 @@ fn extract_chat_reply_summary(body: &str) -> Option<String> {
         .get("content")?;
     match content {
         serde_json::Value::String(text) => Some(text.trim().to_string()),
-        // 部分 provider 把 content 拆成 parts 数组。
+        // 部分 provider 把 content 拆成 parts 数组。思考块(thinking/reasoning)
+        // 不计入回复:always-thinking 模型(kimi k3 等)的思考正文若混入拼接,
+        // 会淹没一个词的最终答案,导致测试色匹配失败、识图探测误判。
         serde_json::Value::Array(parts) => Some(
             parts
                 .iter()
+                .filter(|part| {
+                    !matches!(
+                        part.get("type").and_then(|kind| kind.as_str()),
+                        Some("thinking") | Some("reasoning")
+                    )
+                })
                 .filter_map(|part| part.get("text").and_then(|text| text.as_str()))
                 .collect::<Vec<_>>()
                 .join(" ")
@@ -1410,8 +1419,8 @@ mod tests {
             Some(IMAGE_CAPABILITY_TEST_MAX_TOKENS as u64),
             "普通模型 max_tokens 保持 64"
         );
-        // always-thinking 模型:注入 thinking 且 max_tokens 提到 1024
-        // (64 会被 reasoning 吃掉或触发网关下限 400)。
+        // always-thinking 模型:注入 thinking 且 max_tokens 提到
+        // IMAGE_CAPABILITY_TEST_MAX_TOKENS_THINKING(64 会被 reasoning 吃掉或触发网关下限 400)。
         let payload = image_capability_test_payload("kimi-k3");
         assert_eq!(
             payload["thinking"]["type"].as_str(),
@@ -1680,6 +1689,21 @@ mod tests {
         assert_eq!(result.status, "supported");
         assert!(result.verified);
         assert_eq!(result.summary, "red square");
+    }
+
+    #[test]
+    fn image_capability_reply_skips_thinking_parts() {
+        // always-thinking 模型(kimi k3 等)content parts 里的思考块不参与拼接:
+        // 思考正文不含测试色的明确措辞时会淹没一个词的答案,误判「原因未知」。
+        let body = r#"{"choices":[{"message":{"content":[{"type":"thinking","text":"让我先分析这张图片的像素分布和可能的颜色倾向"},{"type":"reasoning","text":"hmm, could be any color"},{"type":"text","text":"红色"}]}}]}"#;
+        let result = classify_image_capability_http(reqwest::StatusCode::OK, body);
+        assert_eq!(result.status, "supported");
+        assert!(result.verified);
+        assert_eq!(result.summary, "红色");
+        // 思考块声称看不到图片、但最终答案识别出测试色:以最终答案为准。
+        let confused = r#"{"choices":[{"message":{"content":[{"type":"thinking","text":"看不到图片,无法判断"},{"type":"text","text":"红色"}]}}]}"#;
+        let result = classify_image_capability_http(reqwest::StatusCode::OK, confused);
+        assert_eq!(result.status, "supported");
     }
 
     #[test]
