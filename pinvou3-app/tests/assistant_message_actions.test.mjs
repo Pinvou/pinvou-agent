@@ -159,7 +159,7 @@ assert.equal(
   'task creation conversations should serialize the same generic payload that their UI renders as a card',
 );
 assert.equal(
-  assistantResponseText({ items: [{ type: 'agent_message', text: ordinaryScheduledJson }] }),
+  await assistantResponseText({ items: [{ type: 'agent_message', text: ordinaryScheduledJson }] }),
   ordinaryScheduledJson,
   'Codex must retain ordinary JSON that is not rendered through the DeepSeek task-card protocol',
 );
@@ -316,7 +316,7 @@ assert.equal(
 );
 
 assert.equal(
-  assistantResponseText({
+  await assistantResponseText({
     items: [
       { type: 'agent_message', phase: 'commentary', text: '处理中' },
       { type: 'tool', text: 'tool output' },
@@ -328,7 +328,7 @@ assert.equal(
   'turn copy should include final assistant messages without commentary or tool output',
 );
 assert.equal(
-  assistantResponseText({
+  await assistantResponseText({
     items: [{ type: 'agent_message', phase: 'commentary', text: '内部处理过程' }],
     assistantText: '内部处理过程',
   }),
@@ -336,14 +336,21 @@ assert.equal(
   'commentary-only turns must not fall back to the accumulated internal text',
 );
 assert.equal(
-  assistantResponseText({ items: [], assistantText: '  兼容旧会话回复  ' }),
+  await assistantResponseText({ items: [], assistantText: '  兼容旧会话回复  ' }),
   '兼容旧会话回复',
   'turns without structured agent messages should retain the legacy fallback',
 );
 assert.equal(
-  assistantResponseText({ items: [{ type: 'agent_message', text: markdown }] }),
+  await assistantResponseText({ items: [{ type: 'agent_message', text: markdown }] }),
   await assistantItemCopyText({ text: markdown }),
   'ordinary and Codex modes should expose the same canonical Markdown format',
+);
+assert.equal(
+  await assistantResponseText({
+    items: [{ type: 'agent_message', legacyItem: { html: '<h2>历史标题</h2><p>历史内容</p>' } }],
+  }),
+  '## 历史标题\n\n历史内容',
+  'legacy HTML-only turns (no text on the item) must copy through the Markdown compatibility conversion',
 );
 assert.equal(
   assistantResponseAvailable({ items: [{ type: 'agent_message', text: markdown }] }),

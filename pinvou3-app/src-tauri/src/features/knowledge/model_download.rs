@@ -28,6 +28,10 @@ static DOWNLOADING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
 static MODEL_LOAD: ModelLoadCoordinator = ModelLoadCoordinator::new();
 static MODEL_LOAD_ERROR: Mutex<Option<String>> = Mutex::new(None);
+/// 最近一次首帧/热加载跳过确因「无使用场景」门控：模型已装但被故意延迟加载，
+/// 用于让前端把该状态与真实加载失败区分开（故意跳过 ≠ 失败）。任何真实加载
+/// 尝试（成功或失败）都会在入口清除该标记。
+static MODEL_DEFERRED_NO_USAGE: AtomicBool = AtomicBool::new(false);
 
 struct ModelLoadCoordinator {
     lock: tokio::sync::Mutex<()>,
@@ -126,6 +130,9 @@ pub struct KbModelStatus {
     pub loading: bool,
     /// 模型文件存在，但最近一次进程内加载失败。
     pub failed: bool,
+    /// 模型已安装，但因本地无已入库内容且远程无连接被首帧门控故意延迟加载；
+    /// 语义检索退化为全文（既有降级语义），区别于真实加载失败。
+    pub deferred_no_usage: bool,
     /// 最近一次模型加载失败的本地诊断信息。
     pub error: Option<String>,
     /// 正在下载/部署中。
@@ -147,6 +154,11 @@ pub(crate) fn current_status(service: &KnowledgeService) -> KbModelStatus {
         ready,
         loading,
         failed: installed && !ready && !loading && error.is_some(),
+        deferred_no_usage: deferred_no_usage(
+            MODEL_DEFERRED_NO_USAGE.load(Ordering::Acquire),
+            installed,
+            ready,
+        ),
         error,
         downloading: DOWNLOADING.load(Ordering::Relaxed),
         size_bytes: DISPLAY_DOWNLOAD_BYTES,
@@ -207,6 +219,9 @@ pub async fn kb_model_download(
     if DOWNLOADING.load(Ordering::Acquire) {
         return Err("模型正在下载中".into());
     }
+    // 用户主动下载/修复 = 明确使用意图：解除「无使用场景故意延迟」标记，
+    // 保证其后真实的下载/部署/加载失败按失败上报，而不会被 deferred 掩盖。
+    MODEL_DEFERRED_NO_USAGE.store(false, Ordering::SeqCst);
     let repair = repair.unwrap_or(false);
     let external_model_dir = uses_external_model_dir();
     let configured_dir = configured_model_dir();
@@ -359,6 +374,7 @@ pub(crate) async fn load_installed_embedder(
     // 「当前有可检索内容」的语义。返回 Ok(false) = 未安装式静默降级，语义与
     // 模型未部署完全一致；用户建库/下载模型/挂载校验的既有路径不受影响。
     if !knowledge_usage_present(service) {
+        MODEL_DEFERRED_NO_USAGE.store(true, Ordering::SeqCst);
         crate::platform::startup::mark_with_detail(
             "rust",
             "knowledge_embedder_async:skipped_no_usage",
@@ -370,6 +386,8 @@ pub(crate) async fn load_installed_embedder(
         );
         return Ok(false);
     }
+    // 门控放行 = 即将真实加载：清除故意延迟标记，此后的失败按真实失败上报。
+    MODEL_DEFERRED_NO_USAGE.store(false, Ordering::SeqCst);
     let external_model_dir = uses_external_model_dir();
     let configured_dir = configured_model_dir();
     let _install_lock = (!external_model_dir)
@@ -401,6 +419,14 @@ fn usage_present(indexed_content: bool, remote_connections: bool) -> bool {
     indexed_content || remote_connections
 }
 
+/// deferred_no_usage 的纯函数核心（便于单测）：只有「已安装、未就绪、最近一次
+/// 跳过确因无使用场景」三者同时成立才算故意延迟。加载成功（ready）或模型目录
+/// 被移除（!installed）自然解除；真实加载尝试（含用户点重试/下载/导入补载）在
+/// 入口即清除标记，因此其后的真实失败不会被误标为 deferred。
+fn deferred_no_usage(deferred_flag: bool, installed: bool, ready: bool) -> bool {
+    deferred_flag && installed && !ready
+}
+
 /// 远程知识库连接是否存在。不经过 Tauri managed state——model_download 不便
 /// 依赖 RemoteKnowledgeService 实例（各 feature 自行 manage 自己的 state），
 /// 因此直接读默认路径的连接文件；读不到（文件缺失/解析失败）按「无连接」
@@ -415,6 +441,8 @@ async fn load_installed_embedder_unlocked(
     pool: &crate::features::assistant::engine_pool::EnginePool,
     model_dir: std::path::PathBuf,
 ) -> Result<bool, String> {
+    // 真实加载尝试（含 kb_model_download 绕过门控的补载）：清除故意延迟标记。
+    MODEL_DEFERRED_NO_USAGE.store(false, Ordering::SeqCst);
     let _lease = MODEL_LOAD.acquire().await;
     if service.semantic_ready() {
         return Ok(true);
@@ -497,6 +525,19 @@ mod tests {
         // 远程连接存在（远程检索要本地嵌入查询向量）→ 加载。
         assert!(usage_present(false, true));
         assert!(usage_present(true, true));
+    }
+
+    #[test]
+    fn deferred_no_usage_requires_installed_not_ready_and_skip_marker() {
+        // 跳过标记 + 已安装 + 未就绪 → 故意延迟（前端据此区分真实加载失败）。
+        assert!(deferred_no_usage(true, true, false));
+        // 加载成功后 ready=true，即使标记未及时清除也不应再报 deferred。
+        assert!(!deferred_no_usage(true, true, true));
+        // 模型目录被移除（未安装）时按「未安装」语义处理，不算 deferred。
+        assert!(!deferred_no_usage(true, false, false));
+        // 真实加载尝试在入口清除标记：其后的真实失败不得被标为 deferred。
+        assert!(!deferred_no_usage(false, true, false));
+        assert!(!deferred_no_usage(false, false, false));
     }
 
     #[test]

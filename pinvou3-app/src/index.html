@@ -199,10 +199,16 @@
   <script>
     (function () {
       var tags = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || 'zh'];
-      var needsPersonaI18n = tags.some(function (tag) { return /^en|^ja/i.test(String(tag || '')); });
+      var needsPersonaI18n = tags.some(function (tag) {
+        // 前缀比较,避免正则转义陷阱(此前 \b 被写成字面 0x08 导致永不匹配)
+        var primary = String(tag || '').slice(0, 2).toLowerCase();
+        return primary === 'en' || primary === 'ja';
+      });
       if (!needsPersonaI18n) { __PINVOU_STARTUP__.mark('app:personas_i18n_skipped', 'lang=' + tags[0]); return; }
       var s = document.createElement('script');
-      s.src = 'features/personas/personas-i18n.js';
+      // data-personas-i18n:main.jsx 按 UI 语言兜底注入时据此识别在途脚本,防止重复加载
+      s.setAttribute('data-personas-i18n', '1');
+      s.src = '%BASE_URL%features/personas/personas-i18n.js';
       s.onload = function () { __PINVOU_STARTUP__.mark('app:personas_i18n_loaded'); };
       s.onerror = function () { __PINVOU_STARTUP__.mark('app:personas_i18n_error'); };
       document.head.appendChild(s);

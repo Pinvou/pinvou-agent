@@ -129,6 +129,23 @@ fn should_reap_idle_session(
         && idle_for >= Duration::from_secs(IDLE_EVICT_AFTER_SECS)
 }
 
+/// `evict_if_idle` 的锁内复核 + 原子移除（泛型抽出以便用裸组件确定性测试）：
+/// 在同一把 sessions 锁内按现值复核回收条件，满足才 remove 并返回；不满足
+/// （快照后到达的 send_message 已置 busy / 刷新活动，或会话正被打开）返回
+/// `None`，调用方不得回收。复核与移除原子完成，消除快照→回收的 TOCTOU。
+async fn take_session_if_still_idle<T>(
+    sessions: &Mutex<HashMap<String, T>>,
+    session_id: &str,
+    is_still_idle: impl Fn(&T) -> bool,
+) -> Option<T> {
+    let mut sessions = sessions.lock().await;
+    let entry = sessions.get(session_id)?;
+    if !is_still_idle(entry) {
+        return None;
+    }
+    sessions.remove(session_id)
+}
+
 fn backend_for_session_model(model: &str) -> Option<AgentBackend> {
     match model {
         CODEX_ACP_SESSION_MODEL => Some(AgentBackend::CodexAcp),
@@ -3062,6 +3079,34 @@ impl AcpPool {
         }
     }
 
+    /// 仅空闲回收使用的回收路径（TOCTOU 防护）：`reap_idle_sessions` 的候选
+    /// 快照与 `evict` 之间没有共享 gate，快照后到达的 `send_message` 可能已
+    /// 经 `busy.swap(true)` 把 turn 跑起来，直接 remove + `child.kill()` 会
+    /// 误杀在途 prompt。复核 + 移除由 [`take_session_if_still_idle`] 在同一把
+    /// sessions 锁内原子完成：`get_or_spawn` 复用即刷新 last_activity，任何
+    /// 快照后到达的真实请求都会把 idle_for 归零（busy 在途更直接命中），复核
+    /// 自然失败、会话原样保留，留待下一轮巡检。返回是否真正回收。删除 /
+    /// 升级等其他路径仍走 `evict`，语义不变。
+    async fn evict_if_idle(&self, session_id: &str) -> bool {
+        let active_id = self.session_store.active_id();
+        let Some(runtime) = take_session_if_still_idle(&self.sessions, session_id, |runtime| {
+            should_reap_idle_session(
+                runtime.busy.load(Ordering::Acquire),
+                runtime.configuring.load(Ordering::Acquire),
+                active_id.as_deref() == Some(session_id),
+                runtime.idle_for(),
+            )
+        })
+        .await
+        else {
+            return false;
+        };
+        self.cancel_pending_permissions(session_id).await;
+        self.cancel_pending_elicitations(session_id).await;
+        runtime.shutdown().await;
+        true
+    }
+
     /// 启动空闲回收巡检（幂等）：每 REAP_INTERVAL_SECS 秒扫描一次，回收
     /// 「空闲超过 IDLE_EVICT_AFTER_SECS 且无在途 prompt/配置同步且非 active」
     /// 的会话进程。active 判定取 `SessionStore::active_id`——它由 create/
@@ -3099,7 +3144,9 @@ impl AcpPool {
     }
 
     /// 单轮空闲回收。busy/configuring 会话（含 turn 等待权限/问询期间）与
-    /// active 会话一律保留；回收动作复用 evict（级联取消挂起权限/问询）。
+    /// active 会话一律保留；回收走 `evict_if_idle`：快照只是候选筛选，真正
+    /// 回收前在 sessions 锁内复核仍满足回收条件，快照后到达的 send_message
+    /// （busy.swap(true)）不会被误杀。
     async fn reap_idle_sessions(&self) {
         let active_id = self.session_store.active_id();
         let candidates: Vec<String> = {
@@ -3118,11 +3165,12 @@ impl AcpPool {
                 .collect()
         };
         for session_id in candidates {
-            eprintln!(
-                "[pinvou3-app] ACP 会话 {session_id} 空闲超过 {} 秒，回收进程（下次使用时重新拉起）",
-                IDLE_EVICT_AFTER_SECS
-            );
-            self.evict(&session_id).await;
+            if self.evict_if_idle(&session_id).await {
+                eprintln!(
+                    "[pinvou3-app] ACP 会话 {session_id} 空闲超过 {} 秒，回收进程（下次使用时重新拉起）",
+                    IDLE_EVICT_AFTER_SECS
+                );
+            }
         }
     }
 
@@ -4266,6 +4314,90 @@ mod tests {
             false,
             idle - Duration::from_secs(1)
         ));
+    }
+
+    /// take_session_if_still_idle 测试用的裸条目：复刻 AcpSession 参与空闲
+    /// 判定的三个状态（busy / configuring / last_activity），绕开真实
+    /// ConnectionTo / Child（测试环境无法构造）。
+    struct FakeIdleEntry {
+        busy: AtomicBool,
+        configuring: AtomicBool,
+        last_activity: parking_lot::Mutex<Instant>,
+    }
+
+    impl FakeIdleEntry {
+        fn idle_since(idle: Duration) -> Self {
+            Self {
+                busy: AtomicBool::new(false),
+                configuring: AtomicBool::new(false),
+                last_activity: parking_lot::Mutex::new(Instant::now() - idle),
+            }
+        }
+
+        /// 与 AcpPool::evict_if_idle 相同的复核闭包（非 active 会话口径）。
+        fn still_idle(&self) -> bool {
+            should_reap_idle_session(
+                self.busy.load(Ordering::Acquire),
+                self.configuring.load(Ordering::Acquire),
+                false,
+                self.last_activity.lock().elapsed(),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_reap_skips_session_with_activity_after_snapshot() {
+        // PR #318 审阅时序的确定性回归：reap 快照判空闲后、evict 的 remove +
+        // child.kill() 前，send_message 到达（get_or_spawn 复用刷新
+        // last_activity，随后 busy.swap(true) 把 turn 跑起来）。复核必须在同一
+        // 把 sessions 锁内发现活动并保留条目，否则在途 prompt 被误杀。
+        let sessions: Arc<Mutex<HashMap<String, FakeIdleEntry>>> =
+            Arc::new(Mutex::new(HashMap::from([(
+                "acp-session".to_string(),
+                FakeIdleEntry::idle_since(Duration::from_secs(IDLE_EVICT_AFTER_SECS)),
+            )])));
+
+        // send_message 持锁复用会话（get_or_spawn 窗口），reaper 在锁外排队。
+        let guard = sessions.lock().await;
+        let reaper_sessions = sessions.clone();
+        let reaper = tokio::spawn(async move {
+            take_session_if_still_idle(&reaper_sessions, "acp-session", FakeIdleEntry::still_idle)
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        // 快照后到达的真实请求：刷新活动 + 置 busy，随后释放锁。
+        let entry = guard.get("acp-session").expect("session entry");
+        *entry.last_activity.lock() = Instant::now();
+        entry.busy.store(true, Ordering::Release);
+        drop(guard);
+
+        let taken = reaper.await.expect("reaper task joins");
+        assert!(taken.is_none(), "快照后产生活动的会话必须跳过回收");
+        assert!(
+            sessions.lock().await.contains_key("acp-session"),
+            "复核不过时条目必须原样保留"
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_reap_still_takes_session_that_remained_idle() {
+        // 对照测试，防止复核过度保守：快照后无任何活动时回收照常取走条目。
+        let sessions: Mutex<HashMap<String, FakeIdleEntry>> = Mutex::new(HashMap::from([(
+            "acp-session".to_string(),
+            FakeIdleEntry::idle_since(Duration::from_secs(IDLE_EVICT_AFTER_SECS)),
+        )]));
+
+        let taken =
+            take_session_if_still_idle(&sessions, "acp-session", FakeIdleEntry::still_idle).await;
+        assert!(taken.is_some(), "保持空闲的会话必须照常回收");
+        assert!(sessions.lock().await.is_empty());
+        // 已被移除 / 从未存在的会话：取回 None，不二次回收。
+        assert!(
+            take_session_if_still_idle(&sessions, "acp-session", FakeIdleEntry::still_idle)
+                .await
+                .is_none()
+        );
     }
 
     #[test]

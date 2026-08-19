@@ -206,8 +206,12 @@ const mainSource = await readFile(
 );
 assert.match(mainSource, /sessionTitlePresentation\(s\.title, s\.title_attachment_names\)/);
 assert.match(mainSource, /<SessionAttachmentTitle presentation=\{titlePresentation\}/);
+const viewLoadersSource = await readFile(
+  new URL('../src/app/view-loaders.js', import.meta.url),
+  'utf8',
+);
 assert.match(
-  mainSource,
+  viewLoadersSource,
   /search: \(\) => import\('\.\.\/features\/search\/SearchView\.jsx'\)/,
   'the app shell must delegate conversation management rendering to the search feature',
 );

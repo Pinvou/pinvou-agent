@@ -89,9 +89,12 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
   };
 
   const loadPetAssets = (id) => {
+    // 与在途加载去重:重试可重复点击,封面或图集任一在途时不再重复发请求。
+    const current = assets[id];
+    if (current && (current.status === 'loading' || current.atlasStatus === 'loading')) return;
     setAssets((state) => ({
       ...state,
-      [id]: { ...(state[id] || {}), status: 'loading', coverFailed: false },
+      [id]: { ...(state[id] || {}), status: 'loading', coverFailed: false, atlasStatus: 'loading' },
     }));
     const entry = PET_REGISTRY[id];
     entry.cover()
@@ -108,11 +111,11 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
       .then(loadImage)
       .then((atlas) => {
         if (!aliveRef.current) return;
-        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlas, status: 'ready' } }));
+        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlas, atlasStatus: 'ready', status: 'ready' } }));
       })
       .catch(() => {
         if (!aliveRef.current) return;
-        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), status: 'error' } }));
+        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), status: 'error', atlasStatus: 'error' } }));
       });
   };
 
@@ -127,6 +130,8 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
   }, [enabled]);
 
   // 当前选中宠的图集随区域出现预载(它随时会被桌宠窗口使用);其余宠 hover 才载。
+  // 不把 entry 纳入依赖:图集失败会写新 entry,重跑会变成失败-重试死循环;
+  // 主路径靠 ensurePetAtlas 在 !entry 时也照常发起(见下)来保证生效。
   useEffect(() => {
     if (enabled && currentId) ensurePetAtlas(currentId);
   }, [enabled, currentId]);
@@ -134,7 +139,9 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
   const pendingSelectRef = useRef(null);
   const ensurePetAtlas = (id) => {
     const entry = assets[id];
-    if (!entry || entry.atlas || entry.atlasStatus === 'loading') return;
+    // entry 不存在时也要照常发起:预载 effect 首次运行时封面尚未入库,
+    // 在此早退会让「当前宠图集随区域出现预载」在主路径上从不生效。
+    if (entry && (entry.atlas || entry.atlasStatus === 'loading')) return;
     setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlasStatus: 'loading' } }));
     PET_REGISTRY[id].atlas()
       .then(loadImage)
@@ -159,16 +166,21 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
 
   const handleSelect = (id) => {
     ensurePetAtlas(id);
-    if (id === currentId) return;
-    const entry = assets[id];
-    // 两级懒加载:atlas 未就绪时点击先排队,加载完成再切换(点击即意图,
-    // 卡片 disabled 只反映封面可见性)。
-    if (!entry || entry.status !== 'ready') {
-      if (entry && entry.atlasStatus === 'loading') {
-        pendingSelectRef.current = id; // 排队,atlas 完成回调执行切换
-      }
+    if (id === currentId) {
+      // 点击当前宠的早退也要清掉排队,否则旧排队会在其图集就绪后误触发切换。
+      pendingSelectRef.current = null;
       return;
     }
+    const entry = assets[id];
+    // 两级懒加载:atlas 未就绪时点击一律排队(无论本次刚发起加载还是已在途),
+    // 由 ensurePetAtlas 的完成/失败回调消费——用同一渲染闭包的旧快照判断
+    // atlasStatus 会丢弃发起加载的那次点击(旧快照里它还是 undefined)。
+    if (!entry || entry.status !== 'ready') {
+      pendingSelectRef.current = id;
+      return;
+    }
+    // 直接选择生效后清掉可能残留的旧排队,避免之后被在途回调误消费。
+    pendingSelectRef.current = null;
     Promise.resolve(onSelect(id)).catch((error) => {
       console.error('[pet-selector] switch failed, keeping previous pet', error);
     });
@@ -240,10 +252,11 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
                   <span className="pet-card-preparing">{t.uiPetSettings.preparing}</span>
                 )}
               </button>
-              {(entry.status === 'error' || entry.coverFailed) && (
+              {/* hover 预取的图集失败只写 atlasStatus,也必须给出错误展示与重试入口。 */}
+              {(entry.status === 'error' || entry.atlasStatus === 'error' || entry.coverFailed) && (
                 <div className="pet-card-error pet-card-error--dark">
                   <AlertTriangle size={14} />
-                  <span>{entry.status === 'error' ? t.uiPetSettings.animationFailed : t.uiPetSettings.coverFailed}</span>
+                  <span>{entry.status === 'error' || entry.atlasStatus === 'error' ? t.uiPetSettings.animationFailed : t.uiPetSettings.coverFailed}</span>
                   <button type="button" className="pet-card-retry" onClick={() => loadPetAssets(id)}>
                     {t.uiPetSettings.retry}
                   </button>

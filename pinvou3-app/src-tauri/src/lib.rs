@@ -110,6 +110,21 @@ fn allow_embedded_document_navigation(url: &tauri::Url, main_origin_initialized:
     main_origin_initialized && matches!(url.as_str(), "about:blank" | "about:srcdoc")
 }
 
+/// 子进程收割：退出(RunEvent::Exit)与重启(`app.restart()`,Tauri 2 中跳过 Exit
+/// 事件)前共用的收口。managed state 不保证被 drop(kill_on_drop 只在 Child drop
+/// 时生效),显式关停 ACP/连接器子进程防孤儿。各收口内部幂等,超时风险最大的
+/// shutdown() 也只发 oneshot + kill,不做长等待。
+pub(crate) async fn harvest_child_processes(app: &tauri::AppHandle) {
+    if let Some(acp_pool) = app.try_state::<crate::features::codex_acp::AcpPool>() {
+        acp_pool.shutdown_all().await;
+    }
+    if let Some(connector_conn) =
+        app.try_state::<crate::features::connectors::connector_cli::ConnectorConn>()
+    {
+        connector_conn.kill_all_pids();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 必须最先执行:进程级选定 rustls CryptoProvider。
@@ -988,19 +1003,10 @@ pub fn run() {
             startup::mark("tauri:event_loop:first_resumed");
         }
         tauri::RunEvent::Exit => {
-            // 退出收割：managed state 不保证被 drop（kill_on_drop 只在 Child
-            // drop 时生效），显式收口防孤儿进程。同步执行——Exit 后进程即将
-            // 结束，这是最后的清理窗口；各收口内部幂等，超时风险最大的
-            // shutdown() 也只发 oneshot + kill，不做长等待。
+            // 退出收割:同步执行——Exit 后进程即将结束,这是最后的清理窗口。
+            // 重启(app.restart())跳过本事件,调用点在 restart 前主动调同一辅助函数。
             startup::mark("exit:cleanup:start");
-            if let Some(acp_pool) = app.try_state::<crate::features::codex_acp::AcpPool>() {
-                tauri::async_runtime::block_on(acp_pool.shutdown_all());
-            }
-            if let Some(connector_conn) =
-                app.try_state::<crate::features::connectors::connector_cli::ConnectorConn>()
-            {
-                connector_conn.kill_all_pids();
-            }
+            tauri::async_runtime::block_on(harvest_child_processes(app));
             startup::mark("exit:cleanup:done");
         }
         _ => {}

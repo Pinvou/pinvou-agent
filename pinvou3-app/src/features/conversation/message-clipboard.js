@@ -3,11 +3,11 @@ import {
   normalizeAssistantMessageText,
 } from './structured-assistant-content.js';
 import { copyClipboardText, fallbackCopyText } from '../../shared/clipboard.js';
+import { createTurndownService } from '../../shared/turndown-factory.js';
 
 export { copyClipboardText, fallbackCopyText };
 
-// turndown(+gfm 插件)只服务「旧 HTML 会话复制为 Markdown」这一低频路径,改为
-// 首次用到时动态 import,不再随聊天启动链打进主 chunk。
+// 旧 HTML 会话复制为 Markdown 的转换器懒加载缓存。
 let legacyHtmlConverter = null;
 let legacyConverterLoading = null;
 
@@ -34,16 +34,7 @@ async function ensureLegacyHtmlConverter() {
   if (legacyHtmlConverter) return legacyHtmlConverter;
   if (!legacyConverterLoading) {
     legacyConverterLoading = (async () => {
-      const [{ default: TurndownService }, { gfm }] = await Promise.all([
-        import('turndown'),
-        import('turndown-plugin-gfm'),
-      ]);
-      const converter = new TurndownService({
-        headingStyle: 'atx',
-        bulletListMarker: '-',
-        codeBlockStyle: 'fenced',
-      });
-      converter.use(gfm);
+      const converter = await createTurndownService();
       converter.addRule('pinvouFencedCodeLanguage', {
         filter: (node, options) => (
           options.codeBlockStyle === 'fenced'
@@ -66,11 +57,14 @@ async function ensureLegacyHtmlConverter() {
           return `\n\n${fence}${language}\n${String(code.textContent).replace(/\n$/, '')}\n${fence}\n\n`;
         },
       });
-      converter.keep(['kbd']);
       converter.remove(['script', 'style']);
       legacyHtmlConverter = converter;
       return converter;
-    })();
+    })().catch((error) => {
+      // 加载失败(如动态 import 异常)时清除缓存,允许下次复制重试。
+      legacyConverterLoading = null;
+      throw error;
+    });
   }
   return legacyConverterLoading;
 }
@@ -91,13 +85,7 @@ export function readClipboardText() {
 export { assistantMarkdownCopyText, normalizeAssistantMessageText };
 
 // 旧 HTML 会话的复制走异步转换(turndown 懒加载后执行);text 直存的新会话
-// 仍走同步 assistantItemCopyTextSync,复制按钮的即时路径不受懒加载影响。
-export function assistantItemCopyTextSync(item, options) {
-  if (!item) return '';
-  const markdown = normalizeAssistantMessageText(item.text);
-  return markdown ? assistantMarkdownCopyText(markdown, options) : '';
-}
-
+// 在同一函数内走同步路径,不触发懒加载。
 export async function assistantItemCopyText(item, options) {
   if (!item) return '';
   const markdown = normalizeAssistantMessageText(item.text);
@@ -105,7 +93,9 @@ export async function assistantItemCopyText(item, options) {
   return assistantMarkdownCopyText(await legacyAssistantHtmlToMarkdown(item.html), options);
 }
 
-export function assistantResponseText(turn) {
+// 旧 HTML 会话的 agent_message 可能只有 legacyItem.html 没有 text,整轮复制
+// 必须经 turndown 转换兜底,因此本函数为 async;消费方统一 await。
+export async function assistantResponseText(turn) {
   if (!turn) return '';
   const items = Array.isArray(turn.items) && turn.items.length
     ? turn.items
@@ -113,17 +103,16 @@ export function assistantResponseText(turn) {
       ? turn.presentation
       : [];
   const agentMessages = items.filter(item => item?.type === 'agent_message');
-  const messages = agentMessages
+  const messages = (await Promise.all(agentMessages
     .filter(item => item.phase !== 'commentary')
-    .map(item => {
+    .map(async item => {
       if (item.copyText != null) return normalizeAssistantMessageText(item.copyText);
       const source = normalizeAssistantMessageText(item.text);
       if (source && item.copyOptions !== undefined) {
         return assistantMarkdownCopyText(source, item.copyOptions);
       }
-      return source || '';
-    })
-    .filter(Boolean);
+      return source || await assistantItemCopyText(item.legacyItem, item.copyOptions);
+    }))).filter(Boolean);
   if (agentMessages.length) return normalizeAssistantMessageText(messages.join('\n\n'));
   return normalizeAssistantMessageText(turn.assistantText);
 }

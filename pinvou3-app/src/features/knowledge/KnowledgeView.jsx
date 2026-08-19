@@ -693,8 +693,12 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       const modelReadyKnown = effectiveKbModel && typeof effectiveKbModel.ready === 'boolean';
       const modelLoading = !!(kbm.startupLoading || (effectiveKbModel && effectiveKbModel.loading));
       const modelReady = !modelReadyKnown || effectiveKbModel.ready === true || kbm.startupReady === true;
-      const modelFailed = modelInstalled && modelReadyKnown && !modelReady && !modelLoading;
-      const modelUsable = modelInstalled && modelReady;
+      // 故意延迟：模型已装但首帧门控因「本地无已入库内容且远程无连接」跳过加载。
+      // 这不是失败——显示正常知识库 UI（空状态可建库/导入，导入会触发真实补载），
+      // 语义检索按既有口径退化为全文（embedInfo.enabled=false 徽标已表达）。
+      const modelDeferred = !!(effectiveKbModel && effectiveKbModel.deferredNoUsage);
+      const modelFailed = modelInstalled && modelReadyKnown && !modelReady && !modelLoading && !modelDeferred;
+      const modelUsable = modelInstalled && (modelReady || modelDeferred);
       const dlProg = kbm.progress || null;
       const downloading = !!kbm.downloading;
       const mb = (n) => Math.round((n || 0) / 1048576);

@@ -1,15 +1,70 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AppWindow, Award, Briefcase, Check, ChevronLeft, ChevronRight, Cpu, Feather, Globe, Lock, Navigation, Palette, Plus, Radio, Sparkles, Terminal, TrendingUp, User, X } from '../../components/icons.jsx';
+import { ChevronLeft, ChevronRight, Plus, Sparkles, User, X } from '../../components/icons.jsx';
 import { IosSearchField } from '../../components/IosControls.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 
 // 共享小件(部门配色/头像块/多语言取名)抽到 persona-shared.jsx:ChatView 等
 // 主 chunk 消费方直接从那里 import,卡池视图才可能独立懒加载 chunk。
-import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_COLOR, DEPT_OPTIONS, deptColor, avatarSrc, AppIcon, PersonaDetailModal } from './persona-shared.jsx';
-    const CLAMP3 = { display:'-webkit-box', WebkitLineClamp:3, WebkitBoxOrient:'vertical', overflow:'hidden' };
-    const CLAMP2 = { display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', overflow:'hidden' };
+import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColor, AppIcon } from './persona-shared.jsx';
 
+    // 双击卡片打开的详情 modal —— FLIP 转场 + 拉取并展示完整人设正文(body)。
+    // 唯一消费方是本文件,留在卡池 chunk;不进 persona-shared(主 chunk 常驻,
+    // 会把弹层 + bridge.rendering 依赖一并拖进主 chunk)。
+    const PersonaDetailModal = ({ card, originRect, equipped, onClose, onEquip, t }) => {
+      const panelRef = useRef(null);
+      const [body, setBody] = useState(null); // null=loading
+      useEffect(() => {
+        const panel = panelRef.current;
+        if (panel && originRect) {
+          const last = panel.getBoundingClientRect();
+          const dx = originRect.left - last.left, dy = originRect.top - last.top;
+          const sx = Math.max(0.05, originRect.width / last.width), sy = Math.max(0.05, originRect.height / last.height);
+          panel.style.transformOrigin = 'top left';
+          panel.style.transform = `translate(${dx}px,${dy}px) scale(${sx},${sy})`;
+          panel.style.opacity = '0.5';
+          panel.getBoundingClientRect();
+          panel.style.transition = 'transform .34s cubic-bezier(.2,.85,.25,1), opacity .34s';
+          panel.style.transform = 'none';
+          panel.style.opacity = '1';
+        }
+        if (bridge.available && bridge.personas.readPersonaBody) {
+          bridge.personas.readPersonaBody(card.id).then(b=>setBody(b||'')).catch(()=>setBody(t.cpBodyLoadFailed));
+        } else { setBody(''); }
+      }, []);
+      const tc = deptColor(card.dept);
+      const cd = personaText(card, t);
+      return (
+        <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:p-6" style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)', fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
+          <div ref={panelRef} onClick={(e)=>e.stopPropagation()}
+            className="w-full h-[88vh] md:h-auto md:max-h-[84vh] md:max-w-[560px] flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] text-[#000] dark:text-[#fff]">
+            {/* 顶部:头像 + 名称/部门 + 关闭 */}
+            <div className="flex items-center gap-4 px-5 pt-5 pb-4 shrink-0 bg-[#fff] dark:bg-[#000]">
+              <AppIcon card={card} />
+              <div className="min-w-0 flex-1">
+                <h2 className="text-[20px] font-semibold truncate text-[#000] dark:text-[#fff]">{cd.name}</h2>
+                <p className="text-[13px] mt-0.5" style={{ color:'#8E8E93' }}>{deptLabelFor(t, card.dept)}{card.source==='user'?' · ' + t.cpBadgeUser:''}</p>
+              </div>
+              <button onClick={onClose} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-[#F2F2F7] dark:bg-[#2C2C2E]" style={{ color:'#8E8E93' }}><X size={16}/></button>
+            </div>
+            {cd.description ? <div className="px-5 py-3 text-[14px] shrink-0 text-[#3C3C43] dark:text-[#C7C7CC] bg-[#fff] dark:bg-[#000] border-t border-[rgba(198,198,200,.4)] dark:border-[#1C1C1E]">{cd.description}</div> : null}
+            {/* 完整人设 */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-4 min-h-0">
+              <p className="text-[12px] uppercase mb-2" style={{ color:'#8E8E93' }}>{t.cpFullBody}</p>
+              {body===null
+                ? <div className="text-[14px] py-8 text-center" style={{ color:'#8E8E93' }}>{t.cpBodyLoading}</div>
+                : <div className="persona-body text-[14px] leading-relaxed light-code dark-code text-[#1C1C1E] dark:text-[#C7C7CC]" dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown ? bridge.rendering.renderMarkdown(body) : body }} />}
+            </div>
+            {/* 加持/取消 */}
+            <div className="p-4 shrink-0 border-t border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
+              <button onClick={()=>onEquip(card)} className={"w-full py-3 rounded-[12px] text-[16px] font-semibold transition-colors " + (equipped ? 'bg-[#E5E5EA] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]' : 'bg-[#0A84FF] dark:bg-[#007AFF] text-[#fff]')}>
+                {equipped ? t.cpDetailUnequip : t.cpEquipShort}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
 
     // 自创卡编辑器:新建 / 编辑 / ③ 草稿预填都复用它。initial.source==='user' 且有 id → 编辑(update),否则新建(create)。
     const PersonaEditorModal = ({ initial, onClose, onSaved, onDeleted, t }) => {

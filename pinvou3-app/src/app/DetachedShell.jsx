@@ -1,14 +1,16 @@
 import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { CodexAcpView as LazyCodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
-// 撕离窗与主窗口共用同一批懒加载视图 chunk(rolldown 自动共享)。静态 import
-// 会让对应视图被钉回主 chunk,这里全部走 lazy;每个窗只实际加载自己 kind 的 chunk。
-// codex 例外:复用 #159 的 LazyCodexAcpView 包装(web 能力门控 + checking 兜底,
-// 内部同样 lazy import CodexAcpView,共享同一 chunk)。
-const LazyKnowledgeView = lazy(() => import('../features/knowledge/KnowledgeView.jsx').then(m => ({ default: m.KnowledgeView })));
-const LazyMonitorView = lazy(() => import('../features/monitor/MonitorView.jsx').then(m => ({ default: m.MonitorView })));
-const LazyChatView = lazy(() => import('../features/chat/ChatView.jsx').then(m => ({ default: m.ChatView })));
-const LazyToolStoreView = lazy(() => import('../features/tools/ToolStoreView.jsx').then(m => ({ default: m.ToolStoreView })));
-const LazyCardPoolView = lazy(() => import('../features/personas/Personas.jsx').then(m => ({ default: m.CardPoolView })));
+import { VIEW_LOADERS } from './view-loaders.js';
+// 撕离窗与主窗口共用同一批懒加载视图 chunk(rolldown 自动共享),工厂统一走
+// view-loaders.js 的 VIEW_LOADERS。静态 import 会让对应视图被钉回主 chunk,
+// 这里全部走 lazy;每个窗只实际加载自己 kind 的 chunk。codex 例外:复用 #159 的
+// LazyCodexAcpView 包装(web 能力门控 + checking 兜底,内部同样 lazy import
+// CodexAcpView,共享同一 chunk)。
+const LazyKnowledgeView = lazy(() => VIEW_LOADERS.knowledge().then(m => ({ default: m.KnowledgeView })));
+const LazyMonitorView = lazy(() => VIEW_LOADERS.monitor().then(m => ({ default: m.MonitorView })));
+const LazyChatView = lazy(() => VIEW_LOADERS.chat().then(m => ({ default: m.ChatView })));
+const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ default: m.ToolStoreView })));
+const LazyCardPoolView = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.CardPoolView })));
 const DetachedViewFallback = () => <div className="p-6 text-sm opacity-60">…</div>;
 import { useBridgeState } from '../hooks/useBridge.js';
 import { emitTauri, invokeTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';

@@ -14,6 +14,7 @@ import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewpor
 import { dict, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { runSessionBatch } from '../shared/session-management.js';
+import { resolveAppAssetUrl } from '../shared/asset-url.mjs';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
 import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
@@ -51,20 +52,10 @@ import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
 import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
 import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
 import { Lanyard } from '../features/personas/persona-shared.jsx';
-// 低频视图懒加载:用户典型路径是聊天,Settings/Codex/卡池/工具商店/定时/知识库/
-// 监控/搜索视图切到才加载对应 chunk(rolldown 对动态 import 自动分割)。VIEW_LOADERS
-// 是唯一的动态 import 出口:React.lazy 与 NavItem 悬停/聚焦预取共用同一工厂,保证
-// 命中同一模块缓存。ChatView 与 Lanyard 启动即渲染,保持静态 import。
-const VIEW_LOADERS = {
-  settings: () => import('../features/settings/SettingsView.jsx'),
-  codex: () => import('../features/codex/CodexAcpView.jsx'),
-  cardpool: () => import('../features/personas/Personas.jsx'),
-  toolStore: () => import('../features/tools/ToolStoreView.jsx'),
-  scheduled: () => import('../features/scheduled/ScheduledTasksView.jsx'),
-  knowledge: () => import('../features/knowledge/KnowledgeView.jsx'),
-  monitor: () => import('../features/monitor/MonitorView.jsx'),
-  search: () => import('../features/search/SearchView.jsx'),
-};
+import { VIEW_LOADERS } from './view-loaders.js';
+// 低频视图懒加载:VIEW_LOADERS(见 view-loaders.js)是唯一的动态 import 出口,
+// React.lazy 与 NavItem 悬停/聚焦预取共用同一工厂,保证命中同一模块缓存。
+// ChatView 与 Lanyard 启动即渲染,保持静态 import。
 const LazySettingsView = lazy(() => VIEW_LOADERS.settings().then(m => ({ default: m.SettingsView })));
 const LazyCodexAcpView = lazy(() => VIEW_LOADERS.codex().then(m => ({ default: m.CodexAcpView })));
 const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ default: m.ToolStoreView })));
@@ -80,6 +71,26 @@ const LazyDetachedShell = lazy(() => import('./DetachedShell.jsx').then(m => ({ 
 // 视图 chunk 加载占位:沿用 DetachedShell 的「…」惯例,不引入新视觉语言。
 function ViewFallback() {
   return <div className="p-6 text-sm opacity-60" data-testid="lazy-view-fallback">…</div>;
+}
+
+// personas-i18n overlay(141KB)快速路径在 index.html 按系统语言注入;但消费端
+// (persona-shared.jsx personaText / bridge personas.js personaName)看的是用户设置的
+// UI 语言。「系统中文 + 手动切英/日 UI」时 overlay 缺失,卡名会停在中文——此处兜底:
+// 已加载则跳过;在途(index.html 快速路径注入中)则只挂 onload,避免重复注入;
+// 加载完成由调用方 bump state 触发卡名重渲染。
+function ensurePersonaI18nOverlay(onLoaded) {
+  if (typeof document === 'undefined' || window.PERSONA_I18N) return;
+  const existing = document.querySelector('script[data-personas-i18n]');
+  if (existing) {
+    existing.addEventListener('load', onLoaded, { once: true });
+    return;
+  }
+  const s = document.createElement('script');
+  s.setAttribute('data-personas-i18n', '1');
+  s.src = resolveAppAssetUrl('features/personas/personas-i18n.js');
+  s.onload = onLoaded;
+  s.onerror = () => s.remove();
+  document.head.appendChild(s);
 }
 import { TitleBar } from './DesktopTitleBar.jsx';
 
@@ -356,6 +367,14 @@ function workspaceDisplayName(path) {
           return value && dict[value] ? value : systemLanguage;
         } catch (_) { return systemLanguage; }
       });
+      // UI 语言为 en/ja 时确保 personas-i18n overlay 已加载(覆盖「系统中文 + 手动切
+      // 英/日 UI」、index.html 快速路径跳过的场景),加载完成 bump 一次让卡名重渲染。
+      const [, setPersonaI18nTick] = useState(0);
+      useEffect(() => {
+        if (language === 'en' || language === 'ja') {
+          ensurePersonaI18nOverlay(() => setPersonaI18nTick(v => v + 1));
+        }
+      }, [language]);
       const [superPerm, setSuperPerm] = useState(false);
       const defaultTaskCompletedNotif = platformCapabilities.taskCompletionNotificationsDefault !== false;
       const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultTaskCompletedNotif);

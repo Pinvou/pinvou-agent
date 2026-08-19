@@ -943,7 +943,80 @@ mod tests {
         cleanup(&tmp);
     }
 
-    /// forkguard(composer): 静态层 composer 接管后,底座的 Personality/
+    /// 坏 mcp.json(parse 失败)必须自愈:重建骨架并恢复内置 pinvou3 server 条目——
+    /// 早期返回"留给后续启动"会让坏文件永远修不好(present_artifact 永久失效)。
+    #[test]
+    fn ensure_builtin_mcp_servers_repairs_broken_mcp_json() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+        std::fs::write(&bundle.mcp_json, "{ not valid json !!!").unwrap();
+
+        bundle.ensure_builtin_mcp_servers().unwrap();
+
+        let mcp: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap())
+                .expect("自愈后 mcp.json 必须是合法 json");
+        let servers = mcp["servers"].as_object().unwrap();
+        assert!(
+            servers.contains_key("pinvou3"),
+            "坏 mcp.json 自愈后应恢复内置 pinvou3 条目,实际={:?}",
+            servers.keys().collect::<Vec<_>>()
+        );
+        assert!(!servers.contains_key("pinvou"), "旧 pinvou 不残留");
+        cleanup(&tmp);
+    }
+
+    /// write_if_changed:内容逐字节一致时跳过写盘(返回 false 且不动文件);
+    /// 内容不同才实际写入(返回 true)。
+    #[test]
+    fn write_if_changed_skips_rewrite_when_content_identical() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        let target = std::path::Path::new(&tmp).join("nested").join("out.txt");
+
+        // 首次:文件不存在 → 实际写入(父目录自动创建)
+        assert!(bundle.write_if_changed(&target, "hello").unwrap());
+        let mtime = std::fs::metadata(&target).unwrap().modified().unwrap();
+        // 内容一致 → 跳过写盘,mtime 不变
+        assert!(!bundle.write_if_changed(&target, "hello").unwrap());
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().modified().unwrap(),
+            mtime,
+            "内容一致时不应重写文件"
+        );
+        // 内容变化 → 重写
+        assert!(bundle.write_if_changed(&target, "world").unwrap());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "world");
+        cleanup(&tmp);
+    }
+
+    /// 已下架工具无任何残留时走快速路径:不实例化 MarketplaceManager 跑 uninstall。
+    /// 可观测证据:uninstall 必写 marketplace/installed.json,快速路径下它不得出现。
+    #[test]
+    fn cleanup_removed_marketplace_tools_fast_path_skips_uninstall() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+
+        bundle.cleanup_removed_marketplace_tools().unwrap();
+
+        assert!(
+            !paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json")
+                .exists(),
+            "无残留时不应触发 uninstall(其必写 installed.json)"
+        );
+        cleanup(&tmp);
+    }
     /// Session Longevity/Efficient Approvals/taxonomy 不得再进 prompt,
     /// pinvou3 自有的 mode 块 + 瘦身 compact 模板必须在。上游 sync 后此测试
     /// 失败 = set_static_prompt_composer_override fork patch 被合丢。

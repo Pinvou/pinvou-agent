@@ -9,6 +9,7 @@ import {
   highlightDiffCode,
   MAX_HIGHLIGHT_SOURCE_BYTES,
   normalizeSyntaxLanguage,
+  subscribeSyntaxHighlight,
   supportedSyntaxLanguages,
 } from '../src/shared/syntax-highlighter.js';
 
@@ -247,7 +248,72 @@ assert.match(
 // Personas.jsx 代码块明暗切换采用静态共存写法 light-code dark-code
 // （配合 base.css 的 .dark 祖先限定；P1 重构后 isDark 三元式已消除）。
 assert.match(
-  readApp('src', 'features', 'personas', 'persona-shared.jsx'),
+  readApp('src', 'features', 'personas', 'Personas.jsx'),
   /light-code dark-code/u,
 );
+// ---- 懒加载语言(两级注册)行为 ----
+
+// blocker 回归:与原型链同名的围栏 token(```constructor / ```__proto__ 等)
+// 之前会命中 LAZY_LANGUAGE_LOADERS 的原型属性,把 Object()/Object.prototype
+// 当 loader 调用抛 TypeError,会话区无 ErrorBoundary 导致整条消息渲染崩溃。
+// 修法:loader 表与别名反查表一律 Object.hasOwn 查找。
+for (const hostile of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+  assert.doesNotThrow(() => normalizeSyntaxLanguage(hostile), `${hostile} must not hit the prototype chain`);
+  assert.doesNotThrow(
+    () => renderMarkdownMarkup(`\`\`\`${hostile}\nplain text\n\`\`\``),
+    `${hostile} fence must not crash markdown rendering`,
+  );
+  const rendered = renderMarkdownMarkup(`\`\`\`${hostile}\nplain text\n\`\`\``);
+  assert.match(rendered, /class="hljs language-plaintext"/u, `${hostile} fence must fall back to plaintext`);
+}
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+async function waitForLazyHighlight(hint, sample, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = highlightCode(sample, hint);
+    if (result.highlighted) return result;
+    if (Date.now() > deadline) throw new Error(`timed out waiting for lazy highlight: ${hint}`);
+    await sleep(20);
+  }
+}
+
+// major 回归:懒语言别名(proto/bat/objc…)加载前未注册,修复前别名围栏
+// 永不触发动态 import、永久纯文本;现在先经别名反查表解析回 canonical 再加载。
+const protoBefore = highlightCode('syntax = "proto3";\nmessage Probe {}\n', 'proto');
+assert.equal(protoBefore.highlighted, false, 'lazy alias must fall back to plaintext before loading');
+const protoAfter = await waitForLazyHighlight('proto', 'syntax = "proto3";\nmessage Probe {}\n');
+assert.equal(protoAfter.highlighted, true, 'lazy alias must highlight after loading');
+assert.equal(protoAfter.language, 'protobuf', 'proto alias must normalize to protobuf after loading');
+assert.match(protoAfter.html, /hljs-/u);
+assert.equal(normalizeSyntaxLanguage('proto'), 'protobuf', 'proto alias must resolve to protobuf after loading');
+
+// 并发去重:同一 canonical 的多次触发(别名与 canonical 混用)只加载一次,
+// 注册完成只通知一次。
+let dedupeNotifications = 0;
+const unsubscribeDedupe = subscribeSyntaxHighlight(() => { dedupeNotifications += 1; });
+try {
+  normalizeSyntaxLanguage('bat');
+  normalizeSyntaxLanguage('bat');
+  normalizeSyntaxLanguage('dos');
+  const batch = await waitForLazyHighlight('bat', '@echo off\r\nset PROBE=1\r\n');
+  assert.equal(batch.highlighted, true, 'bat alias must highlight after dos loads');
+  assert.equal(batch.language, 'dos', 'bat alias must normalize to dos after loading');
+  assert.equal(dedupeNotifications, 1, 'concurrent triggers for one lazy language must dedupe to a single load');
+} finally {
+  unsubscribeDedupe();
+}
+
+// 订阅通知:懒语言注册完成必须 bump 版本并通知订阅者(消费方借此重算
+// useMemo 恢复高亮);退订后不再通知。
+let notified = 0;
+const unsubscribe = subscribeSyntaxHighlight(() => { notified += 1; });
+const objc = await waitForLazyHighlight('objc', '#import <Foundation/Foundation.h>\nint probe = 1;\n');
+assert.equal(objc.highlighted, true, 'objc alias must highlight after objectivec loads');
+assert.equal(objc.language, 'objectivec', 'objc alias must normalize to objectivec after loading');
+assert.equal(notified, 1, 'lazy registration must notify subscribers exactly once');
+unsubscribe();
+await waitForLazyHighlight('asm', 'mov eax, 1\nret\n');
+assert.equal(notified, 1, 'unsubscribed listener must not be called again');
+
 console.log('Markdown syntax highlighting contract: ok');

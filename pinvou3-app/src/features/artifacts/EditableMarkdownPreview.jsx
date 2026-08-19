@@ -2,23 +2,7 @@ import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef,
 import { Check, Sparkles, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
-
-// HTML→Markdown 回写是「进入编辑态」才发生的低频路径,turndown(+gfm)改
-// 首次用到时动态 import;组件挂载即预热,编辑开始时通常已就绪。
-const createTurndown = async () => {
-  const [{ default: TurndownService }, { gfm }] = await Promise.all([
-    import('turndown'),
-    import('turndown-plugin-gfm'),
-  ]);
-  const turndown = new TurndownService({
-    headingStyle: 'atx',
-    bulletListMarker: '-',
-    codeBlockStyle: 'fenced',
-  });
-  turndown.use(gfm);
-  turndown.keep(['kbd']);
-  return turndown;
-};
+import { createTurndownService } from '../../shared/turndown-factory.js';
 
 const markdownFenceFor = (text) => {
   const runs = String(text || '').match(/`{3,}/g) || [];
@@ -63,14 +47,6 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   const applyingHtmlRef = useRef(false);
   const turndownRef = useRef(null);
   const turndownReadyRef = useRef(null);
-  // 挂载即后台预热;读取处(htmlToMarkdown)按需 await。
-  useEffect(() => {
-    turndownReadyRef.current = createTurndown().then(instance => {
-      turndownRef.current = instance;
-      return instance;
-    });
-    return () => { turndownReadyRef.current = null; };
-  }, []);
 
   const [draft, setDraft] = useState(initialText || '');
   const [saveState, setSaveState] = useState('idle');
@@ -78,6 +54,34 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   const [selectionUi, setSelectionUi] = useState(null);
   const [aiInputOpen, setAiInputOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState('');
+
+  // turndown 就绪前 handleInput 不做 DOM→Markdown 投影,这段编辑只留在 DOM 里;
+  // 就绪回调补一次投影,避免 blur/unmount 保存时丢失。加载失败(如动态 import
+  // 异常)清掉状态并吞掉错误,由下次输入触发重试,不产生 unhandled rejection。
+  const loadTurndown = useCallback(() => {
+    if (turndownRef.current || turndownReadyRef.current) return;
+    turndownReadyRef.current = createTurndownService().then((instance) => {
+      turndownRef.current = instance;
+      const el = editableRef.current;
+      if (el && !applyingHtmlRef.current) {
+        const projected = instance.turndown(el.innerHTML).trim();
+        if (projected !== latestDraftRef.current) {
+          latestDraftRef.current = projected;
+          setDraft(projected);
+        }
+      }
+      return instance;
+    }).catch(() => {
+      turndownReadyRef.current = null;
+      return null;
+    });
+  }, []);
+
+  // 挂载即后台预热,编辑开始时通常已就绪;失败时由 handleInput 重试。
+  useEffect(() => {
+    loadTurndown();
+    return () => { turndownReadyRef.current = null; };
+  }, [loadTurndown]);
 
   const applyMarkdownToDom = useCallback((markdown) => {
     const el = editableRef.current;
@@ -190,8 +194,8 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     }
   }, []);
 
-  // 输入是高频事件,turndown 就绪前不做 DOM→Markdown 投影(草稿保持上次值),
-  // 就绪后(挂载预热,通常早于用户首次编辑)恢复逐键同步。
+  // 输入是高频事件,turndown 未就绪时不做 DOM→Markdown 投影(编辑暂存于 DOM,
+  // 由 loadTurndown 的就绪回调补投影),就绪后恢复逐键同步。
   const markdownFromDom = useCallback(() => {
     const el = editableRef.current;
     const instance = turndownRef.current;
@@ -201,12 +205,16 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
 
   const handleInput = useCallback(() => {
     if (applyingHtmlRef.current) return;
+    if (!turndownRef.current) {
+      // 预热未完成或此前失败:触发(重)加载,就绪回调会把 DOM 里的编辑补进草稿。
+      loadTurndown();
+      return;
+    }
     const next = markdownFromDom();
-    if (!next && !turndownRef.current) return;
     latestDraftRef.current = next;
     setDraft(next);
     if (!aiInputOpen) setSelectionUi(null);
-  }, [aiInputOpen, markdownFromDom]);
+  }, [aiInputOpen, loadTurndown, markdownFromDom]);
 
   const handlePaste = useCallback((e) => {
     const text = e.clipboardData?.getData('text/plain');

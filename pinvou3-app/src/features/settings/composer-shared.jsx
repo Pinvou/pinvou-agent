@@ -413,6 +413,7 @@ import {
         </div>
       );
     };
+    // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
     // 可选触发器变体：triggerVariant='pill' 时触发器渲染为代码页配置组同款 pill
     //（triggerLabel 为可选 10px 前缀文案；triggerTestId 覆盖默认 testid），
     // 下拉内容不变；不传变体时聊天页外观逐字节不变。
