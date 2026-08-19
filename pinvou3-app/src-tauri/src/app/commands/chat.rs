@@ -359,6 +359,58 @@ pub(crate) async fn chat_with_reservation(
     }
 }
 
+/// Mid-turn inject: 当前 turn 仍在跑时,把用户消息投递到下个 step 边界。
+/// 底座 `EngineHandle::steer` 在 turn loop 每个 tool result 处理完后、
+/// 下次 model call 之前自动追加到 session.messages,模型下次思考时看到。
+///
+/// 与 `chat()` 的区别:
+/// - `chat()` 触发新 turn(reserve_turn → SendMessage),turn_in_progress 时拒绝
+/// - `steer_chat()` 只往 steer channel 入队,不触发新 turn,turn_in_progress 也能调用
+///
+/// 失败模式:
+/// - session 不存在 / engine 没起 → 返回 Err,前端走失败恢复路径
+/// - channel 满 → 走 mpsc::send error 路径,前端按错误展示
+///
+/// 返回引擎生成的 opaque steer id,前端据此关联 chat:steer_committed /
+/// chat:steer_dropped 事件。
+///
+/// 渲染用户气泡的 chat:user_message 由前端 bridge 在 invoke 成功时**主动** emit,
+/// 后端不重复发(避免与 turn_loop drain 的 SessionUpdated 重复 + 让前端能精确
+/// 控制在 state.queued chip → bubble 的视觉切换时机)。
+#[tauri::command]
+pub async fn steer_chat(
+    session_id: Option<String>,
+    content: String,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<String, String> {
+    let sid = require_active_sid(session_id, &store)?;
+    pool.steer(&sid, content)
+        .await
+        .map_err(|e| format!("steer_chat: {e:#}"))
+}
+
+/// 撤回一条尚未注入的 steer（前端排队 chip 的 ✕）。
+///
+/// 引擎保证被撤回的 steer_id 永不注入 transcript，并在丢弃时补发一条
+/// `chat:steer_dropped`（幂等）。已 committed 的 id 无副作用、无事件——
+/// 前端乐观移除 chip，不依赖本命令的返回值区分「撤回成功/已注入」。
+///
+/// 失败模式：session 不存在 / engine 没起 → 返回 Err（消息未进引擎，
+/// 前端纯本地移除排队 chip 即可）。
+#[tauri::command]
+pub async fn withdraw_steer(
+    session_id: Option<String>,
+    steer_id: String,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    let sid = require_active_sid(session_id, &store)?;
+    pool.withdraw_steer(&sid, steer_id)
+        .await
+        .map_err(|e| format!("withdraw_steer: {e:#}"))
+}
+
 fn prepare_conversation_attachment_record(
     attachments: &[crate::features::files::file_ingest::IngestResult],
     load_message_index: impl FnOnce() -> Result<usize, String>,

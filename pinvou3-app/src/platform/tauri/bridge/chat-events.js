@@ -331,6 +331,30 @@
     applyRemoteUserMessageEvent(e, false);
   });
 
+  // P0-A：steer 投递确认（steer_id 版）。引擎把 steer 追加进 transcript 后发
+  // committed（带 opaque steer_id），前端把对应排队 chip 转气泡——不再靠
+  // content_hash 内容指纹（UTF-16/UTF-8 编码差异会让中英文内容两侧哈希
+  // 不一致）。结算逻辑在 chat.js（chip 归属方），含"事件早于 invoke 返回"
+  // 的未决暂存和"× 撤回"的乐观移除；旧后端（事件无 steer_id）走
+  // transcript_committed 计数兜底。steer_dropped 同时承载引擎主动丢弃和
+  // 用户 × 撤回（withdraw_steer）两种来源。
+  var settleSteerCommitted = context.settleSteerCommitted;
+  var settleSteerDropped = context.settleSteerDropped;
+  listen("chat:steer_committed", function (e) {
+    var p = e && e.payload || {};
+    var sid = p.session_id || state.activeSessionId;
+    var steerId = String(p.steer_id || "");
+    if (!sid || !steerId) return;
+    settleSteerCommitted(sid, steerId);
+  });
+  listen("chat:steer_dropped", function (e) {
+    var p = e && e.payload || {};
+    var sid = p.session_id || state.activeSessionId;
+    var steerId = String(p.steer_id || "");
+    if (!sid || !steerId) return;
+    settleSteerDropped(sid, steerId);
+  });
+
   listen("chat:transcript_committed", function (e) {
     var payload = e && e.payload || {};
     var sid = payload.session_id || state.activeSessionId;
@@ -347,6 +371,62 @@
         if (ready) flushQueued(sid);
       }).catch(function () {});
     }
+    // mid-turn inject 投递完成兜底信号:turn_loop 把 steer 追加到
+    // session.messages 后,forwarder 持久化完 emit chat:transcript_committed。
+    // 权威结算走 chat:steer_committed(steer_id 匹配);这里只兜底旧后端
+    // (chip 没有 steerId)的场景:此时 state.queued 里仍在等的 legacy steer
+    // chip 应该转 user bubble + 同步 state.messages。
+    //
+    // 计数差 = 新增的 message 数,精确消耗 state.queued 队首对应条数。
+    // 只有在增长 > 0 且包含 user-role 新消息时才 drain,避免对其他 commit
+    // (subagent 完成、runtime 续轮等)误触发。
+    if (!state.queued || state.queued.length === 0) return;
+    invoke("load_session", { id: sid, setActive: false }).then(function (saved) {
+      if (!saved || !Array.isArray(saved.messages)) return;
+      var preCount = committedBuffer.lastSeenMessageCount || 0;
+      var newMessages = saved.messages;
+      // compaction 等会让 transcript 收缩:基线跟着重置,否则
+      // newMessages.length <= preCount 恒成立,兜底永久失效。
+      if (newMessages.length < preCount) {
+        committedBuffer.lastSeenMessageCount = newMessages.length;
+        return;
+      }
+      if (newMessages.length === preCount) return;
+      committedBuffer.lastSeenMessageCount = newMessages.length;
+      runSyncOnSession(sid, function () {
+        state.messages = newMessages;
+        var userAdditions = newMessages
+          .slice(preCount)
+          .filter(function (m) { return m && m.role === "user"; });
+        for (var i = 0; i < userAdditions.length && state.queued.length > 0; i++) {
+          var message = userAdditions[i];
+          var item = state.queued[0];
+          // 只结算 legacy steer chip(steered 且无 steerId):带 id 的由
+          // chat:steer_committed 权威结算,普通排队 chip 归 flushQueued,
+          // 兜底都不碰,避免误配对。
+          if (!item.steered || item.steerId) break;
+          // 提取真实 user 输入,跳过 turn_meta / system-reminder metadata 块
+          var content = Array.isArray(message.content) ? message.content : [];
+          var firstText = content
+            .filter(function (block) { return block && block.type === "text"; })
+            .map(function (block) { return String(block.text || ""); })
+            .filter(function (text) {
+              var t = text.trim();
+              return !(t.indexOf("<turn_meta>") === 0 && t.endsWith("</turn_meta>")) &&
+                !(t.indexOf("<system-reminder>") === 0 && t.endsWith("</system-reminder>"));
+            })
+            .join("");
+          var itemText = String(item.text || "");
+          // 精确匹配:旧的双向 indexOf 包含会把前缀相似的不同消息误配对。
+          // 不匹配则继续扫描后续新增(基线为 0 时历史 user 消息排在新增前面)。
+          if (firstText && firstText === itemText) {
+            state.queued.shift();
+            addChatItem({ type: "user", text: itemText, time: timeStr() });
+          }
+        }
+      });
+      notify();
+    }).catch(function () { /* silent:fall back to existing behavior */ });
   });
 
   listen("chat:turn_started", function (e) { onSessionEvent(e, function () {
