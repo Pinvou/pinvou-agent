@@ -71,6 +71,23 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
 
   // 封面与图集分两级进状态机：封面是轻量资源，先到先显示——图集 decode
   // 期间卡片必须一直露出封面（需求硬性要求），而不是空白占位。
+  const loadPetCover = (id) => {
+    setAssets((state) => ({
+      ...state,
+      [id]: { ...(state[id] || {}), coverFailed: false },
+    }));
+    PET_REGISTRY[id].cover()
+      .then(loadImage)
+      .then((cover) => {
+        if (!aliveRef.current) return;
+        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), cover } }));
+      })
+      .catch(() => {
+        if (!aliveRef.current) return;
+        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), coverFailed: true } }));
+      });
+  };
+
   const loadPetAssets = (id) => {
     setAssets((state) => ({
       ...state,
@@ -99,15 +116,39 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
       });
   };
 
-  // 设置页启用桌宠后直接展示三项，资产随区域出现一次性懒加载；失败的卡等待手动重试。
+  // 两级懒加载:封面(轻)随区域出现即载;图集(单张 1.7-2.2MB)只在 hover/聚焦/
+  // 选中该卡时才拉取——原实现进设置页就把 3 只宠全量预载 ≈5.9MB。atlasStatus
+  // 独立于封面状态,hover 预览与选中切换都要求 atlas ready。
   useEffect(() => {
     if (!enabled) return;
     PET_IDS.forEach((id) => {
-      if (!assets[id]) loadPetAssets(id);
+      if (!assets[id]) loadPetCover(id);
     });
   }, [enabled]);
 
+  // 当前选中宠的图集随区域出现预载(它随时会被桌宠窗口使用);其余宠 hover 才载。
+  useEffect(() => {
+    if (enabled && currentId) ensurePetAtlas(currentId);
+  }, [enabled, currentId]);
+
+  const ensurePetAtlas = (id) => {
+    const entry = assets[id];
+    if (!entry || entry.atlas || entry.atlasStatus === 'loading') return;
+    setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlasStatus: 'loading' } }));
+    PET_REGISTRY[id].atlas()
+      .then(loadImage)
+      .then((atlas) => {
+        if (!aliveRef.current) return;
+        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlas, atlasStatus: 'ready', status: 'ready' } }));
+      })
+      .catch(() => {
+        if (!aliveRef.current) return;
+        setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlasStatus: 'error' } }));
+      });
+  };
+
   const handleSelect = (id) => {
+    ensurePetAtlas(id);
     if (id === currentId) return;
     const entry = assets[id];
     if (!entry || entry.status !== 'ready') return;
@@ -146,9 +187,9 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
                 disabled={!isReady}
                 aria-pressed={isSelected}
                 onClick={() => handleSelect(id)}
-                onMouseEnter={() => setHoveredId(id)}
+                onMouseEnter={() => { setHoveredId(id); ensurePetAtlas(id); }}
                 onMouseLeave={() => setHoveredId((value) => (value === id ? null : value))}
-                onFocus={() => setHoveredId(id)}
+                onFocus={() => { setHoveredId(id); ensurePetAtlas(id); }}
                 onBlur={() => setHoveredId((value) => (value === id ? null : value))}
               >
                 {pet.placeholder && (

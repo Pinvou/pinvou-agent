@@ -134,7 +134,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_COLOR, DEPT_OPTIO
           <div className="bnr-avatars relative z-0 flex-1 flex items-center justify-evenly" style={{ paddingRight:16 }}>
             {avs.map((a,i) => (
               <div key={i} className="flex flex-col items-center shrink-0" style={{ background:'#fff', borderRadius:18, padding:'14px 14px 11px', boxShadow:'0 10px 26px rgba(83,74,183,.22)', animation:`bnrFloat${(i%3)+1} ${(3.2+i*0.25).toFixed(2)}s ease-in-out infinite ${(i*0.3).toFixed(1)}s` }}>
-                <img src={a.src} width={80} height={80} alt="" style={{ borderRadius:14, display:'block' }} />
+                <img src={a.src} width={80} height={80} alt="" loading="lazy" decoding="async" style={{ borderRadius:14, display:'block' }} />
                 <div style={{ fontSize:13, fontWeight:600, color:'#26215C', marginTop:6, lineHeight:1.15, whiteSpace:'nowrap' }}>{a.name}</div>
                 <div style={{ fontSize:11, color:'#534AB7', opacity:.7, lineHeight:1.15, whiteSpace:'nowrap' }}>{a.role}</div>
               </div>

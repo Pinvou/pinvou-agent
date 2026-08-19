@@ -1,11 +1,15 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import TurndownService from 'turndown';
-import { gfm } from 'turndown-plugin-gfm';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Check, Sparkles, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
-const createTurndown = () => {
+// HTML→Markdown 回写是「进入编辑态」才发生的低频路径,turndown(+gfm)改
+// 首次用到时动态 import;组件挂载即预热,编辑开始时通常已就绪。
+const createTurndown = async () => {
+  const [{ default: TurndownService }, { gfm }] = await Promise.all([
+    import('turndown'),
+    import('turndown-plugin-gfm'),
+  ]);
   const turndown = new TurndownService({
     headingStyle: 'atx',
     bulletListMarker: '-',
@@ -57,7 +61,16 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   const saveNowRef = useRef(null);
   const pendingSaveRef = useRef(false);
   const applyingHtmlRef = useRef(false);
-  const turndown = useMemo(createTurndown, []);
+  const turndownRef = useRef(null);
+  const turndownReadyRef = useRef(null);
+  // 挂载即后台预热;读取处(htmlToMarkdown)按需 await。
+  useEffect(() => {
+    turndownReadyRef.current = createTurndown().then(instance => {
+      turndownRef.current = instance;
+      return instance;
+    });
+    return () => { turndownReadyRef.current = null; };
+  }, []);
 
   const [draft, setDraft] = useState(initialText || '');
   const [saveState, setSaveState] = useState('idle');
@@ -177,15 +190,19 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     }
   }, []);
 
+  // 输入是高频事件,turndown 就绪前不做 DOM→Markdown 投影(草稿保持上次值),
+  // 就绪后(挂载预热,通常早于用户首次编辑)恢复逐键同步。
   const markdownFromDom = useCallback(() => {
     const el = editableRef.current;
-    if (!el) return '';
-    return turndown.turndown(el.innerHTML).trim();
-  }, [turndown]);
+    const instance = turndownRef.current;
+    if (!el || !instance) return '';
+    return instance.turndown(el.innerHTML).trim();
+  }, []);
 
   const handleInput = useCallback(() => {
     if (applyingHtmlRef.current) return;
     const next = markdownFromDom();
+    if (!next && !turndownRef.current) return;
     latestDraftRef.current = next;
     setDraft(next);
     if (!aiInputOpen) setSelectionUi(null);

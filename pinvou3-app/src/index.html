@@ -199,7 +199,20 @@
       }
     });
   </script>
-  <script src="%BASE_URL%features/personas/personas-i18n.js" onload="__PINVOU_STARTUP__.mark('app:personas_i18n_loaded')" onerror="__PINVOU_STARTUP__.mark('app:personas_i18n_error')"></script>
+  <!-- 内置卡牌 en/ja 名称 overlay(141KB):中文用户零读取(personaText 对 zh 短路),
+       按系统语言条件加载——zh 跳过,非 zh 注入。所有读取点都有空值兜底。 -->
+  <script>
+    (function () {
+      var tags = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || 'zh'];
+      var needsPersonaI18n = tags.some(function (tag) { return /^en|^ja/i.test(String(tag || '')); });
+      if (!needsPersonaI18n) { __PINVOU_STARTUP__.mark('app:personas_i18n_skipped', 'lang=' + tags[0]); return; }
+      var s = document.createElement('script');
+      s.src = 'features/personas/personas-i18n.js';
+      s.onload = function () { __PINVOU_STARTUP__.mark('app:personas_i18n_loaded'); };
+      s.onerror = function () { __PINVOU_STARTUP__.mark('app:personas_i18n_error'); };
+      document.head.appendChild(s);
+    })();
+  </script>
   <script src="%BASE_URL%features/updater/update-notice-logic.js" onload="__PINVOU_STARTUP__.mark('app:update_notice_logic_loaded')" onerror="__PINVOU_STARTUP__.mark('app:update_notice_logic_error')"></script>
   <script type="module" src="/app/main.jsx" onload="__PINVOU_STARTUP__.mark('app:main_module_loaded'); __PINVOU_STARTUP__.flush()" onerror="__PINVOU_STARTUP__.mark('app:main_module_error'); __PINVOU_STARTUP__.flush()"></script>
 </body>

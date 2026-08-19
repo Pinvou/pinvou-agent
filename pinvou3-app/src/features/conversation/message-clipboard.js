@@ -1,5 +1,3 @@
-import TurndownService from 'turndown';
-import { gfm } from 'turndown-plugin-gfm';
 import {
   assistantMarkdownCopyText,
   normalizeAssistantMessageText,
@@ -8,7 +6,10 @@ import { copyClipboardText, fallbackCopyText } from '../../shared/clipboard.js';
 
 export { copyClipboardText, fallbackCopyText };
 
+// turndown(+gfm 插件)只服务「旧 HTML 会话复制为 Markdown」这一低频路径,改为
+// 首次用到时动态 import,不再随聊天启动链打进主 chunk。
 let legacyHtmlConverter = null;
+let legacyConverterLoading = null;
 
 function legacyFencedCodeLanguage(node) {
   const code = node && node.firstChild;
@@ -29,41 +30,55 @@ function legacyFencedCodeLanguage(node) {
   return classLanguage;
 }
 
-function legacyAssistantHtmlToMarkdown(html) {
-  if (!html) return '';
-  if (!legacyHtmlConverter) {
-    legacyHtmlConverter = new TurndownService({
-      headingStyle: 'atx',
-      bulletListMarker: '-',
-      codeBlockStyle: 'fenced',
-    });
-    legacyHtmlConverter.use(gfm);
-    legacyHtmlConverter.addRule('pinvouFencedCodeLanguage', {
-      filter: (node, options) => (
-        options.codeBlockStyle === 'fenced'
-        && node.nodeName === 'PRE'
-        && node.firstChild
-        && node.firstChild.nodeName === 'CODE'
-        && node.getAttribute('data-language')
-      ),
-      replacement: (content, node, options) => {
-        const code = node.firstChild;
-        const language = legacyFencedCodeLanguage(node);
-        const fenceChar = options.fence.charAt(0);
-        let fenceSize = 3;
-        const fenceInCodeRegex = new RegExp(`^${fenceChar}{3,}`, 'gm');
-        let match;
-        while ((match = fenceInCodeRegex.exec(code.textContent))) {
-          if (match[0].length >= fenceSize) fenceSize = match[0].length + 1;
-        }
-        const fence = fenceChar.repeat(fenceSize);
-        return `\n\n${fence}${language}\n${String(code.textContent).replace(/\n$/, '')}\n${fence}\n\n`;
-      },
-    });
-    legacyHtmlConverter.keep(['kbd']);
-    legacyHtmlConverter.remove(['script', 'style']);
+async function ensureLegacyHtmlConverter() {
+  if (legacyHtmlConverter) return legacyHtmlConverter;
+  if (!legacyConverterLoading) {
+    legacyConverterLoading = (async () => {
+      const [{ default: TurndownService }, { gfm }] = await Promise.all([
+        import('turndown'),
+        import('turndown-plugin-gfm'),
+      ]);
+      const converter = new TurndownService({
+        headingStyle: 'atx',
+        bulletListMarker: '-',
+        codeBlockStyle: 'fenced',
+      });
+      converter.use(gfm);
+      converter.addRule('pinvouFencedCodeLanguage', {
+        filter: (node, options) => (
+          options.codeBlockStyle === 'fenced'
+          && node.nodeName === 'PRE'
+          && node.firstChild
+          && node.firstChild.nodeName === 'CODE'
+          && node.getAttribute('data-language')
+        ),
+        replacement: (content, node, options) => {
+          const code = node.firstChild;
+          const language = legacyFencedCodeLanguage(node);
+          const fenceChar = options.fence.charAt(0);
+          let fenceSize = 3;
+          const fenceInCodeRegex = new RegExp(`^${fenceChar}{3,}`, 'gm');
+          let match;
+          while ((match = fenceInCodeRegex.exec(code.textContent))) {
+            if (match[0].length >= fenceSize) fenceSize = match[0].length + 1;
+          }
+          const fence = fenceChar.repeat(fenceSize);
+          return `\n\n${fence}${language}\n${String(code.textContent).replace(/\n$/, '')}\n${fence}\n\n`;
+        },
+      });
+      converter.keep(['kbd']);
+      converter.remove(['script', 'style']);
+      legacyHtmlConverter = converter;
+      return converter;
+    })();
   }
-  return legacyHtmlConverter.turndown(String(html)).replace(/\u00a0/g, ' ');
+  return legacyConverterLoading;
+}
+
+async function legacyAssistantHtmlToMarkdown(html) {
+  if (!html) return '';
+  const converter = await ensureLegacyHtmlConverter();
+  return converter.turndown(String(html)).replace(/\u00a0/g, ' ');
 }
 
 export function readClipboardText() {
@@ -75,11 +90,19 @@ export function readClipboardText() {
 
 export { assistantMarkdownCopyText, normalizeAssistantMessageText };
 
-export function assistantItemCopyText(item, options) {
+// 旧 HTML 会话的复制走异步转换(turndown 懒加载后执行);text 直存的新会话
+// 仍走同步 assistantItemCopyTextSync,复制按钮的即时路径不受懒加载影响。
+export function assistantItemCopyTextSync(item, options) {
+  if (!item) return '';
+  const markdown = normalizeAssistantMessageText(item.text);
+  return markdown ? assistantMarkdownCopyText(markdown, options) : '';
+}
+
+export async function assistantItemCopyText(item, options) {
   if (!item) return '';
   const markdown = normalizeAssistantMessageText(item.text);
   if (markdown) return assistantMarkdownCopyText(markdown, options);
-  return assistantMarkdownCopyText(legacyAssistantHtmlToMarkdown(item.html), options);
+  return assistantMarkdownCopyText(await legacyAssistantHtmlToMarkdown(item.html), options);
 }
 
 export function assistantResponseText(turn) {
@@ -98,7 +121,7 @@ export function assistantResponseText(turn) {
       if (source && item.copyOptions !== undefined) {
         return assistantMarkdownCopyText(source, item.copyOptions);
       }
-      return source || assistantItemCopyText(item.legacyItem, item.copyOptions);
+      return source || '';
     })
     .filter(Boolean);
   if (agentMessages.length) return normalizeAssistantMessageText(messages.join('\n\n'));

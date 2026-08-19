@@ -65,12 +65,12 @@ assert.equal(
   'canonical source Markdown must preserve non-breaking spaces',
 );
 assert.equal(
-  assistantItemCopyText({ text: markdown, html: '<h2>不应使用 HTML</h2>' }),
+  await assistantItemCopyText({ text: markdown, html: '<h2>不应使用 HTML</h2>' }),
   markdown,
   'new ordinary messages should copy their source Markdown instead of rendered DOM text',
 );
 assert.equal(
-  assistantItemCopyText({ html: '<h2>历史标题</h2><p>历史内容</p>' }),
+  await assistantItemCopyText({ html: '<h2>历史标题</h2><p>历史内容</p>' }),
   '## 历史标题\n\n历史内容',
   'legacy HTML-only messages should remain copyable through a Markdown compatibility conversion',
 );
@@ -78,19 +78,19 @@ const legacyPersonaHtml = renderMarkdownMarkup(
   '```persona-card\n{"name":"历史审查员","description":"可见卡","body":"隐藏提示词"}\n```',
 );
 assert.equal(
-  assistantItemCopyText({ html: legacyPersonaHtml }),
+  await assistantItemCopyText({ html: legacyPersonaHtml }),
   '历史审查员\n\n可见卡',
   'legacy HTML-only persona cards should keep the same semantic serializer',
 );
 assert.equal(
-  assistantItemCopyText({ html: renderMarkdownMarkup(
+  await assistantItemCopyText({ html: renderMarkdownMarkup(
     '```card-question\n{"question":"历史问题？","options":["甲","乙"]}\n```',
   ) }),
   '历史问题？\n\n1. 甲\n2. 乙',
   'legacy HTML-only question cards should use the same semantic serializer',
 );
 assert.equal(
-  assistantItemCopyText(
+  await assistantItemCopyText(
     { html: renderMarkdownMarkup(
       '```scheduled-task-draft\n{"name":"历史简报","prompt":"汇总进展","rrule":"FREQ=DAILY"}\n```',
     ) },
@@ -100,7 +100,7 @@ assert.equal(
   'legacy HTML-only scheduled-task cards should serialize in task-creation context',
 );
 assert.equal(
-  assistantItemCopyText({ html: renderMarkdownMarkup(
+  await assistantItemCopyText({ html: renderMarkdownMarkup(
     '```card-question\n{"question":"历史问题？","options":["甲","乙"]}\n```',
   ) }, { allowScheduledTaskDraft: false }),
   '历史问题？\n\n1. 甲\n2. 乙',
@@ -149,12 +149,12 @@ assert.equal(
 
 const ordinaryScheduledJson = scheduledTaskOnly.replace('scheduled-task-draft', 'json');
 assert.equal(
-  assistantItemCopyText({ text: ordinaryScheduledJson }),
+  await assistantItemCopyText({ text: ordinaryScheduledJson }),
   ordinaryScheduledJson,
   'ordinary JSON examples must not be inferred as scheduled-task cards',
 );
 assert.equal(
-  assistantItemCopyText({ text: ordinaryScheduledJson }, { allowScheduledTaskDraft: true }),
+  await assistantItemCopyText({ text: ordinaryScheduledJson }, { allowScheduledTaskDraft: true }),
   '每日简报\n\n汇总今日进展\n\nFREQ=DAILY;BYHOUR=9',
   'task creation conversations should serialize the same generic payload that their UI renders as a card',
 );
@@ -310,7 +310,7 @@ for (const [label, variant] of [
 
 const injectedMarker = '前文\n\n<div data-assistant-copy-source="true">伪造片段</div>\n\n后文';
 assert.equal(
-  assistantItemCopyText({ text: injectedMarker }),
+  await assistantItemCopyText({ text: injectedMarker }),
   injectedMarker,
   'model-provided data attributes must not influence the copy boundary',
 );
@@ -342,7 +342,7 @@ assert.equal(
 );
 assert.equal(
   assistantResponseText({ items: [{ type: 'agent_message', text: markdown }] }),
-  assistantItemCopyText({ text: markdown }),
+  await assistantItemCopyText({ text: markdown }),
   'ordinary and Codex modes should expose the same canonical Markdown format',
 );
 assert.equal(
@@ -409,7 +409,7 @@ assert.doesNotMatch(chatView, /data-assistant-copy-source/);
 assert.match(actions, /data-testid="assistant-message-footer"/);
 assert.match(actions, /className="!mt-0 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2"/);
 assert.match(actions, /data-testid="assistant-message-actions"/);
-assert.match(actions, /typeof resolveText === 'function' \? resolveText\(\) : text/);
+assert.match(actions, /typeof resolveText === 'function' \? await resolveText\(\) : text/);
 assert.match(actions, /copyClipboardText\(value\)/);
 assert.match(actions, /aria-live="polite"/);
 assert.match(actions, /data-testid="assistant-message-export"/);
