@@ -834,8 +834,8 @@ fn image_capability_test_payload(model: &str) -> serde_json::Value {
 }
 
 /// Anthropic Messages 协议的识图探测 payload:图片用 `image` 块 + base64 source
-/// (OpenAI 兼容端点的 image_url data URL 不被 Anthropic 接受)。max_tokens 1024
-/// 与 OpenAI 路径同档,保证回复空间。
+/// (OpenAI 兼容端点的 image_url data URL 不被 Anthropic 接受)。max_tokens 用
+/// thinking 档上限,与 OpenAI 路径同口径,保证回复空间。
 fn image_capability_test_payload_anthropic(model: &str) -> serde_json::Value {
     serde_json::json!({
         "model": model,

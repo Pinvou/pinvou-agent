@@ -373,8 +373,8 @@ mod tests {
     }
 
     #[test]
-    fn pinvou_decision_follows_builtin_table_like_auto() {
-        // Pinvou(pinvou 决策)= 原 Auto 判定链:内置表命中 → Supported,
+    fn pinvou_decision_follows_builtin_table() {
+        // Pinvou(pinvou 决策,默认)= 原 Auto 判定链:内置表命中 → Supported,
         // 未命中 → Unknown;不参与探测回填。
         let mut hit = saved_model(ModelPreset::OpenaiCompatible, "gpt-4o");
         hit.image_capability_override = ImageCapabilityOverride::Pinvou;
@@ -387,17 +387,6 @@ mod tests {
         assert_eq!(
             effective_image_capability(&miss),
             EffectiveImageCapability::Unknown
-        );
-        // Auto 与 Pinvou 对同一模型判定一致。
-        let auto = saved_model(ModelPreset::OpenaiCompatible, "gpt-4o");
-        let pinvou = {
-            let mut m = saved_model(ModelPreset::OpenaiCompatible, "gpt-4o");
-            m.image_capability_override = ImageCapabilityOverride::Pinvou;
-            m
-        };
-        assert_eq!(
-            effective_image_capability(&auto),
-            effective_image_capability(&pinvou)
         );
     }
 

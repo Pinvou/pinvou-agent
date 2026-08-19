@@ -1489,6 +1489,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         const modelId = preferred ? preferred.id : (c.model || '');
         if (c.base_url) setBaseUrl(c.base_url);
         if (modelId) { setModel(modelId); if (!name.trim()) setName(modelId); }
+        // 与手输模型 ID 同口径:检测回填是显式换模型,未手动改过档位时按标注预填。
+        if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(modelId || ''));
         setApiKey('');
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
       }

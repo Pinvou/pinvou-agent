@@ -324,8 +324,8 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'mimo',
       items: [
-        { model: 'mimo-v2.5-pro', imageCapable: true, title: 'mimo-v2.5-pro', desc: '最新推荐' },
-        { model: 'mimo-v2.5', imageCapable: true, title: 'mimo-v2.5', desc: '通用能力' },
+        { model: 'mimo-v2.5-pro', title: 'mimo-v2.5-pro', desc: '最新推荐' },
+        { model: 'mimo-v2.5', title: 'mimo-v2.5', desc: '通用能力' },
         { model: '', title: '自定义 MiMo 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },

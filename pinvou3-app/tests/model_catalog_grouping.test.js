@@ -434,6 +434,22 @@ test('目录视觉能力标注(imageCapable):形状合法且查询只命中已�
   }
   assert.ok(annotatedKeys.length > 0, '目录至少保留一条视觉能力标注');
   assert.strictEqual(new Set(annotatedKeys).size, annotatedKeys.length, '同组内标注模型 ID 不得重复');
+  // 跨组同 ID(含 legacyAliases)的显式标注必须一致:查询取第一个有标注的命中项,
+  // 各组标注冲突时会静默依赖遍历序,在此提前拦截。
+  const annotatedById = new Map();
+  for (const scope of ['local', 'cloud']) {
+    for (const group of MODEL_CATALOG[scope] || []) {
+      for (const item of group.items || []) {
+        if (item.imageCapable === undefined || item.custom) continue;
+        for (const id of [item.model, ...(item.legacyAliases || [])]) {
+          const known = annotatedById.get(id);
+          assert.ok(known === undefined || known === item.imageCapable,
+            `模型 ${id} 在多个组的 imageCapable 标注冲突`);
+          if (known === undefined) annotatedById.set(id, item.imageCapable);
+        }
+      }
+    }
+  }
   // 查询:已标注命中 true;未标注/未命中/空值落 null(由「自动处理」链兜底)。
   // 注:当前标注全部为 true;若未来引入 imageCapable:false 条目需同步放宽此断言。
   for (const id of annotatedIds) {
