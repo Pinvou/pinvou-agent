@@ -50,7 +50,7 @@ AG-UI 的 interrupt 不是独立生命周期事件。正确协议是先发送恢
 - Mission/Runtime Run 目前只有 Opened/Started 主事件，完整终态、暂停、恢复、取消和结果验证事件仍需补齐。
 - Interaction Plane 首切片已落地：Runtime 账本具有独立 `interaction_run_id`、工具/消息摘要、唯一终态、interrupt 与精确 resume；VoiceShell 消费只读 `projection/*` A2UI v0.9 ordered delta，并显示受信 user-input / artifact 卡。
 - 尚未完成的是标准 AG-UI wire envelope、Mission/Runtime Run 权威关联、Front `front/*` 编排、`system/*` Policy Gate、steering 与跨断连 A2UI Surface recovery；回答正文仍由 `chat:*` 兼容流承载。
-- 当前 A2UI 只有固定 `projection/runtime-overview` 与四个只读组件；Front 没有 `begin_auth`、`present_surface`、Modal 或 AppSurface 能力。旧 ToolStore 虽有连接器 QR 链，当前 VoiceShell 入口不可达；HTML 产物只能经 ArtifactCard 外开独立窗口。
+- 当前 A2UI 只有固定 `projection/runtime-overview` 与四个只读组件；Front 没有 `begin_auth`、`present_surface`、Modal 或 AppSurface 能力。旧 ToolStore 虽有连接器 QR 链，当前 VoiceShell 入口不可达。ArtifactCard、Chat 与 Knowledge 的单文件交付物已统一进入 Host 自有的同 WebView `ArtifactBrowser`：它提供一致外壳、连贯放大、安全静态 HTML 沙箱和外链确认，但不是 A2UI Surface、Front 可编排 Modal 或可承载认证的交互 Widget。`ArtifactsPanel` 仍是多产物管理/编辑/设计工作台，其“打开”动作也回到同一 `ArtifactBrowser`。
 - 在接入认证与交互组件前，必须先关闭当前 Markdown 可保留 fixed style、dialog、form/input 与远程图片的视觉伪造面；回答内 HTTP(S) 不得直接导航，只能由 Host 经 evidenceRef 解析、显示标准化的初始目标域名（含 Punycode / 端口）并按需确认。旧连接器 URL 的字符串包含判断必须升级为 HTTPS + 精确 Host / 端口 / Provider Adapter 校验；OAuth callback / redirect_uri 使用固定 allowlist，不能声称宿主能拦截手机浏览器里的远端跳转链。
 
 ## 继续扩展交互平面前的门禁

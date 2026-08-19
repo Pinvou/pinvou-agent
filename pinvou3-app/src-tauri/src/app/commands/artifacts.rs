@@ -17,11 +17,21 @@ pub(crate) struct ArtifactInfo {
     pub modified: i64,
 }
 
+/// 文本类交付物的内置预览上限。避免一次点击在 Rust、IPC 与 WebView 中复制超大文本。
+pub(crate) const MAX_ARTIFACT_TEXT_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
+pub(crate) const MAX_ARTIFACT_IMAGE_PREVIEW_BYTES: u64 = 25_000_000;
+pub(crate) const MAX_ARTIFACT_DOCUMENT_PREVIEW_BYTES: u64 = 50 * 1024 * 1024;
+
 /// 读 artifact 文件的纯文本（md/json/txt 等）。文件不存在或不是文本 → 报错。
 /// 路径必须在用户家目录下（防 ../../../etc/passwd 之类逃逸）。
 #[tauri::command]
-pub async fn read_artifact_text(path: String) -> Result<String, String> {
-    read_artifact_text_impl(&path)
+pub async fn read_artifact_text(
+    path: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<String, String> {
+    let resolved = resolve_artifact_path(&path, session_id.as_deref(), &store)?;
+    read_artifact_text_impl(&resolved)
 }
 
 pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
@@ -29,15 +39,27 @@ pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
     let _lifecycle = artifact_lifecycle_lock().lock();
     recover_interrupted_artifact_write(&p)
         .map_err(|e| format!("recover_artifact_text({}): {e}", p.display()))?;
+    let size = std::fs::metadata(&p)
+        .map_err(|e| format!("read_artifact_text({}): {e}", p.display()))?
+        .len();
+    if size > MAX_ARTIFACT_TEXT_PREVIEW_BYTES {
+        return Err("artifact text is too large for embedded preview".into());
+    }
     std::fs::read_to_string(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
 }
 
-pub(super) const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
+pub(super) const MAX_EDITABLE_MARKDOWN_BYTES: usize = MAX_ARTIFACT_TEXT_PREVIEW_BYTES as usize;
 
 /// 写回 Markdown artifact。只允许覆盖已存在的 .md/.markdown 文件。
 #[tauri::command]
-pub async fn write_artifact_text(path: String, content: String) -> Result<(), String> {
-    write_artifact_text_impl(&path, &content)
+pub async fn write_artifact_text(
+    path: String,
+    content: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    let resolved = resolve_artifact_path(&path, session_id.as_deref(), &store)?;
+    write_artifact_text_impl(&resolved, &content)
 }
 
 pub(crate) fn write_artifact_text_impl(path: &str, content: &str) -> Result<(), String> {
@@ -325,22 +347,39 @@ pub async fn list_deliverable_index() -> Result<Vec<DeliverableItem>, String> {
 
 /// 读 artifact 元数据：大小 / 类型 / 是否存在。
 #[tauri::command]
-pub async fn artifact_info(path: String) -> Result<ArtifactInfo, String> {
-    artifact_info_impl(&path)
+pub async fn artifact_info(
+    path: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<ArtifactInfo, String> {
+    let resolved = resolve_artifact_path(&path, session_id.as_deref(), &store)?;
+    artifact_info_impl(&resolved)
 }
 
 /// [2026-06-07] 读图片 → base64 data url,给 FilePreviewModal 内联预览 png/jpg
 /// (csp=null 不拦 data:,比 asset 协议 scope 省事)。validate_user_path 防穿越。
 #[tauri::command]
-pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
-    let p = validate_user_path(&path).map_err(|_| "路径不允许".to_string())?;
+pub async fn read_artifact_image_b64(
+    path: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<String, String> {
+    let resolved = resolve_artifact_path(&path, session_id.as_deref(), &store)?;
+    read_artifact_image_b64_impl(&resolved)
+}
+
+pub(crate) fn read_artifact_image_b64_impl(path: &str) -> Result<String, String> {
+    let p = validate_user_path(path).map_err(|_| "路径不允许".to_string())?;
     if !p.is_file() {
         return Err(format!("图片不存在: {path}"));
     }
-    let bytes = std::fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
-    if bytes.len() > 25_000_000 {
+    let size = std::fs::metadata(&p)
+        .map_err(|e| format!("读取失败: {e}"))?
+        .len();
+    if size > MAX_ARTIFACT_IMAGE_PREVIEW_BYTES {
         return Err("图片过大(>25MB),请用外部打开".into());
     }
+    let bytes = std::fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
     let ext = p
         .extension()
         .and_then(|e| e.to_str())
@@ -363,9 +402,18 @@ pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
 /// （前端据此回退紧凑态，不报错）。本地数据、无外链，内网离线安全。
 /// validate_user_path 防路径穿越；跨平台（zip 纯 Rust，Windows/Linux 一致）。
 #[tauri::command]
-pub async fn read_artifact_thumbnail(path: String) -> Result<Option<String>, String> {
+pub async fn read_artifact_thumbnail(
+    path: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<Option<String>, String> {
+    let resolved = resolve_artifact_path(&path, session_id.as_deref(), &store)?;
+    read_artifact_thumbnail_impl(&resolved)
+}
+
+pub(crate) fn read_artifact_thumbnail_impl(path: &str) -> Result<Option<String>, String> {
     use std::io::Read;
-    let p = validate_user_path(&path).map_err(|_| "路径不允许".to_string())?;
+    let p = validate_user_path(path).map_err(|_| "路径不允许".to_string())?;
     if !p.is_file() {
         return Ok(None);
     }
@@ -384,7 +432,7 @@ pub async fn read_artifact_thumbnail(path: String) -> Result<Option<String>, Str
             Ok(e) => e,
             Err(_) => continue,
         };
-        if entry.size() > 25_000_000 {
+        if entry.size() > MAX_ARTIFACT_IMAGE_PREVIEW_BYTES {
             return Ok(None);
         }
         let mut buf = Vec::new();
@@ -440,11 +488,12 @@ pub(crate) fn artifact_info_impl(path: &str) -> Result<ArtifactInfo, String> {
         "xlsx" | "ods" => "xlsx",
         "doc" | "ppt" | "xls" | "rtf" => "legacy_office",
         "txt" | "log" | "csv" | "json" | "yaml" | "yml" | "toml" | "xml" | "rs" | "py" | "js"
-        | "ts" | "go" | "c" | "cpp" | "h" | "hpp" | "sh" | "bash" | "zsh" | "fish" | "bat"
-        | "cmd" | "ps1" | "pl" | "pm" | "lua" | "swift" | "kt" | "kts" | "scala" | "groovy"
-        | "dart" | "r" | "m" | "jl" | "erl" | "hrl" | "css" | "scss" | "sass" | "less" | "vue"
-        | "svelte" | "mdx" | "sql" | "ini" | "conf" | "cfg" | "env" | "properties" | "reg"
-        | "diff" | "patch" | "lock" | "proto" | "graphql" | "gql" | "prisma" => "text",
+        | "mjs" | "cjs" | "jsx" | "ts" | "tsx" | "java" | "cs" | "go" | "c" | "cpp" | "h"
+        | "hpp" | "sh" | "bash" | "zsh" | "fish" | "bat" | "cmd" | "ps1" | "pl" | "pm" | "rb"
+        | "php" | "lua" | "swift" | "kt" | "kts" | "scala" | "groovy" | "dart" | "r" | "m"
+        | "jl" | "erl" | "hrl" | "css" | "scss" | "sass" | "less" | "vue" | "svelte" | "mdx"
+        | "sql" | "ini" | "conf" | "cfg" | "env" | "properties" | "reg" | "diff" | "patch"
+        | "lock" | "proto" | "graphql" | "gql" | "prisma" => "text",
         _ => "binary",
     };
     let modified = meta
@@ -463,6 +512,9 @@ pub(crate) fn artifact_info_impl(path: &str) -> Result<ArtifactInfo, String> {
 
 /// PDF 预览逐页转图的页数上限：太多页 data URI 会撑爆前端内存。
 const VISUAL_PDF_MAX_PAGES: u32 = 30;
+const VISUAL_RESULT_MAX_BYTES: usize = 36 * 1024 * 1024;
+const VISUAL_CACHEABLE_MAX_BYTES: usize = 8 * 1024 * 1024;
+const VISUAL_CACHE_MAX_ENTRIES: usize = 8;
 
 /// 产物可视化预览结果。前端按 `mode` 渲染。
 #[derive(Debug, Clone, Serialize)]
@@ -500,13 +552,24 @@ fn visual_cache() -> &'static parking_lot::Mutex<std::collections::HashMap<Strin
 /// 结果按 路径+mtime 缓存。md/html/text 不走这里（前端直接读文本渲染）。
 /// 转换慢且阻塞 → 丢到 `spawn_blocking`，不堵 tokio reactor。
 #[tauri::command]
-pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String> {
-    let p = validate_user_path(&path)?;
+pub async fn render_artifact_visual(
+    path: String,
+    session_id: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<VisualResult, String> {
+    let resolved = resolve_artifact_path(&path, session_id.as_deref(), &store)?;
+    render_artifact_visual_impl(&resolved).await
+}
+
+pub(crate) async fn render_artifact_visual_impl(path: &str) -> Result<VisualResult, String> {
+    let p = validate_user_path(path)?;
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
-    let mtime = std::fs::metadata(&p)
-        .and_then(|m| m.modified())
+    let metadata =
+        std::fs::metadata(&p).map_err(|e| format!("artifact metadata({}): {e}", p.display()))?;
+    let mtime = metadata
+        .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
@@ -521,8 +584,17 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
+    let input_limit = match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" => MAX_ARTIFACT_IMAGE_PREVIEW_BYTES,
+        "pdf" | "pptx" | "ppt" | "odp" | "docx" | "odt" | "rtf" | "doc" | "xlsx" | "ods"
+        | "xls" => MAX_ARTIFACT_DOCUMENT_PREVIEW_BYTES,
+        _ => u64::MAX,
+    };
+    if metadata.len() > input_limit {
+        return Err("artifact is too large for embedded visual preview".into());
+    }
     let p2 = p.clone();
-    let result = tokio::task::spawn_blocking(move || -> VisualResult {
+    let mut result = tokio::task::spawn_blocking(move || -> VisualResult {
         use crate::features::files::file_ingest as fi;
         match ext.as_str() {
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" => {
@@ -572,9 +644,21 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
     .await
     .map_err(|e| format!("render_artifact_visual join: {e}"))?;
 
+    let result_bytes = result.html.as_ref().map_or(0, String::len)
+        + result.images.iter().map(String::len).sum::<usize>();
+    if result_bytes > VISUAL_RESULT_MAX_BYTES {
+        result = VisualResult::unsupported(Some("预览结果过大，请使用系统应用打开".into()));
+    }
+
     // unsupported 不缓存：可能是工具暂缺，装上后下次重试。
-    if result.mode != "unsupported" {
-        visual_cache().lock().insert(cache_key, result.clone());
+    if result.mode != "unsupported" && result_bytes <= VISUAL_CACHEABLE_MAX_BYTES {
+        let mut cache = visual_cache().lock();
+        if cache.len() >= VISUAL_CACHE_MAX_ENTRIES && !cache.contains_key(&cache_key) {
+            if let Some(evicted) = cache.keys().next().cloned() {
+                cache.remove(&evicted);
+            }
+        }
+        cache.insert(cache_key, result.clone());
     }
     Ok(result)
 }

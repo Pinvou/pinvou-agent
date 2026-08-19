@@ -5,6 +5,7 @@ import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
+import { ArtifactBrowser } from '../artifacts/FilePreviewModal.jsx';
 import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/Personas.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
@@ -441,6 +442,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const [artifactsOpen, setArtifactsOpen] = useState(false);
       const [artifactsFullscreen, setArtifactsFullscreen] = useState(false);
       const [activeArtifactPath, setActiveArtifactPath] = useState(null);
+      const [artifactBrowser, setArtifactBrowser] = useState(null);
+      const openArtifactBrowser = useCallback(request => {
+        setArtifactBrowser(current => current || request);
+      }, []);
       const initialPinvouModeScope = createPinvouModeScopeKey(bs && bs.activeSessionId);
       const [pinvouModeState, setPinvouModeState] = useState(() => loadPinvouModeState(undefined, initialPinvouModeScope));
       const pinvouModeScopeRef = useRef(initialPinvouModeScope);
@@ -850,11 +855,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
       const useUnifiedConversationUi = unifiedConversationUiEnabled();
       const visibleChatItems = chatItems.filter((item) => !(item.type === 'memory_candidate' && !item.resolved));
-      const latestArtIdByPath = {};
-      chatItems.forEach((item) => {
-        if (item.type === 'artifact_card' && item.path) latestArtIdByPath[item.path] = item.id;
-      });
-      const latestArtifactIds = new Set(Object.values(latestArtIdByPath));
       const conversationProjection = projectDeepSeekConversation({
         chatItems: conversationItemsForMode(visibleChatItems, useUnifiedConversationUi),
         busy,
@@ -1605,6 +1605,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                         t={t}
                         editable={!busy && !isLegacyMultiAgentReadOnly && item.id === lastUserId}
                         conversationVariant="unified"
+                        onOpenArtifact={openArtifactBrowser}
                       />
                     )}
                     renderItem={(item) => {
@@ -1622,8 +1623,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                           onPrefill={(text) => setInputText(text)}
                           onSend={sendChatMessage}
                           onOpenEditor={onOpenEditor}
-                          isLatestArtifact={latestArtifactIds.has(item.legacyItem.id)}
                           allowScheduledTaskDraft={isScheduledTaskCreationChat} showAssistantActions={false}
+                          onOpenArtifact={openArtifactBrowser}
                         />
                       );
                     }}
@@ -1647,8 +1648,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                         onSend={sendChatMessage}
                         editable={!busy && !isLegacyMultiAgentReadOnly && item.id === lastUserId}
                         onOpenEditor={onOpenEditor}
-                        isLatestArtifact={latestArtifactIds.has(item.id)}
                         allowScheduledTaskDraft={isScheduledTaskCreationChat}
+                        onOpenArtifact={openArtifactBrowser}
                       />
                     ))}
                     {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
@@ -1690,7 +1691,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   .slice(-2)
                   .map((item) => (
                     <div key={item.id} className="pointer-events-auto w-full flex justify-end">
-                      <ChatBubble item={item} sessionId={activeSessionId} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
+                      <ChatBubble item={item} sessionId={activeSessionId} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} onOpenArtifact={openArtifactBrowser} />
                     </div>
                   ))}
               </div>
@@ -2045,6 +2046,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 onToggleFullscreen={() => setArtifactsFullscreen(false)}
                 preferredArtifactPath={activeArtifactPath}
                 onPreviewArtifact={handlePreviewArtifact}
+                onOpenArtifact={openArtifactBrowser}
                 onGotoSettings={onGotoSettings}
                 designMode={pinvouMode === 'design'}
                 designCommand={designCommand}
@@ -2081,6 +2083,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   onToggleFullscreen={() => setArtifactsFullscreen(true)}
                   preferredArtifactPath={activeArtifactPath}
                   onPreviewArtifact={handlePreviewArtifact}
+                  onOpenArtifact={openArtifactBrowser}
                   onGotoSettings={onGotoSettings}
                   designMode={pinvouMode === 'design'}
                   designCommand={designCommand}
@@ -2109,6 +2112,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               onToggleFullscreen={() => setArtifactsFullscreen(true)}
               preferredArtifactPath={activeArtifactPath}
               onPreviewArtifact={handlePreviewArtifact}
+              onOpenArtifact={openArtifactBrowser}
               onGotoSettings={onGotoSettings}
               designMode={pinvouMode === 'design'}
               designCommand={designCommand}
@@ -2133,6 +2137,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               t={t}
               theme={theme}
               onClose={closeSubagentPanel}
+            />
+          )}
+          {artifactBrowser && (
+            <ArtifactBrowser
+              {...artifactBrowser}
+              theme={theme}
+              t={t}
+              onClose={() => setArtifactBrowser(null)}
             />
           )}
         </div>
@@ -2640,7 +2652,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '…') + '</div>';
     }
 
-    const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) => {
+    const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, onOpenArtifact, t, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       // 后端持久化的记忆状态值是固定中文数据，仅在 UI 边界映射为当前语言；未识别值原样透传
@@ -2658,7 +2670,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const assistantSelectionHostRef = useRef(null);
       const assistantSelectionTargetRef = useRef(null);
 
-      if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
+      if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} onOpen={onOpenArtifact} />;
       if (item.type === 'plan_card') return <PlanCard item={item} t={t} onPrefill={onPrefill} />;
       if (item.type === 'plan_stuck') return <PlanStuckCard item={item} t={t} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} t={t} />;

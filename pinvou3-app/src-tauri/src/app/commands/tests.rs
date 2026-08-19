@@ -789,6 +789,63 @@ fn artifact_public_read_uses_metadata_when_tokens_are_not_parseable() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[test]
+fn artifact_public_read_rejects_oversized_text_before_loading_it() {
+    let root = std::env::temp_dir().join(format!(
+        "pinvou3-artifact-large-preview-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let target = root.join("large.html");
+    let file = std::fs::File::create(&target).unwrap();
+    file.set_len(MAX_ARTIFACT_TEXT_PREVIEW_BYTES + 1).unwrap();
+
+    let error = read_artifact_text_impl(target.to_str().unwrap()).unwrap_err();
+
+    assert_eq!(error, "artifact text is too large for embedded preview");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn artifact_image_read_rejects_oversized_file_before_loading_it() {
+    let root = std::env::temp_dir().join(format!(
+        "pinvou3-artifact-large-image-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let target = root.join("large.png");
+    let file = std::fs::File::create(&target).unwrap();
+    file.set_len(MAX_ARTIFACT_IMAGE_PREVIEW_BYTES + 1).unwrap();
+
+    let error = read_artifact_image_b64_impl(target.to_str().unwrap()).unwrap_err();
+
+    assert_eq!(error, "图片过大(>25MB),请用外部打开");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn artifact_visual_rejects_oversized_document_before_starting_converter() {
+    let root = std::env::temp_dir().join(format!(
+        "pinvou3-artifact-large-document-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let target = root.join("large.pdf");
+    let file = std::fs::File::create(&target).unwrap();
+    file.set_len(MAX_ARTIFACT_DOCUMENT_PREVIEW_BYTES + 1)
+        .unwrap();
+
+    let error = render_artifact_visual_impl(target.to_str().unwrap())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, "artifact is too large for embedded visual preview");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[cfg(windows)]
 #[test]
 fn artifact_read_recovers_an_occupied_1177_layout_after_release() {

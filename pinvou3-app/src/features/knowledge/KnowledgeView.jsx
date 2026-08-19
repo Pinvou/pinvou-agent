@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, AppWindow, Archive, BookOpen, Check, ChevronDown, Database, Download, Edit2, ExternalLink, FileText, FolderOpen, GridIcon, IconList, ImageIcon, Package, Plus, PresentationIcon, RefreshCw, TableIcon, Trash2, X } from '../../components/icons.jsx';
 import { IosSearchField, IosSegmentedControl } from '../../components/IosControls.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { FilePreviewModal } from '../artifacts/FilePreviewModal.jsx';
+import { buildArtifactPreviewDocument } from '../artifacts/artifact-preview-navigation.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import { resolveAppAssetUrl } from '../../shared/asset-url.mjs';
 import { can, isWeb } from '../../shared/platform.js';
@@ -85,6 +86,17 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const [outView, setOutView] = useState('list');
       const [outSortDir, setOutSortDir] = useState('desc');
       const [outputPreview, setOutputPreview] = useState(null);
+      const openOutputPreview = useCallback((artifact, event) => {
+        const source = event?.currentTarget || null;
+        const rect = source?.getBoundingClientRect?.();
+        setOutputPreview({
+          path: artifact.path,
+          sessionId: artifact.sessionId || artifact.session_id || null,
+          title: artifact.name || String(artifact.path || '').split(/[\\/]/).pop(),
+          originRect: rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null,
+          returnFocus: source,
+        });
+      }, []);
       const outPreviewCache = useRef({});
       const outPreviewQueue = useRef({ active: 0, jobs: [] });
       const runQueuedPreview = useCallback((job) => new Promise((resolve, reject) => {
@@ -246,6 +258,13 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         const [pv, setPv] = useState(() => outPreviewCache.current[cacheKey] || { idle: true });
         const title = o.name.replace(/\.[^.]+$/, '');
         const [frameReady, setFrameReady] = useState(false);
+        const frameDocument = useMemo(() => {
+          if (pv.kind !== 'html' && pv.kind !== 'officeHtml') return '';
+          const previewStyle = pv.kind === 'officeHtml'
+            ? '<style>html,body{background:#fff!important;margin:0;color:#111!important;overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>'
+            : '<style>html,body{overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>';
+          return buildArtifactPreviewDocument(previewStyle + (pv.html || ''), { isolated: true });
+        }, [pv.kind, pv.html]);
         useEffect(() => {
           const node = boxRef.current;
           if (!node) return;
@@ -304,11 +323,9 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           return () => { alive = false; clearTimeout(timer); };
         }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview]);
 
-        const htmlPreviewDoc = (html) => '<style>html,body{overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
-        const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
         const shell = (children) => (
           <div ref={boxRef} onClick={onOpen} role={onOpen ? 'button' : undefined} tabIndex={onOpen ? 0 : undefined}
-            onKeyDown={(e) => { if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
+            onKeyDown={(e) => { if (onOpen && !e.repeat && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(e); } }}
             className={`h-[164px] m-2 rounded-[15px] overflow-hidden relative bg-[#111216] ring-1 ring-white/[0.045] ${onOpen ? 'cursor-pointer' : ''}`}>
             {children}
           </div>
@@ -325,7 +342,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         if (pv.kind === 'html') return shell(
           <>
             {!frameReady && <div className="absolute inset-0 bg-[#15171a]"></div>}
-            <iframe title={o.name} sandbox="allow-same-origin" scrolling="no" srcDoc={htmlPreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+            <iframe title={o.name} sandbox="allow-scripts" tabIndex={-1} aria-hidden="true" scrolling="no" srcDoc={frameDocument} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
               className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-[#15171a] pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
               style={{ colorScheme: 'dark' }} />
           </>
@@ -333,7 +350,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         if (pv.kind === 'officeHtml') return shell(
           <>
             {!frameReady && <div className="absolute inset-0 bg-white"></div>}
-            <iframe title={o.name} sandbox="allow-same-origin" scrolling="no" srcDoc={officePreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+            <iframe title={o.name} sandbox="allow-scripts" tabIndex={-1} aria-hidden="true" scrolling="no" srcDoc={frameDocument} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
               className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-white pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
               style={{ colorScheme: 'light' }} />
           </>
@@ -363,6 +380,13 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         const [visible, setVisible] = useState(false);
         const [pv, setPv] = useState(() => outPreviewCache.current[cacheKey] || { idle: true });
         const [frameReady, setFrameReady] = useState(false);
+        const frameDocument = useMemo(() => {
+          if (pv.kind !== 'html' && pv.kind !== 'officeHtml') return '';
+          const previewStyle = pv.kind === 'officeHtml'
+            ? '<style>html,body{background:#fff!important;margin:0;color:#111!important;}*{animation-duration:.001s!important;}</style>'
+            : '<style>*{animation-duration:.001s!important;}</style>';
+          return buildArtifactPreviewDocument(previewStyle + (pv.html || ''), { isolated: true });
+        }, [pv.kind, pv.html]);
         useEffect(() => {
           const node = boxRef.current;
           if (!node) return;
@@ -429,8 +453,6 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         }, [cacheKey, visible, f.path, ext, runQueuedPreview]);
 
         const col = extColor(ext);
-        const htmlPreviewDoc = (html) => '<style>*{animation-duration:.001s!important;}</style>' + (html || '');
-        const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;}*{animation-duration:.001s!important;}</style>' + (html || '');
         const shell = (children) => (
           <div ref={boxRef} onClick={onOpen} role="button" tabIndex={0}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
@@ -449,7 +471,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         if (pv.kind === 'html') return shell(
           <>
             {!frameReady && <div className="absolute inset-0 bg-[#15171a]"></div>}
-            <iframe title={f.name} sandbox="allow-same-origin" srcDoc={htmlPreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+            <iframe title={f.name} sandbox="allow-scripts" srcDoc={frameDocument} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
               className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-[#15171a] pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
               style={{ colorScheme: 'dark' }} />
           </>
@@ -457,7 +479,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         if (pv.kind === 'officeHtml') return shell(
           <>
             {!frameReady && <div className="absolute inset-0 bg-white"></div>}
-            <iframe title={f.name} sandbox="allow-same-origin" srcDoc={officePreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
+            <iframe title={f.name} sandbox="allow-scripts" srcDoc={frameDocument} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
               className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-white pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
               style={{ colorScheme: 'light' }} />
           </>
@@ -965,9 +987,15 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                               <span className="text-center">{t.kbOutColActions}</span>
                             </div>
                             {sortedResults.map((f) => { const e = extOf(f); return (
-                              <div key={f.path} onClick={() => setOutputPreview({ path: f.path, sessionId: null })}
-                                className="group py-4 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
-                                  <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_100px_132px_132px] items-center gap-4">
+                              <div key={f.path} role="group"
+                                className="group relative py-4 border-b border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
+                                  <button
+                                    type="button"
+                                    aria-label={`${t.kbOpen}: ${f.name}`}
+                                    onClick={(event) => openOutputPreview({ ...f, sessionId: null }, event)}
+                                    className="absolute inset-0 z-0 rounded-[12px] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] focus-visible:ring-offset-2 dark:focus-visible:ring-offset-[#1C1C1E]"
+                                  />
+                                  <div className="relative z-10 pointer-events-none grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_100px_132px_132px] items-center gap-4">
                                   <div className="flex min-w-0 items-center gap-4">
                                     <OutputFileIcon meta={{ color: extColor(e), label: extLabel(e) }} ext={e} />
                                     <div className="min-w-0">
@@ -979,7 +1007,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                   </div>
                                   <span className={`hidden md:block text-right text-[12px] ${muted}`}>{fmtSize(f.size)}</span>
                                   <span className={`hidden md:block text-[12px] font-medium tabular-nums ${muted}`}>{fmtDate(f.mtime)}</span>
-                                  <div className="flex shrink-0 items-center justify-end gap-1">
+                                  <div className="relative z-10 pointer-events-auto flex shrink-0 items-center justify-end gap-1">
                                     <button title={t.kbAddToKb} onClick={(e2) => { e2.stopPropagation(); setAddToKb(f.path); if (outputsOnly) loadColls(); }}
                                       className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                                       <Plus size={15} />
@@ -1097,7 +1125,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                   return (
                                     <article key={o.path} className={`group min-h-[286px] rounded-[22px] overflow-hidden border transition-all duration-200 bg-white border-black/[0.045] hover:border-black/[0.075] dark:bg-[#1C1C1E] dark:border-white/[0.055] dark:hover:bg-[#202124] dark:hover:border-white/[0.09]`}
                                       style={isDark ? { boxShadow: '0 14px 36px rgba(0,0,0,.24)' } : { boxShadow: '0 1px 2px rgba(0,0,0,.035), 0 10px 24px rgba(0,0,0,.05)' }}>{/* isDark dynamic-value: 保留 (multi-stop boxShadow) */}
-                                      <OutputLivePreview o={o} onOpen={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })} />
+                                      <OutputLivePreview o={o} onOpen={(event) => openOutputPreview(o, event)} />
                                       <div className="px-5 pb-4">
                                         <div className="flex items-start gap-3 pt-1">
                                           <div className={`text-[17px] leading-[23px] font-semibold flex-1 min-w-0 truncate ${ink}`} title={o.name}>{o.name}</div>
@@ -1143,9 +1171,15 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                               {activeOutputs.map((o) => {
                                 const meta = outCatMeta(o.category);
                                 return (
-                                  <div key={o.path} onClick={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })}
-                                    className="group py-4 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
-                                    <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4">
+                                  <div key={o.path} role="group"
+                                    className="group relative py-4 border-b border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
+                                    <button
+                                      type="button"
+                                      aria-label={`${t.kbOpen}: ${o.name}`}
+                                      onClick={(event) => openOutputPreview(o, event)}
+                                      className="absolute inset-0 z-0 rounded-[12px] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] focus-visible:ring-offset-2 dark:focus-visible:ring-offset-[#1C1C1E]"
+                                    />
+                                    <div className="relative z-10 pointer-events-none grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4">
                                       <div className="flex min-w-0 items-center gap-4">
                                         <OutputFileIcon meta={meta} ext={o.ext} category={o.category} />
                                         <div className="min-w-0">
@@ -1158,7 +1192,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                       <div className="hidden md:block text-[12px] font-medium tabular-nums text-[rgba(60,60,67,.62)] dark:text-[rgba(235,235,245,.62)]">
                                         {fmtOutputDate(o.mtime)}
                                       </div>
-                                      <div className="flex shrink-0 items-center justify-end gap-1">
+                                      <div className="relative z-10 pointer-events-auto flex shrink-0 items-center justify-end gap-1">
                                         <button onClick={(e) => { e.stopPropagation(); continueOutput(o); }}
                                           className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium transition-colors active:opacity-70 text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/10`}>
                                           {t.kbOutContinue}
@@ -1196,7 +1230,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                 })()}
               </div>
             )}
-            {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} theme={theme} t={t} onClose={() => setOutputPreview(null)} />}
+            {outputPreview && <FilePreviewModal {...outputPreview} theme={theme} t={t} onClose={() => setOutputPreview(null)} />}
 
             {/* ============ 知识库 · embedding 模型未安装/加载中/加载失败 → gate ============ */}
             {sub === 'kb' && !modelUsable && (

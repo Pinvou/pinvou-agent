@@ -1,0 +1,410 @@
+.artifact-browser-root {
+  --artifact-browser-bg: rgba(250, 252, 255, 0.985);
+  --artifact-browser-surface: #f2f5f9;
+  --artifact-browser-chrome: rgba(255, 255, 255, 0.96);
+  --artifact-browser-ink: #182230;
+  --artifact-browser-muted: #667085;
+  --artifact-browser-line: rgba(15, 23, 42, 0.1);
+  --artifact-browser-accent: #0a84ff;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  overflow: hidden;
+  color: var(--artifact-browser-ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Segoe UI', sans-serif;
+}
+
+.artifact-browser-root.dark {
+  --artifact-browser-bg: rgba(19, 22, 30, 0.99);
+  --artifact-browser-surface: #11151d;
+  --artifact-browser-chrome: rgba(29, 33, 43, 0.98);
+  --artifact-browser-ink: #f4f7fb;
+  --artifact-browser-muted: #a8b1c0;
+  --artifact-browser-line: rgba(255, 255, 255, 0.1);
+  --artifact-browser-accent: #64a8ff;
+}
+
+.artifact-browser-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(8, 12, 20, 0.56);
+  opacity: 0;
+  transition: opacity 300ms ease;
+}
+
+.artifact-browser-window {
+  position: absolute;
+  z-index: 2;
+  inset: clamp(1rem, 4vw, 3.5rem);
+  display: flex;
+  width: auto;
+  height: auto;
+  max-width: 1280px;
+  max-height: 900px;
+  margin: auto;
+  overflow: hidden;
+  transform: var(--artifact-browser-origin-transform, translate3d(0, 10px, 0) scale(0.97));
+  transform-origin: center;
+  border: 1px solid var(--artifact-browser-line);
+  border-radius: 24px;
+  outline: none;
+  opacity: 0.92;
+  background: var(--artifact-browser-bg);
+  box-shadow: 0 40px 120px rgba(2, 8, 23, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  will-change: transform, opacity;
+  transition:
+    transform 460ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 250ms ease;
+}
+
+.artifact-browser-root.is-settled .artifact-browser-window { will-change: auto; }
+
+.artifact-browser-launch-clone {
+  position: fixed;
+  z-index: 3;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateZ(0) scale(1);
+  transform-origin: center;
+  opacity: 1;
+  transition:
+    transform 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 170ms ease 70ms;
+}
+
+.artifact-browser-launch-clone > * { width: 100% !important; height: 100% !important; margin: 0 !important; }
+.artifact-browser-root.is-open .artifact-browser-launch-clone { transform: translateZ(0) scale(1.045); opacity: 0; }
+.artifact-browser-root.is-settled .artifact-browser-launch-clone { visibility: hidden; }
+.artifact-browser-root.is-closing .artifact-browser-launch-clone {
+  visibility: visible;
+  transform: translateZ(0) scale(1);
+  opacity: 1;
+}
+
+.artifact-browser-root.is-open .artifact-browser-backdrop { opacity: 1; }
+
+.artifact-browser-root.is-open .artifact-browser-window {
+  transform: translate3d(0, 0, 0) scale(1);
+  opacity: 1;
+}
+
+.artifact-browser-root.is-closing .artifact-browser-window {
+  transform: var(--artifact-browser-origin-transform, translate3d(0, 10px, 0) scale(0.97));
+  border-radius: 24px;
+  opacity: 0.78;
+}
+
+.artifact-browser-root.is-closing .artifact-browser-backdrop { opacity: 0; }
+
+.artifact-browser-shell {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.artifact-browser-chrome,
+.artifact-browser-statusbar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  border-color: var(--artifact-browser-line);
+  background: var(--artifact-browser-chrome);
+  opacity: 0;
+  transition: opacity 180ms ease 105ms;
+}
+
+.artifact-browser-root.is-open .artifact-browser-chrome,
+.artifact-browser-root.is-open .artifact-browser-statusbar { opacity: 1; }
+.artifact-browser-root.is-closing .artifact-browser-chrome,
+.artifact-browser-root.is-closing .artifact-browser-statusbar { opacity: 0; transition-delay: 0ms; }
+
+.artifact-browser-chrome {
+  min-height: 76px;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 0.85rem 0.75rem 1rem;
+  border-bottom-width: 1px;
+}
+
+.artifact-browser-identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.artifact-browser-file-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--artifact-browser-line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--artifact-browser-surface) 88%, transparent);
+  color: var(--artifact-browser-accent);
+}
+
+.artifact-browser-title-group { min-width: 0; }
+
+.artifact-browser-eyebrow {
+  margin-bottom: 0.14rem;
+  color: var(--artifact-browser-muted);
+  font-size: 0.66rem;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.artifact-browser-title {
+  overflow: hidden;
+  margin: 0;
+  color: var(--artifact-browser-ink);
+  font-size: clamp(0.94rem, 1.5vw, 1.08rem);
+  font-weight: 720;
+  line-height: 1.28;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-browser-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.artifact-browser-action {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border: 1px solid var(--artifact-browser-line);
+  border-radius: 14px;
+  color: var(--artifact-browser-ink);
+  background: color-mix(in srgb, var(--artifact-browser-surface) 86%, transparent);
+  font-size: 0.78rem;
+  font-weight: 680;
+  transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.artifact-browser-action:hover {
+  border-color: color-mix(in srgb, var(--artifact-browser-accent) 30%, var(--artifact-browser-line));
+  background: color-mix(in srgb, var(--artifact-browser-accent) 11%, var(--artifact-browser-surface));
+}
+
+.artifact-browser-action:active { transform: scale(0.96); }
+.artifact-browser-action:focus-visible { outline: 2px solid var(--artifact-browser-accent); outline-offset: 2px; }
+.artifact-browser-action.is-primary { padding: 0 0.85rem; color: var(--artifact-browser-accent); }
+.artifact-browser-action.is-close { border-radius: 50%; }
+
+.artifact-browser-viewport {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  background: var(--artifact-browser-surface);
+}
+
+.artifact-browser-content {
+  height: 100%;
+  min-height: 100%;
+  opacity: 0;
+  transition: opacity 220ms ease 120ms;
+}
+
+.artifact-browser-root.is-open .artifact-browser-content { opacity: 1; }
+.artifact-browser-root.is-closing .artifact-browser-content { opacity: 0; transition-delay: 0ms; }
+
+.artifact-browser-loading,
+.artifact-browser-state {
+  display: flex;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+}
+
+.artifact-browser-loading-card,
+.artifact-browser-state-card {
+  width: min(420px, 100%);
+  padding: 1.6rem;
+  border: 1px solid var(--artifact-browser-line);
+  border-radius: 22px;
+  background: var(--artifact-browser-chrome);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+}
+
+.artifact-browser-loading-mark {
+  width: 3.1rem;
+  height: 0.32rem;
+  margin: 0 auto 1rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--artifact-browser-muted) 18%, transparent);
+}
+
+.artifact-browser-loading-mark::after {
+  content: '';
+  display: block;
+  width: 45%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--artifact-browser-accent);
+  animation: artifactBrowserLoading 1.15s ease-in-out infinite alternate;
+}
+
+.artifact-browser-preview-pad { min-height: 100%; padding: clamp(1rem, 2.2vw, 2rem); }
+
+.artifact-browser-markdown {
+  width: min(900px, 100%);
+  margin: 0 auto;
+  padding: clamp(1.25rem, 3vw, 3rem);
+  border: 1px solid var(--artifact-browser-line);
+  border-radius: 22px;
+  color: var(--artifact-browser-ink);
+  background: var(--artifact-browser-chrome);
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+}
+
+.artifact-browser-code {
+  width: min(1080px, 100%);
+  min-height: calc(100% - 2rem);
+  margin: 0 auto;
+  padding: 1.4rem;
+  overflow: auto;
+  border: 1px solid var(--artifact-browser-line);
+  border-radius: 20px;
+  color: var(--artifact-browser-ink);
+  background: var(--artifact-browser-chrome);
+  font: 0.78rem/1.65 'SFMono-Regular', Consolas, monospace;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.artifact-browser-image-stage,
+.artifact-browser-pages {
+  display: flex;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(1rem, 2.2vw, 2rem);
+}
+
+.artifact-browser-image {
+  max-width: 100%;
+  max-height: calc(100vh - 13rem);
+  border-radius: 18px;
+  object-fit: contain;
+  box-shadow: 0 20px 55px rgba(2, 8, 23, 0.22);
+}
+
+.artifact-browser-pages { flex-direction: column; gap: 1rem; }
+.artifact-browser-page { width: min(1040px, 100%); height: auto; border-radius: 14px; box-shadow: 0 16px 44px rgba(2, 8, 23, 0.18); }
+
+.artifact-browser-html-frame,
+.artifact-browser-office-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 560px;
+  border: 0;
+  background: #fff;
+}
+
+.artifact-browser-statusbar {
+  min-height: 42px;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  border-top-width: 1px;
+  color: var(--artifact-browser-muted);
+  font-size: 0.7rem;
+  font-weight: 620;
+}
+
+.artifact-browser-statusbar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.artifact-browser-link-confirm-layer {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgba(8, 12, 20, 0.5);
+}
+
+.artifact-browser-link-confirm {
+  width: min(470px, 100%);
+  padding: 1.4rem;
+  border: 1px solid var(--artifact-browser-line);
+  border-radius: 22px;
+  color: var(--artifact-browser-ink);
+  background: var(--artifact-browser-chrome);
+  box-shadow: 0 28px 80px rgba(2, 8, 23, 0.3);
+}
+
+.artifact-browser-link-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 0.9rem;
+  place-items: center;
+  border-radius: 14px;
+  color: var(--artifact-browser-accent);
+  background: color-mix(in srgb, var(--artifact-browser-accent) 12%, transparent);
+}
+
+.artifact-browser-link-confirm h3 { margin: 0; font-size: 1.02rem; }
+.artifact-browser-link-confirm p { margin: 0.55rem 0 0; color: var(--artifact-browser-muted); font-size: 0.82rem; line-height: 1.55; }
+.artifact-browser-link-confirm code {
+  display: block;
+  margin-top: 0.8rem;
+  padding: 0.72rem;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--artifact-browser-line);
+  border-radius: 12px;
+  color: var(--artifact-browser-muted);
+  background: var(--artifact-browser-surface);
+  font: 0.72rem/1.5 'SFMono-Regular', Consolas, monospace;
+}
+.artifact-browser-link-actions { display: flex; justify-content: flex-end; gap: 0.55rem; margin-top: 1rem; }
+
+@keyframes artifactBrowserLoading {
+  from { transform: translateX(-10%); }
+  to { transform: translateX(125%); }
+}
+
+@media (max-width: 720px) {
+  .artifact-browser-window { inset: 0.65rem; border-radius: 20px; }
+  .artifact-browser-chrome { min-height: 68px; padding-left: 0.75rem; }
+  .artifact-browser-file-icon { width: 40px; height: 40px; border-radius: 12px; }
+  .artifact-browser-action.is-primary span { display: none; }
+  .artifact-browser-statusbar { padding-right: 0.7rem; padding-left: 0.7rem; }
+  .artifact-browser-statusbar .artifact-browser-path { display: none; }
+  .artifact-browser-html-frame,
+  .artifact-browser-office-frame { min-height: 480px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .artifact-browser-backdrop,
+  .artifact-browser-window,
+  .artifact-browser-content,
+  .artifact-browser-chrome,
+  .artifact-browser-statusbar,
+  .artifact-browser-action { transition: none !important; }
+  .artifact-browser-loading-mark::after { animation: none !important; width: 100%; }
+  .artifact-browser-launch-clone { display: none !important; }
+  [data-testid="artifact-deliverable-card"],
+  [data-testid="artifact-deliverable-card"] * { transition: none !important; animation: none !important; }
+}

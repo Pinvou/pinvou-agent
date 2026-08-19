@@ -298,7 +298,14 @@ assert.match(knowledgeView, /const outputSessionId = o\.sessionId \|\| o\.sessio
 assert.match(knowledgeView, /const cacheKey = `\$\{outputSessionId \|\| ''\}\|\$\{o\.path\}\|\$\{o\.mtime \|\| 0\}`;/);
 assert.ok((knowledgeView.match(/o\.path, outputSessionId/g) || []).length >= 5,
   'output previews must authorize every Web artifact read with the owning session');
-assert.match(knowledgeView, /<FilePreviewModal path=\{outputPreview\.path\} sessionId=\{outputPreview\.sessionId\}/);
+assert.match(knowledgeView, /const openOutputPreview = useCallback/);
+assert.match(knowledgeView, /originRect: rect \? \{ left: rect\.left, top: rect\.top, width: rect\.width, height: rect\.height \} : null/);
+assert.match(knowledgeView, /returnFocus: source/);
+assert.match(knowledgeView, /<FilePreviewModal \{\.\.\.outputPreview\}/);
+assert.match(artifactsPanel, /`\$\{a\.sessionId \|\| activeSessionId \|\| ''\}\\u0000\$\{a\.path\}`/,
+  'artifact selection keys must include session identity when relative paths repeat across sessions');
+assert.match(artifactsPanel, /sel\.sessionId !== activeSessionId/,
+  'switching sessions must not retain a selection owned by the previous session');
 assert.match(knowledgeView, /if \(isWeb\) \{ setPv\(\{ kind: 'fallback' \}\);/,
   'WebUI must not treat arbitrary local knowledge paths as session artifacts');
 assert.match(settingsView, /const canPickHostFiles = can\('hostFilePicker'\);/);

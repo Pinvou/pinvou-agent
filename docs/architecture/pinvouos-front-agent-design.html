@@ -1632,8 +1632,8 @@
             <tr><td>缺参选择卡</td><td class="yes">存在</td><td class="yes">能</td><td class="partial-text">经 request_user_input</td><td>是旧兼容链上的内联 React 卡，不是 A2UI Modal。</td></tr>
             <tr><td>网站认证二维码</td><td class="yes">ToolStore 已有</td><td class="no">当前入口不可达</td><td class="no">没有 typed auth tool</td><td>飞书、企微、钉钉等已有 URL→本地 SVG QR→事件→卡片链，但完全旁路 Front。</td></tr>
             <tr><td>原生 Dialog / Sheet</td><td class="yes">旧 App 多处存在</td><td class="no">VoiceShell 未挂载</td><td class="no">没有 dispatcher</td><td>A2UI 标准目录本身有 Modal；Pinvou 自有四组件目录没有实现。</td></tr>
-            <tr><td>自己写的 HTML</td><td class="yes">Artifact 链存在</td><td class="partial-text">先显示文件卡</td><td class="partial-text">可生成、不可编排</td><td>用户点击 ArtifactCard 后在独立 Tauri 窗口打开；不是主画布内联，也不是 dialog。</td></tr>
-            <tr><td>安全的富 HTML Widget</td><td class="no">尚无可信 Host</td><td class="no">不能</td><td class="no">不能</td><td>现有 iframe / 独立 artifact window 不能直接当认证或系统交互的安全沙箱。</td></tr>
+            <tr><td>自己写的 HTML</td><td class="yes">Artifact 链存在</td><td class="yes">文件卡进入统一浏览器</td><td class="partial-text">可生成、不可编排</td><td>用户点击 ArtifactCard 后在同一 WebView 的 Host 自有 ArtifactBrowser 中连贯放大；默认是去脚本、去表单、禁网络并由 Host 确认外链的安全静态预览，不是 A2UI dialog 或 AppSurface。</td></tr>
+            <tr><td>安全的富 HTML Widget</td><td class="partial-text">只有静态沙箱</td><td class="partial-text">能安全预览</td><td class="no">不能编排交互</td><td>ArtifactBrowser 解决统一静态查看；可运行脚本、表单或认证的受控 Widget Host 仍未实现，不能用 artifact HTML 冒充系统交互。</td></tr>
           </tbody>
         </table>
       </div>
@@ -1873,7 +1873,7 @@
       </div>
       <div class="sources">
         <a class="source" href="README.md"><strong>PinvouOS 架构权威索引</strong><span>跨文档不变量、当前实现边界与裁决顺序。</span></a>
-        <div class="source"><strong>Front / VoiceShell / ToolStore / Artifact 实现</strong><span>Front 工具面、首页 early return、旧 QR 事件卡和 HTML 外开窗口的真实可达性。</span></div>
+        <div class="source"><strong>Front / VoiceShell / ToolStore / Artifact 实现</strong><span>Front 工具面、首页 early return、旧 QR 事件卡，以及 ArtifactCard → Host ArtifactBrowser 的统一静态预览边界。</span></div>
         <div class="source"><strong>src/shared/markdown-renderer.js · VoiceShell · Chromium 安全探针</strong><span>当前净化仍允许 fixed style、dialog、form/input、远程图片与直接链接；尚缺覆盖这五类 payload 的持久回归 fixture。</span></div>
         <div class="source"><strong>CodeWhale Engine · 3f64e41e</strong><span>Direct 三轮目录收窄与执行期 hard admission。</span></div>
         <a class="source" href="pinvouos-interaction-surface-agui-a2ui.html"><strong>AG-UI × A2UI 交互画布架构</strong><span>协议职责、Surface 写权、Catalog、Host Renderer 与唯一迁移路线。</span></a>

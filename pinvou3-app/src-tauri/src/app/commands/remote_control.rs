@@ -765,7 +765,7 @@ pub async fn web_access_read_artifact_image_b64(
     // Base64 expands by roughly 4/3, leaving ample room below Relay's 4 MiB
     // frame ceiling for the surrounding RPC envelope.
     ensure_web_artifact_file_size(&resolved, 1_500_000)?;
-    ensure_web_artifact_response(super::artifacts::read_artifact_image_b64(resolved).await?)
+    ensure_web_artifact_response(super::artifacts::read_artifact_image_b64_impl(&resolved)?)
 }
 
 #[tauri::command]
@@ -775,7 +775,7 @@ pub async fn web_access_read_artifact_thumbnail(
     store: State<'_, SessionStore>,
 ) -> Result<Option<String>, String> {
     let resolved = scoped_artifact_path(&store, &session_id, &path)?;
-    ensure_web_artifact_response(super::artifacts::read_artifact_thumbnail(resolved).await?)
+    ensure_web_artifact_response(super::artifacts::read_artifact_thumbnail_impl(&resolved)?)
 }
 
 #[tauri::command]
@@ -785,7 +785,7 @@ pub async fn web_access_render_artifact_visual(
     store: State<'_, SessionStore>,
 ) -> Result<super::artifacts::VisualResult, String> {
     let resolved = scoped_artifact_path(&store, &session_id, &path)?;
-    ensure_web_artifact_response(super::artifacts::render_artifact_visual(resolved).await?)
+    ensure_web_artifact_response(super::artifacts::render_artifact_visual_impl(&resolved).await?)
 }
 
 #[cfg(test)]

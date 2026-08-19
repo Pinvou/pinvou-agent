@@ -109,9 +109,9 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     setSaveState('saving');
     setErrorText('');
     const promise = (async () => {
-      await bridge.artifacts.writeArtifactText(artifact.path, content);
+      await bridge.artifacts.writeArtifactText(artifact.path, content, artifact.sessionId);
       let info = initialInfo || null;
-      try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch (_) {}
+      try { info = await bridge.artifacts.artifactInfo(artifact.path, artifact.sessionId); } catch (_) {}
       lastSavedRef.current = content;
       setSaveState('saved');
       onSaved?.(content, info);
@@ -130,7 +130,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
       return saveNow();
     }
     return ok;
-  }, [artifact?.path, initialInfo, onSaved]);
+  }, [artifact?.path, artifact?.sessionId, initialInfo, onSaved]);
 
   useEffect(() => {
     saveNowRef.current = saveNow;
@@ -140,9 +140,9 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     if (!artifact?.path || !bridge.artifacts.readArtifactText) return false;
     if (!force && latestDraftRef.current !== lastSavedRef.current) return false;
     try {
-      const text = await bridge.artifacts.readArtifactText(artifact.path);
+      const text = await bridge.artifacts.readArtifactText(artifact.path, artifact.sessionId);
       let info = initialInfo || null;
-      try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch (_) {}
+      try { info = await bridge.artifacts.artifactInfo(artifact.path, artifact.sessionId); } catch (_) {}
       latestDraftRef.current = text || '';
       lastSavedRef.current = text || '';
       setDraft(text || '');
@@ -156,7 +156,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
       setErrorText(String(e));
       return false;
     }
-  }, [artifact?.path, applyMarkdownToDom, initialInfo, onReloaded]);
+  }, [artifact?.path, artifact?.sessionId, applyMarkdownToDom, initialInfo, onReloaded]);
 
   useImperativeHandle(ref, () => ({
     flush: saveNow,

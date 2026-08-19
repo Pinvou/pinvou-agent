@@ -47,17 +47,34 @@ test("feature-local changes select core and feature smokes", () => {
       ]),
     ),
     [
-      "npm:test:ui-smoke",
       "npm:test:settings-ui",
       "node:tests/pet_selector_ui_smoke.js",
+      "npm:test:ui-smoke",
     ],
+  );
+});
+
+test("artifact card and Knowledge changes run the unified browser smoke before legacy shells", () => {
+  assert.deepEqual(
+    labels(selectFrontendSmokes(["pinvou3-app/src/features/tools/tool-common.jsx"])),
+    [
+      "npm:test:artifact-browser-ui",
+      "npm:test:tool-store",
+      "npm:test:tool-store-import",
+      "npm:test:tool-store-grouping",
+      "npm:test:ui-smoke",
+    ],
+  );
+  assert.deepEqual(
+    labels(selectFrontendSmokes(["pinvou3-app/src/features/knowledge/KnowledgeView.jsx"])),
+    ["npm:test:artifact-browser-ui", "npm:test:kb-smoke", "npm:test:ui-smoke"],
   );
 });
 
 test("relay changes select the web UI smoke", () => {
   assert.deepEqual(
     labels(selectFrontendSmokes(["remote-control-relay/server.js"])),
-    ["npm:test:ui-smoke", "npm:test:webui"],
+    ["npm:test:webui", "npm:test:ui-smoke"],
   );
 });
 

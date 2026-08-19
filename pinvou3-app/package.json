@@ -66,6 +66,8 @@
     "test:artifact-deliverable": "node tests/artifact_deliverable_logic.test.js",
     "test:canonical-tools": "node tests/canonical_tool_contract.test.js",
     "test:artifact-preview": "node tests/artifact_preview_navigation.test.mjs",
+    "test:artifact-browser-motion": "node tests/artifact_browser_motion.test.mjs",
+    "test:artifact-browser-ui": "node tests/artifact_browser_ui_smoke.js",
     "test:scheduled": "node tests/scheduled_tasks_unit.test.js",
     "test:pet-animation": "node tests/pet_animation_logic.test.mjs",
     "test:pet-registry": "node tests/pet_registry_logic.test.mjs",

@@ -5186,7 +5186,7 @@
 
     // File.write/File.edit/File.patch 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
     // 改成记账+去重:AI 一个 turn 会 edit_file 改很多次,实时续会刷出一堆卡;且 edit_file
-    // 之前不触发续卡 → 改完没新卡片 → 没法对改后产物再召唤 pinvou(核账闭环断裂)。
+    // 之前不触发续卡 → 改完没新卡片 → 用户无法就近重新打开改后的交付物。
     var mutationAction = meta && fileMutationAction(meta.name, meta.args);
     if (p.success && mutationAction) {
       extractArtifactPaths(meta.args).forEach(function (ap) {
@@ -5194,7 +5194,7 @@
         // 中间草稿(content_p1.txt / *_params.json 等)不进面板。edit_file 只改已有不新建。
         if (mutationAction !== "edit" && (isDeliverable(ap) || findPresentedArtifact(ap))) trackArtifact(ap);
         // 产物(present 过的成品 或 write/append 写进产物列表的)被写/改 → turn 结束补卡。
-        // 不再要求 present 过:AI 经常写完产物忘了 present_artifact → 没成品卡 = 没召唤入口。
+        // 不再要求 present 过:AI 经常写完产物忘了 present_artifact → 没成品卡 = 没交付物入口。
         // 按 basename 比对:disk watcher(artifact:disk)写盘后抢先用**绝对**路径 trackArtifact
         // 占了名额,而这里 ap 是 write_file 的**相对**参数 —— 用 a.path===ap 比绝对≠相对永远落空,
         // turnDirty 收不到 → 实时不补成品卡(只能靠重启 rerender 才出)。basename 比对消除该竞态。
@@ -5274,8 +5274,8 @@
         terminalStatus === "cancelled" || terminalStatus === "canceled";
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
-      // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
-      // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
+      // 本 turn 写/改过的产物 → 末尾补一张成品卡，让用户就近打开预览。
+      // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没有交付物入口)。
       // 本 turn 刚 present_artifact 出过卡的跳过,不重复。edit/append 改多次也只补一张。
       (state.turnDirtyArtifacts || []).forEach(function (ap) {
         // 按 basename 比对:present 存 server 绝对路径、turnDirty 存 write 相对路径,

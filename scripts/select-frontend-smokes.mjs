@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 const command = (kind, target) => ({ kind, target });
 
 export const FULL_FRONTEND_SMOKES = Object.freeze([
+  command("npm", "test:artifact-browser-ui"),
   command("npm", "test:bridge-smoke"),
   command("npm", "test:code-viewer-ui"),
   command("npm", "test:code-viewer-diff-ui"),
@@ -27,7 +28,8 @@ export const FULL_FRONTEND_SMOKES = Object.freeze([
 const CORE_SMOKE = command("npm", "test:ui-smoke");
 
 const FEATURE_COMMANDS = new Map([
-  ["knowledge", [command("npm", "test:kb-smoke")]],
+  ["artifacts", [command("npm", "test:artifact-browser-ui")]],
+  ["knowledge", [command("npm", "test:artifact-browser-ui"), command("npm", "test:kb-smoke")]],
   ["pet", [command("node", "tests/pet_selector_ui_smoke.js")]],
   ["scheduled", [command("node", "tests/scheduled_tasks_smoke.js")]],
   ["settings", [command("npm", "test:settings-ui")]],
@@ -97,7 +99,7 @@ function commandKey(item) {
  * Unknown frontend paths fail closed to the full suite.
  */
 export function selectFrontendSmokes(paths) {
-  const selected = new Map([[commandKey(CORE_SMOKE), CORE_SMOKE]]);
+  const selected = new Map();
   let sawFrontendPath = false;
 
   for (const path of paths) {
@@ -118,13 +120,20 @@ export function selectFrontendSmokes(paths) {
       continue;
     }
 
+    if (path === "pinvou3-app/src/features/tools/tool-common.jsx") {
+      const item = command("npm", "test:artifact-browser-ui");
+      selected.set(commandKey(item), item);
+    }
+
     const match = path.match(/^pinvou3-app\/src\/features\/([^/]+)\//);
     const commands = match ? FEATURE_COMMANDS.get(match[1]) : undefined;
     if (!commands) return [...FULL_FRONTEND_SMOKES];
     for (const item of commands) selected.set(commandKey(item), item);
   }
 
-  return sawFrontendPath ? [...selected.values()] : [...FULL_FRONTEND_SMOKES];
+  if (!sawFrontendPath) return [...FULL_FRONTEND_SMOKES];
+  selected.set(commandKey(CORE_SMOKE), CORE_SMOKE);
+  return [...selected.values()];
 }
 
 async function main() {

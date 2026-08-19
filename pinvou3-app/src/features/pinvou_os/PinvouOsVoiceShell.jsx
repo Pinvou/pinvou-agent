@@ -3,6 +3,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Mic, Sparkles, StopCircle } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
+import { ArtifactBrowser } from '../artifacts/FilePreviewModal.jsx';
 import { ArtifactCard } from '../tools/tool-common.jsx';
 import { UserInputCard } from '../tools/tool-renderers.jsx';
 import { PinvouOsAgentDock } from './PinvouOsAgentDock.jsx';
@@ -75,6 +76,7 @@ export function PinvouOsVoiceShell({ theme, t, bs, onSubmitPrompt }) {
   const [lastUtterance, setLastUtterance] = useState('');
   const [submitError, setSubmitError] = useState('');
   const [baselineArtifactId, setBaselineArtifactId] = useState('');
+  const [artifactBrowser, setArtifactBrowser] = useState(null);
   const submissionRef = useRef('');
 
   const requesting = voiceInput.status === 'requesting_permission';
@@ -140,6 +142,10 @@ export function PinvouOsVoiceShell({ theme, t, bs, onSubmitPrompt }) {
     [visibleAssistantText],
   );
 
+  const openArtifactBrowser = request => {
+    setArtifactBrowser(current => current || request);
+  };
+
   return (
     <div
       className={`pinvou-os-voice-shell ${theme === 'dark' ? 'dark' : ''}`}
@@ -173,7 +179,7 @@ export function PinvouOsVoiceShell({ theme, t, bs, onSubmitPrompt }) {
               )}
               {visibleArtifact && (
                 <div data-testid="pinvou-os-artifact-card">
-                  <ArtifactCard item={visibleArtifact} theme={theme} t={t} isLatest />
+                  <ArtifactCard item={visibleArtifact} theme={theme} t={t} onOpen={openArtifactBrowser} />
                 </div>
               )}
             </div>
@@ -214,6 +220,19 @@ export function PinvouOsVoiceShell({ theme, t, bs, onSubmitPrompt }) {
       </div>
 
       <PinvouOsAgentDock theme={theme} t={t} />
+
+      {artifactBrowser && (
+        <ArtifactBrowser
+          path={artifactBrowser.path}
+          sessionId={artifactBrowser.sessionId}
+          title={artifactBrowser.title}
+          originRect={artifactBrowser.originRect}
+          returnFocus={artifactBrowser.returnFocus}
+          theme={theme}
+          t={t}
+          onClose={() => setArtifactBrowser(null)}
+        />
+      )}
     </div>
   );
 }

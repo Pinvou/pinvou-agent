@@ -20,14 +20,14 @@
     var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     var attachIdSeq = 0;
   // ── 产物面板 ─────────────────────────────────────────────────────
-  function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
-  function readArtifactText(path) { return invoke("read_artifact_text", { path: path }); }
-  function writeArtifactText(path, content) { return invoke("write_artifact_text", { path: path, content: content }); }
-  function readArtifactImageB64(path) { return invoke("read_artifact_image_b64", { path: path }); }
+  function artifactInfo(path, sessionId) { return invoke("artifact_info", { path: path, sessionId: sessionId || null }); }
+  function readArtifactText(path, sessionId) { return invoke("read_artifact_text", { path: path, sessionId: sessionId || null }); }
+  function writeArtifactText(path, content, sessionId) { return invoke("write_artifact_text", { path: path, content: content, sessionId: sessionId || null }); }
+  function readArtifactImageB64(path, sessionId) { return invoke("read_artifact_image_b64", { path: path, sessionId: sessionId || null }); }
   // pptx 封面缩略图：读 docProps/thumbnail.jpeg → data URL（无则 null）。本地数据、无外链。
-  function readArtifactThumbnail(path) { return invoke("read_artifact_thumbnail", { path: path }).catch(function () { return null; }); }
-  function renderArtifactVisual(path) { return invoke("render_artifact_visual", { path: path }); }
-  function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function readArtifactThumbnail(path, sessionId) { return invoke("read_artifact_thumbnail", { path: path, sessionId: sessionId || null }).catch(function () { return null; }); }
+  function renderArtifactVisual(path, sessionId) { return invoke("render_artifact_visual", { path: path, sessionId: sessionId || null }); }
+  function openContainingFolder(path, sessionId) { return invoke("open_containing_folder", { path: path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function revealSessionFolder(sessionId) { return invoke("reveal_session_folder", { sessionId: sessionId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function openScheduledTaskFolder(automationId) { return invoke("open_scheduled_task_folder", { automationId: automationId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
@@ -77,7 +77,7 @@
         } catch (_) {}
       }
       var info = null;
-      try { info = await artifactInfo(path); } catch (_) {}
+      try { info = await artifactInfo(path, x.sessionId); } catch (_) {}
       var ext = (String(path).split(".").pop() || "").toLowerCase();
       return {
         name: x.name || basename(path),

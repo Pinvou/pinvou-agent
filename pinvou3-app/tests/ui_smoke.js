@@ -4,7 +4,7 @@
  * 覆盖易回归的前端通路:
  *   ① 启动保持在草稿页(activeSessionId=null)。
  *   ② 工具商店渲染出 Obsidian 与钉钉连接器卡。
- *   ③ 聊天流产物卡(artifact_card)挂出「品/悟」召唤 pinvou 按钮。
+ *   ③ 聊天流产物卡(artifact_card)不再暴露低频「品/悟」入口。
  *   ④ 记忆候选事件渲染卡片，且确认/忽略/不再提示分别调用正确后端命令。
  *   ⑤ session 内未发送的 composer 草稿在跳转其他页面后仍能恢复。
  * 依赖:puppeteer-core(自动从 node_modules / ~/.npm/_npx 发现)+ 系统 chromium(或 env CHROME 指定)。
@@ -951,12 +951,17 @@ async function expand(page) {
   });
   rec('② 工具商店渲染 Obsidian 与钉钉卡', connectors.obsidian && connectors.dingtalk, JSON.stringify(connectors));
 
-  // ③ 聊天流产物卡 品/悟 召唤按钮
+  // ③ 聊天流产物卡已移除低频「品/悟」召唤按钮
   await clickText(page, '第三季度财报分析');
   await sleep(2200);
-  const hit = await page.evaluate(() => [...document.querySelectorAll('button')]
-    .map(b => ({ t: b.getAttribute('title') || '', x: (b.textContent || '').trim() }))
-    .filter(o => o.t.includes('查错') || o.t.includes('发散') || /品|悟/.test(o.x)).length);
+  const hit = await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="artifact-deliverable-card"]');
+    if (!card) return -1;
+    return [...card.querySelectorAll('button')]
+      .map(button => ({ title: button.getAttribute('title') || '', text: (button.textContent || '').trim() }))
+      .filter(item => /智能找错|深度查漏|Smart review|Deep check|品 ·|悟 ·/.test(`${item.title}\n${item.text}`))
+      .length;
+  });
   const restored = await page.evaluate(() => {
     const text = document.body.innerText;
     const artifactPaths = window.TauriBridge.state.getMany(['chat', 'vllm']).chatItems
@@ -975,7 +980,7 @@ async function expand(page) {
     };
   });
   rec('③ 后台session恢复时仅 MCP producer 结果生成产物卡、Shell 历史卡不重复',
-    hit >= 2 && restored.history && restored.mobile && restored.mcpArtifact && !restored.shellFakeArtifact &&
+    hit === 0 && restored.history && restored.mobile && restored.mcpArtifact && !restored.shellFakeArtifact &&
     restored.shellHistoryCount === 1 && restored.shellHistoryTaskId === 'task-history-done' &&
     restored.shellHistoryOutput === 'history output',
     JSON.stringify({ hit, ...restored }));

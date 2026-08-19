@@ -80,6 +80,13 @@ test('Agent Runtime dock is backed by native runtime truth and has no legacy ter
 
 test('PinvouOS canvas consumes a read-only namespaced A2UI v0.9 projection', () => {
   const shell = read('src/features/pinvou_os/PinvouOsVoiceShell.jsx');
+  const chatView = read('src/features/chat/ChatView.jsx');
+  const artifactCard = read('src/features/tools/tool-common.jsx');
+  const artifactBrowser = read('src/features/artifacts/FilePreviewModal.jsx');
+  const artifactBrowserCss = read('src/features/artifacts/artifact-browser.css');
+  const artifactNavigation = read('src/features/artifacts/artifact-preview-navigation.js');
+  const tauriArtifacts = read('src/platform/tauri/bridge/artifacts.js');
+  const i18n = read('src/shared/i18n.js');
   const surface = read('src/features/pinvou_os/PinvouOsProjectionSurface.jsx');
   const protocol = read('src/features/pinvou_os/a2ui-runtime.js');
   const api = read('src/features/pinvou_os/runtime-api.js');
@@ -89,7 +96,28 @@ test('PinvouOS canvas consumes a read-only namespaced A2UI v0.9 projection', () 
   assert.match(shell, /data-testid="pinvou-os-user-input-card"/);
   assert.match(shell, /<UserInputCard item=\{pendingUserInput\} t=\{t\} \/>/);
   assert.match(shell, /data-testid="pinvou-os-artifact-card"/);
-  assert.match(shell, /<ArtifactCard item=\{visibleArtifact\}/);
+  assert.match(shell, /<ArtifactCard item=\{visibleArtifact\}[\s\S]*?onOpen=\{openArtifactBrowser\}/);
+  assert.match(shell, /<ArtifactBrowser[\s\S]*?originRect=\{artifactBrowser\.originRect\}/);
+  assert.match(shell, /returnFocus=\{artifactBrowser\.returnFocus\}/);
+  assert.match(artifactCard, /data-testid="artifact-deliverable-card"/);
+  assert.match(artifactCard, /role=\{canOpenArtifact \? 'button'/);
+  assert.doesNotMatch(artifactCard, /summonPinvou|inspectPinvou|pvBtnPin|pvBtnWu/);
+  assert.match(chatView, /<ArtifactCard item=\{item\}[\s\S]*?onOpen=\{onOpenArtifact\}/);
+  assert.match(chatView, /<ArtifactBrowser[\s\S]*?\.\.\.artifactBrowser/);
+  assert.match(artifactBrowser, /createPortal\(browser, document\.body\)/);
+  assert.match(artifactBrowser, /role="dialog"/);
+  assert.match(artifactBrowser, /aria-modal="true"/);
+  assert.match(artifactBrowser, /sandbox="allow-scripts"/);
+  assert.doesNotMatch(artifactBrowser, /allow-same-origin/);
+  assert.match(artifactBrowser, /setPendingExternalUrl/);
+  assert.match(artifactBrowser, /role="alertdialog"/);
+  assert.match(artifactNavigation, /script-src 'nonce-/);
+  assert.match(artifactNavigation, /event\.isTrusted/);
+  assert.match(artifactNavigation, /script,iframe,frame,object,embed,form,input,button,textarea,select,option,meta,base,link/);
+  assert.match(tauriArtifacts, /artifactInfo\(path, sessionId\)[\s\S]*?sessionId: sessionId \|\| null/);
+  assert.doesNotMatch(i18n, /pvBtnPin|pvBtnWu|pinAriaLabel|wuAriaLabel/);
+  assert.match(artifactBrowserCss, /460ms cubic-bezier\(0\.16, 1, 0\.3, 1\)/);
+  assert.match(artifactBrowserCss, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(surface, /data-testid="pinvou-os-a2ui-surface"/);
   assert.match(surface, /data-a2ui-surface-id=\{surface\.surfaceId\}/);
   assert.match(api, /invokeTauri\('get_pinvou_os_projection'\)/);

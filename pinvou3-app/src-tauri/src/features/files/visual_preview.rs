@@ -17,6 +17,9 @@ use super::IngestResult;
 
 // ============== 产物可视化预览助手（commands::render_artifact_visual 复用）==============
 
+const MAX_VISUAL_PREVIEW_IMAGE_BYTES: u64 = 25_000_000;
+const MAX_VISUAL_PREVIEW_TOTAL_RAW_IMAGE_BYTES: u64 = 24 * 1024 * 1024;
+
 /// 极简 base64 标准编码（无换行）。仅为内联图片 data URI 用，不值得引第三方 crate。
 pub fn base64_encode(data: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -57,6 +60,12 @@ fn image_mime(ext: &str) -> &'static str {
 
 /// 单个图片文件 → `data:image/...;base64,...`。
 pub fn image_file_to_data_uri(path: &Path) -> Result<String, String> {
+    let size = std::fs::metadata(path)
+        .map_err(|e| format!("读图失败: {e}"))?
+        .len();
+    if size > MAX_VISUAL_PREVIEW_IMAGE_BYTES {
+        return Err("预览图片过大".into());
+    }
     let bytes = std::fs::read(path).map_err(|e| format!("读图失败: {e}"))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     Ok(format!(
@@ -64,6 +73,22 @@ pub fn image_file_to_data_uri(path: &Path) -> Result<String, String> {
         image_mime(ext),
         base64_encode(&bytes)
     ))
+}
+
+fn page_images_to_data_uris(pages: &[PathBuf]) -> Result<Vec<String>, String> {
+    let mut total_raw_bytes = 0_u64;
+    let mut uris = Vec::with_capacity(pages.len());
+    for page in pages {
+        let size = std::fs::metadata(page)
+            .map_err(|e| format!("读取预览页元数据失败: {e}"))?
+            .len();
+        total_raw_bytes = total_raw_bytes.saturating_add(size);
+        if total_raw_bytes > MAX_VISUAL_PREVIEW_TOTAL_RAW_IMAGE_BYTES {
+            return Err("预览页总量过大，请使用系统应用打开".into());
+        }
+        uris.push(image_file_to_data_uri(page)?);
+    }
+    Ok(uris)
 }
 
 /// 把 HTML 里指向本地旁置图片的 `src` 引用 base64 内联,产出自包含 HTML。
@@ -263,10 +288,7 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
             return Err("未产出可渲染幻灯片页".into());
         }
         let truncated = pages.len() as u32 >= max_pages;
-        let mut uris = Vec::with_capacity(pages.len());
-        for p in &pages {
-            uris.push(image_file_to_data_uri(p)?);
-        }
+        let uris = page_images_to_data_uris(&pages)?;
         Ok((uris, truncated))
     })();
     let _ = std::fs::remove_dir_all(&tmpdir);
@@ -320,10 +342,7 @@ pub fn pdf_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>,
             return Err("PDF 未产出可渲染页".into());
         }
         let truncated = pages.len() as u32 >= max_pages;
-        let mut uris = Vec::with_capacity(pages.len());
-        for p in &pages {
-            uris.push(image_file_to_data_uri(p)?);
-        }
+        let uris = page_images_to_data_uris(&pages)?;
         Ok((uris, truncated))
     })();
     let _ = std::fs::remove_dir_all(&tmpdir);

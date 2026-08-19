@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Users, Video, Wrench, X, Zap } from '../../components/icons.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
@@ -23,6 +23,9 @@ import {
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
   artifactPreviewExternalUrlFromMessage,
+  artifactPreviewFocusDirectionFromMessage,
+  artifactPreviewSizeFromMessage,
+  artifactPreviewZoomDirectionFromMessage,
   buildArtifactPreviewDocument,
 } from '../artifacts/artifact-preview-navigation.js';
 import { ProvidersSection } from './ProvidersSection.jsx';
@@ -799,37 +802,34 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
     // 产物 HTML 预览：测内容自然尺寸，比面板宽就整体等比缩小铺满（只缩不放）。
     // 治"固定尺寸 banner 在窄预览面板里溢出、出滚动条、只露一角"。响应式整页缩放比≈1、不受影响。
     const clampPreviewScale = value => Math.max(0.1, Math.min(3, Number(value) || 1));
-    const ScaledHtmlPreview = ({ html, onFrameLoad, onOpenExternal, zoomMode = 'auto-width', customScale = 1, onScaleChange, onCustomScaleChange }) => {
+    const ScaledHtmlPreview = ({ html, onFrameLoad, onOpenExternal, zoomMode = 'auto-width', customScale = 1, onScaleChange, onCustomScaleChange, trustedScript = '' }) => {
       const wrapRef = useRef(null);
       const frameRef = useRef(null);
       const naturalRef = useRef(null); // 当前 html 的内容自然尺寸缓存(在面板参考宽度下测得)
       const [box, setBox] = useState(null); // { w, h, scale }
       const [ready, setReady] = useState(false);
+      const previewDocument = useMemo(
+        () => buildArtifactPreviewDocument(html, { isolated: true, trustedScript }),
+        [html, trustedScript],
+      );
       const managedZoom = zoomMode !== 'auto-width';
       const canvasW = managedZoom ? 1440 : null;
-      const measure = () => {
+      const measure = (reportedSize = null) => {
         try {
           const fr = frameRef.current, wrap = wrapRef.current;
           if (!fr || !wrap || !fr.contentWindow) return;
-          const doc = fr.contentWindow.document;
-          const de = doc.documentElement, bd = doc.body;
           const panelW = wrap.clientWidth;
           const panelH = wrap.clientHeight;
           // 内容自然尺寸只在面板参考宽度下测量一次并缓存；后续仅依据面板尺寸重算缩放。
           // 若把「已按自然宽度撑开的 iframe 视口」每次再喂回测量，弹层里的 vw/vh 与
           // 溢出内容（如 right:-120px 的绝对定位元素）会让 scrollWidth/scrollHeight 随 iframe
           // 被撑大而继续放大，触发 ResizeObserver 无限反馈 → 预览无限放大。
-          let nat = naturalRef.current;
-          if (!nat) {
-            const cw = Math.max(de ? de.scrollWidth : 0, bd ? bd.scrollWidth : 0);
-            const ch = Math.max(de ? de.scrollHeight : 0, bd ? bd.scrollHeight : 0);
-            nat = { w: cw, h: ch };
-            // iframe 内容可能尚未真正加载(scrollWidth=0 或 scrollHeight=0)：这种空测量不写入缓存，
-            // 等 onLoad 后测到真实尺寸再缓存，避免把首轮空值固化导致正常页面缩放出错。
-            if (cw > 0 && ch > 0) naturalRef.current = nat;
-          }
-          const w = managedZoom ? Math.max(canvasW, nat.w || 0) : nat.w;
-          const h = nat.h;
+          let nat = reportedSize
+            ? { w: reportedSize.width, h: reportedSize.height }
+            : naturalRef.current;
+          if (reportedSize) naturalRef.current = nat;
+          const w = managedZoom ? Math.max(canvasW, nat?.w || 0) : nat?.w || panelW;
+          const h = nat?.h || panelH;
           let scale = 1;
           if (zoomMode === 'fit') {
             const widthScale = w > 0 && panelW > 0 ? panelW / w : 1;
@@ -875,34 +875,33 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         applyWheelZoom(event.deltaY);
       };
       useEffect(() => {
-        const fr = frameRef.current;
-        if (!managedZoom || !fr || !fr.contentWindow) return undefined;
-        let doc = null;
-        try {
-          doc = fr.contentWindow.document;
-        } catch (e) {
-          return undefined;
-        }
-        if (!doc) return undefined;
-        const handleFrameWheel = event => {
-          if (!event.ctrlKey) return;
-          event.preventDefault();
-          event.stopPropagation();
-          applyWheelZoom(event.deltaY);
-        };
-        doc.addEventListener('wheel', handleFrameWheel, { passive: false, capture: true });
-        return () => doc.removeEventListener('wheel', handleFrameWheel, { capture: true });
-      }, [managedZoom, ready, box && box.scale, customScale, onCustomScaleChange]);
-      useEffect(() => {
         const handlePreviewMessage = event => {
           const frameWindow = frameRef.current && frameRef.current.contentWindow;
           if (!frameWindow || event.source !== frameWindow) return;
           const url = artifactPreviewExternalUrlFromMessage(event.data);
           if (url && onOpenExternal) onOpenExternal(url);
+          const size = artifactPreviewSizeFromMessage(event.data);
+          if (size) measure(size);
+          const zoomDirection = artifactPreviewZoomDirectionFromMessage(event.data);
+          if (managedZoom && zoomDirection) applyWheelZoom(zoomDirection === 'in' ? -1 : 1);
+          const focusDirection = artifactPreviewFocusDirectionFromMessage(event.data);
+          if (focusDirection) {
+            const frame = frameRef.current;
+            const selector = 'button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),iframe,[tabindex]:not([tabindex="-1"])';
+            const focusable = [...document.querySelectorAll(selector)].filter((node) => {
+              const style = window.getComputedStyle(node);
+              return !node.hasAttribute('hidden') && node.getClientRects().length > 0 && style.visibility !== 'hidden';
+            });
+            const index = focusable.indexOf(frame);
+            const nextIndex = focusDirection === 'previous' ? index - 1 : index + 1;
+            let target = focusable[nextIndex];
+            if (!target) target = focusDirection === 'previous' ? focusable[focusable.length - 1] : focusable[0];
+            if (target && target !== frame) target.focus({ preventScroll: true });
+          }
         };
         window.addEventListener('message', handlePreviewMessage);
         return () => window.removeEventListener('message', handlePreviewMessage);
-      }, [onOpenExternal]);
+      }, [onOpenExternal, zoomMode, customScale, managedZoom, box && box.scale, onCustomScaleChange]);
       const scaled = box && box.scale !== 1;
       const scaledW = box ? Math.max(1, Math.ceil(box.w * box.scale)) : 0;
       const scaledH = box ? Math.max(1, Math.ceil(box.h * box.scale)) : 0;
@@ -930,12 +929,12 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           {!ready && <div className="h-[480px] bg-[#15171a]"></div>}
           <div data-testid="artifact-html-preview-stage" style={managedZoom ? stageStyle : (box && scaled ? { width: scaledW + 'px', height: scaledH + 'px', position: 'relative' } : { width: '100%', height: '100%' })}>
             <div style={box && scaled ? { width: scaledW + 'px', height: scaledH + 'px', position: 'relative', flex: '0 0 auto' } : (managedZoom && box ? { width: box.w + 'px', height: box.h + 'px', flex: '0 0 auto' } : { width: '100%', height: '100%' })}>
-              <iframe ref={frameRef} sandbox="allow-same-origin allow-scripts" data-testid="artifact-html-preview-frame" onLoad={() => { measure(); if (onFrameLoad) onFrameLoad(frameRef.current); setTimeout(() => setReady(true), 80); }}
+              <iframe ref={frameRef} sandbox="allow-scripts" data-testid="artifact-html-preview-frame" onLoad={() => { measure(); if (onFrameLoad) onFrameLoad(frameRef.current); setTimeout(() => setReady(true), 80); }}
                 className={`border-0 block bg-[#15171a] transition-opacity duration-300 ${ready ? 'opacity-100' : 'opacity-0 absolute pointer-events-none'}`}
                 data-zoom-mode={zoomMode}
                 data-zoom-scale={box ? String(box.scale) : ''}
                 style={frameStyle()}
-                srcDoc={buildArtifactPreviewDocument(html)} />
+                srcDoc={previewDocument} />
             </div>
           </div>
         </div>

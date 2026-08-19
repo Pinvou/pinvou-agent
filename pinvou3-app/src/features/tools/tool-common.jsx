@@ -17,14 +17,42 @@ const AcFmtIcon = FileTypeIcon;
     const AcArrowUpRight = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>;
     const AcFolder = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>;
 
-    const ArtifactCard = ({ item, theme, t, isLatest }) => {
+    const ArtifactCard = ({ item, theme, t, onOpen }) => {
+      const cardRef = useRef(null);
       const path = item.path || '';
       const canOpenArtifact = !isWeb || can('artifactDownload');
       const kind = _artifactKind(path);
       const fmt = _ARTIFACT_FMT[kind] || _ARTIFACT_FMT.other;
       const basename = (String(path).split(/[\\/]/).pop()) || '';
       const title = item.title || basename || t.artifactLabel;
-      const open = () => { if (bridge.available && path) bridge.artifacts.openArtifactExternal(path, item.sessionId); };
+      const open = () => {
+        if (!bridge.available || !path) return;
+        const rect = cardRef.current && cardRef.current.getBoundingClientRect
+          ? cardRef.current.getBoundingClientRect()
+          : null;
+        const request = {
+          path,
+          sessionId: item.sessionId,
+          title,
+          returnFocus: cardRef.current,
+          originRect: rect ? {
+            top: rect.top,
+            left: rect.left,
+            width: rect.width,
+            height: rect.height,
+          } : null,
+        };
+        if (onOpen) {
+          onOpen(request);
+          return;
+        }
+        bridge.artifacts.openArtifactExternal(path, item.sessionId);
+      };
+      const handleKeyDown = (event) => {
+        if (!canOpenArtifact || event.repeat || (event.key !== 'Enter' && event.key !== ' ')) return;
+        event.preventDefault();
+        open();
+      };
 
       // 封面缩略图：仅 pptx 异步抽取（Rust read_artifact_thumbnail 读 docProps/thumbnail.jpeg → data URL）。
       // 拿不到则 hasCover=false，走紧凑态。本地数据、无外链。
@@ -33,7 +61,7 @@ const AcFmtIcon = FileTypeIcon;
         let alive = true;
         setCoverUrl(null);
         if (kind === 'pptx' && bridge.available && bridge.artifacts.readArtifactThumbnail && path) {
-          bridge.artifacts.readArtifactThumbnail(path).then((u) => { if (alive && u) setCoverUrl(u); }).catch(() => {});
+          bridge.artifacts.readArtifactThumbnail(path, item.sessionId).then((u) => { if (alive && u) setCoverUrl(u); }).catch(() => {});
         }
         return () => { alive = false; };
       }, [path, kind, item.sessionId]);
@@ -41,13 +69,22 @@ const AcFmtIcon = FileTypeIcon;
 
       return (
         <div className="flex justify-start" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
-          <div className="w-full bg-white dark:bg-[#1E1E1E] rounded-[24px] shadow-[0_8px_30px_rgba(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.2)] border border-black/[0.04] dark:border-white/[0.06] p-3 flex flex-col transition-all duration-300">
+          <div
+            ref={cardRef}
+            data-testid="artifact-deliverable-card"
+            role={canOpenArtifact ? 'button' : undefined}
+            tabIndex={canOpenArtifact ? 0 : undefined}
+            aria-label={canOpenArtifact ? `${tc(t).open}: ${title}` : undefined}
+            onClick={canOpenArtifact ? open : undefined}
+            onKeyDown={handleKeyDown}
+            className={`group/artifact w-full bg-white dark:bg-[#1E1E1E] rounded-[24px] shadow-[0_8px_30px_rgba(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.2)] border border-black/[0.04] dark:border-white/[0.06] p-3 flex flex-col transition-[transform,box-shadow,border-color] duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] focus-visible:ring-offset-2 dark:focus-visible:ring-offset-[#11151E] ${canOpenArtifact ? 'cursor-pointer hover:-translate-y-0.5 hover:shadow-[0_16px_42px_rgba(0,0,0,0.08)] dark:hover:shadow-[0_18px_46px_rgba(0,0,0,0.32)]' : ''}`}
+          >
 
             {/* 封面区域 */}
             {hasCover ? (
-              <div className={`relative group/cover rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/[0.02] dark:border-white/[0.02] ${canOpenArtifact ? 'cursor-pointer' : ''}`} onClick={canOpenArtifact ? open : undefined}>
+              <div className="relative rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/[0.02] dark:border-white/[0.02]">
                 <div className="w-full aspect-[16/9] relative">
-                  <img src={coverUrl} alt={tc(t).coverAlt} className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover/cover:scale-[1.02]" />
+                  <img src={coverUrl} alt={tc(t).coverAlt} className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover/artifact:scale-[1.02]" />
                 </div>
                 <div className="absolute top-3 right-3 px-2.5 py-1 rounded-[6px] bg-white/95 dark:bg-[#2C2C2E]/95 text-[#111] dark:text-[#eee] text-[11px] font-bold uppercase tracking-widest shadow-sm">
                   {fmt.label}
@@ -65,31 +102,14 @@ const AcFmtIcon = FileTypeIcon;
             )}
 
             {/* 标题与打开按钮区 */}
-            <div onClick={canOpenArtifact ? open : undefined} className={`px-3 pt-4 pb-5 flex justify-between items-center gap-4 group/header ${canOpenArtifact ? 'cursor-pointer' : ''}`}>
-              <h2 className="text-[20px] font-semibold tracking-tight text-[#111] dark:text-[#eee] leading-snug truncate group-hover/header:text-[#007AFF] transition-colors">
+            <div className="px-3 pt-4 pb-5 flex justify-between items-center gap-4">
+              <h2 className="text-[20px] font-semibold tracking-tight text-[#111] dark:text-[#eee] leading-snug truncate group-hover/artifact:text-[#007AFF] transition-colors">
                 {title}
               </h2>
-              {canOpenArtifact && <button onClick={(e) => { e.stopPropagation(); open(); }} className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label={tc(t).open}>
+              {canOpenArtifact && <span data-testid="artifact-open-affordance" aria-hidden="true" className="flex-shrink-0 flex items-center justify-center w-11 h-11 rounded-full bg-gray-100 dark:bg-white/5 group-hover/artifact:bg-gray-200 dark:group-hover/artifact:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-[background-color,transform] group-active/artifact:scale-95">
                 <AcArrowUpRight className="w-[18px] h-[18px]" />
-              </button>}
+              </span>}
             </div>
-
-            {/* 智能操作区：品 / 悟，横排单行、无副标题；仅最新产物显示 */}
-            {isLatest && (
-              <div className="grid grid-cols-2 gap-3 mb-4 px-3">
-                <button onClick={() => bridge.available && bridge.interaction.summonPinvou(path)} title={t.pvBtnPinTitle}
-                  className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label={tc(t).pinAriaLabel}>
-                  <AcShieldCheck className="w-[18px] h-[18px] text-[#FF9500] dark:text-[#FF9F0A] mr-2 shrink-0" />
-                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee] truncate">{t.pvBtnPinLabel}</span>
-                </button>
-
-                <button onClick={() => bridge.available && bridge.interaction.inspectPinvou(path)} title={t.pvBtnWuTitle}
-                  className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label={tc(t).wuAriaLabel}>
-                  <AcSparkles className="w-[18px] h-[18px] text-[#5E5CE6] dark:text-[#5E5CE6] mr-2 shrink-0" />
-                  <span className="text-[14px] font-medium text-[#111] dark:text-[#eee] truncate">{t.pvBtnWuLabel}</span>
-                </button>
-              </div>
-            )}
 
             {/* 底部路径 */}
             <div className="mx-3 mt-1 mb-2 pt-3 border-t border-gray-100 dark:border-white/[0.05]">

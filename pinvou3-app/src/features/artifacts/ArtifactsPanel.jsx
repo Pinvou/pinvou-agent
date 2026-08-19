@@ -61,7 +61,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
-    const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = [], onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
+    const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, onOpenArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = [], onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
       const uiA = t.uiArtifacts;
       const showDesignWorkbench = isFullscreen && designMode;
       const canOpenContainingFolder = can('externalSystemOpen');
@@ -216,34 +216,28 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           });
       }
 
-      function injectDesignRuntime(frame) {
+      function prepareDesignRuntime(frame) {
         designFrameRef.current = frame || null;
-        if (!designMode || !frame || !frame.contentWindow) return;
+        if (!showDesignWorkbench || !frame || !frame.contentWindow) return;
         setDesignStatus('injecting');
-        try {
-          const script = designRuntimeScriptRef.current || (designRuntimeScriptRef.current = buildDesignRuntimeScript());
-          frame.contentWindow.eval(script);
-        } catch (error) {
-          setDesignStatus('error', String(error && error.message || error));
-        }
       }
 
       const handlePreviewFrameLoad = (frame) => {
-        injectDesignRuntime(frame);
+        prepareDesignRuntime(frame);
       };
 
       useEffect(() => {
-        if (!designMode) {
+        if (!showDesignWorkbench) {
           destroyDesignRuntime();
           setDesignStatus('idle');
           return undefined;
         }
-        injectDesignRuntime(designFrameRef.current);
+        prepareDesignRuntime(designFrameRef.current);
         return undefined;
-      }, [designMode, tab, pv.kind, pv.text, pv.visual && pv.visual.html]);
+      }, [showDesignWorkbench, tab, pv.kind, pv.text, pv.visual && pv.visual.html]);
 
       useEffect(() => {
-        if (!designMode || !designCommand || !designCommand.seq) return;
+        if (!showDesignWorkbench || !designCommand || !designCommand.seq) return;
         if (designCommand.kind === 'apply') {
           const ok = postDesignCommand({
             type: DESIGN_MESSAGE_TYPES.APPLY_CHANGE,
@@ -255,7 +249,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         } else if (designCommand.kind === 'clear') {
           postDesignCommand({ type: DESIGN_MESSAGE_TYPES.CLEAR_CHANGES });
         }
-      }, [designMode, designCommand && designCommand.seq]);
+      }, [showDesignWorkbench, designCommand && designCommand.seq]);
 
       useEffect(() => {
         const onMessage = (event) => {
@@ -295,12 +289,16 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       }
 
       // 进面板 / artifacts 变化 → 批量拉元信息(给列表行的「最后修改」+ 类型)
-      const pathsKey = artifacts.map((a) => a.path).join('|');
+      // 同名相对路径可以同时存在于不同会话；选择与元信息缓存必须把会话身份算进 key。
+      // 否则 A -> B 切换时若两边都叫 report.html，旧 sel 会继续读写 A 会话。
+      const pathsKey = artifacts
+        .map((a) => `${a.sessionId || activeSessionId || ''}\u0000${a.path}`)
+        .join('|');
       useEffect(() => {
         let cancelled = false;
         (async () => {
           const entries = await Promise.all(artifacts.map(async (a) => {
-            try { return [a.path, await bridge.artifacts.artifactInfo(a.path)]; }
+            try { return [a.path, await bridge.artifacts.artifactInfo(a.path, a.sessionId || activeSessionId)]; }
             catch (_) { return [a.path, null]; }
           }));
           if (cancelled) return;
@@ -312,11 +310,22 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       }, [pathsKey, activeSessionId]);
 
       // 切 session(artifacts 整批换了)→ 选中文件已不在新列表 → 清预览、退回列表。
-      // 路径含 session id,故「不在列表」可靠区分换 session vs 同 session 内新增文件。
+      // path 本身不保证包含 session id，所以必须同时比较有效 session identity。
       useEffect(() => {
-        if (sel && !artifacts.some((a) => a.path === sel.path)) {
+        const selectedSessionId = sel?.sessionId || activeSessionId || null;
+        const selectionStillCurrent = Boolean(sel && artifacts.some((a) => (
+          sameArtifactPath(a.path, sel.path)
+          && (a.sessionId || activeSessionId || null) === selectedSessionId
+        )));
+        if (sel && !selectionStillCurrent) {
+          const sessionChanged = Boolean(
+            sel.sessionId
+            && activeSessionId
+            && sel.sessionId !== activeSessionId
+          );
           const change = bs && bs.artifactChange;
           if (
+            !sessionChanged &&
             changeMatchesSession(change, bs) &&
             change?.event === 'removed' &&
             sameArtifactPath(change.path, sel.path)
@@ -339,7 +348,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           })();
           return () => { cancelled = true; };
         }
-      }, [pathsKey]);
+      }, [pathsKey, activeSessionId, sel && sel.path, sel && sel.sessionId]);
 
       async function preview(a, options = {}) {
         const ok = options.skipFlush ? true : await flushMarkdownPreview();
@@ -352,19 +361,41 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         setExternalUpdateBlocked(false);
       }
 
+      function openSelectedArtifact(event) {
+        if (!sel) return;
+        const source = event?.currentTarget || null;
+        const rect = source?.getBoundingClientRect?.();
+        if (onOpenArtifact) {
+          onOpenArtifact({
+            path: sel.path,
+            sessionId: sel.sessionId,
+            title: sel.basename,
+            originRect: rect ? {
+              left: rect.left,
+              top: rect.top,
+              width: rect.width,
+              height: rect.height,
+            } : null,
+            returnFocus: source,
+          });
+          return;
+        }
+        bridge.artifacts.openArtifactExternal(sel.path, sel.sessionId);
+      }
+
       useEffect(() => {
         if (!sel || !sel.path || !pv.loading) return;
         let cancelled = false;
         (async () => {
           try {
-            const info = await bridge.artifacts.artifactInfo(sel.path);
+            const info = await bridge.artifacts.artifactInfo(sel.path, sel.sessionId);
             if (cancelled) return;
             if (!info || !info.exists) { setPv({ missing: true, info }); return; }
             if (info.kind === 'md' || info.kind === 'html' || info.kind === 'text') {
-              const text = await bridge.artifacts.readArtifactText(sel.path);
+              const text = await bridge.artifacts.readArtifactText(sel.path, sel.sessionId);
               if (!cancelled) setPv({ kind: info.kind, text, info });
             } else {
-              const visual = await bridge.artifacts.renderArtifactVisual(sel.path);
+              const visual = await bridge.artifacts.renderArtifactVisual(sel.path, sel.sessionId);
               if (!cancelled) setPv({ kind: info.kind, visual, info });
             }
           } catch (e) {
@@ -372,7 +403,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           }
         })();
         return () => { cancelled = true; };
-      }, [sel && sel.path, pv.loading]);
+      }, [sel && sel.path, sel && sel.sessionId, pv.loading]);
 
       useEffect(() => {
         if (pv.loading || artifacts.length === 0) return;
@@ -549,7 +580,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         <button
                           type="button"
                           title={t.apBtnLocate}
-                          onClick={(event) => { event.preventDefault(); event.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
+                          onClick={(event) => { event.preventDefault(); event.stopPropagation(); bridge.artifacts.openContainingFolder(a.path, a.sessionId || activeSessionId); }}
                           className={`mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white text-[#6E6E73] dark:hover:bg-white/10 dark:text-[#D1D1D6]`}
                         >
                           <FolderOpen size={14} />
@@ -608,6 +639,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
               customScale={htmlCustomScale}
               onScaleChange={setHtmlScale}
               onCustomScaleChange={handleHtmlCustomScaleChange}
+              trustedScript={showDesignWorkbench
+                ? designRuntimeScriptRef.current || (designRuntimeScriptRef.current = buildDesignRuntimeScript())
+                : ''}
             />
           );
         }
@@ -620,10 +654,11 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           return (
             <div className="flex flex-col gap-2 h-full">
               {vis.warning && <div className={`flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
-              <iframe sandbox="allow-same-origin allow-scripts" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
-                data-testid="artifact-html-preview-frame"
-                onLoad={(e) => handlePreviewFrameLoad(e.currentTarget)}
-                srcDoc={(vis.html || '') + OFFICE_HTML_STYLE} />
+              <ScaledHtmlPreview
+                html={(vis.html || '') + OFFICE_HTML_STYLE}
+                onFrameLoad={handlePreviewFrameLoad}
+                onOpenExternal={(url) => bridge.artifacts.openUserExternalUrl(url)}
+              />
             </div>
           );
         }
@@ -647,7 +682,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
             {vis && dependencyCheckButton(vis.warning)}
             {(!isWeb || canDownloadArtifacts) && (
-              <button onClick={() => sel && bridge.artifacts.openArtifactExternal(sel.path)} className={cardBtnCls('primary')}>
+              <button onClick={openSelectedArtifact} className={cardBtnCls('primary')}>
                 {t.apBtnOpen}
               </button>
             )}
@@ -714,7 +749,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                             {t.apLastMod} {info ? apFormatMtime(info.modified) : '—'}
                           </div>
                         </div>
-                        {canOpenContainingFolder && <button title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
+                        {canOpenContainingFolder && <button title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.artifacts.openContainingFolder(a.path, a.sessionId || activeSessionId); }}
                           className={`opacity-0 group-hover:opacity-100 w-8 h-8 rounded-full flex items-center justify-center hover:bg-white text-[#444746] dark:hover:bg-[#1E1F20] dark:text-[#C4C7C5]`}><FolderOpen size={16} /></button>
                         }
                       </div>
@@ -894,13 +929,13 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     ) : null}
                     <div className="mt-3 flex items-center gap-2">
                       {(!isWeb || canDownloadArtifacts) && (
-                        <button onClick={() => bridge.artifacts.openArtifactExternal(sel.path)}
+                        <button onClick={openSelectedArtifact}
                           className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls('primary')}`}>
                           <ExternalLink size={15} /> {t.apBtnOpen}
                         </button>
                       )}
                       {canOpenContainingFolder && (
-                        <button onClick={() => bridge.artifacts.openContainingFolder(sel.path)}
+                        <button onClick={() => bridge.artifacts.openContainingFolder(sel.path, sel.sessionId)}
                           className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls()}`}>
                           <FolderOpen size={15} /> {t.apBtnLocate}
                         </button>
