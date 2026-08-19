@@ -31,12 +31,13 @@ vm.runInContext(
   `this.reasoningEffortTiersForModel = reasoningEffortTiersForModel;\n` +
   `this.defaultReasoningEffortForModel = defaultReasoningEffortForModel;\n` +
   `this.reasoningEffortForModelSwitch = reasoningEffortForModelSwitch;\n` +
-  `this.normalizeStoredReasoningEffort = normalizeStoredReasoningEffort;\n`,
+  `this.normalizeStoredReasoningEffort = normalizeStoredReasoningEffort;\n` +
+  `this.catalogImageCapableForModel = catalogImageCapableForModel;\n`,
   ctx,
   { filename: srcPath },
 );
 
-const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort } = ctx;
+const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, catalogImageCapableForModel } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -412,6 +413,53 @@ test('手输改字段（model ID / base_url）归一只修正失效值、保留�
   // openai_compatible 改 base_url 到官方 deepseek 端点：档位从无到有，存量 null 回落默认 high
   const deepseekByUrl = { preset: 'openai_compatible', model: 'my-model', base_url: 'https://api.deepseek.com' };
   assert.strictEqual(normalizeStoredReasoningEffort(deepseekByUrl, null), 'high');
+});
+
+test('目录视觉能力标注(imageCapable):形状合法且查询只命中已标注条目', () => {
+  const annotatedKeys = [];
+  const annotatedIds = new Set();
+  for (const scope of ['local', 'cloud']) {
+    for (const group of MODEL_CATALOG[scope] || []) {
+      for (const item of group.items || []) {
+        if (item.imageCapable === undefined) continue;
+        assert.ok(item.imageCapable === true || item.imageCapable === false,
+          `imageCapable 只能是 true/false:${group.key}/${item.model}`);
+        assert.ok(!item.custom, `custom 条目不应标注视觉能力:${group.key}`);
+        assert.ok(item.model, `标注条目必须有模型 ID:${group.key}`);
+        // 同一模型可出现在多个 provider 组(如 MiniMax-M3 中国/国际版),按组内唯一校验。
+        annotatedKeys.push(`${group.key}/${item.model}`);
+        annotatedIds.add(item.model);
+      }
+    }
+  }
+  assert.ok(annotatedKeys.length > 0, '目录至少保留一条视觉能力标注');
+  assert.strictEqual(new Set(annotatedKeys).size, annotatedKeys.length, '同组内标注模型 ID 不得重复');
+  // 跨组同 ID(含 legacyAliases)的显式标注必须一致:查询取第一个有标注的命中项,
+  // 各组标注冲突时会静默依赖遍历序,在此提前拦截。
+  const annotatedById = new Map();
+  for (const scope of ['local', 'cloud']) {
+    for (const group of MODEL_CATALOG[scope] || []) {
+      for (const item of group.items || []) {
+        if (item.imageCapable === undefined || item.custom) continue;
+        for (const id of [item.model, ...(item.legacyAliases || [])]) {
+          const known = annotatedById.get(id);
+          assert.ok(known === undefined || known === item.imageCapable,
+            `模型 ${id} 在多个组的 imageCapable 标注冲突`);
+          if (known === undefined) annotatedById.set(id, item.imageCapable);
+        }
+      }
+    }
+  }
+  // 查询:已标注命中 true;未标注/未命中/空值落 null(由「自动处理」链兜底)。
+  // 注:当前标注全部为 true;若未来引入 imageCapable:false 条目需同步放宽此断言。
+  for (const id of annotatedIds) {
+    assert.strictEqual(catalogImageCapableForModel(id), true, `${id} 应命中标注`);
+  }
+  assert.strictEqual(catalogImageCapableForModel('deepseek-v4-pro'), null);
+  assert.strictEqual(catalogImageCapableForModel('glm-5.2'), null);
+  assert.strictEqual(catalogImageCapableForModel('完全不存在的模型'), null);
+  assert.strictEqual(catalogImageCapableForModel(''), null);
+  assert.strictEqual(catalogImageCapableForModel(null), null);
 });
 
 console.log(`\nmodel_catalog_grouping: ${pass} passed, ${fail} failed`);

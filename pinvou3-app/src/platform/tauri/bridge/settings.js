@@ -238,15 +238,10 @@
   // model 对象字段须是 snake_case(SavedModel serde):
   // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action,image_capability_override,vision_model_id}
  async function saveModel(model) {
-   // probe_image_capability 是保存命令的独立参数(「自动探测」档),不落 SavedModel。
-   const probeImageCapability = !!model.probe_image_capability;
-   const clean = Object.assign({}, model);
-   delete clean.probe_image_capability;
-   const outcome = await invoke("save_model", { model: clean, probeImageCapability: probeImageCapability });
+   await invoke("save_model", { model: model });
    await loadModels();
    await loadSettings();
    await loadEffectiveModelConfig();
-   return outcome || null;
  }
  async function revealModelApiKey(id) {
    return await invoke("reveal_model_api_key", { id: id });
