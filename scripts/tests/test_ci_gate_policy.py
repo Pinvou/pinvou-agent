@@ -223,6 +223,9 @@ class CiGatePolicyTests(unittest.TestCase):
             "\n  fast-gate:", maxsplit=1
         )[0]
         self.assertIn("benchmark:", changes)
+        self.assertIn("benchmark_cli:", changes)
+        self.assertIn("benchmark_headless:", changes)
+        self.assertIn("benchmark_codewhale:", changes)
         self.assertIn("- 'pinvou-cli/**'", changes)
         self.assertIn(
             "- 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/headless_bridge.rs'",
@@ -240,6 +243,20 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("cargo test --manifest-path CodeWhale/Cargo.toml", benchmark)
         self.assertIn("-p codewhale-tui --lib --locked forkguard_", benchmark)
         self.assertIn("            CodeWhale", benchmark)
+        self.assertIn("needs.changes.outputs.benchmark_cli == 'true'", benchmark)
+        self.assertIn("needs.changes.outputs.benchmark_headless == 'true'", benchmark)
+        self.assertIn("needs.changes.outputs.benchmark_codewhale == 'true'", benchmark)
+        self.assertIn("github.event_name == 'merge_group'", benchmark)
+        self.assertIn("ci:full-benchmark", benchmark)
+
+        all_features_step = benchmark.split(
+            "      - name: benchmark workspace 全特性测试", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn("if:", all_features_step)
+        benchmark_filter = changes.split("benchmark:", 1)[1].split(
+            "release_contract:", 1
+        )[0]
+        self.assertNotIn(".github/workflows/pr-check.yml", benchmark_filter)
 
         required_gate = self.pr_workflow.split("\n  required-gate:", maxsplit=1)[1]
         self.assertIn("- benchmark-test", required_gate)

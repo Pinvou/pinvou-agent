@@ -126,6 +126,9 @@ jobs:
       knowledge_rust: ${{ steps.filter.outputs.knowledge_rust }}
       knowledge_dependencies: ${{ steps.filter.outputs.knowledge_dependencies }}
       benchmark: ${{ steps.filter.outputs.benchmark }}
+      benchmark_cli: ${{ steps.filter.outputs.benchmark_cli }}
+      benchmark_headless: ${{ steps.filter.outputs.benchmark_headless }}
+      benchmark_codewhale: ${{ steps.filter.outputs.benchmark_codewhale }}
       release_contract: ${{ steps.filter.outputs.release_contract }}
       pet: ${{ steps.filter.outputs.pet }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -177,7 +180,17 @@ jobs:
               - 'pinvou3-app/src-tauri/Cargo.toml'
               - 'pinvou3-app/src-tauri/Cargo.lock'
               - 'CodeWhale'
-              - '.github/workflows/pr-check.yml'
+            benchmark_cli:
+              - 'pinvou-cli/**'
+            benchmark_headless:
+              - 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/headless_bridge.rs'
+              - 'pinvou3-app/src-tauri/tests/headless_bridge_contract.rs'
+              - 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/**'
+              - 'pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs'
+              - 'pinvou3-app/src-tauri/Cargo.toml'
+              - 'pinvou3-app/src-tauri/Cargo.lock'
+            benchmark_codewhale:
+              - 'CodeWhale'
             release_contract:
               - 'VERSION'
               - 'scripts/sync-version.mjs'
@@ -1018,7 +1031,7 @@ jobs:
   benchmark-test:
     name: benchmark-test
     needs: changes
-    if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.benchmark == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.benchmark == 'true' || contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark')) && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -1057,20 +1070,24 @@ jobs:
           shared-key: benchmark-test
 
       - name: benchmark workspace 全特性测试
+        if: ${{ github.event_name == 'merge_group' || github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark') }}
         shell: bash
         run: cargo test --manifest-path pinvou-cli/Cargo.toml --all-features
 
       - name: benchmark workspace 无 product-backend 测试
+        if: ${{ needs.changes.outputs.benchmark_cli == 'true' || github.event_name == 'merge_group' || github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark') }}
         shell: bash
         run: cargo test --manifest-path pinvou-cli/Cargo.toml --no-default-features
 
       - name: headless benchmark 契约测试
+        if: ${{ needs.changes.outputs.benchmark_headless == 'true' || github.event_name == 'merge_group' || github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark') }}
         shell: bash
         run: >-
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
           --features benchmark-hooks --test headless_bridge_contract
 
       - name: CodeWhale 受限工具安全回归
+        if: ${{ needs.changes.outputs.benchmark_codewhale == 'true' || github.event_name == 'merge_group' || github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark') }}
         shell: bash
         run: >-
           cargo test --manifest-path CodeWhale/Cargo.toml
