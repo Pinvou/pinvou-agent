@@ -1022,6 +1022,13 @@ jobs:
     if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.benchmark == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      # 同 windows-rust-test:经 RUSTC_WRAPPER 注入 rustc-stack-wrapper.exe,
+      # 只在编译期 rustc 注入 RUST_MIN_STACK=16MiB。app 工作区 dev profile 对
+      # 依赖开 O2 后,codewhale-tui 的 codegen 线程在默认栈下溢出
+      # (STATUS_STACK_OVERFLOW,CI 实证)。.exe 经 CreateProcess 直启,规避
+      # cmd 8191 字符命令行上限;必须用 ${{ github.workspace }} 绝对路径。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1034,6 +1041,12 @@ jobs:
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      # 编译 Windows 专用 .exe 栈 wrapper(源码 scripts/rustc-stack-wrapper.rs)。
+      # 直接调 rustc 编译、不经 cargo,故不受本 job 的 RUSTC_WRAPPER 影响。
+      - name: 编译 Windows 栈 wrapper(.exe)
+        shell: bash
+        run: rustc -O pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs -o pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
