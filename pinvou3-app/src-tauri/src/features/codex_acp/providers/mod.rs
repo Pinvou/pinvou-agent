@@ -1089,7 +1089,10 @@ mod tests {
     #[test]
     fn store_roundtrip_and_atomic() {
         let current = std::thread::current();
-        let test = current.name().unwrap_or_default();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
         let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -1145,7 +1148,10 @@ mod tests {
     #[test]
     fn remove_clears_current_candidate() {
         let current = std::thread::current();
-        let test = current.name().unwrap_or_default();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
         let dir = std::env::temp_dir().join(format!("acp-providers-test-rm-{test}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
