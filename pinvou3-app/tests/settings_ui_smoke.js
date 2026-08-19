@@ -126,9 +126,6 @@ function injectSource() {
     var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
     var imageTestResponse = { status: 'supported', verified: true, summary: '红色', http_status: 200 };
     var imageTestDelay = 0; // 模拟探测耗时,便于断言行内忙转态
-    // 自动探测保存回填 mock:null=不模拟探测(直接保存 auto);设置后 save_model
-    // 按该结果回填 override 并返回 SaveModelOutcome(模拟后端 probe_and_fill)。
-    var imageProbeResponse = null;
     // save_model 失败注入:非 null 时 reject 该错误,模拟连接/写盘失败。
     var saveModelError = null;
     var dependencyCheckResponse = [];
@@ -185,18 +182,8 @@ function injectSource() {
             has_secret: !!args.model.api_key,
             credential_state: args.model.preset === 'local_vllm' ? 'missing' : 'configured',
           });
-          // 模拟后端「自动探测」:auto + probe 请求 → 按 imageProbeResponse 回填。
-          if (imageProbeResponse && args.model.image_capability_override === 'auto' && args.probeImageCapability) {
-            if (imageProbeResponse.applied_override) savedModel.image_capability_override = imageProbeResponse.applied_override;
-            // 明确不支持(unsupported/unverified):后端不写盘,返回待决策信号。
-            if (imageProbeResponse.status === 'unsupported' || imageProbeResponse.status === 'unverified') {
-              return Promise.resolve({ image_probe: imageProbeResponse });
-            }
-            models = models.filter(function (model) { return model.id !== savedModel.id; }).concat(savedModel);
-            return Promise.resolve({ image_probe: imageProbeResponse });
-          }
           models = models.filter(function (model) { return model.id !== savedModel.id; }).concat(savedModel);
-          return Promise.resolve({ image_probe: null });
+          return Promise.resolve(null);
         case 'delete_model':
           models = models.filter(function (model) { return model.id !== args.id; });
           if (activeModelId === args.id) activeModelId = models[0] && models[0].id;
@@ -275,7 +262,6 @@ function injectSource() {
       setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
       setImageTestResponse: function (next) { imageTestResponse = Object.assign({}, next || {}); },
       setImageTestDelay: function (ms) { imageTestDelay = Number(ms) || 0; },
-      setImageProbeResponse: function (next) { imageProbeResponse = next || null; },
       setSaveModelError: function (message) { saveModelError = message || null; },
       setModelImageCapability: function (id, override) {
         models = models.map(function (m) { return m.id === id ? Object.assign({}, m, { image_capability_override: override }) : m; });
@@ -925,29 +911,29 @@ async function modalWidth(page, headingText) {
     const capabilityToggle = root && root.querySelector('[data-testid="image-capability-toggle"]');
     const visionToggle = root && root.querySelector('[data-testid="vision-model-toggle"]');
     return {
-      hasCapabilityRow: !!capabilityToggle && (capabilityToggle.textContent || '').includes('保存时检测'),
+      hasCapabilityRow: !!capabilityToggle && (capabilityToggle.textContent || '').includes('自动处理'),
       hasVisionRow: !!visionToggle && (visionToggle.textContent || '').includes('无'),
       hasHelpText: text.includes('当前模型不能看图时，用该模型分析图片'),
       // §11.8/§11.9 静态隐私说明:云端外发/本地不离机。
       hasPrivacyText: text.includes('使用云端模型时，图片会发送给你选择的模型服务商') && text.includes('本地模型图片不离开本机'),
     };
   });
-  rec('⑦.img.1 编辑模型展示图片输入能力/视觉模型控件、默认保存时检测/无及静态隐私说明', Object.values(imageSectionDefault).every(Boolean), JSON.stringify(imageSectionDefault));
-  // 图片能力四档:保存时检测/支持图片/不支持图片/自动处理。
+  rec('⑦.img.1 编辑模型展示图片输入能力/视觉模型控件、默认自动处理/无及静态隐私说明', Object.values(imageSectionDefault).every(Boolean), JSON.stringify(imageSectionDefault));
+  // 图片能力三档:自动处理/支持图片/不支持图片(「保存时检测」档已下线)。
   await page.click('[data-testid="image-capability-toggle"]');
   await sleep(200);
-  const imageCapabilityOptions4 = await page.evaluate(() => {
+  const imageCapabilityOptions3 = await page.evaluate(() => {
     const root = document.querySelector('[data-testid="model-form-dialog"]');
     return root ? [...root.querySelectorAll('[data-testid^="image-capability-option-"]')].map(node => node.getAttribute('data-testid')) : [];
   });
   await page.click('[data-testid="image-capability-toggle"]');
   await sleep(200);
-  rec('⑦.img.1b 图片能力四档齐全(auto/enabled/disabled/pinvou)',
-    imageCapabilityOptions4.includes('image-capability-option-auto')
-      && imageCapabilityOptions4.includes('image-capability-option-enabled')
-      && imageCapabilityOptions4.includes('image-capability-option-disabled')
-      && imageCapabilityOptions4.includes('image-capability-option-pinvou'),
-    JSON.stringify(imageCapabilityOptions4));
+  rec('⑦.img.1b 图片能力三档齐全(pinvou/enabled/disabled),不再提供保存时检测',
+    imageCapabilityOptions3.includes('image-capability-option-pinvou')
+      && imageCapabilityOptions3.includes('image-capability-option-enabled')
+      && imageCapabilityOptions3.includes('image-capability-option-disabled')
+      && !imageCapabilityOptions3.includes('image-capability-option-auto'),
+    JSON.stringify(imageCapabilityOptions3));
   await page.click('[data-testid="image-capability-toggle"]');
   await sleep(200);
   await page.click('[data-testid="image-capability-option-enabled"]');
@@ -1118,10 +1104,10 @@ async function modalWidth(page, headingText) {
       && imageTestSupported.args.baseUrl === 'https://api.deepseek.com'
       && imageTestSupported.args.apiKey === '',
     JSON.stringify(imageTestSupported));
-  // 档位切回「自动判断」,supported 结果应提示可设为「支持图片」。
+  // 档位切回「自动处理」,supported 结果应提示可设为「支持图片」。
   await page.click('[data-testid="image-capability-toggle"]');
   await sleep(200);
-  await page.click('[data-testid="image-capability-option-auto"]');
+  await page.click('[data-testid="image-capability-option-pinvou"]');
   await sleep(200);
   await page.click('[data-testid="image-capability-test"]');
   await sleep(300);
@@ -1131,7 +1117,7 @@ async function modalWidth(page, headingText) {
     const text = result ? (result.textContent || '') : '';
     return { text: text, showsEnableHint: text.includes('可在上方将图片输入能力设为') };
   });
-  rec('⑦.img.8 档位为自动时 supported 结果提示可设为「支持图片」', imageTestAutoHint.showsEnableHint, imageTestAutoHint.text);
+  rec('⑦.img.8 档位为自动处理时 supported 结果提示可设为「支持图片」', imageTestAutoHint.showsEnableHint, imageTestAutoHint.text);
   await page.evaluate(() => window.__SETTINGS_TEST__.setImageTestResponse({ status: 'unsupported', verified: false, summary: 'this model does not support image input', http_status: 400 }));
   await page.click('[data-testid="image-capability-test"]');
   await sleep(300);
@@ -1188,26 +1174,7 @@ async function modalWidth(page, headingText) {
   await clickExact(page, '取消');
   await sleep(200);
 
-  // ⑦.img.12-14 「保存时检测」:检测支持 → 直接回填关闭;明确不支持 →
-  // 弹窗保持三选一决策(再次检测/去配置视觉模型/直接保存落自动处理);
-  // error/连接不通 → 落「自动处理」直接关闭。
-  const setCapabilityAndProbe = async (optionKey, probeResponse) => {
-    await clickRowAction(page, 'deepseek-v4-pro', '编辑');
-    await sleep(300);
-    await page.click('[data-testid="image-capability-toggle"]');
-    await sleep(200);
-    await page.click(`[data-testid="image-capability-option-${optionKey}"]`);
-    await sleep(200);
-    await page.evaluate(response => window.__SETTINGS_TEST__.setImageProbeResponse(response), probeResponse);
-  };
-  const probeSavedState = () => page.evaluate(() => {
-    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
-    return {
-      dialogClosed: !document.querySelector('[data-testid="model-form-dialog"]'),
-      probed: !!(call && call.args && call.args.probeImageCapability === true),
-      savedWithAuto: !!(call && call.args && call.args.model.image_capability_override === 'auto'),
-    };
-  });
+  // ⑦.img.12 保存不再自动检测:任意档位保存都不带探测参数、直接落盘关闭。
   const echoOverride = async () => {
     await clickRowAction(page, 'deepseek-v4-pro', '编辑');
     await sleep(300);
@@ -1220,99 +1187,35 @@ async function modalWidth(page, headingText) {
     await sleep(200);
     return state;
   };
-  // 明确不支持:后端不写盘,弹窗保持 + 三选一;直接保存落「自动处理」。
-  await setCapabilityAndProbe('auto', { status: 'unsupported', applied_override: null, summary: 'this model does not support image input', http_status: 400 });
-  // 快照已保存模型:探测 unsupported 时后端跳过写盘,mock 同口径,保存后应逐字节不变。
-  const modelsBeforeDecision = await page.evaluate(() => JSON.stringify(window.__SETTINGS_TEST__.models()));
-  await page.click('[data-testid="model-form-save"]');
-  await sleep(400);
-  const decisionShown = await page.evaluate(before => {
-    const root = document.querySelector('[data-testid="model-form-dialog"]');
-    const decision = root && root.querySelector('[data-testid="image-probe-decision"]');
-    const decisionText = decision ? (decision.textContent || '') : '';
-    const saveCall = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
-    return {
-      dialogOpen: !!root,
-      decisionShown: !!(decision && decisionText.includes('检测到该模型未能识别图片')),
-      decisionHasDetail: decisionText.includes('this model does not support image input'),
-      noDuplicatedPrefix: !decisionText.includes('检测到该模型未能识别图片（检测到'),
-      retestBtn: !!root.querySelector('[data-testid="image-probe-retest"]'),
-      configureBtn: !!root.querySelector('[data-testid="image-probe-configure-vision"]'),
-      saveAutoBtn: !!root.querySelector('[data-testid="image-probe-save-auto"]'),
-      probed: !!(saveCall && saveCall.args && saveCall.args.probeImageCapability === true),
-      savedWithAuto: !!(saveCall && saveCall.args && saveCall.args.model.image_capability_override === 'auto'),
-      // 后端 unsupported 不写盘:已保存模型列表与保存前快照完全一致
-      // (mock 在 unsupported 分支不落 models,与后端 save_model 跳过写盘同口径)。
-      modelListUnchanged: JSON.stringify(window.__SETTINGS_TEST__.models()) === before,
-    };
-  }, modelsBeforeDecision);
-  rec('⑦.img.12 保存时检测明确不支持:弹窗保持、文案不重复并给出三选一决策',
-    decisionShown.dialogOpen && decisionShown.decisionShown && decisionShown.decisionHasDetail
-      && decisionShown.noDuplicatedPrefix
-      && decisionShown.retestBtn && decisionShown.configureBtn && decisionShown.saveAutoBtn
-      && decisionShown.probed && decisionShown.savedWithAuto,
-    JSON.stringify(decisionShown));
-  await page.click('[data-testid="image-probe-save-auto"]');
-  await sleep(400);
-  const savedAsAuto = await page.evaluate(() => {
-    const saveCall = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
-    return {
-      dialogClosed: !document.querySelector('[data-testid="model-form-dialog"]'),
-      savedWithPinvou: !!(saveCall && saveCall.args && saveCall.args.model.image_capability_override === 'pinvou'),
-      notProbed: !(saveCall && saveCall.args && saveCall.args.probeImageCapability),
-    };
-  });
-  rec('⑦.img.12b 直接保存落「自动处理」且不再检测并关闭弹窗',
-    savedAsAuto.dialogClosed && savedAsAuto.savedWithPinvou && savedAsAuto.notProbed,
-    JSON.stringify(savedAsAuto));
-  const echoAuto = await echoOverride();
-  rec('⑦.img.12c 重开表单显示「自动处理」', echoAuto.includes('自动处理'), echoAuto);
-
-  // 连接通且识别出测试色 → 直接回填「支持图片」并关闭。
-  await setCapabilityAndProbe('auto', { status: 'supported', applied_override: 'enabled', summary: '红色', http_status: 200 });
-  await page.click('[data-testid="model-form-save"]');
-  await sleep(400);
-  const probeSupported = await probeSavedState();
-  rec('⑦.img.13 保存时检测通过回填「支持图片」且弹窗直接关闭',
-    probeSupported.probed && probeSupported.savedWithAuto && probeSupported.dialogClosed,
-    JSON.stringify(probeSupported));
-  const echoEnabled = await echoOverride();
-  rec('⑦.img.13b 检测回填持久化:重开表单显示「支持图片」', echoEnabled.includes('支持图片'), echoEnabled);
-
-  // 连接不通/瞬时故障 → 无法确认 → 落「自动处理」直接关闭。
-  await setCapabilityAndProbe('auto', { status: 'unknown', applied_override: 'pinvou', summary: 'connection refused', http_status: null });
-  await page.click('[data-testid="model-form-save"]');
-  await sleep(400);
-  const probeUnknown = await probeSavedState();
-  rec('⑦.img.14 保存时检测连接不通回填「自动处理」且弹窗直接关闭',
-    probeUnknown.probed && probeUnknown.savedWithAuto && probeUnknown.dialogClosed,
-    JSON.stringify(probeUnknown));
-  const echoAuto2 = await echoOverride();
-  rec('⑦.img.14b 检测回填持久化:重开表单显示「自动处理」', echoAuto2.includes('自动处理'), echoAuto2);
-
-  // 未决策即取消不写盘:先把已保存档位固化为「支持图片」(enabled,非 auto 档
-  // 保存不探测、直接落盘),再改 auto 档探测「未能正确识别」→ 后端不落盘、
-  // 弹窗保持 → 点「取消」放弃 → 重开表单仍显示基线「支持图片」(而非被探测
-  // 结果污染成别的档位)。注:必须先固化基线,否则上一轮(⑦.img.14)已把
-  // 已保存值落成「自动处理」,取消后回显「自动处理」与「不写盘」不可区分。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');
   await sleep(300);
   await page.click('[data-testid="image-capability-toggle"]');
   await sleep(200);
-  await page.click('[data-testid="image-capability-option-enabled"]');
+  await page.click('[data-testid="image-capability-option-pinvou"]');
   await sleep(200);
-  await page.evaluate(() => window.__SETTINGS_TEST__.setImageProbeResponse(null));
   await page.click('[data-testid="model-form-save"]');
   await sleep(400);
-  await setCapabilityAndProbe('auto', { status: 'unverified', applied_override: null, summary: '未能正确识别图像，原因未知（模型回复：unknown）', http_status: 200 });
-  await page.click('[data-testid="model-form-save"]');
-  await sleep(400);
-  await page.click('[data-testid="model-form-cancel"]');
-  await sleep(200);
-  const echoAfterAbort = await echoOverride();
-  rec('⑦.img.12d 未决策即取消不写盘:重开表单仍显示基线「支持图片」',
-    echoAfterAbort.includes('支持图片') && !echoAfterAbort.includes('保存时检测'),
-    echoAfterAbort);
+  const savedPinvou = await page.evaluate(() => {
+    const saveCall = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return {
+      dialogClosed: !document.querySelector('[data-testid="model-form-dialog"]'),
+      noProbeArg: !(saveCall && saveCall.args && saveCall.args.probeImageCapability),
+      savedWithPinvou: !!(saveCall && saveCall.args && saveCall.args.model.image_capability_override === 'pinvou'),
+    };
+  });
+  rec('⑦.img.12 「自动处理」档保存:不探测、直接落盘关闭',
+    savedPinvou.dialogClosed && savedPinvou.noProbeArg && savedPinvou.savedWithPinvou,
+    JSON.stringify(savedPinvou));
+  const echoPinvou = await echoOverride();
+  rec('⑦.img.12b 重开表单回显「自动处理」', echoPinvou.includes('自动处理'), echoPinvou);
+
+  // 存量「保存时检测」(auto)档残留:重开表单按「自动处理」回显。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setModelImageCapability(
+    window.__SETTINGS_TEST__.models().find(model => model.model === 'deepseek-v4-pro').id, 'auto'));
+  const echoLegacyAuto = await echoOverride();
+  rec('⑦.img.12c 存量 auto 档残留按「自动处理」回显',
+    echoLegacyAuto.includes('自动处理') && !echoLegacyAuto.includes('保存时检测'),
+    echoLegacyAuto);
 
   // 保存失败(连接/写盘错误):弹窗保持 + 行内错误提示,表单输入不丢弃;
   // 修正后重试成功正常关闭(不再依赖不存在的"调用链处理")。
@@ -1329,14 +1232,48 @@ async function modalWidth(page, headingText) {
       errorShown: !!(error && (error.textContent || '').includes('磁盘写入失败')),
     };
   });
-  rec('⑦.img.15 保存失败:弹窗保持并显示行内错误',
+  rec('⑦.img.13 保存失败:弹窗保持并显示行内错误',
     saveFailed.dialogOpen && saveFailed.errorShown,
     JSON.stringify(saveFailed));
   await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelError(null));
   await page.click('[data-testid="model-form-save"]');
   await sleep(400);
   const retrySaved = await page.evaluate(() => !document.querySelector('[data-testid="model-form-dialog"]'));
-  rec('⑦.img.15b 修正后重试保存成功关闭弹窗', retrySaved, String(retrySaved));
+  rec('⑦.img.13b 修正后重试保存成功关闭弹窗', retrySaved, String(retrySaved));
+
+  // ⑦.img.14 目录视觉能力标注自动填写「图片输入能力」:组默认首项 k3 未标注
+  // → 「自动处理」;换已标注的 kimi-for-coding → 预填「支持图片」;手动改档后
+  // 再换已标注条目不再跟随。
+  const capabilityToggleText = () => page.evaluate(() => {
+    const toggle = document.querySelector('[data-testid="model-form-dialog"] [data-testid="image-capability-toggle"]');
+    return toggle ? (toggle.textContent || '') : '';
+  });
+  await clickExact(page, '添加模型');
+  await sleep(250);
+  await clickExact(page, 'Kimi Coding Plan');
+  await sleep(300);
+  const capGroupDefault = await capabilityToggleText();
+  await clickModalExact(page, '模型');
+  await sleep(250);
+  await clickModalExact(page, 'kimi-for-coding');
+  await sleep(250);
+  const capAnnotated = await capabilityToggleText();
+  await page.click('[data-testid="image-capability-toggle"]');
+  await sleep(200);
+  await page.click('[data-testid="image-capability-option-disabled"]');
+  await sleep(200);
+  await clickModalExact(page, '模型');
+  await sleep(250);
+  await clickModalExact(page, 'kimi-for-coding-highspeed');
+  await sleep(250);
+  const capAfterTouched = await capabilityToggleText();
+  rec('⑦.img.14 目录视觉能力标注自动填写,手动改档后不再跟随',
+    capGroupDefault.includes('自动处理')
+      && capAnnotated.includes('支持图片')
+      && capAfterTouched.includes('不支持图片'),
+    JSON.stringify({ capGroupDefault, capAnnotated, capAfterTouched }));
+  await clickExact(page, '取消');
+  await sleep(200);
 
   await clickSettingsSection(page, '搜索');
   const searchList = await page.evaluate(() => {

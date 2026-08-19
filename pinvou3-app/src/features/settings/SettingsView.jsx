@@ -17,6 +17,7 @@ import {
   BRAND_ICON_BY_PRESET, BRAND_ICON_BY_VENDOR,
   presetOptionsI18n, presetProviderLabel,
   normalizedProviderBaseUrl, findCloudProviderForModel, providerLabelForModel, isCodingPlanModel, catalogItemMatchesModel,
+  catalogImageCapableForModel,
   groupModelsForSelector, selectorMainLabel, selectorSubLabel,
   reasoningEffortTiersForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort,
 } from './model-catalog.js';
@@ -29,6 +30,13 @@ import { ProvidersSection } from './ProvidersSection.jsx';
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
+}
+
+// 目录视觉能力标注 → 表单「图片输入能力」档位:
+// true→enabled(支持图片),false→disabled(不支持图片),未命中/未标注→pinvou(自动处理)。
+function imageCapabilityForCatalogModel(model) {
+  const flag = catalogImageCapableForModel(model);
+  return flag === true ? 'enabled' : flag === false ? 'disabled' : 'pinvou';
 }
 
 function visibleSortedModels(models) {
@@ -1304,15 +1312,22 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const [detectResult, setDetectResult] = useState(null); // { candidates } | { error } | null
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
-      // 图片输入能力三档(auto/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
-      const [imageCapability, setImageCapability] = useState(initial.image_capability_override || 'auto');
+      // 图片输入能力三档(pinvou/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
+      // 已下线的「保存时检测」(auto)档残留值按「自动处理」(pinvou)回显。
+      // 未人工钉死(非 enabled/disabled)时按目录视觉能力标注预填:命中已验证
+      // 多模态条目预填「支持图片」,显式标注不支持预填「不支持图片」,未命中/
+      // 未标注保持「自动处理」。
+      const pinnedImageCapability = initial.image_capability_override === 'enabled'
+        || initial.image_capability_override === 'disabled';
+      const [imageCapability, setImageCapability] = useState(
+        pinnedImageCapability
+          ? initial.image_capability_override
+          : imageCapabilityForCatalogModel(initial.model));
+      // 用户手动改过档位后不再随模型 ID/目录项自动填写,避免覆盖显式选择。
+      const [imageCapabilityTouched, setImageCapabilityTouched] = useState(pinnedImageCapability);
       const [visionModelId, setVisionModelId] = useState(initial.vision_model_id || '');
       const [imageCapabilityPickerOpen, setImageCapabilityPickerOpen] = useState(false);
-      // 「自动探测」保存时按钮转「正在探测图片能力…」,探测随保存完成、弹窗直接关闭。
       const [savingModel, setSavingModel] = useState(false);
-      // 「保存时检测」检测到明确不支持时的待决策信号(ImageProbeOutcome);
-      // 非空时弹窗保持,给出再次检测/去配置视觉模型/直接保存(自动处理)三选一。
-      const [probeDecision, setProbeDecision] = useState(null);
       // 保存失败(连接/写盘错误)行内提示:非空时弹窗保持,交用户修正后重试,
       // 不静默关闭丢弃表单输入。
       const [saveError, setSaveError] = useState('');
@@ -1390,6 +1405,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         setEndpointMode(group.endpointMode || '');
         setBaseUrl(nextBaseUrl);
         setModel(nextModel);
+        // 目录项切换是显式换模型:未手动改过档位时按新条目的视觉能力标注预填。
+        if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(nextModel));
         if (!nameTouched) setName(p === 'local_vllm' ? settingsCopy.localModelName(nextModel) : (item.custom ? group.title : item.title));
         setContextWindow(p === 'local_vllm' ? '262144' : '');
         setMaxOutput(p === 'local_vllm' ? '24576' : '');
@@ -1419,6 +1436,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       function handleModelIdChange(value) {
         setModel(value);
         renormalizeReasoningEffort({ preset, model: value, vendor, base_url: baseUrl });
+        // 手输模型 ID 命中目录标注同样预填;手动改过档位后不再跟随。
+        if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(value));
       }
       function handleBaseUrlChange(value) {
         setBaseUrl(value);
@@ -1558,10 +1577,9 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         }
         setShowKey(nextVisible);
       }
-      // 「保存时检测」流程:检测支持 → 回填落盘后直接关闭;检测明确不支持 →
-      // 后端**不落盘**,弹窗保持并给出三选一(再次检测/去配置视觉模型/
-      // 直接保存落自动处理);error/连接不通 → 后端已落「自动处理」,直接关闭。
-      async function doSave(skipProbe) {
+      // 保存只落盘,不做连接/识图探测:图片输入能力默认「自动处理」
+      // (pinvou 档,内置已验证能力表兜底);需要确证时用表单内「测试图片能力」。
+      async function doSave() {
         if (!canSave || savingModel) return;
         const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
         const contextTokens = Number.parseInt(contextWindow, 10);
@@ -1575,7 +1593,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         setSavingModel(true);
         setSaveError('');
         try {
-          const outcome = await onSave({
+          await onSave({
             id: id, name: saveName, preset: preset,
             context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
             max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
@@ -1587,20 +1605,10 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             vendor: vendor || null,
             endpoint_mode: endpointMode || null,
             // 图片能力/视觉模型(阶段 G):选了自身等同未配置。
-            // 用户「直接保存(自动处理)」时带 pinvou 档且不再检测。
-            image_capability_override: skipProbe ? 'pinvou' : (imageCapability || 'auto'),
+            image_capability_override: imageCapability || 'pinvou',
             vision_model_id: visionModelId && visionModelId !== id ? visionModelId : null,
-            // 「保存时检测」档:后端在保存时检测连接+识图,按结果回填。
-            probe_image_capability: !skipProbe && imageCapability === 'auto',
           });
-          const probe = outcome && outcome.image_probe;
-          if (probe && (probe.status === 'unsupported' || probe.status === 'unverified')) {
-            // 明确不支持:后端未写盘,弹窗保持,交用户决策。
-            setProbeDecision(probe);
-          } else {
-            // supported 已回填落盘 / error/unknown 已落自动处理 / 无检测:直接关闭。
-            onCancel();
-          }
+          onCancel();
         } catch (e) {
           // 保存失败(连接/写盘错误):保持弹窗并给行内提示,不丢弃表单输入。
           setSaveError(String(e && e.message ? e.message : e));
@@ -1710,6 +1718,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         setLocalKeyEnabled(false);
         setCustomModel(true);
         setPickerOpen(false);
+        // 手动添加本地模型是显式切换:未手动改过档位时回到「自动处理」。
+        if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(''));
         // 本地模型 → 手动添加是显式切换 route：丢弃草稿残留的思考深度，回落到 vLLM
         // 默认 off（防 SSE timeout）。否则新建 DeepSeek 草稿初始化的 high 会被当成
         // 合法 vLLM 档位保留，保存时显式写入 reasoning_effort=high，绕过桥接层
@@ -1740,6 +1750,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           // 同一 provider 内换模型时重置思考深度到新模型的默认档位：K2.6 选 off 后切 K3
           // 会残留不在 K3 档位表内的 off，界面无高亮且保存仍写旧值；与 applyCatalogItem 一致。
           setReasoningEffort(reasoningEffortForModelSwitch({ preset, model: nextModel, vendor, base_url: baseUrl }));
+          // 与 applyCatalogItem 一致:未手动改过档位时按新条目的视觉能力标注预填。
+          if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(nextModel));
           setProviderModelPickerOpen(false);
         };
         return (
@@ -1932,12 +1944,11 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       };
       // 图片输入能力 + 兜底视觉模型(阶段 G):与发送时后端复核同一组 SavedModel 字段。
       const imageCapabilityOptions = [
-        // 自动探测(auto):保存时探测连接+识图并回填;能(enabled)/不能(disabled):
-        // 人工钉死;pinvou 决策(pinvou):内置已验证表判断,不探测。
-        { key: 'auto', label: settingsCopy.imageCapabilityAuto },
+        // pinvou 决策(pinvou,默认):内置已验证表判断,不探测;能(enabled)/
+        // 不能(disabled):人工钉死。
+        { key: 'pinvou', label: settingsCopy.imageCapabilityPinvou },
         { key: 'enabled', label: settingsCopy.imageCapabilityEnabled },
         { key: 'disabled', label: settingsCopy.imageCapabilityDisabled },
-        { key: 'pinvou', label: settingsCopy.imageCapabilityPinvou },
       ];
       // 视觉兜底候选:显示除当前模型外的全部模型,不做能力过滤——选择时
       // 一律识图探测,supported 才允许选中(探测是唯一闸门;disabled 可能是
@@ -1994,14 +2005,14 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const renderImageInputSection = () => {
         const capabilityLabel = (imageCapabilityOptions.find(option => option.key === imageCapability) || imageCapabilityOptions[0]).label;
         const visionLabel = (visionOptions.find(option => option.key === visionModelId) || visionOptions[0]).label;
-        // 结果文案:supported 附模型回复摘要;仅当结果为 supported 且档位为 auto 时提示可设「支持图片」。
+        // 结果文案:supported 附模型回复摘要;仅当结果为 supported 且档位为「自动处理」时提示可设「支持图片」。
         // unverified(未识别出测试色 / 400 非图片拒绝)统一「原因未知」,不得宣称支持或不支持。
         const imageTestText = !imageTestResult
           ? settingsCopy.imageCapabilityTestHint
           : imageTestResult.status === 'supported'
             ? settingsCopy.imageCapabilityTestSupported
               + (imageTestResult.summary ? ` · ${settingsCopy.imageCapabilityTestReply(imageTestResult.summary)}` : '')
-              + (imageCapability === 'auto' ? ` · ${settingsCopy.imageCapabilityTestEnableHint}` : '')
+              + (imageCapability === 'pinvou' ? ` · ${settingsCopy.imageCapabilityTestEnableHint}` : '')
             : imageTestResult.status === 'unsupported'
               ? settingsCopy.imageCapabilityTestUnsupported + (imageTestResult.summary ? ` · ${imageTestResult.summary}` : '')
               : imageTestResult.status === 'unverified'
@@ -2028,7 +2039,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                 currentKey: imageCapability,
                 open: imageCapabilityPickerOpen,
                 onToggle: () => { setImageCapabilityPickerOpen(open => !open); setVisionModelPickerOpen(false); },
-                onChoose: key => { setImageCapability(key); setImageCapabilityPickerOpen(false); },
+                onChoose: key => { setImageCapability(key); setImageCapabilityTouched(true); setImageCapabilityPickerOpen(false); },
               })}
               {renderPickerRow({
                 testId: 'vision-model',
@@ -2305,35 +2316,11 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                 </div>
               </div>
             )}
-            {/* 「保存时检测」明确不支持:后端未写盘,弹窗保持,交用户决策。
-                summary 为 provider/模型回复原文,由 i18n 函数 key 决定是否展示。 */}
-            {probeDecision && (
-              <div data-testid="image-probe-decision" className={`px-5 py-3 border-t ${formDivider}`}>
-                <div className={`text-[13px] leading-5 ${isDark ? 'text-[#FFD60A]' : 'text-[#B25E00]'}`}>
-                  {settingsCopy.imageCapabilityDecisionTitle}
-                  {settingsCopy.imageCapabilityDecisionDetail(probeDecision.summary)}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <button data-testid="image-probe-retest" disabled={savingModel} onClick={() => { setProbeDecision(null); doSave(); }}
-                    className={`h-8 px-3 rounded-full text-[13px] font-medium disabled:opacity-35 ${isDark ? 'bg-[#0A84FF]/20 text-[#0A84FF]' : 'bg-[#007AFF]/10 text-[#007AFF]'}`}>
-                    {settingsCopy.imageCapabilityDecisionRetest}
-                  </button>
-                  <button data-testid="image-probe-configure-vision" disabled={savingModel} onClick={() => setProbeDecision(null)}
-                    className={`h-8 px-3 rounded-full text-[13px] font-medium disabled:opacity-35 ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>
-                    {settingsCopy.imageCapabilityDecisionConfigureVision}
-                  </button>
-                  <button data-testid="image-probe-save-auto" disabled={savingModel} onClick={() => { setProbeDecision(null); doSave(true); }}
-                    className={`h-8 px-3 rounded-full text-[13px] font-medium disabled:opacity-35 ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>
-                    {settingsCopy.imageCapabilityDecisionSaveAuto}
-                  </button>
-                </div>
-              </div>
-            )}
             <div className={`flex justify-end gap-2 px-5 py-4 border-t ${formDivider}`}>
               <button data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.cpCancel}</button>
               <button data-testid="model-form-save" onClick={() => doSave()} disabled={!canSave || savingModel}
                 className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">
-                {savingModel ? settingsCopy.imageCapabilitySaving : t.modelSaveBtn}
+                {savingModel ? t.saving : t.modelSaveBtn}
               </button>
             </div>
           </div>

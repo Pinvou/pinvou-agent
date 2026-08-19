@@ -87,7 +87,7 @@ fn apply_model_credential(
 
 /// 探测用凭据解析的模型选择规则:指定了 id 却查不到(如前端即时生成、
 /// 尚未落盘的新模型)时**不回退** active_model——那会把另一个模型的凭据
-/// 发往本次探测的 base_url(保存时自动探测即此场景,向新增第三方端点
+/// 发往本次探测的 base_url(手动「测试图片能力」即此场景,向新增第三方端点
 /// 静默外发激活模型 key)。仅显式未指定 id 时才回退当前激活模型。
 fn saved_model_for_probe<'a>(
     prefs: &'a UserPrefs,
@@ -280,160 +280,23 @@ pub async fn reveal_model_api_key(id: String) -> Result<Option<String>, String> 
         .map_err(|e| sanitize_command_error("reveal_model_api_key", e.user_message()))
 }
 
-/// save_model 的返回:auto 档保存时探测是否发生及回填结果(前端据此展示提示)。
-#[derive(Debug, Clone, Serialize)]
-pub struct SaveModelOutcome {
-    /// 自动探测结果;None = 未触发(非 auto 档或未请求探测)。
-    pub image_probe: Option<ImageProbeOutcome>,
-}
-
-/// 自动探测回填结果。
-#[derive(Debug, Clone, Serialize)]
-pub struct ImageProbeOutcome {
-    /// `supported` / `unsupported` / `unknown`(连接不通,未做识图探测)。
-    pub status: String,
-    /// 回填后的档位 `auto` / `pinvou` / `enabled` / `disabled`;None = 保持 auto。
-    pub applied_override: Option<String>,
-    pub summary: String,
-}
-
 /// 增或改一条模型(按 id)。前端负责生成稳定 id。
-/// `probe_image_capability=true` 且档位为 auto(自动探测)时,保存前执行
-/// 连接 + 识图探测并按结果回填 override(见 `probe_and_fill_image_capability`)。
-/// 探测明确不支持(unsupported/unverified)时**不写盘**——保存与否交用户在
-/// 三选一弹窗决策(再次检测 / 去配置视觉模型 / 直接保存落自动处理),
-/// 「不支持图片」档位只来自用户手动选择,机器检测只提示不钉死。
+/// 保存只落盘,不做连接/识图探测:图片输入能力默认「自动处理」
+/// (pinvou 档,内置已验证能力表兜底,见 `effective_image_capability`);
+/// 需要确证时用户可在表单里手动「测试图片能力」。
 #[tauri::command]
-pub async fn save_model(
-    model: SavedModel,
-    probe_image_capability: Option<bool>,
-    pool: State<'_, EnginePool>,
-) -> Result<SaveModelOutcome, String> {
+pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Result<(), String> {
     let model_id = model.id.clone();
-    let mut model = model;
-    // 自动探测在写盘前执行:结果回填 override 后随本次保存一起落盘;
-    // 明确不支持时保持 Auto 并跳过本次写盘(见函数头注释)。
-    // 探测是两个串行 HTTP 请求(最长约 38s await),期间用户可能删除该模型
-    // 或触发第二次保存——探测前记下 id 存在性,写盘事务内复查,翻转即放弃:
-    // 否则旧快照 upsert 会复活已删模型(credential_ref 悬空),或把更旧的
-    // 表单快照盖在探测期间完成的更新保存之上。
-    let probe_requested = probe_image_capability.unwrap_or(false)
-        && model.image_capability_override == ImageCapabilityOverride::Auto;
-    let existed_before_probe = if probe_requested {
-        UserPrefs::load().model_by_id(&model.id).is_some()
-    } else {
-        false
-    };
-    let image_probe = if probe_requested {
-        Some(probe_and_fill_image_capability(&mut model).await)
-    } else {
-        None
-    };
-    if image_probe_denies_persist(&image_probe) {
-        return Ok(SaveModelOutcome { image_probe });
-    }
-    let mut persisted = false;
     UserPrefs::update_transaction(|prefs| {
-        if probe_requested && prefs.model_by_id(&model.id).is_some() != existed_before_probe {
-            // 探测窗口内该 id 的存在性翻转了(已删 / 期间已被另一次保存落盘):
-            // 放弃本次写入,不做静默覆盖。
-            return Err(PROBE_STALE_SNAPSHOT_ERROR.to_string());
-        }
         let old = prefs.model_by_id(&model.id).cloned();
         let model = apply_model_credential(model, old.as_ref())
             .map_err(|e| sanitize_command_error("save_model", e))?;
         prefs.upsert_model(model);
-        persisted = true;
         Ok(())
     })
     .map_err(|e| sanitize_command_error("save_model", e))?;
-    if persisted {
-        pool.mark_model_updated(&model_id);
-    }
-    Ok(SaveModelOutcome { image_probe })
-}
-
-/// 探测期间模型行被删除/替换时 `save_model` 的放弃写盘提示(见函数体注释)。
-const PROBE_STALE_SNAPSHOT_ERROR: &str =
-    "检测期间该模型已被删除或已有新的保存，本次更改未写入；请重新打开表单确认最新内容。";
-
-/// 保存时探测结论是否要求**跳过写盘**(交用户在三选一弹窗决策):
-/// 明确不支持(unsupported)/未能确认识别(unverified)不落盘;supported/
-/// error/unknown 按回填档位正常落盘;未触发探测(None)正常保存。
-fn image_probe_denies_persist(probe: &Option<ImageProbeOutcome>) -> bool {
-    matches!(
-        probe.as_ref().map(|probe| probe.status.as_str()),
-        Some("unsupported") | Some("unverified")
-    )
-}
-
-/// 「保存时检测」回填(「保存时检测」档保存时,一律检测,无表内加速):
-/// 1. 连接探测不通 → 无法确认 → 回填 `Pinvou`(自动处理,内置表兜底);
-/// 2. 连接通 → 识图探测(探测链路与真实链路对齐:always-thinking 模型注入 thinking):
-///    - 识别出测试色 → `Enabled`(支持图片);
-///    - 明确不支持(unsupported/unverified)→ **不写盘**(见 `save_model`),
-///      返回待决策信号,由前端让用户选择:再次检测 / 去配置视觉模型 /
-///      直接保存落「自动处理」——「不支持图片」只来自用户手动选择,
-///      机器检测只提示,不钉死;
-///    - `error`(网络超时/5xx/401/DNS 等瞬时故障)→ 回填 `Pinvou`
-///      (自动处理,内置表兜底)——无法确认不降级已验证模型;
-///    - 意外状态 → 保持 `Auto`,不冒充结论。
-/// summary 只放 provider/模型回复原文(结论性措辞由前端 i18n 拼接),
-/// 避免与前端标题重复、避免中文结论冒泡到英/日界面。
-async fn probe_and_fill_image_capability(model: &mut SavedModel) -> ImageProbeOutcome {
-    // 连接门与识图探测同用 strip 后基准:base_url 含 /chat/completions 后缀时
-    // GET {base}/models 必 404,会在识图探测前就短路成"连接不通"。
-    let connection = probe_model_connection(
-        &image_probe_base_url(&model.base_url),
-        &model.api_key,
-        Some(&model.id),
-    )
-    .await;
-    if !connection.ok {
-        model.image_capability_override = ImageCapabilityOverride::Pinvou;
-        return ImageProbeOutcome {
-            status: "unknown".to_string(),
-            applied_override: Some("pinvou".to_string()),
-            summary: connection.message,
-        };
-    }
-    let probe = run_image_capability_probe(
-        &model.model,
-        &model.base_url,
-        &model.api_key,
-        Some(&model.id),
-    )
-    .await;
-    match probe.status.as_str() {
-        "supported" => {
-            model.image_capability_override = ImageCapabilityOverride::Enabled;
-            ImageProbeOutcome {
-                status: "supported".to_string(),
-                applied_override: Some("enabled".to_string()),
-                summary: probe.summary,
-            }
-        }
-        // 明确不支持:不写盘,交给用户决策(再次检测/去配置视觉模型/直接保存落自动处理)。
-        "unsupported" | "unverified" => ImageProbeOutcome {
-            status: probe.status.clone(),
-            applied_override: None,
-            summary: probe.summary,
-        },
-        // 瞬时故障:无法确认,落「自动处理」(内置表兜底,不降级已验证模型)。
-        "error" => {
-            model.image_capability_override = ImageCapabilityOverride::Pinvou;
-            ImageProbeOutcome {
-                status: "error".to_string(),
-                applied_override: Some("pinvou".to_string()),
-                summary: probe.summary,
-            }
-        }
-        other => ImageProbeOutcome {
-            status: other.to_string(),
-            applied_override: None,
-            summary: probe.summary,
-        },
-    }
+    pool.mark_model_updated(&model_id);
+    Ok(())
 }
 
 /// 删一条模型。至少保留一条;删到当前 active 会自动回退列表首条。
@@ -1830,43 +1693,16 @@ mod tests {
     }
 
     #[test]
-    fn image_probe_denies_persist_only_on_explicit_denial() {
-        // 明确不支持/未能确认识别:跳过写盘,交用户三选一决策。
-        for status in ["unsupported", "unverified"] {
-            assert!(
-                image_probe_denies_persist(&Some(ImageProbeOutcome {
-                    status: status.to_string(),
-                    applied_override: None,
-                    summary: String::new(),
-                })),
-                "{status} 应拒绝写盘"
-            );
-        }
-        // supported/error/unknown:按回填档位正常落盘;未探测(None)正常保存。
-        for status in ["supported", "error", "unknown"] {
-            assert!(
-                !image_probe_denies_persist(&Some(ImageProbeOutcome {
-                    status: status.to_string(),
-                    applied_override: Some("pinvou".to_string()),
-                    summary: String::new(),
-                })),
-                "{status} 不应拒绝写盘"
-            );
-        }
-        assert!(!image_probe_denies_persist(&None));
-    }
-
-    #[test]
     fn unsupported_probe_outcome_summary_keeps_provider_text_only() {
         // unsupported/unverified 分支的 summary 只保留 provider/分类器原文:
-        // 结论性措辞(「检测到该模型未能识别图片」)由前端 i18n 拼接,后端
-        // 不再预置——防止与前端标题重复、防止中文结论冒泡到英/日界面。
+        // 结论性措辞由前端 i18n 拼接,后端不再预置——防止与前端标题重复、
+        // 防止中文结论冒泡到英/日界面。
         let unsupported_body = r#"{"error":{"message":"this model does not support image input"}}"#;
         let result =
             classify_image_capability_http(reqwest::StatusCode::BAD_REQUEST, unsupported_body);
         assert_eq!(result.status, "unsupported");
         assert_eq!(result.summary, "this model does not support image input");
-        assert!(!result.summary.contains("检测到该模型"));
+        assert!(!result.summary.contains("不支持"));
         let unverified = classify_image_reply("A hundred squares", 200);
         assert_eq!(unverified.status, "unverified");
         assert!(unverified.summary.contains("未能正确识别图像"));
@@ -1875,7 +1711,7 @@ mod tests {
     #[test]
     fn saved_model_for_probe_does_not_fall_back_to_active_model_for_unknown_id() {
         // 指定了未落盘的 id(前端即时生成的新模型)时不得回退激活模型:
-        // 否则保存时自动探测会把激活模型的 key 发往新模型的 base_url。
+        // 否则手动「测试图片能力」会把激活模型的 key 发往新模型的 base_url。
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
         let active = SavedModel {
