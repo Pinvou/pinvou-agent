@@ -3307,6 +3307,13 @@
           capabilityRetry.resolve = resolve;
           capabilityRetry.timer = setTimeout(function () {
             if (pendingCapabilitySessionSwitch !== capabilityRetry) return;
+            if (capabilityRetry.spec.requestToken !== sessionSwitchRequestToken) {
+              // 等待期间用户已进入草稿（enterDraft 作废旧切换但未收口 pending）：
+              // 按失败静默收口，不在草稿页误报加载失败，与快照到达路径的
+              // “被取代的等待不报错”语义保持一致。
+              settlePendingCapabilitySessionSwitch(false);
+              return;
+            }
             reportSessionSwitchFailure(e, errorScope);
             settlePendingCapabilitySessionSwitch(false);
           }, WEB_CAPABILITY_SWITCH_RETRY_GRACE_MS);

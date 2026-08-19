@@ -779,6 +779,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   var bridge = bridgeKind === "web" ? {
     sessions: {
       switchToSession: function (id) { return rawBridge.switchToSession(id); },
+      createNewSession: function () { return rawBridge.createNewSession(); },
     },
     chat: {
       sendMessage: function (text, meta) { return rawBridge.sendMessage(text, meta); },
@@ -1511,6 +1512,50 @@ async function sessionDownloadCapabilityGraceExpiryFailsOnce() {
     harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
     false,
     "an expired grace wait must not be revived by a later snapshot"
+  );
+}
+
+async function sessionDownloadCapabilityGraceSupersededByDraftFailsSilently() {
+  // 宽限等待期间用户进入草稿（enterDraft 使切换 token 失效但不收口 pending）：
+  // 宽限 timer 到期必须按失败静默收口，原调用方收到 false，且不在草稿页
+  // 误报“加载对话失败”（与快照到达路径对已被取代等待的处理一致）。
+  var graceTimers = [];
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+    setTimeout: function (callback, delay) {
+      if (delay === 10_000) {
+        queueMicrotask(callback);
+        return 1;
+      }
+      if (delay === 5_000) {
+        graceTimers.push(callback);
+        return 10 + graceTimers.length;
+      }
+      return setTimeout(callback, delay);
+    },
+  });
+  var switchedPromise = harness.bridge.sessions.switchToSession("chat-capabilities-superseded");
+  for (var waitAttempt = 0; waitAttempt < 4; waitAttempt++) await tick();
+  assert.strictEqual(graceTimers.length, 1,
+    "the capability timeout must arm exactly one grace timer");
+  await harness.bridge.sessions.createNewSession();
+  assert.strictEqual(graceTimers.length, 1,
+    "entering the draft view must not arm another grace timer");
+  graceTimers[0]();
+  assert.strictEqual(await switchedPromise, false,
+    "a grace wait superseded by entering the draft must settle as a failure");
+  assert.strictEqual(
+    JSON.stringify(harness.bridge.state.get("chat").chatItems).includes("capability snapshot timed out"),
+    false,
+    "a superseded grace wait must not report a load failure in the draft view"
+  );
+  harness.setWebCapabilities(["web_access_cancel_session_download"]);
+  for (var settleAttempt = 0; settleAttempt < 4; settleAttempt++) await tick();
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false,
+    "a superseded grace wait must not be retried by a later snapshot"
   );
 }
 
@@ -5309,6 +5354,7 @@ Promise.resolve()
   .then(sessionDownloadCapabilityWaitClosesLostDisconnectEventRace)
   .then(sessionDownloadCapabilityWaitHasTimeout)
   .then(sessionDownloadCapabilityGraceExpiryFailsOnce)
+  .then(sessionDownloadCapabilityGraceSupersededByDraftFailsSilently)
   .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(function () { return internalSubagentHandoffStaysOutOfPresentation("tauri"); })
   .then(function () { return internalSubagentHandoffStaysOutOfPresentation("web"); })
