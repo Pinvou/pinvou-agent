@@ -479,12 +479,32 @@ impl TurnLifecycle {
         state.active && state.submitted
     }
 
-    /// 终态是否已认领（`terminal_emitted`）。供 `cancel` 返回结果组装使用：
-    /// 目标轮已认领终态 ⇒ claim 已完成、`finish_terminal_emission` 已重开
-    /// reserve 闸门（emit 后置契约）⇒ 前端可直接 proceed，无需等事件。
-    /// 读取发生在 claim 原子临界区之外，false 时等事件是安全的（事件将到）。
-    pub(crate) fn is_terminal_emitted(&self) -> bool {
-        self.state.lock().terminal_emitted
+    /// 「target 轮」的 reserve 闸门是否已重开（终态已收口、槽位已释放）。
+    /// 供 `cancel` 组装 `CancelOutcome.terminal` 使用（M-6）。
+    ///
+    /// 判据：
+    /// - 当前空闲（`!active && !terminal_closing`）⇒ 闸门开着。权威终态
+    ///   路径中开闸（`finish_terminal_emission`）与 emit `chat:done` 在同一
+    ///   同步块内完成（finish 先于 emit、中间无 await），观察到闸门开 ⇒
+    ///   `chat:done` 已发出；唯一的例外是 `invalidate_unsubmitted_reservation`
+    ///   的静默回收（该轮本无终态事件可等）。两种情形前端都无需等待事件。
+    /// - 仍占闸但 `turn_epoch != target` ⇒ 新轮已 reserve。`reserve` 只有
+    ///   在旧轮 `finish_terminal_emission` 重开闸门后才可能成功，故 target
+    ///   轮终态同样已完成收口。此时判定开闸是必须的：否则前端会等一个
+    ///   已经发过、必然错过的 `chat:done` 直到超时，再撞上新轮的 reserve。
+    /// - 仍占闸且 `turn_epoch == target` ⇒ target 轮仍在运行，或终态正在
+    ///   收口（claim 与 finish 之间的临界区），闸门未开，返回 false。
+    ///
+    /// 不能用 `terminal_emitted` 替代本判据：claim 置位 `terminal_emitted`
+    /// 与 `finish_terminal_emission` 开闸之间，forwarder 有多个
+    /// `spawn_blocking` 持久化 await；该窗口内闸门仍关，cancel 若据此报
+    /// terminal=true，前端跳过等待直接 reserve 会撞 `session_turn_in_progress`。
+    pub(crate) fn is_reserve_gate_open_for(&self, target: Option<u64>) -> bool {
+        let state = self.state.lock();
+        if !state.active && !state.terminal_closing {
+            return true;
+        }
+        target.is_some_and(|epoch| state.turn_epoch != epoch)
     }
 
     pub(crate) fn reserve(self: &Arc<Self>) -> Result<TurnReservation> {
@@ -1935,6 +1955,75 @@ mod turn_lifecycle_tests {
             .is_some());
         assert!(!lifecycle.claim_unsubmitted_terminal());
         reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn reserve_gate_stays_closed_between_claim_and_finish() {
+        // M-6 核心窗口：claim（terminal_emitted 置位、terminal_closing 关闸）
+        // 与 finish_terminal_emission（开闸）之间，forwarder 有多个
+        // spawn_blocking 持久化 await。此窗口内闸门对 target epoch 必须仍判
+        // 关闭（terminal=false，前端等 chat:done），否则前端跳过等待直接
+        // reserve 会撞 session_turn_in_progress。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let reservation = lifecycle.reserve().expect("reserve");
+        let epoch = lifecycle.current_turn_generation().expect("active epoch");
+        lifecycle.mark_reservation_submitted(reservation.reservation_id);
+        reservation.mark_submitted();
+
+        // 运行中的轮次：闸门关闭。
+        assert!(!lifecycle.is_reserve_gate_open_for(Some(epoch)));
+
+        // claim 已置位但 finish 未执行（模拟持久化 await 窗口）：闸门仍关闭。
+        assert!(lifecycle.claim_terminal().is_some());
+        assert!(
+            !lifecycle.is_reserve_gate_open_for(Some(epoch)),
+            "claimed but not finished: gate must still be closed for the target epoch"
+        );
+
+        // finish 开闸（权威路径中 chat:done 与开闸在同一同步块内、finish 先于
+        // emit）⇒ 观察到开闸时 chat:done 已发出，terminal=true 安全。
+        lifecycle.finish_terminal_emission();
+        assert!(lifecycle.is_reserve_gate_open_for(Some(epoch)));
+    }
+
+    #[test]
+    fn reserve_gate_open_for_superseded_epoch_once_new_turn_reserved() {
+        // M-6 epoch mismatch 情形：新轮 reserve 成功的前提是旧轮
+        // finish_terminal_emission 已开闸，因此「新轮 active 且 epoch !=
+        // target」意味着 target 轮终态已完成收口，terminal=true 是安全且
+        // 必须的（否则前端等一个已经发过、错过的 chat:done 直到超时，再撞
+        // 新轮的 reserve）。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let reservation = lifecycle.reserve().expect("reserve");
+        let old_epoch = lifecycle.current_turn_generation().expect("active epoch");
+        lifecycle.mark_reservation_submitted(reservation.reservation_id);
+        reservation.mark_submitted();
+
+        // 旧轮终态完整收口（claim → finish，即 chat:done 已发出）。
+        assert!(lifecycle.claim_terminal().is_some());
+        lifecycle.finish_terminal_emission();
+
+        // 新轮 reserve 成功（只有旧轮开闸后才可能）。
+        let reservation2 = lifecycle.reserve().expect("new reserve");
+        let new_epoch = lifecycle.current_turn_generation().expect("new epoch");
+        assert_ne!(new_epoch, old_epoch);
+        assert!(
+            lifecycle.is_reserve_gate_open_for(Some(old_epoch)),
+            "new epoch active implies the old turn terminal fully closed"
+        );
+        // 新轮自己的 epoch 闸门仍关（新轮在跑，终态未收口）。
+        assert!(!lifecycle.is_reserve_gate_open_for(Some(new_epoch)));
+        reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn reserve_gate_is_open_when_idle() {
+        // 空闲（无进行中轮次、无终态收口临界区）⇒ 闸门开：要么旧轮 chat:done
+        // 已发出，要么该轮本无终态事件可等（invalidate 静默回收路径），前端
+        // 都无需等待。
+        let lifecycle = TurnLifecycle::default();
+        assert!(lifecycle.is_reserve_gate_open_for(None));
+        assert!(lifecycle.is_reserve_gate_open_for(Some(1)));
     }
 
     #[test]

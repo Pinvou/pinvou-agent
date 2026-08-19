@@ -579,6 +579,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
             commands::chat::steer_chat,
+            commands::chat::withdraw_steer,
             commands::behavior_telemetry::track_behavior_event,
             commands::assistant_response::export_assistant_response,
             commands::assistant_response::open_assistant_share_target,

@@ -446,11 +446,13 @@ fn should_retry_cascade(lifecycle: Option<&TurnLifecycle>) -> bool {
 /// 决定「是否需要等待 `chat:done` 事件」。
 ///
 /// - `generation`：被取消的目标轮 epoch（空闲会话为 None）。
-/// - `terminal`：**true** = 目标轮终态已确认，前端无需等待事件即可发送新消息
-///   ——三种情形：cancel 经未提交认领路径自行完成终态（claim 路径的 chat:done
-///   在 cancel 命令返回前发出，前端监听器必然错过，必须由命令返回值确认）；
-///   目标轮已自然结束（mismatch）；会话空闲。**false** = 取消已生效、引擎
-///   turn loop 仍在退出，前端应等待携带该 `generation` 的 `chat:done` 事件。
+/// - `terminal`：**true** = 目标轮终态已确认、reserve 闸门已重开，前端无需
+///   等待事件即可发送新消息——三种情形：cancel 经未提交认领路径自行完成终态
+///   （claim 路径的 chat:done 在 cancel 命令返回前发出，前端监听器必然错过，
+///   必须由命令返回值确认）；目标轮的 reserve 闸门已重开（终态收口完成，
+///   含目标轮已结束、新轮已 reserve 的 mismatch 情形）；会话空闲。
+///   **false** = 取消已生效但目标轮终态仍在收口（reserve 闸门未开），前端
+///   应等待携带该 `generation` 的 `chat:done` 事件。
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CancelOutcome {
@@ -723,6 +725,14 @@ impl Drop for IdleReaperGuard {
         self.cancel.cancel();
         self.handle.abort();
     }
+}
+
+/// M-7：steer 必须有在场 engine 作为投递对象。engine 不在场（session 没在
+/// 跑）时返回 Err——否则永远不会有 steer_committed/steer_dropped 事件，
+/// 前端排队 chip 永久悬挂。独立成函数以便在无 AppHandle 的单测中覆盖
+/// 「不在场 → Err」契约（EnginePool 构造依赖 AppHandle 与 bridge boot）。
+fn require_live_engine_for_steer(engine: Option<AppEngine>, session_id: &str) -> Result<AppEngine> {
+    engine.with_context(|| format!("no live engine for session '{session_id}' to steer"))
 }
 
 impl EnginePool {
@@ -1948,23 +1958,31 @@ impl EnginePool {
         //   1) claim 路径——终态由 cancel 自身完成（其 chat:done 发在 cancel
         //      返回前、前端监听器注册前，必然错过，必须由命令返回值确认）；
         //   2) 空闲（target=None）——没有事件可等；
-        //   3) 目标轮已认领终态（terminal_emitted=true）——claim 已完成、
-        //      闸门已重开（emit 后置契约），事件可能已发出（miss），直接
-        //      proceed 必然成功。
+        //   3) 目标轮的 reserve 闸门已重开（is_reserve_gate_open_for）——
+        //      终态已完成收口：要么 lifecycle 已空闲（权威终态路径中开闸与
+        //      emit chat:done 在同一同步块内，finish 先于 emit、中间无
+        //      await，观察到开闸 ⇒ chat:done 已发出），要么新轮已 active
+        //      且 epoch != target（reserve 只有在旧轮开闸后才可能成功，
+        //      旧轮终态必然已收口——此时 terminal=true 是必须的，否则前端
+        //      等一个已经发过、错过的 chat:done 直到超时，再撞新轮的
+        //      reserve）。
         // 其余一律 terminal=false（前端等携带 target generation 的 chat:done）：
         // **引擎 turn loop 退出 ≠ lifecycle 已释放**——forwarder 处理
         // TurnComplete 并 claim 之前，lifecycle 仍 active，此时 chat 的
         // reserve_turn 会撞 session_turn_in_progress。前端唯一可靠的
-        // 「槽位已释放」信号是 chat:done（claim 之后才 emit）。
-        // （此前按 generation 是否匹配判 terminal=true，把「引擎已退出」误当
-        // 「已释放」，打断消息在竞态窗口内直接丢失。）
-        let terminal_emitted = self
+        // 「槽位已释放」信号是 chat:done（开闸之后才 emit）。
+        // （M-6：曾用 is_terminal_emitted 判 terminal=true，但 claim 置位
+        // terminal_emitted 与 finish_terminal_emission 开闸之间 forwarder
+        // 有多个 spawn_blocking 持久化 await，该窗口内闸门未开，前端跳过
+        // 等待直接 doSendFor 会撞 session_turn_in_progress → ⚡ 间歇性
+        // 投递失败。判据必须是「闸门已开」而非「终态已认领」。）
+        let reserve_gate_open = self
             .turn_lifecycles
             .get(session_id)
-            .is_some_and(|lc| lc.is_terminal_emitted());
+            .is_some_and(|lc| lc.is_reserve_gate_open_for(target));
         CancelOutcome {
             generation: target,
-            terminal: claimed_unsubmitted || target.is_none() || terminal_emitted,
+            terminal: claimed_unsubmitted || target.is_none() || reserve_gate_open,
         }
     }
 
@@ -2104,12 +2122,28 @@ impl EnginePool {
     /// session.messages（见底座 turn_loop.rs:493-510）。模型下一次思考时
     /// 会看到这条消息,与 Claude Code 的"主 agent 空闲时插入"语义对齐。
     ///
-    /// engine 不在场（session 没在跑）→ 静默返回 Ok:调用方一般已用 `chat()`
-    /// 走了正常 send 路径,这里不应报错。语义上等价于 frontend queue 的退化。
-    pub async fn steer(&self, session_id: &str, content: String) -> Result<()> {
-        if let Some(engine) = self.handle_for(session_id).await {
-            engine.handle.steer(content).await?;
-        }
+    /// 返回引擎入队时生成的 opaque steer id（`steer-{n}`），前端用它把排队
+    /// chip 与 `chat:steer_committed` / `chat:steer_dropped` 事件关联。
+    ///
+    /// engine 不在场（session 没在跑）→ 返回 Err（M-7）：steer 没有投递
+    /// 对象，也永远不会有 committed/dropped 事件；静默 Ok 会让前端 chip
+    /// 永久悬挂。前端据 Err 走失败恢复路径。
+    pub async fn steer(&self, session_id: &str, content: String) -> Result<String> {
+        let engine = require_live_engine_for_steer(self.handle_for(session_id).await, session_id)?;
+        engine.handle.steer(content).await
+    }
+
+    /// 撤回一条尚未注入的 steer（前端排队 chip 的 ✕）。
+    ///
+    /// 底座语义：被撤回的 steer_id 永不注入 transcript；引擎在任一收集/注入
+    /// 点遇到它时跳过并 emit 一条 `SteerDropped`（幂等），已 committed 的 id
+    /// 无副作用、无事件——前端乐观移除 chip，晚到的 committed 仍能补气泡。
+    ///
+    /// engine 不在场 → 返回 Err：消息根本没进引擎，前端纯本地移除即可，
+    /// 不需要等任何事件。
+    pub async fn withdraw_steer(&self, session_id: &str, steer_id: String) -> Result<()> {
+        let engine = require_live_engine_for_steer(self.handle_for(session_id).await, session_id)?;
+        engine.handle.withdraw_steer(&steer_id);
         Ok(())
     }
 
@@ -2992,6 +3026,18 @@ mod scheduled_model_tests {
         assert_eq!(pool_lifecycle.finish_once(|| panic!("duplicate")), None);
         lifecycles.remove("session-1");
         assert!(lifecycles.get("session-1").is_none());
+    }
+
+    #[test]
+    fn steer_without_live_engine_is_an_error() {
+        // M-7：engine 不在场（session 没在跑）时 steer 必须返回 Err——静默
+        // Ok 会让前端排队 chip 永远等不到 steer_committed/steer_dropped。
+        // EnginePool 构造依赖 AppHandle 与 bridge boot，无法单测实例化，
+        // 故契约落在 require_live_engine_for_steer 上覆盖。
+        let err = super::require_live_engine_for_steer(None::<super::AppEngine>, "session-1")
+            .err()
+            .expect("steer without a live engine must fail");
+        assert!(format!("{err:#}").contains("no live engine"));
     }
 
     #[tokio::test]
