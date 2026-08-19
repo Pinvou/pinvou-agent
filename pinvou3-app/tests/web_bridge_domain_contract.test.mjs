@@ -45,6 +45,8 @@ const windowObject = {
   setTimeout,
   clearTimeout,
 };
+const nativeStructuredClone = globalThis.structuredClone;
+let deepCloneCalls = 0;
 const context = vm.createContext({
   window: windowObject,
   document: documentObject,
@@ -55,7 +57,10 @@ const context = vm.createContext({
   clearTimeout,
   setInterval,
   clearInterval,
-  structuredClone,
+  structuredClone(value) {
+    deepCloneCalls += 1;
+    return nativeStructuredClone(value);
+  },
   URL,
   URLSearchParams,
   Blob,
@@ -94,6 +99,24 @@ assert.ok(Object.hasOwn(state, 'sessions'));
 assert.ok(Object.hasOwn(state, 'settings'));
 assert.equal(Object.hasOwn(state, 'messages'), false);
 assert.throws(() => api.state.get('unknown'), /Unknown Tauri bridge state slice/);
+
+let subscribedChat;
+let subscribedCombined;
+const unsubscribeChat = api.state.subscribe('chat', snapshot => { subscribedChat = snapshot; });
+const unsubscribeCombined = api.state.subscribeMany(['sessions', 'chat'], snapshot => { subscribedCombined = snapshot; });
+snapshotReads = 0;
+deepCloneCalls = 0;
+await api.sessions.createNewSession();
+assert.equal(snapshotReads, 0, 'subscription notifications must use the supplied transport snapshot');
+assert.equal(deepCloneCalls, 0, 'subscription notifications must not deep-clone the transcript');
+assert.ok(Object.isFrozen(subscribedChat) && Object.isFrozen(subscribedCombined));
+assert.throws(
+  () => subscribedChat.chatItems.push({ type: 'system', text: 'subscriber-only' }),
+  /not extensible|read only|frozen/i,
+);
+assert.equal(api.state.get('chat').chatItems.length, 0, 'subscription arrays must not mutate Web bridge state');
+unsubscribeChat();
+unsubscribeCombined();
 
 const memorySources = {
   profile: { available: true }, preferences: { available: true }, work_context: { available: true },

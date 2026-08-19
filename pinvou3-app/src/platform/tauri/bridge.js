@@ -290,7 +290,7 @@
     mountedRemoteCollections: [],
     mountedCollectionsRevision: 0,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
-    // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
+    // 不进 state/订阅快照，避免每个流式 token 都复制完整卡池。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
     // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
     appVersion: null,
@@ -1203,12 +1203,6 @@
 
   // ── Pub/Sub ──────────────────────────────────────────────────────
   var subscribers = [];
-  function snapshotState() {
-    if (typeof structuredClone === "function") {
-      try { return structuredClone(state); } catch (_) {}
-    }
-    return JSON.parse(JSON.stringify(state));
-  }
   var STATE_SLICE_FIELDS = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
@@ -1244,6 +1238,35 @@
     var result = {};
     for (var i = 0; i < domains.length; i++) Object.assign(result, snapshotStateSlice(domains[i]));
     return result;
+  }
+  // Subscription snapshots are internal, read-only render inputs. Deep-cloning
+  // the entire transcript for every streamed token retained hundreds of MB in
+  // React's update queue on long sessions. Keep get/getMany defensive and
+  // detached, while subscriptions copy only the top-level containers needed to
+  // trigger React. Nested message/tool objects stay structurally shared.
+  function subscriptionStateValue(value) {
+    if (Array.isArray(value)) return Object.freeze(value.slice());
+    if (value && typeof value === "object") return Object.freeze(Object.assign({}, value));
+    return value;
+  }
+  function subscriptionStateSlice(domain) {
+    var fields = STATE_SLICE_FIELDS[domain];
+    if (!fields) throw new Error("Unknown Tauri bridge state slice: " + domain);
+    var slice = {};
+    for (var i = 0; i < fields.length; i++) {
+      slice[fields[i]] = subscriptionStateValue(state[fields[i]]);
+    }
+    return Object.freeze(slice);
+  }
+  function subscriptionStateSlices(domains) {
+    if (!Array.isArray(domains) || domains.length === 0) {
+      throw new Error("Tauri bridge state.subscribeMany requires at least one domain");
+    }
+    var result = {};
+    for (var i = 0; i < domains.length; i++) {
+      Object.assign(result, subscriptionStateSlice(domains[i]));
+    }
+    return Object.freeze(result);
   }
   function cloneJson(value, fallback) {
     try { return JSON.parse(JSON.stringify(value == null ? fallback : value)); }
@@ -1324,8 +1347,7 @@
     state.sessionBusy = {};
     for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
-    var snapshot = snapshotState();
-    for (var i = 0; i < subscribers.length; i++) subscribers[i](snapshot);
+    for (var i = 0; i < subscribers.length; i++) subscribers[i]();
   }
   function subscribe(fn) {
     subscribers.push(fn);
@@ -1334,11 +1356,12 @@
     };
   }
   function subscribeStateSlice(domain, fn) {
-    return subscribe(function () { fn(snapshotStateSlice(domain)); });
+    subscriptionStateSlice(domain);
+    return subscribe(function () { fn(subscriptionStateSlice(domain)); });
   }
   function subscribeStateSlices(domains, fn) {
-    snapshotStateSlices(domains);
-    return subscribe(function () { fn(snapshotStateSlices(domains)); });
+    subscriptionStateSlices(domains);
+    return subscribe(function () { fn(subscriptionStateSlices(domains)); });
   }
 
   var scheduledFeature = installBridgeFeature("scheduled", { state: state, notify: notify, invoke: invoke, bt: bt, runSyncOnSession: runSyncOnSession, addSystemItem: addSystemItem, rememberScheduledRunOwner: rememberScheduledRunOwner, isScheduledRunTerminal: isScheduledRunTerminal, purgeSessionBuffer: purgeSessionBuffer, createNewSession: createNewSession, prefillComposer: prefillComposer, sessionStates: sessionStates });

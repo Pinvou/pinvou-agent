@@ -186,7 +186,7 @@
     mountedCollections: [],
     mountedCollectionsRevision: 0,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
-    // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
+    // 不进 state/订阅快照，避免每个流式 token 都复制完整卡池。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
     // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
     appVersion: null,
@@ -1434,13 +1434,23 @@
     }
     return JSON.parse(JSON.stringify(state));
   }
+  function subscriptionState() {
+    var result = {};
+    Object.keys(state).forEach(function (key) {
+      var value = state[key];
+      if (Array.isArray(value)) result[key] = Object.freeze(value.slice());
+      else if (value && typeof value === "object") result[key] = Object.freeze(Object.assign({}, value));
+      else result[key] = value;
+    });
+    return Object.freeze(result);
+  }
   function notify() {
     if (suppressNotify) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
     state.sessionBusy = {};
     for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
-    var snapshot = snapshotState();
+    var snapshot = subscriptionState();
     for (var i = 0; i < subscribers.length; i++) subscribers[i](snapshot);
   }
   function subscribe(fn) {

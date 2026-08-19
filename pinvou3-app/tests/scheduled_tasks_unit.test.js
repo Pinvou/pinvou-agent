@@ -618,6 +618,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   var dialogCalls = [];
   var dialogResult = null;
   var createdSession = 0;
+  var structuredCloneCalls = 0;
   var storageData = sharedStorage || Object.create(null);
   var storage = {
     getItem: function (key) { return Object.prototype.hasOwnProperty.call(storageData, key) ? storageData[key] : null; },
@@ -738,7 +739,10 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     clearTimeout: runtimeOptions.clearTimeout || clearTimeout,
     setInterval: function () { return 0; },
     clearInterval: function () {},
-    structuredClone: function (value) { return JSON.parse(JSON.stringify(value)); },
+    structuredClone: function (value) {
+      structuredCloneCalls += 1;
+      return JSON.parse(JSON.stringify(value));
+    },
     TextDecoder: TextDecoder,
     Uint8Array: Uint8Array,
   };
@@ -768,6 +772,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     calls: calls,
     storageData: storageData,
     dialogCalls: dialogCalls,
+    getStructuredCloneCalls: function () { return structuredCloneCalls; },
     setDialogResult: function (value) { dialogResult = value; },
     emit: function (name, payload) {
       assert.ok(listeners[name] && listeners[name].length, "expected listener " + name);
@@ -775,6 +780,89 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
       return Promise.all(listeners[name].map(function (listener) { return listener(event); }));
     },
   };
+}
+
+async function subscriptionSnapshotsAvoidTranscriptDeepClone() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var chatUpdates = [];
+  var combinedUpdates = [];
+  var unsubscribeChat = bridge.state.subscribe("chat", function (snapshot) {
+    chatUpdates.push(snapshot);
+  });
+  var unsubscribeCombined = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
+    combinedUpdates.push(snapshot);
+  });
+  var cloneCallsBeforeNotify = harness.getStructuredCloneCalls();
+
+  await bridge.sessions.createNewSession();
+
+  assert.strictEqual(chatUpdates.length, 1, "one bridge notification should publish one chat subscription update");
+  assert.strictEqual(combinedUpdates.length, 1, "one bridge notification should publish one combined subscription update");
+  assert.strictEqual(
+    harness.getStructuredCloneCalls(),
+    cloneCallsBeforeNotify,
+    "subscription notifications must not deep-clone the transcript"
+  );
+  assert.ok(Object.isFrozen(chatUpdates[0]) && Object.isFrozen(combinedUpdates[0]),
+    "subscription envelopes should be read-only");
+
+  assert.throws(function () {
+    chatUpdates[0].chatItems.push({ type: "system", text: "subscriber-only" });
+  }, /not extensible|read only|frozen/i, "subscription array containers should be read-only");
+  assert.strictEqual(bridge.state.get("chat").chatItems.length, 0,
+    "subscription array containers must not mutate bridge state");
+  var detached = bridge.state.get("chat");
+  detached.thinking.active = true;
+  assert.strictEqual(bridge.state.get("chat").thinking.active, false,
+    "get/getMany must retain their defensive deep-copy contract");
+
+  unsubscribeChat();
+  unsubscribeCombined();
+}
+
+async function longSessionStreamingAvoidsPerDeltaDeepClone() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-long-stream";
+  var messages = [];
+  for (var index = 0; index < 469; index++) {
+    messages.push({
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: [{ type: "text", text: "history-" + index + "-" + "x".repeat(1024) }],
+    });
+  }
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: sessionId, title: "Long stream", message_count: messages.length },
+      messages: messages,
+      artifacts: [],
+    };
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
+
+  var updates = 0;
+  var unsubscribe = bridge.state.subscribeMany(["sessions", "chat"], function () {
+    updates += 1;
+  });
+  var cloneCallsBeforeStream = harness.getStructuredCloneCalls();
+  harness.emit("chat:turn_started", { session_id: sessionId });
+  for (var delta = 0; delta < 1000; delta++) {
+    harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
+  }
+  await tick();
+
+  assert.strictEqual(updates, 1001, "stream boundaries and deltas should remain immediately observable");
+  assert.strictEqual(
+    harness.getStructuredCloneCalls(),
+    cloneCallsBeforeStream,
+    "a long transcript must not be deep-cloned for each streamed delta"
+  );
+  var finalAssistant = bridge.state.get("chat").chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop();
+  assert.strictEqual(finalAssistant.text.length, 4000, "subscription snapshot optimization must not lose text");
+  unsubscribe();
 }
 
 async function deepSeekTurnTimelineLifecycleBehavior() {
@@ -4550,6 +4638,8 @@ async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
 }
 
 Promise.resolve()
+  .then(subscriptionSnapshotsAvoidTranscriptDeepClone)
+  .then(longSessionStreamingAvoidsPerDeltaDeepClone)
   .then(multipleKnowledgeMountBehavior)
   .then(queuedKnowledgeMountKeepsOriginalSession)
   .then(staleKnowledgeSnapshotDoesNotCrossSessions)
