@@ -7,7 +7,7 @@ const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
 const bundle = (...p) => path.join(root, "src-tauri", "resources", "common", "bundle", ...p);
-const packs = ["skills", "wecom-skills", "dingtalk-skills", "tmeet-skills"];
+const packs = ["lark-skills", "wecom-skills", "dingtalk-skills", "tmeet-skills"]; // PR#302: skills/ 已重定位 lark-skills/
 
 function walk(dir, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
