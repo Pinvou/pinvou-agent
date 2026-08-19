@@ -218,7 +218,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("- knowledge-rust", required_gate)
         self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
 
-    def test_benchmark_workspace_and_headless_contract_have_required_gates(self):
+    def test_benchmark_diagnostics_are_path_scoped_and_non_blocking(self):
         changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
             "\n  fast-gate:", maxsplit=1
         )[0]
@@ -246,7 +246,9 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("needs.changes.outputs.benchmark_cli == 'true'", benchmark)
         self.assertIn("needs.changes.outputs.benchmark_headless == 'true'", benchmark)
         self.assertIn("needs.changes.outputs.benchmark_codewhale == 'true'", benchmark)
-        self.assertIn("github.event_name == 'merge_group'", benchmark)
+        self.assertIn("github.event_name == 'pull_request'", benchmark)
+        self.assertNotIn("github.event_name == 'merge_group'", benchmark)
+        self.assertNotIn("github.event_name == 'push'", benchmark)
         self.assertIn("ci:full-benchmark", benchmark)
 
         all_features_step = benchmark.split(
@@ -259,8 +261,9 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn(".github/workflows/pr-check.yml", benchmark_filter)
 
         required_gate = self.pr_workflow.split("\n  required-gate:", maxsplit=1)[1]
-        self.assertIn("- benchmark-test", required_gate)
-        self.assertIn('"benchmark-test:$BENCHMARK_TEST_RESULT"', required_gate)
+        self.assertNotIn("- benchmark-test", required_gate)
+        self.assertNotIn("BENCHMARK_TEST_RESULT", required_gate)
+        self.assertNotIn('"benchmark-test:$BENCHMARK_TEST_RESULT"', required_gate)
 
     def test_rust_modes_preserve_fast_drafts_and_final_queue_validation(self):
         self.assertIn("merge_group:", self.pr_workflow)
