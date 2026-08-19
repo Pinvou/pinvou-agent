@@ -182,6 +182,47 @@ impl std::io::Read for BlockingReader {
     }
 }
 
+struct TriggeredFiniteReader {
+    trigger: std::sync::mpsc::Receiver<()>,
+    payload: Option<Vec<u8>>,
+}
+
+impl std::io::Read for TriggeredFiniteReader {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let Some(payload) = self.payload.take() else {
+            return Ok(0);
+        };
+        self.trigger
+            .recv()
+            .map_err(|_| std::io::Error::other("trigger closed"))?;
+        let len = payload.len().min(bytes.len());
+        bytes[..len].copy_from_slice(&payload[..len]);
+        Ok(len)
+    }
+}
+
+struct TriggerInputOnDrop(Option<std::sync::mpsc::Sender<()>>);
+
+impl std::io::Write for TriggerInputOnDrop {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for TriggerInputOnDrop {
+    fn drop(&mut self) {
+        if let Some(trigger) = self.0.take() {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let _ = trigger.send(());
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+}
+
 #[test]
 fn proxy_forwards_only_server_protocol_lines_to_its_stdout() {
     let stem = format!("codex-proxy-test-{}", std::process::id());
@@ -262,6 +303,39 @@ fn replay_rejects_identical_input_and_output_without_truncating_input() {
 }
 
 #[test]
+fn replay_rejects_hard_link_alias_without_truncating_input() {
+    let stem = format!("codex-capture-hard-link-{}", std::process::id());
+    let input = std::env::temp_dir().join(format!("{stem}.input.jsonl"));
+    let output = std::env::temp_dir().join(format!("{stem}.alias.jsonl"));
+    let original = b"{\"id\":1,\"method\":\"initialize\"}\n";
+    std::fs::write(&input, original).unwrap();
+    if let Err(error) = std::fs::hard_link(&input, &output) {
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
+        ) {
+            eprintln!("skipping hard-link identity test: {error}");
+            std::fs::remove_file(input).unwrap();
+            return;
+        }
+        panic!("hard-link test setup failed unexpectedly: {error}");
+    }
+
+    let error = run_capture(CaptureConfig {
+        input: input.clone(),
+        output: output.clone(),
+        command: CommandSpec::codex(Some(OsString::from("must-not-launch"))),
+    })
+    .unwrap_err();
+
+    assert!(error.to_string().contains("same file"));
+    assert_eq!(std::fs::read(&input).unwrap(), original);
+    assert_eq!(std::fs::read(&output).unwrap(), original);
+    std::fs::remove_file(input).unwrap();
+    std::fs::remove_file(output).unwrap();
+}
+
+#[test]
 fn proxy_returns_when_child_exits_while_interactive_input_remains_open() {
     let output = std::env::temp_dir().join(format!(
         "codex-proxy-early-exit-{}.jsonl",
@@ -306,6 +380,45 @@ fn proxy_returns_when_child_exits_while_interactive_input_remains_open() {
     );
 
     drop(keep_input_open);
+    std::fs::remove_file(output).unwrap();
+}
+
+#[test]
+fn proxy_rejects_finite_client_frames_queued_after_child_exit() {
+    let output = std::env::temp_dir().join(format!(
+        "codex-proxy-unsent-input-{}.jsonl",
+        std::process::id()
+    ));
+    let (trigger_tx, trigger_rx) = std::sync::mpsc::channel();
+
+    #[cfg(windows)]
+    let command = CommandSpec::new(
+        OsString::from("powershell.exe"),
+        ["-NoProfile", "-Command", "exit 0"].map(OsString::from),
+    );
+    #[cfg(target_os = "linux")]
+    let command = CommandSpec::new(
+        OsString::from("/bin/sh"),
+        [OsString::from("-c"), OsString::from("exit 0")],
+    );
+
+    let result = run_proxy(
+        ProxyConfig {
+            output: output.clone(),
+            command,
+        },
+        TriggeredFiniteReader {
+            trigger: trigger_rx,
+            payload: Some(b"{\"id\":1,\"method\":\"initialize\"}\n".to_vec()),
+        },
+        TriggerInputOnDrop(Some(trigger_tx)),
+    );
+
+    let error = result.expect_err("queued client frame was silently accepted after child exit");
+    let message = error.to_string();
+    assert!(message.contains("unsent client frame"), "{message}");
+    let capture = std::fs::read_to_string(&output).unwrap();
+    assert!(!capture.contains("client_to_server"));
     std::fs::remove_file(output).unwrap();
 }
 

@@ -268,14 +268,22 @@ where
     stderr_thread
         .join()
         .map_err(|_| anyhow::anyhow!("stderr capture thread panicked"))??;
+    let mut has_unsent_client_frames = false;
     while let Ok(event) = event_rx.try_recv() {
-        if let DriverEvent::ClientDone(error) = event {
-            client_done = true;
-            client_error = error;
+        match event {
+            DriverEvent::ClientFrame(_) => has_unsent_client_frames = true,
+            DriverEvent::ClientDone(error) => {
+                client_done = true;
+                client_error = error;
+            }
+            DriverEvent::StdoutDone(_) | DriverEvent::StderrDone(_) => {}
         }
     }
     if let Some(error) = supervision_error {
         return Err(error);
+    }
+    if has_unsent_client_frames {
+        bail!("app-server exited with an unsent client frame still queued");
     }
     if let Some(error) = client_error {
         bail!("client input failed: {error}");
@@ -317,19 +325,48 @@ fn ensure_distinct_files(input: &Path, output: &Path) -> Result<()> {
         bail!("replay input and capture output resolve to the same file");
     }
 
-    #[cfg(unix)]
-    if output.exists() {
-        use std::os::unix::fs::MetadataExt;
-
-        let input_metadata = std::fs::metadata(input)?;
-        let output_metadata = std::fs::metadata(output)?;
-        if input_metadata.dev() == output_metadata.dev()
-            && input_metadata.ino() == output_metadata.ino()
-        {
-            bail!("replay input and capture output identify the same file");
-        }
+    if output.exists() && files_have_same_identity(input, output)? {
+        bail!("replay input and capture output identify the same file");
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn files_have_same_identity(input: &Path, output: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let input_metadata = std::fs::metadata(input)?;
+    let output_metadata = std::fs::metadata(output)?;
+    Ok(input_metadata.dev() == output_metadata.dev()
+        && input_metadata.ino() == output_metadata.ino())
+}
+
+#[cfg(windows)]
+fn files_have_same_identity(input: &Path, output: &Path) -> Result<bool> {
+    fn identity(file: &File) -> Result<(u32, u64)> {
+        use std::mem::MaybeUninit;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+
+        let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        // SAFETY: the file handle is live and `information` points to writable storage.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) }
+            == 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        // SAFETY: a successful API call initialized the complete structure.
+        let information = unsafe { information.assume_init() };
+        let file_index =
+            ((information.nFileIndexHigh as u64) << 32) | information.nFileIndexLow as u64;
+        Ok((information.dwVolumeSerialNumber, file_index))
+    }
+
+    let input_file = File::open(input)?;
+    let output_file = File::open(output)?;
+    Ok(identity(&input_file)? == identity(&output_file)?)
 }
 
 fn create_capture_file(path: &Path) -> Result<File> {
