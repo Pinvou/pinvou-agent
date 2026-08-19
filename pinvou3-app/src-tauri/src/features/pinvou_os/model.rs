@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const SCHEMA_VERSION: u32 = 4;
+// v5 canonicalizes the legacy observer identity during replay. The raw v4 ledger remains
+// immutable; new snapshots and events use Screen Observer naming exclusively.
+pub const SCHEMA_VERSION: u32 = 5;
 pub const PINVOU_IDENTITY_ID: &str = "pinvou";
 pub const PINVOU_INTERACTION_SCOPE_ID: &str = "pinvou:global";
 pub const KERNEL_ACTOR_ID: &str = "kernel:pinvou-os";

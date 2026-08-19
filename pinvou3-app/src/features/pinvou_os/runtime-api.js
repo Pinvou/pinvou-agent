@@ -134,7 +134,7 @@ export function pinvouOsAgentRows(snapshot) {
   const order = [
     'agent:front',
     'agent:orchestrator',
-    'agent:surface',
+    'agent:screen-observer',
     'agent:resource',
     'agent:connectivity',
     'agent:inference',

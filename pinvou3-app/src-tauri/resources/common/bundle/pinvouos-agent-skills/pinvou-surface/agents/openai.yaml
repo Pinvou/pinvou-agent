@@ -1,4 +1,0 @@
-interface:
-  display_name: "PinvouOS Surface"
-  short_description: "Observe accessible screen facts without guessing"
-  default_prompt: "Use $pinvou-surface to inspect what PinvouOS can reliably observe on screen."

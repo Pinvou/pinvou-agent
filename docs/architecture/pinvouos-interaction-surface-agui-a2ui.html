@@ -1226,7 +1226,7 @@
             <div class="fact future"><b>Front 独占 Agent 画布</b><span>只有 Front 能申请 front/* 内容画布；Runtime 投影和 Kernel 系统层由确定性宿主生成，其他 Agent 均无写权。</span></div>
             <div class="fact future"><b>Host 控制美学</b><span>Agent 选择语义、优先级和布局枚举；React Renderer 决定像素、动效、触控和无障碍。</span></div>
             <div class="fact future"><b>Policy 自动插门禁</b><span>Policy Agent 评估，Kernel 强制，Host 在 system/* 系统层显示确认；不依赖模型“记得加确认卡”。</span></div>
-            <div class="fact future"><b>可中断、可恢复、可回放</b><span>cancel / resume / steering、snapshot + delta、surface replay 都成为正式协议行为。</span></div>
+            <div class="fact future"><b>可中断、可恢复、可回放</b><span>cancel / resume / steering、snapshot + delta、A2UI Surface replay 都成为正式协议行为。</span></div>
           </div>
         </div>
       </div>
@@ -1452,7 +1452,7 @@
 
         <article class="authority-card worker-contract">
           <h3>其他 Agent 的统一回传合同</h3>
-          <p>这里的执行者专指按 Mission / Runtime Run 临时创建的 Dynamic Mission Agent，不包括 12 个常驻系统角色。它可以建议“语义重点”，不能提交 A2UI JSON，更不能直接触碰 Renderer。</p>
+          <p>这里的执行者专指按 Mission / Runtime Run 临时创建的 Dynamic Mission Agent，不包括 12 个常驻系统角色。它可以建议“语义重点”，不能创建、更新或删除 A2UI Surface，更不能直接触碰 Renderer。</p>
           <div class="contract-code" aria-label="WorkerResult JSON 示例">{
   "missionId": "mission_…",
   "runtimeRunId": "run_…",
@@ -1469,12 +1469,12 @@
           <div class="contract-note">
             <div><b>Orchestrator</b><span>聚合为 NO_OP / COMPLETED / NEEDS_CLARIFICATION / BLOCKED / FAILED / CANCELLED；不直接 createSurface。</span></div>
             <div><b>Mission Agent</b><span>只回事实、产物、问题、风险和执行自报；completed 不等于 Runtime 已验证成功。</span></div>
-            <div><b>Surface Agent</b><span>只提供窗口、可访问性节点、焦点、边界与语义缺口事实；设备事实归 Device Agent。</span></div>
+            <div><b>界面感知 Agent</b><span>Screen Observer Agent 只提供窗口、可访问性节点、焦点、边界与语义缺口事实；设备事实归 Device Agent。</span></div>
           </div>
         </article>
       </div>
 
-      <div class="collision-note"><span class="bang">!</span><div><b>必须避免名称误解</b><span>PinvouOS 的 <strong>Surface Agent</strong> 是界面场景观察角色；A2UI 的 <strong>Surface</strong> 是逻辑 UI 区域。前者不能因为同名而获得画布编排权，硬件显示能力仍归 Device Agent。</span></div></div>
+      <div class="collision-note"><span class="bang">!</span><div><b>术语边界</b><span>PinvouOS 的<strong>界面感知 Agent</strong>观察既有界面；A2UI <strong>Surface</strong> 是逻辑 UI 区域。界面感知 Agent 没有 A2UI 写权，硬件显示能力仍归 Device Agent。</span></div></div>
 
       <div class="matrix-wrap">
         <div class="table-caption"><strong>状态所有权矩阵</strong><span>任何“共享状态”都必须能回答：谁写、谁赢、能否重建</span></div>

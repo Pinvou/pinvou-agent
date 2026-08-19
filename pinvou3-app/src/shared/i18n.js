@@ -2440,7 +2440,7 @@ Object.assign(dict.zh, { uiPinvouOs: {
   agents:{
     'agent:front':{ name:'交互 Agent', role:'始终作为唯一的 Pinvou 与用户交流' },
     'agent:orchestrator':{ name:'编排 Agent', role:'把持续意图拆成任务图并协调能力 Agent' },
-    'agent:surface':{ name:'屏幕 Agent', role:'理解屏幕、窗口与可访问性场景' },
+    'agent:screen-observer':{ name:'界面感知 Agent', role:'观察并归一屏幕、窗口与可访问性场景' },
     'agent:resource':{ name:'资源 Agent', role:'持续观察算力、内存、温度与功耗' },
     'agent:connectivity':{ name:'连接 Agent', role:'验证联网路径、定位故障并支持网络恢复' },
     'agent:inference':{ name:'推理 Agent', role:'验证当前模型路由、凭据与推理可用性' },
@@ -2486,7 +2486,7 @@ Object.assign(dict.en, { uiPinvouOs: {
   agents:{
     'agent:front':{ name:'Interaction Agent', role:'The one Pinvou that always talks with the user' },
     'agent:orchestrator':{ name:'Orchestrator Agent', role:'Turns continuous intent into a coordinated work graph' },
-    'agent:surface':{ name:'Surface Agent', role:'Understands screens, windows, and accessibility scenes' },
+    'agent:screen-observer':{ name:'Screen Observer Agent', role:'Observes and normalizes screens, windows, and accessibility scenes' },
     'agent:resource':{ name:'Resource Agent', role:'Observes compute, memory, temperature, and power' },
     'agent:connectivity':{ name:'Connectivity Agent', role:'Validates network paths, diagnoses faults, and supports recovery' },
     'agent:inference':{ name:'Inference Agent', role:'Validates the active model route, credential, and inference readiness' },
@@ -2532,7 +2532,7 @@ Object.assign(dict.ja, { uiPinvouOs: {
   agents:{
     'agent:front':{ name:'対話 Agent', role:'常に唯一の Pinvou としてユーザーと対話' },
     'agent:orchestrator':{ name:'編成 Agent', role:'連続した意図を作業グラフへ分解し能力 Agent を調整' },
-    'agent:surface':{ name:'画面 Agent', role:'画面・ウィンドウ・アクセシビリティ場面を理解' },
+    'agent:screen-observer':{ name:'画面観測 Agent', role:'画面・ウィンドウ・アクセシビリティ場面を観測・正規化' },
     'agent:resource':{ name:'リソース Agent', role:'計算資源・メモリ・温度・電力を継続観測' },
     'agent:connectivity':{ name:'接続 Agent', role:'ネットワーク経路を検証し、障害診断と復旧を支援' },
     'agent:inference':{ name:'推論 Agent', role:'現在のモデル経路・認証情報・推論可用性を検証' },

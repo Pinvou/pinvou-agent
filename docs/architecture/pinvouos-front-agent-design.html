@@ -1451,7 +1451,7 @@
 
     <section id="tools">
       <div class="section-head">
-        <div><span class="section-index">04 · Tool Surface</span><h2>它手上到底有哪些工具？</h2></div>
+        <div><span class="section-index">04 · Tool Boundary</span><h2>它手上到底有哪些工具？</h2></div>
         <p class="section-summary">Front 不是只会调用五个“系统 Agent 工具”。今天的它继承了 CodeWhale 的广泛工具面，再额外接入五个 PinvouOS 只读适配器。</p>
       </div>
 
@@ -1566,13 +1566,13 @@
         <div class="surface-map">
           <div>
             <span class="status partial">协议已冻结</span>
-            <h3 style="margin-top:15px">Surface 写权分区</h3>
+            <h3 style="margin-top:15px">A2UI Surface 写权分区</h3>
             <p class="small">三分区权责已经冻结，但当前只有 projection 精确校验；writer principal、front/system hard gate 与越区审计仍未实现。</p>
           </div>
           <div class="surface-layer"><code>projection/*</code><p>Runtime Projector 的确定性只读投影；当前唯一已落地 Surface。</p><span class="status live">已运行</span></div>
           <div class="surface-layer"><code>front/*</code><p>Front 的普通用户态呈现意图；未来由 Presentation Planner 写入。</p><span class="status target">目标态</span></div>
           <div class="surface-layer"><code>system/*</code><p>系统审批、硬告警与不可隐藏控制层，只归 Kernel / Host。</p><span class="status target">目标态</span></div>
-          <div class="callout warn"><div class="callout-icon">!</div><div><strong>Surface Agent 不是 UI 写入者</strong><p>它的职责是观察窗口和可访问性场景，但当前 Provider 尚未接通；“Surface”同名不代表它能提交 A2UI。</p></div></div>
+          <div class="callout warn"><div class="callout-icon">!</div><div><strong>界面感知 Agent 不是 A2UI 写入者</strong><p>Screen Observer Agent 只观察窗口和可访问性场景，当前 Observation Provider 尚未接通；它不能创建、更新或删除 A2UI Surface。</p></div></div>
         </div>
 
         <div class="canvas-demo" aria-label="目标画布概念图">
@@ -1765,7 +1765,7 @@
             <tr><td>Runtime Ledger</td><td>身份、Mission、Run、Interaction、Agent、资源等事实</td><td>读取并解释事实</td><td>不能把投影当第二真相源</td><td><span class="status partial">trace + 只读投影</span></td></tr>
             <tr><td>Policy / Kernel</td><td>Allow / Deny / RequireConfirmation 与强制结果</td><td>提出 Action Intent、解释结果</td><td>不能替用户确认，不能覆盖硬拒绝</td><td><span class="status off">统一 gate 未接</span></td></tr>
             <tr><td>Memory Agent</td><td>经证据筛选的稳定上下文</td><td>在回答与计划中使用上下文</td><td>不能把任务进度写进长期记忆</td><td><span class="status off">Front consumer 未接</span></td></tr>
-            <tr><td>System Agents</td><td>资源、连接、推理、设备、Surface 等事实和风险</td><td>面向用户解释与建议</td><td>不能阻断它们经 Ledger / Kernel 的系统路径</td><td><span class="status partial">多为投影或算法</span></td></tr>
+            <tr><td>System Agents</td><td>资源、连接、推理、设备、界面感知等事实和风险</td><td>面向用户解释与建议</td><td>不能阻断它们经 Ledger / Kernel 的系统路径</td><td><span class="status partial">多为投影或算法</span></td></tr>
             <tr><td>Host Renderer</td><td>组件能力、动作回执、本地交互事件</td><td>声明普通用户态呈现意图</td><td>不能控制最终像素、焦点和系统确认层</td><td><span class="status partial">只读投影已渲染</span></td></tr>
           </tbody>
         </table>

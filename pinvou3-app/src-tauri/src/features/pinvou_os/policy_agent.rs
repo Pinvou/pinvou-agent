@@ -393,8 +393,8 @@ mod tests {
     fn read_action() -> ProposedAction {
         ProposedAction {
             action_id: "action-read".to_string(),
-            actor_id: "agent:surface".to_string(),
-            capability_id: "surface.observe".to_string(),
+            actor_id: "agent:screen-observer".to_string(),
+            capability_id: "screen.observe".to_string(),
             target_scope: "desktop.primary".to_string(),
             required_permissions: BTreeSet::from(["screen.read".to_string()]),
             effects: BTreeSet::from([PolicyEffect::ReadOnly]),

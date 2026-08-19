@@ -27,15 +27,19 @@ use super::memory_agent::{
     migrate_legacy_memory_projection, CompileMemoryContextRequest, LegacyMemoryMigrationReport,
     MemoryAgent, MemoryCandidate, MemoryContextProjection, MemoryDisputeResolutionReceipt,
     MemoryEvidence, MemoryEvidenceOrigin, MemoryMaintenanceReport, MemoryMutationReceipt,
-    MemoryOrganizationReceipt, MemoryProjectionState, OrganizedMemoryDecisionBatch,
-    OrganizedMemoryDecisionCheckpoint, OrganizedMemoryDecisionEngine, OrganizedMemoryProjection,
-    OrganizedMemoryQuery, RememberMemoryRequest, ResolveMemoryDisputeRequest, RetractMemoryRequest,
-    RetractOrganizedMemoryRequest, TrustedMemoryEvidence, TrustedMemoryEvidenceBinding,
-    MEMORY_AGENT_ID,
+    MemoryOrganizationReceipt, MemoryProjectionState, OrganizedMemory,
+    OrganizedMemoryDecisionBatch, OrganizedMemoryDecisionCheckpoint, OrganizedMemoryDecisionEngine,
+    OrganizedMemoryProjection, OrganizedMemoryQuery, RememberMemoryRequest,
+    ResolveMemoryDisputeRequest, RetractMemoryRequest, RetractOrganizedMemoryRequest,
+    TrustedMemoryEvidence, TrustedMemoryEvidenceBinding, MEMORY_AGENT_ID,
 };
 use super::model::*;
 use super::policy_agent::policy_authorize_contract;
-use super::surface_agent::surface_observe_contract;
+use super::screen_observer_agent::{
+    canonical_screen_observer_agent_id, canonical_screen_observer_capability_id,
+    screen_observe_contract, LEGACY_SURFACE_AGENT_ID, LEGACY_SURFACE_OBSERVE_CAPABILITY_ID,
+    SCREEN_OBSERVER_AGENT_ID, SCREEN_OBSERVER_IDENTITY_SCHEMA_VERSION,
+};
 
 type RuntimeEventSink = dyn Fn(EventEnvelope) + Send + Sync + 'static;
 pub type AgentControlAdapter =
@@ -87,6 +91,7 @@ enum MemoryEngineState {
 struct ReplayedMemoryEngine {
     engine: OrganizedMemoryDecisionEngine,
     pending_legacy_migration: Option<PendingLegacyMemoryMigration>,
+    pending_screen_observer_identity_migration: bool,
 }
 
 struct PendingLegacyMemoryMigration {
@@ -188,8 +193,12 @@ impl PinvouOsRuntime {
         let next_sequence = snapshot.last_sequence.saturating_add(1).max(1);
         if let Some(migration) = replayed_memory.pending_legacy_migration.as_ref() {
             preflight_legacy_memory_migration(&replayed_memory.engine, migration)?;
+        } else if replayed_memory.pending_screen_observer_identity_migration {
+            preflight_screen_observer_memory_identity_migration(&replayed_memory.engine)?;
         }
         let pending_legacy_migration = replayed_memory.pending_legacy_migration;
+        let pending_screen_observer_identity_migration =
+            replayed_memory.pending_screen_observer_identity_migration;
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
                 ledger_path,
@@ -210,10 +219,12 @@ impl PinvouOsRuntime {
         // 先写一个当前 schema 的 RuntimeStarted，形成升级栅栏；旧 Runtime 会因
         // schema 过新而拒绝启动，不会在新事件之后继续写旧格式快照。
         runtime.bootstrap()?;
-        runtime.reconcile_interrupted_process_interactions()?;
         if let Some(migration) = pending_legacy_migration {
             runtime.persist_legacy_memory_migration(migration)?;
+        } else if pending_screen_observer_identity_migration {
+            runtime.persist_screen_observer_memory_identity_migration()?;
         }
+        runtime.reconcile_interrupted_process_interactions()?;
         Ok(runtime)
     }
 
@@ -559,9 +570,9 @@ impl PinvouOsRuntime {
 
     pub fn register_mission_agent(
         &self,
-        request: RegisterMissionAgentRequest,
+        mut request: RegisterMissionAgentRequest,
     ) -> Result<AgentManifest> {
-        validate_capability_contracts(&request.capabilities)?;
+        canonicalize_and_validate_capability_contracts(&mut request.capabilities)?;
         let snapshot = self.inner.snapshot.read();
         let mission = snapshot
             .missions
@@ -740,7 +751,11 @@ impl PinvouOsRuntime {
                     .map_err(|error| anyhow!(error.to_string()))?;
                 let context = memory_event_context(&candidate.candidate_id, &candidate.evidence);
                 let outcome = engine
-                    .organize(candidate)
+                    .organize_with_evidence_actor_alias(
+                        candidate,
+                        SCREEN_OBSERVER_AGENT_ID,
+                        LEGACY_SURFACE_AGENT_ID,
+                    )
                     .map_err(|error| anyhow!(error.to_string()))?;
                 Ok((context, outcome))
             },
@@ -792,7 +807,11 @@ impl PinvouOsRuntime {
                     .map_err(|error| anyhow!(error.to_string()))?;
                 let context = memory_event_context(&request.operation_id, &request.evidence);
                 let outcome = engine
-                    .resolve_dispute(request)
+                    .resolve_dispute_with_evidence_actor_alias(
+                        request,
+                        SCREEN_OBSERVER_AGENT_ID,
+                        LEGACY_SURFACE_AGENT_ID,
+                    )
                     .map_err(|error| anyhow!(error.to_string()))?;
                 Ok((context, outcome))
             },
@@ -846,7 +865,11 @@ impl PinvouOsRuntime {
                     .map_err(|error| anyhow!(error.to_string()))?;
                 let context = memory_event_context(&candidate.candidate_id, &candidate.evidence);
                 let outcome = engine
-                    .organize(candidate)
+                    .organize_with_evidence_actor_alias(
+                        candidate,
+                        SCREEN_OBSERVER_AGENT_ID,
+                        LEGACY_SURFACE_AGENT_ID,
+                    )
                     .map_err(|error| anyhow!(error.to_string()))?;
                 Ok((context, outcome))
             },
@@ -1391,6 +1414,41 @@ impl PinvouOsRuntime {
         Ok(())
     }
 
+    fn persist_screen_observer_memory_identity_migration(&self) -> Result<()> {
+        let mut state = self.inner.memory_engine.write();
+        let append_guard = self.inner.append_lock.lock();
+        ensure_runtime_writable(&self.inner)?;
+        let checkpoint = ready_memory_engine_mut(&mut state)?.checkpoint();
+        let result = self.append_locked(
+            EventContext {
+                source_actor_id: MEMORY_AGENT_ID.to_string(),
+                correlation_id: Some("memory-screen-observer-identity-migration".to_string()),
+                ..EventContext::default()
+            },
+            RuntimeEvent::OrganizedMemoryCheckpointRecorded {
+                checkpoint,
+                legacy_source_event_id: None,
+                legacy_migration: None,
+            },
+        );
+        let publication = match result {
+            Ok(publication) => Some(publication),
+            Err(error) => {
+                let reason = error.to_string();
+                *state = MemoryEngineState::Poisoned {
+                    reason: reason.clone(),
+                };
+                return Err(error).context(format!(
+                    "persist Screen Observer memory identity checkpoint; Memory Agent isolated: {reason}"
+                ));
+            }
+        };
+        drop(state);
+        drop(append_guard);
+        deliver_persisted_event(publication);
+        Ok(())
+    }
+
     fn bootstrap(&self) -> Result<()> {
         self.append(
             EventContext::kernel(),
@@ -1602,7 +1660,8 @@ fn append_envelope(
     ledger_head_from_frame(envelope, expected_final_len, &payload[..payload.len() - 1])
 }
 
-fn serialize_envelope_frame(envelope: &EventEnvelope) -> Result<Vec<u8>> {
+pub(super) fn serialize_envelope_frame(envelope: &EventEnvelope) -> Result<Vec<u8>> {
+    validate_current_schema_screen_observer_identity(envelope)?;
     let mut payload = serde_json::to_vec(envelope).context("serialize PinvouOS event")?;
     payload.push(b'\n');
     if payload.len() > MAX_RUNTIME_EVENT_FRAME_BYTES {
@@ -1639,6 +1698,32 @@ fn preflight_legacy_memory_migration(
     serialize_envelope_frame(&envelope)
         .map(|_| ())
         .context("legacy memory migration checkpoint does not fit one durable ledger frame")
+}
+
+fn preflight_screen_observer_memory_identity_migration(
+    engine: &OrganizedMemoryDecisionEngine,
+) -> Result<()> {
+    let envelope = EventEnvelope {
+        schema_version: SCHEMA_VERSION,
+        sequence: u64::MAX,
+        event_id: "event-ffffffffffffffff".to_string(),
+        occurred_at_ms: i64::MAX,
+        source_actor_id: MEMORY_AGENT_ID.to_string(),
+        mission_id: None,
+        run_id: None,
+        interaction_scope_id: None,
+        interaction_run_id: None,
+        causation_id: None,
+        correlation_id: Some("memory-screen-observer-identity-migration".to_string()),
+        event: RuntimeEvent::OrganizedMemoryCheckpointRecorded {
+            checkpoint: engine.checkpoint(),
+            legacy_source_event_id: None,
+            legacy_migration: None,
+        },
+    };
+    serialize_envelope_frame(&envelope)
+        .map(|_| ())
+        .context("Screen Observer memory identity checkpoint does not fit one durable ledger frame")
 }
 
 fn ledger_head_from_frame(
@@ -1765,6 +1850,7 @@ fn validate_ledger_event_chain(events: &[EventEnvelope]) -> Result<()> {
                 envelope.sequence
             );
         }
+        validate_current_schema_screen_observer_identity(envelope)?;
         if envelope.sequence != expected_sequence {
             bail!(
                 "PinvouOS ledger sequence gap or duplicate: expected {}, found {}",
@@ -1801,10 +1887,107 @@ fn validate_ledger_event_chain(events: &[EventEnvelope]) -> Result<()> {
     Ok(())
 }
 
+/// schema v5 之后，旧观察者标识只能存在于不可变的历史事件。这里仅检查带身份
+/// 语义的 typed 字段；Claim value、Memory value、说明文本等普通内容即使恰好包含
+/// 同样字符串，也不能被误判为协议身份。
+pub(super) fn validate_current_schema_screen_observer_identity(
+    envelope: &EventEnvelope,
+) -> Result<()> {
+    if envelope.schema_version < SCREEN_OBSERVER_IDENTITY_SCHEMA_VERSION {
+        return Ok(());
+    }
+    if envelope.source_actor_id == LEGACY_SURFACE_AGENT_ID {
+        bail!(
+            "schema-v{} event {} uses the legacy Screen Observer source actor",
+            envelope.schema_version,
+            envelope.event_id
+        );
+    }
+    match &envelope.event {
+        RuntimeEvent::AgentRegistered { agent } => {
+            if agent.agent_id == LEGACY_SURFACE_AGENT_ID {
+                bail!(
+                    "schema-v{} agent registration {} uses the legacy Screen Observer agent id",
+                    envelope.schema_version,
+                    envelope.event_id
+                );
+            }
+            if agent
+                .capabilities
+                .iter()
+                .any(|capability| capability.capability_id == LEGACY_SURFACE_OBSERVE_CAPABILITY_ID)
+            {
+                bail!(
+                    "schema-v{} agent registration {} uses the legacy Screen Observer capability id",
+                    envelope.schema_version,
+                    envelope.event_id
+                );
+            }
+        }
+        RuntimeEvent::ClaimAsserted { claim }
+            if claim.asserted_by_actor_id == LEGACY_SURFACE_AGENT_ID =>
+        {
+            bail!(
+                "schema-v{} claim {} uses the legacy Screen Observer actor id",
+                envelope.schema_version,
+                envelope.event_id
+            );
+        }
+        RuntimeEvent::DirectiveIssued { directive }
+            if directive.target_agent_id == LEGACY_SURFACE_AGENT_ID =>
+        {
+            bail!(
+                "schema-v{} directive {} uses the legacy Screen Observer target id",
+                envelope.schema_version,
+                envelope.event_id
+            );
+        }
+        RuntimeEvent::DirectiveAcknowledged {
+            target_agent_id, ..
+        } if target_agent_id == LEGACY_SURFACE_AGENT_ID => {
+            bail!(
+                "schema-v{} directive acknowledgement {} uses the legacy Screen Observer target id",
+                envelope.schema_version,
+                envelope.event_id
+            );
+        }
+        RuntimeEvent::MemoryProjectionUpdated { .. } => {
+            bail!(
+                "schema-v{} event {} re-emits the retired MemoryProjectionUpdated wire shape",
+                envelope.schema_version,
+                envelope.event_id
+            );
+        }
+        RuntimeEvent::OrganizedMemoryDecisionRecorded { decision }
+            if decision_reemits_legacy_screen_observer_actor(decision) =>
+        {
+            bail!(
+                "schema-v{} memory decision {} re-emits legacy Screen Observer actor",
+                envelope.schema_version,
+                envelope.event_id
+            );
+        }
+        RuntimeEvent::OrganizedMemoryCheckpointRecorded { checkpoint, .. }
+            if memory_state_reemits_legacy_screen_observer_actor(&checkpoint.state) =>
+        {
+            bail!(
+                "schema-v{} memory checkpoint {} re-emits legacy Screen Observer actor",
+                envelope.schema_version,
+                envelope.event_id
+            );
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 enum MemoryRecoveryEntry {
     Decision(OrganizedMemoryDecisionBatch),
-    Checkpoint(OrganizedMemoryDecisionCheckpoint),
+    Checkpoint {
+        envelope_schema_version: u32,
+        checkpoint: OrganizedMemoryDecisionCheckpoint,
+    },
 }
 
 fn replay_memory_engine(events: &[EventEnvelope]) -> Result<ReplayedMemoryEngine> {
@@ -1871,6 +2054,15 @@ fn replay_memory_engine(events: &[EventEnvelope]) -> Result<ReplayedMemoryEngine
                         envelope.event_id
                     );
                 }
+                if envelope.schema_version >= SCREEN_OBSERVER_IDENTITY_SCHEMA_VERSION
+                    && decision_reemits_legacy_screen_observer_actor(decision)
+                {
+                    bail!(
+                        "schema-v{} memory decision {} re-emits legacy Screen Observer actor",
+                        envelope.schema_version,
+                        envelope.event_id
+                    );
+                }
                 if !saw_new_memory_stream && latest_legacy.is_some() {
                     bail!(
                         "organized memory decisions cannot follow a legacy projection without a migration checkpoint"
@@ -1890,14 +2082,28 @@ fn replay_memory_engine(events: &[EventEnvelope]) -> Result<ReplayedMemoryEngine
                         envelope.event_id
                     );
                 }
+                if envelope.schema_version >= SCREEN_OBSERVER_IDENTITY_SCHEMA_VERSION
+                    && memory_state_reemits_legacy_screen_observer_actor(&checkpoint.state)
+                {
+                    bail!(
+                        "schema-v{} memory checkpoint {} re-emits legacy Screen Observer actor",
+                        envelope.schema_version,
+                        envelope.event_id
+                    );
+                }
                 if !saw_new_memory_stream {
                     match (&latest_legacy, legacy_source_event_id, legacy_migration) {
                         (Some((projection, source)), Some(marker), Some(report))
                             if marker == &source.event_id =>
                         {
-                            let (expected_engine, expected_report) =
+                            let (mut expected_engine, expected_report) =
                                 migrate_legacy_memory_projection(projection, source)
                                     .map_err(|error| anyhow!(error.to_string()))?;
+                            if envelope.schema_version >= SCREEN_OBSERVER_IDENTITY_SCHEMA_VERSION {
+                                canonicalize_screen_observer_memory_evidence(
+                                    &mut expected_engine,
+                                )?;
+                            }
                             let expected = expected_engine.checkpoint();
                             if report != &expected_report
                                 || checkpoint.last_sequence != expected.last_sequence
@@ -1922,34 +2128,86 @@ fn replay_memory_engine(events: &[EventEnvelope]) -> Result<ReplayedMemoryEngine
                     bail!("legacy migration marker may only appear on the first memory checkpoint");
                 }
                 saw_new_memory_stream = true;
-                entries.push(MemoryRecoveryEntry::Checkpoint(checkpoint.clone()));
+                entries.push(MemoryRecoveryEntry::Checkpoint {
+                    envelope_schema_version: envelope.schema_version,
+                    checkpoint: checkpoint.clone(),
+                });
             }
             _ => {}
         }
     }
 
     if saw_new_memory_stream {
+        let mut engine = recover_organized_memory_entries(&entries)?;
+        let pending_screen_observer_identity_migration =
+            canonicalize_screen_observer_memory_evidence(&mut engine)?;
         return Ok(ReplayedMemoryEngine {
-            engine: recover_organized_memory_entries(&entries)?,
+            engine,
             pending_legacy_migration: None,
+            pending_screen_observer_identity_migration,
         });
     }
     if let Some((projection, source)) = latest_legacy {
         let source_event_id = source.event_id.clone();
-        let (engine, report) = migrate_legacy_memory_projection(&projection, &source)
+        let (mut engine, report) = migrate_legacy_memory_projection(&projection, &source)
             .map_err(|error| anyhow!(error.to_string()))?;
+        let pending_screen_observer_identity_migration =
+            canonicalize_screen_observer_memory_evidence(&mut engine)?;
         return Ok(ReplayedMemoryEngine {
             engine,
             pending_legacy_migration: Some(PendingLegacyMemoryMigration {
                 source_event_id,
                 report,
             }),
+            pending_screen_observer_identity_migration,
         });
     }
     Ok(ReplayedMemoryEngine {
         engine: OrganizedMemoryDecisionEngine::new(),
         pending_legacy_migration: None,
+        pending_screen_observer_identity_migration: false,
     })
+}
+
+fn canonicalize_screen_observer_memory_evidence(
+    engine: &mut OrganizedMemoryDecisionEngine,
+) -> Result<bool> {
+    engine
+        .rewrite_evidence_source_actor_ids(|actor_id| {
+            canonical_screen_observer_agent_id(actor_id).to_string()
+        })
+        .map_err(|error| anyhow!(error.to_string()))
+}
+
+fn decision_reemits_legacy_screen_observer_actor(decision: &OrganizedMemoryDecisionBatch) -> bool {
+    decision
+        .delta
+        .record_upserts
+        .iter()
+        .any(memory_record_reemits_legacy_screen_observer_actor)
+}
+
+fn memory_state_reemits_legacy_screen_observer_actor(
+    state: &super::memory_agent::MemoryOrganizerState,
+) -> bool {
+    state
+        .records
+        .values()
+        .any(memory_record_reemits_legacy_screen_observer_actor)
+}
+
+fn memory_record_reemits_legacy_screen_observer_actor(record: &OrganizedMemory) -> bool {
+    record
+        .supporting_evidence
+        .iter()
+        .chain(record.contradicting_evidence.iter())
+        .chain(
+            record
+                .retraction
+                .iter()
+                .flat_map(|retraction| retraction.evidence.iter()),
+        )
+        .any(|evidence| evidence.source_actor_id == LEGACY_SURFACE_AGENT_ID)
 }
 
 fn recover_organized_memory_entries(
@@ -1964,14 +2222,20 @@ fn recover_organized_memory_entries(
                 tail.push(decision.clone());
                 has_prior_history = true;
             }
-            MemoryRecoveryEntry::Checkpoint(checkpoint) => {
+            MemoryRecoveryEntry::Checkpoint {
+                envelope_schema_version,
+                checkpoint,
+            } => {
                 let checkpoint_engine = OrganizedMemoryDecisionEngine::from_checkpoint(
                     checkpoint.clone(),
                     std::iter::empty(),
                 )
                 .map_err(|error| anyhow!(error.to_string()))?;
                 if has_prior_history {
-                    let prior = recover_memory_segment(base.take(), std::mem::take(&mut tail))?;
+                    let mut prior = recover_memory_segment(base.take(), std::mem::take(&mut tail))?;
+                    if *envelope_schema_version >= SCREEN_OBSERVER_IDENTITY_SCHEMA_VERSION {
+                        canonicalize_screen_observer_memory_evidence(&mut prior)?;
+                    }
                     if prior.last_sequence() != checkpoint_engine.last_sequence()
                         || prior.last_decision_hash() != checkpoint_engine.last_decision_hash()
                         || prior.organizer().state() != checkpoint_engine.organizer().state()
@@ -2192,7 +2456,9 @@ fn trusted_memory_evidence_from_envelope(
     };
     Some(TrustedMemoryEvidence {
         event_id: envelope.event_id.clone(),
-        source_actor_id: envelope.source_actor_id.clone(),
+        // Raw v4 envelopes remain immutable audit history, but any new decision derived
+        // from that evidence must carry only the schema-v5 canonical actor identity.
+        source_actor_id: canonical_screen_observer_agent_id(&envelope.source_actor_id).to_string(),
         origin,
         observed_at_ms,
         recorded_at_ms: envelope.occurred_at_ms,
@@ -2281,9 +2547,8 @@ fn apply_event(snapshot: &mut RuntimeSnapshot, envelope: &EventEnvelope) {
         RuntimeEvent::RuntimeStarted { .. } => {}
         RuntimeEvent::IdentityDeclared { identity } => snapshot.identity = Some(identity.clone()),
         RuntimeEvent::AgentRegistered { agent } => {
-            snapshot
-                .agents
-                .insert(agent.agent_id.clone(), agent.clone());
+            let agent = upcast_agent_manifest(agent);
+            snapshot.agents.insert(agent.agent_id.clone(), agent);
         }
         RuntimeEvent::MissionOpened { mission } => {
             snapshot
@@ -2360,12 +2625,13 @@ fn apply_event(snapshot: &mut RuntimeSnapshot, envelope: &EventEnvelope) {
             snapshot.inference.reason_code = None;
         }
         RuntimeEvent::ClaimAsserted { claim } => {
+            let mut claim = claim.clone();
+            claim.asserted_by_actor_id =
+                canonical_screen_observer_agent_id(&claim.asserted_by_actor_id).to_string();
             if claim.subject == "device.resources" && claim.predicate == "pressure_level" {
                 snapshot.resources.active_pressure_claim_id = Some(claim.claim_id.clone());
             }
-            snapshot
-                .claims
-                .insert(claim.claim_id.clone(), claim.clone());
+            snapshot.claims.insert(claim.claim_id.clone(), claim);
         }
         RuntimeEvent::ClaimRetracted {
             claim_id,
@@ -2382,6 +2648,9 @@ fn apply_event(snapshot: &mut RuntimeSnapshot, envelope: &EventEnvelope) {
             }
         }
         RuntimeEvent::DirectiveIssued { directive } => {
+            let mut directive = directive.clone();
+            directive.target_agent_id =
+                canonical_screen_observer_agent_id(&directive.target_agent_id).to_string();
             if let Some(agent) = snapshot.agents.get_mut(&directive.target_agent_id) {
                 agent.desired_state = match directive.action {
                     DirectiveAction::Pause => AgentState::Paused,
@@ -2406,6 +2675,7 @@ fn apply_event(snapshot: &mut RuntimeSnapshot, envelope: &EventEnvelope) {
                 directive.acknowledged_at_ms = Some(*acknowledged_at_ms);
                 directive.acknowledgement_detail = Some(detail.clone());
             }
+            let target_agent_id = canonical_screen_observer_agent_id(target_agent_id);
             if let Some(agent) = snapshot.agents.get_mut(target_agent_id) {
                 if *status == DirectiveStatus::Applied {
                     agent.observed_state = *resulting_state;
@@ -2420,6 +2690,19 @@ fn apply_event(snapshot: &mut RuntimeSnapshot, envelope: &EventEnvelope) {
         | RuntimeEvent::OrganizedMemoryDecisionRecorded { .. }
         | RuntimeEvent::OrganizedMemoryCheckpointRecorded { .. } => {}
     }
+}
+
+/// v4 及更早账本使用过 `agent:surface` / `surface.observe`。账本保持原始字节不变，
+/// replay projector 只把派生快照提升到 canonical Screen Observer 标识。schema v5 的
+/// RuntimeStarted 是降级栅栏，旧二进制不会在 canonical 事件之后继续写旧标识。
+fn upcast_agent_manifest(agent: &AgentManifest) -> AgentManifest {
+    let mut agent = agent.clone();
+    agent.agent_id = canonical_screen_observer_agent_id(&agent.agent_id).to_string();
+    for capability in &mut agent.capabilities {
+        capability.capability_id =
+            canonical_screen_observer_capability_id(&capability.capability_id).to_string();
+    }
+    agent
 }
 
 fn required_text(value: &str, label: &str) -> Result<String> {
@@ -2478,12 +2761,23 @@ fn sha256_hex(value: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn validate_capability_contracts(capabilities: &[CapabilityContract]) -> Result<()> {
+fn canonicalize_and_validate_capability_contracts(
+    capabilities: &mut [CapabilityContract],
+) -> Result<()> {
     if capabilities.is_empty() {
         bail!("mission agent must declare at least one capability contract");
     }
+    let mut capability_ids = BTreeSet::new();
     for capability in capabilities {
-        required_text(&capability.capability_id, "capability id")?;
+        let capability_id = required_text(&capability.capability_id, "capability id")?;
+        capability.capability_id =
+            canonical_screen_observer_capability_id(&capability_id).to_string();
+        if !capability_ids.insert(capability.capability_id.clone()) {
+            bail!(
+                "mission agent declares duplicate capability {}",
+                capability.capability_id
+            );
+        }
         required_text(&capability.summary, "capability summary")?;
         if capability.version == 0 {
             bail!("capability version must be positive");
@@ -2648,10 +2942,10 @@ fn builtin_system_agents(created_at_ms: i64) -> Vec<AgentManifest> {
             created_at_ms,
         ),
         builtin_agent(
-            "agent:surface",
-            "Surface Agent",
-            "观察当前屏幕与可访问性场景图",
-            surface_observe_contract(),
+            SCREEN_OBSERVER_AGENT_ID,
+            "Screen Observer Agent",
+            "观察并归一当前窗口与可访问性界面场景",
+            screen_observe_contract(),
             AgentState::Starting,
             85,
             created_at_ms,

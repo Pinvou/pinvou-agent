@@ -25,7 +25,7 @@ import {
 const AGENT_ICONS = {
   'agent:front': MessageSquare,
   'agent:orchestrator': Layers,
-  'agent:surface': Monitor,
+  'agent:screen-observer': Monitor,
   'agent:resource': Cpu,
   'agent:connectivity': Radio,
   'agent:inference': Brain,

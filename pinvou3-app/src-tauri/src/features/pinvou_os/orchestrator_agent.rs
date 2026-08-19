@@ -7,6 +7,9 @@ use codewhale_config::{
 };
 use serde::{Deserialize, Serialize};
 
+use super::screen_observer_agent::{
+    canonical_screen_observer_agent_id, canonical_screen_observer_capability_id,
+};
 use super::{CapabilityAvailability, CapabilityAvailabilityState, ResourceClass, ResourcePressure};
 
 pub const ORCHESTRATOR_AGENT_ID: &str = "agent:orchestrator";
@@ -130,16 +133,29 @@ pub fn build_mission_work_graph(input: &MissionPlanningInput) -> Result<MissionW
         bail!("mission must require at least one atomic capability");
     }
 
-    let reports = index_reports(&input.capability_reports)?;
-    let need_ids = validate_needs(&input.needs)?;
+    // v4 callers may still submit the legacy observer identifiers. Normalize the
+    // whole graph boundary once so reports, needs and dependency edges cannot diverge or
+    // re-emit a legacy identity in a schema-v5 plan.
+    let needs = input
+        .needs
+        .iter()
+        .map(canonicalize_capability_need)
+        .collect::<Vec<_>>();
+    let capability_reports = input
+        .capability_reports
+        .iter()
+        .map(canonicalize_capability_report)
+        .collect::<Vec<_>>();
+    let reports = index_reports(&capability_reports)?;
+    let need_ids = validate_needs(&needs)?;
     let work_ids = need_ids
         .iter()
         .enumerate()
         .map(|(index, capability_id)| (capability_id.clone(), format!("work:{:03}", index + 1)))
         .collect::<BTreeMap<_, _>>();
 
-    let mut work_items = Vec::with_capacity(input.needs.len());
-    for need in &input.needs {
+    let mut work_items = Vec::with_capacity(needs.len());
+    for need in &needs {
         let capability_id = need.capability_id.trim();
         let report = reports.get(capability_id);
         let (mut disposition, mut reason_codes, mut candidates) = match report {
@@ -269,6 +285,35 @@ pub fn build_mission_work_graph(input: &MissionPlanningInput) -> Result<MissionW
         reason_codes: reason_codes.into_iter().collect(),
         evidence_event_ids: normalized_identifiers(&input.evidence_event_ids)?,
     })
+}
+
+fn canonicalize_capability_need(need: &CapabilityNeed) -> CapabilityNeed {
+    CapabilityNeed {
+        capability_id: canonical_screen_observer_capability_id(need.capability_id.trim())
+            .to_string(),
+        resource_class: need.resource_class,
+        depends_on_capability_ids: need
+            .depends_on_capability_ids
+            .iter()
+            .map(|capability_id| {
+                canonical_screen_observer_capability_id(capability_id.trim()).to_string()
+            })
+            .collect(),
+    }
+}
+
+fn canonicalize_capability_report(report: &CapabilityAvailability) -> CapabilityAvailability {
+    CapabilityAvailability {
+        capability_id: canonical_screen_observer_capability_id(report.capability_id.trim())
+            .to_string(),
+        state: report.state.clone(),
+        candidate_agent_ids: report
+            .candidate_agent_ids
+            .iter()
+            .map(|agent_id| canonical_screen_observer_agent_id(agent_id.trim()).to_string())
+            .collect(),
+        reason_codes: report.reason_codes.clone(),
+    }
 }
 
 fn resource_governor_defers(class: ResourceClass, pressure: ResourcePressure) -> bool {
@@ -460,17 +505,64 @@ mod tests {
     }
 
     #[test]
+    fn legacy_screen_observer_aliases_are_canonicalized_across_the_work_graph() {
+        let mut dependent = need("user.interact", ResourceClass::Light);
+        dependent.depends_on_capability_ids = vec![
+            super::super::screen_observer_agent::LEGACY_SURFACE_OBSERVE_CAPABILITY_ID.to_string(),
+        ];
+        let mut legacy_report = report(
+            super::super::screen_observer_agent::LEGACY_SURFACE_OBSERVE_CAPABILITY_ID,
+            CapabilityAvailabilityState::Available,
+        );
+        legacy_report.candidate_agent_ids =
+            vec![super::super::screen_observer_agent::LEGACY_SURFACE_AGENT_ID.to_string()];
+
+        let graph = build_mission_work_graph(&MissionPlanningInput {
+            objective: "observe before interacting".to_string(),
+            priority: 70,
+            resource_pressure: ResourcePressure::Normal,
+            needs: vec![
+                need(
+                    super::super::screen_observer_agent::LEGACY_SURFACE_OBSERVE_CAPABILITY_ID,
+                    ResourceClass::Light,
+                ),
+                dependent,
+            ],
+            capability_reports: vec![
+                legacy_report,
+                report("user.interact", CapabilityAvailabilityState::Available),
+            ],
+            evidence_event_ids: Vec::new(),
+        })
+        .unwrap();
+
+        assert!(graph.ready);
+        assert_eq!(graph.work_items[0].capability_id, "screen.observe");
+        assert_eq!(
+            graph.work_items[0].candidate_agent_ids,
+            vec!["agent:screen-observer"]
+        );
+        assert_eq!(
+            graph.work_items[1].depends_on_work_ids,
+            vec![graph.work_items[0].work_id.clone()]
+        );
+        let encoded = serde_json::to_string(&graph).unwrap();
+        assert!(!encoded.contains("agent:surface"));
+        assert!(!encoded.contains("surface.observe"));
+    }
+
+    #[test]
     fn resource_fact_defers_heavy_work_without_hiding_other_work() {
         let graph = build_mission_work_graph(&MissionPlanningInput {
             objective: "inspect and answer".to_string(),
             priority: 60,
             resource_pressure: ResourcePressure::Hot,
             needs: vec![
-                need("surface.observe", ResourceClass::Heavy),
+                need("screen.observe", ResourceClass::Heavy),
                 need("user.interact", ResourceClass::Light),
             ],
             capability_reports: vec![
-                report("surface.observe", CapabilityAvailabilityState::Available),
+                report("screen.observe", CapabilityAvailabilityState::Available),
                 report("user.interact", CapabilityAvailabilityState::Available),
             ],
             evidence_event_ids: Vec::new(),

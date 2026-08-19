@@ -198,6 +198,7 @@ impl Pinvou3Bundle {
             "legacy-ppt-workflow",
             "pinvou-review-plan",
             "pinvou-review-final",
+            "pinvou-surface",
         ] {
             let dir = self.skills_dir.join(retired);
             if dir.join(".installed-from").is_file() {

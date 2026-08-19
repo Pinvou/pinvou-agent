@@ -28,6 +28,7 @@ const MAX_OBSERVED_TERMS: usize = 512;
 const MAX_TERM_CHARS: usize = 64;
 const MAX_CONTEXT_CHARS: usize = 8_192;
 const MAX_PRIVATE_LEXICON_BYTES: u64 = 64 * 1024;
+const RETIRED_SCREEN_OBSERVER_TERMS: &[&str] = &["Surface Agent", "屏幕 Agent"];
 
 // 产品与本地开发环境的公共基础词。个人姓名、联系人和客户词不得写入代码；它们
 // 来自 Memory Agent 或 ~/.pinvou3/pinvou-os/asr-lexicon.txt。
@@ -50,7 +51,7 @@ const BASE_TERMS: &[&str] = &[
     "AI",
     "Front Agent",
     "Orchestrator Agent",
-    "Surface Agent",
+    "Screen Observer Agent",
     "Resource Agent",
     "Device Agent",
     "Capability Agent",
@@ -190,7 +191,7 @@ impl AsrContextAgent {
         super::platform::harden_private_runtime_dir(parent)
             .with_context(|| format!("protect ASR context directory {}", parent.display()))?;
 
-        let state = match fs::read(&state_path) {
+        let mut state = match fs::read(&state_path) {
             Ok(raw) => match serde_json::from_slice::<PersistedState>(&raw) {
                 Ok(state) if state.schema_version == STATE_SCHEMA_VERSION => state,
                 Ok(_) => {
@@ -208,6 +209,10 @@ impl AsrContextAgent {
                     .with_context(|| format!("read ASR context state {}", state_path.display()))
             }
         };
+        if retire_legacy_screen_observer_terms(&mut state) {
+            persist_state(&state_path, &state)
+                .context("persist canonical ASR context terminology migration")?;
+        }
 
         Ok(Self {
             inner: Arc::new(AsrContextInner {
@@ -447,17 +452,7 @@ fn compile_context(
         })
         .collect::<Vec<_>>();
     let english_term_count = terms.iter().filter(|term| term.english).count();
-    let joined = terms
-        .iter()
-        .map(|term| term.text.as_str())
-        .collect::<Vec<_>>()
-        .join("、");
-    let mut context_text = format!(
-        "场景：PinvouOS正在与用户持续交互。优先正确识别人名、产品名、英文缩写和技术术语。相关词：{joined}"
-    );
-    if context_text.chars().count() > MAX_CONTEXT_CHARS {
-        context_text = context_text.chars().take(MAX_CONTEXT_CHARS).collect();
-    }
+    let context_text = context_text_for_terms(&terms);
 
     AsrContextSnapshot {
         revision,
@@ -470,6 +465,47 @@ fn compile_context(
         context_text,
         terms,
     }
+}
+
+fn retire_legacy_screen_observer_terms(state: &mut PersistedState) -> bool {
+    let retired_keys = RETIRED_SCREEN_OBSERVER_TERMS
+        .iter()
+        .map(|term| normalize_term(term))
+        .collect::<BTreeSet<_>>();
+    let before = state.observed_terms.len();
+    state.observed_terms.retain(|key, term| {
+        !retired_keys.contains(&normalize_term(key))
+            && !retired_keys.contains(&normalize_term(&term.text))
+    });
+    let mut changed = state.observed_terms.len() != before;
+    if let Some(snapshot) = state.snapshot.as_mut() {
+        let term_count = snapshot.terms.len();
+        snapshot
+            .terms
+            .retain(|term| !retired_keys.contains(&normalize_term(&term.text)));
+        if snapshot.terms.len() != term_count {
+            snapshot.term_count = snapshot.terms.len();
+            snapshot.english_term_count = snapshot.terms.iter().filter(|term| term.english).count();
+            snapshot.context_text = context_text_for_terms(&snapshot.terms);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn context_text_for_terms(terms: &[AsrContextTerm]) -> String {
+    let joined = terms
+        .iter()
+        .map(|term| term.text.as_str())
+        .collect::<Vec<_>>()
+        .join("、");
+    let mut context_text = format!(
+        "场景：PinvouOS正在与用户持续交互。优先正确识别人名、产品名、英文缩写和技术术语。相关词：{joined}"
+    );
+    if context_text.chars().count() > MAX_CONTEXT_CHARS {
+        context_text = context_text.chars().take(MAX_CONTEXT_CHARS).collect();
+    }
+    context_text
 }
 
 fn add_value_terms(
@@ -833,6 +869,100 @@ mod tests {
             .iter()
             .any(|term| term.text.eq_ignore_ascii_case("Qwen3-ASR")));
         assert!(state_path.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn boot_retires_legacy_screen_observer_terms_from_persisted_context() {
+        let (root, state_path, lexicon_path) = temp_paths();
+        let legacy_term = AsrContextTerm {
+            text: "Surface Agent".to_string(),
+            sources: vec!["recent_user_context".to_string()],
+            score: 7_000,
+            english: true,
+        };
+        let state = PersistedState {
+            schema_version: STATE_SCHEMA_VERSION,
+            revision: 9,
+            observed_terms: BTreeMap::from([(
+                normalize_term("Surface Agent"),
+                ObservedTerm {
+                    text: "Surface Agent".to_string(),
+                    count: 3,
+                    last_observed_at_ms: 90_000,
+                },
+            )]),
+            snapshot: Some(AsrContextSnapshot {
+                revision: 9,
+                refreshed_at_ms: 90_000,
+                next_refresh_at_ms: 100_000,
+                max_terms: ASR_CONTEXT_MAX_TERMS,
+                term_count: 1,
+                english_term_count: 1,
+                context_text: context_text_for_terms(std::slice::from_ref(&legacy_term)),
+                terms: vec![legacy_term],
+            }),
+        };
+        fs::write(&state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+
+        let agent = AsrContextAgent::boot(state_path.clone(), lexicon_path).unwrap();
+        let boot_snapshot = agent.current_snapshot().unwrap();
+        assert!(boot_snapshot.terms.is_empty());
+        assert!(!boot_snapshot.context_text.contains("Surface Agent"));
+
+        let refreshed = agent.refresh(&RuntimeSnapshot::default(), 100_000).unwrap();
+        assert!(refreshed
+            .terms
+            .iter()
+            .any(|term| term.text == "Screen Observer Agent"));
+        assert!(!refreshed
+            .terms
+            .iter()
+            .any(|term| RETIRED_SCREEN_OBSERVER_TERMS.contains(&term.text.as_str())));
+        assert!(!fs::read_to_string(&state_path)
+            .unwrap()
+            .contains("Surface Agent"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn boot_preserves_longer_terms_that_only_contain_the_retired_name() {
+        let (root, state_path, lexicon_path) = temp_paths();
+        let retained_term = AsrContextTerm {
+            text: "Surface Agent Pro".to_string(),
+            sources: vec!["recent_user_context".to_string()],
+            score: 7_000,
+            english: true,
+        };
+        let state = PersistedState {
+            schema_version: STATE_SCHEMA_VERSION,
+            revision: 9,
+            observed_terms: BTreeMap::from([(
+                normalize_term("Surface Agent Pro"),
+                ObservedTerm {
+                    text: "Surface Agent Pro".to_string(),
+                    count: 3,
+                    last_observed_at_ms: 90_000,
+                },
+            )]),
+            snapshot: Some(AsrContextSnapshot {
+                revision: 9,
+                refreshed_at_ms: 90_000,
+                next_refresh_at_ms: 100_000,
+                max_terms: ASR_CONTEXT_MAX_TERMS,
+                term_count: 1,
+                english_term_count: 1,
+                context_text: context_text_for_terms(std::slice::from_ref(&retained_term)),
+                terms: vec![retained_term],
+            }),
+        };
+        let original = serde_json::to_vec_pretty(&state).unwrap();
+        fs::write(&state_path, &original).unwrap();
+
+        let agent = AsrContextAgent::boot(state_path.clone(), lexicon_path).unwrap();
+        let boot_snapshot = agent.current_snapshot().unwrap();
+        assert_eq!(boot_snapshot.terms[0].text, "Surface Agent Pro");
+        assert_eq!(fs::read(&state_path).unwrap(), original);
         fs::remove_dir_all(root).unwrap();
     }
 

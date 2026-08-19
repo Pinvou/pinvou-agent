@@ -164,11 +164,46 @@ impl MemoryOrganizer {
         &mut self,
         candidate: MemoryCandidate,
     ) -> Result<MemoryOrganizationReceipt, MemoryOrganizerError> {
+        self.organize_with_optional_evidence_actor_alias(candidate, None)
+    }
+
+    /// schema identity 迁移后，旧幂等指纹仍然绑定原始命令字节。只有把规范 actor
+    /// 精确反向映射成旧 actor 后的完整候选 SHA-256 命中旧指纹，才把它视作同一
+    /// 次重试；任何其他字段变化仍按不同内容拒绝。
+    pub fn organize_with_evidence_actor_alias(
+        &mut self,
+        candidate: MemoryCandidate,
+        canonical_actor_id: &str,
+        legacy_actor_id: &str,
+    ) -> Result<MemoryOrganizationReceipt, MemoryOrganizerError> {
+        self.organize_with_optional_evidence_actor_alias(
+            candidate,
+            Some((canonical_actor_id, legacy_actor_id)),
+        )
+    }
+
+    fn organize_with_optional_evidence_actor_alias(
+        &mut self,
+        candidate: MemoryCandidate,
+        evidence_actor_alias: Option<(&str, &str)>,
+    ) -> Result<MemoryOrganizationReceipt, MemoryOrganizerError> {
         self.last_changed_record_ids.clear();
         let candidate = normalize_candidate(candidate)?;
         let candidate_fingerprint = fingerprint_candidate(&candidate);
         if let Some(previous) = self.state.processed_candidates.get(&candidate.candidate_id) {
-            if previous.candidate_fingerprint != candidate_fingerprint {
+            let alias_fingerprint_matches =
+                evidence_actor_alias.is_some_and(|(canonical_actor_id, legacy_actor_id)| {
+                    let legacy_candidate = rewrite_candidate_evidence_actor(
+                        candidate.clone(),
+                        canonical_actor_id,
+                        legacy_actor_id,
+                    );
+                    legacy_candidate != candidate
+                        && previous.candidate_fingerprint
+                            == fingerprint_candidate(&legacy_candidate)
+                });
+            if previous.candidate_fingerprint != candidate_fingerprint && !alias_fingerprint_matches
+            {
                 return Err(MemoryOrganizerError::new(format!(
                     "candidate id {} was replayed with different content",
                     candidate.candidate_id
@@ -387,11 +422,41 @@ impl MemoryOrganizer {
         &mut self,
         request: ResolveMemoryDisputeRequest,
     ) -> Result<MemoryDisputeResolutionReceipt, MemoryOrganizerError> {
+        self.resolve_dispute_with_optional_evidence_actor_alias(request, None)
+    }
+
+    pub fn resolve_dispute_with_evidence_actor_alias(
+        &mut self,
+        request: ResolveMemoryDisputeRequest,
+        canonical_actor_id: &str,
+        legacy_actor_id: &str,
+    ) -> Result<MemoryDisputeResolutionReceipt, MemoryOrganizerError> {
+        self.resolve_dispute_with_optional_evidence_actor_alias(
+            request,
+            Some((canonical_actor_id, legacy_actor_id)),
+        )
+    }
+
+    fn resolve_dispute_with_optional_evidence_actor_alias(
+        &mut self,
+        request: ResolveMemoryDisputeRequest,
+        evidence_actor_alias: Option<(&str, &str)>,
+    ) -> Result<MemoryDisputeResolutionReceipt, MemoryOrganizerError> {
         self.last_changed_record_ids.clear();
         let request = normalize_resolution(request)?;
         let request_fingerprint = fingerprint_serializable(&request);
         if let Some(previous) = self.state.dispute_resolutions.get(&request.operation_id) {
-            if previous.request_fingerprint != request_fingerprint {
+            let alias_fingerprint_matches =
+                evidence_actor_alias.is_some_and(|(canonical_actor_id, legacy_actor_id)| {
+                    let legacy_request = rewrite_resolution_evidence_actor(
+                        request.clone(),
+                        canonical_actor_id,
+                        legacy_actor_id,
+                    );
+                    legacy_request != request
+                        && previous.request_fingerprint == fingerprint_serializable(&legacy_request)
+                });
+            if previous.request_fingerprint != request_fingerprint && !alias_fingerprint_matches {
                 return Err(MemoryOrganizerError::new(format!(
                     "resolution operation {} was replayed with different content",
                     request.operation_id
@@ -2601,6 +2666,36 @@ fn memory_id_for_candidate(candidate_id: &str) -> String {
 
 fn fingerprint_candidate(candidate: &MemoryCandidate) -> String {
     fingerprint_serializable(candidate)
+}
+
+fn rewrite_candidate_evidence_actor(
+    mut candidate: MemoryCandidate,
+    from_actor_id: &str,
+    to_actor_id: &str,
+) -> MemoryCandidate {
+    rewrite_evidence_actor_ids(&mut candidate.evidence, from_actor_id, to_actor_id);
+    candidate
+}
+
+fn rewrite_resolution_evidence_actor(
+    mut request: ResolveMemoryDisputeRequest,
+    from_actor_id: &str,
+    to_actor_id: &str,
+) -> ResolveMemoryDisputeRequest {
+    rewrite_evidence_actor_ids(&mut request.evidence, from_actor_id, to_actor_id);
+    request
+}
+
+fn rewrite_evidence_actor_ids(
+    evidence: &mut [MemoryEvidence],
+    from_actor_id: &str,
+    to_actor_id: &str,
+) {
+    for item in evidence {
+        if item.source_actor_id == from_actor_id {
+            item.source_actor_id = to_actor_id.to_string();
+        }
+    }
 }
 
 pub(super) fn fingerprint_evidence_metadata(evidence: &MemoryEvidence) -> EvidenceDigest {

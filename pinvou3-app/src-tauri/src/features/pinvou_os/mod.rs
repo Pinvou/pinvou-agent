@@ -19,7 +19,7 @@ mod platform;
 mod policy_agent;
 mod resource_agent;
 mod runtime;
-mod surface_agent;
+mod screen_observer_agent;
 mod tools;
 
 pub use asr_context_agent::{
@@ -56,7 +56,7 @@ pub use runtime::{
     AgentControlAdapter, OpenInteractionRunRequest, OpenMissionRequest, PinvouOsRuntime,
     RegisterMissionAgentRequest,
 };
-pub use surface_agent::*;
+pub use screen_observer_agent::*;
 pub use tools::{
     pinvou_os_runtime_tools, ASR_CONTEXT_STATUS_TOOL_NAME, ATTENTION_PLAN_TOOL_NAME,
     CAPABILITY_REPORT_TOOL_NAME, ORCHESTRATOR_PLAN_TOOL_NAME, RUNTIME_STATUS_TOOL_NAME,

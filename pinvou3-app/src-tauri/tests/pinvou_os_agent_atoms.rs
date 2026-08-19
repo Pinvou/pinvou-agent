@@ -5,3 +5,5 @@ mod capability_agent;
 mod memory_agent;
 #[path = "../src/features/pinvou_os/model.rs"]
 mod model;
+#[path = "../src/features/pinvou_os/screen_observer_agent.rs"]
+mod screen_observer_agent;

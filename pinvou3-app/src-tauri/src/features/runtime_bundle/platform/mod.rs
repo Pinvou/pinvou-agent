@@ -27,7 +27,7 @@ static PINVOUOS_AGENT_SKILLS_DIR: Dir<'_> =
 
 const PINVOUOS_AGENT_SKILL_DIRS: [&str; 10] = [
     "pinvou-orchestrator",
-    "pinvou-surface",
+    "pinvou-screen-observer",
     "pinvou-resource",
     "pinvou-connectivity",
     "pinvou-inference",
@@ -105,7 +105,9 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.18: 连接器 CLI 统一为首次使用在线安装；原生 CLI 按平台 lock 校验后落用户目录
 /// 0.19: 增加多智能体深度护栏 hook，防止模型用单次 `max_depth` 覆盖会话上限
 /// 0.20: 多智能体深度上限调整为两层，正数覆盖仍拦截
-pub const BUNDLE_VERSION: &str = concat!("0.21-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.21: 增加 PinvouOS 后台系统 Agent 的内置 skills
+/// 0.22: pinvou-surface 迁移为无 A2UI 歧义的 pinvou-screen-observer
+pub const BUNDLE_VERSION: &str = concat!("0.22-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
@@ -440,6 +442,13 @@ mod tests {
 
         // 1) 首次解包：文件被写入 + VERSION 记录
         let bundle = Pinvou3Bundle::paths();
+        let retired_screen_skill = bundle.skills_dir.join("pinvou-surface");
+        std::fs::create_dir_all(&retired_screen_skill).unwrap();
+        std::fs::write(
+            retired_screen_skill.join("SKILL.md"),
+            "legacy surface skill",
+        )
+        .unwrap();
         bundle.ensure_extracted().unwrap();
         assert!(bundle.instructions_md.is_file());
         assert!(bundle.mcp_json.is_file());
@@ -483,11 +492,12 @@ mod tests {
             !canva_dir.join("server.py").exists(),
             "Canva 远程 MCP 不应解包本地 server.py"
         );
-        // 已下线 skills(legacy-ppt-workflow / pinvou-review-*)不应再被写出。
+        // 已下线或已改名的 skills 不应再被写出。
         for retired in [
             "legacy-ppt-workflow",
             "pinvou-review-plan",
             "pinvou-review-final",
+            "pinvou-surface",
         ] {
             assert!(
                 !bundle.skills_dir.join(retired).exists(),

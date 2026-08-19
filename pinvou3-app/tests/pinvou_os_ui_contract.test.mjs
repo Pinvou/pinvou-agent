@@ -41,6 +41,7 @@ test('Agent Runtime dock is backed by native runtime truth and has no legacy ter
   const shell = read('src/features/pinvou_os/PinvouOsVoiceShell.jsx');
   const shellCss = read('src/features/pinvou_os/pinvou-os-voice-shell.css');
   const api = read('src/features/pinvou_os/runtime-api.js');
+  const i18n = read('src/shared/i18n.js');
 
   assert.match(dock, /data-testid="pinvou-os-agent-dock"/);
   assert.match(dock, /data-testid="pinvou-os-agent-card"/);
@@ -70,6 +71,11 @@ test('Agent Runtime dock is backed by native runtime truth and has no legacy ter
   assert.match(api, /'agent:connectivity'/);
   assert.match(api, /'agent:inference'/);
   assert.match(api, /'agent:asr-context'/);
+  assert.match(api, /'agent:screen-observer'/);
+  assert.match(dock, /'agent:screen-observer': Monitor/);
+  assert.match(i18n, /'agent:screen-observer':\{ name:'界面感知 Agent'/);
+  assert.match(i18n, /'agent:screen-observer':\{ name:'Screen Observer Agent'/);
+  assert.doesNotMatch(`${api}\n${dock}\n${i18n}`, /agent:surface|屏幕 Agent|Surface Agent/);
 });
 
 test('PinvouOS canvas consumes a read-only namespaced A2UI v0.9 projection', () => {

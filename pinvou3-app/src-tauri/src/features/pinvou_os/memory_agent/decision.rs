@@ -322,9 +322,44 @@ impl OrganizedMemoryDecisionEngine {
         OrganizedMemoryDecisionOutcome<MemoryOrganizationReceipt>,
         OrganizedMemoryDecisionError,
     > {
+        self.organize_with_optional_evidence_actor_alias(candidate, None)
+    }
+
+    pub fn organize_with_evidence_actor_alias(
+        &mut self,
+        candidate: MemoryCandidate,
+        canonical_actor_id: &str,
+        legacy_actor_id: &str,
+    ) -> Result<
+        OrganizedMemoryDecisionOutcome<MemoryOrganizationReceipt>,
+        OrganizedMemoryDecisionError,
+    > {
+        self.organize_with_optional_evidence_actor_alias(
+            candidate,
+            Some((canonical_actor_id, legacy_actor_id)),
+        )
+    }
+
+    fn organize_with_optional_evidence_actor_alias(
+        &mut self,
+        candidate: MemoryCandidate,
+        evidence_actor_alias: Option<(&str, &str)>,
+    ) -> Result<
+        OrganizedMemoryDecisionOutcome<MemoryOrganizationReceipt>,
+        OrganizedMemoryDecisionError,
+    > {
         self.ensure_write_capacity()?;
         let base_revision = self.organizer.state().revision;
-        let receipt = self.organizer.organize(candidate)?;
+        let receipt = match evidence_actor_alias {
+            Some((canonical_actor_id, legacy_actor_id)) => {
+                self.organizer.organize_with_evidence_actor_alias(
+                    candidate,
+                    canonical_actor_id,
+                    legacy_actor_id,
+                )?
+            }
+            None => self.organizer.organize(candidate)?,
+        };
         if receipt.revision == base_revision {
             debug_assert!(self.organizer.last_changed_record_ids().is_empty());
             return Ok(OrganizedMemoryDecisionOutcome {
@@ -410,9 +445,44 @@ impl OrganizedMemoryDecisionEngine {
         OrganizedMemoryDecisionOutcome<MemoryDisputeResolutionReceipt>,
         OrganizedMemoryDecisionError,
     > {
+        self.resolve_dispute_with_optional_evidence_actor_alias(request, None)
+    }
+
+    pub fn resolve_dispute_with_evidence_actor_alias(
+        &mut self,
+        request: ResolveMemoryDisputeRequest,
+        canonical_actor_id: &str,
+        legacy_actor_id: &str,
+    ) -> Result<
+        OrganizedMemoryDecisionOutcome<MemoryDisputeResolutionReceipt>,
+        OrganizedMemoryDecisionError,
+    > {
+        self.resolve_dispute_with_optional_evidence_actor_alias(
+            request,
+            Some((canonical_actor_id, legacy_actor_id)),
+        )
+    }
+
+    fn resolve_dispute_with_optional_evidence_actor_alias(
+        &mut self,
+        request: ResolveMemoryDisputeRequest,
+        evidence_actor_alias: Option<(&str, &str)>,
+    ) -> Result<
+        OrganizedMemoryDecisionOutcome<MemoryDisputeResolutionReceipt>,
+        OrganizedMemoryDecisionError,
+    > {
         self.ensure_write_capacity()?;
         let base_revision = self.organizer.state().revision;
-        let receipt = self.organizer.resolve_dispute(request)?;
+        let receipt = match evidence_actor_alias {
+            Some((canonical_actor_id, legacy_actor_id)) => {
+                self.organizer.resolve_dispute_with_evidence_actor_alias(
+                    request,
+                    canonical_actor_id,
+                    legacy_actor_id,
+                )?
+            }
+            None => self.organizer.resolve_dispute(request)?,
+        };
         if receipt.revision == base_revision {
             debug_assert!(!receipt.changed);
             return Ok(OrganizedMemoryDecisionOutcome {
@@ -481,6 +551,34 @@ impl OrganizedMemoryDecisionEngine {
         };
         checkpoint.checkpoint_hash = checkpoint_hash(&checkpoint);
         checkpoint
+    }
+
+    /// 在完整验证历史 decision/checkpoint 之后，确定性改写恢复态里的 evidence actor。
+    /// 这不会改写旧决策字节，也不会改变 decision sequence/head hash；调用方必须在
+    /// 接受后续写入前持久化一个新 checkpoint，把规范化状态固定为新的回放边界。
+    pub fn rewrite_evidence_source_actor_ids(
+        &mut self,
+        mut rewrite: impl FnMut(&str) -> String,
+    ) -> Result<bool, OrganizedMemoryDecisionError> {
+        let mut state = self.organizer.export_state();
+        let mut changed = false;
+        for record in state.records.values_mut() {
+            for evidence in &mut record.supporting_evidence {
+                changed |= rewrite_evidence_source_actor_id(evidence, &mut rewrite);
+            }
+            for evidence in &mut record.contradicting_evidence {
+                changed |= rewrite_evidence_source_actor_id(evidence, &mut rewrite);
+            }
+            if let Some(retraction) = &mut record.retraction {
+                for evidence in &mut retraction.evidence {
+                    changed |= rewrite_evidence_source_actor_id(evidence, &mut rewrite);
+                }
+            }
+        }
+        if changed {
+            self.organizer = MemoryOrganizer::from_state(state)?;
+        }
+        Ok(changed)
     }
 
     pub fn replay(
@@ -644,6 +742,18 @@ impl OrganizedMemoryDecisionEngine {
         self.last_decision_hash = decision.decision_hash.clone();
         decision
     }
+}
+
+fn rewrite_evidence_source_actor_id(
+    evidence: &mut super::domain::MemoryEvidence,
+    rewrite: &mut impl FnMut(&str) -> String,
+) -> bool {
+    let rewritten = rewrite(&evidence.source_actor_id);
+    if rewritten == evidence.source_actor_id {
+        return false;
+    }
+    evidence.source_actor_id = rewritten;
+    true
 }
 
 fn apply_decision_batch(

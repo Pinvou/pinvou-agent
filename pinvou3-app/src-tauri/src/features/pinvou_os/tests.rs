@@ -162,6 +162,23 @@ fn append_test_envelope(temp: &TempRuntime, envelope: &EventEnvelope) {
     ledger.sync_data().unwrap();
 }
 
+fn screen_observer_identity_schema_test_envelope(event: RuntimeEvent) -> EventEnvelope {
+    EventEnvelope {
+        schema_version: SCREEN_OBSERVER_IDENTITY_SCHEMA_VERSION,
+        sequence: 1,
+        event_id: "event-0000000000000001".to_string(),
+        occurred_at_ms: 1,
+        source_actor_id: KERNEL_ACTOR_ID.to_string(),
+        mission_id: None,
+        run_id: None,
+        interaction_scope_id: None,
+        interaction_run_id: None,
+        causation_id: None,
+        correlation_id: None,
+        event,
+    }
+}
+
 #[test]
 fn boot_declares_one_continuous_identity_and_resident_agents() {
     let temp = TempRuntime::new("boot");
@@ -183,7 +200,7 @@ fn boot_declares_one_continuous_identity_and_resident_agents() {
     for agent_id in [
         "agent:front",
         "agent:orchestrator",
-        "agent:surface",
+        SCREEN_OBSERVER_AGENT_ID,
         RESOURCE_AGENT_ID,
         CONNECTIVITY_AGENT_ID,
         INFERENCE_AGENT_ID,
@@ -229,6 +246,859 @@ fn boot_declares_one_continuous_identity_and_resident_agents() {
 }
 
 #[test]
+fn schema_v5_rejects_legacy_screen_observer_ids_only_in_typed_identity_fields() {
+    let canonical_agent = AgentManifest {
+        agent_id: SCREEN_OBSERVER_AGENT_ID.to_string(),
+        display_name: "Screen Observer Agent".to_string(),
+        kind: AgentKind::System,
+        role: "observe accessible UI facts".to_string(),
+        capabilities: vec![capability(
+            SCREEN_OBSERVE_CAPABILITY_ID,
+            ResourceClass::Light,
+        )],
+        priority: 85,
+        interruptibility: Interruptibility::Immediate,
+        observed_state: AgentState::Starting,
+        desired_state: AgentState::Starting,
+        mission_id: None,
+        run_id: None,
+        created_at_ms: 1,
+    };
+    let canonical_claim = WorldClaim {
+        claim_id: "claim-screen".to_string(),
+        subject: "screen".to_string(),
+        predicate: "focused_window".to_string(),
+        value: json!("pinvou"),
+        confidence: 1.0,
+        asserted_by_actor_id: SCREEN_OBSERVER_AGENT_ID.to_string(),
+        evidence_event_ids: Vec::new(),
+        asserted_at_ms: 1,
+        active: true,
+        retracted_at_ms: None,
+        retraction_reason: None,
+    };
+    let canonical_directive = ControlDirective {
+        directive_id: "directive-screen".to_string(),
+        target_agent_id: SCREEN_OBSERVER_AGENT_ID.to_string(),
+        action: DirectiveAction::Pause,
+        reason: "test".to_string(),
+        hard: false,
+        issued_at_ms: 1,
+        status: DirectiveStatus::Pending,
+        acknowledged_at_ms: None,
+        acknowledgement_detail: None,
+    };
+
+    let mut legacy_source =
+        screen_observer_identity_schema_test_envelope(RuntimeEvent::RuntimeStarted {
+            process_id: 7,
+        });
+    legacy_source.source_actor_id = LEGACY_SURFACE_AGENT_ID.to_string();
+
+    let mut legacy_agent = canonical_agent.clone();
+    legacy_agent.agent_id = LEGACY_SURFACE_AGENT_ID.to_string();
+    let legacy_agent =
+        screen_observer_identity_schema_test_envelope(RuntimeEvent::AgentRegistered {
+            agent: legacy_agent,
+        });
+
+    let mut legacy_capability_agent = canonical_agent;
+    legacy_capability_agent.capabilities[0].capability_id =
+        LEGACY_SURFACE_OBSERVE_CAPABILITY_ID.to_string();
+    let legacy_capability =
+        screen_observer_identity_schema_test_envelope(RuntimeEvent::AgentRegistered {
+            agent: legacy_capability_agent,
+        });
+
+    let mut legacy_claim = canonical_claim.clone();
+    legacy_claim.asserted_by_actor_id = LEGACY_SURFACE_AGENT_ID.to_string();
+    let legacy_claim = screen_observer_identity_schema_test_envelope(RuntimeEvent::ClaimAsserted {
+        claim: legacy_claim,
+    });
+
+    let mut legacy_directive = canonical_directive.clone();
+    legacy_directive.target_agent_id = LEGACY_SURFACE_AGENT_ID.to_string();
+    let legacy_directive =
+        screen_observer_identity_schema_test_envelope(RuntimeEvent::DirectiveIssued {
+            directive: legacy_directive,
+        });
+
+    let legacy_ack =
+        screen_observer_identity_schema_test_envelope(RuntimeEvent::DirectiveAcknowledged {
+            directive_id: canonical_directive.directive_id,
+            target_agent_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+            status: DirectiveStatus::Applied,
+            resulting_state: AgentState::Paused,
+            acknowledged_at_ms: 1,
+            detail: "test".to_string(),
+        });
+    let retired_projection =
+        screen_observer_identity_schema_test_envelope(RuntimeEvent::MemoryProjectionUpdated {
+            revision: 1,
+            operation: "legacy projection".to_string(),
+            memory_id: "legacy-memory".to_string(),
+            projection: json!({}),
+        });
+
+    for (label, envelope) in [
+        ("source", legacy_source),
+        ("agent", legacy_agent),
+        ("capability", legacy_capability),
+        ("claim", legacy_claim),
+        ("directive", legacy_directive),
+        ("acknowledgement", legacy_ack),
+        ("retired-memory-projection", retired_projection),
+    ] {
+        assert!(
+            super::runtime::validate_current_schema_screen_observer_identity(&envelope).is_err(),
+            "{label} typed legacy identity must fail validation"
+        );
+        assert!(
+            super::runtime::serialize_envelope_frame(&envelope).is_err(),
+            "{label} typed legacy identity must fail before append"
+        );
+
+        let temp = TempRuntime::new(&format!("v5-legacy-{label}"));
+        std::fs::write(&temp.ledger, "").unwrap();
+        append_test_envelope(&temp, &envelope);
+        assert!(
+            PinvouOsRuntime::boot(temp.ledger.clone()).is_err(),
+            "{label} typed legacy identity must fail during replay"
+        );
+    }
+
+    let mut literal_claim = canonical_claim;
+    literal_claim.value = json!(LEGACY_SURFACE_AGENT_ID);
+    let literal = screen_observer_identity_schema_test_envelope(RuntimeEvent::ClaimAsserted {
+        claim: literal_claim,
+    });
+    super::runtime::validate_current_schema_screen_observer_identity(&literal)
+        .expect("ordinary claim values are content, not actor identities");
+    super::runtime::serialize_envelope_frame(&literal)
+        .expect("ordinary claim values must not be rejected as legacy identities");
+}
+
+#[test]
+fn legacy_surface_identity_replays_as_one_canonical_screen_observer() {
+    let temp = TempRuntime::new("screen-observer-v4-upcast");
+    std::fs::write(&temp.ledger, "").unwrap();
+
+    let legacy_agent = AgentManifest {
+        agent_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+        display_name: "Surface Agent".to_string(),
+        kind: AgentKind::System,
+        role: "legacy screen observer".to_string(),
+        capabilities: vec![capability(
+            LEGACY_SURFACE_OBSERVE_CAPABILITY_ID,
+            ResourceClass::Light,
+        )],
+        priority: 85,
+        interruptibility: Interruptibility::Immediate,
+        observed_state: AgentState::Starting,
+        desired_state: AgentState::Starting,
+        mission_id: None,
+        run_id: None,
+        created_at_ms: 123,
+    };
+    let legacy_claim = WorldClaim {
+        claim_id: "claim-legacy-screen".to_string(),
+        subject: "screen".to_string(),
+        predicate: "focused_window".to_string(),
+        value: json!("pinvou"),
+        confidence: 1.0,
+        asserted_by_actor_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+        evidence_event_ids: vec!["event-0000000000000002".to_string()],
+        asserted_at_ms: 3,
+        active: true,
+        retracted_at_ms: None,
+        retraction_reason: None,
+    };
+    let legacy_directive = ControlDirective {
+        directive_id: "directive-legacy-screen".to_string(),
+        target_agent_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+        action: DirectiveAction::Pause,
+        reason: "legacy compatibility fixture".to_string(),
+        hard: false,
+        issued_at_ms: 4,
+        status: DirectiveStatus::Pending,
+        acknowledged_at_ms: None,
+        acknowledgement_detail: None,
+    };
+    let envelopes = [
+        EventEnvelope {
+            schema_version: 4,
+            sequence: 1,
+            event_id: "event-0000000000000001".to_string(),
+            occurred_at_ms: 1,
+            source_actor_id: KERNEL_ACTOR_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: None,
+            correlation_id: None,
+            event: RuntimeEvent::RuntimeStarted { process_id: 7 },
+        },
+        EventEnvelope {
+            schema_version: 4,
+            sequence: 2,
+            event_id: "event-0000000000000002".to_string(),
+            occurred_at_ms: 2,
+            source_actor_id: KERNEL_ACTOR_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: None,
+            correlation_id: None,
+            event: RuntimeEvent::AgentRegistered {
+                agent: legacy_agent,
+            },
+        },
+        EventEnvelope {
+            schema_version: 4,
+            sequence: 3,
+            event_id: "event-0000000000000003".to_string(),
+            occurred_at_ms: 3,
+            source_actor_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: Some("event-0000000000000002".to_string()),
+            correlation_id: None,
+            event: RuntimeEvent::ClaimAsserted {
+                claim: legacy_claim,
+            },
+        },
+        EventEnvelope {
+            schema_version: 4,
+            sequence: 4,
+            event_id: "event-0000000000000004".to_string(),
+            occurred_at_ms: 4,
+            source_actor_id: KERNEL_ACTOR_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: None,
+            correlation_id: None,
+            event: RuntimeEvent::DirectiveIssued {
+                directive: legacy_directive,
+            },
+        },
+        EventEnvelope {
+            schema_version: 4,
+            sequence: 5,
+            event_id: "event-0000000000000005".to_string(),
+            occurred_at_ms: 5,
+            source_actor_id: KERNEL_ACTOR_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: Some("event-0000000000000004".to_string()),
+            correlation_id: None,
+            event: RuntimeEvent::DirectiveAcknowledged {
+                directive_id: "directive-legacy-screen".to_string(),
+                target_agent_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+                status: DirectiveStatus::Applied,
+                resulting_state: AgentState::Paused,
+                acknowledged_at_ms: 5,
+                detail: "legacy adapter paused".to_string(),
+            },
+        },
+    ];
+    for envelope in &envelopes {
+        append_test_envelope(&temp, envelope);
+    }
+    let legacy_ledger_prefix = std::fs::read(&temp.ledger).unwrap();
+
+    let runtime = temp.boot();
+    let snapshot = runtime.snapshot();
+    assert_eq!(snapshot.agents.len(), 12);
+    assert!(!snapshot.agents.contains_key(LEGACY_SURFACE_AGENT_ID));
+    let screen_observer = &snapshot.agents[SCREEN_OBSERVER_AGENT_ID];
+    assert_eq!(screen_observer.display_name, "Screen Observer Agent");
+    assert_eq!(screen_observer.created_at_ms, 123);
+    assert_eq!(screen_observer.observed_state, AgentState::Paused);
+    assert_eq!(screen_observer.desired_state, AgentState::Paused);
+    assert_eq!(
+        screen_observer.capabilities[0].capability_id,
+        SCREEN_OBSERVE_CAPABILITY_ID
+    );
+    assert_eq!(
+        snapshot.claims["claim-legacy-screen"].asserted_by_actor_id,
+        SCREEN_OBSERVER_AGENT_ID
+    );
+    assert_eq!(
+        snapshot.directives["directive-legacy-screen"].target_agent_id,
+        SCREEN_OBSERVER_AGENT_ID
+    );
+
+    let canonical = runtime.explain_capability(SCREEN_OBSERVE_CAPABILITY_ID);
+    let legacy_alias = runtime.explain_capability(LEGACY_SURFACE_OBSERVE_CAPABILITY_ID);
+    assert_eq!(
+        canonical.state,
+        CapabilityAvailabilityState::TemporarilyUnavailable
+    );
+    assert_eq!(legacy_alias.capability_id, SCREEN_OBSERVE_CAPABILITY_ID);
+    assert_eq!(legacy_alias.state, canonical.state);
+    assert_eq!(
+        legacy_alias.candidate_agent_ids,
+        vec![SCREEN_OBSERVER_AGENT_ID]
+    );
+
+    runtime
+        .organize_memory(MemoryCandidate {
+            candidate_id: "legacy-screen-observation".to_string(),
+            kind: OrganizedMemoryKind::ContextualFact,
+            subject: "screen".to_string(),
+            predicate: "focused_window".to_string(),
+            value: json!("pinvou"),
+            applicability: MemoryApplicability {
+                space_id: "forged-space".to_string(),
+                environment: BTreeMap::new(),
+                valid_from_ms: 0,
+                valid_until_ms: None,
+            },
+            importance: 0.5,
+            confidence: 1.0,
+            intent: MemoryCandidateIntent::Assert,
+            target_memory_id: None,
+            evidence: vec![MemoryEvidence {
+                event_id: "event-0000000000000003".to_string(),
+                source_actor_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+                origin: MemoryEvidenceOrigin::AgentAction,
+                polarity: MemoryEvidencePolarity::Supports,
+                observed_at_ms: 0,
+                recorded_at_ms: 0,
+                reliability: 0.0,
+                mission_id: None,
+                run_id: None,
+            }],
+        })
+        .unwrap();
+    let new_memory_decisions = raw_ledger_events(&temp)
+        .into_iter()
+        .filter(|envelope| {
+            envelope.schema_version == SCHEMA_VERSION
+                && matches!(
+                    envelope.event,
+                    RuntimeEvent::OrganizedMemoryDecisionRecorded { .. }
+                )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(new_memory_decisions.len(), 1);
+    let encoded_decision = serde_json::to_string(&new_memory_decisions[0]).unwrap();
+    assert!(encoded_decision.contains(SCREEN_OBSERVER_AGENT_ID));
+    assert!(!encoded_decision.contains(LEGACY_SURFACE_AGENT_ID));
+    assert!(
+        std::fs::read(&temp.ledger)
+            .unwrap()
+            .starts_with(&legacy_ledger_prefix),
+        "schema-v5 replay must append canonical events without rewriting v4 audit bytes"
+    );
+
+    drop(runtime);
+    let replayed = temp.boot();
+    let replayed_snapshot = replayed.snapshot();
+    assert_eq!(replayed_snapshot.agents.len(), 12);
+    assert!(!replayed_snapshot
+        .agents
+        .contains_key(LEGACY_SURFACE_AGENT_ID));
+    let canonical_registrations = raw_ledger_events(&temp)
+        .into_iter()
+        .filter(|envelope| {
+            matches!(
+                &envelope.event,
+                RuntimeEvent::AgentRegistered { agent }
+                    if agent.agent_id == SCREEN_OBSERVER_AGENT_ID
+            )
+        })
+        .count();
+    assert_eq!(canonical_registrations, 1);
+}
+
+#[test]
+fn legacy_memory_actor_migrates_through_one_canonical_v5_checkpoint() {
+    let temp = TempRuntime::new("screen-observer-memory-v4-upcast");
+    std::fs::write(&temp.ledger, "").unwrap();
+
+    let claim_event = EventEnvelope {
+        schema_version: 4,
+        sequence: 2,
+        event_id: "event-0000000000000002".to_string(),
+        occurred_at_ms: 2,
+        source_actor_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+        mission_id: None,
+        run_id: None,
+        interaction_scope_id: None,
+        interaction_run_id: None,
+        causation_id: None,
+        correlation_id: None,
+        event: RuntimeEvent::ClaimAsserted {
+            claim: WorldClaim {
+                claim_id: "claim-legacy-screen-memory".to_string(),
+                subject: "user".to_string(),
+                predicate: "legacy-screen-memory".to_string(),
+                value: json!("dark"),
+                confidence: 1.0,
+                asserted_by_actor_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+                evidence_event_ids: Vec::new(),
+                asserted_at_ms: 2,
+                active: true,
+                retracted_at_ms: None,
+                retraction_reason: None,
+            },
+        },
+    };
+    let legacy_candidate = MemoryCandidate {
+        candidate_id: "legacy-screen-memory-v4".to_string(),
+        kind: OrganizedMemoryKind::ContextualFact,
+        subject: "user".to_string(),
+        predicate: "legacy-screen-memory".to_string(),
+        value: json!("dark"),
+        applicability: MemoryApplicability {
+            space_id: "personal".to_string(),
+            environment: BTreeMap::new(),
+            valid_from_ms: 2,
+            valid_until_ms: None,
+        },
+        importance: 0.8,
+        confidence: 1.0,
+        intent: MemoryCandidateIntent::Assert,
+        target_memory_id: None,
+        evidence: vec![MemoryEvidence {
+            event_id: claim_event.event_id.clone(),
+            source_actor_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+            origin: MemoryEvidenceOrigin::AgentAction,
+            polarity: MemoryEvidencePolarity::Supports,
+            observed_at_ms: 2,
+            recorded_at_ms: 2,
+            reliability: 0.7,
+            mission_id: None,
+            run_id: None,
+        }],
+    };
+    let mut legacy_engine = OrganizedMemoryDecisionEngine::new();
+    let legacy_decision = legacy_engine
+        .organize(legacy_candidate.clone())
+        .unwrap()
+        .decision
+        .unwrap();
+    let legacy_checkpoint = legacy_engine.checkpoint();
+    let followup_claim_event = EventEnvelope {
+        schema_version: 4,
+        sequence: 5,
+        event_id: "event-0000000000000005".to_string(),
+        occurred_at_ms: 5,
+        source_actor_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+        mission_id: None,
+        run_id: None,
+        interaction_scope_id: None,
+        interaction_run_id: None,
+        causation_id: None,
+        correlation_id: None,
+        event: RuntimeEvent::ClaimAsserted {
+            claim: WorldClaim {
+                claim_id: "claim-legacy-screen-memory-followup".to_string(),
+                subject: "user".to_string(),
+                predicate: "legacy-screen-memory-followup".to_string(),
+                value: json!("light"),
+                confidence: 1.0,
+                asserted_by_actor_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+                evidence_event_ids: Vec::new(),
+                asserted_at_ms: 5,
+                active: true,
+                retracted_at_ms: None,
+                retraction_reason: None,
+            },
+        },
+    };
+    let envelopes = [
+        EventEnvelope {
+            schema_version: 4,
+            sequence: 1,
+            event_id: "event-0000000000000001".to_string(),
+            occurred_at_ms: 1,
+            source_actor_id: KERNEL_ACTOR_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: None,
+            correlation_id: None,
+            event: RuntimeEvent::RuntimeStarted { process_id: 7 },
+        },
+        claim_event.clone(),
+        EventEnvelope {
+            schema_version: 4,
+            sequence: 3,
+            event_id: "event-0000000000000003".to_string(),
+            occurred_at_ms: 3,
+            source_actor_id: MEMORY_AGENT_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: Some(claim_event.event_id.clone()),
+            correlation_id: Some("legacy-screen-memory-v4".to_string()),
+            event: RuntimeEvent::OrganizedMemoryDecisionRecorded {
+                decision: legacy_decision,
+            },
+        },
+        EventEnvelope {
+            schema_version: 4,
+            sequence: 4,
+            event_id: "event-0000000000000004".to_string(),
+            occurred_at_ms: 4,
+            source_actor_id: MEMORY_AGENT_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: Some("event-0000000000000003".to_string()),
+            correlation_id: Some("legacy-screen-memory-v4-checkpoint".to_string()),
+            event: RuntimeEvent::OrganizedMemoryCheckpointRecorded {
+                checkpoint: legacy_checkpoint,
+                legacy_source_event_id: None,
+                legacy_migration: None,
+            },
+        },
+        followup_claim_event.clone(),
+    ];
+    for envelope in &envelopes {
+        append_test_envelope(&temp, envelope);
+    }
+    let legacy_ledger_prefix = std::fs::read(&temp.ledger).unwrap();
+
+    let runtime = temp.boot();
+    let events_after_boot = raw_ledger_events(&temp);
+    let identity_checkpoints = events_after_boot
+        .iter()
+        .filter(|envelope| {
+            envelope.schema_version == SCHEMA_VERSION
+                && envelope.correlation_id.as_deref()
+                    == Some("memory-screen-observer-identity-migration")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(identity_checkpoints.len(), 1);
+    let encoded_checkpoint = serde_json::to_string(identity_checkpoints[0]).unwrap();
+    assert!(encoded_checkpoint.contains(SCREEN_OBSERVER_AGENT_ID));
+    assert!(!encoded_checkpoint.contains(LEGACY_SURFACE_AGENT_ID));
+    assert!(
+        std::fs::read(&temp.ledger)
+            .unwrap()
+            .starts_with(&legacy_ledger_prefix),
+        "v5 memory identity migration must append without rewriting the validated v4 chain"
+    );
+
+    let duplicate = runtime.organize_memory(legacy_candidate.clone()).unwrap();
+    assert_eq!(
+        duplicate.action,
+        MemoryOrganizationAction::IgnoredDuplicate,
+        "canonical evidence must match the old idempotency hash only through the exact alias"
+    );
+    let mut altered_retry = legacy_candidate;
+    altered_retry.importance = 0.81;
+    assert!(
+        runtime.organize_memory(altered_retry).is_err(),
+        "the legacy alias may forgive only the renamed actor, not any other content change"
+    );
+    let decisions_before_followup = raw_ledger_events(&temp)
+        .iter()
+        .filter(|envelope| {
+            matches!(
+                envelope.event,
+                RuntimeEvent::OrganizedMemoryDecisionRecorded { .. }
+            )
+        })
+        .count();
+    assert_eq!(decisions_before_followup, 1);
+
+    let followup = proposed_fact(
+        "legacy-screen-memory-followup",
+        &followup_claim_event,
+        json!("light"),
+    );
+    runtime.organize_memory(followup).unwrap();
+    let newest_decision = raw_ledger_events(&temp)
+        .into_iter()
+        .rev()
+        .find(|envelope| {
+            matches!(
+                envelope.event,
+                RuntimeEvent::OrganizedMemoryDecisionRecorded { .. }
+            )
+        })
+        .unwrap();
+    assert_eq!(newest_decision.schema_version, SCHEMA_VERSION);
+    let encoded_decision = serde_json::to_string(&newest_decision).unwrap();
+    assert!(encoded_decision.contains(SCREEN_OBSERVER_AGENT_ID));
+    assert!(!encoded_decision.contains(LEGACY_SURFACE_AGENT_ID));
+
+    drop(runtime);
+    let replayed = temp.boot();
+    assert_eq!(replayed.snapshot().agents.len(), 12);
+    assert_eq!(
+        raw_ledger_events(&temp)
+            .iter()
+            .filter(|envelope| {
+                envelope.correlation_id.as_deref()
+                    == Some("memory-screen-observer-identity-migration")
+            })
+            .count(),
+        1,
+        "the canonical bridge checkpoint must be durable and idempotent across reboot"
+    );
+    assert!(
+        std::fs::read(&temp.ledger)
+            .unwrap()
+            .starts_with(&legacy_ledger_prefix),
+        "reboot must preserve the original v4 audit prefix byte-for-byte"
+    );
+}
+
+#[test]
+fn canonical_v5_memory_checkpoint_remains_a_permanent_replay_boundary() {
+    let temp = TempRuntime::new("screen-observer-memory-v5-boundary");
+    std::fs::write(&temp.ledger, "").unwrap();
+
+    let mut legacy_engine = OrganizedMemoryDecisionEngine::new();
+    let legacy_decision = legacy_engine
+        .organize(MemoryCandidate {
+            candidate_id: "v5-boundary".to_string(),
+            kind: OrganizedMemoryKind::ContextualFact,
+            subject: "user".to_string(),
+            predicate: "v5-boundary".to_string(),
+            value: json!("dark"),
+            applicability: MemoryApplicability {
+                space_id: "personal".to_string(),
+                environment: BTreeMap::new(),
+                valid_from_ms: 1,
+                valid_until_ms: None,
+            },
+            importance: 0.8,
+            confidence: 1.0,
+            intent: MemoryCandidateIntent::Assert,
+            target_memory_id: None,
+            evidence: vec![MemoryEvidence {
+                event_id: "event-v5-boundary-source".to_string(),
+                source_actor_id: LEGACY_SURFACE_AGENT_ID.to_string(),
+                origin: MemoryEvidenceOrigin::AgentAction,
+                polarity: MemoryEvidencePolarity::Supports,
+                observed_at_ms: 1,
+                recorded_at_ms: 1,
+                reliability: 0.7,
+                mission_id: None,
+                run_id: None,
+            }],
+        })
+        .unwrap()
+        .decision
+        .unwrap();
+    let mut canonical_engine =
+        OrganizedMemoryDecisionEngine::replay([legacy_decision.clone()]).unwrap();
+    assert!(canonical_engine
+        .rewrite_evidence_source_actor_ids(|actor_id| {
+            canonical_screen_observer_agent_id(actor_id).to_string()
+        })
+        .unwrap());
+    let canonical_v5_checkpoint = canonical_engine.checkpoint();
+
+    for envelope in [
+        EventEnvelope {
+            schema_version: 4,
+            sequence: 1,
+            event_id: "event-0000000000000001".to_string(),
+            occurred_at_ms: 1,
+            source_actor_id: KERNEL_ACTOR_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: None,
+            correlation_id: None,
+            event: RuntimeEvent::RuntimeStarted { process_id: 7 },
+        },
+        EventEnvelope {
+            schema_version: 4,
+            sequence: 2,
+            event_id: "event-0000000000000002".to_string(),
+            occurred_at_ms: 2,
+            source_actor_id: MEMORY_AGENT_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: None,
+            correlation_id: Some("v4-raw-memory".to_string()),
+            event: RuntimeEvent::OrganizedMemoryDecisionRecorded {
+                decision: legacy_decision,
+            },
+        },
+        EventEnvelope {
+            schema_version: SCREEN_OBSERVER_IDENTITY_SCHEMA_VERSION,
+            sequence: 3,
+            event_id: "event-0000000000000003".to_string(),
+            occurred_at_ms: 3,
+            source_actor_id: MEMORY_AGENT_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: Some("event-0000000000000002".to_string()),
+            correlation_id: Some("fixture-canonical-v5-boundary".to_string()),
+            event: RuntimeEvent::OrganizedMemoryCheckpointRecorded {
+                checkpoint: canonical_v5_checkpoint,
+                legacy_source_event_id: None,
+                legacy_migration: None,
+            },
+        },
+    ] {
+        append_test_envelope(&temp, &envelope);
+    }
+
+    let runtime = temp.boot();
+    assert_eq!(runtime.snapshot().agents.len(), 12);
+    assert_eq!(
+        raw_ledger_events(&temp)
+            .iter()
+            .filter(|envelope| {
+                envelope.correlation_id.as_deref()
+                    == Some("memory-screen-observer-identity-migration")
+            })
+            .count(),
+        0,
+        "an existing canonical v5 checkpoint must remain the migration boundary"
+    );
+    drop(runtime);
+    temp.boot();
+}
+
+#[test]
+fn v5_memory_rejects_legacy_evidence_actor_without_rejecting_literal_history_text() {
+    let decision = |label: &str, evidence_actor: &str, value: serde_json::Value| {
+        let mut engine = OrganizedMemoryDecisionEngine::new();
+        engine
+            .organize(MemoryCandidate {
+                candidate_id: label.to_string(),
+                kind: OrganizedMemoryKind::ContextualFact,
+                subject: "audit".to_string(),
+                predicate: label.to_string(),
+                value,
+                applicability: MemoryApplicability {
+                    space_id: "personal".to_string(),
+                    environment: BTreeMap::new(),
+                    valid_from_ms: 1,
+                    valid_until_ms: None,
+                },
+                importance: 0.5,
+                confidence: 1.0,
+                intent: MemoryCandidateIntent::Assert,
+                target_memory_id: None,
+                evidence: vec![MemoryEvidence {
+                    event_id: format!("event:{label}"),
+                    source_actor_id: evidence_actor.to_string(),
+                    origin: MemoryEvidenceOrigin::AgentAction,
+                    polarity: MemoryEvidencePolarity::Supports,
+                    observed_at_ms: 1,
+                    recorded_at_ms: 1,
+                    reliability: 0.7,
+                    mission_id: None,
+                    run_id: None,
+                }],
+            })
+            .unwrap()
+            .decision
+            .unwrap()
+    };
+    let write_current_ledger = |temp: &TempRuntime, decision| {
+        std::fs::write(&temp.ledger, "").unwrap();
+        append_test_envelope(
+            temp,
+            &EventEnvelope {
+                schema_version: SCHEMA_VERSION,
+                sequence: 1,
+                event_id: "event-0000000000000001".to_string(),
+                occurred_at_ms: 1,
+                source_actor_id: KERNEL_ACTOR_ID.to_string(),
+                mission_id: None,
+                run_id: None,
+                interaction_scope_id: None,
+                interaction_run_id: None,
+                causation_id: None,
+                correlation_id: None,
+                event: RuntimeEvent::RuntimeStarted { process_id: 7 },
+            },
+        );
+        append_test_envelope(
+            temp,
+            &EventEnvelope {
+                schema_version: SCHEMA_VERSION,
+                sequence: 2,
+                event_id: "event-0000000000000002".to_string(),
+                occurred_at_ms: 2,
+                source_actor_id: MEMORY_AGENT_ID.to_string(),
+                mission_id: None,
+                run_id: None,
+                interaction_scope_id: None,
+                interaction_run_id: None,
+                causation_id: None,
+                correlation_id: None,
+                event: RuntimeEvent::OrganizedMemoryDecisionRecorded { decision },
+            },
+        );
+    };
+
+    let bad = TempRuntime::new("v5-memory-legacy-actor-rejected");
+    write_current_ledger(
+        &bad,
+        decision(
+            "legacy-actor",
+            LEGACY_SURFACE_AGENT_ID,
+            json!("ordinary value"),
+        ),
+    );
+    assert!(PinvouOsRuntime::boot(bad.ledger.clone()).is_err());
+
+    let literal = TempRuntime::new("v5-memory-legacy-literal-allowed");
+    write_current_ledger(
+        &literal,
+        decision("legacy-literal", "actor:user", json!("agent:surface")),
+    );
+    assert!(PinvouOsRuntime::boot(literal.ledger.clone()).is_ok());
+}
+
+#[test]
+fn future_runtime_schema_is_rejected_by_the_v5_downgrade_fence() {
+    let temp = TempRuntime::new("future-schema-rejected");
+    std::fs::write(&temp.ledger, "").unwrap();
+    append_test_envelope(
+        &temp,
+        &EventEnvelope {
+            schema_version: SCHEMA_VERSION + 1,
+            sequence: 1,
+            event_id: "event-0000000000000001".to_string(),
+            occurred_at_ms: 1,
+            source_actor_id: KERNEL_ACTOR_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: None,
+            correlation_id: None,
+            event: RuntimeEvent::RuntimeStarted { process_id: 7 },
+        },
+    );
+    let Err(error) = PinvouOsRuntime::boot(temp.ledger.clone()) else {
+        panic!("future schema must not boot on the v5 writer")
+    };
+    assert!(error.to_string().contains("newer than supported"));
+}
+
+#[test]
 fn capability_catalog_tells_available_temporary_and_unsupported_apart() {
     let temp = TempRuntime::new("capabilities");
     let runtime = temp.boot();
@@ -249,11 +1119,17 @@ fn capability_catalog_tells_available_temporary_and_unsupported_apart() {
         runtime.explain_capability("inference.observe").state,
         CapabilityAvailabilityState::Available
     );
-    let surface = runtime.explain_capability("surface.observe");
+    let screen = runtime.explain_capability(SCREEN_OBSERVE_CAPABILITY_ID);
     assert_eq!(
-        surface.state,
+        screen.state,
         CapabilityAvailabilityState::TemporarilyUnavailable
     );
+    let legacy_screen_alias = runtime.explain_capability(LEGACY_SURFACE_OBSERVE_CAPABILITY_ID);
+    assert_eq!(
+        legacy_screen_alias.capability_id,
+        SCREEN_OBSERVE_CAPABILITY_ID
+    );
+    assert_eq!(legacy_screen_alias.state, screen.state);
     assert_eq!(
         runtime.explain_capability("teleport.execute").state,
         CapabilityAvailabilityState::Unsupported
@@ -265,6 +1141,65 @@ fn capability_catalog_tells_available_temporary_and_unsupported_apart() {
         CapabilityAvailabilityState::Available
     );
     assert_eq!(agent.capabilities.len(), 1);
+}
+
+#[test]
+fn mission_registration_canonicalizes_legacy_screen_capability_before_persistence() {
+    let temp = TempRuntime::new("mission-screen-observer-alias");
+    let runtime = temp.boot();
+    let started = runtime
+        .open_mission(OpenMissionRequest {
+            objective: "observe a legacy caller request".to_string(),
+            priority: 50,
+            deadline_at_ms: None,
+        })
+        .unwrap();
+    let request = RegisterMissionAgentRequest {
+        display_name: "Legacy caller executor".to_string(),
+        role: "observe the visible UI".to_string(),
+        capabilities: vec![capability(
+            LEGACY_SURFACE_OBSERVE_CAPABILITY_ID,
+            ResourceClass::Light,
+        )],
+        priority: 50,
+        interruptibility: Interruptibility::Checkpoint,
+        mission_id: started.mission.mission_id.clone(),
+        run_id: started.run.run_id.clone(),
+    };
+    let registered = runtime.register_mission_agent(request.clone()).unwrap();
+    assert_eq!(
+        registered.capabilities[0].capability_id,
+        SCREEN_OBSERVE_CAPABILITY_ID
+    );
+    assert_eq!(
+        runtime.snapshot().agents[&registered.agent_id].capabilities[0].capability_id,
+        SCREEN_OBSERVE_CAPABILITY_ID
+    );
+    let persisted = raw_ledger_events(&temp)
+        .into_iter()
+        .find_map(|envelope| match envelope.event {
+            RuntimeEvent::AgentRegistered { agent } if agent.agent_id == registered.agent_id => {
+                Some(agent)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        persisted.capabilities[0].capability_id,
+        SCREEN_OBSERVE_CAPABILITY_ID
+    );
+
+    let mut duplicate_request = request;
+    duplicate_request.display_name = "Duplicate legacy caller".to_string();
+    duplicate_request.capabilities.push(capability(
+        SCREEN_OBSERVE_CAPABILITY_ID,
+        ResourceClass::Light,
+    ));
+    let error = runtime
+        .register_mission_agent(duplicate_request)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("duplicate capability screen.observe"));
 }
 
 #[test]

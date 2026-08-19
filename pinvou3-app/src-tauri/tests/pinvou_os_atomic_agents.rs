@@ -11,17 +11,17 @@ mod memory_agent;
 mod model;
 #[path = "../src/features/pinvou_os/policy_agent.rs"]
 mod policy_agent;
-#[path = "../src/features/pinvou_os/surface_agent.rs"]
-mod surface_agent;
+#[path = "../src/features/pinvou_os/screen_observer_agent.rs"]
+mod screen_observer_agent;
 
 use attention_agent::attention_allocate_contract;
 use policy_agent::policy_authorize_contract;
-use surface_agent::surface_observe_contract;
+use screen_observer_agent::screen_observe_contract;
 
 #[test]
 fn atomic_agents_publish_unique_typed_capabilities() {
     let contracts = [
-        surface_observe_contract(),
+        screen_observe_contract(),
         policy_authorize_contract(),
         attention_allocate_contract(),
     ];

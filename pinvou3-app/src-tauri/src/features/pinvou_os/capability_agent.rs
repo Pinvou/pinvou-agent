@@ -15,6 +15,7 @@ use super::model::{
     AgentManifest, AgentState, CapabilityAvailabilityState, CapabilityContract, Interruptibility,
     ResourceClass, ResourcePressure, RuntimeSnapshot,
 };
+use super::screen_observer_agent::canonical_screen_observer_capability_id;
 
 pub const CAPABILITY_AGENT_ID: &str = "agent:capability";
 pub const CAPABILITY_REPORT_CAPABILITY_ID: &str = "capability.explain";
@@ -369,8 +370,8 @@ fn assess_executor(
                 reason_code: "permission_must_be_authorized".to_string(),
             }),
     );
-    // 权限与前置条件尚未由 Policy/Device/Surface 的可信事实验证前，只能报告为
-    // 暂时不可用，不能把“有一个注册合同”误说成“现在就能做”。
+    // 权限与前置条件尚未由 Policy / Device / Screen Observer（界面感知）
+    // 的可信事实验证前，只能报告为暂时不可用，不能把“有一个注册合同”误说成“现在就能做”。
     let runtime_requirements_verified = requirements
         .iter()
         .all(|requirement| requirement.status == RequirementStatus::Satisfied);
@@ -446,7 +447,7 @@ fn normalize_capability_ids(values: Vec<String>) -> Result<BTreeSet<String>, Cap
             if value.chars().count() > 512 {
                 return Err(CapabilityAgentError::new("capability id is too long"));
             }
-            Ok(value.to_string())
+            Ok(canonical_screen_observer_capability_id(value).to_string())
         })
         .collect()
 }
@@ -524,7 +525,7 @@ mod tests {
             agent(
                 "agent:starting",
                 AgentState::Starting,
-                capability("surface.observe", ResourceClass::Light),
+                capability("screen.observe", ResourceClass::Light),
             ),
         );
         snapshot.agents.insert(
@@ -554,7 +555,7 @@ mod tests {
                 .iter()
                 .map(|item| item.capability_id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["surface.observe", "video.render"]
+            vec!["screen.observe", "video.render"]
         );
         assert!(report.temporarily_cannot[0]
             .reason_codes
