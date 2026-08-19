@@ -131,6 +131,7 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
     if (enabled && currentId) ensurePetAtlas(currentId);
   }, [enabled, currentId]);
 
+  const pendingSelectRef = useRef(null);
   const ensurePetAtlas = (id) => {
     const entry = assets[id];
     if (!entry || entry.atlas || entry.atlasStatus === 'loading') return;
@@ -140,9 +141,18 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
       .then((atlas) => {
         if (!aliveRef.current) return;
         setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlas, atlasStatus: 'ready', status: 'ready' } }));
+        // 加载期间用户已点击该卡:完成即执行排队的选择。
+        const pending = pendingSelectRef.current;
+        if (pending === id) {
+          pendingSelectRef.current = null;
+          Promise.resolve(onSelect(id)).catch((error) => {
+            console.error('[pet-selector] switch failed, keeping previous pet', error);
+          });
+        }
       })
       .catch(() => {
         if (!aliveRef.current) return;
+        if (pendingSelectRef.current === id) pendingSelectRef.current = null;
         setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlasStatus: 'error' } }));
       });
   };
@@ -151,7 +161,14 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
     ensurePetAtlas(id);
     if (id === currentId) return;
     const entry = assets[id];
-    if (!entry || entry.status !== 'ready') return;
+    // 两级懒加载:atlas 未就绪时点击先排队,加载完成再切换(点击即意图,
+    // 卡片 disabled 只反映封面可见性)。
+    if (!entry || entry.status !== 'ready') {
+      if (entry && entry.atlasStatus === 'loading') {
+        pendingSelectRef.current = id; // 排队,atlas 完成回调执行切换
+      }
+      return;
+    }
     Promise.resolve(onSelect(id)).catch((error) => {
       console.error('[pet-selector] switch failed, keeping previous pet', error);
     });
@@ -184,7 +201,7 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
               <button
                 type="button"
                 className="pet-card-main"
-                disabled={!isReady}
+                disabled={!entry.cover}
                 aria-pressed={isSelected}
                 onClick={() => handleSelect(id)}
                 onMouseEnter={() => { setHoveredId(id); ensurePetAtlas(id); }}
