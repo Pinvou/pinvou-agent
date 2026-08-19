@@ -187,13 +187,7 @@ where
             if !value.is_object() {
                 bail!("client stdin protocol frame must be a JSON object");
             }
-            let mut recorder = recorder
-                .lock()
-                .map_err(|_| anyhow::anyhow!("capture recorder lock poisoned"))?;
-            recorder.record(CaptureChannel::ClientToServer, &frame)?;
-            writeln!(stdin, "{frame}").context("failed to write app-server stdin")?;
-            stdin.flush().context("failed to flush app-server stdin")?;
-            Ok(())
+            record_and_send_client_frame(recorder.as_ref(), &mut stdin, frame)
         })
     };
 
@@ -212,6 +206,27 @@ where
     if !status.success() {
         bail!("app-server exited with status {status}");
     }
+    Ok(())
+}
+
+fn record_and_send_client_frame<RW, C, SW>(
+    recorder: &Mutex<JsonlRecorder<RW, C>>,
+    sink: &mut SW,
+    frame: &str,
+) -> Result<()>
+where
+    RW: Write,
+    C: FnMut() -> u64,
+    SW: Write,
+{
+    let mut recorder_guard = recorder
+        .lock()
+        .map_err(|_| anyhow::anyhow!("capture recorder lock poisoned"))?;
+    recorder_guard.record(CaptureChannel::ClientToServer, frame)?;
+    drop(recorder_guard);
+
+    writeln!(sink, "{frame}").context("failed to write app-server stdin")?;
+    sink.flush().context("failed to flush app-server stdin")?;
     Ok(())
 }
 
@@ -244,5 +259,43 @@ where
         self.writer.write_all(b"\n")?;
         self.writer.flush()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct LockCheckingWriter<'a, W, C> {
+        recorder: &'a Mutex<JsonlRecorder<W, C>>,
+        write_saw_unlocked_recorder: bool,
+        flush_saw_unlocked_recorder: bool,
+    }
+
+    impl<W, C> Write for LockCheckingWriter<'_, W, C> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.write_saw_unlocked_recorder = self.recorder.try_lock().is_ok();
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flush_saw_unlocked_recorder = self.recorder.try_lock().is_ok();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn client_sink_write_and_flush_happen_after_recorder_lock_is_released() {
+        let recorder = Mutex::new(JsonlRecorder::new(Vec::new(), || 1));
+        let mut sink = LockCheckingWriter {
+            recorder: &recorder,
+            write_saw_unlocked_recorder: false,
+            flush_saw_unlocked_recorder: false,
+        };
+
+        record_and_send_client_frame(&recorder, &mut sink, r#"{"id":1}"#).unwrap();
+
+        assert!(sink.write_saw_unlocked_recorder);
+        assert!(sink.flush_saw_unlocked_recorder);
     }
 }
