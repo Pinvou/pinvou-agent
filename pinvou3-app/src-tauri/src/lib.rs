@@ -24,6 +24,10 @@ use crate::features::{
 };
 use crate::platform::{notifications, startup};
 
+const TAURI_ASYNC_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
+
+static TAURI_ASYNC_RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> =
+    std::sync::OnceLock::new();
 const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     // —— vLLM 后端：BASE_URL/MODEL/API_KEY 已在 bridge/mod.rs 有默认常量，
     // 这里只补 run-dev.sh 额外注入但 Rust 没默认的 ——
@@ -97,6 +101,18 @@ fn install_rustls_provider() {
     drop(rustls::crypto::aws_lc_rs::default_provider().install_default());
 }
 
+fn install_tauri_async_runtime() {
+    let runtime = TAURI_ASYNC_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("pinvou-tauri-async")
+            .thread_stack_size(TAURI_ASYNC_THREAD_STACK_SIZE)
+            .build()
+            .expect("failed to build Pinvou Tauri async runtime")
+    });
+    tauri::async_runtime::set(runtime.handle().clone());
+}
+
 /// `iframe[srcdoc]` 在 WebKitGTK 中会作为宿主 WebView 的 `about:srcdoc` 导航
 /// 进入 Wry 的 navigation handler。这里只放行浏览器内部的两个空文档地址；
 /// 主窗口和 iframe 的任意外部来源仍走初始 origin 限制。
@@ -107,6 +123,11 @@ fn allow_embedded_document_navigation(url: &tauri::Url, main_origin_initialized:
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // CodeWhale engine turn handling can use a deeper stack than Tokio's default
+    // worker stack on Windows. Install Tauri's async runtime before any
+    // tauri::async_runtime access so session sends cannot abort the process with
+    // STATUS_STACK_OVERFLOW.
+    install_tauri_async_runtime();
     // 必须最先执行:进程级选定 rustls CryptoProvider。
     // 见 Cargo.toml 的 rustls/reqwest 注释——reqwest 0.13 自带 aws-lc-rs 但只「借用」
     // provider,不写入默认槽;而 oauth2(经 reqwest 0.12)把 rustls 0.23 的 `ring` feature
@@ -556,6 +577,9 @@ pub fn run() {
             commands::connectors::dingtalk_apply_skills,
             commands::connectors::set_dingtalk_enabled,
             commands::connectors::dingtalk_skills_state,
+            commands::ctrip::query_ctrip_wendao,
+            commands::ctrip_browser::open_ctrip_assist_window,
+            commands::ctrip_browser::run_ctrip_search_assist,
             commands::connectors::tmeet_ensure_cli,
             commands::connectors::tmeet_status,
             commands::connectors::tmeet_connect_begin,
@@ -642,6 +666,7 @@ pub fn run() {
             commands::settings::test_image_input_capability,
             commands::settings::test_search_provider,
             commands::voice::transcribe_voice_audio,
+            commands::voice::postprocess_voice_text,
             commands::voice::reset_microphone_permission,
             commands::voice::voice_asr_status,
             commands::voice::install_voice_asr,
@@ -701,6 +726,7 @@ pub fn run() {
             commands::remote_control::web_access_chat,
             commands::remote_control::web_access_save_session_messages_chunk,
             commands::remote_control::web_access_transcribe_voice_audio,
+            commands::remote_control::web_access_postprocess_voice_text,
             commands::remote_control::web_access_read_artifact_chunk,
             commands::remote_control::web_access_update_settings,
             commands::remote_control::web_access_artifact_info,

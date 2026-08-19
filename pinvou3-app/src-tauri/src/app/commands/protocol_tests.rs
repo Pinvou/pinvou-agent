@@ -75,6 +75,12 @@ command_protocol!(
     ["export_assistant_response", "open_assistant_share_target"]
 );
 command_protocol!(chat_protocol, "chat.rs", ["chat"]);
+command_protocol!(ctrip_protocol, "ctrip.rs", ["query_ctrip_wendao"]);
+command_protocol!(
+    ctrip_browser_protocol,
+    "ctrip_browser.rs",
+    ["open_ctrip_assist_window", "run_ctrip_search_assist"]
+);
 command_protocol!(
     connectors_protocol,
     "connectors.rs",
@@ -343,6 +349,7 @@ command_protocol!(
         "web_access_chat",
         "web_access_save_session_messages_chunk",
         "web_access_transcribe_voice_audio",
+        "web_access_postprocess_voice_text",
         "web_access_read_artifact_chunk",
         "web_access_update_settings",
         "web_access_artifact_info",
@@ -445,6 +452,7 @@ command_protocol!(
     "voice.rs",
     [
         "transcribe_voice_audio",
+        "postprocess_voice_text",
         "reset_microphone_permission",
         "voice_asr_status",
         "install_voice_asr",

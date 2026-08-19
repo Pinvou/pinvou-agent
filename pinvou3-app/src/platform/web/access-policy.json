@@ -132,6 +132,7 @@
     "web_access_read_artifact_thumbnail",
     "web_access_render_artifact_visual",
     "web_access_transcribe_voice_audio",
+    "web_access_postprocess_voice_text",
     "web_access_update_settings",
     "web_access_upload_attachment_chunk",
     "web_access_write_artifact_text"

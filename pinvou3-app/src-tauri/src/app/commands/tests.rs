@@ -1357,6 +1357,12 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(url_in_external_allowlist(
         "https://meeting.tencent.com/qrcode-login.html?code=abc"
     ));
+    assert!(url_in_external_allowlist(
+        "https://www.ctrip.com/wendao/openclaw"
+    ));
+    assert!(url_in_external_allowlist(
+        "https://flights.ctrip.com/online/channel/domestic?from=北京&to=上海"
+    ));
     assert!(url_in_external_allowlist("http://localhost:8080/"));
     assert!(url_in_external_allowlist("https://127.0.0.1:8443/preview"));
     assert!(url_in_external_allowlist("http://[::1]:3000/"));
@@ -1377,8 +1383,17 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(!url_in_external_allowlist(
         "https://meeting.tencent.com.evil.com/qrcode-login.html"
     ));
+    assert!(!url_in_external_allowlist(
+        "https://www.ctrip.com.evil.com/wendao/openclaw"
+    ));
+    assert!(!url_in_external_allowlist(
+        "https://flights.ctrip.com.evil.com/online/channel/domestic"
+    ));
     assert!(!url_in_external_allowlist("http://obsidian.md/"));
     assert!(!url_in_external_allowlist("http://meeting.tencent.com/"));
+    assert!(!url_in_external_allowlist(
+        "http://www.ctrip.com/wendao/openclaw"
+    ));
     assert!(!url_in_external_allowlist("http://open.zhihuiya.com/"));
     assert!(!url_in_external_allowlist(
         "http://www.canva.cn/api/action?token=abc"
