@@ -756,6 +756,9 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     chat: {
       sendMessage: function (text, meta) { return rawBridge.sendMessage(text, meta); },
     },
+    interaction: {
+      editLastTurn: function (text) { return rawBridge.editLastTurn(text); },
+    },
     state: {
       get: function () { return rawBridge.getState(); },
     },
@@ -2369,6 +2372,40 @@ async function editLastTurnBlockedWhileAuthorityReconcilePending() {
     1,
     "repeated blocked actions must keep a single sync-pending notice"
   );
+}
+
+// 工具结果同样以 role="user" 进入 state.messages:编辑上一轮必须砍在最早的
+// 真实用户消息上(整轮含 tool_result 一起移除),与底座 is_user_turn_prompt 同口径。
+async function editLastTurnCutsAtRealUserMessageBeforeToolResult(bridgeKind) {
+  var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+  var bridge = harness.bridge;
+  var sessionId = "chat-edit-tool-result-" + bridgeKind;
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: sessionId, title: "Edit with tool result", message_count: 4 },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "original question" }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "Bash", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "tool output" }] },
+        { role: "assistant", content: [{ type: "text", text: "final answer" }] },
+      ],
+      artifacts: [],
+    };
+  };
+
+  assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
+  var before = bridge.state.get("chat").messages;
+  assert.strictEqual(before.length, 4, "seeded transcript must include the tool round-trip");
+
+  await bridge.interaction.editLastTurn("edited question");
+  var after = bridge.state.get("chat").messages;
+  assert.deepStrictEqual(
+    after,
+    [{ role: "user", content: [{ type: "text", text: "edited question" }] }],
+    "edit must cut the whole last turn including the trailing tool_result"
+  );
+  var editCalls = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; });
+  assert.strictEqual(editCalls.length, 1, "edit_last_turn must be invoked exactly once");
 }
 
 async function remoteAcceptPlanConvergesAcrossClients() {
@@ -4590,6 +4627,8 @@ Promise.resolve()
   .then(completedTurnFallsBackWhenSnapshotLacksRevision)
   .then(completedTurnAdoptsRevisionBumpDuringRetry)
   .then(editLastTurnBlockedWhileAuthorityReconcilePending)
+  .then(function () { return editLastTurnCutsAtRealUserMessageBeforeToolResult("tauri"); })
+  .then(function () { return editLastTurnCutsAtRealUserMessageBeforeToolResult("web"); })
   .then(remoteAcceptPlanConvergesAcrossClients)
   .then(activePlanSurvivesUnrelatedTerminalHydrate)
   .then(activePlanHydrateMigratesTicketWithoutDuplicate)

@@ -58,6 +58,10 @@ fingerprints=(
   "T1|宿主批量取消运行中子智能体          |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
   "T1|批量取消幂等行为回归                |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_host_bulk_cancel_stops_all_running_children_idempotently"
   "T1|通用完成事件携带失败终态            |CodeWhale/crates/tui/src/core/events.rs|failed: bool"
+  "T1|真实用户回合谓词排除 tool_result/内部信封|CodeWhale/crates/tui/src/runtime_handoff.rs|pub fn is_user_turn_prompt"
+  "T1|宿主复用真实用户回合谓词            |CodeWhale/crates/tui/src/lib.rs|pub use runtime_handoff::is_user_turn_prompt;"
+  "T1|编辑上一轮截断在真实用户消息        |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_edit_last_turn_cuts_at_user_prompt_before_tool_results"
+  "T1|无用户消息可编辑时报错不发送        |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_edit_last_turn_without_user_prompt_errors_and_sends_nothing"
 
   "T2|宿主额外工具入口                    |CodeWhale/crates/tui/src/core/engine.rs|pub struct ExtraTools("
   "T2|动态禁用工具操作                    |CodeWhale/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"
@@ -98,6 +102,7 @@ fingerprints=(
   "APP|进程启动显式恢复中断工具调用且幂等    |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_boot_repairs_interrupted_tool_call_once"
   "APP|仅进程启动入口触发工具历史恢复        |pinvou3-app/src-tauri/src/lib.rs|SessionStore::boot_for_process_startup()"
   "APP|工具卡隐藏已知内部 runtime suffix    |pinvou3-app/src/platform/tauri/bridge.js|function stripInternalToolRuntimeSuffix("
+  "APP|落盘兜底编辑截断与底座同口径        |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_admitted_display_fallback_edit_cuts_before_trailing_tool_result"
 )
 
 for fp in "${fingerprints[@]}"; do

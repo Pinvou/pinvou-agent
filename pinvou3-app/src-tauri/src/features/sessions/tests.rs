@@ -306,6 +306,40 @@ fn admitted_display_fallback_is_revision_guarded_for_append_and_edit() {
 }
 
 #[test]
+fn forkguard_admitted_display_fallback_edit_cuts_before_trailing_tool_result() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    // 工具结果同样以 role="user" 落盘;edit_last 的截断点必须落在最早的
+    // 真实用户消息上,把整轮(含 tool_use/tool_result)一起砍掉。
+    let tool_result = Message {
+        role: "user".into(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "call_1".into(),
+            content: "tool output".into(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    };
+    let baseline = vec![
+        user_text("first"),
+        assistant_tool_use("call_1"),
+        tool_result,
+        assistant_text("final answer"),
+    ];
+    store
+        .update_messages(&session.metadata.id, baseline.clone())
+        .unwrap();
+    let revision = transcript_revision(&baseline).unwrap();
+
+    let edited = store
+        .persist_admitted_chat_display(&session.metadata.id, &revision, user_text("edited"), true)
+        .unwrap();
+    assert_eq!(edited.messages, vec![user_text("edited")]);
+}
+
+#[test]
 fn scheduled_session_is_isolated_but_directly_loadable() {
     let (store, _g) = isolated_store();
     let chat = store
