@@ -290,7 +290,7 @@
     mountedRemoteCollections: [],
     mountedCollectionsRevision: 0,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
-    // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
+    // 不进 state/订阅快照，避免每个流式 token 都复制完整卡池。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
     // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
     appVersion: null,
@@ -1203,12 +1203,6 @@
 
   // ── Pub/Sub ──────────────────────────────────────────────────────
   var subscribers = [];
-  function snapshotState() {
-    if (typeof structuredClone === "function") {
-      try { return structuredClone(state); } catch (_) {}
-    }
-    return JSON.parse(JSON.stringify(state));
-  }
   var STATE_SLICE_FIELDS = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
@@ -1244,6 +1238,115 @@
     var result = {};
     for (var i = 0; i < domains.length; i++) Object.assign(result, snapshotStateSlice(domains[i]));
     return result;
+  }
+  // Subscription snapshots are immutable persistent projections. The first
+  // projection detaches nested state; later notifications reconcile against it
+  // and allocate only changed paths. Long transcripts therefore stay shared
+  // between snapshots while an in-place streaming item mutation still produces
+  // a stable new item for subscribers. get/getMany retain their deep-copy API.
+  function defineSubscriptionStateProperty(target, key, value) {
+    Object.defineProperty(target, key, {
+      configurable: true,
+      enumerable: true,
+      value: value,
+      writable: true,
+    });
+  }
+  function copySubscriptionStateObject(source) {
+    var result = {};
+    Object.keys(source).forEach(function (key) {
+      defineSubscriptionStateProperty(result, key, source[key]);
+    });
+    return result;
+  }
+  function subscriptionStateValue(value, previous, ancestors) {
+    var valueType = typeof value;
+    if (!value || valueType !== "object") {
+      if (valueType === "function" || valueType === "symbol" || valueType === "bigint") {
+        throw new TypeError("Subscription state only supports JSON-like scalar values");
+      }
+      return value;
+    }
+    var isArray = Array.isArray(value);
+    if (!isArray) {
+      var prototype = Object.getPrototypeOf(value);
+      var isPlainObject = prototype === null || (
+        Object.getPrototypeOf(prototype) === null &&
+        Object.prototype.hasOwnProperty.call(prototype, "constructor") &&
+        prototype.constructor && prototype.constructor.name === "Object"
+      );
+      if (!isPlainObject) {
+        throw new TypeError("Subscription state only supports arrays and plain objects");
+      }
+    }
+    ancestors = ancestors || new WeakSet();
+    if (ancestors.has(value)) throw new TypeError("Subscription state must not contain cycles");
+    ancestors.add(value);
+    try {
+      if (isArray) {
+        var previousArray = Array.isArray(previous) ? previous : null;
+        if (!previousArray) {
+          return Object.freeze(value.map(function (item) {
+            return subscriptionStateValue(item, undefined, ancestors);
+          }));
+        }
+        var nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
+        for (var arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
+          var nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex], ancestors);
+          if (!Object.is(nextItem, previousArray[arrayIndex])) {
+            if (!nextArray) nextArray = previousArray.slice();
+            nextArray[arrayIndex] = nextItem;
+          }
+        }
+        return nextArray ? Object.freeze(nextArray) : previousArray;
+      }
+
+      var keys = Object.keys(value);
+      var previousObject = previous && typeof previous === "object" && !Array.isArray(previous)
+        ? previous
+        : null;
+      var previousKeys = previousObject ? Object.keys(previousObject) : [];
+      var sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
+        return Object.prototype.hasOwnProperty.call(previousObject, key);
+      });
+      var nextObject = sameShape ? null : {};
+      for (var objectIndex = 0; objectIndex < keys.length; objectIndex++) {
+        var key = keys[objectIndex];
+        var nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key], ancestors);
+        if (!sameShape || !Object.is(nextValue, previousObject[key])) {
+          if (!nextObject) nextObject = copySubscriptionStateObject(previousObject);
+          defineSubscriptionStateProperty(nextObject, key, nextValue);
+        }
+      }
+      return nextObject ? Object.freeze(nextObject) : previousObject;
+    } finally {
+      ancestors.delete(value);
+    }
+  }
+  var subscriptionSliceRevision = 0;
+  var subscriptionSliceCache = Object.create(null);
+  function subscriptionStateSlice(domain) {
+    var fields = STATE_SLICE_FIELDS[domain];
+    if (!fields) throw new Error("Unknown Tauri bridge state slice: " + domain);
+    var cached = subscriptionSliceCache[domain];
+    if (cached && cached.revision === subscriptionSliceRevision) return cached.snapshot;
+    var current = {};
+    for (var i = 0; i < fields.length; i++) {
+      current[fields[i]] = state[fields[i]];
+    }
+    var snapshot = subscriptionStateValue(current, cached && cached.snapshot);
+    subscriptionSliceCache[domain] = { revision: subscriptionSliceRevision, snapshot: snapshot };
+    return snapshot;
+  }
+  function subscriptionStateSlices(domains) {
+    if (!Array.isArray(domains) || domains.length === 0) {
+      throw new Error("Tauri bridge state.subscribeMany requires at least one domain");
+    }
+    var result = {};
+    for (var i = 0; i < domains.length; i++) {
+      Object.assign(result, subscriptionStateSlice(domains[i]));
+    }
+    return Object.freeze(result);
   }
   function cloneJson(value, fallback) {
     try { return JSON.parse(JSON.stringify(value == null ? fallback : value)); }
@@ -1318,27 +1421,52 @@
     });
     return true;
   }
+  var notificationQueue = [];
+  var notificationDispatching = false;
   function notify() {
     if (suppressNotify) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
     state.sessionBusy = {};
     for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
-    var snapshot = snapshotState();
-    for (var i = 0; i < subscribers.length; i++) subscribers[i](snapshot);
+    subscriptionSliceRevision += 1;
+    // Membership and state are fixed when a round is queued. Subscribe or
+    // unsubscribe during a callback affects only rounds queued afterwards.
+    var members = subscribers.slice();
+    notificationQueue.push(members.map(function (subscriber) {
+      return { callback: subscriber.callback, snapshot: subscriber.snapshot() };
+    }));
+    if (notificationDispatching) return;
+    notificationDispatching = true;
+    try {
+      while (notificationQueue.length) {
+        var round = notificationQueue.shift();
+        for (var i = 0; i < round.length; i++) round[i].callback(round[i].snapshot);
+      }
+    } catch (error) {
+      // Preserve synchronous callback error propagation. Later queued rounds may
+      // depend on the interrupted callback, so discard them instead of replaying
+      // stale work on the next notification.
+      notificationQueue = [];
+      throw error;
+    } finally {
+      notificationDispatching = false;
+    }
   }
-  function subscribe(fn) {
-    subscribers.push(fn);
+  function subscribe(snapshot, callback) {
+    var subscriber = { snapshot: snapshot, callback: callback };
+    subscribers.push(subscriber);
     return function () {
-      subscribers = subscribers.filter(function (f) { return f !== fn; });
+      subscribers = subscribers.filter(function (candidate) { return candidate !== subscriber; });
     };
   }
   function subscribeStateSlice(domain, fn) {
-    return subscribe(function () { fn(snapshotStateSlice(domain)); });
+    subscriptionStateSlice(domain);
+    return subscribe(function () { return subscriptionStateSlice(domain); }, fn);
   }
   function subscribeStateSlices(domains, fn) {
-    snapshotStateSlices(domains);
-    return subscribe(function () { fn(snapshotStateSlices(domains)); });
+    subscriptionStateSlices(domains);
+    return subscribe(function () { return subscriptionStateSlices(domains); }, fn);
   }
 
   var scheduledFeature = installBridgeFeature("scheduled", { state: state, notify: notify, invoke: invoke, bt: bt, runSyncOnSession: runSyncOnSession, addSystemItem: addSystemItem, rememberScheduledRunOwner: rememberScheduledRunOwner, isScheduledRunTerminal: isScheduledRunTerminal, purgeSessionBuffer: purgeSessionBuffer, createNewSession: createNewSession, prefillComposer: prefillComposer, sessionStates: sessionStates });
