@@ -960,8 +960,22 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
   var sessionId = "chat-long-stream";
-  var messages = [];
-  for (var index = 0; index < 469; index++) {
+  var messages = [
+    {
+      role: "assistant",
+      content: [{
+        type: "tool_use",
+        id: "tool-stable-history",
+        name: "shell",
+        input: { command: "echo stable", options: { cwd: "history", environment: { MODE: "test" } } },
+      }],
+    },
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "tool-stable-history", content: "stable output" }],
+    },
+  ];
+  for (var index = messages.length; index < 469; index++) {
     messages.push({
       role: index % 2 === 0 ? "user" : "assistant",
       content: [{ type: "text", text: "history-" + index + "-" + "x".repeat(1024) }],
@@ -982,11 +996,11 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   var secondSubscriberSnapshots = [];
   var unsubscribe = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
     updates += 1;
-    if (snapshots.length < 3) snapshots.push(snapshot);
+    snapshots.push(snapshot);
   });
   var unsubscribeSecond = bridge.state.subscribe("chat", function (snapshot) {
     secondSubscriberUpdates += 1;
-    if (secondSubscriberSnapshots.length < 3) secondSubscriberSnapshots.push(snapshot);
+    secondSubscriberSnapshots.push(snapshot);
   });
   var cloneCallsBeforeStream = harness.getStructuredCloneCalls();
   harness.emit("chat:turn_started", { session_id: sessionId });
@@ -1024,11 +1038,63 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   assert.strictEqual(updates, 1001, "stream boundaries and deltas should remain immediately observable");
   assert.strictEqual(secondSubscriberUpdates, 1001,
     "all subscribers should receive one immediate update per stream boundary and delta");
+  assert.strictEqual(snapshots.length, 1001, "the regression must retain every persistent snapshot");
+  assert.strictEqual(secondSubscriberSnapshots.length, 1001,
+    "the second subscriber must retain every same-round snapshot for identity checks");
   assert.strictEqual(
     harness.getStructuredCloneCalls(),
     cloneCallsAfterDefensiveRead,
     "a long transcript must not be deep-cloned for each streamed delta"
   );
+
+  var representativeFrames = [0, 1, 499, 500, 999, 1000];
+  var stableMessages = snapshots[0].messages;
+  var stableHistoryMessage = stableMessages[0];
+  var stableHistoryContent = stableHistoryMessage.content;
+  var stableHistoryBlock = stableHistoryContent[0];
+  var stableToolItem = snapshots[0].chatItems.find(function (item) {
+    return item.type === "tool" && item.toolId === "tool-stable-history";
+  });
+  assert.ok(stableToolItem, "the fixture should expose a historical tool chat item");
+  assert.strictEqual(stableToolItem.args.options.environment.MODE, "test");
+  representativeFrames.forEach(function (frame) {
+    var snapshot = snapshots[frame];
+    var secondSnapshot = secondSubscriberSnapshots[frame];
+    var toolItem = snapshot.chatItems.find(function (item) {
+      return item.type === "tool" && item.toolId === "tool-stable-history";
+    });
+    assert.strictEqual(snapshot.messages, stableMessages,
+      "unchanged history messages arrays must be shared across first/middle/last and adjacent frames");
+    assert.strictEqual(snapshot.messages[0], stableHistoryMessage,
+      "unchanged history message objects must be structurally shared");
+    assert.strictEqual(snapshot.messages[0].content, stableHistoryContent,
+      "unchanged history content arrays must be structurally shared");
+    assert.strictEqual(snapshot.messages[0].content[0], stableHistoryBlock,
+      "unchanged history content blocks must be structurally shared");
+    assert.strictEqual(toolItem, stableToolItem,
+      "unchanged historical tool chat items must be structurally shared");
+    assert.strictEqual(toolItem.args, stableToolItem.args,
+      "unchanged historical tool args must be structurally shared");
+    assert.strictEqual(toolItem.args.options.environment, stableToolItem.args.options.environment,
+      "unchanged historical tool deep subtrees must be structurally shared");
+    assert.strictEqual(secondSnapshot.messages, snapshot.messages,
+      "two subscribers in the same revision must share the messages domain subtree");
+    assert.strictEqual(secondSnapshot.chatItems, snapshot.chatItems,
+      "two subscribers in the same revision must share the chatItems domain subtree");
+  });
+
+  function streamingItemAt(frame) {
+    return snapshots[frame].chatItems.filter(function (item) {
+      return item.type === "assistant" && item.streaming;
+    }).pop();
+  }
+  for (var frame = 1; frame < snapshots.length; frame++) {
+    assert.notStrictEqual(streamingItemAt(frame - 1), streamingItemAt(frame),
+      "the changed streaming item must receive a new reference in every adjacent revision");
+  }
+  assert.strictEqual(streamingItemAt(1).text, "abcd", "the first retained delta must remain stable");
+  assert.strictEqual(streamingItemAt(500).text.length, 2000, "the middle retained delta must remain stable");
+  assert.strictEqual(streamingItemAt(1000).text.length, 4000, "the final retained delta must be complete");
   var finalAssistant = bridge.state.get("chat").chatItems.filter(function (item) {
     return item.type === "assistant" && item.streaming;
   }).pop();

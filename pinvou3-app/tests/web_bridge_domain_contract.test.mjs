@@ -119,6 +119,18 @@ assert.equal(deepCloneCalls, 0, 'subscription notifications must not deep-clone 
 assert.equal(flatSnapshots.length, 2, 'Web flat subscribers should observe parsing and ready updates');
 assert.equal(chatSnapshots.length, 2, 'Web domain subscribers should observe parsing and ready updates');
 assert.equal(combinedSnapshots.length, 2, 'Web multi-domain subscribers should observe parsing and ready updates');
+assert.equal(flatSnapshots[0], secondFlatSnapshots[0],
+  'Web flat subscribers in one revision should receive the exact same immutable snapshot');
+assert.equal(flatSnapshots[1], secondFlatSnapshots[1],
+  'Web flat subscribers should continue sharing the same snapshot in later revisions');
+assert.equal(flatSnapshots[1].attachments, chatSnapshots[1].attachments,
+  'Web flat and domain subscribers should share the same changed domain subtree in one revision');
+assert.equal(flatSnapshots[1].attachments, combinedSnapshots[1].attachments,
+  'Web flat and multi-domain subscribers should share the same domain subtree in one revision');
+assert.equal(flatSnapshots[0].messages, flatSnapshots[1].messages,
+  'unchanged Web transcript subtrees should be structurally shared across revisions');
+assert.equal(flatSnapshots[1].messages, chatSnapshots[1].messages,
+  'Web flat and domain subscribers should share unchanged transcript subtrees in one revision');
 assert.equal(flatSnapshots[0].attachments[0].status, 'parsing');
 assert.equal(flatSnapshots[1].attachments[0].status, 'ready');
 assert.equal(chatSnapshots[0].attachments[0].status, 'parsing');
