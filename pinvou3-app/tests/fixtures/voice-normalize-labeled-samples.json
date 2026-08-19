@@ -3,7 +3,6 @@
     "id": "gold_price_chart_001",
     "type": "easy_confusion",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/gold_price_chart_001.wav",
     "gold_text": "查一下今日金价，并生成数据分析图表。",
     "keywords": [
       "今日金价",
@@ -30,7 +29,6 @@
     "id": "stock_volatility_chart_001",
     "type": "query_visualization",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/stock_volatility_chart_001.wav",
     "gold_text": "查一下最近的股票波动，并生成数据分析图表。",
     "keywords": [
       "股票波动",
@@ -56,7 +54,6 @@
     "id": "weather_short_clear_001",
     "type": "short_clear",
     "mode": "dictation",
-    "audio": "tests/fixtures/voice-audio-samples/weather_short_clear_001.wav",
     "gold_text": "今天天气怎么样？",
     "keywords": [
       "今天",
@@ -77,7 +74,6 @@
     "id": "filler_only_001",
     "type": "filler_only",
     "mode": "dictation",
-    "audio": "tests/fixtures/voice-audio-samples/filler_only_001.wav",
     "gold_text": "",
     "keywords": [],
     "asr_expected_errors": [
@@ -99,7 +95,6 @@
     "id": "flight_qiongzhou_001",
     "type": "query",
     "mode": "dictation",
-    "audio": "tests/fixtures/voice-audio-samples/flight_qiongzhou_001.wav",
     "gold_text": "查一下琼州的机票。",
     "keywords": [
       "琼州",
@@ -123,7 +118,6 @@
     "id": "meeting_budget_risk_001",
     "type": "preserve_intent",
     "mode": "dictation",
-    "audio": "tests/fixtures/voice-audio-samples/meeting_budget_risk_001.wav",
     "gold_text": "帮我整理一下今天会议里提到的预算风险，写到输入框里。",
     "keywords": [
       "今天会议",
@@ -149,7 +143,6 @@
     "id": "ppt_sales_q3_001",
     "type": "generation",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/ppt_sales_q3_001.wav",
     "gold_text": "基于第三季度销售数据，生成一页汇总 PPT。",
     "keywords": [
       "第三季度",
@@ -176,7 +169,6 @@
     "id": "webpage_product_intro_001",
     "type": "generation",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/webpage_product_intro_001.wav",
     "gold_text": "做一个产品介绍网页，突出核心功能和价格。",
     "keywords": [
       "产品介绍网页",
@@ -201,7 +193,6 @@
     "id": "english_model_name_001",
     "type": "mixed_language",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/english_model_name_001.wav",
     "gold_text": "比较一下 GPT-5 和 Claude Sonnet 的代码能力。",
     "keywords": [
       "GPT-5",
@@ -227,7 +218,6 @@
     "id": "document_format_001",
     "type": "formatting",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/document_format_001.wav",
     "gold_text": "把这段内容整理成表格，列出负责人、截止时间和状态。",
     "keywords": [
       "表格",
@@ -253,7 +243,6 @@
     "id": "news_search_today_001",
     "type": "query",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/news_search_today_001.wav",
     "gold_text": "搜索一下今天的 AI 新闻，按重要性排序。",
     "keywords": [
       "今天",
@@ -278,7 +267,6 @@
     "id": "multi_constraint_report_001",
     "type": "multi_constraint",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/multi_constraint_report_001.wav",
     "gold_text": "用中文总结这份报告，控制在三百字以内，并列出三个风险点。",
     "keywords": [
       "中文",
@@ -303,7 +291,6 @@
     "id": "calendar_meeting_tomorrow_001",
     "type": "scheduling",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/calendar_meeting_tomorrow_001.wav",
     "gold_text": "帮我安排明天下午三点和产品团队开会。",
     "keywords": [
       "明天下午三点",
@@ -329,7 +316,6 @@
     "id": "budget_table_monthly_001",
     "type": "formatting",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/budget_table_monthly_001.wav",
     "gold_text": "把本月预算按部门整理成表格，并标出超支项。",
     "keywords": [
       "本月预算",
@@ -357,7 +343,6 @@
     "id": "weather_weekend_trip_001",
     "type": "query",
     "mode": "dictation",
-    "audio": "tests/fixtures/voice-audio-samples/weather_weekend_trip_001.wav",
     "gold_text": "查一下这个周末广州适不适合露营。",
     "keywords": [
       "这个周末",
@@ -383,7 +368,6 @@
     "id": "translate_release_note_001",
     "type": "translation",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/translate_release_note_001.wav",
     "gold_text": "把这段发布说明翻译成英文，语气保持正式。",
     "keywords": [
       "发布说明",
@@ -409,7 +393,6 @@
     "id": "email_reply_customer_001",
     "type": "email",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/email_reply_customer_001.wav",
     "gold_text": "帮我写一封回复客户延期交付的邮件，语气诚恳但不要承诺赔偿。",
     "keywords": [
       "回复客户",
@@ -436,7 +419,6 @@
     "id": "code_login_error_001",
     "type": "code",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/code_login_error_001.wav",
     "gold_text": "检查登录接口的 401 错误，看看是不是 token 过期处理有问题。",
     "keywords": [
       "登录接口",
@@ -463,7 +445,6 @@
     "id": "pdf_extract_contract_001",
     "type": "document_extraction",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/pdf_extract_contract_001.wav",
     "gold_text": "从这个 PDF 里提取合同金额、付款节点和违约条款。",
     "keywords": [
       "PDF",
@@ -491,7 +472,6 @@
     "id": "revenue_chart_region_001",
     "type": "query_visualization",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/revenue_chart_region_001.wav",
     "gold_text": "按地区汇总上季度营收，并生成柱状图。",
     "keywords": [
       "地区",
@@ -517,7 +497,6 @@
     "id": "poster_event_launch_001",
     "type": "generation",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/poster_event_launch_001.wav",
     "gold_text": "做一张新品发布会海报，突出时间、地点和报名二维码。",
     "keywords": [
       "新品发布会",
@@ -545,7 +524,6 @@
     "id": "todo_followup_friday_001",
     "type": "todo",
     "mode": "dictation",
-    "audio": "tests/fixtures/voice-audio-samples/todo_followup_friday_001.wav",
     "gold_text": "周五前提醒我跟进供应商报价。",
     "keywords": [
       "周五前",
@@ -571,7 +549,6 @@
     "id": "meeting_action_items_001",
     "type": "preserve_intent",
     "mode": "dictation",
-    "audio": "tests/fixtures/voice-audio-samples/meeting_action_items_001.wav",
     "gold_text": "把会议纪要里的待办按负责人和截止时间列出来。",
     "keywords": [
       "会议纪要",
@@ -599,7 +576,6 @@
     "id": "filler_with_command_001",
     "type": "filler_cleanup",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/filler_with_command_001.wav",
     "gold_text": "帮我查一下明天深圳到北京的高铁票。",
     "keywords": [
       "明天",
@@ -626,7 +602,6 @@
     "id": "filler_only_002",
     "type": "filler_only",
     "mode": "dictation",
-    "audio": "tests/fixtures/voice-audio-samples/filler_only_002.wav",
     "gold_text": "",
     "keywords": [],
     "asr_expected_errors": [
@@ -648,7 +623,6 @@
     "id": "oil_price_chart_001",
     "type": "easy_confusion",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/oil_price_chart_001.wav",
     "gold_text": "查一下今天的原油价格，并画趋势图。",
     "keywords": [
       "今天",
@@ -674,7 +648,6 @@
     "id": "model_cost_compare_001",
     "type": "mixed_language",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/model_cost_compare_001.wav",
     "gold_text": "比较 GPT-5 mini 和 DeepSeek V3 的调用成本。",
     "keywords": [
       "GPT-5 mini",
@@ -700,7 +673,6 @@
     "id": "hotel_table_trip_001",
     "type": "query",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/hotel_table_trip_001.wav",
     "gold_text": "整理三亚亲子酒店，按价格、评分和离海边距离做表格。",
     "keywords": [
       "三亚",
@@ -729,7 +701,6 @@
     "id": "contract_risk_summary_001",
     "type": "document_extraction",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/contract_risk_summary_001.wav",
     "gold_text": "总结这份合同的付款风险和交付风险，各列三条。",
     "keywords": [
       "合同",
@@ -756,7 +727,6 @@
     "id": "customer_followup_crm_001",
     "type": "crm",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/customer_followup_crm_001.wav",
     "gold_text": "把王总标记为重点客户，并记录下周二需要电话跟进。",
     "keywords": [
       "王总",
@@ -783,7 +753,6 @@
     "id": "translate_japanese_001",
     "type": "translation",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/translate_japanese_001.wav",
     "gold_text": "把这句话翻译成日语，保留产品名 Pinvou。",
     "keywords": [
       "翻译成日语",
@@ -809,7 +778,6 @@
     "id": "api_docs_outline_001",
     "type": "mixed_language",
     "mode": "dictation",
-    "audio": "tests/fixtures/voice-audio-samples/api_docs_outline_001.wav",
     "gold_text": "整理 REST API 文档结构，包含认证、错误码和示例请求。",
     "keywords": [
       "REST API",
@@ -837,7 +805,6 @@
     "id": "long_multi_step_ops_001",
     "type": "multi_constraint",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/long_multi_step_ops_001.wav",
     "gold_text": "先汇总本周客服投诉，再按产品线分类，最后列出前三个高频问题。",
     "keywords": [
       "本周客服投诉",
@@ -863,7 +830,6 @@
     "id": "personal_workbench_plan_001",
     "type": "preserve_intent",
     "mode": "dictation",
-    "audio": "tests/fixtures/voice-audio-samples/personal_workbench_plan_001.wav",
     "gold_text": "记录一下我这周重点推进语音输入和模型下载体验。",
     "keywords": [
       "这周",
@@ -889,7 +855,6 @@
     "id": "knowledge_policy_search_001",
     "type": "query",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/knowledge_policy_search_001.wav",
     "gold_text": "在知识库里查一下差旅报销标准，重点看住宿上限。",
     "keywords": [
       "知识库",
@@ -915,7 +880,6 @@
     "id": "banner_mid_autumn_001",
     "type": "generation",
     "mode": "task",
-    "audio": "tests/fixtures/voice-audio-samples/banner_mid_autumn_001.wav",
     "gold_text": "生成一张中秋活动 banner，风格要温暖简洁。",
     "keywords": [
       "中秋活动",

@@ -190,7 +190,7 @@ function useComposerVoiceInput(adapter) {
       return;
     }
     if (voiceInput.status === 'recording') {
-      if (normalizeMode(voiceInput.mode) !== nextMode) return;
+      const activeMode = normalizeMode(voiceInput.mode);
       bridge.voice.startVoiceInput(
         typeof current.getDraft === 'function' ? current.getDraft() : '',
         (text, draftBeforeStart, context) => handleVoiceResult(
@@ -199,7 +199,7 @@ function useComposerVoiceInput(adapter) {
           draftBeforeStart,
           context,
         ),
-        { mode: nextMode },
+        { mode: activeMode },
       );
       return;
     }

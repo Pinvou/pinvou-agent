@@ -1187,11 +1187,21 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
       const voiceAsrBusy = !!(voiceAsrSetup.installing || voiceAsrSetup.cancelling);
       const voiceAsrProgress = voiceAsrSetup.progress || {};
+      const voiceInputRef = useRef(voiceInput);
+      voiceInputRef.current = voiceInput;
       useEffect(() => () => {
         if (voiceAsrReadyNoticeTimerRef.current) window.clearTimeout(voiceAsrReadyNoticeTimerRef.current);
         if (voiceIntroResolveRef.current) {
           voiceIntroResolveRef.current(false);
           voiceIntroResolveRef.current = null;
+        }
+        const voice = voiceInputRef.current;
+        if (voice && (voice.status === 'requesting_permission'
+          || voice.status === 'recording'
+          || voice.status === 'transcribing'
+          || voice.status === 'postprocessing')
+          && bridge.available) {
+          bridge.voice.cancelVoiceInput();
         }
       }, []);
       useEffect(() => {
@@ -1287,6 +1297,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       async function handleSend() {
         // 不再因 busy 拦截:bridge.chat.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
         if (isMultiAgentReadOnly || !canSend) return;
+        if (chatVoice && chatVoice.editPreview) {
+          await chatVoice.applyVoiceEditPreview({ send: true });
+          return;
+        }
         const constrained = constrainChatInput(inputText);
         if (constrained.truncated) {
           setInputText(constrained.text);
@@ -1295,6 +1309,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const accepted = await sendChatMessage(constrained.text);
         if (accepted) {
           setInputText('');
+          if (chatVoice && chatVoice.editPreview) chatVoice.cancelVoiceEditPreview();
           personalWorkbenchTemplateIdRef.current = null;
           setPersonalWorkbenchTemplateId(null);
         }
@@ -1437,6 +1452,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       useEffect(() => {
         if (voiceIntroSeenState || voiceShortcutEnabledRef.current) return;
         if (voiceInput.status !== 'idle' && voiceInput.status !== 'failed') return;
+        if (pendingVoiceAfterIntroRef.current) return;
         pendingVoiceAfterIntroRef.current = null;
       }, [voiceInput.status, voiceIntroSeenState]);
 

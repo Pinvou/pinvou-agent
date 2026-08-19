@@ -1,5 +1,5 @@
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VoiceShortcutKey {
@@ -12,7 +12,6 @@ enum VoiceShortcutKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VoiceShortcutEvent {
     TriggerDictation,
-    Cancel,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -66,24 +65,26 @@ fn handle_voice_shortcut_key(
         (VoiceShortcutKey::Alt, true) => {
             state.alt_down = true;
             state.alt_pending = true;
-            VoiceShortcutDecision::suppress(None)
+            VoiceShortcutDecision::pass()
         }
         (VoiceShortcutKey::Alt, false) => {
             let should_trigger = state.alt_pending;
             state.alt_down = false;
             state.alt_pending = false;
-            VoiceShortcutDecision::suppress(
-                should_trigger.then_some(VoiceShortcutEvent::TriggerDictation),
-            )
+            if should_trigger {
+                VoiceShortcutDecision::suppress(Some(VoiceShortcutEvent::TriggerDictation))
+            } else {
+                VoiceShortcutDecision::pass()
+            }
         }
         (VoiceShortcutKey::Space, true) if state.alt_down => {
             state.alt_pending = false;
             VoiceShortcutDecision::suppress(None)
         }
-        (VoiceShortcutKey::Escape, true) => VoiceShortcutDecision {
-            event: Some(VoiceShortcutEvent::Cancel),
-            suppress: false,
-        },
+        (VoiceShortcutKey::Other, true) if state.alt_down => {
+            state.alt_pending = false;
+            VoiceShortcutDecision::pass()
+        }
         _ => VoiceShortcutDecision::pass(),
     }
 }
@@ -94,37 +95,45 @@ struct VoiceShortcutTriggerPayload {
     source: &'static str,
 }
 
-#[derive(Clone, Serialize)]
-struct VoiceShortcutCancelPayload {
-    source: &'static str,
-}
-
 mod platform;
 
 pub(crate) fn install(app: AppHandle) {
     platform::install(app);
 }
 
+pub(crate) fn set_enabled(enabled: bool) {
+    platform::set_enabled(enabled);
+}
+
 fn emit_shortcut_event(app: &AppHandle, event: VoiceShortcutEvent) {
     match event {
         VoiceShortcutEvent::TriggerDictation => {
-            let result = app.emit(
+            let result = emit_to_focused_webview(
+                app,
                 "voice-shortcut:trigger",
                 VoiceShortcutTriggerPayload {
                     mode: "dictation",
                     source: "native",
                 },
             );
-            log::debug!("voice shortcut emitted event=TriggerDictation ok={}", result.is_ok());
-        }
-        VoiceShortcutEvent::Cancel => {
-            let result = app.emit(
-                "voice-shortcut:cancel",
-                VoiceShortcutCancelPayload { source: "native" },
+            log::debug!(
+                "voice shortcut emitted event=TriggerDictation ok={}",
+                result.is_ok()
             );
-            log::debug!("voice shortcut emitted event=Cancel ok={}", result.is_ok());
         }
     }
+}
+
+fn emit_to_focused_webview<T>(app: &AppHandle, event: &str, payload: T) -> tauri::Result<()>
+where
+    T: Clone + Serialize,
+{
+    for (label, window) in app.webview_windows() {
+        if window.is_focused().unwrap_or(false) {
+            return app.emit_to(label, event, payload);
+        }
+    }
+    app.emit(event, payload)
 }
 
 #[cfg(test)]
@@ -136,7 +145,7 @@ mod tests {
         let mut state = VoiceShortcutState::default();
         let down = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true);
         assert_eq!(down.event, None);
-        assert!(down.suppress);
+        assert!(!down.suppress);
 
         let up = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, false, true);
         assert_eq!(up.event, Some(VoiceShortcutEvent::TriggerDictation));
@@ -154,7 +163,7 @@ mod tests {
 
         let up = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, false, true);
         assert_eq!(up.event, None);
-        assert!(up.suppress);
+        assert!(!up.suppress);
     }
 
     #[test]
@@ -165,7 +174,7 @@ mod tests {
 
         let alt = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true);
         assert_eq!(alt.event, None);
-        assert!(alt.suppress);
+        assert!(!alt.suppress);
 
         let up = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, false, true);
         assert_eq!(up.event, Some(VoiceShortcutEvent::TriggerDictation));
@@ -177,5 +186,23 @@ mod tests {
         let mut state = VoiceShortcutState::default();
         let down = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, false);
         assert_eq!(down, VoiceShortcutDecision::pass());
+    }
+
+    #[test]
+    fn alt_combination_clears_plain_alt_trigger() {
+        let mut state = VoiceShortcutState::default();
+        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true);
+        let other = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Other, true, true);
+        assert_eq!(other, VoiceShortcutDecision::pass());
+
+        let up = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, false, true);
+        assert_eq!(up, VoiceShortcutDecision::pass());
+    }
+
+    #[test]
+    fn escape_is_not_emitted_without_frontend_state() {
+        let mut state = VoiceShortcutState::default();
+        let escape = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Escape, true, true);
+        assert_eq!(escape, VoiceShortcutDecision::pass());
     }
 }

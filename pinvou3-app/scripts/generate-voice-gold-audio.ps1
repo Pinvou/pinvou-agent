@@ -71,13 +71,6 @@ foreach ($sample in $samples) {
   $synth.Speak($spokenText)
   $synth.SetOutputToNull()
 
-  $sample.audio = $relativeAudioPath
-  if (-not ($sample.PSObject.Properties.Name -contains "spoken_text")) {
-    $sample | Add-Member -MemberType NoteProperty -Name "spoken_text" -Value $spokenText
-  } else {
-    $sample.spoken_text = $spokenText
-  }
-
   $audioFile = Get-Item -LiteralPath $fullAudioPath
   $manifest += [PSCustomObject]@{
     id = $sample.id
@@ -95,11 +88,6 @@ foreach ($sample in $samples) {
 }
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText(
-  $fixtureFullPath,
-  (($samples | ConvertTo-Json -Depth 20) + [Environment]::NewLine),
-  $utf8NoBom
-)
 [System.IO.File]::WriteAllText(
   $manifestFullPath,
   (($manifest | ConvertTo-Json -Depth 20) + [Environment]::NewLine),

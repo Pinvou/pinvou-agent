@@ -24,14 +24,6 @@ const LEGACY_WINDOWS_NODE_ROOTS = [
   path.join(WINDOWS_RUNTIME_ROOT, "codex-node"),
 ];
 
-function powershellExecutable() {
-  const probe = spawnSync("pwsh.exe", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  return probe.status === 0 ? "pwsh.exe" : "powershell.exe";
-}
-
 function resolveDescriptorPath(relativePath, label) {
   if (typeof relativePath !== "string" || !relativePath || path.isAbsolute(relativePath)) {
     throw new Error(`Windows runtime descriptor 的 ${label} 必须是相对路径`);
@@ -143,7 +135,7 @@ function stageWindowsRuntime({
     "stage-runtime.ps1",
   );
   const child = spawn(
-    powershellExecutable(),
+    "powershell.exe",
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
     { cwd: APP_ROOT, env: environment, stdio: "inherit" },
   );
@@ -172,7 +164,7 @@ function stageWindowsOnnxRuntime({
     "stage-onnx-runtime.ps1",
   );
   const child = spawn(
-    powershellExecutable(),
+    "powershell.exe",
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
     { cwd: APP_ROOT, env: environment, stdio: "inherit" },
   );

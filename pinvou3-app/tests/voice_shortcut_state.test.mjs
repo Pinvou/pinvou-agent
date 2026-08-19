@@ -28,6 +28,17 @@ const altSpace = (patch = {}) => ({
   ...patch,
 });
 
+const key = (patch = {}) => ({
+  key: 'a',
+  code: 'KeyA',
+  altKey: true,
+  ctrlKey: false,
+  shiftKey: false,
+  metaKey: false,
+  repeat: false,
+  ...patch,
+});
+
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(alt(), { status: 'idle' }),
   { type: 'pending_alt' },
@@ -49,6 +60,11 @@ assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(altSpace(), { status: 'idle' }),
   { type: 'clear_pending' },
   'Alt+Space must not trigger direct voice task mode',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(key(), { status: 'idle', pendingAlt: true }),
+  { type: 'clear_pending' },
+  'pressing any other key while Alt is pending must cancel the plain-Alt trigger',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(alt(), { status: 'idle', pendingSpace: true }),
@@ -100,6 +116,16 @@ assert.deepStrictEqual(
   voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'idle' }),
   { type: 'none' },
   'Escape must not be treated as a global idle shortcut',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'failed' }),
+  { type: 'none' },
+  'Escape must not be captured for failed voice notices',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'postprocessing' }),
+  { type: 'cancel' },
+  'Escape should still cancel active postprocessing voice work',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(altSpace({ repeat: true }), { status: 'idle' }),

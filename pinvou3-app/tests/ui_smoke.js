@@ -181,6 +181,7 @@ function injectSource() {
         case 'artifact_info': return Promise.resolve({exists:true,kind:'md',size:2048,modified:1});
         case 'read_artifact_text': return Promise.resolve('# 会议纪要');
         case 'render_artifact_visual': return Promise.resolve({mode:'unsupported'});
+        case 'voice_asr_status': return Promise.resolve({ready:false,installable:false,missing:['model']});
         case 'detect_local_vllm_setup': {
           const engineState = window.__VLLM_STATE__ || 'stopped';
           return Promise.resolve(window.__VLLM_ELIGIBLE__ && engineState !== 'starting'
@@ -296,6 +297,25 @@ async function expand(page) {
       && composerVoiceEntry.composerVisible
       && composerVoiceEntry.besideSend,
     JSON.stringify(composerVoiceEntry),
+  );
+  const composerVoiceInvoke = await page.evaluate(async () => {
+    window.__TAURI_INVOKES__ = [];
+    const composerButton = document.querySelector('[data-testid="composer-voice-button"]');
+    if (!composerButton) return { clicked: false, invoked: false };
+    composerButton.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    if (window.TauriBridge && window.TauriBridge.voice && window.TauriBridge.voice.closeVoiceAsrSetup) {
+      window.TauriBridge.voice.closeVoiceAsrSetup();
+    }
+    return {
+      clicked: true,
+      invoked: window.__TAURI_INVOKES__.some(call => call.cmd === 'voice_asr_status'),
+    };
+  });
+  rec(
+    '⓪b-2 composer 麦克风点击进入语音能力探测',
+    composerVoiceInvoke.clicked && composerVoiceInvoke.invoked,
+    JSON.stringify(composerVoiceInvoke),
   );
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
   await sleep(250);

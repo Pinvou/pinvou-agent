@@ -2175,10 +2175,7 @@ export function CodexAcpView({
     },
     canStart: () => !working && !activeRuntimeBusy,
     canSendTask: canSendNativeVoiceTask,
-    sendTask: async outgoing => {
-      await send(outgoing);
-      return true;
-    },
+    sendTask: async outgoing => send(outgoing),
   });
   const handleNativeVoiceTrigger = nativeVoice.triggerVoice;
 
@@ -2200,7 +2197,8 @@ export function CodexAcpView({
       const voice = nativeVoiceInputRef.current;
       if (voice && (voice.status === 'requesting_permission'
         || voice.status === 'recording'
-        || voice.status === 'transcribing')
+        || voice.status === 'transcribing'
+        || voice.status === 'postprocessing')
         && bridge.available) {
         bridge.voice.cancelVoiceInput();
       }
@@ -2528,25 +2526,28 @@ export function CodexAcpView({
   }
 
   async function send(messageOverride) {
-    const message = String(messageOverride !== undefined ? messageOverride : draft).trim();
+    const hasMessageOverride = typeof messageOverride === 'string';
+    if (!hasMessageOverride && nativeVoice && nativeVoice.editPreview) {
+      return nativeVoice.applyVoiceEditPreview({ send: true });
+    }
+    const message = String(hasMessageOverride ? messageOverride : draft).trim();
     const readyAttachments = attachments.filter(attachment => (
       attachment.status === 'ready' && attachment.result
     ));
     if ((!message && !readyAttachments.length && !workspaceReferences.length)
-      || busy || working || activeRuntimeBusy) return;
+      || busy || working || activeRuntimeBusy) return false;
     if (!isNativeAgent && !activeStatus?.authenticated) {
       setError(codexCopy.loginRequiredBeforeSend);
-      return;
+      return false;
     }
     if (attachments.some(attachment => attachment.status === 'parsing')) {
       setError(codexCopy.attachmentsParsing);
-      return;
+      return false;
     }
-    if (workspaceUnavailable) return;
-    if (activeId && !sessionReady) return;
+    if (workspaceUnavailable) return false;
+    if (activeId && !sessionReady) return false;
     if (isNativeAgent) {
-      await sendNative(message, readyAttachments);
-      return;
+      return sendNative(message, readyAttachments);
     }
     setWorking(true); setError('');
     try {
@@ -2587,9 +2588,11 @@ export function CodexAcpView({
         attachment => !readyAttachments.some(ready => ready.id === attachment.id),
       ));
       setWorkspaceReferenceDrafts(current => ({ ...current, [targetId]: [] }));
+      return true;
     } catch (err) {
       showError(err);
       setDraft(message);
+      return false;
     } finally {
       setWorking(false);
     }
@@ -2654,9 +2657,11 @@ export function CodexAcpView({
         attachment => !readyAttachments.some(ready => ready.id === attachment.id),
       ));
       setWorkspaceReferenceDrafts(current => ({ ...current, [targetId]: [] }));
+      return true;
     } catch (err) {
       showError(err);
       setDraft(message);
+      return false;
     } finally {
       setWorking(false);
     }
@@ -3627,7 +3632,7 @@ export function CodexAcpView({
                         }
                       }}
                     />
-                    <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
+                    <button onClick={() => send()} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
                       className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                       <Send size={16} />
                     </button>

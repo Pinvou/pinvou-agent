@@ -651,6 +651,7 @@ pub fn run() {
             commands::voice::voice_asr_status,
             commands::voice::install_voice_asr,
             commands::voice::cancel_voice_asr,
+            commands::voice::set_voice_shortcut_enabled,
             commands::sessions::list_sessions,
             commands::sessions::create_session,
             commands::sessions::load_session,

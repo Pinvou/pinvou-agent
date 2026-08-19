@@ -38,6 +38,12 @@ pub struct VoiceCommandError {
     pub message: String,
 }
 
+#[tauri::command]
+pub(crate) fn set_voice_shortcut_enabled(enabled: bool) -> Result<(), String> {
+    crate::features::voice_shortcut::set_enabled(enabled);
+    Ok(())
+}
+
 impl VoiceCommandError {
     pub(crate) fn new(category: &str, stage: &str, message: impl Into<String>) -> Self {
         Self {
@@ -675,8 +681,7 @@ fn voice_reasoning_dialect(
         | crate::platform::prefs::ModelPreset::Anthropic
         | crate::platform::prefs::ModelPreset::Gemini
         | crate::platform::prefs::ModelPreset::Xai => {
-            crate::core::reasoning_dialect::reasoning_dialect_from_base_url(base_url, model)
-                .into()
+            crate::core::reasoning_dialect::reasoning_dialect_from_base_url(base_url, model).into()
         }
     }
 }

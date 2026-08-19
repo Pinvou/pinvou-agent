@@ -4,7 +4,10 @@ use super::{
     VoiceShortcutState,
 };
 #[cfg(target_os = "windows")]
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Mutex, OnceLock,
+};
 use tauri::AppHandle;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
@@ -25,6 +28,8 @@ static INSTALLED: OnceLock<()> = OnceLock::new();
 static SHORTCUT_STATE: OnceLock<Mutex<VoiceShortcutState>> = OnceLock::new();
 #[cfg(target_os = "windows")]
 static EVENT_SENDER: OnceLock<Mutex<Option<mpsc::Sender<VoiceShortcutEvent>>>> = OnceLock::new();
+#[cfg(target_os = "windows")]
+static SHORTCUT_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "windows")]
 pub(super) fn install(app: AppHandle) {
@@ -52,8 +57,35 @@ pub(super) fn install(app: AppHandle) {
     });
 }
 
+#[cfg(target_os = "windows")]
+pub(super) fn set_enabled(enabled: bool) {
+    SHORTCUT_ENABLED.store(enabled, Ordering::SeqCst);
+    if !enabled {
+        let mutex = SHORTCUT_STATE.get_or_init(|| Mutex::new(VoiceShortcutState::default()));
+        if let Ok(mut state) = mutex.lock() {
+            *state = VoiceShortcutState::default();
+        }
+    }
+    log::debug!("voice shortcut enabled={}", enabled);
+}
+
+#[cfg(target_os = "windows")]
+fn shortcut_enabled() -> bool {
+    SHORTCUT_ENABLED.load(Ordering::SeqCst)
+}
+
 #[cfg(not(target_os = "windows"))]
-pub(super) fn install(_app: AppHandle) {}
+pub(super) fn install(_app: AppHandle) {
+    log::debug!("voice shortcut keyboard hook is unsupported on this platform");
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) fn set_enabled(enabled: bool) {
+    log::debug!(
+        "voice shortcut enabled={} ignored because keyboard hook is unsupported on this platform",
+        enabled
+    );
+}
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn keyboard_hook_proc(
@@ -82,7 +114,8 @@ unsafe extern "system" fn keyboard_hook_proc(
             Ok(guard) => guard,
             Err(_) => return call_next_hook(code, w_param, l_param),
         };
-        let decision = handle_voice_shortcut_key(&mut state, key, key_down, foreground);
+        let decision =
+            handle_voice_shortcut_key(&mut state, key, key_down, foreground && shortcut_enabled());
         if key == VoiceShortcutKey::Space && key_down && foreground && alt_pressed {
             state.alt_pending = false;
         }
@@ -119,7 +152,8 @@ fn call_next_hook(code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
 #[cfg(target_os = "windows")]
 fn voice_shortcut_key(vk: VIRTUAL_KEY) -> VoiceShortcutKey {
     match vk {
-        VK_MENU | VK_LMENU | VK_RMENU => VoiceShortcutKey::Alt,
+        VK_MENU | VK_LMENU => VoiceShortcutKey::Alt,
+        VK_RMENU => VoiceShortcutKey::Other,
         VK_SPACE => VoiceShortcutKey::Space,
         VK_ESCAPE => VoiceShortcutKey::Escape,
         _ => VoiceShortcutKey::Other,
@@ -155,7 +189,6 @@ fn alt_is_physically_pressed() -> bool {
     unsafe {
         (GetAsyncKeyState(VK_MENU as i32) & 0x8000u16 as i16) != 0
             || (GetAsyncKeyState(VK_LMENU as i32) & 0x8000u16 as i16) != 0
-            || (GetAsyncKeyState(VK_RMENU as i32) & 0x8000u16 as i16) != 0
     }
 }
 

@@ -175,8 +175,8 @@
       .replace(/四零一/g, "401")
       .replace(/talken/gi, "token")
       .replace(/过期处里/g, "过期处理")
-      .replace(/产品民\s*pin vo|产品名con|pin\s*vo/gi, "产品名 Pinvou")
-      .replace(/rest\s*a\s*p\s*i|re API/gi, "REST API")
+      .replace(/产品民\s*pin\s+vo\b|产品名con|\bpin\s+vo\b/gi, "产品名 Pinvou")
+      .replace(/rest\s*a\s*p\s*i/gi, "REST API")
       .replace(/认正/g, "认证")
       .replace(/错误马/g, "错误码")
       .replace(/示例情求/g, "示例请求")
@@ -935,6 +935,13 @@
     return true;
   }
 
+  function setVoiceShortcutEnabled(enabled) {
+    return invoke("set_voice_shortcut_enabled", { enabled: !!enabled }).catch(function (error) {
+      console.warn("[voice] failed to sync shortcut setting", error);
+      return false;
+    });
+  }
+
     return {
       startVoiceInput: startVoiceInput,
       installVoiceAsr: installVoiceAsr,
@@ -942,6 +949,7 @@
       closeVoiceAsrSetup: closeVoiceAsrSetup,
       cancelVoiceInput: cancelVoiceInput,
       clearVoiceInput: clearVoiceInput,
+      setVoiceShortcutEnabled: setVoiceShortcutEnabled,
       appendVoiceText: appendVoiceText,
       runVoiceInputDebugAssertions: runVoiceInputDebugAssertions
     };

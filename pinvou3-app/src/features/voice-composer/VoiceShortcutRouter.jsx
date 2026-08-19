@@ -6,11 +6,31 @@ import {
   voiceShortcutActionForKeyDown,
   voiceShortcutActionForKeyUp,
 } from '../chat/voice-shortcut-state.mjs';
-import { voiceShortcutEnabled } from '../chat/voice-shortcut-settings.mjs';
+import {
+  VOICE_SHORTCUT_SETTINGS_EVENT,
+  voiceShortcutEnabled,
+} from '../chat/voice-shortcut-settings.mjs';
 import { getActiveVoiceTarget } from './voice-target-registry.mjs';
 
 function VoiceShortcutRouter({ enabled = true }) {
   const pendingRef = useRef(null);
+
+  useEffect(() => {
+    if (!enabled || isWeb) return undefined;
+    function syncNativeShortcutSetting() {
+      const bridge = globalThis.TauriBridge;
+      if (!bridge || !bridge.available || !bridge.voice
+        || typeof bridge.voice.setVoiceShortcutEnabled !== 'function') return;
+      bridge.voice.setVoiceShortcutEnabled(voiceShortcutEnabled());
+    }
+    syncNativeShortcutSetting();
+    window.addEventListener(VOICE_SHORTCUT_SETTINGS_EVENT, syncNativeShortcutSetting);
+    window.addEventListener('storage', syncNativeShortcutSetting);
+    return () => {
+      window.removeEventListener(VOICE_SHORTCUT_SETTINGS_EVENT, syncNativeShortcutSetting);
+      window.removeEventListener('storage', syncNativeShortcutSetting);
+    };
+  }, [enabled]);
 
   useEffect(() => {
     if (!enabled) return undefined;
@@ -52,6 +72,7 @@ function VoiceShortcutRouter({ enabled = true }) {
       const action = voiceShortcutActionForKeyDown(event, {
         status,
         mode,
+        pendingAlt: Boolean(pendingRef.current && pendingRef.current.alt),
       });
       if (action.type === 'none') return;
       event.preventDefault();
@@ -129,11 +150,6 @@ function VoiceShortcutRouter({ enabled = true }) {
         return;
       }
       target.trigger('dictation');
-    }).then(rememberUnlisten).catch(() => {});
-    listenTauri('voice-shortcut:cancel', () => {
-      pendingRef.current = null;
-      const target = getActiveVoiceTarget();
-      if (target && typeof target.cancel === 'function') target.cancel();
     }).then(rememberUnlisten).catch(() => {});
     return () => {
       disposed = true;

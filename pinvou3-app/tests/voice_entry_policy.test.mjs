@@ -27,7 +27,7 @@ assert.match(controlsSource, /data-testid="voice-edit-preview"/, 'voice edit con
 assert.match(controlsSource, /testId = 'composer-voice-button'/, 'composer microphone entry must remain available');
 assert.match(codexSource, /testId="codex-voice-input"/, 'codex composer microphone entry must remain available');
 assert.doesNotMatch(codexSource, /<Paperclip size=\{18\} \/>[\s\S]{0,500}<VoiceComposerButton/, 'codex composer microphone must not stay in the left tool group after attachments');
-assert.match(codexSource, /<VoiceComposerButton[\s\S]*testId="codex-voice-input"[\s\S]*<button onClick=\{send\}/, 'codex composer microphone must render next to the send button');
+assert.match(codexSource, /<VoiceComposerButton[\s\S]*testId="codex-voice-input"[\s\S]*<button onClick=\{\(\) => send\(\)\}/, 'codex composer microphone must render next to a safe send button handler');
 assert.doesNotMatch(chatSource, /data-testid="floating-voice-button"/, 'page-level floating voice entry must not render');
 assert.doesNotMatch(chatSource, /\btabletVoiceMode\b/, 'tablet or touch mode must not enable a separate voice entry');
 assert.doesNotMatch(chatSource, /\bfloatingVoice[A-Z]/, 'floating voice state and refs should stay removed');

@@ -24,6 +24,13 @@ function shouldIgnoreVoiceShortcutEvent(event) {
   return !event || event.repeat || Boolean(event.defaultPrevented);
 }
 
+function isActiveVoiceShortcutStatus(status) {
+  return status === 'requesting_permission'
+    || status === 'recording'
+    || status === 'transcribing'
+    || status === 'postprocessing';
+}
+
 function voiceShortcutActionForKeyDown(event, current) {
   const state = current || {};
   const status = state.status || 'idle';
@@ -31,7 +38,7 @@ function voiceShortcutActionForKeyDown(event, current) {
   const recording = status === 'recording';
 
   if (event && event.key === 'Escape') {
-    return status === 'idle' ? { type: 'none' } : { type: 'cancel' };
+    return isActiveVoiceShortcutStatus(status) ? { type: 'cancel' } : { type: 'none' };
   }
 
   if (isAltSpaceKey(event)) {
@@ -42,6 +49,8 @@ function voiceShortcutActionForKeyDown(event, current) {
     if (!recording) return { type: 'pending_alt' };
     return { type: 'pending_alt' };
   }
+
+  if (state.pendingAlt) return { type: 'clear_pending' };
 
   return { type: 'none' };
 }
@@ -58,6 +67,7 @@ function voiceShortcutActionForKeyUp(event, current) {
 export {
   isAltSpaceKey,
   isPlainAltKey,
+  isActiveVoiceShortcutStatus,
   normalizeVoiceShortcutMode,
   shouldIgnoreVoiceShortcutEvent,
   voiceShortcutActionForKeyDown,

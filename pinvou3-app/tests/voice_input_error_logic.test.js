@@ -126,6 +126,22 @@ assert.strictEqual(
   ruleContext.applyVoiceDeterministicCorrections("嗯，做一张海报，这个海报有长方形，的需要联网下的图片。用于公司的下午茶需要有一些文字的内容。", ""),
   "做一张海报，这个海报是长方形，需要联网下载的图片。用于公司的下午茶需要有一些文字的内容。",
 );
+assert.strictEqual(
+  ruleContext.applyVoiceDeterministicCorrections("帮我调用 more API 文档", ""),
+  "帮我调用 more API 文档",
+);
+assert.strictEqual(
+  ruleContext.applyVoiceDeterministicCorrections("configure API", ""),
+  "configure API",
+);
+assert.strictEqual(
+  ruleContext.applyVoiceDeterministicCorrections("查一下 pinvou 的下载地址", ""),
+  "查一下 pinvou 的下载地址",
+);
+assert.strictEqual(
+  ruleContext.applyVoiceDeterministicCorrections("pin voltage", ""),
+  "pin voltage",
+);
 assert.match(source, /var candidateText = postprocessResult\.text;/);
 assert.doesNotMatch(
   source,
@@ -238,6 +254,21 @@ assert.match(
   routerSource,
   /function triggerVoiceShortcutTarget\(target, actionMode, status, activeMode\) \{[\s\S]*?if \(status === 'recording'\) \{[\s\S]*?target\.trigger\(activeMode \|\| 'dictation', \{ source: 'shortcut-stop', preserveMode: true \}\);/,
   "web voice shortcut stop must preserve the active recording mode instead of re-resolving from draft text",
+);
+assert.match(
+  routerSource,
+  /bridge\.voice\.setVoiceShortcutEnabled\(voiceShortcutEnabled\(\)\)/,
+  "native voice shortcut hook must receive the explicit settings toggle",
+);
+assert.doesNotMatch(
+  routerSource,
+  /voice-shortcut:cancel/,
+  "native voice shortcut router must not listen for stale cancel events after Escape is state-gated in the frontend",
+);
+assert.match(
+  rustShortcutPlatformSource,
+  /static SHORTCUT_ENABLED: AtomicBool = AtomicBool::new\(false\);[\s\S]*?handle_voice_shortcut_key\(&mut state, key, key_down, foreground && shortcut_enabled\(\)\)/,
+  "native voice shortcut hook must default off and gate suppression by the synced settings state",
 );
 assert.match(
   routerSource,

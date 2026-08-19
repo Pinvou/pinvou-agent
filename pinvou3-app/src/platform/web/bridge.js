@@ -7858,6 +7858,13 @@
   function cleanupVoiceInputSession(session) {
     if (!session) return;
     if (session.timeoutId) clearTimeout(session.timeoutId);
+    if (session.permissionTimeoutId) clearTimeout(session.permissionTimeoutId);
+    session.permissionTimeoutId = null;
+    if (session.cancelPermissionRequest) {
+      var cancelPermissionRequest = session.cancelPermissionRequest;
+      session.cancelPermissionRequest = null;
+      try { cancelPermissionRequest(); } catch (_) {}
+    }
     // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
     // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
     // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
@@ -7877,6 +7884,41 @@
     if (ctx && ctx.state !== "closed") {
       setTimeout(function () { try { ctx.close().catch(function () {}); } catch (_) {} }, 0);
     }
+  }
+
+  var VOICE_RECORDING_MAX_DURATION_MS = 60000;
+  var VOICE_DEVICE_REQUEST_TIMEOUT_MS = 8000;
+
+  function requestVoiceMedia(session, constraints, timeoutMs) {
+    var abandoned = false;
+    var mediaPromise = navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
+      if (abandoned || activeVoiceInput !== session) {
+        stopMediaTracks(stream);
+        throw { category: "cancelled", stage: "permission", message: bt("voiceCancelled") };
+      }
+      return stream;
+    });
+    var timeoutPromise = new Promise(function (_, reject) {
+      session.permissionTimeoutId = setTimeout(function () {
+        abandoned = true;
+        reject({
+          category: "device_unavailable",
+          stage: "device",
+          message: bt("voiceDeviceTimeout"),
+        });
+      }, timeoutMs || VOICE_DEVICE_REQUEST_TIMEOUT_MS);
+    });
+    var cancelPromise = new Promise(function (_, reject) {
+      session.cancelPermissionRequest = function () {
+        abandoned = true;
+        reject({ category: "cancelled", stage: "permission", message: bt("voiceCancelled") });
+      };
+    });
+    return Promise.race([mediaPromise, timeoutPromise, cancelPromise]).finally(function () {
+      if (session.permissionTimeoutId) clearTimeout(session.permissionTimeoutId);
+      session.permissionTimeoutId = null;
+      session.cancelPermissionRequest = null;
+    });
   }
 
   function mergeFloatChunks(chunks) {
@@ -8153,7 +8195,7 @@
       if (!AudioCtor) {
         throw { category: "recording_failed", stage: "recording", message: bt("voiceNoAudioRecording") };
       }
-      session.stream = await navigator.mediaDevices.getUserMedia({
+      session.stream = await requestVoiceMedia(session, {
         audio: {
           channelCount: 1,
           echoCancellation: true,
@@ -8184,7 +8226,7 @@
       session.source.connect(session.processor);
       session.processor.connect(session.zeroGain);
       session.zeroGain.connect(session.audioContext.destination);
-      session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
+      session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, VOICE_RECORDING_MAX_DURATION_MS);
       setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording", mode: session.mode });
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
