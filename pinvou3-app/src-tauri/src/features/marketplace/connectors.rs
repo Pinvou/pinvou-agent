@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::platform::paths;
 
@@ -15,15 +16,28 @@ use super::secrets::{is_sensitive_key_name, set_remote_secret_header};
 use super::types::ToolManifest;
 use super::MarketplaceManager;
 
+/// mcp.json 读-改-写的进程内串行化（四轮评审 M-8）：add/remove 是裸读-改-写，
+/// 并发安装/卸载会交错丢更新；与 store.rs 的 BUNDLES_FILE_LOCK 同一范式。
+static MCP_JSON_LOCK: Mutex<()> = Mutex::new(());
+
+pub(super) fn mcp_json_lock() -> MutexGuard<'static, ()> {
+    MCP_JSON_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// 把 JSON 值以 pretty 形式写盘(迁移与 connector 注册共用)。
 /// 写前创建父目录：全新 PINVOU3_HOME 下 `bundle/` 尚不存在，直接写会 ENOENT。
+/// tmp + rename 原子落盘（底座 `write_atomic`，与 store.rs 同一做法）——安装
+/// 中途崩溃不得留下半写的 mcp.json（幽灵 server，四轮评审 M-8）。
 pub(super) fn write_json_pretty(path: &Path, value: &serde_json::Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+    deepseek_tui::utils::write_atomic(path, json.as_bytes())
+        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))
 }
 
 fn default_mcp_json() -> serde_json::Value {
@@ -117,6 +131,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         user_config: &HashMap<String, String>,
         server_dir: &std::path::Path,
     ) -> Result<(), String> {
+        let _guard = mcp_json_lock();
         let mcp_path = paths::mcp_config_path();
         let mut mcp: serde_json::Value = if mcp_path.is_file() {
             let content =
@@ -333,6 +348,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     }
 
     pub(super) fn remove_from_mcp_json(&self, tool_id: &str) -> Result<(), String> {
+        let _guard = mcp_json_lock();
         let mcp_path = paths::mcp_config_path();
         if !mcp_path.is_file() {
             return Ok(());

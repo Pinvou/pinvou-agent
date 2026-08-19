@@ -50,11 +50,6 @@ pub fn bundle_skills_dir() -> PathBuf {
 pub fn bundles_root() -> PathBuf {
     pinvou3_home().join("bundles")
 }
-/// 工作流(Harness Loop)定义目录,跟 `skills/` 并列。
-/// skill = LLM 挂载的标准附件(pinvou-review-*);workflow = harness 读、LLM 不挂载(legacy-ppt-workflow)。
-pub fn bundle_workflow_dir() -> PathBuf {
-    bundle_root().join("workflow")
-}
 pub fn bundle_mcp_json() -> PathBuf {
     bundle_root().join("mcp.json")
 }

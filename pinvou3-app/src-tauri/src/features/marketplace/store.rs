@@ -259,8 +259,10 @@ impl BundleStore {
         save_locked(&self.file, &file)
     }
 
-    /// upsert 变体：记录已存在时保留 `installed_at`（首次登记时间）、`extra`
-    /// （前向兼容/用户字段）与 `content_fingerprint`（完整性校验层的数据），
+    /// upsert 变体：记录已存在时保留 `source`（包来源只在首次登记时确定 —— 重装/
+    /// 重复连接的镜像写一律带 Preset，若覆盖会把 Upload 翻成 Preset，下次卸载
+    /// 误删用户唯一副本，四轮评审 BLOCKER 1）、`installed_at`（首次登记时间）、
+    /// `extra`（前向兼容/用户字段）与 `content_fingerprint`（完整性校验层的数据），
     /// 其余字段以新值为准。安装/连接成功的镜像写统一走这里 —— 重装、重复连接
     /// 不应冲掉首次安装时间，也不应丢老版本二进制不认识的字段。
     pub fn upsert_preserving(&self, record: BundleRecord) -> Result<(), String> {
@@ -269,7 +271,7 @@ impl BundleStore {
         let merged = match file.records.iter().find(|r| r.id == record.id) {
             Some(existing) => BundleRecord {
                 id: record.id,
-                source: record.source,
+                source: existing.source.clone(),
                 installed: record.installed,
                 content_fingerprint: record
                     .content_fingerprint
@@ -965,6 +967,38 @@ mod tests {
             assert_eq!(merged.content_fingerprint, Some("fp-v1".to_string()));
             assert_eq!(merged.credential_keys, vec!["GONGWEN_KEY".to_string()]);
             assert_eq!(store.records().unwrap().len(), 1, "不得产生重复记录");
+        });
+    }
+
+    /// 回归（四轮评审 BLOCKER 1）：既有记录的来源必须保留 —— 上传包重装时
+    /// install 镜像写带的是 Preset，若覆盖 source，下次卸载会把 Upload 误判为
+    /// 可删目录（用户上传内容无其他副本）。source 只在无旧记录时取新值。
+    #[test]
+    fn upsert_preserving_keeps_existing_source() {
+        with_temp_home(|| {
+            let store = BundleStore::new();
+            store
+                .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
+                .unwrap();
+
+            // 重装：镜像写来源是 Preset，既有 Upload 必须保留
+            store
+                .upsert_preserving(record("up", BundleSource::Preset))
+                .unwrap();
+            assert_eq!(
+                store.get("up").unwrap().unwrap().source,
+                BundleSource::Upload("pkg.zip".to_string()),
+                "重装不得把 Upload 来源翻成 Preset"
+            );
+
+            // 无旧记录：取新值（首次登记的语义不变）
+            store
+                .upsert_preserving(record("new-one", BundleSource::Preset))
+                .unwrap();
+            assert_eq!(
+                store.get("new-one").unwrap().unwrap().source,
+                BundleSource::Preset
+            );
         });
     }
 }

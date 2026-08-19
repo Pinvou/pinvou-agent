@@ -273,6 +273,12 @@ fn save_disabled_bundles_file(file: &DisabledBundlesFile) {
 /// 纳入无害（配套技能不在盘上，排除为空操作），且「后才连接」也自动默认关。
 pub fn load_disabled_bundles_for(scope: ConnectorScope) -> Vec<String> {
     let file = load_disabled_bundles_file();
+    resolve_scope_disabled_ids(&file, scope)
+}
+
+/// 已加载文件 → 某 scope 的有效禁用包 id 列表（含 DenyAll 默认兜底）。供
+/// `load_disabled_bundles_for` 与持锁写方（单临界区 RMW）共用，口径一致。
+fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -> Vec<String> {
     let key = scope.as_str();
     if file.initialized.contains(key) {
         return file.scopes.get(key).cloned().unwrap_or_default();
@@ -394,12 +400,26 @@ pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: b
         remove_bundle_from_disabled_scopes(connector_id);
         return;
     }
-    for scope in SessionMode::ALL {
-        let mut ids = load_disabled_bundles_for(*scope);
-        if !ids.iter().any(|id| id == connector_id) {
-            ids.push(connector_id.to_string());
-            save_disabled_bundles_for(*scope, &ids);
+    // 单临界区 RMW（四轮评审 M-6b）：逐 scope 独立 load→save 两次加锁会在跨临界区
+    // 窗口丢并发写（lost-update），与文件内其它写方同范式——持锁读 → 改 → 一次落盘。
+    let _guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = load_disabled_bundles_file_locked();
+    let mut changed = false;
+    for mode in SessionMode::ALL {
+        let mut ids = resolve_scope_disabled_ids(&file, *mode);
+        if ids.iter().any(|id| id == connector_id) {
+            continue;
         }
+        ids.push(connector_id.to_string());
+        let key = mode.as_str().to_string();
+        file.scopes.insert(key.clone(), ids);
+        file.initialized.insert(key);
+        changed = true;
+    }
+    if changed {
+        save_disabled_bundles_file(&file);
     }
 }
 

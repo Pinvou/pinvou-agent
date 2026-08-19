@@ -109,6 +109,8 @@ pub fn disabled_tool_names_for(scope: ConnectorScope) -> Vec<String> {
 /// 文件（mcp.json）。按 mcp.json 的 server 键（= 工具 id）逐条重写，覆盖内嵌预设
 /// 与自定义/手放 MCP（不再只遍历内嵌清单）。返回是否有改动（供启动标记观测）。
 pub fn migrate_mcp_json_paths() -> Result<bool, String> {
+    // 与其他 mcp.json 写方（add/remove_to_mcp_json）同一把进程内锁串行化（M-8）。
+    let _guard = connectors::mcp_json_lock();
     let mcp_path = paths::mcp_config_path();
     if !mcp_path.is_file() {
         return Ok(false);
@@ -340,14 +342,21 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         tool_id: &str,
         user_config: &std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
-        self.install_inner(tool_id, user_config, true)
+        self.install_inner(tool_id, user_config, true, store::BundleSource::Preset)
     }
 
     /// 上传/导入包的 MCP 供给（plugin_import 统一上传路径）：与 `install` 同一管线，
     /// 但不自动执行 pip install —— 上传 manifest 声明的 `pip_dependencies` 未经白名单
     /// 与用户确认（供应链安全），非空时只在日志明确提示需用户自行安装。
-    pub(crate) fn install_upload(&self, tool_id: &str) -> Result<(), String> {
-        self.install_inner(tool_id, &std::collections::HashMap::new(), false)
+    /// `source` 即上传来源（`Upload(zip 展示名)`）：镜像写必须直接带正确来源，
+    /// 不能依赖调用方事后补写（补写仅 log::warn，失败会让 source 停在 Preset，
+    /// 下次卸载误删用户唯一副本 —— 四轮评审 BLOCKER 1）。
+    pub(crate) fn install_upload(
+        &self,
+        tool_id: &str,
+        source: store::BundleSource,
+    ) -> Result<(), String> {
+        self.install_inner(tool_id, &std::collections::HashMap::new(), false, source)
     }
 
     fn install_inner(
@@ -355,6 +364,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         tool_id: &str,
         user_config: &std::collections::HashMap<String, String>,
         pip_auto_install: bool,
+        source: store::BundleSource,
     ) -> Result<(), String> {
         self.migrate_mcp_plaintext_secrets()?;
         let manifest = self
@@ -390,7 +400,33 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
         // 镜像写入统一真相源 bundles.json（Phase 2 过渡期：installed.json / mcp.json
         // 仍是权威，bundles.json 只镜像安装态；镜像写失败不翻盘主操作，fail loud 到日志）。
-        let mut record = store::BundleRecord::installed_now(tool_id, store::BundleSource::Preset);
+        // 来源订正（四轮评审 BLOCKER 1）：卸载 Upload 包只清登记、保留目录（用户唯一
+        // 副本），卡片重现后用户经普通 `install` 重装时 store 已无旧记录可依（既有
+        // 记录的保护由 upsert_preserving 承担）。预置包 release 只写 mcp/ 子目录，
+        // `bundles/<id>/plugin.json` 仅由统一上传管线落盘 —— 据此把盘上上传包的
+        // 来源订正为 Upload，避免误标 Preset 导致下次卸载删除目录。
+        let source = if matches!(source, store::BundleSource::Preset)
+            && paths::bundles_root()
+                .join(tool_id)
+                .join("plugin.json")
+                .is_file()
+        {
+            let display =
+                std::fs::read_to_string(paths::bundles_root().join(tool_id).join("plugin.json"))
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|v| {
+                        v.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| tool_id.to_string());
+            store::BundleSource::Upload(display)
+        } else {
+            source
+        };
+        let mut record = store::BundleRecord::installed_now(tool_id, source);
         record.credential_keys = bundle::tool_credentials(&manifest)
             .into_iter()
             .map(|c| c.key)
@@ -527,7 +563,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     // --- internal ---
 
-    fn load_manifest(&self, tool_id: &str) -> Option<ToolManifest> {
+    pub(crate) fn load_manifest(&self, tool_id: &str) -> Option<ToolManifest> {
         // 新布局优先（上传包/解压包落盘 `bundles/<id>/mcp/manifest.json`）；
         // 内嵌预设回退到编译期 catalog。旧布局 `bundle/mcp-servers/` 已退役，不再回退读取。
         let new_path = mcp_catalog::package_mcp_dir(tool_id).join("manifest.json");
@@ -1877,6 +1913,72 @@ mod tests {
         });
     }
 
+    /// 回归（四轮评审 BLOCKER 1，完整数据丢失链）：上传 MCP 包 → 卸载（Upload
+    /// 保护生效、目录保留）→ 卡片重现 → 用户经普通 install 重装 → 再卸载，
+    /// 目录仍必须保留。修复分两层：install_upload 镜像写直接带 Upload 来源；
+    /// 卸载清登记后重装无旧记录可依，install 按盘上 plugin.json 标记（仅统一
+    /// 上传管线落盘，预置 release 只写 mcp/ 子目录）订正为 Upload。此前任一层
+    /// 失守都会把 source 停在 Preset，再卸载时整目录被删（用户上传内容无其他
+    /// 副本）。
+    #[test]
+    fn reinstall_upload_package_then_uninstall_still_keeps_dir() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "up-re",
+                r#"{
+                    "id":"up-re","name":"Up","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"]
+                }"#,
+            );
+            // 统一上传管线总会落盘 plugin.json（原声明或派生副本）
+            std::fs::write(
+                crate::platform::paths::bundles_root()
+                    .join("up-re")
+                    .join("plugin.json"),
+                r#"{"manifest_version":1,"id":"up-re","name":"Up"}"#,
+            )
+            .unwrap();
+            let mgr = MarketplaceManager::new();
+            mgr.install_upload("up-re", store::BundleSource::Upload("pkg.zip".to_string()))
+                .unwrap();
+            assert_eq!(
+                store::BundleStore::new()
+                    .get("up-re")
+                    .unwrap()
+                    .unwrap()
+                    .source,
+                store::BundleSource::Upload("pkg.zip".to_string()),
+                "上传供给的镜像写应直接带 Upload 来源"
+            );
+
+            // 卸载：Upload 保护生效，目录保留、登记清除
+            mgr.uninstall("up-re").unwrap();
+            let manifest_path = crate::platform::paths::bundles_root()
+                .join("up-re")
+                .join("mcp")
+                .join("manifest.json");
+            assert!(manifest_path.is_file(), "Upload 卸载后目录应保留");
+
+            // 卡片重现 → 用户重装走普通 install（store 已无旧记录可保留）
+            mgr.install("up-re", &std::collections::HashMap::new())
+                .unwrap();
+            assert!(
+                matches!(
+                    store::BundleStore::new()
+                        .get("up-re")
+                        .unwrap()
+                        .unwrap()
+                        .source,
+                    store::BundleSource::Upload(_)
+                ),
+                "重装应按盘上 plugin.json 标记订正为 Upload"
+            );
+
+            mgr.uninstall("up-re").unwrap();
+            assert!(manifest_path.is_file(), "Upload 包重装后再卸载仍应保留目录");
+        });
+    }
+
     /// 上传/导入路径禁用 pip 自动安装（供应链安全）：`install_upload` 遇非空
     /// `pip_dependencies` 不执行 pip install（若执行，不存在的包名会让安装失败），
     /// 只提示用户自行安装，供给照常完成。
@@ -1893,7 +1995,11 @@ mod tests {
             );
             let mgr = MarketplaceManager::new();
 
-            mgr.install_upload("up-pip").unwrap();
+            mgr.install_upload(
+                "up-pip",
+                store::BundleSource::Upload("up-pip.zip".to_string()),
+            )
+            .unwrap();
 
             let mcp = read_mcp_json();
             assert!(

@@ -122,11 +122,12 @@ pub(crate) fn cli_bundle_of_skill(skill_dir: &str) -> Option<&'static str> {
 
 /// 技能目录名 → 所属包 id（物理布局归属，§4「一个包 = 一个目录 = 一个属主」）。
 ///
-/// **无条件映射**：与安装态无关——V5 条件认领是查询层视图语义（list_bundles
-/// 按安装态决定是否把 companion 技能并进包卡），物理存储需要稳定属主，否则
-/// 装卸会让目录来回搬家。推导口径与注册表同源：ima 认领 ima-skills（同
+/// **条件认领**（与 list_bundles 的 V5 决策一致）：ima 认领 ima-skills（同
 /// list_bundles 的 skill_claimed 预置）→ CLI 内置清单 → MCP manifest
-/// companion_skills → 独立成包（owner = 技能名自身）。
+/// companion_skills（仅当所属 MCP 包当前已装才归 MCP；未装时技能保留独立
+/// 纯技能包形态，owner = 技能名自身）→ 独立成包。迁移层
+/// （`skill_marketplace::legacy_companion_owners`）按同一条件口径推导，
+/// 两侧不得分叉（四轮评审 M-7）。
 pub(crate) fn skill_owner_package(skill_name: &str) -> String {
     if skill_name == "ima-skills" {
         return "ima".to_string();
@@ -151,7 +152,7 @@ pub(crate) fn skill_owner_package(skill_name: &str) -> String {
 
 /// 包是否已安装：BundleStore 记录优先；store 不可读时回退 installed.json——
 /// 与 `list_bundles` 的 V5 认领判定同口径（Phase 2 过渡期 installed.json 仍权威）。
-fn bundle_installed(id: &str) -> bool {
+pub(crate) fn bundle_installed(id: &str) -> bool {
     match super::store::BundleStore::new().records() {
         Ok(records) => records.iter().any(|r| r.id == id && r.installed),
         Err(_) => MarketplaceManager::new()

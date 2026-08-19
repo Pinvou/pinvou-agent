@@ -473,7 +473,8 @@ impl SkillMarketplaceManager {
         let file = std::fs::File::open(zip_path).map_err(|e| format!("打开 zip: {e}"))?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip: {e}"))?;
 
-        // pass1:逐 entry 安全校验 + 累计大小 + 找最优 SKILL.md(定 skill_root)。
+        // pass1:逐 entry 安全校验 + 累计头部声明大小（真实解压字节由 pass2 兜底
+        // 计量，声明可被伪造）+ 找最优 SKILL.md(定 skill_root)。
         let mut best: Option<(usize, String)> = None; // (rank, skill_root)
         let mut total: u64 = 0;
         for i in 0..archive.len() {
@@ -546,6 +547,10 @@ impl SkillMarketplaceManager {
         };
 
         let result = (|| -> Result<String, String> {
+            // 实际写盘字节计量：pass1 只累计 zip 头部声明 size，可被伪造（声明很小、
+            // 真实解压很大的 zip bomb）。按 read_to_end 的真实字节兜底，口径与
+            // plugin_import 一致（四轮评审 M-4）。超限由外层清 staged 拒收。
+            let mut actual_total: u64 = 0;
             for i in 0..archive.len() {
                 let mut entry = archive
                     .by_index(i)
@@ -584,6 +589,13 @@ impl SkillMarketplaceManager {
                 entry
                     .read_to_end(&mut buf)
                     .map_err(|e| format!("读条目: {e}"))?;
+                actual_total = actual_total.saturating_add(buf.len() as u64);
+                if actual_total > MAX_SKILL_SIZE_BYTES {
+                    return Err(format!(
+                        "技能包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
+                        MAX_SKILL_SIZE_BYTES / 1024 / 1024
+                    ));
+                }
                 std::fs::write(&target, buf).map_err(|e| format!("写文件: {e}"))?;
             }
             dir_fingerprint(&staged).map_err(|e| format!("计算内容指纹: {e}"))
@@ -630,11 +642,13 @@ impl SkillMarketplaceManager {
         let Ok(rd) = std::fs::read_dir(&self.legacy_skills_dir) else {
             return report;
         };
-        // 迁移期 companion 归属兜底：技能迁移早于自定义 MCP 布局迁移（extraction
-        // 顺序：import_legacy → 技能迁移 → migrate_custom_mcp_layout），此时
-        // `available_tools` 还看不到 `bundle/mcp-servers/` 下的自定义 MCP manifest，
-        // companion 声明需直接从旧目录现算，否则 companion 技能会被错迁为独立包
-        // （owner = 技能名自身），与「companion 物理归属所属包目录」的设计意图相悖。
+        // 迁移期 companion 归属兜底：extraction 顺序为 import_legacy →
+        // migrate_custom_mcp_layout → 技能迁移（M-7），正常路径下自定义 MCP 已搬到
+        // 新布局，`available_tools` 能读到其 manifest 的 companion_skills 声明，
+        // `skill_owner_package` 直接条件认领；仅当自定义 MCP 迁移被门控跳过（明文
+        // 密钥迁移失败）时旧布局仍在，companion 声明需从旧目录现算。映射本身是
+        // 条件认领（MCP 已装才归 MCP，未装则技能独立成包），与查询层
+        // `skill_owner_package` 同口径（M-7）。
         let legacy_companions = legacy_companion_owners();
         for entry in rd.flatten() {
             let dir = entry.path();
@@ -689,9 +703,10 @@ impl SkillMarketplaceManager {
     }
 
     /// 迁移目标目录：`bundles/<owner>/skills/<skill-name>`。属主推导复用
-    /// `bundle::skill_owner_package`；推导结果为「独立成包」（owner = 技能名自身）
-    /// 时回退查迁移期的旧布局 companion 映射（自定义 MCP 此刻尚未搬到新布局，
-    /// 见 `migrate_flat_skills_layout` 注释）。
+    /// `bundle::skill_owner_package`（条件认领）；推导结果为「独立成包」（owner =
+    /// 技能名自身）时回退查迁移期的旧布局 companion 映射（同样条件口径：所属
+    /// MCP 已装才归 MCP；仅自定义 MCP 迁移被门控跳过时才用得到，见
+    /// `migrate_flat_skills_layout` 注释）。
     fn migration_skill_dir(
         &self,
         skill_name: &str,
@@ -761,10 +776,16 @@ pub struct SkillsMigrationReport {
 
 /// 迁移期 companion 归属映射：扫描旧布局 `bundle/mcp-servers/<id>/manifest.json`
 /// 的 `companion_skills` 声明，产出 技能名 → 所属 MCP 包 id。仅供
-/// `migrate_flat_skills_layout` 使用——技能迁移先于自定义 MCP 布局迁移执行，
-/// 此刻 `available_tools` 尚看不到旧目录下的自定义 MCP（旧布局在查询层已退役，
-/// 不回退读取）。manifest 缺失/损坏的目录跳过（其技能按独立包迁移，下个启动
-/// 周期自愈）。
+/// `migrate_flat_skills_layout` 使用——正常路径下自定义 MCP 已先于技能迁移搬到
+/// 新布局（extraction：import_legacy → migrate_custom_mcp_layout → 技能迁移），
+/// `available_tools` 可直接读到 companion 声明；本函数只兜底自定义 MCP 迁移被
+/// 门控跳过（明文密钥迁移失败，旧布局仍在）的异常路径。manifest 缺失/损坏的目录
+/// 跳过（其技能按独立包迁移，下个启动周期自愈）。
+///
+/// **条件认领**（四轮评审 M-7，与查询层 `skill_owner_package` 的 V5 口径一致）：
+/// 所属 MCP 包当前已装才归 MCP；未装时技能按独立包迁移（owner = 技能名自身）。
+/// 否则 companion 单装（MCP 未装）会被迁进未装包的目录，UI 恒显未装、卸载失联。
+/// 安装态读 BundleStore——启动序列里 import_legacy 先于技能迁移跑完，安装态可读。
 fn legacy_companion_owners() -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     let Ok(rd) = std::fs::read_dir(paths::bundle_mcp_servers_dir()) else {
@@ -778,6 +799,9 @@ fn legacy_companion_owners() -> std::collections::HashMap<String, String> {
         let Ok(manifest) = serde_json::from_str::<super::types::ToolManifest>(&content) else {
             continue;
         };
+        if !super::bundle::bundle_installed(&manifest.id) {
+            continue;
+        }
         for skill in &manifest.companion_skills {
             map.insert(skill.clone(), manifest.id.clone());
         }
@@ -1611,7 +1635,9 @@ mod tests {
     }
 
     /// 旧扁平布局 → 按包聚合迁移：四个分支（纯技能 / MCP companion / CLI companion /
-    /// 上传）+ 内置技能不动 + 预置指纹补写 + 幂等。
+    /// 上传）+ 内置技能不动 + 预置指纹补写 + 幂等。companion 归属是条件认领（M-7）：
+    /// 所属 MCP 已装（installed.json → import_legacy 登记）才归 MCP 包目录；未装的
+    /// MCP companion 按独立包迁移。
     #[test]
     fn migrate_flat_skills_layout_covers_all_branches() {
         with_temp_home(|| {
@@ -1622,10 +1648,18 @@ mod tests {
                 std::fs::create_dir_all(p.parent().unwrap()).unwrap();
                 std::fs::write(p, content).unwrap();
             };
-            // gongwen manifest 声明 companion（companion 分支的归属依据）
+            // gongwen 已装（installed.json → import_legacy 登记），manifest 声明
+            // companion（companion 归 MCP 分支的归属依据）
+            seed("marketplace/installed.json", r#"["gongwen"]"#);
             seed(
                 "bundle/mcp-servers/gongwen/manifest.json",
                 r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":[],"command":"","args":[],"companion_skills":["government-writing"]}"#,
+            );
+            // ghost 未装（仅旧布局 manifest 声明 companion）→ 条件认领不成立，
+            // 其 companion 应按独立包迁移
+            seed(
+                "bundle/mcp-servers/ghost/manifest.json",
+                r#"{"id":"ghost","name":"未装","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":[],"command":"","args":[],"companion_skills":["ghost-helper"]}"#,
             );
             // 纯技能（无包认领）
             seed(
@@ -1636,7 +1670,7 @@ mod tests {
                 "bundle/skills/visualizer/.installed-from",
                 "pinvou3-marketplace:visualizer",
             );
-            // MCP companion
+            // MCP companion（所属包已装）
             seed(
                 "bundle/skills/government-writing/SKILL.md",
                 "---\nname: government-writing\n---\n",
@@ -1644,6 +1678,15 @@ mod tests {
             seed(
                 "bundle/skills/government-writing/.installed-from",
                 "pinvou3-marketplace:government-writing",
+            );
+            // MCP companion（所属包未装 → 独立成包）
+            seed(
+                "bundle/skills/ghost-helper/SKILL.md",
+                "---\nname: ghost-helper\n---\n",
+            );
+            seed(
+                "bundle/skills/ghost-helper/.installed-from",
+                "pinvou3-marketplace:ghost-helper",
             );
             // 上传技能
             seed(
@@ -1677,7 +1720,16 @@ mod tests {
             assert!(
                 home.join("bundles/gongwen/skills/government-writing/SKILL.md")
                     .is_file(),
-                "companion → 所属 MCP 包目录"
+                "companion（MCP 已装）→ 所属 MCP 包目录"
+            );
+            assert!(
+                home.join("bundles/ghost-helper/skills/ghost-helper/SKILL.md")
+                    .is_file(),
+                "companion（MCP 未装）→ 独立包目录（条件认领，M-7）"
+            );
+            assert!(
+                !home.join("bundles/ghost").exists(),
+                "未装 MCP 不应因 companion 迁移而空建包目录"
             );
             assert!(
                 home.join("bundles/feishu/skills/lark-shared/SKILL.md")
@@ -1694,7 +1746,7 @@ mod tests {
                 "内置技能不动"
             );
             assert!(!legacy.join("visualizer").exists(), "旧位置已搬空");
-            assert!(report.moved.len() == 4, "应移动 4 个: {report:?}");
+            assert!(report.moved.len() == 5, "应移动 5 个: {report:?}");
             assert!(report.kept.contains(&"visual-design".to_string()));
 
             // 预置指纹补写（update_available 比对基准）

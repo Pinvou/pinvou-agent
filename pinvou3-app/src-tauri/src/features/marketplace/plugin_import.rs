@@ -2,7 +2,7 @@
 // PermissionDenied 重试（杀软/索引器瞬时占用新建目录句柄致 rename os error 5，
 // 实测命中）；Unix 上该错误是真实权限问题不应重试。平台分流仅这一个布尔判断，
 // 下沉 platform 适配层得不偿失；重试路径由 reimport_same_plugin_package_is_allowed
-// 与并发全套测试覆盖。
+// 覆盖，并发互斥由 concurrent_same_id_import_is_serialized 覆盖。
 //! 插件包统一导入：mcp / skill / 组合包 + 图标落盘（plugin-protocol.md）。
 //!
 //! 统一上传路径：用户上传一个 zip，无论内容是哪种能力类型（MCP server、skill、
@@ -214,6 +214,45 @@ fn json_bytes_semantic_eq(disk_path: &std::path::Path, incoming: &[u8]) -> bool 
     }
 }
 
+/// 有界读取 zip 条目到内存（四轮评审 M-5）：`take(声明 size + 1)` 截断底层流——
+/// 伪造 `size=0` 头部的条目在不受限 `read_to_end` 下会绕过声明预算先撑爆内存；
+/// 多读 1 字节用于发现「实际 > 声明」的伪造头部并响亮拒收（zip 规范要求解压
+/// 大小等于头部声明，诚实的条目不会触发）。
+fn read_zip_entry_bounded(
+    entry: &mut impl std::io::Read,
+    declared_size: u64,
+    what: &str,
+) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    entry
+        .take(declared_size.saturating_add(1))
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("读{what}: {e}"))?;
+    if buf.len() as u64 > declared_size {
+        return Err(format!(
+            "{what} 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝"
+        ));
+    }
+    Ok(buf)
+}
+
+/// 进程内导入互斥锁表（按包 id，四轮评审 M-4）：同一包 id 的并发导入共享
+/// staged 路径 `bundles/<id>.tmp` 与 `.old` 备份（线程 B 可删线程 A 的在建目录），
+/// 且 same_package_content 冲突检查与原子 rename 之间无锁即 TOCTOU——必须由调用方
+/// 持锁覆盖「冲突检查 → 原子 rename 完成」整段临界区。不同包 id 持不同锁，互不阻塞。
+fn import_lock_for(id: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let table = LOCKS.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    table
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(id.to_string())
+        .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
+        .clone()
+}
+
 /// 插件导入报告（统一上传路径的返回）。
 #[derive(Debug, Clone)]
 pub struct PluginImportReport {
@@ -262,13 +301,43 @@ fn detect_components(
         if let Some(comps) = &m.components {
             for c in &comps.mcp_servers {
                 let dir = c.dir.trim_end_matches('/');
+                // 强制规范 dir（四轮评审 M-3）：放行任意 dir 时落盘只认 mcp//skills/
+                // 前缀，声明组件会被静默丢弃（登记 installed=true 但磁盘无文件）。
+                if dir != "mcp" {
+                    return Err(format!(
+                        "mcp 组件 '{}' 的 dir '{dir}' 非规范：MCP 组件必须使用规范化目录 'mcp'",
+                        c.id
+                    ));
+                }
                 if !all_paths.iter().any(|p| p.starts_with(&format!("{dir}/"))) {
                     return Err(format!("mcp 组件目录 '{dir}' 不存在"));
+                }
+                // 交叉校验（四轮评审 M-9）：组件声明 id 必须与 mcp/manifest.json 的
+                // ToolManifest.id 一致 —— 不一致时 installed.json/bundles.json 记
+                // 包 id、mcp.json 键却取 manifest.id，卸载只按包 id 清理，残留
+                // 孤儿 server。
+                let Some(bytes) = mcp_manifest_bytes.as_deref() else {
+                    return Err(format!("mcp 组件目录 '{dir}' 缺 manifest.json"));
+                };
+                let tm: crate::features::marketplace::ToolManifest = serde_json::from_slice(bytes)
+                    .map_err(|e| format!("解析 {dir}/manifest.json 失败: {e}"))?;
+                if tm.id != c.id {
+                    return Err(format!(
+                        "mcp 组件声明 id '{}' 与 {dir}/manifest.json 的 id '{}' 不一致",
+                        c.id, tm.id
+                    ));
                 }
                 mcp.push(c.id.clone());
             }
             for c in &comps.skills {
                 let dir = c.dir.trim_end_matches('/');
+                let canonical = format!("skills/{}", c.id);
+                if dir != canonical {
+                    return Err(format!(
+                        "技能组件 '{}' 的 dir '{dir}' 非规范：技能组件必须使用规范化目录 '{canonical}'",
+                        c.id
+                    ));
+                }
                 if !all_paths.iter().any(|p| p == &format!("{dir}/SKILL.md")) {
                     return Err(format!("技能组件目录 '{dir}' 缺 SKILL.md"));
                 }
@@ -501,10 +570,8 @@ pub fn import_plugin_package(
         all_paths.push(path_str.clone());
         // 任一`read_to_end` 后同步累计 actual_total（zip 头声明可能与真实大小不符）
         if path_str == "plugin.json" {
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| format!("读 plugin.json: {e}"))?;
+            let declared_size = entry.size();
+            let buf = read_zip_entry_bounded(&mut entry, declared_size, "plugin.json")?;
             actual_total = actual_total.saturating_add(buf.len() as u64);
             if actual_total > MAX_PLUGIN_SIZE_BYTES {
                 return Err(format!(
@@ -514,10 +581,8 @@ pub fn import_plugin_package(
             }
             manifest_bytes = Some(buf);
         } else if path_str == "mcp/manifest.json" {
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| format!("读 mcp/manifest.json: {e}"))?;
+            let declared_size = entry.size();
+            let buf = read_zip_entry_bounded(&mut entry, declared_size, "mcp/manifest.json")?;
             actual_total = actual_total.saturating_add(buf.len() as u64);
             if actual_total > MAX_PLUGIN_SIZE_BYTES {
                 return Err(format!(
@@ -527,10 +592,8 @@ pub fn import_plugin_package(
             }
             mcp_manifest_bytes = Some(buf);
         } else if (path_str == "icon.svg" || path_str == "icon.png") && icon_entry.is_none() {
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| format!("读图标: {e}"))?;
+            let declared_size = entry.size();
+            let buf = read_zip_entry_bounded(&mut entry, declared_size, "图标")?;
             actual_total = actual_total.saturating_add(buf.len() as u64);
             if actual_total > MAX_PLUGIN_SIZE_BYTES {
                 return Err(format!(
@@ -550,10 +613,8 @@ pub fn import_plugin_package(
                     .unwrap_or(false),
             };
             if better {
-                let mut buf = Vec::new();
-                entry
-                    .read_to_end(&mut buf)
-                    .map_err(|e| format!("读 SKILL.md: {e}"))?;
+                let declared_size = entry.size();
+                let buf = read_zip_entry_bounded(&mut entry, declared_size, "SKILL.md")?;
                 actual_total = actual_total.saturating_add(buf.len() as u64);
                 if actual_total > MAX_PLUGIN_SIZE_BYTES {
                     return Err(format!(
@@ -569,10 +630,8 @@ pub fn import_plugin_package(
             && path_str != "mcp/manifest.json"
             && path_str != "plugin.json"
         {
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| format!("读 manifest.json: {e}"))?;
+            let declared_size = entry.size();
+            let buf = read_zip_entry_bounded(&mut entry, declared_size, "manifest.json")?;
             actual_total = actual_total.saturating_add(buf.len() as u64);
             if actual_total > MAX_PLUGIN_SIZE_BYTES {
                 return Err(format!(
@@ -640,15 +699,26 @@ pub fn import_plugin_package(
     }
     // 技能组件一致性（plugin-package-spec §8 承诺的导入校验）：组件 id 必须与
     // SKILL.md frontmatter 的 `name` 一致——不一致会被注册表当两套技能处理。
+    // 必读必验（四轮评审 M-3）：SKILL.md 缺失或读取失败一律响亮拒收，不再
+    // continue 跳过（否则纯技能包可能登记 installed=true 但磁盘无技能文件）。
     for skill_name in &skills {
-        let rel = format!("skills/{skill_name}/SKILL.md");
-        let mut buf = Vec::new();
-        let Ok(mut entry) = archive.by_name(&rel) else {
-            continue; // 组件目录存在性在 detect_components 已校验
+        // 裸技能回退包的 SKILL.md 在 zip 原始位置（detect 已确认其存在并解析出
+        // frontmatter name），其余组件一律在规范化 `skills/<name>/` 下。
+        let rel = match &det.bare_skill {
+            Some((root, name)) if name == skill_name => {
+                if root.is_empty() {
+                    "SKILL.md".to_string()
+                } else {
+                    format!("{root}/SKILL.md")
+                }
+            }
+            _ => format!("skills/{skill_name}/SKILL.md"),
         };
-        if entry.read_to_end(&mut buf).is_err() {
-            continue;
-        }
+        let mut entry = archive
+            .by_name(&rel)
+            .map_err(|e| format!("技能 '{skill_name}' 的 {rel} 缺失或不可读，拒收: {e}"))?;
+        let declared_size = entry.size();
+        let buf = read_zip_entry_bounded(&mut entry, declared_size, &rel)?;
         if let Some(fm_name) =
             crate::features::marketplace::skill_marketplace::read_skill_name_from_str(
                 std::str::from_utf8(&buf).unwrap_or(""),
@@ -680,6 +750,11 @@ pub fn import_plugin_package(
                 .map(|(_, b)| b.as_slice())
         })
     });
+    // 进程内导入互斥（四轮评审 M-4）：同 id 并发导入共享 staged `.tmp` 与 `.old`
+    // 备份路径，且冲突检查与原子 rename 之间无锁即 TOCTOU——持锁覆盖「冲突检查
+    // → 原子 rename 完成」整段临界区（guard 至函数尾生效，详见 import_lock_for）。
+    let import_lock = import_lock_for(&id);
+    let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
     // 重导/升级，允许走原子替换。
@@ -726,10 +801,9 @@ pub fn import_plugin_package(
             let mut entry = archive
                 .by_name(path_str)
                 .map_err(|e| format!("读条目 {path_str}: {e}"))?;
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| format!("读条目: {e}"))?;
+            let declared_size = entry.size();
+            let buf =
+                read_zip_entry_bounded(&mut entry, declared_size, &format!("条目 {path_str}"))?;
             // 实际写盘计量：pass1 的头部声明预算可被伪造，这里按真实读出字节累计
             // （zip bomb 兜底，二轮评审 M-4）。超限由调用方清 staged 拒收。
             actual_total = actual_total.saturating_add(buf.len() as u64);
@@ -770,9 +844,8 @@ pub fn import_plugin_package(
             for p in &all_paths {
                 if *p == declared && is_supported_icon(&declared) {
                     let mut e = archive.by_name(p).map_err(|e| format!("读图标: {e}"))?;
-                    let mut buf = Vec::new();
-                    e.read_to_end(&mut buf)
-                        .map_err(|e| format!("读图标: {e}"))?;
+                    let declared_size = e.size();
+                    let buf = read_zip_entry_bounded(&mut e, declared_size, "图标")?;
                     write_icon_bytes(&staged, &declared, &buf)?;
                     found = true;
                     break;
@@ -823,9 +896,15 @@ pub fn import_plugin_package(
     // 注：旧 spanner 供给路径已删除；skill 包无可执行供给（tools[]/runtime 协议
     // 为 RFC 草案，执行通路未实施）。
     // 上传包走 `install_upload`：pip_dependencies 不自动 pip install（供应链安全），
-    // 非空时只在日志提示用户自行安装。
+    // 非空时只在日志提示用户自行安装。Upload 来源随供给的镜像写一并登记（而不是
+    // 靠下方补写订正）——补写失败仅 log::warn，若 source 在补写前停在 Preset，
+    // 下次卸载会误删用户唯一副本（四轮评审 BLOCKER 1）。
+    let mgr = super::MarketplaceManager::new();
     if !mcp_servers.is_empty() {
-        if let Err(e) = super::MarketplaceManager::new().install_upload(&id) {
+        if let Err(e) = mgr.install_upload(
+            &id,
+            super::store::BundleSource::Upload(display_name.to_string()),
+        ) {
             return Err(format!("MCP 供给失败（{id}）: {e}"));
         }
     }
@@ -840,6 +919,14 @@ pub fn import_plugin_package(
         id.clone(),
         super::store::BundleSource::Upload(display_name.to_string()),
     );
+    // upsert_preserving 的 credential_keys 取新值：供给的镜像写（install_upload）
+    // 已从 manifest 收敛凭据 key，这里必须带上同一份，否则补写会把它们冲成空表。
+    if let Some(manifest) = mgr.load_manifest(&id) {
+        record.credential_keys = super::bundle::tool_credentials(&manifest)
+            .into_iter()
+            .map(|c| c.key)
+            .collect();
+    }
     // 真实内容指纹（与 mcp_catalog 释放/技能 install 同一 dir_fingerprint 口径；
     // 计算失败不留假指纹，降级为 None）。
     record.content_fingerprint = match super::skill_marketplace::dir_fingerprint(&pkg_dir) {
@@ -1021,6 +1108,17 @@ mod tests {
         assert!(
             mcp_raw.contains("\"demo\""),
             "mcp.json 应含 demo server 供给，实际: {mcp_raw}"
+        );
+        // 导入登记的来源必须是 Upload（zip 展示名）—— 若停在 Preset，卸载会误删
+        // 用户唯一副本（四轮评审 BLOCKER 1）。
+        let record = crate::features::marketplace::store::BundleStore::new()
+            .get("demo")
+            .unwrap()
+            .expect("demo 应登记");
+        assert_eq!(
+            record.source,
+            crate::features::marketplace::store::BundleSource::Upload("combo.zip".to_string()),
+            "上传包登记来源应为 Upload"
         );
 
         match prev {
@@ -1268,6 +1366,225 @@ mod tests {
         assert!(
             mcp_raw.contains("\"wcalc\""),
             "mcp.json 应含 wcalc server 供给，实际: {mcp_raw}"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 非规范组件 dir 拒收（四轮评审 M-3）：detect 此前放行任意 dir，而落盘只认
+    /// mcp/、skills/ 前缀 → 声明组件被静默丢弃（登记 installed=true 但磁盘无文件）。
+    /// 现在 detect 强制 skill 组件 dir == `skills/<id>`、MCP 组件 dir == `mcp`。
+    #[test]
+    fn non_canonical_component_dir_is_rejected() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-noncanon-dir-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        // 非规范 skill dir：声明 dir="my-skill"（zip 内确有 my-skill/SKILL.md，
+        // 旧逻辑 detect 放行、落盘静默丢弃）。
+        let zip_path = dir.join("skill.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("plugin.json", opts).unwrap();
+            zw.write_all(
+                r#"{"manifest_version":1,"id":"demo","name":"d","components":{"skills":[{"id":"demo","dir":"my-skill"}]}}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("my-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
+            zw.finish().unwrap();
+        }
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "skill.zip").unwrap_err();
+        assert!(
+            err.contains("非规范"),
+            "非规范 skill dir 应拒收，实际: {err}"
+        );
+        assert!(
+            !dir.join("bundles").join("demo").exists(),
+            "拒收后不得残留包目录"
+        );
+
+        // 非规范 mcp dir：声明 dir="server"。
+        let zip_path = dir.join("mcp.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("plugin.json", opts).unwrap();
+            zw.write_all(
+                r#"{"manifest_version":1,"id":"demo","name":"d","components":{"mcp_servers":[{"id":"demo","dir":"server"}]}}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("server/manifest.json", opts).unwrap();
+            zw.write_all(
+                r#"{"id":"demo","name":"d","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.finish().unwrap();
+        }
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "mcp.zip").unwrap_err();
+        assert!(err.contains("非规范"), "非规范 mcp dir 应拒收，实际: {err}");
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 并发互斥（四轮评审 M-4）：两线程同时导入同 id 同内容包，按 id 的进程内
+    /// 互斥锁必须保证双方成功且落盘完整、无 staged/.old 残留（修复前线程 B 的
+    /// `remove_dir_all(staged)` 可删线程 A 的在建目录，冲突检查与 rename 间为
+    /// TOCTOU）。
+    #[test]
+    fn concurrent_same_id_import_is_serialized() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-concurrent-import-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let zip_path = dir.join("combo.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("plugin.json", opts).unwrap();
+            zw.write_all(
+                r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("mcp/manifest.json", opts).unwrap();
+            zw.write_all(
+                r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("skills/demo/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
+            zw.finish().unwrap();
+        }
+
+        let zip_str = zip_path.to_string_lossy().into_owned();
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let z = zip_str.clone();
+            handles.push(std::thread::spawn(move || {
+                import_plugin_package(&z, "combo.zip")
+            }));
+        }
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        for r in &results {
+            assert!(r.is_ok(), "并发同包导入应双方成功，实际: {results:?}");
+        }
+
+        let pkg = dir.join("bundles").join("demo");
+        assert!(pkg.join("mcp/manifest.json").is_file());
+        assert!(pkg.join("skills/demo/SKILL.md").is_file());
+        assert!(pkg.join("plugin.json").is_file());
+        assert!(
+            !dir.join("bundles").join("demo.tmp").exists()
+                && !dir.join("bundles").join("demo.old").exists(),
+            "并发导入结束后不得残留 staged/.old 目录"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 有界读取（四轮评审 M-5）：实际解压字节超过头部声明 size 即判伪造头部
+    /// 拒收，不再无界 read_to_end（伪造 size=0 头部可绕过声明预算先 OOM）。
+    #[test]
+    fn read_zip_entry_bounded_rejects_oversized_actual() {
+        let data = b"0123456789";
+        let ok = read_zip_entry_bounded(&mut &data[..5], 5, "x").unwrap();
+        assert_eq!(ok, b"01234");
+        let err = read_zip_entry_bounded(&mut &data[..], 5, "x").unwrap_err();
+        assert!(
+            err.contains("超过 zip 头声明"),
+            "实际 > 声明应拒收，实际: {err}"
+        );
+    }
+
+    /// 交叉校验（四轮评审 M-9）：MCP 组件声明 id 与 mcp/manifest.json 的 id
+    /// 不一致时必须响亮拒收 —— 否则 installed.json/bundles.json 记包 id、
+    /// mcp.json 键取 manifest.id，卸载只按包 id 清理，残留孤儿 server。
+    #[test]
+    fn import_rejects_mismatched_mcp_component_id() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-mcp-id-mismatch-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let zip_path = dir.join("combo.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("plugin.json", opts).unwrap();
+            zw.write_all(
+                r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}]}}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            // manifest 的 id 与组件声明 id 不一致
+            zw.start_file("mcp/manifest.json", opts).unwrap();
+            zw.write_all(
+                r#"{"id":"other","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.finish().unwrap();
+        }
+
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap_err();
+        assert!(
+            err.contains("不一致"),
+            "组件 id 与 manifest id 不一致应响亮拒收，实际: {err}"
+        );
+        assert!(
+            !dir.join("bundles").join("demo").exists(),
+            "拒收不得落盘包目录"
         );
 
         match prev {
