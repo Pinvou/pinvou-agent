@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+. (Join-Path $PSScriptRoot "runtime-manifest-contract.ps1")
 
 $tauriRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
 $appRoot = (Resolve-Path (Join-Path $tauriRoot "..")).Path
@@ -163,8 +164,12 @@ function Read-CompatibleRuntimeManifest {
   param([string]$ManifestPath)
 
   $manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-  if ([int]$manifest.schemaVersion -ne 1 -or [string]$manifest.target -ne [string]$lock.target) {
+  $schemaVersion = [int]$manifest.schemaVersion
+  if ($schemaVersion -notin @(1, 2) -or [string]$manifest.target -ne [string]$lock.target) {
     throw "Windows runtime submodule manifest schema or target is incompatible."
+  }
+  if ($schemaVersion -eq 2 -and @($manifest.stagedFiles).Count -eq 0) {
+    throw "Windows runtime manifest schema 2 must contain stagedFiles."
   }
   return $manifest
 }
@@ -553,6 +558,10 @@ function Stage-Submodule {
       Expand-FlattenedRuntime -ZipPath (Find-ComponentArchive -PayloadRoot $payloadRoot -Pattern "onnxruntime-win-x64-*-runtime.zip" -Label "ONNX Runtime") -Destination (Join-Path $expandedRoot "onnxruntime") -RequiredFile "onnxruntime.dll" -OnnxOnly
       $expandedRoot = $stageContext.ExpandedRoot
       Write-Host ("Expanded all Windows runtime components: {0}" -f $expandedRoot)
+
+      # Schema 2 stagedFiles is the exact lifecycle snapshot after payload copy
+      # and component expansion, before derived files or payload cleanup.
+      Assert-WindowsRuntimeStagedFilesExact -Manifest $Manifest -StageRoot $stageContext.TemporaryRoot
 
       # Resolver 只把 VC++ 组件放入通用 staging；是否供 NSIS 使用由 installer adapter 决定。
       Write-Host "Preparing descriptor-owned VC++ runtime component."

@@ -976,6 +976,7 @@ jobs:
 
       - name: Windows Codex Runtime 原生打包冒烟
         run: |
+          npm --prefix pinvou3-app run test:windows-runtime-manifest
           npm --prefix pinvou3-app run test:windows-runtime
           npm --prefix pinvou3-app run test:codex-acp-windows-runtime
 
