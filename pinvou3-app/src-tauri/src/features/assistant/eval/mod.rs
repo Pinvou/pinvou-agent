@@ -123,9 +123,9 @@ mod tests {
     #[test]
     fn different_provider_or_model_is_allowed() {
         let tested = ModelIdentity::new("deepseek", "chat");
-        assert!(validate_judge_identity(&tested, ModelIdentity::new("openai", "chat")).is_ok());
+        assert!(validate_judge_identity(&tested, &ModelIdentity::new("openai", "chat")).is_ok());
         assert!(
-            validate_judge_identity(&tested, ModelIdentity::new("deepseek", "reasoner")).is_ok()
+            validate_judge_identity(&tested, &ModelIdentity::new("deepseek", "reasoner")).is_ok()
         );
     }
 
@@ -142,6 +142,6 @@ mod tests {
         let valid = ModelIdentity::new("deepseek", "chat");
 
         assert!(validate_judge_identity(&ModelIdentity::new(" ", "chat"), &valid).is_err());
-        assert!(validate_judge_identity(&valid, ModelIdentity::new("deepseek", " ")).is_err());
+        assert!(validate_judge_identity(&valid, &ModelIdentity::new("deepseek", " ")).is_err());
     }
 }

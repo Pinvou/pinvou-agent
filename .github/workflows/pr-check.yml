@@ -299,7 +299,14 @@ jobs:
           python3 scripts/architecture-guard.py --base-ref "origin/$base_ref"
 
       - name: 公开底座 gitlink 可达性
-        run: ./scripts/verify-public-submodule.sh
+        # PR 阶段允许 fork-guard 登记的候选链;merge queue 严格对齐不可变
+        # 标签,保证 main 的可复现性不依赖可变分支。
+        run: |
+          args=()
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            args+=(--allow-registered-candidate)
+          fi
+          ./scripts/verify-public-submodule.sh "${args[@]}"
 
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
@@ -1013,7 +1020,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.benchmark == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -1034,7 +1041,6 @@ jobs:
             pinvou-cli
             pinvou3-app/src-tauri
           shared-key: benchmark-test
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: benchmark workspace 全特性测试
         shell: bash

@@ -88,7 +88,7 @@ class CiGatePolicyTests(unittest.TestCase):
             required_gate,
         )
 
-    def test_pr_submodule_verifier_never_relaxes_public_reachability(self):
+    def test_pr_submodule_verifier_only_relaxes_for_pull_requests(self):
         verifier = PUBLIC_SUBMODULE_VERIFIER.read_text(encoding="utf-8")
         fork_guard = FORK_GUARD.read_text(encoding="utf-8")
         candidate_pattern = re.compile(r'^LOCAL_SECURITY_HEAD="([0-9a-f]{40})"$', re.M)
@@ -98,11 +98,15 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIsNotNone(verifier_candidate)
         self.assertIsNotNone(guard_candidate)
         self.assertEqual(verifier_candidate.group(1), guard_candidate.group(1))
-        self.assertNotIn("--allow-registered-candidate", self.pr_workflow)
+        # 候选放行只允许出现在 pull_request 事件;merge queue 必须严格对齐
+        # 不可变标签,严格校验不得成为死代码。
         candidate_gate = self.pr_workflow.split(
             "- name: 公开底座 gitlink 可达性", maxsplit=1
         )[1].split("- name: 初始化公共底座 submodule", maxsplit=1)[0]
-        self.assertNotIn("github.event_name", candidate_gate)
+        self.assertIn("args+=(--allow-registered-candidate)", candidate_gate)
+        self.assertIn('"pull_request"', candidate_gate)
+        self.assertNotIn("merge_group", candidate_gate)
+        self.assertEqual(candidate_gate.count("--allow-registered-candidate"), 1)
         self.assertIn('[[ "$gitlink" == "$LOCAL_SECURITY_HEAD" ]]', verifier)
         self.assertIn("unknown argument", verifier)
 
