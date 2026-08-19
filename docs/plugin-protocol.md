@@ -306,10 +306,14 @@ workflows 非空                              → Workflow
 7. 热刷     —— refresh_live_sessions_skills + execpolicy ruleset（含脚本包的 deny 规则）
 ```
 
-现有两个命令 `import_skill_package` / `import_skill_package_bytes`（对话框 /
-拖放 base64）**入口名保持不变**，内部改为分派到统一管线；返回类型从
-`Result<bool, String>` 演进为 `Result<PluginImportReport, String>`（前端兼容读
-`ok=true`）。
+现状（四轮评审更正，与代码一致）：统一管线由**新命令** `import_plugin_package_cmd` /
+`import_plugin_package_bytes_cmd`（对话框 / 拖放 base64）暴露，内部走
+`plugin_import::import_plugin_package`；旧命令 `import_skill_package` /
+`import_skill_package_bytes` **入口名与旧管线均保持不变**（仍走
+`SkillMarketplaceManager::import_package`），四条命令返回类型都是
+`Result<bool, String>`（true=已导入，false=用户取消），未演进为
+`PluginImportReport`。`PluginImportReport` 目前仅是管线内部与
+`import_skill_md_content`（.md 包装导入）的返回类型，不暴露到命令层。
 
 ---
 

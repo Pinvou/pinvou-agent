@@ -82,8 +82,8 @@ my-plugin.zip
 | `manifest_version` | ✅ | 协议版本，当前必须 = 1；高于支持版本时拒装并提示升级 |
 | `id` | ✅ | 包 id，落盘目录名，`[a-z0-9-_]{1,64}` |
 | `name` | ✅ | 展示名（任意可读文本） |
-| `version` | 可选 | 语义版本，缺省按 `1.0.0` 处理 |
-| `description` | 可选 | 功能事实，进卡片副标题 |
+| `version` | 可选 | 语义版本。**预留字段**：当前仅解析保存，无消费方（不缺省合成、不参与升级判定） |
+| `description` | 可选 | 功能事实。**预留字段**：当前仅解析保存，无消费方（卡片副标题来自商店数据/组件 manifest，不读本字段） |
 | `icon` | 可选 | 图标文件，相对 zip 根，仅 `icon.svg`/`icon.png` |
 | `components` | 可选 | 多组件声明，见下 |
 
@@ -150,7 +150,9 @@ MCP server 的启动真相源。本地 stdio server 的必填与常用字段：
 - `command` = 解释器（`python` / `node` / …）。
 - `args` = 入口脚本，**推荐脚本命名为 `server.py`** 且 `args: ["server.py"]`
   （安装时会被重写为 `bundles/<id>/mcp/server.py` 绝对路径）。
-- 依赖 pip 包 → 声明 `"pip_dependencies": ["requests"]`，安装时自动装。
+- 依赖 pip 包 → 声明 `"pip_dependencies": ["requests"]`。注意：上传/导入路径
+  **不会自动安装**（供应链安全，仅日志提示需用户自行 `pip install`）；只有内置
+  商店工具的安装管线才会自动装。
 - 敏感项走 `secret_env` / `secret_headers` / `config_fields`（`secret: true`），
   值只进 keyring，落盘占位符。
 

@@ -186,7 +186,7 @@ install_bundle(id):
 |---|---|---|
 | **Phase 0** 地基 ✅ | #287 已合入（scope 按模式泛化、capability-governance.md、编译期穷尽哨兵） | 已上游合并 |
 | **Phase 1** 底座缝 | tooling_changed → ToolingSource 双轨 → CredentialResolver；上游 PR 同步推（探查已完成，落点见 todo 文档 B 节） | FileSource 行为不变；RegistrySource 可注册；dump_session_tooling 交付 |
-| **Phase 2** app 反转 ✅（除 scope 收敛） | BundleStore 可写化 + 首启迁移（刀1-3）；存储布局迁移（刀4/10/11）；execpolicy 路径 deny（刀6）；scope 收敛包 id 待做（#287 已就位，见 todo A 节） | 安装/卸载/更新镜像全走 BundleStore；bundles.json 为安装态唯一真相源 |
+| **Phase 2** app 反转 ✅ | BundleStore 可写化 + 首启迁移（刀1-3）；存储布局迁移（刀4/10/11）；execpolicy 路径 deny（刀6）；scope 收敛包 id（刀12 / a02d58b7，见 todo A 节，已完成） | 安装/卸载/更新镜像全走 BundleStore；bundles.json 为安装态唯一真相源 |
 | **Phase 3** 切换删除（前端部分已提前） | 前端切 bundle_readiness + 动作下发 ✅（刀5/7/8/9，CLI 元数据下沉已同批完成）；待做：app 切 RegistrySource、删除物化模块、mcp.json 写入、占位符、CONNECTOR_CLAIMED_SKILLS、逐连接器 status 命令（前端调用已删，后端命令待删）、tsSkillsData、CLI 常量表 | 删除清单逐项核销；FileSource 回退期（一个版本周期）后删除 |
 | **Phase 4** 收尾 | V5 条件认领退出条件执行；占位卡改注册表 upcoming 条目；capability-governance.md 登记全部已知限制 | 文档与代码一致 |
 
