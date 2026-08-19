@@ -172,11 +172,10 @@ impl Pinvou3Bundle {
             self.write_mcp_servers()?;
         }
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
-        // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。
+        // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。启动自愈(刷新
+        // 陈旧的本地 python server command)也在同一次调用里完成,两者共享一次读盘
+        // +parse;必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
         self.ensure_builtin_mcp_servers()?;
-        // 启动自愈:刷新 mcp.json 里陈旧的本地 python server command(安装时写死的裸
-        // "python" → 重解析成可用路径)。必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
-        self.refresh_mcp_python_commands()?;
         crate::platform::startup::mark("bundle_extract:write_mcp_servers:done");
 
         if !bundle_changed {
@@ -286,7 +285,7 @@ impl Pinvou3Bundle {
     pub(super) fn cleanup_removed_marketplace_tools(&self) -> std::io::Result<()> {
         {
             let tool_id = "data_analysis";
-            // 退役 id 保护（二轮评审）：`bundles/` 已是用户上传落盘区，用户可能上传过
+// 退役 id 保护（二轮评审）：`bundles/` 已是用户上传落盘区，用户可能上传过
             // 同名包——其 Upload 记录存在时跳过整段清理（不删登记、不删 mcp.json），
             // 只清理确定无主的内嵌退役残留。
             let user_uploaded = crate::features::marketplace::store::BundleStore::new()
@@ -302,8 +301,14 @@ impl Pinvou3Bundle {
                 })
                 .unwrap_or(false);
             if !user_uploaded {
+                // 廉价残留探测:所有清理面都干净时直接返回——uninstall 会无条件重写
+                // installed.json / mcp.json 并访问系统 keyring,不值得每次启动都实例化
+                // MarketplaceManager 跑一遍。探测只读私有布局文件,不实例化管理器;
+                // BundleStore 记录的读取开销与探测同量级,保护判定前置不亏。
+                if !Self::marketplace_tool_residue_present(tool_id) {
+                    return Ok(());
+                }
                 let _ = crate::features::marketplace::MarketplaceManager::new().uninstall(tool_id);
-
                 let mut disabled = crate::features::marketplace::load_disabled_connectors();
                 let before = disabled.len();
                 disabled.retain(|id| id != tool_id);
@@ -319,13 +324,60 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
+    /// 探测已下架 marketplace 工具是否还有任何残留清理面:安装目录、installed.json、
+    /// 禁用列表落盘、mcp.json server 条目。全干净 → false(调用方据此跳过
+    /// MarketplaceManager 实例化 + uninstall)。installed.json 与
+    /// disabled_connectors.json 是 marketplace 模块的私有布局,这里按其落盘路径直读做
+    /// contains 级探测——宁可误报(多跑一次幂等清理)也不漏报(残留永驻)。
+    fn marketplace_tool_residue_present(tool_id: &str) -> bool {
+        if paths::bundle_mcp_servers_dir().join(tool_id).exists() {
+            return true;
+        }
+        let home = paths::pinvou3_home();
+        // installed.json = ~/.pinvou3/marketplace/installed.json(镜像 MarketplaceManager
+        // 私有 installed_file 布局);disabled_connectors.json 覆盖 plain + 所有 code scope
+        // 的禁用集(镜像 marketplace::disabled_connectors_path 布局)。
+        for probe in ["marketplace/installed.json", "disabled_connectors.json"] {
+            let path = home.join(probe);
+            if !path.exists() {
+                continue; // 文件不存在 = 该清理面本就干净,不算误报
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    if content.contains(tool_id) {
+                        return true;
+                    }
+                }
+                // 文件存在但读失败(权限/损坏):保守视为有残留——宁可误报(多跑
+                // 一次幂等清理)也不漏报(残留永驻)。
+                Err(_) => return true,
+            }
+        }
+        // mcp.json 按结构探测:server key 存在即残留;坏 json 保守视为有残留,交给
+        // uninstall 走重建路径。
+        if !paths::mcp_config_path().is_file() {
+            return false;
+        }
+        match std::fs::read_to_string(paths::mcp_config_path())
+            .ok()
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        {
+            Some(mcp) => mcp
+                .get("servers")
+                .and_then(|servers| servers.get(tool_id))
+                .is_some(),
+            None => true,
+        }
+    }
+
     /// 解包内嵌的内置 skills 到 pinvou3 单一来源 `bundle/skills`。v0.9 clean re-fork
     /// 后 catalogue 与 `load_skill` 都只扫描此目录，不再写 `~/.agents/skills`。
-    /// 每次启动防御性重写(immutable 内置资源)。当前:视觉设计。
+    /// 每次启动防御性写出(immutable 内置资源);内容一致则跳过写——这些资源不进
+    /// BUNDLE_VERSION 的 hash,升级改内容但 VERSION 不变时靠逐文件比对兜住。
+    /// 当前:视觉设计。
     pub(super) fn write_builtin_skills(&self) -> std::io::Result<()> {
         let dir = self.skills_dir.join("visual-design");
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join("SKILL.md"), VISUAL_DESIGN_SKILL_MD)?;
+        self.write_if_changed(&dir.join("SKILL.md"), VISUAL_DESIGN_SKILL_MD)?;
         Ok(())
     }
 
@@ -479,14 +531,12 @@ impl Pinvou3Bundle {
     /// mcp.json merge：upsert 内置 pinvou server，保留 marketplace 已安装的条目。
     /// 每次启动都调用（不受 VERSION gate 限制）。
     pub(super) fn ensure_builtin_mcp_servers(&self) -> std::io::Result<()> {
+        // mcp.json 只读 + parse 一次,upsert 与 python command 自愈共享(两段语义
+        // 不同:前者修内置 server 条目,后者修 marketplace 条目的陈旧 python 路径;
+        // 合并的只是 IO,不是逻辑)。坏 json 由 load 层重建空骨架,保证内置 server
+        // 条目自愈恢复(parse 失败早期返回会让坏 mcp.json 永远修不好)。
+        let mut mcp = self.load_mcp_json_for_repair();
         let present_server = paths::bundle_present_artifact_server();
-        let mut mcp: serde_json::Value = if self.mcp_json.is_file() {
-            let existing =
-                std::fs::read_to_string(&self.mcp_json).unwrap_or_else(|_| "{}".to_string());
-            serde_json::from_str(&existing).unwrap_or_else(|_| serde_json::json!({"servers": {}}))
-        } else {
-            serde_json::json!({"servers": {}})
-        };
         if mcp.get("servers").and_then(|s| s.as_object()).is_none() {
             mcp.as_object_mut()
                 .unwrap()
@@ -502,12 +552,29 @@ impl Pinvou3Bundle {
         servers.insert(
             "pinvou3".to_string(),
             serde_json::json!({
-                "command": python_cmd,
+                "command": python_cmd.clone(),
                 "args": [present_server.to_string_lossy()]
             }),
         );
+        self.refresh_mcp_python_commands(&mut mcp, &python_cmd)?;
         let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
+        // 写回前与现有文件比对:内容一致则跳过写盘(避免每次启动重写 mcp.json)。
+        if std::fs::read_to_string(&self.mcp_json).is_ok_and(|existing| existing == json) {
+            return Ok(());
+        }
         std::fs::write(&self.mcp_json, json)
+    }
+
+    /// 读 + parse mcp.json 供启动自愈路径复用:文件缺失给空骨架;坏 json 同样重建
+    /// 空骨架(`{"servers":{}}`)——自愈路径的职责就是把内置 server 条目修回来,
+    /// 坏文件若原样放过,present_artifact 会永久失效。代价是丢弃坏文件里可能
+    /// 残留的 marketplace 条目,可接受:坏 json 本就无法被引擎消费。
+    fn load_mcp_json_for_repair(&self) -> serde_json::Value {
+        if !self.mcp_json.is_file() {
+            return serde_json::json!({"servers": {}});
+        }
+        let existing = std::fs::read_to_string(&self.mcp_json).unwrap_or_default();
+        serde_json::from_str(&existing).unwrap_or_else(|_| serde_json::json!({"servers": {}}))
     }
 
     /// 启动自愈:`mcp.json` 里本地 python server 的 `command` 是**安装时写死**的,老条目
@@ -515,17 +582,12 @@ impl Pinvou3Bundle {
     /// Linux)上永远拉不起来(高德天气等 marketplace 工具静默失效)。每次启动重解析:凡
     /// command 是裸 python 家族名、或指向不存在的 python 路径,统一替换成当前
     /// `paths::python_command()`。`url` 型远程 server / 非 python command 一律不动。
-    fn refresh_mcp_python_commands(&self) -> std::io::Result<()> {
-        if !self.mcp_json.is_file() {
-            return Ok(());
-        }
-        let existing = std::fs::read_to_string(&self.mcp_json).unwrap_or_default();
-        let mut mcp: serde_json::Value = match serde_json::from_str(&existing) {
-            Ok(v) => v,
-            Err(_) => return Ok(()), // 坏 json 不碰
-        };
-        let resolved = paths::python_command();
-        let mut changed = false;
+    /// 直接改传入的 `mcp`(调用方负责落盘),不再独立读写文件。
+    fn refresh_mcp_python_commands(
+        &self,
+        mcp: &mut serde_json::Value,
+        resolved: &str,
+    ) -> std::io::Result<()> {
         if let Some(servers) = mcp.get_mut("servers").and_then(|s| s.as_object_mut()) {
             for (_name, entry) in servers.iter_mut() {
                 let Some(obj) = entry.as_object_mut() else {
@@ -537,15 +599,10 @@ impl Pinvou3Bundle {
                 if cmd != resolved && Self::is_stale_python_command(cmd) {
                     obj.insert(
                         "command".to_string(),
-                        serde_json::Value::String(resolved.clone()),
+                        serde_json::Value::String(resolved.to_string()),
                     );
-                    changed = true;
                 }
             }
-        }
-        if changed {
-            let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
-            std::fs::write(&self.mcp_json, json)?;
         }
         Ok(())
     }
@@ -600,19 +657,20 @@ impl Pinvou3Bundle {
             }
         }
     }
-
     fn write_mcp_servers(&self) -> std::io::Result<()> {
         let dir = paths::bundle_mcp_servers_dir();
-        std::fs::create_dir_all(&dir)?;
         // pinvou 内置 present_artifact server
         let server = paths::bundle_present_artifact_server();
-        std::fs::write(&server, PRESENT_ARTIFACT_SERVER_PY)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perm = std::fs::metadata(&server)?.permissions();
-            perm.set_mode(0o755);
-            std::fs::set_permissions(&server, perm)?;
+        let server_written = self.write_if_changed(&server, PRESENT_ARTIFACT_SERVER_PY)?;
+        if server_written {
+            // 可执行位只在本次实际写出时补;内容未变时也不丢——上次写出后已设过。
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perm = std::fs::metadata(&server)?.permissions();
+                perm.set_mode(0o755);
+                std::fs::set_permissions(&server, perm)?;
+            }
         }
 
         // 市场包：按已装记录校验/补齐包目录资源（内嵌目录为比对基准）。
@@ -650,5 +708,23 @@ impl Pinvou3Bundle {
             let _ = std::fs::remove_dir_all(dir.join(spec.id));
         }
         Ok(())
+    }
+
+    /// 内容比对写:目标已存在且逐字节一致时跳过写盘,返回是否实际写入。
+    /// 调用方据此决定是否还要 chmod / 后续动作——避免每次启动无条件重写
+    /// 上百 KB 的 immutable bundle 资源。
+    pub(super) fn write_if_changed(
+        &self,
+        path: &std::path::Path,
+        contents: &str,
+    ) -> std::io::Result<bool> {
+        if std::fs::read(path).is_ok_and(|existing| existing == contents.as_bytes()) {
+            return Ok(false);
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, contents)?;
+        Ok(true)
     }
 }

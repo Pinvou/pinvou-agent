@@ -2,6 +2,7 @@
 //!
 //! 版本、下载地址与两层 SHA-256 都来自随程序编译的目标平台 lock；运行时只在用户
 //! 首次启用连接器时联网，校验归档后只提取预期的单个可执行文件，避免路径穿越。
+// architecture-guard: allow-target-cfg -- 平台专属 license 文本必须按目标平台各自内嵌(对齐 platform.rs LOCK_JSON 门控),数据选择而非适配逻辑,留在安装器内最内聚。
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -18,12 +19,66 @@ const MAX_BINARY_BYTES: u64 = 128 * 1024 * 1024;
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 const DWS_LICENSE: &str =
     include_str!("../../../resources/common/bundle/dingtalk-skills/dws/LICENSE");
+// lark/wecom 是平台专属二进制,license 文本随平台包走——按目标平台 cfg 各自内嵌
+// (写法对齐 platform.rs 的 LOCK_JSON 5 平台门控),避免非 Linux 构建误嵌 Linux 版文本。
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const LARK_LICENSE: &str = include_str!(
     "../../../resources/platforms/linux/x86_64/bundle/connectors/linux-x64/licenses/LICENSE-lark-cli"
 );
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const WECOM_LICENSE: &str = include_str!(
     "../../../resources/platforms/linux/x86_64/bundle/connectors/linux-x64/licenses/LICENSE-wecom-cli"
 );
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const LARK_LICENSE: &str = include_str!(
+    "../../../resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/licenses/LICENSE-lark-cli"
+);
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const WECOM_LICENSE: &str = include_str!(
+    "../../../resources/platforms/linux/aarch64/bundle/connectors/linux-arm64/licenses/LICENSE-wecom-cli"
+);
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const LARK_LICENSE: &str = include_str!(
+    "../../../resources/platforms/macos/aarch64/bundle/connectors/darwin-arm64/licenses/LICENSE-lark-cli"
+);
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const WECOM_LICENSE: &str = include_str!(
+    "../../../resources/platforms/macos/aarch64/bundle/connectors/darwin-arm64/licenses/LICENSE-wecom-cli"
+);
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const LARK_LICENSE: &str = include_str!(
+    "../../../resources/platforms/macos/x86_64/bundle/connectors/darwin-x64/licenses/LICENSE-lark-cli"
+);
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const WECOM_LICENSE: &str = include_str!(
+    "../../../resources/platforms/macos/x86_64/bundle/connectors/darwin-x64/licenses/LICENSE-wecom-cli"
+);
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const LARK_LICENSE: &str = include_str!(
+    "../../../resources/platforms/windows/x86_64/bundle/connectors/windows-x64/licenses/LICENSE-lark-cli"
+);
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const WECOM_LICENSE: &str = include_str!(
+    "../../../resources/platforms/windows/x86_64/bundle/connectors/windows-x64/licenses/LICENSE-wecom-cli"
+);
+// 非支持平台(如未来 Windows ARM64)兜底为空串,保证可编译——对齐 platform/mod.rs
+// LOCK_JSON 的 not(any(...)) 兜底;运行时 load_lock 同样返回"当前平台暂不支持"。
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "macos", target_arch = "x86_64"),
+    all(target_os = "windows", target_arch = "x86_64"),
+)))]
+const LARK_LICENSE: &str = "";
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "macos", target_arch = "x86_64"),
+    all(target_os = "windows", target_arch = "x86_64"),
+)))]
+const WECOM_LICENSE: &str = "";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,10 +124,12 @@ pub fn ensure_native_cli(name: &str) -> Result<bool, String> {
     let version_dir = crate::platform::paths::assets_cli_dir(&artifact.name, &artifact.version);
     let filename = super::platform::executable_name(name);
     let destination = version_dir.join(&filename);
-    write_license(&version_dir, name)?;
     if file_sha256_matches(&destination, &artifact.binary_sha256) {
+        // 二进制已就位(hash 比对通过)时 license 必然随上次释放落过盘,不再重写,
+        // 避免每次按需检查都白写一次 license 文件。
         return Ok(false);
     }
+    write_license(&version_dir, name)?;
 
     fs::create_dir_all(&version_dir).map_err(|e| format!("创建连接器目录失败: {e}"))?;
     let staging_dir = crate::platform::paths::assets_staging_dir().join(&lock.platform);

@@ -89,10 +89,10 @@ for (const language of ['zh', 'en', 'ja']) {
 
 const main = source('app/main.jsx');
 assert.match(main, /emit\(['"]ui:language_changed['"], \{ language: lang \}\)/);
-assert.match(main, /<ToolStoreView[^>]*t=\{t\}/);
+assert.match(main, new RegExp("toolStore: \\(\\) => import\\('\\.\\./features/tools/ToolStoreView\\.jsx'\\)"));
 assert.match(main, /<WebConnectionStatus[^>]*t=\{t\}/);
 assert.match(main, /<SettingsErrorBoundary[^>]*t=\{t\}/);
-assert.match(main, /<CodexAcpView[^>]*t=\{t\}/);
+assert.match(main, new RegExp("codex: \\(\\) => import\\('\\.\\./features/codex/CodexAcpView\\.jsx'\\)"));
 const settingsErrorBoundary = source('features/settings/SettingsErrorBoundary.jsx');
 assert.match(settingsErrorBoundary, /settingsCopy\.settingsLoadFailed/);
 assert.doesNotMatch(settingsErrorBoundary, />设置页加载失败</);

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
@@ -16,13 +16,9 @@ import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
-import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
-import { MonitorView } from '../features/monitor/MonitorView.jsx';
-import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
 import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
-import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
@@ -51,13 +47,40 @@ const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
   { id: 'preview-run-4', automationId: 'preview-follow-up', taskNameKey: 'previewTaskFollowUp', sessionId: 'preview-session-4', status: 'running', scheduledFor: '2026-07-14T09:00:00+08:00', unread: false },
   { id: 'preview-run-6', automationId: 'preview-weekly-report', taskNameKey: 'previewTaskSalesWeekly', sessionId: 'preview-session-6', status: 'completed', scheduledFor: '2026-07-10T16:00:00+08:00', unread: false },
 ];
-import { ToolStoreView } from '../features/tools/ToolStoreView.jsx';
 import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
-import { CardPoolView, Lanyard, PersonaEditorModal } from '../features/personas/Personas.jsx';
-import { SearchView } from '../features/search/SearchView.jsx';
 import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
 import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
-import { DetachedShell } from './DetachedShell.jsx';
+import { Lanyard } from '../features/personas/persona-shared.jsx';
+// 低频视图懒加载:用户典型路径是聊天,Settings/Codex/卡池/工具商店/定时/知识库/
+// 监控/搜索视图切到才加载对应 chunk(rolldown 对动态 import 自动分割)。VIEW_LOADERS
+// 是唯一的动态 import 出口:React.lazy 与 NavItem 悬停/聚焦预取共用同一工厂,保证
+// 命中同一模块缓存。ChatView 与 Lanyard 启动即渲染,保持静态 import。
+const VIEW_LOADERS = {
+  settings: () => import('../features/settings/SettingsView.jsx'),
+  codex: () => import('../features/codex/CodexAcpView.jsx'),
+  cardpool: () => import('../features/personas/Personas.jsx'),
+  toolStore: () => import('../features/tools/ToolStoreView.jsx'),
+  scheduled: () => import('../features/scheduled/ScheduledTasksView.jsx'),
+  knowledge: () => import('../features/knowledge/KnowledgeView.jsx'),
+  monitor: () => import('../features/monitor/MonitorView.jsx'),
+  search: () => import('../features/search/SearchView.jsx'),
+};
+const LazySettingsView = lazy(() => VIEW_LOADERS.settings().then(m => ({ default: m.SettingsView })));
+const LazyCodexAcpView = lazy(() => VIEW_LOADERS.codex().then(m => ({ default: m.CodexAcpView })));
+const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ default: m.ToolStoreView })));
+const LazyCardPoolView = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.CardPoolView })));
+const LazyScheduledTasksView = lazy(() => VIEW_LOADERS.scheduled().then(m => ({ default: m.ScheduledTasksView })));
+const LazyKnowledgeView = lazy(() => VIEW_LOADERS.knowledge().then(m => ({ default: m.KnowledgeView })));
+const LazyMonitorView = lazy(() => VIEW_LOADERS.monitor().then(m => ({ default: m.MonitorView })));
+const LazySearchView = lazy(() => VIEW_LOADERS.search().then(m => ({ default: m.SearchView })));
+const LazyPersonaEditorModal = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.PersonaEditorModal })));
+const LazyWebAccessModal = lazy(() => VIEW_LOADERS.settings().then(m => ({ default: m.WebAccessModal })));
+const LazyDetachedShell = lazy(() => import('./DetachedShell.jsx').then(m => ({ default: m.DetachedShell })));
+
+// 视图 chunk 加载占位:沿用 DetachedShell 的「…」惯例,不引入新视觉语言。
+function ViewFallback() {
+  return <div className="p-6 text-sm opacity-60" data-testid="lazy-view-fallback">…</div>;
+}
 import { TitleBar } from './DesktopTitleBar.jsx';
 
 installGlobalMarkdownRenderer(window);
@@ -129,6 +152,19 @@ function workspaceDisplayName(path) {
             if (bridge.available && bridge.knowledge.loadKnowledgeEmbedderAfterFirstFrame) {
               bridge.knowledge.loadKnowledgeEmbedderAfterFirstFrame();
             }
+            // 首帧已呈现后空闲预取低频视图 chunk:桌宠/定时快捷方式会不经侧栏直接
+            // 跳视图(如 scheduledTaskAutoOpenId),悬停预取覆盖不到这些入口。
+            if (typeof window.requestIdleCallback === 'function') {
+              window.requestIdleCallback(() => {
+                VIEW_LOADERS.scheduled();
+                VIEW_LOADERS.settings();
+              }, { timeout: 4000 });
+            } else {
+              window.setTimeout(() => {
+                VIEW_LOADERS.scheduled();
+                VIEW_LOADERS.settings();
+              }, 1500);
+            }
           });
         });
         // 让首帧先交给 WebView 绘制，再异步校验飞书/企微实时鉴权状态。
@@ -147,7 +183,10 @@ function workspaceDisplayName(path) {
         };
       }, []);
       const [activeChat, setActiveChat] = useState(null);
-      const [currentView, setCurrentView] = useState('chat');
+      const [currentView, setCurrentViewRaw] = useState('chat');
+      // 视图切换包 startTransition:懒加载 chunk 未就绪时保留当前视图内容,
+      // 避免整页闪回 fallback(首挂载的新视图仍会短暂显示 ViewFallback)。
+      const setCurrentView = (nextView) => startTransition(() => setCurrentViewRaw(nextView));
       const [activeTheme, setActiveTheme] = useState('dark');
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
@@ -1811,6 +1850,7 @@ function workspaceDisplayName(path) {
                   t={t}
                   isSidebarOpen={isSidebarOpen}
                   onClick={() => navigateFromScheduledRun('scheduled')}
+                  onPointerEnter={VIEW_LOADERS.scheduled} onFocus={VIEW_LOADERS.scheduled}
                 />
               )}
               <NavItem
@@ -1819,6 +1859,7 @@ function workspaceDisplayName(path) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('outputs')}
+                onPointerEnter={VIEW_LOADERS.knowledge} onFocus={VIEW_LOADERS.knowledge}
                 dragKind={canDetachWindows ? 'outputs' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'outputs:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('outputs', undefined, t.outputs, geom) : undefined}
               />
               <NavItem
@@ -1826,6 +1867,7 @@ function workspaceDisplayName(path) {
                 active={currentView === 'monitor'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
+                onPointerEnter={VIEW_LOADERS.monitor} onFocus={VIEW_LOADERS.monitor}
                 onClick={() => {
                   navigateFromScheduledRun('monitor', () => {
                     const liveBridge = window.TauriBridge || bridge;
@@ -1840,6 +1882,7 @@ function workspaceDisplayName(path) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('toolStore')}
+                onPointerEnter={VIEW_LOADERS.toolStore} onFocus={VIEW_LOADERS.toolStore}
                 dragKind={canDetachWindows ? 'toolstore' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('toolstore', undefined, t.toolStore, geom) : undefined}
               />
               <NavItem
@@ -1848,6 +1891,7 @@ function workspaceDisplayName(path) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))}
+                onPointerEnter={VIEW_LOADERS.cardpool} onFocus={VIEW_LOADERS.cardpool}
                 dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom) : undefined}
               />
               <NavItem
@@ -1856,6 +1900,7 @@ function workspaceDisplayName(path) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('knowledge')}
+                onPointerEnter={VIEW_LOADERS.knowledge} onFocus={VIEW_LOADERS.knowledge}
                 dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
@@ -2084,10 +2129,13 @@ function workspaceDisplayName(path) {
               )
             )}
 
-            {currentView === 'monitor' && <MonitorView theme={activeTheme} t={t} bs={bs} />}
+            {currentView === 'monitor' && <Suspense fallback={<ViewFallback />}>
+              <LazyMonitorView theme={activeTheme} t={t} bs={bs} />
+            </Suspense>}
             {currentView === 'settings' && (
               <SettingsErrorBoundary theme={activeTheme} t={t}>
-                <SettingsView
+              <Suspense fallback={<ViewFallback />}>
+                <LazySettingsView
                   activeTheme={activeTheme} setActiveTheme={handleSetTheme}
                   language={language} setLanguage={handleSetLanguage}
                   superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
@@ -2118,13 +2166,19 @@ function workspaceDisplayName(path) {
                   initialSection={settingsInitialSection}
                   onCloseSettings={() => navigateFromScheduledRun(settingsReturnViewRef.current || 'chat')}
                 />
+              </Suspense>
               </SettingsErrorBoundary>
             )}
-            {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
-            {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
+            {currentView === 'toolStore' && <Suspense fallback={<ViewFallback />}>
+              <LazyToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />
+            </Suspense>}
+            {currentView === 'cardpool' && <Suspense fallback={<ViewFallback />}>
+              <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />
+            </Suspense>}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
             {codexAcpSupported && currentView === 'codex' && (
-              <CodexAcpView
+              <Suspense fallback={<ViewFallback />}>
+              <LazyCodexAcpView
                 theme={activeTheme}
                 t={t}
                 sessions={codexSessions}
@@ -2139,12 +2193,15 @@ function workspaceDisplayName(path) {
                 onGotoSettings={() => openSettingsSection('general')}
                 onGotoTools={() => navigateFromScheduledRun('toolStore')}
               />
+              </Suspense>
             )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
                 <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
               ) : (
-                <ScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} onGotoModelSettings={() => openSettingsSection('model')} />
+                <Suspense fallback={<ViewFallback />}>
+                <LazyScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} onGotoModelSettings={() => openSettingsSection('model')} />
+              </Suspense>
               )
             )}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
@@ -2155,7 +2212,8 @@ function workspaceDisplayName(path) {
                 onOpenPicker={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))} />
             )}
             {currentView === 'search' && (
-              <SearchView
+              <Suspense fallback={<ViewFallback />}>
+              <LazySearchView
                 theme={activeTheme} history={allSidebarTasks} t={t} language={language}
                 archived={(bs && bs.archivedSessions) || []}
                 showArchived={searchShowArchived}
@@ -2173,20 +2231,29 @@ function workspaceDisplayName(path) {
                 onRestoreArchived={handleRestoreArchivedSession}
                 onRestoreMany={handleBatchRestoreArchived}
               />
+              </Suspense>
             )}
-            {currentView === 'outputs' && <KnowledgeView theme={activeTheme} t={t} mode="outputs" />}
-            {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}
+            {currentView === 'outputs' && <Suspense fallback={<ViewFallback />}>
+              <LazyKnowledgeView theme={activeTheme} t={t} mode="outputs" />
+            </Suspense>}
+            {currentView === 'knowledge' && <Suspense fallback={<ViewFallback />}>
+              <LazyKnowledgeView theme={activeTheme} t={t} />
+            </Suspense>}
 
             {can('webAccessAdmin') && webAccessOpen && (
-              <WebAccessModal theme={activeTheme} bs={bs} t={t} onClose={() => setWebAccessOpen(false)} />
+              <Suspense fallback={null}>
+              <LazyWebAccessModal theme={activeTheme} bs={bs} t={t} onClose={() => setWebAccessOpen(false)} />
+            </Suspense>
             )}
 
             {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
             {personaEditor && (
-              <PersonaEditorModal initial={personaEditor.initial} isDark={activeTheme === 'dark'} t={t}
+              <Suspense fallback={null}>
+              <LazyPersonaEditorModal initial={personaEditor.initial} isDark={activeTheme === 'dark'} t={t}
                 onClose={() => setPersonaEditor(null)}
                 onSaved={(sum) => { const isEdit = personaEditor.initial && personaEditor.initial.id; setPersonaEditor(null); if (!isEdit) setSavedConfirm({ name: sum && sum.name }); }}
                 onDeleted={() => setPersonaEditor(null)} />
+              </Suspense>
             )}
 
             {/* 存入成功 → iOS 确认窗:去查看我的卡牌 / 暂不 */}
@@ -2378,7 +2445,11 @@ function workspaceDisplayName(path) {
     const __q = new URLSearchParams(window.location.search);
     if (__q.get('detached') === '1') {
       window.__PINVOU_DETACHED__ = true;
-      root.render(<DetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />);
+      root.render(
+        <Suspense fallback={<div className="p-6 text-sm opacity-60">…</div>}>
+          <LazyDetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />
+        </Suspense>
+      );
     } else {
       window.__PINVOU_STARTUP__.mark('react:render_call');
       root.render(<App />);

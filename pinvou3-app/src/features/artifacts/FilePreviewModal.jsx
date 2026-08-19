@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { OFFICE_HTML_STYLE } from './ArtifactsPanel.jsx';
-import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
+import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
 
 const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
   const [preview, setPreview] = useState({ loading: true });

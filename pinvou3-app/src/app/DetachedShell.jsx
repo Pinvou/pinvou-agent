@@ -1,10 +1,15 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
-import { MonitorView } from '../features/monitor/MonitorView.jsx';
-import { ChatView } from '../features/chat/ChatView.jsx';
-import { ToolStoreView } from '../features/tools/ToolStoreView.jsx';
-import { CardPoolView } from '../features/personas/Personas.jsx';
-import { CodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { CodexAcpView as LazyCodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
+// 撕离窗与主窗口共用同一批懒加载视图 chunk(rolldown 自动共享)。静态 import
+// 会让对应视图被钉回主 chunk,这里全部走 lazy;每个窗只实际加载自己 kind 的 chunk。
+// codex 例外:复用 #159 的 LazyCodexAcpView 包装(web 能力门控 + checking 兜底,
+// 内部同样 lazy import CodexAcpView,共享同一 chunk)。
+const LazyKnowledgeView = lazy(() => import('../features/knowledge/KnowledgeView.jsx').then(m => ({ default: m.KnowledgeView })));
+const LazyMonitorView = lazy(() => import('../features/monitor/MonitorView.jsx').then(m => ({ default: m.MonitorView })));
+const LazyChatView = lazy(() => import('../features/chat/ChatView.jsx').then(m => ({ default: m.ChatView })));
+const LazyToolStoreView = lazy(() => import('../features/tools/ToolStoreView.jsx').then(m => ({ default: m.ToolStoreView })));
+const LazyCardPoolView = lazy(() => import('../features/personas/Personas.jsx').then(m => ({ default: m.CardPoolView })));
+const DetachedViewFallback = () => <div className="p-6 text-sm opacity-60">…</div>;
 import { useBridgeState } from '../hooks/useBridge.js';
 import { emitTauri, invokeTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
 import { listAcpSessions } from '../features/codex/acpClient.js';
@@ -97,7 +102,8 @@ function DetachedCodexSessionView({ id, theme, t, bs }) {
     return <div className="p-6 text-sm opacity-70">{t.uiMainApp.detachedSessionMissing}</div>;
   }
   return (
-    <CodexAcpView
+    <Suspense fallback={<DetachedViewFallback />}>
+    <LazyCodexAcpView
       theme={theme}
       t={t}
       sessions={sessions}
@@ -109,19 +115,20 @@ function DetachedCodexSessionView({ id, theme, t, bs }) {
       onGotoTools={() => {}}
       fixedSession
     />
+    </Suspense>
   );
 }
 
 // Reuse the same feature views as the main window. Cross-view navigation is a
 // no-op because a detached window intentionally owns one view only.
 const DETACHED_VIEWS = {
-  session: ({ theme, t, bs }) => <ChatView theme={theme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={() => {}} justInstalledTool={null} setJustInstalledTool={() => {}} onGotoSettings={() => {}} onGotoTools={() => {}} />,
+  session: ({ theme, t, bs }) => <LazyChatView theme={theme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={() => {}} justInstalledTool={null} setJustInstalledTool={() => {}} onGotoSettings={() => {}} onGotoTools={() => {}} />,
   'codex-session': ({ id, theme, t, bs }) => <DetachedCodexSessionView id={id} theme={theme} t={t} bs={bs} />,
-  monitor: ({ theme, t, bs }) => <MonitorView theme={theme} t={t} bs={bs} />,
-  cardpool: ({ theme, t, bs }) => <CardPoolView theme={theme} t={t} bs={bs} onEquipped={() => {}} onAICreate={() => {}} initialMyOnly={false} />,
-  toolstore: ({ theme, t }) => <ToolStoreView theme={theme} t={t} onNewChat={() => {}} />,
-  knowledge: ({ theme, t }) => <KnowledgeView theme={theme} t={t} />,
-  outputs: ({ theme, t }) => <KnowledgeView theme={theme} t={t} mode="outputs" />,
+  monitor: ({ theme, t, bs }) => <LazyMonitorView theme={theme} t={t} bs={bs} />,
+  cardpool: ({ theme, t, bs }) => <LazyCardPoolView theme={theme} t={t} bs={bs} onEquipped={() => {}} onAICreate={() => {}} initialMyOnly={false} />,
+  toolstore: ({ theme, t }) => <LazyToolStoreView theme={theme} t={t} onNewChat={() => {}} />,
+  knowledge: ({ theme, t }) => <LazyKnowledgeView theme={theme} t={t} />,
+  outputs: ({ theme, t }) => <LazyKnowledgeView theme={theme} t={t} mode="outputs" />,
 };
 
 export function DetachedShell({ kind, id }) {
@@ -148,7 +155,7 @@ export function DetachedShell({ kind, id }) {
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
         {bs
-          ? <DetachedErrorBoundary t={t}><View id={id} theme={activeTheme} t={t} bs={bs} /></DetachedErrorBoundary>
+          ? <DetachedErrorBoundary t={t}><Suspense fallback={<DetachedViewFallback />}><View id={id} theme={activeTheme} t={t} bs={bs} /></Suspense></DetachedErrorBoundary>
           : <div className="p-6 text-sm opacity-60">…</div>}
       </div>
     </div>

@@ -303,9 +303,8 @@ pub fn run() {
             startup::mark("session_store:start");
             let session_store = match SessionStore::boot_for_process_startup() {
                 Ok(store) => {
-                    store.load_session_models();
-                    store.load_pinned_sessions();
-                    store.load_hidden_sessions();
+                    // sidecar(per-session 模型 / 置顶 / 隐藏)已由 SessionStore::boot_inner
+                    // 在 boot 时统一加载,setup 不再重复读同一批文件。
                     eprintln!("[pinvou3-app] session store ready");
                     Some(store)
                 }

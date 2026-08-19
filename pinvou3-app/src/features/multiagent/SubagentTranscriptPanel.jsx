@@ -3,7 +3,7 @@ import { ArrowLeft, ChevronDown, ChevronRight, X } from '../../components/icons.
 import { bridge } from '../../hooks/useBridge.js';
 import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
 import { commandExecutionDetails, terminalStatus } from '../conversation/conversation-model.js';
-import { AppIcon } from '../personas/Personas.jsx';
+import { AppIcon } from '../personas/persona-shared.jsx';
 import {
   fileChangeStat,
   projectSubagentTranscript,

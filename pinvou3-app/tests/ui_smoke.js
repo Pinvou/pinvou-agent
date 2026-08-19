@@ -1052,7 +1052,9 @@ async function expand(page) {
     };
     await window.TauriBridge.knowledge.downloadKbModel(false).catch(() => {});
     document.querySelector('[data-nav="knowledge"]')?.click();
-    await wait(300);
+    // 知识库视图为懒加载 chunk:等待加载失败文案出现(chunk 就绪 + 渲染完成)而非固定延时。
+    for (let i = 0; i < 100 && !document.body.innerText.includes('Embedding 模型加载失败'); i++) await wait(50);
+    await wait(100);
     const failedVisible = document.body.innerText.includes('Embedding 模型加载失败');
     const repairButton = [...document.querySelectorAll('button')]
       .find(button => (button.textContent || '').includes('重新下载并修复'));

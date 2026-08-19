@@ -208,7 +208,7 @@ assert.match(mainSource, /sessionTitlePresentation\(s\.title, s\.title_attachmen
 assert.match(mainSource, /<SessionAttachmentTitle presentation=\{titlePresentation\}/);
 assert.match(
   mainSource,
-  /import \{ SearchView \} from '\.\.\/features\/search\/SearchView\.jsx';/,
+  /search: \(\) => import\('\.\.\/features\/search\/SearchView\.jsx'\)/,
   'the app shell must delegate conversation management rendering to the search feature',
 );
 
