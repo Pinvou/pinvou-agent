@@ -1239,24 +1239,64 @@
     for (var i = 0; i < domains.length; i++) Object.assign(result, snapshotStateSlice(domains[i]));
     return result;
   }
-  // Subscription snapshots are internal, read-only render inputs. Deep-cloning
-  // the entire transcript for every streamed token retained hundreds of MB in
-  // React's update queue on long sessions. Keep get/getMany defensive and
-  // detached, while subscriptions copy only the top-level containers needed to
-  // trigger React. Nested message/tool objects stay structurally shared.
-  function subscriptionStateValue(value) {
-    if (Array.isArray(value)) return Object.freeze(value.slice());
-    if (value && typeof value === "object") return Object.freeze(Object.assign({}, value));
-    return value;
+  // Subscription snapshots are immutable persistent projections. The first
+  // projection detaches nested state; later notifications reconcile against it
+  // and allocate only changed paths. Long transcripts therefore stay shared
+  // between snapshots while an in-place streaming item mutation still produces
+  // a stable new item for subscribers. get/getMany retain their deep-copy API.
+  function subscriptionStateValue(value, previous) {
+    if (!value || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      var previousArray = Array.isArray(previous) ? previous : null;
+      if (!previousArray) {
+        return Object.freeze(value.map(function (item) {
+          return subscriptionStateValue(item, undefined);
+        }));
+      }
+      var nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
+      for (var arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
+        var nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex]);
+        if (nextItem !== previousArray[arrayIndex]) {
+          if (!nextArray) nextArray = previousArray.slice();
+          nextArray[arrayIndex] = nextItem;
+        }
+      }
+      return nextArray ? Object.freeze(nextArray) : previousArray;
+    }
+
+    var keys = Object.keys(value);
+    var previousObject = previous && typeof previous === "object" && !Array.isArray(previous)
+      ? previous
+      : null;
+    var previousKeys = previousObject ? Object.keys(previousObject) : [];
+    var sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
+      return Object.prototype.hasOwnProperty.call(previousObject, key);
+    });
+    var nextObject = sameShape ? null : {};
+    for (var objectIndex = 0; objectIndex < keys.length; objectIndex++) {
+      var key = keys[objectIndex];
+      var nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key]);
+      if (!sameShape || nextValue !== previousObject[key]) {
+        if (!nextObject) nextObject = Object.assign({}, previousObject);
+        nextObject[key] = nextValue;
+      }
+    }
+    return nextObject ? Object.freeze(nextObject) : previousObject;
   }
+  var subscriptionSliceRevision = 0;
+  var subscriptionSliceCache = Object.create(null);
   function subscriptionStateSlice(domain) {
     var fields = STATE_SLICE_FIELDS[domain];
     if (!fields) throw new Error("Unknown Tauri bridge state slice: " + domain);
-    var slice = {};
+    var cached = subscriptionSliceCache[domain];
+    if (cached && cached.revision === subscriptionSliceRevision) return cached.snapshot;
+    var current = {};
     for (var i = 0; i < fields.length; i++) {
-      slice[fields[i]] = subscriptionStateValue(state[fields[i]]);
+      current[fields[i]] = state[fields[i]];
     }
-    return Object.freeze(slice);
+    var snapshot = subscriptionStateValue(current, cached && cached.snapshot);
+    subscriptionSliceCache[domain] = { revision: subscriptionSliceRevision, snapshot: snapshot };
+    return snapshot;
   }
   function subscriptionStateSlices(domains) {
     if (!Array.isArray(domains) || domains.length === 0) {
@@ -1347,6 +1387,7 @@
     state.sessionBusy = {};
     for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
+    subscriptionSliceRevision += 1;
     for (var i = 0; i < subscribers.length; i++) subscribers[i]();
   }
   function subscribe(fn) {

@@ -842,20 +842,56 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
 
   var updates = 0;
-  var unsubscribe = bridge.state.subscribeMany(["sessions", "chat"], function () {
+  var secondSubscriberUpdates = 0;
+  var snapshots = [];
+  var secondSubscriberSnapshots = [];
+  var unsubscribe = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
     updates += 1;
+    if (snapshots.length < 3) snapshots.push(snapshot);
+  });
+  var unsubscribeSecond = bridge.state.subscribe("chat", function (snapshot) {
+    secondSubscriberUpdates += 1;
+    if (secondSubscriberSnapshots.length < 3) secondSubscriberSnapshots.push(snapshot);
   });
   var cloneCallsBeforeStream = harness.getStructuredCloneCalls();
   harness.emit("chat:turn_started", { session_id: sessionId });
-  for (var delta = 0; delta < 1000; delta++) {
+  harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
+
+  var firstDeltaSnapshot = snapshots[1];
+  var firstDeltaItem = firstDeltaSnapshot.chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop();
+  assert.strictEqual(firstDeltaItem.text, "abcd", "the first delta snapshot should capture its own text");
+  assert.ok(Object.isFrozen(firstDeltaItem), "nested subscription items should be immutable");
+  assert.strictEqual(Reflect.set(firstDeltaItem, "text", "subscriber-only"), false,
+    "a subscriber must not mutate a nested item");
+  assert.strictEqual(secondSubscriberSnapshots[1].chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop().text, "abcd", "one subscriber must not affect a second subscriber");
+  assert.strictEqual(bridge.state.get("chat").chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop().text, "abcd", "one subscriber must not affect bridge state");
+  assert.strictEqual(harness.getStructuredCloneCalls(), cloneCallsBeforeStream + 1,
+    "the explicit state.get isolation check should retain its defensive deep copy");
+  var cloneCallsAfterDefensiveRead = harness.getStructuredCloneCalls();
+
+  harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
+  assert.strictEqual(firstDeltaItem.text, "abcd", "an older subscription snapshot must remain stable");
+  assert.strictEqual(snapshots[2].chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop().text, "abcdabcd", "the next snapshot should observe the next delta");
+
+  for (var delta = 2; delta < 1000; delta++) {
     harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
   }
   await tick();
 
   assert.strictEqual(updates, 1001, "stream boundaries and deltas should remain immediately observable");
+  assert.strictEqual(secondSubscriberUpdates, 1001,
+    "all subscribers should receive one immediate update per stream boundary and delta");
   assert.strictEqual(
     harness.getStructuredCloneCalls(),
-    cloneCallsBeforeStream,
+    cloneCallsAfterDefensiveRead,
     "a long transcript must not be deep-cloned for each streamed delta"
   );
   var finalAssistant = bridge.state.get("chat").chatItems.filter(function (item) {
@@ -863,6 +899,7 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   }).pop();
   assert.strictEqual(finalAssistant.text.length, 4000, "subscription snapshot optimization must not lose text");
   unsubscribe();
+  unsubscribeSecond();
 }
 
 async function deepSeekTurnTimelineLifecycleBehavior() {

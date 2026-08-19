@@ -100,21 +100,45 @@ assert.ok(Object.hasOwn(state, 'settings'));
 assert.equal(Object.hasOwn(state, 'messages'), false);
 assert.throws(() => api.state.get('unknown'), /Unknown Tauri bridge state slice/);
 
-let subscribedChat;
-let subscribedCombined;
-const unsubscribeChat = api.state.subscribe('chat', snapshot => { subscribedChat = snapshot; });
-const unsubscribeCombined = api.state.subscribeMany(['sessions', 'chat'], snapshot => { subscribedCombined = snapshot; });
+const flatSnapshots = [];
+const secondFlatSnapshots = [];
+const chatSnapshots = [];
+const combinedSnapshots = [];
+const unsubscribeFlat = flat.subscribe(snapshot => { flatSnapshots.push(snapshot); });
+const unsubscribeSecondFlat = flat.subscribe(snapshot => { secondFlatSnapshots.push(snapshot); });
+const unsubscribeChat = api.state.subscribe('chat', snapshot => { chatSnapshots.push(snapshot); });
+const unsubscribeCombined = api.state.subscribeMany(['sessions', 'chat'], snapshot => { combinedSnapshots.push(snapshot); });
 snapshotReads = 0;
 deepCloneCalls = 0;
-await api.sessions.createNewSession();
+invokeResponse = async command => command === 'web_access_ingest_file'
+  ? { basename: 'stable-snapshot.txt', handle: 'attachment-handle' }
+  : null;
+await api.attachments.addAttachmentByPath('/tmp/stable-snapshot.txt');
 assert.equal(snapshotReads, 0, 'subscription notifications must use the supplied transport snapshot');
 assert.equal(deepCloneCalls, 0, 'subscription notifications must not deep-clone the transcript');
-assert.ok(Object.isFrozen(subscribedChat) && Object.isFrozen(subscribedCombined));
-assert.throws(
-  () => subscribedChat.chatItems.push({ type: 'system', text: 'subscriber-only' }),
-  /not extensible|read only|frozen/i,
-);
-assert.equal(api.state.get('chat').chatItems.length, 0, 'subscription arrays must not mutate Web bridge state');
+assert.equal(flatSnapshots.length, 2, 'Web flat subscribers should observe parsing and ready updates');
+assert.equal(chatSnapshots.length, 2, 'Web domain subscribers should observe parsing and ready updates');
+assert.equal(combinedSnapshots.length, 2, 'Web multi-domain subscribers should observe parsing and ready updates');
+assert.equal(flatSnapshots[0].attachments[0].status, 'parsing');
+assert.equal(flatSnapshots[1].attachments[0].status, 'ready');
+assert.equal(chatSnapshots[0].attachments[0].status, 'parsing');
+assert.equal(chatSnapshots[1].attachments[0].status, 'ready');
+assert.ok(Object.isFrozen(flatSnapshots[0].attachments[0]));
+assert.ok(Object.isFrozen(chatSnapshots[0].attachments[0]));
+assert.equal(Reflect.set(flatSnapshots[0].attachments[0], 'status', 'subscriber-only'), false,
+  'a flat subscriber must not mutate a nested item');
+assert.equal(Reflect.set(chatSnapshots[1].attachments[0].result, 'handle', 'subscriber-only'), false,
+  'a domain subscriber must not mutate a nested result');
+assert.equal(flatSnapshots[0].attachments[0].status, 'parsing', 'an older flat snapshot must remain stable');
+assert.equal(chatSnapshots[0].attachments[0].status, 'parsing', 'an older domain snapshot must remain stable');
+assert.equal(secondFlatSnapshots[0].attachments[0].status, 'parsing',
+  'one flat subscriber must not affect a second subscriber');
+assert.equal(combinedSnapshots[1].attachments[0].result.handle, 'attachment-handle',
+  'one domain subscriber must not affect another domain subscriber');
+assert.equal(api.state.get('chat').attachments[0].result.handle, 'attachment-handle',
+  'subscription writes must not mutate Web bridge state');
+unsubscribeFlat();
+unsubscribeSecondFlat();
 unsubscribeChat();
 unsubscribeCombined();
 

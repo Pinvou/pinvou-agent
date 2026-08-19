@@ -1434,15 +1434,52 @@
     }
     return JSON.parse(JSON.stringify(state));
   }
-  function subscriptionState() {
-    var result = {};
-    Object.keys(state).forEach(function (key) {
-      var value = state[key];
-      if (Array.isArray(value)) result[key] = Object.freeze(value.slice());
-      else if (value && typeof value === "object") result[key] = Object.freeze(Object.assign({}, value));
-      else result[key] = value;
+  // Build immutable persistent subscription snapshots. Reconcile nested values
+  // so unchanged transcript history is shared across notifications, while each
+  // in-place streaming mutation gets a detached changed path.
+  function subscriptionStateValue(value, previous) {
+    if (!value || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      var previousArray = Array.isArray(previous) ? previous : null;
+      if (!previousArray) {
+        return Object.freeze(value.map(function (item) {
+          return subscriptionStateValue(item, undefined);
+        }));
+      }
+      var nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
+      for (var arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
+        var nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex]);
+        if (nextItem !== previousArray[arrayIndex]) {
+          if (!nextArray) nextArray = previousArray.slice();
+          nextArray[arrayIndex] = nextItem;
+        }
+      }
+      return nextArray ? Object.freeze(nextArray) : previousArray;
+    }
+
+    var keys = Object.keys(value);
+    var previousObject = previous && typeof previous === "object" && !Array.isArray(previous)
+      ? previous
+      : null;
+    var previousKeys = previousObject ? Object.keys(previousObject) : [];
+    var sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
+      return Object.prototype.hasOwnProperty.call(previousObject, key);
     });
-    return Object.freeze(result);
+    var nextObject = sameShape ? null : {};
+    for (var objectIndex = 0; objectIndex < keys.length; objectIndex++) {
+      var key = keys[objectIndex];
+      var nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key]);
+      if (!sameShape || nextValue !== previousObject[key]) {
+        if (!nextObject) nextObject = Object.assign({}, previousObject);
+        nextObject[key] = nextValue;
+      }
+    }
+    return nextObject ? Object.freeze(nextObject) : previousObject;
+  }
+  var subscriptionSnapshot = null;
+  function subscriptionState() {
+    subscriptionSnapshot = subscriptionStateValue(state, subscriptionSnapshot);
+    return subscriptionSnapshot;
   }
   function notify() {
     if (suppressNotify) return;
