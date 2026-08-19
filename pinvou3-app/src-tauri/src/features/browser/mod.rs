@@ -30,7 +30,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::platform::paths;
 
-pub use cdp::CdpSession;
+use cdp::CdpSession;
 
 /// 标签页身份（targetId）→ flatten sessionId 缓存。Arc 共享给事件循环做
 /// session→target 反查（导航/帧事件以 target 身份携带给前端）。
@@ -782,9 +782,16 @@ impl BrowserManager {
         if sid.is_empty() {
             return Err("attachToTarget 未返回 sessionId".to_string());
         }
+        // 先登记 session 缓存再切流：switch 失败提前返回时，已 attach 的 flatten
+        // session 不会失联（CDP 不自动释放，失联即泄漏——下次 attach 同一 target
+        // 会再建一条新 session）。
+        self.page_sessions
+            .lock()
+            .insert(target_id.clone(), sid.clone());
         let streaming = self.streaming.load(std::sync::atomic::Ordering::SeqCst);
-        switch_screencast_locked(&mut inner, &sid, streaming).await?;
-        self.page_sessions.lock().insert(target_id.clone(), sid);
+        if let Err(e) = switch_screencast_locked(&mut inner, &sid, streaming).await {
+            return Err(format!("切换截图流失败: {e}"));
+        }
         inner.active_target = Some(target_id);
         Ok(())
     }
@@ -1222,6 +1229,14 @@ async fn run_event_loop(
                             app.state::<BrowserManager>().on_target_created(&tid).await;
                         }
                     }
+                    let payload = json!({ "event": method, "params": params });
+                    let _ = app.emit("browser:tabs-changed", &payload);
+                }
+                "Target.targetInfoChanged" => {
+                    // 页面 title/url 变化（如 document.title 动态改写）只发
+                    // targetInfoChanged，不伴随增删事件——不监听的话前端标签条
+                    // 会一直显示旧标题/URL。非页面 target 的变更同样转发：前端
+                    // refreshTabs 枚举 page target 自然滤掉，幂等无害。
                     let payload = json!({ "event": method, "params": params });
                     let _ = app.emit("browser:tabs-changed", &payload);
                 }

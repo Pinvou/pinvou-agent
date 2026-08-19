@@ -387,9 +387,9 @@ impl Pinvou3Bridge {
         // [pinvou3] 浏览器能力静态不可用时,把可读原因与恢复指引注入模型(§浏览器能力
         // 已声明能力存在与"工具缺失怎么办"的通用兜底;这里给出精确原因)。只在工作模式
         // 注入,且只在不可用时追加——可用时 system 文本逐字节不变,不破 prefix-cache。
-        // 门控经策略语义方法,与工具注册口径(见 build_engine_config_for_session)
-        // 同源。
-        if self.session_policy(session_id).exposes_browser_mcp() {
+        // 门控经 bridge 语义方法(含外部 ACP 运行时轴排除),与工具注册口径(见
+        // build_engine_config_for_session)同源。
+        if self.exposes_browser_mcp(session_id) {
             if let Some(hint) = self.bundle.browser_unavailability_reason() {
                 rendered.push_str("\n\n## 浏览器能力不可用\n");
                 rendered.push_str(&hint);
@@ -461,6 +461,21 @@ impl Pinvou3Bridge {
             .as_ref()
             .is_some_and(|predicate| predicate(session_id));
         !external_acp && self.session_policy(session_id).supports_multi_agent_mode()
+    }
+
+    /// 该 session 是否暴露 browser MCP 工具（`mcp_browser_*`，工作模式有头浏览器）。
+    ///
+    /// 会话模式为 Plain 只是必要条件：外部 ACP 会话（codex 等）虽然也是 plain，
+    /// 但不由 Pinvou Engine 执行，会话专用 mcp.work.json 注入对其无意义——若未来
+    /// 任何路径把外部会话传入 `build_engine_config`，将静默拿到浏览器工具。与
+    /// [`Self::multi_agent_mode_available`] 同款的运行时轴守卫，显式挡住该轴；
+    /// 消费点（mcp 配置路径与「不可用原因」注入）须全部经本方法，保持口径同源。
+    pub fn exposes_browser_mcp(&self, session_id: &str) -> bool {
+        let external_acp = self
+            .external_acp_session_predicate
+            .as_ref()
+            .is_some_and(|predicate| predicate(session_id));
+        !external_acp && self.session_policy(session_id).exposes_browser_mcp()
     }
 
     /// 该 session 的会话模式策略：共享链路（发送 op 构造、工具整形、session
@@ -1314,8 +1329,9 @@ impl Pinvou3Bridge {
             notes_path: paths::notes_path(),
             // 工作模式门控：browser MCP 工具只对 assistant 引擎（工作模式）会话暴露。
             // 全局 mcp.json 不含 browser 条目；此处生成「全局 + browser」的会话专用
-            // 配置文件（条件不满足时直接回落全局配置）。codex ACP 等外部 Agent 不走
-            // 本路径，天然拿不到浏览器工具。
+            // 配置文件（条件不满足时直接回落全局配置）。外部 ACP 会话经
+            // exposes_browser_mcp 的运行时轴守卫显式排除（见该方法注释），不依赖
+            // "外部 Agent 不走本路径"的时序巧合。
             mcp_config_path: self.bundle.work_mode_mcp_config_path(),
             skills_dir: self.bundle.skills_dir.clone(),
             plugin_registry: None,
@@ -1526,11 +1542,11 @@ impl Pinvou3Bridge {
         // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
         // 目录在下次物化时机前被重建。
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
-        // 代码模式（原生代码会话）不暴露 browser MCP 工具：回落全局 mcp.json
-        // （无 browser 条目）。系统提示词 §浏览器能力 与「不可用原因」已按
-        // exposes_browser_mcp 门控，这里对齐工具注册口径，否则 code 会话会
-        // 拿到未声明的 mcp_browser_* 工具，与「仅工作模式暴露」的约定矛盾。
-        if !self.session_policy(session_id).exposes_browser_mcp() {
+        // 代码模式（原生代码会话）与外部 ACP 会话不暴露 browser MCP 工具：回落全局
+        // mcp.json（无 browser 条目）。系统提示词 §浏览器能力 与「不可用原因」已按
+        // exposes_browser_mcp 门控，这里对齐工具注册口径，否则这些会话会拿到未声明
+        // 的 mcp_browser_* 工具，与「仅工作模式暴露」的约定矛盾。
+        if !self.exposes_browser_mcp(session_id) {
             cfg.mcp_config_path = crate::platform::paths::mcp_config_path();
         }
         cfg
@@ -4580,6 +4596,43 @@ mod tests {
         assert!(
             prompt_work.contains("## 浏览器能力不可用"),
             "前置缺失时工作模式应注入不可用原因"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 外部 ACP 会话（codex 等）虽是 plain 模式，但不得经 Engine 配置拿到
+    /// browser MCP：外部 Agent 不由 Pinvou Engine 执行，mcp.work.json 注入对其
+    /// 无意义。运行时轴守卫与 multi_agent_mode_available 同款——防未来任何路径
+    /// 把外部会话传入 build_engine_config 时静默泄漏浏览器工具。
+    #[test]
+    fn browser_mcp_hidden_for_external_acp_sessions() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_SESSION_ARTIFACTS"]);
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-browser-gating-ext-{}-{}",
+            std::process::id(),
+            crate::bridge::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("PINVOU3_HOME", &root);
+
+        let mut bridge = fixture_bridge();
+        bridge
+            .set_external_acp_session_predicate(std::sync::Arc::new(|s| s.starts_with("sess-acp")));
+
+        // mcp 配置路径：外部 ACP 会话回落全局（无 browser 条目）。
+        let cfg = bridge.build_engine_config_for_session("sess-acp-1");
+        assert_eq!(
+            cfg.mcp_config_path,
+            crate::platform::paths::mcp_config_path(),
+            "外部 ACP 会话必须回落全局 mcp.json（不暴露 mcp_browser_*）"
+        );
+
+        // 系统提示词：外部 ACP 会话永不注入「浏览器能力不可用」。
+        let prompt = bridge.build_session_system_prompt("sess-acp-1");
+        assert!(
+            !prompt.contains("## 浏览器能力不可用"),
+            "外部 ACP 会话不应注入浏览器不可用提示"
         );
 
         let _ = std::fs::remove_dir_all(&root);

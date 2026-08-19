@@ -28,7 +28,7 @@
  * Chrome，退出前会清理它。
  */
 
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import {
   chmodSync,
   closeSync,
@@ -142,30 +142,36 @@ function findChrome() {
 }
 
 // ---------------------------------------------------------------------------
-// CDP 存活探测（GET /json/version，同步等待）
+// CDP 存活探测（GET /json/version）。异步实现：execFile 回调 + 重试间让出事件
+// 循环——同步忙循环（execFileSync）会冻结事件循环，压住 probeCatalog 的超时
+// 定时器与启动期全部异步逻辑（catalog 缺失时首个 tools/call 最坏 40-50s 无
+// 响应，且错误文案与真实原因脱节）。
 // ---------------------------------------------------------------------------
-function probeCdp(port, timeoutMs) {
+function probeCdpOnce(port) {
+  return new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      [
+        '-e',
+        [
+          `const http=require('http');`,
+          `http.get({host:'127.0.0.1',port:${port},path:'/json/version',timeout:1000},r=>{`,
+          `  r.resume();`,
+          `  process.exit(r.statusCode===200?0:1)`,
+          `}).on('error',()=>process.exit(1));`,
+        ].join('\n'),
+      ],
+      { stdio: 'ignore', timeout: 2500 },
+      (err) => resolve(!err)
+    );
+  });
+}
+
+async function probeCdp(port, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    try {
-      execFileSync(
-        process.execPath,
-        [
-          '-e',
-          [
-            `const http=require('http');`,
-            `http.get({host:'127.0.0.1',port:${port},path:'/json/version',timeout:1000},r=>{`,
-            `  r.resume();`,
-            `  process.exit(r.statusCode===200?0:1)`,
-            `}).on('error',()=>process.exit(1));`,
-          ].join('\n'),
-        ],
-        { stdio: 'ignore', timeout: 2500 }
-      );
-      return true;
-    } catch {
-      /* 未就绪，重试 */
-    }
+    if (await probeCdpOnce(port)) return true;
+    await sleep(100);
   }
   return false;
 }
@@ -367,7 +373,9 @@ async function startChrome(port) {
 async function ensureBrowserRunning() {
   const portFile = readPortFile();
   let port = portFile?.port ?? 0;
-  if (port > 0 && probeCdp(port, 2000)) {
+  // 注意：probeCdp 为 async（修复同步忙循环压住事件循环），所有调用点必须 await——
+  // 漏 await 时 Promise 恒为 truthy，探测形同虚设（曾致 NO_CDP 假 Chrome 被判就绪）。
+  if (port > 0 && (await probeCdp(port, 2000))) {
     return port;
   }
 
@@ -404,7 +412,7 @@ async function ensureBrowserRunning() {
           continue;
         }
         const pf = readPortFile();
-        if (pf?.port && probeCdp(pf.port, 1000)) {
+        if (pf?.port && (await probeCdp(pf.port, 1000))) {
           port = pf.port;
           chromeReady = true;
         } else {
@@ -431,7 +439,7 @@ async function ensureBrowserRunning() {
     try {
       // 持锁后二次确认（品悟可能刚启动完）
       const pf = readPortFile();
-      if (pf?.port && probeCdp(pf.port, 1000)) {
+      if (pf?.port && (await probeCdp(pf.port, 1000))) {
         port = pf.port;
         chromeReady = true;
       } else {
@@ -441,13 +449,14 @@ async function ensureBrowserRunning() {
           throw new Error('无可用 CDP 端口');
         }
         if (await startChrome(port)) {
-          chromeReady = probeCdp(port, 15000);
+          chromeReady = await probeCdp(port, 15000);
           if (chromeReady && !writePortFile(port, 'mcp')) {
             // Chrome 已就绪但端口文件没落盘：Rust 侧永远发现不了该实例
             // （前端 Tab 不出现），用户触发 ensure_started 还会对同一
             // profile 双启 Chrome 撞单实例锁。按致命处理：记录原因后走统一
             // 失败出口（finally 释放启动锁，下方回收自启 Chrome）。
-            writeLastError(`CDP 端口文件写入失败: ${CDP_PORT_JSON}`);
+            // last-error 会被 Rust 注入模型可见提示词，不写宿主机绝对路径。
+            writeLastError('CDP 端口文件（cdp-port.json）写入失败');
             chromeReady = false;
           }
           if (!chromeReady && chromeChild) {
@@ -773,12 +782,31 @@ function spawnMcpChild(port) {
     mcpChild = child;
     let hsBuf = '';
     let settled = false;
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        reject(new Error('chrome-devtools-mcp 握手超时'));
+    // 握手失败（超时/error/退出）：摘监听 + kill 残余子进程 + 置空全局句柄。
+    // 不 kill 的话，迟到的握手应答会把僵尸 stdout 永久接回引擎 stdout；用户
+    // 重试 spawn 新子进程后，僵尸的 exit 处理器还会把健康的新 mcpChild 置 null
+    // （静默断流 + 孤儿化）——正是 cleanup 注释声称要防的场景。
+    // failed=true 同时让 exit 处理器跳过「cleanup + process.exit」自杀路径：
+    // 握手失败要回到 shim 态保留重试能力（startProxy catch 应答缓冲请求），
+    // 这里退出会让引擎只看到连接断开、丢失可读错误且不可重试。
+    let handshakeFailed = false;
+    const failHandshake = (err) => {
+      settled = true;
+      handshakeFailed = true;
+      clearTimeout(timer);
+      child.stdout.off('data', onData);
+      if (mcpChild === child) mcpChild = null;
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* ignore */
       }
-    }, 20000);
+      reject(err);
+    };
+    // 测试可注入短超时（默认 20s：Windows 杀软扫描 13MB rollup 产物等冷启动）。
+    const timer = setTimeout(() => {
+      if (!settled) failHandshake(new Error('chrome-devtools-mcp 握手超时'));
+    }, Number(process.env.PINVOU_BROWSER_MCP_HANDSHAKE_TIMEOUT_MS) || 20000);
     const onData = (chunk) => {
       hsBuf += chunk;
       let idx;
@@ -793,10 +821,7 @@ function spawnMcpChild(port) {
         }
         if (msg.id !== HANDSHAKE_ID) continue;
         if (msg.error) {
-          settled = true;
-          clearTimeout(timer);
-          child.stdout.off('data', onData);
-          reject(new Error(`chrome-devtools-mcp 握手失败: ${msg.error.message}`));
+          failHandshake(new Error(`chrome-devtools-mcp 握手失败: ${msg.error.message}`));
           return;
         }
         // 握手完成：initialized 通知 + 转入透传（残留缓冲先发，避免丢消息）。
@@ -814,22 +839,20 @@ function spawnMcpChild(port) {
     child.stdout.on('data', onData);
     child.on('error', (err) => {
       log('chrome-devtools-mcp 启动失败:', err.message);
-      mcpChild = null;
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        reject(err);
-      }
+      if (!settled) failHandshake(err);
     });
     child.on('exit', (code, signal) => {
       log('chrome-devtools-mcp 退出', { code, signal });
-      mcpChild = null; // cleanup() 不再重复 kill（双向退出都不会留下孤儿）
+      // 身份校验：只清理自己。历史上无条件置 null，启动失败残留的旧子进程
+      // 退出时会把重试后的健康新子进程误清（cleanup 跳过 kill → 孤儿）。
+      if (mcpChild === child) mcpChild = null; // cleanup() 不再重复 kill（双向退出都不会留下孤儿）
       if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        reject(new Error(`chrome-devtools-mcp 握手前退出 code=${code}`));
+        failHandshake(new Error(`chrome-devtools-mcp 握手前退出 code=${code}`));
         return;
       }
+      // failHandshake kill 触发的退出：子进程已由 failHandshake 清理（监听摘除/
+      // 句柄置空/SIGKILL），此处不退出进程——握手失败回 shim 态可重试。
+      if (handshakeFailed) return;
       void cleanup().finally(() => process.exit(code ?? (signal ? 1 : 0)));
     });
     // 与引擎一致的 initialize 参数（含 protocolVersion 协商与 clientInfo）。
@@ -843,9 +866,7 @@ function spawnMcpChild(port) {
         JSON.stringify({ jsonrpc: '2.0', id: HANDSHAKE_ID, method: 'initialize', params }) + '\n'
       );
     } catch (e) {
-      settled = true;
-      clearTimeout(timer);
-      reject(e);
+      failHandshake(e);
     }
   });
 }
@@ -921,16 +942,18 @@ function startReusedChromeWatchdog(port) {
   if (startedByUs) return; // 自启路径由 chromeChild 的 exit 事件覆盖
   let misses = 0;
   const timer = setInterval(() => {
-    if (probeCdp(port, 1000)) {
-      misses = 0;
-      return;
-    }
-    misses += 1;
-    if (misses >= 2) {
-      clearInterval(timer);
-      log('复用的 Chrome 已失联（可能被停止或启动方会话退出），退出以待重新协调');
-      void cleanup().finally(() => process.exit(1));
-    }
+    void probeCdp(port, 1000).then((alive) => {
+      if (alive) {
+        misses = 0;
+        return;
+      }
+      misses += 1;
+      if (misses >= 2) {
+        clearInterval(timer);
+        log('复用的 Chrome 已失联（可能被停止或启动方会话退出），退出以待重新协调');
+        void cleanup().finally(() => process.exit(1));
+      }
+    });
   }, 10000);
   timer.unref();
 }
