@@ -45,5 +45,7 @@ body:
       options:
         - label: I searched existing issues and discussions for this request.
           required: true
+        - label: I wrote the issue title and description in English.
+          required: true
         - label: This request is for the Community edition or a generally useful open-source capability.
           required: true

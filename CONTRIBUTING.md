@@ -57,13 +57,15 @@ CodeWhale changes must follow the fork boundary in [AGENTS.md](AGENTS.md) and [`
 Use:
 
 ```text
-<type>: <中文描述>
-<type>(<scope>)!: <中文描述>
+<type>: <English description>
+<type>(<scope>)!: <English description>
 ```
 
-`scope` and `!` are optional. Allowed types are `feat`, `fix`, `refactor`, `perf`, `docs`, `style`, `test`, `build`, `ci`, `chore`, and `revert`. Descriptions must contain Chinese, be specific, be at most 50 characters, and not end with punctuation.
+`scope` and `!` are optional. Allowed types are `feat`, `fix`, `refactor`, `perf`, `docs`, `style`, `test`, `build`, `ci`, `chore`, and `revert`. Write concise English descriptions of at most 50 characters without ending punctuation. CI validates the format, not the language.
 
-Issues and pull requests may use English or Chinese. See [`docs/Git Commit 信息规范文档.md`](docs/Git%20Commit%20信息规范文档.md) for full commit rules.
+Use English for branches, issues, pull requests, commits, code comments, developer documentation, and diagnostics. Existing history and localized resources are exempt; UI copy follows [AGENTS.md](AGENTS.md).
+
+See [`docs/commit-message-convention.md`](docs/commit-message-convention.md) for the full commit rules.
 
 ## Local checks
 
@@ -112,6 +114,8 @@ CodeWhale gitlink, and other high-risk changes enter alone.
 ## Pull requests
 
 Review the actual diff against the target branch and complete the quality self-check required by [AGENTS.md](AGENTS.md) before submission.
+
+Pull request titles and descriptions must use English; titles must follow the commit subject convention for squash merges.
 
 A pull request should explain:
 

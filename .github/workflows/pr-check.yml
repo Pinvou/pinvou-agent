@@ -1,7 +1,7 @@
 name: PR Check
 
 # Jobs:
-# - commit-message:强制校验 PR/push 的 Git commit 信息规范。
+# - commit-message: enforce the Git commit convention on pull requests and pushes.
 # - version-consistency:强制校验 VERSION 单一事实来源与 SemVer 规则。
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
 # - changes:检测本 PR 有没有 Rust 代码、发布契约、L1 harness 或前端改动,给后续 job 做 paths filter。
@@ -78,7 +78,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 校验 commit 信息规范
+      - name: Validate commit messages
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             python3 scripts/validate-commit-msg.py --range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"

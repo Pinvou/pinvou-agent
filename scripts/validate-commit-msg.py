@@ -30,14 +30,19 @@ SUBJECT_RE = re.compile(
     )
 )
 
-CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 GITHUB_PR_SUFFIX_RE = re.compile(r" \(#\d+\)$")
-PROHIBITED_DESCRIPTIONS = {"update", "fix bug", "修改代码", "测试"}
+PROHIBITED_DESCRIPTIONS = {
+    "update",
+    "fix bug",
+    "modify code",
+    "test",
+    "修改代码",
+    "测试",
+}
 FORBIDDEN_ENDING_PUNCTUATION = set("。.，,；;、！!？?：:")
-DOC_PATH = "docs/Git Commit 信息规范文档.md"
-# #235 首次把这条门禁带入 main；此前 Windows 分支累积的提交不回写历史。
-# 新门禁只约束该快照之后的非 merge 提交，避免 GitHub 自动 merge commit
-# 和合流前的历史提交永久打红 main。
+DOC_PATH = "docs/commit-message-convention.md"
+# #235 introduced this gate on main. Older Windows branch history remains
+# grandfathered so generated merge commits and pre-gate commits do not fail main.
 LEGACY_HISTORY_CUTOFF = "deae3ca0141390c06e14aa93610645088b8966d4"
 TRUSTED_BOT_AUTHORS = {
     (
@@ -72,9 +77,9 @@ def validate_text(raw: str, label: str) -> list[str]:
     match = SUBJECT_RE.match(subject)
     if not match:
         return [
-            f"{label}: first line must be '<type>[scope]: <中文简短描述>'",
+            f"{label}: first line must be '<type>(<scope>): <description>'",
             f"  allowed types: {', '.join(ALLOWED_TYPES)}",
-            f"  example: fix(installer): 修复安装器资源输出目录",
+            f"  example: fix(installer): preserve runtime resources",
             f"  actual: {subject}",
         ]
 
@@ -90,10 +95,10 @@ def validate_text(raw: str, label: str) -> list[str]:
             f"{label}: description must be 50 characters or fewer, got {len(semantic_desc)}"
         )
 
-    if not CJK_RE.search(semantic_desc):
-        errors.append(f"{label}: description must use Chinese")
+    if not any(char.isalpha() for char in semantic_desc):
+        errors.append(f"{label}: description must contain a letter")
 
-    if semantic_desc[-1] in FORBIDDEN_ENDING_PUNCTUATION:
+    if semantic_desc and semantic_desc[-1] in FORBIDDEN_ENDING_PUNCTUATION:
         errors.append(f"{label}: description must not end with punctuation")
 
     if normalized_desc in PROHIBITED_DESCRIPTIONS:
@@ -162,7 +167,7 @@ def main() -> int:
     errors = validate_range(*args.range) if args.range else validate_file(args.message_file)
 
     if errors:
-        print("Commit message does not follow the mandatory pinvou3 convention.", file=sys.stderr)
+        print("Commit message does not follow the mandatory Pinvou Agent convention.", file=sys.stderr)
         print(f"See {DOC_PATH}", file=sys.stderr)
         for error in errors:
             print(f"- {error}", file=sys.stderr)
