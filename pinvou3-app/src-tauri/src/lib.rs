@@ -5,6 +5,10 @@ mod core;
 pub mod features;
 pub mod platform;
 
+pub use features::assistant::attachments::{
+    build_message_with_attachments, stage_file_in_workspace,
+};
+
 use tauri::Manager;
 
 #[cfg(feature = "benchmark-hooks")]
