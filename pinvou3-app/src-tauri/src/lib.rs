@@ -704,6 +704,8 @@ pub fn run() {
             commands::remote_control::web_access_rpc_respond,
             commands::remote_control::web_access_publish_event,
             commands::remote_control::web_access_list_host_files,
+            commands::remote_control::web_access_list_sessions,
+            commands::remote_control::web_access_list_archived_sessions,
             commands::remote_control::web_access_create_session,
             commands::remote_control::web_access_create_session_and_chat,
             commands::remote_control::web_access_cancel_session_download,

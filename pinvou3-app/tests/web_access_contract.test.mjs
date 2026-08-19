@@ -193,6 +193,8 @@ for (const command of deniedConnectorMutations) {
 
 for (const command of [
   'web_access_chat',
+  'web_access_list_sessions',
+  'web_access_list_archived_sessions',
   'web_access_create_session_and_chat',
   'web_access_ingest_file',
   'web_access_upload_attachment_chunk',
@@ -219,6 +221,10 @@ for (const command of [
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be the bounded Web wrapper`);
 }
+assert.equal(allowed.has('list_sessions'), false,
+  'Web must not call the native session list that exposes host workspace metadata');
+assert.equal(allowed.has('list_archived_sessions'), false,
+  'Web must not call the native archived list that exposes host workspace metadata');
 
 assert.equal(allowedEvents.has('acp:event'), true,
   'the shared ACP timeline must reach WebUI through the normal event transport');
@@ -285,8 +291,17 @@ assert.match(commands,
   /pub async fn list_codex_acp_sessions_for_web[\s\S]*?acp_pool\.is_acp_metadata\(metadata\)[\s\S]*?redact_codex_session_list_item_for_web/,
   'the Web code-session list must contain ACP sessions only');
 assert.match(remoteControlCommands,
-  /let mut saved = store[\s\S]*?redact_session_metadata_for_web\(saved\.metadata\)[\s\S]*?WebSavedSession/,
-  'chunked Web session downloads must redact the SavedSession workspace before serialization');
+  /struct WebSavedSession[\s\S]*?metadata: deepseek_tui::session_manager::SessionMetadata[\s\S]*?messages:[\s\S]*?artifacts:[\s\S]*?transcript_revision:/,
+  'chunked Web session downloads must use an explicit browser field allowlist');
+assert.doesNotMatch(remoteControlCommands,
+  /struct WebSavedSession[\s\S]{0,300}#\[serde\(flatten\)\]/,
+  'the Web session projection must not flatten the full desktop SavedSession');
+assert.match(remoteControlCommands,
+  /impl<'a> WebSavedSession<'a>[\s\S]*?redact_session_metadata_for_web\(session\.metadata\.clone\(\)\)[\s\S]*?web_artifact_storage_path[\s\S]*?ledger_root\(&session_id\)[\s\S]*?session_artifacts_dir\(&session_id\)[\s\S]*?WebSavedSession::project\(&saved, &artifact_roots, &revision\)/,
+  'the Web session projection must redact metadata and scope legacy artifact paths before serialization');
+assert.match(webBridge,
+  /IS_WEB \? "web_access_list_sessions" : "list_sessions"[\s\S]*?IS_WEB \? "web_access_list_archived_sessions" : "list_archived_sessions"/,
+  'Web history refreshes must use path-redacted session list commands');
 assert.match(remoteControlCommands,
   /fn web_workspace_result[\s\S]*?Web code workspace \{operation\} failed[\s\S]*?web_access_list_codex_workspace[\s\S]*?web_workspace_result\("listing", result\)[\s\S]*?web_access_search_codex_workspace[\s\S]*?web_workspace_result\("search", result\)[\s\S]*?web_access_preview_codex_workspace_file[\s\S]*?web_workspace_result\("preview", result\)/,
   'Web workspace RPC failures must not return host paths embedded in native errors');

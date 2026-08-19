@@ -2883,13 +2883,15 @@
         do {
           refreshHistoryQueued = false;
           try {
-            state.sessions = await invoke("list_sessions");
+            state.sessions = await invoke(IS_WEB ? "web_access_list_sessions" : "list_sessions");
           } catch (e) {
             console.warn("list_sessions failed", e);
             state.sessions = [];
           }
           try {
-            state.archivedSessions = await invoke("list_archived_sessions");
+            state.archivedSessions = await invoke(
+              IS_WEB ? "web_access_list_archived_sessions" : "list_archived_sessions",
+            );
           } catch (e) {
             state.archivedSessions = state.archivedSessions || [];
           }

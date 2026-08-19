@@ -347,6 +347,8 @@ command_protocol!(
         "web_access_rpc_respond",
         "web_access_publish_event",
         "web_access_list_host_files",
+        "web_access_list_sessions",
+        "web_access_list_archived_sessions",
         "web_access_create_session",
         "web_access_load_session_chunk",
         "web_access_cancel_session_download",

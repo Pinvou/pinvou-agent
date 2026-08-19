@@ -3321,6 +3321,8 @@ mod tests {
             "web_access_update_settings",
             "web_access_create_session",
             "web_access_create_session_and_chat",
+            "web_access_list_sessions",
+            "web_access_list_archived_sessions",
             "web_access_chat",
             "web_access_ingest_file",
             "web_access_upload_attachment_chunk",
@@ -3345,6 +3347,8 @@ mod tests {
                 "{command} must be Web-scoped"
             );
         }
+        assert!(!policy.commands.contains("list_sessions"));
+        assert!(!policy.commands.contains("list_archived_sessions"));
         assert!(
             !policy
                 .commands

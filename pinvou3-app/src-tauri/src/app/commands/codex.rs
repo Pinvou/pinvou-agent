@@ -604,11 +604,12 @@ pub(crate) fn redact_workspace_path_for_web(path: &str) -> String {
     if path.is_empty() {
         return String::new();
     }
-    std::path::Path::new(path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "workspace".to_string())
+    path.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty() && !name.ends_with(':'))
+        .unwrap_or("workspace")
+        .to_string()
 }
 
 /// Remove host-specific path components from Session metadata before it
@@ -850,10 +851,15 @@ mod tests {
             redact_workspace_path_for_web("/Users/asto/Documents/secret-project"),
             "secret-project"
         );
+        assert_eq!(
+            redact_workspace_path_for_web(r#"C:\Users\asto\Documents\secret-project"#),
+            "secret-project"
+        );
         // 已是末级名称时原样返回；空串兜底为自身。
         assert_eq!(redact_workspace_path_for_web("repo"), "repo");
         assert_eq!(redact_workspace_path_for_web(""), "");
         assert_eq!(redact_workspace_path_for_web("/"), "workspace");
+        assert_eq!(redact_workspace_path_for_web(r#"C:\"#), "workspace");
     }
 
     fn metadata_with_workspace(workspace: &str) -> SessionMetadata {

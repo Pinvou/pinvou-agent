@@ -3,6 +3,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, State, WebviewWindow};
 
 use crate::features::assistant::engine_pool::EnginePool;
@@ -186,6 +187,29 @@ pub fn web_access_list_host_files(
     })
 }
 
+#[tauri::command]
+pub async fn web_access_list_sessions(
+    store: State<'_, SessionStore>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<Vec<super::sessions::SessionListItem>, String> {
+    let mut sessions = super::sessions::list_sessions(store, acp_pool).await?;
+    for session in &mut sessions {
+        session.metadata = super::codex::redact_session_metadata_for_web(session.metadata.clone());
+    }
+    Ok(sessions)
+}
+
+#[tauri::command]
+pub async fn web_access_list_archived_sessions(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<super::sessions::HiddenSessionListItem>, String> {
+    let mut sessions = super::sessions::list_archived_sessions(store).await?;
+    for session in &mut sessions {
+        session.metadata = super::codex::redact_session_metadata_for_web(session.metadata.clone());
+    }
+    Ok(sessions)
+}
+
 /// WebUI navigation owns an independent selected Session. These wrappers
 /// intentionally never mutate the desktop process-wide `SessionStore.active`
 /// pointer used by the native window.
@@ -198,10 +222,7 @@ pub async fn web_access_create_session(
     let metadata = super::sessions::create_session(Some(false), app, store, pool).await?;
     let transcript_revision = crate::features::sessions::transcript_revision(&[])
         .map_err(|error| format!("create empty transcript revision: {error:#}"))?;
-    Ok(WebSessionMetadata {
-        metadata,
-        transcript_revision,
-    })
+    Ok(WebSessionMetadata::project(metadata, transcript_revision))
 }
 
 /// Preserve the native `SessionMetadata` response shape while adding the
@@ -213,11 +234,127 @@ pub struct WebSessionMetadata {
     transcript_revision: String,
 }
 
+impl WebSessionMetadata {
+    fn project(
+        metadata: deepseek_tui::session_manager::SessionMetadata,
+        transcript_revision: String,
+    ) -> Self {
+        Self {
+            metadata: super::codex::redact_session_metadata_for_web(metadata),
+            transcript_revision,
+        }
+    }
+}
+
+/// Browser projection of a saved chat. Keep this allowlist explicit so newly
+/// added desktop-only SavedSession fields cannot cross the Relay by default.
 #[derive(Serialize)]
 struct WebSavedSession<'a> {
-    #[serde(flatten)]
-    session: &'a deepseek_tui::session_manager::SavedSession,
+    metadata: deepseek_tui::session_manager::SessionMetadata,
+    messages: &'a [deepseek_tui::models::Message],
+    artifacts: Vec<deepseek_tui::artifacts::ArtifactRecord>,
     transcript_revision: &'a str,
+}
+
+impl<'a> WebSavedSession<'a> {
+    fn project(
+        session: &'a deepseek_tui::session_manager::SavedSession,
+        artifact_roots: &[PathBuf],
+        transcript_revision: &'a str,
+    ) -> Self {
+        Self {
+            metadata: super::codex::redact_session_metadata_for_web(session.metadata.clone()),
+            messages: &session.messages,
+            artifacts: session
+                .artifacts
+                .iter()
+                .filter_map(|artifact| {
+                    let storage_path = if artifact.storage_path.is_absolute()
+                        || is_absolute_host_path(&artifact.storage_path.to_string_lossy())
+                    {
+                        artifact_roots.iter().find_map(|root| {
+                            web_artifact_storage_path(&artifact.storage_path, root)
+                        })?
+                    } else {
+                        safe_relative_web_path(&artifact.storage_path.to_string_lossy())?
+                    };
+                    let mut projected = artifact.clone();
+                    projected.storage_path = storage_path;
+                    Some(projected)
+                })
+                .collect(),
+            transcript_revision,
+        }
+    }
+}
+
+fn is_absolute_host_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    Path::new(path).is_absolute()
+        || path.starts_with("\\\\")
+        || path.starts_with("//")
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+}
+
+fn normalized_host_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    if normalized == "/" {
+        normalized
+    } else {
+        normalized.trim_end_matches('/').to_string()
+    }
+}
+
+fn safe_relative_web_path(path: &str) -> Option<PathBuf> {
+    if path.is_empty() || is_absolute_host_path(path) {
+        return None;
+    }
+    let normalized = path.replace('\\', "/");
+    let mut components = Vec::new();
+    for component in normalized.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => return None,
+            component => components.push(component),
+        }
+    }
+    (!components.is_empty()).then(|| PathBuf::from(components.join("/")))
+}
+
+fn web_artifact_storage_path(storage_path: &Path, workspace: &Path) -> Option<PathBuf> {
+    let storage_path = storage_path.to_string_lossy();
+    if !is_absolute_host_path(&storage_path) {
+        return safe_relative_web_path(&storage_path);
+    }
+
+    let workspace = workspace.to_string_lossy();
+    if !is_absolute_host_path(&workspace) {
+        return None;
+    }
+    let storage_path = normalized_host_path(&storage_path);
+    let workspace = normalized_host_path(&workspace);
+    let prefix = if workspace == "/" {
+        "/".to_string()
+    } else {
+        format!("{workspace}/")
+    };
+    let windows_style = workspace.starts_with("//")
+        || workspace
+            .as_bytes()
+            .get(1)
+            .is_some_and(|separator| *separator == b':');
+    let prefix_matches = storage_path.get(..prefix.len()).is_some_and(|candidate| {
+        if windows_style {
+            candidate.eq_ignore_ascii_case(&prefix)
+        } else {
+            candidate == prefix
+        }
+    });
+    // Legacy absolute records are useful to WebUI only when they can be
+    // represented by the same session-scoped relative artifact authority.
+    prefix_matches
+        .then(|| &storage_path[prefix.len()..])
+        .and_then(safe_relative_web_path)
 }
 
 #[derive(Debug, Serialize)]
@@ -277,21 +414,23 @@ pub async fn web_access_load_session_chunk(
             let store = store.inner().clone();
             let session_id = id.clone();
             let revision = tokio::task::spawn_blocking(move || -> Result<String, String> {
-                let mut saved = store
+                let saved = store
                     .load(&session_id)
                     .map_err(|error| format!("load Session {session_id}: {error:#}"))?;
-                saved.metadata = super::codex::redact_session_metadata_for_web(saved.metadata);
                 let revision = crate::features::sessions::transcript_revision(&saved.messages)
                     .map_err(|error| {
                         format!("compute Session {session_id} transcript revision: {error:#}")
                     })?;
+                let artifact_roots = [
+                    store.ledger_root(&session_id).map_err(|error| {
+                        format!("resolve Session {session_id} workspace: {error:#}")
+                    })?,
+                    crate::platform::paths::session_artifacts_dir(&session_id),
+                ];
                 let mut writer = BufWriter::new(output_file);
                 serde_json::to_writer(
                     &mut writer,
-                    &WebSavedSession {
-                        session: &saved,
-                        transcript_revision: &revision,
-                    },
+                    &WebSavedSession::project(&saved, &artifact_roots, &revision),
                 )
                 .map_err(|error| format!("serialize Session {session_id}: {error}"))?;
                 writer
@@ -509,10 +648,7 @@ pub async fn web_access_create_session_and_chat(
     }
 
     super::sessions::emit_session_event(&app, "session:list_changed", &session_id, "created");
-    Ok(WebSessionMetadata {
-        metadata,
-        transcript_revision,
-    })
+    Ok(WebSessionMetadata::project(metadata, transcript_revision))
 }
 
 /// Web-safe chat entry point: Session routing is mandatory and attachment
@@ -1239,7 +1375,70 @@ pub async fn web_access_render_artifact_visual(
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_web_chat_session_supported, web_acp_agent_id, web_workspace_result};
+    use super::{
+        ensure_web_chat_session_supported, web_acp_agent_id, web_workspace_result, WebSavedSession,
+        WebSessionMetadata,
+    };
+    use deepseek_tui::session_manager::{create_saved_session, SavedSession};
+    use serde_json::{json, Value};
+    use std::path::Path;
+
+    fn saved_session_with_private_paths(
+        workspace: &str,
+        context_target: &str,
+        artifact_paths: &[&str],
+    ) -> SavedSession {
+        let session = create_saved_session(&[], "test-model", Path::new(workspace), 0, None);
+        let mut value = serde_json::to_value(session).expect("serialize SavedSession fixture");
+        value["context_references"] = json!([{
+            "message_index": 0,
+            "reference": {
+                "kind": "file",
+                "source": "at_mention",
+                "badge": "file",
+                "label": "main.rs",
+                "target": context_target,
+                "included": true,
+                "expanded": false
+            }
+        }]);
+        value["artifacts"] = Value::Array(
+            artifact_paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| {
+                    json!({
+                        "id": format!("artifact-{index}"),
+                        "kind": "tool_output",
+                        "session_id": value["metadata"]["id"],
+                        "tool_call_id": format!("tool-call-{index}"),
+                        "tool_name": "write_file",
+                        "created_at": "2026-08-19T00:00:00Z",
+                        "byte_size": 1,
+                        "preview": "artifact",
+                        "storage_path": path
+                    })
+                })
+                .collect(),
+        );
+        serde_json::from_value(value).expect("deserialize SavedSession fixture")
+    }
+
+    fn assert_value_does_not_contain(value: &Value, private_path: &str) {
+        match value {
+            Value::String(value) => assert!(
+                !value.contains(private_path),
+                "serialized Web session exposed private path {private_path}: {value}"
+            ),
+            Value::Array(values) => values
+                .iter()
+                .for_each(|value| assert_value_does_not_contain(value, private_path)),
+            Value::Object(values) => values
+                .values()
+                .for_each(|value| assert_value_does_not_contain(value, private_path)),
+            _ => {}
+        }
+    }
 
     #[test]
     fn web_chat_rejects_desktop_only_multiagent_sessions() {
@@ -1267,5 +1466,102 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, "Web code workspace preview failed");
         assert!(!error.contains(private_path));
+    }
+
+    #[test]
+    fn web_saved_session_projects_only_browser_fields_and_safe_artifact_paths() {
+        let fixtures = [
+            (
+                "/Users/alice/secret-project",
+                "/Users/alice/secret-project/src/main.rs",
+                "/Users/alice/secret-project/artifacts/report.md",
+                "/Users/alice/.pinvou3/sessions/session-id/artifacts/chart.png",
+                "/Users/alice/.pinvou3/sessions/session-id/artifacts",
+                "/Users/alice/outside.txt",
+            ),
+            (
+                r#"C:\Users\alice\secret-project"#,
+                r#"C:\Users\alice\secret-project\src\main.rs"#,
+                r#"C:\Users\alice\secret-project\artifacts\report.md"#,
+                r#"C:\Users\alice\.pinvou3\sessions\session-id\artifacts\chart.png"#,
+                r#"C:\Users\alice\.pinvou3\sessions\session-id\artifacts"#,
+                r#"C:\Users\alice\outside.txt"#,
+            ),
+        ];
+
+        for (
+            workspace,
+            context_target,
+            in_workspace_artifact,
+            private_artifact,
+            private_artifact_root,
+            outside_artifact,
+        ) in fixtures
+        {
+            let session = saved_session_with_private_paths(
+                workspace,
+                context_target,
+                &[
+                    in_workspace_artifact,
+                    private_artifact,
+                    outside_artifact,
+                    "artifacts/existing.txt",
+                    "../escape.txt",
+                ],
+            );
+            let projected = serde_json::to_value(WebSavedSession::project(
+                &session,
+                &[
+                    Path::new(workspace).to_path_buf(),
+                    Path::new(private_artifact_root).to_path_buf(),
+                ],
+                "revision",
+            ))
+            .expect("serialize projected Web session");
+
+            let mut keys = projected
+                .as_object()
+                .expect("Web session object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                ["artifacts", "messages", "metadata", "transcript_revision"]
+            );
+            assert_eq!(projected["metadata"]["workspace"], "secret-project");
+            assert_eq!(projected["artifacts"].as_array().unwrap().len(), 3);
+            assert_eq!(
+                projected["artifacts"][0]["storage_path"],
+                "artifacts/report.md"
+            );
+            assert_eq!(projected["artifacts"][1]["storage_path"], "chart.png");
+            assert_eq!(
+                projected["artifacts"][2]["storage_path"],
+                "artifacts/existing.txt"
+            );
+            assert_value_does_not_contain(&projected, workspace);
+            assert_value_does_not_contain(&projected, context_target);
+            assert_value_does_not_contain(&projected, private_artifact_root);
+            assert_value_does_not_contain(&projected, outside_artifact);
+        }
+    }
+
+    #[test]
+    fn web_session_metadata_redacts_workspace_paths() {
+        for workspace in [
+            "/Users/alice/secret-project",
+            r#"C:\Users\alice\secret-project"#,
+        ] {
+            let session = create_saved_session(&[], "test-model", Path::new(workspace), 0, None);
+            let projected = serde_json::to_value(WebSessionMetadata::project(
+                session.metadata,
+                "revision".into(),
+            ))
+            .expect("serialize projected Web metadata");
+            assert_eq!(projected["workspace"], "secret-project");
+            assert_value_does_not_contain(&projected, workspace);
+        }
     }
 }
