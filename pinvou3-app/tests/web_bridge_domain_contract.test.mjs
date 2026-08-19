@@ -142,6 +142,92 @@ unsubscribeSecondFlat();
 unsubscribeChat();
 unsubscribeCombined();
 
+const flatReentrantFirst = [];
+const flatReentrantSecond = [];
+const domainReentrantFirst = [];
+const domainReentrantSecond = [];
+const unsubscribeFlatReentrantFirst = flat.subscribe(snapshot => {
+  const text = snapshot.composerPrefill.text;
+  flatReentrantFirst.push(text);
+  if (text === 'outer') api.chat.prefillComposer('nested');
+});
+const unsubscribeFlatReentrantSecond = flat.subscribe(snapshot => {
+  flatReentrantSecond.push(snapshot.composerPrefill.text);
+});
+const unsubscribeDomainReentrantFirst = api.state.subscribe('chat', snapshot => {
+  domainReentrantFirst.push(snapshot.composerPrefill.text);
+});
+const unsubscribeDomainReentrantSecond = api.state.subscribe('chat', snapshot => {
+  domainReentrantSecond.push(snapshot.composerPrefill.text);
+});
+api.chat.prefillComposer('outer');
+assert.deepEqual(flatReentrantFirst, ['outer', 'nested']);
+assert.deepEqual(flatReentrantSecond, ['outer', 'nested'], 'Web flat subscribers must receive outer before nested');
+assert.deepEqual(domainReentrantFirst, ['outer', 'nested']);
+assert.deepEqual(domainReentrantSecond, ['outer', 'nested'], 'Web domain subscribers must receive outer before nested');
+assert.equal(api.state.get('chat').composerPrefill.text, 'nested');
+unsubscribeFlatReentrantFirst();
+unsubscribeFlatReentrantSecond();
+unsubscribeDomainReentrantFirst();
+unsubscribeDomainReentrantSecond();
+
+const membershipFirst = [];
+const membershipSecond = [];
+const membershipAdded = [];
+let unsubscribeMembershipSecond;
+let unsubscribeMembershipAdded = () => {};
+const unsubscribeMembershipFirst = flat.subscribe(snapshot => {
+  const text = snapshot.composerPrefill.text;
+  membershipFirst.push(text);
+  if (text === 'membership-outer') {
+    unsubscribeMembershipSecond();
+    unsubscribeMembershipAdded = flat.subscribe(next => { membershipAdded.push(next.composerPrefill.text); });
+    api.chat.prefillComposer('membership-nested');
+  }
+});
+unsubscribeMembershipSecond = flat.subscribe(snapshot => { membershipSecond.push(snapshot.composerPrefill.text); });
+api.chat.prefillComposer('membership-outer');
+assert.deepEqual(membershipFirst, ['membership-outer', 'membership-nested']);
+assert.deepEqual(membershipSecond, ['membership-outer'],
+  'Web unsubscribe during a round should affect only later queued rounds');
+assert.deepEqual(membershipAdded, ['membership-nested'],
+  'Web subscribe during a round should affect only later queued rounds');
+unsubscribeMembershipFirst();
+unsubscribeMembershipAdded();
+
+const settingsSnapshots = [];
+let negativeZero = true;
+const settingsResult = () => {
+  const result = JSON.parse('{"language":"en","__proto__":{"marker":"own-value"}}');
+  Object.defineProperty(result, 'nan', { enumerable: true, value: NaN, writable: true });
+  result.zero = negativeZero ? -0 : 0;
+  return result;
+};
+const unsubscribeSettings = api.state.subscribe('settings', snapshot => { settingsSnapshots.push(snapshot); });
+invokeResponse = async command => command === 'web_access_update_settings' ? settingsResult() : null;
+assert.equal(await api.settings.saveSettings({ language: 'en' }), true);
+api.chat.prefillComposer('same-settings-revision');
+const firstSettings = settingsSnapshots[0];
+const repeatedSettings = settingsSnapshots[1];
+assert.ok(Object.hasOwn(firstSettings.settings, '__proto__'));
+assert.equal(firstSettings.settings.__proto__.marker, 'own-value');
+assert.equal(Object.getPrototypeOf(firstSettings.settings), Object.getPrototypeOf(firstSettings));
+assert.equal(Object.getPrototypeOf(firstSettings.settings).marker, undefined);
+assert.equal(firstSettings.settings, repeatedSettings.settings, 'Object.is should reuse a subtree containing NaN');
+assert.ok(Number.isNaN(firstSettings.settings.nan));
+assert.ok(Object.is(firstSettings.settings.zero, -0));
+negativeZero = false;
+assert.equal(await api.settings.saveSettings({ language: 'en' }), true);
+const changedSettings = settingsSnapshots.at(-1);
+assert.notEqual(changedSettings.settings, repeatedSettings.settings, 'Object.is should distinguish -0 from +0');
+assert.ok(Object.is(changedSettings.settings.zero, 0));
+assert.ok(Object.prototype.hasOwnProperty.call(changedSettings.settings, '__proto__'),
+  'web copy-on-write updates should retain an existing own __proto__ value');
+assert.equal(changedSettings.settings['__proto__'].marker, 'own-value');
+assert.equal(Object.getPrototypeOf(changedSettings.settings).marker, undefined,
+  'web copy-on-write updates must not route __proto__ through the prototype setter');
+unsubscribeSettings();
+
 const memorySources = {
   profile: { available: true }, preferences: { available: true }, work_context: { available: true },
   current_focus: { available: true }, recent_activity: { available: true }, recent_work: { available: true },
@@ -195,5 +281,14 @@ assert.ok(
   indexSource.indexOf('platform/web/bridge.js') < indexSource.indexOf('platform/web/bridge/domain-adapter.js'),
   'Web domain adapter must load after the flat transport',
 );
+
+invokeResponse = async command => command === 'web_access_ingest_file' ? new Date(0) : null;
+await assert.rejects(api.attachments.addAttachmentByPath('/tmp/non-plain.txt'), /only supports arrays and plain objects/);
+const nonPlainAttachment = flat.getState().attachments.at(-1);
+api.attachments.removeAttachment(nonPlainAttachment.id);
+const cyclic = { value: 'cycle' };
+cyclic.self = cyclic;
+invokeResponse = async command => command === 'web_access_ingest_file' ? cyclic : null;
+await assert.rejects(api.attachments.addAttachmentByPath('/tmp/cyclic.txt'), /must not contain cycles/);
 
 console.log('web bridge domain contract passed');

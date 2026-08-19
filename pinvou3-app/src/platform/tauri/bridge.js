@@ -1244,44 +1244,84 @@
   // and allocate only changed paths. Long transcripts therefore stay shared
   // between snapshots while an in-place streaming item mutation still produces
   // a stable new item for subscribers. get/getMany retain their deep-copy API.
-  function subscriptionStateValue(value, previous) {
-    if (!value || typeof value !== "object") return value;
-    if (Array.isArray(value)) {
-      var previousArray = Array.isArray(previous) ? previous : null;
-      if (!previousArray) {
-        return Object.freeze(value.map(function (item) {
-          return subscriptionStateValue(item, undefined);
-        }));
+  function defineSubscriptionStateProperty(target, key, value) {
+    Object.defineProperty(target, key, {
+      configurable: true,
+      enumerable: true,
+      value: value,
+      writable: true,
+    });
+  }
+  function copySubscriptionStateObject(source) {
+    var result = {};
+    Object.keys(source).forEach(function (key) {
+      defineSubscriptionStateProperty(result, key, source[key]);
+    });
+    return result;
+  }
+  function subscriptionStateValue(value, previous, ancestors) {
+    var valueType = typeof value;
+    if (!value || valueType !== "object") {
+      if (valueType === "function" || valueType === "symbol" || valueType === "bigint") {
+        throw new TypeError("Subscription state only supports JSON-like scalar values");
       }
-      var nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
-      for (var arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
-        var nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex]);
-        if (nextItem !== previousArray[arrayIndex]) {
-          if (!nextArray) nextArray = previousArray.slice();
-          nextArray[arrayIndex] = nextItem;
+      return value;
+    }
+    var isArray = Array.isArray(value);
+    if (!isArray) {
+      var prototype = Object.getPrototypeOf(value);
+      var isPlainObject = prototype === null || (
+        Object.getPrototypeOf(prototype) === null &&
+        Object.prototype.hasOwnProperty.call(prototype, "constructor") &&
+        prototype.constructor && prototype.constructor.name === "Object"
+      );
+      if (!isPlainObject) {
+        throw new TypeError("Subscription state only supports arrays and plain objects");
+      }
+    }
+    ancestors = ancestors || new WeakSet();
+    if (ancestors.has(value)) throw new TypeError("Subscription state must not contain cycles");
+    ancestors.add(value);
+    try {
+      if (isArray) {
+        var previousArray = Array.isArray(previous) ? previous : null;
+        if (!previousArray) {
+          return Object.freeze(value.map(function (item) {
+            return subscriptionStateValue(item, undefined, ancestors);
+          }));
+        }
+        var nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
+        for (var arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
+          var nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex], ancestors);
+          if (!Object.is(nextItem, previousArray[arrayIndex])) {
+            if (!nextArray) nextArray = previousArray.slice();
+            nextArray[arrayIndex] = nextItem;
+          }
+        }
+        return nextArray ? Object.freeze(nextArray) : previousArray;
+      }
+
+      var keys = Object.keys(value);
+      var previousObject = previous && typeof previous === "object" && !Array.isArray(previous)
+        ? previous
+        : null;
+      var previousKeys = previousObject ? Object.keys(previousObject) : [];
+      var sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
+        return Object.prototype.hasOwnProperty.call(previousObject, key);
+      });
+      var nextObject = sameShape ? null : {};
+      for (var objectIndex = 0; objectIndex < keys.length; objectIndex++) {
+        var key = keys[objectIndex];
+        var nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key], ancestors);
+        if (!sameShape || !Object.is(nextValue, previousObject[key])) {
+          if (!nextObject) nextObject = copySubscriptionStateObject(previousObject);
+          defineSubscriptionStateProperty(nextObject, key, nextValue);
         }
       }
-      return nextArray ? Object.freeze(nextArray) : previousArray;
+      return nextObject ? Object.freeze(nextObject) : previousObject;
+    } finally {
+      ancestors.delete(value);
     }
-
-    var keys = Object.keys(value);
-    var previousObject = previous && typeof previous === "object" && !Array.isArray(previous)
-      ? previous
-      : null;
-    var previousKeys = previousObject ? Object.keys(previousObject) : [];
-    var sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
-      return Object.prototype.hasOwnProperty.call(previousObject, key);
-    });
-    var nextObject = sameShape ? null : {};
-    for (var objectIndex = 0; objectIndex < keys.length; objectIndex++) {
-      var key = keys[objectIndex];
-      var nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key]);
-      if (!sameShape || nextValue !== previousObject[key]) {
-        if (!nextObject) nextObject = Object.assign({}, previousObject);
-        nextObject[key] = nextValue;
-      }
-    }
-    return nextObject ? Object.freeze(nextObject) : previousObject;
   }
   var subscriptionSliceRevision = 0;
   var subscriptionSliceCache = Object.create(null);
@@ -1381,6 +1421,8 @@
     });
     return true;
   }
+  var notificationQueue = [];
+  var notificationDispatching = false;
   function notify() {
     if (suppressNotify) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
@@ -1388,21 +1430,43 @@
     for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
     subscriptionSliceRevision += 1;
-    for (var i = 0; i < subscribers.length; i++) subscribers[i]();
+    // Membership and state are fixed when a round is queued. Subscribe or
+    // unsubscribe during a callback affects only rounds queued afterwards.
+    var members = subscribers.slice();
+    notificationQueue.push(members.map(function (subscriber) {
+      return { callback: subscriber.callback, snapshot: subscriber.snapshot() };
+    }));
+    if (notificationDispatching) return;
+    notificationDispatching = true;
+    try {
+      while (notificationQueue.length) {
+        var round = notificationQueue.shift();
+        for (var i = 0; i < round.length; i++) round[i].callback(round[i].snapshot);
+      }
+    } catch (error) {
+      // Preserve synchronous callback error propagation. Later queued rounds may
+      // depend on the interrupted callback, so discard them instead of replaying
+      // stale work on the next notification.
+      notificationQueue = [];
+      throw error;
+    } finally {
+      notificationDispatching = false;
+    }
   }
-  function subscribe(fn) {
-    subscribers.push(fn);
+  function subscribe(snapshot, callback) {
+    var subscriber = { snapshot: snapshot, callback: callback };
+    subscribers.push(subscriber);
     return function () {
-      subscribers = subscribers.filter(function (f) { return f !== fn; });
+      subscribers = subscribers.filter(function (candidate) { return candidate !== subscriber; });
     };
   }
   function subscribeStateSlice(domain, fn) {
     subscriptionStateSlice(domain);
-    return subscribe(function () { fn(subscriptionStateSlice(domain)); });
+    return subscribe(function () { return subscriptionStateSlice(domain); }, fn);
   }
   function subscribeStateSlices(domains, fn) {
     subscriptionStateSlices(domains);
-    return subscribe(function () { fn(subscriptionStateSlices(domains)); });
+    return subscribe(function () { return subscriptionStateSlices(domains); }, fn);
   }
 
   var scheduledFeature = installBridgeFeature("scheduled", { state: state, notify: notify, invoke: invoke, bt: bt, runSyncOnSession: runSyncOnSession, addSystemItem: addSystemItem, rememberScheduledRunOwner: rememberScheduledRunOwner, isScheduledRunTerminal: isScheduledRunTerminal, purgeSessionBuffer: purgeSessionBuffer, createNewSession: createNewSession, prefillComposer: prefillComposer, sessionStates: sessionStates });

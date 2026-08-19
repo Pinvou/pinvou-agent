@@ -1437,50 +1437,92 @@
   // Build immutable persistent subscription snapshots. Reconcile nested values
   // so unchanged transcript history is shared across notifications, while each
   // in-place streaming mutation gets a detached changed path.
-  function subscriptionStateValue(value, previous) {
-    if (!value || typeof value !== "object") return value;
-    if (Array.isArray(value)) {
-      var previousArray = Array.isArray(previous) ? previous : null;
-      if (!previousArray) {
-        return Object.freeze(value.map(function (item) {
-          return subscriptionStateValue(item, undefined);
-        }));
+  function defineSubscriptionStateProperty(target, key, value) {
+    Object.defineProperty(target, key, {
+      configurable: true,
+      enumerable: true,
+      value: value,
+      writable: true,
+    });
+  }
+  function copySubscriptionStateObject(source) {
+    var result = {};
+    Object.keys(source).forEach(function (key) {
+      defineSubscriptionStateProperty(result, key, source[key]);
+    });
+    return result;
+  }
+  function subscriptionStateValue(value, previous, ancestors) {
+    var valueType = typeof value;
+    if (!value || valueType !== "object") {
+      if (valueType === "function" || valueType === "symbol" || valueType === "bigint") {
+        throw new TypeError("Subscription state only supports JSON-like scalar values");
       }
-      var nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
-      for (var arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
-        var nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex]);
-        if (nextItem !== previousArray[arrayIndex]) {
-          if (!nextArray) nextArray = previousArray.slice();
-          nextArray[arrayIndex] = nextItem;
+      return value;
+    }
+    var isArray = Array.isArray(value);
+    if (!isArray) {
+      var prototype = Object.getPrototypeOf(value);
+      var isPlainObject = prototype === null || (
+        Object.getPrototypeOf(prototype) === null &&
+        Object.prototype.hasOwnProperty.call(prototype, "constructor") &&
+        prototype.constructor && prototype.constructor.name === "Object"
+      );
+      if (!isPlainObject) {
+        throw new TypeError("Subscription state only supports arrays and plain objects");
+      }
+    }
+    ancestors = ancestors || new WeakSet();
+    if (ancestors.has(value)) throw new TypeError("Subscription state must not contain cycles");
+    ancestors.add(value);
+    try {
+      if (isArray) {
+        var previousArray = Array.isArray(previous) ? previous : null;
+        if (!previousArray) {
+          return Object.freeze(value.map(function (item) {
+            return subscriptionStateValue(item, undefined, ancestors);
+          }));
+        }
+        var nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
+        for (var arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
+          var nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex], ancestors);
+          if (!Object.is(nextItem, previousArray[arrayIndex])) {
+            if (!nextArray) nextArray = previousArray.slice();
+            nextArray[arrayIndex] = nextItem;
+          }
+        }
+        return nextArray ? Object.freeze(nextArray) : previousArray;
+      }
+
+      var keys = Object.keys(value);
+      var previousObject = previous && typeof previous === "object" && !Array.isArray(previous)
+        ? previous
+        : null;
+      var previousKeys = previousObject ? Object.keys(previousObject) : [];
+      var sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
+        return Object.prototype.hasOwnProperty.call(previousObject, key);
+      });
+      var nextObject = sameShape ? null : {};
+      for (var objectIndex = 0; objectIndex < keys.length; objectIndex++) {
+        var key = keys[objectIndex];
+        var nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key], ancestors);
+        if (!sameShape || !Object.is(nextValue, previousObject[key])) {
+          if (!nextObject) nextObject = copySubscriptionStateObject(previousObject);
+          defineSubscriptionStateProperty(nextObject, key, nextValue);
         }
       }
-      return nextArray ? Object.freeze(nextArray) : previousArray;
+      return nextObject ? Object.freeze(nextObject) : previousObject;
+    } finally {
+      ancestors.delete(value);
     }
-
-    var keys = Object.keys(value);
-    var previousObject = previous && typeof previous === "object" && !Array.isArray(previous)
-      ? previous
-      : null;
-    var previousKeys = previousObject ? Object.keys(previousObject) : [];
-    var sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
-      return Object.prototype.hasOwnProperty.call(previousObject, key);
-    });
-    var nextObject = sameShape ? null : {};
-    for (var objectIndex = 0; objectIndex < keys.length; objectIndex++) {
-      var key = keys[objectIndex];
-      var nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key]);
-      if (!sameShape || nextValue !== previousObject[key]) {
-        if (!nextObject) nextObject = Object.assign({}, previousObject);
-        nextObject[key] = nextValue;
-      }
-    }
-    return nextObject ? Object.freeze(nextObject) : previousObject;
   }
   var subscriptionSnapshot = null;
   function subscriptionState() {
     subscriptionSnapshot = subscriptionStateValue(state, subscriptionSnapshot);
     return subscriptionSnapshot;
   }
+  var notificationQueue = [];
+  var notificationDispatching = false;
   function notify() {
     if (suppressNotify) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
@@ -1488,7 +1530,25 @@
     for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
     var snapshot = subscriptionState();
-    for (var i = 0; i < subscribers.length; i++) subscribers[i](snapshot);
+    // Each queued round fixes both state and membership. Callback-time
+    // subscription changes apply only to rounds queued afterwards.
+    notificationQueue.push({ snapshot: snapshot, subscribers: subscribers.slice() });
+    if (notificationDispatching) return;
+    notificationDispatching = true;
+    try {
+      while (notificationQueue.length) {
+        var round = notificationQueue.shift();
+        for (var i = 0; i < round.subscribers.length; i++) round.subscribers[i](round.snapshot);
+      }
+    } catch (error) {
+      // Preserve synchronous callback error propagation. Later queued rounds may
+      // depend on the interrupted callback, so discard them instead of replaying
+      // stale work on the next notification.
+      notificationQueue = [];
+      throw error;
+    } finally {
+      notificationDispatching = false;
+    }
   }
   function subscribe(fn) {
     subscribers.push(fn);

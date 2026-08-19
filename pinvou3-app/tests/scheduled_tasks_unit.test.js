@@ -821,6 +821,141 @@ async function subscriptionSnapshotsAvoidTranscriptDeepClone() {
   unsubscribeCombined();
 }
 
+async function reentrantSubscriptionNotificationsStayOrdered() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var firstOrder = [];
+  var secondOrder = [];
+  var unsubscribeFirst = bridge.state.subscribe("chat", function (snapshot) {
+    var text = snapshot.composerPrefill.text;
+    firstOrder.push(text);
+    if (text === "outer") bridge.chat.prefillComposer("nested");
+  });
+  var unsubscribeSecond = bridge.state.subscribe("chat", function (snapshot) {
+    secondOrder.push(snapshot.composerPrefill.text);
+  });
+
+  bridge.chat.prefillComposer("outer");
+  assert.deepStrictEqual(firstOrder, ["outer", "nested"], "the first subscriber should receive queued revisions in order");
+  assert.deepStrictEqual(secondOrder, ["outer", "nested"], "a later subscriber must not observe nested before outer");
+  assert.strictEqual(bridge.state.get("chat").composerPrefill.text, "nested");
+  unsubscribeFirst();
+  unsubscribeSecond();
+
+  var membershipHarness = createBridgeHarness();
+  var membershipBridge = membershipHarness.bridge;
+  var membershipFirst = [];
+  var membershipSecond = [];
+  var membershipAdded = [];
+  var unsubscribeMembershipSecond;
+  var unsubscribeAdded = function () {};
+  var unsubscribeMembershipFirst = membershipBridge.state.subscribe("chat", function (snapshot) {
+    var text = snapshot.composerPrefill.text;
+    membershipFirst.push(text);
+    if (text === "membership-outer") {
+      unsubscribeMembershipSecond();
+      unsubscribeAdded = membershipBridge.state.subscribe("chat", function (next) {
+        membershipAdded.push(next.composerPrefill.text);
+      });
+      membershipBridge.chat.prefillComposer("membership-nested");
+    }
+  });
+  unsubscribeMembershipSecond = membershipBridge.state.subscribe("chat", function (snapshot) {
+    membershipSecond.push(snapshot.composerPrefill.text);
+  });
+
+  membershipBridge.chat.prefillComposer("membership-outer");
+  assert.deepStrictEqual(membershipFirst, ["membership-outer", "membership-nested"]);
+  assert.deepStrictEqual(membershipSecond, ["membership-outer"],
+    "unsubscribe during a round should apply only to rounds queued afterwards");
+  assert.deepStrictEqual(membershipAdded, ["membership-nested"],
+    "subscribe during a round should apply only to rounds queued afterwards");
+  unsubscribeMembershipFirst();
+  unsubscribeAdded();
+
+  var errorHarness = createBridgeHarness();
+  var errorBridge = errorHarness.bridge;
+  var interruptedSecond = [];
+  var unsubscribeThrowing = errorBridge.state.subscribe("chat", function (snapshot) {
+    if (snapshot.composerPrefill.text === "error-outer") {
+      errorBridge.chat.prefillComposer("discarded-nested");
+      throw new Error("subscriber failed");
+    }
+  });
+  var unsubscribeInterruptedSecond = errorBridge.state.subscribe("chat", function (snapshot) {
+    interruptedSecond.push(snapshot.composerPrefill.text);
+  });
+  assert.throws(function () { errorBridge.chat.prefillComposer("error-outer"); }, /subscriber failed/,
+    "subscriber errors should retain their synchronous propagation behavior");
+  assert.deepStrictEqual(interruptedSecond, [], "a callback error should interrupt the current subscriber round");
+  unsubscribeThrowing();
+  unsubscribeInterruptedSecond();
+
+  var recovered = [];
+  var unsubscribeRecovered = errorBridge.state.subscribe("chat", function (snapshot) {
+    recovered.push(snapshot.composerPrefill.text);
+  });
+  errorBridge.chat.prefillComposer("recovered");
+  assert.deepStrictEqual(recovered, ["recovered"],
+    "queued revisions from an interrupted callback must be discarded before the next notification");
+  unsubscribeRecovered();
+}
+
+async function persistentSubscriptionSnapshotsPreserveJsonEdges() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var snapshots = [];
+  var negativeZero = true;
+  function settingsResult() {
+    var result = JSON.parse('{"language":"en","__proto__":{"marker":"own-value"}}');
+    Object.defineProperty(result, "nan", { enumerable: true, value: NaN, writable: true });
+    result.zero = negativeZero ? -0 : 0;
+    return result;
+  }
+  harness.handlers.update_settings = settingsResult;
+  harness.handlers.get_effective_model_config = function () { return null; };
+  var unsubscribe = bridge.state.subscribe("settings", function (snapshot) { snapshots.push(snapshot); });
+
+  assert.strictEqual(await bridge.settings.saveSettings({ language: "en" }), true);
+  assert.ok(snapshots.length >= 2, "settings save should publish its effective-model and saved revisions");
+  var first = snapshots[0];
+  var repeated = snapshots[1];
+  assert.ok(Object.prototype.hasOwnProperty.call(first.settings, "__proto__"));
+  assert.strictEqual(first.settings["__proto__"].marker, "own-value");
+  assert.strictEqual(Object.getPrototypeOf(first.settings), Object.getPrototypeOf(first),
+    "snapshots with own __proto__ data must retain the default object prototype");
+  assert.strictEqual(Object.getPrototypeOf(first.settings).marker, undefined, "snapshot prototypes must not be polluted");
+  assert.strictEqual(first.settings, repeated.settings, "Object.is should reuse an unchanged subtree containing NaN");
+  assert.ok(Number.isNaN(first.settings.nan));
+  assert.ok(Object.is(first.settings.zero, -0));
+
+  negativeZero = false;
+  assert.strictEqual(await bridge.settings.saveSettings({ language: "en" }), true);
+  var changed = snapshots[snapshots.length - 1];
+  assert.notStrictEqual(changed.settings, repeated.settings, "Object.is should distinguish -0 from +0");
+  assert.ok(Object.is(changed.settings.zero, 0));
+  assert.ok(Object.prototype.hasOwnProperty.call(changed.settings, "__proto__"),
+    "copy-on-write updates must retain an existing own __proto__ value");
+  assert.strictEqual(changed.settings["__proto__"].marker, "own-value");
+  assert.strictEqual(Object.getPrototypeOf(changed.settings).marker, undefined,
+    "copy-on-write updates must not route __proto__ through the prototype setter");
+  unsubscribe();
+}
+
+async function persistentSubscriptionSnapshotsRejectUnsupportedValues() {
+  async function rejects(result, pattern) {
+    var harness = createBridgeHarness();
+    harness.handlers.ingest_file = function () { return result; };
+    var unsubscribe = harness.bridge.state.subscribe("chat", function () {});
+    await assert.rejects(harness.bridge.attachments.addAttachmentByPath("C:\\snapshot-edge.txt"), pattern);
+    unsubscribe();
+  }
+  await rejects(new Date(0), /only supports arrays and plain objects/);
+  var cyclic = { value: "cycle" };
+  cyclic.self = cyclic;
+  await rejects(cyclic, /must not contain cycles/);
+}
+
 async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -4676,6 +4811,9 @@ async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
 
 Promise.resolve()
   .then(subscriptionSnapshotsAvoidTranscriptDeepClone)
+  .then(reentrantSubscriptionNotificationsStayOrdered)
+  .then(persistentSubscriptionSnapshotsPreserveJsonEdges)
+  .then(persistentSubscriptionSnapshotsRejectUnsupportedValues)
   .then(longSessionStreamingAvoidsPerDeltaDeepClone)
   .then(multipleKnowledgeMountBehavior)
   .then(queuedKnowledgeMountKeepsOriginalSession)
