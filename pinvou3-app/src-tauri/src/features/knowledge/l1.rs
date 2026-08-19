@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Barrier;
@@ -97,16 +97,27 @@ pub struct L1Store {
     /// 配了 embedding 模型则启用向量;None → 纯全文 fts。**可换共享槽**:模型按需下载完成后
     /// `set_embedder` 热加载,所有 L1Store clone(含已在跑的后台线程/会话)立即见新,免重启。
     embedder: Arc<RwLock<Option<Arc<Embedder>>>>,
+    /// embedder 空闲卸载巡检的活动时钟（UNIX 秒）：取用模型的路径（向量化、
+    /// 检索向量、远程查询嵌入）经 [`Self::embedder`] 刷新，模型热加载经
+    /// [`Self::note_embed_activity`] 重置。KnowledgeService 的后台巡检据此
+    /// 判定空闲并 `set_embedder(None)` 卸载 ~570MB 模型。u64 秒 + MAX 起始
+    /// 值 → 「从未活动」= 永不触发卸载（保守）。
+    last_embed_activity_epoch: Arc<AtomicU64>,
     /// 单测专用：把后台导入稳定阻塞在 embedding 完成、写检查点之前，以覆盖取消/删除竞态。
     #[cfg(test)]
     checkpoint_gate: Arc<RwLock<Option<(Arc<Barrier>, Arc<Barrier>)>>>,
 }
+
+/// embedder 活动时钟初始值：取 u64::MAX 使 elapsed 计算 saturating 到 0，
+/// “从未活动”的库不会被空闲卸载（模型刚装好不该立刻被收走）。
+const EMBED_ACTIVITY_NEVER: u64 = u64::MAX;
 
 impl L1Store {
     pub fn new(conn: Arc<Mutex<Connection>>, embedder: Option<Arc<Embedder>>) -> Self {
         Self {
             conn,
             embedder: Arc::new(RwLock::new(embedder)),
+            last_embed_activity_epoch: Arc::new(AtomicU64::new(EMBED_ACTIVITY_NEVER)),
             #[cfg(test)]
             checkpoint_gate: Arc::new(RwLock::new(None)),
         }
@@ -126,8 +137,34 @@ impl L1Store {
     }
 
     /// 取当前 embedder 的克隆句柄(只在锁内拷 Arc,立即释锁,不持锁跑推理)。
+    /// 同时刷新空闲时钟：所有真正要用模型推理的路径（向量化、检索向量）
+    /// 都经此取句柄，取即活动，空闲卸载巡检不会收走在用的模型。
     fn embedder(&self) -> Option<Arc<Embedder>> {
-        self.embedder.read().clone()
+        let embedder = self.embedder.read().clone();
+        if embedder.is_some() {
+            self.last_embed_activity_epoch
+                .store(now_epoch_secs(), Ordering::Release);
+        }
+        embedder
+    }
+
+    /// embedder 空闲秒数（供 KnowledgeService 空闲卸载巡检）。从未活动时
+    /// 返回 0（保守：刚加载的模型不该立刻被卸载）。
+    pub fn embedder_idle_secs(&self) -> u64 {
+        let last = self.last_embed_activity_epoch.load(Ordering::Acquire);
+        if last == EMBED_ACTIVITY_NEVER {
+            return 0;
+        }
+        (now().max(0) as u64).saturating_sub(last)
+    }
+
+    /// 刷新 embedder 空闲时钟。主要场景是模型热加载（install_embedder）：
+    /// 下载完成 / kb_model_status 状态查询触发的重载 / 导入前补载都视为
+    /// 用户意图，从加载时刻重新计空闲（防「热加载→巡检马上又卸载」振荡）。
+    /// 幂等、单个原子 store。
+    pub fn note_embed_activity(&self) {
+        self.last_embed_activity_epoch
+            .store(now_epoch_secs(), Ordering::Release);
     }
 
     /// 热加载:换 embedding 模型(模型下载完成后调)。None=卸载回纯全文检索。
@@ -1150,6 +1187,11 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
+/// 空闲卸载时钟用的 UNIX 秒（u64；负数系统时钟截断为 0，只影响判定方向不致误卸载）。
+fn now_epoch_secs() -> u64 {
+    chrono::Utc::now().timestamp().max(0) as u64
+}
+
 fn dedupe_path_key(path: &str) -> String {
     crate::platform::os::filesystem_path_identity_key(path)
 }
@@ -1204,6 +1246,20 @@ mod tests {
     fn mem() -> L1Store {
         let store = Store::open_in_memory().unwrap();
         L1Store::new(store.conn_arc(), None) // 单测：纯全文,不接 embedding
+    }
+
+    #[test]
+    fn embedder_idle_clock_starts_conservative_and_resets_on_activity() {
+        let l1 = mem();
+        // 从未活动（时钟为 NEVER 哨兵）→ 空闲 0：刚加载的模型不该立刻被卸载。
+        assert_eq!(l1.embedder_idle_secs(), 0);
+        // 显式活动（热加载等）后时钟生效：空闲从 0 起计。
+        l1.note_embed_activity();
+        assert!(l1.embedder_idle_secs() < 60, "活动后应视为刚开始计时");
+        // clone 共享同一时钟：后台线程/会话句柄刷新对巡检可见。
+        let clone = l1.clone();
+        clone.note_embed_activity();
+        assert!(l1.embedder_idle_secs() < 60);
     }
 
     #[test]

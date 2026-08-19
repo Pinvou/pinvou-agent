@@ -32,7 +32,7 @@ pub use l1::{Collection, Document};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -73,7 +73,44 @@ pub struct KnowledgeService {
     imports: import_jobs::ImportJobStore,
     active_import: Arc<Mutex<Option<String>>>,
     index_cancel: Arc<AtomicBool>,
+    /// embedder 空闲卸载巡检任务句柄 + 防振荡时钟。模型常驻 ~570MB 内存；
+    /// 巡检在空闲超阈值时 `set_embedder(None)` 卸载，kb_model_status 的热加载
+    /// 钩子（用户意图）会自动重载。放 Option 使「未装模型 → 不起巡检」零开销。
+    embedder_reaper: Arc<Mutex<Option<EmbedderReaper>>>,
+    /// 上次自动卸载 embedding 模型的 UNIX 秒（防振荡）：距上次卸载不足
+    /// EMBEDDER_UNLOAD_COOLDOWN_SECS 时不再自动卸载。放在服务级字段（而非
+    /// 巡检任务内）是因为卸载/热加载会重启巡检任务，冷却必须跨任务存活。
+    embedder_last_unload_epoch: Arc<AtomicI64>,
 }
+
+/// embedder 空闲卸载巡检任务句柄（Drop 即停）。
+struct EmbedderReaper {
+    #[allow(dead_code)]
+    guard: EmbedderReaperGuard,
+}
+
+struct EmbedderReaperGuard {
+    cancel: tokio_util::sync::CancellationToken,
+    handle: tauri::async_runtime::JoinHandle<()>,
+}
+
+impl Drop for EmbedderReaperGuard {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.handle.abort();
+    }
+}
+
+/// embedder 空闲卸载阈值：无检索/索引活动超过该时长 → 卸载模型释放 ~570MB。
+/// 20 分钟取偏保守值：语义检索是聊天增强路径，卸载后下一次检索退化为纯全文，
+/// 宁可多留一会儿也不让常用用户频繁掉级。
+const EMBEDDER_IDLE_UNLOAD_AFTER_SECS: u64 = 20 * 60;
+/// embedder 空闲卸载巡检间隔（与 AcpPool/EnginePool 空闲回收节奏一致）。
+const EMBEDDER_REAP_INTERVAL_SECS: u64 = 5 * 60;
+/// 卸载冷却：距上次自动卸载不足该时长时不再自动卸载。防「kb_model_status
+/// 热加载（用户查状态=用户意图）→ 巡检立刻又卸载」的振荡循环；热加载视为
+/// 用户意图，重载后空闲时钟与冷却都重新计时。
+const EMBEDDER_UNLOAD_COOLDOWN_SECS: i64 = 10 * 60;
 
 impl KnowledgeService {
     /// 只用磁盘库初始化（`~/.pinvou3/knowledge/index.db`）。embedding 模型必须在首帧后
@@ -107,6 +144,8 @@ impl KnowledgeService {
             imports,
             active_import: Arc::new(Mutex::new(None)),
             index_cancel: Arc::new(AtomicBool::new(false)),
+            embedder_reaper: Arc::new(Mutex::new(None)),
+            embedder_last_unload_epoch: Arc::new(AtomicI64::new(0)),
         })
     }
 
@@ -145,14 +184,67 @@ impl KnowledgeService {
     }
 
     /// 将后台构建完成的模型原子换入共享槽；所有 L1Store clone 立即可见。
+    /// 同时重置空闲时钟并确保巡检在跑：热加载（下载完成 / kb_model_status
+    /// 状态查询 / 导入前补载）都视为用户意图，从加载时刻重新计空闲。
     fn install_embedder(&self, embedder: Arc<embed::Embedder>) -> bool {
         eprintln!(
             "[knowledge] L1 embedding 已启用: {} ({})",
             embedder.model(),
             embedder.source()
         );
+        self.l1.note_embed_activity();
         self.l1.set_embedder(Some(embedder));
+        self.ensure_embedder_reaper();
         true
+    }
+
+    /// 启动 embedder 空闲卸载巡检（幂等）。巡检常驻直到服务释放：模型在场
+    /// 才可能触发卸载，已卸载时每轮只做一次原子读，开销可忽略。
+    fn ensure_embedder_reaper(&self) {
+        let mut slot = self.embedder_reaper.lock();
+        if slot.is_some() {
+            return;
+        }
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let l1 = self.l1.clone();
+        let last_unload = self.embedder_last_unload_epoch.clone();
+        let handle = tauri::async_runtime::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(EMBEDDER_REAP_INTERVAL_SECS));
+            // tokio::interval 首个 tick 立即到期：跳过，统一走周期节奏。
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = task_cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                // 条件逐轮重读：模型可能已被热卸载/热加载。
+                let should_unload = l1.has_embedder()
+                    && l1.embedder_idle_secs() >= EMBEDDER_IDLE_UNLOAD_AFTER_SECS
+                    && now() - last_unload.load(Ordering::Acquire) >= EMBEDDER_UNLOAD_COOLDOWN_SECS;
+                if should_unload {
+                    eprintln!(
+                        "[knowledge] embedding 模型空闲超过 {} 秒，卸载释放内存（下次状态查询/导入自动重载）",
+                        EMBEDDER_IDLE_UNLOAD_AFTER_SECS
+                    );
+                    // set_embedder(None) 后所有 L1Store clone 即刻回到纯全文检索；
+                    // 正在跑的推理持有 Arc 副本，跑完自然释放。
+                    l1.set_embedder(None);
+                    last_unload.store(now(), Ordering::Release);
+                }
+            }
+        });
+        *slot = Some(EmbedderReaper {
+            guard: EmbedderReaperGuard { cancel, handle },
+        });
+    }
+
+    /// 后台索引启动前调用：模型在但被空闲卸载时，先同步尝试热加载（阻塞读
+    /// ONNX ~570MB，只在导入线程，不占 UI）。索引需要向量化，模型缺位会让
+    /// 整个导入静默降级为纯全文（chunks.vec 全 NULL，事后无法补）。
+    pub fn reload_embedder_if_idle_unloaded_blocking(&self) {
+        reload_if_idle_unloaded(&self.l1);
     }
 
     /// 热加载 embedding 模型（按需下载完成后调）：按 dev-env 优先 / 下载落点兜底重新定位并加载，
@@ -281,6 +373,9 @@ impl KnowledgeService {
             // 进程死亡已由启动时的 recover_interrupted 兜底，但进程内线程 panic 不会
             // 触发它：若不在此兜住，active_import 会永久卡在已死的任务上，直到完全重启。
             let outcome = catch_unwind(AssertUnwindSafe(move || {
+                // 模型可能已被空闲卸载：索引需要向量化，模型缺位会让整个导入
+                // 静默降级为纯全文（chunks.vec 全 NULL，事后无法补），先补载。
+                reload_if_idle_unloaded(&l1);
                 let state = match imports.state(&job_id) {
                     Ok(v) => v,
                     Err(_) => {
@@ -437,6 +532,25 @@ impl KnowledgeService {
 
     pub fn status(&self) -> ScanState {
         self.scan_state.lock().clone()
+    }
+}
+
+/// 后台索引入口的补载：模型被空闲卸载后，导入线程在向量化开始前同步重载
+/// （阻塞读 ONNX ~570MB，只占导入线程）。模型缺位会让整个导入静默降级为纯
+/// 全文（chunks.vec 全 NULL，事后无法补），必须先补。失败保持全文降级不阻断。
+fn reload_if_idle_unloaded(l1: &l1::L1Store) {
+    if !l1.has_embedder() && model_download::model_installed() {
+        match KnowledgeService::load_embedder(Some(&model_dir())) {
+            Ok(embedder) => {
+                l1.note_embed_activity();
+                l1.set_embedder(Some(embedder));
+                eprintln!("[knowledge] 导入前重载 embedding 模型完成（向量化解锁）");
+            }
+            Err(error) => {
+                // 与首帧加载同语义：加载失败保持全文降级，不阻断导入。
+                eprintln!("[knowledge] 导入前重载 embedding 模型失败（降级仅全文）: {error}");
+            }
+        }
     }
 }
 

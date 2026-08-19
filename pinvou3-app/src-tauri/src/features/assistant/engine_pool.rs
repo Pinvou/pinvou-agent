@@ -7,7 +7,11 @@
 //! [`AppEngine::spawn_for_session`])。本池按 `session_id` 管理这些 engine 的生命周期:
 //!  - **lazy spawn**:首次给某 session 发消息时才 spawn(带该 session 专属 workspace +
 //!    instructions);已有磁盘历史的 session 在 spawn 后用一次性 `SyncSession` 注水。
-//!  - **keep-alive**:spawn 后常驻,切 session 不销毁(后台 session 继续跑各自的 turn)。
+//!  - **idle 回收(原 keep-alive 策略的收紧)**:spawn 后仍常驻,后台 session 继续跑
+//!    各自的 turn,但不再无限常驻——每个 engine 是进程内 task + 专属通道/工具集,
+//!    池无上限、内存随会话数线性涨。后台巡检(`start_idle_reaper`)回收「空闲超过
+//!    `IDLE_EVICT_AFTER_SECS` 且无 in-flight turn 且非 active」的 engine;回收只是
+//!    回到 lazy spawn 语义,下次发消息 `get_or_spawn` 重建并 `SyncSession` 注水,无损。
 //!  - **evict**:删 session 时回收(cancel 在跑的 turn + Shutdown engine + abort forwarder)。
 //!
 //! 池本身是 Tauri State;`commands.rs` 里的 chat / cancel / submit_user_input 等都带
@@ -17,9 +21,9 @@
 //! session 先通过独立 runtime lock 串行准备/比较/rebuild,再短暂持有 `entries` 完成
 //! 本地 spawn,从根上避免同 session 双引擎,也不让慢凭据服务阻塞其他 session。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
 use anyhow::{bail, Context, Result};
@@ -48,6 +52,31 @@ use crate::features::assistant::runtime_model::{
 use crate::features::assistant::turn_shell_tasks::{SessionShellManagers, SessionTurnShellTasks};
 use crate::features::sessions::{transcript_revision, ScheduledRunProfile, SessionStore};
 use crate::platform::prefs::{SavedModel, UserPrefs};
+
+/// Engine 空闲回收阈值：engine 是进程内 task（非子进程），但每个都占一份通道、
+/// 工具集与注水后的对话上下文，池无上限、内存随会话数线性涨。空闲超过该时长
+/// 且无 in-flight turn 且非 active 会话时回收（复用 `reclaim_engine_entry` 的
+/// 回收序列）。回收回到 lazy spawn 语义，下次发消息重建 + SyncSession 注水，
+/// 无损；30 分钟取偏保守值，宁可少回收也不误伤刚要使用的会话。
+const IDLE_EVICT_AFTER_SECS: u64 = 30 * 60;
+/// 空闲回收巡检间隔：5 分钟一轮，及时性与巡检开销的折中（与 AcpPool 空闲
+/// 回收、embedder 空闲卸载的巡检节奏保持一致）。
+const REAP_INTERVAL_SECS: u64 = 5 * 60;
+
+/// 空闲回收判定（纯函数，便于单测）：turn 活跃（reserve 占用或终态收口）、
+/// scheduled 轮进行中（run_scheduled_turn 的 spawn→submit 窗口 lifecycle 尚未
+/// active）以及当前 active 会话一律不回收。
+fn should_reap_idle_engine(
+    turn_active: bool,
+    scheduled_running: bool,
+    is_active_session: bool,
+    idle_for_secs: u64,
+) -> bool {
+    !turn_active
+        && !scheduled_running
+        && !is_active_session
+        && idle_for_secs >= IDLE_EVICT_AFTER_SECS
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScheduledTurnCompletion {
@@ -434,6 +463,10 @@ struct EngineEntry {
     /// （subagent/mod.rs 的 load 路径），少了这道甄别，父会话重建引擎后
     /// 上一进程的僵尸 worker 会重新显示"工作中"并被永久轮询。
     spawned_at_ms: u64,
+    /// 最近一次 turn 活动（UNIX ms）：reserve_turn 提交与 turn 终态（含被
+    /// cancel / 回收收口的轮）都刷新。空闲回收以它（而非 spawned_at_ms）为
+    /// 准——刚回收重建的引擎若持续不用，也要能被再次回收。
+    last_active_epoch_ms: AtomicU64,
 }
 
 #[derive(Clone, Default)]
@@ -505,6 +538,27 @@ pub struct EnginePool {
     /// 所有 session 共享一份已 boot 的 bridge(boot 会写盘 / 设 env,只能一次)。
     /// commands 读 model / workspace 也走这里。
     pub bridge: Pinvou3Bridge,
+    /// 空闲回收巡检任务句柄。放 Arc 由所有 pool clone 共享：pool 本身是
+    /// Clone（Tauri State 每次命令取的都是 clone），不能直接 impl Drop，否则
+    /// 任一 clone 释放都会误停巡检；最后一个 clone 释放时连带 drop guard。
+    idle_reaper: Arc<SyncMutex<Option<IdleReaperGuard>>>,
+    /// 正在跑 scheduled 轮的会话集合（run_scheduled_turn 的 spawn→submit 窗口
+    /// 里 lifecycle 尚未 active，空闲回收需要它做第二重保护）。
+    scheduled_running_sessions: Arc<SyncMutex<HashSet<String>>>,
+}
+
+/// 后台巡检任务句柄：Drop 时先 cancel 再 abort 双保险停止巡检
+/// （与 scheduled/tasks.rs ScheduledTaskState 的 Drop 清理同模式）。
+struct IdleReaperGuard {
+    cancel: CancellationToken,
+    handle: JoinHandle<()>,
+}
+
+impl Drop for IdleReaperGuard {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.handle.abort();
+    }
 }
 
 impl EnginePool {
@@ -545,7 +599,76 @@ impl EnginePool {
             tool_policy,
             runtime_model_provider,
             bridge,
+            idle_reaper: Arc::new(SyncMutex::new(None)),
+            scheduled_running_sessions: Arc::new(SyncMutex::new(HashSet::new())),
         })
+    }
+
+    /// 启动空闲回收巡检（幂等）：每 REAP_INTERVAL_SECS 秒扫描一次，回收
+    /// 「空闲超过 IDLE_EVICT_AFTER_SECS 且无 in-flight turn 且非 active」的
+    /// engine。active 判定取 `SessionStore::active_id`（create/load session
+    /// 命令维护的前端当前会话）；此外 reserve_turn（turn 开始的必要前置）会
+    /// 刷新 last_active，turn 尚未 reserve 的引擎本就空闲，双保险下宁可保守。
+    /// 回收复用 delete 路径的 `reclaim_engine_entry`（先级联取消子智能体、
+    /// 后 Shutdown），回收后回到 lazy spawn 语义。
+    ///
+    /// 巡检任务持有 pool clone（内部全 Arc，廉价）。pool 是 Tauri managed
+    /// state、进程级生命周期，巡检随进程退出自然终止；guard 的 Drop 清理仅
+    /// 作防御（clone 间 Arc 循环意味着它平时不会触发，不构成泄漏——常驻的
+    /// 只是一个每 5 分钟醒一次的轻任务）。
+    pub fn start_idle_reaper(&self) {
+        let mut slot = self.idle_reaper.lock();
+        if slot.is_some() {
+            return;
+        }
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let pool = self.clone();
+        let handle = tauri::async_runtime::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(REAP_INTERVAL_SECS));
+            // tokio::interval 首个 tick 立即到期：跳过，统一走周期节奏。
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = task_cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                pool.reap_idle_engines().await;
+            }
+        });
+        *slot = Some(IdleReaperGuard { cancel, handle });
+    }
+
+    /// 单轮空闲回收。判定只读快照（entries / lifecycle / active id），真正的
+    /// 回收走 `evict`（与删除共用同一把 turn gate + runtime lock），与并发的
+    /// 发送/取消天然串行，不会误收正在使用的引擎。
+    async fn reap_idle_engines(&self) {
+        let active_id = self.store.active_id();
+        let now = Self::now_epoch_ms();
+        let candidates: Vec<String> = {
+            let entries = self.entries.lock().await;
+            entries
+                .iter()
+                .filter(|(sid, entry)| {
+                    let last_active = entry.last_active_epoch_ms.load(Ordering::Acquire);
+                    let idle_for_secs = now.saturating_sub(last_active) / 1000;
+                    should_reap_idle_engine(
+                        self.is_turn_active(sid),
+                        self.scheduled_running_sessions.lock().contains(*sid),
+                        active_id.as_deref() == Some(sid.as_str()),
+                        idle_for_secs,
+                    )
+                })
+                .map(|(sid, _)| sid.clone())
+                .collect()
+        };
+        for session_id in candidates {
+            eprintln!(
+                "[engine_pool] 会话 {session_id} 空闲超过 {IDLE_EVICT_AFTER_SECS} 秒，回收 engine（下次发消息时 lazy 重建）"
+            );
+            self.evict(&session_id).await;
+        }
     }
 
     pub(crate) fn credential_mode_for(
@@ -842,6 +965,7 @@ impl EnginePool {
                 forwarder,
                 runtime_model: prepared,
                 spawned_at_ms: Self::now_epoch_ms(),
+                last_active_epoch_ms: AtomicU64::new(Self::now_epoch_ms()),
             },
         );
         Ok(engine)
@@ -1098,6 +1222,17 @@ impl EnginePool {
         Ok(reservation)
     }
 
+    /// 刷新会话引擎的空闲时钟（turn 开始时调用，异步上下文安全：瞬时取
+    /// entries 锁，不与发送路径的长临界区重叠）。引擎不在场是 no-op——lazy
+    /// spawn 时 last_active 以 now 初始化，本就新鲜。
+    async fn touch_engine_activity(&self, session_id: &str) {
+        if let Some(entry) = self.entries.lock().await.get(session_id) {
+            entry
+                .last_active_epoch_ms
+                .store(Self::now_epoch_ms(), Ordering::Release);
+        }
+    }
+
     /// 该 session 当前是否有进行中的 turn（供前端 remount 后恢复 busy 展示）。
     pub fn is_turn_active(&self, session_id: &str) -> bool {
         self.turn_lifecycles
@@ -1164,6 +1299,9 @@ impl EnginePool {
             })?;
         }
         reservation.ensure_active()?;
+        // turn 正式提交：刷新空闲时钟（reserve 到 send 之间有附件解析等耗时
+        // 步骤，避免空闲巡检在这个窗口把引擎收走）。
+        self.touch_engine_activity(session_id).await;
         // Side B 卡片池: 该 session 加持了专家面具时,每 turn 注入轻锚点(短)维持身份。
         // 完整 body 已在加持首条消息一次性注入(commands::chat take_pending_turn_injections)。
         // 在 pool 层解析,所有上层调用(chat / accept_plan)自动带上锚点。
@@ -1209,7 +1347,14 @@ impl EnginePool {
     {
         let turn_lock = self.turn_locks.for_session(session_id).await;
         let _turn = turn_lock.lock().await;
+        // scheduled 轮登记：spawn→submit 窗口 lifecycle 尚未 active，空闲回收
+        // 需要这层显式保护；无论成败都在收尾注销（panic 由 abort 语义兜底，
+        // 该任务本身就是 spawn 出来的 detached future）。
+        self.scheduled_running_sessions
+            .lock()
+            .insert(session_id.to_string());
         let result = async {
+            self.touch_engine_activity(session_id).await;
             let profile = self
                 .store
                 .scheduled_profile(session_id)
@@ -1263,6 +1408,7 @@ impl EnginePool {
         }
         .await;
 
+        self.scheduled_running_sessions.lock().remove(session_id);
         self.evict_locked(session_id).await;
         result
     }
@@ -1428,6 +1574,8 @@ impl EnginePool {
             })?;
         }
         reservation.ensure_active()?;
+        // 重发也是 turn 提交：刷新空闲时钟（理由同 send_reserved_user_message）。
+        self.touch_engine_activity(session_id).await;
         self.get_or_spawn(session_id)
             .await?
             .edit_last_turn_reserved(new_message, reservation)
@@ -1679,6 +1827,32 @@ mod scheduled_model_tests {
             matches!(ops[1], deepseek_tui::core::ops::Op::Shutdown),
             "Shutdown 必须殿后"
         );
+    }
+
+    #[test]
+    fn idle_reap_keeps_active_turns_scheduled_and_active_sessions() {
+        let idle = super::IDLE_EVICT_AFTER_SECS;
+        // 空闲且非 active → 回收。
+        assert!(super::should_reap_idle_engine(false, false, false, idle));
+        assert!(super::should_reap_idle_engine(
+            false,
+            false,
+            false,
+            idle + 1
+        ));
+        // in-flight turn（reserve 占用或终态收口）绝不回收。
+        assert!(!super::should_reap_idle_engine(true, false, false, idle));
+        // scheduled 轮进行中（spawn→submit 窗口）不回收。
+        assert!(!super::should_reap_idle_engine(false, true, false, idle));
+        // 当前 active 会话不回收。
+        assert!(!super::should_reap_idle_engine(false, false, true, idle));
+        // 未到空闲阈值不回收。
+        assert!(!super::should_reap_idle_engine(
+            false,
+            false,
+            false,
+            idle - 1
+        ));
     }
 
     fn model(id: &str, wire_name: &str) -> SavedModel {

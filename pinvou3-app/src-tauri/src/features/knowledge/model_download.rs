@@ -352,6 +352,24 @@ pub(crate) async fn load_installed_embedder(
     service: &KnowledgeService,
     pool: &crate::features::assistant::engine_pool::EnginePool,
 ) -> Result<bool, String> {
+    // 首帧门控（kb_model_load_after_first_frame 与 kb_model_status 热加载共用本
+    // 入口，改这一处两个调用点同时生效）：磁盘目录完整 ≠ 值得加载。本地无已
+    // 入库内容且远程无连接时，加载 ~570MB 模型纯属白占内存（没有任何检索、
+    // 建库路径会用它）；曾建库后清空的用户同样跳过——has_indexed_content 就是
+    // 「当前有可检索内容」的语义。返回 Ok(false) = 未安装式静默降级，语义与
+    // 模型未部署完全一致；用户建库/下载模型/挂载校验的既有路径不受影响。
+    if !knowledge_usage_present(service) {
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "knowledge_embedder_async:skipped_no_usage",
+            &format!(
+                "indexed_content={} remote_connections={}",
+                service.has_indexed_content(),
+                remote_has_connections(),
+            ),
+        );
+        return Ok(false);
+    }
     let external_model_dir = uses_external_model_dir();
     let configured_dir = configured_model_dir();
     let _install_lock = (!external_model_dir)
@@ -369,6 +387,26 @@ pub(crate) async fn load_installed_embedder(
         return Ok(false);
     }
     load_installed_embedder_unlocked(service, pool, configured_dir).await
+}
+
+/// 是否存在会用到 embedding 模型的使用迹象：本地有已入库内容，或配置了远程
+/// 知识库连接（远程检索走本地进程内嵌入查询向量，见 tool_policy 的同口径
+/// 判定）。两者皆无 → 首帧不加载。
+fn knowledge_usage_present(service: &KnowledgeService) -> bool {
+    usage_present(service.has_indexed_content(), remote_has_connections())
+}
+
+/// usage_present 的纯函数核心（便于单测）：任一使用迹象存在即加载。
+fn usage_present(indexed_content: bool, remote_connections: bool) -> bool {
+    indexed_content || remote_connections
+}
+
+/// 远程知识库连接是否存在。不经过 Tauri managed state——model_download 不便
+/// 依赖 RemoteKnowledgeService 实例（各 feature 自行 manage 自己的 state），
+/// 因此直接读默认路径的连接文件；读不到（文件缺失/解析失败）按「无连接」
+/// 处理，语义保守（跳过加载，用户连上远程库后热加载钩子会补上）。
+fn remote_has_connections() -> bool {
+    crate::features::remote_knowledge::RemoteKnowledgeService::remote_connections_present()
 }
 
 /// 调用方已经持有模型目录安装锁，或使用不由应用管理的外部只读目录。
@@ -448,6 +486,17 @@ mod tests {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn first_frame_load_requires_local_content_or_remote_connections() {
+        // 两者皆无 → 跳过加载（磁盘目录即使完整也不白占 ~570MB）。
+        assert!(!usage_present(false, false));
+        // 本地有已入库内容（含曾建库后仍有文档的用户）→ 加载。
+        assert!(usage_present(true, false));
+        // 远程连接存在（远程检索要本地嵌入查询向量）→ 加载。
+        assert!(usage_present(false, true));
+        assert!(usage_present(true, true));
     }
 
     #[test]

@@ -105,6 +105,30 @@ const CLAUDE_INSTALL_SCRIPT_WINDOWS: &str = "https://claude.ai/install.ps1";
 const KIMI_INSTALL_SCRIPT_UNIX: &str = "https://code.kimi.com/kimi-code/install.sh";
 const KIMI_INSTALL_SCRIPT_WINDOWS: &str = "https://code.kimi.com/kimi-code/install.ps1";
 
+/// ACP 空闲会话回收阈值：每个空闲会话都是一个活的 node/codex/kimi 子进程
+/// （spawn 带 kill_on_drop），池无上限、内存随会话数线性涨。空闲超过该时长
+/// 且无在跑 turn / 配置同步 / 非 active 会话时回收。回收只是回到 lazy spawn
+/// 语义（下次 get_or_spawn 重新起进程），30 分钟取偏保守值：宁可少回收也不
+/// 误杀刚要被使用的会话。
+const IDLE_EVICT_AFTER_SECS: u64 = 30 * 60;
+/// 空闲回收巡检间隔：5 分钟一轮，及时性与巡检开销的折中（与 EnginePool
+/// 空闲回收、embedder 空闲卸载的巡检节奏保持一致）。
+const REAP_INTERVAL_SECS: u64 = 5 * 60;
+
+/// 空闲回收判定（纯函数，便于单测）：busy（prompt 在途，含等待权限/问询的
+/// turn）、configuring（配置同步中）与当前 active 会话一律不回收。
+fn should_reap_idle_session(
+    busy: bool,
+    configuring: bool,
+    is_active_session: bool,
+    idle_for: Duration,
+) -> bool {
+    !busy
+        && !configuring
+        && !is_active_session
+        && idle_for >= Duration::from_secs(IDLE_EVICT_AFTER_SECS)
+}
+
 fn backend_for_session_model(model: &str) -> Option<AgentBackend> {
     match model {
         CODEX_ACP_SESSION_MODEL => Some(AgentBackend::CodexAcp),
@@ -615,6 +639,9 @@ struct AcpSession {
     kimi_session_id: Option<String>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     child: Mutex<Child>,
+    /// 最近一次请求/响应时刻（空闲回收巡检用）。任何直接到达该会话的请求
+    /// （发消息、改配置、状态查询复用）与 prompt 响应返回都会刷新。
+    last_activity: parking_lot::Mutex<Instant>,
 }
 
 impl AcpSession {
@@ -659,6 +686,8 @@ impl AcpSession {
             .block_task()
             .await;
         self.busy.store(false, Ordering::Release);
+        // 响应返回也算一次活动：长时间流式输出的 turn 结束后重新计空闲。
+        self.note_activity();
         match result {
             Ok(response) => {
                 // Kimi ACP 将普通 provider failure 映射成 end_turn，详细错误只写入
@@ -707,6 +736,16 @@ impl AcpSession {
 
     fn bridge_session_id(&self) -> String {
         self.bridge.pinvou_session_id().to_string()
+    }
+
+    /// 记录一次真实交互（请求到达 / 响应返回）；空闲回收据此判定空闲时长。
+    fn note_activity(&self) {
+        *self.last_activity.lock() = Instant::now();
+    }
+
+    /// 距最近一次活动的时长（保守语义：状态查询等轻量请求也算活动）。
+    fn idle_for(&self) -> Duration {
+        self.last_activity.lock().elapsed()
     }
 
     fn cancel(&self) {
@@ -841,6 +880,25 @@ pub struct AcpPool {
     bundled_node: Option<PathBuf>,
     /// 第三方 Provider（中转）管理：store + 凭据 + 三写入器。
     providers: ProviderManager,
+    /// 空闲回收巡检任务句柄。放在 Arc 里由所有 pool clone 共享：pool 本身是
+    /// Clone（Tauri State 每次命令取的都是 clone），不能直接 impl Drop，否则
+    /// 任一 clone 释放都会误停巡检。pool 是进程级 managed state，巡检随进程
+    /// 退出自然终止；guard 的 Drop 清理仅作防御（见 start_idle_reaper 注释）。
+    idle_reaper: Arc<parking_lot::Mutex<Option<IdleReaperGuard>>>,
+}
+
+/// 后台巡检任务句柄：Drop 时先 cancel 再 abort，双保险停止巡检
+/// （参考 scheduled/tasks.rs ScheduledTaskState 的 Drop 清理模式）。
+struct IdleReaperGuard {
+    cancel: tokio_util::sync::CancellationToken,
+    handle: tauri::async_runtime::JoinHandle<()>,
+}
+
+impl Drop for IdleReaperGuard {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.handle.abort();
+    }
 }
 
 /// 同一 Agent 的安装/升级互斥，不同 Agent 的状态与任务彼此隔离。
@@ -1056,6 +1114,7 @@ impl AcpPool {
             providers: ProviderManager::new(
                 crate::platform::credential_store::SystemCredentialStore::new(),
             )?,
+            idle_reaper: Arc::new(parking_lot::Mutex::new(None)),
         })
     }
 
@@ -3003,6 +3062,83 @@ impl AcpPool {
         }
     }
 
+    /// 启动空闲回收巡检（幂等）：每 REAP_INTERVAL_SECS 秒扫描一次，回收
+    /// 「空闲超过 IDLE_EVICT_AFTER_SECS 且无在途 prompt/配置同步且非 active」
+    /// 的会话进程。active 判定取 `SessionStore::active_id`——它由 create/
+    /// load session 命令维护，是前端当前打开会话的最可靠信号；不过前端也可能
+    /// 通过 web_access 等旁路打开同一会话，因此再多兜一层：`get_or_spawn`
+    /// 复用时会刷新 last_activity，可见即活跃，双保险下宁可保守。
+    /// 回收只是回到 lazy spawn 语义（下次 get_or_spawn 重新起进程并恢复
+    /// 会话上下文），代理侧会话状态不受影响。
+    ///
+    /// 巡检任务持有 pool clone（内部全 Arc，廉价）。pool 是 Tauri managed
+    /// state、进程级生命周期，巡检随进程退出自然终止；guard 的 Drop 清理
+    /// 仅作为防御（clone 间 Arc 循环意味着它平时不会触发，这不构成泄漏——
+    /// 常驻的只有一个每 5 分钟醒一次的轻任务）。
+    pub fn start_idle_reaper(&self) {
+        let mut slot = self.idle_reaper.lock();
+        if slot.is_some() {
+            return;
+        }
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let pool = self.clone();
+        let handle = tauri::async_runtime::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(REAP_INTERVAL_SECS));
+            // tokio::interval 首个 tick 立即到期：跳过它，统一走周期节奏。
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = task_cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                pool.reap_idle_sessions().await;
+            }
+        });
+        *slot = Some(IdleReaperGuard { cancel, handle });
+    }
+
+    /// 单轮空闲回收。busy/configuring 会话（含 turn 等待权限/问询期间）与
+    /// active 会话一律保留；回收动作复用 evict（级联取消挂起权限/问询）。
+    async fn reap_idle_sessions(&self) {
+        let active_id = self.session_store.active_id();
+        let candidates: Vec<String> = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .iter()
+                .filter(|(sid, runtime)| {
+                    should_reap_idle_session(
+                        runtime.busy.load(Ordering::Acquire),
+                        runtime.configuring.load(Ordering::Acquire),
+                        active_id.as_deref() == Some(sid.as_str()),
+                        runtime.idle_for(),
+                    )
+                })
+                .map(|(sid, _)| sid.clone())
+                .collect()
+        };
+        for session_id in candidates {
+            eprintln!(
+                "[pinvou3-app] ACP 会话 {session_id} 空闲超过 {} 秒，回收进程（下次使用时重新拉起）",
+                IDLE_EVICT_AFTER_SECS
+            );
+            self.evict(&session_id).await;
+        }
+    }
+
+    /// 退出收割（lib.rs RunEvent::Exit 调）：不等空闲判定，全量关停。
+    /// kill_on_drop 只在 Child drop 时生效，Tauri 退出不保证 drop managed
+    /// state，显式 shutdown 兜底防孤儿进程。
+    pub async fn shutdown_all(&self) {
+        let runtimes: Vec<Arc<AcpSession>> = {
+            let mut sessions = self.sessions.lock().await;
+            sessions.drain().map(|(_, runtime)| runtime).collect()
+        };
+        for runtime in runtimes {
+            runtime.shutdown().await;
+        }
+    }
+
     pub async fn session_info(&self, session_id: &str) -> Result<CodexAcpSessionInfo> {
         if !self.is_acp(session_id) {
             bail!("当前会话不是 ACP 会话");
@@ -3304,6 +3440,9 @@ impl AcpPool {
                 "session:reused",
                 format!("session_id={session_id}"),
             );
+            // 复用即活动：前端对可见会话的状态轮询会持续刷新空闲时钟，
+            // 这正好与「active 会话不回收」的保守语义一致。
+            runtime.note_activity();
             return Ok(runtime.clone());
         }
         // 与 spawn_session 一致走 self.backend()，让辅助索引缺失的会话在
@@ -3717,6 +3856,7 @@ impl AcpPool {
             prompt_capabilities,
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
             child: Mutex::new(child),
+            last_activity: parking_lot::Mutex::new(Instant::now()),
         })
     }
 
@@ -4101,6 +4241,32 @@ fn codex_client_capabilities() -> ClientCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_reap_keeps_busy_configuring_and_active_sessions() {
+        let idle = Duration::from_secs(IDLE_EVICT_AFTER_SECS);
+        // 空闲且非 active → 回收。
+        assert!(should_reap_idle_session(false, false, false, idle));
+        assert!(should_reap_idle_session(
+            false,
+            false,
+            false,
+            idle + Duration::from_secs(1)
+        ));
+        // 在途 prompt（含等待权限/问询的 turn）绝不回收。
+        assert!(!should_reap_idle_session(true, false, false, idle));
+        // 配置同步中不回收（回收会打断在途 set_model/set_config/set_mode）。
+        assert!(!should_reap_idle_session(false, true, false, idle));
+        // 当前 active 会话不回收（保守：前端可能正在看）。
+        assert!(!should_reap_idle_session(false, false, true, idle));
+        // 未到空闲阈值不回收。
+        assert!(!should_reap_idle_session(
+            false,
+            false,
+            false,
+            idle - Duration::from_secs(1)
+        ));
+    }
 
     #[test]
     fn code_native_workspace_info_returns_temporary_execution_workspace() {

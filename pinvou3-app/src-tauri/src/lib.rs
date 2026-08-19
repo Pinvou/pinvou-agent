@@ -343,6 +343,9 @@ pub fn run() {
                     Ok(pool) => {
                         let agents = pool.agents().clone();
                         let capability_pool = pool.clone();
+                        // 空闲回收巡检：ACP 会话是活的子进程，空闲超阈值回收
+                        // （回到 lazy spawn 语义，下次使用重新拉起）。
+                        pool.start_idle_reaper();
                         handle.manage(pool);
                         eprintln!("[pinvou3-app] Codex ACP pool ready (lazy spawn per session)");
                         (agents, capability_pool)
@@ -438,7 +441,10 @@ pub fn run() {
                             eprintln!("[pinvou3-app] scheduled tasks runtime init failed: {e:#}");
                         }
                     }
-                    handle.manage(pool);
+                    handle.manage(pool.clone());
+                    // 空闲回收巡检：engine 常驻但不再无限常驻，空闲超阈值回收
+                    // （回到 lazy spawn 语义，下次发消息重建 + 注水历史）。
+                    pool.start_idle_reaper();
                     eprintln!("[pinvou3-app] engine pool ready (lazy spawn per session)");
                     match remote_control_manager.resume() {
                         Ok(true) => eprintln!("[pinvou3-app] persistent Web access resumed"),
@@ -975,11 +981,27 @@ pub fn run() {
     startup::mark("tauri:build:done");
     startup::mark("tauri:event_loop:run_enter");
     let mut resumed_reported = false;
-    app.run(move |_app, event| match event {
+    app.run(move |app, event| match event {
         tauri::RunEvent::Ready => startup::mark("tauri:event_loop:ready"),
         tauri::RunEvent::Resumed if !resumed_reported => {
             resumed_reported = true;
             startup::mark("tauri:event_loop:first_resumed");
+        }
+        tauri::RunEvent::Exit => {
+            // 退出收割：managed state 不保证被 drop（kill_on_drop 只在 Child
+            // drop 时生效），显式收口防孤儿进程。同步执行——Exit 后进程即将
+            // 结束，这是最后的清理窗口；各收口内部幂等，超时风险最大的
+            // shutdown() 也只发 oneshot + kill，不做长等待。
+            startup::mark("exit:cleanup:start");
+            if let Some(acp_pool) = app.try_state::<crate::features::codex_acp::AcpPool>() {
+                tauri::async_runtime::block_on(acp_pool.shutdown_all());
+            }
+            if let Some(connector_conn) =
+                app.try_state::<crate::features::connectors::connector_cli::ConnectorConn>()
+            {
+                connector_conn.kill_all_pids();
+            }
+            startup::mark("exit:cleanup:done");
         }
         _ => {}
     });
