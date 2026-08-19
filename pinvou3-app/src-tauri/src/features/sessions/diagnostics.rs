@@ -19,9 +19,6 @@ const SCHEMA_VERSION: u8 = 1;
 const MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_BATCH_ENTRIES: usize = 64;
 const MAX_ENTRY_BYTES: usize = 24 * 1024;
-const MAX_STRING_CHARS: usize = 2_048;
-const MAX_ARRAY_ITEMS: usize = 64;
-const MAX_DEPTH: usize = 8;
 const FRONTEND_EVENTS: &[&str] = &[
     "authority_sync_notice_shown",
     "browser_network_offline",
@@ -43,6 +40,8 @@ const FRONTEND_EVENTS: &[&str] = &[
     "reconcile_succeeded",
     "remote_sync_blocked_action",
     "remote_turn_marked",
+    "session_download_capability_wait_failed",
+    "session_download_cleanup",
     "transcript_committed_event_received",
 ];
 
@@ -71,14 +70,18 @@ pub(crate) fn log_path() -> PathBuf {
 }
 
 pub(crate) fn record_backend(event: &str, details: Value) {
+    let Some(details) = normalize_backend_details(event, &details) else {
+        eprintln!("[authority-sync] rejected unknown or malformed backend diagnostic");
+        return;
+    };
     let entry = json!({
         "schema_version": SCHEMA_VERSION,
         "recorded_at": now(),
         "process_run_id": process_run_id(),
         "pid": std::process::id(),
         "source": "rust",
-        "event": clean_identifier(event),
-        "details": sanitize_backend_details(details, 0),
+        "event": event,
+        "details": details,
     });
     if let Err(error) = append_entries(&[entry]) {
         eprintln!("[authority-sync] unable to append backend diagnostic: {error}");
@@ -258,7 +261,10 @@ fn normalize_frontend_details(value: Option<&Value>) -> Value {
                 Some(value),
                 &[
                     "cancel_rpc_failed",
+                    "capability_snapshot_timeout",
+                    "capability_snapshot_unavailable",
                     "command_rejected",
+                    "download_id_mismatch",
                     "session_turn_in_progress",
                     "snapshot_load_failed",
                 ],
@@ -470,261 +476,110 @@ fn rotate_before_write(path: &Path, upcoming_bytes: u64) -> Result<(), String> {
     })
 }
 
-fn sanitize_value(value: Value, depth: usize) -> Value {
-    if depth >= MAX_DEPTH {
-        return Value::String("[DEPTH_LIMIT]".into());
-    }
-    match value {
-        Value::Object(object) => Value::Object(
-            object
-                .into_iter()
-                .take(MAX_ARRAY_ITEMS)
-                .map(|(key, value)| {
-                    let sanitized = if is_sensitive_key(&key) {
-                        Value::String("[REDACTED]".into())
-                    } else {
-                        sanitize_value(value, depth + 1)
-                    };
-                    (clean_key(&key), sanitized)
-                })
-                .collect(),
-        ),
-        Value::Array(values) => Value::Array(
-            values
-                .into_iter()
-                .take(MAX_ARRAY_ITEMS)
-                .map(|value| sanitize_value(value, depth + 1))
-                .collect(),
-        ),
-        Value::String(value) => Value::String(clean_string(&value)),
-        other => other,
-    }
-}
-
-fn sanitize_backend_details(value: Value, depth: usize) -> Value {
-    if depth >= MAX_DEPTH {
-        return Value::String("[DEPTH_LIMIT]".into());
-    }
-    match value {
-        Value::Object(object) => Value::Object(
-            object
-                .into_iter()
-                .take(MAX_ARRAY_ITEMS)
-                .map(|(key, value)| {
-                    let sanitized = if is_sensitive_key(&key) {
-                        Value::String("[REDACTED]".into())
-                    } else if is_backend_identifier_key(&key) {
-                        value
-                            .as_str()
-                            .and_then(identifier_fingerprint)
-                            .map(Value::String)
-                            .unwrap_or_else(|| Value::String("[INVALID_IDENTIFIER]".into()))
-                    } else {
-                        sanitize_backend_details(value, depth + 1)
-                    };
-                    (clean_key(&key), sanitized)
-                })
-                .collect(),
-        ),
-        Value::Array(values) => Value::Array(
-            values
-                .into_iter()
-                .take(MAX_ARRAY_ITEMS)
-                .map(|value| sanitize_backend_details(value, depth + 1))
-                .collect(),
-        ),
-        Value::String(value) => Value::String(clean_string(&value)),
-        other => other,
-    }
-}
-
-fn is_backend_identifier_key(key: &str) -> bool {
-    matches!(
-        key.to_ascii_lowercase().replace('-', "_").as_str(),
-        "session_id"
-            | "active_session_id"
-            | "download_id"
-            | "trace_id"
-            | "event_id"
-            | "client_run_id"
-            | "endpoint_id"
-    )
-}
-
-fn is_sensitive_key(key: &str) -> bool {
-    let normalized = key.to_ascii_lowercase().replace('-', "_");
-    matches!(
-        normalized.as_str(),
-        "access_token"
-            | "api_key"
-            | "authorization"
-            | "body"
-            | "content"
-            | "cookie"
-            | "credential"
-            | "credentials"
-            | "cwd"
-            | "directory"
-            | "error"
-            | "file_path"
-            | "id_token"
-            | "local_path"
-            | "message"
-            | "output"
-            | "password"
-            | "path"
-            | "prompt"
-            | "refresh_token"
-            | "request"
-            | "response"
-            | "secret"
-            | "text"
-            | "token"
-            | "user_input"
-    ) || [
-        "_access_token",
-        "_api_key",
-        "_authorization",
-        "_body",
-        "_content",
-        "_cookie",
-        "_credential",
-        "_credentials",
-        "_directory",
-        "_error",
-        "_file_path",
-        "_id_token",
-        "_local_path",
-        "_message",
-        "_output",
-        "_password",
-        "_path",
-        "_prompt",
-        "_refresh_token",
-        "_request",
-        "_response",
-        "_secret",
-        "_user_input",
-    ]
-    .iter()
-    .any(|suffix| normalized.ends_with(suffix))
-}
-
-fn clean_identifier(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | ':' | '.')
-        })
-        .take(160)
-        .collect()
-}
-
-fn clean_key(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | ':')
-        })
-        .take(120)
-        .collect()
-}
-
-fn clean_string(value: &str) -> String {
-    let cookie_safe = redact_cookie_header_lines(value);
-    let normalized: String = cookie_safe
-        .chars()
-        .map(|character| {
-            if matches!(character, '\r' | '\n' | '\t') {
-                ' '
-            } else {
-                character
-            }
-        })
-        .take(MAX_STRING_CHARS)
-        .collect();
-    redact_inline_secrets(&normalized)
-}
-
-fn redact_cookie_header_lines(value: &str) -> String {
-    value
-        .lines()
-        .map(|line| {
-            let lower = line.to_ascii_lowercase();
-            let position = lower.find("set-cookie:").or_else(|| lower.find("cookie:"));
-            match position {
-                Some(position) => format!("{}Cookie: [REDACTED]", &line[..position]),
-                None => line.to_string(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn redact_inline_secrets(value: &str) -> String {
-    let mut output = Vec::new();
-    let mut redact_next = false;
-    for part in value.split_whitespace() {
-        if redact_next {
-            output.push("[REDACTED]".to_string());
-            redact_next = false;
+fn normalize_backend_details(event: &str, value: &Value) -> Option<Value> {
+    let allowed_fields: &[&str] = match event {
+        "chat_done_emitting" => &[
+            "session_id",
+            "terminal_status",
+            "terminal_error_present",
+            "shell_cleanup_failed",
+        ],
+        "transcript_committed_emitting" => &[
+            "session_id",
+            "transcript_revision",
+            "persistence_target",
+            "message_count",
+        ],
+        "web_session_download_cancelled" => &["session_id", "download_id", "total_bytes", "ready"],
+        "web_session_chunk_served" => &[
+            "session_id",
+            "download_id",
+            "offset",
+            "chunk_bytes",
+            "total_bytes",
+            "eof",
+            "transcript_revision",
+            "elapsed_ms",
+        ],
+        "desktop_load_session_failed" => &[
+            "session_id",
+            "set_active",
+            "elapsed_ms",
+            "error_category",
+            "error_present",
+        ],
+        "desktop_load_session_revision_failed" => &[
+            "session_id",
+            "message_count",
+            "elapsed_ms",
+            "error_category",
+            "error_present",
+        ],
+        "desktop_load_session_succeeded" => &[
+            "session_id",
+            "set_active",
+            "transcript_revision",
+            "message_count",
+            "elapsed_ms",
+        ],
+        _ => return None,
+    };
+    let object = value.as_object()?;
+    let mut output = Map::new();
+    for key in allowed_fields {
+        let Some(value) = object.get(*key) else {
             continue;
-        }
-        if part.eq_ignore_ascii_case("bearer") || part.eq_ignore_ascii_case("basic") {
-            output.push(part.to_string());
-            redact_next = true;
-            continue;
-        }
-        let lower = part.to_ascii_lowercase();
-        if lower == "cookie:" || lower == "set-cookie:" {
-            output.push("Cookie:".to_string());
-            redact_next = true;
-        } else if [
-            "access_token=",
-            "api_key=",
-            "authorization=",
-            "cookie=",
-            "token=",
-            "secret=",
-            "password=",
-        ]
-        .iter()
-        .any(|marker| lower.contains(marker))
-        {
-            let separator = part.find('=').unwrap_or(part.len());
-            output.push(format!("{}=[REDACTED]", &part[..separator]));
-        } else if looks_like_local_path(part) {
-            output.push("[LOCAL_PATH]".to_string());
-        } else {
-            output.push(part.to_string());
+        };
+        let normalized = match *key {
+            "session_id" | "download_id" => value
+                .as_str()
+                .and_then(identifier_fingerprint)
+                .map(Value::String),
+            "transcript_revision" => {
+                if value.is_null() {
+                    Some(Value::Null)
+                } else {
+                    value
+                        .as_str()
+                        .and_then(normalize_revision)
+                        .map(Value::String)
+                }
+            }
+            "message_count" | "total_bytes" | "offset" | "chunk_bytes" | "elapsed_ms" => {
+                normalize_nonnegative_number(value)
+            }
+            "ready"
+            | "eof"
+            | "set_active"
+            | "terminal_error_present"
+            | "shell_cleanup_failed"
+            | "error_present" => value.as_bool().map(Value::Bool),
+            "terminal_status" => allowed_enum(
+                Some(value),
+                &[
+                    "Cancelled",
+                    "Canceled",
+                    "Completed",
+                    "Failed",
+                    "Interrupted",
+                ],
+            )
+            .map(Value::String),
+            "persistence_target" => {
+                allowed_enum(Some(value), &["session_store", "unknown"]).map(Value::String)
+            }
+            "error_category" => allowed_enum(
+                Some(value),
+                &["revision_compute_failed", "session_load_failed"],
+            )
+            .map(Value::String),
+            _ => None,
+        };
+        if let Some(normalized) = normalized {
+            output.insert((*key).to_string(), normalized);
         }
     }
-    output.join(" ")
-}
-
-fn looks_like_local_path(value: &str) -> bool {
-    let value = value.trim_matches(|character: char| {
-        matches!(character, '"' | '\'' | '(' | ')' | '[' | ']' | ',' | ';')
-    });
-    let bytes = value.as_bytes();
-    let lower = value.to_ascii_lowercase();
-    lower.starts_with("file://")
-        || lower.starts_with("\\\\")
-        || lower.starts_with("~/")
-        || lower.starts_with("~\\")
-        || [
-            "/home/",
-            "/users/",
-            "/tmp/",
-            "/private/var/",
-            "/var/folders/",
-        ]
-        .iter()
-        .any(|prefix| lower.starts_with(prefix))
-        || (bytes.len() >= 3
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && matches!(bytes[2], b'\\' | b'/'))
+    Some(Value::Object(output))
 }
 
 fn now() -> String {
@@ -734,98 +589,37 @@ fn now() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_entries_to_path, clean_string, identifier_fingerprint, is_sensitive_key,
-        normalize_frontend_entry, sanitize_backend_details, sanitize_value, MAX_LOG_BYTES,
+        append_entries_to_path, identifier_fingerprint, normalize_backend_details,
+        normalize_frontend_entry, MAX_LOG_BYTES,
     };
     use serde_json::json;
     use std::io::Write as _;
 
     #[test]
-    fn frontend_diagnostics_redact_user_content_and_credentials() {
-        let sanitized = sanitize_value(
-            json!({
+    fn backend_diagnostics_use_event_specific_allowlists() {
+        let normalized = normalize_backend_details(
+            "desktop_load_session_failed",
+            &json!({
                 "session_id": "chat-safe",
-                "message_count": 12,
-                "message": "private user text",
-                "access_token": "private-token",
-                "details": { "content": "private model output", "revision": "sha-safe" },
-            }),
-            0,
-        );
-        assert_eq!(sanitized["session_id"], "chat-safe");
-        assert_eq!(sanitized["message_count"], 12);
-        assert_eq!(sanitized["message"], "[REDACTED]");
-        assert_eq!(sanitized["access_token"], "[REDACTED]");
-        assert_eq!(sanitized["details"]["content"], "[REDACTED]");
-        assert_eq!(sanitized["details"]["revision"], "sha-safe");
-    }
-
-    #[test]
-    fn sensitive_key_matching_does_not_hide_safe_counts() {
-        assert!(is_sensitive_key("password"));
-        assert!(is_sensitive_key("relay_access_token"));
-        assert!(is_sensitive_key("x-api-key"));
-        assert!(is_sensitive_key("provider_error"));
-        assert!(is_sensitive_key("working_directory"));
-        assert!(!is_sensitive_key("message_count"));
-        assert!(!is_sensitive_key("input_token_count"));
-        assert!(!is_sensitive_key("error_category"));
-    }
-
-    #[test]
-    fn free_form_errors_redact_inline_credentials() {
-        let cleaned = clean_string(
-            "relay failed Basic cHJpdmF0ZQ== Bearer private-token Cookie: sid=private\n\
-             https://x.test/?access_token=private api_key=private C:\\Users\\alice\\secret.txt \
-             /home/alice/private.json",
-        );
-        assert!(!cleaned.contains("cHJpdmF0ZQ"));
-        assert!(!cleaned.contains("private-token"));
-        assert!(!cleaned.contains("sid=private"));
-        assert!(!cleaned.contains("access_token=private"));
-        assert!(!cleaned.contains("api_key=private"));
-        assert!(!cleaned.contains("alice"));
-        assert!(cleaned.contains("Basic [REDACTED]"));
-        assert!(cleaned.contains("Bearer [REDACTED]"));
-        assert!(cleaned.contains("access_token=[REDACTED]"));
-        assert!(cleaned.contains("[LOCAL_PATH]"));
-    }
-
-    #[test]
-    fn arbitrary_errors_prompts_responses_and_paths_are_fully_redacted() {
-        let sanitized = sanitize_value(
-            json!({
-                "error": "private provider response",
-                "cancel_error": "private cancellation response",
-                "api_key": "sk-private",
-                "refresh_token": "refresh-private",
-                "id_token": "id-private",
-                "credential": "credential-private",
-                "user_input": "private input",
-                "request_prompt": "private prompt",
-                "response_body": "private response",
-                "local_path": "C:\\Users\\alice\\session.json",
-                "error_category": "snapshot_load_failed",
+                "set_active": true,
+                "elapsed_ms": 12,
+                "error_category": "session_load_failed",
                 "error_present": true,
+                "relay_token": "private-token",
+                "provider_text": "private provider response",
+                "nested": { "prompt": "private prompt" },
             }),
-            0,
-        );
-        for key in [
-            "error",
-            "cancel_error",
-            "api_key",
-            "refresh_token",
-            "id_token",
-            "credential",
-            "user_input",
-            "request_prompt",
-            "response_body",
-            "local_path",
-        ] {
-            assert_eq!(sanitized[key], "[REDACTED]", "{key} must be redacted");
+        )
+        .unwrap();
+        assert_ne!(normalized["session_id"], "chat-safe");
+        assert_eq!(normalized["set_active"], true);
+        assert_eq!(normalized["elapsed_ms"], 12);
+        assert_eq!(normalized["error_category"], "session_load_failed");
+        assert_eq!(normalized["error_present"], true);
+        for key in ["relay_token", "provider_text", "nested"] {
+            assert!(normalized.get(key).is_none(), "{key} must be dropped");
         }
-        assert_eq!(sanitized["error_category"], "snapshot_load_failed");
-        assert_eq!(sanitized["error_present"], true);
+        assert!(normalize_backend_details("future_backend_event", &json!({})).is_none());
     }
 
     #[test]
@@ -932,56 +726,43 @@ mod tests {
 
     #[test]
     fn backend_identifiers_use_the_same_join_keys_as_frontend_entries() {
-        let backend = sanitize_backend_details(
-            json!({
+        let backend = normalize_backend_details(
+            "web_session_chunk_served",
+            &json!({
                 "session_id": "chat-join-safe",
-                "active_session_id": "chat-active-safe",
                 "download_id": "download_web_join_safe",
-                "trace_id": "trace-join-safe",
-                "event_id": "event-join-safe",
-                "client_run_id": "client-run-safe",
-                "endpoint_id": "endpoint-join-safe",
                 "transcript_revision": "a".repeat(64),
-                "message_count": 4,
-                "terminal_status": "Completed",
-                "nested": { "session_id": "chat-join-safe" },
+                "offset": 0,
+                "chunk_bytes": 4,
+                "total_bytes": 4,
+                "eof": true,
+                "elapsed_ms": 1,
             }),
-            0,
-        );
+        )
+        .unwrap();
         let frontend = normalize_frontend_entry(
             json!({
                 "event": "reconcile_started",
                 "connection": { "endpoint_id": "endpoint-join-safe" },
                 "details": {
                     "session_id": "chat-join-safe",
-                    "active_session_id": "chat-active-safe",
                     "download_id": "download_web_join_safe",
-                    "trace_id": "trace-join-safe",
                 },
             }),
             "2026-08-18T12:00:00.000Z",
         )
         .unwrap();
 
-        for key in ["session_id", "active_session_id", "download_id", "trace_id"] {
+        for key in ["session_id", "download_id"] {
             assert_eq!(backend[key], frontend["details"][key], "join key {key}");
         }
         assert_eq!(
-            backend["endpoint_id"],
-            frontend["connection"]["endpoint_id"]
+            backend["session_id"],
+            identifier_fingerprint("chat-join-safe").unwrap()
         );
-        for key in ["event_id", "client_run_id"] {
-            let raw = if key == "event_id" {
-                "event-join-safe"
-            } else {
-                "client-run-safe"
-            };
-            assert_eq!(backend[key], identifier_fingerprint(raw).unwrap());
-        }
-        assert_eq!(backend["nested"]["session_id"], backend["session_id"]);
         assert_eq!(backend["transcript_revision"], "a".repeat(64));
-        assert_eq!(backend["message_count"], 4);
-        assert_eq!(backend["terminal_status"], "Completed");
+        assert_eq!(backend["total_bytes"], 4);
+        assert_eq!(backend["eof"], true);
         assert_ne!(backend["session_id"], "chat-join-safe");
     }
 

@@ -119,7 +119,21 @@ test('unknown frontend diagnostic events are rejected before queueing', () => {
   assert.equal(window.PinvouAuthoritySyncDiagnostics.pendingCount(), before);
 });
 
-test('authority reconciliation lifecycle is covered by the centralized diagnostics', () => {
+test('disconnected diagnostic queue stays within its persisted bound', () => {
+  const { window, storage } = harness({ web: true, available: false });
+  for (let index = 0; index < 300; index += 1) {
+    window.PinvouAuthoritySyncDiagnostics.record('reconcile_started', {
+      session_id: `chat-${index}`,
+      attempt: index,
+    });
+  }
+  assert.equal(window.PinvouAuthoritySyncDiagnostics.pendingCount(), 256);
+  const persisted = JSON.parse(storage.get('pinvou.authority_sync.diagnostics.v1'));
+  assert.equal(persisted.length, 256);
+  assert.equal(persisted.at(-1).details.attempt, 299);
+});
+
+test('bridge sources register the centralized reconciliation lifecycle events', () => {
   const webBridge = fs.readFileSync(path.join(root, 'src/platform/web/bridge.js'), 'utf8');
   const desktopBridge = [
     'src/platform/tauri/bridge.js',

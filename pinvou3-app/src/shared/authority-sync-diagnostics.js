@@ -22,6 +22,7 @@
     "reconcile_attempt_failed", "reconcile_attempt_rejected", "reconcile_deferred_busy",
     "reconcile_exhausted", "reconcile_joined_inflight", "reconcile_started",
     "reconcile_succeeded", "remote_sync_blocked_action", "remote_turn_marked",
+    "session_download_capability_wait_failed", "session_download_cleanup",
     "transcript_committed_event_received",
   ]);
   var IDENTIFIER_FIELDS = new Set(["session_id", "active_session_id", "trace_id", "download_id"]);
@@ -44,7 +45,10 @@
   ]);
   var ENUM_FIELDS = {
     reason: new Set(["assistant_identity_missing", "invalid_snapshot", "load_session_error", "message_count_short", "revision_mismatch"]),
-    error_category: new Set(["cancel_rpc_failed", "command_rejected", "session_turn_in_progress", "snapshot_load_failed"]),
+    error_category: new Set([
+      "cancel_rpc_failed", "capability_snapshot_timeout", "capability_snapshot_unavailable",
+      "command_rejected", "download_id_mismatch", "session_turn_in_progress", "snapshot_load_failed",
+    ]),
     operation: new Set(["accept_plan", "edit_last_turn", "send", "send_to_session"]),
     notice: new Set(["desktop_done_sync_pending", "remote_done_unsynced"]),
     terminal_status: new Set(["Cancelled", "Canceled", "Completed", "Failed", "Interrupted", "cancelled", "canceled", "completed", "failed", "interrupted"]),

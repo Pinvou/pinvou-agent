@@ -849,7 +849,10 @@ async function interruptedWebSessionDownloadReleasesItsLease() {
         eof: false,
       };
     }
-    if (chunkCalls === 2) throw new Error("relay connection dropped");
+    if (chunkCalls === 2) {
+      harness.setWebConnection({ status: "desktop_offline", desktop_online: false });
+      throw new Error("relay connection dropped");
+    }
     return {
       download_id: args.requestedDownloadId,
       offset: 0,
@@ -875,9 +878,12 @@ async function interruptedWebSessionDownloadReleasesItsLease() {
   );
   assert.ok(sharedStorage["pinvou.web_session_download_leases.v1"],
     "a failed cancellation must remain durable for the reconnect attempt");
-  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
-  assert.strictEqual(cancelCalls, 2, "the reconnect must retry the abandoned lease cancellation");
+  harness.setWebConnection({ status: "connected", desktop_online: true });
+  await tick();
+  await tick();
+  assert.strictEqual(cancelCalls, 2, "the connection event must retry the abandoned lease cancellation");
   assert.strictEqual(sharedStorage["pinvou.web_session_download_leases.v1"], undefined);
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
 
   sharedStorage["pinvou.web_session_download_leases.v1"] = JSON.stringify([{
     download_id: "download_reload_12345678",
@@ -897,6 +903,44 @@ async function interruptedWebSessionDownloadReleasesItsLease() {
     ["web_access_cancel_session_download", "web_access_load_session_chunk"],
     "a page reload must cancel its persisted abandoned lease before opening a replacement download"
   );
+  assert.strictEqual(sharedStorage["pinvou.web_session_download_leases.v1"], undefined);
+}
+
+async function mismatchedEchoedDownloadIdCancelsBothLeases() {
+  var sharedStorage = Object.create(null);
+  var harness = createBridgeHarness(sharedStorage, {
+    bridgeKind: "web",
+    webSupportedCommands: ["web_access_cancel_session_download"],
+  });
+  var sessionId = "chat-download-id-mismatch";
+  var requestedId = "";
+  var echoedId = "download_server_ignored_requested";
+  harness.handlers.web_access_load_session_chunk = function (args) {
+    requestedId = args.requestedDownloadId;
+    var encoded = Buffer.from(JSON.stringify({
+      metadata: { id: sessionId, title: "Mismatch", message_count: 0 },
+      messages: [],
+      artifacts: [],
+    }), "utf8");
+    return {
+      download_id: echoedId,
+      offset: 0,
+      total: encoded.length,
+      data_base64: encoded.toString("base64"),
+      eof: true,
+    };
+  };
+  var cancelled = [];
+  harness.handlers.web_access_cancel_session_download = function (args) {
+    cancelled.push(args.downloadId);
+    assert.strictEqual(args.id, sessionId);
+    return true;
+  };
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), false);
+  assert.ok(requestedId && requestedId !== echoedId);
+  assert.deepStrictEqual(cancelled.sort(), [requestedId, echoedId].sort(),
+    "a protocol mismatch must release both the requested and desktop-echoed leases");
   assert.strictEqual(sharedStorage["pinvou.web_session_download_leases.v1"], undefined);
 }
 
@@ -1412,6 +1456,17 @@ async function sessionDownloadCapabilityWaitHasTimeout() {
   assert.strictEqual(
     harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
     false
+  );
+  harness.setWebCapabilities(["web_access_cancel_session_download"]);
+  for (var attempt = 0; attempt < 4; attempt++) await tick();
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    true,
+    "a late capability snapshot must automatically retry the switch that timed out"
+  );
+  assert.strictEqual(
+    harness.bridge.state.get("sessions").activeSessionId,
+    "chat-capabilities-timeout"
   );
 }
 
@@ -5202,6 +5257,7 @@ Promise.resolve()
   .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
   .then(interruptedWebSessionDownloadReleasesItsLease)
   .then(lostFirstWebSessionChunkStillHasCancellableLease)
+  .then(mismatchedEchoedDownloadIdCancelsBothLeases)
   .then(olderDesktopUsesServerGeneratedSessionDownloadId)
   .then(sessionDownloadWaitsForCapabilitySnapshot)
   .then(sessionDownloadCapabilityWaitStopsOnDisconnect)

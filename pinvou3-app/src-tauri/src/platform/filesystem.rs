@@ -309,7 +309,9 @@ pub(crate) struct RealDirectoryIdentity {
     ))]
     inode: u64,
     #[cfg(windows)]
-    creation_time: u64,
+    volume_serial_number: u32,
+    #[cfg(windows)]
+    file_index: u64,
 }
 
 /// A private directory whose concrete filesystem object stays stable for
@@ -474,8 +476,8 @@ fn open_private_file_directory_impl(
             "private directory cannot be a volume root",
         )
     })?;
-    use std::os::windows::fs::MetadataExt as _;
-    if final_handle.metadata()?.creation_time() != expected.creation_time {
+    let (volume_serial_number, file_index) = windows_file_identity(final_handle)?;
+    if volume_serial_number != expected.volume_serial_number || file_index != expected.file_index {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "private directory changed while acquiring its stable handles",
@@ -922,8 +924,11 @@ fn real_directory_identity(path: &Path) -> io::Result<RealDirectoryIdentity> {
             format!("path is not a real directory: {}", path.display()),
         ));
     }
+    let canonical_path = std::fs::canonicalize(path)?;
+    #[cfg(windows)]
+    let (volume_serial_number, file_index) = windows_directory_identity(&canonical_path)?;
     Ok(RealDirectoryIdentity {
-        canonical_path: std::fs::canonicalize(path)?,
+        canonical_path,
         #[cfg(any(
             target_os = "macos",
             all(target_os = "linux", target_pointer_width = "64")
@@ -941,11 +946,43 @@ fn real_directory_identity(path: &Path) -> io::Result<RealDirectoryIdentity> {
             metadata.ino()
         },
         #[cfg(windows)]
-        creation_time: {
-            use std::os::windows::fs::MetadataExt as _;
-            metadata.creation_time()
-        },
+        volume_serial_number,
+        #[cfg(windows)]
+        file_index,
     })
+}
+
+#[cfg(windows)]
+fn windows_directory_identity(path: &Path) -> io::Result<(u32, u64)> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    let handle = options.open(path)?;
+    windows_file_identity(&handle)
+}
+
+#[cfg(windows)]
+fn windows_file_identity(file: &File) -> io::Result<(u32, u64)> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let information = unsafe { information.assume_init() };
+    let file_index =
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
+    Ok((information.dwVolumeSerialNumber, file_index))
 }
 
 #[cfg(windows)]

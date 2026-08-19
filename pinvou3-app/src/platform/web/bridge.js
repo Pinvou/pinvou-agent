@@ -372,6 +372,7 @@
   var scheduledTaskPendingLoads = Object.create(null);
   var scheduledTaskAutoCreateInFlight = Object.create(null);
   var sessionSwitchRequestToken = 0;
+  var pendingCapabilitySessionSwitch = null;
   // modeState 读取请求序号（评审 P1，定义前置供 syncSessionPresentationState
   // 与权威写回收敛点共用）：任何权威 modeState 写回（invoke 返回 / 事件负载 /
   // 会话切换状态恢复）都必须 bump 它，作废在途 syncModeState 的旧读取——
@@ -1179,6 +1180,7 @@
   var SESSION_DOWNLOAD_LEASES_KEY = "pinvou.web_session_download_leases.v1";
   var activeSessionDownloads = Object.create(null);
   var sessionDownloadLeases = null;
+  var sessionDownloadCleanupPromise = null;
   function readSessionDownloadLeases() {
     if (sessionDownloadLeases !== null) return sessionDownloadLeases.slice();
     try {
@@ -1243,6 +1245,30 @@
     diagnostics.cleanup_failed_count = failed.length;
     diagnostics.cleanup_succeeded_count = entries.length - failed.length;
   }
+  function validSessionDownloadId(downloadId) {
+    return typeof downloadId === "string" && downloadId.length >= 8 && downloadId.length <= 128 &&
+      /^download_[A-Za-z0-9_-]+$/.test(downloadId);
+  }
+  function scheduleAbandonedSessionDownloadCleanup() {
+    if (!IS_WEB || sessionDownloadCleanupPromise) return sessionDownloadCleanupPromise;
+    var diagnostics = {
+      transport_kind: "web_chunked_rpc",
+      cleanup_requested_count: 0,
+      cleanup_failed_count: 0,
+      cleanup_succeeded_count: 0,
+    };
+    sessionDownloadCleanupPromise = waitForWebInvokeCapabilities().then(async function () {
+      if (!canInvoke("web_access_cancel_session_download")) return false;
+      await cleanupAbandonedSessionDownloads(diagnostics);
+      recordAuthoritySyncDiagnostic("session_download_cleanup", diagnostics);
+      return true;
+    }).catch(function () {
+      return false;
+    }).finally(function () {
+      sessionDownloadCleanupPromise = null;
+    });
+    return sessionDownloadCleanupPromise;
+  }
   function newSessionDownloadId() {
     var token = "";
     try {
@@ -1268,7 +1294,20 @@
     // capability boundary for client-selected/persisted leases: older
     // desktops keep their server-generated download id protocol and must not
     // be blocked by cleanup RPCs they do not implement.
-    await waitForWebInvokeCapabilities();
+    try {
+      await waitForWebInvokeCapabilities();
+    } catch (capabilityError) {
+      diagnostics.elapsed_ms = Date.now() - diagnostics.started_at_ms;
+      diagnostics.error_present = true;
+      diagnostics.error_category = capabilityError && capabilityError.code === "desktop_capabilities_timeout"
+        ? "capability_snapshot_timeout"
+        : "capability_snapshot_unavailable";
+      recordAuthoritySyncDiagnostic("session_download_capability_wait_failed", {
+        session_id: sid,
+        transport: diagnostics,
+      });
+      throw capabilityError;
+    }
     var supportsSessionDownloadCancellation = canInvoke("web_access_cancel_session_download");
     if (supportsSessionDownloadCancellation) {
       await cleanupAbandonedSessionDownloads(diagnostics);
@@ -1277,6 +1316,7 @@
     var total = null;
     var payload = null;
     var downloadId = supportsSessionDownloadCancellation ? newSessionDownloadId() : "";
+    var unexpectedDownloadId = "";
     var maxSessionBytes = 256 * 1024 * 1024;
     diagnostics.cancellable_lease = supportsSessionDownloadCancellation;
     if (supportsSessionDownloadCancellation) {
@@ -1301,6 +1341,12 @@
         var chunkOffset = Number(chunk && chunk.offset);
         var chunkTotal = Number(chunk && chunk.total);
         var chunkDownloadId = String((chunk && (chunk.download_id || chunk.downloadId)) || "");
+        if (supportsSessionDownloadCancellation && downloadId &&
+            chunkDownloadId !== downloadId && validSessionDownloadId(chunkDownloadId)) {
+          unexpectedDownloadId = chunkDownloadId;
+          rememberSessionDownloadLease(unexpectedDownloadId, sid);
+          diagnostics.error_category = "download_id_mismatch";
+        }
         if (!Number.isSafeInteger(chunkOffset) || chunkOffset !== offset ||
             !Number.isSafeInteger(chunkTotal) || chunkTotal < 0 || chunkTotal > maxSessionBytes ||
             !chunkDownloadId || (downloadId && chunkDownloadId !== downloadId)) {
@@ -1332,15 +1378,22 @@
       }
     } catch (error) {
       if (supportsSessionDownloadCancellation && downloadId) {
-        delete activeSessionDownloads[downloadId];
+        var cancellationIds = [downloadId];
+        if (unexpectedDownloadId && unexpectedDownloadId !== downloadId) {
+          cancellationIds.push(unexpectedDownloadId);
+        }
+        cancellationIds.forEach(function (id) { delete activeSessionDownloads[id]; });
         diagnostics.cancel_requested = true;
-        try {
-          await cancelSessionDownloadLease(downloadId, sid);
-          forgetSessionDownloadLease(downloadId);
-          diagnostics.cancel_succeeded = true;
-        } catch (cancelError) {
-          diagnostics.cancel_succeeded = false;
-          diagnostics.error_category = "cancel_rpc_failed";
+        diagnostics.cancel_succeeded = true;
+        for (var cancelIndex = 0; cancelIndex < cancellationIds.length; cancelIndex++) {
+          var cancellationId = cancellationIds[cancelIndex];
+          try {
+            await cancelSessionDownloadLease(cancellationId, sid);
+            forgetSessionDownloadLease(cancellationId);
+          } catch (cancelError) {
+            diagnostics.cancel_succeeded = false;
+            diagnostics.error_category = "cancel_rpc_failed";
+          }
         }
       }
       throw error;
@@ -3175,6 +3228,7 @@
 
   async function switchToSessionInternal(id, preserveScheduledRunContext, errorScope, options) {
     var requestToken = ++sessionSwitchRequestToken;
+    pendingCapabilitySessionSwitch = null;
     var forceDurableLoad = !!(options && options.forceDurableLoad);
     var hydrateLiveSession = !!(options && options.hydrateLiveSession);
     if (!id) {
@@ -3229,6 +3283,16 @@
       pinvouReviews = primary[2] || [];
       turnTimeline = primary[3] || [];
     } catch (e) {
+      if (IS_WEB && e && e.code === "desktop_capabilities_timeout" &&
+          requestToken === sessionSwitchRequestToken) {
+        pendingCapabilitySessionSwitch = {
+          id: id,
+          preserveScheduledRunContext: preserveScheduledRunContext,
+          errorScope: errorScope,
+          options: options,
+          requestToken: requestToken,
+        };
+      }
       if (requestToken === sessionSwitchRequestToken) reportSessionSwitchFailure(e, errorScope);
       return false;
     }
@@ -3299,6 +3363,21 @@
     if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== saved.metadata.id) return false;
     reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
     return true;
+  }
+  function retryCapabilityBlockedSessionSwitch() {
+    if (!webInvokeCapabilitiesReady() || !pendingCapabilitySessionSwitch) return;
+    var pending = pendingCapabilitySessionSwitch;
+    if (pending.requestToken !== sessionSwitchRequestToken) {
+      pendingCapabilitySessionSwitch = null;
+      return;
+    }
+    pendingCapabilitySessionSwitch = null;
+    switchToSessionInternal(
+      pending.id,
+      pending.preserveScheduledRunContext,
+      pending.errorScope,
+      pending.options
+    ).catch(function () {});
   }
 
   async function switchToSession(id) {
@@ -9123,20 +9202,30 @@
     installDependencies: installDependencies,
   };
 
+  function retryWebAuthoritySynchronization() {
+    Object.keys(sessionStates).forEach(function (sid) {
+      var buf = sessionStates[sid];
+      if (!buf) return;
+      if (buf.remoteTerminalSeen || (buf.remoteTurnActive && !buf.busy)) {
+        reconcileRemoteTurn(sid).then(function (ready) {
+          if (ready) flushQueued(sid);
+        }).catch(function () {});
+      } else if (!buf.busy && buf.queued && buf.queued.length) {
+        flushQueued(sid);
+      }
+    });
+  }
   if (IS_WEB) {
     window.addEventListener("pinvou:web-connection", function (event) {
       if (!event || !event.detail || event.detail.status !== "connected") return;
-      Object.keys(sessionStates).forEach(function (sid) {
-        var buf = sessionStates[sid];
-        if (!buf) return;
-        if (buf.remoteTerminalSeen || (buf.remoteTurnActive && !buf.busy)) {
-          reconcileRemoteTurn(sid).then(function (ready) {
-            if (ready) flushQueued(sid);
-          }).catch(function () {});
-        } else if (!buf.busy && buf.queued && buf.queued.length) {
-          flushQueued(sid);
-        }
-      });
+      scheduleAbandonedSessionDownloadCleanup();
+      retryWebAuthoritySynchronization();
+    });
+    window.addEventListener("pinvou:web-capabilities", function () {
+      if (!webInvokeCapabilitiesReady()) return;
+      scheduleAbandonedSessionDownloadCleanup();
+      retryCapabilityBlockedSessionSwitch();
+      retryWebAuthoritySynchronization();
     });
   }
 

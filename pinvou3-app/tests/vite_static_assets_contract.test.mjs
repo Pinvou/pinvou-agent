@@ -12,6 +12,7 @@ import {
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sourceRoot = path.join(appRoot, 'src');
 const distRoot = path.join(appRoot, 'dist');
+const distIndexPath = path.join(distRoot, 'index.html');
 
 test('classic runtime script parser recognizes only real HTML attributes', () => {
   const html = `
@@ -82,10 +83,10 @@ test('runtime script containment rejects paths outside source or output roots', 
   assert.throws(() => resolveContainedRuntimePath(root, 'shared\\outside.js'), /invalid runtime script path/u);
 });
 
-test('Vite build contains every local classic runtime script referenced by index.html', () => {
+test('Vite build contains every local classic runtime script referenced by index.html', {
+  skip: fs.existsSync(distIndexPath) ? false : 'run npm run build:ui to verify build artifacts',
+}, () => {
   const sourceIndex = fs.readFileSync(path.join(sourceRoot, 'index.html'), 'utf8');
-  const distIndexPath = path.join(distRoot, 'index.html');
-  assert.ok(fs.existsSync(distIndexPath), 'missing Vite build; run npm run build:ui first');
 
   const expected = localClassicScriptPaths(sourceIndex).sort();
   const built = localClassicScriptPaths(fs.readFileSync(distIndexPath, 'utf8')).sort();
