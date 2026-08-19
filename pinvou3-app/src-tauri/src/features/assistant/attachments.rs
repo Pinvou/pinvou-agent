@@ -155,7 +155,7 @@ where
 
 /// 将附件以受控文件名落进 workspace 子目录;供 GUI 附件命令与 headless
 /// 评测附件 staging(lib 根 re-export)共用。
-pub(crate) fn stage_file_in_workspace(
+pub fn stage_file_in_workspace(
     src: &str,
     basename: &str,
     workspace: &std::path::Path,
@@ -461,7 +461,7 @@ pub(crate) fn build_message_with_attachments_in_dir(
 
 /// 普通对话附件入口。pub 仅为 L1 dialog harness 复用(lib.rs re-export)，
 /// 不是对外 API；scheduled chat 走上面的 run 专属目录入口。
-pub(crate) fn build_message_with_attachments(
+pub fn build_message_with_attachments(
     text: String,
     attachments: Vec<crate::features::files::file_ingest::IngestResult>,
     workspace: &std::path::Path,
