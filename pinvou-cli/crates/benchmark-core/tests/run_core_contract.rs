@@ -213,6 +213,7 @@ enum BackendBehavior {
     PendingResolveOutput,
     PendingClose,
     ResolveFailed,
+    MissingFinalAnswer,
     PendingCleanup,
 }
 
@@ -373,6 +374,9 @@ impl HeadlessAgentBackend for MockBackend {
             BackendBehavior::ResolveFailed => {
                 Ok(AgentTaskOutcome::completed(Duration::from_millis(2))
                     .with_private_output(PrivateOutputHandle::new("missing")))
+            }
+            BackendBehavior::MissingFinalAnswer => {
+                Err(AgentBackendError::Operation("missing_final_answer".into()))
             }
         }
     }
@@ -761,6 +765,36 @@ async fn private_output_resolution_failure_is_invalid_output_after_close() {
         Some(&benchmark_core::SafeFailureCategory::InvalidOutput)
     );
     assert_eq!(backend.state.lock().unwrap().closed, 1);
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[tokio::test]
+async fn missing_final_answer_reason_survives_store_reopen() {
+    let base = temp_base("missing-final-answer");
+    let backend = Arc::new(MockBackend::with_behavior(
+        BackendBehavior::MissingFinalAnswer,
+    ));
+    let service = BenchmarkService::native(&base, backend).unwrap();
+    let summary = service
+        .run(
+            manifest("run-missing-final-answer"),
+            &BenchmarkPlan::new(vec![task("one")]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        summary.outcomes()[0].failure_reason(),
+        Some(benchmark_core::SafeFailureReason::MissingFinalAnswer)
+    );
+
+    let reopened = RunStore::open(&base, "run-missing-final-answer")
+        .unwrap()
+        .read_outcomes()
+        .unwrap();
+    assert_eq!(
+        reopened[0].failure_reason(),
+        Some(benchmark_core::SafeFailureReason::MissingFinalAnswer)
+    );
     fs::remove_dir_all(base).unwrap();
 }
 

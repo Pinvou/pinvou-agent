@@ -279,6 +279,11 @@ pub enum SafeFailureCategory {
     Cancelled,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SafeFailureReason {
+    MissingFinalAnswer,
+}
+
 #[derive(Clone, Debug)]
 pub struct TaskOutcome {
     task_id: String,
@@ -289,6 +294,7 @@ pub struct TaskOutcome {
     elapsed_ms: u64,
     trajectory_ref: Option<PathBuf>,
     failure_category: Option<SafeFailureCategory>,
+    failure_reason: Option<SafeFailureReason>,
     tool_observations: Vec<ToolObservation>,
     private_output: Option<SecretOutput>,
 }
@@ -309,6 +315,7 @@ impl TaskOutcome {
             elapsed_ms,
             trajectory_ref: None,
             failure_category: None,
+            failure_reason: None,
             tool_observations: Vec::new(),
             private_output: None,
         }
@@ -343,6 +350,13 @@ impl TaskOutcome {
     }
     pub fn with_failure_category(mut self, category: SafeFailureCategory) -> Self {
         self.failure_category = Some(category);
+        self
+    }
+    pub fn failure_reason(&self) -> Option<SafeFailureReason> {
+        self.failure_reason
+    }
+    pub fn with_failure_reason(mut self, reason: SafeFailureReason) -> Self {
+        self.failure_reason = Some(reason);
         self
     }
     pub fn with_tool_observations(mut self, observations: Vec<ToolObservation>) -> Self {

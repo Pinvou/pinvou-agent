@@ -219,7 +219,7 @@ where
                         error.code(),
                         "private_output_resolution_failed" | "missing_final_answer"
                     );
-                    TaskOutcome::new(
+                    let outcome = TaskOutcome::new(
                         task.task_id(),
                         if timeout {
                             TaskStatus::Timeout
@@ -236,7 +236,12 @@ where
                         SafeFailureCategory::InvalidOutput
                     } else {
                         SafeFailureCategory::Backend
-                    })
+                    });
+                    if error.code() == "missing_final_answer" {
+                        outcome.with_failure_reason(crate::SafeFailureReason::MissingFinalAnswer)
+                    } else {
+                        outcome
+                    }
                 }
             };
             let outcome = match retention {

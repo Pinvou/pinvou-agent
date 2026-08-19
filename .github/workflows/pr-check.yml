@@ -1054,6 +1054,7 @@ jobs:
           workspaces: |
             pinvou-cli
             pinvou3-app/src-tauri
+            CodeWhale
           shared-key: benchmark-test
 
       - name: benchmark workspace 全特性测试
@@ -1069,6 +1070,12 @@ jobs:
         run: >-
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
           --features benchmark-hooks --test headless_bridge_contract
+
+      - name: CodeWhale 受限工具安全回归
+        shell: bash
+        run: >-
+          cargo test --manifest-path CodeWhale/Cargo.toml
+          -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
 
   required-gate:
     name: required-gate

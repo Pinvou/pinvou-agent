@@ -38,6 +38,8 @@ struct PersistedOutcome {
     usage: Option<UsageMetricsDto>,
     elapsed_ms: u64,
     failure_category: Option<PersistedFailure>,
+    #[serde(default)]
+    failure_reason: Option<PersistedFailureReason>,
     tool_observations: Vec<PersistedToolObservation>,
 }
 
@@ -77,6 +79,12 @@ enum PersistedFailure {
     InvalidOutput,
     Infrastructure,
     Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PersistedFailureReason {
+    MissingFinalAnswer,
 }
 
 impl PersistedOutcome {
@@ -130,6 +138,13 @@ impl PersistedOutcome {
                 PersistedFailure::Cancelled => SafeFailureCategory::Cancelled,
             });
         }
+        if let Some(reason) = self.failure_reason {
+            outcome = outcome.with_failure_reason(match reason {
+                PersistedFailureReason::MissingFinalAnswer => {
+                    crate::SafeFailureReason::MissingFinalAnswer
+                }
+            });
+        }
         outcome
     }
 }
@@ -169,6 +184,11 @@ impl From<&TaskOutcome> for PersistedOutcome {
                 SafeFailureCategory::InvalidOutput => PersistedFailure::InvalidOutput,
                 SafeFailureCategory::Infrastructure => PersistedFailure::Infrastructure,
                 SafeFailureCategory::Cancelled => PersistedFailure::Cancelled,
+            }),
+            failure_reason: outcome.failure_reason().map(|reason| match reason {
+                crate::SafeFailureReason::MissingFinalAnswer => {
+                    PersistedFailureReason::MissingFinalAnswer
+                }
             }),
             tool_observations: outcome
                 .tool_observations()

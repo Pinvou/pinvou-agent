@@ -237,6 +237,9 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo test --manifest-path pinvou-cli/Cargo.toml --no-default-features", benchmark
         )
         self.assertIn("--features benchmark-hooks", benchmark)
+        self.assertIn("cargo test --manifest-path CodeWhale/Cargo.toml", benchmark)
+        self.assertIn("-p codewhale-tui --lib --locked forkguard_", benchmark)
+        self.assertIn("            CodeWhale", benchmark)
 
         required_gate = self.pr_workflow.split("\n  required-gate:", maxsplit=1)[1]
         self.assertIn("- benchmark-test", required_gate)
