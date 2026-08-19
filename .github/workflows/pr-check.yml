@@ -1031,9 +1031,9 @@ jobs:
   benchmark-test:
     name: benchmark-test
     needs: changes
-    # Benchmark 契约耗时较长，仅作为非阻塞 PR 诊断；Merge Queue 与主线 push
-    # 不自动运行。需要完整矩阵时给 PR 添加 ci:full-benchmark 标签。
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.draft == false && (needs.changes.outputs.benchmark == 'true' || contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark')) }}
+    # Benchmark 契约耗时较长，默认不自动运行，也不参与 required-gate。
+    # 需要诊断时给非草稿 PR 添加 ci:full-benchmark 标签，显式运行完整矩阵。
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.draft == false && contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark') }}
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -1072,24 +1072,20 @@ jobs:
           shared-key: benchmark-test
 
       - name: benchmark workspace 全特性测试
-        if: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark') }}
         shell: bash
         run: cargo test --manifest-path pinvou-cli/Cargo.toml --all-features
 
       - name: benchmark workspace 无 product-backend 测试
-        if: ${{ needs.changes.outputs.benchmark_cli == 'true' || contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark') }}
         shell: bash
         run: cargo test --manifest-path pinvou-cli/Cargo.toml --no-default-features
 
       - name: headless benchmark 契约测试
-        if: ${{ needs.changes.outputs.benchmark_headless == 'true' || contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark') }}
         shell: bash
         run: >-
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
           --features benchmark-hooks --test headless_bridge_contract
 
       - name: CodeWhale 受限工具安全回归
-        if: ${{ needs.changes.outputs.benchmark_codewhale == 'true' || contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark') }}
         shell: bash
         run: >-
           cargo test --manifest-path CodeWhale/Cargo.toml

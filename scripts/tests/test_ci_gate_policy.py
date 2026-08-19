@@ -218,7 +218,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("- knowledge-rust", required_gate)
         self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
 
-    def test_benchmark_diagnostics_are_path_scoped_and_non_blocking(self):
+    def test_benchmark_diagnostics_are_label_only_and_non_blocking(self):
         changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
             "\n  fast-gate:", maxsplit=1
         )[0]
@@ -235,6 +235,7 @@ class CiGatePolicyTests(unittest.TestCase):
         benchmark = self.pr_workflow.split("\n  benchmark-test:", maxsplit=1)[1].split(
             "\n  required-gate:", maxsplit=1
         )[0]
+        benchmark_header = benchmark.split("\n    runs-on:", maxsplit=1)[0]
         self.assertIn("cargo test --manifest-path pinvou-cli/Cargo.toml --all-features", benchmark)
         self.assertIn(
             "cargo test --manifest-path pinvou-cli/Cargo.toml --no-default-features", benchmark
@@ -243,18 +244,13 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("cargo test --manifest-path CodeWhale/Cargo.toml", benchmark)
         self.assertIn("-p codewhale-tui --lib --locked forkguard_", benchmark)
         self.assertIn("            CodeWhale", benchmark)
-        self.assertIn("needs.changes.outputs.benchmark_cli == 'true'", benchmark)
-        self.assertIn("needs.changes.outputs.benchmark_headless == 'true'", benchmark)
-        self.assertIn("needs.changes.outputs.benchmark_codewhale == 'true'", benchmark)
         self.assertIn("github.event_name == 'pull_request'", benchmark)
         self.assertNotIn("github.event_name == 'merge_group'", benchmark)
         self.assertNotIn("github.event_name == 'push'", benchmark)
         self.assertIn("ci:full-benchmark", benchmark)
+        self.assertNotIn("needs.changes.outputs.benchmark", benchmark_header)
+        self.assertNotIn("\n        if:", benchmark)
 
-        all_features_step = benchmark.split(
-            "      - name: benchmark workspace 全特性测试", maxsplit=1
-        )[1].split("\n      - name:", maxsplit=1)[0]
-        self.assertIn("if:", all_features_step)
         benchmark_filter = changes.split("benchmark:", 1)[1].split(
             "release_contract:", 1
         )[0]
