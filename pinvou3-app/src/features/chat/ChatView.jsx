@@ -1317,9 +1317,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           return;
         }
         const text = constrained.text;
-        // 点击瞬间即清空输入框（不等 await 返回）：否则 busy 置位到输入框清空
-        // 之间有 ~50ms 窗口，⚡ 按钮（busy && hasDraftText）会闪一下。
-        // 失败（reserve 冲突等）时恢复文字，消息绝不静默丢失。
+        // 点击瞬间即清空输入框（不等 await 返回）；失败（reserve 冲突等）时
+        // 恢复文字，消息绝不静默丢失。busy 时 bridge 侧 steer 注入当前回合
+        //（带附件则本地排队），见 sendMessage。
         setInputText('');
         try {
           const accepted = await sendChatMessage(text);
@@ -1332,41 +1332,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setPersonalWorkbenchTemplateId(null);
       }
 
-      // 插队发送:立刻取消当前 turn,起新 turn 发当前文字。
-      // 与 handleSend 的区别:handleSend 走 steer/queue 模式(等当前 AI 步
-      // 自然结束),handleInterruptSend 走 cancel+chat 路径(放弃当前 AI 进度)。
-      // single-flight(interruptSending)防双击:两次 interruptAndSend 会等同一
-      // 个 chat:done 同时发送,第二个 reserve 失败导致消息丢失。
-      const [interruptSending, setInterruptSending] = useState(false);
-      async function handleInterruptSend() {
-        if (isMultiAgentReadOnly || !canSend || !busy || interruptSending) return;
-        const constrained = constrainChatInput(inputText);
-        if (constrained.truncated) {
-          setInputText(constrained.text);
-          return;
-        }
-        setInterruptSending(true);
-        try {
-          if (!bridge.chat || typeof bridge.chat.interruptAndSend !== "function") {
-            // 桥缺失（旧后端/未加载）：绝不能静默清空输入框——那是用户消息。
-            return;
-          }
-          await bridge.chat.interruptAndSend(
-            activeSessionId,
-            constrained.text,
-            constrained.text,
-            [],
-            null,
-            false,
-          );
-          // 打断消息已成功投递才清空输入框;失败(槽位被抢占等)时保留文本,
-          // 消息绝不静默丢失(对齐 handleSend 按 accepted 清空的语义)。
-          setInputText('');
-          personalWorkbenchTemplateIdRef.current = null;
-          setPersonalWorkbenchTemplateId(null);
-        } finally {
-          setInterruptSending(false);
-        }
+      // 排队 chip 的 ⚡ 瞬发:打断当前生成并立即发送该条排队消息
+      // (cancel + chat 路径,放弃当前 AI 进度)。失败时 bridge 会把消息
+      // 恢复到排队区并提示,这里无需处理。无需本地 single-flight:
+      // bridge 先移除 chip,重复点击自然找不到目标。
+      async function handleInterruptQueued(queuedId) {
+        if (isMultiAgentReadOnly) return;
+        if (!bridge.chat || typeof bridge.chat.interruptAndSendQueued !== "function") return;
+        await bridge.chat.interruptAndSendQueued(activeSessionId, queuedId);
       }
 
       function handleKeyDown(e) {
@@ -1822,14 +1795,27 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   comingSoonLabel={chatViewCopy.comingSoon}
                 />
               )}
-            {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
+            {/* 排队待发消息浮层:盖住发送框上方的整体卡片(busy 时发送=steer
+                注入引擎当前回合;带附件=纯本地排队)。每条右侧 ⚡=瞬发(撤回引擎
+                副本+打断当前轮立即发这条),×=取消(steered chip 走 withdraw_steer
+                真撤回;纯排队 chip 纯本地移除)。⚡ 按 interruptSend 能力门控(web 端隐藏)。 */}
             {queued.length > 0 && (
-              <div className="flex flex-col gap-1 mb-2 px-2">
-                {queued.map((q) => (
-                  <div key={q.id} className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] self-start max-w-full ${'bg-[#EAEDF1] text-[#444746] dark:bg-[#2A2B2D] dark:text-[#C4C7C5]'}`}>
-                    <span className="opacity-60">{t.queuedTag}</span>
-                    <span className="max-w-[480px] truncate">{q.displayText}</span>
-                    <button onClick={() => bridge.chat.removeQueued(q.id)} title={t.queuedCancel} className={`w-5 h-5 rounded-full flex items-center justify-center ${'hover:bg-[#F0F4F9] dark:hover:bg-[#333537]'}`}>×</button>
+              <div className={`mb-2 rounded-2xl border shadow-lg backdrop-blur-xl overflow-hidden ${'border-black/[0.06] bg-white/90 dark:border-white/10 dark:bg-[#161618]/90'}`}>
+                {queued.map((q, index) => (
+                  <div key={q.id}
+                    className={`flex items-center gap-2 px-3 py-2 text-[12px] text-[#444746] dark:text-[#C4C7C5] ${index > 0 ? 'border-t border-black/[0.06] dark:border-white/10' : ''}`}>
+                    <span className="opacity-60 shrink-0">{t.queuedTag}</span>
+                    <span className="flex-1 min-w-0 truncate">{q.displayText}</span>
+                    {can('interruptSend') && (
+                      <button onClick={() => handleInterruptQueued(q.id)}
+                        aria-label={t.interruptMsg} title={t.interruptMsgTip}
+                        className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors text-orange-500 dark:text-orange-400 hover:bg-orange-500/10 active:bg-orange-500/15">
+                        <Zap size={13} />
+                      </button>
+                    )}
+                    <button onClick={() => bridge.chat.removeQueued(q.id)}
+                      aria-label={t.queuedCancel} title={t.queuedCancel}
+                      className={`w-6 h-6 shrink-0 rounded-full flex items-center justify-center transition-colors ${'hover:bg-[#F0F4F9] dark:hover:bg-[#333537]'}`}>×</button>
                   </div>
                 ))}
               </div>
@@ -2029,43 +2015,28 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
-                {!tabletVoiceMode && hasDraftText && (
-                  <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
-                    className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
-                      canClearInput
-                        ? 'text-[#5F6368] hover:bg-black/5 dark:text-[#C4C7C5] dark:hover:bg-white/10'
-                        : 'text-gray-400 cursor-not-allowed opacity-60'
-                    }`}>
-                    <Trash2 size={18} />
-                  </button>
-                )}
-                {busy && !hasDraftText ? (
-                  <button onClick={handleCancel} disabled={cancellingSessionIds.has(activeSessionId)}
-                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                    <StopCircle size={20} />
-                  </button>
-                ) : (() => {
-                  // busy 时输入了文字 → ⚡ 插队（透明图标，打断当前轮、立即发送）
-                  // 与发送按钮（默认排队/steer）并排，无容器底色。
-                  // 文字清空后 Stop 按钮自动回来（hasDraftText=false）。
+                {(() => {
+                  // busy 恒显 Stop（生成中打了字也要能「停止但保留草稿」）。
+                  // 发送按钮 busy 时 = steer 注入当前回合（带附件则本地排队）；
+                  // ⚡ 瞬发挪到排队 chip 上（每条一个），不在发送区。
                   const ready = canSend && !sceneCapabilityPreparing;
                   const isQueue = busy && ready;
                   return (
                     <div className="flex items-center gap-1">
                       {busy && (
-                        <button onClick={handleInterruptSend} disabled={!ready || interruptSending}
-                          aria-label={t.interruptMsg || "插队发送"}
-                          title={t.interruptMsgTip || "立刻打断 AI 当前任务并发送"}
-                          className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${ready && !interruptSending ? 'text-orange-500 dark:text-orange-400 hover:bg-orange-500/10 active:bg-orange-500/15' : 'text-gray-400 cursor-not-allowed opacity-60'}`}>
-                          <Zap size={18} />
+                        <button onClick={handleCancel} disabled={cancellingSessionIds.has(activeSessionId)}
+                          className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                          <StopCircle size={20} />
                         </button>
                       )}
-                      <button onClick={handleSend} disabled={!ready}
-                        aria-label={isQueue ? t.queueMsg : t.sendMsg}
-                        title={isQueue ? t.queueMsgTip : t.sendMsg}
-                        className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? (isQueue ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md ring-2 ring-amber-300 dark:ring-amber-400' : 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0') : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
-                        <Send size={17} className="translate-x-[1px]" />
-                      </button>
+                      {(!busy || hasDraftText || hasReadyAttachment) && (
+                        <button onClick={handleSend} disabled={!ready}
+                          aria-label={isQueue ? t.queueMsg : t.sendMsg}
+                          title={isQueue ? t.queueMsgTip : t.sendMsg}
+                          className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? (isQueue ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md ring-2 ring-amber-300 dark:ring-amber-400' : 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0') : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
+                          <Send size={17} className="translate-x-[1px]" />
+                        </button>
+                      )}
                     </div>
                   );
                 })()}

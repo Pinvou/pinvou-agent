@@ -82,9 +82,11 @@ const expectedProtocolHashes = {
   multiAgent: '6896409bb406f1ba54ca496dd78c04549cc78ff5490ae771d9cf60586368a8a8',
   orchestration: 'e5e333aca4d1fb7e8ed32f879d3b310c01cd0845d0e5cdc2b5ed1e95aee3ea31',
   artifacts: '8ea6cbffcc1a768f79cd218dc02d2f211456fe09c7f2aa233587603ba34c4f4e',
-  chat: 'PLACEHOLDER_CHAT_RECOMPUTE',
   // P0-A/P0-B 有意协议变更：cancel_generation 返回 CancelOutcome、
-  // chat:done 携带 generation、新增 chat:steer_committed/steer_dropped 监听。
+  // chat:done 携带 generation、steer_chat 成功返回 opaque steer_id、
+  // chat:steer_committed/steer_dropped 按 steer_id 结算排队 chip、
+  // 新增 withdraw_steer（排队 chip 的 ×/⚡ 撤回引擎内 steer 副本）。
+  chat: 'f03a2edcd3272e2c036ef591391421064bce56793c5c027d17507f8509504bc0',
   dependencies: '257468e4f9e2e9270de6ef75f685d5eafcd000226d44cfb81a1b04c0e7615707',
   interaction: '255474b88418fcaf371b77b27545fbfb529fbbceb1af9010ac49881082384270',
   knowledge: '96d4f6a1534f0aedf10714e7b945e0a29579b224ec98cbf27659237b5aac59b6',

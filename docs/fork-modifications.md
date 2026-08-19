@@ -35,6 +35,19 @@
 - 新增 `forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，锁定批量取消和重复取消行为。
 - 修复退役后两处通用兼容回归：MCP registry 提示恢复 canonical `Bash(action="run")` / `Web(action="fetch")`，Custom SubAgent allowlist 的旧 action alias 继续解析到已注册的 canonical family。
 
+### 进行中：会话 steer 与确定性取消（CodeWhale#16 / pinvou-agent#308）
+
+- **状态**：评审修复（opaque steer_id、停止语义、清场覆盖、kill 收敛）已完成，待 CodeWhale#16 合并发布；发布后本节并入 T1/T2 主题、公开基线 head 与 drift。
+- **T1（宿主嵌入与路由边界）新增**：
+  - 会话 steer（mid-turn 注入）底座原语：`SteerMessage { id, content }` 经 steer channel 入队，`EngineHandle::steer` 入队时生成并返回 opaque `steer_id`；`Event::SteerCommitted` / `Event::SteerDropped` 携带 `steer_id` 供宿主关联排队占位消息，不使用内容哈希（非 ASCII 内容跨语言哈希无法实现一致）。
+  - `steer_keep_inbox` 开关（宿主 cancel 前设置）：打断（true）未注入 steer 跨轮 park，由下一轮 step 边界注入；停止（false）在全部 Interrupted 出口统一 settle——`pending_steers` 与 steer channel 残留逐条发 `SteerDropped`。
+  - `Op::SyncSession` 与 `Op::Shutdown` 销毁前清场并逐条发 `SteerDropped`，杜绝跨会话注入；`Drop for Engine` 以 `try_send` best-effort 兜底，覆盖宿主 evict/reclaim 直接丢弃引擎的路径。
+  - steer 撤回：`EngineHandle::withdraw_steer`（fire-and-forget）把 id 记入引擎共享撤回集合；所有收集/注入点过滤被撤回 id 并恰好发一条 `SteerDropped`，被撤回 steer 永不注入 transcript；撤回标记跨轮存活，`SyncSession`/`Shutdown` 清场时一并清除。宿主 UI 排队占位的 ✕ 由此在注入前真正生效。
+- **T2（工具兼容与命令执行安全）新增**：
+  - cancel 杀进程范围收敛：`ShellManager::kill_running_turn_foreground` 只杀本轮前台（`spawned_as_foreground` 且无 `owner_agent`）shell 进程组；用户转后台的任务与子智能体 background shell 不再被任何取消源连带 kill。
+- **守护**：13 条新行为测试——`engine_handle_steer_returns_unique_incrementing_ids`、`keep_inbox_true_cancel_parks_steer_and_next_turn_commits_it`、`keep_inbox_false_cancel_drops_parked_and_channel_steers`、`steer_enqueued_before_turn_is_committed_at_step_boundary`、`pending_steer_is_committed_at_no_tool_turn_end`、`pending_steer_is_committed_after_tool_execution`、`sync_session_drops_all_queued_steers_with_events`、`engine_drop_reports_unconsumed_steers_best_effort`、`withdrawn_channel_steer_is_dropped_not_injected_on_next_turn`、`withdrawn_pending_steer_is_dropped_not_injected`、`withdrawing_committed_steer_is_a_noop`、`withdraw_after_interrupt_park_prevents_reinjection`、`withdraw_leaves_other_steers_unaffected`（`core/engine/tests.rs`），`kill_running_turn_foreground_scopes_to_this_turns_unowned_foreground_shells`（`tools/shell/tests.rs`）；指纹见 `scripts/fork-guard.sh` T1/T2 steer 条目。
+- **上游策略**：该能力按上游中性实现（英文注释、无 Pinvou 私有语境），后续按 §5 规则从 upstream main 建净分支回馈；回馈合入前以本登记为准。
+
 ### 软上限评估
 
 净增量高于 1500 行软线，主要保留量来自 Automation 持久化、会话恢复、工具兼容和嵌入上下文密封：

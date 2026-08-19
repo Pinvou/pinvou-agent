@@ -6,9 +6,9 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="2f376e4930940f28d35e05886f78c8ac20a4bee9"
-EXPECTED_HEAD="2f376e4930940f28d35e05886f78c8ac20a4bee9"
-EXPECTED_COMMITS=10
+PUBLISHED_HEAD="c3809140eb80f6d599ca77863e56027822d9daba"
+EXPECTED_HEAD="a5ef9eb91a7c9180e1327e2b80ec6f0500b82a98"
+EXPECTED_COMMITS=13
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -58,6 +58,15 @@ fingerprints=(
   "T1|宿主批量取消运行中子智能体          |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
   "T1|批量取消幂等行为回归                |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_host_bulk_cancel_stops_all_running_children_idempotently"
   "T1|通用完成事件携带失败终态            |CodeWhale/crates/tui/src/core/events.rs|failed: bool"
+  "T1|steer 消息 opaque id 契约           |CodeWhale/crates/tui/src/core/ops.rs|pub struct SteerMessage"
+  "T1|steer 事件携带 steer_id 关联         |CodeWhale/crates/tui/src/core/events.rs|steer_id: String"
+  "T1|keepInbox 开关宿主入口              |CodeWhale/crates/tui/src/core/engine/handle.rs|pub fn set_steer_keep_inbox"
+  "T1|keepInbox 打断 park 下轮注入回归     |CodeWhale/crates/tui/src/core/engine/tests.rs|fn keep_inbox_true_cancel_parks_steer_and_next_turn_commits_it"
+  "T1|keepInbox 停止出口全量 settle 回归  |CodeWhale/crates/tui/src/core/engine/tests.rs|fn keep_inbox_false_cancel_drops_parked_and_channel_steers"
+  "T1|换会话清场防跨会话注入回归          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn sync_session_drops_all_queued_steers_with_events"
+  "T1|引擎回收 steer 不静默悬挂回归       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn engine_drop_reports_unconsumed_steers_best_effort"
+  "T1|steer 撤回宿主入口                  |CodeWhale/crates/tui/src/core/engine/handle.rs|pub fn withdraw_steer"
+  "T1|撤回后不再注入且恰好一条 dropped    |CodeWhale/crates/tui/src/core/engine/tests.rs|fn withdrawn_pending_steer_is_dropped_not_injected"
 
   "T2|宿主额外工具入口                    |CodeWhale/crates/tui/src/core/engine.rs|pub struct ExtraTools("
   "T2|动态禁用工具操作                    |CodeWhale/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"
@@ -73,6 +82,8 @@ fingerprints=(
   "T2|错误降级提示保持 provider 角色合法  |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_tool_error_degradation_preserves_provider_role_sequence"
   "T2|Registry 提示使用 canonical 工具面 |CodeWhale/crates/tui/src/core/engine/tests.rs|fn registry_first_policy_is_in_the_initial_prompt_only_when_mcp_is_enabled"
   "T2|旧 action alias 解析为 canonical   |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn custom_child_allowlist_omitting_load_skill_fails_closed"
+  "T2|cancel 只杀本轮前台 shell          |CodeWhale/crates/tui/src/tools/shell.rs|fn kill_running_turn_foreground"
+  "T2|前台范围 kill 不误杀后台回归        |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn kill_running_turn_foreground_scopes_to_this_turns_unowned_foreground_shells"
 
   "T3|ambient project authority 密封       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_runtime_loader_ignores_ambient_project_authority"
   "T3|Permissions 100 KiB 窄例外回归      |CodeWhale/crates/tui/src/prompts.rs|fn forkguard_instruction_fragment_preserves_content_beyond_default_cap"

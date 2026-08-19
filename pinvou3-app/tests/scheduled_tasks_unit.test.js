@@ -634,6 +634,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     if (cmd === "load_session") {
       return {
         metadata: { id: args.id, title: args.id.indexOf("sched-") === 0 ? "Scheduled run" : "New chat" },
+        transcript_revision: "rev-0",
         messages: [],
         artifacts: [],
       };
@@ -1764,50 +1765,52 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
     unread: false,
   }, { id: "automation-followup", name: "Follow-up task" }), true);
   harness.emit("chat:delta", { session_id: "sched-followup", text: "initial scheduled output" });
-  // 模拟引擎在 steer 投递后磁盘 transcript:load_session 返回含 steer 的 messages。
-  var steerMessages = [
-    { role: "user", content: [{ type: "text", text: "原问题" }] },
-    { role: "assistant", content: [{ type: "text", text: "initial scheduled output" }] },
-  ];
-  harness.handlers.load_session = function () {
+  // load_session mock 必须按 args.id 返回对应 id:固定 id 会把其他会话的
+  // 切换目标错标,退出时把工作集交叉写进错的 buffer。
+  harness.handlers.load_session = function (args) {
+    if (args.id !== "sched-followup") {
+      return { metadata: { id: args.id, title: "Origin" }, messages: [], artifacts: [] };
+    }
     return {
-      metadata: { id: "sched-followup", title: "Follow-up task", message_count: steerMessages.length },
-      messages: steerMessages,
+      metadata: { id: "sched-followup", title: "Follow-up task", message_count: 2 },
+      transcript_revision: "rev-followup-live",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "原问题" }] },
+        { role: "assistant", content: [{ type: "text", text: "initial scheduled output" }] },
+      ],
       artifacts: [],
     };
   };
-  var initialAssistantCount = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.filter(function (item) {
-    return item.type === "assistant";
-  }).length;
+  harness.handlers.steer_chat = function () { return "steer-f1"; };
 
   await bridge.chat.sendMessage("follow up after the scheduled run");
   var queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  // click 后 chip 立即显示,引擎 invoke 完成后 chip 仍滞留(等 transcript commit)
+  // busy 发送 = steer 注入:chip 立即显示并等 steer_committed 结算
   assert.strictEqual(queued.queued.length, 1, "follow-up chip should linger above input after click");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
     1,
-    "a mid-turn follow-up must invoke steer_chat while the scheduled engine turn is active"
+    "a mid-turn follow-up steers into the scheduled engine turn"
   );
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
     0,
     "a mid-turn follow-up must not overlap the scheduled engine turn via chat command"
   );
-  // 模拟引擎真正投递:触发 chat:transcript_committed
-  // 模拟磁盘已包含 steered message
-  steerMessages.push({
-    role: "user",
-    content: [
-      { type: "text", text: "follow up after the scheduled run" },
-      { type: "text", text: "<turn_meta>\nCurrent local date: 2026-08-17\n</turn_meta>" },
-    ],
-  });
-  harness.emit("chat:transcript_committed", { session_id: "sched-followup", transcript_revision: "rev-after-steer" });
   await tick();
+  await tick();
+
+  // 引擎真正投递:steer_committed 按 steer_id 结算 chip → 气泡
+  await harness.emit("chat:steer_committed", { session_id: "sched-followup", steer_id: "steer-f1" });
   await tick();
   queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(queued.queued.length, 0, "follow-up chip consumed by transcript commit");
+  assert.strictEqual(queued.queued.length, 0, "steer_committed consumes the chip");
+  assert.ok(
+    queued.chatItems.some(function (item) {
+      return item.type === "user" && item.text === "follow up after the scheduled run";
+    }),
+    "steer_committed turns the chip into a user bubble"
+  );
 
   harness.emit("chat:done", { session_id: "sched-followup" });
   await tick();
@@ -1818,6 +1821,348 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
     0,
     "after chat:done the engine has the steer; no second chat command expected"
+  );
+}
+
+// ── 排队区语义（busy steer 注入 / chip × 撤回 / chip ⚡ 瞬发）─────────
+async function busySendSteersIntoEngineAndSettlesChip() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-queue-local"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-queue-local" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-1"; };
+
+  await bridge.chat.sendMessage("生成中注入的一句");
+  var view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1, "busy 发送立即进排队浮层");
+  var steerCalls = harness.calls.filter(function (call) { return call.cmd === "steer_chat"; });
+  assert.strictEqual(steerCalls.length, 1, "busy 发送立即 steer 注入引擎(步骤间隙自动插入)");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    0,
+    "busy 发送不直接起新 turn"
+  );
+  await tick();
+  await tick();
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued[0].steerId, "steer-1", "invoke 返回后回填 opaque steer_id");
+
+  // 中文内容也必须按 steer_id 命中（旧 content_hash 方案两侧编码不同必然失配）
+  await harness.emit("chat:steer_committed", { session_id: "chat-queue-local", steer_id: "steer-1" });
+  await tick();
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0, "steer_committed consumes the chip");
+  assert.ok(
+    view.chatItems.some(function (item) { return item.type === "user" && item.text === "生成中注入的一句"; }),
+    "steer_committed turns the chip into a user bubble"
+  );
+}
+
+async function removeQueuedSteeredChipWithdrawsFromEngine() {
+  // × on steered chip:乐观移除 + withdraw_steer 真撤回;引擎随后的
+  // steer_dropped 幂等,不得重复提示。
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-queue-cancel"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-queue-cancel" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-w1"; };
+
+  await bridge.chat.sendMessage("会被撤回的一句");
+  await tick();
+  await tick();
+  var view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1);
+  var queuedId = view.queued[0].id;
+
+  bridge.chat.removeQueued(queuedId);
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0, "× 乐观移除 chip");
+  var withdrawCalls = harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; });
+  assert.strictEqual(withdrawCalls.length, 1, "× 触发 withdraw_steer 真撤回");
+  assert.strictEqual(withdrawCalls[0].args.sessionId, "chat-queue-cancel");
+  assert.strictEqual(withdrawCalls[0].args.steerId, "steer-w1");
+
+  // 引擎确认丢弃:幂等,chip 已不在则不得重复提示
+  await harness.emit("chat:steer_dropped", { session_id: "chat-queue-cancel", steer_id: "steer-w1" });
+  await tick();
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0);
+  assert.ok(
+    !view.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").indexOf("未送达") >= 0;
+    }),
+    "撤回后的 steer_dropped 静默结算,不重复提示"
+  );
+}
+
+async function removeQueuedBeforeSteerIdBackfillWithdrawsOnBackfill() {
+  // × 早于 invoke 返回(id 未回填):本地标记 cancelled,回填后立即补发撤回。
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-cancel-early"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-cancel-early" });
+  await tick();
+  var steerCall = deferred();
+  harness.handlers.steer_chat = function () { return steerCall.promise; };
+
+  await bridge.chat.sendMessage("id 未回填就取消");
+  var queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+  bridge.chat.removeQueued(queuedId);
+  assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 0);
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; }).length,
+    0,
+    "id 未回填时无法撤回,只能等回填"
+  );
+
+  steerCall.resolve("steer-w2");
+  await tick();
+  await tick();
+  await tick();
+  var withdrawCalls = harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; });
+  assert.strictEqual(withdrawCalls.length, 1, "steer_id 回填后立即补发撤回");
+  assert.strictEqual(withdrawCalls[0].args.steerId, "steer-w2");
+}
+
+async function attachmentQueuedChipCancelNeverTouchesEngine() {
+  // 回归(原 bug 的残留面):带附件 chip 是纯本地排队(不 steer),× 取消必须
+  // 零引擎调用。
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-attach-cancel"), true);
+  harness.handlers.ingest_file = function () {
+    return { path: "/tmp/a.png", basename: "a.png" };
+  };
+  await bridge.attachments.addAttachmentByPath("/tmp/a.png");
+  harness.emit("chat:turn_started", { session_id: "chat-attach-cancel" });
+  await tick();
+
+  await bridge.chat.sendMessage("");
+  var view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1, "带附件 busy 发送进纯本地排队");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
+    0,
+    "带附件 chip 不 steer(steer 通道只载文本)"
+  );
+  var queuedId = view.queued[0].id;
+
+  bridge.chat.removeQueued(queuedId);
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0, "× 移除附件 chip");
+
+  harness.emit("chat:done", { session_id: "chat-attach-cancel" });
+  await tick();
+  await tick();
+  assert.strictEqual(
+    harness.calls.filter(function (call) {
+      return call.cmd === "chat" || call.cmd === "steer_chat" || call.cmd === "withdraw_steer";
+    }).length,
+    0,
+    "纯排队 chip 的 × 取消全程零引擎调用"
+  );
+}
+
+async function interruptQueuedSteeredChipWithdrawsBeforeSending() {
+  // ⚡ on steered chip:先 withdraw_steer(防引擎残留后续注入重复),
+  // 再 cancel + chat。
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-queue-zap"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-queue-zap" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-z1"; };
+  // cancel 立即确认终态,避免走 chat:done 事件等待
+  harness.handlers.cancel_generation = function () { return { terminal: true, generation: 1 }; };
+
+  await bridge.chat.sendMessage("要瞬发的一句");
+  await tick();
+  await tick();
+  var view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1);
+  var queuedId = view.queued[0].id;
+
+  var result = await bridge.chat.interruptAndSendQueued("chat-queue-zap", queuedId);
+  assert.strictEqual(result, true, "⚡ 瞬发成功");
+  await tick();
+  await tick();
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0, "⚡ 瞬发后 chip 移除");
+  var indexOf = function (cmd) {
+    return harness.calls.findIndex(function (call) { return call.cmd === cmd; });
+  };
+  var withdrawIndex = indexOf("withdraw_steer");
+  var cancelIndex = indexOf("cancel_generation");
+  var chatIndex = indexOf("chat");
+  assert.ok(withdrawIndex >= 0, "⚡ 先撤回引擎里的 steer 副本");
+  assert.ok(cancelIndex > withdrawIndex, "withdraw 先于 cancel");
+  assert.ok(chatIndex > cancelIndex, "cancel 先于 chat");
+  assert.strictEqual(harness.calls[withdrawIndex].args.steerId, "steer-z1");
+  assert.strictEqual(harness.calls[cancelIndex].args.keepInbox, true, "打断语义保留引擎侧未注入 steer");
+  assert.strictEqual(harness.calls[chatIndex].args.message, "要瞬发的一句");
+  assert.ok(
+    view.chatItems.some(function (item) { return item.type === "user" && item.text === "要瞬发的一句"; }),
+    "⚡ 瞬发渲染用户气泡"
+  );
+}
+
+async function interruptQueuedFailureRestoresChipToQueue() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-queue-zap-fail"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-queue-zap-fail" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-f1"; };
+  harness.handlers.cancel_generation = function () { return { terminal: true, generation: 1 }; };
+  harness.handlers.chat = function () { throw new Error("send boom"); };
+
+  await bridge.chat.sendMessage("瞬发失败要回排队区");
+  await tick();
+  await tick();
+  var queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+
+  var result = await bridge.chat.interruptAndSendQueued("chat-queue-zap-fail", queuedId);
+  assert.strictEqual(result, false, "⚡ 失败返回 false");
+  await tick();
+  await tick();
+  var view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1, "⚡ 失败把消息恢复到排队区(不是输入框)");
+  assert.strictEqual(view.queued[0].text, "瞬发失败要回排队区");
+  assert.strictEqual(view.queued[0].steerId, "steer-f1", "恢复的 chip 保持 steered,由后续 dropped/committed 事件结算");
+  assert.ok(
+    view.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").indexOf("插队发送失败") >= 0;
+    }),
+    "⚡ 失败给出本地化提示"
+  );
+}
+
+async function interruptQueuedWhileIdleSendsWithoutCancel() {
+  // 非 busy 时队列残留(legacy 后端的 steered chip 等不到事件)→ ⚡ 直接发送,
+  // 不 cancel;chip 无 steerId 可撤回,只打取消标记。
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-queue-zap-idle"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-queue-zap-idle" });
+  await tick();
+  // legacy 后端:steer_chat 无返回值 → chip 无 steerId
+  harness.handlers.steer_chat = function () { return null; };
+
+  await bridge.chat.sendMessage("残留后瞬发");
+  var queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+  // 本轮结束:steered chip 不被 flushQueued 消费(等引擎事件),session 不再 busy
+  harness.emit("chat:done", { session_id: "chat-queue-zap-idle" });
+  await tick();
+  await tick();
+  var view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1, "steered chip 残留(flushQueued 让路)");
+  assert.strictEqual(view.busy, false, "本轮已结束");
+
+  var result = await bridge.chat.interruptAndSendQueued("chat-queue-zap-idle", queuedId);
+  assert.strictEqual(result, true);
+  await tick();
+  await tick();
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "cancel_generation"; }).length,
+    0,
+    "非 busy 时 ⚡ 直接发送,不 cancel"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; }).length,
+    0,
+    "chip 无 steerId 时不发撤回"
+  );
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0, "⚡ 直接发送后 chip 移除");
+}
+
+async function withdrawTooLateCommittedStillBubbles() {
+  // 撤回太迟:× 已发 withdraw_steer,但引擎先 committed → 以引擎为准,
+  // 气泡照常出现。
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-withdraw-late"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-withdraw-late" });
+  await tick();
+  harness.handlers.steer_chat = function () { return "steer-late"; };
+
+  await bridge.chat.sendMessage("撤回太迟的一句");
+  await tick();
+  await tick();
+  var queuedId = bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued[0].id;
+  bridge.chat.removeQueued(queuedId);
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "withdraw_steer"; }).length,
+    1,
+    "× 已发撤回"
+  );
+
+  await harness.emit("chat:steer_committed", { session_id: "chat-withdraw-late", steer_id: "steer-late" });
+  await tick();
+  var view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0);
+  assert.ok(
+    view.chatItems.some(function (item) { return item.type === "user" && item.text === "撤回太迟的一句"; }),
+    "撤回太迟(committed 先到)时气泡照常出现"
+  );
+}
+
+async function transcriptFallbackRecoversAfterCompactionShrink() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  // legacy 后端:steer_chat 无返回值 → chip 无 steerId,走 transcript 计数兜底
+  harness.handlers.steer_chat = function () { return null; };
+  var disk = [
+    { role: "user", content: [{ type: "text", text: "原问题" }] },
+    { role: "assistant", content: [{ type: "text", text: "旧回答" }] },
+  ];
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: "chat-compact-fallback", title: "Compact", message_count: disk.length },
+      transcript_revision: "rev-live",
+      messages: disk,
+      artifacts: [],
+    };
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-compact-fallback"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-compact-fallback" });
+  await tick();
+
+  await bridge.chat.sendMessage("兜底恢复甲");
+  disk.push({ role: "user", content: [{ type: "text", text: "兜底恢复甲" }] });
+  harness.emit("chat:transcript_committed", { session_id: "chat-compact-fallback", transcript_revision: "rev-c1" });
+  await tick();
+  await tick();
+  assert.strictEqual(
+    bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length,
+    0,
+    "legacy fallback drains the first chip"
+  );
+
+  // compaction:磁盘 transcript 收缩(3 → 1),基线必须跟着重置
+  await bridge.chat.sendMessage("兜底恢复乙");
+  disk = [{ role: "user", content: [{ type: "text", text: "[compaction summary]" }] }];
+  harness.emit("chat:transcript_committed", { session_id: "chat-compact-fallback", transcript_revision: "rev-c2" });
+  await tick();
+  await tick();
+  assert.strictEqual(
+    bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length,
+    1,
+    "shrink commit only resets the baseline, no false drain"
+  );
+
+  // 收缩后引擎继续投递:兜底必须恢复工作(lastSeenMessageCount 单调不减会永久死亡)
+  disk.push({ role: "user", content: [{ type: "text", text: "兜底恢复乙" }] });
+  harness.emit("chat:transcript_committed", { session_id: "chat-compact-fallback", transcript_revision: "rev-c3" });
+  await tick();
+  await tick();
+  var view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0, "compaction 收缩后兜底恢复 drain");
+  assert.ok(
+    view.chatItems.some(function (item) { return item.type === "user" && item.text === "兜底恢复乙"; }),
+    "post-compaction fallback turns the chip into a user bubble"
   );
 }
 
@@ -3265,38 +3610,28 @@ async function scheduledBufferLruNeverEvictsLive() {
     session_id: "sched-lru-live",
     text: "live buffer must survive",
   });
-  // 模拟磁盘 transcript(steer 投递前的状态)
-  var lruLiveMessages = [
-    { role: "user", content: [{ type: "text", text: "原问题" }] },
-    { role: "assistant", content: [{ type: "text", text: "live buffer must survive" }] },
-  ];
-  harness.handlers.load_session = function () {
+  harness.handlers.load_session = function (args) {
+    if (args.id !== "sched-lru-live") {
+      return { metadata: { id: args.id, title: "Other" }, messages: [], artifacts: [] };
+    }
     return {
-      metadata: { id: "sched-lru-live", title: "LRU live task", message_count: lruLiveMessages.length },
-      messages: lruLiveMessages,
+      metadata: { id: "sched-lru-live", title: "LRU live task", message_count: 2 },
+      transcript_revision: "rev-lru-live",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "原问题" }] },
+        { role: "assistant", content: [{ type: "text", text: "live buffer must survive" }] },
+      ],
       artifacts: [],
     };
   };
   await bridge.chat.sendMessage("queued live follow-up");
-  // mid-turn inject: click 后 chip 立即显示,引擎接受后 chip 滞留等待 transcript commit
+  // busy 发送 = steer 注入:chip 立即显示并等待引擎事件结算
   assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 1);
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
     1,
-    "live follow-up during scheduled turn goes through engine steer"
+    "live follow-up during scheduled turn steers into the engine"
   );
-  // 模拟引擎真正投递:触发 chat:transcript_committed
-  lruLiveMessages.push({
-    role: "user",
-    content: [
-      { type: "text", text: "queued live follow-up" },
-      { type: "text", text: "<turn_meta>\nCurrent local date: 2026-08-17\n</turn_meta>" },
-    ],
-  });
-  harness.emit("chat:transcript_committed", { session_id: "sched-lru-live", transcript_revision: "rev-lru-steer" });
-  await tick();
-  await tick();
-  assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 0);
   assert.strictEqual(await bridge.scheduled.exitScheduledRunChat(), true);
 
   for (var i = 0; i < 70; i++) {
@@ -3331,11 +3666,13 @@ async function scheduledBufferLruNeverEvictsLive() {
     JSON.stringify(live.chatItems).includes("live buffer must survive"),
     "LRU must never evict a busy scheduled buffer"
   );
-  // mid-turn inject: 走底座 steer channel,前端 state.queued 不再持有该项
-  assert.strictEqual(live.queued.length, 0, "mid-turn inject does not populate frontend queue");
-  assert.ok(
-    live.steerCallCount === 1 || JSON.stringify(harness.calls).indexOf('"cmd":"steer_chat"') !== -1,
-    "LRU must keep a scheduled buffer with a pending mid-turn inject (via steer_chat)"
+  // steered chip(等引擎事件结算)留在 live buffer 的队列里,随 buffer 一起被 LRU 保护
+  assert.strictEqual(live.queued.length, 1, "queued steer chip survives with the protected live buffer");
+  assert.strictEqual(live.queued[0].text, "queued live follow-up");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
+    1,
+    "exactly one steer_chat call across the whole LRU scenario"
   );
 
   var saturatedHarness = createBridgeHarness();
@@ -4966,6 +5303,15 @@ Promise.resolve()
   .then(scheduledRunUnreadBehavior)
   .then(openingRunningMarksBusyBeforeHydration)
   .then(followupQueuedUntilScheduledInitialTurnTerminal)
+  .then(busySendSteersIntoEngineAndSettlesChip)
+  .then(removeQueuedSteeredChipWithdrawsFromEngine)
+  .then(removeQueuedBeforeSteerIdBackfillWithdrawsOnBackfill)
+  .then(attachmentQueuedChipCancelNeverTouchesEngine)
+  .then(interruptQueuedSteeredChipWithdrawsBeforeSending)
+  .then(interruptQueuedFailureRestoresChipToQueue)
+  .then(interruptQueuedWhileIdleSendsWithoutCancel)
+  .then(withdrawTooLateCommittedStillBubbles)
+  .then(transcriptFallbackRecoversAfterCompactionShrink)
   .then(terminalEventWinsStaleRunningOpen)
   .then(completedRunReopenPreservesStreamingFollowup)
   .then(scheduledDoneBeforeBufferCreatesTerminalTombstone)
