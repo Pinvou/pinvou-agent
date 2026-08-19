@@ -46,7 +46,7 @@ function injectSource() {
     const BLOCKING_INSTALL_OAUTH_TOOLS=new Set(['yuandian-mcp','canva-mcp']);
     const state=window.__TOOL_STORE_TEST__={
       installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false,ima:false},
-      oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0
+      oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0,failVisibility:false
     };
     window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
     window.__TAURI_EVENT_HANDLERS__={};
@@ -151,6 +151,9 @@ function injectSource() {
           return Promise.reject(new Error('未知能力包 '+id));
         }
         case 'feishu_ensure_cli': case 'wecom_ensure_cli': case 'dingtalk_ensure_cli': case 'tmeet_ensure_cli': case 'feishu_connect_begin': case 'wecom_connect_begin': case 'dingtalk_connect_begin': case 'tmeet_connect_begin': return Promise.resolve(null);
+        // 按会话模式的可见性读写：failVisibility 模拟读取失败（四轮评审冒烟）。
+        case 'get_bundle_visibility': return state.failVisibility ? Promise.reject(new Error('mock visibility read failure')) : Promise.resolve([]);
+        case 'set_bundle_visibility': return Promise.resolve(null);
         case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': case 'open_external_url': return Promise.resolve(null);
         default: return Promise.resolve(null);
       }
@@ -431,6 +434,28 @@ async function closeDetail(page, title) {
     rec(`${query} 授权编排命令与成功事件`,info.calls,info.calls?'':JSON.stringify(info.seen.slice(-12)));
     await closeDetail(page,query);
   }
+
+  // 管理可见性（四轮评审）：加载成功时勾选框可用；读取失败时勾选框禁用、
+  // 有错误提示且不产生静默写入。
+  await search(page,'高德天气');
+  await page.click('[data-testid="tool-store-manage-visibility"]');
+  await sleep(300);
+  rec('可见性加载成功后勾选框可交互',await page.evaluate(()=>{
+    const boxes=[...document.querySelectorAll('input[type="checkbox"]')];
+    return boxes.length>0&&boxes.some(b=>!b.disabled);
+  }));
+  await page.click('[data-testid="tool-store-manage-visibility"]');
+  await page.evaluate(()=>{window.__TOOL_STORE_TEST__.failVisibility=true;});
+  await sleep(80);
+  await page.click('[data-testid="tool-store-manage-visibility"]');
+  await sleep(300);
+  rec('可见性读取失败时勾选框禁用且提示',await page.evaluate(()=>{
+    const boxes=[...document.querySelectorAll('input[type="checkbox"]')];
+    const noWrite=!window.__TOOL_STORE_TEST__.calls.some(x=>x.cmd==='set_bundle_visibility');
+    return boxes.length>0&&boxes.every(b=>b.disabled)&&noWrite&&document.body.innerText.includes('读取可见性配置失败');
+  }));
+  await page.click('[data-testid="tool-store-manage-visibility"]');
+  await dismiss(page);
 
   const calls=await page.evaluate(()=>window.__TOOL_STORE_TEST__.calls);
   rec('用户 Key 工具安装调用携带对应配置',calls.filter(x=>x.cmd==='install_marketplace_tool').every(x=>{

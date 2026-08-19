@@ -1530,6 +1530,17 @@ impl Pinvou3Bridge {
     /// 技能组合目录是软门控（模型看不见技能），本规则集是硬兜底：模型即使知道
     /// 命令，`lark-cli` 等被禁 CLI 二进制也在 spawn 前被底座硬拒（deny 全模式
     /// 生效，含 YOLO；错误直返模型）。从 scope 禁用集派生，自身无状态。
+    ///
+    /// 覆盖面边界（四轮评审登记，仅注释、不改行为）：规则按 CLI **二进制名**做
+    /// word-boundary 前缀匹配（同 `skill_script_deny_rules` 的 DSL 现状），只拦
+    /// 「首 token 即该二进制名」的直接调用。已知残余绕过面：
+    /// - 绝对/相对路径调用（如 `C:\...\lark-cli.exe`、`./bin/lark-cli`）——首 token
+    ///   是路径不是二进制名，不匹配；
+    /// - shell 包装前缀（`cmd /c lark-cli …`、`powershell -Command …`、`sh -c …`、
+    ///   `env lark-cli …`、`env python …` 等）——首 token 是包装器；
+    /// - 重命名/拷贝后的同功能二进制。
+    /// 以上绕过面与「禁用连接器 CLI 被模型直接调用」的主路径相比属边缘场景，
+    /// 登记待底座 execpolicy 支持参数级/路径级匹配后收敛（底座缝候选）。
     pub(crate) fn cli_deny_ruleset(&self, session_id: &str) -> codewhale_execpolicy::Ruleset {
         codewhale_execpolicy::Ruleset::user(vec![], vec![])
             .with_ask_rules(self.cli_deny_rules(session_id))

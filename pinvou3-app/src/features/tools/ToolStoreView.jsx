@@ -2027,15 +2027,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                       return (
                                         <div className="flex flex-col items-start gap-1" onClick={(e) => e.stopPropagation()}>
                                           {[{ key: 'plain', label: storeCopy.modePlain }, { key: 'code', label: storeCopy.modeCode }].map((m) => {
-                                            // 无 backendId 的卡（占位卡/内置 s5）不参与可见性配置：禁用勾选。
-                                            const noBackend = !tool.backendId;
+                                            // 无 backendId 的卡（占位卡/内置 s5）不参与可见性配置：禁用勾选；
+                                            // 可见性读取未成功（visibilityLoaded=false）时同样禁用——handler 虽有
+                                            // 早退，但可点而无反馈的勾选框会误导用户以为配置已生效（四轮评审）。
+                                            const checkDisabled = !tool.backendId || !visibilityLoaded;
                                             const visible = !(hiddenByMode[m.key] || new Set()).has(tool.backendId);
                                             return (
-                                              <label key={m.key} className={`flex items-center gap-2 ${noBackend ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
+                                              <label key={m.key} className={`flex items-center gap-2 ${checkDisabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
                                                 <input
                                                   type="checkbox"
                                                   checked={visible}
-                                                  disabled={noBackend}
+                                                  disabled={checkDisabled}
                                                   onChange={() => toggleModeVisibility(tool.backendId, m.key, !visible)}
                                                   className="h-4 w-4 rounded border-slate-300 accent-blue-600"
                                                 />

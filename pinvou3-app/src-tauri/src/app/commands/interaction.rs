@@ -252,20 +252,12 @@ pub async fn read_skill_body(name: String) -> Result<String, String> {
     if safe_name != name || safe_name.is_empty() {
         return Err(format!("invalid skill name: {name}"));
     }
-    // legacy-ppt-workflow 在 workflow/,review 等 skill 在 skills/;先查 workflow 再 fallback skills。
-    let wf_path = paths::bundle_workflow_dir()
-        .join(&safe_name)
+    // 市场技能按包聚合（bundles/<pkg>/skills/）优先，旧扁平布局回退由
+    // find_skill_dir 内置（迁移过渡容错，下个版本删除回退）。
+    let path = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+        .find_skill_dir(&safe_name)
+        .unwrap_or_else(|| paths::bundle_skills_dir().join(&safe_name))
         .join("SKILL.md");
-    let path = if wf_path.is_file() {
-        wf_path
-    } else {
-        // 市场技能按包聚合（bundles/<pkg>/skills/）优先，旧扁平布局回退由
-        // find_skill_dir 内置（迁移过渡容错，下个版本删除回退）。
-        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .find_skill_dir(&safe_name)
-            .unwrap_or_else(|| paths::bundle_skills_dir().join(&safe_name))
-            .join("SKILL.md")
-    };
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("read SKILL.md ({}): {e}", path.display()))?;
     // 剥 frontmatter ---\n...\n---\n
