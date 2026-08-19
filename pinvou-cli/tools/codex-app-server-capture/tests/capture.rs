@@ -167,6 +167,21 @@ impl std::io::Write for SharedOutput {
     }
 }
 
+struct BlockingReader(std::sync::mpsc::Receiver<Vec<u8>>);
+
+impl std::io::Read for BlockingReader {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        match self.0.recv() {
+            Ok(chunk) => {
+                let len = chunk.len().min(bytes.len());
+                bytes[..len].copy_from_slice(&chunk[..len]);
+                Ok(len)
+            }
+            Err(_) => Ok(0),
+        }
+    }
+}
+
 #[test]
 fn proxy_forwards_only_server_protocol_lines_to_its_stdout() {
     let stem = format!("codex-proxy-test-{}", std::process::id());
@@ -207,5 +222,118 @@ fn proxy_forwards_only_server_protocol_lines_to_its_stdout() {
     let forwarded = String::from_utf8(forwarded.0.lock().unwrap().clone()).unwrap();
     assert_eq!(forwarded, "{\"id\":1,\"result\":{}}\n");
     assert!(!forwarded.contains("must-not-reach-stdout"));
+    std::fs::remove_file(output).unwrap();
+}
+
+#[test]
+fn replay_rejects_identical_input_and_output_without_truncating_input() {
+    let path = std::env::temp_dir().join(format!(
+        "codex-capture-same-path-{}.jsonl",
+        std::process::id()
+    ));
+    let original = b"{\"id\":1,\"method\":\"initialize\"}\n";
+    std::fs::write(&path, original).unwrap();
+
+    let error = run_capture(CaptureConfig {
+        input: path.clone(),
+        output: path.clone(),
+        command: CommandSpec::codex(Some(OsString::from("must-not-launch"))),
+    })
+    .unwrap_err();
+
+    assert!(error.to_string().contains("same file"));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+
+    let alias = path
+        .parent()
+        .unwrap()
+        .join(".")
+        .join(path.file_name().unwrap());
+    let alias_error = run_capture(CaptureConfig {
+        input: path.clone(),
+        output: alias,
+        command: CommandSpec::codex(Some(OsString::from("must-not-launch"))),
+    })
+    .unwrap_err();
+    assert!(alias_error.to_string().contains("same file"));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn proxy_returns_when_child_exits_while_interactive_input_remains_open() {
+    let output = std::env::temp_dir().join(format!(
+        "codex-proxy-early-exit-{}.jsonl",
+        std::process::id()
+    ));
+    let (keep_input_open, input) = std::sync::mpsc::channel();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+
+    #[cfg(windows)]
+    let command = CommandSpec::new(
+        OsString::from("powershell.exe"),
+        ["-NoProfile", "-Command", "exit 0"].map(OsString::from),
+    );
+    #[cfg(target_os = "linux")]
+    let command = CommandSpec::new(
+        OsString::from("/bin/sh"),
+        [OsString::from("-c"), OsString::from("exit 0")],
+    );
+
+    let output_for_driver = output.clone();
+    std::thread::spawn(move || {
+        let result = run_proxy(
+            ProxyConfig {
+                output: output_for_driver,
+                command,
+            },
+            BlockingReader(input),
+            SharedOutput::default(),
+        );
+        finished_tx
+            .send(result.map_err(|error| error.to_string()))
+            .unwrap();
+    });
+
+    let result = finished_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("proxy remained blocked on open interactive input after child exit");
+    assert!(
+        result
+            .unwrap_err()
+            .contains("before client input completed")
+    );
+
+    drop(keep_input_open);
+    std::fs::remove_file(output).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_output_permissions_are_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let stem = format!("codex-capture-mode-{}", std::process::id());
+    let input = std::env::temp_dir().join(format!("{stem}.input.jsonl"));
+    let output = std::env::temp_dir().join(format!("{stem}.capture.jsonl"));
+    std::fs::write(&input, "{\"id\":1}\n").unwrap();
+    let command = CommandSpec::new(
+        OsString::from("/bin/sh"),
+        [OsString::from("-c"), OsString::from("read line")],
+    );
+
+    run_capture(CaptureConfig {
+        input: input.clone(),
+        output: output.clone(),
+        command,
+    })
+    .unwrap();
+
+    assert_eq!(
+        std::fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    std::fs::remove_file(input).unwrap();
     std::fs::remove_file(output).unwrap();
 }

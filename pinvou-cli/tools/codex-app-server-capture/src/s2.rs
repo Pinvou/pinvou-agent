@@ -72,7 +72,23 @@ pub fn validate(evidence: S2Evidence) -> S2Report {
     let mut f2_reasons = Vec::new();
     let mut f3_reasons = Vec::new();
 
-    let scenario = |name: &str| evidence.scenarios.iter().find(|item| item.name == name);
+    for name in ["A", "B", "C", "D"] {
+        let count = evidence
+            .scenarios
+            .iter()
+            .filter(|item| item.name == name)
+            .count();
+        if count != 1 {
+            f1_reasons.push(format!(
+                "F1: evidence requires exactly one scenario {name}, found {count}"
+            ));
+        }
+    }
+    let scenario = |name: &str| {
+        let mut matches = evidence.scenarios.iter().filter(|item| item.name == name);
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    };
     for name in ["A", "B", "C"] {
         match scenario(name) {
             Some(item)
@@ -86,7 +102,7 @@ pub fn validate(evidence: S2Evidence) -> S2Report {
         Some(item) if item.terminal_state == TerminalState::Interrupted => {}
         _ => f1_reasons.push("F1: scenario D requires interrupted terminal state".to_owned()),
     }
-    if evidence.auth_errors + evidence.quota_errors + evidence.protocol_errors != 0 {
+    if evidence.auth_errors != 0 || evidence.quota_errors != 0 || evidence.protocol_errors != 0 {
         f1_reasons.push("F1: auth/quota/protocol error count must be zero".to_owned());
     }
 
@@ -125,6 +141,7 @@ pub fn validate(evidence: S2Evidence) -> S2Report {
             }
             let sizes = &performance.event_sizes;
             if sizes.samples == 0
+                || sizes.min_bytes == 0
                 || !(sizes.min_bytes <= sizes.p50_bytes
                     && sizes.p50_bytes <= sizes.p95_bytes
                     && sizes.p95_bytes <= sizes.max_bytes)

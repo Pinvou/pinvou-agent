@@ -37,6 +37,11 @@ Each capture line is one JSON object:
 Windows QueryPerformanceCounter (QPC) or Linux `CLOCK_MONOTONIC`. It is useful
 only for ordering and durations within a capture and has no wall-clock meaning.
 
+Capture files contain raw, unredacted protocol traffic and may include prompts,
+tool arguments, account metadata, or other sensitive values. Store and share
+them accordingly. On Unix the harness creates them with owner-only `0600`
+permissions (and tightens an existing output file before writing).
+
 The sanitized, zero-cost handshake fixture is
 `tests/fixtures/zero-cost-handshake.jsonl`. It documents line-delimited frames,
 an initialize response without `jsonrpc`, notification/response interleaving,

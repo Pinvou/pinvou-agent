@@ -1,10 +1,11 @@
 use std::ffi::OsString;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
@@ -87,6 +88,7 @@ where
 }
 
 pub fn run_capture(config: CaptureConfig) -> Result<()> {
+    ensure_distinct_files(&config.input, &config.output)?;
     let input = File::open(&config.input)
         .with_context(|| format!("failed to open input {}", config.input.display()))?;
     run_driver(
@@ -102,7 +104,7 @@ pub fn run_capture(config: CaptureConfig) -> Result<()> {
 
 pub fn run_proxy<R, W>(config: ProxyConfig, client_reader: R, server_writer: W) -> Result<()>
 where
-    R: Read,
+    R: Read + Send + 'static,
     W: Write + Send + 'static,
 {
     run_driver(config, client_reader, server_writer, true)
@@ -115,11 +117,10 @@ fn run_driver<R, W>(
     forward_stdout: bool,
 ) -> Result<()>
 where
-    R: Read,
+    R: Read + Send + 'static,
     W: Write + Send + 'static,
 {
-    let output = File::create(&config.output)
-        .with_context(|| format!("failed to create capture {}", config.output.display()))?;
+    let output = create_capture_file(&config.output)?;
     let clock = Arc::new(HostMonotonicClock::new()?);
     let recorder_clock = Arc::clone(&clock);
     let recorder = Arc::new(Mutex::new(JsonlRecorder::new(
@@ -145,68 +146,212 @@ where
         })?;
     let stdout = child.stdout.take().context("child stdout was not piped")?;
     let stderr = child.stderr.take().context("child stderr was not piped")?;
+    let child_stdin = child.stdin.take().context("child stdin was not piped")?;
+    let (event_tx, event_rx) = mpsc::sync_channel(64);
 
     let stdout_recorder = Arc::clone(&recorder);
+    let stdout_events = event_tx.clone();
     let stdout_thread = thread::spawn(move || {
-        read_lines(stdout, |line| {
-            stdout_recorder
-                .lock()
-                .map_err(|_| anyhow::anyhow!("capture recorder lock poisoned"))?
-                .record(CaptureChannel::ServerToClient, line)?;
-            let frame: serde_json::Value = serde_json::from_str(line)
-                .with_context(|| "app-server stdout contained a non-JSON protocol line")?;
-            if !frame.is_object() {
-                bail!("app-server stdout protocol frame must be a JSON object");
-            }
+        let result = read_lines(stdout, |line| {
             if forward_stdout {
-                writeln!(server_writer, "{line}")?;
-                server_writer.flush()?;
+                record_and_forward_server_frame(stdout_recorder.as_ref(), &mut server_writer, line)
+            } else {
+                record_server_frame(stdout_recorder.as_ref(), line)
             }
-            Ok(())
-        })
+        });
+        let _ = stdout_events.send(DriverEvent::StdoutDone(
+            result.as_ref().err().map(ToString::to_string),
+        ));
+        result
     });
 
     let stderr_recorder = Arc::clone(&recorder);
+    let stderr_events = event_tx.clone();
     let stderr_thread = thread::spawn(move || {
-        read_lines(stderr, |line| {
+        let result = read_lines(stderr, |line| {
             stderr_recorder
                 .lock()
                 .map_err(|_| anyhow::anyhow!("capture recorder lock poisoned"))?
                 .record(CaptureChannel::Stderr, line)
-        })
+        });
+        let _ = stderr_events.send(DriverEvent::StderrDone(
+            result.as_ref().err().map(ToString::to_string),
+        ));
+        result
     });
 
-    let client_result = {
-        let mut stdin = child.stdin.take().context("child stdin was not piped")?;
-        read_lines(client_reader, |frame| {
-            if frame.trim().is_empty() {
-                return Ok(());
+    let client_events = event_tx.clone();
+    let _client_thread = thread::spawn(move || {
+        let result = read_lines(client_reader, |frame| {
+            client_events
+                .send(DriverEvent::ClientFrame(frame.to_owned()))
+                .map_err(|_| anyhow::anyhow!("capture supervisor stopped"))
+        });
+        let _ = client_events.send(DriverEvent::ClientDone(
+            result.as_ref().err().map(ToString::to_string),
+        ));
+    });
+    drop(event_tx);
+
+    let mut child_stdin = Some(child_stdin);
+    let mut client_done = false;
+    let mut client_error = None;
+    let mut supervision_error = None;
+    let mut stdout_end_deadline = None;
+
+    let status = 'supervise: loop {
+        if let Some(status) = child.try_wait().context("failed polling app-server")? {
+            break status;
+        }
+        if stdout_end_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            supervision_error = Some(anyhow::anyhow!(
+                "app-server stdout ended while the child remained running"
+            ));
+            let _ = child.kill();
+            break 'supervise child.wait().context("failed waiting for app-server")?;
+        }
+
+        match event_rx.recv_timeout(Duration::from_millis(10)) {
+            Ok(DriverEvent::ClientFrame(frame)) => {
+                if frame.trim().is_empty() {
+                    continue;
+                }
+                let send_result = (|| {
+                    let value: serde_json::Value = serde_json::from_str(&frame)
+                        .with_context(|| "client stdin contained a non-JSON protocol line")?;
+                    if !value.is_object() {
+                        bail!("client stdin protocol frame must be a JSON object");
+                    }
+                    let stdin = child_stdin
+                        .as_mut()
+                        .context("app-server stdin closed before client input completed")?;
+                    record_and_send_client_frame(recorder.as_ref(), stdin, &frame)
+                })();
+                if let Err(error) = send_result {
+                    supervision_error = Some(error);
+                    let _ = child.kill();
+                    break 'supervise child.wait().context("failed waiting for app-server")?;
+                }
             }
-            let value: serde_json::Value = serde_json::from_str(frame)
-                .with_context(|| "client stdin contained a non-JSON protocol line")?;
-            if !value.is_object() {
-                bail!("client stdin protocol frame must be a JSON object");
+            Ok(DriverEvent::ClientDone(error)) => {
+                client_done = true;
+                client_error = error;
+                child_stdin.take();
+                if client_error.is_some() {
+                    let _ = child.kill();
+                    break 'supervise child.wait().context("failed waiting for app-server")?;
+                }
             }
-            record_and_send_client_frame(recorder.as_ref(), &mut stdin, frame)
-        })
+            Ok(DriverEvent::StdoutDone(error)) => {
+                if let Some(error) = error {
+                    supervision_error = Some(anyhow::anyhow!(error));
+                    let _ = child.kill();
+                    break 'supervise child.wait().context("failed waiting for app-server")?;
+                }
+                stdout_end_deadline = Some(Instant::now() + Duration::from_millis(100));
+            }
+            Ok(DriverEvent::StderrDone(Some(error))) => {
+                supervision_error = Some(anyhow::anyhow!(error));
+                let _ = child.kill();
+                break 'supervise child.wait().context("failed waiting for app-server")?;
+            }
+            Ok(DriverEvent::StderrDone(None))
+            | Err(mpsc::RecvTimeoutError::Timeout)
+            | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+        }
     };
+    child_stdin.take();
 
-    if client_result.is_err() {
-        let _ = child.kill();
-    }
-
-    let status = child.wait().context("failed waiting for app-server")?;
     stdout_thread
         .join()
         .map_err(|_| anyhow::anyhow!("stdout capture thread panicked"))??;
     stderr_thread
         .join()
         .map_err(|_| anyhow::anyhow!("stderr capture thread panicked"))??;
-    client_result?;
+    while let Ok(event) = event_rx.try_recv() {
+        if let DriverEvent::ClientDone(error) = event {
+            client_done = true;
+            client_error = error;
+        }
+    }
+    if let Some(error) = supervision_error {
+        return Err(error);
+    }
+    if let Some(error) = client_error {
+        bail!("client input failed: {error}");
+    }
     if !status.success() {
         bail!("app-server exited with status {status}");
     }
+    if !client_done {
+        bail!("app-server exited before client input completed");
+    }
     Ok(())
+}
+
+enum DriverEvent {
+    ClientFrame(String),
+    ClientDone(Option<String>),
+    StdoutDone(Option<String>),
+    StderrDone(Option<String>),
+}
+
+fn ensure_distinct_files(input: &Path, output: &Path) -> Result<()> {
+    let canonical_input = input
+        .canonicalize()
+        .with_context(|| format!("failed to resolve input {}", input.display()))?;
+    let canonical_output = if output.exists() {
+        Some(
+            output
+                .canonicalize()
+                .with_context(|| format!("failed to resolve output {}", output.display()))?,
+        )
+    } else {
+        output
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .and_then(|parent| parent.canonicalize().ok())
+            .and_then(|parent| output.file_name().map(|name| parent.join(name)))
+    };
+    if canonical_output.as_ref() == Some(&canonical_input) {
+        bail!("replay input and capture output resolve to the same file");
+    }
+
+    #[cfg(unix)]
+    if output.exists() {
+        use std::os::unix::fs::MetadataExt;
+
+        let input_metadata = std::fs::metadata(input)?;
+        let output_metadata = std::fs::metadata(output)?;
+        if input_metadata.dev() == output_metadata.dev()
+            && input_metadata.ino() == output_metadata.ino()
+        {
+            bail!("replay input and capture output identify the same file");
+        }
+    }
+    Ok(())
+}
+
+fn create_capture_file(path: &Path) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        options.mode(0o600);
+        let file = options
+            .open(path)
+            .with_context(|| format!("failed to create capture {}", path.display()))?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        return Ok(file);
+    }
+    #[cfg(not(unix))]
+    {
+        options
+            .open(path)
+            .with_context(|| format!("failed to create capture {}", path.display()))
+    }
 }
 
 fn record_and_send_client_frame<RW, C, SW>(
@@ -227,6 +372,41 @@ where
 
     writeln!(sink, "{frame}").context("failed to write app-server stdin")?;
     sink.flush().context("failed to flush app-server stdin")?;
+    Ok(())
+}
+
+fn record_server_frame<RW, C>(recorder: &Mutex<JsonlRecorder<RW, C>>, frame: &str) -> Result<()>
+where
+    RW: Write,
+    C: FnMut() -> u64,
+{
+    let mut recorder_guard = recorder
+        .lock()
+        .map_err(|_| anyhow::anyhow!("capture recorder lock poisoned"))?;
+    recorder_guard.record(CaptureChannel::ServerToClient, frame)?;
+    drop(recorder_guard);
+
+    let value: serde_json::Value = serde_json::from_str(frame)
+        .with_context(|| "app-server stdout contained a non-JSON protocol line")?;
+    if !value.is_object() {
+        bail!("app-server stdout protocol frame must be a JSON object");
+    }
+    Ok(())
+}
+
+fn record_and_forward_server_frame<RW, C, SW>(
+    recorder: &Mutex<JsonlRecorder<RW, C>>,
+    sink: &mut SW,
+    frame: &str,
+) -> Result<()>
+where
+    RW: Write,
+    C: FnMut() -> u64,
+    SW: Write,
+{
+    record_server_frame(recorder, frame)?;
+    writeln!(sink, "{frame}").context("failed to write proxy stdout")?;
+    sink.flush().context("failed to flush proxy stdout")?;
     Ok(())
 }
 
@@ -294,6 +474,21 @@ mod tests {
         };
 
         record_and_send_client_frame(&recorder, &mut sink, r#"{"id":1}"#).unwrap();
+
+        assert!(sink.write_saw_unlocked_recorder);
+        assert!(sink.flush_saw_unlocked_recorder);
+    }
+
+    #[test]
+    fn server_sink_write_and_flush_happen_after_recorder_lock_is_released() {
+        let recorder = Mutex::new(JsonlRecorder::new(Vec::new(), || 1));
+        let mut sink = LockCheckingWriter {
+            recorder: &recorder,
+            write_saw_unlocked_recorder: false,
+            flush_saw_unlocked_recorder: false,
+        };
+
+        record_and_forward_server_frame(&recorder, &mut sink, r#"{"id":1}"#).unwrap();
 
         assert!(sink.write_saw_unlocked_recorder);
         assert!(sink.flush_saw_unlocked_recorder);

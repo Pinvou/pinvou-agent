@@ -113,3 +113,95 @@ fn s2_validation_is_fail_closed_and_suppresses_pass_outputs() {
     );
     assert!(report.reasons.iter().any(|reason| reason.contains("50ms")));
 }
+
+#[test]
+fn s2_rejects_each_error_counter_including_u64_max_without_overflow() {
+    for (auth, quota, protocol) in [
+        (1, 0, 0),
+        (0, 1, 0),
+        (0, 0, 1),
+        (u64::MAX, 0, 0),
+        (u64::MAX, 1, 0),
+    ] {
+        let mut evidence = successful_evidence();
+        evidence.auth_errors = auth;
+        evidence.quota_errors = quota;
+        evidence.protocol_errors = protocol;
+
+        let report = validate(evidence);
+
+        assert!(
+            !report.valid,
+            "counters {auth}/{quota}/{protocol} must invalidate F1"
+        );
+        assert!(!report.f1.passed);
+    }
+}
+
+#[test]
+fn s2_requires_exactly_one_of_each_required_scenario() {
+    let mut identical_duplicate = successful_evidence();
+    identical_duplicate
+        .scenarios
+        .push(identical_duplicate.scenarios[0].clone());
+    let identical_report = validate(identical_duplicate);
+    assert!(!identical_report.valid);
+    assert!(
+        identical_report
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("exactly one scenario A"))
+    );
+
+    let mut duplicate = successful_evidence();
+    let mut contradictory_a = duplicate.scenarios[0].clone();
+    contradictory_a.terminal_state = TerminalState::Failed;
+    contradictory_a.turn_completed = false;
+    duplicate.scenarios.push(contradictory_a);
+    let duplicate_report = validate(duplicate);
+    assert!(!duplicate_report.valid);
+    assert!(
+        duplicate_report
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("exactly one scenario A"))
+    );
+
+    let mut missing = successful_evidence();
+    missing.scenarios.retain(|scenario| scenario.name != "B");
+    let missing_report = validate(missing);
+    assert!(!missing_report.valid);
+    assert!(
+        missing_report
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("exactly one scenario B"))
+    );
+}
+
+#[test]
+fn s2_rejects_zero_or_inconsistent_event_size_distributions() {
+    let invalid_sizes = [
+        (0, 32, 128, 256),
+        (8, 0, 128, 256),
+        (8, 32, 0, 256),
+        (8, 32, 128, 0),
+        (8, 129, 128, 256),
+    ];
+
+    for (min_bytes, p50_bytes, p95_bytes, max_bytes) in invalid_sizes {
+        let mut evidence = successful_evidence();
+        evidence.performance.as_mut().unwrap().event_sizes = EventSizeDistribution {
+            samples: 20,
+            min_bytes,
+            p50_bytes,
+            p95_bytes,
+            max_bytes,
+        };
+
+        let report = validate(evidence);
+
+        assert!(!report.valid);
+        assert!(!report.f3.passed);
+    }
+}
