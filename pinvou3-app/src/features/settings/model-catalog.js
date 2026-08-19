@@ -186,8 +186,8 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.kimi.com/coding/v1',
       endpointAliases: ['https://api.kimi.com/coding/v1/chat/completions'],
       items: [
-        { model: 'k3', title: 'k3', desc: 'K3 长上下文模型' },
-        { model: 'k3-256k', title: 'k3-256k', desc: 'K3 256K 上下文，价格更低' },
+        { model: 'k3', imageCapable: true, title: 'k3', desc: 'K3 长上下文模型' },
+        { model: 'k3-256k', imageCapable: true, title: 'k3-256k', desc: 'K3 256K 上下文，价格更低' },
         { model: 'kimi-for-coding', imageCapable: true, title: 'kimi-for-coding', desc: '标准编码模型' },
         { model: 'kimi-for-coding-highspeed', imageCapable: true, title: 'kimi-for-coding-highspeed', desc: '高速编码模型' },
         { model: '', title: '自定义 Kimi Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },

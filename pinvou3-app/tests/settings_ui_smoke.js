@@ -1241,9 +1241,9 @@ async function modalWidth(page, headingText) {
   const retrySaved = await page.evaluate(() => !document.querySelector('[data-testid="model-form-dialog"]'));
   rec('⑦.img.13b 修正后重试保存成功关闭弹窗', retrySaved, String(retrySaved));
 
-  // ⑦.img.14 目录视觉能力标注自动填写「图片输入能力」:组默认首项 k3 未标注
-  // → 「自动处理」;换已标注的 kimi-for-coding → 预填「支持图片」;手动改档后
-  // 再换已标注条目不再跟随。
+  // ⑦.img.14 目录视觉能力标注自动填写「图片输入能力」:Kimi 系已标注,组默认
+  // 首项 k3 即预填「支持图片」;DeepSeek 组未标注保持「自动处理」;手动改档后
+  // 再换条目不再跟随。
   const capabilityToggleText = () => page.evaluate(() => {
     const toggle = document.querySelector('[data-testid="model-form-dialog"] [data-testid="image-capability-toggle"]');
     return toggle ? (toggle.textContent || '') : '';
@@ -1253,25 +1253,27 @@ async function modalWidth(page, headingText) {
   await clickExact(page, 'Kimi Coding Plan');
   await sleep(300);
   const capGroupDefault = await capabilityToggleText();
-  await clickModalExact(page, '模型');
+  await clickExact(page, '取消');
+  await sleep(200);
+  await clickExact(page, '添加模型');
   await sleep(250);
-  await clickModalExact(page, 'kimi-for-coding');
-  await sleep(250);
-  const capAnnotated = await capabilityToggleText();
+  await clickExact(page, '深度求索 / DeepSeek');
+  await sleep(300);
+  const capUnannotated = await capabilityToggleText();
   await page.click('[data-testid="image-capability-toggle"]');
   await sleep(200);
   await page.click('[data-testid="image-capability-option-disabled"]');
   await sleep(200);
   await clickModalExact(page, '模型');
   await sleep(250);
-  await clickModalExact(page, 'kimi-for-coding-highspeed');
+  await clickModalExact(page, 'deepseek-v4-flash');
   await sleep(250);
   const capAfterTouched = await capabilityToggleText();
   rec('⑦.img.14 目录视觉能力标注自动填写,手动改档后不再跟随',
-    capGroupDefault.includes('自动处理')
-      && capAnnotated.includes('支持图片')
+    capGroupDefault.includes('支持图片')
+      && capUnannotated.includes('自动处理')
       && capAfterTouched.includes('不支持图片'),
-    JSON.stringify({ capGroupDefault, capAnnotated, capAfterTouched }));
+    JSON.stringify({ capGroupDefault, capUnannotated, capAfterTouched }));
   await clickExact(page, '取消');
   await sleep(200);
 
