@@ -338,7 +338,7 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'qwen',
       items: [
-        { model: 'qwen3.8-max', title: 'qwen3.8-max', desc: '最新旗舰' },
+        { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '最新旗舰' },
         { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '上代旗舰推理' },
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.7-flash', title: 'qwen3.7-flash', desc: '快速高性价比' },
@@ -357,7 +357,7 @@ const MODEL_CATALOG = {
       baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
       endpointAliases: ['https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1'],
       items: [
-        { model: 'qwen3.8-max', title: 'qwen3.8-max', desc: '正式旗舰，夜间五折' },
+        { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '正式旗舰，夜间五折' },
         { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '上代旗舰推理' },
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.6-flash', title: 'qwen3.6-flash', desc: '兼容保留' },
@@ -378,7 +378,7 @@ const MODEL_CATALOG = {
       vendor: 'qwen',
       baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
       items: [
-        { model: 'qwen3.8-max', title: 'qwen3.8-max', desc: '最新旗舰' },
+        { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '最新旗舰' },
         { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '上代旗舰推理' },
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.7-flash', title: 'qwen3.7-flash', desc: '快速高性价比' },
