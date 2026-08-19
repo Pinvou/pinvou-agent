@@ -52,6 +52,12 @@
   // 打断消息发出（或其失败路径收尾）后清除，排队消息由打断轮的 chat:done 继续。
   var interruptInFlight = {};
 
+  // steer_chat invoke 的兜底超时。Rust 侧 steer() await 底座 mpsc send,
+  // 引擎任务卡住(不死、不 drain channel)时 invoke 永不结算——输入框已清空、
+  // chip 无 steerId 回填,排队区会被这个悬挂 chip 阻塞。25s 与
+  // waitForChatDone 的兜底对齐:正常引擎入队是同步量级,25s 只兜真实卡死。
+  var STEER_INVOKE_TIMEOUT_MS = 25000;
+
   // ── Chat Items (display format for React) ────────────────────────
   function addChatItem(item) {
     item.id = ++context.itemIdSeq;
@@ -739,7 +745,24 @@
   // 远控/其他宿主也可用。
   async function steer(sid, content) {
     safeConsoleInfo("[pinvou3][chat-ui] steer start", { sid: sid, len: (content || "").length });
-    var steerId = await invoke("steer_chat", { sessionId: sid, content: String(content || "") });
+    // invoke 无传输层超时:引擎卡住(不死不 drain)时 steer_chat 永不结算,
+    // chip(steered:true, steerId:null)会卡住队头并阻塞 flushQueued。超时
+    // 走 catch 的失败恢复(移除 chip、恢复输入框)——若引擎随后恢复并注入,
+    // 用户已拿到文字,重复注入由用户重发自行裁决,优于无限悬挂。
+    var invokePromise = invoke("steer_chat", { sessionId: sid, content: String(content || "") });
+    var timeoutId = null;
+    var timeout = new Promise(function (_, reject) {
+      timeoutId = setTimeout(function () {
+        reject(new Error("steer_chat timed out"));
+      }, STEER_INVOKE_TIMEOUT_MS);
+    });
+    var steerId;
+    try {
+      steerId = await Promise.race([invokePromise, timeout]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    invokePromise.catch(function () { /* 超时后正常 reject 吞掉,避免 unhandledrejection */ });
     safeConsoleInfo("[pinvou3][chat-ui] steer accepted", { sid: sid, steerId: steerId });
     return steerId == null ? null : String(steerId);
   }
@@ -1007,6 +1030,16 @@
       console.warn("[pinvou3][chat-ui] interrupt-queued failed, restoring chip", {
         sid: sid, error: e && e.toString ? e.toString() : e,
       });
+      // 恢复的 chip 降级为非 steered(纯本地排队):撤回已发给引擎,引擎只在
+      // 下一轮 drain 时才发 steer_dropped 结算;而 chat 发送已失败,若保留
+      // steered 标记,flushQueued 会因 steered 队头让路且下一轮永远不来,
+      // 排队区卡死。降级后该 chip 由 flushQueued 正常消费;引擎侧残留(若
+      // 撤回未及生效)由迟到的 steer_committed 补气泡,去重已有处理。
+      if (item.steered) {
+        item.steered = false;
+        item.steerId = null;
+        item.cancelled = false;
+      }
       var retryQueue = queueOf();
       if (retryQueue) retryQueue.splice(Math.min(index, retryQueue.length), 0, item);
       runSyncOnSession(sid, function () {

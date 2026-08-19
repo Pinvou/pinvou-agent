@@ -79,8 +79,11 @@ command_protocol!(
     "behavior_telemetry.rs",
     ["track_behavior_event"]
 );
-command_protocol!(chat_protocol, "chat.rs", ["chat"]);
-command_protocol!(chat_protocol, "chat.rs", ["chat", "steer_chat", "withdraw_steer"]);
+command_protocol!(
+    chat_protocol,
+    "chat.rs",
+    ["chat", "steer_chat", "withdraw_steer"]
+);
 command_protocol!(
     connectors_protocol,
     "connectors.rs",

@@ -86,7 +86,7 @@ const expectedProtocolHashes = {
   // chat:done 携带 generation、steer_chat 成功返回 opaque steer_id、
   // chat:steer_committed/steer_dropped 按 steer_id 结算排队 chip、
   // 新增 withdraw_steer（排队 chip 的 ×/⚡ 撤回引擎内 steer 副本）。
-  chat: 'f03a2edcd3272e2c036ef591391421064bce56793c5c027d17507f8509504bc0',
+  chat: '6918230fed8dcf951ec62316bd30908a9d0855e340b1f0449ceeb4e979679447',
   dependencies: '257468e4f9e2e9270de6ef75f685d5eafcd000226d44cfb81a1b04c0e7615707',
   interaction: '255474b88418fcaf371b77b27545fbfb529fbbceb1af9010ac49881082384270',
   knowledge: '96d4f6a1534f0aedf10714e7b945e0a29579b224ec98cbf27659237b5aac59b6',
