@@ -291,6 +291,8 @@ const CANVA_MCP_MANIFEST_JSON: &str =
     include_str!("../../../../../resources/mcp-servers/canva-mcp/manifest.json");
 const PATSNAP_SEARCH_MANIFEST_JSON: &str =
     include_str!("../../../../../resources/mcp-servers/patsnap-search/manifest.json");
+const TENCENT_DOCS_MANIFEST_JSON: &str =
+    include_str!("../../../../../resources/mcp-servers/tencent-docs/manifest.json");
 const OBSIDIAN_SERVER_PY: &str =
     include_str!("../../../../../resources/mcp-servers/obsidian/server.py");
 const OBSIDIAN_MANIFEST_JSON: &str =
@@ -489,6 +491,35 @@ mod tests {
         assert!(
             !canva_dir.join("server.py").exists(),
             "Canva 远程 MCP 不应解包本地 server.py"
+        );
+        // 腾讯文档 manifest 应解包,且四个官方远程 server + 无 scheme Authorization 声明完整。
+        let tdoc_dir = paths::bundle_mcp_servers_dir().join("tencent-docs");
+        let tdoc_manifest = tdoc_dir.join("manifest.json");
+        assert!(tdoc_manifest.is_file(), "腾讯文档 manifest 应被解包");
+        let tdoc_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&tdoc_manifest).unwrap()).unwrap();
+        assert_eq!(tdoc_json["id"], "tencent-docs");
+        let server_names: Vec<&str> = tdoc_json["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            server_names,
+            vec!["tencent-docs", "tdoc-slide", "tdoc-doc", "tdoc-sheet"]
+        );
+        assert_eq!(
+            tdoc_json["secret_headers"][0]["header"], "Authorization",
+            "Token 走 Authorization 头"
+        );
+        assert_eq!(
+            tdoc_json["secret_headers"][0]["scheme"], "",
+            "scheme 必须为空——官方端点要求原始 Token,不能加 Bearer 前缀"
+        );
+        assert!(
+            !tdoc_dir.join("server.py").exists(),
+            "腾讯文档远程 MCP 不应解包本地 server.py"
         );
         // 已下线 skills(legacy-ppt-workflow / pinvou-review-*)不应再被写出。
         for retired in [

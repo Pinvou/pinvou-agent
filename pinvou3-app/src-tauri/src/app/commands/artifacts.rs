@@ -631,6 +631,8 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     // Canva 可画 MCP 返回的设计编辑链接/预览图资源
     "https://www.canva.cn/",
     "https://export-download.canva.cn/",
+    // 腾讯文档个人 Token 授权页(工具商店「腾讯文档 MCP」配置入口)
+    "https://docs.qq.com/scenario/open-claw.html",
 ];
 
 fn url_is_loopback_http(url: &str) -> bool {

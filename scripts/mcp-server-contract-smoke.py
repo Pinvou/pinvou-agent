@@ -174,8 +174,9 @@ def main():
         "canva-mcp",
         "patsnap-search",
         "wecom-bot",
+        "tencent-docs",
     }
-    print("✅ manifest: 10 个可安装 MCP 清单完整且目录 ID 一致")
+    print("✅ manifest: 11 个可安装 MCP 清单完整且目录 ID 一致")
 
     expected = {
         "weather": {"get_weather"},
@@ -355,6 +356,30 @@ def main():
         "secret": True,
     }]
     print("✅ patsnap-search: 唯一远程端点 + bearer secret + 安装校验契约")
+
+    tdoc = manifests["tencent-docs"]
+    assert tdoc["mcp_tools"] == [] and not tdoc["command"]
+    assert tdoc["servers"] == [
+        {"name": "tencent-docs", "url": "https://docs.qq.com/openapi/mcp"},
+        {"name": "tdoc-slide", "url": "https://docs.qq.com/api/v6/slide/mcp"},
+        {"name": "tdoc-doc", "url": "https://docs.qq.com/api/v6/doc/mcp"},
+        {"name": "tdoc-sheet", "url": "https://docs.qq.com/api/v6/sheet/mcp"},
+    ]
+    assert tdoc["validate_on_install"] is True
+    assert tdoc["secret_headers"] == [{
+        "header": "Authorization",
+        "scheme": "",
+        "source_key": "TENCENT_DOCS_TOKEN",
+        "provider": "tencent-docs",
+        "required": True,
+    }]
+    # 不变量:Token 通道唯一。若再引入 config_fields target="bearer",安装时两通道会
+    # 同写 Authorization(scheme 分歧→bearer_token_env_var 与 env_headers 并存),
+    # 最终请求头是否带 Bearer 前缀将取决于底座合并顺序——禁止这种自相矛盾。
+    assert tdoc.get("config_fields", []) == [], (
+        "tencent-docs 的 Token 只经 secret_headers 声明,不得再加 config_fields"
+    )
+    print("✅ tencent-docs: 四官方远程端点 + 无 scheme 原始 Token 注入 + 安装校验契约")
 
     print("\n✅ ALL MCP SERVER CONTRACTS PASS")
 
