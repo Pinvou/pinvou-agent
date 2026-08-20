@@ -174,12 +174,26 @@ fn main() {
     let stdin = io::stdin();
     let mut turn = 0_u64;
     let mut approval_cwd = None;
+    #[cfg(target_os = "linux")]
+    let mut runner_replaced = false;
     for line in stdin.lock().lines() {
         let frame: Value = serde_json::from_str(&line.unwrap()).unwrap();
         let method = frame.get("method").and_then(Value::as_str);
         let id = frame.get("id").cloned();
         match method {
             Some("initialize") => {
+                #[cfg(target_os = "linux")]
+                if mode == "replace-runner-image" && !runner_replaced {
+                    use std::os::unix::fs::PermissionsExt;
+
+                    let runner =
+                        std::path::PathBuf::from(std::env::var_os("S2_FAKE_RUNNER_PATH").unwrap());
+                    std::fs::rename(&runner, runner.with_extension("original")).unwrap();
+                    std::fs::copy(std::env::current_exe().unwrap(), &runner).unwrap();
+                    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o700))
+                        .unwrap();
+                    runner_replaced = true;
+                }
                 send(json!({"method":"fixture/noise","params":{}}));
                 if mode == "bad-init" {
                     send(json!({"id":id,"result":{}}));

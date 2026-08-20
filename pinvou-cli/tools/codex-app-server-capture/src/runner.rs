@@ -98,7 +98,7 @@ pub fn run_s2(config: S2RunConfig) -> Result<S2RunOutcome> {
     run_s2_with_thresholds(
         config,
         RunnerThresholds::PRODUCTION,
-        MarkerHelperInvocation::current()?,
+        Arc::new(MarkerHelperInvocation::current()?),
     )
 }
 
@@ -109,14 +109,14 @@ pub fn run_s2_for_test(config: S2RunConfig) -> Result<S2RunOutcome> {
     run_s2_with_thresholds(
         config,
         RunnerThresholds::FAST_TEST,
-        MarkerHelperInvocation::test_harness()?,
+        Arc::new(MarkerHelperInvocation::test_harness()?),
     )
 }
 
 fn run_s2_with_thresholds(
     config: S2RunConfig,
     thresholds: RunnerThresholds,
-    marker_helper: MarkerHelperInvocation,
+    marker_helper: Arc<MarkerHelperInvocation>,
 ) -> Result<S2RunOutcome> {
     let output_dir = match config.output_dir.clone() {
         Some(path) => path,
@@ -183,26 +183,96 @@ struct SafeInvocation {
 struct MarkerHelperInvocation {
     program: OsString,
     args: Vec<OsString>,
+    #[cfg(windows)]
+    path: Option<PathBuf>,
+    #[cfg(windows)]
+    handle: Option<windows_sys::Win32::Foundation::HANDLE>,
+    #[cfg(windows)]
+    identity: Option<WindowsFileIdentity>,
 }
 
 impl MarkerHelperInvocation {
     fn current() -> Result<Self> {
-        let program = std::env::current_exe()
-            .and_then(|path| path.canonicalize())
-            .map_err(|_| anyhow!("marker helper executable validation failed"))?;
-        if !program.is_file() {
-            bail!("marker helper executable validation failed");
+        #[cfg(windows)]
+        {
+            let path = std::env::current_exe()
+                .map_err(|_| anyhow!("marker helper executable validation failed"))?;
+            return Self::acquire_windows_path_with_post_open(&path, || {});
         }
-        Ok(Self {
-            program: program.into_os_string(),
-            args: vec![OsString::from("__marker-helper")],
-        })
+        #[cfg(target_os = "linux")]
+        {
+            let program = linux_marker_helper_program();
+            if !program.is_file() {
+                bail!("marker helper executable validation failed");
+            }
+            return Ok(Self {
+                program: program.into_os_string(),
+                args: vec![OsString::from("__marker-helper")],
+            });
+        }
+        #[cfg(all(unix, not(target_os = "linux")))]
+        bail!("marker helper executable validation unsupported on this platform");
+        #[cfg(not(any(windows, unix)))]
+        bail!("marker helper executable validation unsupported on this platform");
     }
 
-    fn command(&self) -> Command {
+    fn command(&self) -> Result<Command> {
+        #[cfg(windows)]
+        if let (Some(path), Some(handle), Some(identity)) = (&self.path, self.handle, self.identity)
+        {
+            let held_identity = wrapper_file_identity(handle)
+                .map_err(|_| anyhow!("marker helper executable validation failed"))?;
+            let reopened = open_locked_wrapper_handle(path)
+                .map_err(|_| anyhow!("marker helper executable validation failed"))?;
+            let final_path = final_path_from_wrapper_handle(reopened.0)
+                .map_err(|_| anyhow!("marker helper executable validation failed"))?;
+            let reopened_identity = wrapper_file_identity(reopened.0)
+                .map_err(|_| anyhow!("marker helper executable validation failed"))?;
+            if held_identity != identity || reopened_identity != identity || final_path != *path {
+                bail!("marker helper executable validation failed");
+            }
+        }
         let mut command = Command::new(&self.program);
         command.args(&self.args);
-        command
+        Ok(command)
+    }
+
+    #[cfg(windows)]
+    fn acquire_windows_path_with_post_open(path: &Path, post_open: impl FnOnce()) -> Result<Self> {
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_DIRECTORY, FILE_TYPE_DISK, GetFileType,
+        };
+
+        let handle = open_locked_wrapper_handle(path)
+            .map_err(|_| anyhow!("marker helper executable validation failed"))?;
+        post_open();
+        let final_path = final_path_from_wrapper_handle(handle.0)
+            .map_err(|_| anyhow!("marker helper executable validation failed"))?;
+        let info = wrapper_file_information(handle.0)
+            .map_err(|_| anyhow!("marker helper executable validation failed"))?;
+        if !final_path.is_absolute()
+            || unsafe { GetFileType(handle.0) } != FILE_TYPE_DISK
+            || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0
+            || final_path.to_str().is_none_or(|value| {
+                value
+                    .chars()
+                    .any(|character| matches!(character, '\r' | '\n'))
+            })
+        {
+            bail!("marker helper executable validation failed");
+        }
+        let identity = WindowsFileIdentity {
+            volume_serial: info.dwVolumeSerialNumber,
+            file_index: ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+        };
+        let raw = handle.into_raw();
+        Ok(Self {
+            program: final_path.clone().into_os_string(),
+            args: vec![OsString::from("__marker-helper")],
+            path: Some(final_path),
+            handle: Some(raw),
+            identity: Some(identity),
+        })
     }
 
     #[cfg(debug_assertions)]
@@ -224,10 +294,27 @@ impl MarkerHelperInvocation {
         if !program.is_file() {
             bail!("marker helper executable validation failed");
         }
+        #[cfg(windows)]
+        return Self::acquire_windows_path_with_post_open(&program, || {});
+        #[cfg(not(windows))]
         Ok(Self {
             program: program.into_os_string(),
             args: vec![OsString::from("__marker-helper")],
         })
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_marker_helper_program() -> PathBuf {
+    PathBuf::from("/proc/self/exe")
+}
+
+#[cfg(windows)]
+impl Drop for MarkerHelperInvocation {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        }
     }
 }
 
@@ -464,7 +551,9 @@ fn verify_executable_version(invocation: &SafeInvocation, global_deadline: Insta
     };
     // Always tear down the contained tree before waiting for EOF: a short-lived
     // version process may have spawned descendants that inherited its pipes.
-    contained.terminate_and_wait_bounded();
+    let cleanup_result = contained
+        .terminate_and_wait_bounded()
+        .context("version preflight cleanup failed");
     let mut stdout_bytes = None;
     let read_deadline = global_deadline.min(Instant::now() + Duration::from_secs(1));
     for _ in 0..2 {
@@ -501,6 +590,7 @@ fn verify_executable_version(invocation: &SafeInvocation, global_deadline: Insta
             let _ = handle.join();
         }
     }
+    cleanup_result?;
     let status = status_result?;
     if !status.success() {
         bail!("version preflight exited with status {status}");
@@ -522,7 +612,7 @@ fn execute(
     thresholds: RunnerThresholds,
     global_deadline: Instant,
     explicit_approval_wrapper: Option<&TrustedApprovalWrapper>,
-    marker_helper: &MarkerHelperInvocation,
+    marker_helper: &Arc<MarkerHelperInvocation>,
 ) -> Result<()> {
     remaining_global(global_deadline)?;
     let clock = Arc::new(HostMonotonicClock::new()?);
@@ -535,7 +625,7 @@ fn execute(
         invocation.command(&["app-server", "--stdio"])?,
         recorder,
         global_deadline,
-        marker_helper.clone(),
+        Arc::clone(marker_helper),
     )?;
 
     let result = (|| {
@@ -692,8 +782,8 @@ fn execute(
         }));
         Ok(())
     })();
-    session.stop();
-    result
+    let cleanup = session.stop();
+    result.and(cleanup)
 }
 
 struct ObservedScenario {
@@ -708,7 +798,14 @@ struct ContainedChild {
     #[cfg(windows)]
     job: windows_sys::Win32::Foundation::HANDLE,
     #[cfg(unix)]
-    process_group: i32,
+    process_group: Option<i32>,
+}
+
+#[cfg(any(unix, test))]
+fn terminate_process_group_once(process_group: &mut Option<i32>, terminate: impl FnOnce(i32)) {
+    if let Some(process_group) = process_group.take() {
+        terminate(process_group);
+    }
 }
 
 impl ContainedChild {
@@ -721,33 +818,45 @@ impl ContainedChild {
             }
         }
         #[cfg(unix)]
-        unsafe {
-            let _ = kill(-self.process_group, 9);
-        }
+        terminate_process_group_once(&mut self.process_group, |process_group| unsafe {
+            let _ = kill(-process_group, 9);
+        });
         let _ = self.child.kill();
     }
 
-    fn terminate_and_wait_bounded(&mut self) {
+    fn terminate_and_wait_bounded(&mut self) -> Result<()> {
         self.terminate_tree();
-        wait_child_bounded(&mut self.child);
+        let child_result = wait_child_bounded(&mut self.child);
         #[cfg(windows)]
-        unsafe {
+        let job_result = unsafe {
             use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
             use windows_sys::Win32::System::Threading::WaitForSingleObject;
             if !self.job.is_null() {
                 // A job becomes signaled only after every contained process has
                 // exited, including descendants that inherited helper pipes.
-                let _ = WaitForSingleObject(self.job, 1_000);
+                let wait = WaitForSingleObject(self.job, 1_000);
                 CloseHandle(self.job);
                 self.job = std::ptr::null_mut();
+                if wait != WAIT_OBJECT_0 {
+                    Err(anyhow!("contained process cleanup failed"))
+                } else {
+                    Ok(())
+                }
+            } else {
+                Ok(())
             }
-        }
+        };
+        child_result?;
+        #[cfg(windows)]
+        job_result?;
+        Ok(())
     }
 }
 
 impl Drop for ContainedChild {
     fn drop(&mut self) {
-        self.terminate_and_wait_bounded();
+        let _ = self.terminate_and_wait_bounded();
     }
 }
 
@@ -759,7 +868,7 @@ struct Session {
     next_id: u64,
     pending: VecDeque<(u64, Value)>,
     global_deadline: Instant,
-    marker_helper: MarkerHelperInvocation,
+    marker_helper: Arc<MarkerHelperInvocation>,
     stdout_thread: Option<thread::JoinHandle<()>>,
     stderr_thread: Option<thread::JoinHandle<()>>,
     reader_done: mpsc::Receiver<&'static str>,
@@ -782,7 +891,7 @@ impl Session {
         mut process: Command,
         recorder: Arc<Mutex<Recorder>>,
         global_deadline: Instant,
-        marker_helper: MarkerHelperInvocation,
+        marker_helper: Arc<MarkerHelperInvocation>,
     ) -> Result<Self> {
         process
             .stdin(Stdio::piped())
@@ -1206,8 +1315,8 @@ impl Session {
         }
     }
 
-    fn stop(&mut self) {
-        self.contained.terminate_and_wait_bounded();
+    fn stop(&mut self) -> Result<()> {
+        let cleanup = self.contained.terminate_and_wait_bounded();
         let deadline = Instant::now() + Duration::from_secs(1);
         let mut done = std::collections::HashSet::new();
         while done.len() < 2 {
@@ -1235,6 +1344,7 @@ impl Session {
         } else {
             self.stderr_thread.take();
         }
+        cleanup
     }
 }
 
@@ -1288,12 +1398,12 @@ fn spawn_contained(mut process: Command) -> Result<ContainedChild> {
         Ok(job) => job,
         Err(error) => {
             let _ = child.kill();
-            wait_child_bounded(&mut child);
+            let _ = wait_child_bounded(&mut child);
             return Err(error);
         }
     };
     #[cfg(unix)]
-    let process_group = child.id() as i32;
+    let process_group = Some(child.id() as i32);
     Ok(ContainedChild {
         child,
         #[cfg(windows)]
@@ -1303,18 +1413,37 @@ fn spawn_contained(mut process: Command) -> Result<ContainedChild> {
     })
 }
 
-fn wait_child_bounded(child: &mut Child) {
-    let deadline = Instant::now() + Duration::from_secs(1);
+fn wait_until_reaped_with(
+    deadline: Instant,
+    mut poll: impl FnMut() -> std::io::Result<bool>,
+    mut terminate: impl FnMut() -> std::io::Result<()>,
+) -> Result<()> {
+    let mut terminate_sent = false;
     loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
-            _ => {
-                let _ = child.kill();
-                break;
-            }
+        if matches!(poll(), Ok(true)) {
+            return Ok(());
         }
+        if !terminate_sent {
+            let _ = terminate();
+            terminate_sent = true;
+        }
+        if Instant::now() >= deadline {
+            bail!("contained direct child cleanup failed");
+        }
+        thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn wait_child_bounded(child: &mut Child) -> Result<()> {
+    use std::cell::RefCell;
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let child = RefCell::new(child);
+    wait_until_reaped_with(
+        deadline,
+        || child.borrow_mut().try_wait().map(|status| status.is_some()),
+        || child.borrow_mut().kill(),
+    )
 }
 
 #[cfg(windows)]
@@ -1827,7 +1956,7 @@ fn run_marker_helper_process(
 ) -> Result<()> {
     const MAX_HELPER_OUTPUT_BYTES: u64 = 64;
     remaining_until(deadline).map_err(|_| anyhow!("marker helper timeout"))?;
-    let mut process = invocation.command();
+    let mut process = invocation.command()?;
     process
         .current_dir(workspace)
         .stdin(Stdio::piped())
@@ -1867,7 +1996,9 @@ fn run_marker_helper_process(
     // Always close the whole contained tree before consuming output. This also
     // closes inherited pipe handles, so bounded synchronous reads cannot leave
     // detached reader threads behind.
-    contained.terminate_and_wait_bounded();
+    contained
+        .terminate_and_wait_bounded()
+        .map_err(|_| anyhow!("marker helper cleanup failed"))?;
     let stdout = read_helper_output_bounded(stdout, MAX_HELPER_OUTPUT_BYTES)?;
     let stderr = read_helper_output_bounded(stderr, MAX_HELPER_OUTPUT_BYTES)?;
     let status = status_result?;
@@ -1921,7 +2052,16 @@ pub fn run_marker_helper_process_for_test(
     };
     let started = Instant::now();
     run_marker_helper_process(
-        &MarkerHelperInvocation { program, args },
+        &MarkerHelperInvocation {
+            program,
+            args,
+            #[cfg(windows)]
+            path: None,
+            #[cfg(windows)]
+            handle: None,
+            #[cfg(windows)]
+            identity: None,
+        },
         workspace,
         operation,
         (started + scenario_timeout).min(started + global_timeout),
@@ -2812,6 +2952,85 @@ mod tests {
 
         assert_eq!(bytes, super::APPROVAL_MARKER_BYTES);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn marker_helper_image_is_locked_and_revalidated_before_spawn() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "codex-s2-helper-image-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let image = root.join("codex-app-server-capture.exe");
+        let displaced = root.join("displaced.exe");
+        std::fs::copy(std::env::current_exe().unwrap(), &image).unwrap();
+
+        let mut invocation =
+            super::MarkerHelperInvocation::acquire_windows_path_with_post_open(&image, || {
+                assert!(
+                    std::fs::rename(&image, &displaced).is_err(),
+                    "helper image must be locked before its final path is trusted"
+                );
+            })
+            .unwrap();
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&image)
+                .is_err()
+        );
+        assert!(invocation.command().is_ok());
+        invocation.identity.as_mut().unwrap().file_index ^= 1;
+        assert!(invocation.command().is_err());
+        drop(invocation);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn child_reap_continues_after_poll_error_until_exit_is_observed() {
+        use std::cell::Cell;
+        use std::collections::VecDeque;
+
+        let mut polls = VecDeque::from([
+            Err(std::io::Error::other("synthetic poll failure")),
+            Ok(false),
+            Ok(true),
+        ]);
+        let kills = Cell::new(0);
+        super::wait_until_reaped_with(
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            || polls.pop_front().unwrap(),
+            || {
+                kills.set(kills.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(kills.get(), 1);
+        assert!(polls.is_empty());
+    }
+
+    #[test]
+    fn process_group_termination_takes_the_pgid_only_once() {
+        let mut process_group = Some(4242);
+        let mut killed = Vec::new();
+        super::terminate_process_group_once(&mut process_group, |pgid| killed.push(pgid));
+        super::terminate_process_group_once(&mut process_group, |pgid| killed.push(pgid));
+        assert_eq!(killed, vec![4242]);
+        assert_eq!(process_group, None);
+    }
+
+    #[test]
+    fn linux_marker_helper_uses_the_running_image_inode_path() {
+        assert_eq!(
+            super::linux_marker_helper_program(),
+            std::path::PathBuf::from("/proc/self/exe")
+        );
     }
 
     #[test]

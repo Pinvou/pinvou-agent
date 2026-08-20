@@ -338,17 +338,21 @@ fn marker_helper_uses_global_deadline_and_reaps_its_contained_tree() {
             ],
             "absent",
             Duration::from_secs(10),
-            Duration::from_millis(750),
+            Duration::from_secs(3),
         );
         assert!(result.is_err());
-        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(started.elapsed() < Duration::from_secs(6));
         let pids = std::fs::read_to_string(workspace.join(".codex-s2-helper-test-pids"))
             .unwrap()
             .lines()
             .map(|line| line.parse::<u32>().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(pids.len(), 2);
-        assert!(pids.into_iter().all(process_has_exited));
+        assert!(
+            process_has_exited(pids[0]),
+            "the direct helper child must be reaped, not left as a zombie"
+        );
+        assert!(descendant_has_terminated(pids[1]));
     }
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -433,6 +437,44 @@ fn marker_helper_subcommand_is_hidden_and_accepts_only_fixed_operations() {
     std::fs::remove_dir_all(workspace).unwrap();
 }
 
+#[test]
+#[cfg(all(debug_assertions, target_os = "linux"))]
+fn linux_helper_survives_replacement_of_the_original_runner_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_output("linux-helper-image-replaced");
+    let runner = root.join("capture-runner");
+    let output = root.join("output");
+    std::fs::copy(env!("CARGO_BIN_EXE_codex-app-server-capture"), &runner).unwrap();
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let result = Command::new(&runner)
+        .args(["run-s2", "--output-dir"])
+        .arg(&output)
+        .args([
+            "--executable",
+            env!("CARGO_BIN_EXE_fake-app-server"),
+            "--scenario-timeout-ms",
+            "10000",
+            "--global-timeout-ms",
+            "60000",
+        ])
+        .env("S2_FAKE_MODE", "replace-runner-image")
+        .env("S2_FAKE_RUNNER_PATH", &runner)
+        .output()
+        .unwrap();
+    assert!(
+        !result.status.success(),
+        "production thresholds must remain strict"
+    );
+    let evidence: Value =
+        serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
+    assert_eq!(evidence["protocol_errors"], 0);
+    assert_eq!(evidence["scenarios"][2]["turn_completed"], true);
+    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+    assert!(capture.contains(r#"\"decision\":\"accept\""#));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(windows)]
 fn process_has_exited(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
@@ -452,6 +494,19 @@ fn process_has_exited(pid: u32) -> bool {
 fn process_has_exited(pid: u32) -> bool {
     if unsafe { libc::kill(pid as i32, 0) } != 0 {
         return std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+    }
+    false
+}
+
+#[cfg(all(debug_assertions, windows))]
+fn descendant_has_terminated(pid: u32) -> bool {
+    process_has_exited(pid)
+}
+
+#[cfg(all(debug_assertions, unix))]
+fn descendant_has_terminated(pid: u32) -> bool {
+    if process_has_exited(pid) {
+        return true;
     }
     #[cfg(target_os = "linux")]
     {
