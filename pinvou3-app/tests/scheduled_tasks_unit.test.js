@@ -20,7 +20,7 @@ const indexHtml = [
 const tauriBridgeFeatureNames = [
   'artifact-tracker', 'chat', 'chat-events', 'sessions', 'terminal', 'scheduled', 'monitor', 'settings', 'memory', 'artifacts', 'personas', 'updater',
   'remote-control', 'dependencies', 'voice', 'knowledge-model', 'interaction',
-  'multiagent'
+  'multiagent', 'llama-engine'
 ];
 const bridgeMessages = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'shared', 'bridge-messages.js'),
