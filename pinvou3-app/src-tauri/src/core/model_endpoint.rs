@@ -269,19 +269,55 @@ pub async fn probe_local_server_kind(base_url: &str) -> LocalServerKind {
     kind
 }
 
-/// 并发去重注册表：key → 完成信号。首个调用方执行探测、完成后发送结果并
-/// 注销；并发调用方订阅等待，探测只跑一次。发送方异常丢弃时等待方降级
-/// 为自行直探（watch 关闭 `changed()` 返回 Err），总能得到结果。
+/// 并发去重注册表：key → 完成信号（Weak，首个调用方持有唯一强引用）。
+/// 首个调用方执行探测、完成后发送结果并注销；并发调用方订阅等待，探测只
+/// 跑一次。首个调用方被取消（任务 abort / 外层 select 丢弃）时其强引用随
+/// future 一起 drop，注册表不延残生命周期：等待方观察到通道关闭（`changed()`
+/// 返回 Err）降级为自行直探，后续调用方 upgrade 失败后重新发起探测，总能
+/// 得到结果，也不存在永久毒化的注册条目。
 static PROBE_KIND_INFLIGHT: std::sync::OnceLock<
     std::sync::Mutex<
-        std::collections::HashMap<String, Arc<tokio::sync::watch::Sender<Option<LocalServerKind>>>>,
+        std::collections::HashMap<
+            String,
+            std::sync::Weak<tokio::sync::watch::Sender<Option<LocalServerKind>>>,
+        >,
     >,
 > = std::sync::OnceLock::new();
+
+/// in-flight 注册守卫：持有首个调用方 sender 的唯一强引用。future 在 await
+/// 探测期间被取消时完成块不会运行，守卫在 Drop 时顺带清掉注册表中仍指向
+/// 自己的陈旧 Weak（cleanup 成功与否都不影响正确性——sender 的 drop 本身
+/// 就会关闭通道唤醒等待方）。
+struct InflightRegistration {
+    key: String,
+    sender: Option<Arc<tokio::sync::watch::Sender<Option<LocalServerKind>>>>,
+}
+
+impl Drop for InflightRegistration {
+    fn drop(&mut self) {
+        let Some(sender) = self.sender.take() else {
+            return;
+        };
+        if let Some(registry) = PROBE_KIND_INFLIGHT.get() {
+            if let Ok(mut guard) = registry.lock() {
+                // 只清理仍指向自己（同指针）的注册，不误删后续调用方重新
+                // 发起的新探测。
+                if guard
+                    .get(&self.key)
+                    .is_some_and(|weak| weak.as_ptr() == Arc::as_ptr(&sender))
+                {
+                    guard.remove(&self.key);
+                }
+            }
+        }
+        // drop 唯一强引用 → 通道关闭 → 等待方 changed() 得 Err 降级直探。
+    }
+}
 
 async fn probe_kind_inflight(base_url: &str) -> LocalServerKind {
     /// 注册结果：要么成为首个执行者，要么订阅在途探测的完成信号。
     enum Inflight {
-        First,
+        First(Arc<tokio::sync::watch::Sender<Option<LocalServerKind>>>),
         Wait(tokio::sync::watch::Receiver<Option<LocalServerKind>>),
     }
     let registry = PROBE_KIND_INFLIGHT.get_or_init(Default::default);
@@ -291,34 +327,51 @@ async fn probe_kind_inflight(base_url: &str) -> LocalServerKind {
             // 注册表锁不可用（中毒）：降级为无合并直探。
             return probe_local_server_kind_uncached(base_url).await;
         };
-        if let Some(sender) = guard.get(base_url) {
-            Inflight::Wait(sender.subscribe())
+        // upgrade 失败 = 陈旧 Weak（此前被取消的探测残留）：按无在途处理，
+        // 用新注册覆盖。
+        if let Some(rx) = guard.get(base_url).and_then(|weak| weak.upgrade()) {
+            Inflight::Wait(rx.subscribe())
         } else {
             let (tx, _rx) = tokio::sync::watch::channel(None);
-            guard.insert(base_url.to_string(), Arc::new(tx));
-            Inflight::First
+            let tx = Arc::new(tx);
+            guard.insert(base_url.to_string(), Arc::downgrade(&tx));
+            Inflight::First(tx)
         }
     };
     match entry {
-        // 首个调用方：执行探测，完成后广播结果并注销注册。
-        Inflight::First => {
+        // 首个调用方：执行探测，完成后广播结果并注销注册。await 期间被取消
+        // 时由守卫 drop 强引用关闭通道（见 InflightRegistration）。
+        Inflight::First(sender) => {
+            let mut registration = InflightRegistration {
+                key: base_url.to_string(),
+                sender: Some(Arc::clone(&sender)),
+            };
             let kind = probe_local_server_kind_uncached(base_url).await;
+            // 正常完成：交出 sender，守卫 Drop 不再重复清理。
+            registration.sender = None;
+            let _ = sender.send(Some(kind));
             if let Ok(mut guard) = registry.lock() {
-                if let Some(sender) = guard.get(base_url) {
-                    let _ = sender.send(Some(kind));
+                if guard
+                    .get(base_url)
+                    .is_some_and(|weak| weak.as_ptr() == Arc::as_ptr(&sender))
+                {
+                    guard.remove(base_url);
                 }
-                guard.remove(base_url);
             }
             kind
         }
         // 并发调用方：等待首个调用方广播结果。
         Inflight::Wait(mut rx) => {
+            // 订阅时结果可能已广播（send 先于 subscribe）：先查当前值。
+            if let Some(kind) = *rx.borrow_and_update() {
+                return kind;
+            }
             while rx.changed().await.is_ok() {
                 if let Some(kind) = *rx.borrow_and_update() {
                     return kind;
                 }
             }
-            // 广播方异常丢弃：降级直探兜底。
+            // 广播方被取消/异常丢弃：通道关闭（changed() Err），降级直探兜底。
             probe_local_server_kind_uncached(base_url).await
         }
     }
@@ -937,6 +990,106 @@ mod tests {
             hits.load(Ordering::SeqCst),
             1,
             "并发调用应合并为一次探测（/api/tags 只命中一次）"
+        );
+        task.abort();
+        clear_probe_kind_cache();
+    }
+
+    /// 取消安全回归：首个 in-flight 探测被 abort 后注册表不能残留毒化条目——
+    /// 已订阅的等待方须降级直探限期返回，后续调用方须重新发起探测，均不得
+    /// 永久挂起（修复前等待方 changed() 既等不到 send 也等不到通道关闭）。
+    ///
+    /// mock server 用 watch 门闩控制：放行前挂起所有请求（让首探停在 HTTP
+    /// await 上以便 abort），放行后对所有端点回 404（直探/重探落 Generic）。
+    #[tokio::test]
+    async fn probe_kind_inflight_abort_first_caller_unblocks_waiter_and_next_caller() {
+        clear_probe_kind_cache();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async move {
+            let gate_rx = gate_rx;
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut gate = gate_rx.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let Ok(n) = stream.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    // 门闩未放行：请求挂起，模拟慢端点让首探停在 HTTP await。
+                    if !*gate.borrow_and_update() {
+                        let _ = gate.changed().await;
+                    }
+                    let body = r#"{"error":"not found"}"#;
+                    let resp = format!(
+                        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        let url = format!("http://{addr}/v1");
+        let key = url.trim_end_matches('/').to_string();
+
+        // 1. 首个探测进入 in-flight 注册（注册后停在 HTTP await 上）。
+        let first_url = url.clone();
+        let first = tokio::spawn(async move { probe_local_server_kind(&first_url).await });
+        let registry = PROBE_KIND_INFLIGHT.get_or_init(Default::default);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !registry.lock().unwrap().contains_key(&key) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "首个探测应在限期内完成 in-flight 注册"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // 2. 并发等待方订阅在途探测。
+        let waiter_url = key.clone();
+        let waiter = tokio::spawn(async move { probe_local_server_kind(&waiter_url).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // 3. abort 首个探测（模拟 spawn 任务被取消）；await 句柄确保 future
+        //    已被丢弃（注销守卫已运行）再继续。
+        first.abort();
+        assert!(first.await.is_err(), "被 abort 的首探任务应以取消告终");
+
+        // 4. 放行 mock：之后的直探/重探请求立即 404。
+        gate_tx.send(true).unwrap();
+
+        // 5. 等待方不得永久挂起：观察到通道关闭后降级直探，限期返回 Generic。
+        let waiter_kind = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("abort 首探后，已订阅的等待方应在限期内降级直探返回")
+            .unwrap();
+        assert_eq!(waiter_kind, LocalServerKind::Generic);
+
+        // 6. 后续调用方不得命中毒化条目：重新发起探测并限期返回。
+        let next_url = key.clone();
+        let next_kind = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::spawn(async move { probe_local_server_kind(&next_url).await }),
+        )
+        .await
+        .expect("abort 首探后，后续调用方应在限期内完成（注册表无残留）")
+        .unwrap();
+        assert_eq!(next_kind, LocalServerKind::Generic);
+
+        // 7. 注册表最终不残留该 key。
+        assert!(
+            !registry.lock().unwrap().contains_key(&key),
+            "abort 后注册表不应残留毒化条目"
         );
         task.abort();
         clear_probe_kind_cache();
