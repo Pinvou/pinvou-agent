@@ -523,6 +523,7 @@ mod tests {
             endpoint_mode: None,
             image_capability_override: Default::default(),
             vision_model_id: None,
+            vision_prefer_local_engine: false,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,

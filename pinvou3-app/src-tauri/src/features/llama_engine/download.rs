@@ -49,10 +49,41 @@ pub(crate) struct ModelAsset {
     pub fallback_url: &'static str,
 }
 
-/// 默认（更小档位）：Qwen3-VL-2B Q3_K_S（bartowski 转换，实测 827MB）。
+/// 极致低配档：Qwen3-VL-2B IQ2_M（bartowski 转换，实测 663MB）。
+/// ⚠️ 跨仓混用：主权重来自 bartowski 转换仓、mmproj 来自官方仓，两者均由
+/// 同源 bf16 权重转出、量化格式兼容；上线前需真机冒烟确认组合可用。
+pub(crate) const MODEL_IQ2_M: LlamaModelSpec = LlamaModelSpec {
+    id: "qwen3vl-2b-iq2m",
+    display_name: "Qwen3-VL-2B IQ2_M（1.14GB，极致低配）",
+    size_bytes: 695_182_656 + 445_053_216,
+    gguf: ModelAsset {
+        filename: "Qwen_Qwen3-VL-2B-Instruct-IQ2_M.gguf",
+        expected_size: 695_182_656,
+        // HF API 未取到该文件 lfs oid，先以尺寸校验兜底（发布后回填实测 sha256）。
+        sha256: "",
+        primary_url: "https://modelscope.cn/models/bartowski/Qwen_Qwen3-VL-2B-Instruct-GGUF/resolve/master/Qwen_Qwen3-VL-2B-Instruct-IQ2_M.gguf",
+        mirror_url: "https://huggingface.co/bartowski/Qwen_Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen_Qwen3-VL-2B-Instruct-IQ2_M.gguf",
+        fallback_url: "https://hf-mirror.com/bartowski/Qwen_Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen_Qwen3-VL-2B-Instruct-IQ2_M.gguf",
+    },
+    mmproj: MMPROJ_2B_Q8_0,
+};
+
+/// 2B 官方仓 Q8_0 视觉投影器（IQ2_M 与 Q4_K_M 两档共用，磁盘上只存一份）。
+/// 相比 F16（819MB）省约 46%，视觉编码精度损失可忽略。
+const MMPROJ_2B_Q8_0: ModelAsset = ModelAsset {
+    filename: "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
+    expected_size: 445_053_216,
+    sha256: "",
+    primary_url: "https://modelscope.cn/models/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/master/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
+    mirror_url: "https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
+    fallback_url: "https://hf-mirror.com/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
+};
+
+/// 旧版档（legacy）：Qwen3-VL-2B Q3_K_S + F16 mmproj（bartowski 转换）。
+/// 仅为兼容已下载的老安装保留，不再推荐；新装请用 q4km / iq2m。
 pub(crate) const MODEL_Q3_K_S: LlamaModelSpec = LlamaModelSpec {
     id: "qwen3vl-2b-q3k-s",
-    display_name: "Qwen3-VL-2B Q3_K_S（0.83GB，推荐）",
+    display_name: "Qwen3-VL-2B Q3_K_S（1.61GB，旧版不推荐）",
     size_bytes: 867_253_568 + 819_394_848,
     gguf: ModelAsset {
         filename: "Qwen_Qwen3-VL-2B-Instruct-Q3_K_S.gguf",
@@ -72,11 +103,12 @@ pub(crate) const MODEL_Q3_K_S: LlamaModelSpec = LlamaModelSpec {
     },
 };
 
-/// 备选（质量优先）：官方 Qwen3-VL-2B Q4_K_M（实测 1.03GB，文件名无连字符）。
+/// 默认档：官方 Qwen3-VL-2B Q4_K_M + Q8_0 mmproj（实测合计 1.45GB）。
+/// CPU/核显设备的质量-体积平衡点，`default_model()` 指向本档。
 pub(crate) const MODEL_Q4_K_M: LlamaModelSpec = LlamaModelSpec {
     id: "qwen3vl-2b-q4km",
-    display_name: "Qwen3-VL-2B Q4_K_M（1.06GB，质量优先）",
-    size_bytes: 1_107_409_952 + 819_394_848,
+    display_name: "Qwen3-VL-2B Q4_K_M（1.55GB，默认推荐）",
+    size_bytes: 1_107_409_952 + 445_053_216,
     gguf: ModelAsset {
         filename: "Qwen3VL-2B-Instruct-Q4_K_M.gguf",
         expected_size: 1_107_409_952,
@@ -85,24 +117,48 @@ pub(crate) const MODEL_Q4_K_M: LlamaModelSpec = LlamaModelSpec {
         mirror_url: "https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen3VL-2B-Instruct-Q4_K_M.gguf",
         fallback_url: "https://hf-mirror.com/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen3VL-2B-Instruct-Q4_K_M.gguf",
     },
-    mmproj: ModelAsset {
-        filename: "mmproj-Qwen3VL-2B-Instruct-F16.gguf",
-        expected_size: 819_394_848,
+    mmproj: MMPROJ_2B_Q8_0,
+};
+
+/// 独显档：官方 Qwen3-VL-4B Q4_K_M + Q8_0 mmproj（实测合计 2.75GB）。
+/// 显存充足的独显设备上识图质量明显优于 2B。
+pub(crate) const MODEL_4B_Q4_K_M: LlamaModelSpec = LlamaModelSpec {
+    id: "qwen3vl-4b-q4km",
+    display_name: "Qwen3-VL-4B Q4_K_M（2.95GB，独显推荐）",
+    size_bytes: 2_497_281_664 + 453_974_304,
+    gguf: ModelAsset {
+        filename: "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+        expected_size: 2_497_281_664,
         sha256: "",
-        primary_url: "https://modelscope.cn/models/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/master/mmproj-Qwen3VL-2B-Instruct-F16.gguf",
-        mirror_url: "https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-2B-Instruct-F16.gguf",
-        fallback_url: "https://hf-mirror.com/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-2B-Instruct-F16.gguf",
+        primary_url: "https://modelscope.cn/models/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/master/Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+        mirror_url: "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+        fallback_url: "https://hf-mirror.com/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+    },
+    mmproj: ModelAsset {
+        filename: "mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
+        expected_size: 453_974_304,
+        sha256: "",
+        primary_url: "https://modelscope.cn/models/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/master/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
+        mirror_url: "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
+        fallback_url: "https://hf-mirror.com/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
     },
 };
 
-const MODEL_SPECS: &[LlamaModelSpec] = &[MODEL_Q3_K_S, MODEL_Q4_K_M];
+/// 档位顺序即设置页展示顺序：极致低配 → 默认 → 独显 → legacy 垫底。
+const MODEL_SPECS: &[LlamaModelSpec] = &[
+    MODEL_IQ2_M,
+    MODEL_Q4_K_M,
+    MODEL_4B_Q4_K_M,
+    MODEL_Q3_K_S,
+];
 
 pub(crate) fn model_specs() -> &'static [LlamaModelSpec] {
     MODEL_SPECS
 }
 
+/// 新装默认档；prefs 里存着 legacy id 的老用户原样保留（已下载的继续用）。
 pub(crate) fn default_model() -> &'static LlamaModelSpec {
-    &MODEL_Q3_K_S
+    &MODEL_Q4_K_M
 }
 
 pub(crate) fn model_spec(model_id: &str) -> Result<&'static LlamaModelSpec, String> {
@@ -748,6 +804,7 @@ mod tests {
             sha256: "",
             primary_url: "",
             mirror_url: "",
+            fallback_url: "",
         };
         assert!(model_file_verified(&path, &asset));
         let wrong = ModelAsset { expected_size: 17, ..asset };

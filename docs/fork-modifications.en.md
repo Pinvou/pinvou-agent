@@ -23,6 +23,40 @@
 - Two CodeWhale tests, two parent `forkguard_*` tests, and Tauri/Web frontend behavior coverage protect side-effect-free runtime reads, observable and idempotent explicit recovery, safe secondary Store opening, durable startup recovery, and consecutive sends after local completion.
 - The fix is included in the published head, drift figures, and immutable tag `pinvou-v0.9.5-r5`; CodeWhale required checks and parent automation pass.
 
+### Pending change (2026-08-12 · slow-device vision timeout adaptation, unreleased)
+
+- Symptom: on Intel iGPU (UHD 750, Vulkan driver 30.0.100.9805) a cold-start
+  `image_analyze` request exceeds the 120s client timeout; all 4 retries queue
+  behind the slow request and fail → `Retry exhausted` → the main model retries
+  → loop (measured single cold request: 18-50s; first run includes Vulkan
+  pipeline compilation which can exceed 120s).
+- Change (`CodeWhale/crates/tui/src/vision/tools.rs`, 2 edits):
+  - `image_analyze` switched to **streaming** (`stream: true`): total duration
+    is capped at 300s by the stream loop (reqwest overall timeout removed;
+    30s connect timeout kept); on timeout the partially accumulated content is
+    returned with a `truncated` marker instead of failing the whole request and
+    triggering the retry loop. `DEFAULT_VISION_MAX_OUTPUT_TOKENS` stays at the
+    upstream 4096 (same for local and cloud — long-document transcription is
+    not crippled; on slow devices generation short of 4096 is bounded by the
+    streaming timeout). Real descriptions are ~150 tokens, so the limit never
+    affects normal-case speed.
+  - `image_analyze` client timeout 120s → 300s (upper bound only; cloud vision
+    models, typically 10-30s, are unaffected).
+- Status: benchmarks confirm single requests take 8-50s (CPU/Vulkan, 3 runs
+  each); full forkguard/contract regression pending the release flow.
+- Addition (same file, same section): `image_analyze` request construction
+  improved — added a system prompt (image type / verbatim text transcription /
+  key elements and layout, no fabrication), temperature 0.7 → 0.2, and the
+  default prompt upgraded from "Describe this image in detail." to the
+  three-element template. Measured on the same Chinese-text screenshot: the old
+  construction produced a hallucinated repetition loop; the new one transcribes
+  the full Chinese body verbatim. Also safe for cloud vision models (gpt-4o
+  etc.); lower temperature has no downside for transcription tasks.
+- Addition (same file, same section): `image_analyze` now marks truncation
+  explicitly — when `finish_reason == "length"` the result JSON gains
+  `"truncated": true`, so the main model knows the transcription is incomplete
+  (text-dense image scenario) instead of silently summarizing partial content.
+
 ## Topics
 
 PR #13 was squash-merged as `a36e6cd533024cfe5724bae21875aea42b2ed87a` and published as immutable tag `pinvou-v0.9.5-r7`. It removes product-specific orchestration while preserving canonical registry prompt text and alias-aware Custom SubAgent allowlist resolution.

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.5 clean re-fork guard: published four-theme baseline.
+# CodeWhale v0.9.5 clean re-fork guard: r7 public baseline (four themes after
+# the PR #13 retirement), plus four pending-review vision commits rebased onto
+# r7 on 2026-08-19 (see docs/fork-modifications.md §待评审改动).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,8 +9,8 @@ TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_COMMITS=9
+EXPECTED_HEAD="ea5bdf566dabefa1231d64e0d81f32945818f2d8"
+EXPECTED_COMMITS=13
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 

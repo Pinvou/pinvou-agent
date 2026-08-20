@@ -231,7 +231,21 @@
       onActiveChange: updateAttachmentDragState,
       onFiles: async function (files) {
         for (var index = 0; index < files.length; index++) {
-          await addDroppedFileAttachment(files[index]);
+          var file = files[index];
+          // 发送前预缩放：超长边图片先压到 ~1500px JPEG 再入附件
+          // （本地引擎视觉编码耗时随 token 线性增长）。canvas 不可用时
+          // prescale 原样回落，绝不拦截添加。
+          if (root.PinvouImagePrescale && file && file.type && file.type.indexOf("image/") === 0) {
+            try {
+              var scaled = await root.PinvouImagePrescale.prescaleImageFile(file);
+              if (scaled.compressed) {
+                var name = String(file.name || "image").replace(/\.[A-Za-z0-9]+$/, "") + ".jpg";
+                file = new File([scaled.file], name, { type: "image/jpeg" });
+                addSystemItem(bt("imageCompressed"));
+              }
+            } catch (_) {}
+          }
+          await addDroppedFileAttachment(file);
         }
       }
     });

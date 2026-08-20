@@ -66,7 +66,8 @@ static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// 首次加载模型（CPU 慢）与自动重启后的就绪等待上限。
-const HEALTH_TIMEOUT: Duration = Duration::from_secs(120);
+/// 发送门（chat.rs）等待窗口与本值对齐，不得另设更短的超时。
+pub(crate) const HEALTH_TIMEOUT: Duration = Duration::from_secs(120);
 const CRASH_REBOOT_WINDOW: Duration = Duration::from_secs(60);
 /// 窗口内允许的自愈次数（超过则停等用户手动）。
 const MAX_CRASH_REBOOTS: u32 = 2;
@@ -128,6 +129,9 @@ pub(crate) fn build_args(
         EngineDevice::Gpu => "99",
         EngineDevice::Cpu => "0",
     };
+    // 线程数钉物理核数：llama.cpp 默认按逻辑核调度，超线程在纯 CPU 推理上
+    // 通常零/负收益；GPU 档该值只影响少量 CPU 侧算子，无副作用。
+    let threads = crate::platform::os::physical_core_count();
     vec![
         bin.as_os_str().to_owned(),
         "--model".into(),
@@ -140,6 +144,30 @@ pub(crate) fn build_args(
         port.to_string().into(),
         "--ctx-size".into(),
         "8192".into(),
+        // 高分辨率图像降采样上限(实测 4K 图视觉编码:默认 409s → 1024 上限 42s,
+        // 总耗时 427s → 58s,7.4 倍)。1024 正是 Qwen-VL grounding 的建议下限,
+        // 只压大图、不影响小图分辨率与准确性。核显/慢设备上必须,独显上无副作用。
+        "--image-max-tokens".into(),
+        "1024".into(),
+        "-t".into(),
+        threads.to_string().into(),
+        // batch/ubatch 提到 1024：1024 视觉 token 不被默认 ubatch 512 切成
+        // 两批，避免跨批 prefill 的额外开销与注意力截断。
+        "--batch-size".into(),
+        "1024".into(),
+        "--ubatch-size".into(),
+        "1024".into(),
+        // FlashAttention：图像 token 多时显著降低 KV 访存与显存占用。
+        "--flash-attn".into(),
+        // KV cache q8_0 量化：视觉任务 KV 常驻占用大，q8_0 精度损失可忽略、
+        // 内存近减半（8GB 内存机器跑 2B 档的保命项）。
+        "--cache-type-k".into(),
+        "q8_0".into(),
+        "--cache-type-v".into(),
+        "q8_0".into(),
+        // mlock：模型常驻物理内存，防系统换页导致解码中途卡顿；
+        // 权限/内存不足时 llama.cpp 仅告警继续运行，无失败风险。
+        "--mlock".into(),
         "-ngl".into(),
         ngl.into(),
         "--no-webui".into(),
@@ -208,8 +236,20 @@ pub(crate) async fn start(
 
         match wait_until_healthy_or_exit(&mut child, port).await {
             HealthOutcome::Healthy => {
+                if STOP_REQUESTED.swap(false, Ordering::SeqCst) {
+                    // spawn/加载期间用户点了停止：此时 pid 尚未写入 guard、
+                    // 停止标志无人消费会残留——必须在这里终结进程并落 Stopped，
+                    // 否则引擎带病进入 Running、标志留到下次退出被误消费。
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    let _ = stderr_task.await;
+                    transition_stopped(&app, "已停止".to_string());
+                    return;
+                }
                 mark_running();
                 emit_state(&app, "running", None);
+                notify_sessions_changed(&app);
+                spawn_warmup(port);
                 watch_running(app, child, stderr_task, port).await;
             }
             HealthOutcome::Exited(status) => {
@@ -251,6 +291,67 @@ pub(crate) fn stop() {
     if let Some(pid) = pid {
         crate::platform::os::kill_pid_tree(pid);
     }
+}
+
+/// 幂等启动：Running/Starting 时直接 Ok(false)（并发防护，绝不把
+/// "引擎已在运行或启动中" 当失败上报）；真正发起启动返回 Ok(true)。
+/// 自动启动（发送门 / launch 后台）与手动启动共用，避免并发双启动。
+pub(crate) async fn start_if_needed(
+    app: &tauri::AppHandle,
+    model_id: &str,
+    device: EngineDevice,
+) -> Result<bool, String> {
+    {
+        let guard = lock_runtime();
+        if matches!(guard.phase, EnginePhase::Starting | EnginePhase::Running) {
+            return Ok(false);
+        }
+    }
+    match start(app, model_id, device).await {
+        Ok(()) => Ok(true),
+        // 锁外检查与 start 内部守卫之间的竞态窗口：已有人启动，归一为 Ok(false)。
+        Err(error) if error.contains("引擎已在运行或启动中") => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// 轮询等待引擎进入 Running（自动启动后、发送路由与 spawn 之前调用）。
+/// 期间若转入 Stopped 且带错误 → Err(该错误)；超时 → Err(超时文案)。
+/// 轮询用 tokio::time::sleep，不阻塞运行时。
+pub(crate) async fn wait_until_running(timeout: Duration) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let snapshot = runtime_snapshot();
+        if snapshot.phase == "running" {
+            return Ok(());
+        }
+        if snapshot.phase == "stopped" {
+            if let Some(error) = snapshot.last_error.filter(|e| !e.is_empty()) {
+                return Err(error);
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("等待本地引擎就绪超时（{}s）", timeout.as_secs()));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// 测试钩子：强制置 Running（bridge.rs 规则 0 单测用；改全局 RUNTIME，
+/// 使用方需保证测试串行）。
+#[cfg(test)]
+pub(crate) fn force_running_for_test(port: u16) {
+    let mut guard = lock_runtime();
+    guard.phase = EnginePhase::Running;
+    guard.port = Some(port);
+}
+
+/// 测试钩子：复位 RUNTIME 到默认（配合 force_running_for_test 的收尾，
+/// 避免污染后续测试的引擎运行态）。
+#[cfg(test)]
+pub(crate) fn reset_runtime_for_test() {
+    let mut guard = lock_runtime();
+    *guard = EngineRuntime::default();
 }
 
 enum HealthOutcome {
@@ -346,7 +447,13 @@ async fn watch_running(
             return;
         };
         let bin = download::engine_binary_path();
-        let new_port = pick_free_port().unwrap_or(port);
+        // 自愈优先复用旧端口：端点 URL 不变，已快照本地端点的会话无需重建；
+        // 仅当旧端口被占时才退避到随机端口（此时靠会话失效钩子 bump revision）。
+        let new_port = if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            port
+        } else {
+            pick_free_port().unwrap_or(port)
+        };
         let Ok(mut new_child) = spawn_server(&bin, &build_args(&bin, spec, new_port, device)).await
         else {
             transition_stopped(&app, "自动重启失败：无法启动引擎进程".to_string());
@@ -375,6 +482,8 @@ async fn watch_running(
                 }
                 mark_running();
                 emit_state(&app, "running", None);
+                notify_sessions_changed(&app);
+                spawn_warmup(new_port);
             }
             HealthOutcome::Exited(status) => {
                 let _ = stderr_task.await;
@@ -413,6 +522,68 @@ fn transition_stopped(app: &tauri::AppHandle, reason: String) {
         guard.last_error = Some(reason.clone());
     }
     emit_state(app, "stopped", Some(reason));
+    // 手动停止/崩溃终停同样使会话端点快照失效（回落 vision_model_id 规则）。
+    notify_sessions_changed(app);
+}
+
+// ---------------- 会话失效钩子 ----------------
+// 引擎运行态翻转（进入 Running / 落 Stopped）时由宿主（lib.rs）注入的回调
+// bump 会话模型 revision，强制 EngineConfig 重快照——本地端点只在会话
+// spawn 时读取（vision_endpoint 快照语义）。llama_engine 不反向依赖
+// assistant::EnginePool，故用注入钩子而不是直接调用。
+
+type SessionInvalidationHook = Box<dyn Fn(&tauri::AppHandle) + Send + Sync>;
+static SESSION_INVALIDATION_HOOK: OnceLock<SessionInvalidationHook> = OnceLock::new();
+
+/// 注册会话失效钩子（lib.rs setup 时调用一次；重复注册后者被忽略）。
+pub fn set_session_invalidation_hook(hook: SessionInvalidationHook) {
+    let _ = SESSION_INVALIDATION_HOOK.set(hook);
+}
+
+fn notify_sessions_changed(app: &tauri::AppHandle) {
+    if let Some(hook) = SESSION_INVALIDATION_HOOK.get() {
+        hook(app);
+    }
+}
+
+// ---------------- warmup ----------------
+
+/// 内置 64×64 测试图（纯色 PNG）：warmup 与微基准探测共用，
+/// 够走通视觉编码全链路又足够小。
+const WARMUP_IMAGE_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAATklEQVR42u3PQQkAAAgEsAtoNDtrBN/CYAWW6nktAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgKXBZ60cbTWfPOjAAAAAElFTkSuQmCC";
+
+/// 引擎进入 Running 后后台预热：发一次最小请求（内置小图 + max_tokens 16），
+/// 把 mmproj/视觉编码器初始化从首个真实请求里挪掉，消除冷启动体感。
+/// 失败静默（预热是纯优化，绝不影响引擎可用性）。
+fn spawn_warmup(port: u16) {
+    tokio::spawn(async move {
+        let client = match reqwest::Client::builder()
+            .timeout(Duration::from_secs(180))
+            .build()
+        {
+            Ok(client) => client,
+            Err(_) => return,
+        };
+        let payload = serde_json::json!({
+            // 单模型模式忽略 model 字段。
+            "model": "warmup",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "Describe this image briefly." },
+                    { "type": "image_url", "image_url": {
+                        "url": format!("data:image/png;base64,{WARMUP_IMAGE_BASE64}")
+                    } }
+                ]
+            }],
+            "max_tokens": 16,
+        });
+        let _ = client
+            .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+            .json(&payload)
+            .send()
+            .await;
+    });
 }
 
 fn emit_state(app: &tauri::AppHandle, phase: &'static str, error: Option<String>) {
@@ -561,6 +732,19 @@ mod tests {
             assert!(text.iter().any(|a| a == "8192"));
             assert!(text.windows(2).any(|w| w[0] == "-ngl" && w[1] == expected_ngl));
             assert!(text.iter().any(|a| a == "--no-webui"));
+            // PR3 启动参数调优：物理核线程数 / batch 1024 / flash-attn /
+            // KV q8_0 / mlock（缺一项即回归，逐项断言）。
+            assert!(
+                text.windows(2)
+                    .any(|w| w[0] == "-t" && w[1].parse::<usize>().is_ok()),
+                "must pass physical core count via -t; got {text:?}"
+            );
+            assert!(text.windows(2).any(|w| w[0] == "--batch-size" && w[1] == "1024"));
+            assert!(text.windows(2).any(|w| w[0] == "--ubatch-size" && w[1] == "1024"));
+            assert!(text.iter().any(|a| a == "--flash-attn"));
+            assert!(text.windows(2).any(|w| w[0] == "--cache-type-k" && w[1] == "q8_0"));
+            assert!(text.windows(2).any(|w| w[0] == "--cache-type-v" && w[1] == "q8_0"));
+            assert!(text.iter().any(|a| a == "--mlock"));
         }
     }
 
