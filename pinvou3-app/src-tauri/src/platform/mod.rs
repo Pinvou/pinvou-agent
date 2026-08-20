@@ -6,6 +6,7 @@ pub(crate) mod download;
 pub(crate) mod encoding;
 pub(crate) mod filesystem;
 pub(crate) mod hashing;
+pub(crate) mod host_supervisor;
 pub(crate) mod notifications;
 pub(crate) mod os;
 pub(crate) mod path_policy;

@@ -1,0 +1,37 @@
+[Unit]
+Description=PinvouOS Host Supervisor
+Requires=pinvou3-supervisor.socket
+After=pinvou3-supervisor.socket
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/pinvou3/supervisor/pinvou-supervisor daemon
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=10s
+Slice=app.slice
+TasksMax=64
+MemoryMax=256M
+OOMPolicy=stop
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pinvou-supervisor
+StateDirectory=pinvou-supervisor
+StateDirectoryMode=0700
+Environment=PINVOU_SUPERVISOR_STATE_DIR=%S/pinvou-supervisor
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes

@@ -217,20 +217,76 @@ pub(crate) fn std_process_group_leader(command: &mut Command) {
 }
 
 /// 按 pid 杀进程树：Windows 用 taskkill 杀整棵树（脚本会再起子 shell，单杀
-/// 父进程会留下继续运行的子进程）；其他平台按进程组杀（负 pid）——安装进程
-/// 以 `process_group(0)` 独立成组，`kill -9 -pgid` 连 curl | bash / npm 派生
+/// 父进程会留下继续运行的子进程）；Unix 通过 `kill(2)` 按进程组杀（负 pid）——安装进程
+/// 以 `process_group(0)` 独立成组，`SIGKILL` 连 curl | bash / npm 派生
 /// 的子进程一起终止，不孤儿化（评审中危项）。
-pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<Output> {
-    let pid_arg = pid.to_string();
-    if crate::platform::capabilities::is_windows() {
-        external_command(Path::new("taskkill"))
+pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<()> {
+    if pid == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "process-group id must be positive",
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        let process_group = i32::try_from(pid).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "process-group id exceeds the platform pid range",
+            )
+        })?;
+        // 负 pid 是 POSIX 进程组寻址。直接使用内核接口，避免受用户 PATH、shell
+        // alias 或同名 shim 影响；调用方只会传由我们创建并登记的 group leader。
+        if unsafe { libc::kill(-process_group, libc::SIGKILL) } == 0 {
+            Ok(())
+        } else {
+            let error = std::io::Error::last_os_error();
+            // 幂等 stop：组已经自然退出也等价于目标状态已达到。其他错误（尤其 EPERM）
+            // 必须保留给上层，不能清掉 ownership 后假报已停止。
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let system_root = std::env::var_os("SystemRoot")
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "SystemRoot is unavailable for fixed taskkill path",
+                )
+            })?;
+        let taskkill = std::path::PathBuf::from(system_root)
+            .join("System32")
+            .join("taskkill.exe");
+        let pid_arg = pid.to_string();
+        let output = HiddenCommand::new(taskkill)
             .args(["/PID", pid_arg.as_str(), "/T", "/F"])
-            .output()
-    } else {
-        let group_arg = format!("-{pid_arg}");
-        external_command(Path::new("kill"))
-            .args(["-9", group_arg.as_str()])
-            .output()
+            .output()?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "taskkill exited {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )))
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "process-tree termination is unsupported on this platform",
+        ))
     }
 }
 
@@ -269,6 +325,70 @@ pub(crate) fn hide_tokio_console(_command: &mut tokio::process::Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_tree_rejects_zero_pid_before_platform_dispatch() {
+        let error = kill_process_tree(0).expect_err("pid zero must be rejected");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn owned_process_group_kills_a_real_descendant() {
+        let mut command = Command::new("sh");
+        std_process_group_leader(&mut command);
+        command
+            .args(["-c", "sleep 30 & wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().expect("spawn owned process group");
+        let root_pid = child.id();
+        let process_group = unsafe { libc::getpgid(root_pid as libc::pid_t) };
+        assert_eq!(process_group, root_pid as libc::pid_t);
+
+        let children_path = format!("/proc/{root_pid}/task/{root_pid}/children");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let descendant_pid = loop {
+            if let Ok(children) = std::fs::read_to_string(&children_path) {
+                if let Some(pid) = children
+                    .split_ascii_whitespace()
+                    .find_map(|pid| pid.parse::<u32>().ok())
+                {
+                    break pid;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "owned process group did not spawn a descendant"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(linux_process_is_running(descendant_pid));
+
+        kill_process_tree(root_pid).expect("kill owned process group");
+        child.wait().expect("reap process group leader");
+        let exit_deadline = Instant::now() + Duration::from_secs(2);
+        while linux_process_is_running(descendant_pid) && Instant::now() < exit_deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !linux_process_is_running(descendant_pid),
+            "owned descendant survived process-group termination"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_process_is_running(pid: u32) -> bool {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        // `/proc/<pid>/stat` is `pid (comm) state ...`; comm may contain spaces or `)`.
+        let state = stat
+            .rsplit_once(") ")
+            .and_then(|(_, tail)| tail.chars().next());
+        !matches!(state, Some('Z' | 'X'))
+    }
 
     #[test]
     fn windows_command_shims_use_command_interpreter() {

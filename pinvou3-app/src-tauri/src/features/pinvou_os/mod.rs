@@ -53,7 +53,8 @@ pub use resource_agent::{
     ResourceMitigationAction, ResourceSampler, DEVICE_AGENT_ID,
 };
 pub use runtime::{
-    AgentControlAdapter, OpenInteractionRunRequest, OpenMissionRequest, PinvouOsRuntime,
+    HostWorkDirectiveRequest, HostWorkHandle, OpenInteractionRunRequest, OpenMissionRequest,
+    PinvouOsRuntime, ReconcileHostWorkDirectiveRequest, RegisterHostWorkRequest,
     RegisterMissionAgentRequest,
 };
 pub use screen_observer_agent::*;

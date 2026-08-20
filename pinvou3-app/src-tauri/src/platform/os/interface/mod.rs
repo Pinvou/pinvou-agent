@@ -2,9 +2,13 @@ mod path;
 mod permission;
 mod system;
 
+use pinvou_host_supervisor_protocol::{SupervisorReceipt, SupervisorRequest};
+
+use crate::platform::host_supervisor::HostSupervisorError;
+
 pub use path::{
     apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command,
-    external_application_path, file_url_from_path, filesystem_path_identity_key, kill_pid_tree,
+    external_application_path, file_url_from_path, filesystem_path_identity_key,
     obsidian_config_path, path_component_eq, platform_compat_path, python_command, user_home_dir,
     validate_upload_location,
 };
@@ -24,3 +28,9 @@ pub use system::{
     show_ocr_dependency_check, show_pandoc_dependency_check, show_pdf_dependency_check,
     system_default_open_supported,
 };
+
+pub(crate) fn host_supervisor_request(
+    request: &SupervisorRequest,
+) -> Result<SupervisorReceipt, HostSupervisorError> {
+    super::platform::host_supervisor_request(request)
+}

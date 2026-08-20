@@ -1516,7 +1516,7 @@
           <div class="timeline">
             <div class="timeline-item"><div class="timeline-dot">1</div><div class="timeline-body"><h4>Front 识别复杂任务</h4><p>路由判断来自系统 Prompt，不是确定性分类器。</p></div></div>
             <div class="timeline-item"><div class="timeline-dot">2</div><div class="timeline-body"><h4>调用通用 agent tool</h4><p>happy-path 使用 <code>profile="pinvou-orchestrator"</code>，但内核未 pin profile，也未限制同批只能一个 agent 调用。</p></div></div>
-            <div class="timeline-item"><div class="timeline-dot">3</div><div class="timeline-body"><h4>CodeWhale 后台子 Agent 执行</h4><p>这是兼容层的 subagent，不是 Runtime Mission Agent，Governor 当前不能按 Mission pause / stop。目标态应先把它登记为 opaque HostWork，再由窄 Adapter 执行；不得靠 PID 或进程名猜测。</p></div></div>
+            <div class="timeline-item"><div class="timeline-dot">3</div><div class="timeline-body"><h4>CodeWhale 后台子 Agent 执行</h4><p>这是兼容层 subagent，不是 Runtime Mission Agent；旧 Mission 同步 callback 已移除，当前无 Mission Adapter。工作树已把 mailbox 仍存活、root turn 已终态且 session 空闲的 detached sub-agent 登记为聚合 HostWork，只由窄 Adapter 发 CancelSubAgents。活跃前台 turn 被保护，不杀 root / shell，也不靠 PID 或进程名猜目标。</p></div></div>
             <div class="timeline-item"><div class="timeline-dot">4</div><div class="timeline-body"><h4>Front 回收结果并最终回答</h4><p>子 Agent 不直接对用户说话；回执格式和证据完整性目前主要靠 Prompt。</p></div></div>
           </div>
         </div>
@@ -1555,7 +1555,7 @@
           <tbody>
             <tr><td>Front Interrupt 路由</td><td>用户说“停下、取消、换目标”时选择业务处理路径</td><td><span class="status prompt">主要是 Prompt</span></td><td>Front 识别，执行仍依赖底层能力</td></tr>
             <tr><td>AG-UI interrupt outcome</td><td>本交互因等待输入/审批结束；新 run 用 interruptId 精确恢复</td><td><span class="status partial">语义内核首切片</span></td><td>InteractionRun 状态机</td></tr>
-            <tr><td>Runtime Directive</td><td>Kernel 对已注册工作签发 Pause / Stop / Resume</td><td><span class="status partial">账本骨架有；生产 Adapter 为 0</span></td><td>Runtime 签意图，受信 Host 执行；不是 Front</td></tr>
+            <tr><td>Runtime Directive</td><td>Kernel 对已注册 HostWork 签发封闭动作</td><td><span class="status partial">HostWork Stop 已接；Mission Adapter 为 0</span></td><td>schema v6 Runtime 只落 Pending；scheduled、knowledge、固定 connector、受限 detached sub-agent 与 ASR 由独立 worker 执行、ACK 并 reconcile。App cgroup 为 essential / status-only；Front 不持有控制权。</td></tr>
           </tbody>
         </table>
       </div>
@@ -1770,7 +1770,7 @@
             <tr><td>Runtime Ledger</td><td>身份、Mission、Run、Interaction、Agent、资源等事实</td><td>读取并解释事实</td><td>不能把投影当第二真相源</td><td><span class="status partial">trace + 只读投影</span></td></tr>
             <tr><td>Policy / Kernel</td><td>Allow / Deny / RequireConfirmation 与强制结果</td><td>提出 Action Intent、解释结果</td><td>不能替用户确认，不能覆盖硬拒绝</td><td><span class="status off">统一 gate 未接</span></td></tr>
             <tr><td>Memory Agent</td><td>经证据筛选的稳定上下文</td><td>在回答与计划中使用上下文</td><td>不能把任务进度写进长期记忆</td><td><span class="status off">Front consumer 未接</span></td></tr>
-            <tr><td>System Agents</td><td>资源、连接、推理、设备、界面感知等事实和风险</td><td>面向用户解释与建议</td><td>不能把压力 Claim 当作已执行控制，也不能指定 PID、unit、命令或绕过 Kernel / Host</td><td><span class="status partial">Resource 只读；生产控制为 0</span></td></tr>
+            <tr><td>System Agents</td><td>资源、连接、推理、设备、界面感知等事实和风险</td><td>面向用户解释与建议</td><td>不能把压力 Claim 当作已执行控制，也不能指定 PID、unit、命令或绕过 Kernel / Host</td><td><span class="status partial">Resource 只观察；固定 HostWork Stop 已接；无 Renderer / 模型写面；普通 desktop direct，MegaBook E2E 待验</span></td></tr>
             <tr><td>Host Renderer</td><td>组件能力、动作回执、本地交互事件</td><td>声明普通用户态呈现意图</td><td>不能控制最终像素、焦点和系统确认层</td><td><span class="status partial">只读投影已渲染</span></td></tr>
           </tbody>
         </table>

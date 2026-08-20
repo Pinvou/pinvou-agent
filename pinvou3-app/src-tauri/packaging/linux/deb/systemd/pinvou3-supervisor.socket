@@ -1,0 +1,12 @@
+[Unit]
+Description=PinvouOS Host Supervisor control socket
+
+[Socket]
+ListenStream=%t/pinvou-supervisor/control.sock
+DirectoryMode=0700
+SocketMode=0600
+RemoveOnStop=yes
+Service=pinvou3-supervisor.service
+
+[Install]
+WantedBy=sockets.target

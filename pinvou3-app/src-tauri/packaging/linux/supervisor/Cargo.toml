@@ -1,0 +1,33 @@
+[package]
+name = "pinvou-supervisor"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+publish = false
+
+[dependencies]
+libc = "0.2"
+pinvou-host-supervisor-protocol = { path = "../../../crates/host-supervisor-protocol" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+wait-timeout = "0.2"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_imports = "deny"
+unused_variables = "deny"
+unused_mut = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+wildcard_dependencies = "deny"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

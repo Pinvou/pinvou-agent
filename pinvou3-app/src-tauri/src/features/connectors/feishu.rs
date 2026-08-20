@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
-use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
+use crate::features::connectors::connector_cli::{
+    self as cc, CliCtx, ConnectorConn, ConnectorLease,
+};
 use crate::features::connectors::skill_gate::ConnectorSkillGate;
 
 /// 连接器 id(事件前缀 + ConnectorConn 槽位键)。
@@ -56,6 +58,29 @@ fn is_user_ready() -> bool {
             .unwrap_or(false);
     }
     false
+}
+
+fn is_user_ready_owned(
+    conn: &ConnectorConn,
+    lease: ConnectorLease,
+) -> Result<Option<bool>, String> {
+    let Some((_ok, so, se)) = cc::run_owned(
+        conn,
+        lease,
+        lark(&["auth", "status", "--json"]),
+        Duration::from_secs(30),
+    )?
+    else {
+        return Ok(None);
+    };
+    let parsed = cc::parse_json(&so).or_else(|| cc::parse_json(&se));
+    Ok(Some(
+        parsed
+            .as_ref()
+            .and_then(|value| value.pointer("/identities/user/status"))
+            .and_then(Value::as_str)
+            .is_some_and(|status| status == "ready"),
+    ))
 }
 
 // ───────────────────────────── Tauri commands ─────────────────────────────
@@ -129,38 +154,42 @@ pub async fn feishu_status() -> Result<Value, String> {
 /// 进度全程走事件:`feishu:qr` / `feishu:phase` / `feishu:connected` / `feishu:error`。
 /// 立即返回 `{started:true}`;前端 listen 事件驱动 UI。
 pub async fn feishu_connect_begin(app: AppHandle) -> Result<Value, String> {
-    app.state::<ConnectorConn>().reset(ID);
+    let lease = app
+        .state::<ConnectorConn>()
+        .begin(ID)
+        .map_err(str::to_string)?;
     let app2 = app.clone();
-    tokio::task::spawn_blocking(move || run_connect_flow(&app2));
+    tokio::task::spawn_blocking(move || run_connect_flow(&app2, lease));
     Ok(json!({ "started": true }))
 }
 
 /// 编排:段① 注册 app → 段② 授权用户。任一段出错 / 取消即停,错误经事件上报。
-fn run_connect_flow(app: &AppHandle) {
-    match phase_register(app) {
-        Ok(true) => {}
-        Ok(false) => return, // 取消,静默
-        Err(e) => {
-            cc::emit(
-                app,
-                "feishu:error",
-                json!({ "phase": "register", "message": e }),
-            );
-            return;
-        }
+fn run_connect_flow(app: &AppHandle, lease: ConnectorLease) {
+    let outcome = match phase_register(app, lease) {
+        Ok(true) => phase_authorize(app, lease)
+            .err()
+            .map(|error| ("authorize", error)),
+        Ok(false) => None,
+        Err(error) => Some(("register", error)),
+    };
+
+    // 即使某个未来分支漏掉 child cleanup，也只移除自己的 generation，并对仍登记的
+    // owned process group 做最后一次 fail-safe stop。
+    if let Err(error) = app.state::<ConnectorConn>().finish(lease) {
+        log::warn!("[feishu] 连接 generation 清理未确认：{error}");
     }
-    if let Err(e) = phase_authorize(app) {
+    if let Some((phase, error)) = outcome {
         cc::emit(
             app,
             "feishu:error",
-            json!({ "phase": "authorize", "message": e }),
+            json!({ "phase": phase, "message": error }),
         );
     }
 }
 
 /// 段①:`config init --new` 长驻 → 抓 URL 出二维码 → 等用户扫码完成(进程退出)。
 /// 返回 Ok(true)=注册成功;Ok(false)=被取消;Err=失败。
-fn phase_register(app: &AppHandle) -> Result<bool, String> {
+fn phase_register(app: &AppHandle, lease: ConnectorLease) -> Result<bool, String> {
     let mut cmd = lark(&["config", "init", "--new"]);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -169,7 +198,11 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
         .spawn()
         .map_err(|e| format!("config init --new 启动失败: {e}(需要先完成飞书 CLI 在线安装)"))?;
     let conn = app.state::<ConnectorConn>();
-    conn.set_pid(ID, Some(child.id()));
+    let pid = child.id();
+    if !conn.register_pid(lease, pid).map_err(str::to_string)? {
+        cc::stop_registered_child(&conn, lease, &mut child)?;
+        return Ok(false);
+    }
 
     // 排空 stdout+stderr,抓首个飞书 URL(channel 送回)。主线程的 tx 丢掉,
     // 这样两个管道都 EOF 后 rx 自动断开,不会永久阻塞。
@@ -185,8 +218,7 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
     let url = match rx.recv_timeout(Duration::from_secs(40)) {
         Ok(u) => u,
         Err(_) => {
-            let _ = child.kill();
-            conn.set_pid(ID, None);
+            cc::stop_registered_child(&conn, lease, &mut child)?;
             return Err("注册:40s 内未拿到二维码链接(检查网络 / 代理)".into());
         }
     };
@@ -199,14 +231,13 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
 
     // 等进程退出(用户扫码完成);期间轮询取消标志。
     loop {
-        if conn.is_cancelled(ID) {
-            let _ = child.kill();
-            conn.set_pid(ID, None);
+        if conn.is_cancelled(lease) {
+            cc::stop_registered_child(&conn, lease, &mut child)?;
             return Ok(false);
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                conn.set_pid(ID, None);
+                conn.stop_pid(lease, pid)?;
                 if !status.success() {
                     return Err("注册应用未完成(可能已取消或超时)".into());
                 }
@@ -215,7 +246,7 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
-                conn.set_pid(ID, None);
+                cc::stop_registered_child(&conn, lease, &mut child)?;
                 return Err(format!("config init 等待失败: {e}"));
             }
         }
@@ -224,14 +255,17 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
 
 /// 段②:`auth login --no-wait --json --recommend` 拿 URL+device_code → 二维码 →
 /// 轮询 `auth login --device-code`(兼容它阻塞或立即返回)直到 user:ready / 超时。
-fn phase_authorize(app: &AppHandle) -> Result<(), String> {
-    let (_ok, so, se) = cc::run(lark(&[
-        "auth",
-        "login",
-        "--no-wait",
-        "--json",
-        "--recommend",
-    ]))?;
+fn phase_authorize(app: &AppHandle, lease: ConnectorLease) -> Result<(), String> {
+    let conn = app.state::<ConnectorConn>();
+    let Some((_ok, so, se)) = cc::run_owned(
+        &conn,
+        lease,
+        lark(&["auth", "login", "--no-wait", "--json", "--recommend"]),
+        Duration::from_secs(30),
+    )?
+    else {
+        return Ok(());
+    };
     let p = cc::parse_json(&so)
         .or_else(|| cc::parse_json(&se))
         .unwrap_or(Value::Null);
@@ -258,9 +292,8 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
     );
 
     let start = Instant::now();
-    let conn = app.state::<ConnectorConn>();
     loop {
-        if conn.is_cancelled(ID) {
+        if conn.is_cancelled(lease) {
             return Ok(()); // 取消:静默(run_connect_flow 不再 emit)
         }
         if start.elapsed() > Duration::from_secs(300) {
@@ -268,14 +301,19 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_secs(3));
         // 这步可能阻塞到完成、也可能立即返回 pending —— 两种都兼容,靠 auth status 判 ready。
-        let _ = cc::run(lark(&[
-            "auth",
-            "login",
-            "--device-code",
-            &device_code,
-            "--json",
-        ]));
-        if is_user_ready() {
+        let completed = cc::run_owned(
+            &conn,
+            lease,
+            lark(&["auth", "login", "--device-code", &device_code, "--json"]),
+            Duration::from_secs(30),
+        )?;
+        if completed.is_none() {
+            return Ok(());
+        }
+        let Some(ready) = is_user_ready_owned(&conn, lease)? else {
+            return Ok(());
+        };
+        if ready {
             cc::emit(app, "feishu:connected", json!({ "ok": true }));
             return Ok(());
         }
@@ -284,9 +322,17 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
 
 /// 取消连接:置取消标志 + tree-kill 当前长驻子进程(关二维码弹窗 / 超时时调)。
 pub async fn feishu_cancel(app: AppHandle) -> Result<Value, String> {
-    let pid = app.state::<ConnectorConn>().cancel(ID);
-    if let Some(pid) = pid {
-        let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
+    let pids = app
+        .state::<ConnectorConn>()
+        .cancel(ID)
+        .map_err(str::to_string)?;
+    if !pids.is_empty() {
+        let stop_app = app.clone();
+        tokio::task::spawn_blocking(move || {
+            stop_app.state::<ConnectorConn>().stop_cancelled_pids(pids)
+        })
+        .await
+        .map_err(|error| format!("取消飞书连接任务失败: {error}"))??;
     }
     Ok(json!({ "ok": true }))
 }

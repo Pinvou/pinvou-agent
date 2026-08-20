@@ -26,11 +26,12 @@ pub(crate) use unsupported as platform;
 #[cfg(target_os = "windows")]
 pub(crate) use windows as platform;
 
+pub(crate) use interface::host_supervisor_request;
 pub use interface::{
     apply_user_npm_prefix, archive_dependency_packages, archive_tool_exists, archive_tool_path,
     command_exists, configure_onnxruntime_dylib, connector_cli_command, disable_super_permission,
     email_dependency_packages, email_manual_hint, email_tool_exists, enable_super_permission,
-    external_application_path, file_url_from_path, filesystem_path_identity_key, kill_pid_tree,
+    external_application_path, file_url_from_path, filesystem_path_identity_key,
     libreoffice_missing_message, libreoffice_open_fallback_needed, libreoffice_tool_path,
     msg_converter_required, msg_native_supported, nvidia_smi_candidates, obsidian_config_path,
     ocr_dependency_packages, ocr_tessdata_dir, ocr_tool_exists, ocr_tool_path, open_target,

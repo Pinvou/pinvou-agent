@@ -1,18 +1,40 @@
 #!/bin/sh
-# pinvou3 .deb 卸载前清理：删除超级权限 sudoers 文件。
-# 否则用户不先在 UI 关 toggle 直接 apt remove pinvou3,会留下 NOPASSWD: ALL 授权 —— 安全黑洞。
-# 失败不阻塞卸载(set -e 不开)。
-rm -f /etc/sudoers.d/pinvou3 2>/dev/null || true
+# Remove the historical unsafe sudoers fragment and stop only fixed units for online sessions.
+# User discovery is anchored in /run/user numeric runtime directories; no home file is read or
+# modified.
 
-# 清理 postinst 放到各用户桌面的快捷方式(本地化目录名 + XDG 解析,与 postinst 对称)。
-for uhome in /home/*; do
-  [ -d "$uhome" ] || continue
-  for c in "$uhome/桌面/pinvou3.desktop" "$uhome/Desktop/pinvou3.desktop"; do
-    rm -f "$c" 2>/dev/null || true
+/bin/rm -f /etc/sudoers.d/pinvou3 2>/dev/null || true
+
+[ -x /usr/sbin/runuser ] && runuser_bin=/usr/sbin/runuser || runuser_bin=/usr/bin/runuser
+[ -x /usr/bin/getent ] && getent_bin=/usr/bin/getent || getent_bin=/bin/getent
+[ -x /usr/bin/systemctl ] && systemctl_bin=/usr/bin/systemctl || systemctl_bin=/bin/systemctl
+[ -x /usr/bin/stat ] && stat_bin=/usr/bin/stat || stat_bin=/bin/stat
+[ -x /usr/bin/env ] && env_bin=/usr/bin/env || env_bin=/bin/env
+[ -x "$runuser_bin" ] && [ -x "$getent_bin" ] && [ -x "$systemctl_bin" ] \
+  && [ -x "$stat_bin" ] && [ -x "$env_bin" ] || exit 0
+
+for runtime_dir in /run/user/*; do
+  [ -d "$runtime_dir" ] || continue
+  uid=${runtime_dir##*/}
+  case "$uid" in ''|*[!0-9]*|0) continue ;; esac
+  [ "$($stat_bin -c %u "$runtime_dir" 2>/dev/null)" = "$uid" ] || continue
+  [ -S "$runtime_dir/bus" ] || continue
+  passwd_record=$($getent_bin passwd "$uid" 2>/dev/null) || continue
+  user_name=${passwd_record%%:*}
+  passwd_tail=${passwd_record#*:}
+  passwd_tail=${passwd_tail#*:}
+  passwd_uid=${passwd_tail%%:*}
+  [ "$passwd_uid" = "$uid" ] || continue
+  case "$user_name" in ''|*[!A-Za-z0-9_.-]*) continue ;; esac
+  for fixed_unit in pinvou3-app.service pinvou3-supervisor.socket pinvou3-supervisor.service; do
+    "$runuser_bin" --user "$user_name" -- "$env_bin" \
+      XDG_RUNTIME_DIR="$runtime_dir" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime_dir/bus" \
+      "$systemctl_bin" --user stop "$fixed_unit" 2>/dev/null || true
   done
-  if [ -r "$uhome/.config/user-dirs.dirs" ]; then
-    ddir=$(. "$uhome/.config/user-dirs.dirs" 2>/dev/null; printf '%s' "$XDG_DESKTOP_DIR")
-    [ -n "$ddir" ] && rm -f "$ddir/pinvou3.desktop" 2>/dev/null || true
-  fi
+  "$runuser_bin" --user "$user_name" -- "$env_bin" \
+    XDG_RUNTIME_DIR="$runtime_dir" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime_dir/bus" \
+    "$systemctl_bin" --user daemon-reload 2>/dev/null || true
 done
 exit 0

@@ -5561,6 +5561,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pinvou-host-supervisor-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "pinvou3-tauri"
 version = "0.8.3"
 dependencies = [
@@ -5582,6 +5589,7 @@ dependencies = [
  "futures-util",
  "gtk",
  "include_dir",
+ "libc",
  "log",
  "msg_parser",
  "notify",
@@ -5590,6 +5598,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-speech",
  "parking_lot",
+ "pinvou-host-supervisor-protocol",
  "qrcode",
  "rand 0.9.4",
  "reqwest 0.13.3",

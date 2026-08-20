@@ -11,16 +11,22 @@
 //! 解析失败(无 GPU 字典、输出格式变化)→ None,前端显示「状态不可用」,
 //! 与现有 graceful degrade 原则一致。
 
+use std::time::Duration;
+
 use super::super::GpuSnapshot;
 
+const IOREG_GPU_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn ioreg_gpu_output() -> Option<std::process::Output> {
+    let mut command = std::process::Command::new("/usr/sbin/ioreg");
+    command.args(["-r", "-c", "IOAccelerator", "-d", "1"]);
+    crate::platform::process::output_with_timeout(command, IOREG_GPU_PROBE_TIMEOUT)
+        .ok()
+        .filter(|output| output.status.success())
+}
+
 pub fn gpu_snapshot() -> Option<GpuSnapshot> {
-    let out = std::process::Command::new("/usr/sbin/ioreg")
-        .args(["-r", "-c", "IOAccelerator", "-d", "1"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
+    let out = ioreg_gpu_output()?;
     let text = String::from_utf8_lossy(&out.stdout);
     parse_ioreg_gpu(&text)
 }
@@ -130,10 +136,7 @@ mod tests {
         // CI 的 macOS runner 是虚拟化环境,IOAccelerator 字典没有 "model" 属性,
         // gpu_snapshot 按设计返回 None(前端显示「状态不可用」),不能强制 Some。
         // 因此先探原始 ioreg 输出:仅当环境确实暴露 GPU model 时才要求解析成功。
-        let Ok(out) = std::process::Command::new("/usr/sbin/ioreg")
-            .args(["-r", "-c", "IOAccelerator", "-d", "1"])
-            .output()
-        else {
+        let Some(out) = ioreg_gpu_output() else {
             eprintln!("ioreg 不可用,跳过主机断言");
             return;
         };

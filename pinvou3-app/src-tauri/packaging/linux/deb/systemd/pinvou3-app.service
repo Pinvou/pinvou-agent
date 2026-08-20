@@ -1,0 +1,29 @@
+[Unit]
+Description=PINVOU intelligent assistant (supervised)
+Wants=pinvou3-supervisor.socket
+After=graphical-session.target pinvou3-supervisor.socket
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/pinvou3-tauri
+Restart=on-failure
+RestartSec=15s
+TimeoutStopSec=15s
+ExecStopPost=-/usr/lib/pinvou3/supervisor/pinvou-supervisor snapshot-app
+Slice=app.slice
+MemoryAccounting=yes
+OOMPolicy=kill
+KillMode=control-group
+TasksMax=512
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pinvou3-app
+Environment=PINVOU_SUPERVISED=1
+
+# Absolute memory limits are deliberately absent here. Device-calibrated profiles are
+# activated explicitly; the first one is profiles/megabook-canary.conf.
+
+[Install]
+WantedBy=default.target

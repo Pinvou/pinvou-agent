@@ -1,53 +1,48 @@
 #!/bin/sh
-# pinvou3 .deb 装后处理:
-#   1) 刷新 desktop 数据库 + 图标缓存 → 应用菜单/启动器立即出现带图标的 pinvou3(免重新登录)
-#   2) 在每个真实用户桌面放一个快捷方式(Windows 习惯;Linux .deb 默认只进菜单不上桌面)
-# 全程 best-effort,任何失败都不阻塞安装(故意不开 set -e)。
+# Refresh global desktop caches and start the fixed socket for sessions that are online now.
+# The package never sources files from a user's home, writes desktop shortcuts into a home,
+# or creates a permanent global/user enable symlink. The desktop helper can socket-activate
+# the service after the next login.
 
-APP_DESKTOP=/usr/share/applications/pinvou3.desktop
+[ -x /usr/bin/update-desktop-database ] && \
+  /usr/bin/update-desktop-database -q /usr/share/applications 2>/dev/null || true
+[ -x /usr/bin/gtk-update-icon-cache ] && \
+  /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
 
-# ── 1) 缓存刷新 ──────────────────────────────────────────────
-command -v update-desktop-database >/dev/null 2>&1 && \
-  update-desktop-database -q /usr/share/applications 2>/dev/null || true
-command -v gtk-update-icon-cache >/dev/null 2>&1 && \
-  gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+online_user_command() {
+  operation="$1"
+  [ -x /usr/sbin/runuser ] && runuser_bin=/usr/sbin/runuser || runuser_bin=/usr/bin/runuser
+  [ -x /usr/bin/getent ] && getent_bin=/usr/bin/getent || getent_bin=/bin/getent
+  [ -x /usr/bin/systemctl ] && systemctl_bin=/usr/bin/systemctl || systemctl_bin=/bin/systemctl
+  [ -x /usr/bin/stat ] && stat_bin=/usr/bin/stat || stat_bin=/bin/stat
+  [ -x /usr/bin/env ] && env_bin=/usr/bin/env || env_bin=/bin/env
+  [ -x "$runuser_bin" ] && [ -x "$getent_bin" ] && [ -x "$systemctl_bin" ] \
+    && [ -x "$stat_bin" ] && [ -x "$env_bin" ] || return 0
 
-# ── 2) 桌面快捷方式 ──────────────────────────────────────────
-[ -f "$APP_DESKTOP" ] || exit 0
+  for runtime_dir in /run/user/*; do
+    [ -d "$runtime_dir" ] || continue
+    uid=${runtime_dir##*/}
+    case "$uid" in ''|*[!0-9]*|0) continue ;; esac
+    [ "$($stat_bin -c %u "$runtime_dir" 2>/dev/null)" = "$uid" ] || continue
+    [ -S "$runtime_dir/bus" ] || continue
+    passwd_record=$($getent_bin passwd "$uid" 2>/dev/null) || continue
+    user_name=${passwd_record%%:*}
+    passwd_tail=${passwd_record#*:}
+    passwd_tail=${passwd_tail#*:}
+    passwd_uid=${passwd_tail%%:*}
+    [ "$passwd_uid" = "$uid" ] || continue
+    case "$user_name" in ''|*[!A-Za-z0-9_.-]*) continue ;; esac
 
-drop_to_desktop() {
-  uhome="$1"; uowner="$2"
-  [ -d "$uhome" ] || return 0
-  # 解析本地化桌面目录(中文系统 = ~/桌面),按 XDG user-dirs → 桌面 → Desktop 依次兜底
-  ddir=""
-  if [ -r "$uhome/.config/user-dirs.dirs" ]; then
-    ddir=$(. "$uhome/.config/user-dirs.dirs" 2>/dev/null; printf '%s' "$XDG_DESKTOP_DIR")
-  fi
-  if [ -z "$ddir" ] || [ ! -d "$ddir" ]; then
-    for c in "$uhome/桌面" "$uhome/Desktop"; do
-      [ -d "$c" ] && ddir="$c" && break
-    done
-  fi
-  [ -n "$ddir" ] && [ -d "$ddir" ] || return 0   # 无桌面目录就不强造,避免污染家目录
-
-  tgt="$ddir/pinvou3.desktop"
-  cp -f "$APP_DESKTOP" "$tgt" 2>/dev/null || return 0
-  chmod 755 "$tgt" 2>/dev/null || true
-  [ -n "$uowner" ] || return 0
-  chown "$uowner" "$tgt" 2>/dev/null || true
-  # GNOME(Ubuntu ding 扩展)要求 metadata::trusted=true,否则图标灰/首启需右键「允许启动」。
-  # 需用户 session 的 dbus,装机时其未必在线 → best-effort;失败则首次右键「允许启动」一次即可。
-  uid=$(id -u "$uowner" 2>/dev/null) || return 0
-  [ -n "$uid" ] && command -v gio >/dev/null 2>&1 && \
-    sudo -u "$uowner" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
-      gio set "$tgt" metadata::trusted true 2>/dev/null || true
+    "$runuser_bin" --user "$user_name" -- "$env_bin" \
+      XDG_RUNTIME_DIR="$runtime_dir" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime_dir/bus" \
+      "$systemctl_bin" --user daemon-reload 2>/dev/null || true
+    "$runuser_bin" --user "$user_name" -- "$env_bin" \
+      XDG_RUNTIME_DIR="$runtime_dir" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime_dir/bus" \
+      "$systemctl_bin" --user "$operation" pinvou3-supervisor.socket 2>/dev/null || true
+  done
 }
 
-for uhome in /home/*; do
-  [ -d "$uhome" ] || continue
-  uowner=$(stat -c %U "$uhome" 2>/dev/null) || continue
-  [ -n "$uowner" ] && [ "$uowner" != "UNKNOWN" ] || continue
-  drop_to_desktop "$uhome" "$uowner"
-done
-
+online_user_command start
 exit 0

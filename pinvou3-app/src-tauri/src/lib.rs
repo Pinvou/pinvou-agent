@@ -574,39 +574,6 @@ pub fn run() {
                 });
             }
 
-            // Resource Agent 常驻采样，但只把等级变化或 30 秒心跳写入统一账本。
-            // 采样复用 monitor 的平台探针；Governor 阈值与控制决策留在 pinvou_os。
-            let resource_sampler: crate::features::pinvou_os::ResourceSampler =
-                std::sync::Arc::new(|| {
-                    let snapshot = crate::features::monitor::sample_local_resources();
-                    let memory_used_pct = snapshot.ram.as_ref().and_then(|ram| {
-                        (ram.total_kib > 0)
-                            .then(|| ram.used_kib as f64 * 100.0 / ram.total_kib as f64)
-                    });
-                    ResourceObservation {
-                        sampled_at_ms: snapshot.generated_at_ms,
-                        cpu_usage_pct: snapshot
-                            .cpu
-                            .as_ref()
-                            .and_then(|cpu| cpu.total_usage_pct),
-                        memory_used_pct,
-                        gpu_usage_pct: snapshot
-                            .gpu
-                            .as_ref()
-                            .map(|gpu| gpu.utilization_pct as f64),
-                        temperature_c: snapshot.temperature_c,
-                        power_w: snapshot
-                            .gpu
-                            .as_ref()
-                            .and_then(|gpu| gpu.power_w)
-                            .map(|value| value as f64),
-                    }
-                });
-            crate::features::pinvou_os::spawn_resource_agent(
-                pinvou_os_runtime,
-                resource_sampler,
-                std::time::Duration::from_secs(5),
-            );
             app.handle()
                 .manage(notifications::NotificationState::default());
             app.handle()
@@ -651,6 +618,56 @@ pub fn run() {
                 Err(e) => eprintln!("[pinvou3-app] knowledge service init failed: {e:#}"),
             }
             startup::mark("knowledge_service:done");
+
+            // HostWork Registry 在 Resource Agent 第一次采样前完整绑定。每个静态受信
+            // adapter 由独立异步 worker 执行；这里不做 status/systemd/进程等待。
+            let app_cgroup_telemetry =
+                crate::app::host_work_control::AppCgroupTelemetryCache::new();
+            let host_work_control =
+                crate::app::host_work_control::spawn_trusted_host_work_control(
+                    app.handle().clone(),
+                    pinvou_os_runtime.clone(),
+                    app_cgroup_telemetry.clone(),
+                )
+                .map_err(|error| format!("PinvouOS HostWork control boot failed: {error:#}"))?;
+            app.handle().manage(host_work_control);
+
+            // Resource Agent 常驻采样，但只把等级变化或 30 秒心跳写入统一账本。
+            // 采样复用 monitor 的平台探针；Governor 只签 Pending，绝不等待上面的 worker。
+            let resource_sampler: crate::features::pinvou_os::ResourceSampler =
+                std::sync::Arc::new(move || {
+                    let snapshot = crate::features::monitor::sample_local_resources();
+                    let memory_used_pct = snapshot.ram.as_ref().and_then(|ram| {
+                        (ram.total_kib > 0)
+                            .then(|| ram.used_kib as f64 * 100.0 / ram.total_kib as f64)
+                    });
+                    ResourceObservation {
+                        sampled_at_ms: snapshot.generated_at_ms,
+                        cpu_usage_pct: snapshot
+                            .cpu
+                            .as_ref()
+                            .and_then(|cpu| cpu.total_usage_pct),
+                        memory_used_pct,
+                        gpu_usage_pct: snapshot
+                            .gpu
+                            .as_ref()
+                            .map(|gpu| gpu.utilization_pct as f64),
+                        temperature_c: snapshot.temperature_c,
+                        power_w: snapshot
+                            .gpu
+                            .as_ref()
+                            .and_then(|gpu| gpu.power_w)
+                            .map(|value| value as f64),
+                        // 纯内存 try-read：本采样调用栈绝不 await/call Supervisor。
+                        app_cgroup: app_cgroup_telemetry
+                            .read_for_resource_sampler(snapshot.generated_at_ms),
+                    }
+                });
+            crate::features::pinvou_os::spawn_resource_agent(
+                pinvou_os_runtime,
+                resource_sampler,
+                std::time::Duration::from_secs(5),
+            );
 
             // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
             pet_window::spawn_if_enabled(app.handle());

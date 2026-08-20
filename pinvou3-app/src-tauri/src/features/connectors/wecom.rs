@@ -15,7 +15,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
-use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
+use crate::features::connectors::connector_cli::{
+    self as cc, CliCtx, ConnectorConn, ConnectorLease,
+};
 use crate::features::connectors::skill_gate::ConnectorSkillGate;
 
 /// 连接器 id(事件前缀 + ConnectorConn 槽位键 + 停用标志名)。
@@ -60,6 +62,19 @@ fn is_ready() -> bool {
     false
 }
 
+fn is_ready_owned(conn: &ConnectorConn, lease: ConnectorLease) -> Result<Option<bool>, String> {
+    let Some((_ok, so, se)) = cc::run_owned(
+        conn,
+        lease,
+        wecom(&["auth", "show"]),
+        Duration::from_secs(30),
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(status_has_id(&so) || status_has_id(&se)))
+}
+
 // ───────────────────────────── Tauri commands ─────────────────────────────
 
 /// 引导:首次使用时下载并校验锁定版本的 wecom-cli，已装则秒返回。
@@ -100,14 +115,21 @@ pub async fn wecom_status() -> Result<Value, String> {
 
 /// 开始连接企微(单段扫码)。立即返回 `{started:true}`,前端 listen 事件驱动 UI。
 pub async fn wecom_connect_begin(app: AppHandle) -> Result<Value, String> {
-    app.state::<ConnectorConn>().reset(ID);
+    let lease = app
+        .state::<ConnectorConn>()
+        .begin(ID)
+        .map_err(str::to_string)?;
     let app2 = app.clone();
-    tokio::task::spawn_blocking(move || run_connect_flow(&app2));
+    tokio::task::spawn_blocking(move || run_connect_flow(&app2, lease));
     Ok(json!({ "started": true }))
 }
 
-fn run_connect_flow(app: &AppHandle) {
-    if let Err(e) = phase_scan(app) {
+fn run_connect_flow(app: &AppHandle, lease: ConnectorLease) {
+    let outcome = phase_scan(app, lease);
+    if let Err(error) = app.state::<ConnectorConn>().finish(lease) {
+        log::warn!("[wecom] 连接 generation 清理未确认：{error}");
+    }
+    if let Err(e) = outcome {
         cc::emit(
             app,
             "wecom:error",
@@ -117,7 +139,7 @@ fn run_connect_flow(app: &AppHandle) {
 }
 
 /// 单段:`init --noninteractive --no-open` 长驻 → 抓 URL 出二维码 → 等进程退出 → 查 ready。
-fn phase_scan(app: &AppHandle) -> Result<(), String> {
+fn phase_scan(app: &AppHandle, lease: ConnectorLease) -> Result<(), String> {
     let mut cmd = wecom(&["init", "--noninteractive", "--no-open"]);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -126,7 +148,11 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("wecom-cli init 启动失败: {e}(需要先完成企微 CLI 在线安装)"))?;
     let conn = app.state::<ConnectorConn>();
-    conn.set_pid(ID, Some(child.id()));
+    let pid = child.id();
+    if !conn.register_pid(lease, pid).map_err(str::to_string)? {
+        cc::stop_registered_child(&conn, lease, &mut child)?;
+        return Ok(());
+    }
 
     // 排空 stdout+stderr,抓首个企微 URL(channel 送回)。主线程 tx 丢掉,
     // 两个管道都 EOF 后 rx 自动断开,不会永久阻塞。
@@ -142,8 +168,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     let url = match rx.recv_timeout(Duration::from_secs(40)) {
         Ok(u) => u,
         Err(_) => {
-            let _ = child.kill();
-            conn.set_pid(ID, None);
+            cc::stop_registered_child(&conn, lease, &mut child)?;
             return Err("40s 内未拿到二维码链接(检查网络 / 代理)".into());
         }
     };
@@ -155,15 +180,17 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
 
     // 等进程退出(用户扫码完成);期间轮询取消标志。退出后查 ready 收尾。
     loop {
-        if conn.is_cancelled(ID) {
-            let _ = child.kill();
-            conn.set_pid(ID, None);
+        if conn.is_cancelled(lease) {
+            cc::stop_registered_child(&conn, lease, &mut child)?;
             return Ok(()); // 取消:静默
         }
         match child.try_wait() {
             Ok(Some(_status)) => {
-                conn.set_pid(ID, None);
-                if is_ready() {
+                conn.stop_pid(lease, pid)?;
+                let Some(ready) = is_ready_owned(&conn, lease)? else {
+                    return Ok(());
+                };
+                if ready {
                     cc::emit(app, "wecom:connected", json!({ "ok": true }));
                     return Ok(());
                 }
@@ -171,7 +198,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
-                conn.set_pid(ID, None);
+                cc::stop_registered_child(&conn, lease, &mut child)?;
                 return Err(format!("init 等待失败: {e}"));
             }
         }
@@ -180,9 +207,17 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
 
 /// 取消连接:置取消标志 + tree-kill 当前长驻子进程。
 pub async fn wecom_cancel(app: AppHandle) -> Result<Value, String> {
-    let pid = app.state::<ConnectorConn>().cancel(ID);
-    if let Some(pid) = pid {
-        let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
+    let pids = app
+        .state::<ConnectorConn>()
+        .cancel(ID)
+        .map_err(str::to_string)?;
+    if !pids.is_empty() {
+        let stop_app = app.clone();
+        tokio::task::spawn_blocking(move || {
+            stop_app.state::<ConnectorConn>().stop_cancelled_pids(pids)
+        })
+        .await
+        .map_err(|error| format!("取消企微连接任务失败: {error}"))??;
     }
     Ok(json!({ "ok": true }))
 }

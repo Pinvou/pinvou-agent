@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Barrier};
 
 use serde_json::json;
 
@@ -86,6 +86,52 @@ fn resources(temperature_c: f64, memory_used_pct: f64) -> ResourceObservation {
         gpu_usage_pct: Some(30.0),
         temperature_c: Some(temperature_c),
         power_w: Some(25.0),
+        app_cgroup: None,
+    }
+}
+
+fn resources_with_app_cgroup(
+    observed_at_ms: i64,
+    memory_current_bytes: u64,
+    memory_high_bytes: u64,
+    events_high: u64,
+    events_oom: u64,
+    events_oom_kill: u64,
+) -> ResourceObservation {
+    let mut observation = resources(50.0, 20.0);
+    observation.sampled_at_ms = observed_at_ms;
+    observation.app_cgroup = Some(AppCgroupResourceObservation {
+        observed_at_ms,
+        instance_generation: "0123456789abcdef0123456789abcdef".to_string(),
+        memory_current_bytes: Some(memory_current_bytes),
+        memory_high_bytes: Some(memory_high_bytes),
+        memory_max_bytes: Some(memory_high_bytes.saturating_mul(2)),
+        memory_events_high: Some(events_high),
+        memory_events_oom: Some(events_oom),
+        memory_events_oom_kill: Some(events_oom_kill),
+        memory_pressure_full_avg10: Some(0.5),
+    });
+    observation
+}
+
+fn host_work_request(
+    owner: &str,
+    priority: u8,
+    interruptibility: Interruptibility,
+    essential: bool,
+    governable: bool,
+    actions: &[HostWorkAction],
+) -> RegisterHostWorkRequest {
+    RegisterHostWorkRequest {
+        owner: owner.to_string(),
+        kind: HostWorkKind::ScheduledRun,
+        resource_class: ResourceClass::Heavy,
+        priority,
+        interruptibility,
+        essential,
+        governable,
+        supported_actions: actions.iter().copied().collect::<BTreeSet<_>>(),
+        initial_observed_state: HostWorkObservedState::Running,
     }
 }
 
@@ -105,6 +151,27 @@ fn asserted_claim_id(event: &EventEnvelope) -> String {
         panic!("expected ClaimAsserted test evidence")
     };
     claim.claim_id.clone()
+}
+
+#[test]
+fn schema_v6_resource_cgroup_fields_are_optional_and_omitted_from_legacy_shapes() {
+    let encoded_observation = serde_json::to_value(resources(50.0, 20.0)).unwrap();
+    assert!(encoded_observation.get("appCgroup").is_none());
+    let legacy_observation: ResourceObservation = serde_json::from_value(json!({
+        "sampledAtMs": 1,
+        "cpuUsagePct": 10.0,
+        "memoryUsedPct": 20.0
+    }))
+    .unwrap();
+    assert!(legacy_observation.app_cgroup.is_none());
+
+    let encoded_state = serde_json::to_value(ResourceState::default()).unwrap();
+    assert_eq!(encoded_state, json!({ "pressure": "normal" }));
+    let legacy_state: ResourceState =
+        serde_json::from_value(json!({ "pressure": "normal" })).unwrap();
+    assert!(!legacy_state.app_cgroup_critical);
+    assert!(legacy_state.last_app_cgroup_observation.is_none());
+    assert!(legacy_state.last_fresh_critical_evidence.is_none());
 }
 
 fn proposed_fact(
@@ -1491,8 +1558,8 @@ fn concurrent_acknowledgements_commit_exactly_once() {
 }
 
 #[test]
-fn registered_control_adapter_applies_governor_directive_immediately() {
-    let temp = TempRuntime::new("control-adapter");
+fn mission_governor_only_persists_pending_until_a_trusted_async_owner_acknowledges() {
+    let temp = TempRuntime::new("mission-directive-pending");
     let runtime = temp.boot();
     let agent = mission_agent(
         &runtime,
@@ -1500,21 +1567,26 @@ fn registered_control_adapter_applies_governor_directive_immediately() {
         20,
         Interruptibility::Immediate,
     );
-    let actions = Arc::new(Mutex::new(Vec::new()));
-    let captured = actions.clone();
-    runtime
-        .register_agent_control_adapter(
-            &agent.agent_id,
-            Arc::new(move |directive| {
-                captured.lock().unwrap().push(directive.action);
-                Ok("run handle reached checkpoint".to_string())
-            }),
-        )
-        .unwrap();
 
     let decision = runtime.observe_resources(resources(90.0, 60.0)).unwrap();
-    assert_eq!(decision.directives[0].status, DirectiveStatus::Applied);
-    assert_eq!(*actions.lock().unwrap(), vec![DirectiveAction::Pause]);
+    let directive = decision.directives.first().expect("pause directive");
+    assert_eq!(directive.target_agent_id, agent.agent_id);
+    assert_eq!(directive.action, DirectiveAction::Pause);
+    assert_eq!(directive.status, DirectiveStatus::Pending);
+    assert_eq!(
+        runtime.snapshot().agents[&agent.agent_id].observed_state,
+        AgentState::Running,
+        "desired control must not impersonate an adapter acknowledgement"
+    );
+
+    let acknowledged = runtime
+        .acknowledge_directive(
+            &directive.directive_id,
+            true,
+            "trusted async owner confirmed pause".to_string(),
+        )
+        .unwrap();
+    assert_eq!(acknowledged.status, DirectiveStatus::Applied);
     assert_eq!(
         runtime.snapshot().agents[&agent.agent_id].observed_state,
         AgentState::Paused
@@ -1522,128 +1594,28 @@ fn registered_control_adapter_applies_governor_directive_immediately() {
 }
 
 #[test]
-fn concurrent_compensation_and_fresh_dispatch_call_adapter_once() {
-    let temp = TempRuntime::new("control-adapter-concurrent-dispatch");
-    let runtime = temp.boot();
-    let agent = mission_agent(
-        &runtime,
-        "background.concurrent",
-        20,
-        Interruptibility::Immediate,
-    );
-
-    // Freeze the issuing path after DirectiveIssued is durable but before its fresh dispatch.
-    // Registration can now find the same Pending directive through its compensation path.
-    let directive_issued = Arc::new(Barrier::new(2));
-    let release_fresh_dispatch = Arc::new(Barrier::new(2));
-    let sink_issued = directive_issued.clone();
-    let sink_release = release_fresh_dispatch.clone();
-    runtime.set_event_sink(move |envelope| {
-        if matches!(envelope.event, RuntimeEvent::DirectiveIssued { .. }) {
-            sink_issued.wait();
-            sink_release.wait();
-        }
-    });
-
-    let observing_runtime = runtime.clone();
-    let observing =
-        std::thread::spawn(move || observing_runtime.observe_resources(resources(90.0, 60.0)));
-    directive_issued.wait();
-
-    // Keep the compensation invocation in flight. A broken implementation calls the same
-    // Adapter again from the newly-issued path; the second call intentionally does not block,
-    // so this interleaving is deterministic rather than scheduler-probabilistic.
-    let adapter_calls = Arc::new(AtomicUsize::new(0));
-    let delivered_ids = Arc::new(Mutex::new(Vec::new()));
-    let first_adapter_entered = Arc::new(Barrier::new(2));
-    let release_first_adapter = Arc::new(Barrier::new(2));
-    let registering_runtime = runtime.clone();
-    let registering_agent_id = agent.agent_id.clone();
-    let captured_calls = adapter_calls.clone();
-    let captured_ids = delivered_ids.clone();
-    let adapter_entered = first_adapter_entered.clone();
-    let adapter_release = release_first_adapter.clone();
-    let registering = std::thread::spawn(move || {
-        registering_runtime.register_agent_control_adapter(
-            &registering_agent_id,
-            Arc::new(move |directive| {
-                let call_index = captured_calls.fetch_add(1, Ordering::SeqCst);
-                captured_ids
-                    .lock()
-                    .unwrap()
-                    .push(directive.directive_id.clone());
-                if call_index == 0 {
-                    adapter_entered.wait();
-                    adapter_release.wait();
-                }
-                Ok(format!("applied {}", directive.directive_id))
-            }),
-        )
-    });
-    first_adapter_entered.wait();
-
-    release_fresh_dispatch.wait();
-    let decision = observing.join().unwrap().unwrap();
-    let calls_while_first_was_in_flight = adapter_calls.load(Ordering::SeqCst);
-
-    release_first_adapter.wait();
-    let reconciled = registering.join().unwrap().unwrap();
-    let directive_id = decision.directives[0].directive_id.clone();
-
-    assert_eq!(reconciled, 1);
-    assert_eq!(calls_while_first_was_in_flight, 1);
-    assert_eq!(adapter_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(*delivered_ids.lock().unwrap(), vec![directive_id.clone()]);
-    assert_eq!(
-        runtime.snapshot().directives[&directive_id].status,
-        DirectiveStatus::Applied
-    );
-    assert_eq!(
-        raw_ledger_events(&temp)
-            .iter()
-            .filter(|envelope| matches!(
-                &envelope.event,
-                RuntimeEvent::DirectiveAcknowledged {
-                    directive_id: acknowledged_id,
-                    ..
-                } if acknowledged_id == &directive_id
-            ))
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn control_adapter_registration_reconciles_pending_directive_after_reboot() {
-    let temp = TempRuntime::new("control-adapter-reboot");
-    let (agent_id, directive_id) = {
+fn pending_mission_directive_survives_reboot_without_inline_side_effect_replay() {
+    let temp = TempRuntime::new("mission-directive-reboot");
+    let directive_id = {
         let runtime = temp.boot();
-        let agent = mission_agent(
+        mission_agent(
             &runtime,
             "background.index",
             20,
             Interruptibility::Immediate,
         );
-        let decision = runtime.observe_resources(resources(90.0, 60.0)).unwrap();
-        (agent.agent_id, decision.directives[0].directive_id.clone())
+        runtime
+            .observe_resources(resources(90.0, 60.0))
+            .unwrap()
+            .directives[0]
+            .directive_id
+            .clone()
     };
 
     let rebooted = temp.boot();
-    let reconciled = rebooted
-        .register_agent_control_adapter(
-            &agent_id,
-            Arc::new(|_| Ok("recovered run handle paused".to_string())),
-        )
-        .unwrap();
-    assert_eq!(reconciled, 1);
-    let snapshot = rebooted.snapshot();
     assert_eq!(
-        snapshot.directives[&directive_id].status,
-        DirectiveStatus::Applied
-    );
-    assert_eq!(
-        snapshot.agents[&agent_id].observed_state,
-        AgentState::Paused
+        rebooted.snapshot().directives[&directive_id].status,
+        DirectiveStatus::Pending
     );
 }
 
@@ -1660,6 +1632,1409 @@ fn critical_pressure_issues_hard_stop_even_for_atomic_agents() {
         .unwrap();
     assert_eq!(directive.action, DirectiveAction::Stop);
     assert!(directive.hard);
+}
+
+#[test]
+fn schema_v5_ledger_upcasts_to_v6_without_rewriting_old_bytes() {
+    let temp = TempRuntime::new("host-work-v5-upcast");
+    std::fs::write(&temp.ledger, "").unwrap();
+    append_test_envelope(
+        &temp,
+        &EventEnvelope {
+            schema_version: 5,
+            sequence: 1,
+            event_id: "event-0000000000000001".to_string(),
+            occurred_at_ms: 1,
+            source_actor_id: KERNEL_ACTOR_ID.to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: None,
+            correlation_id: None,
+            event: RuntimeEvent::RuntimeStarted { process_id: 7 },
+        },
+    );
+    let legacy_prefix = std::fs::read(&temp.ledger).unwrap();
+
+    let runtime = temp.boot();
+    let snapshot = runtime.snapshot();
+    assert_eq!(snapshot.schema_version, 6);
+    assert!(snapshot.host_works.is_empty());
+    assert!(snapshot.host_work_directives.is_empty());
+    let upgraded_bytes = std::fs::read(&temp.ledger).unwrap();
+    assert_eq!(&upgraded_bytes[..legacy_prefix.len()], legacy_prefix);
+    assert!(raw_ledger_events(&temp)
+        .iter()
+        .skip(1)
+        .all(|event| event.schema_version == 6));
+}
+
+#[test]
+fn host_work_control_requires_ack_and_reconciliation_before_observed_state_changes() {
+    let temp = TempRuntime::new("host-work-control-lifecycle");
+    let runtime = temp.boot();
+    let (handle, work) = runtime
+        .register_host_work(host_work_request(
+            "feature:scheduled:lifecycle",
+            20,
+            Interruptibility::Checkpoint,
+            false,
+            true,
+            &[
+                HostWorkAction::Pause,
+                HostWorkAction::Resume,
+                HostWorkAction::Stop,
+            ],
+        ))
+        .unwrap();
+    assert!(work.work_id.starts_with("host-work-"));
+    assert_eq!(work.generation, 1);
+
+    let pause_request =
+        HostWorkDirectiveRequest::new(HostWorkAction::Pause, "hot pressure", "test-policy:v1");
+    let pause_id = pause_request.directive_id().to_string();
+    runtime
+        .issue_host_work_directive(&handle, pause_request.clone())
+        .unwrap();
+    let after_issue = runtime.snapshot();
+    assert_eq!(
+        after_issue.host_works[handle.work_id()].desired_state,
+        HostWorkDesiredState::Paused
+    );
+    assert_eq!(
+        after_issue.host_works[handle.work_id()].observed_state,
+        HostWorkObservedState::Running
+    );
+    assert_eq!(
+        runtime.pending_host_work_directives(&handle).unwrap().len(),
+        1
+    );
+
+    let events_before_issue_retry = raw_ledger_events(&temp).len();
+    runtime
+        .issue_host_work_directive(&handle, pause_request)
+        .unwrap();
+    assert_eq!(raw_ledger_events(&temp).len(), events_before_issue_retry);
+
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &pause_id,
+            HostWorkDirectiveAcknowledgement::Applied,
+            "pause request accepted".to_string(),
+        )
+        .unwrap();
+    assert_eq!(
+        runtime.snapshot().host_works[handle.work_id()].observed_state,
+        HostWorkObservedState::Running
+    );
+    assert_eq!(
+        runtime.snapshot().host_work_directives[&pause_id].status,
+        HostWorkDirectiveStatus::AwaitingReconciliation
+    );
+    runtime
+        .reconcile_host_work_directive(
+            &handle,
+            &pause_id,
+            ReconcileHostWorkDirectiveRequest {
+                outcome: HostWorkReconciliationOutcome::Confirmed,
+                observed_state: Some(HostWorkObservedState::Paused),
+                detail: "status confirms paused".to_string(),
+            },
+        )
+        .unwrap();
+    let paused = runtime.snapshot();
+    assert_eq!(
+        paused.host_works[handle.work_id()].observed_state,
+        HostWorkObservedState::Paused
+    );
+    assert_eq!(
+        paused.host_works[handle.work_id()]
+            .governor_pause_directive_id
+            .as_deref(),
+        Some(pause_id.as_str())
+    );
+
+    let resume_request =
+        HostWorkDirectiveRequest::new(HostWorkAction::Resume, "normal pressure", "test-policy:v1");
+    let resume_id = resume_request.directive_id().to_string();
+    runtime
+        .issue_host_work_directive(&handle, resume_request)
+        .unwrap();
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &resume_id,
+            HostWorkDirectiveAcknowledgement::OutcomeUnknown,
+            "transport closed before receipt".to_string(),
+        )
+        .unwrap();
+    assert!(runtime
+        .pending_host_work_directives(&handle)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        runtime
+            .host_work_directives_requiring_reconciliation(&handle)
+            .unwrap()
+            .iter()
+            .map(|directive| directive.directive_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![resume_id.as_str()]
+    );
+
+    let unknown = ReconcileHostWorkDirectiveRequest {
+        outcome: HostWorkReconciliationOutcome::OutcomeUnknown,
+        observed_state: None,
+        detail: "status endpoint unavailable".to_string(),
+    };
+    runtime
+        .reconcile_host_work_directive(&handle, &resume_id, unknown.clone())
+        .unwrap();
+    let events_before_unknown_retry = raw_ledger_events(&temp).len();
+    runtime
+        .reconcile_host_work_directive(&handle, &resume_id, unknown)
+        .unwrap();
+    assert_eq!(raw_ledger_events(&temp).len(), events_before_unknown_retry);
+    assert_eq!(
+        runtime.snapshot().host_works[handle.work_id()].observed_state,
+        HostWorkObservedState::Paused
+    );
+
+    runtime
+        .reconcile_host_work_directive(
+            &handle,
+            &resume_id,
+            ReconcileHostWorkDirectiveRequest {
+                outcome: HostWorkReconciliationOutcome::Confirmed,
+                observed_state: Some(HostWorkObservedState::Running),
+                detail: "same request id status confirms running".to_string(),
+            },
+        )
+        .unwrap();
+    let resumed = runtime.snapshot();
+    assert_eq!(
+        resumed.host_works[handle.work_id()].observed_state,
+        HostWorkObservedState::Running
+    );
+    assert_eq!(
+        resumed.host_work_directives[&resume_id].status,
+        HostWorkDirectiveStatus::Reconciled
+    );
+    assert_eq!(resumed.host_work_directives.len(), 2);
+}
+
+#[test]
+fn host_work_generation_rejects_old_handles_and_old_directives() {
+    let temp = TempRuntime::new("host-work-generation");
+    let runtime = temp.boot();
+    let (first_handle, first) = runtime
+        .register_host_work(host_work_request(
+            "feature:connector:generation",
+            40,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let stop =
+        HostWorkDirectiveRequest::new(HostWorkAction::Stop, "generation test", "test-policy:v1");
+    let stop_id = stop.directive_id().to_string();
+    runtime
+        .issue_host_work_directive(&first_handle, stop)
+        .unwrap();
+    runtime
+        .acknowledge_host_work_directive(
+            &first_handle,
+            &stop_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "work remained running".to_string(),
+        )
+        .unwrap();
+
+    assert!(runtime
+        .renew_host_work_registration(&first_handle, HostWorkObservedState::Running)
+        .is_err());
+    runtime
+        .observe_host_work(
+            &first_handle,
+            HostWorkObservedState::Stopped,
+            "previous physical generation stopped".to_string(),
+        )
+        .unwrap();
+
+    let (second_handle, second) = runtime
+        .renew_host_work_registration(&first_handle, HostWorkObservedState::Running)
+        .unwrap();
+    assert_eq!(second.work_id, first.work_id);
+    assert_eq!(second.generation, first.generation + 1);
+    assert!(runtime
+        .observe_host_work(
+            &first_handle,
+            HostWorkObservedState::Running,
+            "stale handle".to_string(),
+        )
+        .is_err());
+    assert!(runtime
+        .acknowledge_host_work_directive(
+            &second_handle,
+            &stop_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "old directive".to_string(),
+        )
+        .is_err());
+}
+
+#[test]
+fn host_work_directives_are_single_flight_and_retry_only_after_pressure_changes() {
+    let temp = TempRuntime::new("host-work-single-flight");
+    let runtime = temp.boot();
+    let (handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:scheduled:single-flight",
+            20,
+            Interruptibility::Checkpoint,
+            false,
+            true,
+            &[HostWorkAction::Pause, HostWorkAction::Stop],
+        ))
+        .unwrap();
+
+    let pause =
+        HostWorkDirectiveRequest::new(HostWorkAction::Pause, "first pause", "test-policy:v1");
+    let pause_id = pause.directive_id().to_string();
+    runtime.issue_host_work_directive(&handle, pause).unwrap();
+    assert!(runtime
+        .issue_host_work_directive(
+            &handle,
+            HostWorkDirectiveRequest::new(
+                HostWorkAction::Stop,
+                "must not supersede",
+                "test-policy:v1",
+            ),
+        )
+        .is_err());
+
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &pause_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "adapter refused pause".to_string(),
+        )
+        .unwrap();
+    assert!(runtime
+        .reconcile_host_work_directive(
+            &handle,
+            &pause_id,
+            ReconcileHostWorkDirectiveRequest {
+                outcome: HostWorkReconciliationOutcome::Confirmed,
+                observed_state: Some(HostWorkObservedState::Paused),
+                detail: "rejected is already definitive".to_string(),
+            },
+        )
+        .is_err());
+    assert!(runtime
+        .issue_host_work_directive(
+            &handle,
+            HostWorkDirectiveRequest::new(
+                HostWorkAction::Pause,
+                "same pressure heartbeat",
+                "test-policy:v1",
+            ),
+        )
+        .is_err());
+
+    let warm = runtime.observe_resources(resources(81.0, 60.0)).unwrap();
+    assert_eq!(warm.pressure, ResourcePressure::Warm);
+    assert!(warm.host_work_directives.is_empty());
+    let retried = runtime
+        .issue_host_work_directive(
+            &handle,
+            HostWorkDirectiveRequest::new(
+                HostWorkAction::Pause,
+                "new pressure epoch",
+                "test-policy:v1",
+            ),
+        )
+        .unwrap();
+    assert_eq!(retried.resource_pressure_epoch, 1);
+}
+
+#[test]
+fn host_work_terminal_state_precedes_renewal_unregistration_and_identity_retirement() {
+    let temp = TempRuntime::new("host-work-terminal-generation");
+    let runtime = temp.boot();
+    let (first_handle, first) = runtime
+        .register_host_work(host_work_request(
+            "feature:connector:terminal-generation",
+            30,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+
+    assert!(runtime
+        .renew_host_work_registration(&first_handle, HostWorkObservedState::Running)
+        .is_err());
+    assert!(runtime
+        .unregister_host_work(&first_handle, "still running".to_string())
+        .is_err());
+    runtime
+        .observe_host_work(
+            &first_handle,
+            HostWorkObservedState::Completed,
+            "first generation completed".to_string(),
+        )
+        .unwrap();
+    assert!(runtime
+        .observe_host_work(
+            &first_handle,
+            HostWorkObservedState::Running,
+            "terminal state cannot revive".to_string(),
+        )
+        .is_err());
+
+    let (second_handle, second) = runtime
+        .renew_host_work_registration(&first_handle, HostWorkObservedState::Running)
+        .unwrap();
+    assert_eq!(second.work_id, first.work_id);
+    assert_eq!(second.generation, 2);
+    runtime
+        .observe_host_work(
+            &second_handle,
+            HostWorkObservedState::Stopped,
+            "second generation stopped".to_string(),
+        )
+        .unwrap();
+    runtime
+        .unregister_host_work(&second_handle, "descriptor retired".to_string())
+        .unwrap();
+
+    let mut events = raw_ledger_events(&temp);
+    let reused = events
+        .iter()
+        .find(|envelope| {
+            matches!(
+                &envelope.event,
+                RuntimeEvent::HostWorkRegistered { work } if work.work_id == first.work_id
+            )
+        })
+        .cloned()
+        .unwrap();
+    events.push(reused);
+    assert!(super::runtime::validate_host_work_events_for_test(&events).is_err());
+}
+
+#[test]
+fn host_work_governor_pause_ownership_is_cleared_by_external_resume() {
+    let temp = TempRuntime::new("host-work-pause-ownership");
+    let runtime = temp.boot();
+    let (handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:knowledge:pause-ownership",
+            20,
+            Interruptibility::Checkpoint,
+            false,
+            true,
+            &[HostWorkAction::Pause, HostWorkAction::Resume],
+        ))
+        .unwrap();
+    let pause = HostWorkDirectiveRequest::new(HostWorkAction::Pause, "pause", "test-policy:v1");
+    let pause_id = pause.directive_id().to_string();
+    runtime.issue_host_work_directive(&handle, pause).unwrap();
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &pause_id,
+            HostWorkDirectiveAcknowledgement::Applied,
+            "accepted".to_string(),
+        )
+        .unwrap();
+    runtime
+        .reconcile_host_work_directive(
+            &handle,
+            &pause_id,
+            ReconcileHostWorkDirectiveRequest {
+                outcome: HostWorkReconciliationOutcome::Confirmed,
+                observed_state: Some(HostWorkObservedState::Paused),
+                detail: "paused".to_string(),
+            },
+        )
+        .unwrap();
+    assert!(runtime.snapshot().host_works[handle.work_id()]
+        .governor_pause_directive_id
+        .is_some());
+
+    runtime
+        .observe_host_work(
+            &handle,
+            HostWorkObservedState::Running,
+            "resumed outside Governor".to_string(),
+        )
+        .unwrap();
+    assert!(runtime.snapshot().host_works[handle.work_id()]
+        .governor_pause_directive_id
+        .is_none());
+    let normal = runtime.observe_resources(resources(40.0, 20.0)).unwrap();
+    assert!(normal.host_work_directives.is_empty());
+}
+
+#[test]
+fn newly_registered_host_work_reconciles_immediately_against_current_pressure() {
+    let temp = TempRuntime::new("host-work-registration-pressure");
+    let runtime = temp.boot();
+    let critical = runtime.observe_resources(resources(96.0, 50.0)).unwrap();
+    assert_eq!(critical.pressure, ResourcePressure::Critical);
+    assert!(critical.host_work_directives.is_empty());
+
+    let (handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:scheduled:late-critical",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let directive = runtime
+        .reconcile_host_work_governance(&handle)
+        .unwrap()
+        .expect("critical pressure must immediately govern the new work");
+    assert_eq!(directive.action, HostWorkAction::Stop);
+    assert_eq!(directive.resource_pressure_epoch, 1);
+    assert!(runtime
+        .reconcile_host_work_governance(&handle)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn host_work_registered_during_resource_commit_is_governed_without_heartbeat_gap() {
+    use std::sync::{Arc, Barrier};
+
+    let temp = TempRuntime::new("host-work-registration-pressure-race");
+    let runtime = temp.boot();
+    let observation_entered = Arc::new(Barrier::new(2));
+    let allow_observation_commit = Arc::new(Barrier::new(2));
+    let entered = Arc::clone(&observation_entered);
+    let release = Arc::clone(&allow_observation_commit);
+    runtime.set_resource_observation_before_commit_hook(Some(Arc::new(move || {
+        entered.wait();
+        release.wait();
+    })));
+
+    let observing = runtime.clone();
+    let observation_thread = std::thread::spawn(move || {
+        observing
+            .observe_resources(resources(96.0, 50.0))
+            .expect("critical observation")
+    });
+    observation_entered.wait();
+
+    let (handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:scheduled:during-critical-commit",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    assert!(runtime
+        .reconcile_host_work_governance(&handle)
+        .unwrap()
+        .is_none());
+
+    allow_observation_commit.wait();
+    let decision = observation_thread.join().expect("observation thread");
+    runtime.set_resource_observation_before_commit_hook(None);
+
+    assert_eq!(decision.pressure, ResourcePressure::Critical);
+    assert_eq!(decision.host_work_directives.len(), 1);
+    let directive = &decision.host_work_directives[0];
+    assert_eq!(directive.work_id, handle.work_id());
+    assert_eq!(directive.generation, handle.generation());
+    assert_eq!(directive.action, HostWorkAction::Stop);
+    assert_eq!(directive.resource_pressure_epoch, 1);
+    assert!(runtime
+        .reconcile_host_work_governance(&handle)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn resource_observation_and_registration_reconcile_race_issue_exactly_one_directive() {
+    let temp = TempRuntime::new("host-work-governance-issue-race");
+    let runtime = temp.boot();
+    let (handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:scheduled:governance-issue-race",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let governance_snapshot_taken = Arc::new(Barrier::new(2));
+    let allow_resource_governance = Arc::new(Barrier::new(2));
+    let entered = Arc::clone(&governance_snapshot_taken);
+    let release = Arc::clone(&allow_resource_governance);
+    runtime.set_resource_observation_before_governance_issue_hook(Some(Arc::new(move || {
+        entered.wait();
+        release.wait();
+    })));
+
+    let observing = runtime.clone();
+    let observation_thread = std::thread::spawn(move || {
+        observing
+            .observe_resources(resources(96.0, 50.0))
+            .expect("critical observation must not fail when reconcile wins the issue race")
+    });
+    governance_snapshot_taken.wait();
+    let reconciled = runtime
+        .reconcile_host_work_governance(&handle)
+        .unwrap()
+        .expect("registration reconcile should atomically issue the directive");
+    allow_resource_governance.wait();
+    let decision = observation_thread.join().unwrap();
+    runtime.set_resource_observation_before_governance_issue_hook(None);
+
+    assert!(decision.host_work_directives.is_empty());
+    assert_eq!(runtime.snapshot().host_work_directives.len(), 1);
+    assert_eq!(reconciled.work_id, handle.work_id());
+    assert_eq!(reconciled.resource_pressure_epoch, 1);
+}
+
+#[test]
+fn reboot_rebinds_exact_generation_and_recovers_original_pending_directive() {
+    let temp = TempRuntime::new("host-work-rebind");
+    let (work_id, generation, directive_id) = {
+        let runtime = temp.boot();
+        let (handle, work) = runtime
+            .register_host_work(host_work_request(
+                "feature:knowledge:rebind",
+                25,
+                Interruptibility::Checkpoint,
+                false,
+                true,
+                &[HostWorkAction::Pause, HostWorkAction::Resume],
+            ))
+            .unwrap();
+        let request =
+            HostWorkDirectiveRequest::new(HostWorkAction::Pause, "hot pressure", "test-policy:v1");
+        let directive_id = request.directive_id().to_string();
+        runtime.issue_host_work_directive(&handle, request).unwrap();
+        (work.work_id, work.generation, directive_id)
+    };
+
+    let rebooted = temp.boot();
+    assert!(rebooted
+        .rebind_host_work(
+            "feature:knowledge:rebind",
+            HostWorkKind::ScheduledRun,
+            generation + 1,
+        )
+        .is_err());
+    let (handle, rebound) = rebooted
+        .rebind_host_work(
+            "feature:knowledge:rebind",
+            HostWorkKind::ScheduledRun,
+            generation,
+        )
+        .unwrap();
+    assert_eq!(rebound.work_id, work_id);
+    assert_eq!(rebound.generation, generation);
+    let pending = rebooted.pending_host_work_directives(&handle).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].directive_id, directive_id);
+    assert!(rebooted
+        .register_host_work(host_work_request(
+            "feature:knowledge:rebind",
+            25,
+            Interruptibility::Checkpoint,
+            false,
+            true,
+            &[HostWorkAction::Pause, HostWorkAction::Resume],
+        ))
+        .is_err());
+}
+
+#[test]
+fn host_work_governor_filters_candidates_and_does_not_duplicate_heartbeats() {
+    let temp = TempRuntime::new("host-work-governor-hot");
+    let runtime = temp.boot();
+    let (low_handle, low) = runtime
+        .register_host_work(host_work_request(
+            "feature:scheduled:low",
+            20,
+            Interruptibility::Checkpoint,
+            false,
+            true,
+            &[
+                HostWorkAction::Pause,
+                HostWorkAction::Resume,
+                HostWorkAction::Stop,
+            ],
+        ))
+        .unwrap();
+    runtime
+        .register_host_work(host_work_request(
+            "feature:scheduled:high",
+            95,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[
+                HostWorkAction::Pause,
+                HostWorkAction::Resume,
+                HostWorkAction::Stop,
+            ],
+        ))
+        .unwrap();
+    runtime
+        .register_host_work(host_work_request(
+            "feature:scheduled:atomic",
+            10,
+            Interruptibility::Atomic,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    runtime
+        .register_host_work(host_work_request(
+            "feature:scheduled:essential",
+            10,
+            Interruptibility::Checkpoint,
+            true,
+            true,
+            &[
+                HostWorkAction::Pause,
+                HostWorkAction::Resume,
+                HostWorkAction::Stop,
+            ],
+        ))
+        .unwrap();
+    runtime
+        .register_host_work(host_work_request(
+            "feature:scheduled:observe-only",
+            10,
+            Interruptibility::Checkpoint,
+            false,
+            false,
+            &[
+                HostWorkAction::Pause,
+                HostWorkAction::Resume,
+                HostWorkAction::Stop,
+            ],
+        ))
+        .unwrap();
+
+    let hot = runtime.observe_resources(resources(89.0, 60.0)).unwrap();
+    assert_eq!(hot.host_work_directives.len(), 1);
+    assert_eq!(hot.host_work_directives[0].work_id, low.work_id);
+    assert_eq!(hot.host_work_directives[0].action, HostWorkAction::Pause);
+    let repeated = runtime.observe_resources(resources(89.0, 60.0)).unwrap();
+    assert!(repeated.host_work_directives.is_empty());
+    assert_eq!(
+        runtime
+            .pending_host_work_directives(&low_handle)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn critical_host_work_governor_stops_only_nonessential_governable_work() {
+    let temp = TempRuntime::new("host-work-governor-critical");
+    let runtime = temp.boot();
+    for (owner, priority, interruptibility, essential, governable) in [
+        (
+            "feature:critical:low",
+            10,
+            Interruptibility::Checkpoint,
+            false,
+            true,
+        ),
+        (
+            "feature:critical:high",
+            100,
+            Interruptibility::Immediate,
+            false,
+            true,
+        ),
+        (
+            "feature:critical:atomic",
+            100,
+            Interruptibility::Atomic,
+            false,
+            true,
+        ),
+        (
+            "feature:critical:essential",
+            10,
+            Interruptibility::Checkpoint,
+            true,
+            true,
+        ),
+        (
+            "feature:critical:observe-only",
+            10,
+            Interruptibility::Checkpoint,
+            false,
+            false,
+        ),
+    ] {
+        runtime
+            .register_host_work(host_work_request(
+                owner,
+                priority,
+                interruptibility,
+                essential,
+                governable,
+                &[HostWorkAction::Stop],
+            ))
+            .unwrap();
+    }
+    let critical = runtime.observe_resources(resources(96.0, 50.0)).unwrap();
+    assert_eq!(critical.pressure, ResourcePressure::Critical);
+    assert_eq!(critical.host_work_directives.len(), 3);
+    assert!(critical
+        .host_work_directives
+        .iter()
+        .all(|directive| directive.action == HostWorkAction::Stop));
+    let repeated = runtime.observe_resources(resources(96.0, 50.0)).unwrap();
+    assert!(repeated.host_work_directives.is_empty());
+}
+
+#[test]
+fn app_cgroup_edge_stops_nonessential_host_work_while_system_memory_is_low() {
+    let temp = TempRuntime::new("app-cgroup-low-system-stop");
+    let runtime = temp.boot();
+    runtime
+        .register_host_work(host_work_request(
+            "feature:cgroup:background",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    runtime
+        .register_host_work(host_work_request(
+            "feature:cgroup:essential",
+            20,
+            Interruptibility::Immediate,
+            true,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let base = chrono::Utc::now().timestamp_millis();
+
+    let baseline = runtime
+        .observe_resources(resources_with_app_cgroup(base, 2_000, 4_000, 10, 1, 0))
+        .unwrap();
+    assert_eq!(baseline.pressure, ResourcePressure::Normal);
+    assert!(baseline.host_work_directives.is_empty());
+
+    let critical = runtime
+        .observe_resources(resources_with_app_cgroup(base + 1, 2_100, 4_000, 11, 1, 0))
+        .unwrap();
+    assert_eq!(critical.pressure, ResourcePressure::Critical);
+    assert_eq!(critical.host_work_directives.len(), 1);
+    assert_eq!(
+        critical.host_work_directives[0].action,
+        HostWorkAction::Stop
+    );
+    assert!(critical.host_work_directives[0]
+        .reason
+        .contains("app_cgroup_memory_high_event"));
+
+    let snapshot = runtime.snapshot();
+    assert!(snapshot.resources.app_cgroup_critical);
+    let claim = snapshot
+        .claims
+        .get(
+            snapshot
+                .resources
+                .active_pressure_claim_id
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(claim.value["memoryUsedPct"], 20.0);
+    assert_eq!(
+        claim.value["appCgroup"]["instanceGeneration"],
+        "0123456789abcdef0123456789abcdef"
+    );
+    assert_eq!(claim.value["appCgroup"]["memoryEventDeltas"]["high"], 1);
+}
+
+#[test]
+fn app_cgroup_critical_holds_on_missing_and_relaxes_only_on_trusted_same_instance_relief() {
+    let temp = TempRuntime::new("app-cgroup-sticky-relief");
+    let runtime = temp.boot();
+    let base = chrono::Utc::now().timestamp_millis();
+    runtime
+        .observe_resources(resources_with_app_cgroup(base, 2_000, 4_000, 10, 1, 0))
+        .unwrap();
+    runtime
+        .observe_resources(resources_with_app_cgroup(base + 1, 4_100, 4_000, 10, 1, 0))
+        .unwrap();
+
+    let mut missing_observation = resources(50.0, 20.0);
+    missing_observation.sampled_at_ms = base + 2;
+    let missing = runtime.observe_resources(missing_observation).unwrap();
+    assert_eq!(missing.pressure, ResourcePressure::Critical);
+    assert!(runtime.snapshot().resources.app_cgroup_critical);
+
+    let relieved = runtime
+        .observe_resources(resources_with_app_cgroup(base + 3, 3_000, 4_000, 10, 1, 0))
+        .unwrap();
+    assert_eq!(relieved.pressure, ResourcePressure::Normal);
+    assert!(!runtime.snapshot().resources.app_cgroup_critical);
+}
+
+#[test]
+fn fresh_cgroup_evidence_allows_one_rejected_stop_retry_and_replays_the_bound() {
+    let temp = TempRuntime::new("app-cgroup-actionable-epoch");
+    let runtime = temp.boot();
+    let (handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:cgroup:retry",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let base = chrono::Utc::now().timestamp_millis();
+    runtime
+        .observe_resources(resources_with_app_cgroup(base, 2_000, 4_000, 10, 1, 0))
+        .unwrap();
+    let first = runtime
+        .observe_resources(resources_with_app_cgroup(base + 1, 4_100, 4_000, 10, 1, 0))
+        .unwrap();
+    assert_eq!(first.host_work_directives.len(), 1);
+    assert_eq!(first.host_work_directives[0].resource_pressure_epoch, 1);
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &first.host_work_directives[0].directive_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "fixed target refused stop".to_string(),
+        )
+        .unwrap();
+
+    let sustained = runtime
+        .observe_resources(resources_with_app_cgroup(base + 2, 4_200, 4_000, 10, 1, 0))
+        .unwrap();
+    assert_eq!(runtime.snapshot().resources.pressure_epoch, 1);
+    assert_eq!(sustained.host_work_directives.len(), 1);
+    assert_eq!(sustained.host_work_directives[0].resource_pressure_epoch, 1);
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &sustained.host_work_directives[0].directive_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "retry also rejected".to_string(),
+        )
+        .unwrap();
+
+    for index in 0..100_u64 {
+        let repeated_edge = runtime
+            .observe_resources(resources_with_app_cgroup(
+                base + 4 + i64::try_from(index).unwrap(),
+                4_300,
+                4_000,
+                11 + index,
+                1,
+                0,
+            ))
+            .unwrap();
+        assert!(repeated_edge.host_work_directives.is_empty());
+    }
+    assert_eq!(runtime.snapshot().resources.pressure_epoch, 1);
+    assert_eq!(runtime.snapshot().host_work_directives.len(), 2);
+    drop(runtime);
+
+    let replayed = temp.boot();
+    assert_eq!(replayed.snapshot().resources.pressure_epoch, 1);
+    let (rebound, _) = replayed
+        .rebind_host_work("feature:cgroup:retry", HostWorkKind::ScheduledRun, 1)
+        .unwrap();
+    let after_replay = replayed
+        .observe_resources(resources_with_app_cgroup(
+            base + 105,
+            4_300,
+            4_000,
+            200,
+            1,
+            0,
+        ))
+        .unwrap();
+    assert!(after_replay.host_work_directives.is_empty());
+    assert_eq!(replayed.snapshot().resources.pressure_epoch, 1);
+    assert_eq!(replayed.snapshot().host_work_directives.len(), 2);
+    assert_eq!(rebound.generation(), 1);
+}
+
+#[test]
+fn first_above_high_cgroup_baseline_authorizes_retry_without_changing_pressure_epoch() {
+    let temp = TempRuntime::new("app-cgroup-baseline-existing-critical");
+    let runtime = temp.boot();
+    let (handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:cgroup:existing-critical-retry",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let system = runtime.observe_resources(resources(96.0, 50.0)).unwrap();
+    assert_eq!(system.pressure, ResourcePressure::Critical);
+    assert_eq!(runtime.snapshot().resources.pressure_epoch, 1);
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &system.host_work_directives[0].directive_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "initial system-pressure stop rejected".to_string(),
+        )
+        .unwrap();
+    let base = chrono::Utc::now().timestamp_millis();
+
+    let retry = runtime
+        .observe_resources(resources_with_app_cgroup(base, 4_100, 4_000, 10, 1, 0))
+        .unwrap();
+    assert_eq!(runtime.snapshot().resources.pressure_epoch, 1);
+    assert_eq!(retry.host_work_directives.len(), 1);
+    assert_eq!(retry.host_work_directives[0].resource_pressure_epoch, 1);
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &retry.host_work_directives[0].directive_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "baseline-authorized retry rejected".to_string(),
+        )
+        .unwrap();
+    let repeated = runtime
+        .observe_resources(resources_with_app_cgroup(base + 1, 4_200, 4_000, 10, 1, 0))
+        .unwrap();
+    assert!(repeated.host_work_directives.is_empty());
+    assert_eq!(runtime.snapshot().resources.pressure_epoch, 1);
+}
+
+#[test]
+fn outcome_unknown_host_work_does_not_authorize_cgroup_edge_identity_churn() {
+    let temp = TempRuntime::new("app-cgroup-outcome-unknown-epoch");
+    let runtime = temp.boot();
+    let (handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:cgroup:outcome-unknown",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let base = chrono::Utc::now().timestamp_millis();
+    runtime
+        .observe_resources(resources_with_app_cgroup(base, 2_000, 4_000, 10, 1, 0))
+        .unwrap();
+    let first = runtime
+        .observe_resources(resources_with_app_cgroup(base + 1, 4_100, 4_000, 10, 1, 0))
+        .unwrap();
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &first.host_work_directives[0].directive_id,
+            HostWorkDirectiveAcknowledgement::OutcomeUnknown,
+            "transport closed after dispatch".to_string(),
+        )
+        .unwrap();
+
+    let later_edge = runtime
+        .observe_resources(resources_with_app_cgroup(base + 2, 4_200, 4_000, 11, 1, 0))
+        .unwrap();
+    assert_eq!(runtime.snapshot().resources.pressure_epoch, 1);
+    assert!(later_edge.host_work_directives.is_empty());
+    assert_eq!(runtime.snapshot().host_work_directives.len(), 1);
+}
+
+#[test]
+fn manual_policy_and_stale_generation_rejections_do_not_consume_governor_retry_budget() {
+    let temp = TempRuntime::new("app-cgroup-retry-authority");
+    let runtime = temp.boot();
+    runtime.observe_resources(resources(96.0, 50.0)).unwrap();
+    let (manual_handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:cgroup:manual-policy",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let manual = HostWorkDirectiveRequest::new(
+        HostWorkAction::Stop,
+        "trusted manual test directive",
+        "manual-policy:v1",
+    );
+    let manual_id = manual.directive_id().to_string();
+    runtime
+        .issue_host_work_directive(&manual_handle, manual)
+        .unwrap();
+    runtime
+        .acknowledge_host_work_directive(
+            &manual_handle,
+            &manual_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "manual action rejected".to_string(),
+        )
+        .unwrap();
+    let base = chrono::Utc::now().timestamp_millis();
+    let initial_governor = runtime
+        .observe_resources(resources_with_app_cgroup(base, 4_100, 4_000, 10, 1, 0))
+        .unwrap();
+    assert_eq!(runtime.snapshot().resources.pressure_epoch, 1);
+    assert_eq!(initial_governor.host_work_directives.len(), 1);
+    assert_eq!(
+        initial_governor.host_work_directives[0].work_id,
+        manual_handle.work_id()
+    );
+
+    let (old_handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:cgroup:stale-generation",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let old = HostWorkDirectiveRequest::new(
+        HostWorkAction::Stop,
+        "old generation governor-shaped directive",
+        super::governor::RESOURCE_GOVERNOR_POLICY_REVISION,
+    );
+    let old_id = old.directive_id().to_string();
+    runtime.issue_host_work_directive(&old_handle, old).unwrap();
+    runtime
+        .acknowledge_host_work_directive(
+            &old_handle,
+            &old_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "old generation rejected".to_string(),
+        )
+        .unwrap();
+    runtime
+        .observe_host_work(
+            &old_handle,
+            HostWorkObservedState::Stopped,
+            "old physical generation stopped".to_string(),
+        )
+        .unwrap();
+    let new_generation = runtime
+        .renew_host_work_registration(&old_handle, HostWorkObservedState::Running)
+        .unwrap()
+        .0;
+    let renewed_governance = runtime
+        .observe_resources(resources_with_app_cgroup(base + 1, 4_200, 4_000, 11, 1, 0))
+        .unwrap();
+    assert_eq!(runtime.snapshot().resources.pressure_epoch, 1);
+    assert_eq!(renewed_governance.host_work_directives.len(), 1);
+    assert_eq!(
+        renewed_governance.host_work_directives[0].work_id,
+        new_generation.work_id()
+    );
+    assert_eq!(renewed_governance.host_work_directives[0].generation, 2);
+}
+
+#[test]
+fn rejected_ack_during_resource_commit_authorizes_exactly_one_edge_retry() {
+    let temp = TempRuntime::new("app-cgroup-ack-resource-race");
+    let runtime = temp.boot();
+    let (handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:cgroup:ack-race",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let base = chrono::Utc::now().timestamp_millis();
+    runtime
+        .observe_resources(resources_with_app_cgroup(base, 2_000, 4_000, 10, 1, 0))
+        .unwrap();
+    let initial = runtime
+        .observe_resources(resources_with_app_cgroup(base + 1, 4_100, 4_000, 10, 1, 0))
+        .unwrap();
+
+    let observation_entered = Arc::new(Barrier::new(2));
+    let allow_observation_commit = Arc::new(Barrier::new(2));
+    let entered = Arc::clone(&observation_entered);
+    let release = Arc::clone(&allow_observation_commit);
+    runtime.set_resource_observation_before_commit_hook(Some(Arc::new(move || {
+        entered.wait();
+        release.wait();
+    })));
+    let observing = runtime.clone();
+    let edge_thread = std::thread::spawn(move || {
+        observing
+            .observe_resources(resources_with_app_cgroup(base + 2, 4_200, 4_000, 11, 1, 0))
+            .unwrap()
+    });
+    observation_entered.wait();
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &initial.host_work_directives[0].directive_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "rejected while ResourceObserved awaited append".to_string(),
+        )
+        .unwrap();
+    allow_observation_commit.wait();
+    let decision = edge_thread.join().unwrap();
+    runtime.set_resource_observation_before_commit_hook(None);
+
+    assert_eq!(runtime.snapshot().resources.pressure_epoch, 1);
+    assert_eq!(decision.host_work_directives.len(), 1);
+    assert_eq!(decision.host_work_directives[0].resource_pressure_epoch, 1);
+    let claim = runtime
+        .snapshot()
+        .claims
+        .get(decision.pressure_claim_id.as_deref().unwrap())
+        .cloned()
+        .unwrap();
+    assert_eq!(claim.value["appCgroup"]["memoryEventDeltas"]["high"], 1);
+}
+
+#[test]
+fn resource_commit_before_rejected_ack_preserves_durable_retry_credit() {
+    let temp = TempRuntime::new("app-cgroup-resource-before-ack");
+    let runtime = temp.boot();
+    let (_handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:cgroup:resource-before-ack",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let base = chrono::Utc::now().timestamp_millis();
+    runtime
+        .observe_resources(resources_with_app_cgroup(base, 2_000, 4_000, 10, 1, 0))
+        .unwrap();
+    let initial = runtime
+        .observe_resources(resources_with_app_cgroup(base + 1, 4_100, 4_000, 10, 1, 0))
+        .unwrap();
+
+    let committed_while_pending = runtime
+        .observe_resources(resources_with_app_cgroup(base + 2, 4_200, 4_000, 11, 1, 0))
+        .unwrap();
+    assert!(committed_while_pending.host_work_directives.is_empty());
+    let initial_directive_id = initial.host_work_directives[0].directive_id.clone();
+    drop(runtime);
+
+    let runtime = temp.boot();
+    let (handle, _) = runtime
+        .rebind_host_work(
+            "feature:cgroup:resource-before-ack",
+            HostWorkKind::ScheduledRun,
+            1,
+        )
+        .unwrap();
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &initial_directive_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "rejected after the cgroup edge was committed".to_string(),
+        )
+        .unwrap();
+    let credited_retry = runtime
+        .pending_host_work_directives(&handle)
+        .unwrap()
+        .into_iter()
+        .find(|directive| directive.directive_id != initial_directive_id)
+        .expect("fresh evidence committed while Pending must survive until Rejected ACK");
+    assert_eq!(credited_retry.resource_pressure_epoch, 1);
+
+    let no_third_identity = runtime
+        .observe_resources(resources_with_app_cgroup(base + 3, 3_000, 4_000, 11, 1, 0))
+        .unwrap();
+    assert!(no_third_identity.host_work_directives.is_empty());
+    assert_eq!(runtime.snapshot().host_work_directives.len(), 2);
+    drop(runtime);
+    assert_eq!(temp.boot().snapshot().host_work_directives.len(), 2);
+}
+
+#[test]
+fn stale_or_nonadvancing_critical_samples_cannot_authorize_retry() {
+    let temp = TempRuntime::new("resource-retry-freshness");
+    let runtime = temp.boot();
+    let (handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:critical:retry-freshness",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let now = chrono::Utc::now().timestamp_millis();
+    let old_base = now - 30_000;
+    let mut initial_observation = resources(96.0, 50.0);
+    initial_observation.sampled_at_ms = old_base;
+    let initial = runtime.observe_resources(initial_observation).unwrap();
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &initial.host_work_directives[0].directive_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "stale episode initial stop rejected".to_string(),
+        )
+        .unwrap();
+
+    let mut stale_advancing = resources(96.0, 50.0);
+    stale_advancing.sampled_at_ms = old_base + 1;
+    assert!(runtime
+        .observe_resources(stale_advancing)
+        .unwrap()
+        .host_work_directives
+        .is_empty());
+    let mut duplicate = resources(96.0, 50.0);
+    duplicate.sampled_at_ms = old_base + 1;
+    assert!(runtime
+        .observe_resources(duplicate)
+        .unwrap()
+        .host_work_directives
+        .is_empty());
+
+    let mut fresh = resources(96.0, 50.0);
+    fresh.sampled_at_ms = now + 1;
+    let retry = runtime.observe_resources(fresh).unwrap();
+    assert_eq!(retry.host_work_directives.len(), 1);
+    assert_eq!(retry.host_work_directives[0].resource_pressure_epoch, 1);
+}
+
+#[test]
+fn out_of_order_cgroup_sample_cannot_rewind_counter_baseline_or_replay_delta() {
+    let temp = TempRuntime::new("app-cgroup-baseline-monotonic");
+    let runtime = temp.boot();
+    let base = chrono::Utc::now().timestamp_millis();
+    runtime
+        .observe_resources(resources_with_app_cgroup(base, 2_000, 4_000, 10, 1, 0))
+        .unwrap();
+    runtime
+        .observe_resources(resources_with_app_cgroup(base + 2, 2_100, 4_000, 11, 1, 0))
+        .unwrap();
+    let out_of_order = runtime
+        .observe_resources(resources_with_app_cgroup(base + 1, 2_200, 4_000, 10, 1, 0))
+        .unwrap();
+    assert_eq!(out_of_order.pressure, ResourcePressure::Critical);
+    assert_eq!(
+        runtime
+            .snapshot()
+            .resources
+            .last_app_cgroup_observation
+            .as_ref()
+            .unwrap()
+            .observed_at_ms,
+        base + 2
+    );
+
+    let relief = runtime
+        .observe_resources(resources_with_app_cgroup(base + 3, 2_200, 4_000, 11, 1, 0))
+        .unwrap();
+    assert_eq!(relief.pressure, ResourcePressure::Normal);
+}
+
+#[test]
+fn rejected_governor_action_gets_one_fresh_retry_then_waits_for_pressure_change() {
+    let temp = TempRuntime::new("host-work-governor-retry-epoch");
+    let runtime = temp.boot();
+    let (handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:critical:retry-epoch",
+            10,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let base = chrono::Utc::now().timestamp_millis();
+    let mut first_observation = resources(96.0, 50.0);
+    first_observation.sampled_at_ms = base;
+    let first = runtime.observe_resources(first_observation).unwrap();
+    let first_id = first.host_work_directives[0].directive_id.clone();
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &first_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "fixed target refused stop".to_string(),
+        )
+        .unwrap();
+
+    let mut retry_observation = resources(96.0, 50.0);
+    retry_observation.sampled_at_ms = base + 1;
+    let retry = runtime.observe_resources(retry_observation).unwrap();
+    assert_eq!(retry.host_work_directives.len(), 1);
+    assert_eq!(retry.host_work_directives[0].resource_pressure_epoch, 1);
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &retry.host_work_directives[0].directive_id,
+            HostWorkDirectiveAcknowledgement::Rejected,
+            "fresh retry also rejected".to_string(),
+        )
+        .unwrap();
+    let mut exhausted_observation = resources(96.0, 50.0);
+    exhausted_observation.sampled_at_ms = base + 2;
+    let exhausted = runtime.observe_resources(exhausted_observation).unwrap();
+    assert!(exhausted.host_work_directives.is_empty());
+    assert_eq!(runtime.snapshot().host_work_directives.len(), 2);
+
+    let mut warm_observation = resources(81.0, 50.0);
+    warm_observation.sampled_at_ms = base + 3;
+    let warm = runtime.observe_resources(warm_observation).unwrap();
+    assert_eq!(warm.pressure, ResourcePressure::Warm);
+    let mut next_critical_observation = resources(96.0, 50.0);
+    next_critical_observation.sampled_at_ms = base + 4;
+    let next_epoch = runtime
+        .observe_resources(next_critical_observation)
+        .unwrap();
+    assert_eq!(next_epoch.host_work_directives.len(), 1);
+    assert_ne!(next_epoch.host_work_directives[0].directive_id, first_id);
+    assert_eq!(
+        next_epoch.host_work_directives[0].resource_pressure_epoch,
+        3
+    );
 }
 
 #[test]
@@ -1825,6 +3200,7 @@ fn resource_float_round_trip_does_not_isolate_the_live_writer() {
             gpu_usage_pct: None,
             temperature_c: Some(35.0),
             power_w: None,
+            app_cgroup: None,
         })
         .unwrap();
     let before_reboot = runtime.snapshot().last_sequence;
@@ -1868,6 +3244,7 @@ fn same_length_raw_frame_replacement_still_isolates_the_live_writer() {
             gpu_usage_pct: None,
             temperature_c: Some(35.0),
             power_w: None,
+            app_cgroup: None,
         })
         .unwrap();
 

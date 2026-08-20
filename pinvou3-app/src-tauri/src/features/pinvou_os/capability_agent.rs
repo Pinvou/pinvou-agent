@@ -495,6 +495,7 @@ mod tests {
             last_sequence: 42,
             resources: ResourceState {
                 pressure,
+                pressure_epoch: 0,
                 last_observation: Some(ResourceObservation {
                     sampled_at_ms: 40,
                     cpu_usage_pct: Some(10.0),
@@ -502,8 +503,12 @@ mod tests {
                     gpu_usage_pct: Some(30.0),
                     temperature_c: Some(50.0),
                     power_w: Some(10.0),
+                    app_cgroup: None,
                 }),
                 active_pressure_claim_id: None,
+                app_cgroup_critical: false,
+                last_app_cgroup_observation: None,
+                last_fresh_critical_evidence: None,
             },
             ..RuntimeSnapshot::default()
         }

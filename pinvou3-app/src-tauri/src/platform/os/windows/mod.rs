@@ -2,6 +2,16 @@ mod windows_path;
 mod windows_permission;
 mod windows_system;
 
+use pinvou_host_supervisor_protocol::{SupervisorReceipt, SupervisorRequest};
+
+use crate::platform::host_supervisor::HostSupervisorError;
+
+pub(crate) fn host_supervisor_request(
+    _request: &SupervisorRequest,
+) -> Result<SupervisorReceipt, HostSupervisorError> {
+    Err(HostSupervisorError::Unsupported)
+}
+
 pub use windows_path::{
     apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command,
     filesystem_path_identity_key, kill_pid_tree, obsidian_config_path, path_component_eq,

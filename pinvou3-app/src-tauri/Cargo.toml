@@ -41,6 +41,7 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "1"
 log = "0.4"
+pinvou-host-supervisor-protocol = { path = "crates/host-supervisor-protocol" }
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
@@ -198,6 +199,7 @@ webkit2gtk = "2.0"
 # 多窗口撕离(detach.rs begin_detach_drag):X11 全局鼠标坐标+左键状态,
 # 驱动鬼影跨屏跟随 + 松手落位。Wayland 下不可用 → 降级(后续 task)。
 device_query = "2"
+libc = "0.2"
 
 # =============================================================================
 # Lint 门禁 —— 硬门禁设计:只启用「当前实测零欠账」的 lint(deny);

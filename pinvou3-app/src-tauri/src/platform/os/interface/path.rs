@@ -62,10 +62,6 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
     super::super::platform::apply_user_npm_prefix(cmd);
 }
 
-pub fn kill_pid_tree(pid: u32) {
-    super::super::platform::kill_pid_tree(pid);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

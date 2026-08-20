@@ -18,7 +18,10 @@ use super::capability_agent::{
     capability_agent_capabilities, CapabilityAgent, CapabilityReportRequest,
 };
 use super::connectivity_agent::{connectivity_observe_contract, CONNECTIVITY_AGENT_ID};
-use super::governor::{classify_pressure, directive_for_agent, ResourceGovernorPolicy};
+use super::governor::{
+    directive_for_agent, directive_for_host_work, evaluate_pressure, ResourceGovernorPolicy,
+    RESOURCE_GOVERNOR_POLICY_REVISION,
+};
 use super::inference_agent::{inference_observe_contract, INFERENCE_AGENT_ID};
 use super::memory_agent::{
     attest_memory_candidate, attest_memory_resolution, attest_memory_retraction,
@@ -35,6 +38,7 @@ use super::memory_agent::{
 };
 use super::model::*;
 use super::policy_agent::policy_authorize_contract;
+use super::resource_agent::{app_cgroup_claim_value, validate_app_cgroup_observation};
 use super::screen_observer_agent::{
     canonical_screen_observer_agent_id, canonical_screen_observer_capability_id,
     screen_observe_contract, LEGACY_SURFACE_AGENT_ID, LEGACY_SURFACE_OBSERVE_CAPABILITY_ID,
@@ -42,8 +46,12 @@ use super::screen_observer_agent::{
 };
 
 type RuntimeEventSink = dyn Fn(EventEnvelope) + Send + Sync + 'static;
-pub type AgentControlAdapter =
-    Arc<dyn Fn(ControlDirective) -> std::result::Result<String, String> + Send + Sync + 'static>;
+
+#[cfg(test)]
+type ResourceObservationBeforeCommitHook = dyn Fn() + Send + Sync + 'static;
+
+#[cfg(test)]
+type ResourceObservationBeforeGovernanceIssueHook = dyn Fn() + Send + Sync + 'static;
 
 #[derive(Clone)]
 pub struct PinvouOsRuntime {
@@ -56,6 +64,10 @@ struct RuntimeInner {
     /// 在账本文件锁内做 durable-head CAS；发现外部写入就 fail-stop。
     _writer_lease: fs::File,
     append_lock: Mutex<()>,
+    /// ResourceObserved → Governor reconciliation 是一个逻辑事务。单独串行化资源观测，
+    /// 再在压力落账后扫描当前 Registry；新 HostWork 要么被这次扫描看到，要么在注册后
+    /// 的即时 reconcile 中看到已经提交的压力，不会落进两边都看不到的缝隙。
+    resource_governance_lock: Mutex<()>,
     durable_head: RwLock<Option<LedgerHead>>,
     write_failure: RwLock<Option<String>>,
     snapshot: RwLock<RuntimeSnapshot>,
@@ -65,17 +77,19 @@ struct RuntimeInner {
     memory_engine: RwLock<MemoryEngineState>,
     /// 从统一账本 envelope 派生的最小可信元数据索引；不是第二真相源，重启可重建。
     memory_evidence_index: RwLock<BTreeMap<String, TrustedMemoryEvidence>>,
-    control_adapters: RwLock<BTreeMap<String, AgentControlAdapter>>,
-    /// 本进程已经交给外部 Adapter 的 Directive。claim 在进程生命周期内不释放：
-    /// Adapter 返回后由同一 owner 落 ACK；若进程在两者之间崩溃，重启会携带相同
-    /// directive_id 重试，Adapter 必须用该 identity 实现外部副作用幂等。
-    dispatched_directive_ids: Mutex<BTreeSet<String>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DirectiveAcknowledgementOwner {
-    External,
-    RegisteredAdapter,
+    /// 只有本进程内受信代码拿到的 HostWorkHandle 才能操作 Registry。账本回放会恢复
+    /// 只读投影，但不会凭历史字符串恢复可执行控制句柄。
+    runtime_instance_id: u64,
+    live_host_work_generations: RwLock<BTreeMap<String, u64>>,
+    /// 已注销 identity 永久保留为进程内 tombstone，并可从账本重建。即使 projection
+    /// 不再展示该工作，也绝不能让历史 Directive 与新工作复用同一 identity。
+    retired_host_work_ids: RwLock<BTreeSet<String>>,
+    #[cfg(test)]
+    resource_observation_before_commit_hook:
+        RwLock<Option<Arc<ResourceObservationBeforeCommitHook>>>,
+    #[cfg(test)]
+    resource_observation_before_governance_issue_hook:
+        RwLock<Option<Arc<ResourceObservationBeforeGovernanceIssueHook>>>,
 }
 
 #[derive(Debug)]
@@ -140,6 +154,74 @@ pub struct RegisterMissionAgentRequest {
     pub run_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct RegisterHostWorkRequest {
+    pub owner: String,
+    pub kind: HostWorkKind,
+    pub resource_class: ResourceClass,
+    pub priority: u8,
+    pub interruptibility: Interruptibility,
+    pub essential: bool,
+    pub governable: bool,
+    pub supported_actions: BTreeSet<HostWorkAction>,
+    pub initial_observed_state: HostWorkObservedState,
+}
+
+/// 不可序列化、不可由 Renderer/模型构造的进程内控制能力。work_id 可用于只读展示，
+/// 真正的写操作还必须同时持有当前 Runtime 实例和 generation。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostWorkHandle {
+    work_id: String,
+    generation: u64,
+    runtime_instance_id: u64,
+}
+
+impl HostWorkHandle {
+    pub fn work_id(&self) -> &str {
+        &self.work_id
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+/// Governor 先创建并保留这个请求，再提交 Runtime。重试同一个值会复用同一
+/// directive_id；调用方绝不能为一次 outcome-unknown 另建请求。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostWorkDirectiveRequest {
+    directive_id: String,
+    pub action: HostWorkAction,
+    pub reason: String,
+    pub policy_revision: String,
+}
+
+impl HostWorkDirectiveRequest {
+    pub fn new(
+        action: HostWorkAction,
+        reason: impl Into<String>,
+        policy_revision: impl Into<String>,
+    ) -> Self {
+        Self {
+            directive_id: new_entity_id("host-directive"),
+            action,
+            reason: reason.into(),
+            policy_revision: policy_revision.into(),
+        }
+    }
+
+    pub fn directive_id(&self) -> &str {
+        &self.directive_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconcileHostWorkDirectiveRequest {
+    pub outcome: HostWorkReconciliationOutcome,
+    pub observed_state: Option<HostWorkObservedState>,
+    pub detail: String,
+}
+
 /// Execution adapter 提交给 Runtime 的一次 Front 交互。原文只在调用栈中短暂
 /// 存在；账本只保存 SHA-256 与字符数，避免把完整对话复制成第二份持久真相源。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -185,6 +267,13 @@ impl PinvouOsRuntime {
         let (events, committed_len, durable_head) = read_ledger_events(&ledger_path)?;
         validate_ledger_event_chain(&events)?;
         let snapshot = replay_ledger_events(&events);
+        let retired_host_work_ids = events
+            .iter()
+            .filter_map(|envelope| match &envelope.event {
+                RuntimeEvent::HostWorkUnregistered { work_id, .. } => Some(work_id.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
         let replayed_memory = replay_memory_engine(&events)?;
         let memory_evidence_index = build_trusted_memory_evidence_index(&events, &snapshot);
         if durable_head.is_none() && committed_len != 0 {
@@ -204,6 +293,7 @@ impl PinvouOsRuntime {
                 ledger_path,
                 _writer_lease: writer_lease,
                 append_lock: Mutex::new(()),
+                resource_governance_lock: Mutex::new(()),
                 durable_head: RwLock::new(durable_head),
                 write_failure: RwLock::new(None),
                 snapshot: RwLock::new(snapshot),
@@ -212,8 +302,13 @@ impl PinvouOsRuntime {
                 governor_policy: ResourceGovernorPolicy::default(),
                 memory_engine: RwLock::new(MemoryEngineState::Ready(replayed_memory.engine)),
                 memory_evidence_index: RwLock::new(memory_evidence_index),
-                control_adapters: RwLock::new(BTreeMap::new()),
-                dispatched_directive_ids: Mutex::new(BTreeSet::new()),
+                runtime_instance_id: next_runtime_instance_id(),
+                live_host_work_generations: RwLock::new(BTreeMap::new()),
+                retired_host_work_ids: RwLock::new(retired_host_work_ids),
+                #[cfg(test)]
+                resource_observation_before_commit_hook: RwLock::new(None),
+                #[cfg(test)]
+                resource_observation_before_governance_issue_hook: RwLock::new(None),
             }),
         };
         // 先写一个当前 schema 的 RuntimeStarted，形成升级栅栏；旧 Runtime 会因
@@ -283,6 +378,25 @@ impl PinvouOsRuntime {
 
     pub fn snapshot(&self) -> RuntimeSnapshot {
         self.inner.snapshot.read().clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_resource_observation_before_commit_hook(
+        &self,
+        hook: Option<Arc<ResourceObservationBeforeCommitHook>>,
+    ) {
+        *self.inner.resource_observation_before_commit_hook.write() = hook;
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_resource_observation_before_governance_issue_hook(
+        &self,
+        hook: Option<Arc<ResourceObservationBeforeGovernanceIssueHook>>,
+    ) {
+        *self
+            .inner
+            .resource_observation_before_governance_issue_hook
+            .write() = hook;
     }
 
     fn reconcile_interrupted_process_interactions(&self) -> Result<()> {
@@ -680,59 +794,691 @@ impl PinvouOsRuntime {
             .map_err(|error| anyhow!(error.to_string()))
     }
 
-    /// 内核 Executor Registry 为实际 Run 注册控制句柄。注册后会立即续接账本里该
-    /// Agent 尚未完成的 Directive，因此 Runtime 重启不会把 Pending 控制静默丢掉。
-    pub fn register_agent_control_adapter(
+    /// 仅供组合根和受信 feature 注册。调用方不能提供 work_id、generation、PID、unit
+    /// 或命令；Runtime 生成不透明身份并返回不可序列化的进程内 handle。
+    pub(crate) fn register_host_work(
         &self,
-        agent_id: &str,
-        adapter: AgentControlAdapter,
-    ) -> Result<usize> {
-        let agent_id = required_text(agent_id, "control adapter agent id")?;
-        let agent = self
-            .inner
-            .snapshot
-            .read()
-            .agents
-            .get(&agent_id)
-            .cloned()
-            .ok_or_else(|| anyhow!("unknown control adapter agent {agent_id}"))?;
-        if agent.kind != AgentKind::Mission {
-            bail!("control adapters can only own mission agents");
-        }
-        self.inner
-            .control_adapters
-            .write()
-            .insert(agent_id.clone(), adapter);
+        request: RegisterHostWorkRequest,
+    ) -> Result<(HostWorkHandle, HostWork)> {
+        let registered_at_ms = now_ms();
+        let owner = required_identifier(&request.owner, "host work owner")?;
+        let work = HostWork {
+            work_id: new_entity_id("host-work"),
+            generation: 1,
+            owner,
+            kind: request.kind,
+            resource_class: request.resource_class,
+            priority: request.priority,
+            interruptibility: request.interruptibility,
+            essential: request.essential,
+            governable: request.governable,
+            supported_actions: request.supported_actions,
+            desired_state: desired_host_work_state(request.initial_observed_state),
+            observed_state: request.initial_observed_state,
+            registered_at_ms,
+            last_observed_at_ms: registered_at_ms,
+            governor_pause_directive_id: None,
+        };
+        validate_host_work_registration(&work, None)?;
+        let handle = self.host_work_handle(&work);
 
-        // Adapter 必须先可见，再从最新投影补偿 Pending。与新 Directive 并发时，
-        // 要么新派发看到 Adapter，要么这里看到 Pending；两边都看到则由 dispatch
-        // claim 合并成一次，不能留下“双方都错过”的窗口。
-        let mut pending = self
+        let append_guard = self.inner.append_lock.lock();
+        if self
+            .inner
+            .retired_host_work_ids
+            .read()
+            .contains(&work.work_id)
+        {
+            bail!("generated host work identity collides with a retired identity");
+        }
+        if self
             .inner
             .snapshot
             .read()
-            .directives
+            .host_works
             .values()
-            .filter(|directive| {
-                directive.target_agent_id == agent_id
-                    && directive.status == DirectiveStatus::Pending
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        pending.sort_by_key(|directive| directive.issued_at_ms);
-        let count = pending.len();
-        for directive in pending {
-            self.dispatch_control_directive(&directive)?;
+            .any(|existing| existing.owner == work.owner && existing.kind == work.kind)
+        {
+            bail!(
+                "host work registration key {} + {:?} already exists; rebind it explicitly",
+                work.owner,
+                work.kind
+            );
         }
-        Ok(count)
+        let publication = self.append_locked(
+            EventContext::kernel(),
+            RuntimeEvent::HostWorkRegistered { work: work.clone() },
+        )?;
+        self.inner
+            .live_host_work_generations
+            .write()
+            .insert(work.work_id.clone(), work.generation);
+        drop(append_guard);
+        deliver_persisted_event(Some(publication));
+        Ok((handle, work))
     }
 
-    pub fn unregister_agent_control_adapter(&self, agent_id: &str) -> bool {
+    /// Runtime 重启后，受信 owner 用稳定的 `owner + kind` 和自己保存的 generation
+    /// 重新绑定账本实体。严格唯一且必须精确匹配 generation；不新增事件、不更换
+    /// directive_id，也不把历史 PID/unit/command 带回控制面。
+    pub(crate) fn rebind_host_work(
+        &self,
+        owner: &str,
+        kind: HostWorkKind,
+        expected_generation: u64,
+    ) -> Result<(HostWorkHandle, HostWork)> {
+        let owner = required_identifier(owner, "host work owner")?;
+        if expected_generation == 0 {
+            bail!("host work rebind generation must be positive");
+        }
+        let _append_guard = self.inner.append_lock.lock();
+        let matches = self
+            .inner
+            .snapshot
+            .read()
+            .host_works
+            .values()
+            .filter(|work| work.owner == owner && work.kind == kind)
+            .cloned()
+            .collect::<Vec<_>>();
+        let [work] = matches.as_slice() else {
+            if matches.is_empty() {
+                bail!("host work registration key is not present in the ledger projection");
+            }
+            bail!("host work registration key is not unique");
+        };
+        if work.generation != expected_generation {
+            bail!("host work rebind generation is stale");
+        }
+        if self
+            .inner
+            .live_host_work_generations
+            .read()
+            .contains_key(&work.work_id)
+        {
+            bail!("host work is already bound in this Runtime instance");
+        }
         self.inner
-            .control_adapters
+            .live_host_work_generations
             .write()
-            .remove(agent_id)
-            .is_some()
+            .insert(work.work_id.clone(), work.generation);
+        Ok((self.host_work_handle(work), work.clone()))
+    }
+
+    /// 同一个逻辑工作启动了新实例时轮换 generation。旧 handle 和旧 Directive 会立即
+    /// 失效；存在未决控制时拒绝轮换，必须先用同一 directive_id 完成 reconcile。
+    pub(crate) fn renew_host_work_registration(
+        &self,
+        handle: &HostWorkHandle,
+        initial_observed_state: HostWorkObservedState,
+    ) -> Result<(HostWorkHandle, HostWork)> {
+        let append_guard = self.inner.append_lock.lock();
+        let previous = self.require_live_host_work(handle)?;
+        let snapshot = self.inner.snapshot.read();
+        if host_work_has_unresolved_directive(&snapshot, &previous.work_id, previous.generation) {
+            bail!(
+                "host work {} generation {} has an unresolved directive",
+                previous.work_id,
+                previous.generation
+            );
+        }
+        if !host_work_observed_state_is_terminal(previous.observed_state) {
+            bail!(
+                "host work {} generation {} is still live and cannot be renewed",
+                previous.work_id,
+                previous.generation
+            );
+        }
+        drop(snapshot);
+
+        let generation = previous
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("host work generation overflow"))?;
+        let registered_at_ms = now_ms();
+        let mut renewed = previous;
+        renewed.generation = generation;
+        renewed.desired_state = desired_host_work_state(initial_observed_state);
+        renewed.observed_state = initial_observed_state;
+        renewed.registered_at_ms = registered_at_ms;
+        renewed.last_observed_at_ms = registered_at_ms;
+        renewed.governor_pause_directive_id = None;
+        validate_host_work_registration(&renewed, Some(handle.generation))?;
+        let renewed_handle = self.host_work_handle(&renewed);
+        let publication = self.append_locked(
+            EventContext::kernel(),
+            RuntimeEvent::HostWorkRegistered {
+                work: renewed.clone(),
+            },
+        )?;
+        self.inner
+            .live_host_work_generations
+            .write()
+            .insert(renewed.work_id.clone(), renewed.generation);
+        drop(append_guard);
+        deliver_persisted_event(Some(publication));
+        Ok((renewed_handle, renewed))
+    }
+
+    /// 普通 status 观测。存在未决 Directive 时必须走 reconcile API，避免把未确认的
+    /// desired state 偷渡成 observed state。
+    pub(crate) fn observe_host_work(
+        &self,
+        handle: &HostWorkHandle,
+        observed_state: HostWorkObservedState,
+        detail: String,
+    ) -> Result<HostWork> {
+        let detail = required_text(&detail, "host work observation detail")?;
+        let append_guard = self.inner.append_lock.lock();
+        let work = self.require_live_host_work(handle)?;
+        let snapshot = self.inner.snapshot.read();
+        if host_work_has_unresolved_directive(&snapshot, &work.work_id, work.generation) {
+            bail!("host work with an unresolved directive must be reconciled");
+        }
+        if host_work_observed_state_is_terminal(work.observed_state)
+            && observed_state != work.observed_state
+        {
+            bail!("terminal host work observation is immutable within a generation");
+        }
+        drop(snapshot);
+        let publication = self.append_locked(
+            EventContext {
+                source_actor_id: "adapter:host-work".to_string(),
+                correlation_id: Some(format!("host-work:{}", work.work_id)),
+                ..EventContext::default()
+            },
+            RuntimeEvent::HostWorkObserved {
+                work_id: work.work_id.clone(),
+                generation: work.generation,
+                observed_state,
+                observed_at_ms: now_ms(),
+                detail,
+            },
+        )?;
+        let observed = self.inner.snapshot.read().host_works[&work.work_id].clone();
+        drop(append_guard);
+        deliver_persisted_event(Some(publication));
+        Ok(observed)
+    }
+
+    /// 只落账，不调用 Adapter。执行器可以在任意异步/跨进程边界领取 Pending，Resource
+    /// 采样和 Runtime append 路径不会等待执行结果。
+    pub(crate) fn issue_host_work_directive(
+        &self,
+        handle: &HostWorkHandle,
+        request: HostWorkDirectiveRequest,
+    ) -> Result<HostWorkDirective> {
+        self.issue_host_work_directive_with_cause(handle, request, None)
+    }
+
+    /// 新工作注册/重绑/换代后，组合根可立即基于最近一次可信 Resource projection
+    /// 重新评估，而不伪造采样，也不等待最长 30 秒的持久心跳。这里只签 Pending；
+    /// 外部副作用仍由异步控制执行器领取。
+    pub(crate) fn reconcile_host_work_governance(
+        &self,
+        handle: &HostWorkHandle,
+    ) -> Result<Option<HostWorkDirective>> {
+        self.try_issue_governor_host_work_directive(handle, None, None)
+    }
+
+    /// Governor 内部的原子、幂等签发面。候选工作、当前 pressure、generation、单飞与
+    /// 当前 epoch 的失败抑制都在同一个 append lock 内重新判断。这样 ResourceObserved
+    /// 落账后的扫描与注册方即时 reconcile 即使竞态，也只会有一张 Pending；工作换代、
+    /// 注销或已被另一方治理属于 `Ok(None)`，不会把已经成功的资源观测伪装成 API 失败。
+    fn try_issue_governor_host_work_directive(
+        &self,
+        handle: &HostWorkHandle,
+        reason: Option<String>,
+        causation_id: Option<String>,
+    ) -> Result<Option<HostWorkDirective>> {
+        if handle.runtime_instance_id != self.inner.runtime_instance_id {
+            bail!("host work handle belongs to another Runtime instance");
+        }
+        let reason = reason.map(|reason| required_text(&reason, "host directive reason"));
+        let append_guard = self.inner.append_lock.lock();
+        if self
+            .inner
+            .live_host_work_generations
+            .read()
+            .get(&handle.work_id)
+            .copied()
+            != Some(handle.generation)
+        {
+            return Ok(None);
+        }
+
+        let snapshot = self.inner.snapshot.read();
+        let Some(work) = snapshot.host_works.get(&handle.work_id).cloned() else {
+            bail!("live host work is missing from the ledger projection");
+        };
+        if work.generation != handle.generation {
+            return Ok(None);
+        }
+        let pressure = snapshot.resources.pressure;
+        let Some((action, _hard)) =
+            directive_for_host_work(&work, pressure, self.inner.governor_policy)
+        else {
+            return Ok(None);
+        };
+        if host_work_has_unresolved_directive(&snapshot, &work.work_id, work.generation) {
+            return Ok(None);
+        }
+        let resource_pressure_epoch = snapshot.resources.pressure_epoch;
+        let rejected_count = governor_rejected_action_count_in_pressure_epoch(
+            &snapshot,
+            &work,
+            action,
+            resource_pressure_epoch,
+        );
+        let retry_evidence = if rejected_count == 1 {
+            governor_retry_evidence_after_initial_attempt(
+                &snapshot,
+                &work,
+                action,
+                resource_pressure_epoch,
+            )
+        } else {
+            None
+        };
+        // 每个 work generation/action/pressure episode 最多 initial + 1 retry。
+        // 第二张只由首张 Directive 之后已经落账的 fresh Critical 事实授权。证据可以
+        // 先于 Rejected ACK 到达，projection 会保留它，因而不会丢掉唯一 retry credit。
+        if rejected_count >= 2 || (rejected_count == 1 && retry_evidence.is_none()) {
+            return Ok(None);
+        }
+        let causation_id = retry_evidence
+            .map(|evidence| evidence.event_id.clone())
+            .or(causation_id);
+        drop(snapshot);
+
+        validate_host_work_action(&work, action)?;
+        let reason = match reason {
+            Some(reason) => reason?,
+            None => format!("new host work reconciliation under {pressure:?} pressure"),
+        };
+        let directive = HostWorkDirective {
+            directive_id: new_entity_id("host-directive"),
+            work_id: work.work_id,
+            generation: work.generation,
+            action,
+            reason,
+            policy_revision: RESOURCE_GOVERNOR_POLICY_REVISION.to_string(),
+            resource_pressure_epoch,
+            issued_event_sequence: None,
+            issued_at_ms: now_ms(),
+            status: HostWorkDirectiveStatus::Pending,
+            acknowledgement: None,
+            acknowledged_at_ms: None,
+            acknowledgement_detail: None,
+            reconciliation: None,
+            reconciled_observed_state: None,
+            reconciled_at_ms: None,
+            reconciliation_detail: None,
+        };
+        let publication = self.append_locked(
+            EventContext {
+                source_actor_id: GOVERNOR_ACTOR_ID.to_string(),
+                causation_id,
+                correlation_id: Some("resource-pressure".to_string()),
+                ..EventContext::default()
+            },
+            RuntimeEvent::HostWorkDirectiveIssued {
+                directive: directive.clone(),
+            },
+        )?;
+        drop(append_guard);
+        deliver_persisted_event(Some(publication));
+        Ok(Some(directive))
+    }
+
+    fn issue_host_work_directive_with_cause(
+        &self,
+        handle: &HostWorkHandle,
+        request: HostWorkDirectiveRequest,
+        causation_id: Option<String>,
+    ) -> Result<HostWorkDirective> {
+        let directive_id = required_identifier(&request.directive_id, "host directive id")?;
+        let reason = required_text(&request.reason, "host directive reason")?;
+        let policy_revision =
+            required_identifier(&request.policy_revision, "host directive policy revision")?;
+        let append_guard = self.inner.append_lock.lock();
+        let work = self.require_live_host_work(handle)?;
+        if let Some(existing) = self
+            .inner
+            .snapshot
+            .read()
+            .host_work_directives
+            .get(&directive_id)
+            .cloned()
+        {
+            if existing.work_id == work.work_id
+                && existing.generation == work.generation
+                && existing.action == request.action
+                && existing.reason == reason
+                && existing.policy_revision == policy_revision
+            {
+                return Ok(existing);
+            }
+            bail!("host directive id was replayed with different content");
+        }
+        validate_host_work_action(&work, request.action)?;
+        let snapshot = self.inner.snapshot.read();
+        if host_work_has_unresolved_directive(&snapshot, &work.work_id, work.generation) {
+            bail!("host work already has an unresolved directive");
+        }
+        if host_work_action_failed_in_pressure_epoch(
+            &snapshot,
+            &work,
+            request.action,
+            snapshot.resources.pressure_epoch,
+        ) {
+            bail!("host work action already failed in the current resource pressure epoch");
+        }
+        let resource_pressure_epoch = snapshot.resources.pressure_epoch;
+        drop(snapshot);
+        let directive = HostWorkDirective {
+            directive_id,
+            work_id: work.work_id.clone(),
+            generation: work.generation,
+            action: request.action,
+            reason,
+            policy_revision,
+            resource_pressure_epoch,
+            issued_event_sequence: None,
+            issued_at_ms: now_ms(),
+            status: HostWorkDirectiveStatus::Pending,
+            acknowledgement: None,
+            acknowledged_at_ms: None,
+            acknowledgement_detail: None,
+            reconciliation: None,
+            reconciled_observed_state: None,
+            reconciled_at_ms: None,
+            reconciliation_detail: None,
+        };
+        let publication = self.append_locked(
+            EventContext {
+                source_actor_id: GOVERNOR_ACTOR_ID.to_string(),
+                causation_id,
+                correlation_id: Some("resource-pressure".to_string()),
+                ..EventContext::default()
+            },
+            RuntimeEvent::HostWorkDirectiveIssued {
+                directive: directive.clone(),
+            },
+        )?;
+        drop(append_guard);
+        deliver_persisted_event(Some(publication));
+        Ok(directive)
+    }
+
+    pub(crate) fn pending_host_work_directives(
+        &self,
+        handle: &HostWorkHandle,
+    ) -> Result<Vec<HostWorkDirective>> {
+        let _append_guard = self.inner.append_lock.lock();
+        let work = self.require_live_host_work(handle)?;
+        Ok(self
+            .inner
+            .snapshot
+            .read()
+            .host_work_directives
+            .values()
+            .filter(|directive| {
+                directive.work_id == work.work_id
+                    && directive.generation == work.generation
+                    && directive.status == HostWorkDirectiveStatus::Pending
+            })
+            .cloned()
+            .collect())
+    }
+
+    pub(crate) fn host_work_directives_requiring_reconciliation(
+        &self,
+        handle: &HostWorkHandle,
+    ) -> Result<Vec<HostWorkDirective>> {
+        let _append_guard = self.inner.append_lock.lock();
+        let work = self.require_live_host_work(handle)?;
+        Ok(self
+            .inner
+            .snapshot
+            .read()
+            .host_work_directives
+            .values()
+            .filter(|directive| {
+                directive.work_id == work.work_id
+                    && directive.generation == work.generation
+                    && matches!(
+                        directive.status,
+                        HostWorkDirectiveStatus::AwaitingReconciliation
+                            | HostWorkDirectiveStatus::OutcomeUnknown
+                    )
+            })
+            .cloned()
+            .collect())
+    }
+
+    pub(crate) fn acknowledge_host_work_directive(
+        &self,
+        handle: &HostWorkHandle,
+        directive_id: &str,
+        acknowledgement: HostWorkDirectiveAcknowledgement,
+        detail: String,
+    ) -> Result<HostWorkDirective> {
+        let directive_id = required_identifier(directive_id, "host directive id")?;
+        let detail = required_text(&detail, "host directive acknowledgement detail")?;
+        let append_guard = self.inner.append_lock.lock();
+        let work = self.require_live_host_work(handle)?;
+        let directive = self.require_host_work_directive(&work, &directive_id)?;
+        if let Some(existing) = directive.acknowledgement {
+            if existing == acknowledgement
+                && directive.acknowledgement_detail.as_deref() == Some(detail.as_str())
+            {
+                return Ok(directive);
+            }
+            bail!("host directive acknowledgement conflicts with the recorded result");
+        }
+        if directive.status != HostWorkDirectiveStatus::Pending {
+            bail!("host directive is not pending acknowledgement");
+        }
+        let publication = self.append_locked(
+            EventContext {
+                source_actor_id: "adapter:host-work".to_string(),
+                causation_id: Some(directive.directive_id.clone()),
+                correlation_id: Some(format!("host-work:{}", work.work_id)),
+                ..EventContext::default()
+            },
+            RuntimeEvent::HostWorkDirectiveAcknowledged {
+                directive_id: directive.directive_id.clone(),
+                work_id: work.work_id.clone(),
+                generation: work.generation,
+                acknowledgement,
+                acknowledged_at_ms: now_ms(),
+                detail,
+            },
+        )?;
+        let acknowledged = self.inner.snapshot.read().host_work_directives[&directive_id].clone();
+        drop(append_guard);
+        deliver_persisted_event(Some(publication));
+        if acknowledgement == HostWorkDirectiveAcknowledgement::Rejected
+            && acknowledged.policy_revision == RESOURCE_GOVERNOR_POLICY_REVISION
+        {
+            if let Err(error) = self.try_issue_governor_host_work_directive(handle, None, None) {
+                // ACK 已经耐久化，不能再把调用伪装成整体失败；Runtime 的 append
+                // fail-stop 会阻止后续写入，下一次启动仍可从账本重建 retry credit。
+                log::error!(
+                    "PinvouOS Governor could not persist a credited HostWork retry: {error:#}"
+                );
+            }
+        }
+        Ok(acknowledged)
+    }
+
+    pub(crate) fn reconcile_host_work_directive(
+        &self,
+        handle: &HostWorkHandle,
+        directive_id: &str,
+        request: ReconcileHostWorkDirectiveRequest,
+    ) -> Result<HostWorkDirective> {
+        let directive_id = required_identifier(directive_id, "host directive id")?;
+        let detail = required_text(&request.detail, "host directive reconciliation detail")?;
+        validate_host_work_reconciliation(request.outcome, request.observed_state)?;
+        let append_guard = self.inner.append_lock.lock();
+        let work = self.require_live_host_work(handle)?;
+        let directive = self.require_host_work_directive(&work, &directive_id)?;
+        if directive.acknowledgement.is_none() {
+            bail!("host directive must be acknowledged before reconciliation");
+        }
+        validate_host_work_reconciliation_for_action(
+            directive.action,
+            request.outcome,
+            request.observed_state,
+        )?;
+        if let Some(previous) = directive.reconciliation {
+            let exact_replay = previous == request.outcome
+                && directive.reconciliation_detail.as_deref() == Some(detail.as_str())
+                && match previous {
+                    HostWorkReconciliationOutcome::OutcomeUnknown => {
+                        request.observed_state.is_none()
+                    }
+                    _ => request.observed_state == directive.reconciled_observed_state,
+                };
+            if exact_replay {
+                return Ok(directive);
+            }
+            if previous != HostWorkReconciliationOutcome::OutcomeUnknown {
+                bail!("host directive already has a definitive reconciliation");
+            }
+        }
+        if !matches!(
+            directive.status,
+            HostWorkDirectiveStatus::AwaitingReconciliation
+                | HostWorkDirectiveStatus::OutcomeUnknown
+        ) {
+            bail!("host directive is not eligible for reconciliation");
+        }
+        let publication = self.append_locked(
+            EventContext {
+                source_actor_id: "adapter:host-work".to_string(),
+                causation_id: Some(directive.directive_id.clone()),
+                correlation_id: Some(format!("host-work:{}", work.work_id)),
+                ..EventContext::default()
+            },
+            RuntimeEvent::HostWorkDirectiveReconciled {
+                directive_id: directive.directive_id.clone(),
+                work_id: work.work_id.clone(),
+                generation: work.generation,
+                outcome: request.outcome,
+                observed_state: request.observed_state,
+                reconciled_at_ms: now_ms(),
+                detail,
+            },
+        )?;
+        let reconciled = self.inner.snapshot.read().host_work_directives[&directive_id].clone();
+        drop(append_guard);
+        deliver_persisted_event(Some(publication));
+        if request.outcome == HostWorkReconciliationOutcome::NotApplied
+            && reconciled.policy_revision == RESOURCE_GOVERNOR_POLICY_REVISION
+        {
+            if let Err(error) = self.try_issue_governor_host_work_directive(handle, None, None) {
+                log::error!(
+                    "PinvouOS Governor could not persist a credited HostWork retry: {error:#}"
+                );
+            }
+        }
+        Ok(reconciled)
+    }
+
+    pub(crate) fn unregister_host_work(
+        &self,
+        handle: &HostWorkHandle,
+        reason: String,
+    ) -> Result<()> {
+        let reason = required_text(&reason, "host work unregistration reason")?;
+        let append_guard = self.inner.append_lock.lock();
+        let work = self.require_live_host_work(handle)?;
+        let snapshot = self.inner.snapshot.read();
+        if host_work_has_unresolved_directive(&snapshot, &work.work_id, work.generation) {
+            bail!("host work has an unresolved directive");
+        }
+        if !host_work_observed_state_is_terminal(work.observed_state) {
+            bail!("live host work cannot be unregistered");
+        }
+        drop(snapshot);
+        let publication = self.append_locked(
+            EventContext::kernel(),
+            RuntimeEvent::HostWorkUnregistered {
+                work_id: work.work_id.clone(),
+                generation: work.generation,
+                unregistered_at_ms: now_ms(),
+                reason,
+            },
+        )?;
+        self.inner
+            .live_host_work_generations
+            .write()
+            .remove(&work.work_id);
+        self.inner
+            .retired_host_work_ids
+            .write()
+            .insert(work.work_id.clone());
+        drop(append_guard);
+        deliver_persisted_event(Some(publication));
+        Ok(())
+    }
+
+    fn host_work_handle(&self, work: &HostWork) -> HostWorkHandle {
+        HostWorkHandle {
+            work_id: work.work_id.clone(),
+            generation: work.generation,
+            runtime_instance_id: self.inner.runtime_instance_id,
+        }
+    }
+
+    fn require_live_host_work(&self, handle: &HostWorkHandle) -> Result<HostWork> {
+        if handle.runtime_instance_id != self.inner.runtime_instance_id {
+            bail!("host work handle belongs to another Runtime instance");
+        }
+        let live_generation = self
+            .inner
+            .live_host_work_generations
+            .read()
+            .get(&handle.work_id)
+            .copied()
+            .ok_or_else(|| anyhow!("host work handle is no longer registered"))?;
+        if live_generation != handle.generation {
+            bail!("host work handle generation is stale");
+        }
+        let work = self
+            .inner
+            .snapshot
+            .read()
+            .host_works
+            .get(&handle.work_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("host work projection is not registered"))?;
+        if work.generation != handle.generation {
+            bail!("host work projection generation does not match the handle");
+        }
+        Ok(work)
+    }
+
+    fn require_host_work_directive(
+        &self,
+        work: &HostWork,
+        directive_id: &str,
+    ) -> Result<HostWorkDirective> {
+        let directive = self
+            .inner
+            .snapshot
+            .read()
+            .host_work_directives
+            .get(directive_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown host directive {directive_id}"))?;
+        if directive.work_id != work.work_id || directive.generation != work.generation {
+            bail!("host directive does not belong to the current work generation");
+        }
+        Ok(directive)
     }
 
     /// 新 Memory Agent 的原生写入口。当前只接受与结构化 ClaimAsserted 的
@@ -910,9 +1656,16 @@ impl PinvouOsRuntime {
 
     pub fn observe_resources(&self, observation: ResourceObservation) -> Result<ResourceDecision> {
         validate_resource_observation(&observation)?;
+        let _resource_governance_guard = self.inner.resource_governance_lock.lock();
         let before = self.snapshot();
         let previous_pressure = before.resources.pressure;
-        let classified_pressure = classify_pressure(&observation, self.inner.governor_policy);
+        let evaluation = evaluate_pressure(
+            &observation,
+            before.resources.last_app_cgroup_observation.as_ref(),
+            before.resources.app_cgroup_critical,
+            self.inner.governor_policy,
+        );
+        let classified_pressure = evaluation.pressure;
         // 降压必须证明导致当前压力的传感器已经恢复。缺温度/内存、陈旧或倒序的
         // 样本可以作为遥测留下，但不能把 Hot/Critical 错判成 Normal 并恢复任务。
         let pressure = if classified_pressure < previous_pressure
@@ -922,6 +1675,15 @@ impl PinvouOsRuntime {
         } else {
             classified_pressure
         };
+        #[cfg(test)]
+        if let Some(hook) = self
+            .inner
+            .resource_observation_before_commit_hook
+            .read()
+            .clone()
+        {
+            hook();
+        }
         let observed = self.append(
             EventContext {
                 source_actor_id: RESOURCE_AGENT_ID.to_string(),
@@ -935,10 +1697,16 @@ impl PinvouOsRuntime {
         )?;
 
         let pressure_changed = pressure != previous_pressure;
+        // pressure_epoch 只认 apply 后 projection；同 pressure 下的新 cgroup counter/crossing
+        // edge 仍刷新 Claim 事实，但不再制造新的治理 epoch 或无限 retry identity。
+        let after_observation = self.snapshot();
+        let pressure_evidence_changed = after_observation.resources.pressure_epoch
+            != before.resources.pressure_epoch
+            || evaluation.app_cgroup.governance_edge;
         let mut pressure_claim_id = before.resources.active_pressure_claim_id.clone();
         let mut directive_cause = observed.event_id.clone();
-        if pressure_changed {
-            if let Some(claim_id) = before.resources.active_pressure_claim_id {
+        if pressure_evidence_changed {
+            if let Some(claim_id) = before.resources.active_pressure_claim_id.clone() {
                 self.append(
                     EventContext {
                         source_actor_id: RESOURCE_AGENT_ID.to_string(),
@@ -949,13 +1717,18 @@ impl PinvouOsRuntime {
                     RuntimeEvent::ClaimRetracted {
                         claim_id,
                         retracted_at_ms: now_ms(),
-                        reason: format!("resource pressure changed to {pressure:?}"),
+                        reason: if pressure_changed {
+                            format!("resource pressure changed to {pressure:?}")
+                        } else {
+                            "new actionable cgroup pressure evidence".to_string()
+                        },
                     },
                 )?;
                 pressure_claim_id = None;
             }
         }
-        if pressure != ResourcePressure::Normal && (pressure_changed || pressure_claim_id.is_none())
+        if pressure != ResourcePressure::Normal
+            && (pressure_evidence_changed || pressure_claim_id.is_none())
         {
             let claim_id = new_entity_id("claim");
             let claim = WorldClaim {
@@ -964,9 +1737,11 @@ impl PinvouOsRuntime {
                 predicate: "pressure_level".to_string(),
                 value: json!({
                     "level": pressure,
+                    "reasonCodes": evaluation.reason_codes,
                     "temperatureC": observation.temperature_c,
                     "memoryUsedPct": observation.memory_used_pct,
                     "cpuUsagePct": observation.cpu_usage_pct,
+                    "appCgroup": app_cgroup_claim_value(&observation, &evaluation),
                 }),
                 confidence: 1.0,
                 asserted_by_actor_id: RESOURCE_AGENT_ID.to_string(),
@@ -989,6 +1764,14 @@ impl PinvouOsRuntime {
             pressure_claim_id = Some(claim_id);
         }
 
+        let bounded_reasons = evaluation.reason_codes.join(",");
+        let governance_reason = if bounded_reasons.is_empty() {
+            format!("resource pressure reconciliation {previous_pressure:?} -> {pressure:?}")
+        } else {
+            format!(
+                "resource pressure reconciliation {previous_pressure:?} -> {pressure:?}: {bounded_reasons}"
+            )
+        };
         let mut directives = Vec::new();
         // 每次权威观测都做 reconciliation：这既覆盖 Hot 期间新注册的 Agent，也能在
         // Hot→Warm→Normal 或进程重启后补发尚未完成的恢复控制，而不会依赖单次边沿。
@@ -1005,9 +1788,7 @@ impl PinvouOsRuntime {
                 directive_id: new_entity_id("directive"),
                 target_agent_id: agent.agent_id.clone(),
                 action,
-                reason: format!(
-                    "resource pressure reconciliation {previous_pressure:?} -> {pressure:?}"
-                ),
+                reason: governance_reason.clone(),
                 hard,
                 issued_at_ms: now_ms(),
                 status: DirectiveStatus::Pending,
@@ -1027,7 +1808,56 @@ impl PinvouOsRuntime {
                     directive: directive.clone(),
                 },
             )?;
-            directives.push(self.dispatch_control_directive(&directive)?);
+            // Mission Agent 兼容路径只持久化 Pending。旧的同步 callback 注册面会把
+            // Resource Agent 采样循环与外部副作用绑在同一调用栈，现已移除；未来
+            // Mission 执行器必须像 HostWork 一样在独立有界 worker 中 ACK。
+            directives.push(directive);
+        }
+
+        let mut host_work_directives = Vec::new();
+        // HostWork 只签发账本意图，不在资源采样调用栈执行 Adapter。只有本 Runtime
+        // 实例中仍持有受信 handle 的 generation 才能进入候选，replay 出来的历史字符串
+        // 不会自动恢复控制权。必须在 ResourceObserved 落账后重新读取 Registry：并发注册
+        // 要么先于这张快照并由本轮治理，要么晚于快照并由注册方的即时 reconcile 治理。
+        let governance = self.snapshot();
+        #[cfg(test)]
+        if let Some(hook) = self
+            .inner
+            .resource_observation_before_governance_issue_hook
+            .read()
+            .clone()
+        {
+            hook();
+        }
+        for work in governance.host_works.values() {
+            let Some((_action, _hard)) =
+                directive_for_host_work(work, pressure, self.inner.governor_policy)
+            else {
+                continue;
+            };
+            // 快照预筛仅用于省掉无意义调用；最终单飞、generation 和同 epoch 的
+            // initial + 1 retry 配额都在 append lock 内重新判断。
+            if host_work_has_unresolved_directive(&governance, &work.work_id, work.generation) {
+                continue;
+            }
+            if self
+                .inner
+                .live_host_work_generations
+                .read()
+                .get(&work.work_id)
+                .copied()
+                != Some(work.generation)
+            {
+                continue;
+            }
+            let handle = self.host_work_handle(work);
+            if let Some(directive) = self.try_issue_governor_host_work_directive(
+                &handle,
+                Some(governance_reason.clone()),
+                Some(directive_cause.clone()),
+            )? {
+                host_work_directives.push(directive);
+            }
         }
 
         Ok(ResourceDecision {
@@ -1035,6 +1865,7 @@ impl PinvouOsRuntime {
             observation_event_id: observed.event_id,
             pressure_claim_id,
             directives,
+            host_work_directives,
         })
     }
 
@@ -1099,26 +1930,7 @@ impl PinvouOsRuntime {
         applied: bool,
         detail: String,
     ) -> Result<ControlDirective> {
-        self.commit_directive_acknowledgement(
-            directive_id,
-            applied,
-            detail,
-            DirectiveAcknowledgementOwner::External,
-        )
-    }
-
-    fn acknowledge_dispatched_directive(
-        &self,
-        directive_id: &str,
-        applied: bool,
-        detail: String,
-    ) -> Result<ControlDirective> {
-        self.commit_directive_acknowledgement(
-            directive_id,
-            applied,
-            detail,
-            DirectiveAcknowledgementOwner::RegisteredAdapter,
-        )
+        self.commit_directive_acknowledgement(directive_id, applied, detail)
     }
 
     fn commit_directive_acknowledgement(
@@ -1126,7 +1938,6 @@ impl PinvouOsRuntime {
         directive_id: &str,
         applied: bool,
         detail: String,
-        owner: DirectiveAcknowledgementOwner,
     ) -> Result<ControlDirective> {
         // Pending 检查与 ACK 落账共享 append_lock。否则两个并发确认都可能先读取
         // Pending，再各自追加一个合法但互相冲突的 DirectiveAcknowledged。
@@ -1140,22 +1951,6 @@ impl PinvouOsRuntime {
                 .ok_or_else(|| anyhow!("unknown directive {directive_id}"))?;
             if directive.status != DirectiveStatus::Pending {
                 bail!("directive {directive_id} was already acknowledged");
-            }
-            let adapter_owns_ack = self
-                .inner
-                .dispatched_directive_ids
-                .lock()
-                .contains(directive_id);
-            match (owner, adapter_owns_ack) {
-                (DirectiveAcknowledgementOwner::External, true) => {
-                    bail!(
-                        "directive {directive_id} acknowledgement is owned by its control adapter"
-                    )
-                }
-                (DirectiveAcknowledgementOwner::RegisteredAdapter, false) => {
-                    bail!("directive {directive_id} has no adapter dispatch claim")
-                }
-                _ => {}
             }
             let agent = snapshot
                 .agents
@@ -1208,51 +2003,6 @@ impl PinvouOsRuntime {
         drop(append_guard);
         deliver_persisted_event(Some(publication));
         Ok(acknowledged)
-    }
-
-    fn dispatch_control_directive(&self, directive: &ControlDirective) -> Result<ControlDirective> {
-        let (directive, adapter) = {
-            // 与 ACK 共用 append_lock：一个已确认的 Directive 不能在状态检查后又被
-            // 外部执行；dispatch claim 则合并新派发与注册时补偿派发的并发竞争。
-            let _append_guard = self.inner.append_lock.lock();
-            let current = self
-                .inner
-                .snapshot
-                .read()
-                .directives
-                .get(&directive.directive_id)
-                .cloned()
-                .ok_or_else(|| anyhow!("unknown directive {}", directive.directive_id))?;
-            if current.status != DirectiveStatus::Pending {
-                return Ok(current);
-            }
-            let adapter = self
-                .inner
-                .control_adapters
-                .read()
-                .get(&current.target_agent_id)
-                .cloned();
-            let Some(adapter) = adapter else {
-                return Ok(current);
-            };
-            if !self
-                .inner
-                .dispatched_directive_ids
-                .lock()
-                .insert(current.directive_id.clone())
-            {
-                return Ok(current);
-            }
-            (current, adapter)
-        };
-        match adapter(directive.clone()) {
-            Ok(detail) => {
-                self.acknowledge_dispatched_directive(&directive.directive_id, true, detail)
-            }
-            Err(detail) => {
-                self.acknowledge_dispatched_directive(&directive.directive_id, false, detail)
-            }
-        }
     }
 
     pub fn list_events(
@@ -1662,6 +2412,7 @@ fn append_envelope(
 
 pub(super) fn serialize_envelope_frame(envelope: &EventEnvelope) -> Result<Vec<u8>> {
     validate_current_schema_screen_observer_identity(envelope)?;
+    validate_host_work_event_shape(envelope)?;
     let mut payload = serde_json::to_vec(envelope).context("serialize PinvouOS event")?;
     payload.push(b'\n');
     if payload.len() > MAX_RUNTIME_EVENT_FRAME_BYTES {
@@ -1851,6 +2602,7 @@ fn validate_ledger_event_chain(events: &[EventEnvelope]) -> Result<()> {
             );
         }
         validate_current_schema_screen_observer_identity(envelope)?;
+        validate_host_work_event_shape(envelope)?;
         if envelope.sequence != expected_sequence {
             bail!(
                 "PinvouOS ledger sequence gap or duplicate: expected {}, found {}",
@@ -1884,6 +2636,7 @@ fn validate_ledger_event_chain(events: &[EventEnvelope]) -> Result<()> {
             .checked_add(1)
             .ok_or_else(|| anyhow!("PinvouOS ledger sequence overflow"))?;
     }
+    validate_host_work_event_chain(events)?;
     Ok(())
 }
 
@@ -1977,6 +2730,361 @@ pub(super) fn validate_current_schema_screen_observer_identity(
             );
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn validate_host_work_event_shape(envelope: &EventEnvelope) -> Result<()> {
+    let is_host_work_event = matches!(
+        &envelope.event,
+        RuntimeEvent::HostWorkRegistered { .. }
+            | RuntimeEvent::HostWorkObserved { .. }
+            | RuntimeEvent::HostWorkDirectiveIssued { .. }
+            | RuntimeEvent::HostWorkDirectiveAcknowledged { .. }
+            | RuntimeEvent::HostWorkDirectiveReconciled { .. }
+            | RuntimeEvent::HostWorkUnregistered { .. }
+    );
+    if !is_host_work_event {
+        return Ok(());
+    }
+    if envelope.schema_version < 6 {
+        bail!("HostWork events require PinvouOS ledger schema v6");
+    }
+
+    match &envelope.event {
+        RuntimeEvent::HostWorkRegistered { work } => {
+            if envelope.source_actor_id != KERNEL_ACTOR_ID {
+                bail!("HostWork registration must be emitted by the kernel");
+            }
+            validate_host_work_registration_shape(work)?;
+            if work.registered_at_ms > envelope.occurred_at_ms {
+                bail!("HostWork registration timestamp is in the future");
+            }
+        }
+        RuntimeEvent::HostWorkObserved {
+            work_id,
+            generation,
+            observed_at_ms,
+            detail,
+            ..
+        } => {
+            validate_host_work_event_identity(work_id, *generation)?;
+            required_text(detail, "host work observation detail")?;
+            if envelope.source_actor_id != "adapter:host-work"
+                || *observed_at_ms > envelope.occurred_at_ms
+            {
+                bail!("HostWork observation has an invalid actor or timestamp");
+            }
+        }
+        RuntimeEvent::HostWorkDirectiveIssued { directive } => {
+            if envelope.source_actor_id != GOVERNOR_ACTOR_ID {
+                bail!("HostWork directive must be emitted by the Governor");
+            }
+            validate_host_work_event_identity(&directive.work_id, directive.generation)?;
+            required_identifier(&directive.directive_id, "host directive id")?;
+            if !directive.directive_id.starts_with("host-directive-") {
+                bail!("host directive id is not a Runtime identity");
+            }
+            required_text(&directive.reason, "host directive reason")?;
+            required_identifier(&directive.policy_revision, "host directive policy revision")?;
+            if directive.issued_at_ms > envelope.occurred_at_ms
+                || directive.issued_event_sequence.is_some()
+                || directive.status != HostWorkDirectiveStatus::Pending
+                || directive.acknowledgement.is_some()
+                || directive.acknowledged_at_ms.is_some()
+                || directive.acknowledgement_detail.is_some()
+                || directive.reconciliation.is_some()
+                || directive.reconciled_observed_state.is_some()
+                || directive.reconciled_at_ms.is_some()
+                || directive.reconciliation_detail.is_some()
+            {
+                bail!("HostWork directive was issued with non-initial state");
+            }
+        }
+        RuntimeEvent::HostWorkDirectiveAcknowledged {
+            directive_id,
+            work_id,
+            generation,
+            acknowledged_at_ms,
+            detail,
+            ..
+        } => {
+            validate_host_work_event_identity(work_id, *generation)?;
+            required_identifier(directive_id, "host directive id")?;
+            required_text(detail, "host directive acknowledgement detail")?;
+            if envelope.source_actor_id != "adapter:host-work"
+                || *acknowledged_at_ms > envelope.occurred_at_ms
+            {
+                bail!("HostWork acknowledgement has an invalid actor or timestamp");
+            }
+        }
+        RuntimeEvent::HostWorkDirectiveReconciled {
+            directive_id,
+            work_id,
+            generation,
+            outcome,
+            observed_state,
+            reconciled_at_ms,
+            detail,
+        } => {
+            validate_host_work_event_identity(work_id, *generation)?;
+            required_identifier(directive_id, "host directive id")?;
+            required_text(detail, "host directive reconciliation detail")?;
+            validate_host_work_reconciliation(*outcome, *observed_state)?;
+            if envelope.source_actor_id != "adapter:host-work"
+                || *reconciled_at_ms > envelope.occurred_at_ms
+            {
+                bail!("HostWork reconciliation has an invalid actor or timestamp");
+            }
+        }
+        RuntimeEvent::HostWorkUnregistered {
+            work_id,
+            generation,
+            unregistered_at_ms,
+            reason,
+        } => {
+            validate_host_work_event_identity(work_id, *generation)?;
+            required_text(reason, "host work unregistration reason")?;
+            if envelope.source_actor_id != KERNEL_ACTOR_ID
+                || *unregistered_at_ms > envelope.occurred_at_ms
+            {
+                bail!("HostWork unregistration has an invalid actor or timestamp");
+            }
+        }
+        _ => unreachable!("HostWork event classification and validation diverged"),
+    }
+    Ok(())
+}
+
+fn validate_host_work_event_chain(events: &[EventEnvelope]) -> Result<()> {
+    let mut projection = RuntimeSnapshot::default();
+    let mut retired_work_ids = BTreeSet::new();
+    let mut fresh_critical_evidence_ids = BTreeSet::new();
+    for envelope in events {
+        if envelope
+            .causation_id
+            .as_ref()
+            .is_some_and(|causation_id| fresh_critical_evidence_ids.contains(causation_id))
+        {
+            fresh_critical_evidence_ids.insert(envelope.event_id.clone());
+        }
+        match &envelope.event {
+            RuntimeEvent::ResourceObserved { observation, .. } => {
+                // Directive 的 retry epoch 来自同一权威资源事件流；HostWork 专项校验
+                // 也必须推进这部分 projection，不能把它当无关事件跳过。
+                let evaluation = evaluate_pressure(
+                    observation,
+                    projection.resources.last_app_cgroup_observation.as_ref(),
+                    projection.resources.app_cgroup_critical,
+                    ResourceGovernorPolicy::default(),
+                );
+                if evaluation.fresh_critical_evidence
+                    && resource_observation_is_fresh_and_advancing(
+                        &projection,
+                        observation,
+                        envelope.occurred_at_ms,
+                    )
+                {
+                    fresh_critical_evidence_ids.insert(envelope.event_id.clone());
+                }
+                apply_event(&mut projection, envelope);
+                continue;
+            }
+            RuntimeEvent::HostWorkRegistered { work } => {
+                if retired_work_ids.contains(&work.work_id) {
+                    bail!("retired HostWork identity was reused");
+                }
+                let previous = projection.host_works.get(&work.work_id);
+                if projection.host_works.values().any(|existing| {
+                    existing.work_id != work.work_id
+                        && existing.owner == work.owner
+                        && existing.kind == work.kind
+                }) {
+                    bail!("HostWork registration key is not unique");
+                }
+                validate_host_work_registration(
+                    work,
+                    previous.map(|previous| previous.generation),
+                )?;
+                if let Some(previous) = previous {
+                    if host_work_has_unresolved_directive(
+                        &projection,
+                        &previous.work_id,
+                        previous.generation,
+                    ) {
+                        bail!("HostWork generation changed with an unresolved directive");
+                    }
+                    if !host_work_observed_state_is_terminal(previous.observed_state) {
+                        bail!("live HostWork generation was renewed");
+                    }
+                }
+            }
+            RuntimeEvent::HostWorkObserved {
+                work_id,
+                generation,
+                observed_state,
+                observed_at_ms,
+                ..
+            } => {
+                let work = require_projected_host_work(&projection, work_id, *generation)?;
+                if *observed_at_ms < work.last_observed_at_ms {
+                    bail!("HostWork observation time moved backwards");
+                }
+                if host_work_has_unresolved_directive(&projection, work_id, *generation) {
+                    bail!("HostWork observation bypasses an unresolved directive");
+                }
+                if host_work_observed_state_is_terminal(work.observed_state)
+                    && *observed_state != work.observed_state
+                {
+                    bail!("terminal HostWork observation changed within a generation");
+                }
+            }
+            RuntimeEvent::HostWorkDirectiveIssued { directive } => {
+                if projection
+                    .host_work_directives
+                    .contains_key(&directive.directive_id)
+                {
+                    bail!("duplicate HostWork directive id {}", directive.directive_id);
+                }
+                let work = require_projected_host_work(
+                    &projection,
+                    &directive.work_id,
+                    directive.generation,
+                )?;
+                validate_host_work_action(work, directive.action)?;
+                if directive.resource_pressure_epoch != projection.resources.pressure_epoch {
+                    bail!("HostWork directive pressure epoch does not match the projection");
+                }
+                if host_work_has_unresolved_directive(
+                    &projection,
+                    &directive.work_id,
+                    directive.generation,
+                ) {
+                    bail!("HostWork has parallel unresolved directives");
+                }
+                let rejected_count = governor_rejected_action_count_in_pressure_epoch(
+                    &projection,
+                    work,
+                    directive.action,
+                    directive.resource_pressure_epoch,
+                );
+                let retry_has_fresh_evidence = envelope
+                    .causation_id
+                    .as_ref()
+                    .is_some_and(|causation_id| fresh_critical_evidence_ids.contains(causation_id));
+                if (directive.policy_revision == RESOURCE_GOVERNOR_POLICY_REVISION
+                    && (rejected_count >= 2 || (rejected_count == 1 && !retry_has_fresh_evidence)))
+                    || (directive.policy_revision != RESOURCE_GOVERNOR_POLICY_REVISION
+                        && host_work_action_failed_in_pressure_epoch(
+                            &projection,
+                            work,
+                            directive.action,
+                            directive.resource_pressure_epoch,
+                        ))
+                {
+                    bail!("HostWork action exceeded its retry bound in the pressure epoch");
+                }
+            }
+            RuntimeEvent::HostWorkDirectiveAcknowledged {
+                directive_id,
+                work_id,
+                generation,
+                ..
+            } => {
+                require_projected_host_work(&projection, work_id, *generation)?;
+                let directive = projection
+                    .host_work_directives
+                    .get(directive_id)
+                    .ok_or_else(|| anyhow!("HostWork acknowledgement has no directive"))?;
+                if directive.work_id != *work_id || directive.generation != *generation {
+                    bail!("HostWork acknowledgement generation mismatch");
+                }
+                if directive.acknowledgement.is_some()
+                    || directive.status != HostWorkDirectiveStatus::Pending
+                {
+                    bail!("HostWork directive was acknowledged more than once");
+                }
+            }
+            RuntimeEvent::HostWorkDirectiveReconciled {
+                directive_id,
+                work_id,
+                generation,
+                outcome,
+                observed_state,
+                ..
+            } => {
+                require_projected_host_work(&projection, work_id, *generation)?;
+                let directive = projection
+                    .host_work_directives
+                    .get(directive_id)
+                    .ok_or_else(|| anyhow!("HostWork reconciliation has no directive"))?;
+                if directive.work_id != *work_id || directive.generation != *generation {
+                    bail!("HostWork reconciliation generation mismatch");
+                }
+                if directive.acknowledgement.is_none() {
+                    bail!("HostWork directive was reconciled before acknowledgement");
+                }
+                if !matches!(
+                    directive.status,
+                    HostWorkDirectiveStatus::AwaitingReconciliation
+                        | HostWorkDirectiveStatus::OutcomeUnknown
+                ) {
+                    bail!("HostWork directive status cannot be reconciled");
+                }
+                if directive.reconciliation.is_some_and(|previous| {
+                    previous != HostWorkReconciliationOutcome::OutcomeUnknown
+                }) {
+                    bail!("HostWork directive has multiple definitive reconciliations");
+                }
+                validate_host_work_reconciliation_for_action(
+                    directive.action,
+                    *outcome,
+                    *observed_state,
+                )?;
+            }
+            RuntimeEvent::HostWorkUnregistered {
+                work_id,
+                generation,
+                ..
+            } => {
+                require_projected_host_work(&projection, work_id, *generation)?;
+                if host_work_has_unresolved_directive(&projection, work_id, *generation) {
+                    bail!("HostWork was unregistered with an unresolved directive");
+                }
+                let work = require_projected_host_work(&projection, work_id, *generation)?;
+                if !host_work_observed_state_is_terminal(work.observed_state) {
+                    bail!("live HostWork was unregistered");
+                }
+                retired_work_ids.insert(work_id.clone());
+            }
+            _ => continue,
+        }
+        apply_event(&mut projection, envelope);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn validate_host_work_events_for_test(events: &[EventEnvelope]) -> Result<()> {
+    validate_host_work_event_chain(events)
+}
+
+fn require_projected_host_work<'a>(
+    snapshot: &'a RuntimeSnapshot,
+    work_id: &str,
+    generation: u64,
+) -> Result<&'a HostWork> {
+    snapshot
+        .host_works
+        .get(work_id)
+        .filter(|work| work.generation == generation)
+        .ok_or_else(|| anyhow!("HostWork event targets an unregistered generation"))
+}
+
+fn validate_host_work_event_identity(work_id: &str, generation: u64) -> Result<()> {
+    required_identifier(work_id, "host work id")?;
+    if !work_id.starts_with("host-work-") || generation == 0 {
+        bail!("HostWork event has an invalid opaque identity");
     }
     Ok(())
 }
@@ -2596,8 +3704,55 @@ fn apply_event(snapshot: &mut RuntimeSnapshot, envelope: &EventEnvelope) {
             observation,
             pressure,
         } => {
+            let evaluation = evaluate_pressure(
+                observation,
+                snapshot.resources.last_app_cgroup_observation.as_ref(),
+                snapshot.resources.app_cgroup_critical,
+                ResourceGovernorPolicy::default(),
+            );
+            let fresh_critical_evidence = evaluation.fresh_critical_evidence
+                && resource_observation_is_fresh_and_advancing(
+                    snapshot,
+                    observation,
+                    envelope.occurred_at_ms,
+                );
+            let pressure_changed = snapshot.resources.pressure != *pressure;
+            if pressure_changed {
+                snapshot.resources.pressure_epoch =
+                    snapshot.resources.pressure_epoch.saturating_add(1);
+            }
             snapshot.resources.pressure = *pressure;
-            snapshot.resources.last_observation = Some(observation.clone());
+            if fresh_critical_evidence {
+                snapshot.resources.last_fresh_critical_evidence =
+                    Some(ResourceGovernanceEvidence {
+                        event_id: envelope.event_id.clone(),
+                        sequence: envelope.sequence,
+                        sampled_at_ms: observation.sampled_at_ms,
+                        pressure_epoch: snapshot.resources.pressure_epoch,
+                    });
+            }
+            snapshot.resources.app_cgroup_critical = evaluation.app_cgroup.active;
+            if let Some(app_cgroup) = observation.app_cgroup.as_ref() {
+                // Absolute memory.events counters are consumed only by advancing, durably
+                // applied observations. A duplicate/out-of-order Status may hold or raise
+                // pressure, but must never rewind the persisted baseline and replay a delta.
+                let advances_baseline = snapshot
+                    .resources
+                    .last_app_cgroup_observation
+                    .as_ref()
+                    .is_none_or(|previous| app_cgroup.observed_at_ms > previous.observed_at_ms);
+                if advances_baseline {
+                    snapshot.resources.last_app_cgroup_observation = Some(app_cgroup.clone());
+                }
+            }
+            if snapshot
+                .resources
+                .last_observation
+                .as_ref()
+                .is_none_or(|previous| observation.sampled_at_ms > previous.sampled_at_ms)
+            {
+                snapshot.resources.last_observation = Some(observation.clone());
+            }
         }
         RuntimeEvent::ConnectivityObserved { observation } => {
             snapshot.connectivity.status = observation.status;
@@ -2686,6 +3841,157 @@ fn apply_event(snapshot: &mut RuntimeSnapshot, envelope: &EventEnvelope) {
                 }
             }
         }
+        RuntimeEvent::HostWorkRegistered { work } => {
+            snapshot
+                .host_works
+                .insert(work.work_id.clone(), work.clone());
+        }
+        RuntimeEvent::HostWorkObserved {
+            work_id,
+            generation,
+            observed_state,
+            observed_at_ms,
+            ..
+        } => {
+            if let Some(work) = snapshot
+                .host_works
+                .get_mut(work_id)
+                .filter(|work| work.generation == *generation)
+            {
+                work.observed_state = *observed_state;
+                work.last_observed_at_ms = *observed_at_ms;
+                if *observed_state != HostWorkObservedState::Paused {
+                    work.governor_pause_directive_id = None;
+                }
+                if matches!(
+                    observed_state,
+                    HostWorkObservedState::Stopped
+                        | HostWorkObservedState::Completed
+                        | HostWorkObservedState::Failed
+                ) {
+                    work.desired_state = HostWorkDesiredState::Stopped;
+                    work.governor_pause_directive_id = None;
+                }
+            }
+        }
+        RuntimeEvent::HostWorkDirectiveIssued { directive } => {
+            let mut projected_directive = directive.clone();
+            projected_directive.issued_event_sequence = Some(envelope.sequence);
+            if let Some(work) = snapshot
+                .host_works
+                .get_mut(&directive.work_id)
+                .filter(|work| work.generation == directive.generation)
+            {
+                work.desired_state = match directive.action {
+                    HostWorkAction::Pause => HostWorkDesiredState::Paused,
+                    HostWorkAction::Stop => HostWorkDesiredState::Stopped,
+                    HostWorkAction::Resume => HostWorkDesiredState::Running,
+                };
+            }
+            snapshot
+                .host_work_directives
+                .insert(directive.directive_id.clone(), projected_directive);
+        }
+        RuntimeEvent::HostWorkDirectiveAcknowledged {
+            directive_id,
+            work_id,
+            generation,
+            acknowledgement,
+            acknowledged_at_ms,
+            detail,
+        } => {
+            if let Some(directive) = snapshot.host_work_directives.get_mut(directive_id) {
+                directive.acknowledgement = Some(*acknowledgement);
+                directive.acknowledged_at_ms = Some(*acknowledged_at_ms);
+                directive.acknowledgement_detail = Some(detail.clone());
+                directive.status = match acknowledgement {
+                    HostWorkDirectiveAcknowledgement::Applied => {
+                        HostWorkDirectiveStatus::AwaitingReconciliation
+                    }
+                    HostWorkDirectiveAcknowledgement::Rejected => HostWorkDirectiveStatus::Rejected,
+                    HostWorkDirectiveAcknowledgement::OutcomeUnknown => {
+                        HostWorkDirectiveStatus::OutcomeUnknown
+                    }
+                };
+            }
+            if *acknowledgement == HostWorkDirectiveAcknowledgement::Rejected {
+                if let Some(work) = snapshot
+                    .host_works
+                    .get_mut(work_id)
+                    .filter(|work| work.generation == *generation)
+                {
+                    work.desired_state = desired_host_work_state(work.observed_state);
+                }
+            }
+        }
+        RuntimeEvent::HostWorkDirectiveReconciled {
+            directive_id,
+            work_id,
+            generation,
+            outcome,
+            observed_state,
+            reconciled_at_ms,
+            detail,
+        } => {
+            let action = snapshot
+                .host_work_directives
+                .get(directive_id)
+                .map(|directive| directive.action);
+            if let Some(directive) = snapshot.host_work_directives.get_mut(directive_id) {
+                directive.reconciliation = Some(*outcome);
+                directive.reconciled_observed_state = *observed_state;
+                directive.reconciled_at_ms = Some(*reconciled_at_ms);
+                directive.reconciliation_detail = Some(detail.clone());
+                directive.status = match outcome {
+                    HostWorkReconciliationOutcome::Confirmed => HostWorkDirectiveStatus::Reconciled,
+                    HostWorkReconciliationOutcome::NotApplied => HostWorkDirectiveStatus::Rejected,
+                    HostWorkReconciliationOutcome::OutcomeUnknown => {
+                        HostWorkDirectiveStatus::OutcomeUnknown
+                    }
+                };
+            }
+            if let Some(observed_state) = observed_state {
+                if let Some(work) = snapshot
+                    .host_works
+                    .get_mut(work_id)
+                    .filter(|work| work.generation == *generation)
+                {
+                    work.observed_state = *observed_state;
+                    work.last_observed_at_ms = *reconciled_at_ms;
+                    match outcome {
+                        HostWorkReconciliationOutcome::Confirmed => match action {
+                            Some(HostWorkAction::Pause) => {
+                                work.governor_pause_directive_id = Some(directive_id.clone());
+                            }
+                            Some(HostWorkAction::Resume | HostWorkAction::Stop) => {
+                                work.governor_pause_directive_id = None;
+                            }
+                            None => {}
+                        },
+                        HostWorkReconciliationOutcome::NotApplied => {
+                            work.desired_state = desired_host_work_state(*observed_state);
+                            if *observed_state != HostWorkObservedState::Paused {
+                                work.governor_pause_directive_id = None;
+                            }
+                        }
+                        HostWorkReconciliationOutcome::OutcomeUnknown => {}
+                    }
+                }
+            }
+        }
+        RuntimeEvent::HostWorkUnregistered {
+            work_id,
+            generation,
+            ..
+        } => {
+            if snapshot
+                .host_works
+                .get(work_id)
+                .is_some_and(|work| work.generation == *generation)
+            {
+                snapshot.host_works.remove(work_id);
+            }
+        }
         RuntimeEvent::MemoryProjectionUpdated { .. }
         | RuntimeEvent::OrganizedMemoryDecisionRecorded { .. }
         | RuntimeEvent::OrganizedMemoryCheckpointRecorded { .. } => {}
@@ -2703,6 +4009,244 @@ fn upcast_agent_manifest(agent: &AgentManifest) -> AgentManifest {
             canonical_screen_observer_capability_id(&capability.capability_id).to_string();
     }
     agent
+}
+
+fn desired_host_work_state(observed: HostWorkObservedState) -> HostWorkDesiredState {
+    match observed {
+        HostWorkObservedState::Paused => HostWorkDesiredState::Paused,
+        HostWorkObservedState::Stopped
+        | HostWorkObservedState::Completed
+        | HostWorkObservedState::Failed => HostWorkDesiredState::Stopped,
+        HostWorkObservedState::Unknown
+        | HostWorkObservedState::Starting
+        | HostWorkObservedState::Running => HostWorkDesiredState::Running,
+    }
+}
+
+fn host_work_action_state(action: HostWorkAction) -> HostWorkObservedState {
+    match action {
+        HostWorkAction::Pause => HostWorkObservedState::Paused,
+        HostWorkAction::Stop => HostWorkObservedState::Stopped,
+        HostWorkAction::Resume => HostWorkObservedState::Running,
+    }
+}
+
+fn validate_host_work_registration(
+    work: &HostWork,
+    previous_generation: Option<u64>,
+) -> Result<()> {
+    validate_host_work_registration_shape(work)?;
+    match previous_generation {
+        Some(previous) if work.generation != previous.saturating_add(1) => {
+            bail!("renewed host work generation is not monotonic")
+        }
+        None if work.generation != 1 => bail!("new host work must start at generation 1"),
+        _ => Ok(()),
+    }
+}
+
+fn validate_host_work_registration_shape(work: &HostWork) -> Result<()> {
+    required_identifier(&work.owner, "host work owner")?;
+    required_identifier(&work.work_id, "host work id")?;
+    if !work.work_id.starts_with("host-work-") || work.generation == 0 {
+        bail!("host work id is not an opaque Runtime identity");
+    }
+    if work.last_observed_at_ms < work.registered_at_ms {
+        bail!("host work observation predates registration");
+    }
+    if matches!(
+        work.observed_state,
+        HostWorkObservedState::Stopped
+            | HostWorkObservedState::Completed
+            | HostWorkObservedState::Failed
+    ) {
+        bail!("terminal host work cannot be registered as live");
+    }
+    if work.desired_state != desired_host_work_state(work.observed_state) {
+        bail!("new host work desired state must match its initial observation");
+    }
+    if work.governor_pause_directive_id.is_some() {
+        bail!("new host work cannot claim a prior Governor pause");
+    }
+    if work.supported_actions.contains(&HostWorkAction::Resume)
+        && !work.supported_actions.contains(&HostWorkAction::Pause)
+    {
+        bail!("host work cannot support resume without pause");
+    }
+    if work.supported_actions.contains(&HostWorkAction::Pause)
+        && work.interruptibility == Interruptibility::Atomic
+    {
+        bail!("atomic host work cannot advertise pause");
+    }
+    Ok(())
+}
+
+fn validate_host_work_action(work: &HostWork, action: HostWorkAction) -> Result<()> {
+    if !work.governable {
+        bail!("host work is observation-only");
+    }
+    if work.essential {
+        bail!("essential host work requires a separate authorization path");
+    }
+    if !work.supported_actions.contains(&action) {
+        bail!("host work does not support the requested action");
+    }
+    match action {
+        HostWorkAction::Pause => {
+            if work.interruptibility == Interruptibility::Atomic {
+                bail!("atomic host work cannot be paused");
+            }
+            if work.desired_state != HostWorkDesiredState::Running
+                || work.observed_state != HostWorkObservedState::Running
+            {
+                bail!("only observed running host work can be paused");
+            }
+        }
+        HostWorkAction::Resume => {
+            if work.governor_pause_directive_id.is_none()
+                || work.desired_state != HostWorkDesiredState::Paused
+                || work.observed_state != HostWorkObservedState::Paused
+            {
+                bail!("only work confirmed paused by this Governor can resume");
+            }
+        }
+        HostWorkAction::Stop => {
+            if work.desired_state == HostWorkDesiredState::Stopped
+                || matches!(
+                    work.observed_state,
+                    HostWorkObservedState::Stopped
+                        | HostWorkObservedState::Completed
+                        | HostWorkObservedState::Failed
+                )
+            {
+                bail!("host work is already terminal");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_host_work_reconciliation(
+    outcome: HostWorkReconciliationOutcome,
+    observed_state: Option<HostWorkObservedState>,
+) -> Result<()> {
+    match (outcome, observed_state) {
+        (HostWorkReconciliationOutcome::OutcomeUnknown, None) => Ok(()),
+        (HostWorkReconciliationOutcome::OutcomeUnknown, Some(_)) => {
+            bail!("outcome_unknown reconciliation cannot assert observed state")
+        }
+        (_, Some(HostWorkObservedState::Unknown)) => {
+            bail!("definitive reconciliation cannot report unknown state")
+        }
+        (_, Some(_)) => Ok(()),
+        (_, None) => bail!("definitive reconciliation requires observed state"),
+    }
+}
+
+fn validate_host_work_reconciliation_for_action(
+    action: HostWorkAction,
+    outcome: HostWorkReconciliationOutcome,
+    observed_state: Option<HostWorkObservedState>,
+) -> Result<()> {
+    let target = host_work_action_state(action);
+    match outcome {
+        HostWorkReconciliationOutcome::Confirmed if observed_state != Some(target) => {
+            bail!("confirmed host directive does not match its target state")
+        }
+        HostWorkReconciliationOutcome::NotApplied if observed_state == Some(target) => {
+            bail!("not_applied host directive reports its target state")
+        }
+        _ => Ok(()),
+    }
+}
+
+fn host_work_has_unresolved_directive(
+    snapshot: &RuntimeSnapshot,
+    work_id: &str,
+    generation: u64,
+) -> bool {
+    snapshot.host_work_directives.values().any(|directive| {
+        directive.work_id == work_id
+            && directive.generation == generation
+            && matches!(
+                directive.status,
+                HostWorkDirectiveStatus::Pending
+                    | HostWorkDirectiveStatus::AwaitingReconciliation
+                    | HostWorkDirectiveStatus::OutcomeUnknown
+            )
+    })
+}
+
+fn host_work_action_failed_in_pressure_epoch(
+    snapshot: &RuntimeSnapshot,
+    work: &HostWork,
+    action: HostWorkAction,
+    pressure_epoch: u64,
+) -> bool {
+    snapshot.host_work_directives.values().any(|directive| {
+        directive.work_id == work.work_id
+            && directive.generation == work.generation
+            && directive.action == action
+            && directive.resource_pressure_epoch == pressure_epoch
+            && directive.status == HostWorkDirectiveStatus::Rejected
+    })
+}
+
+fn governor_rejected_action_count_in_pressure_epoch(
+    snapshot: &RuntimeSnapshot,
+    work: &HostWork,
+    action: HostWorkAction,
+    pressure_epoch: u64,
+) -> usize {
+    snapshot
+        .host_work_directives
+        .values()
+        .filter(|directive| {
+            directive.work_id == work.work_id
+                && directive.generation == work.generation
+                && directive.action == action
+                && directive.resource_pressure_epoch == pressure_epoch
+                && directive.policy_revision == RESOURCE_GOVERNOR_POLICY_REVISION
+                && directive.status == HostWorkDirectiveStatus::Rejected
+        })
+        .count()
+}
+
+fn governor_retry_evidence_after_initial_attempt<'a>(
+    snapshot: &'a RuntimeSnapshot,
+    work: &HostWork,
+    action: HostWorkAction,
+    pressure_epoch: u64,
+) -> Option<&'a ResourceGovernanceEvidence> {
+    let initial_attempt_sequence = snapshot
+        .host_work_directives
+        .values()
+        .find(|directive| {
+            directive.work_id == work.work_id
+                && directive.generation == work.generation
+                && directive.action == action
+                && directive.resource_pressure_epoch == pressure_epoch
+                && directive.policy_revision == RESOURCE_GOVERNOR_POLICY_REVISION
+                && directive.status == HostWorkDirectiveStatus::Rejected
+        })?
+        .issued_event_sequence?;
+    snapshot
+        .resources
+        .last_fresh_critical_evidence
+        .as_ref()
+        .filter(|evidence| {
+            evidence.pressure_epoch == pressure_epoch
+                && evidence.sequence > initial_attempt_sequence
+        })
+}
+
+fn host_work_observed_state_is_terminal(state: HostWorkObservedState) -> bool {
+    matches!(
+        state,
+        HostWorkObservedState::Stopped
+            | HostWorkObservedState::Completed
+            | HostWorkObservedState::Failed
+    )
 }
 
 fn required_text(value: &str, label: &str) -> Result<String> {
@@ -2817,6 +4361,9 @@ fn validate_resource_observation(observation: &ResourceObservation) -> Result<()
     {
         bail!("power_w must be non-negative");
     }
+    if let Some(cgroup) = observation.app_cgroup.as_ref() {
+        validate_app_cgroup_observation(cgroup, observation.sampled_at_ms)?;
+    }
     Ok(())
 }
 
@@ -2841,6 +4388,20 @@ fn validate_reason_code(reason_code: Option<&str>) -> Result<()> {
         bail!("runtime reason code is invalid");
     }
     Ok(())
+}
+
+fn resource_observation_is_fresh_and_advancing(
+    snapshot: &RuntimeSnapshot,
+    observation: &ResourceObservation,
+    reference_at_ms: i64,
+) -> bool {
+    const MAX_RETRY_EVIDENCE_AGE_MS: i64 = 15_000;
+    reference_at_ms.saturating_sub(observation.sampled_at_ms) <= MAX_RETRY_EVIDENCE_AGE_MS
+        && snapshot
+            .resources
+            .last_observation
+            .as_ref()
+            .is_none_or(|previous| observation.sampled_at_ms > previous.sampled_at_ms)
 }
 
 fn resource_relief_is_authoritative(
@@ -2881,6 +4442,24 @@ fn resource_relief_is_authoritative(
             }
         }
     }
+    if claim
+        .value
+        .get("appCgroup")
+        .is_some_and(|value| !value.is_null())
+    {
+        has_pressure_evidence = true;
+        let cgroup_still_active = evaluate_pressure(
+            observation,
+            snapshot.resources.last_app_cgroup_observation.as_ref(),
+            snapshot.resources.app_cgroup_critical,
+            ResourceGovernorPolicy::default(),
+        )
+        .app_cgroup
+        .active;
+        if observation.app_cgroup.is_none() || cgroup_still_active {
+            return false;
+        }
+    }
     has_pressure_evidence
 }
 
@@ -2905,6 +4484,11 @@ fn new_entity_id(prefix: &str) -> String {
         now_ms().max(0),
         std::process::id()
     )
+}
+
+fn next_runtime_instance_id() -> u64 {
+    static NEXT_RUNTIME_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+    NEXT_RUNTIME_INSTANCE_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 fn builtin_system_agents(created_at_ms: i64) -> Vec<AgentManifest> {

@@ -1,4 +1,5 @@
 const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 const { writeEffectiveArtifacts } = require("./effective-config.js");
 const {
@@ -18,6 +19,181 @@ const {
   stageWindowsOnnxRuntime,
   stageWindowsRuntime,
 } = require("./windows-runtime.js");
+
+const LINUX_SUPERVISOR_MANIFEST = path.join(
+  APP_ROOT,
+  "src-tauri",
+  "packaging",
+  "linux",
+  "supervisor",
+  "Cargo.toml",
+);
+const LINUX_SUPERVISOR_TARGET_DIR = path.join(
+  APP_ROOT,
+  "src-tauri",
+  "target",
+  "pinvou-supervisor",
+);
+const LINUX_SUPERVISOR_BINARY = path.join(
+  LINUX_SUPERVISOR_TARGET_DIR,
+  "release",
+  "pinvou-supervisor",
+);
+
+function nativeLinuxArchitecture(architecture = process.arch) {
+  if (architecture === "x64") {
+    return { rustTarget: "x86_64-unknown-linux-gnu", elfMachine: 62, debArchitecture: "amd64" };
+  }
+  if (architecture === "arm64") {
+    return { rustTarget: "aarch64-unknown-linux-gnu", elfMachine: 183, debArchitecture: "arm64" };
+  }
+  throw new Error(`pinvou-supervisor does not support Linux architecture ${architecture}`);
+}
+
+function explicitTauriTarget(args = []) {
+  const targets = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--target") {
+      if (!args[index + 1]) throw new Error("--target 缺少 target triple");
+      targets.push(args[index + 1]);
+      index += 1;
+    } else if (args[index].startsWith("--target=")) {
+      targets.push(args[index].slice("--target=".length));
+    }
+  }
+  const unique = [...new Set(targets)];
+  if (unique.length > 1) throw new Error(`conflicting Tauri targets: ${unique.join(", ")}`);
+  return unique[0] || null;
+}
+
+function verifyElfArchitecture(file, expectedMachine, read = fs.readFileSync) {
+  const header = read(file).subarray(0, 20);
+  if (
+    header.length < 20
+    || header[0] !== 0x7f
+    || header[1] !== 0x45
+    || header[2] !== 0x4c
+    || header[3] !== 0x46
+    || header[4] !== 2
+    || header[5] !== 1
+  ) {
+    throw new Error("pinvou-supervisor is not a 64-bit little-endian ELF binary");
+  }
+  const actualMachine = header.readUInt16LE(18);
+  if (actualMachine !== expectedMachine) {
+    throw new Error(
+      `pinvou-supervisor ELF machine mismatch: expected ${expectedMachine}, got ${actualMachine}`,
+    );
+  }
+}
+
+function prepareLinuxSupervisor({
+  platform = process.platform,
+  architecture = process.arch,
+  tauriArgs = [],
+  spawn = spawnSync,
+  exists = fs.existsSync,
+  chmod = fs.chmodSync,
+  executable = (file) => {
+    fs.accessSync(file, fs.constants.X_OK);
+    return true;
+  },
+  verifyElf = verifyElfArchitecture,
+} = {}) {
+  if (platform !== "linux") return null;
+  const native = nativeLinuxArchitecture(architecture);
+  const requestedTarget = explicitTauriTarget(tauriArgs);
+  if (requestedTarget && requestedTarget !== native.rustTarget) {
+    throw new Error(
+      `cross-target Linux packaging is refused: Tauri target ${requestedTarget} cannot use native ${native.rustTarget} supervisor`,
+    );
+  }
+  const args = [
+    "build",
+    "--release",
+    "--locked",
+    "--manifest-path",
+    LINUX_SUPERVISOR_MANIFEST,
+    "--target-dir",
+    LINUX_SUPERVISOR_TARGET_DIR,
+  ];
+  const result = spawn("cargo", args, {
+    cwd: APP_ROOT,
+    env: process.env,
+    stdio: "inherit",
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`pinvou-supervisor release build failed (${result.status})`);
+  }
+  if (!exists(LINUX_SUPERVISOR_BINARY)) {
+    throw new Error(`pinvou-supervisor release binary missing: ${LINUX_SUPERVISOR_BINARY}`);
+  }
+  chmod(LINUX_SUPERVISOR_BINARY, 0o755);
+  if (!executable(LINUX_SUPERVISOR_BINARY)) {
+    throw new Error(`pinvou-supervisor release binary is not executable: ${LINUX_SUPERVISOR_BINARY}`);
+  }
+  verifyElf(LINUX_SUPERVISOR_BINARY, native.elfMachine);
+  return LINUX_SUPERVISOR_BINARY;
+}
+
+function linuxDebRequested(args) {
+  if (args.includes("--no-bundle")) return false;
+  const explicit = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--bundles" || argument === "-b") {
+      if (!args[index + 1]) throw new Error(`${argument} 缺少 bundle 类型`);
+      explicit.push(args[index + 1]);
+      index += 1;
+    } else if (argument.startsWith("--bundles=")) {
+      explicit.push(argument.slice("--bundles=".length));
+    }
+  }
+  if (explicit.length === 0) return true;
+  return explicit.flatMap((value) => value.split(",")).some((value) => value === "deb" || value === "all");
+}
+
+function verifyLinuxDebArchitecture({
+  platform = process.platform,
+  architecture = process.arch,
+  targetDirectory = path.join(APP_ROOT, "src-tauri", "target"),
+  spawn = spawnSync,
+  exists = fs.existsSync,
+  readdir = fs.readdirSync,
+  stat = fs.statSync,
+} = {}) {
+  if (platform !== "linux") return null;
+  const native = nativeLinuxArchitecture(architecture);
+  const debDirectory = path.join(targetDirectory, "release", "bundle", "deb");
+  if (!exists(debDirectory)) {
+    throw new Error(`Linux deb output directory is missing: ${debDirectory}`);
+  }
+  const candidates = readdir(debDirectory)
+    .filter((name) => name.endsWith(".deb"))
+    .map((name) => path.join(debDirectory, name))
+    .sort((left, right) => stat(right).mtimeMs - stat(left).mtimeMs);
+  if (candidates.length === 0) throw new Error("Linux build produced no deb artifact");
+  const dpkgDeb = ["/usr/bin/dpkg-deb", "/bin/dpkg-deb"].find(exists);
+  if (!dpkgDeb) throw new Error("dpkg-deb is required to verify Linux package architecture");
+  const artifact = candidates[0];
+  const result = spawn(dpkgDeb, ["--field", artifact, "Architecture"], {
+    cwd: APP_ROOT,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`cannot inspect deb architecture (${result.status}): ${result.stderr || ""}`);
+  }
+  const actual = String(result.stdout || "").trim();
+  if (actual !== native.debArchitecture) {
+    throw new Error(
+      `Linux deb architecture mismatch: expected ${native.debArchitecture}, got ${actual || "empty"}`,
+    );
+  }
+  return artifact;
+}
 
 function tauriCommandIndex(args) {
   return args.findIndex((argument) => argument === "build" || argument === "bundle");
@@ -152,6 +328,7 @@ function main() {
   if (hasTauriBuildCommand) {
     prepareCodexBridge();
     prepareWindowsCodexBridge(windowsBridgeOptions);
+    prepareLinuxSupervisor({ tauriArgs: args });
     if (process.platform === "win32") {
       additionalConfigs.push(WINDOWS_BRIDGE_CONFIG_PATH);
     }
@@ -170,7 +347,24 @@ function main() {
   }
 
   const tauriEnvironment = tauriRuntimeEnvironment(windowsRuntime || windowsDevRuntime);
-  process.exitCode = runTauri(preparedArgs, undefined, tauriEnvironment);
+  const exitCode = runTauri(preparedArgs, undefined, tauriEnvironment);
+  if (
+    exitCode === 0
+    && hasTauriBuildCommand
+    && process.platform === "linux"
+    && linuxDebRequested(args)
+  ) {
+    const requestedTarget = explicitTauriTarget(args);
+    verifyLinuxDebArchitecture({
+      targetDirectory: path.join(
+        APP_ROOT,
+        "src-tauri",
+        "target",
+        ...(requestedTarget ? [requestedTarget] : []),
+      ),
+    });
+  }
+  process.exitCode = exitCode;
 }
 
 if (require.main === module) {
@@ -185,7 +379,11 @@ if (require.main === module) {
 module.exports = {
   configSpecs,
   main,
+  explicitTauriTarget,
+  linuxDebRequested,
+  nativeLinuxArchitecture,
   prepareCodexBridge,
+  prepareLinuxSupervisor,
   prepareWindowsCodexBridge,
   stageWindowsInstaller,
   stageWindowsOnnxRuntime,
@@ -194,5 +392,7 @@ module.exports = {
   runTauri,
   tauriRuntimeEnvironment,
   tauriCommandIndex,
+  verifyElfArchitecture,
+  verifyLinuxDebArchitecture,
   windowsBundleTargets,
 };

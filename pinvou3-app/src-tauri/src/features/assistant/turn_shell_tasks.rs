@@ -196,6 +196,26 @@ impl SessionTurnShellTasks {
             scope_id,
         })
     }
+
+    /// HostWork 的只读所有权 seam。计数只来自 mailbox Started/terminal 事件维护的
+    /// `live_agent_ids`，不把 foreground turn、shell task 或磁盘残留猜成子智能体。
+    pub(crate) fn live_subagent_sessions(&self) -> Vec<(String, usize)> {
+        let registries = self
+            .registries
+            .lock()
+            .iter()
+            .map(|(session_id, registry)| (session_id.clone(), registry.clone()))
+            .collect::<Vec<_>>();
+        let mut live = registries
+            .into_iter()
+            .filter_map(|(session_id, registry)| {
+                let count = registry.live_agent_count();
+                (count > 0).then_some((session_id, count))
+            })
+            .collect::<Vec<_>>();
+        live.sort_by(|left, right| left.0.cmp(&right.0));
+        live
+    }
 }
 
 impl ShellReclaim {
@@ -289,6 +309,17 @@ impl Drop for PreparedTurnShellScope {
 }
 
 impl TurnShellTaskRegistry {
+    fn live_agent_count(&self) -> usize {
+        self.inner
+            .state
+            .lock()
+            .scopes
+            .values()
+            .filter(|scope| scope.root_terminal)
+            .map(|scope| scope.live_agent_ids.len())
+            .fold(0usize, usize::saturating_add)
+    }
+
     pub(crate) fn new(shell_manager: SharedShellManager) -> Self {
         Self {
             inner: Arc::new(RegistryInner {
@@ -1168,6 +1199,44 @@ mod tests {
             .get(&older_scope)
             .is_some_and(|scope| scope.live_agent_ids.contains("agent-child")));
         assert_eq!(state.active_scope_id, Some(current_scope));
+    }
+
+    #[tokio::test]
+    async fn host_work_snapshot_counts_only_mailbox_live_subagents() {
+        let sessions = SessionTurnShellTasks::default();
+        let registry = sessions.for_session(
+            "session-live-agents",
+            new_shared_shell_manager(std::env::temp_dir()),
+        );
+        registry.prepare_turn().await.expect("prepare scope");
+        registry
+            .bind_active_turn("turn-live-agents")
+            .expect("bind turn");
+
+        assert!(sessions.live_subagent_sessions().is_empty());
+        assert!(registry.register_agent("turn-live-agents", "agent-parent"));
+        assert!(registry.register_child_agent("agent-parent", "agent-child"));
+        assert!(
+            sessions.live_subagent_sessions().is_empty(),
+            "subagents owned by an active foreground turn are not detached"
+        );
+        let scope_id = registry.active_scope_id().expect("active scope");
+        registry
+            .finalize_scope(scope_id, false)
+            .await
+            .expect("foreground root reached terminal");
+        assert_eq!(
+            sessions.live_subagent_sessions(),
+            vec![("session-live-agents".to_string(), 2)]
+        );
+
+        registry.complete_agent("agent-child");
+        assert_eq!(
+            sessions.live_subagent_sessions(),
+            vec![("session-live-agents".to_string(), 1)]
+        );
+        registry.complete_agent("agent-parent");
+        assert!(sessions.live_subagent_sessions().is_empty());
     }
 
     #[test]

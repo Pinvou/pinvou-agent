@@ -11,6 +11,18 @@
         "desktopTemplate": "packaging/linux/deb/pinvou3.desktop",
         "postInstallScript": "packaging/linux/deb/scripts/postinst.sh",
         "preRemoveScript": "packaging/linux/deb/scripts/prerm.sh",
+        "postRemoveScript": "packaging/linux/deb/scripts/postrm.sh",
+        "files": {
+          "/usr/lib/pinvou3/supervisor/pinvou-supervisor": "target/pinvou-supervisor/release/pinvou-supervisor",
+          "/usr/lib/systemd/user/pinvou3-supervisor.socket": "packaging/linux/deb/systemd/pinvou3-supervisor.socket",
+          "/usr/lib/systemd/user/pinvou3-supervisor.service": "packaging/linux/deb/systemd/pinvou3-supervisor.service",
+          "/usr/lib/systemd/user/pinvou3-app.service": "packaging/linux/deb/systemd/pinvou3-app.service",
+          "/usr/lib/systemd/user/pinvou-qwen3-asr.service.d/50-pinvou-supervisor.conf": "packaging/linux/deb/systemd/pinvou-qwen3-asr.service.d/50-pinvou-supervisor.conf",
+          "/usr/share/pinvou3/supervisor/descriptors/pinvou-app-v1.json": "packaging/linux/descriptor/pinvou-app-v1.json",
+          "/usr/share/pinvou3/supervisor/descriptors/pinvou-asr-v1.json": "packaging/linux/descriptor/pinvou-asr-v1.json",
+          "/usr/share/pinvou3/supervisor/profiles/megabook-canary.conf": "packaging/linux/deb/profiles/megabook-canary.conf",
+          "/usr/share/pinvou3/supervisor/profiles/pinvou3-megabook-canary.desktop": "packaging/linux/deb/profiles/pinvou3-megabook-canary.desktop"
+        },
         "depends": [],
         "recommends": [
           "poppler-utils",

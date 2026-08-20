@@ -203,6 +203,75 @@ fn generation_matches(target: Option<u64>, current: Option<u64>) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetachedCancelDispatch {
+    Sent,
+    SkippedActiveTurn,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DetachedSubagentStatus {
+    pub idle_count: usize,
+    pub deferred_by_active_turn_count: usize,
+}
+
+/// 在与 SendMessage 相同的 session gate 内复核 lifecycle，再把 detached-only
+/// 控制 op 入队。reserve 虽可在 gate 外先占 lifecycle，但真正 SendMessage 必须等
+/// 此 gate：复核前 reserve 会被跳过；复核后 reserve 的消息只能排在 cancel op 之后。
+async fn dispatch_detached_cancel_if_idle<F, Fut>(
+    turn_locks: &SessionTurnLocks,
+    turn_lifecycles: &SessionTurnLifecycles,
+    session_id: &str,
+    send_cancel_subagents: F,
+) -> Result<DetachedCancelDispatch>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let turn_lock = turn_locks.for_session(session_id).await;
+    let _turn = turn_lock.lock().await;
+    if turn_lifecycles
+        .get(session_id)
+        .is_some_and(|lifecycle| lifecycle.is_active())
+    {
+        return Ok(DetachedCancelDispatch::SkippedActiveTurn);
+    }
+    send_cancel_subagents().await?;
+    Ok(DetachedCancelDispatch::Sent)
+}
+
+fn classify_detached_subagents(
+    turn_lifecycles: &SessionTurnLifecycles,
+    live_sessions: &[(String, usize)],
+) -> DetachedSubagentStatus {
+    let mut status = DetachedSubagentStatus::default();
+    for (session_id, count) in live_sessions {
+        if turn_lifecycles
+            .get(session_id)
+            .is_some_and(|lifecycle| lifecycle.is_active())
+        {
+            status.deferred_by_active_turn_count =
+                status.deferred_by_active_turn_count.saturating_add(*count);
+        } else {
+            status.idle_count = status.idle_count.saturating_add(*count);
+        }
+    }
+    status
+}
+
+fn finish_detached_cancel(
+    live_count: usize,
+    failures: usize,
+    skipped_active: usize,
+) -> Result<usize> {
+    if failures > 0 || skipped_active > 0 {
+        bail!(
+            "detached-subagent cancellation was not dispatched for {failures} unavailable and {skipped_active} active session(s)"
+        );
+    }
+    Ok(live_count)
+}
+
 /// 级联取消补发的守卫：mismatch 后是否仍可安全补发 `CancelSubAgents`。
 ///
 /// 新轮尚未提交（`SendMessage` 需等同一把 `turn_lock`，cancel 持锁期间 engine
@@ -875,6 +944,65 @@ impl EnginePool {
             .await
             .get(session_id)
             .map(|e| e.engine.clone())
+    }
+
+    /// Resource Governor 的只读 detached-subagent 状态。权威来源是 forwarder 按
+    /// SubAgent mailbox Started/terminal 事件维护的 live ownership registry；这里
+    /// 不扫描持久化 worker ledger。存在新 foreground turn 的 session 暂不暴露为
+    /// governable：待它回到 idle 后，HostWork worker 会 renew generation 并立即治理。
+    pub(crate) fn host_work_detached_subagent_status(&self) -> DetachedSubagentStatus {
+        classify_detached_subagents(
+            &self.turn_lifecycles,
+            &self.turn_shell_tasks.live_subagent_sessions(),
+        )
+    }
+
+    /// Resource Governor 的固定 detached-subagent Stop seam。唯一发送的控制 op 是
+    /// `CancelSubAgents`；绝不调用 `EnginePool::cancel` / `cancel_current`，因此不会
+    /// 中断 foreground turn。返回的是发出请求前 registry 中的 live agent 数。
+    pub(crate) async fn cancel_detached_subagents_for_governor(&self) -> Result<usize> {
+        let live_sessions = self.turn_shell_tasks.live_subagent_sessions();
+        let live_count = live_sessions
+            .iter()
+            .map(|(_, count)| *count)
+            .fold(0usize, usize::saturating_add);
+        if live_count == 0 {
+            return Ok(0);
+        }
+
+        let mut failures = 0usize;
+        let mut skipped_active = 0usize;
+        for (session_id, _) in live_sessions {
+            let result = dispatch_detached_cancel_if_idle(
+                &self.turn_locks,
+                &self.turn_lifecycles,
+                &session_id,
+                || async {
+                    let engine = self
+                        .handle_for(&session_id)
+                        .await
+                        .context("detached-subagent owner engine is unavailable")?;
+                    engine
+                        .handle
+                        .send(Self::governor_detached_subagent_cancel_op())
+                        .await
+                        .context("cancel_subagents dispatch failed")
+                },
+            )
+            .await;
+            match result {
+                Ok(DetachedCancelDispatch::Sent) => {}
+                Ok(DetachedCancelDispatch::SkippedActiveTurn) => {
+                    skipped_active = skipped_active.saturating_add(1);
+                }
+                Err(_) => failures = failures.saturating_add(1),
+            }
+        }
+        finish_detached_cancel(live_count, failures, skipped_active)
+    }
+
+    fn governor_detached_subagent_cancel_op() -> Op {
+        Op::CancelSubAgents
     }
 
     /// Linearize a host-owned interjection FIFO against detached completion
@@ -1764,11 +1892,13 @@ fn resolve_spawn_model(
 #[allow(clippy::await_holding_lock)]
 mod scheduled_model_tests {
     use super::{
-        cancel_turn_with_gates, delete_chat_session_with_gate, delete_scheduled_run_with_gate,
+        cancel_turn_with_gates, classify_detached_subagents, delete_chat_session_with_gate,
+        delete_scheduled_run_with_gate, dispatch_detached_cancel_if_idle, finish_detached_cancel,
         generation_matches, quiesce_engine_before_reclaim, resolve_scheduled_model,
         resolve_spawn_model, scheduled_profile_after_turn_gate, should_sync_session,
-        ModelUpdateRevisions, PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
-        SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks,
+        DetachedCancelDispatch, DetachedSubagentStatus, ModelUpdateRevisions, PreparedRuntimeState,
+        ScheduledUnattendedGuard, SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
+        SessionTurnShellTasks,
     };
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -1792,6 +1922,65 @@ mod scheduled_model_tests {
             matches!(ops[1], deepseek_tui::core::ops::Op::Shutdown),
             "Shutdown 必须殿后"
         );
+    }
+
+    /// Governor 的 detached-subagent 路径不得复用 `EnginePool::cancel`：该方法会
+    /// cancel foreground token。固定 op 契约只能含 `CancelSubAgents`。
+    #[test]
+    fn governor_detached_cancel_never_targets_foreground_turn() {
+        assert!(matches!(
+            super::EnginePool::governor_detached_subagent_cancel_op(),
+            deepseek_tui::core::ops::Op::CancelSubAgents
+        ));
+    }
+
+    #[tokio::test]
+    async fn governor_does_not_cancel_old_detached_agents_during_a_new_active_turn() {
+        let locks = SessionTurnLocks::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let session_id = "session-old-detached-new-active";
+        let lifecycle = lifecycles.for_session(session_id);
+        let new_foreground = lifecycle.reserve().expect("new foreground turn");
+        let detached = vec![(session_id.to_string(), 2)];
+        assert_eq!(
+            classify_detached_subagents(&lifecycles, &detached),
+            DetachedSubagentStatus {
+                idle_count: 0,
+                deferred_by_active_turn_count: 2,
+            },
+            "status must hide old detached work while a new foreground turn is active"
+        );
+        let sent = Arc::new(AtomicBool::new(false));
+        let sent_probe = sent.clone();
+
+        let outcome =
+            dispatch_detached_cancel_if_idle(&locks, &lifecycles, session_id, move || async move {
+                sent_probe.store(true, Ordering::Release);
+                Ok(())
+            })
+            .await
+            .expect("dispatch decision");
+
+        assert_eq!(outcome, DetachedCancelDispatch::SkippedActiveTurn);
+        assert!(
+            !sent.load(Ordering::Acquire),
+            "CancelSubAgents must not be sent while a new foreground turn is active"
+        );
+        drop(new_foreground);
+        assert_eq!(
+            classify_detached_subagents(&lifecycles, &detached),
+            DetachedSubagentStatus {
+                idle_count: 2,
+                deferred_by_active_turn_count: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn governor_partial_detached_cancel_is_not_reported_as_applied() {
+        let error = finish_detached_cancel(3, 0, 1)
+            .expect_err("an active session makes the aggregate cancellation outcome unknown");
+        assert!(error.to_string().contains("1 active session"));
     }
 
     fn model(id: &str, wire_name: &str) -> SavedModel {

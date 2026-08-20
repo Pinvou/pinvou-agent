@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=PINVOU 智能助手（MegaBook Canary）
+Name[en]=PINVOU Assistant (MegaBook Canary)
+Comment=仅在激活 MegaBook 资源配置后通过 Host Supervisor 启动
+Comment[en]=Launch through Host Supervisor only after activating the MegaBook resource profile
+Exec=/usr/lib/pinvou3/supervisor/pinvou-supervisor launch
+Icon=pinvou3-tauri
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=pinvou3-tauri

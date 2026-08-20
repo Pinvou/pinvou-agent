@@ -11,7 +11,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
-use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
+use crate::features::connectors::connector_cli::{
+    self as cc, CliCtx, ConnectorConn, ConnectorLease,
+};
 use crate::features::connectors::skill_gate::ConnectorSkillGate;
 
 const ID: &str = "tmeet";
@@ -94,6 +96,62 @@ fn wait_logged_in(timeout: Duration) -> bool {
         }
         if std::time::Instant::now() >= deadline {
             return false;
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+}
+
+fn tmeet_cli_version_owned(
+    conn: &ConnectorConn,
+    lease: ConnectorLease,
+) -> Result<Option<Option<(u64, u64, u64)>>, String> {
+    let Some((ok, so, se)) =
+        cc::run_owned(conn, lease, tmeet(&["--version"]), Duration::from_secs(30))?
+    else {
+        return Ok(None);
+    };
+    if !ok {
+        return Ok(Some(None));
+    }
+    Ok(Some(
+        parse_tmeet_version(&so).or_else(|| parse_tmeet_version(&se)),
+    ))
+}
+
+fn is_logged_in_owned(conn: &ConnectorConn, lease: ConnectorLease) -> Result<Option<bool>, String> {
+    let Some(version) = tmeet_cli_version_owned(conn, lease)? else {
+        return Ok(None);
+    };
+    if !version.is_some_and(|value| version_at_least(value, TMEET_MIN_VERSION)) {
+        return Ok(Some(false));
+    }
+    let Some((_ok, so, se)) = cc::run_owned(
+        conn,
+        lease,
+        tmeet(&["auth", "status"]),
+        Duration::from_secs(30),
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(status_is_logged_in(&so) || status_is_logged_in(&se)))
+}
+
+fn wait_logged_in_owned(
+    conn: &ConnectorConn,
+    lease: ConnectorLease,
+    timeout: Duration,
+) -> Result<Option<bool>, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let Some(logged_in) = is_logged_in_owned(conn, lease)? else {
+            return Ok(None);
+        };
+        if logged_in {
+            return Ok(Some(true));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(Some(false));
         }
         std::thread::sleep(Duration::from_millis(400));
     }
@@ -184,28 +242,57 @@ pub async fn tmeet_status() -> Result<Value, String> {
 /// 开始连接腾讯会议(单段 OAuth)。立即返回 `{started:true}`,前端 listen 事件驱动 UI。
 pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
     let conn = app.state::<ConnectorConn>();
-    if let Some(pid) = conn.cancel(ID) {
-        let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
-    }
-    conn.reset(ID);
-    let already_logged_in = tokio::task::spawn_blocking(is_logged_in)
+    let pids = conn.cancel(ID).map_err(str::to_string)?;
+    if !pids.is_empty() {
+        let stop_app = app.clone();
+        tokio::task::spawn_blocking(move || {
+            stop_app.state::<ConnectorConn>().stop_cancelled_pids(pids)
+        })
         .await
-        .map_err(|e| format!("spawn_blocking: {e}"))?;
+        .map_err(|error| format!("停止旧腾讯会议连接任务失败: {error}"))??;
+    }
+    let lease = conn.begin(ID).map_err(str::to_string)?;
+    let check_app = app.clone();
+    let check_result = tokio::task::spawn_blocking(move || {
+        let conn = check_app.state::<ConnectorConn>();
+        is_logged_in_owned(&conn, lease)
+    })
+    .await;
+    let already_logged_in = match check_result {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => {
+            let _ = app.state::<ConnectorConn>().finish(lease);
+            return Err(error);
+        }
+        Err(error) => {
+            let _ = app.state::<ConnectorConn>().finish(lease);
+            return Err(format!("spawn_blocking: {error}"));
+        }
+    };
+    let Some(already_logged_in) = already_logged_in else {
+        let _ = app.state::<ConnectorConn>().finish(lease);
+        return Ok(json!({ "started": true, "cancelled": true }));
+    };
     if already_logged_in {
         cc::emit(
             &app,
             "tmeet:connected",
             json!({ "ok": true, "already": true }),
         );
+        app.state::<ConnectorConn>().finish(lease)?;
         return Ok(json!({ "started": true, "already_connected": true }));
     }
     let app2 = app.clone();
-    tokio::task::spawn_blocking(move || run_connect_flow(&app2));
+    tokio::task::spawn_blocking(move || run_connect_flow(&app2, lease));
     Ok(json!({ "started": true }))
 }
 
-fn run_connect_flow(app: &AppHandle) {
-    if let Err(e) = phase_scan(app) {
+fn run_connect_flow(app: &AppHandle, lease: ConnectorLease) {
+    let outcome = phase_scan(app, lease);
+    if let Err(error) = app.state::<ConnectorConn>().finish(lease) {
+        log::warn!("[tmeet] 连接 generation 清理未确认：{error}");
+    }
+    if let Err(e) = outcome {
         cc::emit(
             app,
             "tmeet:error",
@@ -235,7 +322,7 @@ fn drain_for_auth_url<R: std::io::Read + Send + 'static>(
     })
 }
 
-fn phase_scan(app: &AppHandle) -> Result<(), String> {
+fn phase_scan(app: &AppHandle, lease: ConnectorLease) -> Result<(), String> {
     let mut cmd = tmeet(&["auth", "login", "--no-browser"]);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -244,7 +331,11 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("tmeet auth login 启动失败: {e}(需要 tmeet CLI)"))?;
     let conn = app.state::<ConnectorConn>();
-    conn.set_pid(ID, Some(child.id()));
+    let pid = child.id();
+    if !conn.register_pid(lease, pid).map_err(str::to_string)? {
+        cc::stop_registered_child(&conn, lease, &mut child)?;
+        return Ok(());
+    }
 
     let (tx, rx) = mpsc::channel::<(Option<String>, Option<String>)>();
     if let Some(o) = child.stdout.take() {
@@ -260,8 +351,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     let url = loop {
         let now = std::time::Instant::now();
         if now >= deadline {
-            let _ = child.kill();
-            conn.set_pid(ID, None);
+            cc::stop_registered_child(&conn, lease, &mut child)?;
             return Err(auth_failure_message(
                 &auth_lines,
                 "60s 内未拿到腾讯会议授权链接(检查网络 / 代理)",
@@ -278,11 +368,13 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             Ok((None, line)) => remember_auth_line(&mut auth_lines, line),
             Err(_) => {
                 if let Ok(Some(status)) = child.try_wait() {
-                    conn.set_pid(ID, None);
+                    conn.stop_pid(lease, pid)?;
                     eprintln!("[tmeet] auth login exited before auth url: exit={status}");
-                    if auth_lines_say_already_logged_in(&auth_lines)
-                        && wait_logged_in(Duration::from_secs(5))
-                    {
+                    let logged_in = wait_logged_in_owned(&conn, lease, Duration::from_secs(5))?;
+                    if logged_in.is_none() {
+                        return Ok(());
+                    }
+                    if auth_lines_say_already_logged_in(&auth_lines) && logged_in == Some(true) {
                         cc::emit(
                             app,
                             "tmeet:connected",
@@ -306,9 +398,8 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     );
 
     loop {
-        if conn.is_cancelled(ID) {
-            let _ = child.kill();
-            conn.set_pid(ID, None);
+        if conn.is_cancelled(lease) {
+            cc::stop_registered_child(&conn, lease, &mut child)?;
             return Ok(());
         }
         while let Ok((_, line)) = rx.try_recv() {
@@ -316,13 +407,17 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                conn.set_pid(ID, None);
-                if wait_logged_in(Duration::from_secs(5)) {
+                conn.stop_pid(lease, pid)?;
+                let logged_in = wait_logged_in_owned(&conn, lease, Duration::from_secs(5))?;
+                if logged_in.is_none() {
+                    return Ok(());
+                }
+                if logged_in == Some(true) {
                     cc::emit(app, "tmeet:connected", json!({ "ok": true }));
                     return Ok(());
                 }
                 if auth_lines_say_already_logged_in(&auth_lines)
-                    && wait_logged_in(Duration::from_secs(5))
+                    && wait_logged_in_owned(&conn, lease, Duration::from_secs(5))? == Some(true)
                 {
                     cc::emit(
                         app,
@@ -348,7 +443,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
-                conn.set_pid(ID, None);
+                cc::stop_registered_child(&conn, lease, &mut child)?;
                 return Err(format!("auth login 等待失败: {e}"));
             }
         }
@@ -387,9 +482,17 @@ fn auth_failure_message(auth_lines: &std::collections::VecDeque<String>, fallbac
 }
 
 pub async fn tmeet_cancel(app: AppHandle) -> Result<Value, String> {
-    let pid = app.state::<ConnectorConn>().cancel(ID);
-    if let Some(pid) = pid {
-        let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
+    let pids = app
+        .state::<ConnectorConn>()
+        .cancel(ID)
+        .map_err(str::to_string)?;
+    if !pids.is_empty() {
+        let stop_app = app.clone();
+        tokio::task::spawn_blocking(move || {
+            stop_app.state::<ConnectorConn>().stop_cancelled_pids(pids)
+        })
+        .await
+        .map_err(|error| format!("取消腾讯会议连接任务失败: {error}"))??;
     }
     Ok(json!({ "ok": true }))
 }

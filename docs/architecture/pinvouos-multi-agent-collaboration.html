@@ -869,7 +869,7 @@
           <article class="principle">
             <span class="principle-number">04</span>
             <h3>硬安全可以阻止，但不能代答</h3>
-            <p>目标态由 Policy、Governor、Attention 决策拒绝、限流、暂停或停止，再由 Kernel / Host 强制；当前 Resource 控制尚无生产 Adapter。最终如何向用户解释仍属于 Front。</p>
+            <p>Policy 与 Attention 的统一强制链仍是目标态；Resource 纵切已由确定性 Governor 签 Pending，由受信 HostWork Adapter / Supervisor 执行固定 Stop。只有 ACK 与后验观测能证明结果，最终如何向用户解释仍属于 Front。</p>
           </article>
         </div>
       </section>
@@ -903,7 +903,7 @@
         <div class="topology-shell" data-flow="overview">
           <svg class="topology" viewBox="0 0 1600 1040" role="img" aria-labelledby="topology-title topology-desc">
             <title id="topology-title">PinvouOS 多 Agent 协作拓扑</title>
-            <desc id="topology-desc">用户通过语音或文字进入 Front Agent；复杂任务委派给 Orchestrator，再并发调用动态 Mission Agents。感知 Agent 异步把事实写入 Runtime Kernel；Policy、Attention 与 Resource Governor 的目标职责是约束或打断已注册工作，当前生产控制适配器数量为零。</desc>
+            <desc id="topology-desc">用户通过语音或文字进入 Front Agent；复杂任务委派给 Orchestrator，再并发调用动态 Mission Agents。感知 Agent 异步把事实写入 Runtime Kernel。当前 Resource Governor 可向已注册 HostWork 签 Pending，工作树已装配六个受信 Adapter；旧 Mission callback 已移除，Policy、Attention 与用户 steering 仍未形成统一控制闭环。</desc>
             <defs>
               <marker id="arrow-call" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#3157e5" /></marker>
               <marker id="arrow-return" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7048d8" /></marker>
@@ -986,7 +986,7 @@
             <path d="M178 458 C210 570 420 760 1210 790 C1380 796 1430 680 1390 490" class="edge interrupt flow-safety" />
             <text x="318" y="692" class="edge-label red">用户取消 → Front 授权中断</text>
             <path d="M665 892 C770 785 1075 780 1290 490" class="edge interrupt flow-safety flow-background" />
-            <text x="742" y="776" class="edge-label red">目标：Resource → Governor → Adapter / Supervisor</text>
+            <text x="742" y="776" class="edge-label red">已接：Resource → Governor → 固定 HostWork Adapter</text>
             <path d="M1230 912 C1310 790 1380 665 1360 490" class="edge interrupt flow-safety" />
             <text x="1270" y="754" class="edge-label red">Attention → Scheduler</text>
             <path d="M1020 912 C1120 800 1190 700 1225 490" class="edge interrupt flow-safety flow-complex" />
@@ -1085,7 +1085,7 @@
               <text class="node-sub" x="17" y="88">调查 / 修改 / 执行 / 独立验证</text>
               <text class="node-sub" x="17" y="111">每个工作项只给一个明确责任人</text>
               <text class="node-sub" x="17" y="134">最多两层派工；结果必须带证据</text>
-              <text class="node-sub" x="17" y="156">目标：经已注册 Adapter 安全打断</text>
+              <text class="node-sub" x="17" y="156">当前仅受限 detached aggregate 可 Stop</text>
             </g>
 
             <!-- Cognitive services -->
@@ -1146,8 +1146,8 @@
               <text class="node-sub" x="677" y="105">权限 · 用户边界 · 确认</text>
 
               <rect x="925" y="58" width="465" height="70" rx="13" fill="#222e45" />
-              <text class="node-title" x="942" y="84">Governor / Scheduler / Adapter（目标）</text>
-              <text class="node-sub" x="942" y="105">当前仅 Directive / Ack / replay 骨架 · Adapter 0</text>
+              <text class="node-title" x="942" y="84">Governor / HostWork / Adapter</text>
+              <text class="node-sub" x="942" y="105">schema v6 · Pending · 异步 ACK / reconcile · 6 adapters</text>
             </g>
           </svg>
 
@@ -1156,7 +1156,7 @@
             <div class="mobile-chain"><div class="mobile-arrow">2</div><div class="mobile-node"><b>Front → Direct 或 Orchestrator</b><span>简单任务最多 3 轮工具；复杂或三轮未完成时，Prompt 要求委派 pinvou-orchestrator；唯一 profile 与单实例尚未内核化。</span></div></div>
             <div class="mobile-chain"><div class="mobile-arrow">3</div><div class="mobile-node"><b>Orchestrator → Mission Agents</b><span>目标按 Work Graph 并行并返回证据回执；当前复杂委派仍是 CodeWhale background subagent，不是 Runtime Mission Agent。</span></div></div>
             <div class="mobile-chain"><div class="mobile-arrow">4</div><div class="mobile-node"><b>观察 Agent → Runtime</b><span>界面感知、Device、Resource、Connectivity、Inference 等 Agent 发布事实，不直接干预其他 Agent。</span></div></div>
-            <div class="mobile-chain"><div class="mobile-arrow">5</div><div class="mobile-node"><b>Kernel → 控制与打断</b><span>目标由 Policy 评估、Kernel 强制并经 Adapter 控制；统一副作用 Gate、Scheduler 与用户 steering 链尚未闭环。</span></div></div>
+            <div class="mobile-chain"><div class="mobile-arrow">5</div><div class="mobile-node"><b>Kernel → 控制与打断</b><span>Resource 路径已对 scheduled、knowledge、固定 connector、受限 detached sub-agent 与 ASR 装配 Stop；app cgroup 只做 essential status。统一 Policy Gate、Scheduler 与用户 steering 链尚未闭环。</span></div></div>
             <div class="mobile-chain"><div class="mobile-arrow">6</div><div class="mobile-node"><b>回执 → Front → 用户</b><span>Front 独占最终回答已成立；Runtime Mission / Orchestrator 的结构化证据回执仍是目标合同。</span></div></div>
           </div>
         </div>
@@ -1220,11 +1220,11 @@
 
           <article class="timeline-card safety">
             <h3>状态变化 · 控制路径</h3>
-            <p>目标态在用户取消、设备过热、权限拒绝或并发超载时，不等待 LLM 自觉停手；当前控制 Adapter 尚未生产装配。</p>
+            <p>Resource 纵切已对固定 HostWork 实施确定性硬 Stop；用户取消、Policy Gate 与 Attention Scheduler 仍未统一到同一控制闭环。</p>
             <div class="steps">
               <div class="step"><span class="step-dot">01</span><div><b>观察或用户指令进入 Runtime</b><span>事实必须带时间、来源、置信度和证据。</span><span class="async-chip">异步事件</span></div></div>
               <div class="step"><span class="step-dot">02</span><div><b>确定性规则作出约束</b><span>Policy 给出拒绝结论并由 Kernel 强制；Governor 判断 Warm / Hot / Critical；Attention 重新分配预算。</span><span class="sync-chip">同步规则</span></div></div>
-              <div class="step"><span class="step-dot">03</span><div><b>目标：Adapter / Supervisor 执行 Directive</b><span>Pause / Stop / Resume 必须得到 Applied / Rejected Ack，并持续 Reconcile；当前生产 Adapter 数量为零。</span><span class="control-chip">硬控制</span></div></div>
+              <div class="step"><span class="step-dot">03</span><div><b>Adapter / Supervisor 异步执行</b><span>当前 5 类 nonessential HostWork 只声明 Stop，app cgroup 只做 status。Governor 先落 Pending，worker 后写 ACK 并用 status reconcile；单一 ACK 不等于已停。</span><span class="control-chip">硬控制</span></div></div>
               <div class="step"><span class="step-dot">04</span><div><b>Front 统一告知用户</b><span>安全内核能阻止动作，但不能假装成用户业务决策者。</span></div></div>
             </div>
           </article>
@@ -1248,7 +1248,7 @@
               <tr><td class="authority">用户 → Front</td><td>当前 Orchestrator 与相关 Mission Agents</td><td class="yes">目标：可取消 / 改目标</td><td>目标由 Front 将 Interrupt 转为运行时取消；当前 busy UI 不能自然 steering，用户链尚未接到完整 Runtime 控制闭环。</td></tr>
               <tr><td class="authority">Front Agent</td><td>自己授权的 Orchestrator / Mission</td><td class="yes">可中断</td><td>基于用户意图或业务判断撤销授权；Front 不能解除 Policy 的硬拒绝，也不能强迫 Kernel 越过安全阈值。</td></tr>
               <tr><td class="authority">Orchestrator</td><td>自己派出的子 Mission Agents</td><td class="yes">可取消 / 重排</td><td>只管理工作图，不得中断 Front、系统观察 Agent或其他不属于该 Mission 的工作。</td></tr>
-              <tr><td class="authority">Resource Governor</td><td>已注册 Mission / HostWork</td><td class="gate">目标：Pause / Stop / Resume</td><td>Governor 只签确定性 Directive；受信 Adapter / Supervisor 执行并 Ack。当前生产注册 Adapter 数量为 0，因此还不能停止 CodeWhale、PinvouOS、WebKit 或 Linux 后台工作。</td></tr>
+              <tr><td class="authority">Resource Governor</td><td>已注册 HostWork</td><td class="gate">当前：固定 Stop</td><td>Governor 只签确定性 Pending；受信 Adapter / Supervisor 执行、ACK 并后验观测。当前可治理 scheduled、knowledge、固定 connector、仅空闲且 root 已终态的 detached sub-agent 与 ASR；app cgroup 只 status-only，前台 turn、app/WebKit 不可自停。旧 Mission Adapter 为 0。</td></tr>
               <tr><td class="authority">Attention Agent</td><td>并发 Run</td><td class="gate">调度级抢占</td><td>已可通过原子工具输出 Run / Throttle / Pause / Stop 计划；Scheduler 执行仍待接入，Atomic 只在安全边界抢占。</td></tr>
               <tr><td class="authority">Policy Agent + Kernel</td><td>拟执行动作</td><td class="gate">执行前否决</td><td>Policy Agent 评估 Allow / Deny / Require Confirmation；Kernel/AuthorityStore 才是强制执行者。确认绑定完整动作内容且可过期。</td></tr>
               <tr><td class="authority">界面感知 / Device / Connectivity / Inference / Memory / Capability / ASR Context</td><td>其他 Agent</td><td class="no">不能直接中断</td><td>只提交事实、投影或解释。其他组件消费新事实后，才可能由 Front、Policy、Governor 或 Scheduler 采取行动。</td></tr>
@@ -1284,7 +1284,7 @@
             <div class="agent-grid">
               <article class="agent-card"><div class="agent-card-top"><div><h4>界面感知 Agent</h4><span class="agent-id">agent:screen-observer</span></div><span class="status starting">Starting</span></div><dl><dt>负责</dt><dd>窗口、Pinvou 自绘 UI 语义状态与可访问性场景事实。</dd><dt>输入</dt><dd>Known UI State / AT-SPI / Window Manager。</dd><dt>输出</dt><dd>Observed UI Scene、节点、焦点与语义缺口。</dd><dt>边界</dt><dd>只负责“看见什么”；Front 如何控制画布由 Interaction / Presentation 文档负责。</dd></dl></article>
               <article class="agent-card"><div class="agent-card-top"><div><h4>Device Agent</h4><span class="agent-id">agent:device</span></div><span class="status starting">Starting</span></div><dl><dt>负责</dt><dd>硬件与外设是否存在、是否可用、具备何种能力。</dd><dt>输入</dt><dd>系统设备 Provider + 用户权威事实。</dd><dt>输出</dt><dd>presence / operational / capabilities Claims。</dd><dt>边界</dt><dd>不重复 Connectivity 的端到端网络诊断。</dd></dl></article>
-              <article class="agent-card"><div class="agent-card-top"><div><h4>Resource Agent</h4><span class="agent-id">agent:resource</span></div><span class="status running">Running</span></div><dl><dt>负责</dt><dd>CPU、内存、GPU、温度、功耗及观测健康。</dd><dt>输入</dt><dd>Linux /proc 与可信 thermal zone 等探针。</dd><dt>输出</dt><dd>ResourceObservation、压力 Claim、治理候选。</dd><dt>节奏</dt><dd>5 秒采样；变化或 30 秒心跳入账。当前只观察，不执行控制。</dd></dl></article>
+              <article class="agent-card"><div class="agent-card-top"><div><h4>Resource Agent</h4><span class="agent-id">agent:resource</span></div><span class="status running">Running</span></div><dl><dt>负责</dt><dd>CPU、内存、GPU、温度、功耗及观测健康。</dd><dt>输入</dt><dd>Linux /proc、可信 thermal zone 与 Supervisor 核验的 app cgroup Status。</dd><dt>输出</dt><dd>ResourceObservation、压力 Claim、治理候选。</dd><dt>节奏</dt><dd>5 秒采样；压力变化、cgroup 治理证据、有界 retry evidence 或 30 秒心跳入账。它始终只观察，不执行控制。</dd></dl></article>
               <article class="agent-card"><div class="agent-card-top"><div><h4>Connectivity Agent</h4><span class="agent-id">agent:connectivity</span></div><span class="status running">Running</span></div><dl><dt>负责</dt><dd>到当前模型目标的 DNS、路由、TLS、HTTP 路径。</dd><dt>输入</dt><dd>当前激活模型 endpoint；不使用模型密钥。</dd><dt>输出</dt><dd>Online / Degraded / Offline、延迟、故障原因。</dd><dt>节奏</dt><dd>10 秒探测；变化或 60 秒心跳入账。</dd></dl></article>
               <article class="agent-card"><div class="agent-card-top"><div><h4>Inference Agent</h4><span class="agent-id">agent:inference</span></div><span class="status running">Running</span></div><dl><dt>负责</dt><dd>模型配置、凭据、Provider 与真实推理可用性。</dd><dt>输入</dt><dd>模型健康探针 + 每次真实推理完成事件。</dd><dt>输出</dt><dd>Ready / Degraded / Unavailable、模型与延迟。</dd><dt>节奏</dt><dd>30 秒探测；变化或 5 分钟心跳入账。</dd></dl></article>
               <article class="agent-card"><div class="agent-card-top"><div><h4>ASR Context Agent</h4><span class="agent-id">agent:asr-context</span></div><span class="status running">Running</span></div><dl><dt>负责</dt><dd>为 Qwen3-ASR 准备专名、英文与技术术语。</dd><dt>输入</dt><dd>Runtime、近期术语、本机私有词表；未来可读新 Memory 的批准投影。</dd><dt>输出</dt><dd>最多 100 词的有界 Context 快照。</dd><dt>节奏</dt><dd>启动即刷新，之后每 30 分钟；不调用 LLM。</dd></dl></article>
@@ -1311,7 +1311,7 @@
               <li>Memory 写入已受单写锁与 durable-head CAS 保护；结构化 Claim 做精确语义绑定，热投影使用可重建结构索引和有界 Top-K。</li>
               <li>旧 Memory 全量 snapshot 已停写；启动时只做一次可验迁移，不继续双写两套真相。</li>
               <li>Attention 已接成只读原子规划工具；Runtime 状态、能力报告、编排工作图和 ASR Context 也都有同源进程内工具，不维护 MCP 影子状态。</li>
-              <li>Resource Governor 已有面向 Mission Agent 的 Directive、desired/observed 分离、Ack 与重放骨架；只有 Adapter Ack 才能改变 observed state。</li>
+              <li>Runtime schema v6 已有 HostWork Registry、generation 续租、确定性 Pending、单飞行、ACK / reconcile 与 replay；Applied ACK 不直接改 observed state。生产组合根已装配 6 个独立 worker：scheduled、knowledge、固定 connector、受限 detached sub-agent 和 ASR 可 Stop，app cgroup 是 essential / status-only。App cgroup 只从 15 秒内受信 Supervisor Status 进非阻塞采样；首张 counter 建 baseline 但 current 越 high 立即 Critical，Critical 对 missing / stale / reset / 实例切换 sticky，只有同实例三 counter 无增且 current 低于 high 才 relief。首版 Supervisor 已有固定 app status/launch 与 ASR status/stop、InvocationID、双向 PID credential 和耐久账本；模型、Renderer 与远程面无 HostWork 写入口。</li>
               <li>Front 的 3 轮工具预算已由 Engine 强制执行，不只靠提示词自觉。</li>
             </ul>
           </article>
@@ -1321,8 +1321,8 @@
               <li>界面感知 Agent 还没有真实 AT-SPI / Screen Observation Provider；Device 还没有持续设备 Provider，且需解决“内核枚举 ≠ 物理可用”。</li>
               <li>Policy 的确定性算法已完成，但 AuthorityStore 与所有副作用工具的统一闸门尚未接通。</li>
               <li>Attention 已能算优先级与预算，但 Scheduler 尚未消费其 Run / Throttle / Pause / Stop 计划。</li>
-              <li>生产没有注册任何 Resource Control Adapter，也没有独立 Host Supervisor 或 app cgroup 硬上限；CodeWhale 子 Agent、PinvouOS/WebKit、计划任务与 Linux 后台工作当前都不可被 Resource Agent / Governor 停止。</li>
-              <li>目标资源治理不把 Linux 工作伪装成 Mission Agent：可信组合根注册 opaque HostWork，Governor 签 Directive，窄 Adapter 或 app cgroup 外的同 UID Supervisor 执行固定 descriptor。模型、Front 与 Renderer 不得提交 PID、unit、命令或任意 systemctl；唯一权威见 ADR-0009。</li>
+              <li>资源治理新链路尚未在 MegaBook 完成真实 deb / systemd / OOM E2E。普通 desktop 仍直接启动 app，没有 app cgroup 硬限；4 GiB / 8 GiB / 2 GiB 只是需显式激活的 inert MegaBook profile + 专用 launcher。旧 f24 direct transient canary 不是 Supervisor 验证。同 UID socket 与相互 PID credential 是固定动作约束，不是对恶意同 UID shell 的强隔离。</li>
+              <li>当前仍不能停止前台 turn、任意 managed child 或 app/WebKit；detached sub-agent 仅在 root turn 已终态且 session 空闲时可停。旧 Mission 同步 callback 生产面已移除，Mission Adapter 为 0。聚合 Stopped 只证明该 poll 看到的成员，不是 admission fence；后来成员在下次 live poll 续租新 generation。同 work / generation / action / pressure epoch 最多首次 + 1 次 fresh-evidence retry，第二次拒绝后不无限重试；唯一权威见 ADR-0009。</li>
               <li>Memory 尚未接 Front / Orchestrator 异步 worker、消费游标和候选提取；完整 UserMessage / VerifiedTaskOutcome 也未成为受信证据。</li>
               <li>失败经历的类型和门槛规则已在 Memory 内核中，但自动采集要等 VerifiedTaskOutcome；周期 checkpoint / compaction、冷归档、SQLite 和 Obsidian 也未接。</li>
               <li>Front 尚未消费 Memory Context Projection；token budget、稳定上下文编译与 context_plan_hash 仍属于后续 Context Compiler。</li>
@@ -1359,10 +1359,10 @@
         asr: ['Qwen3-ASR Service', '把语音转为尽量忠实的原始文本，不做业务决策。', '音频 + ASR Context 快照。', '带时间边界的转写文本。', '不调用或打断 Agent；它是语音入口服务，不计入 12 个 Agent。'],
         front: ['Front Agent', '唯一用户入口、最终业务决策者与最终答复者。', '当前用户输入、能力与运行时事实；未来读取新 Memory 的只读 Context Projection。', 'Direct / Clarify / Orchestrate / Interrupt 决策及最终回复。', '可委派 Orchestrator；可因用户指令取消后台工作；不能绕过硬安全。'],
         orchestrator: ['Orchestrator Agent', '只为复杂任务构建工作图、派工、跟踪与核验证据。', 'Front 授权的目标、完成标准、约束和证据。', 'NO_OP / COMPLETED / NEEDS_CLARIFICATION / BLOCKED / FAILED / CANCELLED 回执。', '可管理自己派出的 Mission Agents；不能直接面向用户或接管 Front。'],
-        mission: ['Dynamic Mission Agents', '实际执行调查、修改、操作与验证；按 Mission / Run 临时创建。', '一个边界明确的工作项及可观察完成标准。', '证据、变更、风险、阻塞和完成状态。', '目标态可被父 Orchestrator、用户经 Front、Resource Governor 与 Scheduler 打断；当前生产 Resource Adapter 数量为零。'],
+        mission: ['Dynamic Mission Agents', '实际执行调查、修改、操作与验证；按 Mission / Run 临时创建。', '一个边界明确的工作项及可观察完成标准。', '证据、变更、风险、阻塞和完成状态。', '旧 Mission 同步 callback 已移除，当前无 Mission Adapter。兼容层 detached sub-agent 只在 root 已终态且 session 空闲时作为聚合 HostWork 被 Stop；前台 turn 不受该 Adapter 控制。'],
         'screen-observer': ['界面感知 Agent', '归一窗口、可访问性和 Known UI State 为结构化界面场景事实。', 'Screen Observation Provider、AT-SPI、Window Manager；必要时只标记 opaque。', 'Observed UI Scene、节点、焦点、bounds、actions 与 limitation codes。', '不能打断任何 Agent；当前只观察，不定义 UI 控制。'],
         device: ['Device Agent', '维护硬件与外设的 presence、operational 和 capability 事实。', '系统设备 Provider 与用户权威设备事实。', '设备 Claims 和整体健康度。', '不能打断；其事实会让 Capability/Orchestrator 阻塞不可能的任务。'],
-        resource: ['Resource Agent', '持续观察 CPU、内存、GPU、温度和功耗。', '本机可信资源探针。', '资源快照、压力 Claim 与 Governor 候选。', '自己不签也不执行控制；当前生产 Adapter 数量为零。目标态由 Governor 签 Directive、受信 Adapter / Supervisor 执行。'],
+        resource: ['Resource Agent', '持续观察 CPU、内存、GPU、温度、功耗与受信 app cgroup 证据。', '本机可信资源探针与 Supervisor Status cache。', '资源快照、压力 Claim 与 Governor 候选。', '自己不签也不执行控制。Governor 只签 Pending，6 个受信 HostWork Adapter 在独立 worker 执行；app cgroup 仅 status-only。'],
         connectivity: ['Connectivity Agent', '验证到当前模型目标的 DNS、路由、TLS、HTTP 路径。', '当前激活模型 endpoint；故意不带密钥。', 'Online / Degraded / Offline、延迟和原因码。', '不能打断；网络失败会让能力暂不可用并影响 Front/Orchestrator 决策。'],
         inference: ['Inference Agent', '验证模型路由、凭据、Provider 以及最近真实推理是否成功。', '带凭据的健康探针与真实 completion 事件。', 'Ready / Degraded / Unavailable、模型、延迟、最近成功时间。', '不能打断；它是健康事实源，不代理每次模型调用。'],
         'asr-context': ['ASR Context Agent', '周期编译 Qwen3-ASR 所需的专名、英文和技术术语。', 'Runtime、近期候选术语和本机私有词表；未来可读取新 Memory 的批准投影。', '最多 100 词的本地 Context 快照。', '不能打断；Qwen3-ASR 每次识别同步读取快照，刷新过程异步。'],
@@ -1370,7 +1370,7 @@
         capability: ['Capability Agent', '基于事实解释 Pinvou 当前能做、暂时不能做与不支持。', 'Runtime Snapshot、Manifest、Agent 状态和资源压力。', '候选执行者、前置条件、权限待验证项与证据。', '不能执行或打断；它只做确定性的能力投影。'],
         policy: ['Policy Agent', '把权限、安全不变量和用户边界编译为动作约束。', '完整 ProposedAction + 只能由 Kernel 提供的 AuthorityStore。', 'Allow / Deny / Require Confirmation 与 obligations。', 'Policy 只评估，Kernel 才强制；统一副作用闸门尚未接通，确认不能覆盖硬安全。'],
         attention: ['Attention Agent', '为并发 Run 分配排名、份额、工作预算与中断预算。', '目标优先级、deadline、用户阻塞性、资源压力、中断级别。', 'Run / Throttle / Pause / Stop 计划和 preempted run ids。', '经 Scheduler 抢占 Mission Agents；Atomic 只在安全边界停。'],
-        runtime: ['PinvouOS Runtime Kernel', '持有统一事件账本、事实投影、权限真相、Mission/Run 和控制账本骨架。', 'Agent 事件、用户授权、资源观测和 Adapter Ack。', 'Snapshot、Claim、Directive、调度与可重放因果链。', '不是 Agent；只执行确定性规则与安全不变量，不参与业务目标仲裁。当前生产 Resource Adapter 数量为零。']
+        runtime: ['PinvouOS Runtime Kernel', '持有统一事件账本、事实投影、权限真相、Mission/Run 与 schema v6 HostWork 控制账本。', 'Agent 事件、用户授权、资源观测、HostWork 观测和 Adapter ACK。', 'Snapshot、Claim、Pending Directive、ACK / reconcile 与可重放因果链。', '不是 Agent；只执行确定性规则与安全不变量，不参与业务目标仲裁。模型、Renderer 和远程面没有 HostWork 注册或控制写入口。']
       };
 
       function selectFlow(flow) {

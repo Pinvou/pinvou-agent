@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "descriptorId": "pinvou-app",
+  "descriptorRevision": "pinvou-app-descriptor-v1",
+  "unit": "pinvou3-app.service",
+  "executable": "/usr/bin/pinvou3-tauri",
+  "allowedActions": ["status", "launch"],
+  "resourcePolicyOwner": "base app unit plus explicit MegaBook canary deployment drop-in",
+  "requiredProfile": "megabook-canary-v1",
+  "resourcePolicy": {
+    "memoryHigh": "4G",
+    "memoryMax": "8G",
+    "memorySwapMax": "2G",
+    "oomPolicy": "kill",
+    "killMode": "control-group",
+    "tasksMax": 512,
+    "restart": "on-failure",
+    "restartSec": "15s",
+    "startLimitIntervalSec": "300s",
+    "startLimitBurst": 3
+  }
+}

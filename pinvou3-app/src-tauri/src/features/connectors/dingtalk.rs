@@ -15,7 +15,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
-use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
+use crate::features::connectors::connector_cli::{
+    self as cc, CliCtx, ConnectorConn, ConnectorLease,
+};
 use crate::features::connectors::skill_gate::ConnectorSkillGate;
 
 const ID: &str = "dingtalk";
@@ -198,6 +200,36 @@ fn auth_status_message() -> String {
     }
 }
 
+fn auth_status_owned(
+    conn: &ConnectorConn,
+    lease: ConnectorLease,
+) -> Result<Option<(bool, String)>, String> {
+    let Some((ok, so, se)) = cc::run_owned(
+        conn,
+        lease,
+        dws(&["auth", "status", "--format", "json"]),
+        Duration::from_secs(30),
+    )?
+    else {
+        return Ok(None);
+    };
+    let parsed = cc::parse_json(&so).or_else(|| cc::parse_json(&se));
+    let authenticated = parsed
+        .as_ref()
+        .and_then(|value| value.get("authenticated"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let message = parsed
+        .as_ref()
+        .and_then(|value| value.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    Ok(Some((
+        authenticated,
+        format!("ok={ok}, authenticated={authenticated}, message={message}"),
+    )))
+}
+
 // ───────────────────────────── Tauri commands ─────────────────────────────
 
 /// 引导:首次使用时下载并校验锁定版本的 dws，已装则秒返回。
@@ -236,14 +268,21 @@ pub async fn dingtalk_status() -> Result<Value, String> {
 
 /// 开始连接钉钉(单段扫码)。立即返回 `{started:true}`,前端 listen 事件驱动 UI。
 pub async fn dingtalk_connect_begin(app: AppHandle) -> Result<Value, String> {
-    app.state::<ConnectorConn>().reset(ID);
+    let lease = app
+        .state::<ConnectorConn>()
+        .begin(ID)
+        .map_err(str::to_string)?;
     let app2 = app.clone();
-    tokio::task::spawn_blocking(move || run_connect_flow(&app2));
+    tokio::task::spawn_blocking(move || run_connect_flow(&app2, lease));
     Ok(json!({ "started": true }))
 }
 
-fn run_connect_flow(app: &AppHandle) {
-    if let Err(e) = phase_scan(app) {
+fn run_connect_flow(app: &AppHandle, lease: ConnectorLease) {
+    let outcome = phase_scan(app, lease);
+    if let Err(error) = app.state::<ConnectorConn>().finish(lease) {
+        log::warn!("[dingtalk] 连接 generation 清理未确认：{error}");
+    }
+    if let Err(e) = outcome {
         cc::emit(
             app,
             "dingtalk:error",
@@ -252,7 +291,7 @@ fn run_connect_flow(app: &AppHandle) {
     }
 }
 
-fn phase_scan(app: &AppHandle) -> Result<(), String> {
+fn phase_scan(app: &AppHandle, lease: ConnectorLease) -> Result<(), String> {
     let mut cmd = dws(&["auth", "login", "--device"]);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -261,7 +300,11 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("dws auth login 启动失败: {e}(需要先完成钉钉 CLI 在线安装)"))?;
     let conn = app.state::<ConnectorConn>();
-    conn.set_pid(ID, Some(child.id()));
+    let pid = child.id();
+    if !conn.register_pid(lease, pid).map_err(str::to_string)? {
+        cc::stop_registered_child(&conn, lease, &mut child)?;
+        return Ok(());
+    }
 
     let (tx, rx) = mpsc::channel::<AuthEvent>();
     if let Some(o) = child.stdout.take() {
@@ -279,8 +322,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     let url = loop {
         let now = std::time::Instant::now();
         if now >= deadline {
-            let _ = child.kill();
-            conn.set_pid(ID, None);
+            cc::stop_registered_child(&conn, lease, &mut child)?;
             return Err("60s 内未拿到二维码链接(检查网络 / 代理)".into());
         }
         match rx.recv_timeout(deadline.saturating_duration_since(now)) {
@@ -308,8 +350,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                 auth_lines.push_back(line);
             }
             Err(_) => {
-                let _ = child.kill();
-                conn.set_pid(ID, None);
+                cc::stop_registered_child(&conn, lease, &mut child)?;
                 return Err("60s 内未拿到二维码链接(检查网络 / 代理)".into());
             }
         }
@@ -336,9 +377,8 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     );
 
     loop {
-        if conn.is_cancelled(ID) {
-            let _ = child.kill();
-            conn.set_pid(ID, None);
+        if conn.is_cancelled(lease) {
+            cc::stop_registered_child(&conn, lease, &mut child)?;
             return Ok(());
         }
         while let Ok(event) = rx.try_recv() {
@@ -354,14 +394,17 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                conn.set_pid(ID, None);
-                if is_authenticated() {
+                conn.stop_pid(lease, pid)?;
+                let Some((authenticated, status_message)) = auth_status_owned(&conn, lease)? else {
+                    return Ok(());
+                };
+                if authenticated {
                     cc::emit(app, "dingtalk:connected", json!({ "ok": true }));
                     return Ok(());
                 }
                 eprintln!(
                     "[dingtalk] auth login exited without authenticated status: exit={status}, {}",
-                    auth_status_message()
+                    status_message
                 );
                 let raw = auth_lines.iter().cloned().collect::<Vec<_>>().join("\n");
                 return Err(dingtalk_auth_error_hint(&raw)
@@ -369,16 +412,24 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
-                conn.set_pid(ID, None);
+                cc::stop_registered_child(&conn, lease, &mut child)?;
                 return Err(format!("auth login 等待失败: {e}"));
             }
         }
     }
 }
 pub async fn dingtalk_cancel(app: AppHandle) -> Result<Value, String> {
-    let pid = app.state::<ConnectorConn>().cancel(ID);
-    if let Some(pid) = pid {
-        let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
+    let pids = app
+        .state::<ConnectorConn>()
+        .cancel(ID)
+        .map_err(str::to_string)?;
+    if !pids.is_empty() {
+        let stop_app = app.clone();
+        tokio::task::spawn_blocking(move || {
+            stop_app.state::<ConnectorConn>().stop_cancelled_pids(pids)
+        })
+        .await
+        .map_err(|error| format!("取消钉钉连接任务失败: {error}"))??;
     }
     Ok(json!({ "ok": true }))
 }

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "descriptorId": "pinvou-asr",
+  "descriptorRevision": "pinvou-asr-descriptor-v1",
+  "unit": "pinvou-qwen3-asr.service",
+  "fragmentSuffix": "/.config/systemd/user/pinvou-qwen3-asr.service",
+  "executableSuffix": "/.pinvou3/asr/qwen3-asr-openvino/runtime/bin/python",
+  "scriptSuffix": "/.pinvou3/asr/qwen3-asr-openvino/qwen3-asr-openvino.py",
+  "allowedActions": ["status", "stop"],
+  "resourcePolicyOwner": "ASR base unit plus pinvou-supervisor package drop-in",
+  "resourcePolicy": {
+    "memoryHigh": "20%",
+    "memoryMax": "35%",
+    "memorySwapMax": "2G",
+    "oomPolicy": "kill",
+    "killMode": "control-group",
+    "tasksMax": 128,
+    "restart": "on-failure",
+    "restartSec": "3s",
+    "startLimitIntervalSec": "60s",
+    "startLimitBurst": 3
+  }
+}

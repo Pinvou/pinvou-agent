@@ -82,6 +82,7 @@ const packagingPaths = [
   linux.bundle.linux.deb.desktopTemplate,
   linux.bundle.linux.deb.postInstallScript,
   linux.bundle.linux.deb.preRemoveScript,
+  linux.bundle.linux.deb.postRemoveScript,
   windows.bundle.windows.nsis.installerIcon,
 ];
 for (const packagingPath of packagingPaths) {

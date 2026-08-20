@@ -12,8 +12,9 @@
 > manifest 预测）、内置 CLI 连接器归并、统一失效入口（现为各开关命令分别
 > 触发刷新）与 §6 的泛化命令面（现为 `set_disabled_connectors` /
 > `set_disabled_skills` 等）为**已定方向、未实施**，实施时以本文档为准并
-> 更新本注记。§7 冻结模型能力与 HostWork 控制的隔离边界；HostWork / Supervisor
-> 尚未实施，唯一权威见 ADR-0009。
+> 更新本注记。§7 冻结模型能力与 HostWork 控制的隔离边界；当前工作树已实现
+> schema v6 HostWork 与首版 Linux Supervisor，但新链路尚未在 MegaBook 完成实机
+> E2E，唯一权威见 ADR-0009。
 
 ---
 
@@ -189,12 +190,19 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
   也不会授予 PID、systemd unit、cgroup 或进程控制权；
 - HostWork 只能由 Rust 组合根和受信 feature 代码以 opaque `work_id + generation`
   注册；支持的动作来自编译期封闭 Adapter，不来自模型参数或 Renderer 状态；
-- Resource Agent 与 `pinvou-resource` Skill 只读 Runtime Resource 投影。Governor 可以签
-  Directive，但只有受信 Adapter / Supervisor 的 ACK 加后验观测才能证明动作生效；
+- Resource Agent 与 `pinvou-resource` Skill 只读 Runtime Resource 投影。Governor 可以确定性
+  签发 `Pending` Directive，但只有受信 Adapter / Supervisor 的 ACK 加后验观测
+  才能证明动作生效；
 - 模型、Web、MCP、A2UI 与普通 Tauri 命令不得传入任意 PID、unit 名、命令行或
   `systemctl` 动作；不得复用超级权限或 `NOPASSWD:ALL` 作为控制后门；
-- 当前生产没有 Resource Control Adapter，也没有独立 Host Supervisor。能力管理 UI
-  即使显示 Resource 工具可用，也只能表示“可读取资源事实”，不能表示“可停止后台”。
+- 当前工作树的组合根已注册 scheduled、knowledge、编译期固定连接器、受限
+  detached sub-agent 与 ASR 的异步 Stop Adapter；app cgroup 是 `essential + non-governable`
+  的 status-only HostWork，不是自动停止 PinvouOS / WebKit 的动作面。旧 Mission
+  同步 callback 控制面已移除，Mission Adapter 数量为 0；
+- 能力管理 UI 即使显示 Resource 工具可用，也只能表示“可读取资源事实”，
+  不会向模型授予 HostWork 注册或停止权。当前新 Supervisor 链路尚未经 MegaBook
+  实机 E2E；普通 desktop 仍 direct，4 GiB / 8 GiB / 2 GiB 只属于显式激活的
+  MegaBook canary profile。不得用仓库实现或旧 direct transient canary 冒充部署事实。
 
 HostWork、Governor、Supervisor、账本回执和 cgroup 的完整不变量见
 [ADR-0009](adr/0009-PinvouOS-资源治理与Host-Supervisor.md)。

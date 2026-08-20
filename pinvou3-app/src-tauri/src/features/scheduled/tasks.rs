@@ -22,6 +22,7 @@ use crate::features::sessions::SessionStore;
 use crate::platform::prefs::UserPrefs;
 
 const DELETE_CANCEL_TIMEOUT: Duration = Duration::from_secs(15);
+const GOVERNOR_CANCEL_TIMEOUT: Duration = Duration::from_secs(15);
 const SCHEDULED_RETENTION_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_TERMINAL_RUNS_PER_AUTOMATION: usize = 50;
 const SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION: u32 = 2;
@@ -708,6 +709,127 @@ impl ScheduledTaskState {
             return Ok(());
         };
         reconcile_run_statuses_shared(&self.automations, task_manager).await?;
+        Ok(())
+    }
+
+    /// HostWork adapter 的只读状态 seam。只统计 Scheduler 自己账本里仍为 queued/running
+    /// 的运行，不扫描会话、PID 或系统任务。
+    pub(crate) async fn host_work_active_run_count(&self) -> Result<usize> {
+        self.reconcile_runs().await?;
+        let manager = self.automations.lock().await;
+        let mut active = 0usize;
+        for automation in manager.list_automations()? {
+            active = active.saturating_add(
+                manager
+                    .list_runs(&automation.id, None)?
+                    .iter()
+                    .filter(|run| {
+                        matches!(
+                            run.status,
+                            AutomationRunStatus::Queued | AutomationRunStatus::Running
+                        )
+                    })
+                    .count(),
+            );
+        }
+        Ok(active)
+    }
+
+    /// Resource Governor 的固定 aggregate Stop seam。目标只能来自 Scheduler 自己的
+    /// AutomationRunRecord；底层 task cancel 保留既有所有权与有界终态等待语义。
+    pub(crate) async fn stop_active_runs_for_governor(&self) -> Result<usize> {
+        self.reconcile_runs().await?;
+        let runs =
+            {
+                let manager = self.automations.lock().await;
+                let mut runs = Vec::new();
+                for automation in manager.list_automations()? {
+                    runs.extend(manager.list_runs(&automation.id, None)?.into_iter().filter(
+                        |run| {
+                            matches!(
+                                run.status,
+                                AutomationRunStatus::Queued | AutomationRunStatus::Running
+                            )
+                        },
+                    ));
+                }
+                runs
+            };
+        let active = runs.len();
+        self.cancel_active_run_tasks_for_governor(&runs).await?;
+        self.reconcile_runs().await?;
+        Ok(active)
+    }
+
+    /// 与删除路径逐个等待不同，Governor 必须先向所有 active task 发出 cancel，再共享一个
+    /// 全局终态窗口。这样运行数量不会把 adapter 的 60s action timeout 线性放大。
+    async fn cancel_active_run_tasks_for_governor(
+        &self,
+        runs: &[AutomationRunRecord],
+    ) -> Result<()> {
+        let mut task_ids = runs
+            .iter()
+            .filter(|run| {
+                matches!(
+                    run.status,
+                    AutomationRunStatus::Queued | AutomationRunStatus::Running
+                )
+            })
+            .map(|run| {
+                run.task_id
+                    .as_deref()
+                    .with_context(|| format!("active automation run {} has no task id", run.id))
+                    .map(str::to_string)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        task_ids.sort();
+        task_ids.dedup();
+        if task_ids.is_empty() {
+            return Ok(());
+        }
+        let task_manager = self
+            .task_manager
+            .as_ref()
+            .context("task manager is unavailable while automation runs are active")?;
+
+        let mut cancel_failures = 0usize;
+        for task_id in &task_ids {
+            if task_manager.cancel_task(task_id).await.is_err() {
+                cancel_failures = cancel_failures.saturating_add(1);
+            }
+        }
+        if cancel_failures > 0 {
+            bail!("{cancel_failures} scheduled cancellation request(s) had an unknown outcome");
+        }
+
+        let deadline = tokio::time::Instant::now() + GOVERNOR_CANCEL_TIMEOUT;
+        let mut pending = task_ids.into_iter().collect::<HashSet<_>>();
+        while !pending.is_empty() {
+            let mut terminal = Vec::new();
+            for task_id in &pending {
+                if task_manager.get_task(task_id).await.is_ok_and(|task| {
+                    matches!(
+                        task.status,
+                        TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Canceled
+                    )
+                }) {
+                    terminal.push(task_id.clone());
+                }
+            }
+            for task_id in terminal {
+                pending.remove(&task_id);
+            }
+            if pending.is_empty() {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!(
+                    "{} scheduled task(s) did not reach a terminal state before the global timeout",
+                    pending.len()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         Ok(())
     }
 

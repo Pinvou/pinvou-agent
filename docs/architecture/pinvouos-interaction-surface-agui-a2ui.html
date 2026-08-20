@@ -1194,14 +1194,14 @@
             <div class="fact"><b>隐藏 Session 仍在执行链</b><span>用户看不到 Session，但 CodeWhale 仍通过兼容 Session 承载消息、工具和 artifact。</span></div>
             <div class="fact"><b>交互生命周期已进入 Runtime</b><span>Engine adapter 写入独立 interaction run、工具摘要、消息摘要与唯一终态；回答正文仍由 chat 兼容流承载。</span></div>
             <div class="fact"><b>projection/* 已进入同一画布</b><span>Runtime sequence 确定性生成 A2UI v0.9 数据增量；VoiceShell 由宿主 Catalog 渲染身份、交互态与运行健康。</span></div>
-            <div class="fact risk"><b>Mission 闭环尚未出现</b><span>账本只观察到启动、身份、Agent 注册和资源事件，尚无可见 Mission / Run / tool / artifact 闭环。资源事件是观测证据，不代表 Resource Agent 已能停止工作。</span></div>
+            <div class="fact risk"><b>Mission 闭环尚未出现</b><span>该 MegaBook 历史部署版本的账本只观察到启动、身份、Agent 注册和资源事件，尚无可见 Mission / Run / tool / artifact 闭环。资源事件是观测证据，不代表该历史版本的 Resource Agent 能停止工作；当前工作树的 HostWork 新链路在 B 页签单独列出。</span></div>
           </div>
-          <div class="audit-note"><b>2026-08-18 实机验收：</b>使用固定 known-host 校验部署组合切片；MegaBook 本机 Rust 142 项、A2UI 5 项、三语、Web 事件契约、UI build 与架构守卫通过。新进程自 sequence 2648 起只写 schema v4；真实 WebView 可访问性树确认交互画布、语音入口、artifact 与 Agent Runtime，后台视觉黑盒确认有序 delta 更新并拒绝旧 sequence。</div>
+          <div class="audit-note"><b>2026-08-18 实机验收：</b>使用固定 known-host 校验部署组合切片；MegaBook 本机 Rust 142 项、A2UI 5 项、三语、Web 事件契约、UI build 与架构守卫通过。新进程自 sequence 2648 起只写 schema v4；真实 WebView 可访问性树确认交互画布、语音入口、artifact 与 Agent Runtime，后台视觉黑盒确认有序 delta 更新并拒绝旧 sequence。后续 f24 direct transient 资源 canary 曾运行 15 分 50 秒、峰值 306 MiB、memory events 为 0，但它使用的是旧直接临时 unit，不是当前 Supervisor / profile / HostWork 链路的 E2E 证据。</div>
         </div>
 
         <div class="truth-panel" role="tabpanel" id="truth-worktree" aria-labelledby="tab-worktree" hidden>
           <div class="truth-title-row">
-            <div><h3>2026-08-20 checkpoint 已超出 MegaBook 最近验收版本</h3><p>下面的插话、麦克风解锁、后台回流隔离与长流内存修复尚待 x86_64 release canary；“实际部署”页签仍保留上一版实机事实，不能混写。</p></div>
+            <div><h3>2026-08-20 checkpoint 已超出 MegaBook 最近验收版本</h3><p>下面的插话、麦克风解锁、后台回流隔离、长流内存修复，以及 schema v6 HostWork / Linux Supervisor 新链路都尚待 x86_64 release canary；“实际部署”页签仍保留上一版实机事实，不能混写。</p></div>
             <span class="status working">INTEGRATING</span>
           </div>
           <div class="truth-grid">
@@ -1212,8 +1212,8 @@
             <div class="fact"><b>后台完成独立回流</b><span>Front 专用 BoundaryOnly 策略不把子 Agent 完成结果注入活跃用户 turn；回流另开 typed SubAgentHandoff turn，但仍不是 Runtime Mission receipt。</span></div>
             <div class="fact"><b>Memory Runtime 核心已随 Runtime 部署</b><span>MemoryOrganizer 在同一账本维护 decision / checkpoint / replay 和结构 Top-K；异步 worker、VerifiedTaskOutcome 与 Front Context Compiler 仍待接。</span></div>
             <div class="fact risk"><b>Mission 生命周期不完整</b><span>Runtime 有 Mission / Run 结构和 Opened / Started 事件，但缺少完成、暂停、恢复、取消等完整事件闭环。</span></div>
-            <div class="fact risk"><b>资源控制尚未接通</b><span>Resource Agent 已写入只读投影，Governor 也有 Directive / Ack 骨架，但生产 Control Adapter 数量为 0；当前不能停止 CodeWhale、PinvouOS/WebKit 或 Linux 后台工作，也没有独立 Supervisor / app cgroup 硬上限。目标边界见 ADR-0009。</span></div>
-            <div class="fact risk"><b>“存在”不等于“可调用”</b><span>open/register/report/ack 命令函数已写出，但当前 invoke handler 只暴露 snapshot、explain、list events。</span></div>
+            <div class="fact risk"><b>资源治理代码已接，MegaBook 部署未验</b><span>Resource Agent 仍只观察；Governor 只签 Pending。schema v6 已装配 6 个独立 worker：scheduled、knowledge、固定 connector、仅 root 已终态且 session 空闲的 detached sub-agent 与 ASR 可 Stop，app cgroup 是 essential / status-only；旧 Mission 同步 callback 已移除且 Mission Adapter 为 0。聚合 Stopped 只证明当次 poll，不是 admission fence；后来成员会在下次 live 观测续租新 generation。App cgroup 只接受 15 秒内受信 Status；Critical 对 missing / stale / reset / 实例切换 sticky，同 work / generation / action / pressure epoch 最多首次 + 1 次 fresh-evidence retry。Supervisor 只有固定 app status/launch 与 ASR status/stop，使用 InvocationID、相互 PID credential 和耐久账本；同 UID shell 仍不是强隔离。普通 desktop 直接启动、无 app 硬限；4 GiB / 8 GiB / 2 GiB 只是 inert MegaBook profile + 专用 launcher。新 deb / systemd / OOM E2E 尚未在 MegaBook 完成。</span></div>
+            <div class="fact risk"><b>“内部可写”不等于“命令可调”</b><span>Runtime 内部保留受信写方法，但普通 Tauri command 中已没有 open / register / report / ack 等 HostWork 写入函数；invoke handler 只暴露 snapshot、projection、explain 与 list events 四个只读入口。</span></div>
             <div class="fact"><b>AG-UI 生命周期语义已落第一层</b><span>独立 scope/run、工具进度、exactly-one terminal、interrupt 与精确 resume 已入统一账本；标准 AG-UI wire envelope 尚未输出。</span></div>
             <div class="fact"><b>A2UI 投影使用 ordered delta</b><span>projection/* 已按 basis Runtime sequence 增量更新；旧 AgentDock 仍在 pinvou-os:event 后重拉完整 snapshot。</span></div>
           </div>

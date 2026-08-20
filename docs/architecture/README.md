@@ -1,6 +1,6 @@
 # PinvouOS 架构权威索引
 
-状态：2026-08-20 已冻结 Front 插话、后台回流边界与长流内存修复；资源治理与 Host Supervisor 决策已刷新但尚未实施。2026-08-18 的交互平面首阶段已在 MegaBook 完成白盒与黑盒验收，本次 checkpoint 仍需以 x86_64 release canary 单独部署验收。
+状态：2026-08-20 已冻结 Front 插话、后台回流边界与长流内存修复；资源治理的 schema v6、HostWork 异步控制面与首版 Linux Supervisor 已在当前工作树实现并纳入打包资源，但尚未在 MegaBook 完成新 Supervisor / systemd / cgroup 链路的实机 E2E。2026-08-18 的交互平面首阶段已在 MegaBook 完成白盒与黑盒验收，本次 checkpoint 仍需以 x86_64 release canary 单独部署验收。
 
 这份索引不替代各专题文档，只规定它们分别对什么负责，以及发生冲突时按什么顺序裁决。
 
@@ -30,7 +30,7 @@
 8. A2UI Surface 写权分区：`projection/*` 只归 Runtime Projector，`front/*` 只归 Front，`system/*` 只归 Kernel/Host。界面感知 Agent（Screen Observer Agent）只观察窗口与可访问性场景，没有 A2UI 写权。
 9. Memory 不保存任务进度。Runtime Mission/Run Work Graph 保存承诺、进度、阻塞和下一步；Memory 只从可信、已验证结果形成行动经历和教训。
 10. Dynamic Mission Agent 的 `completed` 只是执行自报，不等于 Mission 已验证完成。只有 Runtime 的验证回执能关闭任务成功并成为 Memory 证据。
-11. Resource Agent 只观察并提交 Claim，Governor 只签确定性 Directive；只有受信 Host Adapter / Supervisor 能执行控制。模型、Front、Renderer 和 Resource Agent 都不能提交任意 PID、unit 名、命令或 `systemctl`。当前生产 Control Adapter 数量为零，有资源观测不等于具备停止能力。
+11. Resource Agent 只观察并提交 Claim，Governor 只签确定性 `Pending` Directive；只有受信 HostWork Adapter / Supervisor 能执行控制。模型、Front、Renderer 和 Resource Agent 都不能注册 HostWork，也不能提交任意 PID、unit 名、命令或 `systemctl`。当前工作树已装配 scheduled、knowledge、固定连接器、受限 detached sub-agent 与 ASR 的异步 Stop Adapter；app cgroup 只做 `essential + non-governable` 状态观测。旧 Mission 同步 callback 生产面已移除，其 Adapter 数量仍为 0。
 
 ## 标识与生命周期
 
@@ -51,7 +51,7 @@ AG-UI 的 interrupt 不是独立生命周期事件。正确协议是先发送恢
 - Memory Runtime 核心已接统一账本：细粒度 decision/checkpoint/replay、单写保护、结构热索引和有界 Top-K 可用；异步 worker、`VerifiedTaskOutcome`、Front Context Compiler、冷归档和 Obsidian 尚未闭环。
 - Front → `pinvou-orchestrator` 的 manager-as-tool happy-path 与三轮 Direct 安全上限已接通；唯一 profile、同批单实例和回执 schema 仍是 Prompt 契约。2026-08-19 工作树另要求 Front 在 handoff 启动回执后结束当前 turn，避免前台轮询后台；这条“尽早释放”仍是 Prompt 契约，不是时钟驱动的 Engine lease。
 - 界面感知 Agent、Device、Policy 仍处于 Starting；Policy 算法存在，但 AuthorityStore 与所有副作用工具的统一执行闸门未接。
-- Resource Agent 已每 5 秒采样全机 CPU、内存、GPU、温度与功耗，压力变化或 30 秒心跳时入账；Governor 的 Mission Agent Directive 与 ACK/重放骨架存在，但生产没有注册任何 Control Adapter，CodeWhale 子 Agent、WebKit、PinvouOS 常驻后台和 Linux 工作均不能被它停止。当前 Linux 部署也没有独立 Supervisor 或 app cgroup 的 `MemoryHigh / MemoryMax / OOMPolicy`。目标边界由 ADR-0009 定义：先注册 opaque `HostWork + generation`，再由独立同 UID Supervisor 只控制固定 descriptor；模型工具继续只读。
+- Resource Agent 已每 5 秒采样全机 CPU、内存、GPU、温度与功耗，在压力变化、30 秒心跳、app cgroup 治理证据变化或一次有资格的 fresh retry evidence 时入账，仍不执行控制。GPU cache 仅做异步单飞刷新并立即返回旧值 / `None`，GPU I/O 不持 cache 锁；NVIDIA / macOS / Windows 外部探针硬超时分别为 2 / 5 / 15 秒，GPU 卡死不会阻塞 RAM 与后续 cgroup `try_read` 的 5 秒节奏。只有不超过 15 秒的受信同实例 cgroup 状态才进采样；首张 counter 只建 baseline，但 `current >= high` 可立即 Critical。Critical 对 missing/stale/reset/实例切换 sticky，解除需同实例三计数无增且 `current < high`。Runtime schema v6 已接 HostWork Registry、`generation + directive_id` 单飞行、`Pending → ACK → reconcile` 账本与独立异步 worker；每 `work + generation + action + pressure_epoch` 最多首次 + 1 次由新鲜、已落账 Critical 证据授权的 retry。生产组合根已注册 scheduled、knowledge、编译期固定连接器、仅空闲且 root turn 已终态的 detached sub-agent，以及经 Supervisor 的 ASR Stop。App cgroup 只注册为 `essential + non-governable` 状态源，前台 turn、任意子进程与 app/WebKit 自停都不在 Governor 的当前动作面。首版 Supervisor 仅接受固定 app `status/launch` 与 ASR `status/stop`，使用 systemd `InvocationID`、双向 PID 凭据校验和耐久控制账本，并对 effective restart / StartLimit / memory policy fail closed。普通 desktop 仍直接启动 `/usr/bin/pinvou3-tauri`，4 GiB / 8 GiB / 2 GiB 只属于显式 MegaBook canary profile。新链路尚未 MegaBook 实机 E2E；旧 f24 direct transient canary 不等于 Supervisor 验证。
 - Mission/Runtime Run 目前只有 Opened/Started 主事件，完整终态、暂停、恢复、取消和结果验证事件仍需补齐。
 - Interaction Plane 首切片已落地：Runtime 账本具有独立 `interaction_run_id`、工具/消息摘要、唯一终态、interrupt 与精确 resume；VoiceShell 消费只读 `projection/*` A2UI v0.9 ordered delta，并显示受信 user-input / artifact 卡。
 - 2026-08-20 checkpoint 在普通 `chat:*` 边界增加了插话 FIFO 与 turn-scoped completion lease：busy 时本机语音与兼容/远端文字入口仍可提交，排队项可见且可撤销；同一 Host holder 从首个 admission 保留到最后一个 FIFO turn 的 terminal，随后才 Release。每个 holder 只在 Engine idle 时计算 30 秒遗弃窗口；active turn 本身不发无意义心跳，只有 barrier admission pending 或 Engine/UI idle 且仍有队列时才续自己的 holder。这只是页面崩溃后的 fail-open 回收，不是任务 SLA，也不会让一个存活 Host 延长另一个已崩 Host。Web RPC timeout / outcome-unknown 使用同一 request id 并把队首停在 `uncertain`，只接受精确权威 user/terminal 事件或用户取消，绝不自动换 id 重发。麦克风的请求权限、录音、转写都保持可取消/停止；采集期间后台 summary 与 artifact 不抢占显示。队列与 holder 都是 Renderer/Engine 易失协调状态，不写 Runtime Ledger；VoiceShell 当前仍没有本机文字输入框，scheduled / code / host-managed 与旧 plan-accept / edit 路径不使用这条 Front lease。
@@ -64,7 +64,7 @@ AG-UI 的 interrupt 不是独立生命周期事件。正确协议是先发送恢
 
 这些工作可并行推进，不代表严格瀑布顺序；每项能力只在其实际依赖的门禁全部通过后开放。认证纵切不依赖完整 Mission 工作台，但必须先通过 Presentation Host 安全门与 Auth/Policy 子门禁。
 
-1. Event Envelope 与独立 Interaction Run 当前为 schema v5；v4 及更早的历史事件与账本前缀保持原始字节不变，只在 replay 时提升旧界面感知标识。继续冻结 Mission、Runtime Run 的权威 correlation 语义。
+1. Event Envelope 与独立 Interaction Run 在 schema v5 引入；当前 Runtime schema v6 增加 HostWork 事件。v5 及更早的历史事件与账本前缀保持原始字节不变，只在 replay 时 upcast 到当前投影。继续冻结 Mission、Runtime Run 的权威 correlation 语义。
 2. 冻结 Mission Agent Result、Orchestrator Receipt、`VerifiedTaskOutcome` 三层回执。
 3. 补齐 Runtime 生命周期和用户/模型/工具/Policy/artifact/receipt 事件，再做 AG-UI Adapter。
 4. 第一版确定性、只读 `projection/*` 已落；副作用 Action 在 Kernel Policy Gate 接通前继续保持关闭。

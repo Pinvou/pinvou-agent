@@ -25,6 +25,7 @@
     "build:nsis": "node scripts/tauri/build.js build --bundles nsis",
     "test:tauri-layout": "node tests/tauri_platform_layout.test.js",
     "test:tauri-effective-config": "node tests/tauri_effective_config.test.js",
+    "test:linux-supervisor": "node tests/linux_supervisor_packaging_contract.test.js",
     "test:startup-window": "node tests/startup_window_logic.test.mjs",
     "test:connector-online-install": "node tests/connector_online_install_contract.test.js",
     "test:macos-phase2": "node tests/macos_phase2_contract.test.js",

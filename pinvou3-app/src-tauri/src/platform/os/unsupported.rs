@@ -9,6 +9,17 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use pinvou_host_supervisor_protocol::{SupervisorReceipt, SupervisorRequest};
+
+use crate::platform::host_supervisor::HostSupervisorError;
+
+pub fn host_supervisor_request(
+    _request: &SupervisorRequest,
+) -> Result<SupervisorReceipt, HostSupervisorError> {
+    Err(HostSupervisorError::Unsupported)
+}
+
 pub fn open_target(_target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     Err(format!("当前平台不支持系统打开: {label}"))
 }

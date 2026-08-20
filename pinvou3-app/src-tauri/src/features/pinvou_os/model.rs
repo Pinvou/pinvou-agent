@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-// v5 canonicalizes the legacy observer identity during replay. The raw v4 ledger remains
-// immutable; new snapshots and events use Screen Observer naming exclusively.
-pub const SCHEMA_VERSION: u32 = 5;
+// v5 canonicalizes the legacy observer identity during replay. v6 adds the HostWork control
+// ledger without rewriting older frames; replay always projects the current schema.
+pub const SCHEMA_VERSION: u32 = 6;
 pub const PINVOU_IDENTITY_ID: &str = "pinvou";
 pub const PINVOU_INTERACTION_SCOPE_ID: &str = "pinvou:global";
 pub const KERNEL_ACTOR_ID: &str = "kernel:pinvou-os";
@@ -248,6 +248,33 @@ pub enum ResourcePressure {
     Critical,
 }
 
+/// 由受信 Host Supervisor 的固定 `pinvou_app` Status 回执投影出的 cgroup 事实。
+///
+/// 这里只保存绝对计数，不在采样器里提前消费 delta。Runtime 将它与最后一条已成功
+/// 持久化的同实例观测比较；因此账本写失败不会丢掉一次 memory.events 边沿。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppCgroupResourceObservation {
+    pub observed_at_ms: i64,
+    /// systemd InvocationID。它只用于识别 cumulative counter 是否仍属于同一实例，
+    /// 不会成为任意 unit/PID 控制入口。
+    pub instance_generation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_current_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_high_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_max_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_events_high: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_events_oom: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_events_oom_kill: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_pressure_full_avg10: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceObservation {
@@ -262,24 +289,58 @@ pub struct ResourceObservation {
     pub temperature_c: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub power_w: Option<f64>,
+    /// 可选字段保持 schema v6 旧帧逐字兼容；缺失只表示本轮没有新的可信 Supervisor
+    /// 事实，绝不能被解释为 cgroup 已恢复。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_cgroup: Option<AppCgroupResourceObservation>,
+}
+
+/// 最近一张可独立证明 Critical 的可信 ResourceObserved。sequence 是账本顺序，
+/// 用来判断证据发生在某次 HostWork 尝试之前还是之后；不是新的控制 identity。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceGovernanceEvidence {
+    pub event_id: String,
+    pub sequence: u64,
+    pub sampled_at_ms: i64,
+    pub pressure_epoch: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceState {
     pub pressure: ResourcePressure,
+    /// 只在权威压力等级变化时递增。HostWork 的有界重试由同一 epoch 内持久化的
+    /// work_id + generation + action 的 definitive Rejected 次数决定，不靠易失 latch。
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub pressure_epoch: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_observation: Option<ResourceObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_pressure_claim_id: Option<String>,
+    /// cgroup Critical 是粘性的：只有同一实例更新、更低于 memory.high 且三个
+    /// memory.events 计数均无新增的可信观测才能解除。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub app_cgroup_critical: bool,
+    /// 最近一条已持久化的可信绝对计数 baseline。普通整机心跳不会清掉它。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_app_cgroup_observation: Option<AppCgroupResourceObservation>,
+    /// 只由 fresh、非倒序且已落账的 Critical 样本更新。若它发生在首张 Directive
+    /// 之后，即使当时 Directive 尚 Pending，后续 Rejected 也不会丢掉唯一 retry credit。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_fresh_critical_evidence: Option<ResourceGovernanceEvidence>,
 }
 
 impl Default for ResourceState {
     fn default() -> Self {
         Self {
             pressure: ResourcePressure::Normal,
+            pressure_epoch: 0,
             last_observation: None,
             active_pressure_claim_id: None,
+            app_cgroup_critical: false,
+            last_app_cgroup_observation: None,
+            last_fresh_critical_evidence: None,
         }
     }
 }
@@ -426,6 +487,142 @@ pub struct ControlDirective {
     pub acknowledgement_detail: Option<String>,
 }
 
+/// Runtime 可治理的宿主工作不是 Agent，也不携带 PID、unit 或命令。具体执行目标只由
+/// 受信 Adapter 私有持有；这个枚举仅描述固定的所有权边界。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum HostWorkKind {
+    EngineTurn,
+    DetachedSubAgent,
+    ScheduledRun,
+    KnowledgeJob,
+    ConnectorJob,
+    ManagedChildProcess,
+    AppCgroup,
+    AsrCgroup,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum HostWorkAction {
+    Pause,
+    Stop,
+    Resume,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HostWorkDesiredState {
+    Running,
+    Paused,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HostWorkObservedState {
+    Unknown,
+    Starting,
+    Running,
+    Paused,
+    Stopped,
+    Completed,
+    Failed,
+}
+
+/// Host Adapter 的回执只说明调用结果；`Applied` 仍需一次后验 status reconciliation，
+/// 不能直接改变 observed state。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HostWorkDirectiveAcknowledgement {
+    Applied,
+    Rejected,
+    OutcomeUnknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HostWorkReconciliationOutcome {
+    Confirmed,
+    NotApplied,
+    OutcomeUnknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HostWorkDirectiveStatus {
+    Pending,
+    AwaitingReconciliation,
+    OutcomeUnknown,
+    Reconciled,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostWork {
+    pub work_id: String,
+    pub generation: u64,
+    pub owner: String,
+    pub kind: HostWorkKind,
+    pub resource_class: ResourceClass,
+    pub priority: u8,
+    pub interruptibility: Interruptibility,
+    pub essential: bool,
+    pub governable: bool,
+    pub supported_actions: BTreeSet<HostWorkAction>,
+    pub desired_state: HostWorkDesiredState,
+    pub observed_state: HostWorkObservedState,
+    pub registered_at_ms: i64,
+    pub last_observed_at_ms: i64,
+    /// 只有同一 Governor 已确认暂停的工作才能在 Normal 压力下自动恢复。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub governor_pause_directive_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostWorkDirective {
+    pub directive_id: String,
+    pub work_id: String,
+    pub generation: u64,
+    pub action: HostWorkAction,
+    pub reason: String,
+    pub policy_revision: String,
+    /// Directive 签发时的资源压力周期。确定拒绝/未执行只在同一周期内抑制重签；
+    /// 压力发生真实变化后才允许 Governor 使用新的 identity 再评估。
+    #[serde(default)]
+    pub resource_pressure_epoch: u64,
+    /// 仅在 Runtime projection 中由承载该 Directive 的 envelope sequence 回填；
+    /// 账本事件本身保持 None，从而兼容既有 schema-v6 字节。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issued_event_sequence: Option<u64>,
+    pub issued_at_ms: i64,
+    pub status: HostWorkDirectiveStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acknowledgement: Option<HostWorkDirectiveAcknowledgement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acknowledged_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acknowledgement_detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reconciliation: Option<HostWorkReconciliationOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reconciled_observed_state: Option<HostWorkObservedState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reconciled_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reconciliation_detail: Option<String>,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum RuntimeEvent {
@@ -507,6 +704,43 @@ pub enum RuntimeEvent {
         acknowledged_at_ms: i64,
         detail: String,
     },
+    HostWorkRegistered {
+        work: HostWork,
+    },
+    HostWorkObserved {
+        work_id: String,
+        generation: u64,
+        observed_state: HostWorkObservedState,
+        observed_at_ms: i64,
+        detail: String,
+    },
+    HostWorkDirectiveIssued {
+        directive: HostWorkDirective,
+    },
+    HostWorkDirectiveAcknowledged {
+        directive_id: String,
+        work_id: String,
+        generation: u64,
+        acknowledgement: HostWorkDirectiveAcknowledgement,
+        acknowledged_at_ms: i64,
+        detail: String,
+    },
+    HostWorkDirectiveReconciled {
+        directive_id: String,
+        work_id: String,
+        generation: u64,
+        outcome: HostWorkReconciliationOutcome,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        observed_state: Option<HostWorkObservedState>,
+        reconciled_at_ms: i64,
+        detail: String,
+    },
+    HostWorkUnregistered {
+        work_id: String,
+        generation: u64,
+        unregistered_at_ms: i64,
+        reason: String,
+    },
     /// v2 及更早版本的完整 MemoryAgent 投影。新 Runtime 只读此事件做一次迁移，
     /// 绝不能继续写入；保留 variant 是为了让同一统一账本可向前恢复。
     MemoryProjectionUpdated {
@@ -566,6 +800,10 @@ pub struct RuntimeSnapshot {
     pub interaction_runs: BTreeMap<String, InteractionRun>,
     pub claims: BTreeMap<String, WorldClaim>,
     pub directives: BTreeMap<String, ControlDirective>,
+    #[serde(default)]
+    pub host_works: BTreeMap<String, HostWork>,
+    #[serde(default)]
+    pub host_work_directives: BTreeMap<String, HostWorkDirective>,
     pub resources: ResourceState,
     #[serde(default)]
     pub connectivity: ConnectivityState,
@@ -585,6 +823,8 @@ impl Default for RuntimeSnapshot {
             interaction_runs: BTreeMap::new(),
             claims: BTreeMap::new(),
             directives: BTreeMap::new(),
+            host_works: BTreeMap::new(),
+            host_work_directives: BTreeMap::new(),
             resources: ResourceState::default(),
             connectivity: ConnectivityState::default(),
             inference: InferenceState::default(),
@@ -624,4 +864,6 @@ pub struct ResourceDecision {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pressure_claim_id: Option<String>,
     pub directives: Vec<ControlDirective>,
+    #[serde(default)]
+    pub host_work_directives: Vec<HostWorkDirective>,
 }
