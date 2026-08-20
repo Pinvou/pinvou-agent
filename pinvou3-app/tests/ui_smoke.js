@@ -883,17 +883,17 @@ async function expand(page) {
 
   // codex 区块结束:code 会话在对话管理页被点开后即进入 code 模式(侧边栏样式、
   // 折叠导航、「新对话」行为都跟随模式)。后续用例依赖普通侧边栏与聊天视图,
-  // 这里在对话管理页点开一个普通会话,显式退出 code 模式,避免污染下游断言。
-  await page.evaluate(() => {
-    const label = [...document.querySelectorAll('span')]
-      .find(node => (node.textContent || '').trim() === '第三季度财报分析' && node.getBoundingClientRect().left > 300);
-    label && label.closest('div[class*="cursor-pointer"]')?.click();
-  });
+  // 必须显式退出 code 模式,避免污染下游断言。
+  // 退出路径不能点开任何普通会话(③ 依赖「第三季度财报分析」首次切入时的磁盘
+  // 水合来重建 Shell 历史卡 taskId,预开会让二次切入走缓存路径):先点「新对话」
+  // 进 code 草稿页,再用 HomeModeSwitcher 切回工作模式——全程不触碰已有会话。
+  await clickText(page, '新对话'); await sleep(500);
+  await page.evaluate(() => document.querySelector('[data-testid="home-mode-work"]')?.click());
   await sleep(700);
   const exitedCodeMode = await page.evaluate(() =>
     document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'chat'
       && !document.querySelector('[data-testid="sidebar-primary-nav-expand"]'));
-  rec('①a-6 对话管理页点开普通会话退出 code 模式', exitedCodeMode, String(exitedCodeMode));
+  rec('①a-6 HomeModeSwitcher 切回工作模式退出 code 模式', exitedCodeMode, String(exitedCodeMode));
 
   // 模型表单可能包含尚未保存的名称、地址和密钥，点击遮罩层不能意外丢失草稿；
   // 只有显式点击“取消”才关闭。
