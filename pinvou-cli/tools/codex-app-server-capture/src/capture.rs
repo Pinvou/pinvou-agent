@@ -369,7 +369,7 @@ fn files_have_same_identity(input: &Path, output: &Path) -> Result<bool> {
     Ok(identity(&input_file)? == identity(&output_file)?)
 }
 
-fn create_capture_file(path: &Path) -> Result<File> {
+pub(crate) fn create_capture_file(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.create(true).truncate(true).write(true);
     #[cfg(unix)]

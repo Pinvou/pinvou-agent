@@ -3,6 +3,7 @@ name = "codex-app-server-capture"
 version = "0.1.0"
 edition = "2024"
 publish = false
+default-run = "codex-app-server-capture"
 
 [workspace]
 
@@ -11,6 +12,11 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[[bin]]
+name = "fake-app-server"
+path = "tests/support/fake_app_server.rs"
+test = false
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Performance"] }

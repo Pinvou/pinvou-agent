@@ -61,3 +61,35 @@ unknown notification noise, and separate stderr capture.
 Any missing or failed prerequisite makes the report `valid: false`, removes
 `pass_percentiles`, sets `baseline_update_allowed: false`, and makes the CLI
 exit unsuccessfully after writing the report.
+
+## Executable S2 runner
+
+`run-s2` drives the four real scenarios against the locally installed `codex`
+app-server and then applies the same fail-closed validator:
+
+```text
+cargo run --manifest-path pinvou-cli/tools/codex-app-server-capture/Cargo.toml -- \
+  run-s2 --output-dir /restricted/path/s2-run
+```
+
+The output directory receives `capture.jsonl` (raw and sensitive),
+`evidence.json`, `validation-report.json`, `summary.txt`, and an isolated
+`workspace/`. If `--output-dir` is omitted, a unique directory under the OS
+temporary directory is used and printed after a successful run. Useful bounded
+options are `--scenario-timeout-ms` (default 120000) and
+`--global-timeout-ms` (default 600000). `--model` is optional and otherwise
+leaves model/provider selection to the installed Codex configuration.
+
+Scenario C creates one inert probe script inside the isolated workspace and
+accepts only an `item/commandExecution/requestApproval` whose command exactly
+matches that script and whose working directory remains inside the workspace.
+Every other server request, command, or target is rejected and invalidates the
+run. Scenario D sends `turn/interrupt` immediately after the first real agent
+message delta. Auth, quota, malformed protocol, timeout, missing approval,
+missing interrupt response, and terminal-state mismatches all produce sanitized
+INVALID artifacts and a nonzero exit. Account identifiers are never copied into
+evidence, reports, summaries, or stdout; they can exist only in the restricted
+raw capture.
+
+For deterministic no-quota tests, `--executable <path>` replaces only the Codex
+executable while preserving the `app-server --stdio` arguments.

@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use codex_app_server_capture::capture::{
     CaptureConfig, CommandSpec, ProxyConfig, run_capture, run_proxy,
 };
+use codex_app_server_capture::runner::{S2RunConfig, run_s2};
 use codex_app_server_capture::s2::{S2Evidence, validate};
 
 #[derive(Debug, Parser)]
@@ -39,6 +40,19 @@ enum Commands {
         input: PathBuf,
         #[arg(long)]
         output: Option<PathBuf>,
+    },
+    /// Execute the real A-D S2 scenarios and write capture/evidence/report artifacts.
+    RunS2 {
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+        #[arg(long)]
+        executable: Option<OsString>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long, default_value_t = 120_000)]
+        scenario_timeout_ms: u64,
+        #[arg(long, default_value_t = 600_000)]
+        global_timeout_ms: u64,
     },
 }
 
@@ -78,6 +92,23 @@ fn main() -> Result<()> {
             if !report.valid {
                 bail!("S2 run is INVALID; PASS outputs and baseline update are suppressed");
             }
+            Ok(())
+        }
+        Commands::RunS2 {
+            output_dir,
+            executable,
+            model,
+            scenario_timeout_ms,
+            global_timeout_ms,
+        } => {
+            let outcome = run_s2(S2RunConfig {
+                output_dir,
+                executable,
+                model,
+                scenario_timeout: std::time::Duration::from_millis(scenario_timeout_ms),
+                global_timeout: std::time::Duration::from_millis(global_timeout_ms),
+            })?;
+            println!("S2 PASS: {}", outcome.output_dir.display());
             Ok(())
         }
     }
