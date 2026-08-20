@@ -201,3 +201,53 @@ dict.ja.uiSettingsDetail.customModelTitles = {
   openai_compatible:'カスタム互換モデル', glm_coding_plan:'カスタム GLM Coding Plan モデル',
   tencent_coding_plan:'カスタム Tencent Cloud Coding Plan モデル', kimi_coding_plan:'カスタム Kimi Coding Plan モデル',
 };
+
+// 本地多模态引擎（llama-server）区块文案：三语齐平。
+dict.zh.uiSettingsDetail.llamaEngine = {
+  title: '本地多模态引擎',
+  desc: '一键下载开源视觉模型（Qwen3-VL），图片分析完全在本机运行，不上传云端；运行中的对话模型可用 image_analyze 工具读取图片。',
+  engineReady: '引擎已安装', engineMissing: '引擎未安装',
+  modelReady: '模型已就绪', modelMissing: '模型未下载',
+  running: '运行中', starting: '启动中…', stopped: '已停止',
+  downloadingEngine: '正在下载引擎', downloadingModel: '正在下载模型',
+  cancelDownload: '取消',
+  engineLabel: '引擎', modelLabel: '视觉模型', deviceLabel: '设备', serviceLabel: '服务',
+  installEngine: '下载引擎（约 40MB）', installModel: '下载模型',
+  gpu: 'GPU（Vulkan / Metal）', cpu: 'CPU',
+  start: '启动引擎', stop: '停止引擎',
+  viewLogs: '查看日志',
+  privacyNote: '仅监听本机 127.0.0.1，模型与图片数据不离开电脑。',
+  newSessionHint: '引擎启动后，新开的对话才能使用本地视觉能力。',
+};
+dict.en.uiSettingsDetail.llamaEngine = {
+  title: 'Local Multimodal Engine',
+  desc: 'One-click download of an open-source vision model (Qwen3-VL). Image analysis runs entirely on this machine — nothing is uploaded. Text-only chat models gain image reading through the image_analyze tool.',
+  engineReady: 'Engine installed', engineMissing: 'Engine not installed',
+  modelReady: 'Model ready', modelMissing: 'Model not downloaded',
+  running: 'Running', starting: 'Starting…', stopped: 'Stopped',
+  downloadingEngine: 'Downloading engine', downloadingModel: 'Downloading model',
+  cancelDownload: 'Cancel',
+  engineLabel: 'Engine', modelLabel: 'Vision model', deviceLabel: 'Device', serviceLabel: 'Service',
+  installEngine: 'Download engine (~40MB)', installModel: 'Download model',
+  gpu: 'GPU (Vulkan / Metal)', cpu: 'CPU',
+  start: 'Start engine', stop: 'Stop engine',
+  viewLogs: 'View logs',
+  privacyNote: 'Listens on 127.0.0.1 only. Models and images never leave your computer.',
+  newSessionHint: 'After starting the engine, new conversations can use the local vision capability.',
+};
+dict.ja.uiSettingsDetail.llamaEngine = {
+  title: 'ローカルマルチモーダルエンジン',
+  desc: 'オープンソースのビジョンモデル（Qwen3-VL）をワンクリックでダウンロード。画像分析はすべてローカルで実行され、クラウドへは送信されません。テキストのみのチャットモデルは image_analyze ツールで画像を読み取れます。',
+  engineReady: 'エンジンがインストール済み', engineMissing: 'エンジン未インストール',
+  modelReady: 'モデル準備完了', modelMissing: 'モデル未ダウンロード',
+  running: '実行中', starting: '起動中…', stopped: '停止済み',
+  downloadingEngine: 'エンジンをダウンロード中', downloadingModel: 'モデルをダウンロード中',
+  cancelDownload: 'キャンセル',
+  engineLabel: 'エンジン', modelLabel: 'ビジョンモデル', deviceLabel: 'デバイス', serviceLabel: 'サービス',
+  installEngine: 'エンジンをダウンロード（約 40MB）', installModel: 'モデルをダウンロード',
+  gpu: 'GPU（Vulkan / Metal）', cpu: 'CPU',
+  start: 'エンジンを起動', stop: 'エンジンを停止',
+  viewLogs: 'ログを表示',
+  privacyNote: '127.0.0.1 のみで待ち受け。モデルと画像は端末から離れません。',
+  newSessionHint: 'エンジン起動後、新しい会話でローカルのビジョン機能が使えます。',
+};
