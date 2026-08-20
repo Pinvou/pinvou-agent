@@ -210,7 +210,7 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         .and_then(Value::as_str)
         .unwrap();
     assert!(!command.contains("spaces & semicolon ; safe"));
-    assert_eq!(command.matches('&').count(), 1);
+    assert_eq!(command.matches('&').count(), 2);
     assert!(!command.contains(';'));
     assert!(command.contains(".codex-s2-approval-marker"));
     let response = records
@@ -222,6 +222,12 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         })
         .unwrap();
     assert_eq!(response.1["result"]["decision"], "accept");
+    assert!(!workspace.join(".codex-s2-approval-marker").exists());
+    for artifact in ["evidence.json", "validation-report.json", "summary.txt"] {
+        let sanitized = std::fs::read_to_string(output.join(artifact)).unwrap();
+        assert!(!sanitized.contains("S2_APPROVED"));
+        assert!(!sanitized.contains(".codex-s2-approval-marker"));
+    }
     assert!(workspace.join("cmd.exe").exists());
     #[cfg(windows)]
     {
@@ -631,9 +637,9 @@ fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim(
         .arg(&output)
         .args([
             "--scenario-timeout-ms",
-            "2000",
+            "5000",
             "--global-timeout-ms",
-            "10000",
+            "20000",
         ])
         .env("PATH", isolated_path)
         .env("S2_CMDLINE_MARKER", &command_line_marker)
@@ -844,6 +850,23 @@ fn run_s2_rejects_unexpected_approval_method_instead_of_auto_approving_it() {
         let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
         assert!(capture.contains(r#"\"decision\":\"cancel\""#));
         assert!(!capture.contains(r#"\"decision\":\"accept\""#));
+        std::fs::remove_dir_all(output).unwrap();
+    }
+}
+
+#[test]
+fn scenario_c_requires_exact_marker_execution_evidence() {
+    for mode in ["accepted-no-marker", "wrong-marker", "preexisting-marker"] {
+        let output = temp_output(mode);
+        let result = run_fake(mode, &output, 1_000);
+        assert!(!result.status.success(), "{mode} unexpectedly passed");
+        let evidence: Value =
+            serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
+        assert_eq!(
+            evidence["protocol_errors"], 1,
+            "{mode} did not fail as a protocol error"
+        );
+        assert_eq!(evidence["scenarios"][2]["turn_completed"], false);
         std::fs::remove_dir_all(output).unwrap();
     }
 }

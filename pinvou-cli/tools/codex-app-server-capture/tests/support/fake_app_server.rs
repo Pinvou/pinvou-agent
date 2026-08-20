@@ -2,6 +2,9 @@ use std::io::{self, BufRead, Write};
 
 use serde_json::{Value, json};
 
+const APPROVAL_MARKER_NAME: &str = ".codex-s2-approval-marker";
+const APPROVAL_MARKER_BYTES: &[u8] = b"S2_APPROVED";
+
 #[cfg(windows)]
 fn resolved_pwsh() -> std::path::PathBuf {
     let canonical = std::env::split_paths(&std::env::var_os("PATH").unwrap())
@@ -118,6 +121,7 @@ fn main() {
     }
     let stdin = io::stdin();
     let mut turn = 0_u64;
+    let mut approval_cwd = None;
     for line in stdin.lock().lines() {
         let frame: Value = serde_json::from_str(&line.unwrap()).unwrap();
         let method = frame.get("method").and_then(Value::as_str);
@@ -180,6 +184,13 @@ fn main() {
             Some("thread/start") => {
                 if let Some(cwd) = frame.pointer("/params/cwd").and_then(Value::as_str) {
                     let _ = std::fs::write(std::path::Path::new(cwd).join("cmd.exe"), b"untrusted");
+                    if mode == "preexisting-marker" && turn == 2 {
+                        std::fs::write(
+                            std::path::Path::new(cwd).join(APPROVAL_MARKER_NAME),
+                            APPROVAL_MARKER_BYTES,
+                        )
+                        .unwrap();
+                    }
                 }
                 if mode == "slow-phases" {
                     std::thread::sleep(std::time::Duration::from_millis(120));
@@ -306,6 +317,7 @@ fn main() {
                         } else {
                             turn_id.clone()
                         };
+                        approval_cwd = cwd.as_str().map(std::path::PathBuf::from);
                         let mut params = json!({"threadId":approval_thread,"turnId":approval_turn,"itemId":"approval-item","startedAtMs":1,"command":command,"cwd":cwd});
                         #[cfg(windows)]
                         if mode.starts_with("wrapper-") {
@@ -358,6 +370,21 @@ fn main() {
             }
             None if frame.get("id") == Some(&json!(900)) => {
                 if mode != "missing-approval" {
+                    if frame.pointer("/result/decision").and_then(Value::as_str) == Some("accept") {
+                        if mode == "wrong-marker" {
+                            std::fs::write(
+                                approval_cwd.as_ref().unwrap().join(APPROVAL_MARKER_NAME),
+                                b"WRONG",
+                            )
+                            .unwrap();
+                        } else if mode != "accepted-no-marker" {
+                            std::fs::write(
+                                approval_cwd.as_ref().unwrap().join(APPROVAL_MARKER_NAME),
+                                APPROVAL_MARKER_BYTES,
+                            )
+                            .unwrap();
+                        }
+                    }
                     send(
                         json!({"method":"turn/completed","params":{"threadId":"thread-2","turn":{"id":"turn-3","status":"completed"}}}),
                     );

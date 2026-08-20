@@ -23,6 +23,10 @@ const CAPTURE_FILE: &str = "capture.jsonl";
 const EVIDENCE_FILE: &str = "evidence.json";
 const REPORT_FILE: &str = "validation-report.json";
 const SUMMARY_FILE: &str = "summary.txt";
+const APPROVAL_MARKER_NAME: &str = ".codex-s2-approval-marker";
+const APPROVAL_MARKER_CONTENT: &str = "S2_APPROVED";
+const APPROVAL_MARKER_BYTES: &[u8] = APPROVAL_MARKER_CONTENT.as_bytes();
+const APPROVAL_MARKER_MAX_BYTES: u64 = 64;
 
 #[derive(Clone, Debug)]
 pub struct S2RunConfig {
@@ -515,6 +519,9 @@ fn execute(
         let corpus = restricted_ascii_corpus();
         for name in ["A", "B", "C", "D"] {
             let scenario_deadline = Instant::now() + config.scenario_timeout;
+            if name == "C" {
+                ensure_approval_marker_absent(workspace)?;
+            }
             let approval_policy = if name == "C" { "on-request" } else { "never" };
             let sandbox = if name == "C" {
                 "read-only"
@@ -551,6 +558,7 @@ fn execute(
             if name == "C" {
                 turn_params["approvalPolicy"] = json!("on-request");
                 turn_params["sandboxPolicy"] = json!({"type":"readOnly"});
+                ensure_approval_marker_absent(workspace)?;
             }
             let turn = session.request(
                 "turn/start",
@@ -573,6 +581,9 @@ fn execute(
                 scenario_deadline,
                 thresholds,
             )?;
+            if name == "C" && observed.evidence.terminal_state == TerminalState::Completed {
+                verify_and_remove_approval_marker(workspace, scenario_deadline)?;
+            }
             if name == "B" {
                 scenario_b_content.extend(observed.content.iter().cloned());
             }
@@ -1611,11 +1622,61 @@ fn approval_command() -> Result<String> {
             bail!("system cmd.exe path contained an unsafe quote");
         }
         return Ok(format!(
-            "& \"{path}\" /d /s /c \"echo S2_APPROVED> .codex-s2-approval-marker\""
+            "& \"{path}\" /d /s /c \"<nul set /p ={APPROVAL_MARKER_CONTENT}>{APPROVAL_MARKER_NAME}&exit /b 0\""
         ));
     }
     #[cfg(not(windows))]
-    Ok("/bin/sh -c 'printf S2_APPROVED > .codex-s2-approval-marker'".to_owned())
+    Ok(format!(
+        "/bin/sh -c 'printf {APPROVAL_MARKER_CONTENT} > {APPROVAL_MARKER_NAME}'"
+    ))
+}
+
+fn approval_marker_path(workspace: &Path) -> PathBuf {
+    workspace.join(APPROVAL_MARKER_NAME)
+}
+
+fn ensure_approval_marker_absent(workspace: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(approval_marker_path(workspace)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => bail!("scenario C approval marker precondition failed"),
+        Err(_) => bail!("scenario C approval marker precondition failed"),
+    }
+}
+
+fn verify_and_remove_approval_marker(workspace: &Path, deadline: Instant) -> Result<()> {
+    use std::io::Read;
+
+    remaining_until(deadline)?;
+    let path = approval_marker_path(workspace);
+    let metadata = std::fs::symlink_metadata(&path)
+        .map_err(|_| anyhow!("scenario C approval marker verification failed"))?;
+    let file_type = metadata.file_type();
+    let mut safe_regular_file = file_type.is_file() && !file_type.is_symlink();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        safe_regular_file &= metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0;
+    }
+    if !safe_regular_file
+        || metadata.len() > APPROVAL_MARKER_MAX_BYTES
+        || metadata.len() != APPROVAL_MARKER_BYTES.len() as u64
+    {
+        bail!("scenario C approval marker verification failed");
+    }
+    let mut bytes = Vec::with_capacity(APPROVAL_MARKER_BYTES.len());
+    std::fs::File::open(&path)
+        .map_err(|_| anyhow!("scenario C approval marker verification failed"))?
+        .take(APPROVAL_MARKER_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| anyhow!("scenario C approval marker verification failed"))?;
+    remaining_until(deadline)?;
+    if bytes != APPROVAL_MARKER_BYTES {
+        bail!("scenario C approval marker verification failed");
+    }
+    std::fs::remove_file(path).map_err(|_| anyhow!("scenario C approval marker cleanup failed"))?;
+    remaining_until(deadline)?;
+    Ok(())
 }
 
 fn trusted_scenario_shell() -> Result<PathBuf> {
@@ -2271,14 +2332,16 @@ mod tests {
             "stderr={}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(workspace.join(".codex-s2-approval-marker").is_file());
+        let marker = workspace.join(super::APPROVAL_MARKER_NAME);
+        assert!(marker.is_file());
+        assert_eq!(std::fs::read(marker).unwrap(), super::APPROVAL_MARKER_BYTES);
         assert!(!root.join(".codex-s2-approval-marker").exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn approval_wrapper_is_byte_exact_and_escapes_backslashes_before_quotes() {
-        let expected = r#"& \"C:\Windows\System32\cmd.exe\" /d /s /c \"echo S2_APPROVED> .codex-s2-approval-marker\""#;
+        let expected = r#"& \"C:\Windows\System32\cmd.exe\" /d /s /c \"<nul set /p =S2_APPROVED>.codex-s2-approval-marker&exit /b 0\""#;
         let pwsh = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
         let wrapped = super::approval_wrapper_candidate(pwsh, expected).unwrap();
         let escaped = expected.replace('\\', r"\\").replace('"', r#"\""#);
