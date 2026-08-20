@@ -3430,9 +3430,9 @@ fn quota_exhausted(value: &Value) -> bool {
 }
 
 const AGENT_OUTPUT_SEED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKL";
-const A_OUTPUT_LINES: usize = 900;
-const B_OUTPUT_LINES: usize = 800;
-const D_OUTPUT_LINES: usize = 800;
+const A_OUTPUT_LINES: usize = 200;
+const B_OUTPUT_LINES: usize = 600;
+const D_OUTPUT_LINES: usize = 300;
 
 fn create_scenario_workspace(path: &Path) -> Result<()> {
     std::fs::create_dir(path).map_err(|_| anyhow!("scenario workspace creation failed"))?;
@@ -4411,9 +4411,15 @@ mod tests {
 
     #[test]
     fn agent_prompts_are_short_tool_free_and_have_output_headroom() {
-        for (name, minimum_bytes) in [("A", 60 * 1024), ("B", 50 * 1024), ("D", 50 * 1024)] {
+        for (name, expected_lines, minimum_bytes) in [
+            ("A", 200, 8 * 1024),
+            ("B", 600, 40 * 1024),
+            ("D", 300, 16 * 1024),
+        ] {
             let prompt = super::agent_scenario_prompt(name).unwrap();
             assert!(prompt.len() < 1_024);
+            assert!(prompt.contains(&format!("exactly {expected_lines} lines")));
+            assert_eq!(super::agent_output_lines(name).unwrap(), expected_lines);
             assert!(prompt.contains("64-character ASCII seed"));
             assert!(prompt.contains("six-digit"));
             assert!(prompt.contains("final response body"));
