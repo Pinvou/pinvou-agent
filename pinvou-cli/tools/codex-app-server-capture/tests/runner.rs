@@ -90,7 +90,7 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
     let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
     assert!(capture.contains(r#"\"method\":\"thread/started\""#));
     assert!(capture.contains(r#"\"type\":\"userMessage\""#));
-    assert!(capture.contains(r#"\"method\":\"rawResponseItem/completed\""#));
+    assert!(!capture.contains(r#"\"method\":\"rawResponseItem/completed\""#));
     assert!(capture.contains(r#"\"method\":\"mcpServer/startupStatus/updated\""#));
     assert!(capture.contains(r#"\"method\":\"warning\""#));
     assert!(capture.contains(r#"\"status\":\"ready\""#));
@@ -526,8 +526,6 @@ fn agent_only_lifecycle_is_stateful_and_rejects_malformed_or_tool_raw_items() {
         "agent-user-malformed",
         "agent-user-item-id-mismatch",
         "agent-user-missing-completed",
-        "agent-user-raw-missing",
-        "agent-user-raw-late",
         "agent-user-raw-duplicate",
         "agent-user-raw-wrong-thread",
         "agent-user-raw-wrong-turn",
@@ -579,9 +577,7 @@ fn agent_only_lifecycle_is_stateful_and_rejects_malformed_or_tool_raw_items() {
             }
             "agent-thread-missing" => "duplicate or out-of-order turn/started",
             "agent-user-wrong-ids" => "malformed item lifecycle notification",
-            "agent-user-duplicate" | "agent-user-raw-missing" | "agent-user-raw-late" => {
-                "duplicate or out-of-order user message start"
-            }
+            "agent-user-duplicate" => "duplicate or out-of-order user message start",
             "agent-user-duplicate-completed"
             | "agent-user-out-of-order"
             | "agent-user-item-id-mismatch" => "mismatched or out-of-order user message completion",
@@ -589,21 +585,19 @@ fn agent_only_lifecycle_is_stateful_and_rejects_malformed_or_tool_raw_items() {
                 "malformed or mismatched user message"
             }
             "agent-user-missing-completed" => "agent item arrived before user lifecycle completed",
-            "agent-user-raw-duplicate" => {
-                "non-user raw item arrived before user lifecycle completed"
-            }
+            "agent-user-raw-duplicate" => "duplicate or out-of-order user raw item",
             "agent-user-raw-wrong-thread"
             | "agent-user-raw-wrong-turn"
             | "agent-raw-wrong-ids"
             | "agent-raw-wrong-turn" => "raw response item had mismatched identity or order",
-            "agent-user-raw-role"
-            | "agent-user-raw-text"
-            | "agent-user-raw-multipart"
-            | "agent-user-raw-malformed" => "malformed or mismatched leading user raw item",
+            "agent-user-raw-role" => "non-user raw item arrived before user lifecycle completed",
+            "agent-user-raw-text" | "agent-user-raw-multipart" | "agent-user-raw-malformed" => {
+                "malformed or mismatched user raw item"
+            }
             "agent-raw-duplicate" => "duplicate raw response item",
             "agent-raw-out-of-order" => "raw response item was out of order or duplicate",
-            "agent-raw-role-user"
-            | "agent-raw-function-call"
+            "agent-raw-role-user" => "duplicate or out-of-order user raw item",
+            "agent-raw-function-call"
             | "agent-raw-local-shell"
             | "agent-raw-web-search"
             | "agent-raw-computer"
@@ -623,8 +617,6 @@ fn agent_only_lifecycle_is_stateful_and_rejects_malformed_or_tool_raw_items() {
             } else {
                 "thread/started"
             }
-        } else if mode == "agent-user-raw-missing" {
-            "item/started"
         } else if mode.starts_with("agent-user-raw-") || mode.starts_with("agent-raw-") {
             "rawResponseItem/completed"
         } else {
@@ -635,6 +627,26 @@ fn agent_only_lifecycle_is_stateful_and_rejects_malformed_or_tool_raw_items() {
             capture.contains(&format!(r#"\"method\":\"{expected_method}\""#)),
             "{mode} capture lacked the offending {expected_method} frame"
         );
+        std::fs::remove_dir_all(output).unwrap();
+    }
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn agent_only_user_raw_may_be_absent_or_arrive_during_user_lifecycle() {
+    for mode in ["agent-user-raw-missing", "agent-user-raw-late"] {
+        let output = temp_output(mode);
+        let outcome = run_s2_for_test(S2RunConfig {
+            output_dir: Some(output.clone()),
+            executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+            trusted_approval_wrapper: None,
+            model: None,
+            scenario_timeout: Duration::from_secs(10),
+            global_timeout: Duration::from_secs(60),
+            test_child_env: vec![(OsString::from("S2_FAKE_MODE"), OsString::from(mode))],
+        })
+        .unwrap();
+        assert!(outcome.report.valid, "{mode}");
         std::fs::remove_dir_all(output).unwrap();
     }
 }

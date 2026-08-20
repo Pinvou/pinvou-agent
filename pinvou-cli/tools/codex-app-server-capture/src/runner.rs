@@ -2524,7 +2524,6 @@ impl<'a> AgentOnlyState<'a> {
                     if method == "item/started" {
                         if !self.thread_started
                             || !self.turn_started
-                            || !self.user_raw_seen
                             || self.user_item_id.is_some()
                             || self.user_completed
                         {
@@ -2578,9 +2577,17 @@ impl<'a> AgentOnlyState<'a> {
                 if !exact_thread || !exact_turn || !self.turn_started {
                     bail!("protocol error: raw response item had mismatched identity or order");
                 }
-                if !self.user_raw_seen && self.user_item_id.is_none() {
+                let raw_is_user = raw_item
+                    .and_then(Value::as_object)
+                    .and_then(|item| item.get("role"))
+                    .and_then(Value::as_str)
+                    == Some("user");
+                if raw_is_user {
+                    if self.user_raw_seen || !self.items.is_empty() {
+                        bail!("protocol error: duplicate or out-of-order user raw item");
+                    }
                     if !valid_user_raw_response_item(raw_item, self.prompt) {
-                        bail!("protocol error: malformed or mismatched leading user raw item");
+                        bail!("protocol error: malformed or mismatched user raw item");
                     }
                     self.user_raw_seen = true;
                     return Ok(());
@@ -2631,7 +2638,6 @@ impl<'a> AgentOnlyState<'a> {
     fn finish(&self, scenario: &str, terminal_state: &TerminalState) -> Result<()> {
         if !self.thread_started
             || !self.turn_started
-            || !self.user_raw_seen
             || self.user_item_id.is_none()
             || !self.user_completed
         {
@@ -2647,23 +2653,12 @@ impl<'a> AgentOnlyState<'a> {
         if matches!(scenario, "A" | "B")
             && (*terminal_state != TerminalState::Completed
                 || !self.items.values().all(|item| item.completed)
-                || !self.items.values().any(|item| {
-                    item.kind == AgentItemKind::AgentMessage && item.completed && item.raw_seen
-                }))
+                || !self
+                    .items
+                    .values()
+                    .any(|item| item.kind == AgentItemKind::AgentMessage && item.completed))
         {
-            bail!("protocol error: completed scenario lacked a complete assistant raw lifecycle");
-        }
-        if matches!(scenario, "A" | "B")
-            && self.items.values().any(|item| {
-                matches!(
-                    item.kind,
-                    AgentItemKind::AgentMessage | AgentItemKind::Reasoning
-                ) && !item.raw_seen
-            })
-        {
-            bail!(
-                "protocol error: completed scenario lacked raw response for every completed agent or reasoning item"
-            );
+            bail!("protocol error: completed scenario lacked a complete assistant lifecycle");
         }
         Ok(())
     }
@@ -4433,7 +4428,6 @@ mod tests {
 
     fn state_after_user<'a>(prompt: &'a str, workspace: &'a Path) -> super::AgentOnlyState<'a> {
         let mut state = state_after_turn(prompt, workspace);
-        state.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}}}), "t", "u").unwrap();
         let user = json!({"type":"userMessage","id":"user","clientId":null,"content":[{"type":"text","text":prompt,"text_elements":[]}]});
         state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":1,"item":user}}), "t", "u").unwrap();
         state.validate(&json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":2,"item":user}}), "t", "u").unwrap();
@@ -4767,11 +4761,10 @@ mod tests {
     }
 
     #[test]
-    fn user_raw_is_unique_exact_and_precedes_user_message_lifecycle() {
+    fn user_raw_is_optional_exact_unique_and_does_not_advance_canonical_lifecycle() {
         let workspace = std::env::temp_dir().canonicalize().unwrap();
         let prompt = "exact prompt";
         for item in [
-            json!({"type":"message","role":"assistant","content":[{"type":"input_text","text":prompt}]}),
             json!({"type":"message","role":"user","content":[{"type":"input_text","text":"wrong"}]}),
             json!({"type":"message","role":"user","content":[{"type":"input_text","text":prompt},{"type":"input_text","text":prompt}]}),
             json!({"type":"message","role":"user","content":[{"type":"input_text","text":prompt}],"extra":true}),
@@ -4780,21 +4773,22 @@ mod tests {
             let error = state.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":item}}), "t", "u").unwrap_err();
             assert_eq!(
                 error.to_string(),
-                "protocol error: malformed or mismatched leading user raw item"
+                "protocol error: malformed or mismatched user raw item"
             );
         }
         let mut state = state_after_turn(prompt, &workspace);
+        let user_raw = json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}}});
+        state.validate(&user_raw, "t", "u").unwrap();
         let user = json!({"type":"userMessage","id":"user","clientId":null,"content":[{"type":"text","text":prompt,"text_elements":[]}]});
-        let error = state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":1,"item":user}}), "t", "u").unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "protocol error: duplicate or out-of-order user message start"
-        );
+        state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":1,"item":user}}), "t", "u").unwrap();
+        state.validate(&json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":2,"item":user}}), "t", "u").unwrap();
+
         let mut state = state_after_user(prompt, &workspace);
-        let error = state.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}}}), "t", "u").unwrap_err();
+        state.validate(&user_raw, "t", "u").unwrap();
+        let error = state.validate(&user_raw, "t", "u").unwrap_err();
         assert_eq!(
             error.to_string(),
-            "protocol error: malformed or tool raw response item is forbidden"
+            "protocol error: duplicate or out-of-order user raw item"
         );
     }
 
@@ -4854,7 +4848,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_agent_only_scenarios_require_raw_for_every_agent_and_reasoning_item() {
+    fn completed_agent_only_scenarios_require_canonical_lifecycle_but_not_raw_items() {
         let workspace = std::env::temp_dir().canonicalize().unwrap();
         let prompt = "exact prompt";
 
@@ -4869,13 +4863,9 @@ mod tests {
                 missing_second_agent_raw.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}}}), "t", "u").unwrap();
             }
         }
-        let error = missing_second_agent_raw
+        missing_second_agent_raw
             .finish("A", &super::TerminalState::Completed)
-            .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "protocol error: completed scenario lacked raw response for every completed agent or reasoning item"
-        );
+            .unwrap();
 
         let mut interrupted = state_after_user(prompt, &workspace);
         let active = json!({"type":"agentMessage","id":"active","text":"","phase":"final_answer","memoryCitation":null});
@@ -4894,13 +4884,9 @@ mod tests {
         let reasoning = json!({"type":"reasoning","id":"reasoning","summary":[],"content":[]});
         missing_reasoning_raw.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":5,"item":reasoning}}), "t", "u").unwrap();
         missing_reasoning_raw.validate(&json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":6,"item":reasoning}}), "t", "u").unwrap();
-        let error = missing_reasoning_raw
+        missing_reasoning_raw
             .finish("B", &super::TerminalState::Completed)
-            .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "protocol error: completed scenario lacked raw response for every completed agent or reasoning item"
-        );
+            .unwrap();
     }
 
     #[test]

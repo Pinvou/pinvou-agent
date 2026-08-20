@@ -622,7 +622,10 @@ fn main() {
                 let user_raw = json!({"method":"rawResponseItem/completed","params":{
                     "threadId":user_raw_thread,"turnId":user_raw_turn,"item":user_raw_item
                 }});
-                if mode != "agent-user-raw-missing" && mode != "agent-user-raw-late" {
+                if mode.starts_with("agent-user-raw-")
+                    && mode != "agent-user-raw-missing"
+                    && mode != "agent-user-raw-late"
+                {
                     send(user_raw.clone());
                     if mode == "agent-user-raw-duplicate" {
                         send(user_raw.clone());
@@ -724,9 +727,11 @@ fn main() {
                 send(
                     json!({"method":"item/completed","params":{"threadId":thread_id,"turnId":turn_id,"completedAtMs":4,"item":{"type":"reasoning","id":reasoning_id,"summary":[],"content":[]}}}),
                 );
-                send(
-                    json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":{"type":"reasoning","summary":[],"content":null,"encrypted_content":null}}}),
-                );
+                if mode.starts_with("agent-raw-") {
+                    send(
+                        json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":{"type":"reasoning","summary":[],"content":null,"encrypted_content":null}}}),
+                    );
+                }
                 let raw_thread_id = if mode == "agent-raw-wrong-ids" {
                     "wrong-thread"
                 } else {
@@ -830,13 +835,15 @@ fn main() {
                         raw_item["phase"] = agent_phase;
                     }
                     let duplicate_raw_item = raw_item.clone();
-                    send(
-                        json!({"method":"rawResponseItem/completed","params":{"threadId":raw_thread_id,"turnId":raw_turn_id,"item":raw_item}}),
-                    );
-                    if mode == "agent-raw-duplicate" {
+                    if mode.starts_with("agent-raw-") {
                         send(
-                            json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":duplicate_raw_item}}),
+                            json!({"method":"rawResponseItem/completed","params":{"threadId":raw_thread_id,"turnId":raw_turn_id,"item":raw_item}}),
                         );
+                        if mode == "agent-raw-duplicate" {
+                            send(
+                                json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":duplicate_raw_item}}),
+                            );
+                        }
                     }
                 }
                 if mode.starts_with("agent-raw-") {
