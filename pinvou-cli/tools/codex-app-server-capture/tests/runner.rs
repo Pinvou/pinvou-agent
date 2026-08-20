@@ -265,6 +265,12 @@ fn run_s2_uses_a_fresh_minimal_codex_home_and_cleans_up_copied_auth() {
     .unwrap();
     std::fs::create_dir(original_home.join("plugins")).unwrap();
     std::fs::create_dir(original_home.join("skills")).unwrap();
+    std::fs::create_dir_all(original_home.join(".agents/skills/private-marker")).unwrap();
+    std::fs::write(
+        original_home.join(".agents/skills/private-marker/SKILL.md"),
+        "private marker",
+    )
+    .unwrap();
 
     let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
         .args(["run-s2", "--output-dir"])
@@ -291,6 +297,10 @@ fn run_s2_uses_a_fresh_minimal_codex_home_and_cleans_up_copied_auth() {
             "https://must-not-reach.invalid",
         )
         .env("TRACEPARENT", "must-not-reach-child")
+        .env("CODEX_SQLITE_HOME", &original_home)
+        .env("CODEX_ROLLOUT_TRACE_ROOT", &original_home)
+        .env("CODEX_APP_SERVER_MANAGED_CONFIG_PATH", &original_home)
+        .env("CODEX_TUI_SESSION_LOG_PATH", &original_home)
         .env("HTTPS_PROXY", "http://proxy.invalid:8443")
         .env("CODEX_CA_CERTIFICATE", "test-ca-marker")
         .output()
@@ -309,9 +319,24 @@ fn run_s2_uses_a_fresh_minimal_codex_home_and_cleans_up_copied_auth() {
     assert_eq!(audit["ca_preserved"], true);
     assert_eq!(audit["neutral_marker"], true);
     assert_eq!(audit["no_project_inputs"], true);
+    assert_eq!(audit["real_home_skill_visible"], false);
     let isolated_home = std::path::PathBuf::from(audit["home"].as_str().unwrap());
     let neutral_root = std::path::PathBuf::from(audit["current_dir"].as_str().unwrap());
     assert_eq!(isolated_home.parent(), Some(neutral_root.as_path()));
+    assert_eq!(
+        std::path::Path::new(audit["home_env"].as_str().unwrap()),
+        neutral_root
+    );
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            std::path::Path::new(audit["userprofile_env"].as_str().unwrap()),
+            neutral_root
+        );
+        let rendered = neutral_root.to_string_lossy();
+        assert_eq!(audit["homedrive_env"], &rendered[..2]);
+        assert_eq!(audit["homepath_env"], &rendered[2..]);
+    }
     assert!(!neutral_root.starts_with(&output));
     assert!(
         !isolated_home.exists(),
@@ -795,6 +820,16 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         requirements_read.get("params").is_none(),
         "0.139 requires configRequirements/read params to be omitted"
     );
+    let request_index = |method: &str| {
+        records
+            .iter()
+            .position(|(channel, frame)| {
+                *channel == CaptureChannel::ClientToServer && frame["method"] == method
+            })
+            .unwrap()
+    };
+    assert!(request_index("config/read") < request_index("account/read"));
+    assert!(request_index("configRequirements/read") < request_index("account/read"));
     let config_cwd = config_read
         .pointer("/params/cwd")
         .and_then(Value::as_str)

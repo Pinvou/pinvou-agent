@@ -125,14 +125,24 @@ OTEL exporters are `none`. User config, model-provider overrides, MCP servers,
 plugins, skills, hooks, memories, experimental thread config endpoints, and
 telemetry endpoints are not copied. Before any thread, `config/read` with
 `includeLayers=true` and `configRequirements/read` must report only the exact
-isolated user and fixed session-flag layers, no managed requirements, and the
+fixed session-flag layer, isolated user layer, and empty canonical system layer
+in 0.139 precedence order, with no managed requirements and the
 expected side-effect-free effective values. Supported Windows/Linux hosts also
 fail before app-server launch if their known system or legacy managed config
-surfaces exist; macOS and other Unix targets are currently unsupported. The
+surfaces or system skills directory exist, and re-audit those surfaces before
+every `thread/start`; macOS and other Unix targets are currently unsupported.
+This gate excludes concurrent mutation by an administrator/root between the
+audit and Codex's own read, which is outside the runner's same-user threat
+boundary. The
 built-in cloud/auth control plane and authenticated model network remain
 available. Endpoint, token, and `OTEL_*` environment overrides are removed from
-the child, while proxy and CA variables remain available for enterprise network
-connectivity. The copied auth file remains writable for 0.139 token refresh but
+the child, including SQLite and rollout/session trace path overrides. `HOME`
+and the Windows profile/drive/path variables point at the neutral root so user
+`.agents` content is not inherited. `APPDATA`/`LOCALAPPDATA` remain available
+for Windows runtime integration; plugins and their configuration inputs remain
+disabled and the strict layer gate rejects any injected configuration. Proxy
+and CA variables remain available for enterprise network connectivity. The
+copied auth file remains writable for 0.139 token refresh but
 not replaceable; its identity, owner-only permissions, bounded size, and JSON
 shape are revalidated after the child exits. Auth/config handles stay locked for
 the run, and cleanup failure invalidates the run without

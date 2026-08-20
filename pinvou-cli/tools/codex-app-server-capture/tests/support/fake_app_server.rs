@@ -259,6 +259,10 @@ fn main() {
             "CODEX_EXEC_SERVER_URL",
             "OTEL_EXPORTER_OTLP_ENDPOINT",
             "TRACEPARENT",
+            "CODEX_SQLITE_HOME",
+            "CODEX_ROLLOUT_TRACE_ROOT",
+            "CODEX_APP_SERVER_MANAGED_CONFIG_PATH",
+            "CODEX_TUI_SESSION_LOG_PATH",
         ]
         .iter()
         .all(|key| std::env::var_os(key).is_none());
@@ -280,6 +284,12 @@ fn main() {
                 "risky_env_absent": risky_env_absent,
                 "proxy_preserved": std::env::var("HTTPS_PROXY").ok().as_deref() == Some("http://proxy.invalid:8443"),
                 "ca_preserved": std::env::var("CODEX_CA_CERTIFICATE").ok().as_deref() == Some("test-ca-marker"),
+                "home_env": std::env::var("HOME").ok(),
+                "userprofile_env": std::env::var("USERPROFILE").ok(),
+                "homedrive_env": std::env::var("HOMEDRIVE").ok(),
+                "homepath_env": std::env::var("HOMEPATH").ok(),
+                "real_home_skill_visible": original.join(".agents/skills/private-marker/SKILL.md").exists()
+                    && std::env::var_os("HOME").is_some_and(|value| std::path::Path::new(&value).join(".agents/skills/private-marker/SKILL.md").exists()),
             }))
             .unwrap(),
         )
@@ -366,6 +376,55 @@ fn main() {
                 }
             }
             Some("config/read") => {
+                #[cfg(windows)]
+                let system_config = std::path::PathBuf::from(
+                    std::env::var_os("ProgramData").unwrap_or_else(|| "C:\\ProgramData".into()),
+                )
+                .join("OpenAI/Codex/config.toml");
+                #[cfg(not(windows))]
+                let system_config = std::path::PathBuf::from("/etc/codex/config.toml");
+                let session_name = json!({"type":"sessionFlags"});
+                let user_name = json!({"type":"user","file":std::path::PathBuf::from(std::env::var_os("CODEX_HOME").unwrap()).join("config.toml"),"profile":null});
+                let system_name = json!({"type":"system","file":system_config});
+                let session_config = json!({
+                    "notify":[],"project_root_markers":[".codex-s2-root"],"project_doc_max_bytes":0,
+                    "skills":{"include_instructions":false,"bundled":{"enabled":false}},
+                    "analytics":{"enabled":false},
+                    "otel":{"exporter":"none","trace_exporter":"none","metrics_exporter":"none"},
+                    "features":{"hooks":false,"plugins":false,"apps":false,"shell_snapshot":false,"memories":false}
+                });
+                let user_config = json!({
+                    "cli_auth_credentials_store":"file",
+                    "analytics":{"enabled":false},
+                    "otel":{"exporter":"none","trace_exporter":"none","metrics_exporter":"none"},
+                    "skills":{"include_instructions":false,"bundled":{"enabled":false}}
+                });
+                let mut origins = serde_json::Map::new();
+                origins.insert(
+                    "cli_auth_credentials_store".into(),
+                    json!({"name":user_name.clone(),"version":"user-1"}),
+                );
+                for key in [
+                    "notify",
+                    "project_root_markers",
+                    "project_doc_max_bytes",
+                    "skills.include_instructions",
+                    "skills.bundled.enabled",
+                    "analytics.enabled",
+                    "otel.exporter",
+                    "otel.trace_exporter",
+                    "otel.metrics_exporter",
+                    "features.hooks",
+                    "features.plugins",
+                    "features.apps",
+                    "features.shell_snapshot",
+                    "features.memories",
+                ] {
+                    origins.insert(
+                        key.into(),
+                        json!({"name":session_name.clone(),"version":"session-1"}),
+                    );
+                }
                 let mut response = json!({"id":id,"result":{
                     "config":{
                         "cli_auth_credentials_store":"file",
@@ -380,10 +439,11 @@ fn main() {
                         "skills":{"include_instructions":false,"bundled":{"enabled":false}},
                         "features":{"hooks":false,"plugins":false,"apps":false,"shell_snapshot":false,"memories":false}
                     },
-                    "origins":{},
+                    "origins":origins,
                     "layers":[
-                        {"name":{"type":"sessionFlags"},"version":"1","config":{}},
-                        {"name":{"type":"user","file":std::path::PathBuf::from(std::env::var_os("CODEX_HOME").unwrap()).join("config.toml"),"profile":null},"version":"1","config":{}}
+                        {"name":session_name,"version":"session-1","config":session_config},
+                        {"name":user_name,"version":"user-1","config":user_config},
+                        {"name":system_name,"version":"system-1","config":{}}
                     ]
                 }});
                 match mode.as_str() {

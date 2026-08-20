@@ -435,6 +435,8 @@ fn validate_host_managed_surfaces() -> Result<()> {
         vec![
             program_data.join("OpenAI/Codex/config.toml"),
             program_data.join("OpenAI/Codex/requirements.toml"),
+            program_data.join("OpenAI/Codex/managed_config.toml"),
+            program_data.join("OpenAI/Codex/skills"),
         ]
     };
     #[cfg(target_os = "linux")]
@@ -476,6 +478,10 @@ fn sanitize_child_environment(command: &mut Command) {
         "CODEX_CLOUD_TASKS_BASE_URL",
         "CODEX_CLOUD_TASKS_FORCE_INTERNAL",
         "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+        "CODEX_SQLITE_HOME",
+        "CODEX_ROLLOUT_TRACE_ROOT",
+        "CODEX_APP_SERVER_MANAGED_CONFIG_PATH",
+        "CODEX_TUI_SESSION_LOG_PATH",
         "TRACEPARENT",
         "TRACESTATE",
     ];
@@ -490,6 +496,34 @@ fn sanitize_child_environment(command: &mut Command) {
             command.env_remove(key);
         }
     }
+}
+
+fn apply_neutral_home_environment(command: &mut Command, neutral_root: &Path) -> Result<()> {
+    command.env("HOME", neutral_root);
+    #[cfg(windows)]
+    {
+        let rendered = neutral_root
+            .to_str()
+            .ok_or_else(|| anyhow!("neutral home environment setup failed"))?;
+        let bytes = rendered.as_bytes();
+        if bytes.len() < 3
+            || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':'
+            || !matches!(bytes[2], b'\\' | b'/')
+        {
+            bail!("neutral home environment setup failed");
+        }
+        command.env("USERPROFILE", neutral_root);
+        command.env("HOMEDRIVE", &rendered[..2]);
+        command.env("HOMEPATH", &rendered[2..]);
+    }
+    #[cfg(not(windows))]
+    {
+        command.env_remove("USERPROFILE");
+        command.env_remove("HOMEDRIVE");
+        command.env_remove("HOMEPATH");
+    }
+    Ok(())
 }
 
 fn read_locked_auth(path: &Path) -> Result<Vec<u8>> {
@@ -1248,6 +1282,7 @@ fn execute(
     apply_test_child_env(&mut app_server, config);
     sanitize_child_environment(&mut app_server);
     app_server.env("CODEX_HOME", isolated_codex_home);
+    apply_neutral_home_environment(&mut app_server, neutral_root)?;
     app_server.current_dir(neutral_root);
     let mut session = Session::spawn(
         app_server,
@@ -1264,6 +1299,15 @@ fn execute(
         )?;
         validate_initialize(&initialized)?;
         session.notify("initialized", json!({}))?;
+        let effective_config = session.request(
+            "config/read",
+            json!({"includeLayers":true,"cwd":neutral_root}),
+            config.scenario_timeout,
+        )?;
+        validate_effective_config(&effective_config, isolated_codex_home)?;
+        let requirements =
+            session.request_without_params("configRequirements/read", config.scenario_timeout)?;
+        validate_config_requirements(&requirements)?;
         let account = session.request(
             "account/read",
             json!({"refreshToken":false}),
@@ -1279,15 +1323,6 @@ fn execute(
         if quota_exhausted(limits.get("result").unwrap_or(&Value::Null)) {
             bail!("quota exhausted: account rate limit is reached");
         }
-        let effective_config = session.request(
-            "config/read",
-            json!({"includeLayers":true,"cwd":neutral_root}),
-            config.scenario_timeout,
-        )?;
-        validate_effective_config(&effective_config, isolated_codex_home)?;
-        let requirements =
-            session.request_without_params("configRequirements/read", config.scenario_timeout)?;
-        validate_config_requirements(&requirements)?;
 
         let mut scenario_b_content = Vec::new();
         let mut interrupt_response_latency_ms = None;
@@ -1336,6 +1371,7 @@ fn execute(
             if let Some(model) = config.model.as_ref() {
                 thread_params["model"] = Value::String(model.clone());
             }
+            validate_host_managed_surfaces()?;
             let started = session.request(
                 "thread/start",
                 thread_params,
@@ -3131,54 +3167,100 @@ fn validate_effective_config(frame: &Value, isolated_codex_home: &Path) -> Resul
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow!("config preflight failed"))?;
     let expected_user_config = isolated_codex_home.join("config.toml");
-    let allowed_source = |source: &Value| -> bool {
-        let Some(object) = source.as_object() else {
-            return false;
-        };
-        match object.get("type").and_then(Value::as_str) {
-            Some("sessionFlags") => object.len() == 1,
-            Some("user") => {
-                object
-                    .keys()
-                    .all(|key| matches!(key.as_str(), "type" | "file" | "profile"))
-                    && object.get("profile").is_none_or(Value::is_null)
-                    && object
-                        .get("file")
-                        .and_then(Value::as_str)
-                        .is_some_and(|file| {
-                            pinned_thread_cwd_matches(Path::new(file), &expected_user_config)
-                        })
-            }
-            _ => false,
-        }
+    let expected_system_config =
+        expected_system_config_path().map_err(|_| anyhow!("config preflight failed"))?;
+    let session_name = json!({"type":"sessionFlags"});
+    let user_name_matches = |name: &Value| {
+        name.as_object().is_some_and(|object| {
+            object.len() == 3
+                && object.get("type") == Some(&json!("user"))
+                && object.get("profile") == Some(&Value::Null)
+                && object
+                    .get("file")
+                    .and_then(Value::as_str)
+                    .is_some_and(|file| {
+                        pinned_thread_cwd_matches(Path::new(file), &expected_user_config)
+                    })
+        })
     };
-    let allowed_layer = |layer: &Value| -> bool {
-        let Some(object) = layer.as_object() else {
-            return false;
-        };
-        object.keys().all(|key| {
-            matches!(
-                key.as_str(),
-                "name" | "version" | "config" | "disabledReason"
-            )
-        }) && object.get("version").is_some_and(Value::is_string)
-            && object.contains_key("config")
-            && object
-                .get("disabledReason")
-                .is_none_or(|value| value.is_null() || value.is_string())
-            && object.get("name").is_some_and(&allowed_source)
+    let system_name_matches = |name: &Value| {
+        name.as_object().is_some_and(|object| {
+            object.len() == 2
+                && object.get("type") == Some(&json!("system"))
+                && object
+                    .get("file")
+                    .and_then(Value::as_str)
+                    .is_some_and(|file| {
+                        pinned_thread_cwd_matches(Path::new(file), &expected_system_config)
+                    })
+        })
     };
-    let allowed_origin = |origin: &Value| -> bool {
-        let Some(object) = origin.as_object() else {
-            return false;
-        };
-        object.len() == 2
-            && object.get("version").is_some_and(Value::is_string)
-            && object.get("name").is_some_and(&allowed_source)
+    fn layer_object(layer: &Value) -> Option<&serde_json::Map<String, Value>> {
+        layer.as_object().filter(|object| {
+            object.len() == 3
+                && object.contains_key("name")
+                && object.get("version").is_some_and(Value::is_string)
+                && object.contains_key("config")
+        })
+    }
+    let Some(session_layer) = layers.first().and_then(layer_object) else {
+        bail!("config preflight failed");
     };
-    if layers.len() != 2
-        || layers.iter().any(|layer| !allowed_layer(layer))
-        || origins.values().any(|origin| !allowed_origin(origin))
+    let Some(user_layer) = layers.get(1).and_then(layer_object) else {
+        bail!("config preflight failed");
+    };
+    let Some(system_layer) = layers.get(2).and_then(layer_object) else {
+        bail!("config preflight failed");
+    };
+    if layers.len() != 3
+        || session_layer.get("name") != Some(&session_name)
+        || session_layer.get("config") != Some(&expected_session_layer_config())
+        || !user_layer.get("name").is_some_and(user_name_matches)
+        || user_layer.get("config") != Some(&expected_user_layer_config())
+        || !system_layer.get("name").is_some_and(system_name_matches)
+        || system_layer.get("config") != Some(&json!({}))
+    {
+        bail!("config preflight failed");
+    }
+    let session_version = session_layer.get("version").unwrap();
+    let user_version = user_layer.get("version").unwrap();
+    let session_origin_matches = |origin: &Value| {
+        origin.as_object().is_some_and(|object| {
+            object.len() == 2
+                && object.get("name") == Some(&session_name)
+                && object.get("version") == Some(session_version)
+        })
+    };
+    let user_origin_matches = |origin: &Value| {
+        origin.as_object().is_some_and(|object| {
+            object.len() == 2
+                && object.get("name").is_some_and(user_name_matches)
+                && object.get("version") == Some(user_version)
+        })
+    };
+    const SESSION_ORIGINS: &[&str] = &[
+        "notify",
+        "project_root_markers",
+        "project_doc_max_bytes",
+        "skills.include_instructions",
+        "skills.bundled.enabled",
+        "analytics.enabled",
+        "otel.exporter",
+        "otel.trace_exporter",
+        "otel.metrics_exporter",
+        "features.hooks",
+        "features.plugins",
+        "features.apps",
+        "features.shell_snapshot",
+        "features.memories",
+    ];
+    if origins.len() != SESSION_ORIGINS.len() + 1
+        || !origins
+            .get("cli_auth_credentials_store")
+            .is_some_and(user_origin_matches)
+        || SESSION_ORIGINS
+            .iter()
+            .any(|key| !origins.get(*key).is_some_and(session_origin_matches))
     {
         bail!("config preflight failed");
     }
@@ -3214,6 +3296,34 @@ fn validate_effective_config(frame: &Value, isolated_codex_home: &Path) -> Resul
         }
     }
     Ok(())
+}
+
+fn expected_user_layer_config() -> Value {
+    json!({
+        "cli_auth_credentials_store":"file",
+        "analytics":{"enabled":false},
+        "otel":{"exporter":"none","trace_exporter":"none","metrics_exporter":"none"},
+        "skills":{"include_instructions":false,"bundled":{"enabled":false}}
+    })
+}
+
+fn expected_session_layer_config() -> Value {
+    json!({
+        "notify":[],"project_root_markers":[".codex-s2-root"],"project_doc_max_bytes":0,
+        "skills":{"include_instructions":false,"bundled":{"enabled":false}},
+        "analytics":{"enabled":false},
+        "otel":{"exporter":"none","trace_exporter":"none","metrics_exporter":"none"},
+        "features":{"hooks":false,"plugins":false,"apps":false,"shell_snapshot":false,"memories":false}
+    })
+}
+
+fn expected_system_config_path() -> Result<PathBuf> {
+    #[cfg(windows)]
+    return Ok(known_program_data()?.join("OpenAI/Codex/config.toml"));
+    #[cfg(target_os = "linux")]
+    return Ok(PathBuf::from("/etc/codex/config.toml"));
+    #[cfg(not(any(windows, target_os = "linux")))]
+    bail!("system config path unsupported");
 }
 
 fn validate_config_requirements(frame: &Value) -> Result<()> {
@@ -5180,6 +5290,40 @@ mod tests {
     }
 
     fn valid_config_frame(home: &Path) -> serde_json::Value {
+        #[cfg(windows)]
+        let system_config = super::known_program_data()
+            .unwrap()
+            .join("OpenAI/Codex/config.toml");
+        #[cfg(not(windows))]
+        let system_config = std::path::PathBuf::from("/etc/codex/config.toml");
+        let session_name = json!({"type":"sessionFlags"});
+        let user_name = json!({"type":"user","file":home.join("config.toml"),"profile":null});
+        let mut origins = serde_json::Map::new();
+        origins.insert(
+            "cli_auth_credentials_store".into(),
+            json!({"name":user_name.clone(),"version":"user-1"}),
+        );
+        for key in [
+            "notify",
+            "project_root_markers",
+            "project_doc_max_bytes",
+            "skills.include_instructions",
+            "skills.bundled.enabled",
+            "analytics.enabled",
+            "otel.exporter",
+            "otel.trace_exporter",
+            "otel.metrics_exporter",
+            "features.hooks",
+            "features.plugins",
+            "features.apps",
+            "features.shell_snapshot",
+            "features.memories",
+        ] {
+            origins.insert(
+                key.into(),
+                json!({"name":session_name.clone(),"version":"session-1"}),
+            );
+        }
         json!({"result":{
             "config":{
                 "cli_auth_credentials_store":"file","notify":[],
@@ -5189,9 +5333,19 @@ mod tests {
                 "otel":{"exporter":"none","trace_exporter":"none","metrics_exporter":"none"},
                 "skills":{"include_instructions":false,"bundled":{"enabled":false}},
                 "features":{"hooks":false,"plugins":false,"apps":false,"shell_snapshot":false,"memories":false}
-            },"origins":{},"layers":[
-                {"name":{"type":"sessionFlags"},"version":"1","config":{}},
-                {"name":{"type":"user","file":home.join("config.toml"),"profile":null},"version":"1","config":{}}
+            },"origins":origins,"layers":[
+                {"name":session_name,"version":"session-1","config":{
+                    "notify":[],"project_root_markers":[".codex-s2-root"],"project_doc_max_bytes":0,
+                    "skills":{"include_instructions":false,"bundled":{"enabled":false}},
+                    "analytics":{"enabled":false},"otel":{"exporter":"none","trace_exporter":"none","metrics_exporter":"none"},
+                    "features":{"hooks":false,"plugins":false,"apps":false,"shell_snapshot":false,"memories":false}
+                }},
+                {"name":user_name,"version":"user-1","config":{
+                    "cli_auth_credentials_store":"file","analytics":{"enabled":false},
+                    "otel":{"exporter":"none","trace_exporter":"none","metrics_exporter":"none"},
+                    "skills":{"include_instructions":false,"bundled":{"enabled":false}}
+                }},
+                {"name":{"type":"system","file":system_config},"version":"system-1","config":{}}
             ]
         }})
     }
@@ -5228,6 +5382,44 @@ mod tests {
         frame["result"]["config"]["experimental_thread_config_endpoint"] =
             json!("https://private.invalid");
         assert!(super::validate_effective_config(&frame, &home).is_err());
+        for mutation in [
+            "order",
+            "duplicate",
+            "system-config",
+            "system-path",
+            "user-config",
+            "session-config",
+            "origins",
+        ] {
+            let mut frame = valid_config_frame(&home);
+            match mutation {
+                "order" => frame["result"]["layers"].as_array_mut().unwrap().swap(1, 2),
+                "duplicate" => {
+                    let duplicate = frame["result"]["layers"][0].clone();
+                    frame["result"]["layers"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(duplicate);
+                }
+                "system-config" => {
+                    frame["result"]["layers"][2]["config"] = json!({"model":"unsafe"})
+                }
+                "system-path" => {
+                    frame["result"]["layers"][2]["name"]["file"] = json!(home.join("config.toml"))
+                }
+                "user-config" => frame["result"]["layers"][1]["config"]["extra"] = json!(true),
+                "session-config" => frame["result"]["layers"][0]["config"]["extra"] = json!(true),
+                "origins" => {
+                    frame["result"]["origins"]["extra"] =
+                        frame["result"]["origins"]["notify"].clone()
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                super::validate_effective_config(&frame, &home).is_err(),
+                "mutation {mutation} was accepted"
+            );
+        }
     }
 
     #[test]
