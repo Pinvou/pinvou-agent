@@ -51,6 +51,7 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
     let outcome = run_s2_for_test(S2RunConfig {
         output_dir: Some(output.clone()),
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        trusted_approval_wrapper: None,
         model: None,
         scenario_timeout: Duration::from_secs(2),
         global_timeout: Duration::from_secs(10),
@@ -98,6 +99,7 @@ fn command_execution_output_deltas_contribute_only_when_correlated() {
     let outcome = run_s2_for_test(S2RunConfig {
         output_dir: Some(output.clone()),
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        trusted_approval_wrapper: None,
         model: None,
         scenario_timeout: Duration::from_secs(2),
         global_timeout: Duration::from_secs(10),
@@ -107,6 +109,31 @@ fn command_execution_output_deltas_contribute_only_when_correlated() {
     let evidence: Value =
         serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
     assert_eq!(evidence["performance"]["event_sizes"]["samples"], 40);
+    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+    let prompts = capture
+        .lines()
+        .filter_map(|line| serde_json::from_str::<CaptureRecord>(line).ok())
+        .filter_map(|record| serde_json::from_str::<Value>(&record.line).ok())
+        .filter(|frame| frame["method"] == "turn/start")
+        .filter_map(|frame| {
+            frame
+                .pointer("/params/input/0/text")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .filter(|prompt| {
+            ["S2-A", "S2-B", "S2-D"]
+                .iter()
+                .any(|name| prompt.contains(name))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(prompts.len(), 3);
+    #[cfg(windows)]
+    assert!(prompts.iter().all(|prompt| {
+        prompt.contains(" -EncodedCommand ")
+            && !prompt.contains(r#"\""#)
+            && !prompt.contains(" -Command ")
+    }));
     std::fs::remove_dir_all(output).unwrap();
 }
 
@@ -118,6 +145,7 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
     run_s2_for_test(S2RunConfig {
         output_dir: Some(output.clone()),
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        trusted_approval_wrapper: None,
         model: None,
         scenario_timeout: Duration::from_secs(2),
         global_timeout: Duration::from_secs(10),
@@ -225,6 +253,7 @@ fn scenario_c_accepts_only_the_exact_observed_pwsh_wrapper() {
     let outcome = run_s2_for_test(S2RunConfig {
         output_dir: Some(output.clone()),
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        trusted_approval_wrapper: None,
         model: None,
         scenario_timeout: Duration::from_secs(2),
         global_timeout: Duration::from_secs(10),
@@ -258,6 +287,7 @@ fn version_preflight_and_app_server_share_one_global_deadline() {
     let result = run_s2_for_test(S2RunConfig {
         output_dir: Some(output.clone()),
         executable: Some(executable.into_os_string()),
+        trusted_approval_wrapper: None,
         model: None,
         scenario_timeout: Duration::from_secs(5),
         global_timeout: Duration::from_millis(1200),
@@ -390,6 +420,114 @@ fn scenario_c_rejects_path_planted_pwsh_wrapper() {
     let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
     assert!(capture.contains(r#"\"decision\":\"cancel\""#));
     assert!(!capture.contains(r#"\"decision\":\"accept\""#));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(windows)]
+fn explicit_trusted_wrapper_accepts_only_its_exact_canonical_command() {
+    for mode in ["wrapper-approval", "wrapper-command-mutated"] {
+        let root = temp_output(mode);
+        let output = root.join("output");
+        let (explicit, path) = path_with_planted_pwsh(&root);
+        let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+            .args(["run-s2", "--output-dir"])
+            .arg(&output)
+            .args(["--executable", env!("CARGO_BIN_EXE_fake-app-server")])
+            .arg("--trusted-approval-wrapper")
+            .arg(&explicit)
+            .args([
+                "--scenario-timeout-ms",
+                "2000",
+                "--global-timeout-ms",
+                "10000",
+            ])
+            .env("PATH", path)
+            .env("S2_FAKE_MODE", mode)
+            .output()
+            .unwrap();
+        assert!(
+            !result.status.success(),
+            "production thresholds must stay strict"
+        );
+        let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+        if mode == "wrapper-approval" {
+            assert!(capture.contains(r#"\"decision\":\"accept\""#));
+            let sanitized = ["evidence.json", "validation-report.json", "summary.txt"]
+                .into_iter()
+                .map(|name| std::fs::read_to_string(output.join(name)).unwrap())
+                .collect::<String>();
+            assert!(!sanitized.contains(explicit.to_string_lossy().as_ref()));
+        } else {
+            assert!(capture.contains(r#"\"decision\":\"cancel\""#));
+            assert!(!capture.contains(r#"\"decision\":\"accept\""#));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    let root = temp_output("different-explicit-wrapper");
+    let output = root.join("output");
+    let (_request_wrapper, path) = path_with_planted_pwsh(&root);
+    let other_dir = root.join("other");
+    std::fs::create_dir_all(&other_dir).unwrap();
+    let explicit = other_dir.join("pwsh.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_fake-app-server"), &explicit).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .args(["run-s2", "--output-dir"])
+        .arg(&output)
+        .args(["--executable", env!("CARGO_BIN_EXE_fake-app-server")])
+        .arg("--trusted-approval-wrapper")
+        .arg(&explicit)
+        .args([
+            "--scenario-timeout-ms",
+            "2000",
+            "--global-timeout-ms",
+            "10000",
+        ])
+        .env("PATH", path)
+        .env("S2_FAKE_MODE", "wrapper-approval")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+    assert!(capture.contains(r#"\"decision\":\"cancel\""#));
+    assert!(!capture.contains(r#"\"decision\":\"accept\""#));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(windows)]
+fn explicit_trusted_wrapper_validation_is_generic_and_precedes_capture() {
+    let root = temp_output("invalid-explicit-wrapper");
+    let absent = root.join("absent").join("pwsh.exe");
+    let non_file = root.join("directory-pwsh.exe");
+    std::fs::create_dir_all(&non_file).unwrap();
+    let wrong_name = root.join("wrong.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_fake-app-server"), &wrong_name).unwrap();
+    let unsafe_dir = root.join("unsafe&wrapper");
+    std::fs::create_dir_all(&unsafe_dir).unwrap();
+    let unsafe_path = unsafe_dir.join("pwsh.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_fake-app-server"), &unsafe_path).unwrap();
+
+    for (index, candidate) in [absent, non_file, wrong_name, unsafe_path]
+        .into_iter()
+        .enumerate()
+    {
+        let output = root.join(format!("output-{index}"));
+        let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+            .args(["run-s2", "--output-dir"])
+            .arg(&output)
+            .args(["--executable", env!("CARGO_BIN_EXE_fake-app-server")])
+            .arg("--trusted-approval-wrapper")
+            .arg(&candidate)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(!output.join("capture.jsonl").exists());
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(stderr.contains("trusted approval wrapper validation failed"));
+        assert!(!stderr.contains(candidate.to_string_lossy().as_ref()));
+    }
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -644,6 +782,7 @@ fn interrupt_timings_start_at_the_correlated_request_write() {
     run_s2_for_test(S2RunConfig {
         output_dir: Some(output.clone()),
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        trusted_approval_wrapper: None,
         model: None,
         scenario_timeout: Duration::from_secs(2),
         global_timeout: Duration::from_secs(10),

@@ -48,6 +48,8 @@ enum Commands {
         #[arg(long)]
         executable: Option<OsString>,
         #[arg(long)]
+        trusted_approval_wrapper: Option<PathBuf>,
+        #[arg(long)]
         model: Option<String>,
         #[arg(long, default_value_t = 120_000)]
         scenario_timeout_ms: u64,
@@ -97,6 +99,7 @@ fn main() -> Result<()> {
         Commands::RunS2 {
             output_dir,
             executable,
+            trusted_approval_wrapper,
             model,
             scenario_timeout_ms,
             global_timeout_ms,
@@ -104,6 +107,7 @@ fn main() -> Result<()> {
             let outcome = run_s2(S2RunConfig {
                 output_dir,
                 executable,
+                trusted_approval_wrapper,
                 model,
                 scenario_timeout: std::time::Duration::from_millis(scenario_timeout_ms),
                 global_timeout: std::time::Duration::from_millis(global_timeout_ms),

@@ -28,6 +28,7 @@ const SUMMARY_FILE: &str = "summary.txt";
 pub struct S2RunConfig {
     pub output_dir: Option<PathBuf>,
     pub executable: Option<OsString>,
+    pub trusted_approval_wrapper: Option<PathBuf>,
     pub model: Option<String>,
     pub scenario_timeout: Duration,
     pub global_timeout: Duration,
@@ -124,6 +125,8 @@ fn run_s2_with_thresholds(
         )
     })?;
 
+    let explicit_approval_wrapper =
+        validate_explicit_approval_wrapper(config.trusted_approval_wrapper.as_deref())?;
     let global_deadline = Instant::now() + config.global_timeout;
     let mut evidence = empty_evidence();
     let execution = SafeInvocation::resolve(config.executable.as_ref()).and_then(|invocation| {
@@ -136,6 +139,7 @@ fn run_s2_with_thresholds(
                 &mut evidence,
                 thresholds,
                 global_deadline,
+                explicit_approval_wrapper.as_deref(),
             )
         })
     });
@@ -451,6 +455,7 @@ fn execute(
     evidence: &mut S2Evidence,
     thresholds: RunnerThresholds,
     global_deadline: Instant,
+    explicit_approval_wrapper: Option<&Path>,
 ) -> Result<()> {
     remaining_global(global_deadline)?;
     let clock = Arc::new(HostMonotonicClock::new()?);
@@ -495,11 +500,18 @@ fn execute(
         let scenario_shell = trusted_scenario_shell()?;
         let approval_command = approval_command()?;
         #[cfg(windows)]
-        let approval_wrapper = trusted_approval_wrapper_shell()?
+        let approval_wrapper_shell = match explicit_approval_wrapper {
+            Some(path) => Some(path.to_owned()),
+            None => auto_trusted_approval_wrapper_shell()?,
+        };
+        #[cfg(windows)]
+        let approval_wrapper = approval_wrapper_shell
             .map(|shell| approval_wrapper_candidate(&shell, &approval_command))
             .transpose()?;
         #[cfg(not(windows))]
         let approval_wrapper: Option<String> = None;
+        #[cfg(not(windows))]
+        let _ = explicit_approval_wrapper;
         let corpus = restricted_ascii_corpus();
         for name in ["A", "B", "C", "D"] {
             let scenario_deadline = Instant::now() + config.scenario_timeout;
@@ -1517,13 +1529,10 @@ fn streaming_command(
     }
     #[cfg(windows)]
     {
-        let encoded = chunk
-            .as_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02X}"))
-            .collect::<String>();
+        let script = powershell_streaming_script(chunk, chunks, cadence_ms);
+        let encoded = encode_powershell_command(&script);
         return Ok(format!(
-            r#"\"{shell}\" -NoLogo -NoProfile -NonInteractive -Command \"$h='{encoded}';$c=New-Object byte[] ($h.Length/2);for($j=0;$j -lt $c.Length;$j++){{$c[$j]=[Convert]::ToByte($h.Substring($j*2,2),16)}};$o=[Console]::OpenStandardOutput();for($i=0;$i -lt {chunks};$i++){{$o.Write($c,0,$c.Length);$o.Flush();Start-Sleep -Milliseconds {cadence_ms}}}\""#
+            "\"{shell}\" -NoProfile -NonInteractive -EncodedCommand {encoded}"
         ));
     }
     #[cfg(not(windows))]
@@ -1538,6 +1547,51 @@ fn streaming_command(
             "/bin/sh -c 'i=0; while [ \"$i\" -lt {chunks} ]; do printf \"%b\" \"{encoded}\"; sleep {cadence_seconds:.3}; i=$((i + 1)); done'"
         ))
     }
+}
+
+#[cfg(windows)]
+fn powershell_streaming_script(chunk: &str, chunks: usize, cadence_ms: usize) -> String {
+    let encoded = chunk
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<String>();
+    format!(
+        "$h='{encoded}';$c=New-Object byte[] ($h.Length/2);for($j=0;$j -lt $c.Length;$j++){{$c[$j]=[Convert]::ToByte($h.Substring($j*2,2),16)}};$o=[Console]::OpenStandardOutput();for($i=0;$i -lt {chunks};$i++){{$o.Write($c,0,$c.Length);$o.Flush();Start-Sleep -Milliseconds {cadence_ms}}}"
+    )
+}
+
+#[cfg(windows)]
+fn encode_powershell_command(script: &str) -> String {
+    let mut bytes = Vec::with_capacity(script.len() * 2);
+    for unit in script.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    base64_encode(&bytes)
+}
+
+#[cfg(windows)]
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let value = ((chunk[0] as u32) << 16)
+            | ((chunk.get(1).copied().unwrap_or(0) as u32) << 8)
+            | chunk.get(2).copied().unwrap_or(0) as u32;
+        encoded.push(ALPHABET[((value >> 18) & 0x3f) as usize] as char);
+        encoded.push(ALPHABET[((value >> 12) & 0x3f) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            ALPHABET[((value >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            ALPHABET[(value & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    encoded
 }
 
 fn approval_command() -> Result<String> {
@@ -1588,8 +1642,59 @@ fn trusted_scenario_shell() -> Result<PathBuf> {
     }
 }
 
+fn validate_explicit_approval_wrapper(path: Option<&Path>) -> Result<Option<PathBuf>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    #[cfg(windows)]
+    {
+        if !path.is_absolute() {
+            bail!("trusted approval wrapper validation failed");
+        }
+        let canonical = path
+            .canonicalize()
+            .map_err(|_| anyhow!("trusted approval wrapper validation failed"))?;
+        let canonical = normalize_windows_command_path(canonical)
+            .map_err(|_| anyhow!("trusted approval wrapper validation failed"))?;
+        let safe = canonical.is_absolute()
+            && canonical.is_file()
+            && canonical
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("pwsh.exe"))
+            && canonical.to_str().is_some_and(|value| {
+                !value.chars().any(|character| {
+                    matches!(
+                        character,
+                        '\r' | '\n'
+                            | '"'
+                            | '&'
+                            | '|'
+                            | '<'
+                            | '>'
+                            | '^'
+                            | '%'
+                            | '!'
+                            | '('
+                            | ')'
+                            | ';'
+                    )
+                })
+            });
+        if !safe {
+            bail!("trusted approval wrapper validation failed");
+        }
+        return Ok(Some(canonical));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        bail!("trusted approval wrapper validation failed");
+    }
+}
+
 #[cfg(windows)]
-fn trusted_approval_wrapper_shell() -> Result<Option<PathBuf>> {
+fn auto_trusted_approval_wrapper_shell() -> Result<Option<PathBuf>> {
     let candidate = match find_windows_path_command("pwsh.exe") {
         Ok(candidate) => candidate,
         Err(_) => return Ok(None),
@@ -1783,6 +1888,25 @@ mod tests {
 
     use serde_json::json;
 
+    #[cfg(windows)]
+    fn decode_base64(input: &str) -> Vec<u8> {
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut bits = 0_u32;
+        let mut bit_count = 0_u8;
+        let mut output = Vec::new();
+        for byte in input.bytes().take_while(|byte| *byte != b'=') {
+            let value = alphabet.iter().position(|item| *item == byte).unwrap() as u32;
+            bits = (bits << 6) | value;
+            bit_count += 6;
+            if bit_count >= 8 {
+                bit_count -= 8;
+                output.push((bits >> bit_count) as u8);
+                bits &= (1 << bit_count) - 1;
+            }
+        }
+        output
+    }
+
     #[test]
     fn performance_uses_sliding_one_second_peak() {
         let metrics = performance(&[
@@ -1894,8 +2018,29 @@ mod tests {
         assert!(d.chunk_bytes * 8 >= 2 * 1024);
         #[cfg(windows)]
         for stimulus in [&a, &b, &d] {
-            assert!(stimulus.command.contains("[Convert]::ToByte"));
-            assert!(!stimulus.command.contains("FromHexString"));
+            assert!(stimulus.command.contains(" -EncodedCommand "));
+            assert!(!stimulus.command.contains(r#"\""#));
+            assert!(!stimulus.command.contains(" -Command "));
+        }
+        #[cfg(windows)]
+        {
+            let payload = a.command.split(" -EncodedCommand ").nth(1).unwrap();
+            assert!(
+                payload
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+            );
+            let decoded = decode_base64(payload);
+            assert_eq!(decoded.len() % 2, 0);
+            let utf16 = decoded
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect::<Vec<_>>();
+            let script = String::from_utf16(&utf16).unwrap();
+            assert_eq!(
+                script,
+                super::powershell_streaming_script(&corpus, 36, 1_000)
+            );
         }
         for stimulus in [a, b, d] {
             assert_eq!(

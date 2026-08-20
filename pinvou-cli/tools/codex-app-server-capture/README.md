@@ -83,6 +83,14 @@ options are `--scenario-timeout-ms` (default 120000) and
 `--global-timeout-ms` (default 600000). `--model` is optional and otherwise
 leaves model/provider selection to the installed Codex configuration.
 
+On Windows, `--trusted-approval-wrapper <absolute-pwsh.exe>` is an explicit
+operator trust decision for the one PowerShell executable that app-server may
+use to wrap scenario C's fixed inner command. The path is canonicalized and
+validated before app-server launch; invalid paths fail generically before raw
+capture. If omitted, only the protected Program Files auto-candidate is
+eligible. The selected path is never copied into sanitized evidence or summary
+artifacts.
+
 Before opening the raw capture, the runner invokes the selected executable with
 `--version` and requires the exact pinned output `codex-cli 0.139.0`. A mismatch,
 malformed output, nonzero exit, or timeout fails before app-server evidence is
@@ -106,10 +114,12 @@ emits 36 one-KiB chunks at one-second cadence, B emits 56 one-KiB chunks at
 50 ms cadence, and D emits 64 256-byte chunks at 250 ms cadence so interruption
 can occur after a real backlog. Commands use the canonical OS-protected Windows
 PowerShell path derived from `GetSystemDirectoryW` on Windows, or absolute
-`/bin/sh` on Unix, and never consult PATH or interpolate caller paths. Their
-prompts forbid other tools and prose before completion. Gates still use only
-real, correlated R1 timestamps and content, including official agent message and
-command-execution output deltas.
+`/bin/sh` on Unix, and never consult PATH or interpolate caller paths. Windows
+scripts are UTF-16LE/Base64 `-EncodedCommand` payloads, so the literal prompt
+contains no nested JSON-style quote escapes. Their prompts forbid other tools
+and prose before completion. Gates still use only real, correlated R1 timestamps
+and content, including official agent message and command-execution output
+deltas.
 
 Scenario C uses `on-request` approval and a read-only sandbox, then requests one
 fixed platform-specific command that writes `.codex-s2-approval-marker` relative
