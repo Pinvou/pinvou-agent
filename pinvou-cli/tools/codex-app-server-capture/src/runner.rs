@@ -32,6 +32,7 @@ const APPROVAL_MARKER_CONTENT: &str = "S2_APPROVED";
 const APPROVAL_MARKER_BYTES: &[u8] = APPROVAL_MARKER_CONTENT.as_bytes();
 const APPROVAL_MARKER_MAX_BYTES: u64 = 64;
 const AUTH_FILE_MAX_BYTES: u64 = 1024 * 1024;
+const VERSION_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(15);
 const MINIMAL_CONFIG: &str = concat!(
     "cli_auth_credentials_store = \"file\"\n",
     "\n",
@@ -1255,7 +1256,7 @@ fn version_preflight_timeout() -> Duration {
     {
         return Duration::from_millis(milliseconds);
     }
-    Duration::from_secs(5)
+    VERSION_PREFLIGHT_TIMEOUT
 }
 
 fn execute(

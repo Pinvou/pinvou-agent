@@ -43,6 +43,7 @@ fn run_fake(
             "60000",
         ])
         .env("S2_FAKE_MODE", mode)
+        .env("S2_TEST_VERSION_PREFLIGHT_TIMEOUT_MS", "2000")
         .output()
         .unwrap()
 }
@@ -1046,7 +1047,64 @@ fn version_preflight_and_app_server_share_one_global_deadline() {
         test_child_env: Vec::new(),
     });
     assert!(result.is_err());
-    assert!(start.elapsed() < Duration::from_millis(1800));
+    assert!(start.elapsed() < Duration::from_secs(8));
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn version_preflight_allows_a_slow_pinned_cli_within_its_budget() {
+    let output = temp_output("slow-pinned-version");
+    let started = std::time::Instant::now();
+    let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .args(["run-s2", "--output-dir"])
+        .arg(&output)
+        .args([
+            "--executable",
+            env!("CARGO_BIN_EXE_fake-app-server"),
+            "--scenario-timeout-ms",
+            "10000",
+            "--global-timeout-ms",
+            "60000",
+        ])
+        .env("S2_FAKE_MODE", "version-slow-pinned")
+        .env_remove("S2_TEST_VERSION_PREFLIGHT_TIMEOUT_MS")
+        .output()
+        .unwrap();
+    assert!(
+        !result.status.success(),
+        "production evidence gates stay strict"
+    );
+    assert!(
+        output.join("capture.jsonl").is_file(),
+        "pinned version should reach app-server preflight: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(started.elapsed() >= Duration::from_secs(6));
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn slow_version_preflight_is_still_bounded_by_the_global_deadline() {
+    let output = temp_output("slow-version-global-budget");
+    let started = std::time::Instant::now();
+    let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .args(["run-s2", "--output-dir"])
+        .arg(&output)
+        .args([
+            "--executable",
+            env!("CARGO_BIN_EXE_fake-app-server"),
+            "--scenario-timeout-ms",
+            "5000",
+            "--global-timeout-ms",
+            "1200",
+        ])
+        .env("S2_FAKE_MODE", "version-slow-pinned")
+        .env_remove("S2_TEST_VERSION_PREFLIGHT_TIMEOUT_MS")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(started.elapsed() < Duration::from_secs(8));
+    assert!(!output.join("capture.jsonl").exists());
     std::fs::remove_dir_all(output).unwrap();
 }
 

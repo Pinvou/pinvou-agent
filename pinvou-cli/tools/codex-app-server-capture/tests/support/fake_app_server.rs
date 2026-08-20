@@ -215,6 +215,10 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 println!("codex-cli 0.139.0");
             }
+            "version-slow-pinned" => {
+                std::thread::sleep(std::time::Duration::from_millis(6_500));
+                println!("codex-cli 0.139.0");
+            }
             "version-descendant" => {
                 spawn_pipe_descendant();
                 println!("codex-cli 0.139.0");
