@@ -302,6 +302,43 @@ class DistributedDependencyGuardTests(unittest.TestCase):
             violations = guard.find_violations(graph, [self.root], repo)
             self.assertIn("动态加载", "\n".join(violations))
 
+    def test_scans_all_metadata_target_source_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            crate = repo / "pinvou-cli/crates/pinvou-node"
+            custom_build = crate / "tools/generate.rs"
+            custom_lib = crate / "ffi/entry.rs"
+            custom_bin = crate / "commands/daemon.rs"
+            for path in (custom_build, custom_lib, custom_bin):
+                path.parent.mkdir(parents=True, exist_ok=True)
+            custom_build.write_text(
+                'fn main() { println!("cargo::rustc-link-lib=codewhale_runtime"); }',
+                encoding="utf-8",
+            )
+            custom_lib.write_text(
+                '#[link(name = "tauri_runtime")] extern "C" {}', encoding="utf-8"
+            )
+            custom_bin.write_text(
+                'fn main() { unsafe { Library::new("codewhale_runtime.dll") }; }',
+                encoding="utf-8",
+            )
+            root = package(self.root, str(crate / "Cargo.toml"))
+            root["targets"] = [
+                {"kind": ["custom-build"], "src_path": str(custom_build)},
+                {"kind": ["lib"], "src_path": str(custom_lib)},
+                {"kind": ["bin"], "src_path": str(custom_bin)},
+            ]
+            graph = metadata(
+                [root],
+                [{"id": root["id"], "features": [], "deps": []}],
+            )
+            violations = "\n".join(
+                guard.find_violations(graph, [self.root], repo)
+            )
+            self.assertIn("rustc-link-lib", violations)
+            self.assertIn("#[link]", violations)
+            self.assertIn("动态加载", violations)
+
 
 if __name__ == "__main__":
     unittest.main()

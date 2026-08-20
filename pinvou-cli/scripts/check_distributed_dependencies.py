@@ -119,20 +119,29 @@ def _source_link_violations(package: dict) -> list[str]:
         violations.append(f"{package['name']}: links={links!r} 引用违禁 native library")
 
     crate_dir = Path(package["manifest_path"]).parent
-    candidates = []
+    candidates: dict[Path, bool] = {}
     build_script = crate_dir / "build.rs"
     if build_script.is_file():
-        candidates.append(build_script)
+        candidates[build_script] = True
     source_dir = crate_dir / "src"
     if source_dir.is_dir():
-        candidates.extend(sorted(source_dir.rglob("*.rs")))
-    for source in candidates:
+        for source in sorted(source_dir.rglob("*.rs")):
+            candidates.setdefault(source, False)
+    for target in package.get("targets", []):
+        source_path = target.get("src_path")
+        if not source_path:
+            continue
+        source = Path(source_path)
+        if source.is_file():
+            is_custom_build = "custom-build" in target.get("kind", [])
+            candidates[source] = candidates.get(source, False) or is_custom_build
+    for source, is_custom_build in candidates.items():
         try:
             content = source.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as error:
             violations.append(f"{package['name']}: 无法检查 {source}: {error}")
             continue
-        if source.name == "build.rs":
+        if is_custom_build:
             for line in content.splitlines():
                 if "rustc-link-lib" in line and _has_forbidden_brand(line):
                     violations.append(

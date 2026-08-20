@@ -131,7 +131,8 @@ jobs:
       benchmark_cli: ${{ steps.filter.outputs.benchmark_cli }}
       benchmark_headless: ${{ steps.filter.outputs.benchmark_headless }}
       benchmark_codewhale: ${{ steps.filter.outputs.benchmark_codewhale }}
-      distributed_stage1: ${{ steps.filter.outputs.distributed_stage1 }}
+      distributed_boundary: ${{ steps.filter.outputs.distributed_boundary }}
+      distributed_stage1_impl: ${{ steps.filter.outputs.distributed_stage1_impl }}
       release_contract: ${{ steps.filter.outputs.release_contract }}
       pet: ${{ steps.filter.outputs.pet }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -194,10 +195,36 @@ jobs:
               - 'pinvou3-app/src-tauri/Cargo.lock'
             benchmark_codewhale:
               - 'CodeWhale'
-            distributed_stage1:
-              - 'pinvou-cli/**'
+            distributed_boundary:
+              - 'pinvou-cli/Cargo.toml'
+              - 'pinvou-cli/Cargo.lock'
+              - 'pinvou-cli/crates/cli/Cargo.toml'
+              - 'pinvou-cli/crates/cli/src/lib.rs'
+              - 'pinvou-cli/crates/cli/src/distributed/**'
+              - 'pinvou-cli/crates/cli/tests/distributed_workspace_contract.rs'
+              - 'pinvou-cli/crates/controller/**'
+              - 'pinvou-cli/crates/node/**'
+              - 'pinvou-cli/crates/protocol/**'
+              - 'pinvou-cli/crates/seglog/**'
+              - 'pinvou-cli/crates/runtime-api/**'
+              - 'pinvou-cli/crates/agent-adapter-codex/**'
+              - 'pinvou-cli/scripts/check_distributed_dependencies.py'
+              - 'pinvou-cli/scripts/check_stage1_zero_diff.py'
+              - 'pinvou-cli/scripts/tests/**'
               - '.github/workflows/pr-check.yml'
-              - 'AGENTS.md'
+            distributed_stage1_impl:
+              - 'pinvou-cli/Cargo.toml'
+              - 'pinvou-cli/Cargo.lock'
+              - 'pinvou-cli/crates/cli/Cargo.toml'
+              - 'pinvou-cli/crates/cli/src/lib.rs'
+              - 'pinvou-cli/crates/cli/src/distributed/**'
+              - 'pinvou-cli/crates/cli/tests/distributed_workspace_contract.rs'
+              - 'pinvou-cli/crates/controller/**'
+              - 'pinvou-cli/crates/node/**'
+              - 'pinvou-cli/crates/protocol/**'
+              - 'pinvou-cli/crates/seglog/**'
+              - 'pinvou-cli/crates/runtime-api/**'
+              - 'pinvou-cli/crates/agent-adapter-codex/**'
             release_contract:
               - 'VERSION'
               - 'scripts/sync-version.mjs'
@@ -1038,7 +1065,7 @@ jobs:
   distributed-boundary-build:
     name: distributed-boundary-build
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.distributed_stage1 == 'true' && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
+    if: ${{ !cancelled() && needs.changes.outputs.distributed_boundary == 'true' && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -1069,6 +1096,7 @@ jobs:
         run: python3 -m unittest discover -s pinvou-cli/scripts/tests -p 'test_*.py' -v
 
       - name: 阶段 1 主工程零 diff
+        if: ${{ needs.changes.outputs.distributed_stage1_impl == 'true' }}
         run: |
           base_ref="${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}"
           base_ref="${base_ref#refs/heads/}"
@@ -1087,7 +1115,7 @@ jobs:
           -p pinvou-seglog
           -p pinvou-runtime-api
           -p pinvou-agent-adapter-codex
-          --no-default-features --features pinvou-cli/distributed
+          --no-default-features --features pinvou-cli/distributed --release
 
       - name: 正式分布式 packages 独立测试
         run: >-
