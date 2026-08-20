@@ -1665,6 +1665,26 @@ struct TrustedApprovalWrapper {
 struct TrustedApprovalWrapper;
 
 #[cfg(windows)]
+struct OwnedWrapperHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for OwnedWrapperHandle {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+#[cfg(windows)]
+impl OwnedWrapperHandle {
+    fn into_raw(self) -> windows_sys::Win32::Foundation::HANDLE {
+        let handle = self.0;
+        std::mem::forget(self);
+        handle
+    }
+}
+
+#[cfg(windows)]
 impl Drop for TrustedApprovalWrapper {
     fn drop(&mut self) {
         use windows_sys::Win32::Foundation::CloseHandle;
@@ -1675,21 +1695,16 @@ impl Drop for TrustedApprovalWrapper {
 impl TrustedApprovalWrapper {
     #[cfg(windows)]
     fn path_identity_matches(&self) -> bool {
-        let Ok(canonical) = self.path.canonicalize() else {
+        let Ok(handle) = open_locked_wrapper_handle(&self.path) else {
             return false;
         };
-        let Ok(canonical) = normalize_windows_command_path(canonical) else {
+        let Ok(final_path) = final_path_from_wrapper_handle(handle.0) else {
             return false;
         };
-        if canonical != self.path {
+        if final_path != self.path {
             return false;
         }
-        let Ok(handle) = open_locked_wrapper_handle(&canonical) else {
-            return false;
-        };
-        let matches = wrapper_file_identity(handle).is_ok_and(|identity| identity == self.identity);
-        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-        matches
+        wrapper_file_identity(handle.0).is_ok_and(|identity| identity == self.identity)
     }
 
     #[cfg(not(windows))]
@@ -1709,53 +1724,9 @@ fn validate_explicit_approval_wrapper(
         if !path.is_absolute() {
             bail!("trusted approval wrapper validation failed");
         }
-        let canonical = path
-            .canonicalize()
-            .map_err(|_| anyhow!("trusted approval wrapper validation failed"))?;
-        let canonical = normalize_windows_command_path(canonical)
-            .map_err(|_| anyhow!("trusted approval wrapper validation failed"))?;
-        let safe = canonical.is_absolute()
-            && canonical.is_file()
-            && canonical
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case("pwsh.exe"))
-            && canonical.to_str().is_some_and(|value| {
-                !value.chars().any(|character| {
-                    matches!(
-                        character,
-                        '\r' | '\n'
-                            | '"'
-                            | '&'
-                            | '|'
-                            | '<'
-                            | '>'
-                            | '^'
-                            | '%'
-                            | '!'
-                            | '('
-                            | ')'
-                            | ';'
-                    )
-                })
-            });
-        if !safe {
-            bail!("trusted approval wrapper validation failed");
-        }
-        let handle = open_locked_wrapper_handle(&canonical)
-            .map_err(|_| anyhow!("trusted approval wrapper validation failed"))?;
-        let identity = match wrapper_file_identity(handle) {
-            Ok(identity) => identity,
-            Err(_) => {
-                unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-                bail!("trusted approval wrapper validation failed");
-            }
-        };
-        return Ok(Some(TrustedApprovalWrapper {
-            path: canonical,
-            handle,
-            identity,
-        }));
+        return acquire_explicit_approval_wrapper_with_post_open(path, || {})
+            .map(Some)
+            .map_err(|_| anyhow!("trusted approval wrapper validation failed"));
     }
     #[cfg(not(windows))]
     {
@@ -1765,7 +1736,52 @@ fn validate_explicit_approval_wrapper(
 }
 
 #[cfg(windows)]
-fn open_locked_wrapper_handle(path: &Path) -> Result<windows_sys::Win32::Foundation::HANDLE> {
+fn acquire_explicit_approval_wrapper_with_post_open(
+    path: &Path,
+    post_open: impl FnOnce(),
+) -> Result<TrustedApprovalWrapper> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_TYPE_DISK, GetFileType,
+    };
+
+    if !path.is_absolute() {
+        bail!("trusted approval wrapper validation failed");
+    }
+    let handle = open_locked_wrapper_handle(path)?;
+    post_open();
+    let final_path = final_path_from_wrapper_handle(handle.0)?;
+    let info = wrapper_file_information(handle.0)?;
+    let safe = final_path.is_absolute()
+        && unsafe { GetFileType(handle.0) } == FILE_TYPE_DISK
+        && info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+        && final_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("pwsh.exe"))
+        && final_path.to_str().is_some_and(|value| {
+            !value.chars().any(|character| {
+                matches!(
+                    character,
+                    '\r' | '\n' | '"' | '&' | '|' | '<' | '>' | '^' | '%' | '!' | '(' | ')' | ';'
+                )
+            })
+        });
+    if !safe {
+        bail!("trusted approval wrapper validation failed");
+    }
+    let identity = WindowsFileIdentity {
+        volume_serial: info.dwVolumeSerialNumber,
+        file_index: ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+    };
+    Ok(TrustedApprovalWrapper {
+        path: final_path,
+        handle: handle.into_raw(),
+        identity,
+    })
+}
+
+#[cfg(windows)]
+fn open_locked_wrapper_handle(path: &Path) -> Result<OwnedWrapperHandle> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{
@@ -1791,13 +1807,37 @@ fn open_locked_wrapper_handle(path: &Path) -> Result<windows_sys::Win32::Foundat
     if handle == INVALID_HANDLE_VALUE {
         bail!("trusted approval wrapper validation failed");
     }
-    Ok(handle)
+    Ok(OwnedWrapperHandle(handle))
 }
 
 #[cfg(windows)]
-fn wrapper_file_identity(
+fn final_path_from_wrapper_handle(
     handle: windows_sys::Win32::Foundation::HANDLE,
-) -> Result<WindowsFileIdentity> {
+) -> Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, VOLUME_NAME_DOS};
+
+    let mut buffer = vec![0_u16; 32_768];
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            handle,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            VOLUME_NAME_DOS,
+        )
+    };
+    if length == 0 || length as usize >= buffer.len() {
+        bail!("trusted approval wrapper validation failed");
+    }
+    normalize_windows_command_path(PathBuf::from(std::ffi::OsString::from_wide(
+        &buffer[..length as usize],
+    )))
+}
+
+#[cfg(windows)]
+fn wrapper_file_information(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+) -> Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
     };
@@ -1806,6 +1846,14 @@ fn wrapper_file_identity(
     if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
         bail!("trusted approval wrapper validation failed");
     }
+    Ok(info)
+}
+
+#[cfg(windows)]
+fn wrapper_file_identity(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+) -> Result<WindowsFileIdentity> {
+    let info = wrapper_file_information(handle)?;
     Ok(WindowsFileIdentity {
         volume_serial: info.dwVolumeSerialNumber,
         file_index: ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
@@ -2184,6 +2232,39 @@ mod tests {
             wrapped,
             format!(r#"\"{}\" -Command \"{}\""#, pwsh.display(), escaped)
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn explicit_wrapper_is_locked_before_final_path_resolution() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "codex-s2-atomic-wrapper-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let wrapper_path = root.join("pwsh.exe");
+        let displaced_path = root.join("displaced.exe");
+        std::fs::write(&wrapper_path, b"trusted").unwrap();
+
+        let wrapper =
+            super::acquire_explicit_approval_wrapper_with_post_open(&wrapper_path, || {
+                assert!(
+                    std::fs::rename(&wrapper_path, &displaced_path).is_err(),
+                    "the raw input path must already be locked against replacement"
+                );
+            })
+            .unwrap();
+
+        assert_eq!(
+            wrapper.path,
+            super::normalize_windows_command_path(wrapper_path.canonicalize().unwrap()).unwrap()
+        );
+        drop(wrapper);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

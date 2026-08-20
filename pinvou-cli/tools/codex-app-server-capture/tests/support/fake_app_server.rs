@@ -36,14 +36,23 @@ fn send(value: Value) {
 }
 
 fn spawn_pipe_descendant() {
-    let _ = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .arg("--hold-pipes-child")
-        .spawn();
+        .spawn()
+        .unwrap();
     if let Ok(marker) = std::env::var("S2_FAKE_MARKER") {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !std::path::Path::new(&marker).exists() && std::time::Instant::now() < deadline {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "pipe-holding child exited before signalling readiness"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        assert!(
+            std::path::Path::new(&marker).exists(),
+            "pipe-holding child did not signal readiness before deadline"
+        );
     }
 }
 
@@ -64,6 +73,9 @@ fn main() {
     });
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.first().is_some_and(|arg| arg == "--hold-pipes-child") {
+        if let Ok(delay_ms) = std::env::var("S2_FAKE_CHILD_READY_DELAY_MS") {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms.parse().unwrap()));
+        }
         if let Ok(marker) = std::env::var("S2_FAKE_MARKER") {
             std::fs::write(marker, std::process::id().to_string()).unwrap();
         }
@@ -90,6 +102,7 @@ fn main() {
     }
     if mode == "immediate-child" {
         spawn_pipe_descendant();
+        return;
     }
     let stdin = io::stdin();
     let mut turn = 0_u64;

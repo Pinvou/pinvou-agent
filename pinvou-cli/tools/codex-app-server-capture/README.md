@@ -85,11 +85,12 @@ leaves model/provider selection to the installed Codex configuration.
 
 On Windows, `--trusted-approval-wrapper <absolute-pwsh.exe>` is an explicit
 operator trust decision for the one PowerShell executable that app-server may
-use to wrap scenario C's fixed inner command. The path is canonicalized and
-validated before app-server launch; invalid paths fail generically before raw
-capture. If omitted, only the protected Program Files auto-candidate is
-eligible. The selected path is never copied into sanitized evidence or summary
-artifacts.
+use to wrap scenario C's fixed inner command. The original absolute path is
+opened and write/delete-locked first, then its final canonical path, regular-file
+type, and file identity are derived from that same handle before app-server
+launch; invalid paths fail generically before raw capture. If omitted, only the
+protected Program Files auto-candidate is eligible. The selected path is never
+copied into sanitized evidence or summary artifacts.
 
 Before opening the raw capture, the runner invokes the selected executable with
 `--version` and requires the exact pinned output `codex-cli 0.139.0`. A mismatch,

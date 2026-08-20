@@ -313,23 +313,6 @@ fn process_has_exited(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
-fn wait_for_descendant_pid(marker: &std::path::Path) -> u32 {
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match std::fs::read_to_string(marker) {
-            Ok(value) => return value.parse().unwrap(),
-            Err(error)
-                if error.kind() == std::io::ErrorKind::NotFound
-                    && std::time::Instant::now() < deadline =>
-            {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            Err(error) => panic!("descendant marker was not ready before deadline: {error}"),
-        }
-    }
-}
-
-#[cfg(windows)]
 fn write_fake_codex_cmd(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(directory).unwrap();
     let script = directory.join(name);
@@ -713,12 +696,13 @@ fn contained_process_kills_version_and_immediate_app_descendants() {
                 "--executable",
                 env!("CARGO_BIN_EXE_fake-app-server"),
                 "--scenario-timeout-ms",
-                "300",
+                "2500",
                 "--global-timeout-ms",
-                "3000",
+                "5000",
             ])
             .env("S2_FAKE_MODE", mode)
             .env("S2_FAKE_MARKER", &marker)
+            .env("S2_FAKE_CHILD_READY_DELAY_MS", "1200")
             .output()
             .unwrap();
         assert!(!result.status.success());
@@ -726,7 +710,10 @@ fn contained_process_kills_version_and_immediate_app_descendants() {
             start.elapsed() < Duration::from_secs(8),
             "{mode} cleanup hung"
         );
-        let pid = wait_for_descendant_pid(&marker);
+        let pid = std::fs::read_to_string(&marker)
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
         assert!(
             process_has_exited(pid),
             "{mode} descendant escaped containment"
