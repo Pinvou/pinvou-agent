@@ -1390,10 +1390,10 @@ mod tests {
     #[test]
     fn install_tencent_docs_preset_with_official_references() {
         let tmp = fresh_dir("tdoc");
-        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
 
         mgr.install("tencent-docs-skill").unwrap();
-        let skill_dir = tmp.join("tencent-docs");
+        let skill_dir = tmp.join("bundles").join("tencent-docs-skill").join("skills").join("tencent-docs");
         assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
         assert_eq!(
             read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
