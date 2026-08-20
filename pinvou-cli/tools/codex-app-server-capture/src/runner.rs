@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -9,6 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::capture::{JsonlRecorder, create_capture_file};
@@ -673,6 +674,9 @@ fn execute(
             let scenario_deadline = Instant::now() + config.scenario_timeout;
             let scenario_workspace = workspace.join(name.to_ascii_lowercase());
             create_scenario_workspace(&scenario_workspace)?;
+            let scenario_workspace = scenario_workspace
+                .canonicalize()
+                .map_err(|_| anyhow!("scenario workspace creation failed"))?;
             if name == "C" {
                 ensure_approval_marker_absent_bounded(
                     marker_helper,
@@ -1116,7 +1120,7 @@ impl Session {
         let mut interrupt_terminal_latency_ms = None;
         let mut pending_terminal = None;
         let mut agent_only_state =
-            matches!(name, "A" | "B" | "D").then(|| AgentOnlyState::new(prompt));
+            matches!(name, "A" | "B" | "D").then(|| AgentOnlyState::new(prompt, workspace));
         loop {
             let (timestamp_ns, frame) = self.recv(deadline)?;
             if frame.get("id").is_some() && frame.get("method").is_some() {
@@ -1194,10 +1198,10 @@ impl Session {
                 break;
             }
         }
-        if let Some(state) = agent_only_state.as_ref() {
-            state.finish()?;
-        }
         let terminal_state = pending_terminal.unwrap_or(TerminalState::Missing);
+        if let Some(state) = agent_only_state.as_ref() {
+            state.finish(name, &terminal_state)?;
+        }
         let bytes: u64 = content.iter().map(|event| event.bytes).sum();
         let span = content
             .first()
@@ -1599,21 +1603,41 @@ fn agent_delta_bytes(frame: &Value, thread_id: &str, turn_id: &str) -> Option<u6
 
 struct AgentOnlyState<'a> {
     prompt: &'a str,
+    workspace: &'a Path,
     thread_started: bool,
     turn_started: bool,
+    user_raw_seen: bool,
     user_item_id: Option<String>,
     user_completed: bool,
+    items: HashMap<String, AgentItemState>,
     raw_items: Vec<Value>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AgentItemKind {
+    AgentMessage,
+    Reasoning,
+    Plan,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AgentItemState {
+    kind: AgentItemKind,
+    completed: bool,
+    raw_seen: bool,
+}
+
 impl<'a> AgentOnlyState<'a> {
-    fn new(prompt: &'a str) -> Self {
+    fn new(prompt: &'a str, workspace: &'a Path) -> Self {
         Self {
             prompt,
+            workspace,
             thread_started: false,
             turn_started: false,
+            user_raw_seen: false,
             user_item_id: None,
             user_completed: false,
+            items: HashMap::new(),
             raw_items: Vec::new(),
         }
     }
@@ -1636,8 +1660,9 @@ impl<'a> AgentOnlyState<'a> {
             "thread/started" => {
                 if self.thread_started
                     || self.turn_started
+                    || self.user_raw_seen
                     || self.user_item_id.is_some()
-                    || !valid_thread_started(frame, thread_id)
+                    || !valid_thread_started(frame, thread_id, self.workspace)
                 {
                     bail!("protocol error: malformed, duplicate, or out-of-order thread/started");
                 }
@@ -1675,6 +1700,47 @@ impl<'a> AgentOnlyState<'a> {
                 if !exact_thread || !exact_turn || !self.turn_started || !self.user_completed {
                     bail!("protocol error: mismatched or out-of-order agent notification");
                 }
+                let item_id = frame
+                    .pointer("/params/itemId")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .context("protocol error: agent delta itemId was missing")?;
+                let expected_kind = match method {
+                    "item/agentMessage/delta" => AgentItemKind::AgentMessage,
+                    "item/plan/delta" => AgentItemKind::Plan,
+                    _ => AgentItemKind::Reasoning,
+                };
+                let structurally_valid = match method {
+                    "item/reasoning/summaryPartAdded" => frame
+                        .pointer("/params/summaryIndex")
+                        .and_then(Value::as_u64)
+                        .is_some(),
+                    "item/reasoning/textDelta" => {
+                        frame.pointer("/params/delta").is_some_and(Value::is_string)
+                            && frame
+                                .pointer("/params/contentIndex")
+                                .and_then(Value::as_u64)
+                                .is_some()
+                    }
+                    "item/reasoning/summaryTextDelta" => {
+                        frame.pointer("/params/delta").is_some_and(Value::is_string)
+                            && frame
+                                .pointer("/params/summaryIndex")
+                                .and_then(Value::as_u64)
+                                .is_some()
+                    }
+                    _ => frame.pointer("/params/delta").is_some_and(Value::is_string),
+                };
+                if !structurally_valid {
+                    bail!("protocol error: malformed agent delta notification");
+                }
+                let item = self
+                    .items
+                    .get(item_id)
+                    .context("protocol error: delta arrived before its item lifecycle started")?;
+                if item.kind != expected_kind || item.completed {
+                    bail!("protocol error: delta item kind or lifecycle state was invalid");
+                }
             }
             "item/started" | "item/completed" => {
                 let item_type = frame.pointer("/params/item/type").and_then(Value::as_str);
@@ -1687,6 +1753,7 @@ impl<'a> AgentOnlyState<'a> {
                     if method == "item/started" {
                         if !self.thread_started
                             || !self.turn_started
+                            || !self.user_raw_seen
                             || self.user_item_id.is_some()
                             || self.user_completed
                         {
@@ -1701,27 +1768,65 @@ impl<'a> AgentOnlyState<'a> {
                         }
                         self.user_completed = true;
                     }
-                } else if !self.user_completed
-                    || !matches!(item_type, Some("agentMessage" | "reasoning" | "plan"))
-                {
-                    bail!(
-                        "protocol error: tool, unknown, or out-of-order item is forbidden in agent-only scenario"
-                    );
+                } else {
+                    if !self.user_completed {
+                        bail!("protocol error: agent item arrived before user lifecycle completed");
+                    }
+                    let (item_id, kind) = valid_agent_item(frame).context(
+                        "protocol error: tool, unknown, or malformed item is forbidden in agent-only scenario",
+                    )?;
+                    if method == "item/started" {
+                        if self.items.contains_key(item_id) {
+                            bail!("protocol error: duplicate agent item start");
+                        }
+                        self.items.insert(
+                            item_id.to_owned(),
+                            AgentItemState {
+                                kind,
+                                completed: false,
+                                raw_seen: false,
+                            },
+                        );
+                    } else {
+                        let state = self.items.get_mut(item_id).context(
+                            "protocol error: agent item completion arrived before start",
+                        )?;
+                        if state.kind != kind || state.completed {
+                            bail!("protocol error: mismatched or duplicate agent item completion");
+                        }
+                        state.completed = true;
+                    }
                 }
             }
             "rawResponseItem/completed" => {
                 let raw_item = frame.pointer("/params/item");
-                if !exact_thread
-                    || !exact_turn
-                    || !self.user_completed
-                    || !valid_benign_raw_response_item(raw_item)
-                {
-                    bail!("protocol error: malformed or tool raw response item is forbidden");
+                if !exact_thread || !exact_turn || !self.turn_started {
+                    bail!("protocol error: raw response item had mismatched identity or order");
                 }
-                let raw_item = raw_item.expect("validated raw response item");
+                if !self.user_raw_seen && self.user_item_id.is_none() {
+                    if !valid_user_raw_response_item(raw_item, self.prompt) {
+                        bail!("protocol error: malformed or mismatched leading user raw item");
+                    }
+                    self.user_raw_seen = true;
+                    return Ok(());
+                }
+                if !self.user_completed {
+                    bail!(
+                        "protocol error: non-user raw item arrived before user lifecycle completed"
+                    );
+                }
+                let raw_item = raw_item.context("protocol error: raw response item was missing")?;
                 if self.raw_items.iter().any(|seen| seen == raw_item) {
                     bail!("protocol error: duplicate raw response item");
                 }
+                let kind = valid_benign_raw_response_item(Some(raw_item))
+                    .context("protocol error: malformed or tool raw response item is forbidden")?;
+                let state = self
+                    .items
+                    .values_mut()
+                    .find(|item| item.kind == kind && item.completed && !item.raw_seen)
+                    .context("protocol error: raw response item was out of order or duplicate")?;
+                state.raw_seen = true;
                 self.raw_items.push(raw_item.clone());
             }
             "item/commandExecution/outputDelta"
@@ -1739,72 +1844,151 @@ impl<'a> AgentOnlyState<'a> {
         Ok(())
     }
 
-    fn finish(&self) -> Result<()> {
+    fn finish(&self, scenario: &str, terminal_state: &TerminalState) -> Result<()> {
         if !self.thread_started
             || !self.turn_started
+            || !self.user_raw_seen
             || self.user_item_id.is_none()
             || !self.user_completed
         {
             bail!("protocol error: required agent-only lifecycle notifications were missing");
         }
+        let assistant_seen = self
+            .items
+            .values()
+            .any(|item| item.kind == AgentItemKind::AgentMessage);
+        if !assistant_seen {
+            bail!("protocol error: assistant agent message lifecycle was missing");
+        }
+        if matches!(scenario, "A" | "B")
+            && (*terminal_state != TerminalState::Completed
+                || !self.items.values().all(|item| item.completed)
+                || !self.items.values().any(|item| {
+                    item.kind == AgentItemKind::AgentMessage && item.completed && item.raw_seen
+                }))
+        {
+            bail!("protocol error: completed scenario lacked a complete assistant raw lifecycle");
+        }
         Ok(())
     }
 }
 
-fn valid_thread_started(frame: &Value, thread_id: &str) -> bool {
-    let Some(thread) = frame.pointer("/params/thread").and_then(Value::as_object) else {
-        return false;
-    };
-    thread.get("id").and_then(Value::as_str) == Some(thread_id)
-        && thread
-            .get("cliVersion")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-        && thread.get("createdAt").and_then(Value::as_i64).is_some()
-        && thread.get("updatedAt").and_then(Value::as_i64).is_some()
-        && thread
-            .get("cwd")
-            .and_then(Value::as_str)
-            .is_some_and(|value| Path::new(value).is_absolute())
-        && thread.get("ephemeral").and_then(Value::as_bool).is_some()
-        && thread
-            .get("modelProvider")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-        && thread.get("preview").is_some_and(Value::is_string)
-        && thread
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-        && matches!(
-            thread.get("source").and_then(Value::as_str),
-            Some("cli" | "vscode" | "exec" | "appServer" | "unknown")
-        )
-        && valid_thread_status(thread.get("status"))
-        && thread.get("turns").is_some_and(Value::is_array)
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PinnedThreadStartedParams {
+    thread: PinnedThread,
 }
 
-fn valid_thread_status(value: Option<&Value>) -> bool {
-    let kind = value
-        .and_then(Value::as_object)
-        .and_then(|status| status.get("type"))
-        .and_then(Value::as_str);
-    match kind {
-        Some("notLoaded" | "idle" | "systemError") => true,
-        Some("active") => value
-            .and_then(Value::as_object)
-            .and_then(|status| status.get("activeFlags"))
-            .and_then(Value::as_array)
-            .is_some_and(|flags| {
-                flags.iter().all(|flag| {
-                    matches!(
-                        flag.as_str(),
-                        Some("waitingOnApproval" | "waitingOnUserInput")
-                    )
-                })
-            }),
-        _ => false,
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PinnedThread {
+    id: String,
+    session_id: String,
+    forked_from_id: Option<String>,
+    parent_thread_id: Option<String>,
+    preview: String,
+    ephemeral: bool,
+    model_provider: String,
+    created_at: i64,
+    updated_at: i64,
+    status: PinnedThreadStatus,
+    path: Option<PathBuf>,
+    cwd: PathBuf,
+    cli_version: String,
+    source: PinnedSessionSource,
+    thread_source: Option<PinnedThreadSource>,
+    agent_nickname: Option<String>,
+    agent_role: Option<String>,
+    git_info: Option<PinnedGitInfo>,
+    name: Option<String>,
+    turns: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+enum PinnedThreadStatus {
+    Idle,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum PinnedSessionSource {
+    AppServer,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PinnedThreadSource {
+    User,
+    Subagent,
+    MemoryConsolidation,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+struct PinnedGitInfo {
+    sha: Option<String>,
+    branch: Option<String>,
+    origin_url: Option<String>,
+}
+
+fn valid_thread_started(frame: &Value, thread_id: &str, workspace: &Path) -> bool {
+    const FIELDS: [&str; 20] = [
+        "id",
+        "sessionId",
+        "forkedFromId",
+        "parentThreadId",
+        "preview",
+        "ephemeral",
+        "modelProvider",
+        "createdAt",
+        "updatedAt",
+        "status",
+        "path",
+        "cwd",
+        "cliVersion",
+        "source",
+        "threadSource",
+        "agentNickname",
+        "agentRole",
+        "gitInfo",
+        "name",
+        "turns",
+    ];
+    let Some(params) = frame.get("params") else {
+        return false;
+    };
+    let Some(object) = params.get("thread").and_then(Value::as_object) else {
+        return false;
+    };
+    if object.len() != FIELDS.len() || FIELDS.iter().any(|field| !object.contains_key(*field)) {
+        return false;
     }
+    let Ok(params) = serde_json::from_value::<PinnedThreadStartedParams>(params.clone()) else {
+        return false;
+    };
+    let thread = params.thread;
+    thread.id == thread_id
+        && thread.session_id == thread_id
+        && thread.forked_from_id.is_none()
+        && thread.parent_thread_id.is_none()
+        && thread.preview.is_empty()
+        && thread.ephemeral
+        && !thread.model_provider.is_empty()
+        && thread.created_at >= 0
+        && thread.updated_at == thread.created_at
+        && matches!(thread.status, PinnedThreadStatus::Idle)
+        && thread.path.is_none()
+        && thread.cwd == workspace
+        && thread.cli_version == "0.139.0"
+        && matches!(thread.source, PinnedSessionSource::AppServer)
+        && thread.thread_source.is_none()
+        && thread.agent_nickname.is_none()
+        && thread.agent_role.is_none()
+        && thread.git_info.is_none()
+        && thread.name.is_none()
+        && thread.turns.is_empty()
 }
 
 fn valid_item_timestamp(frame: &Value, method: &str) -> bool {
@@ -1816,7 +2000,7 @@ fn valid_item_timestamp(frame: &Value, method: &str) -> bool {
     frame
         .pointer(&format!("/params/{field}"))
         .and_then(Value::as_i64)
-        .is_some()
+        .is_some_and(|timestamp| timestamp >= 0)
 }
 
 fn valid_user_message_item<'a>(frame: &'a Value, prompt: &str) -> Result<&'a str> {
@@ -1829,8 +2013,9 @@ fn valid_user_message_item<'a>(frame: &'a Value, prompt: &str) -> Result<&'a str
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .context("user message item id must be nonempty")?;
-    if item.get("type").and_then(Value::as_str) != Some("userMessage")
-        || item.get("clientId").is_some_and(|value| !value.is_null())
+    if item.len() != 4
+        || item.get("type").and_then(Value::as_str) != Some("userMessage")
+        || !item.get("clientId").is_some_and(Value::is_null)
     {
         bail!("user message item discriminator was invalid");
     }
@@ -1842,63 +2027,160 @@ fn valid_user_message_item<'a>(frame: &'a Value, prompt: &str) -> Result<&'a str
     let text = content[0]
         .as_object()
         .context("user message input must be an object")?;
-    if text.get("type").and_then(Value::as_str) != Some("text")
+    if text.len() != 3
+        || text.get("type").and_then(Value::as_str) != Some("text")
         || text.get("text").and_then(Value::as_str) != Some(prompt)
-        || text
+        || !text
             .get("text_elements")
-            .is_some_and(|value| !value.as_array().is_some_and(Vec::is_empty))
+            .is_some_and(|value| value.as_array().is_some_and(Vec::is_empty))
     {
         bail!("user message input did not byte-match the submitted prompt");
     }
     Ok(item_id)
 }
 
-fn valid_benign_raw_response_item(item: Option<&Value>) -> bool {
-    let Some(item) = item.and_then(Value::as_object) else {
+fn valid_agent_item(frame: &Value) -> Option<(&str, AgentItemKind)> {
+    let item = frame.pointer("/params/item")?.as_object()?;
+    let id = item.get("id")?.as_str().filter(|value| !value.is_empty())?;
+    let kind = match item.get("type")?.as_str()? {
+        "agentMessage" => {
+            if item.len() != 5
+                || !item.get("memoryCitation")?.is_null()
+                || !item.get("phase")?.is_null()
+            {
+                return None;
+            }
+            item.get("text")?.as_str()?;
+            AgentItemKind::AgentMessage
+        }
+        "reasoning" => {
+            if item.len() != 4
+                || !item
+                    .get("summary")?
+                    .as_array()?
+                    .iter()
+                    .all(Value::is_string)
+                || !item
+                    .get("content")?
+                    .as_array()?
+                    .iter()
+                    .all(Value::is_string)
+            {
+                return None;
+            }
+            AgentItemKind::Reasoning
+        }
+        "plan" => {
+            if item.len() != 3 {
+                return None;
+            }
+            item.get("text")?.as_str()?;
+            AgentItemKind::Plan
+        }
+        _ => return None,
+    };
+    Some((id, kind))
+}
+
+fn valid_user_raw_response_item(item: Option<&Value>, prompt: &str) -> bool {
+    let Some(item) = item else {
         return false;
     };
+    serde_json::from_value::<PinnedRawMessage>(item.clone()).is_ok_and(|item| {
+        item.kind == "message"
+            && item.role == "user"
+            && item.phase.is_none()
+            && matches!(item.content.as_slice(), [PinnedContent::InputText { text }] if text == prompt)
+    })
+}
+
+fn valid_benign_raw_response_item(item: Option<&Value>) -> Option<AgentItemKind> {
+    let Some(item) = item else {
+        return None;
+    };
     match item.get("type").and_then(Value::as_str) {
-        Some("message") => {
-            item.get("role").and_then(Value::as_str) == Some("assistant")
-                && item
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .is_some_and(|content| {
-                        content.iter().all(|part| {
-                            part.get("type").and_then(Value::as_str) == Some("output_text")
-                                && part.get("text").is_some_and(Value::is_string)
-                        })
-                    })
-                && item.get("phase").is_none_or(|phase| {
-                    phase.is_null() || matches!(phase.as_str(), Some("commentary" | "final_answer"))
-                })
-        }
-        Some("reasoning") => {
-            item.get("summary")
-                .and_then(Value::as_array)
-                .is_some_and(|summary| {
-                    summary.iter().all(|part| {
-                        part.get("type").and_then(Value::as_str) == Some("summary_text")
-                            && part.get("text").is_some_and(Value::is_string)
-                    })
-                })
-                && item.get("content").is_none_or(|content| {
-                    content.is_null()
-                        || content.as_array().is_some_and(|parts| {
-                            parts.iter().all(|part| {
-                                matches!(
-                                    part.get("type").and_then(Value::as_str),
-                                    Some("reasoning_text" | "text")
-                                ) && part.get("text").is_some_and(Value::is_string)
-                            })
-                        })
-                })
-                && item
-                    .get("encrypted_content")
-                    .is_none_or(|encrypted| encrypted.is_null() || encrypted.is_string())
-        }
-        _ => false,
+        Some("message") => serde_json::from_value::<PinnedRawMessage>(item.clone())
+            .ok()
+            .filter(|item| {
+                item.kind == "message"
+                    && item.role == "assistant"
+                    && !item.content.is_empty()
+                    && item
+                        .content
+                        .iter()
+                        .all(|part| matches!(part, PinnedContent::OutputText { text } if !text.is_empty()))
+            })
+            .map(|_| AgentItemKind::AgentMessage),
+        Some("reasoning") => serde_json::from_value::<PinnedRawReasoning>(item.clone())
+            .ok()
+            .filter(valid_reasoning_raw)
+            .map(|_| AgentItemKind::Reasoning),
+        _ => None,
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PinnedRawMessage {
+    #[serde(rename = "type")]
+    kind: String,
+    role: String,
+    content: Vec<PinnedContent>,
+    phase: Option<PinnedMessagePhase>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum PinnedContent {
+    InputText { text: String },
+    OutputText { text: String },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PinnedMessagePhase {
+    Commentary,
+    FinalAnswer,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PinnedRawReasoning {
+    #[serde(rename = "type")]
+    kind: String,
+    summary: Vec<PinnedReasoningSummary>,
+    content: Option<Vec<PinnedReasoningContent>>,
+    encrypted_content: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum PinnedReasoningSummary {
+    SummaryText { text: String },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum PinnedReasoningContent {
+    ReasoningText { text: String },
+    Text { text: String },
+}
+
+fn valid_reasoning_raw(item: &PinnedRawReasoning) -> bool {
+    item.kind == "reasoning"
+        && item.summary.iter().all(
+            |part| matches!(part, PinnedReasoningSummary::SummaryText { text } if !text.is_empty()),
+        )
+        && item.content.as_ref().is_none_or(|parts| {
+            parts.iter().all(|part| match part {
+                PinnedReasoningContent::ReasoningText { text }
+                | PinnedReasoningContent::Text { text } => !text.is_empty(),
+            })
+        })
+        && item
+            .encrypted_content
+            .as_ref()
+            .is_none_or(|content| !content.is_empty())
 }
 
 fn terminal_status<'a>(frame: &'a Value, thread_id: &str, turn_id: &str) -> Option<&'a str> {
@@ -2981,19 +3263,171 @@ mod tests {
         );
     }
 
+    fn pinned_thread_frame(workspace: &Path) -> serde_json::Value {
+        json!({"method":"thread/started","params":{"thread":{
+            "id":"t","sessionId":"t","forkedFromId":null,"parentThreadId":null,
+            "preview":"","ephemeral":true,"modelProvider":"openai","createdAt":1,"updatedAt":1,
+            "status":{"type":"idle"},"path":null,"cwd":workspace,"cliVersion":"0.139.0",
+            "source":"appServer","threadSource":null,"agentNickname":null,"agentRole":null,
+            "gitInfo":null,"name":null,"turns":[]
+        }}})
+    }
+
+    fn state_after_turn<'a>(prompt: &'a str, workspace: &'a Path) -> super::AgentOnlyState<'a> {
+        let mut state = super::AgentOnlyState::new(prompt, workspace);
+        state
+            .validate(&pinned_thread_frame(workspace), "t", "u")
+            .unwrap();
+        state
+            .validate(
+                &json!({"method":"turn/started","params":{"threadId":"t","turn":{"id":"u","status":"inProgress"}}}),
+                "t",
+                "u",
+            )
+            .unwrap();
+        state
+    }
+
+    fn state_after_user<'a>(prompt: &'a str, workspace: &'a Path) -> super::AgentOnlyState<'a> {
+        let mut state = state_after_turn(prompt, workspace);
+        state.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}}}), "t", "u").unwrap();
+        let user = json!({"type":"userMessage","id":"user","clientId":null,"content":[{"type":"text","text":prompt,"text_elements":[]}]});
+        state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":1,"item":user}}), "t", "u").unwrap();
+        state.validate(&json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":2,"item":user}}), "t", "u").unwrap();
+        state
+    }
+
+    #[test]
+    fn pinned_thread_started_requires_every_0139_field_and_scenario_binding() {
+        let workspace = std::env::temp_dir().canonicalize().unwrap();
+        let frame = pinned_thread_frame(&workspace);
+        assert!(super::valid_thread_started(&frame, "t", &workspace));
+        let fields = frame["params"]["thread"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for field in fields {
+            let mut missing = frame.clone();
+            missing["params"]["thread"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&field);
+            assert!(
+                !super::valid_thread_started(&missing, "t", &workspace),
+                "missing {field} was accepted"
+            );
+        }
+        for (field, bad) in [
+            ("id", json!("other")),
+            ("sessionId", json!("other")),
+            ("forkedFromId", json!("fork")),
+            ("parentThreadId", json!("parent")),
+            ("preview", json!("unexpected")),
+            ("ephemeral", json!(false)),
+            ("modelProvider", json!("")),
+            ("createdAt", json!(-1)),
+            ("updatedAt", json!(0)),
+            ("status", json!({"type":"active","activeFlags":[]})),
+            ("path", json!("somewhere")),
+            ("cwd", json!(workspace.join("child"))),
+            ("cliVersion", json!("0.140.0")),
+            ("source", json!("cli")),
+            ("threadSource", json!("user")),
+            ("agentNickname", json!("agent")),
+            ("agentRole", json!("worker")),
+            (
+                "gitInfo",
+                json!({"sha":null,"branch":null,"originUrl":null}),
+            ),
+            ("name", json!("name")),
+            ("turns", json!([{}])),
+        ] {
+            let mut changed = frame.clone();
+            changed["params"]["thread"][field] = bad;
+            assert!(
+                !super::valid_thread_started(&changed, "t", &workspace),
+                "wrong {field} was accepted"
+            );
+        }
+        let mut unknown = frame.clone();
+        unknown["params"]["thread"]["futureField"] = json!(true);
+        assert!(!super::valid_thread_started(&unknown, "t", &workspace));
+    }
+
+    #[test]
+    fn user_raw_is_unique_exact_and_precedes_user_message_lifecycle() {
+        let workspace = std::env::temp_dir().canonicalize().unwrap();
+        let prompt = "exact prompt";
+        for item in [
+            json!({"type":"message","role":"assistant","content":[{"type":"input_text","text":prompt}]}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"wrong"}]}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":prompt},{"type":"input_text","text":prompt}]}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":prompt}],"extra":true}),
+        ] {
+            let mut state = state_after_turn(prompt, &workspace);
+            let error = state.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":item}}), "t", "u").unwrap_err();
+            assert!(error.to_string().contains("leading user raw"));
+        }
+        let mut state = state_after_turn(prompt, &workspace);
+        let user = json!({"type":"userMessage","id":"user","clientId":null,"content":[{"type":"text","text":prompt,"text_elements":[]}]});
+        assert!(state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":1,"item":user}}), "t", "u").is_err());
+        let mut state = state_after_user(prompt, &workspace);
+        assert!(state.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}}}), "t", "u").is_err());
+    }
+
+    #[test]
+    fn agent_item_lifecycle_rejects_wrong_ids_kinds_duplicates_and_raw_order() {
+        let workspace = std::env::temp_dir().canonicalize().unwrap();
+        let prompt = "exact prompt";
+        let assistant = json!({"type":"agentMessage","id":"assistant","text":"","phase":null,"memoryCitation":null});
+        let started = json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":3,"item":assistant}});
+        let delta = json!({"method":"item/agentMessage/delta","params":{"threadId":"t","turnId":"u","itemId":"assistant","delta":"x"}});
+        let completed = json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":4,"item":{"type":"agentMessage","id":"assistant","text":"x","phase":null,"memoryCitation":null}}});
+        let raw = json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"x"}]}}});
+
+        let mut state = state_after_user(prompt, &workspace);
+        assert!(state.validate(&delta, "t", "u").is_err());
+        assert!(state.validate(&completed, "t", "u").is_err());
+        assert!(state.validate(&raw, "t", "u").is_err());
+
+        let mut state = state_after_user(prompt, &workspace);
+        state.validate(&started, "t", "u").unwrap();
+        assert!(state.validate(&started, "t", "u").is_err());
+        assert!(state.validate(&json!({"method":"item/agentMessage/delta","params":{"threadId":"t","turnId":"u","itemId":"other","delta":"x"}}), "t", "u").is_err());
+        assert!(state.validate(&json!({"method":"item/plan/delta","params":{"threadId":"t","turnId":"u","itemId":"assistant","delta":"x"}}), "t", "u").is_err());
+        state.validate(&delta, "t", "u").unwrap();
+        state.validate(&completed, "t", "u").unwrap();
+        assert!(state.validate(&delta, "t", "u").is_err());
+        state.validate(&raw, "t", "u").unwrap();
+        assert!(state.validate(&raw, "t", "u").is_err());
+        assert!(state.validate(&completed, "t", "u").is_err());
+    }
+
     #[test]
     fn agent_only_frame_gate_allows_benign_and_rejects_tools() {
         let prompt = "exact prompt";
-        let mut state = super::AgentOnlyState::new(prompt);
+        let workspace = std::env::temp_dir().canonicalize().unwrap();
+        let mut state = super::AgentOnlyState::new(prompt, &workspace);
         let thread = json!({"method":"thread/started","params":{"thread":{
-            "id":"t","cliVersion":"0.139.0","createdAt":1,"updatedAt":1,
-            "cwd":std::env::temp_dir(),"ephemeral":true,"modelProvider":"openai",
-            "preview":"","sessionId":"s","source":"appServer","status":{"type":"idle"},"turns":[]
+            "id":"t","sessionId":"t","forkedFromId":null,"parentThreadId":null,
+            "preview":"","ephemeral":true,"modelProvider":"openai","createdAt":1,"updatedAt":1,
+            "status":{"type":"idle"},"path":null,"cwd":workspace,"cliVersion":"0.139.0",
+            "source":"appServer","threadSource":null,"agentNickname":null,"agentRole":null,
+            "gitInfo":null,"name":null,"turns":[]
         }}});
         state.validate(&thread, "t", "u").unwrap();
         state
             .validate(
                 &json!({"method":"turn/started","params":{"threadId":"t","turn":{"id":"u","status":"inProgress"}}}),
+                "t",
+                "u",
+            )
+            .unwrap();
+        state
+            .validate(
+                &json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}}}),
                 "t",
                 "u",
             )
@@ -3027,10 +3461,12 @@ mod tests {
             let frame = json!({"method":method,"params":{"threadId":"t","turnId":"u","delta":"x"}});
             assert!(state.validate(&frame, "t", "u").is_err(), "{method}");
         }
-        for item_type in ["agentMessage", "reasoning", "plan"] {
-            let frame = json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":3,"item":{"type":item_type}}});
-            state.validate(&frame, "t", "u").unwrap();
-        }
+        let assistant = json!({"type":"agentMessage","id":"assistant","text":"","phase":null,"memoryCitation":null});
+        state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":3,"item":assistant}}), "t", "u").unwrap();
+        state.validate(&json!({"method":"item/agentMessage/delta","params":{"threadId":"t","turnId":"u","itemId":"assistant","delta":"x"}}), "t", "u").unwrap();
+        let assistant = json!({"type":"agentMessage","id":"assistant","text":"x","phase":null,"memoryCitation":null});
+        state.validate(&json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":4,"item":assistant}}), "t", "u").unwrap();
+        state.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"x"}]}}}), "t", "u").unwrap();
         for item_type in [
             "commandExecution",
             "fileChange",
@@ -3049,9 +3485,19 @@ mod tests {
             let frame = json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":3,"item":{"type":item_type}}});
             assert!(state.validate(&frame, "t", "u").is_err(), "{item_type}");
         }
-        let plan = json!({"method":"item/plan/delta","params":{"threadId":"t","turnId":"u","delta":"not R1"}});
+        let plan_item = json!({"type":"plan","id":"plan","text":""});
+        state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":5,"item":plan_item}}), "t", "u").unwrap();
+        let plan = json!({"method":"item/plan/delta","params":{"threadId":"t","turnId":"u","itemId":"plan","delta":"not R1"}});
         state.validate(&plan, "t", "u").unwrap();
         assert_eq!(super::agent_delta_bytes(&plan, "t", "u"), None);
+        let completed_plan = json!({"type":"plan","id":"plan","text":"not R1"});
+        state
+            .validate(
+                &json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":6,"item":completed_plan}}),
+                "t",
+                "u",
+            )
+            .unwrap();
         for frame in [
             json!({"method":"thread/name/updated","params":{"threadId":"t","threadName":"name"}}),
             json!({"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"active"}}}),
@@ -3063,7 +3509,7 @@ mod tests {
         }
         let aggregate = json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","item":{"type":"agentMessage","text":"not R1"}}});
         assert_eq!(super::agent_delta_bytes(&aggregate, "t", "u"), None);
-        state.finish().unwrap();
+        state.finish("A", &super::TerminalState::Completed).unwrap();
     }
 
     #[test]

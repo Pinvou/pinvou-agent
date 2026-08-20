@@ -116,6 +116,15 @@ fn agent_only_lifecycle_is_stateful_and_rejects_malformed_or_tool_raw_items() {
         "agent-user-malformed",
         "agent-user-item-id-mismatch",
         "agent-user-missing-completed",
+        "agent-user-raw-missing",
+        "agent-user-raw-late",
+        "agent-user-raw-duplicate",
+        "agent-user-raw-wrong-thread",
+        "agent-user-raw-wrong-turn",
+        "agent-user-raw-role",
+        "agent-user-raw-text",
+        "agent-user-raw-multipart",
+        "agent-user-raw-malformed",
         "agent-raw-wrong-ids",
         "agent-raw-wrong-turn",
         "agent-raw-duplicate",
@@ -137,6 +146,40 @@ fn agent_only_lifecycle_is_stateful_and_rejects_malformed_or_tool_raw_items() {
             serde_json::from_slice(&std::fs::read(output.join("validation-report.json")).unwrap())
                 .unwrap();
         assert_eq!(report["valid"], false, "{mode}");
+        let evidence: Value =
+            serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
+        assert!(
+            evidence["protocol_errors"]
+                .as_u64()
+                .is_some_and(|count| count > 0),
+            "{mode} did not increment protocol_errors: {evidence}"
+        );
+        assert!(
+            report["reasons"]
+                .as_array()
+                .is_some_and(|reasons| reasons.iter().any(|reason| reason
+                    .as_str()
+                    .is_some_and(|reason| reason.contains("protocol error")))),
+            "{mode} did not record a protocol error: {report}"
+        );
+        let expected_method = if mode.starts_with("agent-thread-") {
+            if matches!(mode, "agent-thread-missing" | "agent-thread-late") {
+                "turn/started"
+            } else {
+                "thread/started"
+            }
+        } else if mode == "agent-user-raw-missing" {
+            "item/started"
+        } else if mode.starts_with("agent-user-raw-") || mode.starts_with("agent-raw-") {
+            "rawResponseItem/completed"
+        } else {
+            "item/started"
+        };
+        let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+        assert!(
+            capture.contains(&format!(r#"\"method\":\"{expected_method}\""#)),
+            "{mode} capture lacked the offending {expected_method} frame"
+        );
         std::fs::remove_dir_all(output).unwrap();
     }
 }

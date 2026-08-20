@@ -54,16 +54,24 @@ fn send(value: Value) {
 fn thread_value(thread_id: &str, cwd: &str) -> Value {
     json!({
         "id":thread_id,
+        "sessionId":thread_id,
+        "forkedFromId":null,
+        "parentThreadId":null,
         "preview":"",
+        "ephemeral":true,
         "modelProvider":"openai",
         "createdAt":1,
         "updatedAt":1,
         "status":{"type":"idle"},
+        "path":null,
         "cwd":cwd,
-        "ephemeral":true,
         "cliVersion":"0.139.0",
         "source":"appServer",
-        "sessionId":"fixture-session",
+        "threadSource":null,
+        "agentNickname":null,
+        "agentRole":null,
+        "gitInfo":null,
+        "name":null,
         "turns":[]
     })
 }
@@ -346,6 +354,40 @@ fn main() {
                     );
                     continue;
                 }
+                let user_raw_thread = if mode == "agent-user-raw-wrong-thread" {
+                    "wrong-thread"
+                } else {
+                    &thread_id
+                };
+                let user_raw_turn = if mode == "agent-user-raw-wrong-turn" {
+                    "wrong-turn"
+                } else {
+                    &turn_id
+                };
+                let user_raw_item = match mode.as_str() {
+                    "agent-user-raw-role" => {
+                        json!({"type":"message","role":"assistant","content":[{"type":"input_text","text":prompt}]})
+                    }
+                    "agent-user-raw-text" => {
+                        json!({"type":"message","role":"user","content":[{"type":"input_text","text":"different"}]})
+                    }
+                    "agent-user-raw-multipart" => {
+                        json!({"type":"message","role":"user","content":[{"type":"input_text","text":prompt},{"type":"input_text","text":prompt}]})
+                    }
+                    "agent-user-raw-malformed" => json!({"type":"message","role":"user"}),
+                    _ => {
+                        json!({"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]})
+                    }
+                };
+                let user_raw = json!({"method":"rawResponseItem/completed","params":{
+                    "threadId":user_raw_thread,"turnId":user_raw_turn,"item":user_raw_item
+                }});
+                if mode != "agent-user-raw-missing" && mode != "agent-user-raw-late" {
+                    send(user_raw.clone());
+                    if mode == "agent-user-raw-duplicate" {
+                        send(user_raw.clone());
+                    }
+                }
                 let user_item_id = format!("user-{turn}");
                 let user_prompt = if mode == "agent-user-prompt-mismatch" {
                     "different prompt"
@@ -369,19 +411,22 @@ fn main() {
                 };
                 let completed_user = json!({"method":"item/completed","params":{"threadId":user_thread_id,"turnId":turn_id,"completedAtMs":2,"item":user_message_item(completed_item_id,user_prompt)}});
                 if mode == "agent-user-out-of-order" {
+                    send(completed_user.clone());
+                    send(started_user);
+                } else {
+                    send(started_user.clone());
+                    if mode == "agent-user-raw-late" {
+                        send(user_raw);
+                    }
+                    if mode == "agent-user-duplicate" {
+                        send(started_user);
+                    }
                     if mode != "agent-user-missing-completed" {
                         send(completed_user.clone());
                         if mode == "agent-user-duplicate-completed" {
                             send(completed_user);
                         }
                     }
-                    send(started_user);
-                } else {
-                    send(started_user.clone());
-                    if mode == "agent-user-duplicate" {
-                        send(started_user);
-                    }
-                    send(completed_user);
                 }
                 let agent_only_violation = match mode.as_str() {
                     "agent-tool-command" => Some(
@@ -423,6 +468,16 @@ fn main() {
                     );
                     continue;
                 }
+                let reasoning_id = format!("reasoning-{turn}");
+                send(
+                    json!({"method":"item/started","params":{"threadId":thread_id,"turnId":turn_id,"startedAtMs":3,"item":{"type":"reasoning","id":reasoning_id,"summary":[],"content":[]}}}),
+                );
+                send(
+                    json!({"method":"item/completed","params":{"threadId":thread_id,"turnId":turn_id,"completedAtMs":4,"item":{"type":"reasoning","id":reasoning_id,"summary":[],"content":[]}}}),
+                );
+                send(
+                    json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":{"type":"reasoning","summary":[],"content":null,"encrypted_content":null}}}),
+                );
                 let raw_thread_id = if mode == "agent-raw-wrong-ids" {
                     "wrong-thread"
                 } else {
@@ -459,20 +514,6 @@ fn main() {
                         json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"fixture output"}]})
                     }
                 };
-                send(
-                    json!({"method":"rawResponseItem/completed","params":{"threadId":raw_thread_id,"turnId":raw_turn_id,"item":raw_item}}),
-                );
-                if mode == "agent-raw-duplicate" {
-                    send(
-                        json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fixture output"}]}}}),
-                    );
-                }
-                if mode.starts_with("agent-raw-") {
-                    continue;
-                }
-                send(
-                    json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":{"type":"reasoning","summary":[],"content":null,"encrypted_content":null}}}),
-                );
                 if mode == "agent-aggregated-only" || (mode == "agent-early-complete" && turn == 1)
                 {
                     if mode == "agent-aggregated-only" {
@@ -486,7 +527,7 @@ fn main() {
                     continue;
                 }
                 send(
-                    json!({"method":"item/started","params":{"threadId":thread_id,"turnId":turn_id,"startedAtMs":3,"item":{"type":"agentMessage","id":format!("item-{turn}"),"text":""}}}),
+                    json!({"method":"item/started","params":{"threadId":thread_id,"turnId":turn_id,"startedAtMs":3,"item":{"type":"agentMessage","id":format!("item-{turn}"),"text":"","phase":null,"memoryCitation":null}}}),
                 );
                 let count = if prompt.contains("S2-B") { 40 } else { 12 };
                 for index in 0..count {
@@ -523,9 +564,22 @@ fn main() {
                         break;
                     }
                 }
-                send(
-                    json!({"method":"item/completed","params":{"threadId":thread_id,"turnId":turn_id,"completedAtMs":4,"item":{"type":"agentMessage","id":format!("item-{turn}"),"text":"aggregated output"}}}),
-                );
+                if !prompt.contains("S2-D") {
+                    send(
+                        json!({"method":"item/completed","params":{"threadId":thread_id,"turnId":turn_id,"completedAtMs":4,"item":{"type":"agentMessage","id":format!("item-{turn}"),"text":"aggregated output","phase":null,"memoryCitation":null}}}),
+                    );
+                    send(
+                        json!({"method":"rawResponseItem/completed","params":{"threadId":raw_thread_id,"turnId":raw_turn_id,"item":raw_item}}),
+                    );
+                    if mode == "agent-raw-duplicate" {
+                        send(
+                            json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fixture output"}]}}}),
+                        );
+                    }
+                }
+                if mode.starts_with("agent-raw-") {
+                    continue;
+                }
                 if prompt.contains("S2-C") {
                     if mode != "missing-approval" {
                         let mut command = prompt
