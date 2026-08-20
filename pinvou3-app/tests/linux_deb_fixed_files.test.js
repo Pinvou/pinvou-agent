@@ -262,6 +262,30 @@ try {
   );
   assert.deepEqual(fs.readdirSync(verificationTemp), [], "temporary extraction must be removed");
 
+  const numericRootListing = contentsListing(
+    expectedFiles,
+    Object.fromEntries(Object.keys(expectedFiles).map((destination) => [
+      destination,
+      { owner: "0/0" },
+    ])),
+  );
+  assert.equal(
+    verifyLinuxDebFixedFiles({
+      artifact,
+      expectedFiles,
+      exists,
+      spawn: fakeDpkgSpawn({
+        expectedFiles,
+        bytesByDestination,
+        listing: numericRootListing,
+      }),
+      temporaryDirectory: verificationTemp,
+    }),
+    artifact,
+    "dpkg-deb may render archive root ownership numerically",
+  );
+  assert.deepEqual(fs.readdirSync(verificationTemp), [], "numeric-owner verification must clean extraction");
+
   const wrongModeListing = contentsListing(expectedFiles, {
     [helperDestination]: { symbolicMode: "-rwxrwxr-x" },
   });
@@ -309,6 +333,23 @@ try {
         bytesByDestination,
         listing: contentsListing(expectedFiles, {
           [profileDestination]: { owner: "builder/builder" },
+        }),
+      }),
+      temporaryDirectory: verificationTemp,
+    }),
+    /owner mismatch/,
+  );
+
+  assert.throws(
+    () => verifyLinuxDebFixedFiles({
+      artifact,
+      expectedFiles,
+      exists,
+      spawn: fakeDpkgSpawn({
+        expectedFiles,
+        bytesByDestination,
+        listing: contentsListing(expectedFiles, {
+          [profileDestination]: { owner: "root/builder" },
         }),
       }),
       temporaryDirectory: verificationTemp,

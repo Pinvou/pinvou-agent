@@ -19,7 +19,8 @@ packaging/
 - `platform-config.js`：只负责选择当前平台 overlay。
 - `build.js`：组合平台配置并启动 Tauri CLI；Linux deb 构建还会以
   `umask 0022` 把固定 `deb.files` allowlist 复制到 `src-tauri/target/` 临时
-  staging，并在构建后核对包内唯一路径、`root/root`、预期 mode 与 SHA-256；
+  staging，并在构建后核对包内唯一路径、root UID/GID 0（`dpkg-deb` 可显示为
+  `root/root` 或 `0/0`）、预期 mode 与 SHA-256；
   任一 symlink、staging / 包内 hardlink、路径、mode 或 hash 异常都 fail closed。
 - `windows-runtime.js`：读取 runtime descriptor，不感知安装器细节。
 - `windows-installer.js`：按 bundle 目标准备 NSIS 专属资源。
@@ -96,7 +97,7 @@ Supervisor 的安装边界如下：
   deb architecture；Intel/AMD x86-64 在这里使用 Rust `x86_64-unknown-linux-gnu`
   和 Debian `amd64`，不在 Linux bundle 步骤冒充交叉编译。固定 payload
   从 allowlist 进入 target staging，最终 deb 必须对每个固定目标证明恰好一份、
-  `root/root`、预期 mode 且内容 hash 与源字节一致；这是构建门禁，不是
+  root UID/GID 0（名称或数字显示均可）、预期 mode 且内容 hash 与源字节一致；这是构建门禁，不是
   MegaBook 安装证据。
 
 开发期 `npm run dev` 不是日常运行、内存恢复或 watchdog 边界。打包和

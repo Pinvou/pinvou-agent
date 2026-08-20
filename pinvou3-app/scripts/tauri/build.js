@@ -652,6 +652,12 @@ function parseDebContents(output) {
   return entries;
 }
 
+function debOwnerGroupIsRoot(ownerGroup) {
+  const parts = String(ownerGroup || "").split("/");
+  if (parts.length !== 2) return false;
+  return parts.every((part) => part === "root" || part === "0");
+}
+
 function checkedSpawn(spawn, command, args, options, label) {
   const result = spawn(command, args, options);
   if (result.error) throw result.error;
@@ -712,9 +718,9 @@ function verifyLinuxDebFixedFiles({
         `deb fixed path mode mismatch for ${destination}: expected ${expectedMode}, got ${entry.mode}`,
       );
     }
-    if (entry.ownerGroup !== "root/root") {
+    if (!debOwnerGroupIsRoot(entry.ownerGroup)) {
       throw new Error(
-        `deb fixed path owner mismatch for ${destination}: expected root/root, got ${entry.ownerGroup}`,
+        `deb fixed path owner mismatch for ${destination}: expected root/root or numeric 0/0, got ${entry.ownerGroup}`,
       );
     }
     if (entry.size !== expected.size) {

@@ -361,7 +361,8 @@ daemon-reload 并启动 Supervisor socket，不停止或重启已运行 ASR；�
   ASR 初始活动状态。脚本不调用 sudo；真实安装和 purge 仍各需一次用户授权；
 - `pinvou3-app/scripts/tauri/build.js`：Linux deb 以 `umask 0022` 把固定
   `deb.files` allowlist 复制到 `src-tauri/target/` 临时 staging，并在新产物中对每个
-  固定目标核对恰好一份、`root/root`、预期 mode 与源字节 SHA-256；symlink、
+  固定目标核对恰好一份、root UID/GID 0（`dpkg-deb` 可显示为 `root/root` 或
+  `0/0`）、预期 mode 与源字节 SHA-256；symlink、
   staging / 包内 hardlink、路径、mode 或 hash 异常都 fail closed。这是打包门禁，
   不是实机安装证据。
 
