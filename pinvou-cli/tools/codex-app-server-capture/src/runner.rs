@@ -2030,7 +2030,7 @@ fn valid_thread_started(frame: &Value, thread_id: &str, workspace: &Path) -> boo
         && thread.updated_at == thread.created_at
         && matches!(thread.status, PinnedThreadStatus::Idle)
         && thread.path.is_none()
-        && thread.cwd == workspace
+        && pinned_thread_cwd_matches(&thread.cwd, workspace)
         && thread.cli_version == "0.139.0"
         && matches!(thread.source, PinnedSessionSource::VsCode)
         && thread.thread_source.is_none()
@@ -2039,6 +2039,23 @@ fn valid_thread_started(frame: &Value, thread_id: &str, workspace: &Path) -> boo
         && thread.git_info.is_none()
         && thread.name.is_none()
         && thread.turns.is_empty()
+}
+
+fn pinned_thread_cwd_matches(observed: &Path, expected: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let Ok(observed) = normalize_windows_command_path(observed.to_owned()) else {
+            return false;
+        };
+        let Ok(expected) = normalize_windows_command_path(expected.to_owned()) else {
+            return false;
+        };
+        observed.as_os_str() == expected.as_os_str()
+    }
+    #[cfg(not(windows))]
+    {
+        observed.as_os_str() == expected.as_os_str()
+    }
 }
 
 fn valid_item_timestamp(frame: &Value, method: &str) -> bool {
@@ -3423,6 +3440,34 @@ mod tests {
         let mut unknown = frame.clone();
         unknown["params"]["thread"]["futureField"] = json!(true);
         assert!(!super::valid_thread_started(&unknown, "t", &workspace));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pinned_thread_cwd_accepts_only_exact_windows_verbatim_equivalence() {
+        let expected = std::path::PathBuf::from(r"\\?\C:\codex-s2\workspace");
+        let observed = std::path::PathBuf::from(r"C:\codex-s2\workspace");
+        let frame = pinned_thread_frame(&observed);
+        assert!(super::valid_thread_started(&frame, "t", &expected));
+
+        let unc_expected = std::path::PathBuf::from(r"\\?\UNC\server\share\workspace");
+        let unc_observed = std::path::PathBuf::from(r"\\server\share\workspace");
+        let frame = pinned_thread_frame(&unc_observed);
+        assert!(super::valid_thread_started(&frame, "t", &unc_expected));
+
+        for rejected in [
+            r"C:\codex-s2\different",
+            r"C:\codex-s2\workspace\child",
+            r"C:\codex-s2",
+            r"C:\codex-s2\workspace\.",
+            r"c:\codex-s2\workspace",
+        ] {
+            let frame = pinned_thread_frame(Path::new(rejected));
+            assert!(
+                !super::valid_thread_started(&frame, "t", &expected),
+                "non-exact cwd {rejected} was accepted"
+            );
+        }
     }
 
     #[test]

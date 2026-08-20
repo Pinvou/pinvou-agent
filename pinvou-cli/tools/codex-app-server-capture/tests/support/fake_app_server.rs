@@ -6,6 +6,19 @@ const APPROVAL_MARKER_NAME: &str = ".codex-s2-approval-marker";
 const APPROVAL_MARKER_BYTES: &[u8] = b"S2_APPROVED";
 
 #[cfg(windows)]
+fn notification_cwd(cwd: &str) -> String {
+    if let Some(path) = cwd.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{path}");
+    }
+    cwd.strip_prefix(r"\\?\").unwrap_or(cwd).to_owned()
+}
+
+#[cfg(not(windows))]
+fn notification_cwd(cwd: &str) -> String {
+    cwd.to_owned()
+}
+
+#[cfg(windows)]
 fn resolved_pwsh() -> std::path::PathBuf {
     let canonical = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|directory| directory.join("pwsh.exe"))
@@ -310,7 +323,7 @@ fn main() {
                 let thread = if mode == "agent-thread-malformed" {
                     json!({"id":notification_thread_id})
                 } else {
-                    thread_value(notification_thread_id, cwd)
+                    thread_value(notification_thread_id, &notification_cwd(cwd))
                 };
                 let notification = json!({"method":"thread/started","params":{"thread":thread}});
                 if mode != "agent-thread-missing" {
