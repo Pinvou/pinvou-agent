@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, Write};
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +13,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
+#[cfg(windows)]
+use crate::capture::harden_windows_capture_acl;
 use crate::capture::{JsonlRecorder, create_capture_file};
 use crate::clock::{HostMonotonicClock, MonotonicClock};
 use crate::protocol::CaptureChannel;
@@ -27,6 +31,10 @@ const APPROVAL_MARKER_NAME: &str = ".codex-s2-approval-marker";
 const APPROVAL_MARKER_CONTENT: &str = "S2_APPROVED";
 const APPROVAL_MARKER_BYTES: &[u8] = APPROVAL_MARKER_CONTENT.as_bytes();
 const APPROVAL_MARKER_MAX_BYTES: u64 = 64;
+#[cfg(windows)]
+const STREAMING_SCRIPT_NAME: &str = ".codex-s2-stream.ps1";
+#[cfg(unix)]
+const STREAMING_SCRIPT_NAME: &str = ".codex-s2-stream.sh";
 
 #[derive(Clone, Debug)]
 pub struct S2RunConfig {
@@ -670,13 +678,26 @@ fn execute(
         let approval_wrapper: Option<String> = None;
         #[cfg(not(windows))]
         let _ = explicit_approval_wrapper;
-        let corpus = restricted_ascii_corpus();
         for name in ["A", "B", "C", "D"] {
             let scenario_deadline = Instant::now() + config.scenario_timeout;
+            let scenario_workspace = workspace.join(name.to_ascii_lowercase());
+            create_scenario_workspace(&scenario_workspace)?;
+            let mut streaming_script = if matches!(name, "A" | "B" | "D") {
+                let (chunk_bytes, chunks, cadence_ms) = streaming_parameters(name)?;
+                Some(StreamingScript::create(
+                    &scenario_workspace,
+                    &scenario_shell,
+                    chunk_bytes,
+                    chunks,
+                    cadence_ms,
+                )?)
+            } else {
+                None
+            };
             if name == "C" {
                 ensure_approval_marker_absent_bounded(
                     marker_helper,
-                    workspace,
+                    &scenario_workspace,
                     scenario_deadline,
                     global_deadline,
                 )?;
@@ -688,7 +709,7 @@ fn execute(
                 "workspace-write"
             };
             let mut thread_params = json!({
-                "cwd": workspace,
+                "cwd": scenario_workspace,
                 "approvalPolicy": approval_policy,
                 "sandbox": sandbox,
                 "ephemeral": true
@@ -708,10 +729,19 @@ fn execute(
                     format!("scenario {name}: thread/start response missing thread.id")
                 })?
                 .to_owned();
-            let prompt = scenario_prompt(name, &approval_command, &corpus, &scenario_shell)?;
+            if let Some(script) = streaming_script.as_mut() {
+                script.verify()?;
+            }
+            let prompt = scenario_prompt(
+                name,
+                &approval_command,
+                streaming_script
+                    .as_ref()
+                    .map(|script| script.command.as_str()),
+            )?;
             let mut turn_params = json!({
                 "threadId":thread_id,
-                "cwd":workspace,
+                "cwd":scenario_workspace,
                 "input":[{"type":"text","text":prompt}]
             });
             if name == "C" {
@@ -719,7 +749,7 @@ fn execute(
                 turn_params["sandboxPolicy"] = json!({"type":"readOnly"});
                 ensure_approval_marker_absent_bounded(
                     marker_helper,
-                    workspace,
+                    &scenario_workspace,
                     scenario_deadline,
                     global_deadline,
                 )?;
@@ -738,17 +768,20 @@ fn execute(
                 name,
                 &thread_id,
                 &turn_id,
-                workspace,
+                &scenario_workspace,
                 &approval_command,
                 approval_wrapper.as_deref(),
                 explicit_approval_wrapper,
                 scenario_deadline,
                 thresholds,
             )?;
+            if let Some(script) = streaming_script.as_mut() {
+                script.verify()?;
+            }
             if name == "C" && observed.evidence.terminal_state == TerminalState::Completed {
                 verify_approval_marker_bounded(
                     marker_helper,
-                    workspace,
+                    &scenario_workspace,
                     scenario_deadline,
                     global_deadline,
                 )?;
@@ -1709,6 +1742,18 @@ const D_CHUNK_BYTES: usize = 256;
 const D_CHUNKS: usize = 64;
 const D_CADENCE_MS: usize = 250;
 
+fn create_scenario_workspace(path: &Path) -> Result<()> {
+    std::fs::create_dir(path).map_err(|_| anyhow!("scenario workspace creation failed"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .map_err(|_| anyhow!("scenario workspace creation failed"))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 #[derive(Debug)]
 struct ScenarioStimulus {
     prompt: String,
@@ -1719,60 +1764,43 @@ struct ScenarioStimulus {
     target_bytes: usize,
 }
 
-fn restricted_ascii_corpus() -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:-_";
-    let mut state = 0x5a17_2d39_u32;
-    let mut bytes = Vec::with_capacity(CORPUS_BYTES);
-    for index in 0..CORPUS_BYTES {
-        if index % 64 == 63 {
-            bytes.push(b'\n');
-        } else {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            bytes.push(ALPHABET[(state as usize) % ALPHABET.len()]);
-        }
-    }
-    String::from_utf8(bytes).expect("restricted ASCII corpus must be UTF-8")
+fn streaming_parameters(name: &str) -> Result<(usize, usize, usize)> {
+    Ok(match name {
+        "A" => (CORPUS_BYTES, A_CHUNKS, A_CADENCE_MS),
+        "B" => (CORPUS_BYTES, B_CHUNKS, B_CADENCE_MS),
+        "D" => (D_CHUNK_BYTES, D_CHUNKS, D_CADENCE_MS),
+        _ => bail!("unknown streaming scenario {name}"),
+    })
 }
 
-fn streaming_stimulus(name: &str, corpus: &str, shell: &Path) -> Result<ScenarioStimulus> {
-    let (chunk, chunks, cadence_ms) = match name {
-        "A" => (corpus, A_CHUNKS, A_CADENCE_MS),
-        "B" => (corpus, B_CHUNKS, B_CADENCE_MS),
-        "D" => (&corpus[..D_CHUNK_BYTES], D_CHUNKS, D_CADENCE_MS),
-        _ => bail!("unknown streaming scenario {name}"),
-    };
-    let command = streaming_command(shell, chunk, chunks, cadence_ms)?;
+#[cfg(test)]
+fn streaming_stimulus(name: &str, shell: &Path) -> Result<ScenarioStimulus> {
+    let (chunk_bytes, chunks, cadence_ms) = streaming_parameters(name)?;
+    let command = streaming_command(shell, chunk_bytes, chunks, cadence_ms)?;
     let prompt = format!(
         "S2-{name}: Execute exactly this command once now. Use no other tool or command. Emit no prose before completion.\nCOMMAND_BEGIN\n{command}\nCOMMAND_END"
     );
     Ok(ScenarioStimulus {
         prompt,
         command,
-        chunk_bytes: chunk.len(),
+        chunk_bytes,
         chunks,
         cadence_ms,
-        target_bytes: chunk.len() * chunks,
+        target_bytes: chunk_bytes * chunks,
     })
 }
 
 fn scenario_prompt(
     name: &str,
     approval_command: &str,
-    corpus: &str,
-    shell: &Path,
+    streaming_command: Option<&str>,
 ) -> Result<String> {
     match name {
         "A" | "B" | "D" => {
-            let stimulus = streaming_stimulus(name, corpus, shell)?;
-            debug_assert!(stimulus.target_bytes >= if name == "D" { 16 * 1024 } else { 36 * 1024 });
-            debug_assert_eq!(
-                stimulus.target_bytes,
-                stimulus.chunk_bytes * stimulus.chunks
-            );
-            debug_assert!(stimulus.cadence_ms > 0);
-            debug_assert!(stimulus.prompt.contains(&stimulus.command));
-            debug_assert!(name != "D" || stimulus.chunk_bytes * 8 >= 2 * 1024);
-            Ok(stimulus.prompt)
+            let command = streaming_command.context("streaming script command was missing")?;
+            Ok(format!(
+                "S2-{name}: Execute exactly this command once now. Use no other tool or command. Emit no prose before completion.\nCOMMAND_BEGIN\n{command}\nCOMMAND_END"
+            ))
         }
         "C" => Ok(format!(
             "S2-C: Execute exactly this command once now. Emit no prose. Use no other command or tool. APPROVAL_COMMAND_JSON:{}",
@@ -1784,7 +1812,7 @@ fn scenario_prompt(
 
 fn streaming_command(
     shell: &Path,
-    chunk: &str,
+    chunk_bytes: usize,
     chunks: usize,
     cadence_ms: usize,
 ) -> Result<String> {
@@ -1796,69 +1824,147 @@ fn streaming_command(
     }
     #[cfg(windows)]
     {
-        let script = powershell_streaming_script(chunk, chunks, cadence_ms);
-        let encoded = encode_powershell_command(&script);
         return Ok(format!(
-            "& \"{shell}\" -NoProfile -NonInteractive -EncodedCommand {encoded}"
+            "& \"{shell}\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \".\\{STREAMING_SCRIPT_NAME}\" {chunk_bytes} {chunks} {cadence_ms}"
         ));
     }
     #[cfg(not(windows))]
     {
-        let encoded = chunk
-            .as_bytes()
-            .iter()
-            .map(|byte| format!(r"\{byte:03o}"))
-            .collect::<String>();
-        let cadence_seconds = cadence_ms as f64 / 1_000.0;
         Ok(format!(
-            "/bin/sh -c 'i=0; while [ \"$i\" -lt {chunks} ]; do printf \"%b\" \"{encoded}\"; sleep {cadence_seconds:.3}; i=$((i + 1)); done'"
+            "/bin/sh ./{STREAMING_SCRIPT_NAME} {chunk_bytes} {chunks} {cadence_ms}"
         ))
     }
 }
 
 #[cfg(windows)]
-fn powershell_streaming_script(chunk: &str, chunks: usize, cadence_ms: usize) -> String {
-    let encoded = chunk
-        .as_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<String>();
-    format!(
-        "$h='{encoded}';$c=New-Object byte[] ($h.Length/2);for($j=0;$j -lt $c.Length;$j++){{$c[$j]=[Convert]::ToByte($h.Substring($j*2,2),16)}};$o=[Console]::OpenStandardOutput();for($i=0;$i -lt {chunks};$i++){{$o.Write($c,0,$c.Length);$o.Flush();Start-Sleep -Milliseconds {cadence_ms}}}"
-    )
+const STREAMING_SCRIPT_BYTES: &[u8] = b"param([int]$ChunkBytes,[int]$Chunks,[int]$CadenceMs)\r\nif($ChunkBytes-lt 1-or$ChunkBytes-gt 1024-or$Chunks-lt 1-or$Chunks-gt 64-or$CadenceMs-lt 0-or$CadenceMs-gt 1000){exit 64}\r\n$c=New-Object byte[] $ChunkBytes\r\nfor($j=0;$j-lt$c.Length;$j++){$c[$j]=[byte](65+(($j*17+11)%26))}\r\n$o=[Console]::OpenStandardOutput()\r\nfor($i=0;$i-lt$Chunks;$i++){$o.Write($c,0,$c.Length);$o.Flush();if($i+1-lt$Chunks){Start-Sleep -Milliseconds $CadenceMs}}\r\n";
+
+#[cfg(unix)]
+const STREAMING_SCRIPT_BYTES: &[u8] = b"#!/bin/sh\nexec awk -v n=\"$1\" -v count=\"$2\" -v ms=\"$3\" 'BEGIN{for(i=0;i<count;i++){for(j=0;j<n;j++)printf \"%c\",65+((j*17+11)%26);fflush();if(i+1<count)system(\"sleep \" ms/1000)}}'\n";
+
+#[cfg(test)]
+fn expected_stream_bytes(chunk_bytes: usize, chunks: usize) -> Vec<u8> {
+    let chunk = (0..chunk_bytes)
+        .map(|index| 65 + ((index * 17 + 11) % 26) as u8)
+        .collect::<Vec<_>>();
+    chunk.repeat(chunks)
 }
 
-#[cfg(windows)]
-fn encode_powershell_command(script: &str) -> String {
-    let mut bytes = Vec::with_capacity(script.len() * 2);
-    for unit in script.encode_utf16() {
-        bytes.extend_from_slice(&unit.to_le_bytes());
-    }
-    base64_encode(&bytes)
+struct StreamingScript {
+    command: String,
+    path: PathBuf,
+    file: std::fs::File,
+    #[cfg(windows)]
+    identity: WindowsFileIdentity,
+    #[cfg(unix)]
+    identity: (u64, u64),
 }
 
-#[cfg(windows)]
-fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let value = ((chunk[0] as u32) << 16)
-            | ((chunk.get(1).copied().unwrap_or(0) as u32) << 8)
-            | chunk.get(2).copied().unwrap_or(0) as u32;
-        encoded.push(ALPHABET[((value >> 18) & 0x3f) as usize] as char);
-        encoded.push(ALPHABET[((value >> 12) & 0x3f) as usize] as char);
-        encoded.push(if chunk.len() > 1 {
-            ALPHABET[((value >> 6) & 0x3f) as usize] as char
-        } else {
-            '='
-        });
-        encoded.push(if chunk.len() > 2 {
-            ALPHABET[(value & 0x3f) as usize] as char
-        } else {
-            '='
-        });
+impl StreamingScript {
+    fn create(
+        workspace: &Path,
+        shell: &Path,
+        chunk_bytes: usize,
+        chunks: usize,
+        cadence_ms: usize,
+    ) -> Result<Self> {
+        let path = workspace.join(STREAMING_SCRIPT_NAME);
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_SHARE_READ, READ_CONTROL, WRITE_DAC,
+            };
+            options.access_mode(GENERIC_READ | GENERIC_WRITE | READ_CONTROL | WRITE_DAC);
+            options.share_mode(FILE_SHARE_READ);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o400);
+        }
+        let mut file = options
+            .open(&path)
+            .map_err(|_| anyhow!("streaming script creation failed"))?;
+        #[cfg(windows)]
+        harden_windows_capture_acl(&file)
+            .map_err(|_| anyhow!("streaming script creation failed"))?;
+        file.write_all(STREAMING_SCRIPT_BYTES)
+            .and_then(|_| file.flush())
+            .map_err(|_| anyhow!("streaming script creation failed"))?;
+        let mut permissions = file.metadata()?.permissions();
+        permissions.set_readonly(true);
+        file.set_permissions(permissions)?;
+        #[cfg(windows)]
+        let identity = wrapper_file_identity(file.as_raw_handle())
+            .map_err(|_| anyhow!("streaming script validation failed"))?;
+        #[cfg(unix)]
+        let identity = {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = file.metadata()?;
+            (metadata.dev(), metadata.ino())
+        };
+        #[cfg(windows)]
+        let file = {
+            drop(file);
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+            let mut locked = std::fs::OpenOptions::new();
+            locked.read(true).share_mode(FILE_SHARE_READ);
+            let locked = locked
+                .open(&path)
+                .map_err(|_| anyhow!("streaming script validation failed"))?;
+            if wrapper_file_identity(locked.as_raw_handle())
+                .map_err(|_| anyhow!("streaming script validation failed"))?
+                != identity
+            {
+                bail!("streaming script validation failed");
+            }
+            locked
+        };
+        let mut script = Self {
+            command: streaming_command(shell, chunk_bytes, chunks, cadence_ms)?,
+            path,
+            file,
+            identity,
+        };
+        script.verify()?;
+        Ok(script)
     }
-    encoded
+
+    fn verify(&mut self) -> Result<()> {
+        let metadata = std::fs::symlink_metadata(&self.path)
+            .map_err(|_| anyhow!("streaming script validation failed"))?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            bail!("streaming script validation failed");
+        }
+        #[cfg(windows)]
+        if wrapper_file_identity(self.file.as_raw_handle())
+            .map_err(|_| anyhow!("streaming script validation failed"))?
+            != self.identity
+        {
+            bail!("streaming script validation failed");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if (metadata.dev(), metadata.ino()) != self.identity {
+                bail!("streaming script validation failed");
+            }
+        }
+        self.file.seek(std::io::SeekFrom::Start(0))?;
+        let mut bytes = Vec::with_capacity(STREAMING_SCRIPT_BYTES.len() + 1);
+        std::io::Read::by_ref(&mut self.file)
+            .take((STREAMING_SCRIPT_BYTES.len() + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes != STREAMING_SCRIPT_BYTES {
+            bail!("streaming script validation failed");
+        }
+        Ok(())
+    }
 }
 
 fn approval_command() -> Result<String> {
@@ -2583,8 +2689,12 @@ fn approval_wrapper_candidate(pwsh: &Path, expected: &str) -> Result<String> {
     {
         bail!("trusted pwsh.exe path contained unsafe characters");
     }
+    // app-server 0.139 renders the outer executable path with each path separator
+    // doubled, while the four wrapper-level quote characters remain literal quotes.
+    // The inner command uses its independently observed backslash-then-quote escaping.
+    let escaped_pwsh = pwsh.replace('\\', r"\\");
     let escaped = expected.replace('\\', r"\\").replace('"', r#"\""#);
-    Ok(format!(r#""{pwsh}" -Command "{escaped}""#))
+    Ok(format!(r#""{escaped_pwsh}" -Command "{escaped}""#))
 }
 
 #[cfg(windows)]
@@ -2669,25 +2779,6 @@ mod tests {
 
     use serde_json::json;
 
-    #[cfg(windows)]
-    fn decode_base64(input: &str) -> Vec<u8> {
-        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut bits = 0_u32;
-        let mut bit_count = 0_u8;
-        let mut output = Vec::new();
-        for byte in input.bytes().take_while(|byte| *byte != b'=') {
-            let value = alphabet.iter().position(|item| *item == byte).unwrap() as u32;
-            bits = (bits << 6) | value;
-            bit_count += 6;
-            if bit_count >= 8 {
-                bit_count -= 8;
-                output.push((bits >> bit_count) as u8);
-                bits &= (1 << bit_count) - 1;
-            }
-        }
-        output
-    }
-
     #[test]
     fn performance_uses_sliding_one_second_peak() {
         let metrics = performance(&[
@@ -2738,16 +2829,12 @@ mod tests {
     }
 
     #[test]
-    fn scenario_corpus_is_deterministic_restricted_ascii_near_one_kibibyte() {
-        let first = super::restricted_ascii_corpus();
-        let second = super::restricted_ascii_corpus();
+    fn scenario_stream_bytes_are_deterministic_restricted_ascii() {
+        let first = super::expected_stream_bytes(1024, 1);
+        let second = super::expected_stream_bytes(1024, 1);
         assert_eq!(first, second);
         assert_eq!(first.len(), 1024);
-        assert!(
-            first
-                .bytes()
-                .all(|byte| byte == b'\n' || (0x20..=0x7e).contains(&byte))
-        );
+        assert!(first.iter().all(u8::is_ascii_uppercase));
     }
 
     #[test]
@@ -2777,51 +2864,39 @@ mod tests {
 
     #[test]
     fn deterministic_streaming_commands_have_safe_output_and_cadence_headroom() {
-        let corpus = super::restricted_ascii_corpus();
         #[cfg(windows)]
         let shell = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
         #[cfg(not(windows))]
         let shell = Path::new("/bin/sh");
-        let a = super::streaming_stimulus("A", &corpus, shell).unwrap();
-        let b = super::streaming_stimulus("B", &corpus, shell).unwrap();
-        let d = super::streaming_stimulus("D", &corpus, shell).unwrap();
+        let a = super::streaming_stimulus("A", shell).unwrap();
+        let b = super::streaming_stimulus("B", shell).unwrap();
+        let d = super::streaming_stimulus("D", shell).unwrap();
 
         assert_eq!(a.chunk_bytes, 1024);
         assert_eq!(a.chunks, 36);
         assert_eq!(a.cadence_ms, 1_000);
+        assert!(a.command.ends_with("1024 36 1000"));
         assert!((a.chunks - 1) * a.cadence_ms >= 35_000);
         assert_eq!(b.chunk_bytes, 1024);
         assert!(b.chunks >= 56);
         assert_eq!(b.cadence_ms, 50);
+        assert!(b.command.ends_with("1024 56 50"));
         assert_eq!(d.chunk_bytes, 256);
         assert!(d.chunks >= 64);
         assert!(d.cadence_ms >= 200);
+        assert!(d.command.ends_with("256 64 250"));
         assert!(d.chunk_bytes * 8 >= 2 * 1024);
         #[cfg(windows)]
         for stimulus in [&a, &b, &d] {
-            assert!(stimulus.command.contains(" -EncodedCommand "));
+            assert!(
+                stimulus
+                    .command
+                    .contains(" -ExecutionPolicy Bypass -File \".\\.codex-s2-stream.ps1\" ")
+            );
+            assert!(stimulus.command.len() < 512);
+            assert!(!stimulus.command.contains(" -EncodedCommand "));
             assert!(!stimulus.command.contains(r#"\""#));
             assert!(!stimulus.command.contains(" -Command "));
-        }
-        #[cfg(windows)]
-        {
-            let payload = a.command.split(" -EncodedCommand ").nth(1).unwrap();
-            assert!(
-                payload
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
-            );
-            let decoded = decode_base64(payload);
-            assert_eq!(decoded.len() % 2, 0);
-            let utf16 = decoded
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-                .collect::<Vec<_>>();
-            let script = String::from_utf16(&utf16).unwrap();
-            assert_eq!(
-                script,
-                super::powershell_streaming_script(&corpus, 36, 1_000)
-            );
         }
         for stimulus in [a, b, d] {
             assert_eq!(
@@ -2840,21 +2915,72 @@ mod tests {
     #[cfg(windows)]
     fn generated_windows_streaming_command_executes_through_outer_powershell() {
         let shell = super::trusted_scenario_shell().unwrap();
-        let chunk = "S2xy";
-        let chunks = 3;
-        let command = super::streaming_command(&shell, chunk, chunks, 1).unwrap();
-        let output = std::process::Command::new(&shell)
-            .args(["-NoProfile", "-NonInteractive", "-Command"])
-            .arg(&command)
-            .output()
-            .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "codex-s2-stream-script-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for (index, (chunk_bytes, chunks, cadence_ms)) in
+            [(4, 3, 1), (8, 4, 2), (16, 8, 1)].into_iter().enumerate()
+        {
+            let workspace = root.join(index.to_string());
+            std::fs::create_dir_all(&workspace).unwrap();
+            let mut script =
+                super::StreamingScript::create(&workspace, &shell, chunk_bytes, chunks, cadence_ms)
+                    .unwrap();
+            let output = std::process::Command::new(&shell)
+                .args(["-NoProfile", "-NonInteractive", "-Command"])
+                .arg(&script.command)
+                .current_dir(&workspace)
+                .output()
+                .unwrap();
 
-        assert!(
-            output.status.success(),
-            "stderr={}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(output.stdout, chunk.repeat(chunks).as_bytes());
+            assert!(
+                output.status.success(),
+                "stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                output.stdout,
+                super::expected_stream_bytes(chunk_bytes, chunks)
+            );
+            script.verify().unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn streaming_script_creation_rejects_preexisting_and_tampering() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-s2-stream-script-negative-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let shell = super::trusted_scenario_shell().unwrap();
+        let path = root.join(super::STREAMING_SCRIPT_NAME);
+        std::fs::write(&path, b"planted").unwrap();
+        assert!(super::StreamingScript::create(&root, &shell, 4, 3, 1).is_err());
+        std::fs::remove_file(&path).unwrap();
+        let target = root.join("target.ps1");
+        std::fs::write(&target, b"planted").unwrap();
+        if std::os::windows::fs::symlink_file(&target, &path).is_ok() {
+            assert!(super::StreamingScript::create(&root, &shell, 4, 3, 1).is_err());
+            std::fs::remove_file(&path).unwrap();
+        }
+        std::fs::remove_file(target).unwrap();
+        let mut script = super::StreamingScript::create(&root, &shell, 4, 3, 1).unwrap();
+        assert!(std::fs::write(&path, b"tampered").is_err());
+        script.verify().unwrap();
+        drop(script);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2897,10 +3023,9 @@ mod tests {
         let pwsh = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
         let wrapped = super::approval_wrapper_candidate(pwsh, expected).unwrap();
         let escaped = expected.replace('\\', r"\\").replace('"', r#"\""#);
-        assert_eq!(
-            wrapped,
-            format!(r#""{}" -Command "{}""#, pwsh.display(), escaped)
-        );
+        let escaped_pwsh = pwsh.to_string_lossy().replace('\\', r"\\");
+        assert_eq!(wrapped, format!(r#""{escaped_pwsh}" -Command "{escaped}""#));
+        assert!(wrapped.starts_with(r#""C:\\Program Files\\PowerShell"#));
         assert!(!wrapped.starts_with(r#"\""#));
         assert!(!wrapped.ends_with(r#"\""#));
     }

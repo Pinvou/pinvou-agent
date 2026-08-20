@@ -133,7 +133,8 @@ fn command_execution_output_deltas_contribute_only_when_correlated() {
     assert_eq!(prompts.len(), 3);
     #[cfg(windows)]
     assert!(prompts.iter().all(|prompt| {
-        prompt.contains(" -EncodedCommand ")
+        prompt.contains(" -ExecutionPolicy Bypass -File \".\\.codex-s2-stream.ps1\" ")
+            && !prompt.contains(" -EncodedCommand ")
             && !prompt.contains(r#"\""#)
             && !prompt.contains(" -Command ")
     }));
@@ -144,7 +145,7 @@ fn command_execution_output_deltas_contribute_only_when_correlated() {
 #[cfg(debug_assertions)]
 fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
     let output = temp_output("spaces & semicolon ; safe");
-    let workspace = output.join("workspace");
+    let workspace = output.join("workspace").join("c");
     run_s2_for_test(S2RunConfig {
         output_dir: Some(output.clone()),
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
@@ -172,6 +173,16 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         })
         .unwrap();
     assert_eq!(thread_start["params"]["sandbox"], "read-only");
+    let scenario_cwds = records
+        .iter()
+        .map(|(_, frame)| frame)
+        .filter(|frame| frame["method"] == "thread/start")
+        .filter_map(|frame| frame.pointer("/params/cwd").and_then(Value::as_str))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(scenario_cwds.len(), 4);
+    for name in ["a", "b", "c", "d"] {
+        assert!(scenario_cwds.iter().any(|cwd| cwd.ends_with(name)));
+    }
     let turn_start = records
         .iter()
         .map(|(_, frame)| frame)
@@ -233,6 +244,7 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         let sanitized = std::fs::read_to_string(output.join(artifact)).unwrap();
         assert!(!sanitized.contains("S2_APPROVED"));
         assert!(!sanitized.contains(".codex-s2-approval-marker"));
+        assert!(!sanitized.contains(".codex-s2-stream"));
     }
     assert!(workspace.join("cmd.exe").exists());
     #[cfg(windows)]
@@ -279,6 +291,9 @@ fn scenario_c_accepts_only_the_exact_observed_pwsh_wrapper() {
         "wrapper-extra-action",
         "wrapper-wrong-pwsh",
         "wrapper-outer-backslashes",
+        "wrapper-path-separator-single",
+        "wrapper-path-separator-triple",
+        "wrapper-extra-argv",
         "wrapper-outer-backslash-0",
         "wrapper-outer-backslash-1",
         "wrapper-outer-backslash-2",

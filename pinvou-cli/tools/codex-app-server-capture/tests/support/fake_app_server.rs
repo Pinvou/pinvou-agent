@@ -25,8 +25,9 @@ fn resolved_pwsh() -> std::path::PathBuf {
 
 #[cfg(windows)]
 fn approval_wrapper(expected: &str) -> String {
+    let escaped_pwsh = resolved_pwsh().to_string_lossy().replace('\\', r"\\");
     let escaped = expected.replace('\\', r"\\").replace('"', r#"\""#);
-    format!(r#""{}" -Command "{}""#, resolved_pwsh().display(), escaped)
+    format!(r#""{escaped_pwsh}" -Command "{escaped}""#)
 }
 
 #[cfg(windows)]
@@ -319,6 +320,9 @@ fn main() {
                                 | "wrapper-extra-action"
                                 | "wrapper-wrong-pwsh"
                                 | "wrapper-outer-backslashes"
+                                | "wrapper-path-separator-single"
+                                | "wrapper-path-separator-triple"
+                                | "wrapper-extra-argv"
                                 | "wrapper-inner-backslash-missing"
                         ) || mode.starts_with("wrapper-outer-backslash-")
                         {
@@ -342,6 +346,12 @@ fn main() {
                                 command = command.replacen("pwsh.exe", "other-pwsh.exe", 1);
                             } else if mode == "wrapper-outer-backslashes" {
                                 command = add_backslash_before_wrapper_quotes(command, None);
+                            } else if mode == "wrapper-path-separator-single" {
+                                command = command.replacen(r"\\", r"\", 1);
+                            } else if mode == "wrapper-path-separator-triple" {
+                                command = command.replacen(r"\\", r"\\\", 1);
+                            } else if mode == "wrapper-extra-argv" {
+                                command.push_str(" -NoProfile");
                             } else if let Some(ordinal) = mode
                                 .strip_prefix("wrapper-outer-backslash-")
                                 .and_then(|value| value.parse().ok())

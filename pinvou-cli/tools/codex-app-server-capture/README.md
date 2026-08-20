@@ -110,17 +110,23 @@ fixed `/d /s /c` arguments and fail-closed quoting. Explicit regular `.cmd`
 scripts use the same path, while explicit `.exe` test overrides remain direct.
 
 Scenarios A, B, and D request exactly one fixed, side-effect-free command built
-from a deterministic, non-sensitive restricted ASCII corpus and constants. A
+from deterministic, non-sensitive restricted ASCII bytes and constants. A
 emits 36 one-KiB chunks at one-second cadence, B emits 56 one-KiB chunks at
 50 ms cadence, and D emits 64 256-byte chunks at 250 ms cadence so interruption
 can occur after a real backlog. Commands use the canonical OS-protected Windows
 PowerShell path derived from `GetSystemDirectoryW` on Windows, or absolute
-`/bin/sh` on Unix, and never consult PATH or interpolate caller paths. Windows
-scripts are UTF-16LE/Base64 `-EncodedCommand` payloads, so the literal prompt
-contains no nested JSON-style quote escapes. Their prompts forbid other tools
-and prose before completion. Gates still use only real, correlated R1 timestamps
-and content, including official agent message and command-execution output
-deltas.
+`/bin/sh` on Unix, and never consult PATH or interpolate caller paths. Each
+scenario gets a fresh runner-owned workspace. The runner exclusively creates a
+fixed relative streaming script there, restricts it to the owner and read-only
+use, and validates the same identity and exact fixed bytes before and after the
+scenario. On Windows a read handle denying write/delete sharing remains held
+during execution; Unix uses a mode-0700 directory, a mode-0400 file, and
+pre/post identity and content checks. The human prompt contains only a short
+`-File` command with fixed integer arguments, not an opaque Base64 payload.
+Prompts forbid other tools and prose before completion. Script names, paths, and
+contents stay out of sanitized artifacts; the restricted raw capture may contain
+the command. Gates still use only real, correlated R1 timestamps and content,
+including official agent message and command-execution output deltas.
 
 Scenario C uses `on-request` approval and a read-only sandbox, then requests one
 fixed platform-specific command that writes `.codex-s2-approval-marker` relative
