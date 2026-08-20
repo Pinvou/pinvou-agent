@@ -222,19 +222,31 @@ impl KnowledgeService {
                     _ = task_cancel.cancelled() => break,
                     _ = interval.tick() => {}
                 }
-                // 条件逐轮重读：模型可能已被热卸载/热加载。
-                let should_unload = l1.has_embedder()
-                    && l1.embedder_idle_secs() >= EMBEDDER_IDLE_UNLOAD_AFTER_SECS
-                    && now() - last_unload.load(Ordering::Acquire) >= EMBEDDER_UNLOAD_COOLDOWN_SECS;
-                if should_unload {
+                // 单轮 panic 隔离：巡检循环 panic 会让整个 async task 静默终止
+                // （guard Drop 只在服务释放时触发），模型从此常驻不再卸载。风险
+                // 本就低（条件读取 + 原子写），兜底只为「停摆不静默」。
+                let tick_l1 = l1.clone();
+                let tick_unload = last_unload.clone();
+                if let Err(panic) = catch_unwind(AssertUnwindSafe(move || {
+                    // 条件逐轮重读：模型可能已被热卸载/热加载。
+                    let should_unload = tick_l1.has_embedder()
+                        && tick_l1.embedder_idle_secs() >= EMBEDDER_IDLE_UNLOAD_AFTER_SECS
+                        && now() - tick_unload.load(Ordering::Acquire)
+                            >= EMBEDDER_UNLOAD_COOLDOWN_SECS;
+                    if should_unload {
+                        eprintln!(
+                            "[knowledge] embedding 模型空闲超过 {} 秒，卸载释放内存（下次状态查询/导入自动重载）",
+                            EMBEDDER_IDLE_UNLOAD_AFTER_SECS
+                        );
+                        // set_embedder(None) 后所有 L1Store clone 即刻回到纯全文检索；
+                        // 正在跑的推理持有 Arc 副本，跑完自然释放。
+                        tick_l1.set_embedder(None);
+                        tick_unload.store(now(), Ordering::Release);
+                    }
+                })) {
                     eprintln!(
-                        "[knowledge] embedding 模型空闲超过 {} 秒，卸载释放内存（下次状态查询/导入自动重载）",
-                        EMBEDDER_IDLE_UNLOAD_AFTER_SECS
+                        "[knowledge] embedding 空闲巡检单轮 panic（已隔离，下轮继续）: {panic:?}"
                     );
-                    // set_embedder(None) 后所有 L1Store clone 即刻回到纯全文检索；
-                    // 正在跑的推理持有 Arc 副本，跑完自然释放。
-                    l1.set_embedder(None);
-                    last_unload.store(now(), Ordering::Release);
                 }
             }
         });
@@ -266,6 +278,9 @@ impl KnowledgeService {
         if self.l1.has_embedder() || !model_installed {
             return;
         }
+        // 门控放行 = 即将真实加载:清除「故意延迟」标记,此后的失败按真实失败
+        // 上报,不被 deferred 状态掩盖(与 kb_model_status 热加载同语义)。
+        model_download::clear_deferred_no_usage();
         match load() {
             Ok(embedder) => {
                 self.install_embedder(embedder);

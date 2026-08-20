@@ -3137,7 +3137,16 @@ impl AcpPool {
                     _ = task_cancel.cancelled() => break,
                     _ = interval.tick() => {}
                 }
-                pool.reap_idle_sessions().await;
+                // 单轮 panic 隔离（与 EnginePool 巡检同款）：回收逻辑 panic 只
+                // 终止当轮 task，外层循环下轮照常继续，ACP 会话回收不停摆。
+                let round_pool = pool.clone();
+                let round =
+                    tauri::async_runtime::spawn(
+                        async move { round_pool.reap_idle_sessions().await },
+                    );
+                if let Err(error) = round.await {
+                    eprintln!("[codex_acp] 空闲巡检单轮失败（已隔离，下轮继续）: {error}");
+                }
             }
         });
         *slot = Some(IdleReaperGuard { cancel, handle });

@@ -84,6 +84,13 @@ fn set_model_load_error(error: Option<String>) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = error;
 }
 
+/// 任何真实加载尝试（成功或失败）前清除「无使用场景故意延迟」标记:导入补载
+/// 等绕过状态命令的加载入口也在其列——否则首帧被门控跳过的用户导入文件时,
+/// 补载失败仍被前端误标为 deferred(「故意延迟」),真实失败被掩盖。
+pub(super) fn clear_deferred_no_usage() {
+    MODEL_DEFERRED_NO_USAGE.store(false, Ordering::SeqCst);
+}
+
 fn configured_model_dir() -> std::path::PathBuf {
     configured_model_dir_from(
         std::env::var("PINVOU3_KB_EMBED_MODEL_DIR").ok(),
@@ -471,6 +478,71 @@ async fn load_installed_embedder_unlocked(
     Ok(service.semantic_ready())
 }
 
+/// kb_search 自愈路径的租约化重载：模型被空闲卸载/首帧门控跳过后，工具执行时
+/// 按需恢复。与模型下载、首帧加载共用 `MODEL_LOAD` 租约：并发 kb_search（同
+/// turn 并行工具调用）等待先行者完成后在租约内复查短路，不重复读 ~570MB；
+/// 与 kb_model_download 的目录替换互斥，不会读到半替换状态。失败写
+/// `MODEL_LOAD_ERROR`（前端状态页可见）并返回 Err，调用方降级纯全文。
+///
+/// 工具门控（lib.rs tool_policy）不依赖 semantic_ready，重载成败都不需要刷新
+/// disallowed_tools；被 `tokio::time::timeout` 取消等待时，后台加载任务本身
+/// 不受影响（spawn_blocking 闭包继续执行并落位），仅当次检索降级。
+pub(super) async fn reload_installed_embedder_leased(
+    service: &KnowledgeService,
+) -> Result<bool, String> {
+    let model_dir = configured_model_dir();
+    let ready_probe = service.clone();
+    let load_service = service.clone();
+    leased_reload_with(
+        model_installed(),
+        move || ready_probe.semantic_ready(),
+        move || {
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    KnowledgeService::load_embedder(Some(&model_dir))
+                        .map(|embedder| load_service.install_embedder(embedder))
+                })
+                .await
+                .unwrap_or_else(|error| Err(format!("embedding 后台加载任务失败: {error}")))
+            })
+        },
+    )
+    .await
+}
+
+/// 上一方法的可测核心：`installed` 门控 → 清 deferred 标记 → 拿租约 →
+/// **租约内**复查 ready（并发调用等待先行加载后短路）→ 加载并安装。
+/// `ready` 与 `load_and_install` 注入，使并发回归测试无需真实模型文件。
+/// 加载器必须自行把阻塞 IO 放进 spawn_blocking（生产实现已做）。
+async fn leased_reload_with(
+    installed: bool,
+    ready: impl Fn() -> bool,
+    load_and_install: impl FnOnce() -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<bool, String>> + Send>,
+    >,
+) -> Result<bool, String> {
+    if !installed {
+        return Ok(false);
+    }
+    // 真实加载尝试：清除「无使用场景故意延迟」标记，失败按真实失败上报。
+    MODEL_DEFERRED_NO_USAGE.store(false, Ordering::SeqCst);
+    let _lease = MODEL_LOAD.acquire().await;
+    if ready() {
+        return Ok(true);
+    }
+    set_model_load_error(None);
+    match load_and_install().await {
+        Ok(ready) => {
+            set_model_load_error(None);
+            Ok(ready)
+        }
+        Err(error) => {
+            set_model_load_error(Some(error.clone()));
+            Err(error)
+        }
+    }
+}
+
 struct ModelDeployment {
     install_embedder: bool,
     cleanup_warning: Option<String>,
@@ -606,6 +678,143 @@ mod tests {
             .expect("cancelled loader must release the coordinator");
         drop(lease);
         assert!(!coordinator.is_loading());
+    }
+
+    /// kb_search 自愈重载的并发回归：N 路并发重载同一槽位，真实加载只允许发生
+    /// 一次（租约串行 + 租约内复查 ready 短路），其余等待者拿到 Ok(true)。
+    /// 复现审计缺陷：并发 kb_search 各自 spawn_blocking 重载 ~570MB 模型。
+    #[tokio::test]
+    async fn leased_reload_concurrent_calls_load_once() {
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let loads = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let ready = ready.clone();
+            let loads = loads.clone();
+            let ready_after_load = ready.clone();
+            tasks.push(tokio::spawn(async move {
+                leased_reload_with(
+                    true,
+                    move || ready.load(Ordering::SeqCst),
+                    move || {
+                        let loads = loads.clone();
+                        Box::pin(async move {
+                            loads.fetch_add(1, Ordering::SeqCst);
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                            ready_after_load.store(true, Ordering::SeqCst);
+                            Ok(true)
+                        })
+                    },
+                )
+                .await
+            }));
+        }
+        for task in tasks {
+            let outcome = task.await.expect("reload task should finish");
+            assert!(outcome.is_ok(), "等待先行加载后短路应返回 Ok: {outcome:?}");
+            assert_eq!(outcome, Ok(true));
+        }
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "并发重载必须只真实加载一次（租约内复查短路）"
+        );
+    }
+
+    /// 未安装时重载直接 Ok(false) 短路，不触碰租约也不发起加载。
+    #[tokio::test]
+    async fn leased_reload_skips_when_not_installed() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let loads_probe = loads.clone();
+        let outcome = leased_reload_with(
+            false,
+            || false,
+            move || {
+                loads_probe.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(true) })
+            },
+        )
+        .await;
+        assert_eq!(outcome, Ok(false));
+        assert_eq!(loads.load(Ordering::SeqCst), 0);
+    }
+
+    /// 加载失败不落 ready，错误穿透给调用方（kb_search 降级纯全文），后续
+    /// 调用仍会重试（不缓存失败）。
+    #[tokio::test]
+    async fn leased_reload_failure_propagates_and_retries() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        for expected_error in ["第一次失败", "第二次失败"] {
+            let loads = loads.clone();
+            let outcome = leased_reload_with(
+                true,
+                || false,
+                move || {
+                    let loads = loads.clone();
+                    Box::pin(async move {
+                        loads.fetch_add(1, Ordering::SeqCst);
+                        Err(expected_error.to_string())
+                    })
+                },
+            )
+            .await;
+            assert_eq!(outcome, Err(expected_error.to_string()));
+        }
+        assert_eq!(loads.load(Ordering::SeqCst), 2, "失败不缓存,下次重试");
+        // 真实加载尝试清 deferred 标记（失败按真实失败上报,不误标「故意延迟」）。
+        assert!(!MODEL_DEFERRED_NO_USAGE.load(Ordering::SeqCst));
+    }
+
+    /// 工具门控语义（lib.rs tool_policy 的纯函数投影）：模型卸载（!ready）后
+    /// 只要有已入库内容,kb_search/kb_open_source 就必须保持可见——否则快照式
+    /// 重算会把工具写进 disallowed,工具内按需重载的自愈路径不可达。
+    #[test]
+    fn kb_tools_stay_visible_after_model_unload_when_content_present() {
+        let kb_usable = |indexed_content: bool, _semantic_ready: bool| indexed_content;
+        // 有内容 + 模型已卸载：工具仍可见（自愈重载路径可达）。
+        assert!(kb_usable(true, false));
+        // 有内容 + 模型在位：工具可见（原语义）。
+        assert!(kb_usable(true, true));
+        // 库空：无论模型在位与否都不可见（不空宣传能力）。
+        assert!(!kb_usable(false, true));
+        assert!(!kb_usable(false, false));
+    }
+
+    /// 集成层：空闲卸载语义（set_embedder(None)）不改变 has_indexed_content 的
+    /// 读数——门控数据源与 embedder 槽解耦。
+    #[test]
+    fn idle_unload_keeps_has_indexed_content_stable() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3_kb_gate_unload_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        let service = KnowledgeService::new(&dir.join("index.db")).expect("KnowledgeService::new");
+        let l1 = service.l1();
+        let collection_id = l1
+            .create_collection("回归知识集", None, None)
+            .expect("create collection");
+        let doc_id = l1
+            .upsert_document(
+                collection_id,
+                dir.to_string_lossy().as_ref(),
+                "回归文档",
+                Some("md"),
+                1,
+                0,
+            )
+            .expect("upsert document");
+        assert!(doc_id > 0);
+        assert!(service.has_indexed_content(), "入库后有内容");
+        // 模拟空闲卸载：embedder 槽置空后内容读数不变（工具可见性不波动）。
+        assert!(!service.semantic_ready());
+        service.l1().set_embedder(None);
+        assert!(!service.semantic_ready());
+        assert!(
+            service.has_indexed_content(),
+            "卸载后 has_indexed_content 读数不变"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

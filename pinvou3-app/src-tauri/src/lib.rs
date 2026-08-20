@@ -386,9 +386,14 @@ pub fn run() {
             let tool_policy: crate::features::assistant::engine_pool::ToolPolicy =
                 std::sync::Arc::new(|app| {
                     let mut tools = crate::features::marketplace::disabled_tool_names();
+                    // kb 工具可见性只看「有没有内容」：模型可能被空闲卸载/首帧门控
+                    // 跳过，可见性若随之波动，快照式重算会把 kb_search 写进
+                    // disallowed，新 spawn 的 engine 看不到工具，工具内的按需重载
+                    // 自愈路径反而不可达。模型缺位由 kb_search 执行时走租约化重载
+                    // 兜底（失败降级纯全文，不阻断检索）。
                     let kb_usable = app
                         .try_state::<knowledge::KnowledgeService>()
-                        .map(|service| service.has_indexed_content() && service.semantic_ready())
+                        .map(|service| service.has_indexed_content())
                         .unwrap_or(false)
                         || app
                             .try_state::<RemoteKnowledgeService>()

@@ -32,6 +32,10 @@ const KB_OPEN_DEFAULT_CHUNKS: usize = 3;
 const KB_OPEN_MAX_CHUNKS: usize = 8;
 /// 单个远程来源不能无限拖住本地及其他健康来源。超时只降级该来源。
 const KB_REMOTE_SOURCE_TIMEOUT: Duration = Duration::from_secs(12);
+/// 自愈重载 embedding 模型（~570MB 磁盘读 + ONNX 会话创建）的限时：超时本次
+/// 检索降级纯全文，后台加载不受影响（下次检索恢复语义）。慢盘冷读按分钟级
+/// 余量取 120s。
+const KB_MODEL_RELOAD_TIMEOUT_SECS: u64 = 120;
 
 fn source_ref(document_id: i64, ord: i64) -> String {
     format!("kbdoc:{document_id}:chunk:{}", ord.max(0))
@@ -323,16 +327,27 @@ impl ToolSpec for KbSearchTool {
         if !collection_ids.is_empty() {
             if let Some(kb) = self.app.try_state::<KnowledgeService>() {
                 // 模型可能已被空闲卸载（卸载不刷新工具门控，门控只在发消息时快
-                // 照式重算）：挂载存在即真实使用意图，先在后台线程重载模型再检
-                // 索，本会话后续轮次恢复语义检索。租约内并发调用会等待先行加载
-                // 后短路返回；加载失败保持纯全文降级，不阻断本次检索。
+                // 照式重算）：挂载存在即真实使用意图，先重载模型再检索，本会话
+                // 后续轮次恢复语义检索。重载走 MODEL_LOAD 租约（model_download
+                // 统一协调）：并发 kb_search 等待先行加载后短路，不重复读
+                // ~570MB，也不与模型下载的目录替换竞态。外层限时兜底，超时/
+                // 失败均降级纯全文，不阻断本次检索。
                 if !kb.semantic_ready() && super::model_download::model_installed() {
-                    let service = kb.inner().clone();
-                    if let Err(error) =
-                        tauri::async_runtime::spawn_blocking(move || service.reload_embedder())
-                            .await
-                    {
-                        eprintln!("[knowledge] kb_search 前重载模型失败（降级纯全文）: {error}");
+                    let reload =
+                        super::model_download::reload_installed_embedder_leased(kb.inner());
+                    match timeout(Duration::from_secs(KB_MODEL_RELOAD_TIMEOUT_SECS), reload).await {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => {
+                            eprintln!(
+                                "[knowledge] kb_search 前重载模型失败（降级纯全文）: {error}"
+                            );
+                        }
+                        Err(_) => {
+                            eprintln!(
+                                "[knowledge] kb_search 前重载模型超时（{}s，降级纯全文；后台加载继续，下次检索恢复语义）",
+                                KB_MODEL_RELOAD_TIMEOUT_SECS
+                            );
+                        }
                     }
                 }
                 let l1 = kb.l1().clone();

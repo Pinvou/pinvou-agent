@@ -685,7 +685,17 @@ impl EnginePool {
                     _ = task_cancel.cancelled() => break,
                     _ = interval.tick() => {}
                 }
-                pool.reap_idle_engines().await;
+                // 单轮 panic 隔离：回收逻辑 panic 会连坐整个巡检 async task
+                // （静默停摆，engines 从此常驻）。每轮独立 spawn，panic 只终止
+                // 当轮，外层循环下轮照常继续。
+                let round_pool = pool.clone();
+                let round =
+                    tauri::async_runtime::spawn(
+                        async move { round_pool.reap_idle_engines().await },
+                    );
+                if let Err(error) = round.await {
+                    eprintln!("[engine_pool] 空闲巡检单轮失败（已隔离，下轮继续）: {error}");
+                }
             }
         });
         *slot = Some(IdleReaperGuard { cancel, handle });

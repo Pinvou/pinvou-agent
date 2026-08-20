@@ -16,6 +16,7 @@ import { useBridgeState } from '../hooks/useBridge.js';
 import { emitTauri, invokeTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
 import { listAcpSessions } from '../features/codex/acpClient.js';
 import { dict, initialSystemLanguage, TAG_TO_LANG } from '../shared/i18n.js';
+import { ensurePersonaI18nOverlay } from './personas-overlay.js';
 
 function useDetachedBase() {
   const bs = useBridgeState([
@@ -24,6 +25,7 @@ function useDetachedBase() {
   ]);
   const [language, setLanguage] = useState(initialSystemLanguage);
   const [activeTheme, setActiveTheme] = useState('dark');
+  const [, setPersonaI18nTick] = useState(0);
   const initRef = useRef(false);
 
   useEffect(() => {
@@ -36,6 +38,14 @@ function useDetachedBase() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', activeTheme === 'dark');
   }, [activeTheme]);
+  // 与主窗 App 同一兜底:撕离窗加载同一 index.html,「系统中文 + 英/日 UI」时
+  // index.html 快速路径跳过注入,卡池撕离窗卡名会停在中文。UI 语言为 en/ja 时
+  // 兜底注入 overlay,加载完成 bump 一次让卡名重渲染。
+  useEffect(() => {
+    if (language === 'en' || language === 'ja') {
+      ensurePersonaI18nOverlay(() => setPersonaI18nTick(v => v + 1));
+    }
+  }, [language]);
 
   return { bs, activeTheme, t: dict[language] };
 }

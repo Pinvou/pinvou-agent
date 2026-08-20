@@ -143,6 +143,11 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
       try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch (_) {}
       lastSavedRef.current = content;
       setSaveState('saved');
+      // 保存成功即草稿==已保存:立即补一次懒语言重放。刚保存的内容若含首次
+      // 出现的懒语言围栏,注册可能在保存后才完成;syntaxVersion bump 的重放
+      // effect 依赖 latestDraftRef==lastSavedRef,此刻两者恰好相等,直接投影
+      // 幂等且与该 effect 同语义。
+      applyMarkdownToDomRef.current?.(content);
       onSaved?.(content, info);
       return true;
     })().catch((e) => {

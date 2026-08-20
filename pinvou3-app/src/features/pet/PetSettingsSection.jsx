@@ -112,9 +112,22 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
       .then((atlas) => {
         if (!aliveRef.current) return;
         setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), atlas, atlasStatus: 'ready', status: 'ready' } }));
+        // 重试路径与 ensurePetAtlas 同一收口语义:加载期间用户已点击该卡
+        // (重试在途时点击只能排队,ensurePetAtlas 因 atlasStatus=loading 早退、
+        // 无人发起回调),完成即执行排队的选择,不丢点击。
+        const pending = pendingSelectRef.current;
+        if (pending === id) {
+          pendingSelectRef.current = null;
+          Promise.resolve(onSelect(id)).catch((error) => {
+            console.error('[pet-selector] switch failed, keeping previous pet', error);
+          });
+        }
       })
       .catch(() => {
         if (!aliveRef.current) return;
+        // 失败腿同样消费排队:排队的选择等不到就绪,丢弃并让用户看到失败态,
+        // 不残留误触发(之后 hover 不会再无点击切换)。
+        if (pendingSelectRef.current === id) pendingSelectRef.current = null;
         setAssets((state) => ({ ...state, [id]: { ...(state[id] || {}), status: 'error', atlasStatus: 'error' } }));
       });
   };

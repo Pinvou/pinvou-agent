@@ -14,7 +14,6 @@ import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewpor
 import { dict, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { runSessionBatch } from '../shared/session-management.js';
-import { resolveAppAssetUrl } from '../shared/asset-url.mjs';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
 import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
@@ -52,7 +51,7 @@ import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
 import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
 import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
 import { Lanyard } from '../features/personas/persona-shared.jsx';
-import { VIEW_LOADERS } from './view-loaders.js';
+import { VIEW_LOADERS, prefetchView } from './view-loaders.js';
 // 低频视图懒加载:VIEW_LOADERS(见 view-loaders.js)是唯一的动态 import 出口,
 // React.lazy 与 NavItem 悬停/聚焦预取共用同一工厂,保证命中同一模块缓存。
 // ChatView 与 Lanyard 启动即渲染,保持静态 import。
@@ -73,28 +72,9 @@ function ViewFallback() {
   return <div className="p-6 text-sm opacity-60" data-testid="lazy-view-fallback">…</div>;
 }
 
-// personas-i18n overlay(141KB)快速路径在 index.html 按系统语言注入;但消费端
-// (persona-shared.jsx personaText / bridge personas.js personaName)看的是用户设置的
-// UI 语言。「系统中文 + 手动切英/日 UI」时 overlay 缺失,卡名会停在中文——此处兜底:
-// 已加载则同步回调(不吞 onLoaded);在途(index.html 快速路径注入中)则只挂
-// onload,避免重复注入;加载完成由调用方 bump state 触发卡名重渲染。
-function ensurePersonaI18nOverlay(onLoaded) {
-  if (typeof document === 'undefined') return;
-  if (window.PERSONA_I18N) { onLoaded(); return; }
-  const existing = document.querySelector('script[data-personas-i18n]');
-  if (existing) {
-    // index.html 快速路径的在途脚本:挂 load 恢复回调。index.html 的 onerror 会
-    // 移除元素,因此这里只会见到真正在途的脚本,不会挂在死元素上。
-    existing.addEventListener('load', onLoaded, { once: true });
-    return;
-  }
-  const s = document.createElement('script');
-  s.setAttribute('data-personas-i18n', '1');
-  s.src = resolveAppAssetUrl('features/personas/personas-i18n.js');
-  s.onload = onLoaded;
-  s.onerror = () => s.remove();
-  document.head.appendChild(s);
-}
+// personas-i18n overlay 的 UI 语言兜底注入:实现收敛在 personas-overlay.js,
+// 与撕离窗(DetachedShell 的 useDetachedBase)共用同一模块。
+import { ensurePersonaI18nOverlay } from './personas-overlay.js';
 import { TitleBar } from './DesktopTitleBar.jsx';
 
 installGlobalMarkdownRenderer(window);
@@ -170,13 +150,15 @@ function workspaceDisplayName(path) {
             // 跳视图(如 scheduledTaskAutoOpenId),悬停预取覆盖不到这些入口。
             if (typeof window.requestIdleCallback === 'function') {
               window.requestIdleCallback(() => {
-                VIEW_LOADERS.scheduled();
-                VIEW_LOADERS.settings();
+                prefetchView('scheduled');
+                prefetchView('settings');
+                prefetchView('codex');
               }, { timeout: 4000 });
             } else {
               window.setTimeout(() => {
-                VIEW_LOADERS.scheduled();
-                VIEW_LOADERS.settings();
+                prefetchView('scheduled');
+                prefetchView('settings');
+                prefetchView('codex');
               }, 1500);
             }
           });
@@ -1874,7 +1856,7 @@ function workspaceDisplayName(path) {
                   t={t}
                   isSidebarOpen={isSidebarOpen}
                   onClick={() => navigateFromScheduledRun('scheduled')}
-                  onPointerEnter={VIEW_LOADERS.scheduled} onFocus={VIEW_LOADERS.scheduled}
+                  onPointerEnter={() => prefetchView('scheduled')} onFocus={() => prefetchView('scheduled')}
                 />
               )}
               <NavItem
@@ -1883,7 +1865,7 @@ function workspaceDisplayName(path) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('outputs')}
-                onPointerEnter={VIEW_LOADERS.knowledge} onFocus={VIEW_LOADERS.knowledge}
+                onPointerEnter={() => prefetchView('knowledge')} onFocus={() => prefetchView('knowledge')}
                 dragKind={canDetachWindows ? 'outputs' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'outputs:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('outputs', undefined, t.outputs, geom) : undefined}
               />
               <NavItem
@@ -1891,7 +1873,7 @@ function workspaceDisplayName(path) {
                 active={currentView === 'monitor'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onPointerEnter={VIEW_LOADERS.monitor} onFocus={VIEW_LOADERS.monitor}
+                onPointerEnter={() => prefetchView('monitor')} onFocus={() => prefetchView('monitor')}
                 onClick={() => {
                   navigateFromScheduledRun('monitor', () => {
                     const liveBridge = window.TauriBridge || bridge;
@@ -1906,7 +1888,7 @@ function workspaceDisplayName(path) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('toolStore')}
-                onPointerEnter={VIEW_LOADERS.toolStore} onFocus={VIEW_LOADERS.toolStore}
+                onPointerEnter={() => prefetchView('toolStore')} onFocus={() => prefetchView('toolStore')}
                 dragKind={canDetachWindows ? 'toolstore' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('toolstore', undefined, t.toolStore, geom) : undefined}
               />
               <NavItem
@@ -1915,7 +1897,7 @@ function workspaceDisplayName(path) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))}
-                onPointerEnter={VIEW_LOADERS.cardpool} onFocus={VIEW_LOADERS.cardpool}
+                onPointerEnter={() => prefetchView('cardpool')} onFocus={() => prefetchView('cardpool')}
                 dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom) : undefined}
               />
               <NavItem
@@ -1924,7 +1906,7 @@ function workspaceDisplayName(path) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('knowledge')}
-                onPointerEnter={VIEW_LOADERS.knowledge} onFocus={VIEW_LOADERS.knowledge}
+                onPointerEnter={() => prefetchView('knowledge')} onFocus={() => prefetchView('knowledge')}
                 dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}

@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Palette, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
+import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
 import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
@@ -2663,6 +2665,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const localizedMemoryStatus = (label) => memoryStatusLabels[label] || label;
       const assistantSelectionHostRef = useRef(null);
       const assistantSelectionTargetRef = useRef(null);
+      // 懒加载语言注册完成会 bump 版本号:legacy assistant 气泡由 item.text 现算
+      // markdown(见下),订阅版本号让注册后本组件重渲染,历史消息恢复高亮。
+      const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
+      void syntaxVersion;
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
       if (item.type === 'plan_card') return <PlanCard item={item} t={t} onPrefill={onPrefill} />;
@@ -2683,7 +2689,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
       if (item.type === 'assistant') {
         if (item.streaming && !item.html) return null; // 空流式气泡交给 ThinkingBubble 表示
-        const html = item.html || '';
+        // 旧会话(legacy)的 assistant 气泡由 item.text 现算 markdown:懒语言注册后
+        // (ChatBubble 顶部订阅 syntaxVersion 触发重渲染)历史消息恢复高亮——若
+        // 沿用冻结的 item.html,首次渲染时未注册的语言将永久纯文本。流式消息仍
+        // 走 item.html(增量渲染管线);仅存 html 无 text 的旧消息无法现算,保持
+        // 原样(其语言在启动核心集内,不受懒注册影响)。
+        const html = (!item.streaming && item.text)
+          ? renderMarkdown(item.text)
+          : (item.html || '');
         const streamingDraftLabel = /scheduled-task-draft/.test(html) ? t.uiChatExtra.draftingScheduled : (t && t.cpDesigning);
         const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
         const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
