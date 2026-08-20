@@ -52,6 +52,7 @@ pub use resource_agent::{
     ObservationHealth, ResourceAgentAssessment, ResourceDirectiveCandidate,
     ResourceMitigationAction, ResourceSampler, DEVICE_AGENT_ID,
 };
+pub(crate) use runtime::HostWorkDispatchRecord;
 pub use runtime::{
     HostWorkDirectiveRequest, HostWorkHandle, OpenInteractionRunRequest, OpenMissionRequest,
     PinvouOsRuntime, ReconcileHostWorkDirectiveRequest, RegisterHostWorkRequest,

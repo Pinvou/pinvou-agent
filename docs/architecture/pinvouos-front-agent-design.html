@@ -1279,7 +1279,7 @@
   <div class="hero">
     <div class="hero-inner">
       <div>
-        <div class="eyebrow"><span class="eyebrow-dot"></span>PinvouOS Architecture · 2026-08-20</div>
+        <div class="eyebrow"><span class="eyebrow-dot"></span>PinvouOS Architecture · 2026-08-21</div>
         <h1>交互 Agent<br />到底能做什么？</h1>
         <p class="hero-lead">
           这份文档把 <strong>Front Agent 的真实能力、软约定和目标设计</strong> 分开说明。
@@ -1288,7 +1288,7 @@
         </p>
       </div>
       <div class="hero-meta">
-        <div class="meta-card"><span class="meta-label">代码基线</span><span class="meta-value mono">pinvou-agent · 0b1b3a5 + 2026-08-20 工作树</span></div>
+        <div class="meta-card"><span class="meta-label">代码基线</span><span class="meta-value mono">pinvou-agent · 2026-08-21 Resource 工作树</span></div>
         <div class="meta-card"><span class="meta-label">执行底座</span><span class="meta-value mono">CodeWhale · 2f1f851e · 回流边界 checkpoint</span></div>
         <div class="meta-card"><span class="meta-label">阅读方式</span><span class="meta-value">先看状态标签，再看硬边界</span></div>
       </div>
@@ -1555,7 +1555,7 @@
           <tbody>
             <tr><td>Front Interrupt 路由</td><td>用户说“停下、取消、换目标”时选择业务处理路径</td><td><span class="status prompt">主要是 Prompt</span></td><td>Front 识别，执行仍依赖底层能力</td></tr>
             <tr><td>AG-UI interrupt outcome</td><td>本交互因等待输入/审批结束；新 run 用 interruptId 精确恢复</td><td><span class="status partial">语义内核首切片</span></td><td>InteractionRun 状态机</td></tr>
-            <tr><td>Runtime Directive</td><td>Kernel 对已注册 HostWork 签发封闭动作</td><td><span class="status partial">HostWork Stop 已接；Mission Adapter 为 0</span></td><td>schema v6 Runtime 只落 Pending；scheduled、knowledge、固定 connector、受限 detached sub-agent 与 ASR 由独立 worker 执行、ACK 并 reconcile。App cgroup 为 essential / status-only；Front 不持有控制权。</td></tr>
+            <tr><td>Runtime Directive</td><td>Kernel 对已注册 HostWork 签发封闭动作</td><td><span class="status partial">HostWork Stop 已接；Mission Adapter 为 0</span></td><td>schema v6 的耐久链是 Pending → HostWorkDirectiveDispatchRecorded → ACK → status reconcile。dispatch 在副作用前 append + flush + sync_data，只是 attempt fence，不证明成功；已有 marker 和 prior-boot 无 marker 的 Pending 都只做 OutcomeUnknown / status-only 对账，不重放。scheduled、knowledge、固定 connector、受限 detached sub-agent 与 ASR 由独立 worker 执行；App cgroup 为 essential / status-only，Front 不持有控制权。</td></tr>
           </tbody>
         </table>
       </div>
@@ -1770,7 +1770,7 @@
             <tr><td>Runtime Ledger</td><td>身份、Mission、Run、Interaction、Agent、资源等事实</td><td>读取并解释事实</td><td>不能把投影当第二真相源</td><td><span class="status partial">trace + 只读投影</span></td></tr>
             <tr><td>Policy / Kernel</td><td>Allow / Deny / RequireConfirmation 与强制结果</td><td>提出 Action Intent、解释结果</td><td>不能替用户确认，不能覆盖硬拒绝</td><td><span class="status off">统一 gate 未接</span></td></tr>
             <tr><td>Memory Agent</td><td>经证据筛选的稳定上下文</td><td>在回答与计划中使用上下文</td><td>不能把任务进度写进长期记忆</td><td><span class="status off">Front consumer 未接</span></td></tr>
-            <tr><td>System Agents</td><td>资源、连接、推理、设备、界面感知等事实和风险</td><td>面向用户解释与建议</td><td>不能把压力 Claim 当作已执行控制，也不能指定 PID、unit、命令或绕过 Kernel / Host</td><td><span class="status partial">Resource 只观察；固定 HostWork Stop 已接；无 Renderer / 模型写面；普通 desktop direct，MegaBook E2E 待验</span></td></tr>
+            <tr><td>System Agents</td><td>资源、连接、推理、设备、界面感知等事实和风险</td><td>面向用户解释与建议</td><td>不能把压力 Claim 当作已执行控制，也不能指定 PID、unit、命令或绕过 Kernel / Host</td><td><span class="status partial">Resource 只观察；固定 HostWork Stop 已接；profile helper、E2E harness 与 deb payload mode/hash 门禁已实现；普通 desktop direct，MegaBook 真实 deb / High / OOM / purge 未执行</span></td></tr>
             <tr><td>Host Renderer</td><td>组件能力、动作回执、本地交互事件</td><td>声明普通用户态呈现意图</td><td>不能控制最终像素、焦点和系统确认层</td><td><span class="status partial">只读投影已渲染</span></td></tr>
           </tbody>
         </table>
@@ -1896,7 +1896,7 @@
 
   <footer>
     <div class="footer-inner">
-      <p>PinvouOS Front Agent · 能力与设计真相源 · 基于 CodeWhale feature checkpoint 2f1f851e 与父仓 2026-08-20 候选</p>
+      <p>PinvouOS Front Agent · 能力与设计真相源 · 基于 CodeWhale feature checkpoint 2f1f851e 与父仓 2026-08-21 Resource 工作树</p>
       <p><a href="README.md">返回架构权威索引</a> · <a href="pinvouos-interaction-surface-agui-a2ui.html">查看交互画布协议</a></p>
     </div>
   </footer>

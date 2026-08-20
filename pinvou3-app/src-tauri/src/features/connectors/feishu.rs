@@ -15,7 +15,7 @@
 //! 生产应迁到安全配置 / 后端代理(secret 不落客户端)。
 
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
@@ -81,6 +81,27 @@ fn is_user_ready_owned(
             .and_then(Value::as_str)
             .is_some_and(|status| status == "ready"),
     ))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuthorizeWaitDecision {
+    Continue,
+    Cancel,
+}
+
+/// 二维码已经交给用户后不再设置总等待时限。`elapsed` 只用于把这条协议做成可测试的
+/// 显式输入：无论等待是否超过旧版的 300 秒边界，都不从时间推导失败；精确 lease
+/// 取消或失效时才结束本轮等待。
+fn authorize_wait_decision(
+    conn: &ConnectorConn,
+    lease: ConnectorLease,
+    _elapsed: Duration,
+) -> AuthorizeWaitDecision {
+    if conn.is_cancelled(lease) {
+        AuthorizeWaitDecision::Cancel
+    } else {
+        AuthorizeWaitDecision::Continue
+    }
 }
 
 // ───────────────────────────── Tauri commands ─────────────────────────────
@@ -254,7 +275,8 @@ fn phase_register(app: &AppHandle, lease: ConnectorLease) -> Result<bool, String
 }
 
 /// 段②:`auth login --no-wait --json --recommend` 拿 URL+device_code → 二维码 →
-/// 轮询 `auth login --device-code`(兼容它阻塞或立即返回)直到 user:ready / 超时。
+/// 轮询 `auth login --device-code`(兼容它阻塞或立即返回)直到 user:ready / lease 取消；
+/// 二维码发出后没有固定总时限，每次 CLI 调用仍受 30 秒边界约束。
 fn phase_authorize(app: &AppHandle, lease: ConnectorLease) -> Result<(), String> {
     let conn = app.state::<ConnectorConn>();
     let Some((_ok, so, se)) = cc::run_owned(
@@ -291,13 +313,12 @@ fn phase_authorize(app: &AppHandle, lease: ConnectorLease) -> Result<(), String>
         json!({ "phase": "authorize", "url": url, "qr_data_url": qr }),
     );
 
-    let start = Instant::now();
+    let qr_emitted_at = std::time::Instant::now();
     loop {
-        if conn.is_cancelled(lease) {
+        if authorize_wait_decision(&conn, lease, qr_emitted_at.elapsed())
+            == AuthorizeWaitDecision::Cancel
+        {
             return Ok(()); // 取消:静默(run_connect_flow 不再 emit)
-        }
-        if start.elapsed() > Duration::from_secs(300) {
-            return Err("授权超时(5 分钟内未完成扫码)".into());
         }
         std::thread::sleep(Duration::from_secs(3));
         // 这步可能阻塞到完成、也可能立即返回 pending —— 两种都兼容,靠 auth status 判 ready。
@@ -317,6 +338,55 @@ fn phase_authorize(app: &AppHandle, lease: ConnectorLease) -> Result<(), String>
             cc::emit(app, "feishu:connected", json!({ "ok": true }));
             return Ok(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authorization_wait_continues_after_the_legacy_five_minute_boundary() {
+        let conn = ConnectorConn::default();
+        let lease = conn.begin(ID).expect("active Feishu lease");
+        assert_eq!(
+            authorize_wait_decision(&conn, lease, Duration::from_secs(301)),
+            AuthorizeWaitDecision::Continue
+        );
+        assert_eq!(
+            authorize_wait_decision(&conn, lease, Duration::from_secs(24 * 60 * 60)),
+            AuthorizeWaitDecision::Continue
+        );
+    }
+
+    #[test]
+    fn authorization_wait_stops_when_the_lease_is_cancelled() {
+        let conn = ConnectorConn::default();
+        let lease = conn.begin(ID).expect("active Feishu lease");
+        assert!(conn.cancel(ID).expect("cancel Feishu").is_empty());
+        assert_eq!(
+            authorize_wait_decision(&conn, lease, Duration::from_secs(301)),
+            AuthorizeWaitDecision::Cancel
+        );
+    }
+
+    #[test]
+    fn stale_generation_cleanup_does_not_cancel_the_new_authorization_wait() {
+        let conn = ConnectorConn::default();
+        let old = conn.begin(ID).expect("old Feishu lease");
+        let new = conn.begin(ID).expect("new Feishu lease");
+        conn.finish(old).expect("retire only the old lease");
+
+        assert_eq!(
+            authorize_wait_decision(&conn, old, Duration::from_secs(301)),
+            AuthorizeWaitDecision::Cancel,
+            "a stale copied lease must fail closed"
+        );
+        assert_eq!(
+            authorize_wait_decision(&conn, new, Duration::from_secs(301)),
+            AuthorizeWaitDecision::Continue,
+            "retiring the old generation must not clear the newer lease"
+        );
     }
 }
 

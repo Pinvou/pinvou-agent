@@ -135,6 +135,19 @@ fn host_work_request(
     }
 }
 
+fn record_host_work_dispatch(
+    runtime: &PinvouOsRuntime,
+    handle: &HostWorkHandle,
+    directive_id: &str,
+) {
+    assert_eq!(
+        runtime
+            .record_host_work_directive_dispatch(handle, directive_id)
+            .unwrap(),
+        HostWorkDispatchRecord::NewlyRecorded
+    );
+}
+
 fn user_evidence_event(
     runtime: &PinvouOsRuntime,
     subject: &str,
@@ -172,6 +185,89 @@ fn schema_v6_resource_cgroup_fields_are_optional_and_omitted_from_legacy_shapes(
     assert!(!legacy_state.app_cgroup_critical);
     assert!(legacy_state.last_app_cgroup_observation.is_none());
     assert!(legacy_state.last_fresh_critical_evidence.is_none());
+}
+
+#[test]
+fn schema_v6_host_work_ack_without_dispatch_marker_replays_without_rewriting_prefix() {
+    let temp = TempRuntime::new("host-work-v6-pre-dispatch-marker");
+    let runtime = temp.boot();
+    let (handle, work) = runtime
+        .register_host_work(host_work_request(
+            "feature:scheduled:v6-pre-dispatch-marker",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let request =
+        HostWorkDirectiveRequest::new(HostWorkAction::Stop, "legacy v6 stop", "legacy-policy:v1");
+    let directive_id = request.directive_id().to_string();
+    let directive = runtime.issue_host_work_directive(&handle, request).unwrap();
+    let issued_envelope = raw_ledger_events(&temp)
+        .into_iter()
+        .find(|envelope| {
+            matches!(
+                &envelope.event,
+                RuntimeEvent::HostWorkDirectiveIssued { directive }
+                    if directive.directive_id == directive_id
+            )
+        })
+        .unwrap();
+    assert!(
+        !serde_json::to_string(&issued_envelope)
+            .unwrap()
+            .contains("dispatchRecordedAtMs"),
+        "the optional projection field must not rewrite the existing schema-v6 issuance shape"
+    );
+
+    let sequence = runtime.snapshot().last_sequence.saturating_add(1);
+    drop(runtime);
+    append_test_envelope(
+        &temp,
+        &EventEnvelope {
+            schema_version: SCHEMA_VERSION,
+            sequence,
+            event_id: format!("event-{sequence:016x}"),
+            occurred_at_ms: directive.issued_at_ms.saturating_add(1),
+            source_actor_id: "adapter:host-work".to_string(),
+            mission_id: None,
+            run_id: None,
+            interaction_scope_id: None,
+            interaction_run_id: None,
+            causation_id: Some(directive_id.clone()),
+            correlation_id: Some(format!("host-work:{}", work.work_id)),
+            event: RuntimeEvent::HostWorkDirectiveAcknowledged {
+                directive_id: directive_id.clone(),
+                work_id: work.work_id,
+                generation: work.generation,
+                acknowledgement: HostWorkDirectiveAcknowledgement::Applied,
+                acknowledged_at_ms: directive.issued_at_ms.saturating_add(1),
+                detail: "legacy schema-v6 adapter acknowledgement".to_string(),
+            },
+        },
+    );
+    let legacy_prefix = std::fs::read(&temp.ledger).unwrap();
+
+    let replayed = temp.boot();
+    let replayed_snapshot = replayed.snapshot();
+    let replayed_directive = &replayed_snapshot.host_work_directives[&directive_id];
+    assert_eq!(replayed_directive.dispatch_recorded_at_ms, None);
+    assert_eq!(
+        replayed_directive.acknowledgement,
+        Some(HostWorkDirectiveAcknowledgement::Applied)
+    );
+    assert_eq!(
+        replayed_directive.status,
+        HostWorkDirectiveStatus::AwaitingReconciliation
+    );
+    assert!(
+        std::fs::read(&temp.ledger)
+            .unwrap()
+            .starts_with(&legacy_prefix),
+        "new schema-v6 replay must append without rewriting the validated old prefix"
+    );
 }
 
 fn proposed_fact(
@@ -1717,6 +1813,26 @@ fn host_work_control_requires_ack_and_reconciliation_before_observed_state_chang
         .unwrap();
     assert_eq!(raw_ledger_events(&temp).len(), events_before_issue_retry);
 
+    assert!(
+        runtime
+            .acknowledge_host_work_directive(
+                &handle,
+                &pause_id,
+                HostWorkDirectiveAcknowledgement::Applied,
+                "must not acknowledge before durable dispatch".to_string(),
+            )
+            .is_err(),
+        "a current-boot Pending cannot cross the adapter boundary without a durable marker"
+    );
+
+    record_host_work_dispatch(&runtime, &handle, &pause_id);
+    assert_eq!(
+        runtime
+            .record_host_work_directive_dispatch(&handle, &pause_id)
+            .unwrap(),
+        HostWorkDispatchRecord::AlreadyRecorded,
+        "the existing marker is a replay fence, never a second apply permit"
+    );
     runtime
         .acknowledge_host_work_directive(
             &handle,
@@ -1762,6 +1878,7 @@ fn host_work_control_requires_ack_and_reconciliation_before_observed_state_chang
     runtime
         .issue_host_work_directive(&handle, resume_request)
         .unwrap();
+    record_host_work_dispatch(&runtime, &handle, &resume_id);
     runtime
         .acknowledge_host_work_directive(
             &handle,
@@ -1826,6 +1943,69 @@ fn host_work_control_requires_ack_and_reconciliation_before_observed_state_chang
 }
 
 #[test]
+fn host_work_dispatch_validator_rejects_duplicate_and_late_markers() {
+    let temp = TempRuntime::new("host-work-dispatch-chain-validation");
+    let runtime = temp.boot();
+    let (handle, _) = runtime
+        .register_host_work(host_work_request(
+            "feature:scheduled:dispatch-chain-validation",
+            20,
+            Interruptibility::Immediate,
+            false,
+            true,
+            &[HostWorkAction::Stop],
+        ))
+        .unwrap();
+    let request =
+        HostWorkDirectiveRequest::new(HostWorkAction::Stop, "validate marker", "test-policy:v1");
+    let directive_id = request.directive_id().to_string();
+    runtime.issue_host_work_directive(&handle, request).unwrap();
+    record_host_work_dispatch(&runtime, &handle, &directive_id);
+    runtime
+        .acknowledge_host_work_directive(
+            &handle,
+            &directive_id,
+            HostWorkDirectiveAcknowledgement::Applied,
+            "adapter accepted stop".to_string(),
+        )
+        .unwrap();
+
+    let events = raw_ledger_events(&temp);
+    let marker_index = events
+        .iter()
+        .position(|envelope| {
+            matches!(
+                &envelope.event,
+                RuntimeEvent::HostWorkDirectiveDispatchRecorded {
+                    directive_id: recorded_id,
+                    ..
+                } if recorded_id == &directive_id
+            )
+        })
+        .unwrap();
+    let acknowledgement_index = events
+        .iter()
+        .position(|envelope| {
+            matches!(
+                &envelope.event,
+                RuntimeEvent::HostWorkDirectiveAcknowledged {
+                    directive_id: recorded_id,
+                    ..
+                } if recorded_id == &directive_id
+            )
+        })
+        .unwrap();
+
+    let mut duplicated = events.clone();
+    duplicated.insert(marker_index + 1, events[marker_index].clone());
+    assert!(super::runtime::validate_host_work_events_for_test(&duplicated).is_err());
+
+    let mut late = events;
+    late.swap(marker_index, acknowledgement_index);
+    assert!(super::runtime::validate_host_work_events_for_test(&late).is_err());
+}
+
+#[test]
 fn host_work_generation_rejects_old_handles_and_old_directives() {
     let temp = TempRuntime::new("host-work-generation");
     let runtime = temp.boot();
@@ -1845,6 +2025,7 @@ fn host_work_generation_rejects_old_handles_and_old_directives() {
     runtime
         .issue_host_work_directive(&first_handle, stop)
         .unwrap();
+    record_host_work_dispatch(&runtime, &first_handle, &stop_id);
     runtime
         .acknowledge_host_work_directive(
             &first_handle,
@@ -1917,6 +2098,7 @@ fn host_work_directives_are_single_flight_and_retry_only_after_pressure_changes(
         )
         .is_err());
 
+    record_host_work_dispatch(&runtime, &handle, &pause_id);
     runtime
         .acknowledge_host_work_directive(
             &handle,
@@ -2047,6 +2229,7 @@ fn host_work_governor_pause_ownership_is_cleared_by_external_resume() {
     let pause = HostWorkDirectiveRequest::new(HostWorkAction::Pause, "pause", "test-policy:v1");
     let pause_id = pause.directive_id().to_string();
     runtime.issue_host_work_directive(&handle, pause).unwrap();
+    record_host_work_dispatch(&runtime, &handle, &pause_id);
     runtime
         .acknowledge_host_work_directive(
             &handle,
@@ -2529,6 +2712,11 @@ fn fresh_cgroup_evidence_allows_one_rejected_stop_retry_and_replays_the_bound() 
         .unwrap();
     assert_eq!(first.host_work_directives.len(), 1);
     assert_eq!(first.host_work_directives[0].resource_pressure_epoch, 1);
+    record_host_work_dispatch(
+        &runtime,
+        &handle,
+        &first.host_work_directives[0].directive_id,
+    );
     runtime
         .acknowledge_host_work_directive(
             &handle,
@@ -2544,6 +2732,11 @@ fn fresh_cgroup_evidence_allows_one_rejected_stop_retry_and_replays_the_bound() 
     assert_eq!(runtime.snapshot().resources.pressure_epoch, 1);
     assert_eq!(sustained.host_work_directives.len(), 1);
     assert_eq!(sustained.host_work_directives[0].resource_pressure_epoch, 1);
+    record_host_work_dispatch(
+        &runtime,
+        &handle,
+        &sustained.host_work_directives[0].directive_id,
+    );
     runtime
         .acknowledge_host_work_directive(
             &handle,
@@ -2608,6 +2801,11 @@ fn first_above_high_cgroup_baseline_authorizes_retry_without_changing_pressure_e
     let system = runtime.observe_resources(resources(96.0, 50.0)).unwrap();
     assert_eq!(system.pressure, ResourcePressure::Critical);
     assert_eq!(runtime.snapshot().resources.pressure_epoch, 1);
+    record_host_work_dispatch(
+        &runtime,
+        &handle,
+        &system.host_work_directives[0].directive_id,
+    );
     runtime
         .acknowledge_host_work_directive(
             &handle,
@@ -2624,6 +2822,11 @@ fn first_above_high_cgroup_baseline_authorizes_retry_without_changing_pressure_e
     assert_eq!(runtime.snapshot().resources.pressure_epoch, 1);
     assert_eq!(retry.host_work_directives.len(), 1);
     assert_eq!(retry.host_work_directives[0].resource_pressure_epoch, 1);
+    record_host_work_dispatch(
+        &runtime,
+        &handle,
+        &retry.host_work_directives[0].directive_id,
+    );
     runtime
         .acknowledge_host_work_directive(
             &handle,
@@ -2660,6 +2863,11 @@ fn outcome_unknown_host_work_does_not_authorize_cgroup_edge_identity_churn() {
     let first = runtime
         .observe_resources(resources_with_app_cgroup(base + 1, 4_100, 4_000, 10, 1, 0))
         .unwrap();
+    record_host_work_dispatch(
+        &runtime,
+        &handle,
+        &first.host_work_directives[0].directive_id,
+    );
     runtime
         .acknowledge_host_work_directive(
             &handle,
@@ -2701,6 +2909,7 @@ fn manual_policy_and_stale_generation_rejections_do_not_consume_governor_retry_b
     runtime
         .issue_host_work_directive(&manual_handle, manual)
         .unwrap();
+    record_host_work_dispatch(&runtime, &manual_handle, &manual_id);
     runtime
         .acknowledge_host_work_directive(
             &manual_handle,
@@ -2737,6 +2946,7 @@ fn manual_policy_and_stale_generation_rejections_do_not_consume_governor_retry_b
     );
     let old_id = old.directive_id().to_string();
     runtime.issue_host_work_directive(&old_handle, old).unwrap();
+    record_host_work_dispatch(&runtime, &old_handle, &old_id);
     runtime
         .acknowledge_host_work_directive(
             &old_handle,
@@ -2805,6 +3015,11 @@ fn rejected_ack_during_resource_commit_authorizes_exactly_one_edge_retry() {
             .unwrap()
     });
     observation_entered.wait();
+    record_host_work_dispatch(
+        &runtime,
+        &handle,
+        &initial.host_work_directives[0].directive_id,
+    );
     runtime
         .acknowledge_host_work_directive(
             &handle,
@@ -2830,7 +3045,7 @@ fn rejected_ack_during_resource_commit_authorizes_exactly_one_edge_retry() {
 }
 
 #[test]
-fn resource_commit_before_rejected_ack_preserves_durable_retry_credit() {
+fn inherited_pending_is_status_only_and_not_applied_reconcile_preserves_retry_credit() {
     let temp = TempRuntime::new("app-cgroup-resource-before-ack");
     let runtime = temp.boot();
     let (_handle, _) = runtime
@@ -2866,12 +3081,30 @@ fn resource_commit_before_rejected_ack_preserves_durable_retry_credit() {
             1,
         )
         .unwrap();
+    assert_eq!(
+        runtime
+            .record_host_work_directive_dispatch(&handle, &initial_directive_id)
+            .unwrap(),
+        HostWorkDispatchRecord::InheritedPending,
+        "a prior-boot Pending without a marker must never be replayed"
+    );
     runtime
         .acknowledge_host_work_directive(
             &handle,
             &initial_directive_id,
-            HostWorkDirectiveAcknowledgement::Rejected,
-            "rejected after the cgroup edge was committed".to_string(),
+            HostWorkDirectiveAcknowledgement::OutcomeUnknown,
+            "prior-boot Pending may already have executed".to_string(),
+        )
+        .unwrap();
+    runtime
+        .reconcile_host_work_directive(
+            &handle,
+            &initial_directive_id,
+            ReconcileHostWorkDirectiveRequest {
+                outcome: HostWorkReconciliationOutcome::NotApplied,
+                observed_state: Some(HostWorkObservedState::Running),
+                detail: "status confirms the inherited stop was not applied".to_string(),
+            },
         )
         .unwrap();
     let credited_retry = runtime
@@ -2879,7 +3112,7 @@ fn resource_commit_before_rejected_ack_preserves_durable_retry_credit() {
         .unwrap()
         .into_iter()
         .find(|directive| directive.directive_id != initial_directive_id)
-        .expect("fresh evidence committed while Pending must survive until Rejected ACK");
+        .expect("fresh evidence committed while Pending must survive until status reconciliation");
     assert_eq!(credited_retry.resource_pressure_epoch, 1);
 
     let no_third_identity = runtime
@@ -2910,6 +3143,11 @@ fn stale_or_nonadvancing_critical_samples_cannot_authorize_retry() {
     let mut initial_observation = resources(96.0, 50.0);
     initial_observation.sampled_at_ms = old_base;
     let initial = runtime.observe_resources(initial_observation).unwrap();
+    record_host_work_dispatch(
+        &runtime,
+        &handle,
+        &initial.host_work_directives[0].directive_id,
+    );
     runtime
         .acknowledge_host_work_directive(
             &handle,
@@ -2992,6 +3230,7 @@ fn rejected_governor_action_gets_one_fresh_retry_then_waits_for_pressure_change(
     first_observation.sampled_at_ms = base;
     let first = runtime.observe_resources(first_observation).unwrap();
     let first_id = first.host_work_directives[0].directive_id.clone();
+    record_host_work_dispatch(&runtime, &handle, &first_id);
     runtime
         .acknowledge_host_work_directive(
             &handle,
@@ -3006,6 +3245,11 @@ fn rejected_governor_action_gets_one_fresh_retry_then_waits_for_pressure_change(
     let retry = runtime.observe_resources(retry_observation).unwrap();
     assert_eq!(retry.host_work_directives.len(), 1);
     assert_eq!(retry.host_work_directives[0].resource_pressure_epoch, 1);
+    record_host_work_dispatch(
+        &runtime,
+        &handle,
+        &retry.host_work_directives[0].directive_id,
+    );
     runtime
         .acknowledge_host_work_directive(
             &handle,

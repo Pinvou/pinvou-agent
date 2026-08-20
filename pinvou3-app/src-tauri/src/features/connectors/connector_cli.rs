@@ -14,7 +14,7 @@
 //! 连接状态按 connector id + generation 追踪每轮 lease、全部 owned process group 与取消标志；
 //! `lib.rs` 里 `.manage(ConnectorConn::default())` 注册一次，四个连接器共用。
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -345,7 +345,7 @@ struct Slot {
 
 #[derive(Default)]
 struct ConnectorRun {
-    pid: Option<u32>,
+    pids: BTreeSet<u32>,
     cancelled: bool,
 }
 
@@ -378,9 +378,7 @@ impl ConnectorConn {
         let mut pids = Vec::new();
         for run in slot.runs.values_mut() {
             run.cancelled = true;
-            if let Some(pid) = run.pid {
-                pids.push(pid);
-            }
+            pids.extend(run.pids.iter().copied());
         }
         Ok(pids)
     }
@@ -401,9 +399,13 @@ impl ConnectorConn {
 
     /// 把新生成的 owned process-group root 绑定到精确 generation。
     ///
-    /// 如果该 generation 已取消、已结束，或仍登记着另一个 PID，则拒绝接管；调用方必须
-    /// 立即终止刚启动的进程，避免出现 registry 看不见的后台工作。
+    /// 同一 generation 可以同时持有多个进程组。若该 generation 已取消，则仍先登记
+    /// PID、再返回 false；调用方必须立即终止刚启动的进程，且 registry 在 stop 确认前
+    /// 始终保留 ownership。
     pub fn register_pid(&self, lease: ConnectorLease, pid: u32) -> Result<bool, &'static str> {
+        if pid == 0 {
+            return Err("connector process-group id must be positive");
+        }
         let mut slots = self
             .slots
             .lock()
@@ -414,13 +416,8 @@ impl ConnectorConn {
         else {
             return Ok(false);
         };
-        match run.pid {
-            None => {
-                run.pid = Some(pid);
-                Ok(!run.cancelled)
-            }
-            Some(existing) => Ok(existing == pid && !run.cancelled),
-        }
+        run.pids.insert(pid);
+        Ok(!run.cancelled)
     }
 
     /// 只清理精确 generation 当前登记的同一个 PID。旧任务不能清掉新任务的 PID。
@@ -429,17 +426,18 @@ impl ConnectorConn {
             .slots
             .lock()
             .map_err(|_| "connector ownership registry is unavailable")?;
-        let Some(run) = slots
-            .get_mut(lease.id)
-            .and_then(|slot| slot.runs.get_mut(&lease.generation))
-        else {
+        let Some(slot) = slots.get_mut(lease.id) else {
             return Ok(false);
         };
-        if run.pid == Some(pid) {
-            run.pid = None;
-            return Ok(true);
+        let Some(run) = slot.runs.get_mut(&lease.generation) else {
+            return Ok(false);
+        };
+        let removed = run.pids.remove(&pid);
+        let retire_run = removed && run.cancelled && run.pids.is_empty();
+        if retire_run {
+            slot.runs.remove(&lease.generation);
         }
-        Ok(false)
+        Ok(removed)
     }
 
     /// 确认精确 PID 的整个进程组已停止后，才清理 ownership。
@@ -450,28 +448,66 @@ impl ConnectorConn {
             .map(|_| ())
     }
 
-    /// 结束精确 generation。若仍登记 PID，先做最后一次 fail-safe group stop；失败时保留
-    /// generation，让治理状态继续诚实地显示 Running/Unknown。
+    /// 结束精确 generation。若仍登记 PID，先对全部 owned group 做最后一次 fail-safe
+    /// stop；每个确认成功的 PID 立即退役，失败项及其 generation 保留，让治理状态继续
+    /// 诚实地显示 Running/Unknown。
     pub fn finish(&self, lease: ConnectorLease) -> Result<(), String> {
-        let pid = self
-            .slots
-            .lock()
-            .map_err(|_| "connector ownership registry is unavailable".to_string())?
-            .get(lease.id)
-            .and_then(|slot| slot.runs.get(&lease.generation))
-            .and_then(|run| run.pid);
-        if let Some(pid) = pid {
-            self.stop_pid(lease, pid)?;
+        self.finish_with(lease, kill_pid_tree)
+    }
+
+    fn finish_with<F>(&self, lease: ConnectorLease, mut stop: F) -> Result<(), String>
+    where
+        F: FnMut(u32) -> Result<(), String>,
+    {
+        // 先在锁内关闭本 generation 的准入。之后的 late registration 会登记 ownership
+        // 但得到 false，并由启动方立即 stop；在这里快照到的全部 PID 则在锁外尽力批停。
+        let pids = {
+            let mut slots = self
+                .slots
+                .lock()
+                .map_err(|_| "connector ownership registry is unavailable".to_string())?;
+            let Some(run) = slots
+                .get_mut(lease.id)
+                .and_then(|slot| slot.runs.get_mut(&lease.generation))
+            else {
+                return Ok(());
+            };
+            run.cancelled = true;
+            run.pids.iter().copied().collect::<Vec<_>>()
+        };
+
+        let mut stopped_pids = Vec::new();
+        let mut errors = Vec::new();
+        for pid in pids {
+            match stop(pid) {
+                Ok(()) => stopped_pids.push(pid),
+                Err(error) => errors.push(error),
+            }
         }
+
         let mut slots = self
             .slots
             .lock()
             .map_err(|_| "connector ownership registry is unavailable".to_string())?;
         if let Some(slot) = slots.get_mut(lease.id) {
-            slot.runs.remove(&lease.generation);
-            // 保留空 slot 的 monotonic generation，避免 stale copied lease 与未来新轮次别名。
+            let retire_run = if let Some(run) = slot.runs.get_mut(&lease.generation) {
+                for pid in stopped_pids {
+                    run.pids.remove(&pid);
+                }
+                run.cancelled && run.pids.is_empty()
+            } else {
+                false
+            };
+            if retire_run {
+                slot.runs.remove(&lease.generation);
+                // 保留空 slot 的 monotonic generation，避免 stale copied lease 与未来新轮次别名。
+            }
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     /// 只读返回固定白名单连接器当前活跃连接尝试数。即使子进程尚未登记或两阶段之间
@@ -500,9 +536,7 @@ impl ConnectorConn {
             };
             for run in slot.runs.values_mut() {
                 run.cancelled = true;
-                if let Some(pid) = run.pid {
-                    pids.push(pid);
-                }
+                pids.extend(run.pids.iter().copied());
             }
         }
         Ok(pids)
@@ -510,9 +544,9 @@ impl ConnectorConn {
 
     /// 停止一批已标记 cancelled 的 owned process group。
     ///
-    /// 每个确认成功的 generation 都立即退役，只有失败的 generation 保留给下一轮
-    /// HostWork reconcile。不能在部分失败时继续保留已经停止的旧 PGID：该数字一旦被
-    /// 内核复用，后续重试可能误伤不属于 Pinvou 的新进程组。
+    /// 每个确认成功的 PGID 都立即退役；只有 PID 集合已经为空，才退役对应 generation，
+    /// 失败项及其 generation 留给下一轮 HostWork reconcile。不能在部分失败时继续保留
+    /// 已经停止的旧 PGID：该数字一旦被内核复用，后续重试可能误伤不属于 Pinvou 的新进程组。
     pub(crate) fn stop_cancelled_pids(&self, pids: Vec<u32>) -> Result<(), String> {
         self.stop_cancelled_pids_with(pids, kill_pid_tree)
     }
@@ -535,13 +569,14 @@ impl ConnectorConn {
             slots
                 .iter()
                 .flat_map(|(id, slot)| {
-                    slot.runs.iter().filter_map(|(generation, run)| {
-                        let pid = run.pid?;
-                        (run.cancelled && pids.binary_search(&pid).is_ok()).then_some((
-                            *id,
-                            *generation,
-                            pid,
-                        ))
+                    slot.runs.iter().flat_map(|(generation, run)| {
+                        run.pids.iter().filter_map(|pid| {
+                            (run.cancelled && pids.binary_search(pid).is_ok()).then_some((
+                                *id,
+                                *generation,
+                                *pid,
+                            ))
+                        })
                     })
                 })
                 .collect::<Vec<_>>()
@@ -570,11 +605,12 @@ impl ConnectorConn {
             let Some(slot) = slots.get_mut(id) else {
                 continue;
             };
-            if slot
-                .runs
-                .get(&generation)
-                .is_some_and(|run| run.cancelled && run.pid == Some(pid))
-            {
+            let retire_run = if let Some(run) = slot.runs.get_mut(&generation) {
+                run.cancelled && run.pids.remove(&pid) && run.pids.is_empty()
+            } else {
+                false
+            };
+            if retire_run {
                 slot.runs.remove(&generation);
             }
         }
@@ -762,12 +798,41 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_batch_attempts_every_group_and_retires_each_confirmed_success() {
+    fn one_lease_owns_every_registered_group_and_batch_cancel_returns_them_all() {
         let state = ConnectorConn::default();
-        let first = state.begin("wecom").expect("first lease");
-        let second = state.begin("wecom").expect("second lease");
-        assert_eq!(state.register_pid(first, 41), Ok(true));
-        assert_eq!(state.register_pid(second, 42), Ok(true));
+        let lease = state.begin("wecom").expect("wecom lease");
+        assert_eq!(state.register_pid(lease, 41), Ok(true));
+        assert_eq!(state.register_pid(lease, 42), Ok(true));
+        assert_eq!(state.register_pid(lease, 41), Ok(true));
+
+        assert_eq!(state.governed_running_count(), Some(1));
+        assert_eq!(state.cancel("wecom"), Ok(vec![41, 42]));
+    }
+
+    #[test]
+    fn zero_process_group_is_rejected_without_entering_count_or_cancel_results() {
+        let state = ConnectorConn::default();
+        let lease = state.begin("wecom").expect("wecom reservation");
+        assert_eq!(
+            state.register_pid(lease, 0),
+            Err("connector process-group id must be positive")
+        );
+        assert_eq!(
+            state.governed_running_count(),
+            Some(1),
+            "the child-less lease remains an honest running reservation"
+        );
+        assert_eq!(state.cancel("wecom"), Ok(Vec::new()));
+        state.finish(lease).expect("retire empty cancelled lease");
+        assert_eq!(state.governed_running_count(), Some(0));
+    }
+
+    #[test]
+    fn cancelled_batch_attempts_every_group_and_retires_only_confirmed_success() {
+        let state = ConnectorConn::default();
+        let lease = state.begin("wecom").expect("wecom lease");
+        assert_eq!(state.register_pid(lease, 41), Ok(true));
+        assert_eq!(state.register_pid(lease, 42), Ok(true));
         let pids = state.cancel("wecom").expect("cancel all generations");
 
         let mut attempted = Vec::new();
@@ -792,6 +857,71 @@ mod tests {
             })
             .expect("only the failed group should be retried");
         assert_eq!(retried, vec![41]);
+        assert_eq!(state.governed_running_count(), Some(0));
+    }
+
+    #[test]
+    fn finish_attempts_every_group_and_keeps_only_failed_ownership() {
+        let state = ConnectorConn::default();
+        let lease = state.begin("tmeet").expect("tmeet lease");
+        assert_eq!(state.register_pid(lease, 51), Ok(true));
+        assert_eq!(state.register_pid(lease, 52), Ok(true));
+
+        let mut attempted = Vec::new();
+        let error = state
+            .finish_with(lease, |pid| {
+                attempted.push(pid);
+                (pid != 51)
+                    .then_some(())
+                    .ok_or_else(|| "first group failed".to_string())
+            })
+            .expect_err("partial finish must retain failed ownership");
+        assert_eq!(attempted, vec![51, 52]);
+        assert_eq!(error, "first group failed");
+        assert_eq!(state.governed_running_count(), Some(1));
+        assert_eq!(state.cancel("tmeet"), Ok(vec![51]));
+
+        state
+            .finish_with(lease, |_| Ok(()))
+            .expect("retry should retire the remaining failed group");
+        assert_eq!(state.governed_running_count(), Some(0));
+    }
+
+    #[test]
+    fn finish_closes_admission_before_snapshot_and_preserves_late_ownership() {
+        let state = std::sync::Arc::new(ConnectorConn::default());
+        let lease = state.begin("feishu").expect("feishu lease");
+        assert_eq!(state.register_pid(lease, 61), Ok(true));
+        let (stop_entered_tx, stop_entered_rx) = std::sync::mpsc::channel();
+        let (release_stop_tx, release_stop_rx) = std::sync::mpsc::channel();
+
+        let finishing_state = state.clone();
+        let finish = std::thread::spawn(move || {
+            finishing_state.finish_with(lease, |pid| {
+                assert_eq!(pid, 61);
+                stop_entered_tx.send(()).expect("announce stop snapshot");
+                release_stop_rx.recv().expect("release first stop");
+                Ok(())
+            })
+        });
+        stop_entered_rx
+            .recv()
+            .expect("finish should mark the lease cancelled before stopping");
+
+        assert_eq!(
+            state.register_pid(lease, 62),
+            Ok(false),
+            "late registration must fail closed while retaining ownership until self-stop"
+        );
+        release_stop_tx.send(()).expect("release finish");
+        finish
+            .join()
+            .expect("finish thread")
+            .expect("the snapshotted stop should succeed");
+
+        assert_eq!(state.governed_running_count(), Some(1));
+        assert_eq!(state.cancel("feishu"), Ok(vec![62]));
+        assert_eq!(state.clear_pid(lease, 62), Ok(true));
         assert_eq!(state.governed_running_count(), Some(0));
     }
 

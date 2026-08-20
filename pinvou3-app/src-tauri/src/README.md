@@ -40,6 +40,13 @@ HostWork 或传入 OS 标识；Supervisor 的固定 app launcher 是当前唯一
 `Launch` 用法，只能选固定 app descriptor，不能传入任意 target 或 command。它与
 同 UID socket 也不构成对恶意同 UID shell 的强隔离。
 
+HostWork 副作用链是 `Pending → HostWorkDirectiveDispatchRecorded → ACK →
+status reconcile`。worker 必须在调用 Adapter 前经 Runtime 串行 append 路径完成
+flush + `sync_data`；该 dispatch marker 只是“可能已开始执行”的 attempt fence，
+不是成功回执。已有 marker 的 `Pending` 和 prior-boot 无 marker 的 `Pending`
+都不重放 Adapter，只以原 `directive_id` 记录 `OutcomeUnknown` 并做 status-only
+对账。Runtime append 锁内不执行 Adapter I/O。
+
 组合根当前注册 6 个静态生产 Adapter：scheduled、knowledge、编译期固定
 connector、仅作用于 root turn 已终态且 session 空闲的 detached sub-agent、经
 Supervisor 停止的 ASR，以及 `essential + non-governable` 的 app cgroup status-only

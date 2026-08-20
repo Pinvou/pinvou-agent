@@ -20,9 +20,10 @@ use crate::features::connectors::connector_cli::ConnectorConn;
 use crate::features::knowledge::KnowledgeService;
 use crate::features::pinvou_os::{
     AppCgroupResourceObservation, HostWork, HostWorkAction, HostWorkDirective,
-    HostWorkDirectiveAcknowledgement, HostWorkDirectiveStatus, HostWorkHandle, HostWorkKind,
-    HostWorkObservedState, HostWorkReconciliationOutcome, Interruptibility, PinvouOsRuntime,
-    ReconcileHostWorkDirectiveRequest, RegisterHostWorkRequest, ResourceClass,
+    HostWorkDirectiveAcknowledgement, HostWorkDirectiveStatus, HostWorkDispatchRecord,
+    HostWorkHandle, HostWorkKind, HostWorkObservedState, HostWorkReconciliationOutcome,
+    Interruptibility, PinvouOsRuntime, ReconcileHostWorkDirectiveRequest, RegisterHostWorkRequest,
+    ResourceClass,
 };
 use crate::features::scheduled::tasks::ScheduledTaskState;
 
@@ -367,7 +368,27 @@ async fn drive_worker_once(
         let acknowledgement = match attempted.get(&directive.directive_id) {
             Some(cached) => cached.clone(),
             None => {
-                let acknowledgement = call_apply(adapter, &directive, config).await;
+                // durable marker 必须在 Runtime 锁内 append+fsync 完成；真正 adapter I/O
+                // 只在锁外执行。任何已有 marker 或旧 boot 遗留 Pending 都只能 status-only，
+                // 不能把“没有 ACK”误当成“肯定没有发生副作用”。
+                let acknowledgement = match runtime.record_host_work_directive_dispatch(
+                    handle,
+                    &directive.directive_id,
+                )? {
+                    HostWorkDispatchRecord::NewlyRecorded => {
+                        call_apply(adapter, &directive, config).await
+                    }
+                    HostWorkDispatchRecord::AlreadyRecorded => {
+                        AdapterAcknowledgement::outcome_unknown(
+                            "durable dispatch was already recorded; action was not replayed",
+                        )
+                    }
+                    HostWorkDispatchRecord::InheritedPending => {
+                        AdapterAcknowledgement::outcome_unknown(
+                            "pending directive was inherited from a prior runtime; action was not replayed",
+                        )
+                    }
+                };
                 attempted.insert(directive.directive_id.clone(), acknowledgement.clone());
                 acknowledgement
             }
@@ -1474,8 +1495,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restart_rebinds_exact_generation_and_finishes_pending_directive() {
-        let temp = TempLedger::new("rebind");
+    async fn restart_rebinds_inherited_pending_without_replaying_an_unknown_side_effect() {
+        let temp = TempLedger::new("inherited-pending");
         let directive_id = {
             let runtime = PinvouOsRuntime::boot(temp.ledger.clone()).expect("first runtime");
             let spec = HostWorkSpec::stop_only(
@@ -1508,12 +1529,19 @@ mod tests {
         ));
         let plane = start_control_plane(runtime.clone(), vec![adapter.clone()], test_config())
             .expect("rebound control plane");
-        wait_until(Duration::from_secs(1), || {
+        wait_until(Duration::from_secs(2), || {
             runtime
                 .snapshot()
                 .host_work_directives
                 .get(&directive_id)
-                .is_some_and(|directive| directive.status == HostWorkDirectiveStatus::Reconciled)
+                .is_some_and(|directive| {
+                    directive.status == HostWorkDirectiveStatus::Rejected
+                        && directive.acknowledgement
+                            == Some(HostWorkDirectiveAcknowledgement::OutcomeUnknown)
+                        && directive.reconciliation
+                            == Some(HostWorkReconciliationOutcome::NotApplied)
+                        && directive.dispatch_recorded_at_ms.is_none()
+                })
         })
         .await;
         let snapshot = runtime.snapshot();
@@ -1527,7 +1555,197 @@ mod tests {
                 .generation,
             1
         );
-        assert_eq!(adapter.apply_count(), 1);
+        assert_eq!(
+            adapter.apply_count(),
+            0,
+            "a prior-boot Pending without a marker may already have executed"
+        );
+        drop(plane);
+    }
+
+    #[tokio::test]
+    async fn dispatch_marker_append_failure_prevents_adapter_apply() {
+        let temp = TempLedger::new("dispatch-marker-append-failure");
+        let runtime = PinvouOsRuntime::boot(temp.ledger.clone()).expect("runtime");
+        let adapter = FakeAdapter::new(
+            "test:dispatch-marker-append-failure",
+            HostWorkDirectiveAcknowledgement::Applied,
+        );
+        let mut handle = bind_registration(&runtime, adapter.spec()).expect("registration");
+        runtime
+            .observe_host_work(
+                &handle,
+                HostWorkObservedState::Running,
+                "test work started".to_string(),
+            )
+            .expect("running observation");
+        let directive = runtime
+            .observe_resources(critical_observation())
+            .expect("critical observation")
+            .host_work_directives[0]
+            .clone();
+
+        let backup = temp.root.join("events.backup.jsonl");
+        std::fs::rename(&temp.ledger, &backup).expect("move ledger aside");
+        std::fs::create_dir(&temp.ledger).expect("replace ledger path with directory");
+        let mut attempted = HashMap::new();
+        let mut reconciliation_started = HashMap::new();
+        assert!(
+            drive_worker_once(
+                &runtime,
+                &adapter,
+                &mut handle,
+                &mut attempted,
+                &mut reconciliation_started,
+                test_config(),
+            )
+            .await
+            .is_err(),
+            "the worker must stop before adapter I/O when marker durability is unknown"
+        );
+        assert_eq!(adapter.apply_count(), 0);
+        let snapshot = runtime.snapshot();
+        let projected = &snapshot.host_work_directives[&directive.directive_id];
+        assert_eq!(projected.dispatch_recorded_at_ms, None);
+        assert_eq!(projected.acknowledgement, None);
+
+        std::fs::remove_dir(&temp.ledger).expect("remove injected ledger directory");
+        std::fs::rename(&backup, &temp.ledger).expect("restore ledger");
+        drop(runtime);
+        let replayed = PinvouOsRuntime::boot(temp.ledger.clone()).expect("replay durable prefix");
+        let snapshot = replayed.snapshot();
+        let projected = &snapshot.host_work_directives[&directive.directive_id];
+        assert_eq!(projected.dispatch_recorded_at_ms, None);
+        assert_eq!(projected.acknowledgement, None);
+    }
+
+    #[tokio::test]
+    async fn restart_after_dispatch_and_apply_before_ack_uses_status_only() {
+        let temp = TempLedger::new("dispatch-after-apply-before-ack");
+        let adapter = Arc::new(FakeAdapter::new(
+            "test:dispatched-applied",
+            HostWorkDirectiveAcknowledgement::Applied,
+        ));
+        let directive_id = {
+            let runtime = PinvouOsRuntime::boot(temp.ledger.clone()).expect("first runtime");
+            let handle = bind_registration(&runtime, adapter.spec()).expect("registration");
+            runtime
+                .observe_host_work(
+                    &handle,
+                    HostWorkObservedState::Running,
+                    "test work started".to_string(),
+                )
+                .expect("running observation");
+            let directive = runtime
+                .observe_resources(critical_observation())
+                .expect("critical observation")
+                .host_work_directives[0]
+                .clone();
+            assert_eq!(
+                runtime
+                    .record_host_work_directive_dispatch(&handle, &directive.directive_id)
+                    .expect("durable dispatch marker"),
+                HostWorkDispatchRecord::NewlyRecorded
+            );
+            let acknowledgement = call_apply(adapter.as_ref(), &directive, test_config()).await;
+            assert_eq!(
+                acknowledgement.kind,
+                HostWorkDirectiveAcknowledgement::Applied
+            );
+            assert_eq!(adapter.apply_count(), 1);
+            directive.directive_id
+        };
+
+        let runtime = PinvouOsRuntime::boot(temp.ledger.clone()).expect("restarted runtime");
+        let plane = start_control_plane(runtime.clone(), vec![adapter.clone()], test_config())
+            .expect("rebound control plane");
+        wait_until(Duration::from_secs(1), || {
+            runtime
+                .snapshot()
+                .host_work_directives
+                .get(&directive_id)
+                .is_some_and(|directive| {
+                    directive.status == HostWorkDirectiveStatus::Reconciled
+                        && directive.acknowledgement
+                            == Some(HostWorkDirectiveAcknowledgement::OutcomeUnknown)
+                        && directive.reconciliation
+                            == Some(HostWorkReconciliationOutcome::Confirmed)
+                        && directive.dispatch_recorded_at_ms.is_some()
+                })
+        })
+        .await;
+        assert_eq!(
+            adapter.apply_count(),
+            1,
+            "the durable dispatch fence must prevent a second apply"
+        );
+        drop(plane);
+    }
+
+    #[tokio::test]
+    async fn restart_after_dispatch_before_apply_fails_closed_to_status_only() {
+        let temp = TempLedger::new("dispatch-before-apply");
+        let directive_id = {
+            let runtime = PinvouOsRuntime::boot(temp.ledger.clone()).expect("first runtime");
+            let spec = HostWorkSpec::stop_only(
+                "test:dispatched-not-applied",
+                HostWorkKind::KnowledgeJob,
+                ResourceClass::Heavy,
+                10,
+                Interruptibility::Immediate,
+            );
+            let handle = bind_registration(&runtime, &spec).expect("registration");
+            runtime
+                .observe_host_work(
+                    &handle,
+                    HostWorkObservedState::Running,
+                    "test work started".to_string(),
+                )
+                .expect("running observation");
+            let directive = runtime
+                .observe_resources(critical_observation())
+                .expect("critical observation")
+                .host_work_directives[0]
+                .clone();
+            assert_eq!(
+                runtime
+                    .record_host_work_directive_dispatch(&handle, &directive.directive_id)
+                    .expect("durable dispatch marker"),
+                HostWorkDispatchRecord::NewlyRecorded
+            );
+            directive.directive_id
+        };
+
+        let runtime = PinvouOsRuntime::boot(temp.ledger.clone()).expect("restarted runtime");
+        let adapter = Arc::new(
+            FakeAdapter::new(
+                "test:dispatched-not-applied",
+                HostWorkDirectiveAcknowledgement::Applied,
+            )
+            .without_completion(),
+        );
+        let plane = start_control_plane(runtime.clone(), vec![adapter.clone()], test_config())
+            .expect("rebound control plane");
+        wait_until(Duration::from_secs(2), || {
+            runtime
+                .snapshot()
+                .host_work_directives
+                .get(&directive_id)
+                .is_some_and(|directive| {
+                    directive.status == HostWorkDirectiveStatus::Rejected
+                        && directive.acknowledgement
+                            == Some(HostWorkDirectiveAcknowledgement::OutcomeUnknown)
+                        && directive.reconciliation
+                            == Some(HostWorkReconciliationOutcome::NotApplied)
+                        && directive.dispatch_recorded_at_ms.is_some()
+                })
+        })
+        .await;
+        assert_eq!(
+            adapter.apply_count(),
+            0,
+            "a marker is an attempt fence, not permission to replay"
+        );
         drop(plane);
     }
 

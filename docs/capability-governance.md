@@ -13,8 +13,9 @@
 > 触发刷新）与 §6 的泛化命令面（现为 `set_disabled_connectors` /
 > `set_disabled_skills` 等）为**已定方向、未实施**，实施时以本文档为准并
 > 更新本注记。§7 冻结模型能力与 HostWork 控制的隔离边界；当前工作树已实现
-> schema v6 HostWork 与首版 Linux Supervisor，但新链路尚未在 MegaBook 完成实机
-> E2E，唯一权威见 ADR-0009。
+> schema v6 HostWork、首版 Linux Supervisor、显式 profile helper、固定 E2E
+> harness 与 deb 固定 payload mode/hash 门禁，但 MegaBook 真实 deb 安装、
+> High、OOM 与 purge 尚未执行，唯一权威见 ADR-0009。
 
 ---
 
@@ -193,6 +194,11 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
 - Resource Agent 与 `pinvou-resource` Skill 只读 Runtime Resource 投影。Governor 可以确定性
   签发 `Pending` Directive，但只有受信 Adapter / Supervisor 的 ACK 加后验观测
   才能证明动作生效；
+- 受信 worker 的耐久链是 `Pending → HostWorkDirectiveDispatchRecorded → ACK →
+  status reconcile`。dispatch 事件必须在 Adapter 副作用前 append + flush +
+  `sync_data`；它只是 attempt fence，不是执行或成功证明。已有 marker 的
+  `Pending` 和 prior-boot 遗留但没有 marker 的 `Pending` 都只能以同一
+  `directive_id` 做 `OutcomeUnknown` / status-only 对账，不得重放副作用；
 - 模型、Web、MCP、A2UI 与普通 Tauri 命令不得传入任意 PID、unit 名、命令行或
   `systemctl` 动作；不得复用超级权限或 `NOPASSWD:ALL` 作为控制后门；
 - 当前工作树的组合根已注册 scheduled、knowledge、编译期固定连接器、受限
@@ -200,9 +206,11 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
   的 status-only HostWork，不是自动停止 PinvouOS / WebKit 的动作面。旧 Mission
   同步 callback 控制面已移除，Mission Adapter 数量为 0；
 - 能力管理 UI 即使显示 Resource 工具可用，也只能表示“可读取资源事实”，
-  不会向模型授予 HostWork 注册或停止权。当前新 Supervisor 链路尚未经 MegaBook
-  实机 E2E；普通 desktop 仍 direct，4 GiB / 8 GiB / 2 GiB 只属于显式激活的
-  MegaBook canary profile。不得用仓库实现或旧 direct transient canary 冒充部署事实。
+  不会向模型授予 HostWork 注册或停止权。Profile helper、固定 E2E harness
+  和 deb 固定 payload mode/hash 门禁已在工作树实现，但 MegaBook 真实
+  deb 安装、High、OOM 与 purge 尚未执行；普通 desktop 仍 direct，4 GiB /
+  8 GiB / 2 GiB 只属于显式激活的 MegaBook canary profile。不得用仓库实现、
+  harness 存在或旧 direct transient canary 冒充部署事实。
 
 HostWork、Governor、Supervisor、账本回执和 cgroup 的完整不变量见
 [ADR-0009](adr/0009-PinvouOS-资源治理与Host-Supervisor.md)。

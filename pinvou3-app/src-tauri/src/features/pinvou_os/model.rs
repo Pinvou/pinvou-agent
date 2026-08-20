@@ -597,6 +597,11 @@ pub struct HostWorkDirective {
     /// 账本事件本身保持 None，从而兼容既有 schema-v6 字节。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issued_event_sequence: Option<u64>,
+    /// Adapter 副作用前已经 fsync 的 durable dispatch barrier。旧 schema-v6 前缀缺失
+    /// 此可选字段时只表示“账本没有 marker”，绝不是“动作尚未执行”的证明；投影只由
+    /// 独立 dispatch marker 回填，旧 boot 遗留 Pending 必须 fail-closed/status-only。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_recorded_at_ms: Option<i64>,
     pub issued_at_ms: i64,
     pub status: HostWorkDirectiveStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -716,6 +721,12 @@ pub enum RuntimeEvent {
     },
     HostWorkDirectiveIssued {
         directive: HostWorkDirective,
+    },
+    HostWorkDirectiveDispatchRecorded {
+        directive_id: String,
+        work_id: String,
+        generation: u64,
+        dispatched_at_ms: i64,
     },
     HostWorkDirectiveAcknowledged {
         directive_id: String,

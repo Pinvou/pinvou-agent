@@ -6,7 +6,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Component, Path, PathBuf};
@@ -14,7 +15,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pinvou_host_supervisor_protocol::{
     validate_instance_generation, CgroupObservation, HostWorkObservation, ManagedHostWork,
@@ -34,6 +35,8 @@ const SUPERVISOR_UNIT: &str = "pinvou3-supervisor.service";
 const SOCKET_RELATIVE_PATH: &str = "pinvou-supervisor/control.sock";
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(12);
 const IO_TIMEOUT: Duration = Duration::from_secs(8);
+const CLIENT_CONNECT_RETRIES: usize = 30;
+const CLIENT_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(50);
 const MAX_ACTIVE_CLIENTS: usize = 16;
 const MAX_OBSERVATION_JOURNAL_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CONTROL_JOURNAL_BYTES: u64 = 4 * 1024 * 1024;
@@ -257,6 +260,13 @@ fn fixed_systemctl_path() -> Result<&'static str, String> {
 }
 
 fn run_systemctl(arguments: &[&str]) -> Result<String, String> {
+    run_systemctl_with_timeout(arguments, SYSTEMCTL_TIMEOUT)
+}
+
+fn run_systemctl_with_timeout(arguments: &[&str], timeout: Duration) -> Result<String, String> {
+    if timeout.is_zero() {
+        return Err("fixed systemd operation has no remaining time budget".to_string());
+    }
     let executable = fixed_systemctl_path()?;
     let mut child = Command::new(executable)
         .args(arguments)
@@ -267,7 +277,7 @@ fn run_systemctl(arguments: &[&str]) -> Result<String, String> {
         .spawn()
         .map_err(|error| format!("spawn fixed systemd operation: {error}"))?;
     let status = child
-        .wait_timeout(SYSTEMCTL_TIMEOUT)
+        .wait_timeout(timeout)
         .map_err(|error| format!("wait fixed systemd operation: {error}"))?;
     let Some(status) = status else {
         let _ = child.kill();
@@ -298,15 +308,18 @@ fn run_systemctl(arguments: &[&str]) -> Result<String, String> {
     }
 }
 
-fn systemd_main_pid(unit: &str) -> Result<u32, String> {
-    let output = run_systemctl(&[
-        "--user",
-        "show",
-        unit,
-        "--no-pager",
-        "--property=MainPID",
-        "--value",
-    ])?;
+fn systemd_main_pid(unit: &str, deadline: Instant) -> Result<u32, String> {
+    let output = run_systemctl_with_timeout(
+        &[
+            "--user",
+            "show",
+            unit,
+            "--no-pager",
+            "--property=MainPID",
+            "--value",
+        ],
+        remaining_client_budget(deadline)?.min(SYSTEMCTL_TIMEOUT),
+    )?;
     output
         .trim()
         .parse::<u32>()
@@ -361,16 +374,19 @@ fn validate_effective_unit(
 ) -> Result<(), String> {
     validate_unit_identity(target, properties)?;
     validate_effective_restart_policy(target, properties)?;
-    if !matches!(
+    let requires_live_cgroup = matches!(
         observation.state,
         ObservedWorkState::Active | ObservedWorkState::Activating | ObservedWorkState::Deactivating
-    ) {
-        return Ok(());
-    }
-    if observation.instance_generation.is_none() {
+    );
+    // systemd 的 effective resource policy 在 unit 尚未启动时也已经可读。Launch
+    // preflight 必须先证明 profile 完整可信，不能先启动一个无保护实例再依赖
+    // post-action rollback。只有 live/transitional unit 才额外要求 InvocationID 和
+    // 实际 cgroup 文件与 systemd property 完全一致。
+    validate_effective_protection(target, observation, properties, requires_live_cgroup)?;
+    if requires_live_cgroup && observation.instance_generation.is_none() {
         return Err("active unit has no valid systemd InvocationID".to_string());
     }
-    validate_effective_protection(target, observation, properties)
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -559,6 +575,7 @@ fn validate_effective_protection(
     target: ManagedHostWork,
     observation: &HostWorkObservation,
     properties: &HashMap<String, String>,
+    require_cgroup_match: bool,
 ) -> Result<(), String> {
     let expected_tasks = match target {
         ManagedHostWork::PinvouApp => 512,
@@ -575,9 +592,10 @@ fn validate_effective_protection(
     let systemd_max = parse_optional_u64(properties.get("MemoryMax"));
     let systemd_swap_max = parse_optional_u64(properties.get("MemorySwapMax"));
     let cgroup = &observation.cgroup;
-    if systemd_high != cgroup.memory_high_bytes
-        || systemd_max != cgroup.memory_max_bytes
-        || systemd_swap_max != cgroup.memory_swap_max_bytes
+    if require_cgroup_match
+        && (systemd_high != cgroup.memory_high_bytes
+            || systemd_max != cgroup.memory_max_bytes
+            || systemd_swap_max != cgroup.memory_swap_max_bytes)
     {
         return Err(
             "systemd memory protection does not match the effective cgroup files".to_string(),
@@ -1835,9 +1853,9 @@ fn verify_same_uid(stream: &UnixStream) -> Result<PeerCredentials, String> {
     Ok(credentials)
 }
 
-fn verify_supervisor_sender(credentials: PeerCredentials) -> Result<(), String> {
+fn verify_supervisor_sender(credentials: PeerCredentials, deadline: Instant) -> Result<(), String> {
     let expected_uid = unsafe { libc::geteuid() };
-    let expected_pid = systemd_main_pid(SUPERVISOR_UNIT)?;
+    let expected_pid = systemd_main_pid(SUPERVISOR_UNIT, deadline)?;
     verify_sender_identity(credentials, expected_uid, expected_pid)
 }
 
@@ -1894,10 +1912,16 @@ fn enable_passcred(stream: &UnixStream) -> Result<(), String> {
 
 fn read_response_with_credentials(
     stream: &UnixStream,
+    deadline: Instant,
 ) -> Result<(Vec<u8>, PeerCredentials), String> {
     let mut response = Vec::new();
     let mut sender = None;
     loop {
+        // SO_RCVTIMEO applies independently to each recvmsg. Derive every chunk timeout from the
+        // same absolute client deadline so a slow peer cannot multiply the advertised 8s budget.
+        stream
+            .set_read_timeout(Some(remaining_client_budget(deadline)?))
+            .map_err(|error| format!("set client read timeout: {error}"))?;
         let mut bytes = [0_u8; 8192];
         let mut control = AncillaryBuffer([0_u8; 128]);
         let mut io = libc::iovec {
@@ -2091,52 +2115,55 @@ fn fixed_runtime_directory() -> Result<PathBuf, String> {
     Ok(runtime)
 }
 
-fn activate_socket() -> Result<(), String> {
-    run_systemctl(&["--user", "start", SOCKET_UNIT]).map(|_| ())
+fn activate_socket(deadline: Instant) -> Result<(), String> {
+    run_systemctl_with_timeout(
+        &["--user", "start", SOCKET_UNIT],
+        remaining_client_budget(deadline)?.min(SYSTEMCTL_TIMEOUT),
+    )
+    .map(|_| ())
 }
 
 pub fn send_client_request(request: &SupervisorRequest) -> Result<SupervisorReceipt, String> {
+    let deadline = Instant::now()
+        .checked_add(IO_TIMEOUT)
+        .ok_or_else(|| "supervisor client deadline overflow".to_string())?;
+    send_client_request_until(request, deadline)
+}
+
+fn send_client_request_until(
+    request: &SupervisorRequest,
+    deadline: Instant,
+) -> Result<SupervisorReceipt, String> {
     request
         .validate()
         .map_err(|error| format!("invalid bounded request: {error:?}"))?;
     let socket = client_socket_path()?;
-    let mut stream = match UnixStream::connect(&socket) {
+    let mut stream = match connect_with_deadline(&socket, deadline) {
         Ok(stream) => stream,
         Err(first_error) => {
-            activate_socket().map_err(|activation_error| {
+            activate_socket(deadline).map_err(|activation_error| {
                 format!("connect failed ({first_error}); activation failed ({activation_error})")
             })?;
-            let mut connected = None;
-            for _ in 0..30 {
-                match UnixStream::connect(&socket) {
-                    Ok(stream) => {
-                        connected = Some(stream);
-                        break;
-                    }
-                    Err(_) => thread::sleep(Duration::from_millis(50)),
-                }
-            }
-            connected.ok_or_else(|| "activated supervisor socket did not accept".to_string())?
+            retry_client_connect_until_with(
+                deadline,
+                first_error,
+                |request_deadline| connect_with_deadline(&socket, request_deadline),
+                Instant::now,
+                thread::sleep,
+            )?
         }
     };
     set_close_on_exec(stream.as_raw_fd())?;
     verify_same_uid(&stream)?;
     enable_passcred(&stream)?;
-    stream
-        .set_read_timeout(Some(IO_TIMEOUT))
-        .and_then(|_| stream.set_write_timeout(Some(IO_TIMEOUT)))
-        .map_err(|error| format!("set client timeout: {error}"))?;
     let mut encoded = serde_json::to_vec(request).map_err(|error| error.to_string())?;
     if encoded.len() + 1 > MAX_REQUEST_BYTES {
         return Err("request exceeds protocol bound".to_string());
     }
     encoded.push(b'\n');
-    stream
-        .write_all(&encoded)
-        .and_then(|_| stream.flush())
-        .map_err(|error| format!("write supervisor request: {error}"))?;
-    let (mut response, sender) = read_response_with_credentials(&stream)?;
-    verify_supervisor_sender(sender)?;
+    write_all_with_deadline(&mut stream, &encoded, deadline)?;
+    let (mut response, sender) = read_response_with_credentials(&stream, deadline)?;
+    verify_supervisor_sender(sender, deadline)?;
     if response.is_empty() || response.len() > MAX_RESPONSE_BYTES || !response.ends_with(b"\n") {
         return Err("response is empty, truncated, or oversized".to_string());
     }
@@ -2147,8 +2174,198 @@ pub fn send_client_request(request: &SupervisorRequest) -> Result<SupervisorRece
     Ok(receipt)
 }
 
+fn write_all_with_deadline(
+    stream: &mut UnixStream,
+    bytes: &[u8],
+    deadline: Instant,
+) -> Result<(), String> {
+    let mut written = 0;
+    while written < bytes.len() {
+        stream
+            .set_write_timeout(Some(remaining_client_budget(deadline)?))
+            .map_err(|error| format!("set client write timeout: {error}"))?;
+        match stream.write(&bytes[written..]) {
+            Ok(0) => return Err("supervisor socket closed while writing request".to_string()),
+            Ok(count) => written += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("write supervisor request: {error}")),
+        }
+    }
+    Ok(())
+}
+
+fn remaining_client_budget(deadline: Instant) -> Result<Duration, String> {
+    remaining_client_budget_at(deadline, Instant::now())
+}
+
+fn remaining_client_budget_at(deadline: Instant, now: Instant) -> Result<Duration, String> {
+    deadline
+        .checked_duration_since(now)
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| "supervisor client exhausted its total deadline".to_string())
+}
+
+fn retry_client_connect_until_with<T, Connect, Now, Sleep>(
+    deadline: Instant,
+    mut last_error: std::io::Error,
+    mut connect: Connect,
+    mut now: Now,
+    mut sleep: Sleep,
+) -> Result<T, String>
+where
+    Connect: FnMut(Instant) -> std::io::Result<T>,
+    Now: FnMut() -> Instant,
+    Sleep: FnMut(Duration),
+{
+    for attempt_index in 0..CLIENT_CONNECT_RETRIES {
+        if remaining_client_budget_at(deadline, now()).is_err() {
+            return Err(format!(
+                "supervisor connect retry budget was exhausted after: {last_error}"
+            ));
+        }
+        match connect(deadline) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = error,
+        }
+        if attempt_index + 1 < CLIENT_CONNECT_RETRIES {
+            let Ok(remaining) = remaining_client_budget_at(deadline, now()) else {
+                break;
+            };
+            sleep(CLIENT_CONNECT_RETRY_DELAY.min(remaining));
+        }
+    }
+    Err(format!(
+        "activated supervisor socket did not accept: {last_error}"
+    ))
+}
+
+fn connect_with_deadline(socket_path: &Path, deadline: Instant) -> std::io::Result<UnixStream> {
+    let path = socket_path.as_os_str().as_bytes();
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if path.is_empty()
+        || path.contains(&0)
+        || path.len() >= address.sun_path.len()
+        || remaining_client_budget_io(deadline).is_err()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Unix socket path or client deadline is invalid",
+        ));
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (destination, source) in address.sun_path.iter_mut().zip(path.iter().copied()) {
+        *destination = source as libc::c_char;
+    }
+
+    let raw_fd = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    if raw_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let owned_fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+    let address_length = std::mem::offset_of!(libc::sockaddr_un, sun_path)
+        .saturating_add(path.len())
+        .saturating_add(1);
+    let connected = unsafe {
+        libc::connect(
+            owned_fd.as_raw_fd(),
+            std::ptr::addr_of!(address).cast(),
+            address_length as libc::socklen_t,
+        )
+    };
+    if connected != 0 {
+        let error = std::io::Error::last_os_error();
+        let retryable = error.raw_os_error().is_some_and(|code| {
+            code == libc::EINPROGRESS
+                || code == libc::EAGAIN
+                || code == libc::EWOULDBLOCK
+                || code == libc::EINTR
+        });
+        if !retryable {
+            return Err(error);
+        }
+        poll_connected(owned_fd.as_raw_fd(), deadline)?;
+    }
+    let flags = unsafe { libc::fcntl(owned_fd.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0
+        || unsafe {
+            libc::fcntl(
+                owned_fd.as_raw_fd(),
+                libc::F_SETFL,
+                flags & !libc::O_NONBLOCK,
+            )
+        } < 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { UnixStream::from_raw_fd(owned_fd.into_raw_fd()) })
+}
+
+fn poll_connected(fd: RawFd, deadline: Instant) -> std::io::Result<()> {
+    loop {
+        let remaining = remaining_client_budget_io(deadline)?;
+        let timeout_ms = remaining.as_millis().max(1).min(libc::c_int::MAX as u128) as libc::c_int;
+        let mut descriptor = libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(std::ptr::addr_of_mut!(descriptor), 1, timeout_ms) };
+        if result == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Unix socket connect deadline elapsed",
+            ));
+        }
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        let mut socket_error: libc::c_int = 0;
+        let mut length = std::mem::size_of_val(&socket_error) as libc::socklen_t;
+        if unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                std::ptr::addr_of_mut!(socket_error).cast(),
+                &mut length,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        return if socket_error == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::from_raw_os_error(socket_error))
+        };
+    }
+}
+
+fn remaining_client_budget_io(deadline: Instant) -> std::io::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "supervisor client deadline elapsed",
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
 
@@ -2373,6 +2590,18 @@ mod tests {
                 start_limit_interval_usec.to_string(),
             ),
             ("StartLimitBurst".to_string(), "3".to_string()),
+        ])
+    }
+
+    fn valid_app_resource_properties() -> HashMap<String, String> {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        HashMap::from([
+            ("OOMPolicy".to_string(), "kill".to_string()),
+            ("KillMode".to_string(), "control-group".to_string()),
+            ("TasksMax".to_string(), "512".to_string()),
+            ("MemoryHigh".to_string(), (4 * GIB).to_string()),
+            ("MemoryMax".to_string(), (8 * GIB).to_string()),
+            ("MemorySwapMax".to_string(), (2 * GIB).to_string()),
         ])
     }
 
@@ -2649,6 +2878,51 @@ mod tests {
         assert_eq!(receipt.outcome, SupervisorOutcome::OutcomeUnknown);
         assert_eq!(controller.launch_count.load(Ordering::SeqCst), 1);
         assert_eq!(controller.app_stop_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn inactive_or_failed_untrusted_app_profile_never_starts_or_stops_app() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let inactive = observation(ObservedWorkState::Inactive, None, None);
+        let mut missing = valid_app_resource_properties();
+        missing.remove("MemoryMax");
+        let mut widened = valid_app_resource_properties();
+        widened.insert("MemoryMax".to_string(), (9 * GIB).to_string());
+        let mut untrusted = valid_app_resource_properties();
+        untrusted.insert("OOMPolicy".to_string(), "stop".to_string());
+        let invalid_profiles = [
+            ("missing", missing),
+            ("widened", widened),
+            ("untrusted", untrusted),
+        ];
+
+        for state in [ObservedWorkState::Inactive, ObservedWorkState::Failed] {
+            for (label, properties) in &invalid_profiles {
+                let integrity_error = validate_effective_protection(
+                    ManagedHostWork::PinvouApp,
+                    &inactive,
+                    properties,
+                    false,
+                )
+                .expect_err("invalid inactive profile must fail before launch");
+                let root = temp_directory(&format!("launch-{state:?}-{label}"));
+                let controller = Arc::new(FakeController::active());
+                controller
+                    .set_observation(ManagedHostWork::PinvouApp, observation(state, None, None));
+                controller.set_integrity_error(ManagedHostWork::PinvouApp, integrity_error);
+                let supervisor = test_supervisor(Arc::clone(&controller), &root);
+                let receipt = supervisor.process(
+                    &SupervisorRequest::launch_pinvou_app(format!(
+                        "desktop-launch:{state:?}:{label}"
+                    )),
+                    APP_MAIN_PID,
+                );
+                assert_eq!(receipt.outcome, SupervisorOutcome::Rejected);
+                assert!(receipt.detail.contains("effective-policy validation"));
+                assert_eq!(controller.launch_count.load(Ordering::SeqCst), 0);
+                assert_eq!(controller.app_stop_count.load(Ordering::SeqCst), 0);
+            }
+        }
     }
 
     #[test]
@@ -3009,6 +3283,21 @@ mod tests {
             ("MemorySwapMax".to_string(), swap.to_string()),
         ]);
         properties.extend(valid_restart_properties(ManagedHostWork::PinvouAsr));
+        for state in [ObservedWorkState::Inactive, ObservedWorkState::Failed] {
+            let inactive = observation(state, None, None);
+            assert!(
+                validate_effective_unit(ManagedHostWork::PinvouAsr, &inactive, &properties).is_ok(),
+                "inactive/failed ASR must validate its effective policy without a live cgroup"
+            );
+
+            let mut missing_policy = properties.clone();
+            missing_policy.remove("MemoryMax");
+            assert!(
+                validate_effective_unit(ManagedHostWork::PinvouAsr, &inactive, &missing_policy,)
+                    .is_err(),
+                "inactive/failed ASR must fail closed when its effective policy is incomplete"
+            );
+        }
         let mut observed = observation(ObservedWorkState::Active, Some(84), Some(ASR_INVOCATION));
         observed.cgroup.memory_high_bytes = Some(high);
         observed.cgroup.memory_max_bytes = Some(max);
@@ -3058,14 +3347,20 @@ mod tests {
     #[test]
     fn effective_app_protection_requires_exact_megabook_profile() {
         let gib = 1024 * 1024 * 1024_u64;
-        let mut properties = HashMap::from([
-            ("OOMPolicy".to_string(), "kill".to_string()),
-            ("KillMode".to_string(), "control-group".to_string()),
-            ("TasksMax".to_string(), "512".to_string()),
-            ("MemoryHigh".to_string(), (4 * gib).to_string()),
-            ("MemoryMax".to_string(), (8 * gib).to_string()),
-            ("MemorySwapMax".to_string(), (2 * gib).to_string()),
-        ]);
+        let mut properties = valid_app_resource_properties();
+        for state in [ObservedWorkState::Inactive, ObservedWorkState::Failed] {
+            let inactive = observation(state, None, None);
+            assert!(
+                validate_effective_protection(
+                    ManagedHostWork::PinvouApp,
+                    &inactive,
+                    &properties,
+                    false,
+                )
+                .is_ok(),
+                "valid effective profile must be accepted before the app has a cgroup"
+            );
+        }
         let mut observed = observation(
             ObservedWorkState::Active,
             Some(APP_MAIN_PID),
@@ -3074,16 +3369,22 @@ mod tests {
         observed.cgroup.memory_high_bytes = Some(4 * gib);
         observed.cgroup.memory_max_bytes = Some(8 * gib);
         observed.cgroup.memory_swap_max_bytes = Some(2 * gib);
-        assert!(
-            validate_effective_protection(ManagedHostWork::PinvouApp, &observed, &properties,)
-                .is_ok()
-        );
+        assert!(validate_effective_protection(
+            ManagedHostWork::PinvouApp,
+            &observed,
+            &properties,
+            true,
+        )
+        .is_ok());
 
         properties.insert("MemoryMax".to_string(), (9 * gib).to_string());
-        assert!(
-            validate_effective_protection(ManagedHostWork::PinvouApp, &observed, &properties,)
-                .is_err()
-        );
+        assert!(validate_effective_protection(
+            ManagedHostWork::PinvouApp,
+            &observed,
+            &properties,
+            true,
+        )
+        .is_err());
     }
 
     #[test]
@@ -3155,7 +3456,8 @@ mod tests {
         enable_passcred(&client).expect("passcred");
         let listener_peer = peer_credentials(&client).expect("listener peer");
         let (response, response_sender) =
-            read_response_with_credentials(&client).expect("credentialed response");
+            read_response_with_credentials(&client, Instant::now() + Duration::from_secs(5))
+                .expect("credentialed response");
         assert_eq!(response, b"{}\n");
         assert_eq!(listener_peer.pid, std::process::id());
         assert_eq!(response_sender.pid, child_pid as u32);
@@ -3185,10 +3487,32 @@ mod tests {
             sender.write_all(&response).expect("large response");
         });
         let (response, credentials) =
-            read_response_with_credentials(&receiver).expect("credentialed large response");
+            read_response_with_credentials(&receiver, Instant::now() + Duration::from_secs(5))
+                .expect("credentialed large response");
         writer.join().expect("writer");
         assert_eq!(response.len(), 20_001);
         assert_eq!(credentials.pid, std::process::id());
+    }
+
+    #[test]
+    fn cli_response_chunks_share_one_absolute_read_deadline() {
+        let (receiver, mut sender) = UnixStream::pair().expect("socketpair");
+        enable_passcred(&receiver).expect("passcred");
+        let writer = thread::spawn(move || {
+            sender.write_all(b"{").expect("first response chunk");
+            thread::sleep(Duration::from_millis(100));
+            sender.write_all(b"}").expect("second response chunk");
+            thread::sleep(Duration::from_millis(100));
+            sender.write_all(b"\n").expect("final response chunk");
+        });
+
+        let result =
+            read_response_with_credentials(&receiver, Instant::now() + Duration::from_millis(150));
+        writer.join().expect("writer");
+        assert!(
+            result.is_err(),
+            "three individually timely chunks must not multiply the total deadline"
+        );
     }
 
     #[test]
@@ -3211,5 +3535,68 @@ mod tests {
         std::env::remove_var("LISTEN_PID");
         std::env::remove_var("LISTEN_FDS");
         assert!(activated_listener().is_err());
+    }
+
+    #[test]
+    fn cli_connect_retries_share_one_total_deadline() {
+        let started = Instant::now();
+        let deadline = started + IO_TIMEOUT;
+        let clock = Cell::new(started);
+        let attempts = Cell::new(0_usize);
+        let sleeps = Cell::new(0_usize);
+        let result = retry_client_connect_until_with::<(), _, _, _>(
+            deadline,
+            std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "initial"),
+            |received_deadline| {
+                assert_eq!(received_deadline, deadline);
+                attempts.set(attempts.get() + 1);
+                clock.set(clock.get() + Duration::from_secs(3));
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "injected slow connect",
+                ))
+            },
+            || clock.get(),
+            |duration| {
+                sleeps.set(sleeps.get() + 1);
+                clock.set(clock.get() + duration);
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            attempts.get(),
+            3,
+            "deadline must stop retries before 30 attempts"
+        );
+        assert_eq!(sleeps.get(), 2);
+        assert!(clock.get() >= deadline);
+    }
+
+    #[test]
+    fn cli_exhausted_deadline_has_no_long_tail_connect_or_sleep() {
+        let started = Instant::now();
+        let deadline = started + IO_TIMEOUT;
+        let clock = Cell::new(started);
+        let attempts = Cell::new(0_usize);
+        let sleeps = Cell::new(0_usize);
+        let result = retry_client_connect_until_with::<(), _, _, _>(
+            deadline,
+            std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "initial"),
+            |_received_deadline| {
+                attempts.set(attempts.get() + 1);
+                clock.set(deadline);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "injected connect consumed the budget",
+                ))
+            },
+            || clock.get(),
+            |_duration| sleeps.set(sleeps.get() + 1),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(sleeps.get(), 0);
     }
 }

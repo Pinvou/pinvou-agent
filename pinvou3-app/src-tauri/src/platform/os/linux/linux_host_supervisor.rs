@@ -1,11 +1,12 @@
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pinvou_host_supervisor_protocol::{
     SupervisorReceipt, SupervisorRequest, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,
@@ -17,32 +18,40 @@ use crate::platform::host_supervisor::HostSupervisorError;
 const SOCKET_RELATIVE_PATH: &str = "pinvou-supervisor/control.sock";
 const SOCKET_UNIT: &str = "pinvou3-supervisor.socket";
 const SUPERVISOR_UNIT: &str = "pinvou3-supervisor.service";
-const IO_TIMEOUT: Duration = Duration::from_secs(8);
+const REQUEST_BUDGET: Duration = Duration::from_secs(8);
 const ACTIVATE_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_RETRIES: usize = 30;
+const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 pub(crate) fn host_supervisor_request(
     request: &SupervisorRequest,
 ) -> Result<SupervisorReceipt, HostSupervisorError> {
+    let deadline = Instant::now()
+        .checked_add(REQUEST_BUDGET)
+        .ok_or_else(|| HostSupervisorError::Unavailable("request deadline overflow".to_string()))?;
+    host_supervisor_request_until(request, deadline)
+}
+
+fn host_supervisor_request_until(
+    request: &SupervisorRequest,
+    deadline: Instant,
+) -> Result<SupervisorReceipt, HostSupervisorError> {
     let socket_path = supervisor_socket_path()?;
-    match request_at(&socket_path, request) {
+    match request_at(&socket_path, request, deadline) {
         Ok(receipt) => Ok(receipt),
         Err(first_error) => {
-            activate_socket_unit().map_err(|activation_error| {
+            activate_socket_unit(deadline).map_err(|activation_error| {
                 HostSupervisorError::Unavailable(format!(
                     "connect failed ({first_error}); socket activation failed ({activation_error})"
                 ))
             })?;
-            for _ in 0..CONNECT_RETRIES {
-                match request_at(&socket_path, request) {
-                    Ok(receipt) => return Ok(receipt),
-                    Err(_) => thread::sleep(Duration::from_millis(50)),
-                }
-            }
-            Err(HostSupervisorError::Unavailable(format!(
-                "socket activation completed but {} did not accept a bounded request",
-                socket_path.display()
-            )))
+            retry_request_until_with(
+                deadline,
+                Some(first_error),
+                |request_deadline| request_at(&socket_path, request, request_deadline),
+                Instant::now,
+                thread::sleep,
+            )
         }
     }
 }
@@ -68,35 +77,26 @@ fn supervisor_socket_path() -> Result<PathBuf, HostSupervisorError> {
 fn request_at(
     socket_path: &Path,
     request: &SupervisorRequest,
+    deadline: Instant,
 ) -> Result<SupervisorReceipt, HostSupervisorError> {
-    let mut stream = UnixStream::connect(socket_path).map_err(|error| {
+    let mut stream = connect_with_deadline(socket_path, deadline).map_err(|error| {
         HostSupervisorError::Unavailable(format!("connect {}: {error}", socket_path.display()))
     })?;
     set_close_on_exec(stream.as_raw_fd())?;
     verify_listener_uid(&stream)?;
     enable_passcred(&stream)?;
-    stream
-        .set_read_timeout(Some(IO_TIMEOUT))
-        .map_err(|error| HostSupervisorError::Unavailable(format!("set read timeout: {error}")))?;
-    stream
-        .set_write_timeout(Some(IO_TIMEOUT))
-        .map_err(|error| HostSupervisorError::Unavailable(format!("set write timeout: {error}")))?;
-
-    let encoded = serde_json::to_vec(request)
+    let mut encoded = serde_json::to_vec(request)
         .map_err(|error| HostSupervisorError::Protocol(format!("encode request: {error}")))?;
     if encoded.len() + 1 > MAX_REQUEST_BYTES {
         return Err(HostSupervisorError::InvalidRequest(
             "encoded request exceeds protocol bound".to_string(),
         ));
     }
-    stream
-        .write_all(&encoded)
-        .and_then(|_| stream.write_all(b"\n"))
-        .and_then(|_| stream.flush())
-        .map_err(|error| HostSupervisorError::Unavailable(format!("write request: {error}")))?;
+    encoded.push(b'\n');
+    write_all_with_deadline(&mut stream, &encoded, deadline)?;
 
-    let (mut response, sender) = read_response_with_credentials(&stream)?;
-    verify_supervisor_sender(sender)?;
+    let (mut response, sender) = read_response_with_credentials(&stream, deadline)?;
+    verify_supervisor_sender(sender, deadline)?;
     if response.is_empty() || response.len() > MAX_RESPONSE_BYTES || !response.ends_with(b"\n") {
         return Err(HostSupervisorError::Protocol(
             "supervisor returned an empty, truncated, or oversized frame".to_string(),
@@ -109,6 +109,217 @@ fn request_at(
         .validate_for(request)
         .map_err(|error| HostSupervisorError::Protocol(error.to_string()))?;
     Ok(receipt)
+}
+
+fn write_all_with_deadline(
+    stream: &mut UnixStream,
+    bytes: &[u8],
+    deadline: Instant,
+) -> Result<(), HostSupervisorError> {
+    let mut written = 0;
+    while written < bytes.len() {
+        stream
+            .set_write_timeout(Some(remaining_budget(deadline)?))
+            .map_err(|error| {
+                HostSupervisorError::Unavailable(format!("set write timeout: {error}"))
+            })?;
+        match stream.write(&bytes[written..]) {
+            Ok(0) => {
+                return Err(HostSupervisorError::Unavailable(
+                    "supervisor socket closed while writing request".to_string(),
+                ));
+            }
+            Ok(count) => written += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(HostSupervisorError::Unavailable(format!(
+                    "write request: {error}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remaining_budget(deadline: Instant) -> Result<Duration, HostSupervisorError> {
+    remaining_budget_at(deadline, Instant::now())
+}
+
+fn remaining_budget_at(deadline: Instant, now: Instant) -> Result<Duration, HostSupervisorError> {
+    deadline
+        .checked_duration_since(now)
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| {
+            HostSupervisorError::Unavailable(
+                "host supervisor request exhausted its total deadline".to_string(),
+            )
+        })
+}
+
+fn retry_request_until_with<Attempt, Now, Sleep>(
+    deadline: Instant,
+    mut last_error: Option<HostSupervisorError>,
+    mut attempt: Attempt,
+    mut now: Now,
+    mut sleep: Sleep,
+) -> Result<SupervisorReceipt, HostSupervisorError>
+where
+    Attempt: FnMut(Instant) -> Result<SupervisorReceipt, HostSupervisorError>,
+    Now: FnMut() -> Instant,
+    Sleep: FnMut(Duration),
+{
+    for attempt_index in 0..CONNECT_RETRIES {
+        if remaining_budget_at(deadline, now()).is_err() {
+            return Err(HostSupervisorError::Unavailable(format!(
+                "host supervisor retry budget was exhausted after: {}",
+                last_error
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "no completed attempt".to_string())
+            )));
+        }
+        match attempt(deadline) {
+            Ok(receipt) => return Ok(receipt),
+            Err(error) => last_error = Some(error),
+        }
+        if attempt_index + 1 < CONNECT_RETRIES {
+            let Ok(remaining) = remaining_budget_at(deadline, now()) else {
+                break;
+            };
+            sleep(CONNECT_RETRY_DELAY.min(remaining));
+        }
+    }
+    Err(HostSupervisorError::Unavailable(format!(
+        "host supervisor did not accept a bounded request: {}",
+        last_error
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "no completed attempt".to_string())
+    )))
+}
+
+fn connect_with_deadline(socket_path: &Path, deadline: Instant) -> std::io::Result<UnixStream> {
+    let path = socket_path.as_os_str().as_bytes();
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if path.is_empty()
+        || path.contains(&0)
+        || path.len() >= address.sun_path.len()
+        || remaining_budget_io(deadline).is_err()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Unix socket path or request deadline is invalid",
+        ));
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (destination, source) in address.sun_path.iter_mut().zip(path.iter().copied()) {
+        *destination = source as libc::c_char;
+    }
+
+    let raw_fd = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    if raw_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let owned_fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+    let address_length = std::mem::offset_of!(libc::sockaddr_un, sun_path)
+        .saturating_add(path.len())
+        .saturating_add(1);
+    let connected = unsafe {
+        libc::connect(
+            owned_fd.as_raw_fd(),
+            std::ptr::addr_of!(address).cast(),
+            address_length as libc::socklen_t,
+        )
+    };
+    if connected != 0 {
+        let error = std::io::Error::last_os_error();
+        let retryable = error.raw_os_error().is_some_and(|code| {
+            code == libc::EINPROGRESS
+                || code == libc::EAGAIN
+                || code == libc::EWOULDBLOCK
+                || code == libc::EINTR
+        });
+        if !retryable {
+            return Err(error);
+        }
+        poll_connected(owned_fd.as_raw_fd(), deadline)?;
+    }
+    let flags = unsafe { libc::fcntl(owned_fd.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0
+        || unsafe {
+            libc::fcntl(
+                owned_fd.as_raw_fd(),
+                libc::F_SETFL,
+                flags & !libc::O_NONBLOCK,
+            )
+        } < 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { UnixStream::from_raw_fd(owned_fd.into_raw_fd()) })
+}
+
+fn poll_connected(fd: RawFd, deadline: Instant) -> std::io::Result<()> {
+    loop {
+        let remaining = remaining_budget_io(deadline)?;
+        let timeout_ms = remaining.as_millis().max(1).min(libc::c_int::MAX as u128) as libc::c_int;
+        let mut descriptor = libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(std::ptr::addr_of_mut!(descriptor), 1, timeout_ms) };
+        if result == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Unix socket connect deadline elapsed",
+            ));
+        }
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        let mut socket_error: libc::c_int = 0;
+        let mut length = std::mem::size_of_val(&socket_error) as libc::socklen_t;
+        if unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                std::ptr::addr_of_mut!(socket_error).cast(),
+                &mut length,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        return if socket_error == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::from_raw_os_error(socket_error))
+        };
+    }
+}
+
+fn remaining_budget_io(deadline: Instant) -> std::io::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "host supervisor request deadline elapsed",
+            )
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,9 +376,12 @@ fn verify_listener_uid(stream: &UnixStream) -> Result<(), HostSupervisorError> {
     Ok(())
 }
 
-fn verify_supervisor_sender(credentials: PeerCredentials) -> Result<(), HostSupervisorError> {
+fn verify_supervisor_sender(
+    credentials: PeerCredentials,
+    deadline: Instant,
+) -> Result<(), HostSupervisorError> {
     let expected_uid = unsafe { libc::geteuid() };
-    let expected_pid = supervisor_main_pid()?;
+    let expected_pid = supervisor_main_pid(deadline)?;
     verify_sender_identity(credentials, expected_uid, expected_pid)
 }
 
@@ -207,10 +421,19 @@ fn enable_passcred(stream: &UnixStream) -> Result<(), HostSupervisorError> {
 
 fn read_response_with_credentials(
     stream: &UnixStream,
+    deadline: Instant,
 ) -> Result<(Vec<u8>, PeerCredentials), HostSupervisorError> {
     let mut response = Vec::new();
     let mut sender = None;
     loop {
+        // SO_RCVTIMEO is a per-recv timeout. Re-arm it from the one absolute request deadline
+        // before every chunk so a peer cannot stretch an 8 second request into N x 8 seconds by
+        // drip-feeding a bounded multi-chunk frame.
+        stream
+            .set_read_timeout(Some(remaining_budget(deadline)?))
+            .map_err(|error| {
+                HostSupervisorError::Unavailable(format!("set read timeout: {error}"))
+            })?;
         let mut bytes = [0_u8; 8192];
         let mut control = AncillaryBuffer([0_u8; 128]);
         let mut io = libc::iovec {
@@ -289,8 +512,9 @@ fn credentials_from_message(message: &libc::msghdr) -> Option<PeerCredentials> {
     None
 }
 
-fn supervisor_main_pid() -> Result<u32, HostSupervisorError> {
+fn supervisor_main_pid(deadline: Instant) -> Result<u32, HostSupervisorError> {
     let systemctl = fixed_systemctl_path().map_err(HostSupervisorError::Unavailable)?;
+    let timeout = remaining_budget(deadline)?.min(ACTIVATE_TIMEOUT);
     let mut child = Command::new(systemctl)
         .args([
             "--user",
@@ -308,7 +532,7 @@ fn supervisor_main_pid() -> Result<u32, HostSupervisorError> {
         .map_err(|error| {
             HostSupervisorError::Unavailable(format!("query supervisor MainPID: {error}"))
         })?;
-    let status = child.wait_timeout(ACTIVATE_TIMEOUT).map_err(|error| {
+    let status = child.wait_timeout(timeout).map_err(|error| {
         HostSupervisorError::Unavailable(format!("wait supervisor MainPID: {error}"))
     })?;
     let Some(status) = status else {
@@ -353,8 +577,13 @@ fn set_close_on_exec(fd: RawFd) -> Result<(), HostSupervisorError> {
     Ok(())
 }
 
-fn activate_socket_unit() -> Result<(), String> {
+fn activate_socket_unit(deadline: Instant) -> Result<(), String> {
     let systemctl = fixed_systemctl_path()?;
+    let timeout = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| "socket activation request budget was exhausted".to_string())?
+        .min(ACTIVATE_TIMEOUT);
     let mut child = Command::new(systemctl)
         .args(["--user", "start", SOCKET_UNIT])
         .env("LC_ALL", "C")
@@ -364,7 +593,7 @@ fn activate_socket_unit() -> Result<(), String> {
         .spawn()
         .map_err(|error| format!("spawn fixed socket activation: {error}"))?;
     let status = child
-        .wait_timeout(ACTIVATE_TIMEOUT)
+        .wait_timeout(timeout)
         .map_err(|error| format!("wait fixed socket activation: {error}"))?;
     let Some(status) = status else {
         let _ = child.kill();
@@ -407,6 +636,7 @@ fn truncate(value: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::os::unix::net::UnixStream;
     use std::thread;
 
@@ -443,7 +673,8 @@ mod tests {
         drop(sender);
 
         let (response, credentials) =
-            read_response_with_credentials(&receiver).expect("credentialed response");
+            read_response_with_credentials(&receiver, Instant::now() + Duration::from_secs(5))
+                .expect("credentialed response");
         assert_eq!(response, b"{}\n");
         assert_eq!(credentials.uid, unsafe { libc::geteuid() });
         assert_eq!(credentials.pid, child_pid as u32);
@@ -469,11 +700,33 @@ mod tests {
         enable_passcred(&receiver).expect("passcred");
         let writer = thread::spawn(move || sender.write_all(b"{}\n").expect("response"));
         let (response, credentials) =
-            read_response_with_credentials(&receiver).expect("credentialed response");
+            read_response_with_credentials(&receiver, Instant::now() + Duration::from_secs(5))
+                .expect("credentialed response");
         writer.join().expect("writer");
         assert_eq!(response, b"{}\n");
         assert_eq!(credentials.pid, std::process::id());
         assert_eq!(credentials.uid, unsafe { libc::geteuid() });
+    }
+
+    #[test]
+    fn response_chunks_share_one_absolute_read_deadline() {
+        let (receiver, mut sender) = UnixStream::pair().expect("socket pair");
+        enable_passcred(&receiver).expect("passcred");
+        let writer = thread::spawn(move || {
+            sender.write_all(b"{").expect("first response chunk");
+            thread::sleep(Duration::from_millis(100));
+            sender.write_all(b"}").expect("second response chunk");
+            thread::sleep(Duration::from_millis(100));
+            sender.write_all(b"\n").expect("final response chunk");
+        });
+
+        let result =
+            read_response_with_credentials(&receiver, Instant::now() + Duration::from_millis(150));
+        writer.join().expect("writer");
+        assert!(
+            result.is_err(),
+            "three individually timely chunks must not multiply the total deadline"
+        );
     }
 
     #[test]
@@ -497,5 +750,66 @@ mod tests {
         if let Ok(path) = fixed_systemctl_path() {
             assert!(path.starts_with('/'));
         }
+    }
+
+    #[test]
+    fn retry_attempts_share_one_deadline_instead_of_multiplying_io_timeout() {
+        let started = Instant::now();
+        let deadline = started + REQUEST_BUDGET;
+        let clock = Cell::new(started);
+        let attempts = Cell::new(0_usize);
+        let sleeps = Cell::new(0_usize);
+        let result = retry_request_until_with(
+            deadline,
+            None,
+            |received_deadline| {
+                assert_eq!(received_deadline, deadline);
+                attempts.set(attempts.get() + 1);
+                clock.set(clock.get() + Duration::from_secs(3));
+                Err::<SupervisorReceipt, _>(HostSupervisorError::Unavailable(
+                    "injected slow response".to_string(),
+                ))
+            },
+            || clock.get(),
+            |duration| {
+                sleeps.set(sleeps.get() + 1);
+                clock.set(clock.get() + duration);
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            attempts.get(),
+            3,
+            "deadline must stop retries before 30 attempts"
+        );
+        assert_eq!(sleeps.get(), 2);
+        assert!(clock.get() >= deadline);
+    }
+
+    #[test]
+    fn exhausted_outer_deadline_starts_no_long_tail_retry_or_sleep() {
+        let started = Instant::now();
+        let deadline = started + REQUEST_BUDGET;
+        let clock = Cell::new(started);
+        let attempts = Cell::new(0_usize);
+        let sleeps = Cell::new(0_usize);
+        let result = retry_request_until_with(
+            deadline,
+            None,
+            |_received_deadline| {
+                attempts.set(attempts.get() + 1);
+                clock.set(deadline);
+                Err::<SupervisorReceipt, _>(HostSupervisorError::Unavailable(
+                    "injected response consumed the whole budget".to_string(),
+                ))
+            },
+            || clock.get(),
+            |_duration| sleeps.set(sleeps.get() + 1),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(sleeps.get(), 0);
     }
 }

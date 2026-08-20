@@ -607,6 +607,7 @@ mod tests {
             policy_revision: RESOURCE_GOVERNOR_POLICY_REVISION.to_string(),
             resource_pressure_epoch: 7,
             issued_event_sequence: Some(10),
+            dispatch_recorded_at_ms: None,
             issued_at_ms: 10,
             status: HostWorkDirectiveStatus::Rejected,
             acknowledgement: None,

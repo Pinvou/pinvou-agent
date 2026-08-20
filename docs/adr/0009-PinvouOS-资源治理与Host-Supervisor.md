@@ -2,8 +2,9 @@
 
 ## 状态
 
-已接受；当前工作树已实现 schema v6 HostWork 控制面与首版 Linux
-Supervisor，但尚未完成 MegaBook 实机 E2E 部署验收。
+已接受；当前工作树已实现 schema v6 HostWork 控制面、首版 Linux
+Supervisor、显式 MegaBook profile helper 与固定 E2E harness，但尚未执行 MegaBook
+真实安装 / High / OOM / 卸载 E2E，不能把脚本存在写成实机通过。
 
 本文是 PinvouOS 资源治理、Host 工作控制和 Linux Supervisor 的唯一权威。它延续
 ADR-0007 的原则：Resource Agent 只观察并提交 Claim，确定性 Governor 决策，
@@ -131,7 +132,12 @@ resume(work_id, generation, directive_id)
 `directive_id` 同时是幂等 request id。Adapter 不接受额外命令字符串。Governor 在
 Runtime 的串行 append 路径上只签发 `Pending`，绝不在该锁内等待 systemd 或进程。
 每个生产 Adapter 拥有独立异步 worker；一个 worker 慢或超时不阻塞 Resource Agent
-采样、Runtime append 或其他 Adapter。结构化 ACK 之后仍必须做 status reconcile。
+采样、Runtime append 或其他 Adapter。worker 在任何 Adapter 副作用前先 append
+`HostWorkDirectiveDispatchRecorded`，并完成 flush + `sync_data`；该 marker 只证明同一
+directive 已进入“可能执行”的 attempt window，不证明动作成功。已有 marker 的 Pending，
+或 prior-boot 遗留且没有 marker、因而仍无法证明未执行的 Pending，都只以同一
+`directive_id` 进入 `OutcomeUnknown` / status-only 对账，绝不重放副作用。结构化 ACK
+之后仍必须做 status reconcile。
 
 当前生产组合根的 6 个静态 Adapter 为：
 
@@ -238,6 +244,7 @@ Runtime schema v6 已增加以下事件；旧账本保持原字节，只在 repl
 
 - `HostWorkRegistered / HostWorkObserved`；
 - `HostWorkDirectiveIssued`；
+- `HostWorkDirectiveDispatchRecorded`；
 - `HostWorkDirectiveAcknowledged`；
 - `HostWorkDirectiveReconciled`；
 - `HostWorkUnregistered`。
@@ -315,8 +322,8 @@ daemon-reload 并启动 Supervisor socket，不停止或重启已运行 ASR；�
 - `pinvou3-app/src-tauri/src/features/pinvou_os/governor.rs`：85 / 92 / 97%
   默认全机压力阈值、HostWork 确定性候选与 app cgroup 压力评估；
 - `pinvou3-app/src-tauri/src/features/pinvou_os/model.rs` 与 `runtime.rs`：schema v6
-  HostWork Registry、opaque handle、generation 续租、单飞行、Directive / ACK / reconcile /
-  replay；注册与观测写方法只对 crate 内受信组合面开放；
+  HostWork Registry、opaque handle、generation 续租、单飞行、Directive / durable dispatch
+  marker / ACK / reconcile / replay；注册与观测写方法只对 crate 内受信组合面开放；
 - `pinvou3-app/src-tauri/src/app/host_work_control.rs`：6 个静态生产 Adapter、独立
   异步 worker、状态轮询与后验 reconcile；
 - `pinvou3-app/src-tauri/src/features/monitor/platform/linux_memory.rs`：全机
@@ -332,8 +339,33 @@ daemon-reload 并启动 Supervisor socket，不停止或重启已运行 ASR；�
   受限 rollback、`InvocationID` 前置条件、双向 PID 凭据与耐久控制/观测账本；
 - `pinvou3-app/src-tauri/packaging/linux/deb/` 与 `packaging/linux/descriptor/`：
   Supervisor socket/service、受监督 app unit、ASR drop-in、descriptor v1、显式 MegaBook
-  4 GiB / 8 GiB / 2 GiB profile 与专用 launcher。普通 desktop 仍是 direct；这些新
-  资源尚未经 MegaBook 真实 deb / systemd / OOM E2E。
+  4 GiB / 8 GiB / 2 GiB profile、专用 launcher，以及只接受
+  `activate / deactivate / status` 的 marker-transaction helper。普通 desktop 仍是 direct；
+  helper 以 v2 `installing → effective-policy 校验 → applied` 两阶段 marker 表达事实，v1
+  profile / desktop 的包内源路径、用户目标路径、字节/hash 与 legacy marker 路径/字节/hash
+  共同冻结为 cleanup ABI，并保留 status/deactivate 兼容。每个目标用 no-clobber hardlink、
+  inode/mode/hash/nlink 复核及 file/parent fsync 分别原子发布，不宣称两文件整组瞬时原子；
+  删除先原子 rename 到同目录固定 quarantine 再复核，避免同 UID 编辑器 atomic-save 的
+  TOCTOU。activate/deactivate 都在 app `Inactive | Failed` 且 `MainPID=0` 的停止边界
+  fail closed；三个固定私有 `0700`
+  staging namespace 只恢复可证明的空/半写单链接残留，或与固定公开目标同 inode 的
+  已发布双链接残留；未知内容保留并报出精确恢复路径；
+- `pinvou3-app/scripts/megabook-supervisor-e2e.sh` 与其固定 fixtures：真实 deb 基线、
+  deb SHA-256、完整 maintainer control 成员与跟踪的安装行为字段、生成 `.list`、control `md5sums`、
+  `dpkg --verify` 与 12 条关键安装路径的模式/大小/内容行为等价证据、hardened client /
+  mutual credential、same-UID ASR Stop 负测、High / Max 独立 generation、
+  ready/go 放量门、精确账本与 journald/oom 证据、trap 回滚、prepare-purge 与
+  verify-purged 的自动验收结构。任何已安装 helper / Supervisor 执行之前都先完成精确 deb
+  行为等价校验；该证据不冒充为能从 dpkg 状态反推原始压缩 archive 字节的回执。首次
+  Launch 前必须证明无任何内存测试资产，退出时恢复并核验 socket / Supervisor /
+  ASR 初始活动状态。脚本不调用 sudo；真实安装和 purge 仍各需一次用户授权；
+- `pinvou3-app/scripts/tauri/build.js`：Linux deb 以 `umask 0022` 把固定
+  `deb.files` allowlist 复制到 `src-tauri/target/` 临时 staging，并在新产物中对每个
+  固定目标核对恰好一份、`root/root`、预期 mode 与源字节 SHA-256；symlink、
+  staging / 包内 hardlink、路径、mode 或 hash 异常都 fail closed。这是打包门禁，
+  不是实机安装证据。
+
+以上新部署资源和验收结构尚未经 MegaBook 真实 deb / systemd / High / OOM / purge E2E。
 
 实现接线变化后必须同时更新这些锚点、架构索引、三份专题 HTML、Resource Skill、
 packaging 说明、schema/replay 测试和 architecture guard；只改图或 Prompt 不算落地。
@@ -361,7 +393,8 @@ packaging 说明、schema/replay 测试和 architecture guard；只改图或 Pro
 
 当前工作树已落地的代码阶段：
 
-1. schema v6、HostWork Registry、只读 status、Directive / ACK / reconcile 与 replay；
+1. schema v6、HostWork Registry、只读 status、Directive / durable dispatch marker / ACK /
+   reconcile 与 replay；
 2. scheduled、knowledge、固定 connector、受限 detached sub-agent、ASR Stop 与 app
    status-only 的 6 个生产 Adapter；无 EngineTurn / ManagedChild / app 自停 Adapter；
 3. 每个 Adapter 的独立异步 worker、Governor 确定性 Pending、单飞行、后验观测
@@ -369,18 +402,17 @@ packaging 说明、schema/replay 测试和 architecture guard；只改图或 Pro
 4. 独立 user Supervisor、descriptor v1 / wire v2、固定 action matrix、`InvocationID`
    与双向 PID credential 校验、effective restart / memory policy fail-closed、
    Launch 所有权受限 rollback，以及耐久控制/观测账本；
-5. 随包 Supervisor unit、app unit、ASR drop-in、MegaBook inert profile 与专用 launcher。
+5. 随包 Supervisor unit、app unit、ASR drop-in、MegaBook inert profile、专用 launcher
+   与显式 profile helper；仓库内已有固定、可回滚的 install / High / Max / purge harness。
 
 仍待完成的验收阶段：
 
-1. 对已冻结的 cgroup freshness / baseline / sticky relief 与“首次 + 1 次 retry”语义
-   完成最终全量回归与文档门禁；
-2. 在 MegaBook 以真实 x86_64 / Debian `amd64` release deb 完成安装、显式
+1. 在 MegaBook 以真实 x86_64 / Debian `amd64` release deb 完成安装、显式
    profile 激活、专用 launcher、mutual credential、ASR Stop、应用组越过
    `MemoryMax` 以及 Supervisor 存活/留证 E2E；
-3. 核对普通 desktop 继续 direct 且不被误设为全局默认；验证卸载、回滚和
+2. 核对普通 desktop 继续 direct 且不被误设为全局默认；实际执行卸载、回滚和
    已运行 ASR 不被 postinst 意外重启；
-4. 再决定是否开放受保护的 `system/*` 状态投影或人工恢复入口；当前模型与
+3. 再决定是否开放受保护的 `system/*` 状态投影或人工恢复入口；当前模型与
    Renderer 保持只读。
 
 最低验收不变：

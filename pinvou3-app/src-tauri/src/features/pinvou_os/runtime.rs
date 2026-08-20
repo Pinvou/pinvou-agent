@@ -80,6 +80,9 @@ struct RuntimeInner {
     /// 只有本进程内受信代码拿到的 HostWorkHandle 才能操作 Registry。账本回放会恢复
     /// 只读投影，但不会凭历史字符串恢复可执行控制句柄。
     runtime_instance_id: u64,
+    /// 本次 boot 的 RuntimeStarted sequence。只有其后由本进程签发、且尚无 dispatch
+    /// marker 的 Pending 才能首次派发；旧 boot 遗留 Pending 一律 status-only。
+    current_runtime_started_sequence: u64,
     live_host_work_generations: RwLock<BTreeMap<String, u64>>,
     /// 已注销 identity 永久保留为进程内 tombstone，并可从账本重建。即使 projection
     /// 不再展示该工作，也绝不能让历史 Directive 与新工作复用同一 identity。
@@ -222,6 +225,13 @@ pub struct ReconcileHostWorkDirectiveRequest {
     pub detail: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostWorkDispatchRecord {
+    NewlyRecorded,
+    AlreadyRecorded,
+    InheritedPending,
+}
+
 /// Execution adapter 提交给 Runtime 的一次 Front 交互。原文只在调用栈中短暂
 /// 存在；账本只保存 SHA-256 与字符数，避免把完整对话复制成第二份持久真相源。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -303,6 +313,7 @@ impl PinvouOsRuntime {
                 memory_engine: RwLock::new(MemoryEngineState::Ready(replayed_memory.engine)),
                 memory_evidence_index: RwLock::new(memory_evidence_index),
                 runtime_instance_id: next_runtime_instance_id(),
+                current_runtime_started_sequence: next_sequence,
                 live_host_work_generations: RwLock::new(BTreeMap::new()),
                 retired_host_work_ids: RwLock::new(retired_host_work_ids),
                 #[cfg(test)]
@@ -1105,6 +1116,7 @@ impl PinvouOsRuntime {
             policy_revision: RESOURCE_GOVERNOR_POLICY_REVISION.to_string(),
             resource_pressure_epoch,
             issued_event_sequence: None,
+            dispatch_recorded_at_ms: None,
             issued_at_ms: now_ms(),
             status: HostWorkDirectiveStatus::Pending,
             acknowledgement: None,
@@ -1185,6 +1197,7 @@ impl PinvouOsRuntime {
             policy_revision,
             resource_pressure_epoch,
             issued_event_sequence: None,
+            dispatch_recorded_at_ms: None,
             issued_at_ms: now_ms(),
             status: HostWorkDirectiveStatus::Pending,
             acknowledgement: None,
@@ -1230,6 +1243,54 @@ impl PinvouOsRuntime {
             })
             .cloned()
             .collect())
+    }
+
+    /// 在任何 Adapter 副作用前持久化一次 dispatch attempt fence。
+    ///
+    /// marker 只证明“本 directive 已进入可能执行的窗口”，不证明动作执行或成功。
+    /// 当前 boot 之前遗留且没有 marker 的 Pending 同样可能已在旧进程中执行，因此绝不
+    /// 补写 marker 或重放，只返回 `InheritedPending` 让 worker 转 outcome_unknown/status。
+    pub(crate) fn record_host_work_directive_dispatch(
+        &self,
+        handle: &HostWorkHandle,
+        directive_id: &str,
+    ) -> Result<HostWorkDispatchRecord> {
+        let directive_id = required_identifier(directive_id, "host directive id")?;
+        let append_guard = self.inner.append_lock.lock();
+        let work = self.require_live_host_work(handle)?;
+        let directive = self.require_host_work_directive(&work, &directive_id)?;
+        if directive.dispatch_recorded_at_ms.is_some() {
+            return Ok(HostWorkDispatchRecord::AlreadyRecorded);
+        }
+        if directive.acknowledgement.is_some()
+            || directive.status != HostWorkDirectiveStatus::Pending
+        {
+            bail!("host directive is not pending dispatch");
+        }
+        let issued_sequence = directive
+            .issued_event_sequence
+            .ok_or_else(|| anyhow!("host directive has no durable issuance sequence"))?;
+        if issued_sequence <= self.inner.current_runtime_started_sequence {
+            return Ok(HostWorkDispatchRecord::InheritedPending);
+        }
+
+        let publication = self.append_locked(
+            EventContext {
+                source_actor_id: "adapter:host-work".to_string(),
+                causation_id: Some(directive.directive_id.clone()),
+                correlation_id: Some(format!("host-work:{}", work.work_id)),
+                ..EventContext::default()
+            },
+            RuntimeEvent::HostWorkDirectiveDispatchRecorded {
+                directive_id: directive.directive_id,
+                work_id: work.work_id,
+                generation: work.generation,
+                dispatched_at_ms: now_ms(),
+            },
+        )?;
+        drop(append_guard);
+        deliver_persisted_event(Some(publication));
+        Ok(HostWorkDispatchRecord::NewlyRecorded)
     }
 
     pub(crate) fn host_work_directives_requiring_reconciliation(
@@ -1279,6 +1340,15 @@ impl PinvouOsRuntime {
         }
         if directive.status != HostWorkDirectiveStatus::Pending {
             bail!("host directive is not pending acknowledgement");
+        }
+        let inherited_outcome_unknown = acknowledgement
+            == HostWorkDirectiveAcknowledgement::OutcomeUnknown
+            && directive.dispatch_recorded_at_ms.is_none()
+            && directive
+                .issued_event_sequence
+                .is_some_and(|sequence| sequence <= self.inner.current_runtime_started_sequence);
+        if directive.dispatch_recorded_at_ms.is_none() && !inherited_outcome_unknown {
+            bail!("host directive acknowledgement has no durable dispatch record");
         }
         let publication = self.append_locked(
             EventContext {
@@ -2740,6 +2810,7 @@ fn validate_host_work_event_shape(envelope: &EventEnvelope) -> Result<()> {
         RuntimeEvent::HostWorkRegistered { .. }
             | RuntimeEvent::HostWorkObserved { .. }
             | RuntimeEvent::HostWorkDirectiveIssued { .. }
+            | RuntimeEvent::HostWorkDirectiveDispatchRecorded { .. }
             | RuntimeEvent::HostWorkDirectiveAcknowledged { .. }
             | RuntimeEvent::HostWorkDirectiveReconciled { .. }
             | RuntimeEvent::HostWorkUnregistered { .. }
@@ -2789,6 +2860,7 @@ fn validate_host_work_event_shape(envelope: &EventEnvelope) -> Result<()> {
             required_identifier(&directive.policy_revision, "host directive policy revision")?;
             if directive.issued_at_ms > envelope.occurred_at_ms
                 || directive.issued_event_sequence.is_some()
+                || directive.dispatch_recorded_at_ms.is_some()
                 || directive.status != HostWorkDirectiveStatus::Pending
                 || directive.acknowledgement.is_some()
                 || directive.acknowledged_at_ms.is_some()
@@ -2799,6 +2871,21 @@ fn validate_host_work_event_shape(envelope: &EventEnvelope) -> Result<()> {
                 || directive.reconciliation_detail.is_some()
             {
                 bail!("HostWork directive was issued with non-initial state");
+            }
+        }
+        RuntimeEvent::HostWorkDirectiveDispatchRecorded {
+            directive_id,
+            work_id,
+            generation,
+            dispatched_at_ms,
+        } => {
+            validate_host_work_event_identity(work_id, *generation)?;
+            required_identifier(directive_id, "host directive id")?;
+            if envelope.source_actor_id != "adapter:host-work"
+                || envelope.causation_id.as_deref() != Some(directive_id.as_str())
+                || *dispatched_at_ms > envelope.occurred_at_ms
+            {
+                bail!("HostWork dispatch record has an invalid actor, cause, or timestamp");
             }
         }
         RuntimeEvent::HostWorkDirectiveAcknowledged {
@@ -2860,6 +2947,7 @@ fn validate_host_work_event_chain(events: &[EventEnvelope]) -> Result<()> {
     let mut projection = RuntimeSnapshot::default();
     let mut retired_work_ids = BTreeSet::new();
     let mut fresh_critical_evidence_ids = BTreeSet::new();
+    let mut current_runtime_started_sequence = None;
     for envelope in events {
         if envelope
             .causation_id
@@ -2869,6 +2957,10 @@ fn validate_host_work_event_chain(events: &[EventEnvelope]) -> Result<()> {
             fresh_critical_evidence_ids.insert(envelope.event_id.clone());
         }
         match &envelope.event {
+            RuntimeEvent::RuntimeStarted { .. } => {
+                current_runtime_started_sequence = Some(envelope.sequence);
+                continue;
+            }
             RuntimeEvent::ResourceObserved { observation, .. } => {
                 // Directive 的 retry epoch 来自同一权威资源事件流；HostWork 专项校验
                 // 也必须推进这部分 projection，不能把它当无关事件跳过。
@@ -2983,6 +3075,37 @@ fn validate_host_work_event_chain(events: &[EventEnvelope]) -> Result<()> {
                         ))
                 {
                     bail!("HostWork action exceeded its retry bound in the pressure epoch");
+                }
+            }
+            RuntimeEvent::HostWorkDirectiveDispatchRecorded {
+                directive_id,
+                work_id,
+                generation,
+                ..
+            } => {
+                require_projected_host_work(&projection, work_id, *generation)?;
+                let directive = projection
+                    .host_work_directives
+                    .get(directive_id)
+                    .ok_or_else(|| anyhow!("HostWork dispatch record has no directive"))?;
+                if directive.work_id != *work_id || directive.generation != *generation {
+                    bail!("HostWork dispatch record generation mismatch");
+                }
+                if directive.dispatch_recorded_at_ms.is_some()
+                    || directive.acknowledgement.is_some()
+                    || directive.status != HostWorkDirectiveStatus::Pending
+                {
+                    bail!("HostWork directive dispatch was recorded more than once or too late");
+                }
+                let runtime_started_sequence =
+                    current_runtime_started_sequence.ok_or_else(|| {
+                        anyhow!("HostWork dispatch record has no RuntimeStarted fence")
+                    })?;
+                if directive
+                    .issued_event_sequence
+                    .is_none_or(|sequence| sequence <= runtime_started_sequence)
+                {
+                    bail!("inherited HostWork Pending cannot receive a new dispatch record");
                 }
             }
             RuntimeEvent::HostWorkDirectiveAcknowledged {
@@ -3892,6 +4015,15 @@ fn apply_event(snapshot: &mut RuntimeSnapshot, envelope: &EventEnvelope) {
                 .host_work_directives
                 .insert(directive.directive_id.clone(), projected_directive);
         }
+        RuntimeEvent::HostWorkDirectiveDispatchRecorded {
+            directive_id,
+            dispatched_at_ms,
+            ..
+        } => {
+            if let Some(directive) = snapshot.host_work_directives.get_mut(directive_id) {
+                directive.dispatch_recorded_at_ms = Some(*dispatched_at_ms);
+            }
+        }
         RuntimeEvent::HostWorkDirectiveAcknowledged {
             directive_id,
             work_id,
@@ -4469,6 +4601,7 @@ fn event_is_renderer_visible(event: &RuntimeEvent) -> bool {
         RuntimeEvent::MemoryProjectionUpdated { .. }
             | RuntimeEvent::OrganizedMemoryDecisionRecorded { .. }
             | RuntimeEvent::OrganizedMemoryCheckpointRecorded { .. }
+            | RuntimeEvent::HostWorkDirectiveDispatchRecorded { .. }
     )
 }
 

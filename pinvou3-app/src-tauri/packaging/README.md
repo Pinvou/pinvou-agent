@@ -17,7 +17,10 @@ packaging/
 公共构建编排位于 `../../scripts/tauri/`：
 
 - `platform-config.js`：只负责选择当前平台 overlay。
-- `build.js`：组合平台配置并启动 Tauri CLI。
+- `build.js`：组合平台配置并启动 Tauri CLI；Linux deb 构建还会以
+  `umask 0022` 把固定 `deb.files` allowlist 复制到 `src-tauri/target/` 临时
+  staging，并在构建后核对包内唯一路径、`root/root`、预期 mode 与 SHA-256；
+  任一 symlink、staging / 包内 hardlink、路径、mode 或 hash 异常都 fail closed。
 - `windows-runtime.js`：读取 runtime descriptor，不感知安装器细节。
 - `windows-installer.js`：按 bundle 目标准备 NSIS 专属资源。
 
@@ -31,9 +34,18 @@ packaging/
 ## Linux 资源边界
 
 当前工作树的 Linux bundle 已包含独立 `pinvou-supervisor`、socket-activated user
-service、固定 app / ASR descriptor、受监督 app unit、ASR cgroup drop-in 和显式
-MegaBook canary profile。这是已实现的发行候选资源，不是 MegaBook 已部署且验收
-的事实：当前新 deb / systemd / OOM 链路尚未完成实机 E2E。旧 f24
+service、固定 app / ASR descriptor、受监督 app unit、ASR cgroup drop-in、显式
+MegaBook canary profile、专用 launcher 和只接受 `activate / deactivate / status`
+的 profile helper。helper 对完整 effective unit / resource / restart policy 和受信 Supervisor
+`Status + Reconciled` 回执 fail closed，并冻结 v1 profile / desktop / marker 的路径、
+字节与 hash cleanup ABI。仓库还已实现固定 E2E harness 与 deb 固定 payload
+mode/hash 门禁；验收脚本在执行任何已安装 helper / Supervisor 前，以 deb SHA-256、
+完整 maintainer control 成员/跟踪的安装行为字段、生成 `.list`、control `md5sums`、`dpkg --verify` 和
+12 条关键安装路径证明安装行为与未变基线 deb 等价，但不声称能由 dpkg 状态重建原始
+压缩 archive 字节。这些是已实现的
+发行候选资源与验收结构，不是
+MegaBook 已部署且验收的事实：真实 deb 安装、High、OOM 与 purge 尚未
+执行。旧 f24
 direct transient canary 只验证过当时的直接临时 unit，不能作为新 Supervisor
 或 HostWork 链路的验收证据。
 
@@ -82,13 +94,16 @@ Supervisor 的安装边界如下：
   `/etc/sudoers.d/pinvou3`；
 - Linux 构建只产出当前主机的 native release companion，并核对 ELF machine 与
   deb architecture；Intel/AMD x86-64 在这里使用 Rust `x86_64-unknown-linux-gnu`
-  和 Debian `amd64`，不在 Linux bundle 步骤冒充交叉编译。
+  和 Debian `amd64`，不在 Linux bundle 步骤冒充交叉编译。固定 payload
+  从 allowlist 进入 target staging，最终 deb 必须对每个固定目标证明恰好一份、
+  `root/root`、预期 mode 且内容 hash 与源字节一致；这是构建门禁，不是
+  MegaBook 安装证据。
 
 开发期 `npm run dev` 不是日常运行、内存恢复或 watchdog 边界。打包和
 运维也不得把“Resource Agent 正在采样”、“Supervisor 资源已随包”或“旧 canary
 曾经稳定”写成“当前 MegaBook 已受新链路保护”。
 
 资源治理唯一权威见
-[`ADR-0009`](../../../docs/adr/0009-PinvouOS-资源治理与Host-Supervisor.md)。在新链路通过
-MegaBook 实机 E2E 前，本文只声明已入库的安装资源和安全边界，不发布未验证的
-恢复手册或默认激活步骤。
+[`ADR-0009`](../../../docs/adr/0009-PinvouOS-资源治理与Host-Supervisor.md)。在 MegaBook 真实
+deb 安装、High、OOM 与 purge E2E 通过前，本文只声明已入库的安装资源、
+验收 harness、构建门禁和安全边界，不发布未验证的恢复手册或默认激活步骤。
