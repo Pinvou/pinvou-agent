@@ -4,12 +4,20 @@ use serde_json::{Value, json};
 
 #[cfg(windows)]
 fn resolved_pwsh() -> std::path::PathBuf {
-    std::env::split_paths(&std::env::var_os("PATH").unwrap())
+    let canonical = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|directory| directory.join("pwsh.exe"))
         .find(|candidate| candidate.is_file())
         .unwrap()
         .canonicalize()
-        .unwrap()
+        .unwrap();
+    let rendered = canonical.to_string_lossy();
+    if let Some(path) = rendered.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{path}"));
+    }
+    if let Some(path) = rendered.strip_prefix(r"\\?\") {
+        return std::path::PathBuf::from(path);
+    }
+    canonical
 }
 
 #[cfg(windows)]

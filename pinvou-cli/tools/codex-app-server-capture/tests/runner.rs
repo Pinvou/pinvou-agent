@@ -297,6 +297,102 @@ fn write_fake_codex_cmd(directory: &std::path::Path, name: &str) -> std::path::P
     script
 }
 
+#[cfg(windows)]
+fn path_with_planted_pwsh(root: &std::path::Path) -> (std::path::PathBuf, std::ffi::OsString) {
+    let planted_dir = root.join("planted-pwsh");
+    std::fs::create_dir_all(&planted_dir).unwrap();
+    let planted = planted_dir.join("pwsh.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_fake-app-server"), &planted).unwrap();
+    let mut paths = vec![planted_dir];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    (planted, std::env::join_paths(paths).unwrap())
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_streaming_stimuli_ignore_path_planted_pwsh() {
+    let root = temp_output("protected-streaming-shell");
+    let output = root.join("output");
+    let (planted, path) = path_with_planted_pwsh(&root);
+    let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .args(["run-s2", "--output-dir"])
+        .arg(&output)
+        .args([
+            "--executable",
+            env!("CARGO_BIN_EXE_fake-app-server"),
+            "--scenario-timeout-ms",
+            "2000",
+            "--global-timeout-ms",
+            "10000",
+        ])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        !result.status.success(),
+        "production thresholds must stay strict"
+    );
+    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+    let planted = planted.to_string_lossy();
+    let prompts = capture
+        .lines()
+        .filter_map(|line| serde_json::from_str::<CaptureRecord>(line).ok())
+        .filter_map(|record| serde_json::from_str::<Value>(&record.line).ok())
+        .filter(|frame| frame["method"] == "turn/start")
+        .filter_map(|frame| {
+            frame
+                .pointer("/params/input/0/text")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .filter(|prompt| {
+            ["S2-A", "S2-B", "S2-D"]
+                .iter()
+                .any(|name| prompt.contains(name))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(prompts.len(), 3);
+    assert!(
+        prompts
+            .iter()
+            .all(|prompt| !prompt.contains(planted.as_ref()))
+    );
+    assert!(prompts.iter().all(|prompt| {
+        prompt
+            .to_ascii_lowercase()
+            .contains(r"windowspowershell\v1.0\powershell.exe")
+    }));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(windows)]
+fn scenario_c_rejects_path_planted_pwsh_wrapper() {
+    let root = temp_output("untrusted-wrapper-shell");
+    let output = root.join("output");
+    let (_planted, path) = path_with_planted_pwsh(&root);
+    let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .args(["run-s2", "--output-dir"])
+        .arg(&output)
+        .args([
+            "--executable",
+            env!("CARGO_BIN_EXE_fake-app-server"),
+            "--scenario-timeout-ms",
+            "2000",
+            "--global-timeout-ms",
+            "10000",
+        ])
+        .env("PATH", path)
+        .env("S2_FAKE_MODE", "wrapper-approval")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+    assert!(capture.contains(r#"\"decision\":\"cancel\""#));
+    assert!(!capture.contains(r#"\"decision\":\"accept\""#));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 #[cfg(windows)]
 fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim() {

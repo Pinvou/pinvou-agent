@@ -495,10 +495,9 @@ fn execute(
         let scenario_shell = trusted_scenario_shell()?;
         let approval_command = approval_command()?;
         #[cfg(windows)]
-        let approval_wrapper = Some(approval_wrapper_candidate(
-            &scenario_shell,
-            &approval_command,
-        )?);
+        let approval_wrapper = trusted_approval_wrapper_shell()?
+            .map(|shell| approval_wrapper_candidate(&shell, &approval_command))
+            .transpose()?;
         #[cfg(not(windows))]
         let approval_wrapper: Option<String> = None;
         let corpus = restricted_ascii_corpus();
@@ -1524,7 +1523,7 @@ fn streaming_command(
             .map(|byte| format!("{byte:02X}"))
             .collect::<String>();
         return Ok(format!(
-            r#"\"{shell}\" -NoLogo -NoProfile -NonInteractive -Command \"$c=[Convert]::FromHexString('{encoded}');$o=[Console]::OpenStandardOutput();for($i=0;$i -lt {chunks};$i++){{$o.Write($c,0,$c.Length);$o.Flush();Start-Sleep -Milliseconds {cadence_ms}}}\""#
+            r#"\"{shell}\" -NoLogo -NoProfile -NonInteractive -Command \"$h='{encoded}';$c=New-Object byte[] ($h.Length/2);for($j=0;$j -lt $c.Length;$j++){{$c[$j]=[Convert]::ToByte($h.Substring($j*2,2),16)}};$o=[Console]::OpenStandardOutput();for($i=0;$i -lt {chunks};$i++){{$o.Write($c,0,$c.Length);$o.Flush();Start-Sleep -Milliseconds {cadence_ms}}}\""#
         ));
     }
     #[cfg(not(windows))]
@@ -1562,31 +1561,20 @@ fn approval_command() -> Result<String> {
 fn trusted_scenario_shell() -> Result<PathBuf> {
     #[cfg(windows)]
     {
-        let candidate = find_windows_path_command("pwsh.exe")?;
-        let canonical =
-            normalize_windows_command_path(candidate.canonicalize().with_context(|| {
-                format!(
-                    "failed to canonicalize trusted pwsh.exe {}",
-                    candidate.display()
-                )
-            })?)?;
-        if !canonical.is_absolute()
-            || !canonical.is_file()
+        let system_root = canonical_safe_windows_root(system_directory()?, "system directory")?;
+        let candidate = system_root.join(r"WindowsPowerShell\v1.0\powershell.exe");
+        let canonical = canonical_safe_windows_executable(
+            &candidate,
+            "powershell.exe",
+            "system Windows PowerShell",
+        )?;
+        if !canonical.starts_with(&system_root)
             || !canonical
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case("pwsh.exe"))
+                .is_some_and(|name| name.eq_ignore_ascii_case("powershell.exe"))
         {
-            bail!("trusted pwsh.exe was not a canonical absolute regular file");
-        }
-        let rendered = canonical
-            .to_str()
-            .context("trusted pwsh.exe path was not valid Unicode")?;
-        if rendered
-            .chars()
-            .any(|character| matches!(character, '\r' | '\n' | '"'))
-        {
-            bail!("trusted pwsh.exe path contained unsafe characters");
+            bail!("system Windows PowerShell escaped the protected system directory");
         }
         return Ok(canonical);
     }
@@ -1598,6 +1586,117 @@ fn trusted_scenario_shell() -> Result<PathBuf> {
         }
         Ok(shell)
     }
+}
+
+#[cfg(windows)]
+fn trusted_approval_wrapper_shell() -> Result<Option<PathBuf>> {
+    let candidate = match find_windows_path_command("pwsh.exe") {
+        Ok(candidate) => candidate,
+        Err(_) => return Ok(None),
+    };
+    let canonical =
+        canonical_safe_windows_executable(&candidate, "pwsh.exe", "app-server PowerShell")?;
+    let program_files = canonical_safe_windows_root(known_program_files()?, "Program Files")?;
+    let powershell_root = match program_files.join("PowerShell").canonicalize() {
+        Ok(root) => normalize_windows_command_path(root)?,
+        Err(_) => return Ok(None),
+    };
+    if !powershell_root.starts_with(&program_files) || !canonical.starts_with(&powershell_root) {
+        return Ok(None);
+    }
+    Ok(Some(canonical))
+}
+
+#[cfg(windows)]
+fn canonical_safe_windows_root(path: PathBuf, label: &str) -> Result<PathBuf> {
+    let canonical = normalize_windows_command_path(
+        path.canonicalize()
+            .with_context(|| format!("failed to canonicalize {label} {}", path.display()))?,
+    )?;
+    if !canonical.is_absolute() || !canonical.is_dir() {
+        bail!("{label} was not a canonical absolute directory");
+    }
+    validate_safe_windows_path(&canonical, label)?;
+    Ok(canonical)
+}
+
+#[cfg(windows)]
+fn canonical_safe_windows_executable(
+    path: &Path,
+    expected_name: &str,
+    label: &str,
+) -> Result<PathBuf> {
+    let canonical = normalize_windows_command_path(
+        path.canonicalize()
+            .with_context(|| format!("failed to canonicalize {label} {}", path.display()))?,
+    )?;
+    if !canonical.is_absolute()
+        || !canonical.is_file()
+        || !canonical
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected_name))
+    {
+        bail!("{label} was not the expected canonical absolute regular file");
+    }
+    validate_safe_windows_path(&canonical, label)?;
+    Ok(canonical)
+}
+
+#[cfg(windows)]
+fn validate_safe_windows_path(path: &Path, label: &str) -> Result<()> {
+    let rendered = path
+        .to_str()
+        .with_context(|| format!("{label} path was not valid Unicode"))?;
+    if rendered
+        .chars()
+        .any(|character| matches!(character, '\r' | '\n' | '"'))
+    {
+        bail!("{label} path contained unsafe characters");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn known_program_files() -> Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath};
+
+    let mut path = std::ptr::null_mut();
+    let result =
+        unsafe { SHGetKnownFolderPath(&FOLDERID_ProgramFiles, 0, std::ptr::null_mut(), &mut path) };
+    if result < 0 || path.is_null() {
+        unsafe { CoTaskMemFree(path.cast()) };
+        bail!("SHGetKnownFolderPath(FOLDERID_ProgramFiles) failed: HRESULT {result:#x}");
+    }
+    let length = unsafe {
+        let mut length = 0;
+        while *path.add(length) != 0 {
+            length += 1;
+        }
+        length
+    };
+    let value = PathBuf::from(OsString::from_wide(unsafe {
+        std::slice::from_raw_parts(path, length)
+    }));
+    unsafe { CoTaskMemFree(path.cast()) };
+    Ok(value)
+}
+
+#[cfg(windows)]
+fn system_directory() -> Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    let mut buffer = vec![0_u16; 32_768];
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if length == 0 || length as usize >= buffer.len() {
+        bail!("GetSystemDirectoryW failed or returned an oversized path");
+    }
+    Ok(PathBuf::from(OsString::from_wide(
+        &buffer[..length as usize],
+    )))
 }
 
 fn approval_wrapper_candidate(pwsh: &Path, expected: &str) -> Result<String> {
@@ -1616,17 +1715,14 @@ fn approval_wrapper_candidate(pwsh: &Path, expected: &str) -> Result<String> {
 
 #[cfg(windows)]
 fn trusted_system_cmd() -> Result<PathBuf> {
-    use std::os::windows::ffi::OsStringExt;
-    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
-
-    let mut buffer = vec![0_u16; 32_768];
-    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
-    if length == 0 || length as usize >= buffer.len() {
-        bail!("GetSystemDirectoryW failed or returned an oversized path");
-    }
-    let path = PathBuf::from(OsString::from_wide(&buffer[..length as usize])).join("cmd.exe");
-    if !path.is_absolute() || !path.is_file() {
-        bail!("trusted system cmd.exe was not a regular absolute file");
+    let system_root = canonical_safe_windows_root(system_directory()?, "system directory")?;
+    let path = canonical_safe_windows_executable(
+        &system_root.join("cmd.exe"),
+        "cmd.exe",
+        "system cmd.exe",
+    )?;
+    if !path.starts_with(&system_root) {
+        bail!("system cmd.exe escaped the protected system directory");
     }
     Ok(path)
 }
@@ -1796,6 +1892,11 @@ mod tests {
         assert!(d.chunks >= 64);
         assert!(d.cadence_ms >= 200);
         assert!(d.chunk_bytes * 8 >= 2 * 1024);
+        #[cfg(windows)]
+        for stimulus in [&a, &b, &d] {
+            assert!(stimulus.command.contains("[Convert]::ToByte"));
+            assert!(!stimulus.command.contains("FromHexString"));
+        }
         for stimulus in [a, b, d] {
             assert_eq!(
                 stimulus.target_bytes,
