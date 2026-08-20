@@ -12,6 +12,7 @@
 | Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `9c5f4f19` (r12: PR #33 six commits + PR #35 merged via rebase) |
 | Merged fixes | Existing `#9`, `#11`, `#12`, `#13`, `#15`, `#16`, `#17`, and `#19`, plus r11 PRs `#18`, `#21`, `#22`, `#25`, `#26`, `#27`, `#29`, `#30` and r12 PRs `#33`, `#35`, are merged |
 | Published status | `pinvou3-clean`, `pinvou-v0.9.5-r11`, and the r11 parent gitlink resolve to `0d89a31be016457c180501417dd2c0f34ce844a6`; `r1` through `r11` remain immutable historical tags; r12 landed on the engine side (`pinvou3-clean` and tag `pinvou-v0.9.5-r12` at `9c5f4f19`), parent gitlink lands via PR #375 |
+| Pending foundation change | `Pinvou/CodeWhale#20` candidate `542c8411e118a752507f9934e5bbd3422437e5fa`; parent PR #323 may validate this candidate but must not merge until CodeWhale publishes a new immutable tag and the gitlink is updated to that tag target |
 | Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | Drift | r12 baseline totals 110 files, `+9781/-1168` (net 8,613 added lines); r11→r12 is 17 files, `+1941/-188` |
 | Organization | Four current long-lived topics; PR #13 removes the product-specific orchestration topic |
@@ -29,6 +30,12 @@
 - Explicit route output ceilings now constrain request budgets; the host declares an output route fact for operator-owned uncatalogued models on custom OpenAI-compatible endpoints while official and coding-plan endpoints stay fail-closed (parent PR #216). Moonshot omits only incompatible tools, emits one user-visible diagnostic per turn, and rejects a named `tool_choice` when its target was omitted. Host MCP secret resolution avoids process-environment writes, while denied servers disappear consistently from the pool, catalog, direct calls, reloads, and subagent inheritance.
 - `withdraw_steer` returns `SteerWithdrawal` to distinguish withdrawn, committed, and missing input. Windows Shell output uses incremental UTF-8 decoding across polls, and dependency updates address the h2/lru advisories. r11 adds 15 `forkguard_*` regressions, raising the total from 41 to 56 without creating a new long-lived topic.
 - r11 adds 48 files and `+2242/-292` over r10. Provider projection, host MCP policy, steer lifecycle, and cross-platform Shell decoding remain generic upstream candidates.
+
+### PR #20 local-vision transport boundary (pending release)
+
+- The foundation keeps prompt text, temperature, and output policy internal. Its reusable host interface adds only optional request timeout, streaming, and transient-retry controls.
+- Parent PR #323 enables a 300-second streaming request and disables transient retries only for the app-managed llama-server process. Configured cloud, vLLM, Ollama, and native multimodal routes retain the foundation defaults.
+- Streaming parsing is bounded, reports truncated partial output, rejects empty responses, and reuses the existing retry classifier. Mid-stream read errors and per-chunk timeouts no longer collapse into the truncated flag: once the retry policy is exhausted they fail with the underlying cause, and only genuine `finish_reason=length` cuts or EOF without a terminal event are reported as truncated. The candidate is intentionally not treated as published: public submodule verification must remain blocked until PR #20 is merged and a new immutable CodeWhale tag exists.
 
 ### r10 fixed-sampling and compaction-usage boundaries (published)
 
@@ -56,6 +63,76 @@ CodeWhale PR #15 combined candidate `1eca6103a` with security follow-ups `169c24
 - Revision reconciliation remains fail-closed only for genuine cross-client turns. A local `chat:done` immediately releases the next send, readback failures cannot block ordinary local chat, and cross-client pending notices are deduplicated per session.
 - Two CodeWhale tests, two parent `forkguard_*` tests, and Tauri/Web frontend behavior coverage protect side-effect-free runtime reads, observable and idempotent explicit recovery, safe secondary Store opening, durable startup recovery, and consecutive sends after local completion.
 - The fix is included in the published head, drift figures, and immutable tag `pinvou-v0.9.5-r5`; CodeWhale required checks and parent automation pass.
+
+### Pending change (2026-08-12 · slow-device vision timeout adaptation, unreleased)
+
+- Symptom: on Intel iGPU (UHD 750, Vulkan driver 30.0.100.9805) a cold-start
+  `image_analyze` request exceeds the 120s client timeout; all 4 retries queue
+  behind the slow request and fail → `Retry exhausted` → the main model retries
+  → loop (measured single cold request: 18-50s; first run includes Vulkan
+  pipeline compilation which can exceed 120s).
+- Change (`CodeWhale/crates/tui/src/vision/tools.rs`, 2 edits):
+  - `image_analyze` switched to **streaming** (`stream: true`): total duration
+    is capped at 300s by the stream loop (reqwest overall timeout removed;
+    30s connect timeout kept); on timeout the partially accumulated content is
+    returned with a `truncated` marker instead of failing the whole request and
+    triggering the retry loop. `DEFAULT_VISION_MAX_OUTPUT_TOKENS` stays at the
+    upstream 4096 (same for local and cloud — long-document transcription is
+    not crippled; on slow devices generation short of 4096 is bounded by the
+    streaming timeout). Real descriptions are ~150 tokens, so the limit never
+    affects normal-case speed.
+  - `image_analyze` client timeout 120s → 300s (upper bound only; cloud vision
+    models, typically 10-30s, are unaffected).
+- Status: benchmarks confirm single requests take 8-50s (CPU/Vulkan, 3 runs
+  each); full forkguard/contract regression pending the release flow.
+- Addition (same file, same section): `image_analyze` request construction
+  improved — added a system prompt (image type / verbatim text transcription /
+  key elements and layout, no fabrication), temperature 0.7 → 0.2, and the
+  default prompt upgraded from "Describe this image in detail." to the
+  three-element template. Measured on the same Chinese-text screenshot: the old
+  construction produced a hallucinated repetition loop; the new one transcribes
+  the full Chinese body verbatim. Also safe for cloud vision models (gpt-4o
+  etc.); lower temperature has no downside for transcription tasks.
+- Addition (same file, same section): `image_analyze` now marks truncation
+  explicitly — when `finish_reason == "length"` the result JSON gains
+  `"truncated": true`, so the main model knows the transcription is incomplete
+  (text-dense image scenario) instead of silently summarizing partial content.
+
+### Superseded proposal (2026-08-12 · replaced by PR #20)
+
+> Historical design note only. PR #20 replaced the global streaming/default-prompt approach below with the opt-in host boundary documented above.
+
+- Symptom: on Intel iGPU (UHD 750, Vulkan driver 30.0.100.9805) a cold-start
+  `image_analyze` request exceeds the 120s client timeout; all 4 retries queue
+  behind the slow request and fail → `Retry exhausted` → the main model retries
+  → loop (measured single cold request: 18-50s; first run includes Vulkan
+  pipeline compilation which can exceed 120s).
+- Change (`CodeWhale/crates/tui/src/vision/tools.rs`, 2 edits):
+  - `image_analyze` switched to **streaming** (`stream: true`): total duration
+    is capped at 300s by the stream loop (reqwest overall timeout removed;
+    30s connect timeout kept); on timeout the partially accumulated content is
+    returned with a `truncated` marker instead of failing the whole request and
+    triggering the retry loop. `DEFAULT_VISION_MAX_OUTPUT_TOKENS` stays at the
+    upstream 4096 (same for local and cloud — long-document transcription is
+    not crippled; on slow devices generation short of 4096 is bounded by the
+    streaming timeout). Real descriptions are ~150 tokens, so the limit never
+    affects normal-case speed.
+  - `image_analyze` client timeout 120s → 300s (upper bound only; cloud vision
+    models, typically 10-30s, are unaffected).
+- Status: benchmarks confirm single requests take 8-50s (CPU/Vulkan, 3 runs
+  each); full forkguard/contract regression pending the release flow.
+- Addition (same file, same section): `image_analyze` request construction
+  improved — added a system prompt (image type / verbatim text transcription /
+  key elements and layout, no fabrication), temperature 0.7 → 0.2, and the
+  default prompt upgraded from "Describe this image in detail." to the
+  three-element template. Measured on the same Chinese-text screenshot: the old
+  construction produced a hallucinated repetition loop; the new one transcribes
+  the full Chinese body verbatim. Also safe for cloud vision models (gpt-4o
+  etc.); lower temperature has no downside for transcription tasks.
+- Addition (same file, same section): `image_analyze` now marks truncation
+  explicitly — when `finish_reason == "length"` the result JSON gains
+  `"truncated": true`, so the main model knows the transcription is incomplete
+  (text-dense image scenario) instead of silently summarizing partial content.
 
 ## Topics
 

@@ -1875,6 +1875,9 @@ fn image_input_capability_info_serializes_stable_fields() {
         has_vision_model: true,
         is_local_endpoint: false,
         vision_is_local_endpoint: Some(false),
+        local_engine_state: "unused".to_string(),
+        local_engine_model: "qwen3vl-2b-q3k-s".to_string(),
+        local_engine_device: "gpu".to_string(),
     };
     let value = serde_json::to_value(&info).expect("serialize ImageInputCapabilityInfo");
     assert_eq!(
@@ -1885,6 +1888,9 @@ fn image_input_capability_info_serializes_stable_fields() {
             "has_vision_model": true,
             "is_local_endpoint": false,
             "vision_is_local_endpoint": false,
+            "local_engine_state": "unused",
+            "local_engine_model": "qwen3vl-2b-q3k-s",
+            "local_engine_device": "gpu",
         })
     );
     // 未配置视觉模型时字段仍稳定出现(为 null),前端按 fail-open 处理。
@@ -1894,6 +1900,9 @@ fn image_input_capability_info_serializes_stable_fields() {
         has_vision_model: false,
         is_local_endpoint: true,
         vision_is_local_endpoint: None,
+        local_engine_state: "unused".to_string(),
+        local_engine_model: "qwen3vl-2b-q3k-s".to_string(),
+        local_engine_device: "gpu".to_string(),
     };
     let value = serde_json::to_value(&no_vision).expect("serialize without vision model");
     assert_eq!(value["vision_is_local_endpoint"], serde_json::Value::Null);

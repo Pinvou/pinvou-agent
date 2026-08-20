@@ -244,7 +244,23 @@
   async function uploadDeviceFiles(files) {
     const list = Array.prototype.slice.call(files || []).filter(Boolean);
     for (let index = 0; index < list.length; index++) {
-      await addDroppedFileAttachment(list[index]);
+      let file = list[index];
+      // 发送前预缩放：超长边图片先压到 ~1500px JPEG 再入附件
+      // （本地引擎视觉编码耗时随 token 线性增长）。canvas 不可用时
+      // prescale 原样回落，绝不拦截上传。
+      if (root.PinvouImagePrescale && file.type && file.type.indexOf("image/") === 0) {
+        try {
+          const scaled = await root.PinvouImagePrescale.prescaleImageFile(file);
+          if (scaled.compressed) {
+            const name = String(file.name || "image").replace(/\.[A-Za-z0-9]+$/, "") + ".jpg";
+            file = new File([scaled.file], name, { type: "image/jpeg" });
+            addSystemItem(bt("imageCompressed"));
+          }
+        } catch {
+          // 预缩放失败不拦截上传：原文件继续走分块上传，循环不中断。
+        }
+      }
+      await addDroppedFileAttachment(file);
     }
   }
 

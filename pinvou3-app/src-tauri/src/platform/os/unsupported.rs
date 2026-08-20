@@ -280,3 +280,15 @@ mod tests {
         assert!(validate_upload_location(Path::new("/etc/passwd")).is_err());
     }
 }
+
+/// GPU 分级（本地引擎设备自动选择）：未支持平台一律按无 GPU，走 CPU 推理。
+pub fn gpu_class() -> crate::platform::os::GpuClass {
+    crate::platform::os::GpuClass::None
+}
+
+/// 物理核数（llama-server `-t` 用）：未支持平台回落逻辑核数。
+pub fn physical_core_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}

@@ -1003,6 +1003,55 @@ pub fn run() {
             // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
             pet_window::spawn_if_enabled(app.handle());
 
+            // 本地多模态引擎会话失效钩子:引擎运行态翻转(就绪/停止)时对全部
+            // saved_models bump revision,强制会话 EngineConfig 重快照——覆盖
+            // launch 自启、手动停止、崩溃自愈三条不经 chat.rs 发送门的路径
+            // (EngineConfig 只在会话 spawn 时快照 vision 端点)。
+            crate::features::llama_engine::server::set_session_invalidation_hook(Box::new(
+                |app| {
+                    let Some(pool) = app.try_state::<EnginePool>() else {
+                        return;
+                    };
+                    let prefs = crate::platform::prefs::UserPrefs::load();
+                    for saved in &prefs.advanced.saved_models {
+                        pool.mark_model_updated(&saved.id);
+                    }
+                },
+            ));
+
+            // 本地多模态引擎自动启动(auto_start == launch):后台拉起,不阻塞
+            // 启动流程。前置校验引擎/模型已安装,不满足则静默跳过——首次发图时
+            // 发送门(chat.rs ensure_local_engine_ready)会再触发,自愈该场景。
+            {
+                use crate::features::llama_engine as llama_engine_domain;
+                use crate::platform::prefs::{LlamaEngineAutoStart, UserPrefs};
+                let launch_prefs = UserPrefs::load();
+                if launch_prefs.advanced.llama_engine_auto_start
+                    == Some(LlamaEngineAutoStart::Launch)
+                {
+                    let app = app.handle().clone();
+                    let (model_id, device) =
+                        llama_engine_domain::resolve_default_engine_plan(&launch_prefs.advanced);
+                    tokio::spawn(async move {
+                        if !llama_engine_domain::download::engine_installed() {
+                            return;
+                        }
+                        let Ok(spec) = llama_engine_domain::download::model_spec(&model_id) else {
+                            return;
+                        };
+                        if !llama_engine_domain::download::model_files_verified(spec) {
+                            return;
+                        }
+                        let _ = llama_engine_domain::server::start_if_needed(
+                            &app,
+                            &model_id,
+                            device,
+                        )
+                        .await;
+                    });
+                }
+            }
+
             startup::mark("setup:done");
             Ok(())
         })
@@ -1479,6 +1528,9 @@ pub fn run() {
             startup::mark("exit:cleanup:start");
             tauri::async_runtime::block_on(harvest_child_processes(app));
             startup::mark("exit:cleanup:done");
+            // 退出 pinvou 时自动关闭本地多模态引擎（固定行为，同步 kill 整树，
+            // 无需 async；不挂主窗口 Destroyed——macOS 关主窗桌宠存活时 app 未退出）。
+            crate::features::llama_engine::server::stop();
         }
         tauri::RunEvent::Resumed if !resumed_reported => {
             resumed_reported = true;

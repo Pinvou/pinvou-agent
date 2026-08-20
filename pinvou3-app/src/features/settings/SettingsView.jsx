@@ -670,6 +670,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       // 未人工钉死(非 enabled/disabled)时按目录视觉能力标注预填:命中已验证
       // 多模态条目预填「支持图片」,显式标注不支持预填「不支持图片」,未命中/
       // 未标注保持「自动处理」。
+      // 视觉模型:显式选「本地识图引擎」时用前端局部哨兵 '__local_engine__'(不落盘,
+      // doSave 转 vision_prefer_local_engine);否则用 vision_model_id。
       const pinnedImageCapability = initial.image_capability_override === 'enabled'
         || initial.image_capability_override === 'disabled';
       const [imageCapability, setImageCapability] = useState(
@@ -678,7 +680,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           : imageCapabilityForCatalogModel(initial.model));
       // 用户手动改过档位后不再随模型 ID/目录项自动填写,避免覆盖显式选择。
       const [imageCapabilityTouched, setImageCapabilityTouched] = useState(pinnedImageCapability);
-      const [visionModelId, setVisionModelId] = useState(initial.vision_model_id || '');
+      const [visionModelId, setVisionModelId] = useState(
+        initial.vision_prefer_local_engine ? '__local_engine__' : (initial.vision_model_id || ''));
       const [imageCapabilityPickerOpen, setImageCapabilityPickerOpen] = useState(false);
       const [savingModel, setSavingModel] = useState(false);
       // 保存失败(连接/写盘错误)行内提示:非空时弹窗保持,交用户修正后重试,
@@ -960,8 +963,11 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             vendor: vendor || null,
             endpoint_mode: endpointMode || null,
             // 图片能力/视觉模型(阶段 G):选了自身等同未配置。
+            // 「本地识图引擎」是前端局部哨兵(不落盘),保存时转 vision_prefer_local_engine,
+            // 与 vision_model_id 互斥(后端 save_model 另有归一兜底)。
             image_capability_override: imageCapability || 'pinvou',
-            vision_model_id: visionModelId && visionModelId !== id ? visionModelId : null,
+            vision_prefer_local_engine: visionModelId === '__local_engine__',
+            vision_model_id: visionModelId && visionModelId !== '__local_engine__' && visionModelId !== id ? visionModelId : null,
           });
           onCancel();
         } catch (e) {
@@ -1312,6 +1318,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       // 历史探测误判残留,不应隐藏,如 kimi-for-coding)。
       const visionCandidates = (models || []).filter(item => item && item.id && item.id !== initial.id);
       const visionOptions = [
+        { key: '__local_engine__', label: settingsCopy.llamaEngine.localEngineOption },
         { key: '', label: settingsCopy.visionModelNone },
         ...visionCandidates.map(item => ({ key: item.id, label: selectorMainLabel(item, t) || item.model })),
       ];
@@ -1729,10 +1736,36 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [searchDeleteConfirm, setSearchDeleteConfirm] = useState(null);
       const [searchPickerOpen, setSearchPickerOpen] = useState(false);
       const [restartDialog, setRestartDialog] = useState(null);
-      // 本地多模态引擎：模型/设备选择 + 诊断日志折叠
-      const [llamaModel, setLlamaModel] = useState('qwen3vl-2b-q3k-s');
-      const [llamaDevice, setLlamaDevice] = useState('gpu');
+      // 本地多模态引擎：模型/设备选择 + 诊断日志折叠。模型/设备选择持久化到
+      // prefs.advanced（自动启动与发送兜底共用同一套默认，服务端同源解析）。
+      // 新装默认：q4km 档 + 设备自动检测（老用户 prefs 里的 legacy 模型 id
+      // 与显式 cpu/gpu 原样生效，不强制迁移）。
+      const llamaAdvanced = (bs && bs.settings && bs.settings.advanced) || {};
+      const [llamaModel, setLlamaModel] = useState(llamaAdvanced.llama_engine_default_model || 'qwen3vl-2b-q4km');
+      const [llamaDevice, setLlamaDevice] = useState(llamaAdvanced.llama_engine_default_device || 'auto');
       const [showLlamaLogs, setShowLlamaLogs] = useState(false);
+      // 本地引擎视觉兜底开关：默认开（prefs.advanced.llamaEngineVisionFallback !== false）
+      const [llamaVisionFallback, setLlamaVisionFallback] = useState(
+        (llamaAdvanced.llama_engine_vision_fallback) !== false
+      );
+      // 自动启动引擎三档：first_image(默认) / launch / never
+      const [llamaAutoStart, setLlamaAutoStart] = useState(llamaAdvanced.llama_engine_auto_start || 'first_image');
+      const saveAdvancedPatch = async (patch) => {
+        try {
+          const current = (bs && bs.settings && bs.settings.advanced) || {};
+          await bridge.settings.saveSettings({ advanced: Object.assign({}, current, patch) });
+        } catch (_) {}
+      };
+      const applyLlamaModel = (modelId) => { setLlamaModel(modelId); saveAdvancedPatch({ llama_engine_default_model: modelId }); };
+      const applyLlamaDevice = (device) => { setLlamaDevice(device); saveAdvancedPatch({ llama_engine_default_device: device }); };
+      // prefs 外部刷新(如其他端保存)时同步显示
+      useEffect(() => {
+        const adv = (bs && bs.settings && bs.settings.advanced) || {};
+        if (adv.llama_engine_default_model) setLlamaModel(adv.llama_engine_default_model);
+        if (adv.llama_engine_default_device) setLlamaDevice(adv.llama_engine_default_device);
+        if (adv.llama_engine_auto_start) setLlamaAutoStart(adv.llama_engine_auto_start);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [bs && bs.settings && bs.settings.advanced]);
       useEffect(() => {
         // 首次进入设置页拉一次引擎状态（下载进度/运行状态以事件驱动，这里是兜底）
         if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.refreshStatus) {
@@ -2507,11 +2540,14 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                   <div className="p-4">
                     <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.modelLabel}</div>
                     {models.map(m => (
-                      <button key={m.id} onClick={() => setLlamaModel(m.id)}
+                      <button key={m.id} onClick={() => applyLlamaModel(m.id)}
                         className="flex items-center gap-2.5 w-full py-1.5 text-left">
                         <RadioDot active={llamaModel === m.id} />
                         <span className="text-[13px] leading-4 text-[#1C1C1E] dark:text-[#F2F2F7]">
                           {m.displayName}
+                          {st.recommendedModel === m.id && (
+                            <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded-full bg-[#007AFF]/10 text-[#007AFF]">{settingsCopy.llamaEngine.recommended}</span>
+                          )}
                           {m.installed && <span className="ml-1.5 text-[12px] text-[#34C759]">✓</span>}
                         </span>
                       </button>
@@ -2523,14 +2559,23 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                   </div>
                   <div className="p-4">
                     <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.deviceLabel}</div>
-                    <button onClick={() => setLlamaDevice('gpu')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
+                    <button onClick={() => applyLlamaDevice('auto')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
+                      <RadioDot active={llamaDevice === 'auto'} />
+                      <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.deviceAuto}</span>
+                    </button>
+                    <button onClick={() => applyLlamaDevice('gpu')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
                       <RadioDot active={llamaDevice === 'gpu'} />
                       <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.gpu}</span>
                     </button>
-                    <button onClick={() => setLlamaDevice('cpu')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
+                    <button onClick={() => applyLlamaDevice('cpu')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
                       <RadioDot active={llamaDevice === 'cpu'} />
                       <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.cpu}</span>
                     </button>
+                    {llamaDevice === 'auto' && (
+                      <div className="mt-1 text-[12px] leading-4 text-[#9AA0A6] dark:text-[#636366]">
+                        {st.detectedDevice === 'gpu' ? settingsCopy.llamaEngine.deviceAutoGpu : settingsCopy.llamaEngine.deviceAutoCpu}
+                      </div>
+                    )}
                   </div>
                   <div className="p-4">
                     <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.serviceLabel}</div>
@@ -2539,7 +2584,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                         onClick={() => {
                           if (!bridge.available || !bridge.llamaEngine) return;
                           if (running || starting) bridge.llamaEngine.stopEngine().catch(() => {});
-                          else bridge.llamaEngine.startEngine(llamaModel, llamaDevice).catch(() => {});
+                          // auto 档传给后端已解析的检测值（llama_engine_start 只认 cpu/gpu）
+                          else bridge.llamaEngine.startEngine(llamaModel, llamaDevice === 'auto' ? (st.detectedDevice || 'cpu') : llamaDevice).catch(() => {});
                         }}
                         disabled={starting}
                         className={`h-9 px-4 rounded-full text-[14px] font-semibold ${starting ? 'opacity-50' : ''} ${running ? 'bg-[#FF3B30] text-white' : 'bg-[#007AFF] text-white'}`}>
@@ -2559,6 +2605,40 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     {(st.stderrTail || []).join('\n')}
                   </pre>
                 )}
+                <div className="px-4 py-3 border-t border-black/[0.12] dark:border-white/[0.10]">
+                  <IOSRow label={settingsCopy.llamaEngine.visionFallbackLabel} desc={settingsCopy.llamaEngine.visionFallbackDesc}>
+                    <IOSSwitch
+                      checked={llamaVisionFallback}
+                      onChange={async (v) => {
+                        setLlamaVisionFallback(v);
+                        try {
+                          if (bridge.available && bridge.settings && bridge.settings.saveSettings) {
+                            const current = (bs && bs.settings && bs.settings.advanced) || {};
+                            await bridge.settings.saveSettings({
+                              advanced: Object.assign({}, current, { llama_engine_vision_fallback: v }),
+                            });
+                          }
+                        } catch (_) {}
+                      }} />
+                  </IOSRow>
+                </div>
+                <div className="px-4 py-3 border-t border-black/[0.12] dark:border-white/[0.10]">
+                  <IOSRow label={settingsCopy.llamaEngine.autoStartLabel}>
+                    <SSegmented
+                      isDark={isDark}
+                      options={[
+                        { key: 'first_image', label: settingsCopy.llamaEngine.autoStartFirstImage },
+                        { key: 'launch', label: settingsCopy.llamaEngine.autoStartLaunch },
+                        { key: 'never', label: settingsCopy.llamaEngine.autoStartNever },
+                      ]}
+                      value={llamaAutoStart}
+                      onChange={(v) => { setLlamaAutoStart(v); saveAdvancedPatch({ llama_engine_auto_start: v }); }}
+                    />
+                  </IOSRow>
+                  <div className="px-1 pb-1 mt-1 text-[12px] leading-4 text-[#9AA0A6] dark:text-[#636366]">
+                    {settingsCopy.llamaEngine.autoShutdownHint}
+                  </div>
+                </div>
                 <div className="px-4 py-3 text-[12px] leading-[17px] text-[#9AA0A6] dark:text-[#636366]">
                   {settingsCopy.llamaEngine.privacyNote} {settingsCopy.llamaEngine.newSessionHint}
                 </div>
