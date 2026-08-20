@@ -738,6 +738,7 @@ fn execute(
                 name,
                 &thread_id,
                 &turn_id,
+                &prompt,
                 &scenario_workspace,
                 &approval_command,
                 approval_wrapper.as_deref(),
@@ -1098,6 +1099,7 @@ impl Session {
         name: &str,
         thread_id: &str,
         turn_id: &str,
+        prompt: &str,
         workspace: &Path,
         approval_command: &str,
         approval_wrapper: Option<&str>,
@@ -1113,9 +1115,10 @@ impl Session {
         let mut interrupt_response_latency_ms = None;
         let mut interrupt_terminal_latency_ms = None;
         let mut pending_terminal = None;
+        let mut agent_only_state =
+            matches!(name, "A" | "B" | "D").then(|| AgentOnlyState::new(prompt));
         loop {
             let (timestamp_ns, frame) = self.recv(deadline)?;
-            fail_on_error_notification(&frame)?;
             if frame.get("id").is_some() && frame.get("method").is_some() {
                 if name != "C" || approval_seen {
                     self.reject_server_request(&frame)?;
@@ -1134,6 +1137,7 @@ impl Session {
                 approval_seen = true;
                 continue;
             }
+            fail_on_error_notification(&frame)?;
             if let Some(expected) = interrupt_id {
                 if frame.get("id") == Some(&json!(expected)) && frame.get("method").is_none() {
                     if frame.get("error").is_some() || frame.get("result").is_none() {
@@ -1149,8 +1153,8 @@ impl Session {
                     continue;
                 }
             }
-            if matches!(name, "A" | "B" | "D") {
-                validate_agent_only_notification(&frame, thread_id, turn_id)?;
+            if let Some(state) = agent_only_state.as_mut() {
+                state.validate(&frame, thread_id, turn_id)?;
             }
             if let Some(bytes) = agent_delta_bytes(&frame, thread_id, turn_id) {
                 content.push(ContentEvent {
@@ -1189,6 +1193,9 @@ impl Session {
                 pending_terminal = Some(terminal_state);
                 break;
             }
+        }
+        if let Some(state) = agent_only_state.as_ref() {
+            state.finish()?;
         }
         let terminal_state = pending_terminal.unwrap_or(TerminalState::Missing);
         let bytes: u64 = content.iter().map(|event| event.bytes).sum();
@@ -1590,67 +1597,308 @@ fn agent_delta_bytes(frame: &Value, thread_id: &str, turn_id: &str) -> Option<u6
     .flatten()
 }
 
-fn validate_agent_only_notification(frame: &Value, thread_id: &str, turn_id: &str) -> Result<()> {
-    let Some(method) = frame.get("method").and_then(Value::as_str) else {
-        return Ok(());
-    };
-    let params = frame.get("params").and_then(Value::as_object);
-    let exact_thread = params
-        .and_then(|value| value.get("threadId"))
-        .and_then(Value::as_str)
-        == Some(thread_id);
-    let exact_turn = params
-        .and_then(|value| value.get("turnId"))
-        .and_then(Value::as_str)
-        .or_else(|| frame.pointer("/params/turn/id").and_then(Value::as_str))
-        == Some(turn_id);
-    match method {
-        "turn/started" | "turn/completed" | "turn/plan/updated" => {
-            if !exact_thread || !exact_turn {
-                bail!("protocol error: agent-only notification had mismatched turn identity");
-            }
+struct AgentOnlyState<'a> {
+    prompt: &'a str,
+    thread_started: bool,
+    turn_started: bool,
+    user_item_id: Option<String>,
+    user_completed: bool,
+    raw_items: Vec<Value>,
+}
+
+impl<'a> AgentOnlyState<'a> {
+    fn new(prompt: &'a str) -> Self {
+        Self {
+            prompt,
+            thread_started: false,
+            turn_started: false,
+            user_item_id: None,
+            user_completed: false,
+            raw_items: Vec::new(),
         }
-        "thread/tokenUsage/updated" | "turn/moderationMetadata" => {
-            if !exact_thread || !exact_turn {
-                bail!("protocol error: benign notification had mismatched turn identity");
-            }
-        }
-        "thread/name/updated" | "thread/status/changed" => {
-            if !exact_thread {
-                bail!("protocol error: benign notification had mismatched thread identity");
-            }
-        }
-        "item/agentMessage/delta"
-        | "item/plan/delta"
-        | "item/reasoning/textDelta"
-        | "item/reasoning/summaryTextDelta"
-        | "item/reasoning/summaryPartAdded" => {
-            if !exact_thread || !exact_turn {
-                bail!("protocol error: agent-only notification had mismatched turn identity");
-            }
-        }
-        "item/started" | "item/completed" => {
-            let item_type = frame.pointer("/params/item/type").and_then(Value::as_str);
-            if !exact_thread
-                || !exact_turn
-                || !matches!(item_type, Some("agentMessage" | "reasoning" | "plan"))
-            {
-                bail!("protocol error: tool or unknown item is forbidden in agent-only scenario");
-            }
-        }
-        "item/commandExecution/outputDelta"
-        | "item/commandExecution/terminalInteraction"
-        | "item/fileChange/outputDelta"
-        | "item/fileChange/patchUpdated"
-        | "item/mcpToolCall/progress"
-        | "item/autoApprovalReview/started"
-        | "item/autoApprovalReview/completed"
-        | "turn/diff/updated" => {
-            bail!("protocol error: tool activity is forbidden in agent-only scenario");
-        }
-        _ => bail!("protocol error: unexpected notification in agent-only scenario"),
     }
-    Ok(())
+
+    fn validate(&mut self, frame: &Value, thread_id: &str, turn_id: &str) -> Result<()> {
+        let Some(method) = frame.get("method").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let params = frame.get("params").and_then(Value::as_object);
+        let exact_thread = params
+            .and_then(|value| value.get("threadId"))
+            .and_then(Value::as_str)
+            == Some(thread_id);
+        let exact_turn = params
+            .and_then(|value| value.get("turnId"))
+            .and_then(Value::as_str)
+            .or_else(|| frame.pointer("/params/turn/id").and_then(Value::as_str))
+            == Some(turn_id);
+        match method {
+            "thread/started" => {
+                if self.thread_started
+                    || self.turn_started
+                    || self.user_item_id.is_some()
+                    || !valid_thread_started(frame, thread_id)
+                {
+                    bail!("protocol error: malformed, duplicate, or out-of-order thread/started");
+                }
+                self.thread_started = true;
+            }
+            "turn/started" => {
+                if !exact_thread || !exact_turn {
+                    bail!("protocol error: agent-only notification had mismatched turn identity");
+                }
+                if !self.thread_started || self.turn_started {
+                    bail!("protocol error: duplicate or out-of-order turn/started");
+                }
+                self.turn_started = true;
+            }
+            "turn/completed" | "turn/plan/updated" => {
+                if !exact_thread || !exact_turn || !self.turn_started || !self.user_completed {
+                    bail!("protocol error: mismatched or out-of-order turn notification");
+                }
+            }
+            "thread/tokenUsage/updated" | "turn/moderationMetadata" => {
+                if !exact_thread || !exact_turn {
+                    bail!("protocol error: benign notification had mismatched turn identity");
+                }
+            }
+            "thread/name/updated" | "thread/status/changed" => {
+                if !exact_thread {
+                    bail!("protocol error: benign notification had mismatched thread identity");
+                }
+            }
+            "item/agentMessage/delta"
+            | "item/plan/delta"
+            | "item/reasoning/textDelta"
+            | "item/reasoning/summaryTextDelta"
+            | "item/reasoning/summaryPartAdded" => {
+                if !exact_thread || !exact_turn || !self.turn_started || !self.user_completed {
+                    bail!("protocol error: mismatched or out-of-order agent notification");
+                }
+            }
+            "item/started" | "item/completed" => {
+                let item_type = frame.pointer("/params/item/type").and_then(Value::as_str);
+                if !exact_thread || !exact_turn || !valid_item_timestamp(frame, method) {
+                    bail!("protocol error: malformed item lifecycle notification");
+                }
+                if item_type == Some("userMessage") {
+                    let item_id = valid_user_message_item(frame, self.prompt)
+                        .context("protocol error: malformed or mismatched user message")?;
+                    if method == "item/started" {
+                        if !self.thread_started
+                            || !self.turn_started
+                            || self.user_item_id.is_some()
+                            || self.user_completed
+                        {
+                            bail!("protocol error: duplicate or out-of-order user message start");
+                        }
+                        self.user_item_id = Some(item_id.to_owned());
+                    } else {
+                        if self.user_completed || self.user_item_id.as_deref() != Some(item_id) {
+                            bail!(
+                                "protocol error: mismatched or out-of-order user message completion"
+                            );
+                        }
+                        self.user_completed = true;
+                    }
+                } else if !self.user_completed
+                    || !matches!(item_type, Some("agentMessage" | "reasoning" | "plan"))
+                {
+                    bail!(
+                        "protocol error: tool, unknown, or out-of-order item is forbidden in agent-only scenario"
+                    );
+                }
+            }
+            "rawResponseItem/completed" => {
+                let raw_item = frame.pointer("/params/item");
+                if !exact_thread
+                    || !exact_turn
+                    || !self.user_completed
+                    || !valid_benign_raw_response_item(raw_item)
+                {
+                    bail!("protocol error: malformed or tool raw response item is forbidden");
+                }
+                let raw_item = raw_item.expect("validated raw response item");
+                if self.raw_items.iter().any(|seen| seen == raw_item) {
+                    bail!("protocol error: duplicate raw response item");
+                }
+                self.raw_items.push(raw_item.clone());
+            }
+            "item/commandExecution/outputDelta"
+            | "item/commandExecution/terminalInteraction"
+            | "item/fileChange/outputDelta"
+            | "item/fileChange/patchUpdated"
+            | "item/mcpToolCall/progress"
+            | "item/autoApprovalReview/started"
+            | "item/autoApprovalReview/completed"
+            | "turn/diff/updated" => {
+                bail!("protocol error: tool activity is forbidden in agent-only scenario");
+            }
+            _ => bail!("protocol error: unexpected notification in agent-only scenario"),
+        }
+        Ok(())
+    }
+
+    fn finish(&self) -> Result<()> {
+        if !self.thread_started
+            || !self.turn_started
+            || self.user_item_id.is_none()
+            || !self.user_completed
+        {
+            bail!("protocol error: required agent-only lifecycle notifications were missing");
+        }
+        Ok(())
+    }
+}
+
+fn valid_thread_started(frame: &Value, thread_id: &str) -> bool {
+    let Some(thread) = frame.pointer("/params/thread").and_then(Value::as_object) else {
+        return false;
+    };
+    thread.get("id").and_then(Value::as_str) == Some(thread_id)
+        && thread
+            .get("cliVersion")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        && thread.get("createdAt").and_then(Value::as_i64).is_some()
+        && thread.get("updatedAt").and_then(Value::as_i64).is_some()
+        && thread
+            .get("cwd")
+            .and_then(Value::as_str)
+            .is_some_and(|value| Path::new(value).is_absolute())
+        && thread.get("ephemeral").and_then(Value::as_bool).is_some()
+        && thread
+            .get("modelProvider")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        && thread.get("preview").is_some_and(Value::is_string)
+        && thread
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        && matches!(
+            thread.get("source").and_then(Value::as_str),
+            Some("cli" | "vscode" | "exec" | "appServer" | "unknown")
+        )
+        && valid_thread_status(thread.get("status"))
+        && thread.get("turns").is_some_and(Value::is_array)
+}
+
+fn valid_thread_status(value: Option<&Value>) -> bool {
+    let kind = value
+        .and_then(Value::as_object)
+        .and_then(|status| status.get("type"))
+        .and_then(Value::as_str);
+    match kind {
+        Some("notLoaded" | "idle" | "systemError") => true,
+        Some("active") => value
+            .and_then(Value::as_object)
+            .and_then(|status| status.get("activeFlags"))
+            .and_then(Value::as_array)
+            .is_some_and(|flags| {
+                flags.iter().all(|flag| {
+                    matches!(
+                        flag.as_str(),
+                        Some("waitingOnApproval" | "waitingOnUserInput")
+                    )
+                })
+            }),
+        _ => false,
+    }
+}
+
+fn valid_item_timestamp(frame: &Value, method: &str) -> bool {
+    let field = if method == "item/started" {
+        "startedAtMs"
+    } else {
+        "completedAtMs"
+    };
+    frame
+        .pointer(&format!("/params/{field}"))
+        .and_then(Value::as_i64)
+        .is_some()
+}
+
+fn valid_user_message_item<'a>(frame: &'a Value, prompt: &str) -> Result<&'a str> {
+    let item = frame
+        .pointer("/params/item")
+        .and_then(Value::as_object)
+        .context("user message item must be an object")?;
+    let item_id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .context("user message item id must be nonempty")?;
+    if item.get("type").and_then(Value::as_str) != Some("userMessage")
+        || item.get("clientId").is_some_and(|value| !value.is_null())
+    {
+        bail!("user message item discriminator was invalid");
+    }
+    let content = item
+        .get("content")
+        .and_then(Value::as_array)
+        .filter(|content| content.len() == 1)
+        .context("user message must contain exactly one input")?;
+    let text = content[0]
+        .as_object()
+        .context("user message input must be an object")?;
+    if text.get("type").and_then(Value::as_str) != Some("text")
+        || text.get("text").and_then(Value::as_str) != Some(prompt)
+        || text
+            .get("text_elements")
+            .is_some_and(|value| !value.as_array().is_some_and(Vec::is_empty))
+    {
+        bail!("user message input did not byte-match the submitted prompt");
+    }
+    Ok(item_id)
+}
+
+fn valid_benign_raw_response_item(item: Option<&Value>) -> bool {
+    let Some(item) = item.and_then(Value::as_object) else {
+        return false;
+    };
+    match item.get("type").and_then(Value::as_str) {
+        Some("message") => {
+            item.get("role").and_then(Value::as_str) == Some("assistant")
+                && item
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|content| {
+                        content.iter().all(|part| {
+                            part.get("type").and_then(Value::as_str) == Some("output_text")
+                                && part.get("text").is_some_and(Value::is_string)
+                        })
+                    })
+                && item.get("phase").is_none_or(|phase| {
+                    phase.is_null() || matches!(phase.as_str(), Some("commentary" | "final_answer"))
+                })
+        }
+        Some("reasoning") => {
+            item.get("summary")
+                .and_then(Value::as_array)
+                .is_some_and(|summary| {
+                    summary.iter().all(|part| {
+                        part.get("type").and_then(Value::as_str) == Some("summary_text")
+                            && part.get("text").is_some_and(Value::is_string)
+                    })
+                })
+                && item.get("content").is_none_or(|content| {
+                    content.is_null()
+                        || content.as_array().is_some_and(|parts| {
+                            parts.iter().all(|part| {
+                                matches!(
+                                    part.get("type").and_then(Value::as_str),
+                                    Some("reasoning_text" | "text")
+                                ) && part.get("text").is_some_and(Value::is_string)
+                            })
+                        })
+                })
+                && item
+                    .get("encrypted_content")
+                    .is_none_or(|encrypted| encrypted.is_null() || encrypted.is_string())
+        }
+        _ => false,
+    }
 }
 
 fn terminal_status<'a>(frame: &'a Value, thread_id: &str, turn_id: &str) -> Option<&'a str> {
@@ -2735,6 +2983,36 @@ mod tests {
 
     #[test]
     fn agent_only_frame_gate_allows_benign_and_rejects_tools() {
+        let prompt = "exact prompt";
+        let mut state = super::AgentOnlyState::new(prompt);
+        let thread = json!({"method":"thread/started","params":{"thread":{
+            "id":"t","cliVersion":"0.139.0","createdAt":1,"updatedAt":1,
+            "cwd":std::env::temp_dir(),"ephemeral":true,"modelProvider":"openai",
+            "preview":"","sessionId":"s","source":"appServer","status":{"type":"idle"},"turns":[]
+        }}});
+        state.validate(&thread, "t", "u").unwrap();
+        state
+            .validate(
+                &json!({"method":"turn/started","params":{"threadId":"t","turn":{"id":"u","status":"inProgress"}}}),
+                "t",
+                "u",
+            )
+            .unwrap();
+        let user = json!({"type":"userMessage","id":"user","clientId":null,"content":[{"type":"text","text":prompt,"text_elements":[]}]});
+        state
+            .validate(
+                &json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":1,"item":user}}),
+                "t",
+                "u",
+            )
+            .unwrap();
+        state
+            .validate(
+                &json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":2,"item":user}}),
+                "t",
+                "u",
+            )
+            .unwrap();
         for method in [
             "item/commandExecution/outputDelta",
             "item/commandExecution/terminalInteraction",
@@ -2747,14 +3025,11 @@ mod tests {
             "item/unknownTool/progress",
         ] {
             let frame = json!({"method":method,"params":{"threadId":"t","turnId":"u","delta":"x"}});
-            assert!(
-                super::validate_agent_only_notification(&frame, "t", "u").is_err(),
-                "{method}"
-            );
+            assert!(state.validate(&frame, "t", "u").is_err(), "{method}");
         }
         for item_type in ["agentMessage", "reasoning", "plan"] {
-            let frame = json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","item":{"type":item_type}}});
-            super::validate_agent_only_notification(&frame, "t", "u").unwrap();
+            let frame = json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":3,"item":{"type":item_type}}});
+            state.validate(&frame, "t", "u").unwrap();
         }
         for item_type in [
             "commandExecution",
@@ -2771,14 +3046,11 @@ mod tests {
             "exitedReviewMode",
             "unknownItem",
         ] {
-            let frame = json!({"method":"item/started","params":{"threadId":"t","turnId":"u","item":{"type":item_type}}});
-            assert!(
-                super::validate_agent_only_notification(&frame, "t", "u").is_err(),
-                "{item_type}"
-            );
+            let frame = json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":3,"item":{"type":item_type}}});
+            assert!(state.validate(&frame, "t", "u").is_err(), "{item_type}");
         }
         let plan = json!({"method":"item/plan/delta","params":{"threadId":"t","turnId":"u","delta":"not R1"}});
-        super::validate_agent_only_notification(&plan, "t", "u").unwrap();
+        state.validate(&plan, "t", "u").unwrap();
         assert_eq!(super::agent_delta_bytes(&plan, "t", "u"), None);
         for frame in [
             json!({"method":"thread/name/updated","params":{"threadId":"t","threadName":"name"}}),
@@ -2786,11 +3058,12 @@ mod tests {
             json!({"method":"thread/tokenUsage/updated","params":{"threadId":"t","turnId":"u","tokenUsage":{}}}),
             json!({"method":"turn/moderationMetadata","params":{"threadId":"t","turnId":"u","metadata":{}}}),
         ] {
-            super::validate_agent_only_notification(&frame, "t", "u").unwrap();
+            state.validate(&frame, "t", "u").unwrap();
             assert_eq!(super::agent_delta_bytes(&frame, "t", "u"), None);
         }
         let aggregate = json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","item":{"type":"agentMessage","text":"not R1"}}});
         assert_eq!(super::agent_delta_bytes(&aggregate, "t", "u"), None);
+        state.finish().unwrap();
     }
 
     #[test]

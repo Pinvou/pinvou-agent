@@ -118,8 +118,12 @@ code fences, commentary, and every other tool. Any server request, tool item, or
 tool notification makes the run invalid. Only nonempty, exactly correlated
 `item/agentMessage/delta` notifications count as R1 content; reasoning, plans,
 aggregated messages, and command output never contribute to thresholds or
-performance metrics. Each scenario still gets a fresh runner-owned workspace,
-and sanitized artifacts exclude prompts and generated content.
+performance metrics. The runner also validates the 0.139 lifecycle statefully:
+one structurally valid `thread/started`, one ordered `userMessage` lifecycle
+whose text byte-matches the submitted prompt, and only assistant-message or
+reasoning `rawResponseItem/completed` payloads. Each scenario still gets a
+fresh runner-owned workspace, and sanitized artifacts exclude prompts and
+generated content.
 
 Scenario C uses `on-request` approval and a read-only sandbox, then requests one
 fixed platform-specific command that writes `.codex-s2-approval-marker` relative

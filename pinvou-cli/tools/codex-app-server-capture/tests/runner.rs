@@ -85,6 +85,10 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
         serde_json::from_slice(&std::fs::read(output.join("validation-report.json")).unwrap())
             .unwrap();
     assert_eq!(report["valid"], true);
+    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+    assert!(capture.contains(r#"\"method\":\"thread/started\""#));
+    assert!(capture.contains(r#"\"type\":\"userMessage\""#));
+    assert!(capture.contains(r#"\"method\":\"rawResponseItem/completed\""#));
     let sanitized = format!(
         "{}{}",
         std::fs::read_to_string(output.join("evidence.json")).unwrap(),
@@ -92,6 +96,65 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
     );
     assert!(!sanitized.contains("private@example.invalid"));
     assert!(!sanitized.contains("chatgpt"));
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn agent_only_lifecycle_is_stateful_and_rejects_malformed_or_tool_raw_items() {
+    for mode in [
+        "agent-thread-wrong-id",
+        "agent-thread-missing",
+        "agent-thread-duplicate",
+        "agent-thread-late",
+        "agent-thread-malformed",
+        "agent-user-wrong-ids",
+        "agent-user-duplicate",
+        "agent-user-duplicate-completed",
+        "agent-user-out-of-order",
+        "agent-user-prompt-mismatch",
+        "agent-user-malformed",
+        "agent-user-item-id-mismatch",
+        "agent-user-missing-completed",
+        "agent-raw-wrong-ids",
+        "agent-raw-wrong-turn",
+        "agent-raw-duplicate",
+        "agent-raw-out-of-order",
+        "agent-raw-role-user",
+        "agent-raw-function-call",
+        "agent-raw-local-shell",
+        "agent-raw-web-search",
+        "agent-raw-computer",
+        "agent-raw-tool-output",
+        "agent-raw-custom-tool",
+        "agent-raw-unknown",
+        "agent-raw-malformed",
+    ] {
+        let output = temp_output(mode);
+        let result = run_fake(mode, &output, 10_000);
+        assert!(!result.status.success(), "{mode} unexpectedly passed");
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(output.join("validation-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(report["valid"], false, "{mode}");
+        std::fs::remove_dir_all(output).unwrap();
+    }
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn method_named_error_server_request_is_rejected_with_a_correlated_error_response() {
+    let output = temp_output("agent-error-request");
+    let result = run_fake("agent-error-request", &output, 10_000);
+    assert!(!result.status.success());
+    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+    let response_seen = capture
+        .lines()
+        .filter_map(|line| serde_json::from_str::<CaptureRecord>(line).ok())
+        .filter(|record| record.channel == CaptureChannel::ClientToServer)
+        .filter_map(|record| serde_json::from_str::<Value>(&record.line).ok())
+        .any(|frame| frame["id"] == 902 && frame["error"]["code"] == -32601);
+    assert!(response_seen, "method-named error request was not answered");
     std::fs::remove_dir_all(output).unwrap();
 }
 
