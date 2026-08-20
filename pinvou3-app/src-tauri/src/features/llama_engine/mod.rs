@@ -114,7 +114,8 @@ pub(crate) struct LlamaEngineStatus {
     pub engine_installed: bool,
     pub engine_tag: Option<String>,
     pub models: Vec<ModelInstallStatus>,
-    /// idle | downloading | starting | running | stopped
+    /// 引擎进程相位：idle | starting | running | stopped（下载态由
+    /// `downloading` / `downloading_item` 独立表达，不复读到本字段）。
     pub phase: &'static str,
     pub port: Option<u16>,
     pub pid: Option<u32>,
@@ -163,11 +164,12 @@ pub(crate) fn llama_engine_status() -> LlamaEngineStatus {
                 installed: download::model_files_verified(spec),
             })
             .collect(),
-        phase: if downloading {
-            "downloading"
-        } else {
-            snapshot.phase
-        },
+        // phase 只表达引擎进程相位,不复读下载态——下载有自己的
+        // downloading/downloading_item 字段。此前下载中 phase 被覆盖成
+        // "downloading",并发下载时运行中的引擎对外隐身:前端发送门
+        // (startEngineAndWait 轮询 phase === 'running')和 capability 的
+        // local_engine_state 永远等不到 running,自动唤起必须等下载结束。
+        phase: snapshot.phase,
         port: snapshot.port,
         pid: snapshot.pid,
         device: snapshot.device,
@@ -220,6 +222,16 @@ pub(crate) fn llama_engine_delete_model(model: String) -> Result<(), String> {
         server::stop();
     }
     download::delete_model_files(spec).map(|_| ())
+}
+
+/// 卸载引擎：运行/启动中先停止，再删引擎二进制与共享库；模型文件保留，
+/// 重装引擎后即可直接使用。
+pub(crate) fn llama_engine_delete_engine() -> Result<(), String> {
+    let phase = server::runtime_snapshot().phase;
+    if phase == "running" || phase == "starting" {
+        server::stop();
+    }
+    download::delete_engine_files().map(|_| ())
 }
 
 // ---------------- bridge 接线点 ----------------

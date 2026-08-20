@@ -2216,6 +2216,7 @@
   var llamaEngineStart = llamaEngineFeature.startEngine;
   var llamaEngineStop = llamaEngineFeature.stopEngine;
   var llamaEngineDeleteModel = llamaEngineFeature.deleteModel;
+  var llamaEngineDeleteEngine = llamaEngineFeature.deleteEngine;
 
   var multiAgentFeature = installBridgeFeature("multiagent", { state: state, notify: notify, invoke: invoke, listen: listen });
   var listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
@@ -2361,6 +2362,7 @@
       startEngine: llamaEngineStart,
       stopEngine: llamaEngineStop,
       deleteModel: llamaEngineDeleteModel,
+      deleteEngine: llamaEngineDeleteEngine,
     },
     scheduled: {
       loadScheduledTasks: loadScheduledTasks,

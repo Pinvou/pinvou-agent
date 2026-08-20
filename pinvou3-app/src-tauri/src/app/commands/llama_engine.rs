@@ -10,6 +10,7 @@ async_command_passthrough!(llama_engine_domain, llama_engine_install_model(app: 
 sync_command_passthrough!(llama_engine_domain, llama_engine_cancel_download());
 sync_command_passthrough!(llama_engine_domain, llama_engine_stop());
 sync_command_passthrough!(llama_engine_domain, llama_engine_delete_model(model: String) -> Result<(), String>);
+sync_command_passthrough!(llama_engine_domain, llama_engine_delete_engine() -> Result<(), String>);
 
 /// 手动启动引擎（设置页按钮）。成功后对全部 saved_models bump revision：
 /// 引擎启动前已 spawn 的旧会话据此重建 EngineConfig 快照，本轮起即可用

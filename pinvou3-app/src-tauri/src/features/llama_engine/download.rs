@@ -611,6 +611,26 @@ pub(crate) fn model_files_verified(spec: &LlamaModelSpec) -> bool {
         && model_file_verified(&mmproj_path(spec), &spec.mmproj)
 }
 
+/// 删除引擎二进制与同目录共享库（保留 bin 目录本身），返回删除的文件数。
+/// 引擎可经「下载引擎」随时重装。
+pub(crate) fn delete_engine_files() -> Result<u32, String> {
+    let mut removed = 0u32;
+    let dir = bin_dir();
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("读取引擎目录失败: {e}"))? {
+        let entry = entry.map_err(|e| format!("读取引擎目录项失败: {e}"))?;
+        let path = entry.path();
+        if path.is_file() {
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("删除引擎文件失败 {}: {e}", path.display()))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// 删除已安装模型的权重文件，返回实际删除的文件数（0 = 本就没装）。
 /// mmproj 仅在无其他已安装档位共用同一文件时一并删除（历史上 2B 两档
 /// 共享 Q8_0 mmproj；当前只余 Q4_K_M 一档使用，逻辑保留以防后续加档）。
