@@ -102,25 +102,40 @@ children are created suspended, assigned to a Job Object, and only then resumed;
 on Unix they are placed in a dedicated process group before exec.
 
 For `run-s2` only, the app-server invocation adds the official fixed overrides
-`--disable hooks`, `--disable plugins`, `--disable apps`,
+`--strict-config`, `--disable hooks`, `--disable plugins`, `--disable apps`,
 `--disable shell_snapshot`, `--disable memories`, and `-c notify=[]`, while the
 version preflight remains exactly `--version`. The public 0.139 feature names are
 `hooks`, `plugins`, `apps`, `shell_snapshot`, and `memories`; internal enum or legacy names are not valid
 substitutes for these CLI flags. Clearing `notify` separately disables the
 legacy end-of-turn notifier, which is independent of the hooks feature.
+It also pins a private project-root marker, disables project instructions and
+bundled skill instructions, and repeats the analytics/OTEL disables at the
+highest CLI layer.
 
-The app-server never receives the user's normal `CODEX_HOME`. Before capture,
+The app-server never receives the user's normal `CODEX_HOME` and never starts
+in the repository or artifact output directory. Before capture,
 the runner opens a regular, no-follow `auth.json` through one bounded handle and
 copies it opaquely into a fresh owner-only temporary Codex home. File-backed auth
 is the only supported credential store for this isolation; missing, malformed,
 unsafe, or keyring-only credentials fail generically before raw capture. The
-temporary home contains only the copied auth and a fixed minimal config: CLI
+temporary private run root contains only the copied auth, a neutral workspace,
+a private root marker, and a fixed minimal config: CLI
 auth uses the file store, analytics is disabled, and all log, trace, and metrics
 OTEL exporters are `none`. User config, model-provider overrides, MCP servers,
 plugins, skills, hooks, memories, experimental thread config endpoints, and
-telemetry endpoints are not copied. The built-in authenticated model network
-remains available. Auth/config handles stay locked for the run, their identities
-are revalidated before cleanup, and cleanup failure invalidates the run without
+telemetry endpoints are not copied. Before any thread, `config/read` with
+`includeLayers=true` and `configRequirements/read` must report only the exact
+isolated user and fixed session-flag layers, no managed requirements, and the
+expected side-effect-free effective values. Supported Windows/Linux hosts also
+fail before app-server launch if their known system or legacy managed config
+surfaces exist; macOS and other Unix targets are currently unsupported. The
+built-in cloud/auth control plane and authenticated model network remain
+available. Endpoint, token, and `OTEL_*` environment overrides are removed from
+the child, while proxy and CA variables remain available for enterprise network
+connectivity. The copied auth file remains writable for 0.139 token refresh but
+not replaceable; its identity, owner-only permissions, bounded size, and JSON
+shape are revalidated after the child exits. Auth/config handles stay locked for
+the run, and cleanup failure invalidates the run without
 putting the temporary path or credentials in sanitized artifacts. Any hook or
 tool notification that still arrives is rejected fail-closed.
 

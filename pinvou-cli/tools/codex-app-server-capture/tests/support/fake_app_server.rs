@@ -231,6 +231,11 @@ fn main() {
         let config = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
         let auth = std::fs::read(home.join("auth.json")).unwrap_or_default();
         let expected_auth = std::env::var("S2_FAKE_EXPECTED_AUTH").unwrap();
+        let auth_refresh_succeeded = match std::env::var("S2_FAKE_REFRESH_AUTH").as_deref() {
+            Ok("valid") => std::fs::write(home.join("auth.json"), br#"{"refreshed":true}"#).is_ok(),
+            Ok("invalid") => std::fs::write(home.join("auth.json"), b"not-json").is_ok(),
+            _ => false,
+        };
         let mut auth_write_blocked = Value::Null;
         let mut config_replace_blocked = Value::Null;
         if std::env::var_os("S2_FAKE_TAMPER_HOME").is_some() {
@@ -247,6 +252,16 @@ fn main() {
                 std::fs::write(config_path, b"tampered = true\n").unwrap();
             }
         }
+        let risky_env_absent = [
+            "OPENAI_API_KEY",
+            "CODEX_API_KEY",
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_EXEC_SERVER_URL",
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "TRACEPARENT",
+        ]
+        .iter()
+        .all(|key| std::env::var_os(key).is_none());
         std::fs::write(
             audit_path,
             serde_json::to_vec(&json!({
@@ -254,8 +269,17 @@ fn main() {
                 "isolated": home != original,
                 "auth_matches": auth == expected_auth.as_bytes(),
                 "config": config,
+                "current_dir": std::env::current_dir().unwrap(),
+                "neutral_marker": std::env::current_dir().unwrap().join(".codex-s2-root").is_file(),
+                "no_project_inputs": !std::env::current_dir().unwrap().join(".codex").exists()
+                    && !std::env::current_dir().unwrap().join(".agents").exists()
+                    && !std::env::current_dir().unwrap().join("AGENTS.md").exists(),
+                "auth_refresh_succeeded": auth_refresh_succeeded,
                 "auth_write_blocked": auth_write_blocked,
                 "config_replace_blocked": config_replace_blocked,
+                "risky_env_absent": risky_env_absent,
+                "proxy_preserved": std::env::var("HTTPS_PROXY").ok().as_deref() == Some("http://proxy.invalid:8443"),
+                "ca_preserved": std::env::var("CODEX_CA_CERTIFICATE").ok().as_deref() == Some("test-ca-marker"),
             }))
             .unwrap(),
         )
@@ -339,6 +363,48 @@ fn main() {
                     send(
                         json!({"id":id,"result":{"rateLimits":{"primary":{"usedPercent":10},"rateLimitReachedType":null}}}),
                     );
+                }
+            }
+            Some("config/read") => {
+                let mut response = json!({"id":id,"result":{
+                    "config":{
+                        "cli_auth_credentials_store":"file",
+                        "notify":[],
+                        "project_doc_max_bytes":0,
+                        "project_root_markers":[".codex-s2-root"],
+                        "mcp_servers":{},
+                        "model_providers":{},
+                        "experimental_thread_config_endpoint":null,
+                        "analytics":{"enabled":false},
+                        "otel":{"exporter":"none","trace_exporter":"none","metrics_exporter":"none"},
+                        "skills":{"include_instructions":false,"bundled":{"enabled":false}},
+                        "features":{"hooks":false,"plugins":false,"apps":false,"shell_snapshot":false,"memories":false}
+                    },
+                    "origins":{},
+                    "layers":[
+                        {"name":{"type":"sessionFlags"},"version":"1","config":{}},
+                        {"name":{"type":"user","file":std::path::PathBuf::from(std::env::var_os("CODEX_HOME").unwrap()).join("config.toml"),"profile":null},"version":"1","config":{}}
+                    ]
+                }});
+                match mode.as_str() {
+                    "config-managed-layer" => {
+                        response["result"]["layers"] = json!([{"name":{"type":"enterpriseManaged","id":"id","name":"managed"},"version":"1","config":{}}])
+                    }
+                    "config-side-effect" => {
+                        response["result"]["config"]["mcp_servers"] = json!({"unsafe":{}})
+                    }
+                    "config-malformed" => response["result"] = json!({}),
+                    _ => {}
+                }
+                send(response);
+            }
+            Some("configRequirements/read") => {
+                if mode == "config-requirements" {
+                    send(
+                        json!({"id":id,"result":{"requirements":{"allowedApprovalPolicies":["never"]}}}),
+                    );
+                } else {
+                    send(json!({"id":id,"result":{"requirements":null}}));
                 }
             }
             Some("thread/start") => {

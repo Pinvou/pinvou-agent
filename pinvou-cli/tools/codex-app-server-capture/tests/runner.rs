@@ -168,6 +168,7 @@ fn run_s2_isolates_startup_commands_only_for_app_server_invocation() {
             vec!["--version"],
             vec![
                 "app-server",
+                "--strict-config",
                 "--disable",
                 "hooks",
                 "--disable",
@@ -180,6 +181,22 @@ fn run_s2_isolates_startup_commands_only_for_app_server_invocation() {
                 "memories",
                 "-c",
                 "notify=[]",
+                "-c",
+                "project_root_markers=['.codex-s2-root']",
+                "-c",
+                "project_doc_max_bytes=0",
+                "-c",
+                "skills.include_instructions=false",
+                "-c",
+                "skills.bundled.enabled=false",
+                "-c",
+                "analytics.enabled=false",
+                "-c",
+                "otel.exporter='none'",
+                "-c",
+                "otel.trace_exporter='none'",
+                "-c",
+                "otel.metrics_exporter='none'",
                 "--stdio",
             ],
         ]
@@ -211,6 +228,12 @@ fn run_s2_uses_a_fresh_minimal_codex_home_and_cleans_up_copied_auth() {
         "exporter = \"none\"\n",
         "trace_exporter = \"none\"\n",
         "metrics_exporter = \"none\"\n",
+        "\n",
+        "[skills]\n",
+        "include_instructions = false\n",
+        "\n",
+        "[skills.bundled]\n",
+        "enabled = false\n",
     );
 
     let root = temp_output("isolated-codex-home");
@@ -258,6 +281,18 @@ fn run_s2_uses_a_fresh_minimal_codex_home_and_cleans_up_copied_auth() {
         .env("S2_FAKE_HOME_AUDIT", &audit)
         .env("S2_FAKE_ORIGINAL_HOME", &original_home)
         .env("S2_FAKE_EXPECTED_AUTH", AUTH_FIXTURE)
+        .env("S2_FAKE_REFRESH_AUTH", "valid")
+        .env("OPENAI_API_KEY", "must-not-reach-child")
+        .env("CODEX_API_KEY", "must-not-reach-child")
+        .env("CODEX_ACCESS_TOKEN", "must-not-reach-child")
+        .env("CODEX_EXEC_SERVER_URL", "https://must-not-reach.invalid")
+        .env(
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "https://must-not-reach.invalid",
+        )
+        .env("TRACEPARENT", "must-not-reach-child")
+        .env("HTTPS_PROXY", "http://proxy.invalid:8443")
+        .env("CODEX_CA_CERTIFICATE", "test-ca-marker")
         .output()
         .unwrap();
     assert!(
@@ -268,10 +303,23 @@ fn run_s2_uses_a_fresh_minimal_codex_home_and_cleans_up_copied_auth() {
     assert_eq!(audit["isolated"], true);
     assert_eq!(audit["auth_matches"], true);
     assert_eq!(audit["config"], MINIMAL_CONFIG);
+    assert_eq!(audit["auth_refresh_succeeded"], true);
+    assert_eq!(audit["risky_env_absent"], true);
+    assert_eq!(audit["proxy_preserved"], true);
+    assert_eq!(audit["ca_preserved"], true);
+    assert_eq!(audit["neutral_marker"], true);
+    assert_eq!(audit["no_project_inputs"], true);
     let isolated_home = std::path::PathBuf::from(audit["home"].as_str().unwrap());
+    let neutral_root = std::path::PathBuf::from(audit["current_dir"].as_str().unwrap());
+    assert_eq!(isolated_home.parent(), Some(neutral_root.as_path()));
+    assert!(!neutral_root.starts_with(&output));
     assert!(
         !isolated_home.exists(),
         "credential copy must be cleaned up"
+    );
+    assert!(
+        !neutral_root.exists(),
+        "neutral run root must be cleaned up"
     );
     let sanitized = format!(
         "{}{}{}",
@@ -320,6 +368,69 @@ fn run_s2_rejects_missing_auth_generically_before_raw_capture() {
 }
 
 #[test]
+fn config_preflight_rejects_layers_requirements_and_side_effects_before_threads() {
+    for mode in [
+        "config-managed-layer",
+        "config-side-effect",
+        "config-malformed",
+        "config-requirements",
+    ] {
+        let output = temp_output(mode);
+        let result = run_fake(mode, &output, 1_000);
+        assert!(!result.status.success(), "{mode} unexpectedly succeeded");
+        let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+        assert!(capture.contains("config/read"));
+        assert!(!capture.contains("thread/start"));
+        let summary = std::fs::read_to_string(output.join("summary.txt")).unwrap();
+        assert!(summary.contains("protocol/scenario precondition failed"));
+        assert!(!summary.contains("enterpriseManaged"));
+        assert!(!summary.contains("mcp_servers"));
+        std::fs::remove_dir_all(output).unwrap();
+    }
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn invalid_refreshed_auth_fails_closed_during_post_run_validation() {
+    let output = temp_output("invalid-refreshed-auth");
+    let audit = output.join("home-audit.json");
+    let result = run_s2_for_test(S2RunConfig {
+        output_dir: Some(output.clone()),
+        executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        trusted_approval_wrapper: None,
+        model: None,
+        scenario_timeout: Duration::from_secs(10),
+        global_timeout: Duration::from_secs(60),
+        test_child_env: vec![
+            (
+                OsString::from("S2_FAKE_HOME_AUDIT"),
+                audit.clone().into_os_string(),
+            ),
+            (
+                OsString::from("S2_FAKE_ORIGINAL_HOME"),
+                OsString::from("original"),
+            ),
+            (
+                OsString::from("S2_FAKE_EXPECTED_AUTH"),
+                OsString::from("{}"),
+            ),
+            (
+                OsString::from("S2_FAKE_REFRESH_AUTH"),
+                OsString::from("invalid"),
+            ),
+        ],
+    });
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("S2 artifacts:"), "unexpected error: {error}");
+    let summary = std::fs::read_to_string(output.join("summary.txt")).unwrap();
+    assert!(!summary.contains("not-json"));
+    assert!(summary.contains("protocol/scenario precondition failed"));
+    let home: Value = serde_json::from_slice(&std::fs::read(audit).unwrap()).unwrap();
+    assert!(!std::path::Path::new(home["home"].as_str().unwrap()).exists());
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
 #[cfg(debug_assertions)]
 fn isolated_home_files_are_locked_or_identity_tamper_fails_closed() {
     let output = temp_output("isolated-home-tamper");
@@ -348,7 +459,10 @@ fn isolated_home_files_are_locked_or_identity_tamper_fails_closed() {
         ],
     });
     let audit: Value = serde_json::from_slice(&std::fs::read(&audit).unwrap()).unwrap();
-    assert_eq!(audit["auth_write_blocked"], true);
+    assert_eq!(
+        audit["auth_write_blocked"], false,
+        "the isolated auth file must remain writable for token refresh"
+    );
     #[cfg(windows)]
     {
         assert_eq!(audit["config_replace_blocked"], true);
@@ -626,7 +740,6 @@ fn agent_only_scenarios_fail_closed_on_tools_requests_and_non_delta_output() {
 #[cfg(debug_assertions)]
 fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
     let output = temp_output("spaces & semicolon ; safe");
-    let workspace = output.join("workspace").join("c");
     run_s2_for_test(S2RunConfig {
         output_dir: Some(output.clone()),
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
@@ -662,9 +775,42 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         .filter_map(|frame| frame.pointer("/params/cwd").and_then(Value::as_str))
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(scenario_cwds.len(), 4);
-    let workspace_root = output.join("workspace").canonicalize().unwrap();
+    let workspace_root = std::path::PathBuf::from(scenario_cwds.iter().next().unwrap())
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert!(!workspace_root.starts_with(&output));
+    let config_read = records
+        .iter()
+        .map(|(_, frame)| frame)
+        .find(|frame| frame["method"] == "config/read")
+        .unwrap();
+    assert_eq!(config_read["params"]["includeLayers"], true);
+    let requirements_read = records
+        .iter()
+        .map(|(_, frame)| frame)
+        .find(|frame| frame["method"] == "configRequirements/read")
+        .unwrap();
+    assert!(
+        requirements_read.get("params").is_none(),
+        "0.139 requires configRequirements/read params to be omitted"
+    );
+    let config_cwd = config_read
+        .pointer("/params/cwd")
+        .and_then(Value::as_str)
+        .unwrap();
+    let expected_root = workspace_root.parent().unwrap().to_string_lossy();
+    #[cfg(windows)]
+    assert_eq!(
+        config_cwd.strip_prefix(r"\\?\").unwrap_or(config_cwd),
+        expected_root
+            .strip_prefix(r"\\?\")
+            .unwrap_or(expected_root.as_ref())
+    );
+    #[cfg(not(windows))]
+    assert_eq!(config_cwd, expected_root);
     for (name, tag) in [("a", "S2-A"), ("b", "S2-B"), ("c", "S2-C"), ("d", "S2-D")] {
-        let expected = workspace_root.join(name).canonicalize().unwrap();
+        let expected = workspace_root.join(name);
         let expected = expected.to_str().unwrap();
         let thread = records
             .iter()
@@ -760,9 +906,15 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         })
         .unwrap();
     assert_eq!(response.1["result"]["decision"], "accept");
-    assert_eq!(
-        std::fs::read(workspace.join(".codex-s2-approval-marker")).unwrap(),
-        b"S2_APPROVED"
+    let workspace = std::path::PathBuf::from(
+        turn_start
+            .pointer("/params/cwd")
+            .and_then(Value::as_str)
+            .unwrap(),
+    );
+    assert!(
+        !workspace.exists(),
+        "the private neutral run root must be removed after validation"
     );
     for artifact in ["evidence.json", "validation-report.json", "summary.txt"] {
         let sanitized = std::fs::read_to_string(output.join(artifact)).unwrap();
@@ -770,7 +922,6 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         assert!(!sanitized.contains(".codex-s2-approval-marker"));
         assert!(!sanitized.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKL"));
     }
-    assert!(workspace.join("cmd.exe").exists());
     #[cfg(windows)]
     {
         let executable = command
@@ -1316,6 +1467,7 @@ fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim(
             "60000",
         ])
         .env("PATH", isolated_path)
+        .env("S2_TEST_VERSION_PREFLIGHT_TIMEOUT_MS", "15000")
         .env("S2_CMDLINE_MARKER", &command_line_marker)
         .output()
         .unwrap();
@@ -1338,9 +1490,10 @@ fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim(
     assert!(capture.contains("thread/start"));
     let command_line = std::fs::read_to_string(&command_line_marker).unwrap();
     assert!(command_line.contains("codex.cmd"));
-    assert!(command_line.contains(
-        "app-server --disable hooks --disable plugins --disable apps --disable shell_snapshot --disable memories -c notify=[] --stdio"
-    ));
+    assert!(command_line.contains("app-server --strict-config --disable hooks"));
+    assert!(command_line.contains("-c notify=[]"));
+    assert!(command_line.contains("-c skills.include_instructions=false"));
+    assert!(command_line.contains("-c otel.metrics_exporter='none' --stdio"));
     std::fs::remove_dir_all(root).unwrap();
 }
 

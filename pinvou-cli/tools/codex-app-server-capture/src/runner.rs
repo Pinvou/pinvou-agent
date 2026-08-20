@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -42,11 +42,18 @@ const MINIMAL_CONFIG: &str = concat!(
     "exporter = \"none\"\n",
     "trace_exporter = \"none\"\n",
     "metrics_exporter = \"none\"\n",
+    "\n",
+    "[skills]\n",
+    "include_instructions = false\n",
+    "\n",
+    "[skills.bundled]\n",
+    "enabled = false\n",
 );
 static ISOLATED_HOME_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const VERSION_ARGS: &[&str] = &["--version"];
 const APP_SERVER_ARGS: &[&str] = &[
     "app-server",
+    "--strict-config",
     "--disable",
     "hooks",
     "--disable",
@@ -59,6 +66,22 @@ const APP_SERVER_ARGS: &[&str] = &[
     "memories",
     "-c",
     "notify=[]",
+    "-c",
+    "project_root_markers=['.codex-s2-root']",
+    "-c",
+    "project_doc_max_bytes=0",
+    "-c",
+    "skills.include_instructions=false",
+    "-c",
+    "skills.bundled.enabled=false",
+    "-c",
+    "analytics.enabled=false",
+    "-c",
+    "otel.exporter='none'",
+    "-c",
+    "otel.trace_exporter='none'",
+    "-c",
+    "otel.metrics_exporter='none'",
     "--stdio",
 ];
 
@@ -167,38 +190,27 @@ fn run_s2_with_thresholds(
     };
     std::fs::create_dir_all(&output_dir)
         .with_context(|| format!("failed to create output directory {}", output_dir.display()))?;
-    let workspace = output_dir.join("workspace");
-    if workspace.exists() {
-        bail!(
-            "isolated workspace already exists; choose a fresh output directory: {}",
-            workspace.display()
-        );
-    }
-    std::fs::create_dir_all(&workspace).with_context(|| {
-        format!(
-            "failed to create isolated workspace {}",
-            workspace.display()
-        )
-    })?;
-
     let explicit_approval_wrapper =
         validate_explicit_approval_wrapper(config.trusted_approval_wrapper.as_deref())?;
     let global_deadline = Instant::now() + config.global_timeout;
     let mut evidence = empty_evidence();
     let execution = SafeInvocation::resolve(config.executable.as_ref()).and_then(|invocation| {
+        ensure_supported_isolation_platform()?;
+        validate_host_managed_surfaces()?;
         verify_executable_version(&invocation, global_deadline, &config)?;
         let isolated_home = IsolatedCodexHome::prepare(source_codex_home)?;
         let run = execute(
             &config,
             &invocation,
             &output_dir,
-            &workspace,
+            isolated_home.workspace(),
             &mut evidence,
             thresholds,
             global_deadline,
             explicit_approval_wrapper.as_ref(),
             &marker_helper,
             isolated_home.path(),
+            isolated_home.root(),
         );
         let cleanup = isolated_home.cleanup();
         match (run, cleanup) {
@@ -249,7 +261,9 @@ fn unique_isolated_home_path(prefix: &str) -> PathBuf {
 
 #[derive(Debug)]
 struct IsolatedCodexHome {
+    root: PathBuf,
     path: PathBuf,
+    workspace: PathBuf,
     auth: Option<File>,
     auth_identity: Option<PrivateFileIdentity>,
     config: Option<File>,
@@ -267,11 +281,15 @@ struct PrivateFileIdentity {
 
 impl IsolatedCodexHome {
     fn prepare(source_override: Option<&Path>) -> Result<Self> {
-        let path = unique_isolated_home_path("codex-s2-home");
-        create_private_directory(&path)
+        let root = unique_isolated_home_path("codex-s2-run");
+        create_private_directory(&root)
             .map_err(|_| anyhow!("isolated Codex home preparation failed"))?;
+        let path = root.join("home");
+        let workspace = root.join("workspace");
         let mut home = Self {
+            root,
             path,
+            workspace,
             auth: None,
             auth_identity: None,
             config: None,
@@ -281,21 +299,28 @@ impl IsolatedCodexHome {
             cleaned: false,
         };
         let prepared: Result<()> = (|| {
-            let directory = open_and_harden_private_directory(&home.path)
+            let directory = open_and_harden_private_directory(&home.root)
                 .map_err(|_| anyhow!("isolated Codex home preparation failed"))?;
             home.directory_identity = Some(private_file_identity(&directory)?);
             home.directory = Some(directory);
+            create_private_directory(&home.path)
+                .map_err(|_| anyhow!("isolated Codex home preparation failed"))?;
+            create_private_directory(&home.workspace)
+                .map_err(|_| anyhow!("isolated Codex home preparation failed"))?;
+            std::fs::write(home.root.join(".codex-s2-root"), b"")
+                .map_err(|_| anyhow!("isolated Codex home preparation failed"))?;
             let source_home = match source_override {
                 Some(path) => path.to_path_buf(),
                 None => resolve_source_codex_home()?,
             };
             let auth_bytes = read_locked_auth(&source_home.join("auth.json"))?;
-            let auth = create_locked_private_file(&home.path.join("auth.json"), &auth_bytes)?;
+            let auth = create_locked_private_file(&home.path.join("auth.json"), &auth_bytes, true)?;
             home.auth_identity = Some(private_file_identity(&auth)?);
             home.auth = Some(auth);
             let config = create_locked_private_file(
                 &home.path.join("config.toml"),
                 MINIMAL_CONFIG.as_bytes(),
+                false,
             )?;
             home.config_identity = Some(private_file_identity(&config)?);
             home.config = Some(config);
@@ -312,15 +337,31 @@ impl IsolatedCodexHome {
         &self.path
     }
 
+    fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
     fn cleanup(mut self) -> Result<()> {
         self.cleanup_inner()
             .map_err(|_| anyhow!("isolated Codex home cleanup failed"))
     }
 
     fn cleanup_inner(&mut self) -> Result<()> {
+        let auth_content_valid =
+            self.auth
+                .as_mut()
+                .zip(self.auth_identity)
+                .is_some_and(|(auth, identity)| {
+                    validate_mutable_auth_after_run(auth, &self.path.join("auth.json"), identity)
+                        .is_ok()
+                });
         let directory_matches = self
             .directory_identity
-            .zip(path_private_identity(&self.path, true).ok())
+            .zip(path_private_identity(&self.root, true).ok())
             .is_some_and(|(expected, observed)| expected == observed);
         let observed_auth = path_private_identity(&self.path.join("auth.json"), false);
         let auth_matches = self
@@ -336,10 +377,15 @@ impl IsolatedCodexHome {
         self.config.take();
         self.directory.take();
         if directory_matches {
-            std::fs::remove_dir_all(&self.path)?;
+            std::fs::remove_dir_all(&self.root)?;
         }
-        self.cleaned = directory_matches && !self.path.exists();
-        if !directory_matches || !auth_matches || !config_matches || !self.cleaned {
+        self.cleaned = directory_matches && !self.root.exists();
+        if !directory_matches
+            || !auth_matches
+            || !config_matches
+            || !auth_content_valid
+            || !self.cleaned
+        {
             bail!("isolated Codex home integrity check failed");
         }
         Ok(())
@@ -372,6 +418,78 @@ fn resolve_source_codex_home() -> Result<PathBuf> {
         bail!("isolated Codex auth unavailable");
     }
     Ok(candidate)
+}
+
+fn ensure_supported_isolation_platform() -> Result<()> {
+    #[cfg(any(windows, target_os = "linux"))]
+    return Ok(());
+    #[cfg(not(any(windows, target_os = "linux")))]
+    bail!("S2 isolation is unsupported on this platform");
+}
+
+fn validate_host_managed_surfaces() -> Result<()> {
+    #[cfg(windows)]
+    let paths = {
+        let program_data =
+            known_program_data().map_err(|_| anyhow!("S2 managed configuration audit failed"))?;
+        vec![
+            program_data.join("OpenAI/Codex/config.toml"),
+            program_data.join("OpenAI/Codex/requirements.toml"),
+        ]
+    };
+    #[cfg(target_os = "linux")]
+    let paths = vec![
+        PathBuf::from("/etc/codex/config.toml"),
+        PathBuf::from("/etc/codex/requirements.toml"),
+        PathBuf::from("/etc/codex/managed_config.toml"),
+        PathBuf::from("/etc/codex/skills"),
+    ];
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let paths: Vec<PathBuf> = Vec::new();
+    validate_managed_surfaces(&paths)
+}
+
+fn validate_managed_surfaces(paths: &[PathBuf]) -> Result<()> {
+    for path in paths {
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) | Ok(_) => bail!("S2 managed configuration audit failed"),
+        }
+    }
+    Ok(())
+}
+
+fn sanitize_child_environment(command: &mut Command) {
+    const EXACT: &[&str] = &[
+        "OPENAI_API_KEY",
+        "CODEX_API_KEY",
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+        "CODEX_REVOKE_TOKEN_URL_OVERRIDE",
+        "CODEX_AUTHAPI_BASE_URL",
+        "CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL",
+        "CODEX_APP_SERVER_LOGIN_ISSUER",
+        "CODEX_EXEC_SERVER_URL",
+        "CODEX_OSS_BASE_URL",
+        "CODEX_OSS_PORT",
+        "CODEX_CONNECTORS_TOKEN",
+        "CODEX_CLOUD_TASKS_BASE_URL",
+        "CODEX_CLOUD_TASKS_FORCE_INTERNAL",
+        "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+        "TRACEPARENT",
+        "TRACESTATE",
+    ];
+    for key in EXACT {
+        command.env_remove(key);
+    }
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_str()
+            .is_some_and(|value| value.to_ascii_uppercase().starts_with("OTEL_"))
+        {
+            command.env_remove(key);
+        }
+    }
 }
 
 fn read_locked_auth(path: &Path) -> Result<Vec<u8>> {
@@ -540,10 +658,18 @@ fn open_private_directory(path: &Path, for_acl_update: bool) -> Result<File> {
     if !directory.metadata()?.is_dir() {
         bail!("isolated directory was not a directory");
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if directory.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            bail!("isolated directory was a reparse point");
+        }
+    }
     Ok(directory)
 }
 
-fn create_locked_private_file(path: &Path, bytes: &[u8]) -> Result<File> {
+fn create_locked_private_file(path: &Path, bytes: &[u8], mutable_auth: bool) -> Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create_new(true);
     #[cfg(windows)]
@@ -551,14 +677,20 @@ fn create_locked_private_file(path: &Path, bytes: &[u8]) -> Result<File> {
         use std::os::windows::fs::OpenOptionsExt;
         use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
         use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, READ_CONTROL, WRITE_DAC};
+        let share = FILE_SHARE_READ
+            | if mutable_auth {
+                windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE
+            } else {
+                0
+            };
         options
             .access_mode(GENERIC_READ | GENERIC_WRITE | READ_CONTROL | WRITE_DAC)
-            .share_mode(FILE_SHARE_READ);
+            .share_mode(share);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o400);
+        options.mode(if mutable_auth { 0o600 } else { 0o400 });
     }
     let mut file = options.open(path)?;
     #[cfg(windows)]
@@ -569,9 +701,58 @@ fn create_locked_private_file(path: &Path, bytes: &[u8]) -> Result<File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o400))?;
+        file.set_permissions(std::fs::Permissions::from_mode(if mutable_auth {
+            0o600
+        } else {
+            0o400
+        }))?;
     }
     Ok(file)
+}
+
+fn validate_mutable_auth_after_run(
+    file: &mut File,
+    path: &Path,
+    expected_identity: PrivateFileIdentity,
+) -> Result<()> {
+    if private_file_identity(file)? != expected_identity
+        || path_private_identity(path, false)? != expected_identity
+    {
+        bail!("isolated Codex auth integrity check failed");
+    }
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file()
+        || metadata.len() == 0
+        || metadata.len() > AUTH_FILE_MAX_BYTES
+    {
+        bail!("isolated Codex auth integrity check failed");
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            bail!("isolated Codex auth integrity check failed");
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o077 != 0
+        {
+            bail!("isolated Codex auth integrity check failed");
+        }
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(AUTH_FILE_MAX_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != metadata.len()
+        || !serde_json::from_slice::<Value>(&bytes).is_ok_and(|value| value.is_object())
+    {
+        bail!("isolated Codex auth integrity check failed");
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -793,7 +974,10 @@ impl SafeInvocation {
                 arg.is_empty()
                     || !arg.bytes().all(|byte| {
                         byte.is_ascii_alphanumeric()
-                            || matches!(byte, b'-' | b'_' | b'=' | b'[' | b']' | b'{' | b'}')
+                            || matches!(
+                                byte,
+                                b'-' | b'_' | b'=' | b'[' | b']' | b'{' | b'}' | b'.' | b'\''
+                            )
                     })
             }) {
                 bail!("unsafe requested argument for cmd invocation");
@@ -922,6 +1106,7 @@ fn verify_executable_version(
     remaining_global(global_deadline)?;
     let mut process = invocation.command(VERSION_ARGS)?;
     apply_test_child_env(&mut process, config);
+    sanitize_child_environment(&mut process);
     process
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -960,7 +1145,7 @@ fn verify_executable_version(
     }
     drop(output_tx);
     drop(done_tx);
-    let deadline = global_deadline.min(Instant::now() + Duration::from_secs(5));
+    let deadline = global_deadline.min(Instant::now() + version_preflight_timeout());
     let status_result = loop {
         if let Some(status) = contained
             .child
@@ -1028,6 +1213,17 @@ fn verify_executable_version(
     Ok(())
 }
 
+fn version_preflight_timeout() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(milliseconds) = std::env::var_os("S2_TEST_VERSION_PREFLIGHT_TIMEOUT_MS")
+        .and_then(|value| value.to_str().and_then(|value| value.parse::<u64>().ok()))
+        .filter(|milliseconds| *milliseconds <= 30_000)
+    {
+        return Duration::from_millis(milliseconds);
+    }
+    Duration::from_secs(5)
+}
+
 fn execute(
     config: &S2RunConfig,
     invocation: &SafeInvocation,
@@ -1039,6 +1235,7 @@ fn execute(
     explicit_approval_wrapper: Option<&TrustedApprovalWrapper>,
     marker_helper: &Arc<MarkerHelperInvocation>,
     isolated_codex_home: &Path,
+    neutral_root: &Path,
 ) -> Result<()> {
     remaining_global(global_deadline)?;
     let clock = Arc::new(HostMonotonicClock::new()?);
@@ -1049,7 +1246,9 @@ fn execute(
     )));
     let mut app_server = invocation.command(APP_SERVER_ARGS)?;
     apply_test_child_env(&mut app_server, config);
+    sanitize_child_environment(&mut app_server);
     app_server.env("CODEX_HOME", isolated_codex_home);
+    app_server.current_dir(neutral_root);
     let mut session = Session::spawn(
         app_server,
         recorder,
@@ -1080,6 +1279,15 @@ fn execute(
         if quota_exhausted(limits.get("result").unwrap_or(&Value::Null)) {
             bail!("quota exhausted: account rate limit is reached");
         }
+        let effective_config = session.request(
+            "config/read",
+            json!({"includeLayers":true,"cwd":neutral_root}),
+            config.scenario_timeout,
+        )?;
+        validate_effective_config(&effective_config, isolated_codex_home)?;
+        let requirements =
+            session.request_without_params("configRequirements/read", config.scenario_timeout)?;
+        validate_config_requirements(&requirements)?;
 
         let mut scenario_b_content = Vec::new();
         let mut interrupt_response_latency_ms = None;
@@ -1490,9 +1698,26 @@ impl Session {
     }
 
     fn request(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
+        self.request_inner(method, Some(params), timeout)
+    }
+
+    fn request_without_params(&mut self, method: &str, timeout: Duration) -> Result<Value> {
+        self.request_inner(method, None, timeout)
+    }
+
+    fn request_inner(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+        timeout: Duration,
+    ) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
-        self.send(&json!({"id":id,"method":method,"params":params}))?;
+        let mut request = json!({"id":id,"method":method});
+        if let Some(params) = params {
+            request["params"] = params;
+        }
+        self.send(&request)?;
         let deadline = Instant::now() + timeout;
         loop {
             let (timestamp_ns, frame) = self.recv_wire(deadline)?;
@@ -2880,6 +3105,128 @@ fn validate_rate_limits(frame: &Value) -> Result<()> {
     Ok(())
 }
 
+fn validate_effective_config(frame: &Value, isolated_codex_home: &Path) -> Result<()> {
+    let result = frame
+        .get("result")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("config preflight failed"))?;
+    if result
+        .keys()
+        .any(|key| !matches!(key.as_str(), "config" | "origins" | "layers"))
+    {
+        bail!("config preflight failed");
+    }
+    let config_value = result
+        .get("config")
+        .ok_or_else(|| anyhow!("config preflight failed"))?;
+    let config = config_value
+        .as_object()
+        .ok_or_else(|| anyhow!("config preflight failed"))?;
+    let layers = result
+        .get("layers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("config preflight failed"))?;
+    let origins = result
+        .get("origins")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("config preflight failed"))?;
+    let expected_user_config = isolated_codex_home.join("config.toml");
+    let allowed_source = |source: &Value| -> bool {
+        let Some(object) = source.as_object() else {
+            return false;
+        };
+        match object.get("type").and_then(Value::as_str) {
+            Some("sessionFlags") => object.len() == 1,
+            Some("user") => {
+                object
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "type" | "file" | "profile"))
+                    && object.get("profile").is_none_or(Value::is_null)
+                    && object
+                        .get("file")
+                        .and_then(Value::as_str)
+                        .is_some_and(|file| {
+                            pinned_thread_cwd_matches(Path::new(file), &expected_user_config)
+                        })
+            }
+            _ => false,
+        }
+    };
+    let allowed_layer = |layer: &Value| -> bool {
+        let Some(object) = layer.as_object() else {
+            return false;
+        };
+        object.keys().all(|key| {
+            matches!(
+                key.as_str(),
+                "name" | "version" | "config" | "disabledReason"
+            )
+        }) && object.get("version").is_some_and(Value::is_string)
+            && object.contains_key("config")
+            && object
+                .get("disabledReason")
+                .is_none_or(|value| value.is_null() || value.is_string())
+            && object.get("name").is_some_and(&allowed_source)
+    };
+    let allowed_origin = |origin: &Value| -> bool {
+        let Some(object) = origin.as_object() else {
+            return false;
+        };
+        object.len() == 2
+            && object.get("version").is_some_and(Value::is_string)
+            && object.get("name").is_some_and(&allowed_source)
+    };
+    if layers.len() != 2
+        || layers.iter().any(|layer| !allowed_layer(layer))
+        || origins.values().any(|origin| !allowed_origin(origin))
+    {
+        bail!("config preflight failed");
+    }
+    let exact = |pointer: &str, expected: &Value| config_value.pointer(pointer) == Some(expected);
+    if !exact("/cli_auth_credentials_store", &json!("file"))
+        || !exact("/analytics/enabled", &json!(false))
+        || !exact("/otel/exporter", &json!("none"))
+        || !exact("/otel/trace_exporter", &json!("none"))
+        || !exact("/otel/metrics_exporter", &json!("none"))
+        || !exact("/skills/include_instructions", &json!(false))
+        || !exact("/skills/bundled/enabled", &json!(false))
+        || !config
+            .get("notify")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        || !exact("/project_doc_max_bytes", &json!(0))
+        || !exact("/project_root_markers", &json!([".codex-s2-root"]))
+        || config
+            .get("mcp_servers")
+            .is_some_and(|value| !value.as_object().is_some_and(serde_json::Map::is_empty))
+        || config
+            .get("model_providers")
+            .is_some_and(|value| !value.as_object().is_some_and(serde_json::Map::is_empty))
+        || config
+            .get("experimental_thread_config_endpoint")
+            .is_some_and(|value| !value.is_null())
+    {
+        bail!("config preflight failed");
+    }
+    for feature in ["hooks", "plugins", "apps", "shell_snapshot", "memories"] {
+        if config_value.pointer(&format!("/features/{feature}")) != Some(&json!(false)) {
+            bail!("config preflight failed");
+        }
+    }
+    Ok(())
+}
+
+fn validate_config_requirements(frame: &Value) -> Result<()> {
+    let result = frame
+        .get("result")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("config requirements preflight failed"))?;
+    if result.len() != 1 || result.get("requirements") != Some(&Value::Null) {
+        bail!("config requirements preflight failed");
+    }
+    Ok(())
+}
+
 fn quota_exhausted(value: &Value) -> bool {
     match value {
         Value::Object(map) => map.iter().any(|(key, value)| {
@@ -3607,6 +3954,33 @@ fn known_program_files() -> Result<PathBuf> {
     if result < 0 || path.is_null() {
         unsafe { CoTaskMemFree(path.cast()) };
         bail!("SHGetKnownFolderPath(FOLDERID_ProgramFiles) failed: HRESULT {result:#x}");
+    }
+    let length = unsafe {
+        let mut length = 0;
+        while *path.add(length) != 0 {
+            length += 1;
+        }
+        length
+    };
+    let value = PathBuf::from(OsString::from_wide(unsafe {
+        std::slice::from_raw_parts(path, length)
+    }));
+    unsafe { CoTaskMemFree(path.cast()) };
+    Ok(value)
+}
+
+#[cfg(windows)]
+fn known_program_data() -> Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramData, SHGetKnownFolderPath};
+
+    let mut path = std::ptr::null_mut();
+    let result =
+        unsafe { SHGetKnownFolderPath(&FOLDERID_ProgramData, 0, std::ptr::null_mut(), &mut path) };
+    if result < 0 || path.is_null() {
+        unsafe { CoTaskMemFree(path.cast()) };
+        bail!("known folder lookup failed");
     }
     let length = unsafe {
         let mut length = 0;
@@ -4802,6 +5176,92 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(super::read_approval_marker_atomically(&fifo).is_err());
         assert!(started.elapsed() < std::time::Duration::from_millis(250));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn valid_config_frame(home: &Path) -> serde_json::Value {
+        json!({"result":{
+            "config":{
+                "cli_auth_credentials_store":"file","notify":[],
+                "project_doc_max_bytes":0,"project_root_markers":[".codex-s2-root"],"mcp_servers":{},
+                "model_providers":{},"experimental_thread_config_endpoint":null,
+                "analytics":{"enabled":false},
+                "otel":{"exporter":"none","trace_exporter":"none","metrics_exporter":"none"},
+                "skills":{"include_instructions":false,"bundled":{"enabled":false}},
+                "features":{"hooks":false,"plugins":false,"apps":false,"shell_snapshot":false,"memories":false}
+            },"origins":{},"layers":[
+                {"name":{"type":"sessionFlags"},"version":"1","config":{}},
+                {"name":{"type":"user","file":home.join("config.toml"),"profile":null},"version":"1","config":{}}
+            ]
+        }})
+    }
+
+    #[test]
+    fn config_preflight_rejects_privileged_layers_and_effective_side_effects() {
+        let home = std::env::temp_dir();
+        super::validate_effective_config(&valid_config_frame(&home), &home).unwrap();
+        for source in [
+            "system",
+            "enterpriseManaged",
+            "legacyManaged",
+            "mdm",
+            "project",
+        ] {
+            let mut frame = valid_config_frame(&home);
+            frame["result"]["layers"] = json!([{"name":{"type":source},"version":"1","config":{}}]);
+            assert_eq!(
+                super::validate_effective_config(&frame, &home)
+                    .unwrap_err()
+                    .to_string(),
+                "config preflight failed"
+            );
+        }
+        for pointer in [
+            "/result/config/mcp_servers",
+            "/result/config/model_providers",
+        ] {
+            let mut frame = valid_config_frame(&home);
+            *frame.pointer_mut(pointer).unwrap() = json!({"unsafe":{}});
+            assert!(super::validate_effective_config(&frame, &home).is_err());
+        }
+        let mut frame = valid_config_frame(&home);
+        frame["result"]["config"]["experimental_thread_config_endpoint"] =
+            json!("https://private.invalid");
+        assert!(super::validate_effective_config(&frame, &home).is_err());
+    }
+
+    #[test]
+    fn config_requirements_preflight_requires_exactly_null() {
+        super::validate_config_requirements(&json!({"result":{"requirements":null}})).unwrap();
+        for frame in [
+            json!({"result":{}}),
+            json!({"result":{"requirements":{}}}),
+            json!({"result":{"requirements":null,"extra":true}}),
+        ] {
+            assert!(super::validate_config_requirements(&frame).is_err());
+        }
+    }
+
+    #[test]
+    fn managed_surface_audit_rejects_any_existing_object() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-s2-managed-audit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let absent = root.join("absent");
+        super::validate_managed_surfaces(std::slice::from_ref(&absent)).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&absent, b"managed").unwrap();
+        assert_eq!(
+            super::validate_managed_surfaces(&[absent])
+                .unwrap_err()
+                .to_string(),
+            "S2 managed configuration audit failed"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }
