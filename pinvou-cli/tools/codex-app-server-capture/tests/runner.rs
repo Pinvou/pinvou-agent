@@ -58,6 +58,7 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
         model: None,
         scenario_timeout: Duration::from_secs(10),
         global_timeout: Duration::from_secs(60),
+        test_child_env: Vec::new(),
     })
     .unwrap();
     assert!(outcome.report.valid);
@@ -89,6 +90,8 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
     assert!(capture.contains(r#"\"method\":\"thread/started\""#));
     assert!(capture.contains(r#"\"type\":\"userMessage\""#));
     assert!(capture.contains(r#"\"method\":\"rawResponseItem/completed\""#));
+    assert!(capture.contains(r#"\"phase\":\"final_answer\""#));
+    assert!(capture.contains(r#"\"phase\":null"#));
     let sanitized = format!(
         "{}{}",
         std::fs::read_to_string(output.join("evidence.json")).unwrap(),
@@ -106,7 +109,6 @@ fn agent_only_lifecycle_is_stateful_and_rejects_malformed_or_tool_raw_items() {
         "agent-thread-wrong-id",
         "agent-thread-missing",
         "agent-thread-duplicate",
-        "agent-thread-late",
         "agent-thread-malformed",
         "agent-user-wrong-ids",
         "agent-user-duplicate",
@@ -140,8 +142,17 @@ fn agent_only_lifecycle_is_stateful_and_rejects_malformed_or_tool_raw_items() {
         "agent-raw-malformed",
     ] {
         let output = temp_output(mode);
-        let result = run_fake(mode, &output, 10_000);
-        assert!(!result.status.success(), "{mode} unexpectedly passed");
+        let result = run_s2_for_test(S2RunConfig {
+            output_dir: Some(output.clone()),
+            executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+            trusted_approval_wrapper: None,
+            model: None,
+            scenario_timeout: Duration::from_secs(10),
+            global_timeout: Duration::from_secs(60),
+            test_child_env: vec![(OsString::from("S2_FAKE_MODE"), OsString::from(mode))],
+        });
+        assert!(result.is_err(), "{mode} unexpectedly passed");
+        let execution_error = format!("{:#}", result.unwrap_err());
         let report: Value =
             serde_json::from_slice(&std::fs::read(output.join("validation-report.json")).unwrap())
                 .unwrap();
@@ -154,16 +165,52 @@ fn agent_only_lifecycle_is_stateful_and_rejects_malformed_or_tool_raw_items() {
                 .is_some_and(|count| count > 0),
             "{mode} did not increment protocol_errors: {evidence}"
         );
+        let expected_rejection = match mode {
+            "agent-thread-wrong-id" | "agent-thread-duplicate" | "agent-thread-malformed" => {
+                "malformed, duplicate, or out-of-order thread/started"
+            }
+            "agent-thread-missing" => "duplicate or out-of-order turn/started",
+            "agent-user-wrong-ids" => "malformed item lifecycle notification",
+            "agent-user-duplicate" | "agent-user-raw-missing" | "agent-user-raw-late" => {
+                "duplicate or out-of-order user message start"
+            }
+            "agent-user-duplicate-completed"
+            | "agent-user-out-of-order"
+            | "agent-user-item-id-mismatch" => "mismatched or out-of-order user message completion",
+            "agent-user-prompt-mismatch" | "agent-user-malformed" => {
+                "malformed or mismatched user message"
+            }
+            "agent-user-missing-completed" => "agent item arrived before user lifecycle completed",
+            "agent-user-raw-duplicate" => {
+                "non-user raw item arrived before user lifecycle completed"
+            }
+            "agent-user-raw-wrong-thread"
+            | "agent-user-raw-wrong-turn"
+            | "agent-raw-wrong-ids"
+            | "agent-raw-wrong-turn" => "raw response item had mismatched identity or order",
+            "agent-user-raw-role"
+            | "agent-user-raw-text"
+            | "agent-user-raw-multipart"
+            | "agent-user-raw-malformed" => "malformed or mismatched leading user raw item",
+            "agent-raw-duplicate" => "duplicate raw response item",
+            "agent-raw-out-of-order" => "raw response item was out of order or duplicate",
+            "agent-raw-role-user"
+            | "agent-raw-function-call"
+            | "agent-raw-local-shell"
+            | "agent-raw-web-search"
+            | "agent-raw-computer"
+            | "agent-raw-tool-output"
+            | "agent-raw-custom-tool"
+            | "agent-raw-unknown"
+            | "agent-raw-malformed" => "malformed or tool raw response item is forbidden",
+            _ => unreachable!("unmapped fake mode {mode}"),
+        };
         assert!(
-            report["reasons"]
-                .as_array()
-                .is_some_and(|reasons| reasons.iter().any(|reason| reason
-                    .as_str()
-                    .is_some_and(|reason| reason.contains("protocol error")))),
-            "{mode} did not record a protocol error: {report}"
+            execution_error.contains(expected_rejection),
+            "{mode} did not execute target rejection {expected_rejection}: {execution_error}"
         );
         let expected_method = if mode.starts_with("agent-thread-") {
-            if matches!(mode, "agent-thread-missing" | "agent-thread-late") {
+            if mode == "agent-thread-missing" {
                 "turn/started"
             } else {
                 "thread/started"
@@ -255,6 +302,7 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         model: None,
         scenario_timeout: Duration::from_secs(10),
         global_timeout: Duration::from_secs(60),
+        test_child_env: Vec::new(),
     })
     .unwrap();
     let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
@@ -385,6 +433,7 @@ fn scenario_c_accepts_only_the_exact_observed_pwsh_wrapper() {
         model: None,
         scenario_timeout: Duration::from_secs(10),
         global_timeout: Duration::from_secs(60),
+        test_child_env: Vec::new(),
     })
     .unwrap();
     assert!(outcome.report.valid);
@@ -434,6 +483,7 @@ fn version_preflight_and_app_server_share_one_global_deadline() {
         model: None,
         scenario_timeout: Duration::from_secs(5),
         global_timeout: Duration::from_millis(1200),
+        test_child_env: Vec::new(),
     });
     assert!(result.is_err());
     assert!(start.elapsed() < Duration::from_millis(1800));
@@ -1155,6 +1205,7 @@ fn interrupt_timings_start_at_the_correlated_request_write() {
         model: None,
         scenario_timeout: Duration::from_secs(10),
         global_timeout: Duration::from_secs(60),
+        test_child_env: Vec::new(),
     })
     .unwrap();
     let records = std::fs::read_to_string(output.join("capture.jsonl"))

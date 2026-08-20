@@ -313,7 +313,7 @@ fn main() {
                     thread_value(notification_thread_id, cwd)
                 };
                 let notification = json!({"method":"thread/started","params":{"thread":thread}});
-                if !matches!(mode.as_str(), "agent-thread-missing" | "agent-thread-late") {
+                if mode != "agent-thread-missing" {
                     send(notification.clone());
                     if mode == "agent-thread-duplicate" {
                         send(notification);
@@ -338,22 +338,6 @@ fn main() {
                     json!({"method":"turn/started","params":{"threadId":format!("thread-{}", turn - 1),"turn":{"id":turn_id,"status":"inProgress"}}}),
                 );
                 let thread_id = format!("thread-{}", turn - 1);
-                if mode == "agent-thread-late" {
-                    let cwd = frame
-                        .pointer("/params/cwd")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    send(
-                        json!({"method":"thread/started","params":{"thread":thread_value(&thread_id,cwd)}}),
-                    );
-                    continue;
-                }
-                if mode == "agent-raw-out-of-order" {
-                    send(
-                        json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"early"}]}}}),
-                    );
-                    continue;
-                }
                 let user_raw_thread = if mode == "agent-user-raw-wrong-thread" {
                     "wrong-thread"
                 } else {
@@ -468,6 +452,12 @@ fn main() {
                     );
                     continue;
                 }
+                if mode == "agent-raw-out-of-order" {
+                    send(
+                        json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"early"}]}}}),
+                    );
+                    continue;
+                }
                 let reasoning_id = format!("reasoning-{turn}");
                 send(
                     json!({"method":"item/started","params":{"threadId":thread_id,"turnId":turn_id,"startedAtMs":3,"item":{"type":"reasoning","id":reasoning_id,"summary":[],"content":[]}}}),
@@ -526,8 +516,13 @@ fn main() {
                     );
                     continue;
                 }
+                let agent_phase = if turn % 2 == 1 {
+                    json!("final_answer")
+                } else {
+                    Value::Null
+                };
                 send(
-                    json!({"method":"item/started","params":{"threadId":thread_id,"turnId":turn_id,"startedAtMs":3,"item":{"type":"agentMessage","id":format!("item-{turn}"),"text":"","phase":null,"memoryCitation":null}}}),
+                    json!({"method":"item/started","params":{"threadId":thread_id,"turnId":turn_id,"startedAtMs":3,"item":{"type":"agentMessage","id":format!("item-{turn}"),"text":"","phase":agent_phase,"memoryCitation":null}}}),
                 );
                 let count = if prompt.contains("S2-B") { 40 } else { 12 };
                 for index in 0..count {
@@ -566,14 +561,22 @@ fn main() {
                 }
                 if !prompt.contains("S2-D") {
                     send(
-                        json!({"method":"item/completed","params":{"threadId":thread_id,"turnId":turn_id,"completedAtMs":4,"item":{"type":"agentMessage","id":format!("item-{turn}"),"text":"aggregated output","phase":null,"memoryCitation":null}}}),
+                        json!({"method":"item/completed","params":{"threadId":thread_id,"turnId":turn_id,"completedAtMs":4,"item":{"type":"agentMessage","id":format!("item-{turn}"),"text":"aggregated output","phase":agent_phase,"memoryCitation":null}}}),
                     );
+                    let mut raw_item = raw_item;
+                    if raw_item.get("type").and_then(Value::as_str) == Some("message")
+                        && raw_item.get("role").and_then(Value::as_str) == Some("assistant")
+                        && !agent_phase.is_null()
+                    {
+                        raw_item["phase"] = agent_phase;
+                    }
+                    let duplicate_raw_item = raw_item.clone();
                     send(
                         json!({"method":"rawResponseItem/completed","params":{"threadId":raw_thread_id,"turnId":raw_turn_id,"item":raw_item}}),
                     );
                     if mode == "agent-raw-duplicate" {
                         send(
-                            json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fixture output"}]}}}),
+                            json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":duplicate_raw_item}}),
                         );
                     }
                 }

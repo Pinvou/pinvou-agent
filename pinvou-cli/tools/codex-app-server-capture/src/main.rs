@@ -114,6 +114,8 @@ fn main() -> Result<()> {
                 model,
                 scenario_timeout: std::time::Duration::from_millis(scenario_timeout_ms),
                 global_timeout: std::time::Duration::from_millis(global_timeout_ms),
+                #[cfg(debug_assertions)]
+                test_child_env: Vec::new(),
             })?;
             println!("S2 PASS: {}", outcome.output_dir.display());
             Ok(())

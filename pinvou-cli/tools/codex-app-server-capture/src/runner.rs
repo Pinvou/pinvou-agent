@@ -37,6 +37,9 @@ pub struct S2RunConfig {
     pub model: Option<String>,
     pub scenario_timeout: Duration,
     pub global_timeout: Duration,
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub test_child_env: Vec<(OsString, OsString)>,
 }
 
 #[derive(Debug)]
@@ -144,7 +147,7 @@ fn run_s2_with_thresholds(
     let global_deadline = Instant::now() + config.global_timeout;
     let mut evidence = empty_evidence();
     let execution = SafeInvocation::resolve(config.executable.as_ref()).and_then(|invocation| {
-        verify_executable_version(&invocation, global_deadline).and_then(|_| {
+        verify_executable_version(&invocation, global_deadline, &config).and_then(|_| {
             execute(
                 &config,
                 &invocation,
@@ -493,11 +496,29 @@ fn normalize_windows_command_path(canonical: PathBuf) -> Result<PathBuf> {
     Ok(canonical)
 }
 
-fn verify_executable_version(invocation: &SafeInvocation, global_deadline: Instant) -> Result<()> {
+#[cfg(debug_assertions)]
+fn apply_test_child_env(command: &mut Command, config: &S2RunConfig) {
+    command.envs(
+        config
+            .test_child_env
+            .iter()
+            .map(|(key, value)| (key, value)),
+    );
+}
+
+#[cfg(not(debug_assertions))]
+fn apply_test_child_env(_command: &mut Command, _config: &S2RunConfig) {}
+
+fn verify_executable_version(
+    invocation: &SafeInvocation,
+    global_deadline: Instant,
+    config: &S2RunConfig,
+) -> Result<()> {
     use std::io::Read;
 
     remaining_global(global_deadline)?;
     let mut process = invocation.command(&["--version"])?;
+    apply_test_child_env(&mut process, config);
     process
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -622,8 +643,10 @@ fn execute(
         BufWriter::new(create_capture_file(&output_dir.join(CAPTURE_FILE))?),
         Box::new(move || recorder_clock.now_ns().expect("monotonic clock failed")),
     )));
+    let mut app_server = invocation.command(&["app-server", "--stdio"])?;
+    apply_test_child_env(&mut app_server, config);
     let mut session = Session::spawn(
-        invocation.command(&["app-server", "--stdio"])?,
+        app_server,
         recorder,
         global_deadline,
         Arc::clone(marker_helper),
@@ -1610,6 +1633,7 @@ struct AgentOnlyState<'a> {
     user_item_id: Option<String>,
     user_completed: bool,
     items: HashMap<String, AgentItemState>,
+    expected_raw_order: VecDeque<String>,
     raw_items: Vec<Value>,
 }
 
@@ -1623,6 +1647,7 @@ enum AgentItemKind {
 #[derive(Clone, Copy, Debug)]
 struct AgentItemState {
     kind: AgentItemKind,
+    phase: Option<PinnedMessagePhase>,
     completed: bool,
     raw_seen: bool,
 }
@@ -1638,6 +1663,7 @@ impl<'a> AgentOnlyState<'a> {
             user_item_id: None,
             user_completed: false,
             items: HashMap::new(),
+            expected_raw_order: VecDeque::new(),
             raw_items: Vec::new(),
         }
     }
@@ -1772,7 +1798,7 @@ impl<'a> AgentOnlyState<'a> {
                     if !self.user_completed {
                         bail!("protocol error: agent item arrived before user lifecycle completed");
                     }
-                    let (item_id, kind) = valid_agent_item(frame).context(
+                    let (item_id, kind, phase) = valid_agent_item(frame).context(
                         "protocol error: tool, unknown, or malformed item is forbidden in agent-only scenario",
                     )?;
                     if method == "item/started" {
@@ -1783,6 +1809,7 @@ impl<'a> AgentOnlyState<'a> {
                             item_id.to_owned(),
                             AgentItemState {
                                 kind,
+                                phase,
                                 completed: false,
                                 raw_seen: false,
                             },
@@ -1791,10 +1818,13 @@ impl<'a> AgentOnlyState<'a> {
                         let state = self.items.get_mut(item_id).context(
                             "protocol error: agent item completion arrived before start",
                         )?;
-                        if state.kind != kind || state.completed {
+                        if state.kind != kind || state.phase != phase || state.completed {
                             bail!("protocol error: mismatched or duplicate agent item completion");
                         }
                         state.completed = true;
+                        if matches!(kind, AgentItemKind::AgentMessage | AgentItemKind::Reasoning) {
+                            self.expected_raw_order.push_back(item_id.to_owned());
+                        }
                     }
                 }
             }
@@ -1819,14 +1849,22 @@ impl<'a> AgentOnlyState<'a> {
                 if self.raw_items.iter().any(|seen| seen == raw_item) {
                     bail!("protocol error: duplicate raw response item");
                 }
-                let kind = valid_benign_raw_response_item(Some(raw_item))
+                let (kind, phase) = valid_benign_raw_response_item(Some(raw_item))
                     .context("protocol error: malformed or tool raw response item is forbidden")?;
+                let expected_id = self
+                    .expected_raw_order
+                    .front()
+                    .context("protocol error: raw response item was out of order or duplicate")?;
                 let state = self
                     .items
-                    .values_mut()
-                    .find(|item| item.kind == kind && item.completed && !item.raw_seen)
+                    .get_mut(expected_id)
                     .context("protocol error: raw response item was out of order or duplicate")?;
+                if state.kind != kind || state.phase != phase || !state.completed || state.raw_seen
+                {
+                    bail!("protocol error: raw response item was out of order or duplicate");
+                }
                 state.raw_seen = true;
+                self.expected_raw_order.pop_front();
                 self.raw_items.push(raw_item.clone());
             }
             "item/commandExecution/outputDelta"
@@ -1868,6 +1906,18 @@ impl<'a> AgentOnlyState<'a> {
                 }))
         {
             bail!("protocol error: completed scenario lacked a complete assistant raw lifecycle");
+        }
+        if matches!(scenario, "A" | "B")
+            && self.items.values().any(|item| {
+                matches!(
+                    item.kind,
+                    AgentItemKind::AgentMessage | AgentItemKind::Reasoning
+                ) && !item.raw_seen
+            })
+        {
+            bail!(
+                "protocol error: completed scenario lacked raw response for every completed agent or reasoning item"
+            );
         }
         Ok(())
     }
@@ -2039,19 +2089,22 @@ fn valid_user_message_item<'a>(frame: &'a Value, prompt: &str) -> Result<&'a str
     Ok(item_id)
 }
 
-fn valid_agent_item(frame: &Value) -> Option<(&str, AgentItemKind)> {
+fn valid_agent_item(frame: &Value) -> Option<(&str, AgentItemKind, Option<PinnedMessagePhase>)> {
     let item = frame.pointer("/params/item")?.as_object()?;
     let id = item.get("id")?.as_str().filter(|value| !value.is_empty())?;
-    let kind = match item.get("type")?.as_str()? {
+    let (kind, phase) = match item.get("type")?.as_str()? {
         "agentMessage" => {
-            if item.len() != 5
-                || !item.get("memoryCitation")?.is_null()
-                || !item.get("phase")?.is_null()
-            {
+            if item.len() != 5 || !item.get("memoryCitation")?.is_null() {
+                return None;
+            }
+            let phase =
+                serde_json::from_value::<Option<PinnedMessagePhase>>(item.get("phase")?.clone())
+                    .ok()?;
+            if phase == Some(PinnedMessagePhase::Commentary) {
                 return None;
             }
             item.get("text")?.as_str()?;
-            AgentItemKind::AgentMessage
+            (AgentItemKind::AgentMessage, phase)
         }
         "reasoning" => {
             if item.len() != 4
@@ -2068,18 +2121,18 @@ fn valid_agent_item(frame: &Value) -> Option<(&str, AgentItemKind)> {
             {
                 return None;
             }
-            AgentItemKind::Reasoning
+            (AgentItemKind::Reasoning, None)
         }
         "plan" => {
             if item.len() != 3 {
                 return None;
             }
             item.get("text")?.as_str()?;
-            AgentItemKind::Plan
+            (AgentItemKind::Plan, None)
         }
         _ => return None,
     };
-    Some((id, kind))
+    Some((id, kind, phase))
 }
 
 fn valid_user_raw_response_item(item: Option<&Value>, prompt: &str) -> bool {
@@ -2094,7 +2147,9 @@ fn valid_user_raw_response_item(item: Option<&Value>, prompt: &str) -> bool {
     })
 }
 
-fn valid_benign_raw_response_item(item: Option<&Value>) -> Option<AgentItemKind> {
+fn valid_benign_raw_response_item(
+    item: Option<&Value>,
+) -> Option<(AgentItemKind, Option<PinnedMessagePhase>)> {
     let Some(item) = item else {
         return None;
     };
@@ -2104,17 +2159,18 @@ fn valid_benign_raw_response_item(item: Option<&Value>) -> Option<AgentItemKind>
             .filter(|item| {
                 item.kind == "message"
                     && item.role == "assistant"
+                    && item.phase != Some(PinnedMessagePhase::Commentary)
                     && !item.content.is_empty()
                     && item
                         .content
                         .iter()
                         .all(|part| matches!(part, PinnedContent::OutputText { text } if !text.is_empty()))
             })
-            .map(|_| AgentItemKind::AgentMessage),
+            .map(|item| (AgentItemKind::AgentMessage, item.phase)),
         Some("reasoning") => serde_json::from_value::<PinnedRawReasoning>(item.clone())
             .ok()
             .filter(valid_reasoning_raw)
-            .map(|_| AgentItemKind::Reasoning),
+            .map(|_| (AgentItemKind::Reasoning, None)),
         _ => None,
     }
 }
@@ -2136,7 +2192,7 @@ enum PinnedContent {
     OutputText { text: String },
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum PinnedMessagePhase {
     Commentary,
@@ -3357,6 +3413,41 @@ mod tests {
     }
 
     #[test]
+    fn thread_lifecycle_rejection_categories_are_stable() {
+        let workspace = std::env::temp_dir().canonicalize().unwrap();
+        let mut malformed = pinned_thread_frame(&workspace);
+        malformed["params"]["thread"]["id"] = json!("other");
+        let mut state = super::AgentOnlyState::new("prompt", &workspace);
+        let error = state.validate(&malformed, "t", "u").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "protocol error: malformed, duplicate, or out-of-order thread/started"
+        );
+
+        let mut missing = super::AgentOnlyState::new("prompt", &workspace);
+        let error = missing
+            .validate(
+                &json!({"method":"turn/started","params":{"threadId":"t","turn":{"id":"u","status":"inProgress"}}}),
+                "t",
+                "u",
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "protocol error: duplicate or out-of-order turn/started"
+        );
+
+        let mut duplicate = state_after_turn("prompt", &workspace);
+        let error = duplicate
+            .validate(&pinned_thread_frame(&workspace), "t", "u")
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "protocol error: malformed, duplicate, or out-of-order thread/started"
+        );
+    }
+
+    #[test]
     fn user_raw_is_unique_exact_and_precedes_user_message_lifecycle() {
         let workspace = std::env::temp_dir().canonicalize().unwrap();
         let prompt = "exact prompt";
@@ -3368,13 +3459,24 @@ mod tests {
         ] {
             let mut state = state_after_turn(prompt, &workspace);
             let error = state.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":item}}), "t", "u").unwrap_err();
-            assert!(error.to_string().contains("leading user raw"));
+            assert_eq!(
+                error.to_string(),
+                "protocol error: malformed or mismatched leading user raw item"
+            );
         }
         let mut state = state_after_turn(prompt, &workspace);
         let user = json!({"type":"userMessage","id":"user","clientId":null,"content":[{"type":"text","text":prompt,"text_elements":[]}]});
-        assert!(state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":1,"item":user}}), "t", "u").is_err());
+        let error = state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":1,"item":user}}), "t", "u").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "protocol error: duplicate or out-of-order user message start"
+        );
         let mut state = state_after_user(prompt, &workspace);
-        assert!(state.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}}}), "t", "u").is_err());
+        let error = state.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}}}), "t", "u").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "protocol error: malformed or tool raw response item is forbidden"
+        );
     }
 
     #[test]
@@ -3388,21 +3490,150 @@ mod tests {
         let raw = json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"x"}]}}});
 
         let mut state = state_after_user(prompt, &workspace);
-        assert!(state.validate(&delta, "t", "u").is_err());
-        assert!(state.validate(&completed, "t", "u").is_err());
-        assert!(state.validate(&raw, "t", "u").is_err());
+        assert_eq!(
+            state.validate(&delta, "t", "u").unwrap_err().to_string(),
+            "protocol error: delta arrived before its item lifecycle started"
+        );
+        assert_eq!(
+            state
+                .validate(&completed, "t", "u")
+                .unwrap_err()
+                .to_string(),
+            "protocol error: agent item completion arrived before start"
+        );
+        assert_eq!(
+            state.validate(&raw, "t", "u").unwrap_err().to_string(),
+            "protocol error: raw response item was out of order or duplicate"
+        );
 
         let mut state = state_after_user(prompt, &workspace);
         state.validate(&started, "t", "u").unwrap();
-        assert!(state.validate(&started, "t", "u").is_err());
-        assert!(state.validate(&json!({"method":"item/agentMessage/delta","params":{"threadId":"t","turnId":"u","itemId":"other","delta":"x"}}), "t", "u").is_err());
-        assert!(state.validate(&json!({"method":"item/plan/delta","params":{"threadId":"t","turnId":"u","itemId":"assistant","delta":"x"}}), "t", "u").is_err());
+        assert_eq!(
+            state.validate(&started, "t", "u").unwrap_err().to_string(),
+            "protocol error: duplicate agent item start"
+        );
+        assert_eq!(state.validate(&json!({"method":"item/agentMessage/delta","params":{"threadId":"t","turnId":"u","itemId":"other","delta":"x"}}), "t", "u").unwrap_err().to_string(), "protocol error: delta arrived before its item lifecycle started");
+        assert_eq!(state.validate(&json!({"method":"item/plan/delta","params":{"threadId":"t","turnId":"u","itemId":"assistant","delta":"x"}}), "t", "u").unwrap_err().to_string(), "protocol error: delta item kind or lifecycle state was invalid");
         state.validate(&delta, "t", "u").unwrap();
         state.validate(&completed, "t", "u").unwrap();
-        assert!(state.validate(&delta, "t", "u").is_err());
+        assert_eq!(
+            state.validate(&delta, "t", "u").unwrap_err().to_string(),
+            "protocol error: delta item kind or lifecycle state was invalid"
+        );
         state.validate(&raw, "t", "u").unwrap();
-        assert!(state.validate(&raw, "t", "u").is_err());
-        assert!(state.validate(&completed, "t", "u").is_err());
+        assert_eq!(
+            state.validate(&raw, "t", "u").unwrap_err().to_string(),
+            "protocol error: duplicate raw response item"
+        );
+        assert_eq!(
+            state
+                .validate(&completed, "t", "u")
+                .unwrap_err()
+                .to_string(),
+            "protocol error: mismatched or duplicate agent item completion"
+        );
+    }
+
+    #[test]
+    fn completed_agent_only_scenarios_require_raw_for_every_agent_and_reasoning_item() {
+        let workspace = std::env::temp_dir().canonicalize().unwrap();
+        let prompt = "exact prompt";
+
+        let mut missing_second_agent_raw = state_after_user(prompt, &workspace);
+        for (id, text, with_raw) in [("first", "one", true), ("second", "two", false)] {
+            let item =
+                json!({"type":"agentMessage","id":id,"text":"","phase":null,"memoryCitation":null});
+            missing_second_agent_raw.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":3,"item":item}}), "t", "u").unwrap();
+            let item = json!({"type":"agentMessage","id":id,"text":text,"phase":null,"memoryCitation":null});
+            missing_second_agent_raw.validate(&json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":4,"item":item}}), "t", "u").unwrap();
+            if with_raw {
+                missing_second_agent_raw.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}}}), "t", "u").unwrap();
+            }
+        }
+        let error = missing_second_agent_raw
+            .finish("A", &super::TerminalState::Completed)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "protocol error: completed scenario lacked raw response for every completed agent or reasoning item"
+        );
+
+        let mut interrupted = state_after_user(prompt, &workspace);
+        let active = json!({"type":"agentMessage","id":"active","text":"","phase":"final_answer","memoryCitation":null});
+        interrupted.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":7,"item":active}}), "t", "u").unwrap();
+        interrupted.validate(&json!({"method":"item/agentMessage/delta","params":{"threadId":"t","turnId":"u","itemId":"active","delta":"partial"}}), "t", "u").unwrap();
+        interrupted
+            .finish("D", &super::TerminalState::Interrupted)
+            .unwrap();
+
+        let mut missing_reasoning_raw = state_after_user(prompt, &workspace);
+        let agent = json!({"type":"agentMessage","id":"agent","text":"","phase":null,"memoryCitation":null});
+        missing_reasoning_raw.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":3,"item":agent}}), "t", "u").unwrap();
+        let agent = json!({"type":"agentMessage","id":"agent","text":"answer","phase":null,"memoryCitation":null});
+        missing_reasoning_raw.validate(&json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":4,"item":agent}}), "t", "u").unwrap();
+        missing_reasoning_raw.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}}), "t", "u").unwrap();
+        let reasoning = json!({"type":"reasoning","id":"reasoning","summary":[],"content":[]});
+        missing_reasoning_raw.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":5,"item":reasoning}}), "t", "u").unwrap();
+        missing_reasoning_raw.validate(&json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":6,"item":reasoning}}), "t", "u").unwrap();
+        let error = missing_reasoning_raw
+            .finish("B", &super::TerminalState::Completed)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "protocol error: completed scenario lacked raw response for every completed agent or reasoning item"
+        );
+    }
+
+    #[test]
+    fn agent_message_phase_is_exact_stable_and_final_only() {
+        let workspace = std::env::temp_dir().canonicalize().unwrap();
+        let prompt = "exact prompt";
+        for phase in [json!(null), json!("final_answer")] {
+            let mut state = state_after_user(prompt, &workspace);
+            let started = json!({"type":"agentMessage","id":"agent","text":"","phase":phase,"memoryCitation":null});
+            state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":3,"item":started}}), "t", "u").unwrap();
+            state.validate(&json!({"method":"item/agentMessage/delta","params":{"threadId":"t","turnId":"u","itemId":"agent","delta":"x"}}), "t", "u").unwrap();
+            let completed = json!({"type":"agentMessage","id":"agent","text":"x","phase":phase,"memoryCitation":null});
+            state.validate(&json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":4,"item":completed}}), "t", "u").unwrap();
+            let mut raw = json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"x"}]});
+            if phase == json!("final_answer") {
+                raw["phase"] = phase;
+            }
+            state.validate(&json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":raw}}), "t", "u").unwrap();
+            state.finish("A", &super::TerminalState::Completed).unwrap();
+        }
+
+        for phase in [json!("commentary"), json!("future_phase")] {
+            let mut state = state_after_user(prompt, &workspace);
+            let started = json!({"type":"agentMessage","id":"agent","text":"","phase":phase,"memoryCitation":null});
+            let error = state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":3,"item":started}}), "t", "u").unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "protocol error: tool, unknown, or malformed item is forbidden in agent-only scenario"
+            );
+        }
+
+        let mut state = state_after_user(prompt, &workspace);
+        let started = json!({"type":"agentMessage","id":"agent","text":"","phase":null,"memoryCitation":null});
+        state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":3,"item":started}}), "t", "u").unwrap();
+        let completed = json!({"type":"agentMessage","id":"agent","text":"x","phase":"final_answer","memoryCitation":null});
+        let error = state.validate(&json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":4,"item":completed}}), "t", "u").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "protocol error: mismatched or duplicate agent item completion"
+        );
+
+        let mut state = state_after_user(prompt, &workspace);
+        let started = json!({"type":"agentMessage","id":"agent","text":"","phase":"final_answer","memoryCitation":null});
+        state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":3,"item":started}}), "t", "u").unwrap();
+        let completed = json!({"type":"agentMessage","id":"agent","text":"x","phase":"final_answer","memoryCitation":null});
+        state.validate(&json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":4,"item":completed}}), "t", "u").unwrap();
+        let raw_without_phase = json!({"method":"rawResponseItem/completed","params":{"threadId":"t","turnId":"u","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"x"}]}}});
+        let error = state.validate(&raw_without_phase, "t", "u").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "protocol error: raw response item was out of order or duplicate"
+        );
     }
 
     #[test]
