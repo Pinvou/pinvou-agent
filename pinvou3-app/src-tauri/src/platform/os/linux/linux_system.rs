@@ -219,3 +219,41 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
         "/usr/local/bin/nvidia-smi",
     ]
 }
+
+/// GPU 分级（本地引擎设备自动选择）：Linux 首版恒按无 GPU（CPU 推理），
+/// Vulkan 可用性探测留给后续迭代。
+pub fn gpu_class() -> crate::platform::os::GpuClass {
+    crate::platform::os::GpuClass::None
+}
+
+/// 物理核数（llama-server `-t` 用）：按 /sys CPU 拓扑
+/// (physical_package_id, core_id) 去重；拓扑缺失时回落逻辑核数。
+pub fn physical_core_count() -> usize {
+    let mut cores = std::collections::HashSet::new();
+    if let Ok(entries) = std::fs::read_dir("/sys/devices/system/cpu") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            // 只要 cpuN 目录，跳过 cpufreq/cpuidle 等。
+            if name.len() <= 3
+                || !name.starts_with("cpu")
+                || !name[3..].chars().all(|c| c.is_ascii_digit())
+            {
+                continue;
+            }
+            let topo = entry.path().join("topology");
+            let pkg = std::fs::read_to_string(topo.join("physical_package_id")).ok();
+            let core = std::fs::read_to_string(topo.join("core_id")).ok();
+            if let (Some(pkg), Some(core)) = (pkg, core) {
+                cores.insert((pkg.trim().to_string(), core.trim().to_string()));
+            }
+        }
+    }
+    if cores.is_empty() {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+    } else {
+        cores.len()
+    }
+}

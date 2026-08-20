@@ -151,6 +151,28 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     super::super::platform::nvidia_smi_candidates()
 }
 
+/// GPU 能力分级（本地引擎设备自动选择与模型档位推荐共用口径）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuClass {
+    /// 独显（Windows：任一适配器专用显存 ≥5.6GB；macOS 恒此档）。
+    Dedicated,
+    /// 强核显白名单命中（Radeon 680M/780M/880M/890M、Iris Xe、Arc Graphics）。
+    StrongIgpu,
+    /// 无可用 GPU（枚举失败 / Vulkan 运行时缺失 / 其余核显）→ 走 CPU 推理。
+    None,
+}
+
+/// 本地引擎 GPU 分级；GPU 判定以 Vulkan/Metal 运行时可用为前提。
+pub fn gpu_class() -> GpuClass {
+    super::super::platform::gpu_class()
+}
+
+/// 物理 CPU 核数（llama-server `-t` 用）；各平台读取失败时回落逻辑核数。
+pub fn physical_core_count() -> usize {
+    super::super::platform::physical_core_count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

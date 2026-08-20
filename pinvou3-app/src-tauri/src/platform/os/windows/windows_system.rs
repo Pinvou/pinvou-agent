@@ -510,3 +510,110 @@ mod tests {
         assert!(normalized_presentation_extension(Path::new("notes.txt")).is_none());
     }
 }
+
+// ---------------- 本地引擎硬件探测 ----------------
+
+/// 独显专用显存阈值 5.6GB：低于此档跑 4B Q4_K_M + KV 很吃力，按核显对待。
+const DEDICATED_VRAM_MIN_BYTES: u64 = 5_600_000_000;
+
+/// GPU 分级（本地引擎设备自动选择）：任一适配器专用显存 ≥5.6GB → 独显档；
+/// 名称命中强核显白名单（Radeon 680M/780M/880M/890M、Iris Xe、Arc Graphics）
+/// → 强核显档；其余核显 → 无 GPU。枚举失败一律回落无 GPU（CPU 推理）。
+/// GPU 判定前提：vulkan-1.dll 存在（引擎 win-vulkan 包走 Vulkan 后端，
+/// 缺运行时必然起不来，此时按 CPU 计）。
+pub fn gpu_class() -> crate::platform::os::GpuClass {
+    use crate::platform::os::GpuClass;
+    if !vulkan_runtime_present() {
+        return GpuClass::None;
+    }
+    enum_gpu_class().unwrap_or(GpuClass::None)
+}
+
+fn vulkan_runtime_present() -> bool {
+    let root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    root.join("System32").join("vulkan-1.dll").is_file()
+}
+
+fn enum_gpu_class() -> Option<crate::platform::os::GpuClass> {
+    use crate::platform::os::GpuClass;
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
+    };
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
+        let mut index = 0u32;
+        let mut best = GpuClass::None;
+        while let Ok(adapter) = factory.EnumAdapters1(index) {
+            index += 1;
+            let Ok(desc) = adapter.GetDesc1() else {
+                continue;
+            };
+            // 跳过 Basic Render 等软件适配器。
+            if desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0 {
+                continue;
+            }
+            if desc.DedicatedVideoMemory as u64 >= DEDICATED_VRAM_MIN_BYTES {
+                return Some(GpuClass::Dedicated);
+            }
+            if is_strong_igpu(&adapter_name(&desc.Description)) {
+                best = GpuClass::StrongIgpu;
+            }
+        }
+        Some(best)
+    }
+}
+
+fn adapter_name(buf: &[u16]) -> String {
+    let end = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..end])
+}
+
+fn is_strong_igpu(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    [
+        "radeon 680m",
+        "radeon 780m",
+        "radeon 880m",
+        "radeon 890m",
+        "iris xe",
+        "arc graphics",
+    ]
+    .iter()
+    .any(|key| name.contains(key))
+}
+
+/// 物理核数（llama-server `-t` 用）：GetLogicalProcessorInformation 按
+/// RelationProcessorCore 条目计数（每条目对应一个物理核）；失败回落逻辑核数。
+pub fn physical_core_count() -> usize {
+    physical_cores_via_processor_info().unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+    })
+}
+
+fn physical_cores_via_processor_info() -> Option<usize> {
+    use windows_sys::Win32::System::SystemInformation::{
+        GetLogicalProcessorInformation, RelationProcessorCore, SYSTEM_LOGICAL_PROCESSOR_INFORMATION,
+    };
+    unsafe {
+        let mut len: u32 = 0;
+        GetLogicalProcessorInformation(std::ptr::null_mut(), &mut len);
+        if len == 0 {
+            return None;
+        }
+        let count = len as usize / std::mem::size_of::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION>();
+        let mut buf: Vec<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> = Vec::with_capacity(count);
+        if GetLogicalProcessorInformation(buf.as_mut_ptr(), &mut len) == 0 {
+            return None;
+        }
+        buf.set_len(count);
+        let cores = buf
+            .iter()
+            .filter(|info| info.Relationship == RelationProcessorCore)
+            .count();
+        (cores > 0).then_some(cores)
+    }
+}

@@ -9,6 +9,7 @@ const staticExtensions = new Set([
 ]);
 const staticScripts = new Set([
   'features/attachments/attachment-drop-controller.js',
+  'features/attachments/image-prescale.js',
   'features/personas/personas-i18n.js',
   'features/updater/update-notice-logic.js',
   'platform/tauri/bridge.js',

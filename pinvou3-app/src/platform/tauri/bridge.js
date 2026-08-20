@@ -345,6 +345,15 @@
       progress: null,     // { stage:'ffmpeg'|'model'|'cancelling'|'cancelled'|'done', downloaded, total }
       error: null,
     },
+    // 本地多模态引擎（llama-server）：一键下载引擎/模型 + 启动/停止本地视觉服务
+    llamaEngineSetup: {
+      status: null,       // llama_engine_status 返回 { engineInstalled, engineTag, models[], phase, port, pid, device, error }
+      downloading: false, // 下载中（引擎或模型）
+      downloadingItem: null, // 'engine' | 'model' | 'mmproj'
+      starting: false,    // 启动中（避免重复点击）
+      progress: null,     // { stage, item, modelId, downloaded, total }
+      error: null,
+    },
     // 知识库 embedding 模型按需下载引导（知识库页未装模型时显 gate）
     kbModelSetup: {
       downloading: false, // 下载/部署中
@@ -458,6 +467,7 @@
       kbPickFolderTitle: "Choose folders to import into the knowledge base",
       memoryWriteFailed: "Memory write failed: ", memoryIgnoreFailed: "Failed to ignore memory: ", memoryNeverFailed: "Failed to set \"never ask\": ",
       attachNeedSession: "⚠️ Start a new chat before adding attachments", attachTooLarge: "Attachment exceeds the 20 MiB limit", attachEmptyFile: "Empty files cannot be added", attachAddCancelled: "Attachment add canceled", attachInvalidResult: "Attachment add returned no valid result",
+      imageCompressed: "Large image compressed before sending; recognition may be slower",
       planTicketInvalid: "⚠️ The plan credential is no longer valid. Regenerate the plan before executing.",
       remoteTurnSyncing: "⚠️ This chat is still syncing a turn finished on another device. Try again shortly.",
       mountCollectionFailed: "Failed to mount collection: ",
@@ -532,6 +542,7 @@
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
       memoryWriteFailed: "メモリの書き込みに失敗: ", memoryIgnoreFailed: "メモリの無視に失敗: ", memoryNeverFailed: "「今後表示しない」の設定に失敗: ",
       attachNeedSession: "⚠️ 添付ファイルを追加する前に新しいチャットを開始してください", attachTooLarge: "添付ファイルが 20 MiB の上限を超えています", attachEmptyFile: "空のファイルは追加できません", attachAddCancelled: "添付ファイルの追加はキャンセルされました", attachInvalidResult: "添付ファイルの追加で有効な結果が返されませんでした",
+      imageCompressed: "大きな画像を圧縮してから送信します。認識が遅くなる場合があります",
       planTicketInvalid: "⚠️ プランの資格情報が無効になりました。プランを再生成してから実行してください。",
       remoteTurnSyncing: "⚠️ このセッションは別の端末で完了したターンを同期中です。しばらくしてから再試行してください。",
       mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
@@ -606,6 +617,7 @@
       kbPickFolderTitle: "选择要导入知识库的文件夹",
       memoryWriteFailed: "记忆写入失败：", memoryIgnoreFailed: "忽略记忆失败：", memoryNeverFailed: "设置不再提示失败：",
       attachNeedSession: "⚠️ 请先新建会话再添加附件", attachTooLarge: "附件超过 20 MiB 上限", attachEmptyFile: "空文件无法添加", attachAddCancelled: "附件添加已取消", attachInvalidResult: "附件添加未返回有效结果",
+      imageCompressed: "图片较大已压缩，识别可能较慢",
       planTicketInvalid: "⚠️ 方案凭证已失效，请重新生成方案后再执行",
       remoteTurnSyncing: "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试",
       mountCollectionFailed: "挂载知识集失败: ",
@@ -1209,6 +1221,7 @@
     chat: ["activeSkill", "artifacts", "artifactChange", "attachmentDragActive", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedRemoteCollections", "mountedCollectionsRevision"],
+    llamaEngine: ["llamaEngineSetup"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
     monitor: ["monitor", "monitorError"],
     settings: ["settings", "selectedPet"],
@@ -2195,6 +2208,15 @@
   var knowledgeModelFeature = installBridgeFeature("knowledge-model", { state: state, notify: notify, invoke: invoke, listen: listen });
   var downloadKbModel = knowledgeModelFeature.downloadKbModel;
   var cancelKbModel = knowledgeModelFeature.cancelKbModel;
+  var llamaEngineFeature = installBridgeFeature("llama-engine", { state: state, notify: notify, invoke: invoke });
+  var llamaEngineRefreshStatus = llamaEngineFeature.refreshStatus;
+  var llamaEngineInstallEngine = llamaEngineFeature.installEngine;
+  var llamaEngineInstallModel = llamaEngineFeature.installModel;
+  var llamaEngineCancelDownload = llamaEngineFeature.cancelDownload;
+  var llamaEngineStart = llamaEngineFeature.startEngine;
+  var llamaEngineStop = llamaEngineFeature.stopEngine;
+  var llamaEngineDeleteModel = llamaEngineFeature.deleteModel;
+  var llamaEngineDeleteEngine = llamaEngineFeature.deleteEngine;
 
   var multiAgentFeature = installBridgeFeature("multiagent", { state: state, notify: notify, invoke: invoke, listen: listen });
   var listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
@@ -2331,6 +2353,16 @@
       removeRemoteCollection: removeRemoteCollection,
       listCollections: function () { return invoke("kb_collection_list"); },
       kbModelStatus: function () { return invoke("kb_model_status"); },
+    },
+    llamaEngine: {
+      refreshStatus: llamaEngineRefreshStatus,
+      installEngine: llamaEngineInstallEngine,
+      installModel: llamaEngineInstallModel,
+      cancelDownload: llamaEngineCancelDownload,
+      startEngine: llamaEngineStart,
+      stopEngine: llamaEngineStop,
+      deleteModel: llamaEngineDeleteModel,
+      deleteEngine: llamaEngineDeleteEngine,
     },
     scheduled: {
       loadScheduledTasks: loadScheduledTasks,

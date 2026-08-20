@@ -10,13 +10,42 @@
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
 | 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `a36e6cd53` |
+| 待评审分支 | `fix/vision-tool-robustness`，head `ea5bdf566`（r7 公开 head 之上 4 个 vision 提交：慢设备适配 + 可配置化/流式健壮性 + 三项修复 + L3 端到端回归；2026-08-19 由 r6 基线重落到 r7，原 r6 基线提交 `98b64480e`/`80f649cce`/`ac22a1ad7`/`cdc348cc1`），已推送至个人 fork `qiuYliangM/CodeWhale`，向 `Pinvou/CodeWhale` 的 PR 待创建 |
 | 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r7` |
-| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r7` 与父仓 gitlink 均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a` |
+| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r7` 与父仓 gitlink 均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a`；本分支 gitlink 指向待评审 head `ea5bdf566` |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r7 公开基线 `46 files changed, +1852/-269`；净增 1583 行 |
+| 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销；本分支另载 4 个待评审 vision 提交 |
+| drift | r7 公开基线 `46 files changed, +1852/-269`；含待评审 vision 提交（`ea5bdf566`）为 `48 files changed, +2662/-344` |
 | 守护 | 23 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
+
+### 待评审改动（2026-08-19 · image_analyze 三项修复 + 通道拆分）
+
+> 状态：4 个 vision 提交已重落到 r7 公开 head 之上（`5d6e03589`/`5c6f15686`/
+> `1173e0a71`/`ea5bdf566`，原 r6 基线提交 `98b64480e`/`80f649cce`/`ac22a1ad7`/
+> `cdc348cc1`），推送至个人 fork `qiuYliangM/CodeWhale` 的
+> `fix/vision-tool-robustness` 分支，向 `Pinvou/CodeWhale` 的 PR 待创建；
+> 本分支 gitlink 已指向 `ea5bdf566`。
+
+- L3 — 流式空内容统一兜底：原实现只覆盖 `saw_data_event=false`（端点忽略
+  stream 参数）一种空内容场景；模型返空 delta（`data: {"choices":[{"delta":{}}]}`）
+  时静默返回空成功，主模型误以为识别完成。改为 `!truncated && content.is_empty()`
+  统一报 "no usable content"，按 `saw_data_event` 区分提示成因。
+- M4 — 非流式 body 读取失败对齐流式语义：返回空 + `truncated`，不再硬报错，
+  同一种瞬断两条路径 UX 一致。
+- `VisionModelConfig` 新增 `retry_on_transient_errors: Option<bool>`（第 7 个
+  Option 字段，`None` 回落默认重试）：llama-server 等进程级引擎启动/崩溃窗口
+  的 5xx 重试只会加剧资源争抢，由应用层置 `Some(false)` 跳过；vLLM/云端保持
+  默认。URL 启发式不进底座，通道拆分决策在应用层
+  （`bridge.rs::resolve_vision_model_config`：规则 0 显式选本地引擎与规则 3
+  本地兜底 → `Some(false)`，规则 1/2 服务级通道 → `None`；兜底仅接管
+  未配置视觉模型的纯文本模型，不覆盖显式配置）。
+- 验证：`cargo test -p codewhale-tui --lib vision::tools` 23 个用例全过
+  （含新增 `should_retry_transient_respects_config_field`、
+  `empty_delta_after_data_event_triggers_unified_error` 与 `ea5bdf566` 补的
+  端到端 `execute_streaming_errors_when_model_returns_empty_delta_stream`）；
+  父仓 `bridge.rs` 新增 `vision_config_retry_split_by_channel` 锁定通道拆分
+  字段断言。
 
 ### 本次会话修复（已验证并发布）
 
@@ -34,6 +63,28 @@
 - 保留宿主取消所有运行中子智能体的窄操作，以及通用完成事件的 `failed` 终态；桌面停止/回收仍不会遗留后台子任务。
 - 新增 `forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，锁定批量取消和重复取消行为。
 - 修复退役后两处通用兼容回归：MCP registry 提示恢复 canonical `Bash(action="run")` / `Web(action="fetch")`，Custom SubAgent allowlist 的旧 action alias 继续解析到已注册的 canonical family。
+### 待验证改动（2026-08-12 · 慢设备 vision 超时适配，未发布）
+
+- 现象：Intel 核显（UHD 750，Vulkan 驱动 30.0.100.9805）上 `image_analyze` 冷启动请求
+  超过 `120s` 客户端超时，4 次重试全部排队失败 → `Retry exhausted` → 主模型自动重试
+  → 死循环（实测单请求冷启动 18-50s，首次含 Vulkan 管线编译可超 120s）。
+- 改动（`CodeWhale/crates/tui/src/vision/tools.rs`，仅 2 处）：
+  - `image_analyze` 改**流式接收**（`stream: true`）：总时长 300s 由流式循环控制
+    （reqwest 整体 timeout 移除，连接阶段 30s）；超时返回已累积的部分内容 +
+    `truncated` 标记，而不是整请求失败触发重试死循环。`DEFAULT_VISION_MAX_OUTPUT_TOKENS`
+    保持上游 4096（本地/云端一致，长文档转写不阉割；慢设备生成不满 4096 时由
+    流式超时兜底）。图片描述实测 ~150 tokens，正常场景上限不影响速度。
+  - `image_analyze` 客户端超时 120s → 300s：只放宽上限，云端视觉模型（通常 10-30s）无感。
+- 验证状态：基准确认单请求 8-50s（CPU/Vulkan 各 3 次），修复后超时窗口充足；
+  完整 forkguard/契约回归待发布流程执行。
+- 追加（同文件，同一节）：`image_analyze` 请求构造增强——加 system prompt
+  （图片类型 / 文字逐字转写 / 元素布局三要素，禁止臆测）、temperature 0.7 → 0.2、
+  默认 prompt 从 "Describe this image in detail." 增强为三要素模板。
+  实测（同一张含中文截图的对比）：旧构造输出幻觉重复循环，新构造逐字转写全部中文正文。
+  对云端视觉模型（gpt-4o 等）同样适用，低温度对转写类任务无副作用。
+- 追加（同文件，同一节）：`image_analyze` 结果显式标记截断——`finish_reason == "length"`
+  时结果 JSON 附加 `"truncated": true`，主模型据此知道转写不完整（密集文字图场景），
+  避免基于残缺内容无感知总结。
 
 ### 软上限评估
 

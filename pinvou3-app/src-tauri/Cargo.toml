@@ -192,6 +192,8 @@ webview2-com = "0.38.2"
 # windows-core——不必拉入完整 windows crate。windows-core 已由 webview2-com 传递引入,
 # 此处显式声明只为把 app 直接依赖收敛到更轻的 windows-core(windows::core::* 即其 re-export)。
 windows-core = "0.61"
+# llama-engine 设备自动选择用 DXGI 枚举 GPU(独立特性集,与 windows-core 不冲突)。
+windows = { version = "0.61.3", features = ["Win32_Graphics_Dxgi"] }
 
 [target.'cfg(not(windows))'.dependencies]
 
