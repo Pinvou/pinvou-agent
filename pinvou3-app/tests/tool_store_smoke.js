@@ -57,6 +57,8 @@ function injectSource() {
       {id:'visualizer',title:'数据分析可视化',installed:!!state.skills.visualizer,user_uploaded:false},
       // pptx:真实预置技能(组合包化),卡片由后端数据合成,安装态跟随同名 MCP
       {id:'pptx',title:'PPT 生成',subtitle:'本地直出可编辑 PowerPoint',description:'本地直出可编辑 .pptx',icon:'Presentation',color:'bg-gradient-to-b from-orange-400 to-rose-500',installed:!!state.installed.pptx,user_uploaded:false},
+      // tencent-docs 的 companion 预置技能(#300):统一包模型下包由该合成卡代表
+      {id:'tencent-docs-skill',title:'腾讯文档 MCP',subtitle:'官方远程 MCP:在线文档/表格/幻灯片读写与协作',description:'接入腾讯文档官方远程 MCP',icon:'FileText',color:'bg-gradient-to-b from-blue-500 to-indigo-600',installed:!!state.installed['tencent-docs'],user_uploaded:false},
     ];
     function record(cmd,args){state.calls.push({cmd,args:args||{}});}
     function invoke(cmd,args){
@@ -146,7 +148,7 @@ function injectSource() {
           if(TOOL_META[id]){
             const inst=!!state.installed[id];
             const oauth=!!OAUTH_SERVERS[id];
-            const withConfig=['weather','iwencai','patsnap-search'].includes(id);
+            const withConfig=['weather','iwencai','patsnap-search','tencent-docs'].includes(id);
             return Promise.resolve(mk(inst,true,null,inst?[act('uninstall')]:(oauth?[act('connect',{kind:'oauth'})]:(withConfig?[act('configure')]:[act('install')]))));
           }
           return Promise.reject(new Error('未知能力包 '+id));
