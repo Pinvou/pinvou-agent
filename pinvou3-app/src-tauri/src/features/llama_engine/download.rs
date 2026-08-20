@@ -104,10 +104,7 @@ pub(crate) const MODEL_4B_Q4_K_M: LlamaModelSpec = LlamaModelSpec {
 /// 档位顺序即设置页展示顺序：默认 → 独显。
 /// （2026-08 移除 IQ2_M 极致低配档与 Q3_K_S legacy 档：量化过低识图质量
 /// 不可用，老安装残留文件不受影响，只是不再出现在可选列表。）
-const MODEL_SPECS: &[LlamaModelSpec] = &[
-    MODEL_Q4_K_M,
-    MODEL_4B_Q4_K_M,
-];
+const MODEL_SPECS: &[LlamaModelSpec] = &[MODEL_Q4_K_M, MODEL_4B_Q4_K_M];
 
 pub(crate) fn model_specs() -> &'static [LlamaModelSpec] {
     MODEL_SPECS
@@ -152,7 +149,10 @@ pub(crate) fn engine_tag() -> Option<String> {
     let meta = bin_dir().join("engine-meta.json");
     let text = std::fs::read_to_string(meta).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    value.get("tag").and_then(|v| v.as_str()).map(str::to_string)
+    value
+        .get("tag")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
 }
 
 fn engine_installed_with_tag(tag: &str) -> bool {
@@ -257,8 +257,7 @@ fn locate_engine_server_dir(extract_dir: &Path) -> Result<PathBuf, String> {
     if extract_dir.join(name).is_file() {
         return Ok(extract_dir.to_path_buf());
     }
-    let entries =
-        std::fs::read_dir(extract_dir).map_err(|e| format!("读取解压目录失败: {e}"))?;
+    let entries = std::fs::read_dir(extract_dir).map_err(|e| format!("读取解压目录失败: {e}"))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("读取解压目录条目失败: {e}"))?;
         let path = entry.path();
@@ -477,8 +476,7 @@ async fn download_file(
         .content_length()
         .filter(|n| *n > 0)
         .unwrap_or(fallback_total);
-    let mut file =
-        std::fs::File::create(dest).map_err(|e| format!("创建文件失败: {e}"))?;
+    let mut file = std::fs::File::create(dest).map_err(|e| format!("创建文件失败: {e}"))?;
     let mut downloaded: u64 = 0;
     let mut last_emit: u64 = 0;
     loop {
@@ -493,7 +491,8 @@ async fn download_file(
             }
         };
         let Some(chunk) = chunk else { break };
-        file.write_all(&chunk).map_err(|e| format!("写盘失败: {e}"))?;
+        file.write_all(&chunk)
+            .map_err(|e| format!("写盘失败: {e}"))?;
         downloaded += chunk.len() as u64;
         if downloaded - last_emit >= PROGRESS_EMIT_BYTES || (total > 0 && downloaded >= total) {
             last_emit = downloaded;
@@ -580,11 +579,7 @@ pub(crate) fn model_file_verified(path: &Path, asset: &ModelAsset) -> bool {
     let Some(expected) = asset_sha256(asset) else {
         return true;
     };
-    let key = (
-        path.to_path_buf(),
-        meta.len(),
-        meta.modified().ok(),
-    );
+    let key = (path.to_path_buf(), meta.len(), meta.modified().ok());
     if let Some(cached) = VERIFY_CACHE
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -689,10 +684,7 @@ fn extract_targz(archive: &Path, dest: &Path) -> Result<(), String> {
     let decoder = flate2::read::GzDecoder::new(file);
     let mut tar = tar::Archive::new(decoder);
     tar.set_unpack_xattrs(false);
-    for entry in tar
-        .entries()
-        .map_err(|e| format!("读取压缩包失败: {e}"))?
-    {
+    for entry in tar.entries().map_err(|e| format!("读取压缩包失败: {e}"))? {
         let mut entry = entry.map_err(|e| format!("读取压缩包条目失败: {e}"))?;
         let name = entry
             .path()
@@ -727,7 +719,9 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
-        let read = file.read(&mut buffer).map_err(|e| format!("读取文件失败: {e}"))?;
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("读取文件失败: {e}"))?;
         if read == 0 {
             break;
         }
@@ -811,7 +805,10 @@ mod tests {
             fallback_url: "",
         };
         assert!(model_file_verified(&path, &asset));
-        let wrong = ModelAsset { expected_size: 17, ..asset };
+        let wrong = ModelAsset {
+            expected_size: 17,
+            ..asset
+        };
         assert!(!model_file_verified(&path, &wrong));
         let _ = std::fs::remove_dir_all(&tmp);
     }
