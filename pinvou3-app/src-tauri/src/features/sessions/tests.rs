@@ -3206,3 +3206,236 @@ fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
         "failed persistence must not leave a memory-only model choice"
     );
 }
+
+// ===================== 代码模式回退：对话截断 + sidecar 备份（rewind.rs）=====================
+
+fn tool_result_message(id: &str) -> Message {
+    Message {
+        role: "user".into(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: id.into(),
+            content: "tool output".into(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    }
+}
+
+/// 读 `_rewound_turns.json` sidecar 中某会话的备份记录。
+fn rewound_records(id: &str) -> Vec<super::rewind::RewoundTurnsRecord> {
+    let path = paths::sessions_root().join("_rewound_turns.json");
+    let bytes = std::fs::read(&path).expect("read rewound turns sidecar");
+    let map: std::collections::HashMap<String, Vec<super::rewind::RewoundTurnsRecord>> =
+        serde_json::from_slice(&bytes).expect("parse rewound turns sidecar");
+    map.get(id).cloned().unwrap_or_default()
+}
+
+/// 定位口径：tool_result（同样 role="user"）不得被算作 turn 边界；截断点必须落在
+/// 第 N+1 个真实用户 prompt 上，其前的 assistant/tool_result 全部保留。
+#[test]
+fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let messages = vec![
+        user_text("第一轮"),
+        assistant_text("调工具"),
+        tool_result_message("call_1"),
+        assistant_text("答一"),
+        user_text("第二轮"),
+        assistant_text("答二"),
+        tool_result_message("call_2"),
+        user_text("第三轮"),
+        assistant_text("答三"),
+    ];
+    store
+        .update_messages(&id, messages.clone())
+        .expect("seed transcript");
+    let original_revision = transcript_revision(&messages).expect("revision");
+
+    let outcome = store.truncate_to_user_turn(&id, 1).expect("rewind to turn 1");
+
+    assert_eq!(outcome.rewound_turns, 2);
+    assert_eq!(outcome.removed_messages, 5);
+    let kept = store.load(&id).expect("load").messages;
+    assert_eq!(kept, messages[..4], "保留第 1 轮全部消息（含 tool_result 交错段）");
+    assert_eq!(
+        outcome.new_revision,
+        transcript_revision(&kept).expect("kept revision")
+    );
+
+    // sidecar 备份：截断时间、原 revision、被截消息齐全。
+    let records = rewound_records(&id);
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert!(!record.rewound_at.is_empty());
+    assert_eq!(record.original_revision, original_revision);
+    assert_eq!(record.kept_turns, 1);
+    assert_eq!(record.removed_messages, messages[4..]);
+}
+
+/// N=0 = 回退到第一轮之前，transcript 全部截断。
+#[test]
+fn rewind_to_zero_turns_empties_transcript() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    store
+        .update_messages(
+            &id,
+            vec![
+                user_text("第一轮"),
+                assistant_text("答一"),
+                user_text("第二轮"),
+                tool_result_message("call_1"),
+            ],
+        )
+        .expect("seed transcript");
+
+    let outcome = store.truncate_to_user_turn(&id, 0).expect("rewind to zero");
+
+    assert_eq!(outcome.rewound_turns, 2);
+    assert_eq!(outcome.removed_messages, 4);
+    assert!(store.load(&id).expect("load").messages.is_empty());
+    let records = rewound_records(&id);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kept_turns, 0);
+    assert_eq!(records[0].removed_messages.len(), 4);
+}
+
+/// N ≥ 当前 turn 数：如实报错，transcript 与 sidecar 都不动。
+#[test]
+fn rewind_out_of_range_errors_and_leaves_transcript_untouched() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let messages = vec![user_text("第一轮"), assistant_text("答一")];
+    store
+        .update_messages(&id, messages.clone())
+        .expect("seed transcript");
+
+    // N == 当前 turn 数（无可截内容）与 N > 当前 turn 数都必须报错。
+    assert!(store.truncate_to_user_turn(&id, 1).is_err());
+    assert!(store.truncate_to_user_turn(&id, 7).is_err());
+    assert_eq!(store.load(&id).expect("load").messages, messages);
+    assert!(
+        !paths::sessions_root()
+            .join("_rewound_turns.json")
+            .exists(),
+        "失败的回退不得产生 sidecar"
+    );
+}
+
+/// 守卫放行：回退是 looks_like_truncating_overwrite 的显式放行路径，截断本身不受
+/// 拦；但同一守卫对 update_messages 等通用入口的保护不变。
+#[test]
+fn rewind_bypasses_guard_while_update_messages_stays_protected() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let messages = vec![
+        user_text("第一轮"),
+        assistant_text("答一"),
+        user_text("第二轮"),
+        assistant_text("答二"),
+    ];
+    store
+        .update_messages(&id, messages.clone())
+        .expect("seed transcript");
+
+    // 同样的断式覆盖走通用入口仍被守卫拦截。
+    assert!(store.update_messages(&id, vec![]).is_err());
+    // 回退专用路径放行（N=0 清空全部也允许）。
+    store.truncate_to_user_turn(&id, 0).expect("rewind");
+    assert!(store.load(&id).expect("load").messages.is_empty());
+}
+
+/// revision/CAS：截断后 revision 自然变化，持旧 revision 的 CAS 必须失败。
+#[test]
+fn stale_revision_cas_fails_after_rewind() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let messages = vec![
+        user_text("第一轮"),
+        assistant_text("答一"),
+        user_text("第二轮"),
+        assistant_text("答二"),
+    ];
+    store
+        .update_messages(&id, messages.clone())
+        .expect("seed transcript");
+    let stale_revision = transcript_revision(&messages).expect("revision");
+
+    store.truncate_to_user_turn(&id, 1).expect("rewind");
+
+    let error = store
+        .compare_and_swap_messages(&id, &stale_revision, messages)
+        .expect_err("stale revision CAS must fail after rewind");
+    assert!(error.to_string().contains("session_revision_conflict"));
+}
+
+/// 多次回退向 sidecar 追加；超过每会话容量上限时裁掉最老，防无限膨胀。
+#[test]
+fn rewind_backups_append_and_cap_at_limit() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    for round in 0..21u32 {
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_text(&format!("round {round} t1")),
+                    assistant_text("答一"),
+                    user_text(&format!("round {round} t2")),
+                    assistant_text("答二"),
+                ],
+            )
+            .expect("reseed transcript");
+        store.truncate_to_user_turn(&id, 0).expect("rewind");
+    }
+    let records = rewound_records(&id);
+    assert_eq!(records.len(), 20, "每会话备份条数封顶 20（LRU 裁最老）");
+    // 最老的一条（round 0）已被裁掉，剩余的是最后 20 次。
+    assert!(records
+        .iter()
+        .all(|record| record.removed_messages.len() == 4));
+}
+
+/// 删除会话时回退备份 sidecar 同步清理。
+#[test]
+fn delete_session_purges_rewound_turns_backup() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    store
+        .update_messages(
+            &id,
+            vec![user_text("第一轮"), assistant_text("答一"), user_text("第二轮")],
+        )
+        .expect("seed transcript");
+    store.truncate_to_user_turn(&id, 1).expect("rewind");
+    assert_eq!(rewound_records(&id).len(), 1);
+
+    store.delete(&id).expect("delete session");
+
+    // sidecar 中该会话的备份已清；无其他会话时整个文件被移除。
+    assert!(!paths::sessions_root()
+        .join("_rewound_turns.json")
+        .exists());
+}

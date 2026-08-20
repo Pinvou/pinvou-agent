@@ -286,6 +286,8 @@ impl SessionStore {
             // error return cannot strand an active id, model binding or turn
             // state forever when the caller never retries.
             self.purge_session_side_maps(&[id.to_string()]);
+            // 回退备份 sidecar 同样随会话清理（best-effort，见其实现注释）。
+            Self::purge_rewound_turns_backups(&[id.to_string()]);
         }
         match delete_result {
             Ok(()) => {}

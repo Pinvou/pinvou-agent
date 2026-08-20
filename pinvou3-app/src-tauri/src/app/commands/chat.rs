@@ -291,6 +291,41 @@ pub(crate) async fn chat_with_reservation(
     );
     full = prepared_delegation.content;
     let mode = mode_state.mode;
+    // 原生代码会话每个 turn 开始前对执行根打 checkpoint（影子 git，数据落账本根，
+    // 机制见 features/code_checkpoints）。快照必须先于引擎写文件，因此在 send 前
+    // 同步等待；失败不阻断 turn——如实记日志，该轮只是没有回退入口（设计 §5
+    // 降级语义）。turn 序号用 is_user_turn_prompt 同口径计数（tool_result 不计入），
+    // 计数失败（会话加载失败等）登记 None，前端按顺序兜底对齐。
+    if store.is_code_session(&sid) {
+        let turn_number = store
+            .load(&sid)
+            .map(|session| {
+                crate::features::code_checkpoints::count_user_turns(&session.messages) + 1
+            })
+            .ok();
+        let checkpoint_ledger = roots.ledger.clone();
+        let checkpoint_execution = roots.execution.clone();
+        let label = display_content.clone();
+        let snapshot = tauri::async_runtime::spawn_blocking(move || {
+            crate::features::code_checkpoints::create_checkpoint(
+                &checkpoint_ledger,
+                &checkpoint_execution,
+                turn_number,
+                crate::features::code_checkpoints::CheckpointKind::Turn,
+                &label,
+            )
+        })
+        .await;
+        match snapshot {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                log::warn!("[pinvou3][chat] checkpoint failed sid={sid}: {error:#}")
+            }
+            Err(error) => {
+                log::warn!("[pinvou3][chat] checkpoint task failed sid={sid}: {error}")
+            }
+        }
+    }
     let send_started_at = std::time::Instant::now();
     crate::features::assistant::timing::start_turn(&sid);
     log::info!(
