@@ -39,6 +39,48 @@ class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
             self.assertGreater(upload, guard, "glibc floor guard must run before upload")
         self.assertEqual(self.workflow.count("check-linux-glibc-floor.sh"), 2)
 
+    def test_linux_builds_rotate_rust_cache_key_per_runner_baseline(self):
+        # 换 runner 基座必须换 rust-cache key:24.04 glibc 环境编译的缓存产物
+        # 复用进 22.04 构建会把高版本符号引用混进发布二进制,-jammy 后缀把
+        # 两个基座的缓存隔离。runner 标签与 cache key 必须绑定变更。
+        self.assertIn("shared-key: release-linux-x64-jammy", self.x64_job)
+        self.assertIn("shared-key: release-linux-arm64-jammy", self.arm64_job)
+
+    def _step_block(self, job, needle):
+        # 提取含 needle 的步骤块(步骤以 6 空格 + '- ' 开始),供单步骤断言。
+        at = job.find(needle)
+        self.assertGreater(at, 0, f"missing step containing {needle!r}")
+        start = job.rfind("\n      - ", 0, at)
+        self.assertGreater(start, 0, f"{needle!r} must live inside a step")
+        end = job.find("\n      - ", at)
+        return job[start:] if end == -1 else job[start:end]
+
+    def test_glibc_floor_guard_step_cannot_be_neutralized(self):
+        # continue-on-error 或步骤级 if: 会让超基线产物绿着通过守护,把启动
+        # 崩溃留给 22.04 用户;守护步骤必须无条件执行且直接调用脚本。
+        for job in (self.x64_job, self.arm64_job):
+            step = self._step_block(job, "check-linux-glibc-floor.sh")
+            self.assertIn("run: ./scripts/check-linux-glibc-floor.sh", step)
+            self.assertNotIn("continue-on-error", step)
+            self.assertNotIn("\n        if:", step)
+
+    def test_linux_deb_unified_name_consistent_across_rename_guard_upload(self):
+        # deb 统一名横跨 重命名→守护→上传 手工同步(重命名/守护用 ${VERSION},
+        # 上传用 needs 输出表达式);失配只能在 90 分钟构建后的发布 run 末尾
+        # 暴露(guard usage exit 2 或 upload 找不到文件),契约层直接钉住。
+        for job, arch in ((self.x64_job, "x64"), (self.arm64_job, "arm64")):
+            local_name = "pinvou-agent_${VERSION}-linux-" + arch + ".deb"
+            upload_name = (
+                "pinvou-agent_${{ needs.check-version-bump.outputs.version }}"
+                "-linux-" + arch + ".deb"
+            )
+            self.assertEqual(
+                job.count(local_name), 2, f"{arch}: unified deb name must appear in rename and guard"
+            )
+            self.assertEqual(
+                job.count(upload_name), 2, f"{arch}: unified deb name must appear in both upload paths"
+            )
+
     def test_guard_script_defaults_to_2204_glibc_floor(self):
         # 脚本默认 glibc 下限必须与基线一致;workflow 不传参即用默认值。
         source = GUARD_SCRIPT.read_text(encoding="utf-8")

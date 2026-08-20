@@ -183,7 +183,8 @@ jobs:
       # glibc 下限守护:解包 deb,对每个 ELF 断言 GLIBC_ 符号版本 ≤ 2.35
       # (Ubuntu 22.04 基线)。runner 被误升或依赖引入新符号时在此挡下,
       # 而不是等 22.04 用户启动崩溃。deb 内 ELF = 主二进制 + codex-bridge
-      # 的 node(asr 是 python、knowledge-host 是 shell、连接器 CLI 首用下载)。
+      # 的 node + knowledge-host 的 pinvou-knowledge-server(asr 是 python、
+      # knowledge-host 的 helper 是 shell、连接器 CLI 首用下载)。
       - name: glibc 下限守护 (Ubuntu 22.04 = glibc 2.35)
         run: ./scripts/check-linux-glibc-floor.sh "pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${VERSION}-linux-x64.deb"
 
