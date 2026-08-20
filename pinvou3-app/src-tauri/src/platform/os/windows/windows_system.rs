@@ -539,7 +539,7 @@ fn vulkan_runtime_present() -> bool {
 fn enum_gpu_class() -> Option<crate::platform::os::GpuClass> {
     use crate::platform::os::GpuClass;
     use windows::Win32::Graphics::Dxgi::{
-        CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1,
+        CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
     };
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
@@ -596,8 +596,7 @@ pub fn physical_core_count() -> usize {
 
 fn physical_cores_via_processor_info() -> Option<usize> {
     use windows_sys::Win32::System::SystemInformation::{
-        GetLogicalProcessorInformation, RelationProcessorCore,
-        SYSTEM_LOGICAL_PROCESSOR_INFORMATION,
+        GetLogicalProcessorInformation, RelationProcessorCore, SYSTEM_LOGICAL_PROCESSOR_INFORMATION,
     };
     unsafe {
         let mut len: u32 = 0;

@@ -49,7 +49,8 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 // 视觉工具（image_analyze）提示词与采样参数：底座 PR2 起提示词/temperature
 // 移出底座，由应用层注入；system prompt 在三要素转写纪律上追加长文本软约束，
 // 避免小模型面对密集文字图时逐字硬转写撑爆输出。
-const VISION_SYSTEM_PROMPT: &str = "You are an image content analyst. Describe the image accurately: \
+const VISION_SYSTEM_PROMPT: &str =
+    "You are an image content analyst. Describe the image accurately: \
      1) the image type (screenshot / photo / document / chart); \
      2) all visible text, transcribed verbatim in its original language; \
      3) key visual elements and layout. Never fabricate details you cannot see. \
@@ -83,7 +84,11 @@ fn vision_model_config(
         temperature: Some(VISION_TEMPERATURE),
         request_timeout_secs: None,
         stream: None,
-        retry_on_transient_errors: if is_local_process_engine { Some(false) } else { None },
+        retry_on_transient_errors: if is_local_process_engine {
+            Some(false)
+        } else {
+            None
+        },
     }
 }
 
@@ -974,7 +979,12 @@ impl Pinvou3Bridge {
             if let Some(endpoint) = crate::features::llama_engine::vision_endpoint() {
                 // 本地 llama-server = 进程级引擎,禁掉 transient 5xx 重试,
                 // 避免启动期 / 崩溃期重发加剧资源争抢。
-                return Some(vision_model_config(self.model(), self.api_key(), endpoint, true));
+                return Some(vision_model_config(
+                    self.model(),
+                    self.api_key(),
+                    endpoint,
+                    true,
+                ));
             }
         }
         if let Some(vision_id) = effective.and_then(|model| model.vision_model_id.as_deref()) {
@@ -1021,9 +1031,19 @@ impl Pinvou3Bridge {
         // 规则 3:本地兜底——全局兜底开关开(默认开)且引擎运行中 → 本地
         // 端点。只有未配置视觉模型的纯文本模型会到达这里(规则 1/2 已把
         // 有出路的模型接走);本地 llama-server 同规则 0 禁 transient 5xx。
-        if self.prefs.advanced.llama_engine_vision_fallback.unwrap_or(true) {
+        if self
+            .prefs
+            .advanced
+            .llama_engine_vision_fallback
+            .unwrap_or(true)
+        {
             if let Some(endpoint) = crate::features::llama_engine::vision_endpoint() {
-                return Some(vision_model_config(self.model(), self.api_key(), endpoint, true));
+                return Some(vision_model_config(
+                    self.model(),
+                    self.api_key(),
+                    endpoint,
+                    true,
+                ));
             }
         }
         // scheduled 例外:Unknown(如本地 vLLM 模型不在内置表)也注册,见函数头
@@ -2890,16 +2910,34 @@ mod tests {
         // 全局兜底默认开 + 未配置视觉模型 → 命中（即便模型未显式选本地）
         assert!(vision_local_gate(&prefs(None), model(false, None).as_ref()));
         // 全局兜底关闭 + 模型未选本地 → 不命中
-        assert!(!vision_local_gate(&prefs(Some(false)), model(false, None).as_ref()));
+        assert!(!vision_local_gate(
+            &prefs(Some(false)),
+            model(false, None).as_ref()
+        ));
         // 全局兜底关闭 + 模型显式选本地 → 命中（per-model 覆盖全局）
-        assert!(vision_local_gate(&prefs(Some(false)), model(true, None).as_ref()));
+        assert!(vision_local_gate(
+            &prefs(Some(false)),
+            model(true, None).as_ref()
+        ));
         // 全局兜底开 + 未配置视觉模型 → 命中
-        assert!(vision_local_gate(&prefs(Some(true)), model(false, None).as_ref()));
+        assert!(vision_local_gate(
+            &prefs(Some(true)),
+            model(false, None).as_ref()
+        ));
         // 全局兜底开 + 已配置视觉模型 → 不命中（兜底不覆盖显式配置）
-        assert!(!vision_local_gate(&prefs(None), model(false, Some("v1")).as_ref()));
-        assert!(!vision_local_gate(&prefs(Some(true)), model(false, Some("v1")).as_ref()));
+        assert!(!vision_local_gate(
+            &prefs(None),
+            model(false, Some("v1")).as_ref()
+        ));
+        assert!(!vision_local_gate(
+            &prefs(Some(true)),
+            model(false, Some("v1")).as_ref()
+        ));
         // 已配置视觉模型 + 显式选本地 → 命中（显式选择优先于一切）
-        assert!(vision_local_gate(&prefs(Some(false)), model(true, Some("v1")).as_ref()));
+        assert!(vision_local_gate(
+            &prefs(Some(false)),
+            model(true, Some("v1")).as_ref()
+        ));
     }
 
     /// 规则 0：模型显式选「本地识图引擎」+ 引擎运行 → 本地端点
@@ -3011,8 +3049,7 @@ mod tests {
             "sk-main",
         );
         push_vision_model(&mut configured, "vision-vllm", "qwen2-vl-72b", "sk-vision");
-        configured.prefs.advanced.saved_models[0].vision_model_id =
-            Some("vision-vllm".to_string());
+        configured.prefs.advanced.saved_models[0].vision_model_id = Some("vision-vllm".to_string());
         let config = configured
             .resolve_vision_model_config()
             .expect("configured vision model must resolve");

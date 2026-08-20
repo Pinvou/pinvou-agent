@@ -298,10 +298,19 @@ mod tests {
         assert_eq!(local_engine_state(true, true, true, "running"), "running");
         // 已安装未运行 → not_running
         assert_eq!(local_engine_state(true, true, true, "idle"), "not_running");
-        assert_eq!(local_engine_state(true, true, true, "stopped"), "not_running");
+        assert_eq!(
+            local_engine_state(true, true, true, "stopped"),
+            "not_running"
+        );
         // 引擎或模型缺失 → not_installed
-        assert_eq!(local_engine_state(true, false, true, "idle"), "not_installed");
-        assert_eq!(local_engine_state(true, true, false, "idle"), "not_installed");
+        assert_eq!(
+            local_engine_state(true, false, true, "idle"),
+            "not_installed"
+        );
+        assert_eq!(
+            local_engine_state(true, true, false, "idle"),
+            "not_installed"
+        );
     }
 
     #[test]

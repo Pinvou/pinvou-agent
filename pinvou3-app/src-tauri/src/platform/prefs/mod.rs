@@ -1374,12 +1374,12 @@ mod tests {
         let legacy = r#"{"allow_shell": null}"#;
         let prefs: AdvancedPrefs = serde_json::from_str(legacy).unwrap();
         assert_eq!(
-            prefs.llama_engine_auto_start,
-            None,
+            prefs.llama_engine_auto_start, None,
             "legacy json 无字段应为 None(读取侧 unwrap_or(FirstImage))"
         );
         assert_eq!(
-            prefs.llama_engine_auto_start
+            prefs
+                .llama_engine_auto_start
                 .unwrap_or(LlamaEngineAutoStart::FirstImage),
             LlamaEngineAutoStart::FirstImage
         );

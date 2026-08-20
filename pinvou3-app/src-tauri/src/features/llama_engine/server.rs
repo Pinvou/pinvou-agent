@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 use super::download::{self, LlamaModelSpec};
-use super::{EngineDevice, llama_engine_dir};
+use super::{llama_engine_dir, EngineDevice};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum EnginePhase {
@@ -223,8 +223,7 @@ pub(crate) async fn start(
     STOP_REQUESTED.store(false, Ordering::SeqCst);
     emit_state(app, "starting", None);
 
-    std::fs::create_dir_all(llama_engine_dir())
-        .map_err(|e| format!("创建引擎目录失败: {e}"))?;
+    std::fs::create_dir_all(llama_engine_dir()).map_err(|e| format!("创建引擎目录失败: {e}"))?;
     let mut child = match spawn_server(&bin, &build_args(&bin, spec, port, device)).await {
         Ok(child) => child,
         Err(error) => {
@@ -289,10 +288,7 @@ pub(crate) async fn start(
                 let reason = if error.is_empty() {
                     format!("等待服务就绪超时（{}s）", HEALTH_TIMEOUT.as_secs())
                 } else {
-                    format!(
-                        "等待服务就绪超时（{}s）：{error}",
-                        HEALTH_TIMEOUT.as_secs()
-                    )
+                    format!("等待服务就绪超时（{}s）：{error}", HEALTH_TIMEOUT.as_secs())
                 };
                 transition_stopped(&app, reason);
             }
@@ -377,10 +373,7 @@ enum HealthOutcome {
     Timeout(String),
 }
 
-async fn wait_until_healthy_or_exit(
-    child: &mut tokio::process::Child,
-    port: u16,
-) -> HealthOutcome {
+async fn wait_until_healthy_or_exit(child: &mut tokio::process::Child, port: u16) -> HealthOutcome {
     let deadline = Instant::now() + HEALTH_TIMEOUT;
     let mut last_error = String::new();
     while Instant::now() < deadline {
@@ -618,10 +611,7 @@ fn emit_state(app: &tauri::AppHandle, phase: &'static str, error: Option<String>
     );
 }
 
-async fn spawn_server(
-    bin: &Path,
-    args: &[OsString],
-) -> Result<tokio::process::Child, String> {
+async fn spawn_server(bin: &Path, args: &[OsString]) -> Result<tokio::process::Child, String> {
     let mut command = crate::platform::process::HiddenTokioCommand::new(bin);
     command.args(&args[1..]);
     // 钉死工作目录，防 llama.cpp 往源码树写日志（voice_asr 同款教训）。
@@ -629,7 +619,9 @@ async fn spawn_server(
     command.stdout(std::process::Stdio::null());
     command.stderr(std::process::Stdio::piped());
     command.kill_on_drop(true);
-    command.spawn().map_err(|e| format!("启动 llama-server 失败: {e}"))
+    command
+        .spawn()
+        .map_err(|e| format!("启动 llama-server 失败: {e}"))
 }
 
 /// 常驻排空 stderr（防管道写满阻塞子进程），保留尾部供诊断。
@@ -735,23 +727,25 @@ mod tests {
     fn build_args_includes_required_flags() {
         let bin = Path::new("llama-server");
         let port = 4242;
-        for (device, expected_ngl) in [
-            (EngineDevice::Gpu, "99"),
-            (EngineDevice::Cpu, "0"),
-        ] {
+        for (device, expected_ngl) in [(EngineDevice::Gpu, "99"), (EngineDevice::Cpu, "0")] {
             let args = build_args(bin, &MODEL_Q4_K_M, port, device);
-            let text: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+            let text: Vec<String> = args
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
             assert_eq!(text[0], "llama-server");
             assert!(
-                text.windows(2).any(|w| w[0] == "--model"
-                    && w[1].ends_with(MODEL_Q4_K_M.gguf.filename)),
+                text.windows(2)
+                    .any(|w| w[0] == "--model" && w[1].ends_with(MODEL_Q4_K_M.gguf.filename)),
                 "must pass the gguf model path; got {text:?}"
             );
             assert!(text.iter().any(|a| a == "--mmproj"));
             assert!(text.iter().any(|a| a == "127.0.0.1"));
             assert!(text.iter().any(|a| a == port.to_string().as_str()));
             assert!(text.iter().any(|a| a == "8192"));
-            assert!(text.windows(2).any(|w| w[0] == "-ngl" && w[1] == expected_ngl));
+            assert!(text
+                .windows(2)
+                .any(|w| w[0] == "-ngl" && w[1] == expected_ngl));
             assert!(text.iter().any(|a| a == "--no-webui"));
             // PR3 启动参数调优：物理核线程数 / batch 1024 / flash-attn /
             // KV q8_0（缺一项即回归，逐项断言）。
@@ -760,15 +754,23 @@ mod tests {
                     .any(|w| w[0] == "-t" && w[1].parse::<usize>().is_ok()),
                 "must pass physical core count via -t; got {text:?}"
             );
-            assert!(text.windows(2).any(|w| w[0] == "--batch-size" && w[1] == "1024"));
-            assert!(text.windows(2).any(|w| w[0] == "--ubatch-size" && w[1] == "1024"));
+            assert!(text
+                .windows(2)
+                .any(|w| w[0] == "--batch-size" && w[1] == "1024"));
+            assert!(text
+                .windows(2)
+                .any(|w| w[0] == "--ubatch-size" && w[1] == "1024"));
             assert!(
                 text.windows(2)
                     .any(|w| w[0] == "--flash-attn" && w[1] == "on"),
                 "flash-attn 必须带值(on|off|auto),裸 flag 会被新版引擎拒绝; got {text:?}"
             );
-            assert!(text.windows(2).any(|w| w[0] == "--cache-type-k" && w[1] == "q8_0"));
-            assert!(text.windows(2).any(|w| w[0] == "--cache-type-v" && w[1] == "q8_0"));
+            assert!(text
+                .windows(2)
+                .any(|w| w[0] == "--cache-type-k" && w[1] == "q8_0"));
+            assert!(text
+                .windows(2)
+                .any(|w| w[0] == "--cache-type-v" && w[1] == "q8_0"));
             // --mlock 与 -ngl 0 组合在 b10362 上 mmap 崩溃,必须不传。
             assert!(
                 !text.iter().any(|a| a == "--mlock"),
