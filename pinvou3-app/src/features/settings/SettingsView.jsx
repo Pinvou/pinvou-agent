@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, Globe, Lightbulb, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Sparkles, Trash2, User, Users, Wrench, X, Zap } from '../../components/icons.jsx';
+import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, Globe, Lightbulb, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Sparkles, Trash2, User, Users, Wrenchimport { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, Globe, Lightbulb, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Sparkles, Trash2, User, Users, Wrench, X } from '../../components/icons.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -1716,11 +1716,12 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
       const usesBundledDependencyInstaller = !!platformCapabilities.usesBundledDependencyInstaller;
       const usesHomebrewDependencyInstaller = !!platformCapabilities.usesHomebrewDependencyInstaller;
-      // 「ACP 管理」（原 Provider 管理）并入模型设置页：activeSection 用 'model'，
-      // modelTab 区分「模型 / ACP 管理」两个子页；深链 initialSection='providers'
-      // （代码页错误横幅等入口）映射为模型页 + ACP 子页。
-      const [activeSection, setActiveSection] = useState(initialSection === 'providers' ? 'model' : (initialSection || 'general'));
-      const [modelTab, setModelTab] = useState(initialSection === 'providers' ? 'acp' : 'models');
+      // 「ACP 管理」（原 Provider 管理）与「本地识图」（本地多模态引擎）并入模型
+      // 设置页：activeSection 用 'model'，modelTab 区分子页；深链
+      // initialSection='providers'（代码页错误横幅入口）映射 ACP 子页，
+      // initialSection='llama'（发送兜底安装引导入口）映射本地识图子页。
+      const [activeSection, setActiveSection] = useState((initialSection === 'providers' || initialSection === 'llama') ? 'model' : (initialSection || 'general'));
+      const [modelTab, setModelTab] = useState(initialSection === 'providers' ? 'acp' : (initialSection === 'llama' ? 'llama' : 'models'));
       const canUsePet = can('pet');
       const canUseSuperPermission = can('superPermission');
       const canUpdateApp = can('appUpdate');
@@ -1764,14 +1765,12 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         if (adv.llama_engine_default_model) setLlamaModel(adv.llama_engine_default_model);
         if (adv.llama_engine_default_device) setLlamaDevice(adv.llama_engine_default_device);
         if (adv.llama_engine_auto_start) setLlamaAutoStart(adv.llama_engine_auto_start);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [bs && bs.settings && bs.settings.advanced]);
       useEffect(() => {
         // 首次进入设置页拉一次引擎状态（下载进度/运行状态以事件驱动，这里是兜底）
         if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.refreshStatus) {
           bridge.llamaEngine.refreshStatus().catch(() => {});
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
       useEffect(() => {
         // 启动中（事件可能延迟）每 2s 轮询状态兜底，避免 UI 卡在 starting
@@ -1784,7 +1783,6 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           }
         }, 2000);
         return () => clearInterval(timer);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [bs && bs.llamaEngineSetup && bs.llamaEngineSetup.status && bs.llamaEngineSetup.status.phase]);
       const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
       const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -1972,7 +1970,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         <div className={`px-3 mb-2 text-[12px] leading-4 font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{children}</div>
       );
       const RadioDot = ({ active }) => (
-        <span className={`block w-5 h-5 rounded-full border-[3px] ${active ? 'border-[#007AFF]' : ('border-[#AEAEB2] dark:border-[#636366]')}`}>
+        <span className={`block shrink-0 w-5 h-5 rounded-full border-[3px] ${active ? 'border-[#007AFF]' : ('border-[#AEAEB2] dark:border-[#636366]')}`}>
           {active && <span className="block w-2 h-2 rounded-full bg-[#007AFF] mx-auto mt-[3px]" />}
         </span>
       );
@@ -2193,27 +2191,27 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       );
       const renderModels = () => (
         <>
-          {acpProvidersTabVisible && (
-            // 左上角小胶囊切换：模型 / ACP 管理（替代原列表上方「模型」小字标题；
-            // 原侧栏「Provider 管理」分节并入为子页）
-            <div data-testid="settings-model-tabs" className="mb-3 inline-flex items-center gap-0.5 p-0.5 rounded-full bg-black/[0.05] dark:bg-white/[0.07]">
-              {[
-                { key: 'models', label: t.uiSettings.model },
-                { key: 'acp', label: t.uiSettings.providers },
-              ].map(tab => (
-                <button key={tab.key} type="button" data-testid={`settings-model-tab-${tab.key}`} onClick={() => setModelTab(tab.key)}
-                  className={`h-7 px-3 rounded-full text-[12px] font-semibold transition-colors ${modelTab === tab.key ? ('bg-white text-[#007AFF] shadow-sm dark:bg-[#3A3A3C] dark:text-[#F2F2F7]') : ('text-[#8A8A8E] hover:text-[#636366] dark:text-[#8E8E93] dark:hover:text-[#C7C7CC]')}`}>
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-          )}
+          {/* 左上角小胶囊切换：模型 / ACP 管理 / 本地识图（替代原列表上方「模型」
+              小字标题；原侧栏「Provider 管理」「本地多模态引擎」分节并入为子页。
+              本地识图与原侧栏分节一致不做平台门控，web 宿主下按钮动作为空操作）*/}
+          <div data-testid="settings-model-tabs" className="mb-3 inline-flex items-center gap-0.5 p-0.5 rounded-full bg-black/[0.05] dark:bg-white/[0.07]">
+            {[
+              { key: 'models', label: t.uiSettings.model },
+              ...(acpProvidersTabVisible ? [{ key: 'acp', label: t.uiSettings.providers }] : []),
+              { key: 'llama', label: t.uiSettings.localVision },
+            ].map(tab => (
+              <button key={tab.key} type="button" data-testid={`settings-model-tab-${tab.key}`} onClick={() => setModelTab(tab.key)}
+                className={`h-7 px-3 rounded-full text-[12px] font-semibold transition-colors ${modelTab === tab.key ? ('bg-white text-[#007AFF] shadow-sm dark:bg-[#3A3A3C] dark:text-[#F2F2F7]') : ('text-[#8A8A8E] hover:text-[#636366] dark:text-[#8E8E93] dark:hover:text-[#C7C7CC]')}`}>
+                {tab.label}
+              </button>
+            ))}
+          </div>
           {modelTab === 'acp' && acpProvidersTabVisible ? (
             <ProvidersSection t={t} />
+          ) : modelTab === 'llama' ? (
+            renderLocalEngine()
           ) : (
           <section className="mb-6">
-            {/* 有 ACP 子页时顶端胶囊切换已承担「模型」标题语义，不再重复小字标题 */}
-            {!acpProvidersTabVisible && <SectionTitle>{settingsCopy.modelSection}</SectionTitle>}
             <Group>
               {(() => {
                 const { preset, custom } = groupModelsForSelector(userModels);
@@ -2485,24 +2483,55 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           ? (modelReady ? settingsCopy.llamaEngine.modelReady : settingsCopy.llamaEngine.modelMissing)
           : '';
         const serviceLine = running
-          ? `${settingsCopy.llamaEngine.running}（${st.port ? '127.0.0.1:' + st.port : ''}）`
+          ? `${settingsCopy.llamaEngine.running}${st.port ? `（127.0.0.1:${st.port}）` : ''}`
           : (starting ? settingsCopy.llamaEngine.starting : settingsCopy.llamaEngine.stopped);
         return (
           <>
+            {/* 功能说明：是什么 / 何时需要 / 如何启用 / 性能提示 */}
             <section className="mb-6">
               <SectionTitle>{settingsCopy.llamaEngine.title}</SectionTitle>
               <Group>
-                <div className="px-4 py-3 text-[13px] leading-5 border-b last:border-b-0 border-black/[0.12] text-[#8A8A8E] dark:border-white/[0.10] dark:text-[#98989D]">
-                  {settingsCopy.llamaEngine.desc}
-                </div>
-                <div className="px-4 py-3 text-[14px] leading-5 border-b border-black/[0.12] text-[#1C1C1E] dark:border-white/[0.10] dark:text-[#F2F2F7]">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full ${running ? 'bg-[#34C759]' : (starting || downloading ? 'bg-[#FF9F0A]' : 'bg-[#AEAEB2] dark:bg-[#636366]')}`} />
-                    <span className="font-medium">{serviceLine}</span>
+                {[
+                  [settingsCopy.llamaEngine.introWhatLabel, settingsCopy.llamaEngine.introWhat],
+                  [settingsCopy.llamaEngine.introWhenLabel, settingsCopy.llamaEngine.introWhen],
+                  [settingsCopy.llamaEngine.introHowLabel, settingsCopy.llamaEngine.introHow],
+                  [settingsCopy.llamaEngine.introPerfLabel, settingsCopy.llamaEngine.introPerf],
+                ].map(([label, text]) => (
+                  <div key={label} className="px-4 py-2.5 text-[13px] leading-5 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]">
+                    <span className="font-semibold text-[#1C1C1E] dark:text-[#F2F2F7]">{label}</span>
+                    <span className="ml-2 text-[#8A8A8E] dark:text-[#98989D]">{text}</span>
                   </div>
-                  <div className="mt-1 text-[12px] leading-[17px] text-[#8A8A8E] dark:text-[#98989D]">
-                    {statusLine} · {modelLine}
+                ))}
+              </Group>
+            </section>
+
+            {/* 服务：状态 + 启停 + 下载进度 + 日志 */}
+            <section className="mb-6">
+              <SectionTitle>{settingsCopy.llamaEngine.serviceLabel}</SectionTitle>
+              <Group>
+                <div className="px-4 py-3 flex items-center justify-between gap-3 border-b border-black/[0.12] dark:border-white/[0.10]">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2 h-2 shrink-0 rounded-full ${running ? 'bg-[#34C759]' : (starting || downloading ? 'bg-[#FF9F0A]' : 'bg-[#AEAEB2] dark:bg-[#636366]')}`} />
+                      <span className="text-[14px] font-medium text-[#1C1C1E] dark:text-[#F2F2F7]">{serviceLine}</span>
+                    </div>
+                    <div className="mt-1 text-[12px] leading-[17px] text-[#8A8A8E] dark:text-[#98989D]">
+                      {statusLine} · {modelLine}
+                    </div>
                   </div>
+                  {engineReady && modelReady && (
+                    <button
+                      onClick={() => {
+                        if (!bridge.available || !bridge.llamaEngine) return;
+                        if (running || starting) bridge.llamaEngine.stopEngine().catch(() => {});
+                        // auto 档传给后端已解析的检测值（llama_engine_start 只认 cpu/gpu）
+                        else bridge.llamaEngine.startEngine(llamaModel, llamaDevice === 'auto' ? (st.detectedDevice || 'cpu') : llamaDevice).catch(() => {});
+                      }}
+                      disabled={starting}
+                      className={`shrink-0 h-9 px-4 rounded-full text-[14px] font-semibold ${starting ? 'opacity-50' : ''} ${running ? 'bg-[#FF3B30] text-white' : 'bg-[#007AFF] text-white'}`}>
+                      {starting ? settingsCopy.llamaEngine.starting : (running ? settingsCopy.llamaEngine.stop : settingsCopy.llamaEngine.start)}
+                    </button>
+                  )}
                 </div>
                 {errText && (
                   <div className="px-4 py-3 text-[13px] leading-5 border-b whitespace-pre-wrap border-black/[0.12] text-[#FF3B30] dark:border-white/[0.10] dark:text-[#FF453A]">
@@ -2529,83 +2558,116 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     )}
                   </div>
                 )}
-                <div className="grid grid-cols-2 divide-x divide-y divide-black/[0.12] dark:divide-white/[0.10]">
-                  <div className="p-4">
-                    <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.engineLabel}</div>
-                    {!engineReady && !downloading && (
-                      <button onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.installEngine().catch(() => {})}
-                        className={`h-9 px-4 rounded-full text-[14px] font-semibold text-white ${downloadingItem === 'engine' ? 'opacity-50' : ''}`} style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installEngine}</button>
-                    )}
-                  </div>
-                  <div className="p-4">
-                    <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.modelLabel}</div>
-                    {models.map(m => (
-                      <button key={m.id} onClick={() => applyLlamaModel(m.id)}
-                        className="flex items-center gap-2.5 w-full py-1.5 text-left">
-                        <RadioDot active={llamaModel === m.id} />
-                        <span className="text-[13px] leading-4 text-[#1C1C1E] dark:text-[#F2F2F7]">
-                          {m.displayName}
-                          {st.recommendedModel === m.id && (
-                            <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded-full bg-[#007AFF]/10 text-[#007AFF]">{settingsCopy.llamaEngine.recommended}</span>
-                          )}
-                          {m.installed && <span className="ml-1.5 text-[12px] text-[#34C759]">✓</span>}
-                        </span>
-                      </button>
-                    ))}
-                    {!modelReady && !downloading && (
-                      <button onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.installModel(llamaModel).catch(() => {})}
-                        className={`mt-1 h-9 px-4 rounded-full text-[14px] font-semibold text-white ${downloadingItem === 'model' ? 'opacity-50' : ''}`} style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installModel}</button>
-                    )}
-                  </div>
-                  <div className="p-4">
-                    <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.deviceLabel}</div>
-                    <button onClick={() => applyLlamaDevice('auto')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
-                      <RadioDot active={llamaDevice === 'auto'} />
-                      <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.deviceAuto}</span>
+                {(running || stopped || st.stderrTail) && (
+                  <div className="px-4 py-2.5 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]">
+                    <button onClick={() => setShowLlamaLogs(v => !v)}
+                      className={`min-h-7 px-3 rounded-full text-[13px] font-medium ${actionButton('blue')}`}>
+                      {settingsCopy.llamaEngine.viewLogs}
                     </button>
-                    <button onClick={() => applyLlamaDevice('gpu')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
-                      <RadioDot active={llamaDevice === 'gpu'} />
-                      <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.gpu}</span>
-                    </button>
-                    <button onClick={() => applyLlamaDevice('cpu')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
-                      <RadioDot active={llamaDevice === 'cpu'} />
-                      <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.cpu}</span>
-                    </button>
-                    {llamaDevice === 'auto' && (
-                      <div className="mt-1 text-[12px] leading-4 text-[#9AA0A6] dark:text-[#636366]">
-                        {st.detectedDevice === 'gpu' ? settingsCopy.llamaEngine.deviceAutoGpu : settingsCopy.llamaEngine.deviceAutoCpu}
-                      </div>
-                    )}
                   </div>
-                  <div className="p-4">
-                    <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.serviceLabel}</div>
-                    {engineReady && modelReady && (
-                      <button
-                        onClick={() => {
-                          if (!bridge.available || !bridge.llamaEngine) return;
-                          if (running || starting) bridge.llamaEngine.stopEngine().catch(() => {});
-                          // auto 档传给后端已解析的检测值（llama_engine_start 只认 cpu/gpu）
-                          else bridge.llamaEngine.startEngine(llamaModel, llamaDevice === 'auto' ? (st.detectedDevice || 'cpu') : llamaDevice).catch(() => {});
-                        }}
-                        disabled={starting}
-                        className={`h-9 px-4 rounded-full text-[14px] font-semibold ${starting ? 'opacity-50' : ''} ${running ? 'bg-[#FF3B30] text-white' : 'bg-[#007AFF] text-white'}`}>
-                        {starting ? settingsCopy.llamaEngine.starting : (running ? settingsCopy.llamaEngine.stop : settingsCopy.llamaEngine.start)}
-                      </button>
-                    )}
-                    {(running || stopped || st.stderrTail) && (
-                      <button onClick={() => setShowLlamaLogs(v => !v)}
-                        className={`mt-2 min-h-7 px-3 rounded-full text-[13px] font-medium ${actionButton('blue')}`}>
-                        {settingsCopy.llamaEngine.viewLogs}
-                      </button>
-                    )}
-                  </div>
-                </div>
+                )}
                 {showLlamaLogs && (st.stderrTail || []).length > 0 && (
                   <pre className="px-4 py-3 text-[11px] leading-4 overflow-x-auto max-h-56 overflow-y-auto bg-[#F8F9FB] text-[#6E6E73] dark:bg-[#1C1C1E] dark:text-[#98989D]">
                     {(st.stderrTail || []).join('\n')}
                   </pre>
                 )}
-                <div className="px-4 py-3 border-t border-black/[0.12] dark:border-white/[0.10]">
+              </Group>
+            </section>
+
+            {/* 安装与模型：引擎 / 视觉模型 / 设备 */}
+            <section className="mb-6">
+              <SectionTitle>{settingsCopy.llamaEngine.setupSection}</SectionTitle>
+              <Group>
+                <div className="px-4 py-3 border-b border-black/[0.12] dark:border-white/[0.10]">
+                  <IOSRow label={settingsCopy.llamaEngine.engineLabel} desc={statusLine}>
+                    {!engineReady && !downloading && (
+                      <button onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.installEngine().catch(() => {})}
+                        className={`h-9 px-4 rounded-full text-[14px] font-semibold text-white ${downloadingItem === 'engine' ? 'opacity-50' : ''}`} style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installEngine}</button>
+                    )}
+                  </IOSRow>
+                </div>
+                <div className="px-4 py-3 border-b border-black/[0.12] dark:border-white/[0.10]">
+                  <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">
+                    {settingsCopy.llamaEngine.modelLabel}
+                    <span className="ml-2 text-[12px] font-normal text-[#8A8A8E] dark:text-[#98989D]">{modelLine}</span>
+                  </div>
+                  {models.map(m => (
+                    <div key={m.id} className="flex items-center gap-2.5 w-full py-1.5">
+                      <button onClick={() => applyLlamaModel(m.id)}
+                        className="flex items-center gap-2.5 flex-1 min-w-0 text-left">
+                        <RadioDot active={llamaModel === m.id} />
+                        <span className="text-[13px] leading-4 text-[#1C1C1E] dark:text-[#F2F2F7]">
+                          {m.displayName}
+                          {st.recommendedModel === m.id && st.recommendedModel !== st.defaultModel && (
+                            <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded-full bg-[#007AFF]/10 text-[#007AFF]">{settingsCopy.llamaEngine.recommended}</span>
+                          )}
+                          {st.defaultModel === m.id && (
+                            <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded-full bg-black/[0.06] text-[#636366] dark:bg-white/[0.10] dark:text-[#C7C7CC]">{settingsCopy.llamaEngine.default}</span>
+                          )}
+                          {m.installed && <span className="ml-1.5 text-[12px] text-[#34C759]">✓</span>}
+                        </span>
+                      </button>
+                      {!downloading && (m.installed ? (
+                        <button data-testid={`llama-delete-model-${m.id}`} onClick={() => {
+                          if (!bridge.available || !bridge.llamaEngine || !bridge.llamaEngine.deleteModel) return;
+                          if (!window.confirm(settingsCopy.llamaEngine.deleteModelConfirm(m.displayName))) return;
+                          bridge.llamaEngine.deleteModel(m.id).catch(() => {});
+                        }}
+                          className="shrink-0 min-h-7 px-3 rounded-full text-[12px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10">{settingsCopy.llamaEngine.deleteModel}</button>
+                      ) : (
+                        <button data-testid={`llama-install-model-${m.id}`} onClick={() => {
+                          if (!bridge.available || !bridge.llamaEngine) return;
+                          applyLlamaModel(m.id);
+                          bridge.llamaEngine.installModel(m.id).catch(() => {});
+                        }}
+                          className="shrink-0 min-h-7 px-3 rounded-full text-[12px] font-semibold text-white" style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installModel}</button>
+                      ))}
+                    </div>
+                  ))}
+                  {running && st.activeModel && st.activeModel !== llamaModel && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <button data-testid="llama-restart-apply" onClick={() => {
+                        if (!bridge.available || !bridge.llamaEngine) return;
+                        const dev = llamaDevice === 'auto' ? (st.detectedDevice || 'cpu') : llamaDevice;
+                        bridge.llamaEngine.stopEngine().catch(() => {})
+                          .then(() => bridge.llamaEngine.startEngine(llamaModel, dev))
+                          .catch(() => {});
+                      }}
+                        className="h-9 px-4 rounded-full text-[14px] font-semibold text-white" style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.restartApply}</button>
+                      <span className="text-[12px] leading-4 text-[#9AA0A6] dark:text-[#636366]">{settingsCopy.llamaEngine.restartNeeded}</span>
+                    </div>
+                  )}
+                </div>
+                <div className="px-4 py-3">
+                  <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.deviceLabel}</div>
+                  <div className="flex items-center gap-4">
+                    <button onClick={() => applyLlamaDevice('auto')} className="flex items-center gap-2 py-1.5 text-left">
+                      <RadioDot active={llamaDevice === 'auto'} />
+                      <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.deviceAuto}</span>
+                    </button>
+                    <button onClick={() => applyLlamaDevice('gpu')} className="flex items-center gap-2 py-1.5 text-left">
+                      <RadioDot active={llamaDevice === 'gpu'} />
+                      <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.gpu}</span>
+                    </button>
+                    <button onClick={() => applyLlamaDevice('cpu')} className="flex items-center gap-2 py-1.5 text-left">
+                      <RadioDot active={llamaDevice === 'cpu'} />
+                      <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.cpu}</span>
+                    </button>
+                  </div>
+                  {llamaDevice === 'auto' && (
+                    <div className="mt-1 text-[12px] leading-4 text-[#9AA0A6] dark:text-[#636366]">
+                      {st.detectedDevice === 'gpu' ? settingsCopy.llamaEngine.deviceAutoGpu : settingsCopy.llamaEngine.deviceAutoCpu}
+                    </div>
+                  )}
+                </div>
+              </Group>
+            </section>
+
+            {/* 行为：兜底开关 / 自动启动 / 隐私说明 */}
+            <section className="mb-6">
+              <SectionTitle>{settingsCopy.llamaEngine.behaviorSection}</SectionTitle>
+              <Group>
+                <div className="px-4 py-3 border-b border-black/[0.12] dark:border-white/[0.10]">
                   <IOSRow label={settingsCopy.llamaEngine.visionFallbackLabel} desc={settingsCopy.llamaEngine.visionFallbackDesc}>
                     <IOSSwitch
                       checked={llamaVisionFallback}
@@ -2622,10 +2684,9 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                       }} />
                   </IOSRow>
                 </div>
-                <div className="px-4 py-3 border-t border-black/[0.12] dark:border-white/[0.10]">
+                <div className="px-4 py-3 border-b border-black/[0.12] dark:border-white/[0.10]">
                   <IOSRow label={settingsCopy.llamaEngine.autoStartLabel}>
                     <SSegmented
-                      isDark={isDark}
                       options={[
                         { key: 'first_image', label: settingsCopy.llamaEngine.autoStartFirstImage },
                         { key: 'launch', label: settingsCopy.llamaEngine.autoStartLaunch },
@@ -2653,21 +2714,21 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         if (activeSection === 'memory') return renderMemory();
         if (activeSection === 'community') return renderCommunity();
         if (activeSection === 'permissions') return renderPermissions();
-        if (activeSection === 'llama') return renderLocalEngine();
         if (activeSection === 'update') return renderUpdate();
         if (activeSection === 'help') return renderHelp();
         return renderGeneral();
       };
       const sectionTitle = (activeSection === 'model' && modelTab === 'acp' && acpProvidersTabVisible)
         ? t.uiSettings.providers
-        : ({
+        : (activeSection === 'model' && modelTab === 'llama')
+          ? t.uiSettings.localVision
+          : ({
             general: t.uiSettings.general,
             model: t.uiSettings.model,
             search: t.uiSettings.search,
             memory: t.uiSettings.memory,
             community: t.uiSettings.community,
             permissions: t.uiSettings.permissions,
-            llama: t.uiSettings.localEngine,
             update: t.uiSettings.update,
             help: t.uiSettings.help,
           }[activeSection] || t.uiSettings.general);
@@ -2809,8 +2870,6 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                 <SectionButton id="model" icon={<Cpu size={17} />} label={t.uiSettings.model} />
                 {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
                 <SectionButton id="search" icon={<Search size={17} />} label={t.uiSettings.search} />
-                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
-                <SectionButton id="llama" icon={<Zap size={17} />} label={t.uiSettings.localEngine} />
                 {memorySettingsVisible && <SectionButton id="memory" icon={<Database size={17} />} label={t.uiSettings.memory} />}
               </div>
               <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.system}</div>

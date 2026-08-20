@@ -129,8 +129,11 @@ pub(crate) struct LlamaEngineStatus {
     /// 设备自动检测结果（「自动」档实际生效的设备；用户显式 cpu/gpu 时
     /// 仍回填检测值，仅供设置页展示推荐）。
     pub detected_device: EngineDevice,
-    /// 按设备分级推荐的模型档 id（设置页「推荐」标）。
+    /// 按设备分级推荐的模型档 id（设置页「推荐」标：仅独显推荐 4B；
+    /// 其余设备与默认档相同，设置页据此只显示「默认」不显示「推荐」）。
     pub recommended_model: &'static str,
+    /// 新装默认档 id（设置页「默认」标；恒为 2B Q4_K_M，不随配置漂移）。
+    pub default_model: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -175,6 +178,7 @@ pub(crate) fn llama_engine_status() -> LlamaEngineStatus {
         stderr_tail: snapshot.stderr_tail,
         detected_device: auto_detect_device(),
         recommended_model: recommended_model_id(),
+        default_model: download::default_model().id,
     }
 }
 
@@ -204,6 +208,18 @@ pub(crate) async fn llama_engine_start(
 
 pub(crate) fn llama_engine_stop() {
     server::stop();
+}
+
+/// 删除模型：运行/启动中的引擎先停止（Windows 下模型文件被进程占用
+/// 无法删除），再删权重文件；安装状态由下次 `llama_engine_status`
+/// 按文件存在性重算。
+pub(crate) fn llama_engine_delete_model(model: String) -> Result<(), String> {
+    let spec = download::model_spec(&model)?;
+    let phase = server::runtime_snapshot().phase;
+    if phase == "running" || phase == "starting" {
+        server::stop();
+    }
+    download::delete_model_files(spec).map(|_| ())
 }
 
 // ---------------- bridge 接线点 ----------------
