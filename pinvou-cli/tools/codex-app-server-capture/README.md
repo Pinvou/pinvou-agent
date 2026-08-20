@@ -138,9 +138,11 @@ built-in cloud/auth control plane and authenticated model network remain
 available. Endpoint, token, and `OTEL_*` environment overrides are removed from
 the child, including SQLite and rollout/session trace path overrides. `HOME`
 and the Windows profile/drive/path variables point at the neutral root so user
-`.agents` content is not inherited. `APPDATA`/`LOCALAPPDATA` remain available
-for Windows runtime integration; plugins and their configuration inputs remain
-disabled and the strict layer gate rejects any injected configuration. Proxy
+`.agents` content is not inherited. Windows UNC neutral roots are unsupported
+and fail closed with a generic pre-capture error. `APPDATA`/`LOCALAPPDATA`
+remain available for Windows runtime integration; plugins and their
+configuration inputs remain disabled and the strict layer gate rejects any
+injected configuration. Proxy
 and CA variables remain available for enterprise network connectivity. The
 copied auth file remains writable for 0.139 token refresh but
 not replaceable; its identity, owner-only permissions, bounded size, and JSON

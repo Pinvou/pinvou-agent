@@ -405,8 +405,7 @@ fn main() {
                     json!({"name":user_name.clone(),"version":"user-1"}),
                 );
                 for key in [
-                    "notify",
-                    "project_root_markers",
+                    "project_root_markers.0",
                     "project_doc_max_bytes",
                     "skills.include_instructions",
                     "skills.bundled.enabled",

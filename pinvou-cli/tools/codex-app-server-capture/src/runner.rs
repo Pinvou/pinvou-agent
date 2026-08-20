@@ -3239,8 +3239,7 @@ fn validate_effective_config(frame: &Value, isolated_codex_home: &Path) -> Resul
         })
     };
     const SESSION_ORIGINS: &[&str] = &[
-        "notify",
-        "project_root_markers",
+        "project_root_markers.0",
         "project_doc_max_bytes",
         "skills.include_instructions",
         "skills.bundled.enabled",
@@ -5304,8 +5303,7 @@ mod tests {
             json!({"name":user_name.clone(),"version":"user-1"}),
         );
         for key in [
-            "notify",
-            "project_root_markers",
+            "project_root_markers.0",
             "project_doc_max_bytes",
             "skills.include_instructions",
             "skills.bundled.enabled",
@@ -5411,7 +5409,7 @@ mod tests {
                 "session-config" => frame["result"]["layers"][0]["config"]["extra"] = json!(true),
                 "origins" => {
                     frame["result"]["origins"]["extra"] =
-                        frame["result"]["origins"]["notify"].clone()
+                        frame["result"]["origins"]["project_root_markers.0"].clone()
                 }
                 _ => unreachable!(),
             }
@@ -5420,6 +5418,31 @@ mod tests {
                 "mutation {mutation} was accepted"
             );
         }
+
+        for legacy_key in ["notify", "project_root_markers"] {
+            let mut frame = valid_config_frame(&home);
+            frame["result"]["origins"][legacy_key] =
+                frame["result"]["origins"]["project_root_markers.0"].clone();
+            assert!(
+                super::validate_effective_config(&frame, &home).is_err(),
+                "non-leaf origin {legacy_key} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn neutral_home_rejects_unc_roots_generically() {
+        let mut command = std::process::Command::new("cmd.exe");
+        assert_eq!(
+            super::apply_neutral_home_environment(
+                &mut command,
+                std::path::Path::new(r"\\server\share\codex-s2")
+            )
+            .unwrap_err()
+            .to_string(),
+            "neutral home environment setup failed"
+        );
     }
 
     #[test]

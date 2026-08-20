@@ -284,6 +284,8 @@ fn run_s2_uses_a_fresh_minimal_codex_home_and_cleans_up_copied_auth() {
             "60000",
         ])
         .env("CODEX_HOME", &original_home)
+        .env("HOME", &original_home)
+        .env("USERPROFILE", &original_home)
         .env("S2_FAKE_HOME_AUDIT", &audit)
         .env("S2_FAKE_ORIGINAL_HOME", &original_home)
         .env("S2_FAKE_EXPECTED_AUTH", AUTH_FIXTURE)
