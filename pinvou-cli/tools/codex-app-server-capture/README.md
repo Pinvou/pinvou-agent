@@ -102,11 +102,15 @@ children are created suspended, assigned to a Job Object, and only then resumed;
 on Unix they are placed in a dedicated process group before exec.
 
 For `run-s2` only, the app-server invocation adds the official fixed
-`--disable codex_hooks` feature override while the version preflight remains
-exactly `--version`. This keeps the operator's existing `CODEX_HOME` account and
-authentication available but prevents user-configured lifecycle hooks from
-executing during agent-only evidence collection. Any `hook/started` notification
-that still arrives is rejected fail-closed as tool activity.
+`--disable hooks -c notify=[]` overrides while the version preflight remains
+exactly `--version`. The public 0.139 feature name is `hooks`; the internal
+`CodexHooks`/legacy `codex_hooks` names are not valid substitutes for this CLI
+flag. Clearing `notify` separately disables the legacy end-of-turn notifier,
+which is independent of the hooks feature. These overrides keep the operator's
+existing `CODEX_HOME` account and authentication available while preventing
+user-configured lifecycle commands from executing during evidence collection.
+Any `hook/started` notification that still arrives is rejected fail-closed as
+tool activity.
 
 On Windows the default executable lookup searches PATH specifically for
 `codex.cmd`; it does not fall through to an extensionless POSIX shim or a later

@@ -141,7 +141,7 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
 
 #[test]
 #[cfg(debug_assertions)]
-fn run_s2_disables_hooks_only_for_app_server_invocation() {
+fn run_s2_disables_hooks_and_legacy_notify_only_for_app_server_invocation() {
     let output = temp_output("argv spaces & semicolon ; user-input");
     let argv_log = output.join("fake-argv.jsonl");
     run_s2_for_test(S2RunConfig {
@@ -166,8 +166,19 @@ fn run_s2_disables_hooks_only_for_app_server_invocation() {
         invocations,
         vec![
             vec!["--version"],
-            vec!["app-server", "--disable", "codex_hooks", "--stdio"],
+            vec![
+                "app-server",
+                "--disable",
+                "hooks",
+                "-c",
+                "notify=[]",
+                "--stdio",
+            ],
         ]
+    );
+    assert!(
+        !invocations.iter().flatten().any(|arg| arg == "codex_hooks"),
+        "internal/legacy feature name must never be used as the CLI feature key"
     );
     assert!(
         invocations
@@ -1151,7 +1162,7 @@ fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim(
     assert!(capture.contains("thread/start"));
     let command_line = std::fs::read_to_string(&command_line_marker).unwrap();
     assert!(command_line.contains("codex.cmd"));
-    assert!(command_line.contains("app-server --disable codex_hooks --stdio"));
+    assert!(command_line.contains("app-server --disable hooks -c notify=[] --stdio"));
     std::fs::remove_dir_all(root).unwrap();
 }
 

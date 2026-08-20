@@ -29,7 +29,14 @@ const APPROVAL_MARKER_CONTENT: &str = "S2_APPROVED";
 const APPROVAL_MARKER_BYTES: &[u8] = APPROVAL_MARKER_CONTENT.as_bytes();
 const APPROVAL_MARKER_MAX_BYTES: u64 = 64;
 const VERSION_ARGS: &[&str] = &["--version"];
-const APP_SERVER_ARGS: &[&str] = &["app-server", "--disable", "codex_hooks", "--stdio"];
+const APP_SERVER_ARGS: &[&str] = &[
+    "app-server",
+    "--disable",
+    "hooks",
+    "-c",
+    "notify=[]",
+    "--stdio",
+];
 
 #[derive(Clone, Debug)]
 pub struct S2RunConfig {
@@ -384,6 +391,9 @@ impl SafeInvocation {
     }
 
     fn command(&self, requested_args: &[&str]) -> Result<Command> {
+        if requested_args != VERSION_ARGS && requested_args != APP_SERVER_ARGS {
+            bail!("unexpected executable invocation arguments");
+        }
         let mut command = Command::new(&self.program);
         #[cfg(windows)]
         if let Some(script) = self.cmd_script.as_ref() {
@@ -391,9 +401,10 @@ impl SafeInvocation {
 
             if requested_args.iter().any(|arg| {
                 arg.is_empty()
-                    || !arg
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                    || !arg.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric()
+                            || matches!(byte, b'-' | b'_' | b'=' | b'[' | b']')
+                    })
             }) {
                 bail!("unsafe requested argument for cmd invocation");
             }
