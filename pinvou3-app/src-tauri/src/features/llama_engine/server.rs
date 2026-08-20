@@ -67,7 +67,11 @@ static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// 首次加载模型（CPU 慢）与自动重启后的就绪等待上限。
 /// 发送门（chat.rs）等待窗口与本值对齐，不得另设更短的超时。
-pub(crate) const HEALTH_TIMEOUT: Duration = Duration::from_secs(120);
+/// 300s 的依据：并发下载显著拖慢 mmap 分页——实测下载 4B 模型
+/// 期间 2B 模型冷加载从 ~12s 恶化到 ~50s（约 4 倍），120s 窗口
+/// 在机械盘/更大并发下会被打穿，引擎被误杀、UI 只剩"启动中→
+/// 超时"。300s 覆盖 6 倍恶化余量。
+pub(crate) const HEALTH_TIMEOUT: Duration = Duration::from_secs(300);
 const CRASH_REBOOT_WINDOW: Duration = Duration::from_secs(60);
 /// 窗口内允许的自愈次数（超过则停等用户手动）。
 const MAX_CRASH_REBOOTS: u32 = 2;
@@ -657,6 +661,10 @@ async fn check_health(port: u16) -> Result<(), String> {
         .get_or_init(|| {
             reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(2))
+                // 整体超时：下载并发等 IO 打满时,server 可能接受连接但
+                // 响应被拖住——没有总超时的请求会永远卡在一次轮询里,
+                // 健康门的 120s 截止与退出分支全部失效(UI 永远"启动中")。
+                .timeout(Duration::from_secs(3))
                 .build()
                 .map_err(|e| format!("HTTP client 构建失败: {e}"))
         })

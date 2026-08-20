@@ -1143,6 +1143,8 @@ async function modalWidth(page, headingText) {
   rec('⑦.llama.0 模型页胶囊含「本地识图」且无残留弹窗', llamaTabDebug.hasTab && !llamaTabDebug.dialogOpen, JSON.stringify(llamaTabDebug));
   await page.click('[data-testid="settings-model-tab-llama"]');
   await sleep(400);
+  await page.click('[data-testid="llama-autostart-select"]');
+  await sleep(250);
   const llamaSection = await page.evaluate(() => {
     const text = document.body.innerText;
     return {
@@ -1153,7 +1155,7 @@ async function modalWidth(page, headingText) {
     };
   });
   rec('⑦.llama.1 本地多模态引擎区块展示自动启动三档与退出提示', Object.values(llamaSection).every(Boolean), JSON.stringify(llamaSection));
-  await clickExact(page, '开启 pinvou 时');
+  await page.click('[data-testid="llama-autostart-launch"]');
   await sleep(300);
   const llamaAutoStartSaved = await page.evaluate(() => {
     const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'update_settings');

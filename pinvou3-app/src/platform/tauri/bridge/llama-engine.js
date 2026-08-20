@@ -101,6 +101,17 @@
       await refreshStatus();
     }
 
+    async function deleteEngine() {
+      try {
+        await invoke("llama_engine_delete_engine");
+      } catch (e) {
+        merge({ error: String(e) });
+        notify();
+        throw e;
+      }
+      await refreshStatus();
+    }
+
     return {
       refreshStatus: refreshStatus,
       installEngine: installEngine,
@@ -108,7 +119,8 @@
       cancelDownload: cancelDownload,
       startEngine: startEngine,
       stopEngine: stopEngine,
-      deleteModel: deleteModel
+      deleteModel: deleteModel,
+      deleteEngine: deleteEngine
     };
   };
 })(window);

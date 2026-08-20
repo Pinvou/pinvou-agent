@@ -1751,6 +1751,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       );
       // 自动启动引擎三档：first_image(默认) / launch / never
       const [llamaAutoStart, setLlamaAutoStart] = useState(llamaAdvanced.llama_engine_auto_start || 'first_image');
+      const [llamaAutoStartOpen, setLlamaAutoStartOpen] = useState(false);
+      const llamaAutoStartBtnRef = useRef(null);
       const saveAdvancedPatch = async (patch) => {
         try {
           const current = (bs && bs.settings && bs.settings.advanced) || {};
@@ -2584,6 +2586,14 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                       <button onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.installEngine().catch(() => {})}
                         className={`h-9 px-4 rounded-full text-[14px] font-semibold text-white ${downloadingItem === 'engine' ? 'opacity-50' : ''}`} style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installEngine}</button>
                     )}
+                    {engineReady && !downloading && (
+                      <button data-testid="llama-delete-engine" onClick={() => {
+                        if (!bridge.available || !bridge.llamaEngine || !bridge.llamaEngine.deleteEngine) return;
+                        if (!window.confirm(settingsCopy.llamaEngine.deleteEngineConfirm(st.engineTag || ''))) return;
+                        bridge.llamaEngine.deleteEngine().catch(() => {});
+                      }}
+                        className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10">{settingsCopy.llamaEngine.deleteEngine}</button>
+                    )}
                   </IOSRow>
                 </div>
                 <div className="px-4 py-3 border-b border-black/[0.12] dark:border-white/[0.10]">
@@ -2592,7 +2602,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     <span className="ml-2 text-[12px] font-normal text-[#8A8A8E] dark:text-[#98989D]">{modelLine}</span>
                   </div>
                   {models.map(m => (
-                    <div key={m.id} className="flex items-center gap-2.5 w-full py-1.5">
+                    <div key={m.id} className="flex items-center gap-2.5 w-full py-1.5 pr-4">
                       <button onClick={() => applyLlamaModel(m.id)}
                         className="flex items-center gap-2.5 flex-1 min-w-0 text-left">
                         <RadioDot active={llamaModel === m.id} />
@@ -2613,14 +2623,14 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                           if (!window.confirm(settingsCopy.llamaEngine.deleteModelConfirm(m.displayName))) return;
                           bridge.llamaEngine.deleteModel(m.id).catch(() => {});
                         }}
-                          className="shrink-0 min-h-7 px-3 rounded-full text-[12px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10">{settingsCopy.llamaEngine.deleteModel}</button>
+                          className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-[#FF3B30] bg-[#FF3B30]/10">{settingsCopy.llamaEngine.deleteModel}</button>
                       ) : (
                         <button data-testid={`llama-install-model-${m.id}`} onClick={() => {
                           if (!bridge.available || !bridge.llamaEngine) return;
                           applyLlamaModel(m.id);
                           bridge.llamaEngine.installModel(m.id).catch(() => {});
                         }}
-                          className="shrink-0 min-h-7 px-3 rounded-full text-[12px] font-semibold text-white" style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installModel}</button>
+                          className="shrink-0 min-h-7 px-3 rounded-full text-[11px] font-semibold text-white" style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installModel}</button>
                       ))}
                     </div>
                   ))}
@@ -2685,20 +2695,41 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                   </IOSRow>
                 </div>
                 <div className="px-4 py-3 border-b border-black/[0.12] dark:border-white/[0.10]">
-                  <IOSRow label={settingsCopy.llamaEngine.autoStartLabel}>
-                    <SSegmented
-                      options={[
-                        { key: 'first_image', label: settingsCopy.llamaEngine.autoStartFirstImage },
-                        { key: 'launch', label: settingsCopy.llamaEngine.autoStartLaunch },
-                        { key: 'never', label: settingsCopy.llamaEngine.autoStartNever },
-                      ]}
-                      value={llamaAutoStart}
-                      onChange={(v) => { setLlamaAutoStart(v); saveAdvancedPatch({ llama_engine_auto_start: v }); }}
-                    />
-                  </IOSRow>
-                  <div className="px-1 pb-1 mt-1 text-[12px] leading-4 text-[#9AA0A6] dark:text-[#636366]">
-                    {settingsCopy.llamaEngine.autoShutdownHint}
-                  </div>
+                  {(() => {
+                    const options = [
+                      { key: 'first_image', label: settingsCopy.llamaEngine.autoStartFirstImage, desc: settingsCopy.llamaEngine.autoStartFirstImageDesc },
+                      { key: 'launch', label: settingsCopy.llamaEngine.autoStartLaunch, desc: settingsCopy.llamaEngine.autoStartLaunchDesc },
+                      { key: 'never', label: settingsCopy.llamaEngine.autoStartNever, desc: settingsCopy.llamaEngine.autoStartNeverDesc },
+                    ];
+                    const current = options.find(o => o.key === llamaAutoStart) || options[0];
+                    return (
+                      <>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="text-[15px] leading-5 font-normal text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.autoStartLabel}</div>
+                          <div className="relative shrink-0">
+                            <button ref={llamaAutoStartBtnRef} data-testid="llama-autostart-select" onClick={() => setLlamaAutoStartOpen(v => !v)}
+                              className="h-8 pl-3 pr-2 rounded-full text-[13px] font-medium flex items-center gap-1 bg-[#E1E5EA] text-[#1C1C1E] hover:bg-[#D3D9E0] dark:bg-white/[0.08] dark:text-[#F2F2F7] dark:hover:bg-white/[0.12]">
+                              {current.label}
+                              <ChevronDown size={13} className="opacity-50 shrink-0" />
+                            </button>
+                            <ComposerPopover open={llamaAutoStartOpen} onClose={() => setLlamaAutoStartOpen(false)} triggerRef={llamaAutoStartBtnRef}
+                              desktopClassName="absolute bottom-full right-0 mb-1 z-50 min-w-[190px] bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
+                              {options.map(o => (
+                                <button key={o.key} data-testid={`llama-autostart-${o.key}`} onClick={() => { setLlamaAutoStart(o.key); saveAdvancedPatch({ llama_engine_auto_start: o.key }); setLlamaAutoStartOpen(false); }}
+                                  className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left rounded-xl text-[13px] text-[#1C1C1E] hover:bg-[#007AFF] hover:text-white dark:text-[#F2F2F7]">
+                                  <span>{o.label}</span>
+                                  {llamaAutoStart === o.key && <Check size={14} className="shrink-0" />}
+                                </button>
+                              ))}
+                            </ComposerPopover>
+                          </div>
+                        </div>
+                        <div className="mt-1 text-[12px] leading-4 text-[#9AA0A6] dark:text-[#636366]">
+                          {current.desc}；{settingsCopy.llamaEngine.autoShutdownHint}
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
                 <div className="px-4 py-3 text-[12px] leading-[17px] text-[#9AA0A6] dark:text-[#636366]">
                   {settingsCopy.llamaEngine.privacyNote} {settingsCopy.llamaEngine.newSessionHint}

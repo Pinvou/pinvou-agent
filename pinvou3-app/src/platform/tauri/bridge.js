@@ -2248,6 +2248,34 @@
   const llamaEngineCancelDownload = llamaEngineFeature.cancelDownload;
   const llamaEngineStart = llamaEngineFeature.startEngine;
   const llamaEngineStop = llamaEngineFeature.stopEngine;
+  const refreshRemoteControlStatus = remoteControlFeature.refreshRemoteControlStatus;
+  const startRemoteControl = remoteControlFeature.startRemoteControl;
+  const stopRemoteControl = remoteControlFeature.stopRemoteControl;
+  const refreshRemoteControlQr = remoteControlFeature.refreshRemoteControlQr;
+  const dependenciesFeature = installBridgeFeature("dependencies", { state: state, notify: notify, invoke: invoke, listen: listen, bt: bt });
+  const checkDependencies = dependenciesFeature.checkDependencies;
+  const installDependencies = dependenciesFeature.installDependencies;
+  const voiceFeature = installBridgeFeature("voice", { state: state, notify: notify, invoke: invoke, bt: bt });
+  const startVoiceInput = voiceFeature.startVoiceInput;
+  const installVoiceAsr = voiceFeature.installVoiceAsr;
+  const cancelVoiceAsrSetup = voiceFeature.cancelVoiceAsrSetup;
+  const closeVoiceAsrSetup = voiceFeature.closeVoiceAsrSetup;
+  const cancelVoiceInput = voiceFeature.cancelVoiceInput;
+  const clearVoiceInput = voiceFeature.clearVoiceInput;
+  const appendVoiceText = voiceFeature.appendVoiceText;
+  const runVoiceInputDebugAssertions = voiceFeature.runVoiceInputDebugAssertions;
+  const knowledgeModelFeature = installBridgeFeature("knowledge-model", { state: state, notify: notify, invoke: invoke, listen: listen });
+  const downloadKbModel = knowledgeModelFeature.downloadKbModel;
+  const cancelKbModel = knowledgeModelFeature.cancelKbModel;
+  const llamaEngineFeature = installBridgeFeature("llama-engine", { state, notify, invoke });
+  const llamaEngineRefreshStatus = llamaEngineFeature.refreshStatus;
+  const llamaEngineInstallEngine = llamaEngineFeature.installEngine;
+  const llamaEngineInstallModel = llamaEngineFeature.installModel;
+  const llamaEngineCancelDownload = llamaEngineFeature.cancelDownload;
+  const llamaEngineStart = llamaEngineFeature.startEngine;
+  const llamaEngineStop = llamaEngineFeature.stopEngine;
+  const llamaEngineDeleteModel = llamaEngineFeature.deleteModel;
+  const llamaEngineDeleteEngine = llamaEngineFeature.deleteEngine;
 
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
   const listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
@@ -2401,6 +2429,8 @@
       cancelDownload: llamaEngineCancelDownload,
       startEngine: llamaEngineStart,
       stopEngine: llamaEngineStop,
+      deleteModel: llamaEngineDeleteModel,
+      deleteEngine: llamaEngineDeleteEngine,
     },
     scheduled: {
       loadScheduledTasks,

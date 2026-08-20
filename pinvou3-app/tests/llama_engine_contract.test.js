@@ -31,7 +31,7 @@ assert(
 );
 assert(!/--alias/.test(bridge), "bridge.rs 不得引入 --alias");
 
-// 2. 命令注册：7 条 llama_engine_* 命令齐全，且 #[tauri::command] 只在 app/commands/ 宿主。
+// 2. 命令注册：8 条 llama_engine_* 命令齐全，且 #[tauri::command] 只在 app/commands/ 宿主。
 const commands = read("app/commands/llama_engine.rs");
 for (const name of [
   "llama_engine_status",
@@ -41,6 +41,7 @@ for (const name of [
   "llama_engine_start",
   "llama_engine_stop",
   "llama_engine_delete_model",
+  "llama_engine_delete_engine",
 ]) {
   assert(
     new RegExp(name).test(commands),
@@ -56,6 +57,7 @@ for (const name of [
   "llama_engine_start",
   "llama_engine_stop",
   "llama_engine_delete_model",
+  "llama_engine_delete_engine",
 ]) {
   assert(
     new RegExp(`commands::llama_engine::${name}`).test(lib),
