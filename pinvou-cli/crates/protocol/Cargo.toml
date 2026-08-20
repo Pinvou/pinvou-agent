@@ -6,3 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+serde.workspace = true
+serde_json = { version = "1", features = ["raw_value"] }
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Performance"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

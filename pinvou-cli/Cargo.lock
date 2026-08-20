@@ -6406,6 +6406,13 @@ dependencies = [
 [[package]]
 name = "pinvou-protocol"
 version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "pinvou-runtime-api"

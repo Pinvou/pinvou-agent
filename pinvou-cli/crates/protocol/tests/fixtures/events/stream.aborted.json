@@ -1,0 +1,1 @@
+{"protocol_version":1,"schema_version":1,"node_id":"node_test","logical_session_id":"sess_test","attachment_id":"att_test","work_id":null,"collaborative_run_id":null,"stream_id":"control","turn_id":"turn_test","seq":1,"source_span":null,"timestamp":"2026-08-19T09:00:00.123Z","rate_class":"R0","kind":"stream.aborted","payload":{"reason":"event_spool_exhausted"}}
