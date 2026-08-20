@@ -285,7 +285,7 @@ export const dictZh = {
         },
         uiMonitor: { bridgeNotReady:'桥接未就绪', readFailed:'读取失败', reading:'正在读取', configError:'配置异常', unverified:'未验证', authFailed:'鉴权失败', bridgeError:'监控桥接未就绪：请确认打开的是 Tauri 应用窗口', readError:e=>`监控读取失败：${e}`, activity:'运行活动' },
 
-        uiSettings: { common:'常用', system:'系统', general:'通用', model:'模型', search:'搜索', memory:'记忆', community:'用户交流', permissions:'权限与环境', data:'数据管理', update:'更新', help:'帮助反馈', appearance:'外观', language:'界面语言', languageDesc:'切换应用显示语言', theme:'主题模式', themeDesc:'选择浅色或深色外观', notifications:'通知', taskNotice:'任务完成提醒', taskNoticeDesc:'任务完成后展示系统通知', desktopAssistant:'桌面助手', pet:'桌伴公仔', petDesc:'在桌面显示常驻小公仔', version:'版本', currentVersion:'当前版本', beta:'内测版', releaseNotes:'更新内容', noReleaseNotes:'暂无更新说明', downloading:p=>`正在下载更新 ${p}%`, installingUpdate:'正在安装更新…', installerStarted:'安装器已启动', cancelDownload:'取消下载', providers:'ACP 管理' },
+        uiSettings: { common:'常用', system:'系统', general:'通用', model:'模型', search:'搜索', memory:'记忆', community:'用户交流', permissions:'权限与环境', data:'数据管理', update:'更新', help:'帮助反馈', appearance:'外观', language:'界面语言', languageDesc:'切换应用显示语言', theme:'主题模式', themeDesc:'选择浅色或深色外观', notifications:'通知', taskNotice:'任务完成提醒', taskNoticeDesc:'任务完成后展示系统通知', desktopAssistant:'桌面助手', pet:'桌伴公仔', petDesc:'在桌面显示常驻小公仔', version:'版本', currentVersion:'当前版本', beta:'内测版', releaseNotes:'更新内容', noReleaseNotes:'暂无更新说明', downloading:p=>`正在下载更新 ${p}%`, installingUpdate:'正在安装更新…', installerStarted:'安装器已启动', cancelDownload:'取消下载', providers:'ACP 管理', localEngine:'本地多模态引擎' },
         uiSettingsDetail: { modelSection:'模型', settingsLoadFailed:'设置页加载失败', addModel:'添加模型', envManaged:'如果模型配置被环境变量管理，设置页会保留当前值，但修改可能需要到环境变量中完成。', localModel:'本地模型', defaultTag:'默认', edit:'编辑', delete:'删除', noModels:'暂无模型', localDefaultName:'本地 Qwen3.6', searchList:'搜索源列表', setDefault:'设为默认', addSearch:'添加搜索源', searchDescriptions:{ bing:'内置搜索', metaso:'中文搜索服务', bocha:'搜索服务', baidu:'千帆 AI 搜索', tavily:'海外搜索服务' }, searchSourceHint:'内置搜索免密钥、开箱即用；所选服务失败时自动回退内置搜索。中文长查询建议添加中文搜索服务获得更准结果。', memoryTypes:{ preference:'长期偏好', work_context:'工作背景', current_focus:'当前关注', recent_activity:'近期动态' }, memoryDetail:'记忆详情', content:'内容', editTitle:label=>`编辑${label}`, userCallName:'用户称呼', assistantNickname:'助手昵称', callNameDesc:'助手称呼你的方式', assistantNameDesc:'你称呼助手的方式', unnamedMemory:'未命名记忆', view:'查看', enableMemory:'启用记忆', enableMemoryDesc:'PINVOU 会记住称呼、偏好、工作背景和近期事项', profile:'个人资料', notSet:'未设置', longMemory:'长期记忆', shortMemory:'短期记忆', noLongMemory:'暂无长期记忆', noShortMemory:'暂无短期记忆', hiddenTasks:'隐藏任务', archivedAt:date=>`收纳于 ${date}`, restore:'恢复', noHiddenTasks:'暂无隐藏任务', noHiddenTasksDesc:'收纳后的任务会显示在这里', system:'系统', advancedPermission:'高级执行权限', advancedPermissionDesc:'允许助手执行环境配置等高级指令', missing:'缺失', installMissing:'安装缺失依赖', feedbackTitle:'提交问题或建议', feedbackDesc:'支持图片和视频附件，提交前会显示隐私提示', submitFeedback:'提交反馈', editSearch:'编辑搜索源', apiKeyPlaceholder:'输入 API Key', hide:'隐藏', show:'显示', cancel:'取消', save:'保存', saving:'保存中', restartSearchTitle:'重启以应用搜索配置？', restartLanguageTitle:'重启以应用语言设置？', restartSearchDesc:'搜索源或凭据保存后，需要重启应用才能用于助手的联网搜索。', restartLanguageDesc:'界面语言已切换，重启后助手回复语言也会同步生效。', later:'稍后', restartNow:'现在重启', deleteModelTitle:'删除模型？', deleteModelDesc:'将移除该模型配置和已保存的凭据。', deleteModel:'删除模型', deleteSearchTitle:'删除搜索源？', deleteSearchDesc:name=>`将移除 ${name} 和已保存的凭据。`, deleteSearch:'删除搜索源', addSearchDesc:'选择搜索源后再填写必要凭据', closeSettings:'关闭设置', chooseModelDesc:'选择模型后再填写必要凭据', collapse:'收起', change:'更换', customModel:'自定义模型', modelAlias:'别名', modelAliasPlaceholder:'选填，例如：日常助手', localModelName:name=>name ? `本地 ${name}` : '本地模型', apiKeyReadFailed:'读取 API Key 失败', localModelId:'本地模型 ID', modelId:'模型 ID', modelIdPlaceholder:'输入模型 ID', customModelTitle:provider=>`自定义 ${provider} 模型`, customModelDesc:'手动填写模型 ID', customLocalDesc:'填写本地服务暴露的模型 ID', customCompatibleDesc:'手动填写模型 ID 和服务地址', localDetectionTargets:'检测 vLLM、Ollama、LM Studio', redetect:'重新检测', detect:'检测', noRunningLocalModel:'未检测到运行中的本地模型', modelNotLoadedTag:'未加载', modelNotLoadedHint:'尚未载入内存，首次使用时会自动加载', add:'添加', manualLocalModel:'手动添加本地模型', manualLocalModelDesc:'填写 API 地址和模型 ID', cloudModels:'云端模型', localModels:'本地模型', toolCalling:'工具调用', apiKeyRequired:'需要 API Key', testBeforeSave:'保存前可测试服务是否可用', modelDescriptions:{ '本地服务默认模型':'本地服务默认模型', '高能力模型':'高能力模型', '快速响应':'快速响应', '最新通用模型':'最新通用模型', '代码场景':'代码场景', '高速代码场景':'高速代码场景', '稳定可用':'稳定可用', '最新推荐':'最新推荐', '高性价比':'高性价比', '通用能力':'通用能力', '兼容保留':'兼容保留', '高速响应':'高速响应', '兼容高速':'兼容高速', '稳定通用':'稳定通用', '轻量模型':'轻量模型', '兼容端点示例':'兼容端点示例' } },
 
         uiPetSettings: { choose:'选择公仔', placeholder:'开发占位', preparing:'正在准备动画', animationFailed:'动画加载失败', coverFailed:'封面加载失败', retry:'重试', pets:{ lingling:{name:'灵灵',description:'星纹卷尾，灵动相伴'}, langlang:{name:'浪浪',description:'黑衫眼镜，从容同行'}, 'ace-taffy':{name:'Ace Taffy',description:'粉发皇冠，元气应援'} } },
@@ -942,4 +942,20 @@ dictZh.uiSettingsDetail.customModelTitles = {
   glm:'自定义 GLM 模型', qwen:'自定义通义模型',
   openai_compatible:'自定义兼容模型', glm_coding_plan:'自定义 GLM Coding Plan 模型',
   tencent_coding_plan:'自定义腾讯云 Coding Plan 模型', tencent_token_plan:'自定义腾讯云 Token Plan 模型', kimi_coding_plan:'自定义 Kimi Coding Plan 模型',
+};
+dictZh.uiSettingsDetail.llamaEngine = {
+  title: '本地多模态引擎',
+  desc: '一键下载开源视觉模型（Qwen3-VL），图片分析完全在本机运行，不上传云端；运行中的对话模型可用 image_analyze 工具读取图片。',
+  engineReady: '引擎已安装', engineMissing: '引擎未安装',
+  modelReady: '模型已就绪', modelMissing: '模型未下载',
+  running: '运行中', starting: '启动中…', stopped: '已停止',
+  downloadingEngine: '正在下载引擎', downloadingModel: '正在下载模型',
+  cancelDownload: '取消',
+  engineLabel: '引擎', modelLabel: '视觉模型', deviceLabel: '设备', serviceLabel: '服务',
+  installEngine: '下载引擎（约 40MB）', installModel: '下载模型',
+  gpu: 'GPU（Vulkan / Metal）', cpu: 'CPU',
+  start: '启动引擎', stop: '停止引擎',
+  viewLogs: '查看日志',
+  privacyNote: '仅监听本机 127.0.0.1，模型与图片数据不离开电脑。',
+  newSessionHint: '引擎启动后，新开的对话才能使用本地视觉能力。',
 };

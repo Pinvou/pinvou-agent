@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, Globe, Lightbulb, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Sparkles, Trash2, User, Users, Wrench, X } from '../../components/icons.jsx';
+import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, Globe, Lightbulb, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Sparkles, Trash2, User, Users, Wrench, X, Zap } from '../../components/icons.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -1729,6 +1729,30 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [searchDeleteConfirm, setSearchDeleteConfirm] = useState(null);
       const [searchPickerOpen, setSearchPickerOpen] = useState(false);
       const [restartDialog, setRestartDialog] = useState(null);
+      // 本地多模态引擎：模型/设备选择 + 诊断日志折叠
+      const [llamaModel, setLlamaModel] = useState('qwen3vl-2b-q3k-s');
+      const [llamaDevice, setLlamaDevice] = useState('gpu');
+      const [showLlamaLogs, setShowLlamaLogs] = useState(false);
+      useEffect(() => {
+        // 首次进入设置页拉一次引擎状态（下载进度/运行状态以事件驱动，这里是兜底）
+        if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.refreshStatus) {
+          bridge.llamaEngine.refreshStatus().catch(() => {});
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, []);
+      useEffect(() => {
+        // 启动中（事件可能延迟）每 2s 轮询状态兜底，避免 UI 卡在 starting
+        const le = (bs && bs.llamaEngineSetup) || {};
+        const phase = (le.status && le.status.phase) || 'idle';
+        if (phase !== 'starting') return undefined;
+        const timer = setInterval(() => {
+          if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.refreshStatus) {
+            bridge.llamaEngine.refreshStatus().catch(() => {});
+          }
+        }, 2000);
+        return () => clearInterval(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [bs && bs.llamaEngineSetup && bs.llamaEngineSetup.status && bs.llamaEngineSetup.status.phase]);
       const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
       const [feedbackOpen, setFeedbackOpen] = useState(false);
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
@@ -2403,12 +2427,153 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           </IOSRow>
         </IOSSection>
       );
+      const renderLocalEngine = () => {
+        const le = (bs && bs.llamaEngineSetup) || {};
+        const st = le.status || {};
+        const phase = st.phase || 'idle';
+        const models = st.models || [];
+        const downloading = !!le.downloading;
+        const downloadingItem = le.downloadingItem;
+        const starting = phase === 'starting';
+        const running = phase === 'running';
+        const stopped = phase === 'stopped';
+        const progress = le.progress || {};
+        const engineReady = !!st.engineInstalled;
+        const selectedModel = models.find(m => m.id === llamaModel) || models[0] || null;
+        const modelReady = !!(selectedModel && selectedModel.installed);
+        const errText = le.error || st.error || null;
+        const pct = (progress.total > 0 && typeof progress.downloaded === 'number')
+          ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100)) : null;
+        const busyPhase = progress.stage || null;
+        const statusLine = engineReady
+          ? `${settingsCopy.llamaEngine.engineReady}${st.engineTag ? ' v' + st.engineTag : ''}`
+          : settingsCopy.llamaEngine.engineMissing;
+        const modelLine = selectedModel
+          ? (modelReady ? settingsCopy.llamaEngine.modelReady : settingsCopy.llamaEngine.modelMissing)
+          : '';
+        const serviceLine = running
+          ? `${settingsCopy.llamaEngine.running}（${st.port ? '127.0.0.1:' + st.port : ''}）`
+          : (starting ? settingsCopy.llamaEngine.starting : settingsCopy.llamaEngine.stopped);
+        return (
+          <>
+            <section className="mb-6">
+              <SectionTitle>{settingsCopy.llamaEngine.title}</SectionTitle>
+              <Group>
+                <div className="px-4 py-3 text-[13px] leading-5 border-b last:border-b-0 border-black/[0.12] text-[#8A8A8E] dark:border-white/[0.10] dark:text-[#98989D]">
+                  {settingsCopy.llamaEngine.desc}
+                </div>
+                <div className="px-4 py-3 text-[14px] leading-5 border-b border-black/[0.12] text-[#1C1C1E] dark:border-white/[0.10] dark:text-[#F2F2F7]">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${running ? 'bg-[#34C759]' : (starting || downloading ? 'bg-[#FF9F0A]' : 'bg-[#AEAEB2] dark:bg-[#636366]')}`} />
+                    <span className="font-medium">{serviceLine}</span>
+                  </div>
+                  <div className="mt-1 text-[12px] leading-[17px] text-[#8A8A8E] dark:text-[#98989D]">
+                    {statusLine} · {modelLine}
+                  </div>
+                </div>
+                {errText && (
+                  <div className="px-4 py-3 text-[13px] leading-5 border-b whitespace-pre-wrap border-black/[0.12] text-[#FF3B30] dark:border-white/[0.10] dark:text-[#FF453A]">
+                    {errText}
+                  </div>
+                )}
+                {downloading && (
+                  <div className="px-4 py-3 border-b border-black/[0.12] dark:border-white/[0.10]">
+                    <div className="flex items-center justify-between text-[13px] mb-1.5">
+                      <span className="text-[#1C1C1E] dark:text-[#F2F2F7]">
+                        {busyPhase === 'engine_download' || busyPhase === 'engine_extract'
+                          ? settingsCopy.llamaEngine.downloadingEngine
+                          : settingsCopy.llamaEngine.downloadingModel}
+                        {pct !== null ? ` ${pct}%` : ''}
+                      </span>
+                      <button onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.cancelDownload()}
+                        className={`min-h-7 px-3 rounded-full text-[13px] font-medium ${actionButton('red')}`}>{settingsCopy.llamaEngine.cancelDownload}</button>
+                    </div>
+                    <div className="h-1.5 rounded-full overflow-hidden bg-[#E9E9EB] dark:bg-[#3A3A3C]">
+                      <div className="h-full rounded-full bg-[#007AFF]" style={{ width: `${pct !== null ? pct : (busyPhase ? 5 : 0)}%`, transition: 'width .3s' }} />
+                    </div>
+                    {progress.filename && (
+                      <div className="mt-1 text-[11px] truncate text-[#8A8A8E] dark:text-[#636366]">{progress.filename}</div>
+                    )}
+                  </div>
+                )}
+                <div className="grid grid-cols-2 divide-x divide-y divide-black/[0.12] dark:divide-white/[0.10]">
+                  <div className="p-4">
+                    <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.engineLabel}</div>
+                    {!engineReady && !downloading && (
+                      <button onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.installEngine().catch(() => {})}
+                        className={`h-9 px-4 rounded-full text-[14px] font-semibold text-white ${downloadingItem === 'engine' ? 'opacity-50' : ''}`} style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installEngine}</button>
+                    )}
+                  </div>
+                  <div className="p-4">
+                    <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.modelLabel}</div>
+                    {models.map(m => (
+                      <button key={m.id} onClick={() => setLlamaModel(m.id)}
+                        className="flex items-center gap-2.5 w-full py-1.5 text-left">
+                        <RadioDot active={llamaModel === m.id} />
+                        <span className="text-[13px] leading-4 text-[#1C1C1E] dark:text-[#F2F2F7]">
+                          {m.displayName}
+                          {m.installed && <span className="ml-1.5 text-[12px] text-[#34C759]">✓</span>}
+                        </span>
+                      </button>
+                    ))}
+                    {!modelReady && !downloading && (
+                      <button onClick={() => bridge.available && bridge.llamaEngine && bridge.llamaEngine.installModel(llamaModel).catch(() => {})}
+                        className={`mt-1 h-9 px-4 rounded-full text-[14px] font-semibold text-white ${downloadingItem === 'model' ? 'opacity-50' : ''}`} style={{ background: '#007AFF' }}>{settingsCopy.llamaEngine.installModel}</button>
+                    )}
+                  </div>
+                  <div className="p-4">
+                    <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.deviceLabel}</div>
+                    <button onClick={() => setLlamaDevice('gpu')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
+                      <RadioDot active={llamaDevice === 'gpu'} />
+                      <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.gpu}</span>
+                    </button>
+                    <button onClick={() => setLlamaDevice('cpu')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
+                      <RadioDot active={llamaDevice === 'cpu'} />
+                      <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.cpu}</span>
+                    </button>
+                  </div>
+                  <div className="p-4">
+                    <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.serviceLabel}</div>
+                    {engineReady && modelReady && (
+                      <button
+                        onClick={() => {
+                          if (!bridge.available || !bridge.llamaEngine) return;
+                          if (running || starting) bridge.llamaEngine.stopEngine().catch(() => {});
+                          else bridge.llamaEngine.startEngine(llamaModel, llamaDevice).catch(() => {});
+                        }}
+                        disabled={starting}
+                        className={`h-9 px-4 rounded-full text-[14px] font-semibold ${starting ? 'opacity-50' : ''} ${running ? 'bg-[#FF3B30] text-white' : 'bg-[#007AFF] text-white'}`}>
+                        {starting ? settingsCopy.llamaEngine.starting : (running ? settingsCopy.llamaEngine.stop : settingsCopy.llamaEngine.start)}
+                      </button>
+                    )}
+                    {(running || stopped || st.stderrTail) && (
+                      <button onClick={() => setShowLlamaLogs(v => !v)}
+                        className={`mt-2 min-h-7 px-3 rounded-full text-[13px] font-medium ${actionButton('blue')}`}>
+                        {settingsCopy.llamaEngine.viewLogs}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {showLlamaLogs && (st.stderrTail || []).length > 0 && (
+                  <pre className="px-4 py-3 text-[11px] leading-4 overflow-x-auto max-h-56 overflow-y-auto bg-[#F8F9FB] text-[#6E6E73] dark:bg-[#1C1C1E] dark:text-[#98989D]">
+                    {(st.stderrTail || []).join('\n')}
+                  </pre>
+                )}
+                <div className="px-4 py-3 text-[12px] leading-[17px] text-[#9AA0A6] dark:text-[#636366]">
+                  {settingsCopy.llamaEngine.privacyNote} {settingsCopy.llamaEngine.newSessionHint}
+                </div>
+              </Group>
+            </section>
+          </>
+        );
+      };
       const renderContent = () => {
         if (activeSection === 'model') return renderModels();
         if (activeSection === 'search') return renderSearch();
         if (activeSection === 'memory') return renderMemory();
         if (activeSection === 'community') return renderCommunity();
         if (activeSection === 'permissions') return renderPermissions();
+        if (activeSection === 'llama') return renderLocalEngine();
         if (activeSection === 'update') return renderUpdate();
         if (activeSection === 'help') return renderHelp();
         return renderGeneral();
@@ -2422,6 +2587,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             memory: t.uiSettings.memory,
             community: t.uiSettings.community,
             permissions: t.uiSettings.permissions,
+            llama: t.uiSettings.localEngine,
             update: t.uiSettings.update,
             help: t.uiSettings.help,
           }[activeSection] || t.uiSettings.general);
@@ -2564,6 +2730,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                 {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
                 <SectionButton id="search" icon={<Search size={17} />} label={t.uiSettings.search} />
                 {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
+                <SectionButton id="llama" icon={<Zap size={17} />} label={t.uiSettings.localEngine} />
                 {memorySettingsVisible && <SectionButton id="memory" icon={<Database size={17} />} label={t.uiSettings.memory} />}
               </div>
               <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.system}</div>
