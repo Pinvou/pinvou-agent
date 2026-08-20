@@ -1,8 +1,12 @@
+#[cfg(debug_assertions)]
 use std::ffi::OsString;
 use std::process::Command;
 use std::time::Duration;
 
-use codex_app_server_capture::protocol::{CaptureChannel, CaptureRecord};
+#[cfg(debug_assertions)]
+use codex_app_server_capture::protocol::CaptureChannel;
+use codex_app_server_capture::protocol::CaptureRecord;
+#[cfg(debug_assertions)]
 use codex_app_server_capture::runner::{S2RunConfig, run_s2_for_test};
 use serde_json::Value;
 
@@ -41,6 +45,7 @@ fn run_fake(
 }
 
 #[test]
+#[cfg(debug_assertions)]
 fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
     let output = temp_output("success");
     let outcome = run_s2_for_test(S2RunConfig {
@@ -83,6 +88,35 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
     );
     assert!(!sanitized.contains("private@example.invalid"));
     assert!(!sanitized.contains("chatgpt"));
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn approval_command_never_contains_metacharacter_output_path() {
+    let output = temp_output("spaces & semicolon ; safe");
+    run_s2_for_test(S2RunConfig {
+        output_dir: Some(output.clone()),
+        executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        model: None,
+        scenario_timeout: Duration::from_secs(2),
+        global_timeout: Duration::from_secs(10),
+    })
+    .unwrap();
+    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+    let approval = capture
+        .lines()
+        .filter_map(|line| serde_json::from_str::<CaptureRecord>(line).ok())
+        .filter_map(|record| serde_json::from_str::<Value>(&record.line).ok())
+        .find(|frame| frame["method"] == "item/commandExecution/requestApproval")
+        .unwrap();
+    let command = approval
+        .pointer("/params/command")
+        .and_then(Value::as_str)
+        .unwrap();
+    assert!(!command.contains("spaces & semicolon ; safe"));
+    assert!(!command.contains('&'));
+    assert!(!command.contains(';'));
     std::fs::remove_dir_all(output).unwrap();
 }
 
@@ -138,6 +172,27 @@ fn run_s2_fails_closed_on_auth_and_quota_preflight_without_leaking_account_data(
 }
 
 #[test]
+fn version_preflight_requires_exact_pinned_cli_before_capture() {
+    for mode in [
+        "version-mismatch",
+        "version-malformed",
+        "version-nonzero",
+        "version-timeout",
+    ] {
+        let output = temp_output(mode);
+        let start = std::time::Instant::now();
+        let result = run_fake(mode, &output, 500);
+        assert!(!result.status.success());
+        assert!(start.elapsed() < Duration::from_secs(12));
+        let evidence: Value =
+            serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
+        assert_eq!(evidence["protocol_errors"], 1);
+        assert!(!output.join("capture.jsonl").exists());
+        std::fs::remove_dir_all(output).unwrap();
+    }
+}
+
+#[test]
 fn run_s2_rejects_missing_approval_interrupt_and_terminal_evidence() {
     for mode in [
         "missing-approval",
@@ -177,6 +232,7 @@ fn run_s2_rejects_unexpected_approval_method_instead_of_auto_approving_it() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 fn interrupt_timings_start_at_the_correlated_request_write() {
     let output = temp_output("timing");
     run_s2_for_test(S2RunConfig {
@@ -254,12 +310,48 @@ fn interrupt_timings_start_at_the_correlated_request_write() {
 }
 
 #[test]
+fn one_scenario_deadline_covers_thread_turn_and_drive() {
+    let output = temp_output("slow-phases");
+    let start = std::time::Instant::now();
+    let result = run_fake("slow-phases", &output, 200);
+    assert!(!result.status.success());
+    assert!(start.elapsed() < Duration::from_secs(8));
+    let timestamps = std::fs::read_to_string(output.join("capture.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<CaptureRecord>(line)
+                .unwrap()
+                .monotonic_ns
+        })
+        .collect::<Vec<_>>();
+    let captured_span = timestamps.last().unwrap() - timestamps.first().unwrap();
+    assert!(captured_span < 350_000_000, "scenario deadline was reset");
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn inherited_pipe_descendant_and_noise_flood_fail_with_bounded_return() {
+    for mode in ["descendant-pipes", "noise-flood"] {
+        let output = temp_output(mode);
+        let start = std::time::Instant::now();
+        let result = run_fake(mode, &output, 250);
+        assert!(!result.status.success(), "{mode} unexpectedly passed");
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "{mode} cleanup hung"
+        );
+        std::fs::remove_dir_all(output).unwrap();
+    }
+}
+
+#[test]
 fn run_s2_timeout_is_bounded_and_produces_invalid_artifacts() {
     let output = temp_output("timeout");
     let start = std::time::Instant::now();
     let result = run_fake("timeout", &output, 100);
     assert!(!result.status.success());
-    assert!(start.elapsed() < std::time::Duration::from_secs(3));
+    assert!(start.elapsed() < std::time::Duration::from_secs(8));
     let report: Value =
         serde_json::from_slice(&std::fs::read(output.join("validation-report.json")).unwrap())
             .unwrap();

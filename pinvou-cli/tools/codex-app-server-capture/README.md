@@ -83,10 +83,17 @@ options are `--scenario-timeout-ms` (default 120000) and
 `--global-timeout-ms` (default 600000). `--model` is optional and otherwise
 leaves model/provider selection to the installed Codex configuration.
 
-Scenario C creates one inert probe script inside the isolated workspace and
-accepts only an `item/commandExecution/requestApproval` whose command exactly
-matches that script, whose thread/turn IDs match scenario C, and whose working
-directory remains inside the workspace. Exactly one such approval is required.
+Before opening the raw capture, the runner invokes the selected executable with
+`--version` and requires the exact pinned output `codex-cli 0.139.0`. A mismatch,
+malformed output, nonzero exit, or timeout fails before app-server evidence is
+collected.
+
+Scenario C uses a fixed platform-specific benign command (`/bin/true`, or
+`cmd.exe /d /c exit 0` on Windows) and accepts only an
+`item/commandExecution/requestApproval` whose command exactly matches it, whose
+thread/turn IDs match scenario C, and whose canonical working directory remains
+inside the workspace. No caller-controlled path is interpolated into the
+command. Exactly one such approval is required.
 Every other server request, command, or target is rejected and invalidates the
 run. Scenario D sends `turn/interrupt` only after a real backlog of at least
 eight nonempty deltas and 2 KiB, and reports request-write-to-response and
@@ -94,8 +101,12 @@ request-write-to-interrupted-terminal latency.
 
 Production gates require scenario A to span at least 30 seconds with at least
 eight nonempty deltas and 2 KiB, and scenario B to contain at least 32 nonempty
-deltas and 32 KiB. Peak rates, event sizes, and 50 ms merge inputs are computed
-from scenario B alone. These thresholds cannot be lowered through the CLI.
+deltas and 32 KiB. Sliding one-second peak rates, event sizes, and 50 ms merge
+windows relative to B's first event are computed from scenario B alone. These
+thresholds cannot be lowered through the CLI. Each scenario uses one deadline
+covering thread start, turn start, and streaming; inbound traffic is bounded,
+and timeout/error cleanup terminates the spawned process tree and bounds reader
+shutdown.
 Auth, quota, malformed protocol, timeout, missing approval,
 missing interrupt response, and terminal-state mismatches all produce sanitized
 INVALID artifacts and a nonzero exit. Account identifiers are never copied into

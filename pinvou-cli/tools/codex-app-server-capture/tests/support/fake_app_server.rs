@@ -9,6 +9,21 @@ fn send(value: Value) {
 
 fn main() {
     let mode = std::env::var("S2_FAKE_MODE").unwrap_or_else(|_| "success".to_owned());
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().is_some_and(|arg| arg == "--hold-pipes-child") {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "--version") {
+        match mode.as_str() {
+            "version-mismatch" => println!("codex-cli 0.138.0"),
+            "version-malformed" => println!("not-a-codex-version"),
+            "version-nonzero" => std::process::exit(7),
+            "version-timeout" => std::thread::sleep(std::time::Duration::from_secs(60)),
+            _ => println!("codex-cli 0.139.0"),
+        }
+        return;
+    }
     let stdin = io::stdin();
     let mut turn = 0_u64;
     for line in stdin.lock().lines() {
@@ -28,6 +43,17 @@ fn main() {
             }
             Some("initialized") => {}
             Some("account/read") => {
+                if mode == "descendant-pipes" {
+                    let _ = std::process::Command::new(std::env::current_exe().unwrap())
+                        .arg("--hold-pipes-child")
+                        .spawn();
+                    return;
+                }
+                if mode == "noise-flood" {
+                    for index in 0..20_000 {
+                        send(json!({"method":"fixture/flood","params":{"index":index}}));
+                    }
+                }
                 if mode == "malformed" {
                     println!("{{not-json");
                     io::stdout().flush().unwrap();
@@ -59,12 +85,18 @@ fn main() {
                 }
             }
             Some("thread/start") => {
+                if mode == "slow-phases" {
+                    std::thread::sleep(std::time::Duration::from_millis(120));
+                }
                 send(json!({"id":id,"result":{"thread":{"id":format!("thread-{turn}")}}}));
             }
             Some("thread/resume") => {
                 send(json!({"id":id,"result":{"thread":{"id":"thread-0"}}}));
             }
             Some("turn/start") => {
+                if mode == "slow-phases" {
+                    std::thread::sleep(std::time::Duration::from_millis(120));
+                }
                 turn += 1;
                 let turn_id = format!("turn-{turn}");
                 let prompt = frame

@@ -3,6 +3,7 @@ use std::ffi::OsString;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -86,6 +87,7 @@ enum Inbound {
 }
 
 type Recorder = JsonlRecorder<BufWriter<std::fs::File>, Box<dyn FnMut() -> u64 + Send>>;
+const INBOUND_CAPACITY: usize = 1024;
 
 pub fn run_s2(config: S2RunConfig) -> Result<S2RunOutcome> {
     run_s2_with_thresholds(config, RunnerThresholds::PRODUCTION)
@@ -123,7 +125,8 @@ fn run_s2_with_thresholds(
     })?;
 
     let mut evidence = empty_evidence();
-    let execution = execute(&config, &output_dir, &workspace, &mut evidence, thresholds);
+    let execution = verify_executable_version(&config, config.global_timeout)
+        .and_then(|_| execute(&config, &output_dir, &workspace, &mut evidence, thresholds));
     if let Err(error) = &execution {
         classify_failure(error, &mut evidence);
     }
@@ -136,6 +139,78 @@ fn run_s2_with_thresholds(
         bail!("S2 run is INVALID; artifacts: {}", output_dir.display());
     }
     Ok(S2RunOutcome { output_dir, report })
+}
+
+fn verify_executable_version(config: &S2RunConfig, timeout: Duration) -> Result<()> {
+    use std::io::Read;
+
+    let program = config
+        .executable
+        .clone()
+        .unwrap_or_else(|| OsString::from("codex"));
+    let mut child = Command::new(&program)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to launch version preflight for {program:?}"))?;
+    let stdout = child.stdout.take().context("version stdout unavailable")?;
+    let stderr = child.stderr.take().context("version stderr unavailable")?;
+    let (output_tx, output_rx) = mpsc::sync_channel(2);
+    for (label, stream) in [
+        ("stdout", Box::new(stdout) as Box<dyn Read + Send>),
+        ("stderr", Box::new(stderr) as Box<dyn Read + Send>),
+    ] {
+        let tx = output_tx.clone();
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = stream.take(4097).read_to_end(&mut bytes).map(|_| bytes);
+            let _ = tx.send((label, result));
+        });
+    }
+    drop(output_tx);
+    let deadline = Instant::now() + timeout.min(Duration::from_secs(5));
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed polling version preflight")?
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("version preflight timeout");
+        }
+        thread::sleep(Duration::from_millis(5));
+    };
+    let mut stdout_bytes = None;
+    let read_deadline = Instant::now() + Duration::from_secs(1);
+    for _ in 0..2 {
+        let remaining = read_deadline
+            .checked_duration_since(Instant::now())
+            .context("version output reader timeout")?;
+        let (label, bytes) = output_rx
+            .recv_timeout(remaining)
+            .context("version output reader timeout")?;
+        let bytes = bytes.context("version output read failed")?;
+        if bytes.len() > 4096 {
+            bail!("version output exceeded 4096 bytes");
+        }
+        if label == "stdout" {
+            stdout_bytes = Some(bytes);
+        }
+    }
+    if !status.success() {
+        bail!("version preflight exited with status {status}");
+    }
+    let output = String::from_utf8(stdout_bytes.unwrap_or_default())
+        .context("version output was not UTF-8")?;
+    if output.trim() != "codex-cli 0.139.0" {
+        bail!("version preflight requires exact codex-cli 0.139.0");
+    }
+    Ok(())
 }
 
 fn execute(
@@ -184,8 +259,9 @@ fn execute(
         let mut scenario_b_content = Vec::new();
         let mut interrupt_response_latency_ms = None;
         let mut interrupt_terminal_latency_ms = None;
-        let approval_command = create_approval_probe(workspace)?;
+        let approval_command = approval_command();
         for name in ["A", "B", "C", "D"] {
+            let scenario_deadline = Instant::now() + config.scenario_timeout;
             let approval_policy = if name == "C" { "untrusted" } else { "never" };
             let mut thread_params = json!({
                 "cwd": workspace,
@@ -196,8 +272,11 @@ fn execute(
             if let Some(model) = config.model.as_ref() {
                 thread_params["model"] = Value::String(model.clone());
             }
-            let started =
-                session.request("thread/start", thread_params, config.scenario_timeout)?;
+            let started = session.request(
+                "thread/start",
+                thread_params,
+                remaining_until(scenario_deadline)?,
+            )?;
             let thread_id = started
                 .pointer("/result/thread/id")
                 .and_then(Value::as_str)
@@ -209,7 +288,7 @@ fn execute(
             let turn = session.request(
                 "turn/start",
                 json!({"threadId":thread_id,"cwd":workspace,"input":[{"type":"text","text":prompt}]}),
-                config.scenario_timeout,
+                remaining_until(scenario_deadline)?,
             )?;
             let turn_id = turn
                 .pointer("/result/turn/id")
@@ -221,8 +300,8 @@ fn execute(
                 &thread_id,
                 &turn_id,
                 workspace,
-                &approval_command,
-                config.scenario_timeout,
+                approval_command,
+                scenario_deadline,
                 thresholds,
             )?;
             if name == "B" {
@@ -275,6 +354,23 @@ struct Session {
     global_deadline: Instant,
     stdout_thread: Option<thread::JoinHandle<()>>,
     stderr_thread: Option<thread::JoinHandle<()>>,
+    reader_done: mpsc::Receiver<&'static str>,
+    inbound_overflow: Arc<AtomicBool>,
+    #[cfg(windows)]
+    job: windows_sys::Win32::Foundation::HANDLE,
+    #[cfg(unix)]
+    process_group: i32,
+}
+
+fn try_emit(sender: &mpsc::SyncSender<Inbound>, overflow: &AtomicBool, event: Inbound) -> bool {
+    match sender.try_send(event) {
+        Ok(()) => true,
+        Err(mpsc::TrySendError::Full(_)) => {
+            overflow.store(true, Ordering::Release);
+            true
+        }
+        Err(mpsc::TrySendError::Disconnected(_)) => false,
+    }
 }
 
 impl Session {
@@ -283,18 +379,36 @@ impl Session {
         recorder: Arc<Mutex<Recorder>>,
         global_timeout: Duration,
     ) -> Result<Self> {
-        let mut child = Command::new(&command.program)
+        let mut process = Command::new(&command.program);
+        process
             .args(&command.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "failed to launch app-server executable {:?}",
-                    command.program
-                )
-            })?;
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: setpgid is async-signal-safe and called before exec in the child.
+            unsafe {
+                process.pre_exec(|| {
+                    if setpgid(0, 0) == 0 {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error())
+                    }
+                });
+            }
+        }
+        let mut child = process.spawn().with_context(|| {
+            format!(
+                "failed to launch app-server executable {:?}",
+                command.program
+            )
+        })?;
+        #[cfg(windows)]
+        let job = assign_child_job(&mut child)?;
+        #[cfg(unix)]
+        let process_group = child.id() as i32;
         let stdin = child.stdin.take().context("app-server stdin unavailable")?;
         let stdout = child
             .stdout
@@ -304,15 +418,20 @@ impl Session {
             .stderr
             .take()
             .context("app-server stderr unavailable")?;
-        let (tx, incoming) = mpsc::channel();
+        let (tx, incoming) = mpsc::sync_channel(INBOUND_CAPACITY);
+        let inbound_overflow = Arc::new(AtomicBool::new(false));
+        let (reader_done_tx, reader_done) = mpsc::sync_channel(2);
         let stderr_tx = tx.clone();
+        let stderr_overflow = Arc::clone(&inbound_overflow);
+        let stdout_overflow = Arc::clone(&inbound_overflow);
+        let stdout_done = reader_done_tx.clone();
         let stdout_recorder = Arc::clone(&recorder);
         let stdout_thread = thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let line = match line {
                     Ok(line) => line,
                     Err(error) => {
-                        let _ = tx.send(Inbound::Malformed(error.to_string()));
+                        try_emit(&tx, &stdout_overflow, Inbound::Malformed(error.to_string()));
                         break;
                     }
                 };
@@ -321,62 +440,91 @@ impl Session {
                         match guard.record_timestamped(CaptureChannel::ServerToClient, &line) {
                             Ok(timestamp) => timestamp,
                             Err(error) => {
-                                let _ = tx.send(Inbound::Malformed(format!(
-                                    "raw capture write failed: {error}"
-                                )));
+                                try_emit(
+                                    &tx,
+                                    &stdout_overflow,
+                                    Inbound::Malformed(format!(
+                                        "raw capture write failed: {error}"
+                                    )),
+                                );
                                 break;
                             }
                         }
                     }
                     Err(_) => {
-                        let _ = tx.send(Inbound::Malformed(
-                            "raw capture recorder lock poisoned".to_owned(),
-                        ));
+                        try_emit(
+                            &tx,
+                            &stdout_overflow,
+                            Inbound::Malformed("raw capture recorder lock poisoned".to_owned()),
+                        );
                         break;
                     }
                 };
                 match serde_json::from_str::<Value>(&line) {
                     Ok(value) if value.is_object() => {
-                        if tx
-                            .send(Inbound::Frame {
+                        if !try_emit(
+                            &tx,
+                            &stdout_overflow,
+                            Inbound::Frame {
                                 timestamp_ns,
                                 value,
-                            })
-                            .is_err()
-                        {
+                            },
+                        ) {
                             break;
                         }
                     }
                     Ok(_) => {
-                        let _ = tx.send(Inbound::Malformed(
-                            "server frame was not an object".to_owned(),
-                        ));
+                        try_emit(
+                            &tx,
+                            &stdout_overflow,
+                            Inbound::Malformed("server frame was not an object".to_owned()),
+                        );
                         break;
                     }
                     Err(error) => {
-                        let _ = tx.send(Inbound::Malformed(format!(
-                            "malformed server JSON: {error}"
-                        )));
+                        try_emit(
+                            &tx,
+                            &stdout_overflow,
+                            Inbound::Malformed(format!("malformed server JSON: {error}")),
+                        );
                         break;
                     }
                 }
             }
-            let _ = tx.send(Inbound::Closed);
+            try_emit(&tx, &stdout_overflow, Inbound::Closed);
+            let _ = stdout_done.send("stdout");
         });
         let stderr_recorder = Arc::clone(&recorder);
+        let stderr_done = reader_done_tx;
         let stderr_thread = thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let mut reader = BufReader::new(stderr);
+            loop {
+                let line = match read_line_checked(&mut reader) {
+                    Ok(Some(line)) => line,
+                    Ok(None) => break,
+                    Err(error) => {
+                        try_emit(
+                            &stderr_tx,
+                            &stderr_overflow,
+                            Inbound::Malformed(format!("stderr read failed: {error}")),
+                        );
+                        break;
+                    }
+                };
                 let result = stderr_recorder
                     .lock()
                     .map_err(|_| anyhow!("raw capture recorder lock poisoned"))
                     .and_then(|mut guard| guard.record(CaptureChannel::Stderr, &line));
                 if let Err(error) = result {
-                    let _ = stderr_tx.send(Inbound::Malformed(format!(
-                        "raw stderr capture write failed: {error}"
-                    )));
+                    try_emit(
+                        &stderr_tx,
+                        &stderr_overflow,
+                        Inbound::Malformed(format!("raw stderr capture write failed: {error}")),
+                    );
                     break;
                 }
             }
+            let _ = stderr_done.send("stderr");
         });
         Ok(Self {
             child,
@@ -388,6 +536,12 @@ impl Session {
             global_deadline: Instant::now() + global_timeout,
             stdout_thread: Some(stdout_thread),
             stderr_thread: Some(stderr_thread),
+            reader_done,
+            inbound_overflow,
+            #[cfg(windows)]
+            job,
+            #[cfg(unix)]
+            process_group,
         })
     }
 
@@ -428,6 +582,9 @@ impl Session {
             }
             if frame.get("id").is_some() && frame.get("method").is_some() {
                 if method == "turn/start" {
+                    if self.pending.len() >= INBOUND_CAPACITY {
+                        bail!("protocol error: pending frame queue overflow");
+                    }
                     self.pending.push_back((timestamp_ns, frame));
                     continue;
                 }
@@ -436,6 +593,9 @@ impl Session {
             }
             fail_on_error_notification(&frame)?;
             if method == "turn/start" {
+                if self.pending.len() >= INBOUND_CAPACITY {
+                    bail!("protocol error: pending frame queue overflow");
+                }
                 self.pending.push_back((timestamp_ns, frame));
             }
         }
@@ -448,10 +608,9 @@ impl Session {
         turn_id: &str,
         workspace: &Path,
         approval_command: &str,
-        timeout: Duration,
+        deadline: Instant,
         thresholds: RunnerThresholds,
     ) -> Result<ObservedScenario> {
-        let deadline = Instant::now() + timeout;
         let mut content = Vec::new();
         let mut approval_seen = false;
         let mut interrupt_response_seen = false;
@@ -621,6 +780,9 @@ impl Session {
     }
 
     fn recv_wire(&mut self, scenario_deadline: Instant) -> Result<(u64, Value)> {
+        if self.inbound_overflow.load(Ordering::Acquire) {
+            bail!("protocol error: bounded inbound queue overflow");
+        }
         let deadline = scenario_deadline.min(self.global_deadline);
         let remaining = deadline
             .checked_duration_since(Instant::now())
@@ -640,15 +802,98 @@ impl Session {
     }
 
     fn stop(&mut self) {
-        let _ = self.child.kill();
+        self.terminate_tree();
         let _ = self.child.wait();
-        if let Some(handle) = self.stdout_thread.take() {
-            let _ = handle.join();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut done = std::collections::HashSet::new();
+        while done.len() < 2 {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            match self.reader_done.recv_timeout(remaining) {
+                Ok(label) => {
+                    done.insert(label);
+                }
+                Err(_) => break,
+            }
         }
-        if let Some(handle) = self.stderr_thread.take() {
-            let _ = handle.join();
+        if done.contains("stdout") {
+            if let Some(handle) = self.stdout_thread.take() {
+                let _ = handle.join();
+            }
+        } else {
+            self.stdout_thread.take();
+        }
+        if done.contains("stderr") {
+            if let Some(handle) = self.stderr_thread.take() {
+                let _ = handle.join();
+            }
+        } else {
+            self.stderr_thread.take();
         }
     }
+
+    fn terminate_tree(&mut self) {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+            let _ = TerminateJobObject(self.job, 1);
+            CloseHandle(self.job);
+            self.job = std::ptr::null_mut();
+        }
+        #[cfg(unix)]
+        unsafe {
+            let _ = kill(-self.process_group, 9);
+        }
+        let _ = self.child.kill();
+    }
+}
+
+fn read_line_checked(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(None);
+    }
+    while matches!(line.as_bytes().last(), Some(b'\n' | b'\r')) {
+        line.pop();
+    }
+    Ok(Some(line))
+}
+
+fn remaining_until(deadline: Instant) -> Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .context("S2 scenario timeout expired")
+}
+
+#[cfg(windows)]
+fn assign_child_job(child: &mut Child) -> Result<windows_sys::Win32::Foundation::HANDLE> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+    // SAFETY: null security/name create an unnamed job; child handle is live.
+    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if job.is_null() || job == INVALID_HANDLE_VALUE {
+        let _ = child.kill();
+        bail!(
+            "CreateJobObjectW failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    if unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) } == 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe { CloseHandle(job) };
+        let _ = child.kill();
+        bail!("AssignProcessToJobObject failed: {error}");
+    }
+    Ok(job)
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn setpgid(pid: i32, pgid: i32) -> i32;
+    fn kill(pid: i32, signal: i32) -> i32;
 }
 
 fn is_delta(frame: &Value, thread_id: &str, turn_id: &str) -> bool {
@@ -795,22 +1040,11 @@ fn scenario_prompt(name: &str, approval_command: &str) -> String {
     }
 }
 
-fn create_approval_probe(workspace: &Path) -> Result<String> {
+fn approval_command() -> &'static str {
     #[cfg(windows)]
-    let (path, contents) = (
-        workspace.join("s2-benign-probe.cmd"),
-        "@echo off\r\nexit /b 0\r\n",
-    );
+    return "cmd.exe /d /c exit 0";
     #[cfg(not(windows))]
-    let (path, contents) = (workspace.join("s2-benign-probe.sh"), "#!/bin/sh\nexit 0\n");
-    std::fs::write(&path, contents)
-        .with_context(|| format!("failed writing {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(path.to_string_lossy().into_owned())
+    return "/bin/true";
 }
 
 fn performance(events: &[ContentEvent]) -> Result<PerformanceEvidence> {
@@ -820,18 +1054,29 @@ fn performance(events: &[ContentEvent]) -> Result<PerformanceEvidence> {
     let mut sizes = events.iter().map(|event| event.bytes).collect::<Vec<_>>();
     sizes.sort_unstable();
     let percentile = |numerator: usize| sizes[((sizes.len() - 1) * numerator) / 100];
-    let mut buckets = std::collections::BTreeMap::<u64, (u64, u64)>::new();
-    for event in events {
-        let bucket = event.timestamp_ns / 1_000_000_000;
-        let entry = buckets.entry(bucket).or_default();
-        entry.0 += 1;
-        entry.1 += event.bytes;
+    let mut ordered = events.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|event| event.timestamp_ns);
+    let mut left = 0;
+    let mut window_bytes = 0_u64;
+    let mut peak_events = 0_u64;
+    let mut peak_bytes = 0_u64;
+    for (right, event) in ordered.iter().enumerate() {
+        window_bytes += event.bytes;
+        while event
+            .timestamp_ns
+            .saturating_sub(ordered[left].timestamp_ns)
+            >= 1_000_000_000
+        {
+            window_bytes -= ordered[left].bytes;
+            left += 1;
+        }
+        peak_events = peak_events.max((right - left + 1) as u64);
+        peak_bytes = peak_bytes.max(window_bytes);
     }
-    let peak_events = buckets.values().map(|item| item.0).max().unwrap_or(0);
-    let peak_bytes = buckets.values().map(|item| item.1).max().unwrap_or(0);
     let mut merge_windows = std::collections::BTreeSet::new();
-    for event in events {
-        merge_windows.insert(event.timestamp_ns / 50_000_000);
+    let first_timestamp = ordered[0].timestamp_ns;
+    for event in ordered {
+        merge_windows.insert(event.timestamp_ns.saturating_sub(first_timestamp) / 50_000_000);
     }
     Ok(PerformanceEvidence {
         real_content: true,
@@ -848,6 +1093,61 @@ fn performance(events: &[ContentEvent]) -> Result<PerformanceEvidence> {
         merge_input_events: events.len() as u64,
         merge_output_events: merge_windows.len() as u64,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ContentEvent, performance};
+    use std::io::{self, BufReader, Read};
+
+    #[test]
+    fn performance_uses_sliding_one_second_peak() {
+        let metrics = performance(&[
+            ContentEvent {
+                timestamp_ns: 990_000_000,
+                bytes: 7,
+            },
+            ContentEvent {
+                timestamp_ns: 1_010_000_000,
+                bytes: 11,
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(metrics.peak_events_per_second, 2.0);
+        assert_eq!(metrics.peak_megabytes_per_second, 18.0 / 1_000_000.0);
+    }
+
+    #[test]
+    fn merge_windows_are_relative_to_first_event() {
+        let metrics = performance(&[
+            ContentEvent {
+                timestamp_ns: 49_000_000,
+                bytes: 7,
+            },
+            ContentEvent {
+                timestamp_ns: 51_000_000,
+                bytes: 11,
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(metrics.merge_input_events, 2);
+        assert_eq!(metrics.merge_output_events, 1);
+    }
+
+    #[test]
+    fn stderr_line_reader_propagates_io_errors() {
+        struct BrokenReader;
+        impl Read for BrokenReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::Other, "injected failure"))
+            }
+        }
+
+        let error = super::read_line_checked(&mut BufReader::new(BrokenReader)).unwrap_err();
+        assert_eq!(error.to_string(), "injected failure");
+    }
 }
 
 fn empty_evidence() -> S2Evidence {
