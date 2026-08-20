@@ -399,7 +399,7 @@ pub(crate) fn create_capture_file(path: &Path) -> Result<File> {
             .open(path)
             .with_context(|| format!("failed to create capture {}", path.display()))?;
         #[cfg(windows)]
-        if let Err(error) = harden_windows_capture_acl(&file) {
+        if let Err(error) = harden_windows_handle_acl(&file) {
             drop(file);
             let _ = std::fs::remove_file(path);
             return Err(error)
@@ -410,7 +410,7 @@ pub(crate) fn create_capture_file(path: &Path) -> Result<File> {
 }
 
 #[cfg(windows)]
-fn harden_windows_capture_acl(file: &File) -> Result<()> {
+pub(crate) fn harden_windows_handle_acl(file: &File) -> Result<()> {
     use std::os::windows::io::AsRawHandle;
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};

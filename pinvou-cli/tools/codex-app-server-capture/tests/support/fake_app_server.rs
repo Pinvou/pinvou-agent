@@ -223,6 +223,44 @@ fn main() {
         }
         return;
     }
+    if args.first().is_some_and(|arg| arg == "app-server")
+        && let Ok(audit_path) = std::env::var("S2_FAKE_HOME_AUDIT")
+    {
+        let home = std::path::PathBuf::from(std::env::var_os("CODEX_HOME").unwrap());
+        let original = std::path::PathBuf::from(std::env::var_os("S2_FAKE_ORIGINAL_HOME").unwrap());
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+        let auth = std::fs::read(home.join("auth.json")).unwrap_or_default();
+        let expected_auth = std::env::var("S2_FAKE_EXPECTED_AUTH").unwrap();
+        let mut auth_write_blocked = Value::Null;
+        let mut config_replace_blocked = Value::Null;
+        if std::env::var_os("S2_FAKE_TAMPER_HOME").is_some() {
+            auth_write_blocked = Value::Bool(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(home.join("auth.json"))
+                    .is_err(),
+            );
+            let config_path = home.join("config.toml");
+            let removed = std::fs::remove_file(&config_path).is_ok();
+            config_replace_blocked = Value::Bool(!removed);
+            if removed {
+                std::fs::write(config_path, b"tampered = true\n").unwrap();
+            }
+        }
+        std::fs::write(
+            audit_path,
+            serde_json::to_vec(&json!({
+                "home": home,
+                "isolated": home != original,
+                "auth_matches": auth == expected_auth.as_bytes(),
+                "config": config,
+                "auth_write_blocked": auth_write_blocked,
+                "config_replace_blocked": config_replace_blocked,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
     if mode == "immediate-child" {
         spawn_pipe_descendant();
         return;

@@ -103,19 +103,26 @@ on Unix they are placed in a dedicated process group before exec.
 
 For `run-s2` only, the app-server invocation adds the official fixed overrides
 `--disable hooks`, `--disable plugins`, `--disable apps`,
-`--disable shell_snapshot`, `-c notify=[]`, and `-c mcp_servers={}`, while the
+`--disable shell_snapshot`, `--disable memories`, and `-c notify=[]`, while the
 version preflight remains exactly `--version`. The public 0.139 feature names are
-`hooks`, `plugins`,
-`apps`, and `shell_snapshot`; internal enum or legacy names are not valid
+`hooks`, `plugins`, `apps`, `shell_snapshot`, and `memories`; internal enum or legacy names are not valid
 substitutes for these CLI flags. Clearing `notify` separately disables the
-legacy end-of-turn notifier, which is independent of the hooks feature, and
-clearing `mcp_servers` prevents configured MCP processes from starting.
-Disabling plugins and apps also prevents their contributed MCP configuration
-from being loaded; disabling the shell snapshot prevents sourcing the user's
-shell profile. These overrides keep the operator's existing `CODEX_HOME`
-account, authentication, model, and network configuration available while
-isolating startup-time external command surfaces during evidence collection.
-Any hook or tool notification that still arrives is rejected fail-closed.
+legacy end-of-turn notifier, which is independent of the hooks feature.
+
+The app-server never receives the user's normal `CODEX_HOME`. Before capture,
+the runner opens a regular, no-follow `auth.json` through one bounded handle and
+copies it opaquely into a fresh owner-only temporary Codex home. File-backed auth
+is the only supported credential store for this isolation; missing, malformed,
+unsafe, or keyring-only credentials fail generically before raw capture. The
+temporary home contains only the copied auth and a fixed minimal config: CLI
+auth uses the file store, analytics is disabled, and all log, trace, and metrics
+OTEL exporters are `none`. User config, model-provider overrides, MCP servers,
+plugins, skills, hooks, memories, experimental thread config endpoints, and
+telemetry endpoints are not copied. The built-in authenticated model network
+remains available. Auth/config handles stay locked for the run, their identities
+are revalidated before cleanup, and cleanup failure invalidates the run without
+putting the temporary path or credentials in sanitized artifacts. Any hook or
+tool notification that still arrives is rejected fail-closed.
 
 On Windows the default executable lookup searches PATH specifically for
 `codex.cmd`; it does not fall through to an extensionless POSIX shim or a later

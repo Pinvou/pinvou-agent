@@ -1,9 +1,10 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -12,6 +13,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+#[cfg(windows)]
+use crate::capture::harden_windows_handle_acl;
 use crate::capture::{JsonlRecorder, create_capture_file};
 use crate::clock::{HostMonotonicClock, MonotonicClock};
 use crate::protocol::CaptureChannel;
@@ -28,6 +31,19 @@ const APPROVAL_MARKER_NAME: &str = ".codex-s2-approval-marker";
 const APPROVAL_MARKER_CONTENT: &str = "S2_APPROVED";
 const APPROVAL_MARKER_BYTES: &[u8] = APPROVAL_MARKER_CONTENT.as_bytes();
 const APPROVAL_MARKER_MAX_BYTES: u64 = 64;
+const AUTH_FILE_MAX_BYTES: u64 = 1024 * 1024;
+const MINIMAL_CONFIG: &str = concat!(
+    "cli_auth_credentials_store = \"file\"\n",
+    "\n",
+    "[analytics]\n",
+    "enabled = false\n",
+    "\n",
+    "[otel]\n",
+    "exporter = \"none\"\n",
+    "trace_exporter = \"none\"\n",
+    "metrics_exporter = \"none\"\n",
+);
+static ISOLATED_HOME_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const VERSION_ARGS: &[&str] = &["--version"];
 const APP_SERVER_ARGS: &[&str] = &[
     "app-server",
@@ -39,10 +55,10 @@ const APP_SERVER_ARGS: &[&str] = &[
     "apps",
     "--disable",
     "shell_snapshot",
+    "--disable",
+    "memories",
     "-c",
     "notify=[]",
-    "-c",
-    "mcp_servers={}",
     "--stdio",
 ];
 
@@ -120,6 +136,7 @@ pub fn run_s2(config: S2RunConfig) -> Result<S2RunOutcome> {
         config,
         RunnerThresholds::PRODUCTION,
         Arc::new(MarkerHelperInvocation::current()?),
+        None,
     )
 }
 
@@ -127,17 +144,22 @@ pub fn run_s2(config: S2RunConfig) -> Result<S2RunOutcome> {
 /// Production/release builds and the CLI cannot lower the real S2 gates.
 #[cfg(debug_assertions)]
 pub fn run_s2_for_test(config: S2RunConfig) -> Result<S2RunOutcome> {
-    run_s2_with_thresholds(
+    let test_auth_home = create_test_auth_home()?;
+    let result = run_s2_with_thresholds(
         config,
         RunnerThresholds::FAST_TEST,
         Arc::new(MarkerHelperInvocation::test_harness()?),
-    )
+        Some(&test_auth_home),
+    );
+    let _ = std::fs::remove_dir_all(test_auth_home);
+    result
 }
 
 fn run_s2_with_thresholds(
     config: S2RunConfig,
     thresholds: RunnerThresholds,
     marker_helper: Arc<MarkerHelperInvocation>,
+    source_codex_home: Option<&Path>,
 ) -> Result<S2RunOutcome> {
     let output_dir = match config.output_dir.clone() {
         Some(path) => path,
@@ -164,19 +186,26 @@ fn run_s2_with_thresholds(
     let global_deadline = Instant::now() + config.global_timeout;
     let mut evidence = empty_evidence();
     let execution = SafeInvocation::resolve(config.executable.as_ref()).and_then(|invocation| {
-        verify_executable_version(&invocation, global_deadline, &config).and_then(|_| {
-            execute(
-                &config,
-                &invocation,
-                &output_dir,
-                &workspace,
-                &mut evidence,
-                thresholds,
-                global_deadline,
-                explicit_approval_wrapper.as_ref(),
-                &marker_helper,
-            )
-        })
+        verify_executable_version(&invocation, global_deadline, &config)?;
+        let isolated_home = IsolatedCodexHome::prepare(source_codex_home)?;
+        let run = execute(
+            &config,
+            &invocation,
+            &output_dir,
+            &workspace,
+            &mut evidence,
+            thresholds,
+            global_deadline,
+            explicit_approval_wrapper.as_ref(),
+            &marker_helper,
+            isolated_home.path(),
+        );
+        let cleanup = isolated_home.cleanup();
+        match (run, cleanup) {
+            (_, Err(error)) => Err(error),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
     });
     if let Err(error) = &execution {
         classify_failure(error, &mut evidence);
@@ -190,6 +219,359 @@ fn run_s2_with_thresholds(
         bail!("S2 run is INVALID; artifacts: {}", output_dir.display());
     }
     Ok(S2RunOutcome { output_dir, report })
+}
+
+#[cfg(debug_assertions)]
+fn create_test_auth_home() -> Result<PathBuf> {
+    let path = unique_isolated_home_path("codex-s2-test-auth");
+    std::fs::create_dir(&path)?;
+    let auth = path.join("auth.json");
+    std::fs::write(&auth, b"{}")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(path)
+}
+
+fn unique_isolated_home_path(prefix: &str) -> PathBuf {
+    let sequence = ISOLATED_HOME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "{prefix}-{}-{timestamp}-{sequence}",
+        std::process::id()
+    ))
+}
+
+#[derive(Debug)]
+struct IsolatedCodexHome {
+    path: PathBuf,
+    auth: Option<File>,
+    auth_identity: Option<PrivateFileIdentity>,
+    config: Option<File>,
+    config_identity: Option<PrivateFileIdentity>,
+    directory: Option<File>,
+    directory_identity: Option<PrivateFileIdentity>,
+    cleaned: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PrivateFileIdentity {
+    device: u64,
+    file: u64,
+}
+
+impl IsolatedCodexHome {
+    fn prepare(source_override: Option<&Path>) -> Result<Self> {
+        let path = unique_isolated_home_path("codex-s2-home");
+        create_private_directory(&path)
+            .map_err(|_| anyhow!("isolated Codex home preparation failed"))?;
+        let mut home = Self {
+            path,
+            auth: None,
+            auth_identity: None,
+            config: None,
+            config_identity: None,
+            directory: None,
+            directory_identity: None,
+            cleaned: false,
+        };
+        let prepared: Result<()> = (|| {
+            let directory = open_and_harden_private_directory(&home.path)
+                .map_err(|_| anyhow!("isolated Codex home preparation failed"))?;
+            home.directory_identity = Some(private_file_identity(&directory)?);
+            home.directory = Some(directory);
+            let source_home = match source_override {
+                Some(path) => path.to_path_buf(),
+                None => resolve_source_codex_home()?,
+            };
+            let auth_bytes = read_locked_auth(&source_home.join("auth.json"))?;
+            let auth = create_locked_private_file(&home.path.join("auth.json"), &auth_bytes)?;
+            home.auth_identity = Some(private_file_identity(&auth)?);
+            home.auth = Some(auth);
+            let config = create_locked_private_file(
+                &home.path.join("config.toml"),
+                MINIMAL_CONFIG.as_bytes(),
+            )?;
+            home.config_identity = Some(private_file_identity(&config)?);
+            home.config = Some(config);
+            Ok(())
+        })();
+        if prepared.is_err() {
+            let _ = home.cleanup_inner();
+            return Err(anyhow!("isolated Codex home preparation failed"));
+        }
+        Ok(home)
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn cleanup(mut self) -> Result<()> {
+        self.cleanup_inner()
+            .map_err(|_| anyhow!("isolated Codex home cleanup failed"))
+    }
+
+    fn cleanup_inner(&mut self) -> Result<()> {
+        let directory_matches = self
+            .directory_identity
+            .zip(path_private_identity(&self.path, true).ok())
+            .is_some_and(|(expected, observed)| expected == observed);
+        let observed_auth = path_private_identity(&self.path.join("auth.json"), false);
+        let auth_matches = self
+            .auth_identity
+            .zip(observed_auth.as_ref().ok().copied())
+            .is_some_and(|(expected, observed)| expected == observed);
+        let observed_config = path_private_identity(&self.path.join("config.toml"), false);
+        let config_matches = self
+            .config_identity
+            .zip(observed_config.as_ref().ok().copied())
+            .is_some_and(|(expected, observed)| expected == observed);
+        self.auth.take();
+        self.config.take();
+        self.directory.take();
+        if directory_matches {
+            std::fs::remove_dir_all(&self.path)?;
+        }
+        self.cleaned = directory_matches && !self.path.exists();
+        if !directory_matches || !auth_matches || !config_matches || !self.cleaned {
+            bail!("isolated Codex home integrity check failed");
+        }
+        Ok(())
+    }
+}
+
+impl Drop for IsolatedCodexHome {
+    fn drop(&mut self) {
+        if !self.cleaned {
+            let _ = self.cleanup_inner();
+        }
+    }
+}
+
+fn resolve_source_codex_home() -> Result<PathBuf> {
+    let candidate = match std::env::var_os("CODEX_HOME") {
+        Some(path) => PathBuf::from(path),
+        None => {
+            #[cfg(windows)]
+            let home = std::env::var_os("USERPROFILE");
+            #[cfg(unix)]
+            let home = std::env::var_os("HOME");
+            #[cfg(not(any(windows, unix)))]
+            let home: Option<OsString> = None;
+            PathBuf::from(home.ok_or_else(|| anyhow!("isolated Codex auth unavailable"))?)
+                .join(".codex")
+        }
+    };
+    if !candidate.is_absolute() || !candidate.is_dir() {
+        bail!("isolated Codex auth unavailable");
+    }
+    Ok(candidate)
+}
+
+fn read_locked_auth(path: &Path) -> Result<Vec<u8>> {
+    read_locked_auth_with_post_open(path, || {})
+}
+
+fn read_locked_auth_with_post_open(path: &Path, post_open: impl FnOnce()) -> Result<Vec<u8>> {
+    let mut file = open_locked_nofollow_file(path, false)
+        .map_err(|_| anyhow!("isolated Codex auth unavailable"))?;
+    let identity_before =
+        private_file_identity(&file).map_err(|_| anyhow!("isolated Codex auth unavailable"))?;
+    post_open();
+    let metadata = file
+        .metadata()
+        .map_err(|_| anyhow!("isolated Codex auth unavailable"))?;
+    if !metadata.file_type().is_file()
+        || metadata.len() == 0
+        || metadata.len() > AUTH_FILE_MAX_BYTES
+    {
+        bail!("isolated Codex auth unavailable");
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            bail!("isolated Codex auth unavailable");
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o077 != 0
+        {
+            bail!("isolated Codex auth unavailable");
+        }
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    std::io::Read::by_ref(&mut file)
+        .take(AUTH_FILE_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| anyhow!("isolated Codex auth unavailable"))?;
+    if bytes.len() as u64 != metadata.len()
+        || !serde_json::from_slice::<Value>(&bytes).is_ok_and(|value| value.is_object())
+        || private_file_identity(&file).ok() != Some(identity_before)
+    {
+        bail!("isolated Codex auth unavailable");
+    }
+    Ok(bytes)
+}
+
+fn open_locked_nofollow_file(path: &Path, share_existing_write: bool) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Foundation::GENERIC_READ;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        let share_mode = FILE_SHARE_READ
+            | if share_existing_write {
+                FILE_SHARE_WRITE
+            } else {
+                0
+            };
+        options
+            .access_mode(GENERIC_READ)
+            .share_mode(share_mode)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = share_existing_write;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    }
+    Ok(options.open(path)?)
+}
+
+fn private_file_identity(file: &File) -> Result<PrivateFileIdentity> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        let information = wrapper_file_information(file.as_raw_handle())?;
+        return Ok(PrivateFileIdentity {
+            device: information.dwVolumeSerialNumber as u64,
+            file: ((information.nFileIndexHigh as u64) << 32) | information.nFileIndexLow as u64,
+        });
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        return Ok(PrivateFileIdentity {
+            device: metadata.dev(),
+            file: metadata.ino(),
+        });
+    }
+    #[cfg(not(any(windows, unix)))]
+    bail!("isolated Codex home is unsupported");
+}
+
+fn path_private_identity(path: &Path, directory: bool) -> Result<PrivateFileIdentity> {
+    let file = if directory {
+        open_private_directory(path, false)?
+    } else {
+        open_locked_nofollow_file(path, true)?
+    };
+    private_file_identity(&file)
+}
+
+fn create_private_directory(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700).create(path)?;
+        return Ok(());
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir(path)?;
+        Ok(())
+    }
+}
+
+fn open_and_harden_private_directory(path: &Path) -> Result<File> {
+    let directory = open_private_directory(path, true)?;
+    #[cfg(windows)]
+    harden_windows_handle_acl(&directory)?;
+    Ok(directory)
+}
+
+fn open_private_directory(path: &Path, for_acl_update: bool) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(not(windows))]
+    let _ = for_acl_update;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+            READ_CONTROL, WRITE_DAC,
+        };
+        let access = if for_acl_update {
+            READ_CONTROL | WRITE_DAC
+        } else {
+            FILE_READ_ATTRIBUTES | READ_CONTROL
+        };
+        options
+            .access_mode(access)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let directory = options.open(path)?;
+    if !directory.metadata()?.is_dir() {
+        bail!("isolated directory was not a directory");
+    }
+    Ok(directory)
+}
+
+fn create_locked_private_file(path: &Path, bytes: &[u8]) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, READ_CONTROL, WRITE_DAC};
+        options
+            .access_mode(GENERIC_READ | GENERIC_WRITE | READ_CONTROL | WRITE_DAC)
+            .share_mode(FILE_SHARE_READ);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o400);
+    }
+    let mut file = options.open(path)?;
+    #[cfg(windows)]
+    harden_windows_handle_acl(&file)?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o400))?;
+    }
+    Ok(file)
 }
 
 #[derive(Clone, Debug)]
@@ -656,6 +1038,7 @@ fn execute(
     global_deadline: Instant,
     explicit_approval_wrapper: Option<&TrustedApprovalWrapper>,
     marker_helper: &Arc<MarkerHelperInvocation>,
+    isolated_codex_home: &Path,
 ) -> Result<()> {
     remaining_global(global_deadline)?;
     let clock = Arc::new(HostMonotonicClock::new()?);
@@ -666,6 +1049,7 @@ fn execute(
     )));
     let mut app_server = invocation.command(APP_SERVER_ARGS)?;
     apply_test_child_env(&mut app_server, config);
+    app_server.env("CODEX_HOME", isolated_codex_home);
     let mut session = Session::spawn(
         app_server,
         recorder,
@@ -3335,7 +3719,7 @@ fn performance(events: &[ContentEvent]) -> Result<PerformanceEvidence> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContentEvent, performance};
+    use super::{ContentEvent, performance, read_locked_auth, read_locked_auth_with_post_open};
     use std::io::{self, BufReader, Read};
     use std::path::Path;
 
@@ -3349,6 +3733,65 @@ mod tests {
         impl<T: ?Sized + Clone> AmbiguousIfClone<u8> for T {}
 
         <super::MarkerHelperInvocation as AmbiguousIfClone<_>>::assert_not_clone();
+    }
+
+    #[test]
+    fn auth_copy_reads_only_the_original_bounded_nofollow_handle() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-s2-auth-handle-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let auth = root.join("auth.json");
+        let original = br#"{"auth_mode":"chatgpt","tokens":{"access_token":"original"}}"#;
+        std::fs::write(&auth, original).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let mut replaced = false;
+        let observed = read_locked_auth_with_post_open(&auth, || {
+            if std::fs::remove_file(&auth).is_ok() {
+                replaced = true;
+                std::fs::write(&auth, br#"{"auth_mode":"chatgpt","tokens":{}}"#).unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600))
+                        .unwrap();
+                }
+            }
+        })
+        .unwrap();
+        assert_eq!(observed, original);
+        #[cfg(windows)]
+        assert!(!replaced, "the open source handle must block replacement");
+        #[cfg(unix)]
+        assert!(replaced, "the test must exercise same-handle Unix reading");
+
+        let target = root.join("target.json");
+        std::fs::write(&target, original).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let link = root.join("link.json");
+            symlink(&target, &link).unwrap();
+            assert!(read_locked_auth(&link).is_err());
+        }
+        #[cfg(windows)]
+        {
+            let link = root.join("link.json");
+            if std::os::windows::fs::symlink_file(&target, &link).is_ok() {
+                assert!(read_locked_auth(&link).is_err());
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     use serde_json::json;

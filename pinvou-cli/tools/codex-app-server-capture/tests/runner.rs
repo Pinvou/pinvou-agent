@@ -176,10 +176,10 @@ fn run_s2_isolates_startup_commands_only_for_app_server_invocation() {
                 "apps",
                 "--disable",
                 "shell_snapshot",
+                "--disable",
+                "memories",
                 "-c",
                 "notify=[]",
-                "-c",
-                "mcp_servers={}",
                 "--stdio",
             ],
         ]
@@ -194,6 +194,174 @@ fn run_s2_isolates_startup_commands_only_for_app_server_invocation() {
             .flatten()
             .all(|arg| { !arg.contains("user-input") && !arg.contains('&') && !arg.contains(';') })
     );
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn run_s2_uses_a_fresh_minimal_codex_home_and_cleans_up_copied_auth() {
+    const AUTH_FIXTURE: &str = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"test-only"}}"#;
+    const MINIMAL_CONFIG: &str = concat!(
+        "cli_auth_credentials_store = \"file\"\n",
+        "\n",
+        "[analytics]\n",
+        "enabled = false\n",
+        "\n",
+        "[otel]\n",
+        "exporter = \"none\"\n",
+        "trace_exporter = \"none\"\n",
+        "metrics_exporter = \"none\"\n",
+    );
+
+    let root = temp_output("isolated-codex-home");
+    let original_home = root.join("original-home");
+    let output = root.join("output");
+    let audit = root.join("home-audit.json");
+    std::fs::create_dir(&original_home).unwrap();
+    std::fs::write(original_home.join("auth.json"), AUTH_FIXTURE).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            original_home.join("auth.json"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        original_home.join("config.toml"),
+        concat!(
+            "notify = [\"S2_UNTRUSTED_NOTIFY_MARKER\"]\n",
+            "experimental_thread_config_endpoint = \"https://marker.invalid\"\n",
+            "[mcp_servers.marker]\ncommand = \"S2_UNTRUSTED_MCP_MARKER\"\n",
+            "[analytics]\nenabled = true\n",
+            "[otel]\nexporter = \"statsig\"\n",
+            "[features]\nmemories = true\nplugins = true\napps = true\n",
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir(original_home.join("plugins")).unwrap();
+    std::fs::create_dir(original_home.join("skills")).unwrap();
+
+    let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .args(["run-s2", "--output-dir"])
+        .arg(&output)
+        .args([
+            "--executable",
+            env!("CARGO_BIN_EXE_fake-app-server"),
+            "--scenario-timeout-ms",
+            "10000",
+            "--global-timeout-ms",
+            "60000",
+        ])
+        .env("CODEX_HOME", &original_home)
+        .env("S2_FAKE_HOME_AUDIT", &audit)
+        .env("S2_FAKE_ORIGINAL_HOME", &original_home)
+        .env("S2_FAKE_EXPECTED_AUTH", AUTH_FIXTURE)
+        .output()
+        .unwrap();
+    assert!(
+        !result.status.success(),
+        "production gates must remain strict"
+    );
+    let audit: Value = serde_json::from_slice(&std::fs::read(&audit).unwrap()).unwrap();
+    assert_eq!(audit["isolated"], true);
+    assert_eq!(audit["auth_matches"], true);
+    assert_eq!(audit["config"], MINIMAL_CONFIG);
+    let isolated_home = std::path::PathBuf::from(audit["home"].as_str().unwrap());
+    assert!(
+        !isolated_home.exists(),
+        "credential copy must be cleaned up"
+    );
+    let sanitized = format!(
+        "{}{}{}",
+        std::fs::read_to_string(output.join("evidence.json")).unwrap(),
+        std::fs::read_to_string(output.join("validation-report.json")).unwrap(),
+        std::fs::read_to_string(output.join("summary.txt")).unwrap(),
+    );
+    assert!(!sanitized.contains(AUTH_FIXTURE));
+    assert!(!sanitized.contains(&isolated_home.to_string_lossy().into_owned()));
+    assert!(!sanitized.contains("S2_UNTRUSTED"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn run_s2_rejects_missing_auth_generically_before_raw_capture() {
+    let root = temp_output("isolated-home-missing-auth");
+    let original_home = root.join("private-original-home");
+    let output = root.join("output");
+    std::fs::create_dir(&original_home).unwrap();
+    std::fs::write(
+        original_home.join("config.toml"),
+        "[mcp_servers.marker]\ncommand = \"private-marker\"\n",
+    )
+    .unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .args(["run-s2", "--output-dir"])
+        .arg(&output)
+        .args([
+            "--executable",
+            env!("CARGO_BIN_EXE_fake-app-server"),
+            "--scenario-timeout-ms",
+            "1000",
+            "--global-timeout-ms",
+            "10000",
+        ])
+        .env("CODEX_HOME", &original_home)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(!output.join("capture.jsonl").exists());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("isolated Codex home preparation failed"));
+    assert!(!stderr.contains(&original_home.to_string_lossy().into_owned()));
+    assert!(!stderr.contains("private-marker"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn isolated_home_files_are_locked_or_identity_tamper_fails_closed() {
+    let output = temp_output("isolated-home-tamper");
+    let audit = output.join("home-audit.json");
+    let result = run_s2_for_test(S2RunConfig {
+        output_dir: Some(output.clone()),
+        executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        trusted_approval_wrapper: None,
+        model: None,
+        scenario_timeout: Duration::from_secs(10),
+        global_timeout: Duration::from_secs(60),
+        test_child_env: vec![
+            (
+                OsString::from("S2_FAKE_HOME_AUDIT"),
+                audit.clone().into_os_string(),
+            ),
+            (
+                OsString::from("S2_FAKE_ORIGINAL_HOME"),
+                OsString::from("not-the-isolated-home"),
+            ),
+            (
+                OsString::from("S2_FAKE_EXPECTED_AUTH"),
+                OsString::from("{}"),
+            ),
+            (OsString::from("S2_FAKE_TAMPER_HOME"), OsString::from("1")),
+        ],
+    });
+    let audit: Value = serde_json::from_slice(&std::fs::read(&audit).unwrap()).unwrap();
+    assert_eq!(audit["auth_write_blocked"], true);
+    #[cfg(windows)]
+    {
+        assert_eq!(audit["config_replace_blocked"], true);
+        assert!(result.is_ok(), "{result:?}");
+    }
+    #[cfg(unix)]
+    {
+        assert_eq!(audit["config_replace_blocked"], false);
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("isolated Codex home cleanup failed"));
+    }
+    let isolated_home = std::path::PathBuf::from(audit["home"].as_str().unwrap());
+    assert!(!isolated_home.exists());
     std::fs::remove_dir_all(output).unwrap();
 }
 
@@ -1171,7 +1339,7 @@ fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim(
     let command_line = std::fs::read_to_string(&command_line_marker).unwrap();
     assert!(command_line.contains("codex.cmd"));
     assert!(command_line.contains(
-        "app-server --disable hooks --disable plugins --disable apps --disable shell_snapshot -c notify=[] -c mcp_servers={} --stdio"
+        "app-server --disable hooks --disable plugins --disable apps --disable shell_snapshot --disable memories -c notify=[] --stdio"
     ));
     std::fs::remove_dir_all(root).unwrap();
 }
