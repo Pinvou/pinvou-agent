@@ -174,3 +174,97 @@ test('bridge sources register the centralized reconciliation lifecycle events', 
     assert.ok(backend.includes(`"${event}"`), `backend is missing ${event}`);
   }
 });
+
+test('frontend allowlists stay in lockstep between JS and Rust', () => {
+  const rust = fs.readFileSync(
+    path.join(root, 'src-tauri/src/features/sessions/diagnostics.rs'),
+    'utf8',
+  );
+
+  // --- Extract the JS-side allowlists from the shared module source. ---
+  const jsSet = name => {
+    const match = source.match(new RegExp(`var ${name} = new Set\\(\\[([^\\]]+)\\]\\)`));
+    assert.ok(match, `${name} not found in JS source`);
+    return new Set([...match[1].matchAll(/"([^"]+)"/g)].map(entry => entry[1]));
+  };
+  const jsEnumBlock = source.match(/var ENUM_FIELDS = \{([\s\S]*?)\n  \};/);
+  assert.ok(jsEnumBlock, 'ENUM_FIELDS not found in JS source');
+  const jsEnums = new Map();
+  for (const arm of jsEnumBlock[1].matchAll(/(\w+):\s*new Set\(\[([^\]]+)\]\)/g)) {
+    jsEnums.set(arm[1], new Set([...arm[2].matchAll(/"([^"]+)"/g)].map(entry => entry[1])));
+  }
+
+  // --- Extract the Rust-side allowlists from normalize_frontend_details. ---
+  const detailsStart = rust.indexOf('fn normalize_frontend_details');
+  assert.ok(detailsStart > 0, 'normalize_frontend_details not found in Rust source');
+  const detailsBody = rust.slice(detailsStart, rust.indexOf('\nfn ', detailsStart));
+  const rustFields = new Set(
+    [...detailsBody.matchAll(/"([^"]+)"(?=\s*(?:\||=>))/g)].map(entry => entry[1]),
+  );
+  const rustEnums = new Map();
+  for (const [field] of jsEnums) {
+    const arm = detailsBody.match(
+      new RegExp(`"${field}"\\s*=>\\s*\\{?\\s*allowed_enum\\(\\s*Some\\(value\\),\\s*&\\[([^\\]]+)\\]`),
+    );
+    if (arm) {
+      rustEnums.set(field, new Set([...arm[1].matchAll(/"([^"]+)"/g)].map(entry => entry[1])));
+    }
+  }
+
+  // Events: JS queue gate must accept exactly what Rust FRONTEND_EVENTS admits.
+  const rustEvents = rust.match(/const FRONTEND_EVENTS: &\[&str\] = &\[([\s\S]*?)\];/);
+  assert.ok(rustEvents, 'FRONTEND_EVENTS not found in Rust source');
+  const rustEventSet = new Set([...rustEvents[1].matchAll(/"([^"]+)"/g)].map(e => e[1]));
+  assert.deepEqual([...jsSet('ALLOWED_EVENTS')].sort(), [...rustEventSet].sort(),
+    'frontend event allowlists drifted between JS and Rust');
+
+  // Detail fields: every key JS may emit must be recognized by Rust normalization.
+  const jsFieldUnion = new Set([
+    ...jsSet('IDENTIFIER_FIELDS'), ...jsSet('REVISION_FIELDS'),
+    ...jsSet('NUMBER_FIELDS'), ...jsSet('BOOLEAN_FIELDS'),
+    ...jsEnums.keys(), 'transport', 'cause', 'saved_roles',
+  ]);
+  assert.deepEqual([...jsFieldUnion].sort(), [...rustFields].sort(),
+    'frontend detail-field allowlists drifted between JS and Rust');
+
+  // Enum values: JS accepts exactly the values Rust re-validates.
+  for (const [field, jsValues] of jsEnums) {
+    const rustValues = rustEnums.get(field);
+    assert.ok(rustValues, `Rust normalization is missing enum field "${field}"`);
+    assert.deepEqual([...jsValues].sort(), [...rustValues].sort(),
+      `enum values for "${field}" drifted between JS and Rust`);
+  }
+
+  // Connection snapshot: JS regex gates must equal the Rust-side enum lists.
+  const connectionBody = rust.slice(
+    rust.indexOf('fn normalize_frontend_connection'),
+    rust.indexOf('\nfn ', rust.indexOf('fn normalize_frontend_connection')),
+  );
+  const rustConnection = new Map();
+  for (const field of ['platform_kind', 'visibility', 'connection_status']) {
+    const anchor = connectionBody.indexOf(`\"${field}\"`);
+    assert.ok(anchor > 0, `Rust connection normalization is missing "${field}"`);
+    const tail = connectionBody.slice(anchor + field.length + 2, connectionBody.indexOf('[..]', anchor));
+    rustConnection.set(field, new Set([...tail.matchAll(/"([^"]+)"/g)].map(e => e[1])));
+  }
+  const jsConnectionBody = source.match(/function normalizeConnection\(snapshot\) \{[\s\S]*?\n  \}/);
+  assert.ok(jsConnectionBody, 'normalizeConnection not found in JS source');
+  const jsAlternations = [...jsConnectionBody[0].matchAll(/\/\^\(([^)]+)\)\$\//g)].map(m => m[1]);
+  assert.equal(jsAlternations.length, 3, 'expected exactly three connection gates in JS');
+  const jsConnection = new Map([
+    ['platform_kind', new Set(jsAlternations[0].split('|'))],
+    ['visibility', new Set(jsAlternations[1].split('|'))],
+    ['connection_status', new Set(jsAlternations[2].split('|'))],
+  ]);
+  for (const [field, jsValues] of jsConnection) {
+    assert.deepEqual([...jsValues].sort(), [...rustConnection.get(field)].sort(),
+      `connection field "${field}" drifted between JS and Rust`);
+  }
+
+  // Numeric ceiling: JS must reject above the exact cap Rust re-validates.
+  const jsCap = Number(source.match(/var MAX_NUMBER_VALUE = (\d+);/)[1]);
+  const rustCap = Number(
+    rust.match(/\*value <= ([\d_]+)/)[1].replace(/_/g, ''),
+  );
+  assert.equal(jsCap, rustCap, 'numeric ceiling drifted between JS and Rust');
+});

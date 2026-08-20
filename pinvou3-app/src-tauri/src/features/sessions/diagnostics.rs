@@ -488,7 +488,7 @@ fn normalize_backend_details(event: &str, value: &Value) -> Option<Value> {
         "transcript_committed_emitting" => &[
             "session_id",
             "transcript_revision",
-            "persistence_target",
+            "persistence_origin",
             "message_count",
         ],
         "web_session_download_cancelled" => &["session_id", "download_id", "total_bytes", "ready"],
@@ -566,9 +566,17 @@ fn normalize_backend_details(event: &str, value: &Value) -> Option<Value> {
                 ],
             )
             .map(Value::String),
-            "persistence_target" => {
-                allowed_enum(Some(value), &["session_store", "unknown"]).map(Value::String)
-            }
+            "persistence_origin" => allowed_enum(
+                Some(value),
+                &[
+                    "engine_state_update",
+                    "reclaimed_fallback",
+                    "session_store",
+                    "terminal_fallback",
+                    "unknown",
+                ],
+            )
+            .map(Value::String),
             "error_category" => allowed_enum(
                 Some(value),
                 &["revision_compute_failed", "session_load_failed"],

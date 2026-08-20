@@ -400,7 +400,7 @@ pub(crate) fn emit_transcript_committed(
     app: &AppHandle,
     session_id: &str,
     revision: String,
-    persistence_path: &str,
+    persistence_origin: &str,
     message_count: usize,
 ) {
     crate::features::sessions::diagnostics::record_backend(
@@ -408,7 +408,7 @@ pub(crate) fn emit_transcript_committed(
         json!({
             "session_id": session_id,
             "transcript_revision": revision,
-            "persistence_target": if persistence_path.is_empty() { "unknown" } else { "session_store" },
+            "persistence_origin": if persistence_origin.is_empty() { "unknown" } else { persistence_origin },
             "message_count": message_count,
         }),
     );

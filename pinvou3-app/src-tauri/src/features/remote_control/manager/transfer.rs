@@ -430,6 +430,13 @@ mod tests {
         Inner, WebSessionDownload, WEB_SESSION_TRANSFER_TTL,
     };
     use std::time::{Duration, Instant};
+
+    /// A `last_touched` older than the TTL, without panicking on hosts whose
+    /// monotonic clock started less than the TTL ago (fresh boot).
+    fn expired_last_touched(now: Instant) -> Instant {
+        now.checked_sub(WEB_SESSION_TRANSFER_TTL + Duration::from_secs(1))
+            .unwrap_or_else(|| now - WEB_SESSION_TRANSFER_TTL)
+    }
     #[cfg(any(
         windows,
         target_os = "macos",
@@ -457,13 +464,7 @@ mod tests {
     fn ttl_pruning_releases_only_the_expired_snapshot_handle() {
         let now = Instant::now();
         let mut inner = Inner::default();
-        for (id, last_touched) in [
-            (
-                "expired",
-                now - WEB_SESSION_TRANSFER_TTL - Duration::from_secs(1),
-            ),
-            ("fresh", now),
-        ] {
+        for (id, last_touched) in [("expired", expired_last_touched(now)), ("fresh", now)] {
             inner.web_session_download_order.push_back(id.to_string());
             inner.web_session_downloads.insert(
                 id.to_string(),
@@ -590,7 +591,7 @@ mod tests {
                 "download_reap",
                 "session_reap",
                 b"original-reap".as_slice(),
-                now - WEB_SESSION_TRANSFER_TTL - Duration::from_secs(1),
+                expired_last_touched(now),
             ),
         ] {
             let mut file = directory

@@ -29,6 +29,9 @@
   var REVISION_FIELDS = new Set([
     "session_revision", "committed_revision", "expected_committed_revision", "saved_revision", "event_revision",
   ]);
+  // Keep in lockstep with Rust's normalize_nonnegative_number cap (10^15) in
+  // features/sessions/diagnostics.rs; the contract test enforces the pairing.
+  var MAX_NUMBER_VALUE = 1000000000000000;
   var NUMBER_FIELDS = new Set([
     "message_count", "chat_item_count", "queued_count", "expected_assistant_key_length",
     "baseline_message_count", "minimum_terminal_message_count", "attempt", "attempts", "elapsed_ms",
@@ -136,7 +139,7 @@
           (candidate === "" || /^[A-Fa-f0-9]{64}$/.test(candidate))) {
         output[key] = candidate.toLowerCase();
       } else if (NUMBER_FIELDS.has(key) && (candidate === null ||
-          (Number.isSafeInteger(candidate) && candidate >= 0))) {
+          (Number.isSafeInteger(candidate) && candidate >= 0 && candidate <= MAX_NUMBER_VALUE))) {
         output[key] = candidate;
       } else if (BOOLEAN_FIELDS.has(key) && typeof candidate === "boolean") {
         output[key] = candidate;
