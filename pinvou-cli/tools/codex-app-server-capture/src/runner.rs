@@ -1737,7 +1737,7 @@ impl<'a> AgentOnlyState<'a> {
                 {
                     bail!("protocol error: malformed MCP startup status notification");
                 }
-                if !self.thread_started || self.turn_started || status.thread_id != thread_id {
+                if !self.thread_started || status.thread_id != thread_id {
                     bail!(
                         "protocol error: MCP startup status had mismatched thread identity or order"
                     );
@@ -3586,7 +3586,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_startup_status_is_strictly_typed_and_stateful_before_turn_start() {
+    fn mcp_startup_status_is_strictly_typed_and_stateful_for_the_thread() {
         let workspace = std::env::temp_dir().canonicalize().unwrap();
         let mut state = super::AgentOnlyState::new("prompt", &workspace);
         state
@@ -3609,12 +3609,16 @@ mod tests {
                 "u",
             )
             .unwrap();
+        let cross_turn_terminal = json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"t","name":"still-starting","status":"cancelled","error":null}});
+        state.validate(&cross_turn_terminal, "t", "u").unwrap();
         let late = json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"t","name":"late","status":"starting","error":null}});
-        let error = state.validate(&late, "t", "u").unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "protocol error: MCP startup status had mismatched thread identity or order"
-        );
+        state.validate(&late, "t", "u").unwrap();
+        let late_terminal = json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"t","name":"late","status":"failed","error":"late failure"}});
+        state.validate(&late_terminal, "t", "u").unwrap();
+        assert!(state.turn_started);
+        assert!(state.items.is_empty());
+        assert!(!state.user_raw_seen);
+        assert!(state.user_item_id.is_none());
         let mut before_thread = super::AgentOnlyState::new("prompt", &workspace);
         let error = before_thread.validate(&late, "t", "u").unwrap_err();
         assert_eq!(

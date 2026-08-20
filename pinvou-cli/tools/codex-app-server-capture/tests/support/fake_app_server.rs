@@ -380,13 +380,7 @@ fn main() {
                         }
                         _ => {
                             send(startup("fixture-ready", "starting", Value::Null));
-                            send(startup("fixture-ready", "ready", Value::Null));
                             send(startup("fixture-failed", "starting", Value::Null));
-                            send(startup(
-                                "fixture-failed",
-                                "failed",
-                                json!("fixture failure"),
-                            ));
                         }
                     }
                 }
@@ -409,6 +403,14 @@ fn main() {
                     json!({"method":"turn/started","params":{"threadId":format!("thread-{}", turn - 1),"turn":{"id":turn_id,"status":"inProgress"}}}),
                 );
                 let thread_id = format!("thread-{}", turn - 1);
+                if !mode.starts_with("mcp-startup-") && mode != "agent-thread-missing" {
+                    send(json!({"method":"mcpServer/startupStatus/updated","params":{
+                        "threadId":thread_id,"name":"fixture-ready","status":"ready","error":null
+                    }}));
+                    send(json!({"method":"mcpServer/startupStatus/updated","params":{
+                        "threadId":thread_id,"name":"fixture-failed","status":"failed","error":"fixture failure"
+                    }}));
+                }
                 let user_raw_thread = if mode == "agent-user-raw-wrong-thread" {
                     "wrong-thread"
                 } else {

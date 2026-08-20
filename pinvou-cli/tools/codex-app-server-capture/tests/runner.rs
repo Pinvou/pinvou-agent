@@ -95,6 +95,39 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
     assert!(capture.contains(r#"\"status\":\"failed\""#));
     assert!(capture.contains(r#"\"phase\":\"final_answer\""#));
     assert!(capture.contains(r#"\"phase\":null"#));
+    let server_frames = capture
+        .lines()
+        .filter_map(|line| serde_json::from_str::<CaptureRecord>(line).ok())
+        .filter(|record| record.channel == CaptureChannel::ServerToClient)
+        .filter_map(|record| serde_json::from_str::<Value>(&record.line).ok())
+        .collect::<Vec<_>>();
+    let frame_index = |method: &str, name: Option<&str>, status: Option<&str>| {
+        server_frames
+            .iter()
+            .position(|frame| {
+                frame["method"] == method
+                    && frame.pointer("/params/threadId").and_then(Value::as_str) == Some("thread-0")
+                    && name.is_none_or(|value| {
+                        frame.pointer("/params/name").and_then(Value::as_str) == Some(value)
+                    })
+                    && status.is_none_or(|value| {
+                        frame.pointer("/params/status").and_then(Value::as_str) == Some(value)
+                    })
+            })
+            .expect("missing expected thread-scoped MCP fixture frame")
+    };
+    let starting = frame_index(
+        "mcpServer/startupStatus/updated",
+        Some("fixture-failed"),
+        Some("starting"),
+    );
+    let turn_started = frame_index("turn/started", None, None);
+    let failed = frame_index(
+        "mcpServer/startupStatus/updated",
+        Some("fixture-failed"),
+        Some("failed"),
+    );
+    assert!(starting < turn_started && turn_started < failed);
     let sanitized = format!(
         "{}{}",
         std::fs::read_to_string(output.join("evidence.json")).unwrap(),
