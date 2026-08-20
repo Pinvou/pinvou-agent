@@ -13,6 +13,8 @@ GAIA 数据集托管在 Hugging Face 仓库 `gaia-benchmark/GAIA`。该仓库为
 
 远程元数据或内容下载失败返回 `gaia_download_failed`；本地导入源的路径或附件安全约束不合规返回 `gaia_import_failed`；数据集固定内容、已发布 ready marker、完整性清单或文件内容校验失败返回 `gaia_verify_failed`。
 
+同一数据目录已有 fetch/import 正在运行时返回 `gaia_fetch_in_progress`；锁由操作系统持有，进程崩溃后自动释放，遗留锁文件可安全复用。
+
 访问权限审批由 Hugging Face 平台管理，Pinvou 无法代为申请。
 
 ## Pinned revisions
@@ -93,6 +95,9 @@ pinvou benchmark report <run-id>               # 查看 report.md（需先完成
 pinvou benchmark resume <run-id>               # 恢复未完成的运行（product-backend）
 ```
 
+- 同一 `run-id` 只允许一个执行者持有运行锁；并发 `run` / `resume` 返回 `run_in_progress`，避免同一 task 被重复执行和落盘。
+- 进程在追加 JSONL 时崩溃留下的末行残片会在恢复前截断；完整但缺换行的末行会补齐换行。已换行的损坏记录、未知 schema 或重复 task outcome 都会 fail closed，不会被静默当成可恢复状态。
+
 ### 评分
 
 ```bash
@@ -137,7 +142,7 @@ pinvou benchmark submission gaia --run-id <run-id> --destination ./output.jsonl
 - **参考答案隔离**：参考答案仅存在于适配器内部，评分时通过 run-bound scorer view 解析私有预测，不暴露给代理、不写入日志、不出现在提交文件中。
 - **附件隔离**：附件通过 `AttachmentHandle` 挂载到沙盒，代理只能访问附件内容，不能访问参考答案或元数据中的私有字段。
 - **Token 隔离**：HF token 仅在 fetch 阶段用于 HTTPS 认证，不持久化、不回显、不出现在任何输出中。
-- **预测句柄隔离**：公开预测句柄（`PrivateInputHandle`）无法解码候选答案；只有 run-bound scorer view 能解析。
+- **预测句柄隔离**：公开预测句柄（`PrivateInputHandle`）无法解码候选答案；只有 run-bound scorer view 能解析。Windows 预测正文使用 DPAPI 保护，完整性摘要绑定受保护密文和运行元数据而不直接散列明文；预测目录和 blob 使用与数据集相同的受保护私有 DACL。
 - **测试边界**：测试代码不硬编码真实参考答案或真实 token；测试用的私有预测通过 `test-support` feature 下的辅助方法注入，不泄露到默认构建。
 
 ## Not a leaderboard score

@@ -5,6 +5,7 @@ use std::io::{Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 
 use agent_backend_api::SecretText;
+use fs2::FileExt;
 use hf_hub::api::sync::ApiBuilder;
 use hf_hub::{Cache, Repo, RepoType};
 use parquet::file::reader::{FileReader, SerializedFileReader};
@@ -17,9 +18,6 @@ use sha2::{Digest, Sha256};
 use crate::{
     GAIA_DATASET_REVISION, GAIA_PARQUET_SIZE, GAIA_SCORER_REVISION, GaiaDataset, GaiaDatasetError,
 };
-
-#[cfg(windows)]
-mod windows_private_acl;
 
 const GAIA_REPO_ID: &str = "gaia-benchmark/GAIA";
 const GAIA_PARQUET_PATH: &str = "2023/validation/metadata.level1.parquet";
@@ -177,6 +175,7 @@ impl fmt::Debug for GaiaAcquisition {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GaiaFetchError {
     AccessDenied,
+    Busy,
     DownloadFailed,
     ImportFailed,
     VerifyFailed,
@@ -186,6 +185,7 @@ impl GaiaFetchError {
     pub const fn code(self) -> &'static str {
         match self {
             Self::AccessDenied => "gaia_access_denied",
+            Self::Busy => "gaia_fetch_in_progress",
             Self::DownloadFailed => "gaia_download_failed",
             Self::ImportFailed => "gaia_import_failed",
             Self::VerifyFailed => "gaia_verify_failed",
@@ -1093,7 +1093,7 @@ fn set_private_file_permissions(path: &Path) -> Result<(), ()> {
         return Err(());
     }
     #[cfg(windows)]
-    windows_private_acl::apply_and_verify(path, false)?;
+    benchmark_core::apply_windows_private_acl(path, false)?;
     Ok(())
 }
 
@@ -1119,7 +1119,7 @@ fn set_private_directory_permissions(path: &Path) -> Result<(), ()> {
         return Err(());
     }
     #[cfg(windows)]
-    windows_private_acl::apply_and_verify(path, true)?;
+    benchmark_core::apply_windows_private_acl(path, true)?;
     Ok(())
 }
 
@@ -1909,7 +1909,7 @@ fn secure_private_acquisition_directory(path: &Path) -> Result<PathBuf, ()> {
         if !canonical.starts_with(profile) {
             return Err(());
         }
-        windows_private_acl::apply_and_verify(&canonical, true)?;
+        benchmark_core::apply_windows_private_acl(&canonical, true)?;
     }
     Ok(canonical)
 }
@@ -2017,36 +2017,49 @@ fn path_identity(_path: &Path) -> Result<ObjectIdentity, ()> {
 }
 
 struct AcquisitionLock {
-    path: PathBuf,
-    identity: ObjectIdentity,
-    nonce: String,
+    file: File,
 }
 
 impl AcquisitionLock {
     fn claim(root: &Path) -> Result<Self, GaiaFetchError> {
         let path = root.join(".pinvou-gaia-acquire.lock");
-        let nonce = format!("{:032x}", random::<u128>());
-        let mut file = create_private_file(&path).map_err(|_| GaiaFetchError::VerifyFailed)?;
-        file.write_all(nonce.as_bytes())
-            .and_then(|_| file.sync_all())
-            .map_err(|_| GaiaFetchError::VerifyFailed)?;
-        let identity = path_identity(&path).map_err(|_| GaiaFetchError::VerifyFailed)?;
-        Ok(Self {
-            path,
-            identity,
-            nonce,
-        })
+        let file = open_private_lock_file(&path).map_err(|_| GaiaFetchError::VerifyFailed)?;
+        match FileExt::try_lock_exclusive(&file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == fs2::lock_contended_error().kind() => {
+                return Err(GaiaFetchError::Busy);
+            }
+            Err(_) => return Err(GaiaFetchError::VerifyFailed),
+        }
+        Ok(Self { file })
     }
 }
 
 impl Drop for AcquisitionLock {
     fn drop(&mut self) {
-        let same = path_identity(&self.path).is_ok_and(|identity| identity == self.identity)
-            && fs::read_to_string(&self.path).is_ok_and(|contents| contents == self.nonce);
-        if same {
-            let _ = fs::remove_file(&self.path);
-        }
+        let _ = FileExt::unlock(&self.file);
     }
+}
+
+fn open_private_lock_file(path: &Path) -> Result<File, ()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.is_file() || is_link_or_reparse(&metadata) => {
+            return Err(());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(()),
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path).map_err(|_| ())?;
+    set_private_file_permissions(path)?;
+    Ok(file)
 }
 
 struct OwnedDirectory {
@@ -2442,14 +2455,14 @@ mod review_contract_tests {
         let file = directory.join("private-file");
         fs::write(&file, b"private").unwrap();
 
-        windows_private_acl::apply_and_verify(&directory, true).unwrap();
-        windows_private_acl::apply_and_verify(&file, false).unwrap();
+        benchmark_core::apply_windows_private_acl(&directory, true).unwrap();
+        benchmark_core::apply_windows_private_acl(&file, false).unwrap();
         assert_eq!(
-            windows_private_acl::ace_flags(true),
+            benchmark_core::windows_private_acl_ace_flags(true),
             windows_sys::Win32::Security::CONTAINER_INHERIT_ACE
                 | windows_sys::Win32::Security::OBJECT_INHERIT_ACE
         );
-        assert_eq!(windows_private_acl::ace_flags(false), 0);
+        assert_eq!(benchmark_core::windows_private_acl_ace_flags(false), 0);
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -2772,5 +2785,23 @@ mod review_contract_tests {
         let _ = fs::remove_dir_all(source);
         let _ = fs::remove_dir_all(acquisition);
         let _ = fs::remove_dir_all(worktree);
+    }
+
+    #[test]
+    fn acquisition_lock_reuses_a_stale_file_and_rejects_a_live_owner() {
+        let root = test_directory("acquisition-lock");
+        let stale_path = root.join(".pinvou-gaia-acquire.lock");
+        drop(create_private_file(&stale_path).unwrap());
+
+        let first = AcquisitionLock::claim(&root).expect("reuse stale lock file");
+        let second_error = match AcquisitionLock::claim(&root) {
+            Ok(_) => panic!("live acquisition lock must be exclusive"),
+            Err(error) => error,
+        };
+        assert_eq!(second_error, GaiaFetchError::Busy);
+
+        drop(first);
+        AcquisitionLock::claim(&root).expect("OS lock releases after owner exits");
+        let _ = fs::remove_dir_all(root);
     }
 }

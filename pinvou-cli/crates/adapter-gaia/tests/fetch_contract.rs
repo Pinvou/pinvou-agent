@@ -143,4 +143,9 @@ fn fetch_source_and_errors_redact_paths_environment_names_and_tokens() {
         format!("{error:?} {error}"),
         "gaia_download_failed gaia_download_failed"
     );
+    assert_eq!(GaiaFetchError::Busy.code(), "gaia_fetch_in_progress");
+    assert_eq!(
+        format!("{:?} {}", GaiaFetchError::Busy, GaiaFetchError::Busy),
+        "gaia_fetch_in_progress gaia_fetch_in_progress"
+    );
 }

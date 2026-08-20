@@ -218,7 +218,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("- knowledge-rust", required_gate)
         self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
 
-    def test_benchmark_diagnostics_are_label_only_and_non_blocking(self):
+    def test_benchmark_minimum_contract_is_required_and_diagnostics_are_label_only(self):
         changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
             "\n  fast-gate:", maxsplit=1
         )[0]
@@ -231,6 +231,35 @@ class CiGatePolicyTests(unittest.TestCase):
             "- 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/headless_bridge.rs'",
             changes,
         )
+
+        contract = self.pr_workflow.split("\n  benchmark-contract:", maxsplit=1)[1].split(
+            "\n  benchmark-test:", maxsplit=1
+        )[0]
+        self.assertIn("needs.changes.outputs.benchmark == 'true'", contract)
+        self.assertIn("github.event.pull_request.draft == false", contract)
+        self.assertIn("runs-on: ubuntu-latest", contract)
+        self.assertIn(
+            "RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper",
+            contract,
+        )
+        self.assertIn(
+            "cargo test --manifest-path pinvou-cli/Cargo.toml --all-features", contract
+        )
+        for package in (
+            "agent-backend-api",
+            "benchmark-core",
+            "adapter-smoke",
+            "adapter-gaia",
+        ):
+            self.assertIn(f"-p {package}", contract)
+        self.assertIn(
+            "-p pinvou-cli --no-default-features", contract
+        )
+        self.assertIn(
+            "cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml", contract
+        )
+        self.assertIn("--features benchmark-hooks --test headless_bridge_contract", contract)
+        self.assertIn("needs.changes.outputs.benchmark_codewhale == 'true'", contract)
 
         benchmark = self.pr_workflow.split("\n  benchmark-test:", maxsplit=1)[1].split(
             "\n  required-gate:", maxsplit=1
@@ -257,6 +286,9 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn(".github/workflows/pr-check.yml", benchmark_filter)
 
         required_gate = self.pr_workflow.split("\n  required-gate:", maxsplit=1)[1]
+        self.assertIn("- benchmark-contract", required_gate)
+        self.assertIn("BENCHMARK_CONTRACT_RESULT", required_gate)
+        self.assertIn('"benchmark-contract:$BENCHMARK_CONTRACT_RESULT"', required_gate)
         self.assertNotIn("- benchmark-test", required_gate)
         self.assertNotIn("BENCHMARK_TEST_RESULT", required_gate)
         self.assertNotIn('"benchmark-test:$BENCHMARK_TEST_RESULT"', required_gate)

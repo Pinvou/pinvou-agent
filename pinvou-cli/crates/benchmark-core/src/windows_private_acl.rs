@@ -19,7 +19,7 @@ use windows_sys::Win32::Security::{
 use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-pub(super) fn ace_flags(directory: bool) -> u32 {
+pub fn ace_flags(directory: bool) -> u32 {
     if directory {
         CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE
     } else {
@@ -27,7 +27,7 @@ pub(super) fn ace_flags(directory: bool) -> u32 {
     }
 }
 
-pub(super) fn apply_and_verify(path: &Path, directory: bool) -> Result<(), ()> {
+pub fn apply_and_verify(path: &Path, directory: bool) -> Result<(), ()> {
     let wide = wide_path(path);
     let current = current_user_sid()?;
     let system = well_known_sid(WinLocalSystemSid)?;

@@ -39,4 +39,8 @@ impl RunEvent {
     pub fn kind(&self) -> RunEventKind {
         self.kind
     }
+
+    pub(crate) fn schema_supported(&self) -> bool {
+        self.schema_version == 1
+    }
 }

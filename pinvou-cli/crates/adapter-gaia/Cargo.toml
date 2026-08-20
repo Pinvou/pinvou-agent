@@ -20,6 +20,7 @@ sha1 = "=0.10.6"
 sha2 = "0.10.9"
 thiserror.workspace = true
 ureq = { version = "=2.12.1", default-features = false, features = ["tls"] }
+fs2 = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }

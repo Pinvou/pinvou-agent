@@ -65,6 +65,7 @@ where
 
     pub async fn run(&self, manifest: RunManifest, plan: &BenchmarkPlan) -> Result<RunSummary> {
         let store = RunStore::create(&self.base, &manifest)?;
+        let _execution = store.claim_execution()?;
         store.plan_tasks(plan.tasks().iter().map(|task| task.task_id()))?;
         self.execute(
             &store,
@@ -91,6 +92,7 @@ where
         }
         let plan = adapter.plan(dataset, selection)?;
         let store = RunStore::create(&self.base, &manifest)?;
+        let _execution = store.claim_execution()?;
         let prepared = self.prepare_plan(adapter, &store, &manifest, &plan)?;
         store.plan_tasks(prepared.tasks().iter().map(|task| task.task_id()))?;
         self.execute(
@@ -122,6 +124,7 @@ where
 
     pub async fn resume(&self, run_id: &str, plan: &BenchmarkPlan) -> Result<RunSummary> {
         let store = RunStore::open(&self.base, run_id)?;
+        let _execution = store.claim_execution()?;
         let manifest = store.read_manifest()?;
         if manifest.run_id() != run_id {
             return Err(BenchmarkError::coded("resume_manifest_mismatch"));
@@ -145,6 +148,7 @@ where
         selection: &TaskSelection,
     ) -> Result<RunSummary> {
         let store = RunStore::open(&self.base, run_id)?;
+        let _execution = store.claim_execution()?;
         let manifest = store.read_manifest()?;
         if expected_manifest.validate().is_err()
             || manifest.validate().is_err()

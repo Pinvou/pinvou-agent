@@ -4,8 +4,11 @@ pub(crate) const GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS: &[&str] = &["File", "Web", "i
 
 pub(crate) const GAIA_OFFLINE_V1_ALLOWED_TOOLS: &[&str] = &["File"];
 
+pub(crate) const PRODUCT_V1_ALLOWED_TOOLS: &[&str] = &["File", "Web", "image_analyze"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EvalToolPolicy {
+    ProductV1,
     GaiaPublicWebV1,
     GaiaOfflineV1,
 }
@@ -41,6 +44,12 @@ static GAIA_OFFLINE_V1: EvalTurnPolicy = EvalTurnPolicy {
     network: EvalNetworkClass::Offline,
 };
 
+static PRODUCT_V1: EvalTurnPolicy = EvalTurnPolicy {
+    id: EvalToolPolicy::ProductV1,
+    allowed_tools: PRODUCT_V1_ALLOWED_TOOLS,
+    network: EvalNetworkClass::PublicWeb,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EvalToolPolicyError;
 
@@ -62,6 +71,7 @@ pub(crate) fn resolve_eval_policy(
     policy_id: &str,
 ) -> Result<&'static EvalTurnPolicy, EvalToolPolicyError> {
     match policy_id {
+        "pinvou-product/v1" => Ok(&PRODUCT_V1),
         "pinvou-gaia-public-web/v1" => Ok(&GAIA_PUBLIC_WEB_V1),
         "pinvou-gaia-offline/v1" => Ok(&GAIA_OFFLINE_V1),
         _ => Err(EvalToolPolicyError),
@@ -72,7 +82,7 @@ pub(crate) fn resolve_eval_policy(
 mod tests {
     use super::{
         resolve_eval_policy, EvalNetworkClass, EvalToolPolicy, GAIA_OFFLINE_V1_ALLOWED_TOOLS,
-        GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS,
+        GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS, PRODUCT_V1_ALLOWED_TOOLS,
     };
     use crate::features::assistant::tool_policy::is_pinvou3_allowed;
     use deepseek_tui::config::VisionModelConfig;
@@ -99,7 +109,11 @@ mod tests {
     }
 
     #[test]
-    fn resolves_only_registered_gaia_v1_profiles() {
+    fn resolves_registered_eval_profiles() {
+        assert_eq!(
+            resolve_eval_policy("pinvou-product/v1").unwrap().id,
+            EvalToolPolicy::ProductV1
+        );
         assert_eq!(
             resolve_eval_policy("pinvou-gaia-public-web/v1").unwrap().id,
             EvalToolPolicy::GaiaPublicWebV1
@@ -116,9 +130,12 @@ mod tests {
 
     #[test]
     fn profiles_have_exact_network_separation() {
+        let product = resolve_eval_policy("pinvou-product/v1").unwrap();
         let public = resolve_eval_policy("pinvou-gaia-public-web/v1").unwrap();
         let offline = resolve_eval_policy("pinvou-gaia-offline/v1").unwrap();
 
+        assert_eq!(product.network, EvalNetworkClass::PublicWeb);
+        assert!(product.allows("Web"));
         assert_eq!(public.network, EvalNetworkClass::PublicWeb);
         assert_eq!(offline.network, EvalNetworkClass::Offline);
         assert!(public.allows("Web"));
@@ -135,8 +152,10 @@ mod tests {
             &["File", "Web", "image_analyze"]
         );
         assert_eq!(GAIA_OFFLINE_V1_ALLOWED_TOOLS, &["File"]);
+        assert_eq!(PRODUCT_V1_ALLOWED_TOOLS, &["File", "Web", "image_analyze"]);
 
         for profile in [
+            PRODUCT_V1_ALLOWED_TOOLS,
             GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS,
             GAIA_OFFLINE_V1_ALLOWED_TOOLS,
         ] {
@@ -158,6 +177,7 @@ mod tests {
         // The upstream read-only builder registers this compatibility helper,
         // but Pinvou deliberately excludes it from the product tool policy.
         assert!(!is_pinvou3_allowed("retrieve_tool_result"));
+        assert!(!PRODUCT_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
         assert!(!GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
         assert!(!GAIA_OFFLINE_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
     }

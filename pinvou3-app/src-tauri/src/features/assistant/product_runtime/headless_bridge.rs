@@ -599,14 +599,12 @@ fn backend_error(code: &'static str) -> AgentBackendError {
 
 fn extract_final_answer(output: &str) -> Option<String> {
     const MARKER: &str = "FINAL ANSWER:";
-    if !output.contains(MARKER) {
-        return None;
-    }
     output
-        .rsplit(MARKER)
+        .split(MARKER)
+        .skip(1)
         .map(str::trim)
         .filter(|answer| !answer.is_empty())
-        .next()
+        .last()
         .map(ToOwned::to_owned)
 }
 
@@ -636,6 +634,10 @@ mod final_answer_contract_tests {
     fn gaia_contract_rejects_missing_or_empty_final_answer_markers() {
         assert_eq!(extract_final_answer("analysis only"), None);
         assert_eq!(extract_final_answer("FINAL ANSWER:   \n"), None);
+        assert_eq!(
+            extract_final_answer("analysis only\nFINAL ANSWER:   \n"),
+            None
+        );
     }
 }
 

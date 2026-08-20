@@ -4,6 +4,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use fs2::FileExt;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::private_prediction::PrivatePredictionStore;
@@ -20,11 +22,25 @@ use crate::{
 const MANIFEST_FILE: &str = "manifest.json";
 const EVENT_FILE: &str = "events.jsonl";
 const OUTCOME_FILE: &str = "predictions.jsonl";
+const EXECUTION_LOCK_FILE: &str = ".execution.lock";
 
 #[derive(Clone, Debug)]
 pub struct RunStore {
     run_dir: PathBuf,
     lock: Arc<Mutex<()>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RunExecutionGuard(File);
+
+impl Drop for RunExecutionGuard {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
+trait PersistedRecord: DeserializeOwned {
+    fn has_supported_schema(&self) -> bool;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -88,6 +104,10 @@ enum PersistedFailureReason {
 }
 
 impl PersistedOutcome {
+    fn schema_supported(&self) -> bool {
+        self.schema_version == 1
+    }
+
     fn into_outcome(self) -> TaskOutcome {
         let status = match self.status {
             PersistedStatus::Planned => TaskStatus::Planned,
@@ -146,6 +166,18 @@ impl PersistedOutcome {
             });
         }
         outcome
+    }
+}
+
+impl PersistedRecord for PersistedOutcome {
+    fn has_supported_schema(&self) -> bool {
+        self.schema_supported()
+    }
+}
+
+impl PersistedRecord for RunEvent {
+    fn has_supported_schema(&self) -> bool {
+        self.schema_supported()
     }
 }
 
@@ -265,6 +297,21 @@ impl RunStore {
         &self.run_dir
     }
 
+    pub(crate) fn claim_execution(&self) -> Result<RunExecutionGuard> {
+        let lock = open_execution_lock(&self.run_dir.join(EXECUTION_LOCK_FILE))?;
+        match FileExt::try_lock_exclusive(&lock) {
+            Ok(()) => {}
+            Err(error) if error.kind() == fs2::lock_contended_error().kind() => {
+                return Err(BenchmarkError::coded("run_in_progress"));
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let guard = RunExecutionGuard(lock);
+        self.repair_torn_jsonl_tail::<RunEvent>(EVENT_FILE)?;
+        self.repair_torn_jsonl_tail::<PersistedOutcome>(OUTCOME_FILE)?;
+        Ok(guard)
+    }
+
     pub fn read_manifest(&self) -> Result<RunManifest> {
         let manifest = serde_json::from_reader(File::open(self.manifest_path())?)
             .map_err(|_| BenchmarkError::coded("invalid_manifest"))?;
@@ -287,6 +334,13 @@ impl RunStore {
         validate_component(outcome.task_id())?;
         if let Some(prediction) = outcome.prediction() {
             validate_public_prediction(prediction)?;
+        }
+        if self
+            .read_json_lines::<PersistedOutcome>(OUTCOME_FILE)?
+            .iter()
+            .any(|persisted| persisted.task_id == outcome.task_id())
+        {
+            return Err(BenchmarkError::coded("duplicate_outcome"));
         }
         self.append_json_line(OUTCOME_FILE, &PersistedOutcome::from(&outcome))
     }
@@ -444,11 +498,12 @@ impl RunStore {
     }
 
     fn append_json_line<T: Serialize>(&self, file_name: &str, value: &T) -> Result<()> {
-        let bytes =
+        let mut bytes =
             serde_json::to_vec(value).map_err(|_| BenchmarkError::coded("serialization_failed"))?;
         if bytes.len() > 16 * 1024 {
             return Err(BenchmarkError::coded("payload_too_large"));
         }
+        bytes.push(b'\n');
         let _guard = self
             .lock
             .lock()
@@ -458,26 +513,108 @@ impl RunStore {
             .append(true)
             .open(self.run_dir.join(file_name))?;
         file.write_all(&bytes)?;
-        file.write_all(b"\n")?;
         file.flush()?;
         file.sync_data()?;
         Ok(())
     }
 
-    fn read_json_lines<T: for<'de> Deserialize<'de>>(&self, file_name: &str) -> Result<Vec<T>> {
+    fn read_json_lines<T: PersistedRecord>(&self, file_name: &str) -> Result<Vec<T>> {
         let path = self.run_dir.join(file_name);
         if !path.exists() {
             return Ok(Vec::new());
         }
-        BufReader::new(File::open(path)?)
-            .lines()
-            .map(|line| {
-                let line = line?;
-                serde_json::from_str(&line)
-                    .map_err(|_| BenchmarkError::coded("invalid_persisted_record"))
-            })
-            .collect()
+        let mut reader = BufReader::new(File::open(path)?);
+        let mut records = Vec::new();
+        loop {
+            let mut line = Vec::new();
+            let read = reader.read_until(b'\n', &mut line)?;
+            if read == 0 {
+                break;
+            }
+            let terminated = line.last() == Some(&b'\n');
+            trim_jsonl_terminator(&mut line);
+            match serde_json::from_slice::<T>(&line) {
+                Ok(record) if record.has_supported_schema() => records.push(record),
+                Ok(_) => return Err(BenchmarkError::coded("invalid_persisted_record")),
+                Err(_) if !terminated => break,
+                Err(_) => return Err(BenchmarkError::coded("invalid_persisted_record")),
+            }
+        }
+        Ok(records)
     }
+
+    fn repair_torn_jsonl_tail<T: PersistedRecord>(&self, file_name: &str) -> Result<()> {
+        let path = self.run_dir.join(file_name);
+        if !path.exists() {
+            return Ok(());
+        }
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let mut reader = BufReader::new(file.try_clone()?);
+        let mut record_start = 0_u64;
+        loop {
+            let mut line = Vec::new();
+            let read = reader.read_until(b'\n', &mut line)?;
+            if read == 0 {
+                return Ok(());
+            }
+            let terminated = line.last() == Some(&b'\n');
+            trim_jsonl_terminator(&mut line);
+            match serde_json::from_slice::<T>(&line) {
+                Ok(record) if !record.has_supported_schema() => {
+                    return Err(BenchmarkError::coded("invalid_persisted_record"));
+                }
+                Ok(_) if !terminated => {
+                    let mut append = OpenOptions::new().append(true).open(&path)?;
+                    append.write_all(b"\n")?;
+                    append.sync_data()?;
+                    return Ok(());
+                }
+                Ok(_) => {}
+                Err(_) if !terminated => {
+                    file.set_len(record_start)?;
+                    file.sync_data()?;
+                    return Ok(());
+                }
+                Err(_) => return Err(BenchmarkError::coded("invalid_persisted_record")),
+            }
+            record_start = record_start
+                .checked_add(read as u64)
+                .ok_or_else(|| BenchmarkError::coded("invalid_persisted_record"))?;
+        }
+    }
+}
+
+fn trim_jsonl_terminator(line: &mut Vec<u8>) {
+    if line.last() == Some(&b'\n') {
+        line.pop();
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+    }
+}
+
+#[cfg(unix)]
+fn open_execution_lock(path: &Path) -> Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)
+        .map_err(Into::into)
+}
+
+#[cfg(not(unix))]
+fn open_execution_lock(path: &Path) -> Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(Into::into)
 }
 
 fn valid_core_prediction_handle(value: &str) -> bool {
@@ -500,6 +637,33 @@ fn validate_public_prediction(prediction: &Prediction) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_store(name: &str) -> (PathBuf, RunStore) {
+        let base = std::env::temp_dir().join(format!(
+            "pinvou-run-store-{name}-{:016x}",
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&base).expect("create test base");
+        let descriptor = crate::BenchmarkDescriptor::new(
+            crate::BenchmarkId::new("smoke"),
+            "smoke/v1",
+            "dataset/v1",
+            "scorer/v1",
+            vec![crate::Split::new("smoke")],
+            crate::ExecutionKind::NativeTurn,
+        );
+        let manifest = crate::RunManifest::new(
+            format!("run-{name}"),
+            &descriptor,
+            crate::Split::new("smoke"),
+            crate::ModelIdentity::new("fixture", "model").unwrap(),
+            crate::ToolPolicyId::new("smoke/v1"),
+            1,
+        )
+        .unwrap();
+        let store = RunStore::create(&base, &manifest).expect("create run store");
+        (base, store)
+    }
 
     #[test]
     fn public_persistence_accepts_only_registered_core_predictions() {
@@ -524,5 +688,87 @@ mod tests {
             .expect("registered core prediction");
         validate_public_prediction(&Prediction::durable("canonical-json/v1", "b".repeat(64)))
             .expect("registered canonical json prediction");
+    }
+
+    #[test]
+    fn execution_lock_is_process_wide_and_released_with_the_guard() {
+        let (base, store) = test_store("execution-lock");
+        let guard = store.claim_execution().expect("claim first execution");
+        let reopened = RunStore::open(&base, "run-execution-lock").unwrap();
+        assert_eq!(
+            reopened.claim_execution().unwrap_err().code(),
+            "run_in_progress"
+        );
+        drop(guard);
+        reopened
+            .claim_execution()
+            .expect("execution lock released after guard drop");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn torn_unterminated_tail_is_ignored_then_truncated_before_resume() {
+        let (base, store) = test_store("torn-tail");
+        store.plan_tasks(["planned"]).unwrap();
+        let path = store.run_dir().join(EVENT_FILE);
+        let intact = fs::read(&path).unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(br#"{"schema_version":1,"task_id":"torn""#)
+            .unwrap();
+
+        assert_eq!(store.recover().unwrap().runnable_task_ids(), &["planned"]);
+        let guard = store.claim_execution().expect("repair torn tail");
+        assert_eq!(fs::read(&path).unwrap(), intact);
+        drop(guard);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn complete_unterminated_record_is_preserved_and_terminated_before_resume() {
+        let (base, store) = test_store("complete-tail");
+        let path = store.run_dir().join(EVENT_FILE);
+        let event = serde_json::to_vec(&RunEvent::new("planned", RunEventKind::Planned)).unwrap();
+        fs::write(&path, &event).unwrap();
+
+        let guard = store.claim_execution().expect("normalize complete tail");
+        let repaired = fs::read(&path).unwrap();
+        assert_eq!(repaired.strip_suffix(b"\n"), Some(event.as_slice()));
+        drop(guard);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn unsupported_persisted_schema_is_never_treated_as_a_torn_tail() {
+        let (base, store) = test_store("schema");
+        fs::write(
+            store.run_dir().join(EVENT_FILE),
+            b"{\"schema_version\":2,\"task_id\":\"planned\",\"kind\":\"planned\"}\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            store.recover().unwrap_err().code(),
+            "invalid_persisted_record"
+        );
+        assert_eq!(
+            store.claim_execution().unwrap_err().code(),
+            "invalid_persisted_record"
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn duplicate_task_outcomes_are_rejected_at_the_store_boundary() {
+        let (base, store) = test_store("duplicate-outcome");
+        let outcome = TaskOutcome::new("task", TaskStatus::Completed, None, vec![], 1);
+        store.record_outcome(outcome.clone()).unwrap();
+        assert_eq!(
+            store.record_outcome(outcome).unwrap_err().code(),
+            "duplicate_outcome"
+        );
+        fs::remove_dir_all(base).unwrap();
     }
 }

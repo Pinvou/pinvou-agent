@@ -15,9 +15,10 @@ tokio = { version = "1.49", features = ["time"] }
 rand = "0.9.4"
 sha2 = "0.10.9"
 zeroize = "1.9.0"
+fs2 = "0.4"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [dev-dependencies]
 futures = "0.3"

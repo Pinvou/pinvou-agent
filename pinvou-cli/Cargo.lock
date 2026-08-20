@@ -11,6 +11,7 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "benchmark-core",
+ "fs2",
  "futures",
  "hf-hub",
  "parquet",
@@ -874,6 +875,7 @@ version = "0.1.0"
 dependencies = [
  "agent-backend-api",
  "async-trait",
+ "fs2",
  "futures",
  "rand 0.9.4",
  "serde",

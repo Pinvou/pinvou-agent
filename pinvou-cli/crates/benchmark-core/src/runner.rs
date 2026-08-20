@@ -22,20 +22,22 @@ impl AgentRunObserver for CollectingObserver {
             elapsed,
             ..
         } = event
+            && let Ok(mut tools) = self.0.lock()
         {
-            if let Ok(mut tools) = self.0.lock() {
-                tools.push(ToolObservation {
-                    canonical_name: safe_tool_name(tool_name),
-                    failed: *status != SafeRunStatus::Completed,
-                    elapsed_ms: elapsed.as_millis() as u64,
-                });
-            }
+            tools.push(ToolObservation {
+                canonical_name: safe_tool_name(tool_name),
+                failed: *status != SafeRunStatus::Completed,
+                elapsed_ms: elapsed.as_millis() as u64,
+            });
         }
     }
 }
 
 fn safe_tool_name(name: &str) -> String {
     const ALLOWED: &[&str] = &[
+        "File",
+        "Web",
+        "image_analyze",
         "web_search",
         "fetch_url",
         "exec_shell",
@@ -252,5 +254,18 @@ where
             result = result.with_private_output(output);
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_tool_name;
+
+    #[test]
+    fn product_policy_tool_names_are_preserved_in_observations() {
+        for name in ["File", "Web", "image_analyze"] {
+            assert_eq!(safe_tool_name(name), name);
+        }
+        assert_eq!(safe_tool_name("private-tool-sentinel"), "[redacted-tool]");
     }
 }

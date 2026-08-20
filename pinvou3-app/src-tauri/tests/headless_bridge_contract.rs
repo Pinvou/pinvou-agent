@@ -16,6 +16,11 @@ fn prepare_request(task_id: &str, attachments: Vec<AttachmentHandle>) -> Prepare
     )
 }
 
+fn prepare_request_with_policy(task_id: &str, policy: &str) -> PrepareRequest {
+    PrepareRequest::new(task_id, vec![])
+        .with_tool_policy(AgentToolPolicyId::new(policy).expect("valid test policy id"))
+}
+
 #[derive(Default)]
 struct RecordingRuntime {
     calls: Mutex<Vec<String>>,
@@ -99,6 +104,21 @@ impl AgentRunObserver for Observer {
     fn on_event(&self, event: &SafeAgentEvent) {
         self.0.lock().unwrap().push(event.clone());
     }
+}
+
+#[tokio::test]
+async fn product_smoke_policy_is_accepted_by_the_headless_backend() {
+    let runtime = Arc::new(RecordingRuntime::default());
+    let backend = ProductHeadlessBackend::from_runtime(runtime);
+    let session = backend
+        .prepare(prepare_request_with_policy(
+            "product-policy",
+            "pinvou-product/v1",
+        ))
+        .await
+        .unwrap();
+
+    backend.close(session).await.unwrap();
 }
 
 #[tokio::test]
@@ -694,11 +714,12 @@ impl ProductRuntimePort for AttachmentAwareRuntime {
         anyhow::bail!("ordinary run must not receive attachments")
     }
 
-    async fn run_with_staged_attachments(
+    async fn run_with_staged_attachments_and_policy(
         &self,
         _session_id: &str,
         _prompt: &str,
         staged_workspace: &std::path::Path,
+        _policy: ProductToolPolicy,
     ) -> anyhow::Result<pinvou3_lib::headless_bridge::ProductTurnOutcome> {
         let bytes = std::fs::read(staged_workspace.join("attachment.txt"))?;
         self.saw_private_bytes.store(
@@ -711,17 +732,6 @@ impl ProductRuntimePort for AttachmentAwareRuntime {
             usage: None,
             tools: vec![],
         })
-    }
-
-    async fn run_with_staged_attachments_and_policy(
-        &self,
-        session_id: &str,
-        prompt: &str,
-        staged_workspace: &std::path::Path,
-        _policy: ProductToolPolicy,
-    ) -> anyhow::Result<pinvou3_lib::headless_bridge::ProductTurnOutcome> {
-        self.run_with_staged_attachments(session_id, prompt, staged_workspace)
-            .await
     }
 
     async fn cancel(&self, _session_id: &str) -> anyhow::Result<()> {

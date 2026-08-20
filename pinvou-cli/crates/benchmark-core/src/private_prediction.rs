@@ -173,8 +173,7 @@ impl PrivatePredictionStore {
             handle.expose_to_adapter(),
         )?;
         let protected = protect(payload.expose_to_scorer(), &binding)?;
-        let integrity =
-            integrity_digest(payload.content_type(), &binding, payload.expose_to_scorer());
+        let integrity = integrity_digest(payload.content_type(), &binding, &protected);
         let envelope = encode_envelope(payload.content_type(), &binding, &integrity, &protected)?;
         self.publish_blob(&handle, &envelope)?;
         Ok(handle)
@@ -285,10 +284,10 @@ impl ScorerView {
         if binding != expected_binding {
             return Err(corrupt());
         }
-        let plaintext = unprotect(protected, &expected_binding)?;
-        if integrity != integrity_digest(content_type, &expected_binding, &plaintext).as_slice() {
+        if integrity != integrity_digest(content_type, &expected_binding, protected).as_slice() {
             return Err(corrupt());
         }
+        let plaintext = unprotect(protected, &expected_binding)?;
         PrivatePredictionPayload::new_zeroizing(content_type, plaintext).map_err(|_| corrupt())
     }
 }
@@ -345,7 +344,9 @@ fn encode_envelope(
     Ok(result)
 }
 
-fn decode_envelope(bytes: &[u8]) -> Result<(PrivatePredictionContentType, &[u8], &[u8], &[u8])> {
+type DecodedEnvelope<'a> = (PrivatePredictionContentType, &'a [u8], &'a [u8], &'a [u8]);
+
+fn decode_envelope(bytes: &[u8]) -> Result<DecodedEnvelope<'_>> {
     let header_len = 12 + INTEGRITY_BYTES;
     if bytes.len() < header_len || &bytes[..4] != MAGIC || bytes[4] != SCHEMA_VERSION {
         return Err(corrupt());
@@ -369,15 +370,15 @@ fn decode_envelope(bytes: &[u8]) -> Result<(PrivatePredictionContentType, &[u8],
 fn integrity_digest(
     content_type: PrivatePredictionContentType,
     binding: &[u8],
-    plaintext: &[u8],
+    protected: &[u8],
 ) -> [u8; INTEGRITY_BYTES] {
     let mut hasher = Sha256::new();
-    hasher.update(b"pinvou-private-prediction-integrity/v1");
+    hasher.update(b"pinvou-private-prediction-integrity/v2");
     hasher.update([content_type.tag()]);
     hasher.update((binding.len() as u64).to_le_bytes());
     hasher.update(binding);
-    hasher.update((plaintext.len() as u64).to_le_bytes());
-    hasher.update(plaintext);
+    hasher.update((protected.len() as u64).to_le_bytes());
+    hasher.update(protected);
     hasher.finalize().into()
 }
 
@@ -431,7 +432,17 @@ fn create_private_directory(path: &Path) -> Result<()> {
         .map_err(|_| BenchmarkError::coded("private_prediction_write_failed"))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn create_private_directory(path: &Path) -> Result<()> {
+    fs::create_dir(path).map_err(|_| BenchmarkError::coded("private_prediction_write_failed"))?;
+    if crate::apply_windows_private_acl(path, true).is_err() {
+        let _ = fs::remove_dir(path);
+        return Err(BenchmarkError::coded("private_permissions_unsupported"));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn create_private_directory(path: &Path) -> Result<()> {
     fs::create_dir(path).map_err(|_| BenchmarkError::coded("private_prediction_write_failed"))
 }
@@ -442,7 +453,7 @@ fn validate_private_directory(path: &Path) -> Result<()> {
     if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
         return Err(BenchmarkError::coded("unsafe_private_store_path"));
     }
-    validate_platform_directory(&metadata)
+    validate_platform_directory(path, &metadata)
 }
 
 fn validate_private_file(path: &Path) -> Result<()> {
@@ -451,11 +462,11 @@ fn validate_private_file(path: &Path) -> Result<()> {
     if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
         return Err(BenchmarkError::coded("private_prediction_corrupt"));
     }
-    validate_platform_file(&metadata)
+    validate_platform_file(path, &metadata)
 }
 
 #[cfg(unix)]
-fn validate_platform_directory(metadata: &fs::Metadata) -> Result<()> {
+fn validate_platform_directory(_path: &Path, metadata: &fs::Metadata) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     if metadata.permissions().mode() & 0o777 != 0o700 {
         return Err(BenchmarkError::coded("private_permissions_unsupported"));
@@ -463,13 +474,19 @@ fn validate_platform_directory(metadata: &fs::Metadata) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn validate_platform_directory(_metadata: &fs::Metadata) -> Result<()> {
+#[cfg(windows)]
+fn validate_platform_directory(path: &Path, _metadata: &fs::Metadata) -> Result<()> {
+    crate::apply_windows_private_acl(path, true)
+        .map_err(|_| BenchmarkError::coded("private_permissions_unsupported"))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn validate_platform_directory(_path: &Path, _metadata: &fs::Metadata) -> Result<()> {
     Ok(())
 }
 
 #[cfg(unix)]
-fn validate_platform_file(metadata: &fs::Metadata) -> Result<()> {
+fn validate_platform_file(_path: &Path, metadata: &fs::Metadata) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     if metadata.permissions().mode() & 0o777 != 0o600 {
         return Err(BenchmarkError::coded("private_permissions_unsupported"));
@@ -477,8 +494,14 @@ fn validate_platform_file(metadata: &fs::Metadata) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn validate_platform_file(_metadata: &fs::Metadata) -> Result<()> {
+#[cfg(windows)]
+fn validate_platform_file(path: &Path, _metadata: &fs::Metadata) -> Result<()> {
+    crate::apply_windows_private_acl(path, false)
+        .map_err(|_| BenchmarkError::coded("private_permissions_unsupported"))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn validate_platform_file(_path: &Path, _metadata: &fs::Metadata) -> Result<()> {
     Ok(())
 }
 
@@ -493,7 +516,22 @@ fn open_private_new_file(path: &Path) -> Result<File> {
         .map_err(|_| BenchmarkError::coded("private_prediction_write_failed"))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn open_private_new_file(path: &Path) -> Result<File> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|_| BenchmarkError::coded("private_prediction_write_failed"))?;
+    if crate::apply_windows_private_acl(path, false).is_err() {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(BenchmarkError::coded("private_permissions_unsupported"));
+    }
+    Ok(file)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn open_private_new_file(path: &Path) -> Result<File> {
     OpenOptions::new()
         .write(true)
@@ -665,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn envelope_integrity_binds_plaintext_and_metadata() {
+    fn envelope_integrity_binds_protected_payload_and_metadata() {
         let binding = b"run-task-type-handle";
         let digest = integrity_digest(
             PrivatePredictionContentType::Utf8TextV1,
