@@ -313,6 +313,23 @@ fn process_has_exited(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
+fn wait_for_descendant_pid(marker: &std::path::Path) -> u32 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match std::fs::read_to_string(marker) {
+            Ok(value) => return value.parse().unwrap(),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("descendant marker was not ready before deadline: {error}"),
+        }
+    }
+}
+
+#[cfg(windows)]
 fn write_fake_codex_cmd(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(directory).unwrap();
     let script = directory.join(name);
@@ -533,6 +550,74 @@ fn explicit_trusted_wrapper_validation_is_generic_and_precedes_capture() {
 
 #[test]
 #[cfg(windows)]
+fn explicit_trusted_wrapper_handle_blocks_write_for_the_entire_run() {
+    let root = temp_output("wrapper-write-attempt");
+    let output = root.join("output");
+    let result_marker = root.join("write-result.txt");
+    let (explicit, path) = path_with_planted_pwsh(&root);
+    let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .args(["run-s2", "--output-dir"])
+        .arg(&output)
+        .args(["--executable", env!("CARGO_BIN_EXE_fake-app-server")])
+        .arg("--trusted-approval-wrapper")
+        .arg(&explicit)
+        .args([
+            "--scenario-timeout-ms",
+            "2000",
+            "--global-timeout-ms",
+            "10000",
+        ])
+        .env("PATH", path)
+        .env("S2_FAKE_MODE", "wrapper-write-attempt")
+        .env("S2_FAKE_WRAPPER_TARGET", &explicit)
+        .env("S2_FAKE_WRAPPER_RESULT", &result_marker)
+        .output()
+        .unwrap();
+    assert!(
+        !result.status.success(),
+        "production thresholds must stay strict"
+    );
+    assert_eq!(std::fs::read_to_string(result_marker).unwrap(), "blocked");
+    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+    assert!(capture.contains(r#"\"decision\":\"accept\""#));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(windows)]
+fn explicit_trusted_wrapper_rejects_a_preexisting_writer_before_capture() {
+    let root = temp_output("wrapper-existing-writer");
+    let output = root.join("output");
+    let (explicit, _path) = path_with_planted_pwsh(&root);
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&explicit)
+        .unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .args(["run-s2", "--output-dir"])
+        .arg(&output)
+        .args(["--executable", env!("CARGO_BIN_EXE_fake-app-server")])
+        .arg("--trusted-approval-wrapper")
+        .arg(&explicit)
+        .args([
+            "--scenario-timeout-ms",
+            "2000",
+            "--global-timeout-ms",
+            "10000",
+        ])
+        .output()
+        .unwrap();
+    drop(writer);
+    assert!(!result.status.success());
+    assert!(!output.join("capture.jsonl").exists());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("trusted approval wrapper validation failed"));
+    assert!(!stderr.contains(explicit.to_string_lossy().as_ref()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(windows)]
 fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim() {
     let root = temp_output("windows-cmd-path");
     let bin = root.join("bin");
@@ -641,10 +726,7 @@ fn contained_process_kills_version_and_immediate_app_descendants() {
             start.elapsed() < Duration::from_secs(8),
             "{mode} cleanup hung"
         );
-        let pid = std::fs::read_to_string(&marker)
-            .unwrap()
-            .parse::<u32>()
-            .unwrap();
+        let pid = wait_for_descendant_pid(&marker);
         assert!(
             process_has_exited(pid),
             "{mode} descendant escaped containment"

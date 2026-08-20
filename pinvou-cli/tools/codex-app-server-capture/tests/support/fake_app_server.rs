@@ -212,10 +212,24 @@ fn main() {
                         if matches!(
                             mode.as_str(),
                             "wrapper-approval"
+                                | "wrapper-write-attempt"
                                 | "wrapper-command-mutated"
                                 | "wrapper-extra-action"
                                 | "wrapper-wrong-pwsh"
                         ) {
+                            if mode == "wrapper-write-attempt" {
+                                let target = std::env::var("S2_FAKE_WRAPPER_TARGET").unwrap();
+                                let outcome = std::fs::OpenOptions::new()
+                                    .write(true)
+                                    .open(target)
+                                    .map(|_| "opened")
+                                    .unwrap_or("blocked");
+                                std::fs::write(
+                                    std::env::var("S2_FAKE_WRAPPER_RESULT").unwrap(),
+                                    outcome,
+                                )
+                                .unwrap();
+                            }
                             command = approval_wrapper(&command);
                             if mode == "wrapper-command-mutated" {
                                 command.push(' ');

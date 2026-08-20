@@ -128,12 +128,17 @@ absolute `cmd.exe` returned from `GetSystemDirectoryW`, and the runner accepts o
 `item/commandExecution/requestApproval` whose command exactly matches it, whose
 thread/turn IDs match scenario C, and whose canonical working directory remains
 exactly equal to the scenario workspace. On Windows the runner also accepts the
-one observed app-server PowerShell wrapper form only when its canonical
-`pwsh.exe` is below the `FOLDERID_ProgramFiles` PowerShell root returned by
-WinAPI, and its escaping, argument shape, and sole `commandActions` entry exactly
-preserve the allowlisted inner command. PATH-planted shells, child directories,
-and all wrapper variations are rejected. No caller-controlled path is
-interpolated into the command. Exactly one such approval is required.
+one observed app-server PowerShell wrapper form. Without an explicit option,
+automatic trust is limited to canonical `pwsh.exe` below the WinAPI
+`FOLDERID_ProgramFiles` PowerShell root. With
+`--trusted-approval-wrapper`, the operator instead trusts exactly that one
+canonical executable, even outside Program Files. The runner retains a read
+handle that excludes write/delete sharing for the whole run, records its volume
+and file ID, and revalidates path identity immediately before approval. In both
+modes, escaping, argument shape, and the sole `commandActions` entry must exactly
+preserve the allowlisted inner command. Other shells, child directories, and all
+wrapper variations are rejected. No caller-controlled path is interpolated into
+the command. Exactly one such approval is required.
 Every other server request, command, or target is rejected and invalidates the
 run. Scenario D sends `turn/interrupt` only after a real backlog of at least
 eight nonempty deltas and 2 KiB, and reports request-write-to-response and

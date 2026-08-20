@@ -139,7 +139,7 @@ fn run_s2_with_thresholds(
                 &mut evidence,
                 thresholds,
                 global_deadline,
-                explicit_approval_wrapper.as_deref(),
+                explicit_approval_wrapper.as_ref(),
             )
         })
     });
@@ -455,7 +455,7 @@ fn execute(
     evidence: &mut S2Evidence,
     thresholds: RunnerThresholds,
     global_deadline: Instant,
-    explicit_approval_wrapper: Option<&Path>,
+    explicit_approval_wrapper: Option<&TrustedApprovalWrapper>,
 ) -> Result<()> {
     remaining_global(global_deadline)?;
     let clock = Arc::new(HostMonotonicClock::new()?);
@@ -501,7 +501,7 @@ fn execute(
         let approval_command = approval_command()?;
         #[cfg(windows)]
         let approval_wrapper_shell = match explicit_approval_wrapper {
-            Some(path) => Some(path.to_owned()),
+            Some(wrapper) => Some(wrapper.path.clone()),
             None => auto_trusted_approval_wrapper_shell()?,
         };
         #[cfg(windows)]
@@ -569,6 +569,7 @@ fn execute(
                 workspace,
                 &approval_command,
                 approval_wrapper.as_deref(),
+                explicit_approval_wrapper,
                 scenario_deadline,
                 thresholds,
             )?;
@@ -889,6 +890,7 @@ impl Session {
         workspace: &Path,
         approval_command: &str,
         approval_wrapper: Option<&str>,
+        explicit_approval_wrapper: Option<&TrustedApprovalWrapper>,
         deadline: Instant,
         thresholds: RunnerThresholds,
     ) -> Result<ObservedScenario> {
@@ -915,6 +917,7 @@ impl Session {
                     workspace,
                     approval_command,
                     approval_wrapper,
+                    explicit_approval_wrapper,
                 )?;
                 approval_seen = true;
                 continue;
@@ -1015,6 +1018,7 @@ impl Session {
         workspace: &Path,
         command: &str,
         wrapper_candidate: Option<&str>,
+        explicit_wrapper: Option<&TrustedApprovalWrapper>,
     ) -> Result<()> {
         let id = frame.get("id").cloned().context("approval missing id")?;
         let method = frame.get("method").and_then(Value::as_str);
@@ -1033,6 +1037,7 @@ impl Session {
                         actions.len() == 1
                             && actions[0].get("command").and_then(Value::as_str) == Some(command)
                     })
+                && explicit_wrapper.map_or(true, TrustedApprovalWrapper::path_identity_matches)
         });
         let safe = method == Some("item/commandExecution/requestApproval")
             && params.get("threadId").and_then(Value::as_str) == Some(thread_id)
@@ -1642,7 +1647,60 @@ fn trusted_scenario_shell() -> Result<PathBuf> {
     }
 }
 
-fn validate_explicit_approval_wrapper(path: Option<&Path>) -> Result<Option<PathBuf>> {
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WindowsFileIdentity {
+    volume_serial: u32,
+    file_index: u64,
+}
+
+#[cfg(windows)]
+struct TrustedApprovalWrapper {
+    path: PathBuf,
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    identity: WindowsFileIdentity,
+}
+
+#[cfg(not(windows))]
+struct TrustedApprovalWrapper;
+
+#[cfg(windows)]
+impl Drop for TrustedApprovalWrapper {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        unsafe { CloseHandle(self.handle) };
+    }
+}
+
+impl TrustedApprovalWrapper {
+    #[cfg(windows)]
+    fn path_identity_matches(&self) -> bool {
+        let Ok(canonical) = self.path.canonicalize() else {
+            return false;
+        };
+        let Ok(canonical) = normalize_windows_command_path(canonical) else {
+            return false;
+        };
+        if canonical != self.path {
+            return false;
+        }
+        let Ok(handle) = open_locked_wrapper_handle(&canonical) else {
+            return false;
+        };
+        let matches = wrapper_file_identity(handle).is_ok_and(|identity| identity == self.identity);
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        matches
+    }
+
+    #[cfg(not(windows))]
+    fn path_identity_matches(&self) -> bool {
+        false
+    }
+}
+
+fn validate_explicit_approval_wrapper(
+    path: Option<&Path>,
+) -> Result<Option<TrustedApprovalWrapper>> {
     let Some(path) = path else {
         return Ok(None);
     };
@@ -1684,13 +1742,74 @@ fn validate_explicit_approval_wrapper(path: Option<&Path>) -> Result<Option<Path
         if !safe {
             bail!("trusted approval wrapper validation failed");
         }
-        return Ok(Some(canonical));
+        let handle = open_locked_wrapper_handle(&canonical)
+            .map_err(|_| anyhow!("trusted approval wrapper validation failed"))?;
+        let identity = match wrapper_file_identity(handle) {
+            Ok(identity) => identity,
+            Err(_) => {
+                unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+                bail!("trusted approval wrapper validation failed");
+            }
+        };
+        return Ok(Some(TrustedApprovalWrapper {
+            path: canonical,
+            handle,
+            identity,
+        }));
     }
     #[cfg(not(windows))]
     {
         let _ = path;
         bail!("trusted approval wrapper validation failed");
     }
+}
+
+#[cfg(windows)]
+fn open_locked_wrapper_handle(path: &Path) -> Result<windows_sys::Win32::Foundation::HANDLE> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, OPEN_EXISTING,
+    };
+
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        bail!("trusted approval wrapper validation failed");
+    }
+    Ok(handle)
+}
+
+#[cfg(windows)]
+fn wrapper_file_identity(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+) -> Result<WindowsFileIdentity> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        bail!("trusted approval wrapper validation failed");
+    }
+    Ok(WindowsFileIdentity {
+        volume_serial: info.dwVolumeSerialNumber,
+        file_index: ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+    })
 }
 
 #[cfg(windows)]
