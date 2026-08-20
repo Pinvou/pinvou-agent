@@ -433,11 +433,12 @@ fn validate_host_managed_surfaces() -> Result<()> {
     let paths = {
         let program_data =
             known_program_data().map_err(|_| anyhow!("S2 managed configuration audit failed"))?;
+        let codex_system = program_data.join("OpenAI").join("Codex");
         vec![
-            program_data.join("OpenAI/Codex/config.toml"),
-            program_data.join("OpenAI/Codex/requirements.toml"),
-            program_data.join("OpenAI/Codex/managed_config.toml"),
-            program_data.join("OpenAI/Codex/skills"),
+            codex_system.join("config.toml"),
+            codex_system.join("requirements.toml"),
+            codex_system.join("managed_config.toml"),
+            codex_system.join("skills"),
         ]
     };
     #[cfg(target_os = "linux")]
@@ -3334,7 +3335,10 @@ fn expected_session_layer_config() -> Value {
 
 fn expected_system_config_path() -> Result<PathBuf> {
     #[cfg(windows)]
-    return Ok(known_program_data()?.join("OpenAI/Codex/config.toml"));
+    return Ok(known_program_data()?
+        .join("OpenAI")
+        .join("Codex")
+        .join("config.toml"));
     #[cfg(target_os = "linux")]
     return Ok(PathBuf::from("/etc/codex/config.toml"));
     #[cfg(not(any(windows, target_os = "linux")))]
@@ -5308,7 +5312,9 @@ mod tests {
         #[cfg(windows)]
         let system_config = super::known_program_data()
             .unwrap()
-            .join("OpenAI/Codex/config.toml");
+            .join("OpenAI")
+            .join("Codex")
+            .join("config.toml");
         #[cfg(not(windows))]
         let system_config = std::path::PathBuf::from("/etc/codex/config.toml");
         let session_name = json!({"type":"sessionFlags"});
@@ -5401,6 +5407,21 @@ mod tests {
         frame["result"]["config"]["experimental_thread_config_endpoint"] =
             json!("https://private.invalid");
         assert!(super::validate_effective_config(&frame, &home).is_err());
+        #[cfg(windows)]
+        {
+            let mut frame = valid_config_frame(&home);
+            frame["result"]["layers"][2]["name"]["file"] = json!(
+                super::known_program_data()
+                    .unwrap()
+                    .join("OpenAI/Codex/config.toml")
+            );
+            assert_eq!(
+                super::validate_effective_config(&frame, &home)
+                    .unwrap_err()
+                    .to_string(),
+                "config preflight failed [CFG_SYSTEM_PATH]"
+            );
+        }
         for (mutation, code) in [
             ("order", "CFG_LAYER_USER"),
             ("duplicate", "CFG_LAYER_COUNT"),

@@ -384,7 +384,9 @@ fn main() {
                 let system_config = std::path::PathBuf::from(
                     std::env::var_os("ProgramData").unwrap_or_else(|| "C:\\ProgramData".into()),
                 )
-                .join("OpenAI/Codex/config.toml");
+                .join("OpenAI")
+                .join("Codex")
+                .join("config.toml");
                 #[cfg(not(windows))]
                 let system_config = std::path::PathBuf::from("/etc/codex/config.toml");
                 let session_name = json!({"type":"sessionFlags"});
