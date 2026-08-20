@@ -881,6 +881,20 @@ async function expand(page) {
     JSON.stringify(codexBatchArchive));
   await page.evaluate(() => document.querySelector('button[aria-label="取消"]')?.click());
 
+  // codex 区块结束:code 会话在对话管理页被点开后即进入 code 模式(侧边栏样式、
+  // 折叠导航、「新对话」行为都跟随模式)。后续用例依赖普通侧边栏与聊天视图,
+  // 这里在对话管理页点开一个普通会话,显式退出 code 模式,避免污染下游断言。
+  await page.evaluate(() => {
+    const label = [...document.querySelectorAll('span')]
+      .find(node => (node.textContent || '').trim() === '第三季度财报分析' && node.getBoundingClientRect().left > 300);
+    label && label.closest('div[class*="cursor-pointer"]')?.click();
+  });
+  await sleep(700);
+  const exitedCodeMode = await page.evaluate(() =>
+    document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'chat'
+      && !document.querySelector('[data-testid="sidebar-primary-nav-expand"]'));
+  rec('①a-6 对话管理页点开普通会话退出 code 模式', exitedCodeMode, String(exitedCodeMode));
+
   // 模型表单可能包含尚未保存的名称、地址和密钥，点击遮罩层不能意外丢失草稿；
   // 只有显式点击“取消”才关闭。
   const modelModalOpened = await page.evaluate(() => {
