@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -68,6 +68,14 @@ import {
   finalizePreparedSessionCreation,
   resolveNativeModelId,
 } from './native-session-handoff.js';
+import {
+  checkpointRefreshKey,
+  reloadSessionAfterRewind,
+  rewindEntriesByTurnId,
+  rewindNoticeText,
+  useSessionCheckpoints,
+} from './checkpoints.js';
+import { RewindChip, RewindConfirmDialog } from './RewindChip.jsx';
 import {
   ConversationActivityIndicator,
   ConversationMarkdown,
@@ -1281,6 +1289,25 @@ export function CodexAcpView({
   const busy = isNativeAgent
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
+  // 「回退到第 N 轮」入口（仅原生代码车道）：checkpoint 列表 + turn 边界对齐。
+  // 回退编排（rewind_to_turn）由 confirmRewind 发起；成功后走既有 loadSession
+  // 重载（磁盘对话已截断、engine 已被后端回收重注水）。refreshKey 含 busy 边沿：
+  // 新 turn 的快照在 turn 开始时由 Rust 写入，发送瞬间的拉取可能拿到旧列表，
+  // busy→idle（turn 完成）重拉后入口变体才收敛（联调 Bug A）。ACP 车道与聊天页
+  // 不渲染入口（设计 §7）。
+  const rewindCheckpoints = useSessionCheckpoints({
+    sessionId: activeId,
+    enabled: isNativeAgent && Boolean(activeId),
+    refreshKey: checkpointRefreshKey({ turnCount: visibleTurns.length, busy }),
+  });
+  const rewindEntries = useMemo(
+    () => (isNativeAgent ? rewindEntriesByTurnId(visibleTurns, rewindCheckpoints.checkpoints) : new Map()),
+    [isNativeAgent, visibleTurns, rewindCheckpoints.checkpoints],
+  );
+  // 待确认的回退目标（{ keepTurns, checkpoint, conversationOnly }）；非 null 时渲染确认弹窗。
+  const [rewindTarget, setRewindTarget] = useState(null);
+  const [rewindError, setRewindError] = useState('');
+  const [rewinding, setRewinding] = useState(false);
   // Equivalent to [...visibleTurns].reverse().find(status === 'running'): scan backwards for the last
   // running turn, memoized on the turns reference (both turns branches come from memoized projections,
   // and the draft empty state uses the module-level constant array), so no reversed copy is rebuilt per render.
@@ -1374,6 +1401,8 @@ export function CodexAcpView({
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously collapse the subagent panel on session switch; one-shot mirror
     setSubagentPanel(null);
+    setRewindTarget(null);
+    setRewindError('');
   }, [activeId]);
   useEffect(() => {
     if (typeof window === 'undefined' || !isNativeAgent) return;
@@ -1940,6 +1969,66 @@ export function CodexAcpView({
   function rebaseAcpEventSeqTracker(sessionId, timeline) {
     const maxSeq = (timeline || []).reduce((max, event) => Math.max(max, Number(event?.seq) || 0), 0);
     acpEventSeqTrackerRef.current.rebase(sessionId, maxSeq);
+  }
+
+  // 打开回退确认弹窗；有快照的目标懒加载 diff 预览（「将撤销的变更」摘要）。
+  function openRewindDialog(entry) {
+    setRewindError('');
+    setRewindTarget(entry);
+    if (entry.checkpoint) rewindCheckpoints.preview(entry.checkpoint.id);
+  }
+
+  // 确认回退：rewind_to_turn 编排（恢复代码 + 截断对话 + engine 回收重注水，
+  // 含本会话/跨会话忙碌门）。成功后先重载再收口（联调 Bug B）：loadSession 走
+  // 既有路径按磁盘截断后内容重注水，成败都强制 bump tick 兜底重投影；重载
+  // 失败留在弹窗如实上屏（弹窗不在重载前关闭，错误不再被吞进不可见状态）。
+  async function confirmRewind() {
+    const target = rewindTarget;
+    if (!target || !activeId || rewinding) return;
+    setRewinding(true);
+    setRewindError('');
+    try {
+      const result = await invoke('rewind_to_turn', {
+        sessionId: activeId,
+        keepTurns: target.keepTurns,
+        conversationOnly: target.conversationOnly,
+      });
+      const { error: reloadError } = await reloadSessionAfterRewind({
+        reload: () => loadSession(activeId),
+        bumpTick: () => setNativeLaneTick(tick => tick + 1),
+      });
+      if (reloadError) {
+        setRewindError(reloadError);
+        return;
+      }
+      setRewindTarget(null);
+      const notice = rewindNoticeText(codexCopy, result, target.keepTurns);
+      appendNativeSystemItem(getNativeLane(activeId), notice);
+      setNativeLaneTick(tick => tick + 1);
+      // 入口可用性随新时间线重算（refreshKey 的 turns/busy 变化通常已触发，此处兜底）。
+      rewindCheckpoints.refresh();
+    } catch (err) {
+      setRewindError(String(err && err.message ? err.message : err));
+    } finally {
+      setRewinding(false);
+    }
+  }
+
+  async function createSession(workspacePath = draftWorkspacePath) {
+    setError('');
+    setWorkspaceMenuOpen(false);
+    const metadata = await invoke('create_codex_acp_session', {
+      workspacePath,
+      agentId: draftAgentId,
+    });
+    // loadSession 用 nativeSessionIdsRef 判定分流；新会话先登记，避免它读到旧 prop。
+    if (draftAgentId === 'pinvou') nativeSessionIdsRef.current.add(metadata.id);
+    if (workspacePath) setRecentWorkspaces(rememberWorkspace(workspacePath));
+    await refreshSessions();
+    skipNextActiveLoadRef.current = metadata.id;
+    if (onActiveSessionChange) onActiveSessionChange(metadata.id);
+    const info = await loadSession(metadata.id);
+    return { id: metadata.id, info };
   }
 
   // Self-healing for envelope-seq gaps in the web live stream: after the
@@ -3393,52 +3482,63 @@ export function CodexAcpView({
             )}
             {visibleTurns.map(turn => (useUnifiedConversationUi || isNativeAgent)
               ? (
-                  <ConversationTurn
-                    key={turn.id}
-                    turn={turn}
-                    now={now}
-                    copy={t.uiConversation}
-                    pendingByTool={pendingByTool}
-                    onRespond={respond}
-                    responding={responding}
-                    assistantAvatar={(
-                      <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center text-[#1F1F1F] dark:text-[#E3E3E3]">
-                        <AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} />
-                      </div>
+                  <Fragment key={turn.id}>
+                    {isNativeAgent && rewindEntries.has(turn.id) && (
+                      // 原生车道 turn 边界回退入口：turn N+1 前的 chip =「回退到第 N 轮」；
+                      // 无快照的边界为「仅回退对话」变体（rewindEntriesByTurnId 判定）。
+                      <RewindChip
+                        entry={rewindEntries.get(turn.id)}
+                        disabled={busy || rewinding}
+                        copy={codexCopy}
+                        onOpen={openRewindDialog}
+                      />
                     )}
-                    renderItem={isNativeAgent
-                      ? (item) => renderNativeItem(item)
-                      : (item) => item.type === 'elicitation'
-                        ? (
-                            <ElicitationCard
-                              elicitation={item.elicitation}
-                              pending={pendingByElicitation[item.elicitation.elicitationId]}
-                              onRespond={respondElicitation}
-                              responding={responding}
-                              copy={codexCopy}
-                              conversationCopy={t.uiConversation}
-                            />
-                          )
+                    <ConversationTurn
+                      turn={turn}
+                      now={now}
+                      copy={t.uiConversation}
+                      pendingByTool={pendingByTool}
+                      onRespond={respond}
+                      responding={responding}
+                      assistantAvatar={(
+                        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center text-[#1F1F1F] dark:text-[#E3E3E3]">
+                          <AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} />
+                        </div>
+                      )}
+                      renderItem={isNativeAgent
+                        ? (item) => renderNativeItem(item)
+                        : (item) => item.type === 'elicitation'
+                          ? (
+                              <ElicitationCard
+                                elicitation={item.elicitation}
+                                pending={pendingByElicitation[item.elicitation.elicitationId]}
+                                onRespond={respondElicitation}
+                                responding={responding}
+                                copy={codexCopy}
+                                conversationCopy={t.uiConversation}
+                              />
+                            )
+                          : undefined}
+                      renderToolItem={isNativeAgent
+                        ? (item) => item.legacyItem
+                          && !isSearchTool(item.tool)
+                          && !isFetchTool(item.tool)
+                          ? (
+                              <ToolCard
+                                item={{ ...item.legacyItem, sessionId: activeId }}
+                                sessionId={activeId}
+                                theme={theme}
+                                t={t}
+                                variant="timeline"
+                              />
+                            )
+                          : undefined
                         : undefined}
-                    renderToolItem={isNativeAgent
-                      ? (item) => item.legacyItem
-                        && !isSearchTool(item.tool)
-                        && !isFetchTool(item.tool)
-                        ? (
-                            <ToolCard
-                              item={{ ...item.legacyItem, sessionId: activeId }}
-                              sessionId={activeId}
-                              theme={theme}
-                              t={t}
-                              variant="timeline"
-                            />
-                          )
-                        : undefined
-                      : undefined}
-                    agentLabel={activeAgentName}
-                    onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
-                    onOpenResource={isWeb ? undefined : openWorkspaceResource}
-                  />
+                      agentLabel={activeAgentName}
+                      onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
+                      onOpenResource={isWeb ? undefined : openWorkspaceResource}
+                    />
+                  </Fragment>
                 )
               : (
                   <Turn key={turn.id} turn={turn} now={now}
@@ -4002,6 +4102,22 @@ export function CodexAcpView({
             busy={yoloConfirmBusy}
             onConfirm={confirmPendingYoloSwitch}
             onCancel={() => setPendingYoloSwitch(null)}
+          />
+        )}
+        {rewindTarget && (
+          // 「回退到第 N 轮」确认弹窗：变更摘要（懒加载 diff）+ 对话截断位置 +
+          // 错误如实上屏；确认后 confirmRewind 走 rewind_to_turn 编排。
+          <RewindConfirmDialog
+            entry={rewindTarget}
+            previewState={rewindTarget.checkpoint
+              ? rewindCheckpoints.previews[rewindTarget.checkpoint.id]
+              : null}
+            error={rewindError}
+            busy={rewinding}
+            theme={theme}
+            copy={codexCopy}
+            onCancel={() => { if (!rewinding) setRewindTarget(null); }}
+            onConfirm={confirmRewind}
           />
         )}
         {(activeSession || (!isWeb && draftWorkspacePath)) && (

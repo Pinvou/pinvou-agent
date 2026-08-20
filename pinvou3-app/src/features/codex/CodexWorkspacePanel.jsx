@@ -16,6 +16,7 @@ import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { CodeViewerModal } from './CodeViewerModal.jsx';
 import { can, isWeb } from '../../shared/platform.js';
 import { acpErrorMessage } from './acpErrors.js';
+import { isMissingWorkspaceDirectoryError, pruneMissingDirectory } from './workspace-tree.js';
 
 const invoke = invokeTauri;
 function changeLabel(status, copy) {
@@ -208,7 +209,18 @@ export function CodexWorkspacePanel({
       setEntriesByDirectory(current => ({ ...current, [path]: listing.entries || [] }));
       setError('');
     } catch (nextError) {
-      showError(nextError);
+      // 浏览中的非根目录已从磁盘消失（回退撤销 agent 创建的目录、agent 回合中
+      // 删目录、用户外部删除都会触发）：把它（含子路径）从展开集合与条目缓存
+      // 逐出，树自然折叠到仍存在的祖先。不 showError——折叠本身已如实反映现实，
+      // 而 showError 会随 refresh/轮询对仍挂在 expanded 里的路径无限重复爆错
+      // （联调 bug）。错误判定依赖后端固定文案，见 workspace-tree.js 注释。
+      // 根路径（''）失败保持 showError：那是整个工作区不可用，必须显式提示。
+      if (path && isMissingWorkspaceDirectoryError(nextError)) {
+        setExpanded(current => pruneMissingDirectory(current, {}, path).expanded);
+        setEntriesByDirectory(current => pruneMissingDirectory(new Set(), current, path).entriesByDirectory);
+      } else {
+        showError(nextError);
+      }
     } finally {
       setLoadingDirectories(current => {
         const next = new Set(current);
