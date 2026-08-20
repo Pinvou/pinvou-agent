@@ -7,9 +7,9 @@ TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-LOCAL_SECURITY_HEAD="21e5f661abc522ecf36bf2ee6d6aabe93b4bf365"
+LOCAL_SECURITY_HEAD="a647ed866c9adaac687dc1b892935537adcdaaf5"
 PUBLISHED_COMMITS=9
-LOCAL_COMMITS=13
+LOCAL_COMMITS=14
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -46,7 +46,7 @@ commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev
 if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
   green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，当前合法拓扑应为 ${expected_commits:-9 或 13}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，当前合法拓扑应为 ${expected_commits:-9 或 14}"
   fail=1
 fi
 
@@ -95,7 +95,10 @@ fingerprints=(
   "T2|会话 trusted roots 可完全覆盖       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_session_trusted_roots_override_persisted_workspace_trust"
   "T2|执行分发白名单 fail-closed          |CodeWhale/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends"
   "T2|排队控制操作继承受限权限             |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_queued_control_op_keeps_restricted_turn_authority"
-  "T2|受限续轮与 MCP reload 拒绝           |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_queued_goal_continuation_and_mcp_reload_keeps_restricted_turn_authority"
+  "T2|受限续轮、编辑与 MCP reload 拒绝     |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_queued_goal_continuation_and_mcp_reload_keeps_restricted_turn_authority"
+  "T2|受限轮次延迟空闲子代理续轮           |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message"
+  "T2|受限轮次延迟后台 Shell 唤醒          |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_restricted_turn_defers_idle_shell_wake_until_new_message"
+  "T2|受限 Bash 使用只读 Shell 加固        |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_agent_uses_hardened_read_only_shell_context"
   "T2|受限轮次 Hook 默认关闭              |CodeWhale/crates/tui/src/core/ops.rs|fn forkguard_restricted_turn_hooks_require_explicit_host_opt_in"
   "T2|受限工具审计固定脱敏                 |CodeWhale/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_restricted_tool_audit_redacts_private_sentinel"
   "T2|受限轮次 File schema 只读           |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_agent_uses_read_only_file_schema"
