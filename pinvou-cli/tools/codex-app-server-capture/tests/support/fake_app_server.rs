@@ -66,7 +66,7 @@ fn thread_value(thread_id: &str, cwd: &str) -> Value {
         "path":null,
         "cwd":cwd,
         "cliVersion":"0.139.0",
-        "source":"appServer",
+        "source":"vscode",
         "threadSource":null,
         "agentNickname":null,
         "agentRole":null,

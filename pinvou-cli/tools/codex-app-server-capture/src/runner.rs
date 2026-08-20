@@ -1961,9 +1961,9 @@ enum PinnedThreadStatus {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 enum PinnedSessionSource {
-    AppServer,
+    #[serde(rename = "vscode")]
+    VsCode,
 }
 
 #[derive(Deserialize)]
@@ -2032,7 +2032,7 @@ fn valid_thread_started(frame: &Value, thread_id: &str, workspace: &Path) -> boo
         && thread.path.is_none()
         && thread.cwd == workspace
         && thread.cli_version == "0.139.0"
-        && matches!(thread.source, PinnedSessionSource::AppServer)
+        && matches!(thread.source, PinnedSessionSource::VsCode)
         && thread.thread_source.is_none()
         && thread.agent_nickname.is_none()
         && thread.agent_role.is_none()
@@ -3324,7 +3324,7 @@ mod tests {
             "id":"t","sessionId":"t","forkedFromId":null,"parentThreadId":null,
             "preview":"","ephemeral":true,"modelProvider":"openai","createdAt":1,"updatedAt":1,
             "status":{"type":"idle"},"path":null,"cwd":workspace,"cliVersion":"0.139.0",
-            "source":"appServer","threadSource":null,"agentNickname":null,"agentRole":null,
+            "source":"vscode","threadSource":null,"agentNickname":null,"agentRole":null,
             "gitInfo":null,"name":null,"turns":[]
         }}})
     }
@@ -3389,7 +3389,7 @@ mod tests {
             ("path", json!("somewhere")),
             ("cwd", json!(workspace.join("child"))),
             ("cliVersion", json!("0.140.0")),
-            ("source", json!("cli")),
+            ("source", json!("appServer")),
             ("threadSource", json!("user")),
             ("agentNickname", json!("agent")),
             ("agentRole", json!("worker")),
@@ -3405,6 +3405,19 @@ mod tests {
             assert!(
                 !super::valid_thread_started(&changed, "t", &workspace),
                 "wrong {field} was accepted"
+            );
+        }
+        for bad_source in [
+            json!("appServer"),
+            json!("cli"),
+            json!("unknown"),
+            json!({"custom":"caller-defined"}),
+        ] {
+            let mut changed = frame.clone();
+            changed["params"]["thread"]["source"] = bad_source.clone();
+            assert!(
+                !super::valid_thread_started(&changed, "t", &workspace),
+                "wrong source {bad_source} was accepted"
             );
         }
         let mut unknown = frame.clone();
@@ -3645,7 +3658,7 @@ mod tests {
             "id":"t","sessionId":"t","forkedFromId":null,"parentThreadId":null,
             "preview":"","ephemeral":true,"modelProvider":"openai","createdAt":1,"updatedAt":1,
             "status":{"type":"idle"},"path":null,"cwd":workspace,"cliVersion":"0.139.0",
-            "source":"appServer","threadSource":null,"agentNickname":null,"agentRole":null,
+            "source":"vscode","threadSource":null,"agentNickname":null,"agentRole":null,
             "gitInfo":null,"name":null,"turns":[]
         }}});
         state.validate(&thread, "t", "u").unwrap();

@@ -330,8 +330,48 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         .filter_map(|frame| frame.pointer("/params/cwd").and_then(Value::as_str))
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(scenario_cwds.len(), 4);
-    for name in ["a", "b", "c", "d"] {
-        assert!(scenario_cwds.iter().any(|cwd| cwd.ends_with(name)));
+    let workspace_root = output.join("workspace").canonicalize().unwrap();
+    for (name, tag) in [("a", "S2-A"), ("b", "S2-B"), ("c", "S2-C"), ("d", "S2-D")] {
+        let expected = workspace_root.join(name).canonicalize().unwrap();
+        let expected = expected.to_str().unwrap();
+        let thread = records
+            .iter()
+            .map(|(_, frame)| frame)
+            .find(|frame| {
+                frame["method"] == "thread/start"
+                    && frame.pointer("/params/cwd").and_then(Value::as_str) == Some(expected)
+            })
+            .unwrap_or_else(|| panic!("missing exact canonical thread/start cwd for {tag}"));
+        assert_eq!(thread["params"]["ephemeral"], true);
+        assert!(thread["params"].get("model").is_none());
+        assert_eq!(
+            thread["params"]["approvalPolicy"],
+            if name == "c" { "on-request" } else { "never" }
+        );
+        assert_eq!(
+            thread["params"]["sandbox"],
+            if name == "c" {
+                "read-only"
+            } else {
+                "workspace-write"
+            }
+        );
+
+        let turn = records
+            .iter()
+            .map(|(_, frame)| frame)
+            .find(|frame| {
+                frame["method"] == "turn/start"
+                    && frame
+                        .pointer("/params/input/0/text")
+                        .and_then(Value::as_str)
+                        .is_some_and(|prompt| prompt.contains(tag))
+            })
+            .unwrap_or_else(|| panic!("missing turn/start for {tag}"));
+        assert_eq!(
+            turn.pointer("/params/cwd").and_then(Value::as_str),
+            Some(expected)
+        );
     }
     let turn_start = records
         .iter()
