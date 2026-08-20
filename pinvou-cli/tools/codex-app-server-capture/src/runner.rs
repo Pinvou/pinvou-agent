@@ -278,7 +278,7 @@ fn find_windows_path_command(name: &str) -> Result<PathBuf> {
             return Ok(candidate);
         }
     }
-    bail!("codex.cmd was not found on PATH")
+    bail!("{name} was not found on PATH")
 }
 
 #[cfg(windows)]
@@ -492,7 +492,15 @@ fn execute(
         let mut scenario_b_content = Vec::new();
         let mut interrupt_response_latency_ms = None;
         let mut interrupt_terminal_latency_ms = None;
+        let scenario_shell = trusted_scenario_shell()?;
         let approval_command = approval_command()?;
+        #[cfg(windows)]
+        let approval_wrapper = Some(approval_wrapper_candidate(
+            &scenario_shell,
+            &approval_command,
+        )?);
+        #[cfg(not(windows))]
+        let approval_wrapper: Option<String> = None;
         let corpus = restricted_ascii_corpus();
         for name in ["A", "B", "C", "D"] {
             let scenario_deadline = Instant::now() + config.scenario_timeout;
@@ -523,7 +531,7 @@ fn execute(
                     format!("scenario {name}: thread/start response missing thread.id")
                 })?
                 .to_owned();
-            let prompt = scenario_prompt(name, &approval_command, &corpus);
+            let prompt = scenario_prompt(name, &approval_command, &corpus, &scenario_shell)?;
             let mut turn_params = json!({
                 "threadId":thread_id,
                 "cwd":workspace,
@@ -549,6 +557,7 @@ fn execute(
                 &turn_id,
                 workspace,
                 &approval_command,
+                approval_wrapper.as_deref(),
                 scenario_deadline,
                 thresholds,
             )?;
@@ -868,6 +877,7 @@ impl Session {
         turn_id: &str,
         workspace: &Path,
         approval_command: &str,
+        approval_wrapper: Option<&str>,
         deadline: Instant,
         thresholds: RunnerThresholds,
     ) -> Result<ObservedScenario> {
@@ -893,6 +903,7 @@ impl Session {
                     turn_id,
                     workspace,
                     approval_command,
+                    approval_wrapper,
                 )?;
                 approval_seen = true;
                 continue;
@@ -912,29 +923,22 @@ impl Session {
                     continue;
                 }
             }
-            if is_delta(&frame, thread_id, turn_id) {
-                let bytes = frame
-                    .pointer("/params/delta")
-                    .and_then(Value::as_str)
-                    .map(|delta| delta.len() as u64)
-                    .unwrap_or(0);
-                if bytes > 0 {
-                    content.push(ContentEvent {
-                        timestamp_ns,
-                        bytes,
-                    });
-                    let content_bytes = content.iter().map(|event| event.bytes).sum::<u64>();
-                    if name == "D"
-                        && interrupt_id.is_none()
-                        && content.len() >= thresholds.d_min_events
-                        && content_bytes >= thresholds.d_min_bytes
-                    {
-                        let id = self.next_id;
-                        self.next_id += 1;
-                        let request_ns = self.send(&json!({"id":id,"method":"turn/interrupt","params":{"threadId":thread_id,"turnId":turn_id}}))?;
-                        interrupt_request_ns = Some(request_ns);
-                        interrupt_id = Some(id);
-                    }
+            if let Some(bytes) = delta_bytes(&frame, thread_id, turn_id) {
+                content.push(ContentEvent {
+                    timestamp_ns,
+                    bytes,
+                });
+                let content_bytes = content.iter().map(|event| event.bytes).sum::<u64>();
+                if name == "D"
+                    && interrupt_id.is_none()
+                    && content.len() >= thresholds.d_min_events
+                    && content_bytes >= thresholds.d_min_bytes
+                {
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    let request_ns = self.send(&json!({"id":id,"method":"turn/interrupt","params":{"threadId":thread_id,"turnId":turn_id}}))?;
+                    interrupt_request_ns = Some(request_ns);
+                    interrupt_id = Some(id);
                 }
             }
             if let Some(status) = terminal_status(&frame, thread_id, turn_id) {
@@ -999,6 +1003,7 @@ impl Session {
         turn_id: &str,
         workspace: &Path,
         command: &str,
+        wrapper_candidate: Option<&str>,
     ) -> Result<()> {
         let id = frame.get("id").cloned().context("approval missing id")?;
         let method = frame.get("method").and_then(Value::as_str);
@@ -1006,10 +1011,22 @@ impl Session {
         let cwd = params.get("cwd").and_then(Value::as_str).map(PathBuf::from);
         let workspace_root = workspace.canonicalize().ok();
         let canonical_cwd = cwd.as_deref().and_then(|path| path.canonicalize().ok());
+        let raw_command = params.get("command").and_then(Value::as_str);
+        let direct_command = raw_command == Some(command);
+        let exact_wrapped_command = wrapper_candidate.is_some_and(|wrapper| {
+            raw_command == Some(wrapper)
+                && params
+                    .get("commandActions")
+                    .and_then(Value::as_array)
+                    .is_some_and(|actions| {
+                        actions.len() == 1
+                            && actions[0].get("command").and_then(Value::as_str) == Some(command)
+                    })
+        });
         let safe = method == Some("item/commandExecution/requestApproval")
             && params.get("threadId").and_then(Value::as_str) == Some(thread_id)
             && params.get("turnId").and_then(Value::as_str) == Some(turn_id)
-            && params.get("command").and_then(Value::as_str) == Some(command)
+            && (direct_command || exact_wrapped_command)
             && workspace_root
                 .as_ref()
                 .is_some_and(|root| canonical_cwd.as_ref().is_some_and(|path| path == root));
@@ -1260,10 +1277,21 @@ unsafe extern "C" {
     fn kill(pid: i32, signal: i32) -> i32;
 }
 
-fn is_delta(frame: &Value, thread_id: &str, turn_id: &str) -> bool {
-    frame.get("method").and_then(Value::as_str) == Some("item/agentMessage/delta")
-        && frame.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id)
-        && frame.pointer("/params/turnId").and_then(Value::as_str) == Some(turn_id)
+fn delta_bytes(frame: &Value, thread_id: &str, turn_id: &str) -> Option<u64> {
+    let method = frame.get("method").and_then(Value::as_str)?;
+    if !matches!(
+        method,
+        "item/agentMessage/delta" | "item/commandExecution/outputDelta"
+    ) || frame.pointer("/params/threadId").and_then(Value::as_str) != Some(thread_id)
+        || frame.pointer("/params/turnId").and_then(Value::as_str) != Some(turn_id)
+    {
+        return None;
+    }
+    frame
+        .pointer("/params/delta")
+        .and_then(Value::as_str)
+        .filter(|delta| !delta.is_empty())
+        .map(|delta| delta.len() as u64)
 }
 
 fn terminal_status<'a>(frame: &'a Value, thread_id: &str, turn_id: &str) -> Option<&'a str> {
@@ -1395,16 +1423,22 @@ fn quota_exhausted(value: &Value) -> bool {
 }
 
 const CORPUS_BYTES: usize = 1024;
-const A_CORPUS_REPEATS: usize = 22;
-const B_CORPUS_REPEATS: usize = 56;
-const D_PREFIX_REPEATS: usize = 4;
-const D_CORPUS_REPEATS: usize = 32;
+const A_CHUNKS: usize = 36;
+const A_CADENCE_MS: usize = 1_000;
+const B_CHUNKS: usize = 56;
+const B_CADENCE_MS: usize = 50;
+const D_CHUNK_BYTES: usize = 256;
+const D_CHUNKS: usize = 64;
+const D_CADENCE_MS: usize = 250;
 
 #[derive(Debug)]
 struct ScenarioStimulus {
     prompt: String,
+    command: String,
+    chunk_bytes: usize,
+    chunks: usize,
+    cadence_ms: usize,
     target_bytes: usize,
-    prefix_bytes: usize,
 }
 
 fn restricted_ascii_corpus() -> String {
@@ -1422,47 +1456,88 @@ fn restricted_ascii_corpus() -> String {
     String::from_utf8(bytes).expect("restricted ASCII corpus must be UTF-8")
 }
 
-fn streaming_prompt(name: &str, corpus: &str) -> Option<ScenarioStimulus> {
-    let (repeats, prefix_repeats, instruction) = match name {
-        "A" => (
-            A_CORPUS_REPEATS,
-            0,
-            "Emit at a steady pace over at least 35 seconds. Do not finish before 35 seconds; finish only after all copies.",
-        ),
-        "B" => (
-            B_CORPUS_REPEATS,
-            0,
-            "Start immediately and emit every copy continuously at full output rate.",
-        ),
-        "D" => (
-            D_CORPUS_REPEATS,
-            D_PREFIX_REPEATS,
-            "Start immediately; the first four copies are the required prefix, then continue until interrupted.",
-        ),
-        _ => return None,
+fn streaming_stimulus(name: &str, corpus: &str, shell: &Path) -> Result<ScenarioStimulus> {
+    let (chunk, chunks, cadence_ms) = match name {
+        "A" => (corpus, A_CHUNKS, A_CADENCE_MS),
+        "B" => (corpus, B_CHUNKS, B_CADENCE_MS),
+        "D" => (&corpus[..D_CHUNK_BYTES], D_CHUNKS, D_CADENCE_MS),
+        _ => bail!("unknown streaming scenario {name}"),
     };
-    Some(ScenarioStimulus {
-        prompt: format!(
-            "S2-{name}: Output the CORPUS block verbatim exactly {repeats} times, one copy after another. {instruction} Emit only corpus copies. Do not summarize. Do not use tools. Do not explain or stop early.\nCORPUS_BEGIN\n{corpus}CORPUS_END"
-        ),
-        target_bytes: repeats * corpus.len(),
-        prefix_bytes: prefix_repeats * corpus.len(),
+    let command = streaming_command(shell, chunk, chunks, cadence_ms)?;
+    let prompt = format!(
+        "S2-{name}: Execute exactly this command once now. Use no other tool or command. Emit no prose before completion.\nCOMMAND_BEGIN\n{command}\nCOMMAND_END"
+    );
+    Ok(ScenarioStimulus {
+        prompt,
+        command,
+        chunk_bytes: chunk.len(),
+        chunks,
+        cadence_ms,
+        target_bytes: chunk.len() * chunks,
     })
 }
 
-fn scenario_prompt(name: &str, approval_command: &str, corpus: &str) -> String {
+fn scenario_prompt(
+    name: &str,
+    approval_command: &str,
+    corpus: &str,
+    shell: &Path,
+) -> Result<String> {
     match name {
         "A" | "B" | "D" => {
-            let stimulus = streaming_prompt(name, corpus).unwrap();
-            debug_assert!(stimulus.target_bytes >= 20 * 1024);
-            debug_assert!(name != "D" || stimulus.prefix_bytes >= 4 * 1024);
-            stimulus.prompt
+            let stimulus = streaming_stimulus(name, corpus, shell)?;
+            debug_assert!(stimulus.target_bytes >= if name == "D" { 16 * 1024 } else { 36 * 1024 });
+            debug_assert_eq!(
+                stimulus.target_bytes,
+                stimulus.chunk_bytes * stimulus.chunks
+            );
+            debug_assert!(stimulus.cadence_ms > 0);
+            debug_assert!(stimulus.prompt.contains(&stimulus.command));
+            debug_assert!(name != "D" || stimulus.chunk_bytes * 8 >= 2 * 1024);
+            Ok(stimulus.prompt)
         }
-        "C" => format!(
+        "C" => Ok(format!(
             "S2-C: Execute exactly this command once now. Emit no prose. Use no other command or tool. APPROVAL_COMMAND_JSON:{}",
             serde_json::to_string(approval_command).unwrap()
-        ),
+        )),
         _ => unreachable!(),
+    }
+}
+
+fn streaming_command(
+    shell: &Path,
+    chunk: &str,
+    chunks: usize,
+    cadence_ms: usize,
+) -> Result<String> {
+    let shell = shell
+        .to_str()
+        .context("trusted scenario shell path was not valid Unicode")?;
+    if shell.contains(['\r', '\n', '"']) {
+        bail!("trusted scenario shell path contained unsafe characters");
+    }
+    #[cfg(windows)]
+    {
+        let encoded = chunk
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<String>();
+        return Ok(format!(
+            r#"\"{shell}\" -NoLogo -NoProfile -NonInteractive -Command \"$c=[Convert]::FromHexString('{encoded}');$o=[Console]::OpenStandardOutput();for($i=0;$i -lt {chunks};$i++){{$o.Write($c,0,$c.Length);$o.Flush();Start-Sleep -Milliseconds {cadence_ms}}}\""#
+        ));
+    }
+    #[cfg(not(windows))]
+    {
+        let encoded = chunk
+            .as_bytes()
+            .iter()
+            .map(|byte| format!(r"\{byte:03o}"))
+            .collect::<String>();
+        let cadence_seconds = cadence_ms as f64 / 1_000.0;
+        Ok(format!(
+            "/bin/sh -c 'i=0; while [ \"$i\" -lt {chunks} ]; do printf \"%b\" \"{encoded}\"; sleep {cadence_seconds:.3}; i=$((i + 1)); done'"
+        ))
     }
 }
 
@@ -1482,6 +1557,61 @@ fn approval_command() -> Result<String> {
     }
     #[cfg(not(windows))]
     Ok("/bin/sh -c 'printf S2_APPROVED > .codex-s2-approval-marker'".to_owned())
+}
+
+fn trusted_scenario_shell() -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        let candidate = find_windows_path_command("pwsh.exe")?;
+        let canonical =
+            normalize_windows_command_path(candidate.canonicalize().with_context(|| {
+                format!(
+                    "failed to canonicalize trusted pwsh.exe {}",
+                    candidate.display()
+                )
+            })?)?;
+        if !canonical.is_absolute()
+            || !canonical.is_file()
+            || !canonical
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("pwsh.exe"))
+        {
+            bail!("trusted pwsh.exe was not a canonical absolute regular file");
+        }
+        let rendered = canonical
+            .to_str()
+            .context("trusted pwsh.exe path was not valid Unicode")?;
+        if rendered
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '"'))
+        {
+            bail!("trusted pwsh.exe path contained unsafe characters");
+        }
+        return Ok(canonical);
+    }
+    #[cfg(not(windows))]
+    {
+        let shell = PathBuf::from("/bin/sh");
+        if !shell.is_file() {
+            bail!("trusted /bin/sh was not a regular file");
+        }
+        Ok(shell)
+    }
+}
+
+fn approval_wrapper_candidate(pwsh: &Path, expected: &str) -> Result<String> {
+    let pwsh = pwsh
+        .to_str()
+        .context("trusted pwsh.exe path was not valid Unicode")?;
+    if pwsh
+        .chars()
+        .any(|character| matches!(character, '\r' | '\n' | '"'))
+    {
+        bail!("trusted pwsh.exe path contained unsafe characters");
+    }
+    let escaped = expected.replace('\\', r"\\").replace('"', r#"\""#);
+    Ok(format!(r#"\"{pwsh}\" -Command \"{escaped}\""#))
 }
 
 #[cfg(windows)]
@@ -1553,6 +1683,9 @@ fn performance(events: &[ContentEvent]) -> Result<PerformanceEvidence> {
 mod tests {
     use super::{ContentEvent, performance};
     use std::io::{self, BufReader, Read};
+    use std::path::Path;
+
+    use serde_json::json;
 
     #[test]
     fn performance_uses_sliding_one_second_peak() {
@@ -1617,25 +1750,75 @@ mod tests {
     }
 
     #[test]
-    fn streaming_prompts_request_substantial_literal_output_above_each_gate() {
-        let corpus = super::restricted_ascii_corpus();
-        let a = super::streaming_prompt("A", &corpus).unwrap();
-        let b = super::streaming_prompt("B", &corpus).unwrap();
-        let d = super::streaming_prompt("D", &corpus).unwrap();
+    fn command_output_delta_is_r1_only_for_the_exact_thread_and_turn() {
+        let command_output = json!({
+            "method":"item/commandExecution/outputDelta",
+            "params":{"threadId":"thread-a","turnId":"turn-a","delta":"real-output"}
+        });
+        assert_eq!(
+            super::delta_bytes(&command_output, "thread-a", "turn-a"),
+            Some(11)
+        );
+        assert_eq!(
+            super::delta_bytes(&command_output, "other-thread", "turn-a"),
+            None
+        );
+        assert_eq!(
+            super::delta_bytes(&command_output, "thread-a", "other-turn"),
+            None
+        );
+        let unrelated = json!({
+            "method":"item/commandExecution/outputDelta",
+            "params":{"threadId":"thread-a","turnId":"turn-a","output":"not-a-delta"}
+        });
+        assert_eq!(super::delta_bytes(&unrelated, "thread-a", "turn-a"), None);
+    }
 
-        assert!((20 * 1024..=24 * 1024).contains(&a.target_bytes));
-        assert!(a.prompt.contains("steady pace"));
-        assert!(a.prompt.contains("at least 35 seconds"));
-        assert!(a.prompt.contains("Do not finish before 35 seconds"));
-        assert!((48 * 1024..=64 * 1024).contains(&b.target_bytes));
-        assert!(d.prefix_bytes >= 4 * 1024);
-        assert!(d.target_bytes >= 24 * 1024);
+    #[test]
+    fn deterministic_streaming_commands_have_safe_output_and_cadence_headroom() {
+        let corpus = super::restricted_ascii_corpus();
+        #[cfg(windows)]
+        let shell = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
+        #[cfg(not(windows))]
+        let shell = Path::new("/bin/sh");
+        let a = super::streaming_stimulus("A", &corpus, shell).unwrap();
+        let b = super::streaming_stimulus("B", &corpus, shell).unwrap();
+        let d = super::streaming_stimulus("D", &corpus, shell).unwrap();
+
+        assert_eq!(a.chunk_bytes, 1024);
+        assert_eq!(a.chunks, 36);
+        assert_eq!(a.cadence_ms, 1_000);
+        assert!((a.chunks - 1) * a.cadence_ms >= 35_000);
+        assert_eq!(b.chunk_bytes, 1024);
+        assert!(b.chunks >= 56);
+        assert_eq!(b.cadence_ms, 50);
+        assert_eq!(d.chunk_bytes, 256);
+        assert!(d.chunks >= 64);
+        assert!(d.cadence_ms >= 200);
+        assert!(d.chunk_bytes * 8 >= 2 * 1024);
         for stimulus in [a, b, d] {
-            assert!(stimulus.prompt.contains(&corpus));
-            assert!(stimulus.prompt.contains("verbatim"));
-            assert!(stimulus.prompt.contains("Do not summarize"));
-            assert!(stimulus.prompt.contains("Do not use tools"));
+            assert_eq!(
+                stimulus.target_bytes,
+                stimulus.chunk_bytes * stimulus.chunks
+            );
+            assert!(stimulus.prompt.contains(&stimulus.command));
+            assert!(stimulus.prompt.contains("exactly this command once"));
+            assert!(stimulus.prompt.contains("Use no other tool or command"));
+            assert!(stimulus.prompt.contains("Emit no prose before completion"));
+            assert!(!stimulus.command.contains("caller-controlled"));
         }
+    }
+
+    #[test]
+    fn approval_wrapper_is_byte_exact_and_escapes_backslashes_before_quotes() {
+        let expected = r#"\"C:\Windows\System32\cmd.exe\" /d /s /c \"echo S2_APPROVED> .codex-s2-approval-marker\""#;
+        let pwsh = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
+        let wrapped = super::approval_wrapper_candidate(pwsh, expected).unwrap();
+        let escaped = expected.replace('\\', r"\\").replace('"', r#"\""#);
+        assert_eq!(
+            wrapped,
+            format!(r#"\"{}\" -Command \"{}\""#, pwsh.display(), escaped)
+        );
     }
 }
 

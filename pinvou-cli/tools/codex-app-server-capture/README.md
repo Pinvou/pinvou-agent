@@ -100,14 +100,15 @@ line breaks. It is invoked through the absolute trusted System32 `cmd.exe` with
 fixed `/d /s /c` arguments and fail-closed quoting. Explicit regular `.cmd`
 scripts use the same path, while explicit `.exe` test overrides remain direct.
 
-Scenarios A, B, and D embed the same deterministic, non-sensitive restricted
-ASCII corpus and request literal repetition: 22 KiB for A, 56 KiB for B, and a
-32 KiB D stream with a required 4 KiB prefix before continued output. Their
-prompts forbid summaries, prose substitutions, and tools; the corpus remains
-only in the restricted raw capture and is never copied into sanitized artifacts.
-Scenario A additionally requires steady paced emission for at least 35 seconds
-and explicitly forbids finishing earlier; its gate still uses only real delta
-timestamps and requires at least 30 seconds of measured content span.
+Scenarios A, B, and D request exactly one fixed, side-effect-free command built
+from a deterministic, non-sensitive restricted ASCII corpus and constants. A
+emits 36 one-KiB chunks at one-second cadence, B emits 56 one-KiB chunks at
+50 ms cadence, and D emits 64 256-byte chunks at 250 ms cadence so interruption
+can occur after a real backlog. Commands use a pre-resolved canonical absolute
+`pwsh.exe` on Windows or absolute `/bin/sh` on Unix and never interpolate caller
+paths. Their prompts forbid other tools and prose before completion. Gates still
+use only real, correlated R1 timestamps and content, including official agent
+message and command-execution output deltas.
 
 Scenario C uses `on-request` approval and a read-only sandbox, then requests one
 fixed platform-specific command that writes `.codex-s2-approval-marker` relative
@@ -115,8 +116,12 @@ to the isolated working directory. The command uses absolute `/bin/sh` or the
 absolute `cmd.exe` returned from `GetSystemDirectoryW`, and the runner accepts only an
 `item/commandExecution/requestApproval` whose command exactly matches it, whose
 thread/turn IDs match scenario C, and whose canonical working directory remains
-exactly equal to the scenario workspace. Child directories are rejected. No caller-controlled path is interpolated into the
-command. Exactly one such approval is required.
+exactly equal to the scenario workspace. On Windows the runner also accepts the
+one observed app-server PowerShell wrapper form only when its canonical pwsh
+path, escaping, argument shape, and sole `commandActions` entry exactly preserve
+the allowlisted inner command. Child directories and all wrapper variations are
+rejected. No caller-controlled path is interpolated into the command. Exactly
+one such approval is required.
 Every other server request, command, or target is rejected and invalidates the
 run. Scenario D sends `turn/interrupt` only after a real backlog of at least
 eight nonempty deltas and 2 KiB, and reports request-write-to-response and

@@ -2,6 +2,26 @@ use std::io::{self, BufRead, Write};
 
 use serde_json::{Value, json};
 
+#[cfg(windows)]
+fn resolved_pwsh() -> std::path::PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|directory| directory.join("pwsh.exe"))
+        .find(|candidate| candidate.is_file())
+        .unwrap()
+        .canonicalize()
+        .unwrap()
+}
+
+#[cfg(windows)]
+fn approval_wrapper(expected: &str) -> String {
+    let escaped = expected.replace('\\', r"\\").replace('"', r#"\""#);
+    format!(
+        r#"\"{}\" -Command \"{}\""#,
+        resolved_pwsh().display(),
+        escaped
+    )
+}
+
 fn send(value: Value) {
     println!("{value}");
     io::stdout().flush().unwrap();
@@ -153,8 +173,21 @@ fn main() {
                 let count = if prompt.contains("S2-B") { 40 } else { 12 };
                 for index in 0..count {
                     let delta = "x".repeat(8 + (index % 8) * 7);
+                    let delta_method = if mode == "command-output-success" {
+                        "item/commandExecution/outputDelta"
+                    } else {
+                        "item/agentMessage/delta"
+                    };
+                    if mode == "command-output-success" {
+                        send(
+                            json!({"method":delta_method,"params":{"threadId":"wrong-thread","turnId":turn_id,"itemId":format!("noise-{turn}"),"delta":"WRONG_THREAD_NOISE"}}),
+                        );
+                        send(
+                            json!({"method":"fixture/unrelatedDelta","params":{"threadId":format!("thread-{}", turn - 1),"turnId":turn_id,"delta":"UNRELATED_NOISE"}}),
+                        );
+                    }
                     send(
-                        json!({"method":"item/agentMessage/delta","params":{"threadId":format!("thread-{}", turn - 1),"turnId":turn_id,"itemId":format!("item-{turn}"),"delta":delta}}),
+                        json!({"method":delta_method,"params":{"threadId":format!("thread-{}", turn - 1),"turnId":turn_id,"itemId":format!("item-{turn}"),"delta":delta}}),
                     );
                 }
                 if prompt.contains("S2-C") {
@@ -166,6 +199,21 @@ fn main() {
                             .unwrap_or_else(|| "unexpected-command".to_owned());
                         if mode == "unexpected-command" {
                             command = "not-allowlisted".to_owned();
+                        }
+                        #[cfg(windows)]
+                        if matches!(
+                            mode.as_str(),
+                            "wrapper-approval"
+                                | "wrapper-command-mutated"
+                                | "wrapper-extra-action"
+                                | "wrapper-wrong-pwsh"
+                        ) {
+                            command = approval_wrapper(&command);
+                            if mode == "wrapper-command-mutated" {
+                                command.push(' ');
+                            } else if mode == "wrapper-wrong-pwsh" {
+                                command = command.replacen("pwsh.exe", "other-pwsh.exe", 1);
+                            }
                         }
                         let mut cwd = frame.pointer("/params/cwd").cloned().unwrap_or(Value::Null);
                         if mode == "outside-approval" {
@@ -194,8 +242,22 @@ fn main() {
                         } else {
                             turn_id.clone()
                         };
+                        let mut params = json!({"threadId":approval_thread,"turnId":approval_turn,"itemId":"approval-item","startedAtMs":1,"command":command,"cwd":cwd});
+                        #[cfg(windows)]
+                        if mode.starts_with("wrapper-") {
+                            let expected = prompt
+                                .split("APPROVAL_COMMAND_JSON:")
+                                .nth(1)
+                                .and_then(|raw| serde_json::from_str::<String>(raw.trim()).ok())
+                                .unwrap();
+                            params["commandActions"] = if mode == "wrapper-extra-action" {
+                                json!([{"command":expected},{"command":"extra"}])
+                            } else {
+                                json!([{"command":expected}])
+                            };
+                        }
                         send(
-                            json!({"id":900,"method":if mode == "unexpected-approval" {"item/fileChange/requestApproval"} else {"item/commandExecution/requestApproval"},"params":{"threadId":approval_thread,"turnId":approval_turn,"itemId":"approval-item","startedAtMs":1,"command":command,"cwd":cwd}}),
+                            json!({"id":900,"method":if mode == "unexpected-approval" {"item/fileChange/requestApproval"} else {"item/commandExecution/requestApproval"},"params":params}),
                         );
                         continue;
                     }

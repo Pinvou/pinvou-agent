@@ -93,6 +93,25 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
 
 #[test]
 #[cfg(debug_assertions)]
+fn command_execution_output_deltas_contribute_only_when_correlated() {
+    let output = temp_output("command-output-success");
+    let outcome = run_s2_for_test(S2RunConfig {
+        output_dir: Some(output.clone()),
+        executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        model: None,
+        scenario_timeout: Duration::from_secs(2),
+        global_timeout: Duration::from_secs(10),
+    })
+    .unwrap();
+    assert!(outcome.report.valid);
+    let evidence: Value =
+        serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
+    assert_eq!(evidence["performance"]["event_sizes"]["samples"], 40);
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
 fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
     let output = temp_output("spaces & semicolon ; safe");
     let workspace = output.join("workspace");
@@ -135,6 +154,22 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         .unwrap();
     assert_eq!(turn_start["params"]["approvalPolicy"], "on-request");
     assert_eq!(turn_start["params"]["sandboxPolicy"]["type"], "readOnly");
+    for scenario in ["S2-A", "S2-B", "S2-D"] {
+        let prompt = records
+            .iter()
+            .map(|(_, frame)| frame)
+            .filter(|frame| frame["method"] == "turn/start")
+            .filter_map(|frame| {
+                frame
+                    .pointer("/params/input/0/text")
+                    .and_then(Value::as_str)
+            })
+            .find(|prompt| prompt.contains(scenario))
+            .unwrap();
+        assert!(prompt.contains("Execute exactly this command once"));
+        assert!(prompt.contains("COMMAND_BEGIN"));
+        assert!(!prompt.contains(output.to_string_lossy().as_ref()));
+    }
     let approvals = records
         .iter()
         .map(|(_, frame)| frame)
@@ -181,6 +216,36 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
     #[cfg(unix)]
     assert!(command.starts_with("/bin/sh "));
     std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+#[cfg(all(debug_assertions, windows))]
+fn scenario_c_accepts_only_the_exact_observed_pwsh_wrapper() {
+    let output = temp_output("wrapper-approval");
+    let outcome = run_s2_for_test(S2RunConfig {
+        output_dir: Some(output.clone()),
+        executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        model: None,
+        scenario_timeout: Duration::from_secs(2),
+        global_timeout: Duration::from_secs(10),
+    })
+    .unwrap();
+    assert!(outcome.report.valid);
+    std::fs::remove_dir_all(output).unwrap();
+
+    for mode in [
+        "wrapper-command-mutated",
+        "wrapper-extra-action",
+        "wrapper-wrong-pwsh",
+    ] {
+        let output = temp_output(mode);
+        let result = run_fake(mode, &output, 1_000);
+        assert!(!result.status.success(), "{mode} unexpectedly passed");
+        let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+        assert!(capture.contains(r#"\"decision\":\"cancel\""#));
+        assert!(!capture.contains(r#"\"decision\":\"accept\""#));
+        std::fs::remove_dir_all(output).unwrap();
+    }
 }
 
 #[test]
@@ -242,6 +307,10 @@ fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim(
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("codex"), b"#!/bin/sh\nexit 99\n").unwrap();
     write_fake_codex_cmd(&bin, "codex.cmd");
+    let pwsh_dir = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .find(|directory| directory.join("pwsh.exe").is_file())
+        .unwrap();
+    let isolated_path = std::env::join_paths([bin.as_path(), pwsh_dir.as_path()]).unwrap();
 
     let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
         .args(["run-s2", "--output-dir"])
@@ -252,7 +321,7 @@ fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim(
             "--global-timeout-ms",
             "10000",
         ])
-        .env("PATH", &bin)
+        .env("PATH", isolated_path)
         .env("S2_CMDLINE_MARKER", &command_line_marker)
         .output()
         .unwrap();
