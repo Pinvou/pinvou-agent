@@ -67,6 +67,12 @@ fingerprints=(
   "T1|编辑上一轮截断在真实用户消息        |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_edit_last_turn_cuts_at_user_prompt_before_tool_results"
   "T1|无用户消息可编辑时报错不发送        |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_edit_last_turn_without_user_prompt_errors_and_sends_nothing"
   "T1|不支持的最新用户内容拒绝编辑        |CodeWhale/crates/tui/src/core/engine.rs|edit_last_turn_unsupported_user_content"
+  "T1|kimi-for-coding 固定采样剥离        |CodeWhale/crates/tui/src/client/chat.rs|fn apply_kimi_code_coding_plan_fixed_sampling("
+  "T1|kimi-for-coding 固定采样回归        |CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_kimi_code_coding_plan_strips_non_one_temperature"
+  "T1|deepseek-v4 Chat 文档采样契约回归   |CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_deepseek_v4_chat_preserves_documented_temperature"
+  "T1|deepseek-v4-flash Responses 采样 shim |CodeWhale/crates/tui/src/client/responses.rs|requires_default_temperature"
+  "T1|deepseek-v4-flash Responses 采样回归 |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_deepseek_v4_flash_responses_drops_non_one_temperature"
+  "T1|压缩完成事件携带新上下文估算        |CodeWhale/crates/tui/src/core/events.rs|post_input_tokens: Option<u64>"
 
   "T2|宿主额外工具入口                    |CodeWhale/crates/tui/src/core/engine.rs|pub struct ExtraTools("
   "T2|动态禁用工具操作                    |CodeWhale/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"

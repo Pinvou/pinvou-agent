@@ -44,7 +44,7 @@ const codexZh = {
   temporarySessionDesc:'使用 Pinvou 管理的隔离目录', recentProjects:'最近项目',
   nativeBlockedNotice:'已拦截一条危险命令，未执行',
   compactStart:'正在压缩上下文', compactDone:'上下文压缩完成', compactFail:'上下文压缩失败',
-  nativeCompactTitle:'点击立即压缩上下文，为会话腾出记忆空间',
+  nativeUsageTitle:(used,pct)=>`上下文已用 ${used}${pct == null ? '' : `，占比 ${pct}%`}；点击立即压缩，为会话腾出记忆空间`,
   nativeMemory:'记忆', nativeMemoryTitle:'本会话生效的记忆',
   // 原生车道 Plan 审批卡：状态/失败文案与 bridge BT 表（acceptPlanFailed 等）同文。
   nativePlanApproved:'✅ 已批准', nativePlanDiscarded:'🚪 已放弃此方案',

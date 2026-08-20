@@ -1172,9 +1172,11 @@ export function CodexAcpView({
     ? nativeLanesRef.current.get(activeId) || null
     : null;
   // 原生车道的用量/压缩/记忆展示数据：直接读 lane（可变对象，靠 nativeLaneTick 重渲染）。
-  // chat:usage 不带 context 上限（tokens.max 恒 0，docs/code-native-agent.md §9 登记的
-  // 已知限制），用量 chip 按降级处理：只显示已用 token，不显示上限与百分比。
+  // chat:usage 的 context_window 已写入 tokens.max；hydration 回填只有 input 没有 max，
+  // 占比/进度条在 max>0 时才显示，否则降级为纯已用 token。
   const nativeTokensInput = isNativeAgent && activeNativeLane ? Number(activeNativeLane.tokens.input || 0) : 0;
+  const nativeTokensMax = isNativeAgent && activeNativeLane ? Number(activeNativeLane.tokens.max || 0) : 0;
+  const nativeCtxPct = nativeTokensMax > 0 ? Math.min(100, Math.round((nativeTokensInput / nativeTokensMax) * 100)) : null;
   const nativeCompacting = Boolean(isNativeAgent && activeNativeLane && activeNativeLane.compacting);
   const nativeMemoryItems = isNativeAgent && activeNativeLane && activeNativeLane.memory
     ? activeNativeLane.memory.items
@@ -3587,17 +3589,25 @@ export function CodexAcpView({
                       />
                       {activeId && nativeTokensInput > 0 && (
                         // 用量 chip 兼手动压缩入口（compact_now 的后端注释语义即"用户点 token
-                        // 进度条 → 立即压缩"）；tokens.max 恒 0 的已知限制下只显示已用 token。
+                        // 进度条 → 立即压缩"）：框内按占比填色做迷你进度条；文案只留 token 数，
+                        // 描述与占比放 hover tooltip。
                         <button
                           type="button"
                           data-testid="native-usage-chip"
                           onClick={() => compactNativeSession().catch(showError)}
                           disabled={busy || working || nativeCompacting}
-                          title={codexCopy.nativeCompactTitle}
-                          aria-label={codexCopy.nativeCompactTitle}
-                          className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-black/[0.07] bg-black/[0.025] px-2.5 text-[11px] font-semibold text-[#1F1F1F] transition-all hover:-translate-y-px hover:shadow-sm disabled:cursor-default disabled:opacity-50 dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
+                          title={codexCopy.nativeUsageTitle(fmtNativeCtxTok(nativeTokensInput), nativeCtxPct)}
+                          aria-label={codexCopy.nativeUsageTitle(fmtNativeCtxTok(nativeTokensInput), nativeCtxPct)}
+                          className="relative inline-flex h-8 items-center gap-1.5 overflow-hidden rounded-xl border border-black/[0.07] bg-black/[0.025] px-2.5 text-[11px] font-semibold text-[#1F1F1F] transition-all hover:-translate-y-px hover:shadow-sm disabled:cursor-default disabled:opacity-50 dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
                         >
-                          {nativeCompacting ? codexCopy.compactStart : `${t.ctxUsage} ${fmtNativeCtxTok(nativeTokensInput)}`}
+                          {nativeCtxPct != null && (
+                            <span
+                              aria-hidden="true"
+                              className="absolute inset-y-0 left-0 bg-blue-500/15 dark:bg-blue-400/20"
+                              style={{ width: `${nativeCtxPct}%` }}
+                            />
+                          )}
+                          <span className="relative">{nativeCompacting ? codexCopy.compactStart : fmtNativeCtxTok(nativeTokensInput)}</span>
                         </button>
                       )}
                       {nativeMemoryItems.length > 0 && (
