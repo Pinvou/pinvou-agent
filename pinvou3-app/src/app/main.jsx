@@ -17,6 +17,7 @@ import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
 import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
+import { ViewErrorBoundary } from '../shared/ViewErrorBoundary.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
@@ -2135,12 +2136,14 @@ function workspaceDisplayName(path) {
               )
             )}
 
-            {currentView === 'monitor' && <Suspense fallback={<ViewFallback />}>
-              <LazyMonitorView theme={activeTheme} t={t} bs={bs} />
-            </Suspense>}
+            {/* 单一常驻 Suspense 边界:React 19 下切视图时旧视图在本边界内被替换,
+                chunk 未就绪(未被预取覆盖的入口)保持旧视图不闪 fallback;失败由
+                ViewErrorBoundary 兜底(reload 重试绕开 React.lazy 的失败缓存)。 */}
+            <ViewErrorBoundary t={t}>
+              <Suspense fallback={<ViewFallback />}>
+            {currentView === 'monitor' && <LazyMonitorView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'settings' && (
               <SettingsErrorBoundary theme={activeTheme} t={t}>
-              <Suspense fallback={<ViewFallback />}>
                 <LazySettingsView
                   activeTheme={activeTheme} setActiveTheme={handleSetTheme}
                   language={language} setLanguage={handleSetLanguage}
@@ -2172,18 +2175,12 @@ function workspaceDisplayName(path) {
                   initialSection={settingsInitialSection}
                   onCloseSettings={() => navigateFromScheduledRun(settingsReturnViewRef.current || 'chat')}
                 />
-              </Suspense>
               </SettingsErrorBoundary>
             )}
-            {currentView === 'toolStore' && <Suspense fallback={<ViewFallback />}>
-              <LazyToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />
-            </Suspense>}
-            {currentView === 'cardpool' && <Suspense fallback={<ViewFallback />}>
-              <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />
-            </Suspense>}
+            {currentView === 'toolStore' && <LazyToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
+            {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
             {codexAcpSupported && currentView === 'codex' && (
-              <Suspense fallback={<ViewFallback />}>
               <LazyCodexAcpView
                 theme={activeTheme}
                 t={t}
@@ -2199,15 +2196,12 @@ function workspaceDisplayName(path) {
                 onGotoSettings={() => openSettingsSection('general')}
                 onGotoTools={() => navigateFromScheduledRun('toolStore')}
               />
-              </Suspense>
             )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
                 <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
               ) : (
-                <Suspense fallback={<ViewFallback />}>
                 <LazyScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} onGotoModelSettings={() => openSettingsSection('model')} />
-              </Suspense>
               )
             )}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
@@ -2218,7 +2212,6 @@ function workspaceDisplayName(path) {
                 onOpenPicker={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))} />
             )}
             {currentView === 'search' && (
-              <Suspense fallback={<ViewFallback />}>
               <LazySearchView
                 theme={activeTheme} history={allSidebarTasks} t={t} language={language}
                 archived={(bs && bs.archivedSessions) || []}
@@ -2237,19 +2230,18 @@ function workspaceDisplayName(path) {
                 onRestoreArchived={handleRestoreArchivedSession}
                 onRestoreMany={handleBatchRestoreArchived}
               />
-              </Suspense>
             )}
-            {currentView === 'outputs' && <Suspense fallback={<ViewFallback />}>
-              <LazyKnowledgeView theme={activeTheme} t={t} mode="outputs" />
-            </Suspense>}
-            {currentView === 'knowledge' && <Suspense fallback={<ViewFallback />}>
-              <LazyKnowledgeView theme={activeTheme} t={t} />
-            </Suspense>}
+            {currentView === 'outputs' && <LazyKnowledgeView theme={activeTheme} t={t} mode="outputs" />}
+            {currentView === 'knowledge' && <LazyKnowledgeView theme={activeTheme} t={t} />}
+              </Suspense>
+            </ViewErrorBoundary>
 
             {can('webAccessAdmin') && webAccessOpen && (
+              <ViewErrorBoundary t={t}>
               <Suspense fallback={null}>
               <LazyWebAccessModal theme={activeTheme} bs={bs} t={t} onClose={() => setWebAccessOpen(false)} />
             </Suspense>
+            </ViewErrorBoundary>
             )}
 
             {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
