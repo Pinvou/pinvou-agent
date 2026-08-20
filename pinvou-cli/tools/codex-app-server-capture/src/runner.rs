@@ -179,7 +179,7 @@ struct SafeInvocation {
     cmd_script: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct MarkerHelperInvocation {
     program: OsString,
     args: Vec<OsString>,
@@ -2654,6 +2654,18 @@ mod tests {
     use super::{ContentEvent, performance};
     use std::io::{self, BufReader, Read};
     use std::path::Path;
+
+    #[test]
+    fn marker_helper_invocation_is_not_directly_cloneable() {
+        trait AmbiguousIfClone<A> {
+            fn assert_not_clone() {}
+        }
+
+        impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+        impl<T: ?Sized + Clone> AmbiguousIfClone<u8> for T {}
+
+        <super::MarkerHelperInvocation as AmbiguousIfClone<_>>::assert_not_clone();
+    }
 
     use serde_json::json;
 
