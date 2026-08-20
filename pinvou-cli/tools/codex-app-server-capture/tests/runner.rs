@@ -266,6 +266,12 @@ fn scenario_c_accepts_only_the_exact_observed_pwsh_wrapper() {
         "wrapper-command-mutated",
         "wrapper-extra-action",
         "wrapper-wrong-pwsh",
+        "wrapper-outer-backslashes",
+        "wrapper-outer-backslash-0",
+        "wrapper-outer-backslash-1",
+        "wrapper-outer-backslash-2",
+        "wrapper-outer-backslash-3",
+        "wrapper-inner-backslash-missing",
     ] {
         let output = temp_output(mode);
         let result = run_fake(mode, &output, 1_000);

@@ -1537,7 +1537,7 @@ fn streaming_command(
         let script = powershell_streaming_script(chunk, chunks, cadence_ms);
         let encoded = encode_powershell_command(&script);
         return Ok(format!(
-            "\"{shell}\" -NoProfile -NonInteractive -EncodedCommand {encoded}"
+            "& \"{shell}\" -NoProfile -NonInteractive -EncodedCommand {encoded}"
         ));
     }
     #[cfg(not(windows))]
@@ -1982,7 +1982,7 @@ fn approval_wrapper_candidate(pwsh: &Path, expected: &str) -> Result<String> {
         bail!("trusted pwsh.exe path contained unsafe characters");
     }
     let escaped = expected.replace('\\', r"\\").replace('"', r#"\""#);
-    Ok(format!(r#"\"{pwsh}\" -Command \"{escaped}\""#))
+    Ok(format!(r#""{pwsh}" -Command "{escaped}""#))
 }
 
 #[cfg(windows)]
@@ -2223,6 +2223,27 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn generated_windows_streaming_command_executes_through_outer_powershell() {
+        let shell = super::trusted_scenario_shell().unwrap();
+        let chunk = "S2xy";
+        let chunks = 3;
+        let command = super::streaming_command(&shell, chunk, chunks, 1).unwrap();
+        let output = std::process::Command::new(&shell)
+            .args(["-NoProfile", "-NonInteractive", "-Command"])
+            .arg(&command)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, chunk.repeat(chunks).as_bytes());
+    }
+
+    #[test]
     fn approval_wrapper_is_byte_exact_and_escapes_backslashes_before_quotes() {
         let expected = r#"\"C:\Windows\System32\cmd.exe\" /d /s /c \"echo S2_APPROVED> .codex-s2-approval-marker\""#;
         let pwsh = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
@@ -2230,8 +2251,10 @@ mod tests {
         let escaped = expected.replace('\\', r"\\").replace('"', r#"\""#);
         assert_eq!(
             wrapped,
-            format!(r#"\"{}\" -Command \"{}\""#, pwsh.display(), escaped)
+            format!(r#""{}" -Command "{}""#, pwsh.display(), escaped)
         );
+        assert!(!wrapped.starts_with(r#"\""#));
+        assert!(!wrapped.ends_with(r#"\""#));
     }
 
     #[test]

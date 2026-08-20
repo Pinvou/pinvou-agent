@@ -23,11 +23,23 @@ fn resolved_pwsh() -> std::path::PathBuf {
 #[cfg(windows)]
 fn approval_wrapper(expected: &str) -> String {
     let escaped = expected.replace('\\', r"\\").replace('"', r#"\""#);
-    format!(
-        r#"\"{}\" -Command \"{}\""#,
-        resolved_pwsh().display(),
-        escaped
-    )
+    format!(r#""{}" -Command "{}""#, resolved_pwsh().display(), escaped)
+}
+
+#[cfg(windows)]
+fn add_backslash_before_wrapper_quotes(mut command: String, only_ordinal: Option<usize>) -> String {
+    let second = command.find("\" -Command ").unwrap();
+    let third = second + "\" -Command ".len();
+    let fourth = command.len() - 1;
+    let positions = [0, second, third, fourth];
+    let mut positions = only_ordinal
+        .map(|ordinal| vec![positions[ordinal]])
+        .unwrap_or_else(|| positions.to_vec());
+    positions.sort_unstable_by(|left, right| right.cmp(left));
+    for position in positions {
+        command.insert(position, '\\');
+    }
+    command
 }
 
 fn send(value: Value) {
@@ -229,7 +241,10 @@ fn main() {
                                 | "wrapper-command-mutated"
                                 | "wrapper-extra-action"
                                 | "wrapper-wrong-pwsh"
-                        ) {
+                                | "wrapper-outer-backslashes"
+                                | "wrapper-inner-backslash-missing"
+                        ) || mode.starts_with("wrapper-outer-backslash-")
+                        {
                             if mode == "wrapper-write-attempt" {
                                 let target = std::env::var("S2_FAKE_WRAPPER_TARGET").unwrap();
                                 let outcome = std::fs::OpenOptions::new()
@@ -248,6 +263,19 @@ fn main() {
                                 command.push(' ');
                             } else if mode == "wrapper-wrong-pwsh" {
                                 command = command.replacen("pwsh.exe", "other-pwsh.exe", 1);
+                            } else if mode == "wrapper-outer-backslashes" {
+                                command = add_backslash_before_wrapper_quotes(command, None);
+                            } else if let Some(ordinal) = mode
+                                .strip_prefix("wrapper-outer-backslash-")
+                                .and_then(|value| value.parse().ok())
+                            {
+                                command =
+                                    add_backslash_before_wrapper_quotes(command, Some(ordinal));
+                            } else if mode == "wrapper-inner-backslash-missing" {
+                                let inner =
+                                    command.find(" -Command \"").unwrap() + " -Command \"".len();
+                                assert_eq!(command.as_bytes()[inner], b'\\');
+                                command.remove(inner);
                             }
                         }
                         let mut cwd = frame.pointer("/params/cwd").cloned().unwrap_or(Value::Null);
