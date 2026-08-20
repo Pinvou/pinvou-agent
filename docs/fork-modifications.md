@@ -59,8 +59,10 @@
   - 保留宿主需要的 runtime thread / Automation 接口和 `EngineConfig` 注入边界。
   - 将无副作用的运行时 session snapshot 与已知进程重启后的显式 tool history recovery 分开，避免嵌入宿主把仍在执行的工具调用误判为崩溃。
   - 提供通用的宿主批量取消操作和失败终态标记，供会话停止与 Engine 回收安全收敛后台子智能体。
+  - （待发布）固定采样路由剥离显式非 1 的 `temperature`（否则 400 "only 1 is allowed"）：DeepSeek 官方端点 v4 系列（Chat 方言 seam + Responses 方言 body 双侧，v4-flash 走 Responses 线）与 Kimi Code 会员路由 kimi-for-coding 系列（K2.7，Chat 方言）；网关与旧代模型契约不动。修复 code 页手动压缩在这两条路由必现 400。
+  - （待发布）`CompactionCompleted` 事件新增 `post_input_tokens`（压缩后新消息列表的输入 token 保守估算），供宿主在压缩完成后立即刷新用量展示；TUI 与 runtime thread 持久化路径不消费。
 - **边界**：不实现 Pinvou 产品工具策略或专用编排完成语义。
-- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，以及父仓启动恢复、resolved-route、取消级联和 compaction 合约测试。
+- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`、`forkguard_deepseek_v4_official_route_strips_fixed_temperature`、`forkguard_deepseek_v4_responses_drops_non_one_temperature`、`forkguard_kimi_code_coding_plan_strips_non_one_temperature`（后三条待发布），以及父仓启动恢复、resolved-route、取消级联和 compaction 合约测试。
 
 ### T2：工具兼容与命令执行安全
 

@@ -84,7 +84,7 @@ const codexZh = {
   temporarySessionDesc:'使用 Pinvou 管理的隔离目录', recentProjects:'最近项目',
   nativeBlockedNotice:'已拦截一条危险命令，未执行',
   compactStart:'正在压缩上下文', compactDone:'上下文压缩完成', compactFail:'上下文压缩失败',
-  nativeCompactTitle:'点击立即压缩上下文，为会话腾出记忆空间',
+  nativeUsageTitle:(used,pct)=>`上下文已用 ${used}${pct == null ? '' : `，占比 ${pct}%`}；点击立即压缩，为会话腾出记忆空间`,
   nativeMemory:'记忆', nativeMemoryTitle:'本会话生效的记忆',
   // 原生车道 Plan 审批卡：状态/失败文案与 bridge BT 表（acceptPlanFailed 等）同文。
   nativePlanApproved:'✅ 已批准', nativePlanDiscarded:'🚪 已放弃此方案',
@@ -186,7 +186,7 @@ const codexEn = {
   temporarySessionDesc:'Use an isolated directory managed by Pinvou', recentProjects:'Recent projects',
   nativeBlockedNotice:'A dangerous command was blocked and not executed',
   compactStart:'Compacting context', compactDone:'Context compacted', compactFail:'Context compaction failed',
-  nativeCompactTitle:'Click to compact the context now and free up session memory',
+  nativeUsageTitle:(used,pct)=>`Context used: ${used}${pct == null ? '' : ` (${pct}%)`}. Click to compact now and free up session memory`,
   nativeMemory:'Memory', nativeMemoryTitle:'Memories active in this session',
   // Native-lane Plan approval card: status/failure copy mirrors the bridge BT table.
   nativePlanApproved:'✅ Approved', nativePlanDiscarded:'🚪 Plan discarded',
@@ -288,7 +288,7 @@ const codexJa = {
   temporarySessionDesc:'Pinvou が管理する隔離ディレクトリを使用', recentProjects:'最近のプロジェクト',
   nativeBlockedNotice:'危険なコマンドをブロックしました（未実行）',
   compactStart:'コンテキストを圧縮中', compactDone:'コンテキストを圧縮しました', compactFail:'コンテキストの圧縮に失敗しました',
-  nativeCompactTitle:'クリックでコンテキストを今すぐ圧縮し、セッションの記憶領域を空けます',
+  nativeUsageTitle:(used,pct)=>`コンテキスト使用量：${used}${pct == null ? '' : `（${pct}%）`}。クリックで今すぐ圧縮し、セッションの記憶領域を空けます`,
   nativeMemory:'メモリ', nativeMemoryTitle:'このセッションで有効なメモリ',
   // ネイティブレーンの Plan 承認カード：状態/失敗文案は bridge BT テーブルと同文。
   nativePlanApproved:'✅ 承認済み', nativePlanDiscarded:'🚪 プランを破棄',

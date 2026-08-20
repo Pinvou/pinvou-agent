@@ -1408,11 +1408,15 @@ impl EnginePool {
             .await
     }
 
-    /// 手动压缩指定 session 上下文。engine 没起则 no-op(无上下文可压)。
+    /// 手动压缩指定 session 上下文。引擎惰性 spawn：重启后未对话的会话没有引擎
+    /// 实例，此时显式报错（前端以压缩失败系统项呈现），不静默 no-op。
     pub async fn compact_now(&self, session_id: &str) -> Result<()> {
-        if let Some(engine) = self.handle_for(session_id).await {
-            engine.compact_now().await?;
-        }
+        let Some(engine) = self.handle_for(session_id).await else {
+            anyhow::bail!(
+                "会话引擎未在运行（重启后尚未对话）：请先发送一条消息激活会话，再压缩上下文"
+            );
+        };
+        engine.compact_now().await?;
         Ok(())
     }
 
