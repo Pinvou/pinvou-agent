@@ -36,7 +36,7 @@ function bootWebBridge() {
   };
   const calls = { invoke: [] };
   const handlers = {
-    list_sessions: () => Promise.resolve([{ id: 'chat-a', title: '新对话', updated_at: 1 }]),
+    web_access_list_sessions: () => Promise.resolve([{ id: 'chat-a', title: '新对话', updated_at: 1 }]),
   };
   const listeners = {};
   const deferreds = {};

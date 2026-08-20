@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
 
-function loadRemoteControlFeature() {
+function loadRemoteControlFeature(initialWebAccess = {}) {
   const root = {};
   const src = fs.readFileSync(path.join(bridgeDir, 'remote-control.js'), 'utf8');
   vm.runInNewContext(src, {
@@ -25,19 +25,22 @@ function loadRemoteControlFeature() {
   });
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__['remote-control'];
   const deferreds = {};
-  const state = { webAccess: {} };
+  const calls = [];
+  const state = { webAccess: { ...initialWebAccess } };
   const api = factory({
     state,
     notify() {},
     bt(key) { return key; },
     listen() { return Promise.resolve(function () {}); },
-    invoke(name) {
+    invoke(name, args) {
+      calls.push({ name, args });
       if (deferreds[name] && deferreds[name].promise) return deferreds[name].promise;
       return Promise.resolve({});
     },
   });
   return {
     api,
+    calls,
     state,
     defer(name) {
       const d = {};
@@ -47,6 +50,46 @@ function loadRemoteControlFeature() {
     },
   };
 }
+
+test('start forwards host-workspace consent and restores an existing endpoint on failure', async () => {
+  const rt = loadRemoteControlFeature({
+    active: true,
+    web_client_connected: true,
+    host_workspace_authorized: true,
+    status: 'connected',
+  });
+  const dEnable = rt.defer('web_access_enable');
+  const pending = rt.api.startRemoteControl({ allowHostWorkspace: true });
+
+  const enableArgs = rt.calls.find(call => call.name === 'web_access_enable')?.args;
+  assert.equal(enableArgs?.allowHostWorkspace, true, 'explicit desktop consent must reach the backend command');
+  assert.deepEqual(Object.keys(enableArgs || {}), ['allowHostWorkspace'], 'the enable payload stays narrow');
+
+  dEnable.reject(new Error('enable failed'));
+  await assert.rejects(pending, /enable failed/);
+  assert.equal(rt.state.webAccess.active, true, 'a failed restart must preserve the active endpoint');
+  assert.equal(rt.state.webAccess.web_client_connected, true, 'a failed restart must preserve connection state');
+  assert.equal(rt.state.webAccess.host_workspace_authorized, true, 'a failed restart must preserve prior authorization');
+  assert.equal(rt.state.webAccess.starting, false, 'a failed restart must clear starting');
+  assert.equal(rt.state.webAccess.status, 'error', 'the fresh failure remains visible');
+});
+
+test('stop clears host-workspace authorization together with terminal state', async () => {
+  const rt = loadRemoteControlFeature({
+    active: true,
+    web_client_connected: true,
+    host_workspace_authorized: true,
+    starting: true,
+  });
+
+  await rt.api.stopRemoteControl();
+
+  assert.equal(rt.state.webAccess.active, false);
+  assert.equal(rt.state.webAccess.web_client_connected, false);
+  assert.equal(rt.state.webAccess.host_workspace_authorized, false);
+  assert.equal(rt.state.webAccess.starting, false);
+  assert.equal(rt.state.webAccess.status, 'stopped');
+});
 
 test('stop 顶掉在途 start 后 starting 必须被清除（不残留启动中）', async () => {
   const rt = loadRemoteControlFeature();
