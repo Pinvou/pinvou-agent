@@ -7,11 +7,39 @@ fn send(value: Value) {
     io::stdout().flush().unwrap();
 }
 
+fn spawn_pipe_descendant() {
+    let _ = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--hold-pipes-child")
+        .spawn();
+    if let Ok(marker) = std::env::var("S2_FAKE_MARKER") {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !std::path::Path::new(&marker).exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+
 fn main() {
-    let mode = std::env::var("S2_FAKE_MODE").unwrap_or_else(|_| "success".to_owned());
+    let mode = std::env::var("S2_FAKE_MODE").unwrap_or_else(|_| {
+        let executable = std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.file_stem()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_default();
+        if executable.contains("version-budget") {
+            "version-budget".to_owned()
+        } else {
+            "success".to_owned()
+        }
+    });
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.first().is_some_and(|arg| arg == "--hold-pipes-child") {
-        std::thread::sleep(std::time::Duration::from_secs(60));
+        if let Ok(marker) = std::env::var("S2_FAKE_MARKER") {
+            std::fs::write(marker, std::process::id().to_string()).unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_secs(15));
         return;
     }
     if args.first().is_some_and(|arg| arg == "--version") {
@@ -20,9 +48,20 @@ fn main() {
             "version-malformed" => println!("not-a-codex-version"),
             "version-nonzero" => std::process::exit(7),
             "version-timeout" => std::thread::sleep(std::time::Duration::from_secs(60)),
+            "version-budget" => {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                println!("codex-cli 0.139.0");
+            }
+            "version-descendant" => {
+                spawn_pipe_descendant();
+                println!("codex-cli 0.139.0");
+            }
             _ => println!("codex-cli 0.139.0"),
         }
         return;
+    }
+    if mode == "immediate-child" {
+        spawn_pipe_descendant();
     }
     let stdin = io::stdin();
     let mut turn = 0_u64;
@@ -44,9 +83,7 @@ fn main() {
             Some("initialized") => {}
             Some("account/read") => {
                 if mode == "descendant-pipes" {
-                    let _ = std::process::Command::new(std::env::current_exe().unwrap())
-                        .arg("--hold-pipes-child")
-                        .spawn();
+                    spawn_pipe_descendant();
                     return;
                 }
                 if mode == "noise-flood" {
@@ -61,7 +98,10 @@ fn main() {
                     send(json!({"id":id,"error":{"code":-32000,"message":"usage limit exceeded"}}));
                 } else if mode == "auth" {
                     send(json!({"id":id,"result":{"requiresOpenaiAuth":true,"account":null}}));
-                } else if mode == "timeout" {
+                } else if matches!(
+                    mode.as_str(),
+                    "timeout" | "version-budget" | "immediate-child"
+                ) {
                     continue;
                 } else if mode == "bad-account" {
                     send(json!({"id":id,"result":{}}));
@@ -85,6 +125,9 @@ fn main() {
                 }
             }
             Some("thread/start") => {
+                if let Some(cwd) = frame.pointer("/params/cwd").and_then(Value::as_str) {
+                    let _ = std::fs::write(std::path::Path::new(cwd).join("cmd.exe"), b"untrusted");
+                }
                 if mode == "slow-phases" {
                     std::thread::sleep(std::time::Duration::from_millis(120));
                 }

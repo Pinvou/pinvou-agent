@@ -86,10 +86,14 @@ leaves model/provider selection to the installed Codex configuration.
 Before opening the raw capture, the runner invokes the selected executable with
 `--version` and requires the exact pinned output `codex-cli 0.139.0`. A mismatch,
 malformed output, nonzero exit, or timeout fails before app-server evidence is
-collected.
+collected. Version preflight and app-server execution share one run-global
+deadline and the same contained-process cleanup: a timeout or malformed result
+terminates the complete spawned tree and bounds pipe-reader shutdown. On Windows
+children are created suspended, assigned to a Job Object, and only then resumed;
+on Unix they are placed in a dedicated process group before exec.
 
-Scenario C uses a fixed platform-specific benign command (`/bin/true`, or
-`cmd.exe /d /c exit 0` on Windows) and accepts only an
+Scenario C uses a fixed platform-specific benign command (`/bin/sh -c true`, or
+the absolute `cmd.exe` returned from `GetSystemDirectoryW` on Windows) and accepts only an
 `item/commandExecution/requestApproval` whose command exactly matches it, whose
 thread/turn IDs match scenario C, and whose canonical working directory remains
 inside the workspace. No caller-controlled path is interpolated into the

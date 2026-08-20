@@ -95,6 +95,7 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
 #[cfg(debug_assertions)]
 fn approval_command_never_contains_metacharacter_output_path() {
     let output = temp_output("spaces & semicolon ; safe");
+    let workspace = output.join("workspace");
     run_s2_for_test(S2RunConfig {
         output_dir: Some(output.clone()),
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
@@ -117,7 +118,101 @@ fn approval_command_never_contains_metacharacter_output_path() {
     assert!(!command.contains("spaces & semicolon ; safe"));
     assert!(!command.contains('&'));
     assert!(!command.contains(';'));
+    assert!(workspace.join("cmd.exe").exists());
+    #[cfg(windows)]
+    {
+        let executable = command
+            .strip_prefix('"')
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let executable = std::path::Path::new(executable);
+        assert!(executable.is_absolute());
+        assert!(
+            executable
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .ends_with("system32\\cmd.exe")
+        );
+        assert_ne!(executable, workspace.join("cmd.exe"));
+    }
+    #[cfg(unix)]
+    assert!(command.starts_with("/bin/sh "));
     std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn version_preflight_and_app_server_share_one_global_deadline() {
+    let output = temp_output("version-budget");
+    let executable = output.join("fake-version-budget.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_fake-app-server"), &executable).unwrap();
+    let start = std::time::Instant::now();
+    let result = run_s2_for_test(S2RunConfig {
+        output_dir: Some(output.clone()),
+        executable: Some(executable.into_os_string()),
+        model: None,
+        scenario_timeout: Duration::from_secs(5),
+        global_timeout: Duration::from_millis(1200),
+    });
+    assert!(result.is_err());
+    assert!(start.elapsed() < Duration::from_millis(1800));
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[cfg(windows)]
+fn process_has_exited(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return true;
+    }
+    let exited = unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0;
+    unsafe { CloseHandle(handle) };
+    exited
+}
+
+#[test]
+#[cfg(windows)]
+fn contained_process_kills_version_and_immediate_app_descendants() {
+    for mode in ["version-descendant", "immediate-child"] {
+        let output = temp_output(mode);
+        let marker = output.join("descendant.pid");
+        let start = std::time::Instant::now();
+        let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+            .args(["run-s2", "--output-dir"])
+            .arg(&output)
+            .args([
+                "--executable",
+                env!("CARGO_BIN_EXE_fake-app-server"),
+                "--scenario-timeout-ms",
+                "300",
+                "--global-timeout-ms",
+                "3000",
+            ])
+            .env("S2_FAKE_MODE", mode)
+            .env("S2_FAKE_MARKER", &marker)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "{mode} cleanup hung"
+        );
+        let pid = std::fs::read_to_string(&marker)
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        assert!(
+            process_has_exited(pid),
+            "{mode} descendant escaped containment"
+        );
+        std::fs::remove_dir_all(output).unwrap();
+    }
 }
 
 #[test]

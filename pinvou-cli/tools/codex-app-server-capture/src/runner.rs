@@ -124,9 +124,18 @@ fn run_s2_with_thresholds(
         )
     })?;
 
+    let global_deadline = Instant::now() + config.global_timeout;
     let mut evidence = empty_evidence();
-    let execution = verify_executable_version(&config, config.global_timeout)
-        .and_then(|_| execute(&config, &output_dir, &workspace, &mut evidence, thresholds));
+    let execution = verify_executable_version(&config, global_deadline).and_then(|_| {
+        execute(
+            &config,
+            &output_dir,
+            &workspace,
+            &mut evidence,
+            thresholds,
+            global_deadline,
+        )
+    });
     if let Err(error) = &execution {
         classify_failure(error, &mut evidence);
     }
@@ -141,52 +150,69 @@ fn run_s2_with_thresholds(
     Ok(S2RunOutcome { output_dir, report })
 }
 
-fn verify_executable_version(config: &S2RunConfig, timeout: Duration) -> Result<()> {
+fn verify_executable_version(config: &S2RunConfig, global_deadline: Instant) -> Result<()> {
     use std::io::Read;
 
+    remaining_global(global_deadline)?;
     let program = config
         .executable
         .clone()
         .unwrap_or_else(|| OsString::from("codex"));
-    let mut child = Command::new(&program)
+    let mut process = Command::new(&program);
+    process
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    let mut contained = spawn_contained(process)
         .with_context(|| format!("failed to launch version preflight for {program:?}"))?;
-    let stdout = child.stdout.take().context("version stdout unavailable")?;
-    let stderr = child.stderr.take().context("version stderr unavailable")?;
+    let stdout = contained
+        .child
+        .stdout
+        .take()
+        .context("version stdout unavailable")?;
+    let stderr = contained
+        .child
+        .stderr
+        .take()
+        .context("version stderr unavailable")?;
     let (output_tx, output_rx) = mpsc::sync_channel(2);
+    let (done_tx, done_rx) = mpsc::sync_channel(2);
+    let mut readers = Vec::new();
     for (label, stream) in [
         ("stdout", Box::new(stdout) as Box<dyn Read + Send>),
         ("stderr", Box::new(stderr) as Box<dyn Read + Send>),
     ] {
         let tx = output_tx.clone();
-        thread::spawn(move || {
+        let done = done_tx.clone();
+        readers.push(thread::spawn(move || {
             let mut bytes = Vec::new();
             let result = stream.take(4097).read_to_end(&mut bytes).map(|_| bytes);
             let _ = tx.send((label, result));
-        });
+            let _ = done.send(label);
+        }));
     }
     drop(output_tx);
-    let deadline = Instant::now() + timeout.min(Duration::from_secs(5));
-    let status = loop {
-        if let Some(status) = child
+    drop(done_tx);
+    let deadline = global_deadline.min(Instant::now() + Duration::from_secs(5));
+    let status_result = loop {
+        if let Some(status) = contained
+            .child
             .try_wait()
             .context("failed polling version preflight")?
         {
-            break status;
+            break Ok(status);
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("version preflight timeout");
+            break Err(anyhow!("version preflight timeout"));
         }
         thread::sleep(Duration::from_millis(5));
     };
+    // Always tear down the contained tree before waiting for EOF: a short-lived
+    // version process may have spawned descendants that inherited its pipes.
+    contained.terminate_and_wait_bounded();
     let mut stdout_bytes = None;
-    let read_deadline = Instant::now() + Duration::from_secs(1);
+    let read_deadline = global_deadline.min(Instant::now() + Duration::from_secs(1));
     for _ in 0..2 {
         let remaining = read_deadline
             .checked_duration_since(Instant::now())
@@ -202,6 +228,26 @@ fn verify_executable_version(config: &S2RunConfig, timeout: Duration) -> Result<
             stdout_bytes = Some(bytes);
         }
     }
+    let mut completed = std::collections::HashSet::new();
+    let join_deadline = Instant::now() + Duration::from_secs(1);
+    while completed.len() < readers.len() {
+        let Some(remaining) = join_deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        match done_rx.recv_timeout(remaining) {
+            Ok(label) => {
+                completed.insert(label);
+            }
+            Err(_) => break,
+        }
+    }
+    for (index, handle) in readers.into_iter().enumerate() {
+        let label = if index == 0 { "stdout" } else { "stderr" };
+        if completed.contains(label) {
+            let _ = handle.join();
+        }
+    }
+    let status = status_result?;
     if !status.success() {
         bail!("version preflight exited with status {status}");
     }
@@ -219,7 +265,9 @@ fn execute(
     workspace: &Path,
     evidence: &mut S2Evidence,
     thresholds: RunnerThresholds,
+    global_deadline: Instant,
 ) -> Result<()> {
+    remaining_global(global_deadline)?;
     let clock = Arc::new(HostMonotonicClock::new()?);
     let recorder_clock = Arc::clone(&clock);
     let recorder: Arc<Mutex<Recorder>> = Arc::new(Mutex::new(JsonlRecorder::new(
@@ -229,7 +277,7 @@ fn execute(
     let mut session = Session::spawn(
         CommandSpec::codex(config.executable.clone()),
         recorder,
-        config.global_timeout,
+        global_deadline,
     )?;
 
     let result = (|| {
@@ -259,7 +307,7 @@ fn execute(
         let mut scenario_b_content = Vec::new();
         let mut interrupt_response_latency_ms = None;
         let mut interrupt_terminal_latency_ms = None;
-        let approval_command = approval_command();
+        let approval_command = approval_command()?;
         for name in ["A", "B", "C", "D"] {
             let scenario_deadline = Instant::now() + config.scenario_timeout;
             let approval_policy = if name == "C" { "untrusted" } else { "never" };
@@ -300,7 +348,7 @@ fn execute(
                 &thread_id,
                 &turn_id,
                 workspace,
-                approval_command,
+                &approval_command,
                 scenario_deadline,
                 thresholds,
             )?;
@@ -344,8 +392,47 @@ struct ObservedScenario {
     interrupt_terminal_latency_ms: Option<f64>,
 }
 
-struct Session {
+struct ContainedChild {
     child: Child,
+    #[cfg(windows)]
+    job: windows_sys::Win32::Foundation::HANDLE,
+    #[cfg(unix)]
+    process_group: i32,
+}
+
+impl ContainedChild {
+    fn terminate_tree(&mut self) {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+            if !self.job.is_null() {
+                let _ = TerminateJobObject(self.job, 1);
+                CloseHandle(self.job);
+                self.job = std::ptr::null_mut();
+            }
+        }
+        #[cfg(unix)]
+        unsafe {
+            let _ = kill(-self.process_group, 9);
+        }
+        let _ = self.child.kill();
+    }
+
+    fn terminate_and_wait_bounded(&mut self) {
+        self.terminate_tree();
+        wait_child_bounded(&mut self.child);
+    }
+}
+
+impl Drop for ContainedChild {
+    fn drop(&mut self) {
+        self.terminate_and_wait_bounded();
+    }
+}
+
+struct Session {
+    contained: ContainedChild,
     stdin: ChildStdin,
     incoming: mpsc::Receiver<Inbound>,
     recorder: Arc<Mutex<Recorder>>,
@@ -356,10 +443,6 @@ struct Session {
     stderr_thread: Option<thread::JoinHandle<()>>,
     reader_done: mpsc::Receiver<&'static str>,
     inbound_overflow: Arc<AtomicBool>,
-    #[cfg(windows)]
-    job: windows_sys::Win32::Foundation::HANDLE,
-    #[cfg(unix)]
-    process_group: i32,
 }
 
 fn try_emit(sender: &mpsc::SyncSender<Inbound>, overflow: &AtomicBool, event: Inbound) -> bool {
@@ -377,7 +460,7 @@ impl Session {
     fn spawn(
         command: CommandSpec,
         recorder: Arc<Mutex<Recorder>>,
-        global_timeout: Duration,
+        global_deadline: Instant,
     ) -> Result<Self> {
         let mut process = Command::new(&command.program);
         process
@@ -385,36 +468,24 @@ impl Session {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            // SAFETY: setpgid is async-signal-safe and called before exec in the child.
-            unsafe {
-                process.pre_exec(|| {
-                    if setpgid(0, 0) == 0 {
-                        Ok(())
-                    } else {
-                        Err(std::io::Error::last_os_error())
-                    }
-                });
-            }
-        }
-        let mut child = process.spawn().with_context(|| {
+        let mut contained = spawn_contained(process).with_context(|| {
             format!(
                 "failed to launch app-server executable {:?}",
                 command.program
             )
         })?;
-        #[cfg(windows)]
-        let job = assign_child_job(&mut child)?;
-        #[cfg(unix)]
-        let process_group = child.id() as i32;
-        let stdin = child.stdin.take().context("app-server stdin unavailable")?;
-        let stdout = child
+        let stdin = contained
+            .child
+            .stdin
+            .take()
+            .context("app-server stdin unavailable")?;
+        let stdout = contained
+            .child
             .stdout
             .take()
             .context("app-server stdout unavailable")?;
-        let stderr = child
+        let stderr = contained
+            .child
             .stderr
             .take()
             .context("app-server stderr unavailable")?;
@@ -527,21 +598,17 @@ impl Session {
             let _ = stderr_done.send("stderr");
         });
         Ok(Self {
-            child,
+            contained,
             stdin,
             incoming,
             recorder,
             next_id: 1,
             pending: VecDeque::new(),
-            global_deadline: Instant::now() + global_timeout,
+            global_deadline,
             stdout_thread: Some(stdout_thread),
             stderr_thread: Some(stderr_thread),
             reader_done,
             inbound_overflow,
-            #[cfg(windows)]
-            job,
-            #[cfg(unix)]
-            process_group,
         })
     }
 
@@ -802,8 +869,7 @@ impl Session {
     }
 
     fn stop(&mut self) {
-        self.terminate_tree();
-        let _ = self.child.wait();
+        self.contained.terminate_and_wait_bounded();
         let deadline = Instant::now() + Duration::from_secs(1);
         let mut done = std::collections::HashSet::new();
         while done.len() < 2 {
@@ -832,22 +898,6 @@ impl Session {
             self.stderr_thread.take();
         }
     }
-
-    fn terminate_tree(&mut self) {
-        #[cfg(windows)]
-        unsafe {
-            use windows_sys::Win32::Foundation::CloseHandle;
-            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
-            let _ = TerminateJobObject(self.job, 1);
-            CloseHandle(self.job);
-            self.job = std::ptr::null_mut();
-        }
-        #[cfg(unix)]
-        unsafe {
-            let _ = kill(-self.process_group, 9);
-        }
-        let _ = self.child.kill();
-    }
 }
 
 fn read_line_checked(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
@@ -867,15 +917,82 @@ fn remaining_until(deadline: Instant) -> Result<Duration> {
         .context("S2 scenario timeout expired")
 }
 
+fn remaining_global(deadline: Instant) -> Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .context("S2 global timeout expired")
+}
+
+fn spawn_contained(mut process: Command) -> Result<ContainedChild> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setpgid is async-signal-safe and called before exec in the child.
+        unsafe {
+            process.pre_exec(|| {
+                if setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+        process.creation_flags(CREATE_SUSPENDED);
+    }
+    let mut child = process.spawn()?;
+    #[cfg(windows)]
+    let job = match contain_and_resume_windows_child(&child) {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = child.kill();
+            wait_child_bounded(&mut child);
+            return Err(error);
+        }
+    };
+    #[cfg(unix)]
+    let process_group = child.id() as i32;
+    Ok(ContainedChild {
+        child,
+        #[cfg(windows)]
+        job,
+        #[cfg(unix)]
+        process_group,
+    })
+}
+
+fn wait_child_bounded(child: &mut Child) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
+            _ => {
+                let _ = child.kill();
+                break;
+            }
+        }
+    }
+}
+
 #[cfg(windows)]
-fn assign_child_job(child: &mut Child) -> Result<windows_sys::Win32::Foundation::HANDLE> {
+fn contain_and_resume_windows_child(
+    child: &Child,
+) -> Result<windows_sys::Win32::Foundation::HANDLE> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
     use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
     // SAFETY: null security/name create an unnamed job; child handle is live.
     let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
     if job.is_null() || job == INVALID_HANDLE_VALUE {
-        let _ = child.kill();
         bail!(
             "CreateJobObjectW failed: {}",
             std::io::Error::last_os_error()
@@ -884,10 +1001,66 @@ fn assign_child_job(child: &mut Child) -> Result<windows_sys::Win32::Foundation:
     if unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) } == 0 {
         let error = std::io::Error::last_os_error();
         unsafe { CloseHandle(job) };
-        let _ = child.kill();
         bail!("AssignProcessToJobObject failed: {error}");
     }
+
+    // `std::process::Child` does not retain the primary thread handle. Because
+    // CREATE_SUSPENDED prevents any child code from running, the snapshot has
+    // exactly the suspended primary thread for this PID at this point.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        let error = std::io::Error::last_os_error();
+        terminate_and_close_job(job);
+        bail!("CreateToolhelp32Snapshot failed: {error}");
+    }
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
+    let mut found = false;
+    let mut has_entry = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+    while has_entry {
+        if entry.th32OwnerProcessID == child.id() {
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if thread.is_null() {
+                let error = std::io::Error::last_os_error();
+                unsafe {
+                    CloseHandle(snapshot);
+                }
+                terminate_and_close_job(job);
+                bail!("OpenThread failed: {error}");
+            }
+            let resumed = unsafe { ResumeThread(thread) };
+            unsafe { CloseHandle(thread) };
+            if resumed == u32::MAX {
+                let error = std::io::Error::last_os_error();
+                unsafe {
+                    CloseHandle(snapshot);
+                }
+                terminate_and_close_job(job);
+                bail!("ResumeThread failed: {error}");
+            }
+            found = true;
+            break;
+        }
+        has_entry = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
+    if !found {
+        terminate_and_close_job(job);
+        bail!("suspended child primary thread was not found");
+    }
     Ok(job)
+}
+
+#[cfg(windows)]
+fn terminate_and_close_job(job: windows_sys::Win32::Foundation::HANDLE) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+    unsafe {
+        let _ = TerminateJobObject(job, 1);
+        CloseHandle(job);
+    }
 }
 
 #[cfg(unix)]
@@ -1040,11 +1213,28 @@ fn scenario_prompt(name: &str, approval_command: &str) -> String {
     }
 }
 
-fn approval_command() -> &'static str {
+fn approval_command() -> Result<String> {
     #[cfg(windows)]
-    return "cmd.exe /d /c exit 0";
+    {
+        use std::os::windows::ffi::OsStringExt;
+        use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+        let mut buffer = vec![0_u16; 32_768];
+        let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+        if length == 0 || length as usize >= buffer.len() {
+            bail!("GetSystemDirectoryW failed or returned an oversized path");
+        }
+        let path = PathBuf::from(OsString::from_wide(&buffer[..length as usize])).join("cmd.exe");
+        let path = path
+            .to_str()
+            .context("system cmd.exe path was not valid Unicode")?;
+        if path.contains('"') {
+            bail!("system cmd.exe path contained an unsafe quote");
+        }
+        return Ok(format!("\"{path}\" /d /c exit 0"));
+    }
     #[cfg(not(windows))]
-    return "/bin/true";
+    Ok("/bin/sh -c true".to_owned())
 }
 
 fn performance(events: &[ContentEvent]) -> Result<PerformanceEvidence> {
