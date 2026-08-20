@@ -93,7 +93,7 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
 
 #[test]
 #[cfg(debug_assertions)]
-fn approval_command_never_contains_metacharacter_output_path() {
+fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
     let output = temp_output("spaces & semicolon ; safe");
     let workspace = output.join("workspace");
     run_s2_for_test(S2RunConfig {
@@ -105,12 +105,43 @@ fn approval_command_never_contains_metacharacter_output_path() {
     })
     .unwrap();
     let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
-    let approval = capture
+    let records = capture
         .lines()
         .filter_map(|line| serde_json::from_str::<CaptureRecord>(line).ok())
-        .filter_map(|record| serde_json::from_str::<Value>(&record.line).ok())
-        .find(|frame| frame["method"] == "item/commandExecution/requestApproval")
+        .filter_map(|record| {
+            serde_json::from_str::<Value>(&record.line)
+                .ok()
+                .map(|frame| (record.channel, frame))
+        })
+        .collect::<Vec<_>>();
+    let thread_start = records
+        .iter()
+        .map(|(_, frame)| frame)
+        .find(|frame| {
+            frame["method"] == "thread/start" && frame["params"]["approvalPolicy"] == "on-request"
+        })
         .unwrap();
+    assert_eq!(thread_start["params"]["sandbox"], "read-only");
+    let turn_start = records
+        .iter()
+        .map(|(_, frame)| frame)
+        .find(|frame| {
+            frame["method"] == "turn/start"
+                && frame
+                    .pointer("/params/input/0/text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|prompt| prompt.contains("S2-C"))
+        })
+        .unwrap();
+    assert_eq!(turn_start["params"]["approvalPolicy"], "on-request");
+    assert_eq!(turn_start["params"]["sandboxPolicy"]["type"], "readOnly");
+    let approvals = records
+        .iter()
+        .map(|(_, frame)| frame)
+        .filter(|frame| frame["method"] == "item/commandExecution/requestApproval")
+        .collect::<Vec<_>>();
+    assert_eq!(approvals.len(), 1);
+    let approval = approvals[0];
     let command = approval
         .pointer("/params/command")
         .and_then(Value::as_str)
@@ -118,6 +149,16 @@ fn approval_command_never_contains_metacharacter_output_path() {
     assert!(!command.contains("spaces & semicolon ; safe"));
     assert!(!command.contains('&'));
     assert!(!command.contains(';'));
+    assert!(command.contains(".codex-s2-approval-marker"));
+    let response = records
+        .iter()
+        .find(|(channel, frame)| {
+            *channel == CaptureChannel::ClientToServer
+                && frame["id"] == approval["id"]
+                && frame["result"]["decision"] == "accept"
+        })
+        .unwrap();
+    assert_eq!(response.1["result"]["decision"], "accept");
     assert!(workspace.join("cmd.exe").exists());
     #[cfg(windows)]
     {

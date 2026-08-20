@@ -100,8 +100,16 @@ line breaks. It is invoked through the absolute trusted System32 `cmd.exe` with
 fixed `/d /s /c` arguments and fail-closed quoting. Explicit regular `.cmd`
 scripts use the same path, while explicit `.exe` test overrides remain direct.
 
-Scenario C uses a fixed platform-specific benign command (`/bin/sh -c true`, or
-the absolute `cmd.exe` returned from `GetSystemDirectoryW` on Windows) and accepts only an
+Scenarios A, B, and D embed the same deterministic, non-sensitive restricted
+ASCII corpus and request literal repetition: 22 KiB for A, 56 KiB for B, and a
+32 KiB D stream with a required 4 KiB prefix before continued output. Their
+prompts forbid summaries, prose substitutions, and tools; the corpus remains
+only in the restricted raw capture and is never copied into sanitized artifacts.
+
+Scenario C uses `on-request` approval and a read-only sandbox, then requests one
+fixed platform-specific command that writes `.codex-s2-approval-marker` relative
+to the isolated working directory. The command uses absolute `/bin/sh` or the
+absolute `cmd.exe` returned from `GetSystemDirectoryW`, and the runner accepts only an
 `item/commandExecution/requestApproval` whose command exactly matches it, whose
 thread/turn IDs match scenario C, and whose canonical working directory remains
 inside the workspace. No caller-controlled path is interpolated into the

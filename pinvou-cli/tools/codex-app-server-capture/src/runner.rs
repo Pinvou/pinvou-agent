@@ -493,13 +493,19 @@ fn execute(
         let mut interrupt_response_latency_ms = None;
         let mut interrupt_terminal_latency_ms = None;
         let approval_command = approval_command()?;
+        let corpus = restricted_ascii_corpus();
         for name in ["A", "B", "C", "D"] {
             let scenario_deadline = Instant::now() + config.scenario_timeout;
-            let approval_policy = if name == "C" { "untrusted" } else { "never" };
+            let approval_policy = if name == "C" { "on-request" } else { "never" };
+            let sandbox = if name == "C" {
+                "read-only"
+            } else {
+                "workspace-write"
+            };
             let mut thread_params = json!({
                 "cwd": workspace,
                 "approvalPolicy": approval_policy,
-                "sandbox": "workspace-write",
+                "sandbox": sandbox,
                 "ephemeral": true
             });
             if let Some(model) = config.model.as_ref() {
@@ -517,10 +523,19 @@ fn execute(
                     format!("scenario {name}: thread/start response missing thread.id")
                 })?
                 .to_owned();
-            let prompt = scenario_prompt(name, &approval_command);
+            let prompt = scenario_prompt(name, &approval_command, &corpus);
+            let mut turn_params = json!({
+                "threadId":thread_id,
+                "cwd":workspace,
+                "input":[{"type":"text","text":prompt}]
+            });
+            if name == "C" {
+                turn_params["approvalPolicy"] = json!("on-request");
+                turn_params["sandboxPolicy"] = json!({"type":"readOnly"});
+            }
             let turn = session.request(
                 "turn/start",
-                json!({"threadId":thread_id,"cwd":workspace,"input":[{"type":"text","text":prompt}]}),
+                turn_params,
                 remaining_until(scenario_deadline)?,
             )?;
             let turn_id = turn
@@ -1381,12 +1396,74 @@ fn quota_exhausted(value: &Value) -> bool {
     }
 }
 
-fn scenario_prompt(name: &str, approval_command: &str) -> String {
+const CORPUS_BYTES: usize = 1024;
+const A_CORPUS_REPEATS: usize = 22;
+const B_CORPUS_REPEATS: usize = 56;
+const D_PREFIX_REPEATS: usize = 4;
+const D_CORPUS_REPEATS: usize = 32;
+
+#[derive(Debug)]
+struct ScenarioStimulus {
+    prompt: String,
+    target_bytes: usize,
+    prefix_bytes: usize,
+}
+
+fn restricted_ascii_corpus() -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:-_";
+    let mut state = 0x5a17_2d39_u32;
+    let mut bytes = Vec::with_capacity(CORPUS_BYTES);
+    for index in 0..CORPUS_BYTES {
+        if index % 64 == 63 {
+            bytes.push(b'\n');
+        } else {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            bytes.push(ALPHABET[(state as usize) % ALPHABET.len()]);
+        }
+    }
+    String::from_utf8(bytes).expect("restricted ASCII corpus must be UTF-8")
+}
+
+fn streaming_prompt(name: &str, corpus: &str) -> Option<ScenarioStimulus> {
+    let (repeats, prefix_repeats, instruction) = match name {
+        "A" => (
+            A_CORPUS_REPEATS,
+            0,
+            "Stream every copy continuously and finish only after all copies.",
+        ),
+        "B" => (
+            B_CORPUS_REPEATS,
+            0,
+            "Start immediately and emit every copy continuously at full output rate.",
+        ),
+        "D" => (
+            D_CORPUS_REPEATS,
+            D_PREFIX_REPEATS,
+            "Start immediately; the first four copies are the required prefix, then continue until interrupted.",
+        ),
+        _ => return None,
+    };
+    Some(ScenarioStimulus {
+        prompt: format!(
+            "S2-{name}: Output the CORPUS block verbatim exactly {repeats} times, one copy after another. {instruction} Emit only corpus copies. Do not summarize. Do not use tools. Do not explain or stop early.\nCORPUS_BEGIN\n{corpus}CORPUS_END"
+        ),
+        target_bytes: repeats * corpus.len(),
+        prefix_bytes: prefix_repeats * corpus.len(),
+    })
+}
+
+fn scenario_prompt(name: &str, approval_command: &str, corpus: &str) -> String {
     match name {
-        "A" => "S2-A: Sustain a continuous plain-text technical explanation of streaming backpressure for at least 35 seconds and at least 2 KiB. Do not call tools.".to_owned(),
-        "B" => "S2-B: Produce at least 40 KiB of dense generated content in one response for a real peak-output measurement. Do not call tools.".to_owned(),
-        "C" => format!("S2-C: Execute exactly the following single benign local probe command, requesting approval before execution. Do not run any other command or tool. APPROVAL_COMMAND_JSON:{}", serde_json::to_string(approval_command).unwrap()),
-        "D" => "S2-D: Begin producing at least 8000 words of dense generated content immediately and continuously. Do not call tools.".to_owned(),
+        "A" | "B" | "D" => {
+            let stimulus = streaming_prompt(name, corpus).unwrap();
+            debug_assert!(stimulus.target_bytes >= 20 * 1024);
+            debug_assert!(name != "D" || stimulus.prefix_bytes >= 4 * 1024);
+            stimulus.prompt
+        }
+        "C" => format!(
+            "S2-C: Execute exactly this command once now. Emit no prose. Use no other command or tool. APPROVAL_COMMAND_JSON:{}",
+            serde_json::to_string(approval_command).unwrap()
+        ),
         _ => unreachable!(),
     }
 }
@@ -1401,10 +1478,12 @@ fn approval_command() -> Result<String> {
         if path.contains('"') {
             bail!("system cmd.exe path contained an unsafe quote");
         }
-        return Ok(format!("\"{path}\" /d /c exit 0"));
+        return Ok(format!(
+            "\"{path}\" /d /s /c \"echo S2_APPROVED> .codex-s2-approval-marker\""
+        ));
     }
     #[cfg(not(windows))]
-    Ok("/bin/sh -c true".to_owned())
+    Ok("/bin/sh -c 'printf S2_APPROVED > .codex-s2-approval-marker'".to_owned())
 }
 
 #[cfg(windows)]
@@ -1524,6 +1603,38 @@ mod tests {
 
         let error = super::read_line_checked(&mut BufReader::new(BrokenReader)).unwrap_err();
         assert_eq!(error.to_string(), "injected failure");
+    }
+
+    #[test]
+    fn scenario_corpus_is_deterministic_restricted_ascii_near_one_kibibyte() {
+        let first = super::restricted_ascii_corpus();
+        let second = super::restricted_ascii_corpus();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 1024);
+        assert!(
+            first
+                .bytes()
+                .all(|byte| byte == b'\n' || (0x20..=0x7e).contains(&byte))
+        );
+    }
+
+    #[test]
+    fn streaming_prompts_request_substantial_literal_output_above_each_gate() {
+        let corpus = super::restricted_ascii_corpus();
+        let a = super::streaming_prompt("A", &corpus).unwrap();
+        let b = super::streaming_prompt("B", &corpus).unwrap();
+        let d = super::streaming_prompt("D", &corpus).unwrap();
+
+        assert!((20 * 1024..=24 * 1024).contains(&a.target_bytes));
+        assert!((48 * 1024..=64 * 1024).contains(&b.target_bytes));
+        assert!(d.prefix_bytes >= 4 * 1024);
+        assert!(d.target_bytes >= 24 * 1024);
+        for stimulus in [a, b, d] {
+            assert!(stimulus.prompt.contains(&corpus));
+            assert!(stimulus.prompt.contains("verbatim"));
+            assert!(stimulus.prompt.contains("Do not summarize"));
+            assert!(stimulus.prompt.contains("Do not use tools"));
+        }
     }
 }
 
