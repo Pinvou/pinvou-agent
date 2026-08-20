@@ -477,7 +477,19 @@ mod tests {
             "Canva 远程 MCP 不应解包本地 server.py"
         );
         // 腾讯文档 manifest 应解包,且四个官方远程 server + 无 scheme Authorization 声明完整。
-        let tdoc_dir = paths::bundle_mcp_servers_dir().join("tencent-docs");
+        // 未安装包在新架构下只住 mcp_catalog 内嵌目录（不落盘）；先登记安装再校验释放。
+        let store = crate::features::marketplace::store::BundleStore::new();
+        store
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "tencent-docs",
+                    crate::features::marketplace::store::BundleSource::Preset,
+                ),
+            )
+            .unwrap();
+        crate::features::marketplace::mcp_catalog::ensure_package_released("tencent-docs")
+            .expect("腾讯文档包应释放");
+        let tdoc_dir = crate::features::marketplace::mcp_catalog::package_mcp_dir("tencent-docs");
         let tdoc_manifest = tdoc_dir.join("manifest.json");
         assert!(tdoc_manifest.is_file(), "腾讯文档 manifest 应被解包");
         let tdoc_json: serde_json::Value =
@@ -1137,9 +1149,13 @@ mod tests {
         for d in WECOM_LEGACY_SKILL_DIRS {
             assert!(!bundle.skills_dir.join(d).exists(), "{d} 应被清理");
         }
+        // 门控解包目标在按包聚合布局 bundles/wecom/skills/（旧扁平 skills_dir 已退役）
+        let wecom_pkg_skills = crate::platform::paths::bundles_root()
+            .join("wecom")
+            .join("skills");
         for d in WECOM_SKILL_DIRS {
             assert!(
-                bundle.skills_dir.join(d).join("SKILL.md").is_file(),
+                wecom_pkg_skills.join(d).join("SKILL.md").is_file(),
                 "{d} 应被解包"
             );
         }
