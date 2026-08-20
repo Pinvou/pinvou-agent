@@ -305,6 +305,8 @@ pub enum FrameError {
     InvalidJson,
     #[error("IPC message fields violate the envelope contract")]
     InvalidMessage,
+    #[error("frame transport I/O failed")]
+    Io,
 }
 
 pub fn decode_length_prefix(prefix: [u8; LENGTH_PREFIX_LEN]) -> Result<usize, FrameError> {
@@ -351,6 +353,21 @@ pub fn decode_frame<T: DeserializeOwned>(frame: &[u8]) -> Result<T, FrameError> 
             actual: payload.len(),
         });
     }
+    decode_payload(payload)
+}
+
+pub fn read_frame<R: std::io::Read, T: DeserializeOwned>(reader: &mut R) -> Result<T, FrameError> {
+    let mut prefix = [0_u8; LENGTH_PREFIX_LEN];
+    reader.read_exact(&mut prefix).map_err(|_| FrameError::Io)?;
+    let declared = decode_length_prefix(prefix)?;
+    let mut payload = vec![0_u8; declared];
+    reader
+        .read_exact(&mut payload)
+        .map_err(|_| FrameError::Io)?;
+    decode_payload(&payload)
+}
+
+fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, FrameError> {
     let json = std::str::from_utf8(payload).map_err(|_| FrameError::InvalidUtf8)?;
     serde_json::from_str(json).map_err(|_| FrameError::InvalidJson)
 }

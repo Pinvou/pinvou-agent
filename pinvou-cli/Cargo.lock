@@ -6355,8 +6355,12 @@ dependencies = [
 name = "pinvou-controller"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "pinvou-protocol",
  "pinvou-seglog",
+ "serde_json",
+ "thiserror 2.0.20",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

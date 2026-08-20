@@ -1,4 +1,6 @@
 fn main() {
-    eprintln!("{}", pinvou_controller::unavailable_message());
-    std::process::exit(1);
+    if let Err(error) = pinvou_controller::run_from_env() {
+        eprintln!("pinvou-controller: {error}");
+        std::process::exit(error.exit_code().as_i32());
+    }
 }

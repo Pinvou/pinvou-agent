@@ -1,6 +1,6 @@
 use pinvou_protocol::{
     FrameError, HelloClient, HelloServer, IpcMessage, MAX_FRAME_LEN, decode_frame,
-    decode_length_prefix, encode_frame,
+    decode_length_prefix, encode_frame, read_frame,
 };
 
 #[test]
@@ -66,6 +66,30 @@ fn encoding_stops_when_json_exceeds_the_frame_limit() {
     let oversized = serde_json::json!({"data": "x".repeat(MAX_FRAME_LEN)});
     assert!(matches!(
         encode_frame(&oversized),
+        Err(FrameError::FrameTooLarge { .. })
+    ));
+}
+
+#[test]
+fn streaming_reader_rejects_an_oversized_prefix_before_reading_a_body() {
+    struct PrefixOnly {
+        prefix: std::io::Cursor<[u8; 4]>,
+    }
+    impl std::io::Read for PrefixOnly {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.prefix.position() < 4 {
+                self.prefix.read(buffer)
+            } else {
+                panic!("oversized frame body must never be read")
+            }
+        }
+    }
+
+    let mut reader = PrefixOnly {
+        prefix: std::io::Cursor::new(((MAX_FRAME_LEN + 1) as u32).to_le_bytes()),
+    };
+    assert!(matches!(
+        read_frame::<_, serde_json::Value>(&mut reader),
         Err(FrameError::FrameTooLarge { .. })
     ));
 }
