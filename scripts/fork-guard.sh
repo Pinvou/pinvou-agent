@@ -58,6 +58,11 @@ fingerprints=(
   "T1|宿主批量取消运行中子智能体          |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
   "T1|批量取消幂等行为回归                |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_host_bulk_cancel_stops_all_running_children_idempotently"
   "T1|通用完成事件携带失败终态            |CodeWhale/crates/tui/src/core/events.rs|failed: bool"
+  "T1|deepseek-v4 官方路由剥离固定采样    |CodeWhale/crates/tui/src/client/chat.rs|fn apply_deepseek_v4_official_fixed_sampling("
+  "T1|deepseek-v4 固定采样行为回归        |CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_deepseek_v4_official_route_strips_fixed_temperature"
+  "T1|deepseek-v4 Responses 固定采样回归  |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_deepseek_v4_responses_drops_non_one_temperature"
+  "T1|kimi-for-coding 固定采样回归        |CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_kimi_code_coding_plan_strips_non_one_temperature"
+  "T1|压缩完成事件携带新上下文估算        |CodeWhale/crates/tui/src/core/events.rs|post_input_tokens: Option<u64>"
 
   "T2|宿主额外工具入口                    |CodeWhale/crates/tui/src/core/engine.rs|pub struct ExtraTools("
   "T2|动态禁用工具操作                    |CodeWhale/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"

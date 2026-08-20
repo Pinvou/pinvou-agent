@@ -51,11 +51,16 @@ try {
   applyNativeChatEvent(lane, 'chat:tool_start', { session_id: 's1', id: 'call-1', name: 'exec_shell', args: { command: 'ls' } });
   assert.equal(lane.thinking.phase, 'tool');
   applyNativeChatEvent(lane, 'chat:tool_end', { session_id: 's1', id: 'call-1', success: true, output: 'a.txt' });
-  applyNativeChatEvent(lane, 'chat:usage', { session_id: 's1', input_tokens: 1234 });
+  applyNativeChatEvent(lane, 'chat:usage', { session_id: 's1', input_tokens: 1234, context_window: 64000 });
   applyNativeChatEvent(lane, 'chat:done', { session_id: 's1', status: 'Completed' });
 
   assert.equal(lane.busy, false, 'done 后结束 busy');
   assert.equal(lane.tokens.input, 1234);
+  assert.equal(lane.tokens.max, 64000, 'chat:usage 的 context_window 写入 tokens.max（占比/进度条数据源）');
+  // context_window 缺失时保留旧 max，不清零
+  applyNativeChatEvent(lane, 'chat:usage', { session_id: 's1', input_tokens: 2000 });
+  assert.equal(lane.tokens.input, 2000);
+  assert.equal(lane.tokens.max, 64000, '缺 context_window 时保留旧 max');
   const projection = projectNativeLane(lane, 's1');
   assert.equal(projection.turns.length, 1, '单 user 回合聚成一个 turn');
   const [turn] = projection.turns;
@@ -179,10 +184,14 @@ try {
     ],
   }, [
     { turn_id: 't1', event: 'user_start', timestamp: 1000, ui_turn_index: 0 },
-    { turn_id: 't1', event: 'assistant_done', timestamp: 2000, status: 'Completed', usage: { input_tokens: 10, output_tokens: 5 } },
+    { turn_id: 't1', event: 'assistant_done', timestamp: 2000, status: 'Completed', usage: { input_tokens: 10, output_tokens: 5, context_window: 64000 } },
+    // 压缩完成后的快照事件（无配对 user_start）：hydration 应优先取它而非压缩前的 turn
+    { turn_id: 'context-snapshot-3000', event: 'context_snapshot', timestamp: 3000, usage: { input_tokens: 4, context_window: 64000 } },
   ]);
   assert.equal(lane4.hydrated, true);
   assert.equal(lane4.busy, false, '无 live 痕迹时 hydration 不恢复 busy');
+  assert.equal(lane4.tokens.input, 4, 'hydration 取最后的 context_snapshot（压缩后新值），不回退到压缩前的 turn');
+  assert.equal(lane4.tokens.max, 64000, 'hydration 一并回填 context_window（占比/进度条分母）');
   const hydrated = projectNativeLane(lane4, 's4');
   assert.equal(hydrated.turns.length, 1);
   assert.equal(hydrated.turns[0].status, 'Completed', 'timeline 事件驱动回合状态');
@@ -489,6 +498,16 @@ try {
   assert.equal(notices[0].compactPhase, 'start');
   assert.equal(notices[1].compactPhase, 'done');
   assert.equal(notices[1].text, '12 → 8');
+
+  // compaction done 带 post_tokens → 立即刷新用量 chip（不等下一轮 chat:usage）
+  const lane7b = createNativeLane();
+  lane7b.tokens = { input: 98000, max: 262144 };
+  applyNativeChatEvent(lane7b, 'chat:compaction', { session_id: 's7b', phase: 'done', message: 'done', post_tokens: 12000 });
+  assert.equal(lane7b.tokens.input, 12000, '压缩完成后 tokens.input 刷新为压缩后估算');
+  assert.equal(lane7b.tokens.max, 262144, 'max 保留');
+  // start/无 post_tokens 不动用量
+  applyNativeChatEvent(lane7b, 'chat:compaction', { session_id: 's7b', phase: 'start' });
+  assert.equal(lane7b.tokens.input, 12000);
 
   // ── Plan 审批：snapshot → ready → 覆盖/批准 ─────────────────────
   const planSnap = {
