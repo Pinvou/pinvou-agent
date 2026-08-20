@@ -462,6 +462,17 @@ fn run_s2_rejects_unexpected_approval_method_instead_of_auto_approving_it() {
 }
 
 #[test]
+fn run_s2_rejects_approval_from_in_workspace_child_cwd() {
+    let output = temp_output("child-approval");
+    let result = run_fake("child-approval", &output, 1_000);
+    assert!(!result.status.success());
+    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+    assert!(capture.contains(r#"\"decision\":\"cancel\""#));
+    assert!(!capture.contains(r#"\"decision\":\"accept\""#));
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
 #[cfg(debug_assertions)]
 fn interrupt_timings_start_at_the_correlated_request_write() {
     let output = temp_output("timing");

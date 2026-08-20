@@ -174,6 +174,15 @@ fn main() {
                                 .and_then(|path| std::path::Path::new(path).parent())
                                 .map(|path| json!(path))
                                 .unwrap_or(Value::Null);
+                        } else if mode == "child-approval" {
+                            cwd = cwd
+                                .as_str()
+                                .map(|path| std::path::Path::new(path).join("child"))
+                                .map(|path| {
+                                    std::fs::create_dir_all(&path).unwrap();
+                                    json!(path)
+                                })
+                                .unwrap_or(Value::Null);
                         }
                         let approval_thread = if mode == "wrong-approval-thread" {
                             "wrong-thread".to_owned()

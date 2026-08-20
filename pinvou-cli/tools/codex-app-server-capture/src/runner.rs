@@ -1010,11 +1010,9 @@ impl Session {
             && params.get("threadId").and_then(Value::as_str) == Some(thread_id)
             && params.get("turnId").and_then(Value::as_str) == Some(turn_id)
             && params.get("command").and_then(Value::as_str) == Some(command)
-            && workspace_root.as_ref().is_some_and(|root| {
-                canonical_cwd
-                    .as_ref()
-                    .is_some_and(|path| path == root || path.starts_with(root))
-            });
+            && workspace_root
+                .as_ref()
+                .is_some_and(|root| canonical_cwd.as_ref().is_some_and(|path| path == root));
         if !safe {
             self.send(&json!({"id":id,"result":{"decision":"cancel"}}))?;
             bail!(
@@ -1429,7 +1427,7 @@ fn streaming_prompt(name: &str, corpus: &str) -> Option<ScenarioStimulus> {
         "A" => (
             A_CORPUS_REPEATS,
             0,
-            "Stream every copy continuously and finish only after all copies.",
+            "Emit at a steady pace over at least 35 seconds. Do not finish before 35 seconds; finish only after all copies.",
         ),
         "B" => (
             B_CORPUS_REPEATS,
@@ -1626,6 +1624,9 @@ mod tests {
         let d = super::streaming_prompt("D", &corpus).unwrap();
 
         assert!((20 * 1024..=24 * 1024).contains(&a.target_bytes));
+        assert!(a.prompt.contains("steady pace"));
+        assert!(a.prompt.contains("at least 35 seconds"));
+        assert!(a.prompt.contains("Do not finish before 35 seconds"));
         assert!((48 * 1024..=64 * 1024).contains(&b.target_bytes));
         assert!(d.prefix_bytes >= 4 * 1024);
         assert!(d.target_bytes >= 24 * 1024);
