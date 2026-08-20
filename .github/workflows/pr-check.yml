@@ -10,6 +10,8 @@ name: PR Check
 # - release-contract-test:发布链路改动只跑配置/脚本契约,不在 PR 构建安装包。
 # - knowledge-rust:独立 pinvou-knowledge crate/部署入口改动跑 fmt/clippy/test 与 shell
 #   语法检查；依赖或策略改动时追加 cargo-deny，不依赖 Tauri workspace 间接覆盖。
+# - distributed-boundary-build:固定正式分布式 roots 的 resolved normal/build 依赖闭包，
+#   并以 no-default-features + distributed 独立编译测试；同时守住阶段 1 主工程零 diff。
 # - rust-test(编译类):Draft/普通 PR 默认不跑;Ready 高风险 PR 可加 ci:full-rust
 #   标签提前跑；Merge Queue 对最新组合提交运行；main push 无条件累计验证并写暖
 #   cache(防 concurrency pending 替换盲区)。
@@ -129,6 +131,7 @@ jobs:
       benchmark_cli: ${{ steps.filter.outputs.benchmark_cli }}
       benchmark_headless: ${{ steps.filter.outputs.benchmark_headless }}
       benchmark_codewhale: ${{ steps.filter.outputs.benchmark_codewhale }}
+      distributed_stage1: ${{ steps.filter.outputs.distributed_stage1 }}
       release_contract: ${{ steps.filter.outputs.release_contract }}
       pet: ${{ steps.filter.outputs.pet }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -191,6 +194,10 @@ jobs:
               - 'pinvou3-app/src-tauri/Cargo.lock'
             benchmark_codewhale:
               - 'CodeWhale'
+            distributed_stage1:
+              - 'pinvou-cli/**'
+              - '.github/workflows/pr-check.yml'
+              - 'AGENTS.md'
             release_contract:
               - 'VERSION'
               - 'scripts/sync-version.mjs'
@@ -1028,6 +1035,72 @@ jobs:
       - name: macOS Codex 与 Claude Runtime 原生打包冒烟
         run: npm --prefix pinvou3-app run test:codex-acp-macos-runtime
 
+  distributed-boundary-build:
+    name: distributed-boundary-build
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.distributed_stage1 == 'true' && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+          fetch-depth: 0
+
+      # cargo metadata 会加载 workspace 中未激活的 legacy path manifest；这里只为
+      # 完成解析初始化 gitlink，后续 check/test 均不选择 Tauri 或 CodeWhale package。
+      - name: 初始化 metadata 所需公共底座 manifest
+        run: git submodule update --init --recursive -- CodeWhale
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.89.0
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou-cli
+          shared-key: distributed-boundary-build
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: 守卫脚本确定性测试
+        run: python3 -m unittest discover -s pinvou-cli/scripts/tests -p 'test_*.py' -v
+
+      - name: 阶段 1 主工程零 diff
+        run: |
+          base_ref="${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}"
+          base_ref="${base_ref#refs/heads/}"
+          python3 pinvou-cli/scripts/check_stage1_zero_diff.py --base-ref "origin/$base_ref"
+
+      - name: 正式分布式 resolved 依赖边界
+        run: python3 pinvou-cli/scripts/check_distributed_dependencies.py
+
+      - name: 正式分布式 packages 独立检查
+        run: >-
+          cargo check --manifest-path pinvou-cli/Cargo.toml --locked
+          -p pinvou-cli
+          -p pinvou-controller
+          -p pinvou-node
+          -p pinvou-protocol
+          -p pinvou-seglog
+          -p pinvou-runtime-api
+          -p pinvou-agent-adapter-codex
+          --no-default-features --features pinvou-cli/distributed
+
+      - name: 正式分布式 packages 独立测试
+        run: >-
+          cargo test --manifest-path pinvou-cli/Cargo.toml --locked
+          -p pinvou-cli
+          -p pinvou-controller
+          -p pinvou-node
+          -p pinvou-protocol
+          -p pinvou-seglog
+          -p pinvou-runtime-api
+          -p pinvou-agent-adapter-codex
+          --no-default-features --features pinvou-cli/distributed
+
   benchmark-test:
     name: benchmark-test
     needs: changes
@@ -1106,6 +1179,7 @@ jobs:
       - rust-test
       - macos-codex-runtime-test
       - windows-codex-runtime-test
+      - distributed-boundary-build
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1124,6 +1198,7 @@ jobs:
           RUST_RESULT: ${{ needs.rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
+          DISTRIBUTED_BOUNDARY_BUILD_RESULT: ${{ needs.distributed-boundary-build.result }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
             # 队列提交由 GitHub 生成，不重复校验人工 commit message；
@@ -1146,7 +1221,8 @@ jobs:
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
-            "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
+            "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT" \
+            "distributed-boundary-build:$DISTRIBUTED_BOUNDARY_BUILD_RESULT"; do
             name="${item%%:*}"
             result="${item#*:}"
             case "$result" in

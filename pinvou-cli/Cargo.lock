@@ -6330,6 +6330,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pinvou-agent-adapter-codex"
+version = "0.1.0"
+dependencies = [
+ "pinvou-runtime-api",
+]
+
+[[package]]
 name = "pinvou-cli"
 version = "0.1.0"
 dependencies = [
@@ -6340,7 +6347,16 @@ dependencies = [
  "async-trait",
  "benchmark-core",
  "pinvou-product-backend",
+ "pinvou-protocol",
  "serde_json",
+]
+
+[[package]]
+name = "pinvou-controller"
+version = "0.1.0"
+dependencies = [
+ "pinvou-protocol",
+ "pinvou-seglog",
 ]
 
 [[package]]
@@ -6370,6 +6386,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinvou-node"
+version = "0.1.0"
+dependencies = [
+ "pinvou-protocol",
+ "pinvou-runtime-api",
+ "pinvou-seglog",
+]
+
+[[package]]
 name = "pinvou-product-backend"
 version = "0.1.0"
 dependencies = [
@@ -6377,6 +6402,21 @@ dependencies = [
  "anyhow",
  "pinvou3-tauri",
 ]
+
+[[package]]
+name = "pinvou-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "pinvou-runtime-api"
+version = "0.1.0"
+dependencies = [
+ "pinvou-protocol",
+]
+
+[[package]]
+name = "pinvou-seglog"
+version = "0.1.0"
 
 [[package]]
 name = "pinvou3-tauri"

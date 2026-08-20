@@ -1,0 +1,9 @@
+[package]
+name = "pinvou-agent-adapter-codex"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pinvou-runtime-api = { path = "../runtime-api" }

@@ -1,0 +1,15 @@
+[package]
+name = "pinvou-node"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pinvou-protocol = { path = "../protocol" }
+pinvou-runtime-api = { path = "../runtime-api" }
+pinvou-seglog = { path = "../seglog" }
+
+[[bin]]
+name = "pinvou-node"
+path = "src/main.rs"

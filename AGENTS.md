@@ -34,6 +34,12 @@ CodeWhale 提供模型调用、流式输出、工具循环、Session、Skills、
 - 仅更新 CodeWhale gitlink 且行为不变时，仍须按 guard 结果更新登记和指纹；能够证明现有测试已覆盖时，不强制新增行为测试。
 - fork 基线、规模、主题和同步流程以 `docs/fork-policy.md` 与 `docs/fork-modifications.md` 为单一真相源。
 
+#### 分布式 CLI 边界
+
+- `pinvou-cli` 的正式 distributed 构建必须显式使用 `--no-default-features --features pinvou-cli/distributed`，并只选择 `pinvou-cli`、Controller、Node、Protocol、Seglog、Runtime API 和已批准 Adapter package。
+- 上述正式 roots 的 resolved normal/build 依赖闭包不得包含 `pinvou-product-backend`、Tauri、任何 `codewhale-*` crate，也不得引用 `pinvou3-app/` 或 `CodeWhale/` 下的 manifest；以 `pinvou-cli/scripts/check_distributed_dependencies.py` 为门禁。
+- 分布式运行时阶段 1 仅允许改动 `pinvou-cli/`、其 required CI job 与本节规则；不得修改 Desktop、CodeWhale gitlink、主发布/打包输入或默认构建路径，以 `pinvou-cli/scripts/check_stage1_zero_diff.py` 为门禁。
+
 ### 3. 多平台架构边界
 
 Pinvou Agent 按“业务功能优先、平台适配次之”组织：

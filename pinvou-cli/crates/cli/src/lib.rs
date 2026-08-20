@@ -2,6 +2,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(feature = "distributed")]
+pub mod distributed;
+
 use adapter_gaia::{
     GAIA_DATASET_REVISION, GAIA_LEVEL, GAIA_SPLIT, GaiaAdapter, GaiaDataset, GaiaSnapshotManager,
     GaiaSource, HfSnapshotDownloader,
