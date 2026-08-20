@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::capture::{CommandSpec, JsonlRecorder, create_capture_file};
+use crate::capture::{JsonlRecorder, create_capture_file};
 use crate::clock::{HostMonotonicClock, MonotonicClock};
 use crate::protocol::CaptureChannel;
 use crate::s2::{
@@ -126,15 +126,18 @@ fn run_s2_with_thresholds(
 
     let global_deadline = Instant::now() + config.global_timeout;
     let mut evidence = empty_evidence();
-    let execution = verify_executable_version(&config, global_deadline).and_then(|_| {
-        execute(
-            &config,
-            &output_dir,
-            &workspace,
-            &mut evidence,
-            thresholds,
-            global_deadline,
-        )
+    let execution = SafeInvocation::resolve(config.executable.as_ref()).and_then(|invocation| {
+        verify_executable_version(&invocation, global_deadline).and_then(|_| {
+            execute(
+                &config,
+                &invocation,
+                &output_dir,
+                &workspace,
+                &mut evidence,
+                thresholds,
+                global_deadline,
+            )
+        })
     });
     if let Err(error) = &execution {
         classify_failure(error, &mut evidence);
@@ -150,22 +153,203 @@ fn run_s2_with_thresholds(
     Ok(S2RunOutcome { output_dir, report })
 }
 
-fn verify_executable_version(config: &S2RunConfig, global_deadline: Instant) -> Result<()> {
+#[derive(Clone, Debug)]
+struct SafeInvocation {
+    program: OsString,
+    prefix_args: Vec<OsString>,
+    #[cfg(windows)]
+    cmd_script: Option<PathBuf>,
+}
+
+impl SafeInvocation {
+    fn resolve(explicit: Option<&OsString>) -> Result<Self> {
+        #[cfg(windows)]
+        {
+            let candidate = match explicit {
+                Some(value) => PathBuf::from(value),
+                None => find_windows_path_command("codex.cmd")?,
+            };
+            if candidate
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("cmd"))
+            {
+                let script = resolve_safe_cmd_script(&candidate)?;
+                return Ok(Self {
+                    program: trusted_system_cmd()?.into_os_string(),
+                    prefix_args: ["/d", "/s", "/c"].map(OsString::from).to_vec(),
+                    cmd_script: Some(script),
+                });
+            }
+            if explicit.is_none()
+                || !candidate
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
+            {
+                bail!("Windows executable override must be a regular .exe or .cmd file");
+            }
+            let candidate = if candidate.components().count() == 1 {
+                find_windows_path_command(
+                    candidate
+                        .to_str()
+                        .context("explicit .exe filename was not valid Unicode")?,
+                )?
+            } else {
+                candidate
+            };
+            let candidate = candidate.canonicalize().with_context(|| {
+                format!(
+                    "failed to canonicalize .exe executable {}",
+                    candidate.display()
+                )
+            })?;
+            if !candidate.is_file() {
+                bail!("Windows executable override was not a regular .exe file");
+            }
+            return Ok(Self {
+                program: candidate.into_os_string(),
+                prefix_args: Vec::new(),
+                cmd_script: None,
+            });
+        }
+        #[cfg(not(windows))]
+        Ok(Self {
+            program: explicit.cloned().unwrap_or_else(|| OsString::from("codex")),
+            prefix_args: Vec::new(),
+        })
+    }
+
+    fn command(&self, requested_args: &[&str]) -> Result<Command> {
+        let mut command = Command::new(&self.program);
+        #[cfg(windows)]
+        if let Some(script) = self.cmd_script.as_ref() {
+            use std::os::windows::process::CommandExt;
+
+            if requested_args.iter().any(|arg| {
+                arg.is_empty()
+                    || !arg
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            }) {
+                bail!("unsafe requested argument for cmd invocation");
+            }
+            let script = script
+                .to_str()
+                .context("canonical .cmd path was not valid Unicode")?;
+            let mut line = String::new();
+            for prefix in &self.prefix_args {
+                if !line.is_empty() {
+                    line.push(' ');
+                }
+                line.push_str(
+                    prefix
+                        .to_str()
+                        .context("cmd prefix argument was not valid Unicode")?,
+                );
+            }
+            line.push_str(" \"\"");
+            line.push_str(script);
+            line.push('"');
+            for arg in requested_args {
+                line.push(' ');
+                line.push_str(arg);
+            }
+            line.push('"');
+            // cmd.exe has its own quoting grammar; Rust's ordinary Windows argv
+            // escaping would insert backslashes that cmd treats literally.
+            // The script path was canonicalized and metacharacter-checked above,
+            // and requested arguments are restricted to a fixed safe alphabet.
+            command.raw_arg(line);
+            return Ok(command);
+        }
+        command.args(&self.prefix_args);
+        command.args(requested_args);
+        Ok(command)
+    }
+}
+
+#[cfg(windows)]
+fn find_windows_path_command(name: &str) -> Result<PathBuf> {
+    let path = std::env::var_os("PATH").context("PATH is unavailable for codex.cmd lookup")?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join(name);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    bail!("codex.cmd was not found on PATH")
+}
+
+#[cfg(windows)]
+fn resolve_safe_cmd_script(candidate: &Path) -> Result<PathBuf> {
+    let candidate = if candidate.components().count() == 1 {
+        find_windows_path_command(
+            candidate
+                .to_str()
+                .context("explicit .cmd filename was not valid Unicode")?,
+        )?
+    } else {
+        candidate.to_owned()
+    };
+    let canonical = candidate.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize .cmd executable {}",
+            candidate.display()
+        )
+    })?;
+    if !canonical.is_file()
+        || !canonical
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("cmd"))
+    {
+        bail!("resolved command is not a regular .cmd file");
+    }
+    let canonical = normalize_windows_command_path(canonical)?;
+    let rendered = canonical
+        .to_str()
+        .context("canonical .cmd path was not valid Unicode")?;
+    if rendered.chars().any(|character| {
+        matches!(
+            character,
+            '\r' | '\n' | '"' | '&' | '|' | '<' | '>' | '^' | '%' | '!' | '(' | ')' | ';'
+        )
+    }) {
+        bail!("unsafe command path metacharacter in .cmd executable");
+    }
+    Ok(canonical)
+}
+
+#[cfg(windows)]
+fn normalize_windows_command_path(canonical: PathBuf) -> Result<PathBuf> {
+    let rendered = canonical
+        .to_str()
+        .context("canonical .cmd path was not valid Unicode")?;
+    if let Some(path) = rendered.strip_prefix(r"\\?\UNC\") {
+        return Ok(PathBuf::from(format!(r"\\{path}")));
+    }
+    if let Some(path) = rendered.strip_prefix(r"\\?\") {
+        return Ok(PathBuf::from(path));
+    }
+    Ok(canonical)
+}
+
+fn verify_executable_version(invocation: &SafeInvocation, global_deadline: Instant) -> Result<()> {
     use std::io::Read;
 
     remaining_global(global_deadline)?;
-    let program = config
-        .executable
-        .clone()
-        .unwrap_or_else(|| OsString::from("codex"));
-    let mut process = Command::new(&program);
+    let mut process = invocation.command(&["--version"])?;
     process
-        .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut contained = spawn_contained(process)
-        .with_context(|| format!("failed to launch version preflight for {program:?}"))?;
+    let mut contained = spawn_contained(process).with_context(|| {
+        format!(
+            "failed to launch version preflight for {:?}",
+            invocation.program
+        )
+    })?;
     let stdout = contained
         .child
         .stdout
@@ -261,6 +445,7 @@ fn verify_executable_version(config: &S2RunConfig, global_deadline: Instant) -> 
 
 fn execute(
     config: &S2RunConfig,
+    invocation: &SafeInvocation,
     output_dir: &Path,
     workspace: &Path,
     evidence: &mut S2Evidence,
@@ -275,7 +460,7 @@ fn execute(
         Box::new(move || recorder_clock.now_ns().expect("monotonic clock failed")),
     )));
     let mut session = Session::spawn(
-        CommandSpec::codex(config.executable.clone()),
+        invocation.command(&["app-server", "--stdio"])?,
         recorder,
         global_deadline,
     )?;
@@ -458,22 +643,15 @@ fn try_emit(sender: &mpsc::SyncSender<Inbound>, overflow: &AtomicBool, event: In
 
 impl Session {
     fn spawn(
-        command: CommandSpec,
+        mut process: Command,
         recorder: Arc<Mutex<Recorder>>,
         global_deadline: Instant,
     ) -> Result<Self> {
-        let mut process = Command::new(&command.program);
         process
-            .args(&command.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut contained = spawn_contained(process).with_context(|| {
-            format!(
-                "failed to launch app-server executable {:?}",
-                command.program
-            )
-        })?;
+        let mut contained = spawn_contained(process).context("failed to launch app-server")?;
         let stdin = contained
             .child
             .stdin
@@ -1216,15 +1394,7 @@ fn scenario_prompt(name: &str, approval_command: &str) -> String {
 fn approval_command() -> Result<String> {
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStringExt;
-        use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
-
-        let mut buffer = vec![0_u16; 32_768];
-        let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
-        if length == 0 || length as usize >= buffer.len() {
-            bail!("GetSystemDirectoryW failed or returned an oversized path");
-        }
-        let path = PathBuf::from(OsString::from_wide(&buffer[..length as usize])).join("cmd.exe");
+        let path = trusted_system_cmd()?;
         let path = path
             .to_str()
             .context("system cmd.exe path was not valid Unicode")?;
@@ -1235,6 +1405,23 @@ fn approval_command() -> Result<String> {
     }
     #[cfg(not(windows))]
     Ok("/bin/sh -c true".to_owned())
+}
+
+#[cfg(windows)]
+fn trusted_system_cmd() -> Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    let mut buffer = vec![0_u16; 32_768];
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if length == 0 || length as usize >= buffer.len() {
+        bail!("GetSystemDirectoryW failed or returned an oversized path");
+    }
+    let path = PathBuf::from(OsString::from_wide(&buffer[..length as usize])).join("cmd.exe");
+    if !path.is_absolute() || !path.is_file() {
+        bail!("trusted system cmd.exe was not a regular absolute file");
+    }
+    Ok(path)
 }
 
 fn performance(events: &[ContentEvent]) -> Result<PerformanceEvidence> {

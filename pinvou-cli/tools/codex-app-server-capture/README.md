@@ -92,6 +92,14 @@ terminates the complete spawned tree and bounds pipe-reader shutdown. On Windows
 children are created suspended, assigned to a Job Object, and only then resumed;
 on Unix they are placed in a dedicated process group before exec.
 
+On Windows the default executable lookup searches PATH specifically for
+`codex.cmd`; it does not fall through to an extensionless POSIX shim or a later
+`codex.exe`. The selected script is canonicalized, required to be a regular
+`.cmd` file, and rejected if its command path contains cmd.exe metacharacters or
+line breaks. It is invoked through the absolute trusted System32 `cmd.exe` with
+fixed `/d /s /c` arguments and fail-closed quoting. Explicit regular `.cmd`
+scripts use the same path, while explicit `.exe` test overrides remain direct.
+
 Scenario C uses a fixed platform-specific benign command (`/bin/sh -c true`, or
 the absolute `cmd.exe` returned from `GetSystemDirectoryW` on Windows) and accepts only an
 `item/commandExecution/requestApproval` whose command exactly matches it, whose

@@ -176,6 +176,100 @@ fn process_has_exited(pid: u32) -> bool {
     exited
 }
 
+#[cfg(windows)]
+fn write_fake_codex_cmd(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
+    std::fs::create_dir_all(directory).unwrap();
+    let script = directory.join(name);
+    let fake = env!("CARGO_BIN_EXE_fake-app-server");
+    std::fs::write(
+        &script,
+        format!(
+            "@echo off\r\nif defined S2_CMDLINE_MARKER echo %cmdcmdline% > \"%S2_CMDLINE_MARKER%\"\r\n\"{fake}\" %*\r\n"
+        ),
+    )
+    .unwrap();
+    script
+}
+
+#[test]
+#[cfg(windows)]
+fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim() {
+    let root = temp_output("windows-cmd-path");
+    let bin = root.join("bin");
+    let output = root.join("output");
+    let command_line_marker = root.join("cmdline.txt");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("codex"), b"#!/bin/sh\nexit 99\n").unwrap();
+    write_fake_codex_cmd(&bin, "codex.cmd");
+
+    let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .args(["run-s2", "--output-dir"])
+        .arg(&output)
+        .args([
+            "--scenario-timeout-ms",
+            "2000",
+            "--global-timeout-ms",
+            "10000",
+        ])
+        .env("PATH", &bin)
+        .env("S2_CMDLINE_MARKER", &command_line_marker)
+        .output()
+        .unwrap();
+
+    assert!(
+        !result.status.success(),
+        "production thresholds should remain strict"
+    );
+    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap_or_else(|error| {
+        panic!(
+            "capture missing: {error}; stderr={}",
+            format!(
+                "{}; cmdline={}",
+                String::from_utf8_lossy(&result.stderr),
+                std::fs::read_to_string(&command_line_marker).unwrap_or_default()
+            )
+        )
+    });
+    assert!(capture.contains("initialize"));
+    assert!(capture.contains("thread/start"));
+    let command_line = std::fs::read_to_string(&command_line_marker).unwrap();
+    assert!(command_line.contains("codex.cmd"));
+    assert!(command_line.contains("app-server --stdio"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(windows)]
+fn explicit_cmd_path_with_command_metacharacters_is_rejected_before_execution() {
+    let root = temp_output("windows-cmd-metachar");
+    let unsafe_dir = root.join("unsafe&dir");
+    let output = root.join("output");
+    let script = write_fake_codex_cmd(&unsafe_dir, "codex.cmd");
+
+    let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .args(["run-s2", "--output-dir"])
+        .arg(&output)
+        .args(["--executable"])
+        .arg(&script)
+        .args([
+            "--scenario-timeout-ms",
+            "500",
+            "--global-timeout-ms",
+            "3000",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!result.status.success());
+    assert!(!output.join("capture.jsonl").exists());
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("unsafe command path"),
+        "stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 #[cfg(windows)]
 fn contained_process_kills_version_and_immediate_app_descendants() {
