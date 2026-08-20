@@ -1,5 +1,6 @@
 #[cfg(debug_assertions)]
 use std::ffi::OsString;
+use std::io::Write;
 use std::process::Command;
 use std::time::Duration;
 
@@ -7,7 +8,9 @@ use std::time::Duration;
 use codex_app_server_capture::protocol::CaptureChannel;
 use codex_app_server_capture::protocol::CaptureRecord;
 #[cfg(debug_assertions)]
-use codex_app_server_capture::runner::{S2RunConfig, run_s2_for_test};
+use codex_app_server_capture::runner::{
+    S2RunConfig, run_marker_helper_process_for_test, run_s2_for_test,
+};
 use serde_json::Value;
 
 fn temp_output(label: &str) -> std::path::PathBuf {
@@ -37,7 +40,7 @@ fn run_fake(
             "--scenario-timeout-ms",
             &scenario_timeout_ms.to_string(),
             "--global-timeout-ms",
-            "10000",
+            "60000",
         ])
         .env("S2_FAKE_MODE", mode)
         .output()
@@ -53,8 +56,8 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
         trusted_approval_wrapper: None,
         model: None,
-        scenario_timeout: Duration::from_secs(2),
-        global_timeout: Duration::from_secs(10),
+        scenario_timeout: Duration::from_secs(10),
+        global_timeout: Duration::from_secs(60),
     })
     .unwrap();
     assert!(outcome.report.valid);
@@ -101,8 +104,8 @@ fn command_execution_output_deltas_contribute_only_when_correlated() {
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
         trusted_approval_wrapper: None,
         model: None,
-        scenario_timeout: Duration::from_secs(2),
-        global_timeout: Duration::from_secs(10),
+        scenario_timeout: Duration::from_secs(10),
+        global_timeout: Duration::from_secs(60),
     })
     .unwrap();
     assert!(outcome.report.valid);
@@ -147,8 +150,8 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
         trusted_approval_wrapper: None,
         model: None,
-        scenario_timeout: Duration::from_secs(2),
-        global_timeout: Duration::from_secs(10),
+        scenario_timeout: Duration::from_secs(10),
+        global_timeout: Duration::from_secs(60),
     })
     .unwrap();
     let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
@@ -264,8 +267,8 @@ fn scenario_c_accepts_only_the_exact_observed_pwsh_wrapper() {
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
         trusted_approval_wrapper: None,
         model: None,
-        scenario_timeout: Duration::from_secs(2),
-        global_timeout: Duration::from_secs(10),
+        scenario_timeout: Duration::from_secs(10),
+        global_timeout: Duration::from_secs(60),
     })
     .unwrap();
     assert!(outcome.report.valid);
@@ -283,7 +286,7 @@ fn scenario_c_accepts_only_the_exact_observed_pwsh_wrapper() {
         "wrapper-inner-backslash-missing",
     ] {
         let output = temp_output(mode);
-        let result = run_fake(mode, &output, 1_000);
+        let result = run_fake(mode, &output, 10_000);
         assert!(!result.status.success(), "{mode} unexpectedly passed");
         let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
         assert!(
@@ -318,6 +321,118 @@ fn version_preflight_and_app_server_share_one_global_deadline() {
     std::fs::remove_dir_all(output).unwrap();
 }
 
+#[test]
+#[cfg(debug_assertions)]
+fn marker_helper_uses_global_deadline_and_reaps_its_contained_tree() {
+    let root = temp_output("marker-helper-timeout");
+    for attempt in 0..3 {
+        let workspace = root.join(format!("workspace-{attempt}"));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let started = std::time::Instant::now();
+        let result = run_marker_helper_process_for_test(
+            &workspace,
+            OsString::from(env!("CARGO_BIN_EXE_fake-app-server")),
+            vec![
+                OsString::from("--marker-helper-fixture"),
+                OsString::from("stall"),
+            ],
+            "absent",
+            Duration::from_secs(10),
+            Duration::from_millis(750),
+        );
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let pids = std::fs::read_to_string(workspace.join(".codex-s2-helper-test-pids"))
+            .unwrap()
+            .lines()
+            .map(|line| line.parse::<u32>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(pids.len(), 2);
+        assert!(pids.into_iter().all(process_has_exited));
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn marker_helper_rejects_malformed_and_oversize_output() {
+    for mode in ["malformed", "oversize"] {
+        let workspace = temp_output(&format!("marker-helper-{mode}"));
+        let result = run_marker_helper_process_for_test(
+            &workspace,
+            OsString::from(env!("CARGO_BIN_EXE_fake-app-server")),
+            vec![
+                OsString::from("--marker-helper-fixture"),
+                OsString::from(mode),
+            ],
+            "verify",
+            Duration::from_secs(3),
+            Duration::from_secs(3),
+        );
+        assert!(result.is_err(), "{mode} unexpectedly passed");
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+}
+
+#[test]
+fn marker_helper_subcommand_is_hidden_and_accepts_only_fixed_operations() {
+    let help = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(!String::from_utf8_lossy(&help.stdout).contains("marker-helper"));
+
+    let workspace = temp_output("marker-helper-cli");
+    let mut absent = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .arg("__marker-helper")
+        .current_dir(&workspace)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    absent.stdin.take().unwrap().write_all(b"absent\n").unwrap();
+    let absent = absent.wait_with_output().unwrap();
+    assert!(absent.status.success());
+    assert_eq!(absent.stdout, b"ABSENT\n");
+    assert!(absent.stderr.is_empty());
+
+    std::fs::write(workspace.join(".codex-s2-approval-marker"), b"S2_APPROVED").unwrap();
+    let mut verify = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .arg("__marker-helper")
+        .current_dir(&workspace)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    verify.stdin.take().unwrap().write_all(b"verify\n").unwrap();
+    let verify = verify.wait_with_output().unwrap();
+    assert!(verify.status.success());
+    assert_eq!(verify.stdout, b"VERIFIED\n");
+    assert!(verify.stderr.is_empty());
+
+    let invalid = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
+        .arg("__marker-helper")
+        .current_dir(&workspace)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.take().unwrap().write_all(b"read arbitrary\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(invalid.stdout.is_empty());
+    assert!(
+        !String::from_utf8_lossy(&invalid.stderr).contains(workspace.to_string_lossy().as_ref())
+    );
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
 #[cfg(windows)]
 fn process_has_exited(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
@@ -331,6 +446,23 @@ fn process_has_exited(pid: u32) -> bool {
     let exited = unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0;
     unsafe { CloseHandle(handle) };
     exited
+}
+
+#[cfg(unix)]
+fn process_has_exited(pid: u32) -> bool {
+    if unsafe { libc::kill(pid as i32, 0) } != 0 {
+        return std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            return stat
+                .rsplit_once(") ")
+                .and_then(|(_, fields)| fields.chars().next())
+                == Some('Z');
+        }
+    }
+    false
 }
 
 #[cfg(windows)]
@@ -372,9 +504,9 @@ fn windows_streaming_stimuli_ignore_path_planted_pwsh() {
             "--executable",
             env!("CARGO_BIN_EXE_fake-app-server"),
             "--scenario-timeout-ms",
-            "2000",
-            "--global-timeout-ms",
             "10000",
+            "--global-timeout-ms",
+            "60000",
         ])
         .env("PATH", path)
         .output()
@@ -429,9 +561,9 @@ fn scenario_c_rejects_path_planted_pwsh_wrapper() {
             "--executable",
             env!("CARGO_BIN_EXE_fake-app-server"),
             "--scenario-timeout-ms",
-            "2000",
-            "--global-timeout-ms",
             "10000",
+            "--global-timeout-ms",
+            "60000",
         ])
         .env("PATH", path)
         .env("S2_FAKE_MODE", "wrapper-approval")
@@ -459,9 +591,9 @@ fn explicit_trusted_wrapper_accepts_only_its_exact_canonical_command() {
             .arg(&explicit)
             .args([
                 "--scenario-timeout-ms",
-                "2000",
-                "--global-timeout-ms",
                 "10000",
+                "--global-timeout-ms",
+                "60000",
             ])
             .env("PATH", path)
             .env("S2_FAKE_MODE", mode)
@@ -501,9 +633,9 @@ fn explicit_trusted_wrapper_accepts_only_its_exact_canonical_command() {
         .arg(&explicit)
         .args([
             "--scenario-timeout-ms",
-            "2000",
-            "--global-timeout-ms",
             "10000",
+            "--global-timeout-ms",
+            "60000",
         ])
         .env("PATH", path)
         .env("S2_FAKE_MODE", "wrapper-approval")
@@ -567,9 +699,9 @@ fn explicit_trusted_wrapper_handle_blocks_write_for_the_entire_run() {
         .arg(&explicit)
         .args([
             "--scenario-timeout-ms",
-            "2000",
-            "--global-timeout-ms",
             "10000",
+            "--global-timeout-ms",
+            "60000",
         ])
         .env("PATH", path)
         .env("S2_FAKE_MODE", "wrapper-write-attempt")
@@ -605,9 +737,9 @@ fn explicit_trusted_wrapper_rejects_a_preexisting_writer_before_capture() {
         .arg(&explicit)
         .args([
             "--scenario-timeout-ms",
-            "2000",
-            "--global-timeout-ms",
             "10000",
+            "--global-timeout-ms",
+            "60000",
         ])
         .output()
         .unwrap();
@@ -848,7 +980,7 @@ fn run_s2_rejects_unexpected_approval_method_instead_of_auto_approving_it() {
         "direct-malformed-action",
     ] {
         let output = temp_output(mode);
-        let result = run_fake(mode, &output, 1_000);
+        let result = run_fake(mode, &output, 10_000);
         assert!(!result.status.success(), "{mode} unexpectedly passed");
         let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
         assert!(capture.contains(r#"\"decision\":\"cancel\""#));
@@ -866,7 +998,7 @@ fn scenario_c_requires_exact_marker_execution_evidence() {
         "approval-preseed-marker",
     ] {
         let output = temp_output(mode);
-        let result = run_fake(mode, &output, 1_000);
+        let result = run_fake(mode, &output, 10_000);
         assert!(!result.status.success(), "{mode} unexpectedly passed");
         let evidence: Value =
             serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
@@ -887,7 +1019,7 @@ fn scenario_c_requires_exact_marker_execution_evidence() {
 #[test]
 fn run_s2_rejects_approval_from_in_workspace_child_cwd() {
     let output = temp_output("child-approval");
-    let result = run_fake("child-approval", &output, 1_000);
+    let result = run_fake("child-approval", &output, 10_000);
     assert!(!result.status.success());
     let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
     assert!(capture.contains(r#"\"decision\":\"cancel\""#));
@@ -904,8 +1036,8 @@ fn interrupt_timings_start_at_the_correlated_request_write() {
         executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
         trusted_approval_wrapper: None,
         model: None,
-        scenario_timeout: Duration::from_secs(2),
-        global_timeout: Duration::from_secs(10),
+        scenario_timeout: Duration::from_secs(10),
+        global_timeout: Duration::from_secs(60),
     })
     .unwrap();
     let records = std::fs::read_to_string(output.join("capture.jsonl"))

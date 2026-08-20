@@ -143,6 +143,10 @@ the command. Immediately before accepting, the runner atomically rejects any
 preexisting marker object. After completion it reads the exact marker bytes from
 one no-follow, identity-stable handle under the scenario deadline; the marker is
 left inside the runner-owned temporary workspace rather than removed by path.
+Marker checks run through a hidden, fixed-operation helper subprocess using the
+runner executable itself. The helper is contained in the same Windows Job/Unix
+process-group boundary, accepts only `absent` or `verify` on stdin, and is killed
+and reaped at the earlier of the scenario and global deadlines.
 Exactly one such approval is required.
 Every other server request, command, or target is rejected and invalidates the
 run. Scenario D sends `turn/interrupt` only after a real backlog of at least

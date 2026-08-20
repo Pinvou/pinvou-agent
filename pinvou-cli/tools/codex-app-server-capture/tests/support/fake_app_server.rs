@@ -87,6 +87,58 @@ fn main() {
         }
     });
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--marker-helper-child")
+    {
+        let mut pids = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(".codex-s2-helper-test-pids")
+            .unwrap();
+        writeln!(pids, "{}", std::process::id()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        return;
+    }
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--marker-helper-fixture")
+    {
+        let fixture = args.get(1).map(String::as_str).unwrap_or("");
+        let mut operation = String::new();
+        io::stdin().read_line(&mut operation).unwrap();
+        match fixture {
+            "stall" => {
+                let mut pids = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(".codex-s2-helper-test-pids")
+                    .unwrap();
+                writeln!(pids, "{}", std::process::id()).unwrap();
+                pids.flush().unwrap();
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .arg("--marker-helper-child")
+                    .spawn()
+                    .unwrap();
+                while std::fs::read_to_string(".codex-s2-helper-test-pids")
+                    .unwrap_or_default()
+                    .lines()
+                    .count()
+                    < 2
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+            "malformed" => println!("NOT_A_HELPER_STATUS"),
+            "oversize" => {
+                io::stdout().write_all(&vec![b'X'; 8192]).unwrap();
+                io::stdout().flush().unwrap();
+            }
+            _ => std::process::exit(9),
+        }
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "--hold-pipes-child") {
         if let Ok(delay_ms) = std::env::var("S2_FAKE_CHILD_READY_DELAY_MS") {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms.parse().unwrap()));

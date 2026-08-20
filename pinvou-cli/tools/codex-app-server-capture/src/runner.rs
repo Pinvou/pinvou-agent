@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -95,19 +95,28 @@ type Recorder = JsonlRecorder<BufWriter<std::fs::File>, Box<dyn FnMut() -> u64 +
 const INBOUND_CAPACITY: usize = 1024;
 
 pub fn run_s2(config: S2RunConfig) -> Result<S2RunOutcome> {
-    run_s2_with_thresholds(config, RunnerThresholds::PRODUCTION)
+    run_s2_with_thresholds(
+        config,
+        RunnerThresholds::PRODUCTION,
+        MarkerHelperInvocation::current()?,
+    )
 }
 
 /// Deterministic debug-build seam for the fake app-server integration tests.
 /// Production/release builds and the CLI cannot lower the real S2 gates.
 #[cfg(debug_assertions)]
 pub fn run_s2_for_test(config: S2RunConfig) -> Result<S2RunOutcome> {
-    run_s2_with_thresholds(config, RunnerThresholds::FAST_TEST)
+    run_s2_with_thresholds(
+        config,
+        RunnerThresholds::FAST_TEST,
+        MarkerHelperInvocation::test_harness()?,
+    )
 }
 
 fn run_s2_with_thresholds(
     config: S2RunConfig,
     thresholds: RunnerThresholds,
+    marker_helper: MarkerHelperInvocation,
 ) -> Result<S2RunOutcome> {
     let output_dir = match config.output_dir.clone() {
         Some(path) => path,
@@ -144,6 +153,7 @@ fn run_s2_with_thresholds(
                 thresholds,
                 global_deadline,
                 explicit_approval_wrapper.as_ref(),
+                &marker_helper,
             )
         })
     });
@@ -167,6 +177,58 @@ struct SafeInvocation {
     prefix_args: Vec<OsString>,
     #[cfg(windows)]
     cmd_script: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+struct MarkerHelperInvocation {
+    program: OsString,
+    args: Vec<OsString>,
+}
+
+impl MarkerHelperInvocation {
+    fn current() -> Result<Self> {
+        let program = std::env::current_exe()
+            .and_then(|path| path.canonicalize())
+            .map_err(|_| anyhow!("marker helper executable validation failed"))?;
+        if !program.is_file() {
+            bail!("marker helper executable validation failed");
+        }
+        Ok(Self {
+            program: program.into_os_string(),
+            args: vec![OsString::from("__marker-helper")],
+        })
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args(&self.args);
+        command
+    }
+
+    #[cfg(debug_assertions)]
+    fn test_harness() -> Result<Self> {
+        let current = std::env::current_exe()
+            .map_err(|_| anyhow!("marker helper executable validation failed"))?;
+        let debug_dir = current
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| anyhow!("marker helper executable validation failed"))?;
+        let program = debug_dir.join(format!(
+            "{}{}",
+            env!("CARGO_PKG_NAME"),
+            std::env::consts::EXE_SUFFIX
+        ));
+        let program = program
+            .canonicalize()
+            .map_err(|_| anyhow!("marker helper executable validation failed"))?;
+        if !program.is_file() {
+            bail!("marker helper executable validation failed");
+        }
+        Ok(Self {
+            program: program.into_os_string(),
+            args: vec![OsString::from("__marker-helper")],
+        })
+    }
 }
 
 impl SafeInvocation {
@@ -460,6 +522,7 @@ fn execute(
     thresholds: RunnerThresholds,
     global_deadline: Instant,
     explicit_approval_wrapper: Option<&TrustedApprovalWrapper>,
+    marker_helper: &MarkerHelperInvocation,
 ) -> Result<()> {
     remaining_global(global_deadline)?;
     let clock = Arc::new(HostMonotonicClock::new()?);
@@ -472,6 +535,7 @@ fn execute(
         invocation.command(&["app-server", "--stdio"])?,
         recorder,
         global_deadline,
+        marker_helper.clone(),
     )?;
 
     let result = (|| {
@@ -520,7 +584,12 @@ fn execute(
         for name in ["A", "B", "C", "D"] {
             let scenario_deadline = Instant::now() + config.scenario_timeout;
             if name == "C" {
-                ensure_approval_marker_absent_bounded(workspace, scenario_deadline)?;
+                ensure_approval_marker_absent_bounded(
+                    marker_helper,
+                    workspace,
+                    scenario_deadline,
+                    global_deadline,
+                )?;
             }
             let approval_policy = if name == "C" { "on-request" } else { "never" };
             let sandbox = if name == "C" {
@@ -558,7 +627,12 @@ fn execute(
             if name == "C" {
                 turn_params["approvalPolicy"] = json!("on-request");
                 turn_params["sandboxPolicy"] = json!({"type":"readOnly"});
-                ensure_approval_marker_absent_bounded(workspace, scenario_deadline)?;
+                ensure_approval_marker_absent_bounded(
+                    marker_helper,
+                    workspace,
+                    scenario_deadline,
+                    global_deadline,
+                )?;
             }
             let turn = session.request(
                 "turn/start",
@@ -582,7 +656,12 @@ fn execute(
                 thresholds,
             )?;
             if name == "C" && observed.evidence.terminal_state == TerminalState::Completed {
-                verify_approval_marker_bounded(workspace, scenario_deadline)?;
+                verify_approval_marker_bounded(
+                    marker_helper,
+                    workspace,
+                    scenario_deadline,
+                    global_deadline,
+                )?;
             }
             if name == "B" {
                 scenario_b_content.extend(observed.content.iter().cloned());
@@ -636,12 +715,9 @@ impl ContainedChild {
     fn terminate_tree(&mut self) {
         #[cfg(windows)]
         unsafe {
-            use windows_sys::Win32::Foundation::CloseHandle;
             use windows_sys::Win32::System::JobObjects::TerminateJobObject;
             if !self.job.is_null() {
                 let _ = TerminateJobObject(self.job, 1);
-                CloseHandle(self.job);
-                self.job = std::ptr::null_mut();
             }
         }
         #[cfg(unix)]
@@ -654,6 +730,18 @@ impl ContainedChild {
     fn terminate_and_wait_bounded(&mut self) {
         self.terminate_tree();
         wait_child_bounded(&mut self.child);
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Threading::WaitForSingleObject;
+            if !self.job.is_null() {
+                // A job becomes signaled only after every contained process has
+                // exited, including descendants that inherited helper pipes.
+                let _ = WaitForSingleObject(self.job, 1_000);
+                CloseHandle(self.job);
+                self.job = std::ptr::null_mut();
+            }
+        }
     }
 }
 
@@ -671,6 +759,7 @@ struct Session {
     next_id: u64,
     pending: VecDeque<(u64, Value)>,
     global_deadline: Instant,
+    marker_helper: MarkerHelperInvocation,
     stdout_thread: Option<thread::JoinHandle<()>>,
     stderr_thread: Option<thread::JoinHandle<()>>,
     reader_done: mpsc::Receiver<&'static str>,
@@ -693,6 +782,7 @@ impl Session {
         mut process: Command,
         recorder: Arc<Mutex<Recorder>>,
         global_deadline: Instant,
+        marker_helper: MarkerHelperInvocation,
     ) -> Result<Self> {
         process
             .stdin(Stdio::piped())
@@ -830,6 +920,7 @@ impl Session {
             next_id: 1,
             pending: VecDeque::new(),
             global_deadline,
+            marker_helper,
             stdout_thread: Some(stdout_thread),
             stderr_thread: Some(stderr_thread),
             reader_done,
@@ -1066,7 +1157,12 @@ impl Session {
                 "unexpected approval rejected: method/command/cwd was outside the exact allowlist"
             );
         }
-        if let Err(error) = ensure_approval_marker_absent_bounded(workspace, deadline) {
+        if let Err(error) = ensure_approval_marker_absent_bounded(
+            &self.marker_helper,
+            workspace,
+            deadline,
+            self.global_deadline,
+        ) {
             self.send(&json!({"id":id,"result":{"decision":"cancel"}}))?;
             return Err(error);
         }
@@ -1230,7 +1326,11 @@ fn contain_and_resume_windows_child(
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
     };
-    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
     use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
     // SAFETY: null security/name create an unnamed job; child handle is live.
     let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
@@ -1239,6 +1339,21 @@ fn contain_and_resume_windows_child(
             "CreateJobObjectW failed: {}",
             std::io::Error::last_os_error()
         );
+    }
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            (&raw const limits).cast(),
+            std::mem::size_of_val(&limits) as u32,
+        )
+    } == 0
+    {
+        let error = std::io::Error::last_os_error();
+        unsafe { CloseHandle(job) };
+        bail!("SetInformationJobObject failed: {error}");
     }
     if unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) } == 0 {
         let error = std::io::Error::last_os_error();
@@ -1641,43 +1756,176 @@ fn approval_marker_path(workspace: &Path) -> PathBuf {
     workspace.join(APPROVAL_MARKER_NAME)
 }
 
-fn run_marker_io_worker<T>(
-    deadline: Instant,
-    operation: impl FnOnce() -> Result<T> + Send + 'static,
-) -> Result<T>
-where
-    T: Send + 'static,
-{
-    let remaining = remaining_until(deadline)?;
-    let (sender, receiver) = mpsc::sync_channel(1);
-    thread::spawn(move || {
-        let _ = sender.send(operation());
-    });
-    match receiver.recv_timeout(remaining) {
-        Ok(result) => result,
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            bail!("scenario C approval marker I/O timeout")
+#[derive(Clone, Copy, Debug)]
+enum MarkerHelperOperation {
+    Absent,
+    Verify,
+}
+
+impl MarkerHelperOperation {
+    fn stdin_bytes(self) -> &'static [u8] {
+        match self {
+            Self::Absent => b"absent\n",
+            Self::Verify => b"verify\n",
         }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            bail!("scenario C approval marker I/O worker failed")
+    }
+
+    fn success_bytes(self) -> &'static [u8] {
+        match self {
+            Self::Absent => b"ABSENT\n",
+            Self::Verify => b"VERIFIED\n",
         }
     }
 }
 
-fn ensure_approval_marker_absent_bounded(workspace: &Path, deadline: Instant) -> Result<()> {
-    let path = approval_marker_path(workspace);
-    run_marker_io_worker(deadline, move || {
-        ensure_approval_marker_absent_atomically(&path)
-    })
+pub fn run_marker_helper() -> Result<()> {
+    const MAX_OPERATION_BYTES: u64 = 16;
+    let mut input = Vec::new();
+    std::io::stdin()
+        .take(MAX_OPERATION_BYTES + 1)
+        .read_to_end(&mut input)
+        .map_err(|_| anyhow!("marker helper failed"))?;
+    let operation = match input.as_slice() {
+        b"absent\n" => MarkerHelperOperation::Absent,
+        b"verify\n" => MarkerHelperOperation::Verify,
+        _ => bail!("marker helper failed"),
+    };
+    let workspace = std::env::current_dir().map_err(|_| anyhow!("marker helper failed"))?;
+    let marker = approval_marker_path(&workspace);
+    match operation {
+        MarkerHelperOperation::Absent => ensure_approval_marker_absent_atomically(&marker)?,
+        MarkerHelperOperation::Verify => {
+            if read_approval_marker_atomically(&marker)? != APPROVAL_MARKER_BYTES {
+                bail!("marker helper failed");
+            }
+        }
+    }
+    std::io::stdout()
+        .write_all(operation.success_bytes())
+        .and_then(|_| std::io::stdout().flush())
+        .map_err(|_| anyhow!("marker helper failed"))
 }
 
-fn verify_approval_marker_bounded(workspace: &Path, deadline: Instant) -> Result<()> {
-    let path = approval_marker_path(workspace);
-    let bytes = run_marker_io_worker(deadline, move || read_approval_marker_atomically(&path))?;
-    if bytes != APPROVAL_MARKER_BYTES {
-        bail!("scenario C approval marker verification failed");
+fn read_helper_output_bounded(mut stream: impl Read, limit: u64) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    stream
+        .by_ref()
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| anyhow!("marker helper output failed"))?;
+    if bytes.len() as u64 > limit {
+        bail!("marker helper output failed");
+    }
+    Ok(bytes)
+}
+
+fn run_marker_helper_process(
+    invocation: &MarkerHelperInvocation,
+    workspace: &Path,
+    operation: MarkerHelperOperation,
+    deadline: Instant,
+) -> Result<()> {
+    const MAX_HELPER_OUTPUT_BYTES: u64 = 64;
+    remaining_until(deadline).map_err(|_| anyhow!("marker helper timeout"))?;
+    let mut process = invocation.command();
+    process
+        .current_dir(workspace)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut contained =
+        spawn_contained(process).map_err(|_| anyhow!("marker helper launch failed"))?;
+    let mut stdin = contained
+        .child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("marker helper launch failed"))?;
+    let stdout = contained
+        .child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("marker helper launch failed"))?;
+    let stderr = contained
+        .child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("marker helper launch failed"))?;
+    stdin
+        .write_all(operation.stdin_bytes())
+        .and_then(|_| stdin.flush())
+        .map_err(|_| anyhow!("marker helper protocol failed"))?;
+    drop(stdin);
+
+    let status_result = loop {
+        match contained.child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
+            Ok(None) => break Err(anyhow!("marker helper timeout")),
+            Err(_) => break Err(anyhow!("marker helper process failed")),
+        }
+    };
+    // Always close the whole contained tree before consuming output. This also
+    // closes inherited pipe handles, so bounded synchronous reads cannot leave
+    // detached reader threads behind.
+    contained.terminate_and_wait_bounded();
+    let stdout = read_helper_output_bounded(stdout, MAX_HELPER_OUTPUT_BYTES)?;
+    let stderr = read_helper_output_bounded(stderr, MAX_HELPER_OUTPUT_BYTES)?;
+    let status = status_result?;
+    if !status.success() || !stderr.is_empty() || stdout != operation.success_bytes() {
+        bail!("marker helper protocol failed");
     }
     Ok(())
+}
+
+fn ensure_approval_marker_absent_bounded(
+    invocation: &MarkerHelperInvocation,
+    workspace: &Path,
+    scenario_deadline: Instant,
+    global_deadline: Instant,
+) -> Result<()> {
+    run_marker_helper_process(
+        invocation,
+        workspace,
+        MarkerHelperOperation::Absent,
+        scenario_deadline.min(global_deadline),
+    )
+}
+
+fn verify_approval_marker_bounded(
+    invocation: &MarkerHelperInvocation,
+    workspace: &Path,
+    scenario_deadline: Instant,
+    global_deadline: Instant,
+) -> Result<()> {
+    run_marker_helper_process(
+        invocation,
+        workspace,
+        MarkerHelperOperation::Verify,
+        scenario_deadline.min(global_deadline),
+    )
+}
+
+#[cfg(debug_assertions)]
+pub fn run_marker_helper_process_for_test(
+    workspace: &Path,
+    program: OsString,
+    args: Vec<OsString>,
+    operation: &str,
+    scenario_timeout: Duration,
+    global_timeout: Duration,
+) -> Result<()> {
+    let operation = match operation {
+        "absent" => MarkerHelperOperation::Absent,
+        "verify" => MarkerHelperOperation::Verify,
+        _ => bail!("marker helper test operation failed"),
+    };
+    let started = Instant::now();
+    run_marker_helper_process(
+        &MarkerHelperInvocation { program, args },
+        workspace,
+        operation,
+        (started + scenario_timeout).min(started + global_timeout),
+    )
 }
 
 #[cfg(windows)]
@@ -2536,18 +2784,6 @@ mod tests {
         );
         drop(wrapper);
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn marker_io_worker_obeys_the_absolute_deadline() {
-        let start = std::time::Instant::now();
-        let result =
-            super::run_marker_io_worker(start + std::time::Duration::from_millis(25), || {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                Ok(())
-            });
-        assert!(result.is_err());
-        assert!(start.elapsed() < std::time::Duration::from_millis(250));
     }
 
     #[test]

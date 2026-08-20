@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use codex_app_server_capture::capture::{
     CaptureConfig, CommandSpec, ProxyConfig, run_capture, run_proxy,
 };
-use codex_app_server_capture::runner::{S2RunConfig, run_s2};
+use codex_app_server_capture::runner::{S2RunConfig, run_marker_helper, run_s2};
 use codex_app_server_capture::s2::{S2Evidence, validate};
 
 #[derive(Debug, Parser)]
@@ -18,6 +18,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    #[command(name = "__marker-helper", hide = true)]
+    MarkerHelper,
     /// Transparent stdin/stdout proxy for adaptive scenarios such as approval and interrupt.
     Proxy {
         #[arg(long)]
@@ -60,6 +62,7 @@ enum Commands {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Commands::MarkerHelper => run_marker_helper(),
         Commands::Proxy { output, executable } => run_proxy(
             ProxyConfig {
                 output,
