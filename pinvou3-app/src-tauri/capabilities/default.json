@@ -15,7 +15,6 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "core:window:allow-start-dragging",
-    "core:window:allow-set-position",
-    "core:webview:allow-create-webview-window"
+    "core:window:allow-set-position"
   ]
 }

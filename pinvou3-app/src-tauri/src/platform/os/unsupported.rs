@@ -70,10 +70,6 @@ pub fn archive_tool_exists() -> bool {
     false
 }
 
-pub fn msg_native_supported() -> bool {
-    false
-}
-
 pub fn msg_converter_required() -> bool {
     false
 }

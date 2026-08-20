@@ -5,6 +5,8 @@
 //!
 //! .msg 的 HTML 正文与 hex 编码 body 在此做 UTF-16 / HTML-entity 解码。
 
+// architecture-guard: allow-target-cfg -- msg_parser 仅 Windows 编译（Cargo.toml cfg(windows) 依赖段），.msg 原生解析分支与解码辅助需同门控
+
 use std::path::Path;
 use std::process::Command;
 
@@ -35,7 +37,11 @@ pub(super) fn ingest_email(
         }
     };
 
-    if kind == "msg" && crate::platform::os::msg_native_supported() {
+    // msg_parser 仅 Windows 编译（Cargo.toml 的 cfg(windows) 依赖段），
+    // 与原 os::msg_native_supported() 谓词等价（该谓词 Windows 恒 true，
+    // 接口链已随之退役）。非 Windows 走下方 msgconvert → .eml 分支。
+    #[cfg(target_os = "windows")]
+    if kind == "msg" {
         return match parse_msg_via_msg_parser(path) {
             Ok(text) => mk(Some(text), None),
             Err(e) => mk(None, Some(e)),
@@ -102,6 +108,8 @@ struct MsgMarkdownParts {
     attachments: Vec<String>,
 }
 
+/// 以下 msg_parser 类型参与的解析函数仅在 Windows 编译（依赖段同门控）。
+#[cfg(target_os = "windows")]
 fn parse_msg_via_msg_parser(path: &Path) -> Result<String, String> {
     let outlook =
         msg_parser::Outlook::from_path(path).map_err(|e| format!(".msg 解析失败: {e}"))?;
@@ -171,6 +179,7 @@ fn push_mail_line(out: &mut String, label: &str, value: &str) {
     out.push('\n');
 }
 
+#[cfg(target_os = "windows")]
 fn people_to_text(people: &[msg_parser::Person]) -> Vec<String> {
     people
         .iter()
@@ -179,10 +188,12 @@ fn people_to_text(people: &[msg_parser::Person]) -> Vec<String> {
         .collect()
 }
 
+#[cfg(target_os = "windows")]
 fn person_to_text(person: &msg_parser::Person) -> String {
     clean_msg_text(&person.to_string())
 }
 
+#[cfg(target_os = "windows")]
 fn attachment_to_name(attachment: &msg_parser::Attachment) -> String {
     [
         &attachment.long_file_name,
@@ -203,6 +214,7 @@ fn first_non_empty<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "windows")]
 fn decode_msg_body(outlook: &msg_parser::Outlook) -> String {
     let body = clean_msg_text(&outlook.body);
     if !body.is_empty() {

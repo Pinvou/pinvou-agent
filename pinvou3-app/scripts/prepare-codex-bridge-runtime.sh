@@ -28,9 +28,9 @@ else
 fi
 
 NODE_VERSION="22.22.0"
-CODEX_ACP_VERSION="1.1.5"
+CODEX_ACP_VERSION="1.6.2"
 CODEX_ACP_PACKAGE="@agentclientprotocol/codex-acp"
-CLAUDE_ACP_VERSION="0.62.0"
+CLAUDE_ACP_VERSION="0.70.0"
 CLAUDE_ACP_PACKAGE="@agentclientprotocol/claude-agent-acp"
 CLAUDE_SDK_VERSION="0.3.219"
 BRIDGE_PACKAGE_DIR="$SCRIPT_DIR/codex-bridge-runtime"

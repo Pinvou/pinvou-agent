@@ -10,7 +10,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -75,7 +74,16 @@ pub(super) fn pending_revocations_path() -> PathBuf {
     paths::pinvou3_home().join("web-access-pending-revocations.json")
 }
 
-pub(super) fn acquire_process_lock(path: &Path) -> Result<File, String> {
+/// Acquire the process-ownership lock (single desktop owner for Web access).
+///
+/// Uses `fd_lock` (already in the dependency graph via codewhale-config)
+/// instead of fs2; both wrap the same OS primitive (flock on Unix,
+/// LockFileEx on Windows). The `RwLock` box is deliberately leaked to give
+/// the write guard a `'static` lifetime: the ownership lock lives until
+/// process exit anyway, and dropping the guard (or the process) releases it.
+pub(super) fn acquire_process_lock(
+    path: &Path,
+) -> Result<fd_lock::RwLockWriteGuard<'static, File>, String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("invalid Web access lock path: {}", path.display()))?;
@@ -89,13 +97,13 @@ pub(super) fn acquire_process_lock(path: &Path) -> Result<File, String> {
         .map_err(|error| format!("open {}: {error}", path.display()))?;
     platform::enforce_private_permissions(&file, path)
         .map_err(|error| format!("set private permissions on {}: {error}", path.display()))?;
-    file.try_lock_exclusive().map_err(|error| {
+    let lock: &'static mut fd_lock::RwLock<File> = Box::leak(Box::new(fd_lock::RwLock::new(file)));
+    lock.try_write().map_err(|error| {
         format!(
             "Web access is already owned by another desktop process ({}): {error}",
             path.display()
         )
-    })?;
-    Ok(file)
+    })
 }
 
 pub(super) fn rpc_ledger_path() -> PathBuf {
