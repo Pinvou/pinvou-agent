@@ -30,7 +30,11 @@
     }
     html.compact-web-viewport body {
       position: fixed;
-      inset: 0;
+      /* 不用 inset 简写：Safari 14.0(macOS 11 初版)不识别，展开为物理属性 */
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
     }
     /* 与 Tailwind max-sm 同断点:触屏横滑容器(如设置页 Tab 条)不显示滚动条 */
     @media (max-width: 639.98px) {

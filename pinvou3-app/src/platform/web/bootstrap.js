@@ -108,7 +108,7 @@
 
   function randomId(prefix) {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
-      return `${prefix}_${window.crypto.randomUUID()}`;
+      return `${prefix}_${window.crypto.randomUUID()}`; // safari14-ok: guarded above
     }
     const bytes = new Uint8Array(18);
     if (window.crypto && typeof window.crypto.getRandomValues === "function") {
