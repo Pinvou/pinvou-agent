@@ -12,7 +12,9 @@
         "desktopTemplate": "packaging/linux/deb/pinvou3.desktop",
         "postInstallScript": "packaging/linux/deb/scripts/postinst.sh",
         "preRemoveScript": "packaging/linux/deb/scripts/prerm.sh",
-        "depends": [],
+        "depends": [
+          "libwebkit2gtk-4.1-0 (>= 2.40)"
+        ],
         "recommends": [
           "poppler-utils",
           "tesseract-ocr",
