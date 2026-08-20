@@ -1393,7 +1393,9 @@ mod tests {
         let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
 
         mgr.install("tencent-docs-skill").unwrap();
-        let skill_dir = tmp.join("bundles").join("tencent-docs-skill").join("skills").join("tencent-docs");
+        // 预置 id 是市场名(tencent-docs-skill),落盘按 frontmatter name(tencent-docs)
+        // 经 package_skill_dir 推导 owner——与 gongwen 等同名 companion 不同,勿硬编码。
+        let skill_dir = mgr.package_skill_dir("tencent-docs");
         assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
         assert_eq!(
             read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
