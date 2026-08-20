@@ -12,6 +12,7 @@ import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { dict, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
+import { TEMPORARY_GROUP_KEY, groupSessionsByFolder } from '../shared/sidebar-grouping.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -512,6 +513,7 @@ function workspaceDisplayName(path) {
       }
 
       function handleActivateSkill(name) {
+        setCodeModeOn(false);
         setChatPrefill(t.skillPrefill(name));
         setCurrentView('chat');
       }
@@ -714,6 +716,8 @@ function workspaceDisplayName(path) {
           : t.uiCodex.temporarySession,
         date: formatSessionDate(session.updated_at || session.created_at, language),
         updatedAt: session.updated_at || session.created_at || '',
+        workspacePath: session.workspace_path || '',
+        workspaceKind: session.workspace_kind || '',
         pinned: !!session.pinned,
         pinnedAt: session.pinned_at || '',
         working: !!codexBusyBySession[session.id],
@@ -809,9 +813,92 @@ function workspaceDisplayName(path) {
       const taskFilterRef = useRef(null);
       // 日期组展开状态:未点过的组按默认值走(今天展开、以往折叠),点过后记住用户选择
       const [dateGroupOpen, setDateGroupOpen] = useState({});
+      // code 样式边栏:进入 code 模式默认启用(按文件夹分组+折叠主导航),
+      // 右下角可切回普通样式;选择持久化,重进 code 模式仍生效。
+      const [sidebarCodeStyle, setSidebarCodeStyle] = useState(() => {
+        try {
+          return localStorage.getItem('pinvou_sidebar_code_style') === 'normal' ? 'normal' : 'code';
+        } catch {
+          return 'code';
+        }
+      });
+      const toggleSidebarCodeStyle = useCallback(() => {
+        setSidebarCodeStyle(prev => {
+          const next = prev === 'code' ? 'normal' : 'code';
+          try {
+            localStorage.setItem('pinvou_sidebar_code_style', next);
+          } catch {
+            // WebView 禁用 storage 时仍允许当前窗口内切换。
+          }
+          return next;
+        });
+      }, []);
+      // 文件夹组展开状态:默认全部展开,点过后记住用户选择
+      const [folderGroupOpen, setFolderGroupOpen] = useState({});
+      // code 样式下主导航默认折叠成一行,展开后记住当次选择(退出 code 模式即重置)
+      const [codeNavExpanded, setCodeNavExpanded] = useState(false);
+      // code 模式是「模式」而非「页面」:进入后点击导航工具切到输出/监控等页面
+      // 仍留在 code 模式,边栏保持 code 样式、新对话仍建 code 会话;
+      // 只有显式切回工作/设计、或点开普通聊天会话时才退出。
+      const [codeModeOn, setCodeModeOn] = useState(false);
+      const codeStyleActive = codeModeOn && sidebarCodeStyle === 'code';
+      // 退出 code 模式后主导航折叠条复位,下次进入仍是折叠的默认形态。
+      useEffect(() => {
+        if (!codeModeOn) setCodeNavExpanded(false);
+      }, [codeModeOn]);
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
+
+      // 展开态边栏宽度:右边沿拖拽调整(220~480px),双击把手复位默认,选择持久化。
+      const SIDEBAR_WIDTH_DEFAULT = 280;
+      const SIDEBAR_WIDTH_MIN = 220;
+      const SIDEBAR_WIDTH_MAX = 480;
+      const clampSidebarWidth = (w) => Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, w));
+      const [sidebarWidth, setSidebarWidth] = useState(() => {
+        try {
+          const saved = Number(localStorage.getItem('pinvou_sidebar_width'));
+          return Number.isFinite(saved) && saved > 0 ? clampSidebarWidth(saved) : SIDEBAR_WIDTH_DEFAULT;
+        } catch {
+          return SIDEBAR_WIDTH_DEFAULT;
+        }
+      });
+      // 拖拽中关闭宽度过渡动画,避免跟随延迟;ref 供 pointerup 时读最新宽度落盘。
+      const [sidebarResizing, setSidebarResizing] = useState(false);
+      const sidebarWidthRef = useRef(sidebarWidth);
+      const applySidebarWidth = (w) => {
+        sidebarWidthRef.current = w;
+        setSidebarWidth(w);
+      };
+      const beginSidebarResize = useCallback((event) => {
+        event.preventDefault();
+        const startX = event.clientX;
+        const startWidth = sidebarWidthRef.current;
+        setSidebarResizing(true);
+        const onMove = (moveEvent) => {
+          applySidebarWidth(clampSidebarWidth(startWidth + moveEvent.clientX - startX));
+        };
+        const onUp = () => {
+          setSidebarResizing(false);
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          try {
+            localStorage.setItem('pinvou_sidebar_width', String(sidebarWidthRef.current));
+          } catch {
+            // WebView 禁用 storage 时仅当次生效。
+          }
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+      }, []);
+      const resetSidebarWidth = useCallback(() => {
+        applySidebarWidth(SIDEBAR_WIDTH_DEFAULT);
+        try {
+          localStorage.setItem('pinvou_sidebar_width', String(SIDEBAR_WIDTH_DEFAULT));
+        } catch {
+          // 同上。
+        }
+      }, []);
 
       useEffect(() => {
         if (!taskFilterOpen) return undefined;
@@ -897,6 +984,19 @@ function workspaceDisplayName(path) {
           return b.key.localeCompare(a.key);
         });
       }
+
+      // code 样式边栏:只列 code 会话,按文件夹(workspace)分组,组间/组内均按最后活跃
+      // 倒序,temporary 会话合并沉底;「置顶优先」时置顶 code 会话提升到文件夹组之上。
+      const sidebarCodeTasks = codeStyleActive
+        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
+        : [];
+      const sidebarFolderPinned = taskListSort === 'pinned_first'
+        ? sidebarCodeTasks.filter(chat => !!chat.pinned)
+        : [];
+      const sidebarFolderGroups = codeStyleActive
+        ? groupSessionsByFolder(
+            sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)))
+        : [];
 
       petSnapshotRef.current = chatHistory.map(chat => ({
         id: chat.id,
@@ -984,7 +1084,7 @@ function workspaceDisplayName(path) {
         if (opened) setCurrentView('scheduled');
       }
 
-      function handleNewChat(installedToolId) {
+      function handleNewChat(installedToolId, forceMode) {
         // 类型守卫:installedToolId 必须是字符串 toolId。侧边栏按钮 onClick={() => handleNewChat()}
         // 本不传参,但若哪天有调用点写成 onClick={handleNewChat},React 会把事件对象当首参塞进来——
         // 那是 truthy 的 SyntheticEvent,会被当成 toolId 置进 welcomeToolId → ToolWelcomeCard 查不到
@@ -992,7 +1092,10 @@ function workspaceDisplayName(path) {
         if (typeof installedToolId === 'string' && installedToolId) {
           setJustInstalledTool(installedToolId);
         }
-        if (currentView === 'codex' && codexAcpSupported) {
+        // 跟随 code 模式而非当前页面:code 模式下即使停在输出/监控等工具页,
+        // 「新对话」仍建 code 会话草稿;forceMode 供 AI 造卡等必须落普通聊天的调用点使用。
+        const wantCode = forceMode ? forceMode === 'code' : codeModeOn;
+        if (wantCode && codexAcpSupported) {
           updateActiveCodexSession(null);
           setCodexDraftEpoch(value => value + 1);
           setCurrentView('codex');
@@ -1005,10 +1108,12 @@ function workspaceDisplayName(path) {
 
       function handleSwitchHomeMode(mode) {
         if (mode === 'code' && codexAcpSupported) {
+          setCodeModeOn(true);
           updateActiveCodexSession(null);
           setCodexDraftEpoch(value => value + 1);
           setCurrentView('codex');
         } else if (mode === 'design') {
+          setCodeModeOn(false);
           // 仅草稿态（无活跃会话）才开新会话：从 code 页切回时 bridge 的
           // activeSessionId 仍是原工作会话，强制 createNewSession 会新建一个
           // plain 会话（默认 Yolo），把用户切过的 Plan 顶掉——表现为「从代码
@@ -1027,6 +1132,7 @@ function workspaceDisplayName(path) {
           }
           setCurrentView('chat');
         } else if (mode === 'work') {
+          setCodeModeOn(false);
           const scopeKey = bridge.activeSessionId
             ? createPinvouModeScopeKey(bridge.activeSessionId)
             : undefined;
@@ -1042,7 +1148,9 @@ function workspaceDisplayName(path) {
 
       // AI 造卡:新对话 + 加持「卡牌制造专家」+ 一条 iOS 引导卡 → 用户在空输入框描述需求,复用 persona-card 草稿流程入库
       async function startAICard() {
-        handleNewChat();
+        // 造卡必须落普通聊天会话:即使在 code 模式下从卡片池发起,也要先退出 code 模式。
+        setCodeModeOn(false);
+        handleNewChat(null, 'chat');
         if (!bridge.available) return;
         var card = await bridge.personas.equipPersona('pinvou-card-creator'); // 先加持(落新 session + 加持气泡)
         if (card) bridge.personas.postCardCreatorIntro();                     // 加持成功才追加引导卡(持久化,切会话/重启不丢);失败则放弃后续,避免错投(二审补充)
@@ -1050,6 +1158,8 @@ function workspaceDisplayName(path) {
 
       async function handleSwitchSession(id) {
         if (!bridge.available) return;
+        // 点开普通聊天会话即退出 code 模式(模式跟随会话类型,而非停留页面)。
+        setCodeModeOn(false);
         // Web RPC 可能跨公网 Relay：先关闭抽屉并切入聊天路由，后台再加载会话。
         setCurrentView('chat');
         closeMobileSidebar();
@@ -1064,6 +1174,7 @@ function workspaceDisplayName(path) {
       }
 
       function handleSwitchCodexSession(id) {
+        setCodeModeOn(true);
         updateActiveCodexSession(id);
         setCurrentView('codex');
         closeMobileSidebar();
@@ -1180,6 +1291,7 @@ function workspaceDisplayName(path) {
               emitToPet('pet:session_unavailable', { session_id: sid }).catch(() => {});
               return;
             }
+            setCodeModeOn(false);
             setActiveChat(sid);
             setCurrentView('chat');
             setPetFocusComposerTick(value => value + 1);
@@ -1741,14 +1853,17 @@ function workspaceDisplayName(path) {
           {/* ================= Sidebar (Gemini Style) ================= */}
           <div
             data-testid="app-sidebar"
-            style={isCompactShell ? {
-              display: isSidebarOpen ? 'flex' : 'none',
-              position: 'fixed',
-              left: 0,
-              top: 48,
-              bottom: 56,
-            } : undefined}
-            className={`${isSidebarOpen ? 'w-[280px]' : 'w-[68px]'} shrink-0 flex flex-col z-40 transition-all duration-300 ${
+            style={{
+              width: isSidebarOpen ? sidebarWidth : undefined,
+              ...(isCompactShell ? {
+                display: isSidebarOpen ? 'flex' : 'none',
+                position: 'fixed',
+                left: 0,
+                top: 48,
+                bottom: 56,
+              } : {}),
+            }}
+            className={`${isSidebarOpen ? '' : 'w-[68px]'} relative shrink-0 flex flex-col z-40 ${sidebarResizing ? '' : 'transition-all duration-300'} ${
               activeTheme === 'light'
                 ? 'bg-[#F0F4F9]'
                 : (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]')
@@ -1784,7 +1899,9 @@ function workspaceDisplayName(path) {
               )}
             </div>
 
-            {/* Navigation — shrink-0 固定不滚动,list 再多也不挤压 nav */}
+            {/* Navigation — shrink-0 固定不滚动,list 再多也不挤压 nav。
+                code 样式下默认折叠成一行折叠条,但「新对话」常驻不折叠;
+                其余导航项展开后可在底部收起。 */}
             <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-0.5 mt-1.5 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
                 icon={<Edit2 size={18} />} label={t.newChat}
@@ -1792,6 +1909,7 @@ function workspaceDisplayName(path) {
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => handleNewChat()}
               />
+              {/* 紧凑壳下搜索只在导航里有入口,折叠时也必须常驻 */}
               {(!isSidebarOpen || isCompactShell) && (
                 <NavItem
                   icon={<Search size={18} />} label={t.searchChats}
@@ -1801,6 +1919,19 @@ function workspaceDisplayName(path) {
                   onClick={() => setSearchOverlayOpen(true)}
                 />
               )}
+              {codeStyleActive && isSidebarOpen && !codeNavExpanded ? (
+                <button
+                  type="button"
+                  data-testid="sidebar-primary-nav-expand"
+                  onClick={() => setCodeNavExpanded(true)}
+                  title={t.sidebarNavExpand}
+                  className={`w-full h-8 px-4 flex items-center justify-between rounded-full text-[13px] font-semibold transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+                >
+                  <span className="truncate">{t.sidebarNavExpand}</span>
+                  <ChevronDown size={14} className="shrink-0" />
+                </button>
+              ) : (
+              <>
               {SCHEDULED_TASKS_ENTRY_ENABLED && (
                 <NavItem
                   icon={<Clock size={18} />} label={t.scheduledPlans}
@@ -1867,6 +1998,19 @@ function workspaceDisplayName(path) {
                   onClick={() => navigateFromScheduledRun('chat')}
                 />
               )}
+              {codeStyleActive && isSidebarOpen && codeNavExpanded && (
+                <button
+                  type="button"
+                  onClick={() => setCodeNavExpanded(false)}
+                  title={t.sidebarNavCollapse}
+                  className={`w-full h-7 px-4 flex items-center justify-between rounded-full text-[12px] transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+                >
+                  <span className="truncate">{t.sidebarNavCollapse}</span>
+                  <ChevronDown size={14} className="shrink-0 rotate-180" />
+                </button>
+              )}
+              </>
+              )}
             </div>
 
             {/* Recents — 独立 flex-1 + overflow-y-auto,只在展开态显示。
@@ -1882,7 +2026,7 @@ function workspaceDisplayName(path) {
                       activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'
                     }`}>
                       <span className="truncate">
-                        {t.sidebarTaskList} ({sidebarTaskHistory.length})
+                        {t.sidebarTaskList} ({codeStyleActive ? sidebarCodeTasks.length : sidebarTaskHistory.length})
                       </span>
                       <span className="flex items-center">
                         {/* 对话管理页入口:悬停任务列表行显现(触屏常显),替代原搜索入口 */}
@@ -1948,7 +2092,46 @@ function workspaceDisplayName(path) {
                     )}
                   </div>
                   <div className="space-y-1">
-                    {!sidebarDateGrouping ? (
+                    {codeStyleActive ? (
+                      (sidebarFolderPinned.length > 0 || sidebarFolderGroups.length > 0) ? (
+                        <>
+                          {sidebarFolderPinned.length > 0 && (
+                            <div className="space-y-0.5">
+                              {sidebarFolderPinned.map(renderSidebarTaskItem)}
+                            </div>
+                          )}
+                          {sidebarFolderGroups.map((group) => {
+                            const isOpen = folderGroupOpen[group.key] ?? true;
+                            const label = group.key === TEMPORARY_GROUP_KEY
+                              ? t.uiCodex.temporarySession
+                              : workspaceDisplayName(group.key);
+                            return (
+                              <div key={group.key}>
+                                <button
+                                  type="button"
+                                  data-testid="sidebar-folder-group"
+                                  title={group.key === TEMPORARY_GROUP_KEY ? undefined : group.key}
+                                  onClick={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
+                                  className={`w-full h-7 px-4 flex items-center justify-between rounded-full text-[12px] transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+                                >
+                                  <span className="truncate">{label} ({group.rows.length})</span>
+                                  <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
+                                </button>
+                                {isOpen && (
+                                  <div className="mt-1 space-y-0.5">
+                                    {group.rows.map(renderSidebarTaskItem)}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </>
+                      ) : (
+                        <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+                          {t.sidebarTaskEmpty}
+                        </div>
+                      )
+                    ) : !sidebarDateGrouping ? (
                       <div className="space-y-0.5">
                         {sidebarTaskHistory.length > 0 ? sidebarTaskHistory.map(renderSidebarTaskItem) : (
                           <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
@@ -2065,8 +2248,38 @@ function workspaceDisplayName(path) {
                     </button>
                   </div>
                 )}
+                {/* code 模式下边栏样式切换:与左侧图标组分开,单独钉在边栏右下角 */}
+                {isSidebarOpen && codeModeOn && (
+                  <button
+                    type="button"
+                    data-testid="sidebar-code-style-toggle"
+                    onClick={toggleSidebarCodeStyle}
+                    title={sidebarCodeStyle === 'code' ? t.sidebarCodeStyleOff : t.sidebarCodeStyleOn}
+                    aria-label={sidebarCodeStyle === 'code' ? t.sidebarCodeStyleOff : t.sidebarCodeStyleOn}
+                    className={`ml-auto relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${sidebarCodeStyle === 'code' ? (activeTheme === 'dark' ? 'bg-[#004A77] text-[#C2E7FF] hover:bg-[#0B5C8F]' : 'bg-[#D3E3FD] text-[#0B57D0] hover:bg-[#C2DAFC]') : (activeTheme === 'dark' ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#E1E5EA]')}`}
+                  >
+                    {sidebarCodeStyle === 'code' ? <FolderOpen size={18} /> : <IconList size={18} />}
+                  </button>
+                )}
               </div>
             </div>
+
+            {/* 右边沿拖拽调宽:仅展开态桌面壳提供;双击复位默认宽度 */}
+            {isSidebarOpen && !isCompactShell && (
+              <div
+                data-testid="sidebar-resize-handle"
+                role="separator"
+                aria-orientation="vertical"
+                title={t.sidebarResize}
+                onPointerDown={beginSidebarResize}
+                onDoubleClick={resetSidebarWidth}
+                className={`absolute top-0 bottom-0 right-0 w-[6px] cursor-col-resize z-50 transition-colors ${
+                  sidebarResizing
+                    ? 'bg-[#0B57D0]/40'
+                    : (activeTheme === 'dark' ? 'hover:bg-[#A8C7FA]/30' : 'hover:bg-[#0B57D0]/25')
+                }`}
+              />
+            )}
           </div>
 
           {/* ================= Main Content ================= */}
@@ -2120,7 +2333,7 @@ function workspaceDisplayName(path) {
               </SettingsErrorBoundary>
             )}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
-            {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
+            {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => { setCodeModeOn(false); setCurrentView('chat'); }} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
             {codexAcpSupported && currentView === 'codex' && (
               <CodexAcpView
@@ -2143,7 +2356,7 @@ function workspaceDisplayName(path) {
               bs && bs.scheduledRunContext ? (
                 <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
               ) : (
-                <ScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} onGotoModelSettings={() => openSettingsSection('model')} />
+                <ScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => { setCodeModeOn(false); setCurrentView('chat'); }} onGotoModelSettings={() => openSettingsSection('model')} />
               )
             )}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
