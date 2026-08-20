@@ -135,6 +135,14 @@ fn main() {
         }
     });
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if let Ok(path) = std::env::var("S2_FAKE_ARGV_LOG") {
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        writeln!(log, "{}", serde_json::to_string(&args).unwrap()).unwrap();
+    }
     if args
         .first()
         .is_some_and(|arg| arg == "--marker-helper-child")
@@ -381,6 +389,9 @@ fn main() {
                         _ => {
                             send(startup("fixture-ready", "starting", Value::Null));
                             send(startup("fixture-failed", "starting", Value::Null));
+                            send(json!({"method":"warning","params":{
+                                "threadId":thread_id,"message":"fixture warning before turn"
+                            }}));
                         }
                     }
                 }
@@ -409,6 +420,9 @@ fn main() {
                     }}));
                     send(json!({"method":"mcpServer/startupStatus/updated","params":{
                         "threadId":thread_id,"name":"fixture-failed","status":"failed","error":"fixture failure"
+                    }}));
+                    send(json!({"method":"warning","params":{
+                        "threadId":thread_id,"message":"fixture warning after turn"
                     }}));
                 }
                 let user_raw_thread = if mode == "agent-user-raw-wrong-thread" {
@@ -503,6 +517,9 @@ fn main() {
                     ),
                     "agent-tool-collab" => Some(
                         json!({"method":"item/started","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id,"item":{"type":"collabAgentToolCall"}}}),
+                    ),
+                    "agent-hook-started" => Some(
+                        json!({"method":"hook/started","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id,"run":{"handlerType":"command"}}}),
                     ),
                     "agent-tool-unknown" => Some(
                         json!({"method":"item/unknownTool/progress","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id}}),

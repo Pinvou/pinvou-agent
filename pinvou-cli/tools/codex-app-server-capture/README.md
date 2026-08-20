@@ -101,6 +101,13 @@ terminates the complete spawned tree and bounds pipe-reader shutdown. On Windows
 children are created suspended, assigned to a Job Object, and only then resumed;
 on Unix they are placed in a dedicated process group before exec.
 
+For `run-s2` only, the app-server invocation adds the official fixed
+`--disable codex_hooks` feature override while the version preflight remains
+exactly `--version`. This keeps the operator's existing `CODEX_HOME` account and
+authentication available but prevents user-configured lifecycle hooks from
+executing during agent-only evidence collection. Any `hook/started` notification
+that still arrives is rejected fail-closed as tool activity.
+
 On Windows the default executable lookup searches PATH specifically for
 `codex.cmd`; it does not fall through to an extensionless POSIX shim or a later
 `codex.exe`. The selected script is canonicalized, required to be a regular

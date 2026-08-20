@@ -91,6 +91,7 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
     assert!(capture.contains(r#"\"type\":\"userMessage\""#));
     assert!(capture.contains(r#"\"method\":\"rawResponseItem/completed\""#));
     assert!(capture.contains(r#"\"method\":\"mcpServer/startupStatus/updated\""#));
+    assert!(capture.contains(r#"\"method\":\"warning\""#));
     assert!(capture.contains(r#"\"status\":\"ready\""#));
     assert!(capture.contains(r#"\"status\":\"failed\""#));
     assert!(capture.contains(r#"\"phase\":\"final_answer\""#));
@@ -135,6 +136,45 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
     );
     assert!(!sanitized.contains("private@example.invalid"));
     assert!(!sanitized.contains("chatgpt"));
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn run_s2_disables_hooks_only_for_app_server_invocation() {
+    let output = temp_output("argv spaces & semicolon ; user-input");
+    let argv_log = output.join("fake-argv.jsonl");
+    run_s2_for_test(S2RunConfig {
+        output_dir: Some(output.clone()),
+        executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        trusted_approval_wrapper: None,
+        model: None,
+        scenario_timeout: Duration::from_secs(10),
+        global_timeout: Duration::from_secs(60),
+        test_child_env: vec![(
+            OsString::from("S2_FAKE_ARGV_LOG"),
+            argv_log.clone().into_os_string(),
+        )],
+    })
+    .unwrap();
+    let invocations = std::fs::read_to_string(&argv_log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Vec<String>>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        invocations,
+        vec![
+            vec!["--version"],
+            vec!["app-server", "--disable", "codex_hooks", "--stdio"],
+        ]
+    );
+    assert!(
+        invocations
+            .iter()
+            .flatten()
+            .all(|arg| { !arg.contains("user-input") && !arg.contains('&') && !arg.contains(';') })
+    );
     std::fs::remove_dir_all(output).unwrap();
 }
 
@@ -365,6 +405,7 @@ fn agent_only_scenarios_fail_closed_on_tools_requests_and_non_delta_output() {
         "agent-tool-dynamic",
         "agent-tool-web",
         "agent-tool-collab",
+        "agent-hook-started",
         "agent-tool-unknown",
         "agent-server-request",
         "agent-aggregated-only",
@@ -376,6 +417,16 @@ fn agent_only_scenarios_fail_closed_on_tools_requests_and_non_delta_output() {
         let output = temp_output(mode);
         let result = run_fake(mode, &output, 10_000);
         assert!(!result.status.success(), "{mode} unexpectedly passed");
+        if mode == "agent-hook-started" {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            assert!(
+                stderr
+                    .contains("protocol error: tool activity is forbidden in agent-only scenario"),
+                "hook/started did not reach the explicit fail-closed branch: {stderr}"
+            );
+            let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+            assert!(capture.contains(r#"\"method\":\"hook/started\""#));
+        }
         let report: Value =
             serde_json::from_slice(&std::fs::read(output.join("validation-report.json")).unwrap())
                 .unwrap();
@@ -1100,7 +1151,7 @@ fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim(
     assert!(capture.contains("thread/start"));
     let command_line = std::fs::read_to_string(&command_line_marker).unwrap();
     assert!(command_line.contains("codex.cmd"));
-    assert!(command_line.contains("app-server --stdio"));
+    assert!(command_line.contains("app-server --disable codex_hooks --stdio"));
     std::fs::remove_dir_all(root).unwrap();
 }
 

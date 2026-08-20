@@ -28,6 +28,8 @@ const APPROVAL_MARKER_NAME: &str = ".codex-s2-approval-marker";
 const APPROVAL_MARKER_CONTENT: &str = "S2_APPROVED";
 const APPROVAL_MARKER_BYTES: &[u8] = APPROVAL_MARKER_CONTENT.as_bytes();
 const APPROVAL_MARKER_MAX_BYTES: u64 = 64;
+const VERSION_ARGS: &[&str] = &["--version"];
+const APP_SERVER_ARGS: &[&str] = &["app-server", "--disable", "codex_hooks", "--stdio"];
 
 #[derive(Clone, Debug)]
 pub struct S2RunConfig {
@@ -517,7 +519,7 @@ fn verify_executable_version(
     use std::io::Read;
 
     remaining_global(global_deadline)?;
-    let mut process = invocation.command(&["--version"])?;
+    let mut process = invocation.command(VERSION_ARGS)?;
     apply_test_child_env(&mut process, config);
     process
         .stdin(Stdio::null())
@@ -643,7 +645,7 @@ fn execute(
         BufWriter::new(create_capture_file(&output_dir.join(CAPTURE_FILE))?),
         Box::new(move || recorder_clock.now_ns().expect("monotonic clock failed")),
     )));
-    let mut app_server = invocation.command(&["app-server", "--stdio"])?;
+    let mut app_server = invocation.command(APP_SERVER_ARGS)?;
     apply_test_child_env(&mut app_server, config);
     let mut session = Session::spawn(
         app_server,
@@ -1765,6 +1767,21 @@ impl<'a> AgentOnlyState<'a> {
                     }
                 }
             }
+            "warning" => {
+                let warning = serde_json::from_value::<PinnedWarningParams>(
+                    frame
+                        .get("params")
+                        .cloned()
+                        .context("protocol error: malformed warning notification")?,
+                )
+                .context("protocol error: malformed warning notification")?;
+                if warning.message.is_empty() {
+                    bail!("protocol error: malformed warning notification");
+                }
+                if !self.thread_started || warning.thread_id != thread_id {
+                    bail!("protocol error: warning had mismatched thread identity or order");
+                }
+            }
             "turn/completed" | "turn/plan/updated" => {
                 if !exact_thread || !exact_turn || !self.turn_started || !self.user_completed {
                     bail!("protocol error: mismatched or out-of-order turn notification");
@@ -1936,6 +1953,7 @@ impl<'a> AgentOnlyState<'a> {
             | "item/mcpToolCall/progress"
             | "item/autoApprovalReview/started"
             | "item/autoApprovalReview/completed"
+            | "hook/started"
             | "turn/diff/updated" => {
                 bail!("protocol error: tool activity is forbidden in agent-only scenario");
             }
@@ -2023,6 +2041,13 @@ struct PinnedMcpStartupStatusParams {
     name: String,
     status: PinnedMcpStartupStatus,
     error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PinnedWarningParams {
+    thread_id: String,
+    message: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -3715,6 +3740,68 @@ mod tests {
     }
 
     #[test]
+    fn warning_is_strictly_typed_and_thread_scoped() {
+        let workspace = std::env::temp_dir().canonicalize().unwrap();
+        let warning = |thread_id: serde_json::Value, message: serde_json::Value| json!({"method":"warning","params":{"threadId":thread_id,"message":message}});
+        let mut state = super::AgentOnlyState::new("prompt", &workspace);
+        let before_thread = state
+            .validate(&warning(json!("t"), json!("before")), "t", "u")
+            .unwrap_err();
+        assert_eq!(
+            before_thread.to_string(),
+            "protocol error: warning had mismatched thread identity or order"
+        );
+        state
+            .validate(&pinned_thread_frame(&workspace), "t", "u")
+            .unwrap();
+        state
+            .validate(&warning(json!("t"), json!("before turn")), "t", "u")
+            .unwrap();
+        state
+            .validate(
+                &json!({"method":"turn/started","params":{"threadId":"t","turn":{"id":"u","status":"inProgress"}}}),
+                "t",
+                "u",
+            )
+            .unwrap();
+        state
+            .validate(&warning(json!("t"), json!("after turn")), "t", "u")
+            .unwrap();
+        assert!(state.turn_started);
+        assert!(state.items.is_empty());
+        assert!(state.user_item_id.is_none());
+
+        for frame in [
+            warning(serde_json::Value::Null, json!("message")),
+            warning(json!("t"), json!("")),
+            warning(json!("t"), serde_json::Value::Null),
+            json!({"method":"warning","params":{"threadId":"t","message":"message","extra":true}}),
+            json!({"method":"warning","params":{"threadId":"t"}}),
+        ] {
+            let mut state = super::AgentOnlyState::new("prompt", &workspace);
+            state
+                .validate(&pinned_thread_frame(&workspace), "t", "u")
+                .unwrap();
+            let error = state.validate(&frame, "t", "u").unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "protocol error: malformed warning notification"
+            );
+        }
+        let mut state = super::AgentOnlyState::new("prompt", &workspace);
+        state
+            .validate(&pinned_thread_frame(&workspace), "t", "u")
+            .unwrap();
+        let wrong_thread = state
+            .validate(&warning(json!("wrong"), json!("message")), "t", "u")
+            .unwrap_err();
+        assert_eq!(
+            wrong_thread.to_string(),
+            "protocol error: warning had mismatched thread identity or order"
+        );
+    }
+
+    #[test]
     fn user_raw_is_unique_exact_and_precedes_user_message_lifecycle() {
         let workspace = std::env::temp_dir().canonicalize().unwrap();
         let prompt = "exact prompt";
@@ -3954,10 +4041,17 @@ mod tests {
             "item/autoApprovalReview/started",
             "item/autoApprovalReview/completed",
             "turn/diff/updated",
+            "hook/started",
             "item/unknownTool/progress",
         ] {
             let frame = json!({"method":method,"params":{"threadId":"t","turnId":"u","delta":"x"}});
-            assert!(state.validate(&frame, "t", "u").is_err(), "{method}");
+            let error = state.validate(&frame, "t", "u").unwrap_err();
+            if method == "hook/started" {
+                assert_eq!(
+                    error.to_string(),
+                    "protocol error: tool activity is forbidden in agent-only scenario"
+                );
+            }
         }
         let assistant = json!({"type":"agentMessage","id":"assistant","text":"","phase":null,"memoryCitation":null});
         state.validate(&json!({"method":"item/started","params":{"threadId":"t","turnId":"u","startedAtMs":3,"item":assistant}}), "t", "u").unwrap();
