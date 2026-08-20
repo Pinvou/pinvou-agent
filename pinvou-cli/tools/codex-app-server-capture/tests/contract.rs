@@ -33,6 +33,7 @@ fn successful_evidence() -> S2Evidence {
         r1_sufficient: true,
         approval_seen: name == "C",
         interrupt_response_seen: false,
+        transport_retry_count: 0,
     };
 
     S2Evidence {
@@ -48,6 +49,7 @@ fn successful_evidence() -> S2Evidence {
                 r1_sufficient: false,
                 approval_seen: false,
                 interrupt_response_seen: true,
+                transport_retry_count: 0,
             },
         ],
         auth_errors: 0,

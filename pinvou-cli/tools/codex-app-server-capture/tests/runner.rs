@@ -728,6 +728,64 @@ fn method_named_error_server_request_is_rejected_with_a_correlated_error_respons
 
 #[test]
 #[cfg(debug_assertions)]
+fn strict_retryable_transport_error_is_nonfatal_and_counted_without_resetting_the_turn() {
+    let output = temp_output("transport-retry-success");
+    let outcome = run_s2_for_test(S2RunConfig {
+        output_dir: Some(output.clone()),
+        executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        trusted_approval_wrapper: None,
+        model: None,
+        scenario_timeout: Duration::from_secs(10),
+        global_timeout: Duration::from_secs(60),
+        test_child_env: vec![(
+            OsString::from("S2_FAKE_MODE"),
+            OsString::from("transport-retry-success"),
+        )],
+    })
+    .unwrap();
+    assert!(outcome.report.valid);
+    let evidence: Value =
+        serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
+    assert_eq!(evidence["protocol_errors"], 0);
+    assert_eq!(evidence["scenarios"][0]["transport_retry_count"], 1);
+    assert_eq!(
+        evidence["scenarios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|scenario| scenario["transport_retry_count"].as_u64())
+            .sum::<u64>(),
+        1
+    );
+    let summary = std::fs::read_to_string(output.join("summary.txt")).unwrap();
+    assert!(summary.contains("transport_retry_count=1"));
+    assert!(!summary.contains("fixture transport interruption"));
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn transport_retry_is_fatal_on_false_malformed_identity_or_retry_spam_and_still_times_out() {
+    for mode in [
+        "transport-retry-fatal",
+        "transport-retry-wrong-identity",
+        "transport-retry-wrong-status",
+        "transport-retry-extra-field",
+        "transport-retry-spam",
+        "transport-retry-timeout",
+    ] {
+        let output = temp_output(mode);
+        let result = run_fake(mode, &output, 500);
+        assert!(!result.status.success(), "{mode} unexpectedly passed");
+        let evidence: Value =
+            serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
+        assert_eq!(evidence["protocol_errors"], 1, "{mode}");
+        std::fs::remove_dir_all(output).unwrap();
+    }
+}
+
+#[test]
+#[cfg(debug_assertions)]
 fn command_execution_output_deltas_are_rejected_in_agent_only_scenarios() {
     let output = temp_output("command-output-success");
     let outcome = run_fake("command-output-success", &output, 10_000);

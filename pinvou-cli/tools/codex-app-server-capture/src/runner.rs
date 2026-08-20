@@ -27,6 +27,7 @@ const CAPTURE_FILE: &str = "capture.jsonl";
 const EVIDENCE_FILE: &str = "evidence.json";
 const REPORT_FILE: &str = "validation-report.json";
 const SUMMARY_FILE: &str = "summary.txt";
+const MAX_TRANSPORT_RETRIES_PER_TURN: u64 = 5;
 const APPROVAL_MARKER_NAME: &str = ".codex-s2-approval-marker";
 const APPROVAL_MARKER_CONTENT: &str = "S2_APPROVED";
 const APPROVAL_MARKER_BYTES: &[u8] = APPROVAL_MARKER_CONTENT.as_bytes();
@@ -1810,6 +1811,7 @@ impl Session {
         let mut interrupt_response_latency_ms = None;
         let mut interrupt_terminal_latency_ms = None;
         let mut pending_terminal = None;
+        let mut transport_retry_count = 0;
         let mut agent_only_state =
             matches!(name, "A" | "B" | "D").then(|| AgentOnlyState::new(prompt, workspace));
         loop {
@@ -1830,6 +1832,13 @@ impl Session {
                     deadline,
                 )?;
                 approval_seen = true;
+                continue;
+            }
+            if strict_retryable_transport_error(&frame, thread_id, turn_id) {
+                transport_retry_count += 1;
+                if transport_retry_count > MAX_TRANSPORT_RETRIES_PER_TURN {
+                    bail!("scenario {name}: transport retry limit exceeded");
+                }
                 continue;
             }
             fail_on_error_notification(&frame)?;
@@ -1920,6 +1929,7 @@ impl Session {
                 r1_sufficient,
                 approval_seen,
                 interrupt_response_seen,
+                transport_retry_count,
             },
             content,
             interrupt_response_latency_ms,
@@ -3038,6 +3048,62 @@ fn fail_on_error_notification(frame: &Value) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn strict_retryable_transport_error(frame: &Value, thread_id: &str, turn_id: &str) -> bool {
+    let Some(frame) = frame.as_object() else {
+        return false;
+    };
+    if frame.len() != 2
+        || frame.get("method").and_then(Value::as_str) != Some("error")
+        || !frame.contains_key("params")
+    {
+        return false;
+    }
+    let Some(params) = frame.get("params").and_then(Value::as_object) else {
+        return false;
+    };
+    const PARAM_FIELDS: [&str; 4] = ["error", "willRetry", "threadId", "turnId"];
+    if params.len() != PARAM_FIELDS.len()
+        || PARAM_FIELDS
+            .iter()
+            .any(|field| !params.contains_key(*field))
+        || params.get("willRetry") != Some(&Value::Bool(true))
+        || params.get("threadId").and_then(Value::as_str) != Some(thread_id)
+        || params.get("turnId").and_then(Value::as_str) != Some(turn_id)
+    {
+        return false;
+    }
+    let Some(error) = params.get("error").and_then(Value::as_object) else {
+        return false;
+    };
+    const ERROR_FIELDS: [&str; 3] = ["message", "codexErrorInfo", "additionalDetails"];
+    if error.len() != ERROR_FIELDS.len()
+        || ERROR_FIELDS.iter().any(|field| !error.contains_key(*field))
+        || !error
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| !message.is_empty())
+        || error
+            .get("additionalDetails")
+            .and_then(Value::as_str)
+            .is_none()
+    {
+        return false;
+    }
+    let Some(info) = error.get("codexErrorInfo").and_then(Value::as_object) else {
+        return false;
+    };
+    if info.len() != 1 || !info.contains_key("responseStreamDisconnected") {
+        return false;
+    }
+    let Some(disconnected) = info
+        .get("responseStreamDisconnected")
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    disconnected.len() == 1 && disconnected.get("httpStatusCode") == Some(&Value::Null)
 }
 
 fn sanitized_error(value: &Value) -> String {
@@ -5570,6 +5636,7 @@ fn empty_evidence() -> S2Evidence {
                 r1_sufficient: false,
                 approval_seen: false,
                 interrupt_response_seen: false,
+                transport_retry_count: 0,
             })
             .to_vec(),
         auth_errors: 0,
@@ -5630,10 +5697,15 @@ fn write_artifacts(
             ))
         })
         .unwrap_or_else(|| "interrupt_timings=unavailable".to_owned());
+    let transport_retry_count = evidence
+        .scenarios
+        .iter()
+        .map(|scenario| scenario.transport_retry_count)
+        .sum::<u64>();
     std::fs::write(
         output_dir.join(SUMMARY_FILE),
         format!(
-            "S2 {status}\nF1={} F2={} F3={}\n{timing}\n{detail}\n",
+            "S2 {status}\nF1={} F2={} F3={}\n{timing} transport_retry_count={transport_retry_count}\n{detail}\n",
             report.f1.passed, report.f2.passed, report.f3.passed,
         ),
     )?;

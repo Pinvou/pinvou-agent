@@ -82,6 +82,9 @@ temporary directory is used and printed after a successful run. Useful bounded
 options are `--scenario-timeout-ms` (default 120000) and
 `--global-timeout-ms` (default 600000). `--model` is optional and otherwise
 leaves model/provider selection to the installed Codex configuration.
+The pinned 0.139 response-stream disconnect notification may retry at most five
+times per turn. Retries never extend either deadline, and artifacts retain only
+the numeric retry count rather than the server message.
 
 On Windows, `--trusted-approval-wrapper <absolute-pwsh.exe>` is an explicit
 operator trust decision for the one PowerShell executable that app-server may

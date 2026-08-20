@@ -671,6 +671,43 @@ fn main() {
                         }
                     }
                 }
+                if mode.starts_with("transport-retry-") && turn == 1 {
+                    let mut retry = json!({"method":"error","params":{
+                        "error":{
+                            "message":"fixture transport interruption",
+                            "codexErrorInfo":{"responseStreamDisconnected":{"httpStatusCode":null}},
+                            "additionalDetails":"fixture detail"
+                        },
+                        "willRetry":true,
+                        "threadId":thread_id,
+                        "turnId":turn_id
+                    }});
+                    match mode.as_str() {
+                        "transport-retry-wrong-identity" => {
+                            retry["params"]["threadId"] = json!("wrong-thread");
+                        }
+                        "transport-retry-wrong-status" => {
+                            retry["params"]["error"]["codexErrorInfo"] = json!({
+                                "responseStreamDisconnected":{"httpStatusCode":503}
+                            });
+                        }
+                        "transport-retry-extra-field" => {
+                            retry["params"]["error"]["extra"] = json!(true);
+                        }
+                        _ => {}
+                    }
+                    let copies = if mode == "transport-retry-spam" { 6 } else { 1 };
+                    for _ in 0..copies {
+                        send(retry.clone());
+                    }
+                    if mode == "transport-retry-fatal" {
+                        retry["params"]["willRetry"] = json!(false);
+                        send(retry);
+                    }
+                    if mode != "transport-retry-success" {
+                        continue;
+                    }
+                }
                 let agent_only_violation = match mode.as_str() {
                     "agent-tool-command" => Some(
                         json!({"method":"item/started","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id,"item":{"type":"commandExecution"}}}),

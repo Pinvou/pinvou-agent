@@ -19,6 +19,8 @@ pub struct ScenarioEvidence {
     pub r1_sufficient: bool,
     pub approval_seen: bool,
     pub interrupt_response_seen: bool,
+    #[serde(default)]
+    pub transport_retry_count: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
