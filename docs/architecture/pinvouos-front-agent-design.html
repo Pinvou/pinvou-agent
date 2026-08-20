@@ -1334,7 +1334,7 @@
       </div>
       <div class="role-subgrid">
         <div class="mini-node"><strong>Orchestrator</strong><span>复杂任务的后台顾问/执行单元，不直接对用户说话。</span></div>
-        <div class="mini-node"><strong>System Agents</strong><span>Resource、Connectivity、Policy 等可直接写事实或触发 Kernel。</span></div>
+        <div class="mini-node"><strong>System Agents</strong><span>Resource、Connectivity 等写入受信事实；控制只能由 Kernel 决策并经 Host 执行。</span></div>
         <div class="mini-node"><strong>Host Renderer</strong><span>控制组件、样式、布局、动效、触控、降级和最终像素。</span></div>
       </div>
 
@@ -1516,7 +1516,7 @@
           <div class="timeline">
             <div class="timeline-item"><div class="timeline-dot">1</div><div class="timeline-body"><h4>Front 识别复杂任务</h4><p>路由判断来自系统 Prompt，不是确定性分类器。</p></div></div>
             <div class="timeline-item"><div class="timeline-dot">2</div><div class="timeline-body"><h4>调用通用 agent tool</h4><p>happy-path 使用 <code>profile="pinvou-orchestrator"</code>，但内核未 pin profile，也未限制同批只能一个 agent 调用。</p></div></div>
-            <div class="timeline-item"><div class="timeline-dot">3</div><div class="timeline-body"><h4>CodeWhale 后台子 Agent 执行</h4><p>这是兼容层的 subagent，不是 Runtime Mission Agent，Governor 不能按 Mission pause / stop。</p></div></div>
+            <div class="timeline-item"><div class="timeline-dot">3</div><div class="timeline-body"><h4>CodeWhale 后台子 Agent 执行</h4><p>这是兼容层的 subagent，不是 Runtime Mission Agent，Governor 当前不能按 Mission pause / stop。目标态应先把它登记为 opaque HostWork，再由窄 Adapter 执行；不得靠 PID 或进程名猜测。</p></div></div>
             <div class="timeline-item"><div class="timeline-dot">4</div><div class="timeline-body"><h4>Front 回收结果并最终回答</h4><p>子 Agent 不直接对用户说话；回执格式和证据完整性目前主要靠 Prompt。</p></div></div>
           </div>
         </div>
@@ -1555,7 +1555,7 @@
           <tbody>
             <tr><td>Front Interrupt 路由</td><td>用户说“停下、取消、换目标”时选择业务处理路径</td><td><span class="status prompt">主要是 Prompt</span></td><td>Front 识别，执行仍依赖底层能力</td></tr>
             <tr><td>AG-UI interrupt outcome</td><td>本交互因等待输入/审批结束；新 run 用 interruptId 精确恢复</td><td><span class="status partial">语义内核首切片</span></td><td>InteractionRun 状态机</td></tr>
-            <tr><td>Runtime Directive</td><td>Kernel 对 Agent 执行 Pause / Stop / Resume</td><td><span class="status partial">系统路径已有</span></td><td>Runtime / Kernel，不是 Front</td></tr>
+            <tr><td>Runtime Directive</td><td>Kernel 对已注册工作签发 Pause / Stop / Resume</td><td><span class="status partial">账本骨架有；生产 Adapter 为 0</span></td><td>Runtime 签意图，受信 Host 执行；不是 Front</td></tr>
           </tbody>
         </table>
       </div>
@@ -1770,7 +1770,7 @@
             <tr><td>Runtime Ledger</td><td>身份、Mission、Run、Interaction、Agent、资源等事实</td><td>读取并解释事实</td><td>不能把投影当第二真相源</td><td><span class="status partial">trace + 只读投影</span></td></tr>
             <tr><td>Policy / Kernel</td><td>Allow / Deny / RequireConfirmation 与强制结果</td><td>提出 Action Intent、解释结果</td><td>不能替用户确认，不能覆盖硬拒绝</td><td><span class="status off">统一 gate 未接</span></td></tr>
             <tr><td>Memory Agent</td><td>经证据筛选的稳定上下文</td><td>在回答与计划中使用上下文</td><td>不能把任务进度写进长期记忆</td><td><span class="status off">Front consumer 未接</span></td></tr>
-            <tr><td>System Agents</td><td>资源、连接、推理、设备、界面感知等事实和风险</td><td>面向用户解释与建议</td><td>不能阻断它们经 Ledger / Kernel 的系统路径</td><td><span class="status partial">多为投影或算法</span></td></tr>
+            <tr><td>System Agents</td><td>资源、连接、推理、设备、界面感知等事实和风险</td><td>面向用户解释与建议</td><td>不能把压力 Claim 当作已执行控制，也不能指定 PID、unit、命令或绕过 Kernel / Host</td><td><span class="status partial">Resource 只读；生产控制为 0</span></td></tr>
             <tr><td>Host Renderer</td><td>组件能力、动作回执、本地交互事件</td><td>声明普通用户态呈现意图</td><td>不能控制最终像素、焦点和系统确认层</td><td><span class="status partial">只读投影已渲染</span></td></tr>
           </tbody>
         </table>
@@ -1852,7 +1852,7 @@
 
       <div class="grid-2">
         <article class="example"><div class="example-input"><small>用户</small><p>“解释一下这段架构文档。”</p></div><div class="example-output"><span class="status live">Direct</span><p style="margin-top:14px">无需启动 Orchestrator；Front 直接读取、解释并给结论。若用工具，仍受三轮预算。</p></div></article>
-        <article class="example"><div class="example-input"><small>用户</small><p>“MegaBook 现在热不热？”</p></div><div class="example-output"><span class="status live">Direct + 只读状态</span><p style="margin-top:14px">Front 可读取 Runtime / Resource 投影后回答；不会凭一个 Running 徽标夸大设备能力。</p></div></article>
+        <article class="example"><div class="example-input"><small>用户</small><p>“MegaBook 现在热不热？”</p></div><div class="example-output"><span class="status live">Direct + 只读状态</span><p style="margin-top:14px">Front 可读取 Runtime / Resource 投影后回答；不会凭一个 Running 徽标夸大设备能力，也不会把 Critical Claim 说成“已经停掉后台”。</p></div></article>
         <article class="example"><div class="example-input"><small>用户</small><p>“把这个模块重构、部署，再做白盒和黑盒验证。”</p></div><div class="example-output"><span class="status partial">Orchestrate</span><p style="margin-top:14px">按 Prompt 契约应进入、happy-path 会进入 CodeWhale 子 Agent；目标态应建立 Runtime Mission、Work Graph、回执和验证终态。</p></div></article>
         <article class="example"><div class="example-input"><small>用户</small><p>“先停，部署范围改成只动前端。”</p></div><div class="example-output"><span class="status partial">边界 FIFO</span><p style="margin-top:14px">输入可见排队并在当前 turn 结束后处理；它不会中途注入当前工具批次。真正的即时 cancel / steering 与耐久恢复仍需 AG-UI 接线。</p></div></article>
         <article class="example span-2"><div class="example-input"><small>用户</small><p>“把整个屏幕整理成这项工作的操作台。”</p></div><div class="example-output"><span class="status target">front/* Canvas</span><p style="margin-top:14px">目标不是让 Front 输出任意 HTML，而是声明 Mission、产物、风险、等待决定等语义块；Host 用统一设计系统渲染，并由 Policy / Kernel 保护 Action。</p></div></article>
@@ -1878,6 +1878,7 @@
       </div>
       <div class="sources">
         <a class="source" href="README.md"><strong>PinvouOS 架构权威索引</strong><span>跨文档不变量、当前实现边界与裁决顺序。</span></a>
+        <a class="source" href="../adr/0009-PinvouOS-资源治理与Host-Supervisor.md"><strong>ADR-0009 · 资源治理与 Host Supervisor</strong><span>Resource 只观察、Governor 只签 Directive、HostWork 注册边界与受信执行者的唯一权威。</span></a>
         <div class="source"><strong>Front / VoiceShell / ToolStore / Artifact 实现</strong><span>Front 工具面、首页 early return、旧 QR 事件卡，以及 ArtifactCard → Host ArtifactBrowser 的统一静态预览边界。</span></div>
         <div class="source"><strong>src/shared/markdown-renderer.js · VoiceShell · Chromium 安全探针</strong><span>当前净化仍允许 fixed style、dialog、form/input、远程图片与直接链接；尚缺覆盖这五类 payload 的持久回归 fixture。</span></div>
         <div class="source"><strong>CodeWhale Engine · 2f1f851e</strong><span>Direct 三轮 hard admission、BoundaryOnly 独立回流、typed provenance 与两阶段 completion barrier。</span></div>

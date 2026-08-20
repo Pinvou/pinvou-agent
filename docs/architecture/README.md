@@ -1,6 +1,6 @@
 # PinvouOS 架构权威索引
 
-状态：2026-08-20 已冻结 Front 插话、后台回流边界与长流内存修复；2026-08-18 的交互平面首阶段已在 MegaBook 完成白盒与黑盒验收，本次 checkpoint 仍需以 x86_64 release canary 单独部署验收。
+状态：2026-08-20 已冻结 Front 插话、后台回流边界与长流内存修复；资源治理与 Host Supervisor 决策已刷新但尚未实施。2026-08-18 的交互平面首阶段已在 MegaBook 完成白盒与黑盒验收，本次 checkpoint 仍需以 x86_64 release canary 单独部署验收。
 
 这份索引不替代各专题文档，只规定它们分别对什么负责，以及发生冲突时按什么顺序裁决。
 
@@ -9,6 +9,7 @@
 | 范围 | 唯一权威 | 说明 |
 |---|---|---|
 | 无 Session、Identity、Mission、Runtime Run、Event Ledger | [ADR-0007](../adr/0007-PinvouOS-无Session连续运行时.md) | 产品与运行时领域模型 |
+| Resource Agent、Governor、HostWork、Linux Supervisor、cgroup 与停止/恢复权限 | [ADR-0009](../adr/0009-PinvouOS-资源治理与Host-Supervisor.md) | 资源治理和主机控制唯一权威；ADR-0007 保留历史顶层原则 |
 | 长期记忆语义、证据门槛、当前实现状态 | [Memory ADR](../adr/0008-PinvouOS-Memory-Agent-整理内核.md) + [Memory HTML](pinvouos-memory-architecture.html) | Memory ADR 负责硬约束，HTML 负责可视化与状态 |
 | 常驻系统角色、调用拓扑、中断权限、同步/异步关系 | [Multi-Agent HTML](pinvouos-multi-agent-collaboration.html) | 描述本地工作树；不代表 MegaBook 已部署版本 |
 | Front / 交互 Agent 的能力、四路由、工具硬边界、当前与目标态 | [Front Agent HTML](pinvouos-front-agent-design.html) | 以代码 checkpoint 为基线，明确区分已运行、部分接通、Prompt 协议和目标态 |
@@ -29,6 +30,7 @@
 8. A2UI Surface 写权分区：`projection/*` 只归 Runtime Projector，`front/*` 只归 Front，`system/*` 只归 Kernel/Host。界面感知 Agent（Screen Observer Agent）只观察窗口与可访问性场景，没有 A2UI 写权。
 9. Memory 不保存任务进度。Runtime Mission/Run Work Graph 保存承诺、进度、阻塞和下一步；Memory 只从可信、已验证结果形成行动经历和教训。
 10. Dynamic Mission Agent 的 `completed` 只是执行自报，不等于 Mission 已验证完成。只有 Runtime 的验证回执能关闭任务成功并成为 Memory 证据。
+11. Resource Agent 只观察并提交 Claim，Governor 只签确定性 Directive；只有受信 Host Adapter / Supervisor 能执行控制。模型、Front、Renderer 和 Resource Agent 都不能提交任意 PID、unit 名、命令或 `systemctl`。当前生产 Control Adapter 数量为零，有资源观测不等于具备停止能力。
 
 ## 标识与生命周期
 
@@ -49,6 +51,7 @@ AG-UI 的 interrupt 不是独立生命周期事件。正确协议是先发送恢
 - Memory Runtime 核心已接统一账本：细粒度 decision/checkpoint/replay、单写保护、结构热索引和有界 Top-K 可用；异步 worker、`VerifiedTaskOutcome`、Front Context Compiler、冷归档和 Obsidian 尚未闭环。
 - Front → `pinvou-orchestrator` 的 manager-as-tool happy-path 与三轮 Direct 安全上限已接通；唯一 profile、同批单实例和回执 schema 仍是 Prompt 契约。2026-08-19 工作树另要求 Front 在 handoff 启动回执后结束当前 turn，避免前台轮询后台；这条“尽早释放”仍是 Prompt 契约，不是时钟驱动的 Engine lease。
 - 界面感知 Agent、Device、Policy 仍处于 Starting；Policy 算法存在，但 AuthorityStore 与所有副作用工具的统一执行闸门未接。
+- Resource Agent 已每 5 秒采样全机 CPU、内存、GPU、温度与功耗，压力变化或 30 秒心跳时入账；Governor 的 Mission Agent Directive 与 ACK/重放骨架存在，但生产没有注册任何 Control Adapter，CodeWhale 子 Agent、WebKit、PinvouOS 常驻后台和 Linux 工作均不能被它停止。当前 Linux 部署也没有独立 Supervisor 或 app cgroup 的 `MemoryHigh / MemoryMax / OOMPolicy`。目标边界由 ADR-0009 定义：先注册 opaque `HostWork + generation`，再由独立同 UID Supervisor 只控制固定 descriptor；模型工具继续只读。
 - Mission/Runtime Run 目前只有 Opened/Started 主事件，完整终态、暂停、恢复、取消和结果验证事件仍需补齐。
 - Interaction Plane 首切片已落地：Runtime 账本具有独立 `interaction_run_id`、工具/消息摘要、唯一终态、interrupt 与精确 resume；VoiceShell 消费只读 `projection/*` A2UI v0.9 ordered delta，并显示受信 user-input / artifact 卡。
 - 2026-08-20 checkpoint 在普通 `chat:*` 边界增加了插话 FIFO 与 turn-scoped completion lease：busy 时本机语音与兼容/远端文字入口仍可提交，排队项可见且可撤销；同一 Host holder 从首个 admission 保留到最后一个 FIFO turn 的 terminal，随后才 Release。每个 holder 只在 Engine idle 时计算 30 秒遗弃窗口；active turn 本身不发无意义心跳，只有 barrier admission pending 或 Engine/UI idle 且仍有队列时才续自己的 holder。这只是页面崩溃后的 fail-open 回收，不是任务 SLA，也不会让一个存活 Host 延长另一个已崩 Host。Web RPC timeout / outcome-unknown 使用同一 request id 并把队首停在 `uncertain`，只接受精确权威 user/terminal 事件或用户取消，绝不自动换 id 重发。麦克风的请求权限、录音、转写都保持可取消/停止；采集期间后台 summary 与 artifact 不抢占显示。队列与 holder 都是 Renderer/Engine 易失协调状态，不写 Runtime Ledger；VoiceShell 当前仍没有本机文字输入框，scheduled / code / host-managed 与旧 plan-accept / edit 路径不使用这条 Front lease。
@@ -69,4 +72,4 @@ AG-UI 的 interrupt 不是独立生命周期事件。正确协议是先发送恢
 6. 显示面的第一条互动纵切采用 Host 原生 `system/auth/*` AuthChallenge，复用现有 Connector QR 原语；Front 只传 opaque `providerCapabilityId` 与有界 `purpose`，不传 URL、二维码、flow type 或凭据。
 7. 富 HTML 分成静态 ArtifactPreview 与沙箱 AppSurface 两条路；Front 只能引用 opaque `artifactId` / `appViewRef`，不得直接提交 HTML、CSS、JS、src 或 iframe 权限。
 
-更新任一跨文档不变量时，必须同时检查四份 HTML、两份 ADR、相关代码测试和该索引；不得只改一张图。
+更新任一跨文档不变量时，必须同时检查四份 HTML、三份 ADR、相关代码测试和该索引；不得只改一张图。

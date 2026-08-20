@@ -29,3 +29,11 @@ Rust 后端按“功能优先、平台适配次之”组织：
 工具门控通过 `EngineToolFactory` / `ToolPolicy` 注入，Tauri 事件通过 `AppEventBus`
 转发，远控附件 staging 通过 `AttachmentStager` 注入。资源 bundle、连接器可见性协调和
 路径安全策略属于跨功能基础设施，统一位于 `platform/`。
+
+资源治理沿用同一组合根纪律。未来 `HostWorkRegistry`、各 feature 的窄控制 Adapter 与
+Linux Supervisor client 必须由 `lib.rs/app` 注入；`assistant`、`scheduled`、`knowledge`
+或 `connector` feature 不得为控制彼此而新增依赖。跨边界只传 opaque
+`work_id + generation + directive_id` 和封闭动作枚举，PID、systemd unit、cgroup 路径与
+命令只保留在受信 Adapter 内部。模型、Renderer、Web、MCP 和普通命令面不得注册任意
+HostWork 或传入 OS 标识。当前生产尚未装配 Resource Control Adapter；完整决策见
+[`ADR-0009`](../../../docs/adr/0009-PinvouOS-资源治理与Host-Supervisor.md)。

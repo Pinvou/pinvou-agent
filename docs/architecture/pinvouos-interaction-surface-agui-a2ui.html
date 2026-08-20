@@ -1194,7 +1194,7 @@
             <div class="fact"><b>隐藏 Session 仍在执行链</b><span>用户看不到 Session，但 CodeWhale 仍通过兼容 Session 承载消息、工具和 artifact。</span></div>
             <div class="fact"><b>交互生命周期已进入 Runtime</b><span>Engine adapter 写入独立 interaction run、工具摘要、消息摘要与唯一终态；回答正文仍由 chat 兼容流承载。</span></div>
             <div class="fact"><b>projection/* 已进入同一画布</b><span>Runtime sequence 确定性生成 A2UI v0.9 数据增量；VoiceShell 由宿主 Catalog 渲染身份、交互态与运行健康。</span></div>
-            <div class="fact risk"><b>Mission 闭环尚未出现</b><span>账本只观察到启动、身份、Agent 注册和资源事件，尚无可见 Mission / Run / tool / artifact 闭环。</span></div>
+            <div class="fact risk"><b>Mission 闭环尚未出现</b><span>账本只观察到启动、身份、Agent 注册和资源事件，尚无可见 Mission / Run / tool / artifact 闭环。资源事件是观测证据，不代表 Resource Agent 已能停止工作。</span></div>
           </div>
           <div class="audit-note"><b>2026-08-18 实机验收：</b>使用固定 known-host 校验部署组合切片；MegaBook 本机 Rust 142 项、A2UI 5 项、三语、Web 事件契约、UI build 与架构守卫通过。新进程自 sequence 2648 起只写 schema v4；真实 WebView 可访问性树确认交互画布、语音入口、artifact 与 Agent Runtime，后台视觉黑盒确认有序 delta 更新并拒绝旧 sequence。</div>
         </div>
@@ -1212,6 +1212,7 @@
             <div class="fact"><b>后台完成独立回流</b><span>Front 专用 BoundaryOnly 策略不把子 Agent 完成结果注入活跃用户 turn；回流另开 typed SubAgentHandoff turn，但仍不是 Runtime Mission receipt。</span></div>
             <div class="fact"><b>Memory Runtime 核心已随 Runtime 部署</b><span>MemoryOrganizer 在同一账本维护 decision / checkpoint / replay 和结构 Top-K；异步 worker、VerifiedTaskOutcome 与 Front Context Compiler 仍待接。</span></div>
             <div class="fact risk"><b>Mission 生命周期不完整</b><span>Runtime 有 Mission / Run 结构和 Opened / Started 事件，但缺少完成、暂停、恢复、取消等完整事件闭环。</span></div>
+            <div class="fact risk"><b>资源控制尚未接通</b><span>Resource Agent 已写入只读投影，Governor 也有 Directive / Ack 骨架，但生产 Control Adapter 数量为 0；当前不能停止 CodeWhale、PinvouOS/WebKit 或 Linux 后台工作，也没有独立 Supervisor / app cgroup 硬上限。目标边界见 ADR-0009。</span></div>
             <div class="fact risk"><b>“存在”不等于“可调用”</b><span>open/register/report/ack 命令函数已写出，但当前 invoke handler 只暴露 snapshot、explain、list events。</span></div>
             <div class="fact"><b>AG-UI 生命周期语义已落第一层</b><span>独立 scope/run、工具进度、exactly-one terminal、interrupt 与精确 resume 已入统一账本；标准 AG-UI wire envelope 尚未输出。</span></div>
             <div class="fact"><b>A2UI 投影使用 ordered delta</b><span>projection/* 已按 basis Runtime sequence 增量更新；旧 AgentDock 仍在 pinvou-os:event 后重拉完整 snapshot。</span></div>
@@ -1618,6 +1619,7 @@
             <a class="source-link source-path" href="./README.md">docs/architecture/README.md · 跨文档权威索引与共同不变量</a>
             <a class="source-link source-path" href="./pinvouos-multi-agent-collaboration.html">docs/architecture/pinvouos-multi-agent-collaboration.html · Agent topology truth</a>
             <a class="source-link source-path" href="./pinvouos-memory-architecture.html">docs/architecture/pinvouos-memory-architecture.html · Memory plane truth</a>
+            <a class="source-link source-path" href="../adr/0009-PinvouOS-资源治理与Host-Supervisor.md">docs/adr/0009 · Resource / HostWork / Supervisor control truth</a>
             <span class="source-link source-path">AIOS UI Agent卡片协议设计.md · 内部设计输入</span>
             <span class="source-link source-path">Obsidian / PinvouOS AgentOS 产品主张 · 产品原则</span>
             <span class="source-link source-path">pinvou3-app/src/features/pinvou_os/PinvouOsVoiceShell.jsx · 当前显示边界</span>
