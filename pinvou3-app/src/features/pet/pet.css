@@ -685,6 +685,8 @@ html.pet-window #root {
   font: 12px/1 system-ui, "Microsoft YaHei UI", sans-serif;
   white-space: nowrap;
   cursor: default;
+  /* 手写前缀:构建只降语法不补 -webkit-,Safari 14-17 靠前缀渲染毛玻璃 */
+  -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
 }
 

@@ -168,7 +168,8 @@ function buildDesignRuntimeScript() {
     function makeHandleLayer() {
       var layer = document.createElement('div');
       layer.setAttribute('data-pinvou-design-handles', 'true');
-      layer.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;display:none';
+      // 不用 inset 简写:字符串原样进产物,Safari 14.0 不识别简写,句柄层会失去全屏铺底。
+      layer.style.cssText = 'position:fixed;top:0;right:0;bottom:0;left:0;z-index:2147483647;pointer-events:none;display:none';
       document.documentElement.appendChild(layer);
       return layer;
     }

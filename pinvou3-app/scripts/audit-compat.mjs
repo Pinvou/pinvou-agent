@@ -199,7 +199,10 @@ function auditSource(label, code, { sourceType = 'module', isPolyfillScript = fa
     return null;
   };
   walk(ast, (node) => {
-    if (suppressed.has(lineOfOffset(code, node.start).line)) return;
+    // Minified dist chunks carry no safari14-ok comments, so an empty marker
+    // set skips the per-node line lookup — quadratic on multi-MB chunks and
+    // the audit's dominant cost (minutes) without this guard.
+    if (suppressed.size > 0 && suppressed.has(lineOfOffset(code, node.start).line)) return;
     if (node.type === 'Literal' && node.regex) {
       const { pattern, flags } = node.regex;
       if (/\(\?<[=!]/.test(pattern)) {
@@ -307,7 +310,11 @@ export function runAudit({ distDir = distRoot } = {}) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const violations = runAudit();
   if (!existsSync(join(distRoot, 'assets'))) {
-    console.error('audit-compat: dist/assets not found — run `npm run build:ui` first (static scripts were still audited)');
+    // Fail closed: the dist layer is the one that catches a marked@16-style
+    // parse-time regression, so silently green-lighting without it would
+    // defeat the gate. The static/inline layers were still audited above.
+    console.error('audit-compat: dist/assets not found — run `npm run build:ui` first');
+    process.exitCode = 1;
   }
   if (violations.length) {
     console.error(`audit-compat: ${violations.length} violation(s) against the Safari 14 baseline:`);
