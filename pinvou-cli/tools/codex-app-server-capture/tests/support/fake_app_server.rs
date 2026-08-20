@@ -331,6 +331,64 @@ fn main() {
                     if mode == "agent-thread-duplicate" {
                         send(notification);
                     }
+                    let startup = |name: &str, status: &str, error: Value| {
+                        json!({"method":"mcpServer/startupStatus/updated","params":{
+                            "threadId":thread_id,"name":name,"status":status,"error":error
+                        }})
+                    };
+                    match mode.as_str() {
+                        "mcp-startup-extra" => {
+                            let mut frame = startup("server", "starting", Value::Null);
+                            frame["params"]["extra"] = json!(true);
+                            send(frame);
+                        }
+                        "mcp-startup-null-thread" => {
+                            let mut frame = startup("server", "starting", Value::Null);
+                            frame["params"]["threadId"] = Value::Null;
+                            send(frame);
+                        }
+                        "mcp-startup-wrong-thread" => {
+                            let mut frame = startup("server", "starting", Value::Null);
+                            frame["params"]["threadId"] = json!("wrong-thread");
+                            send(frame);
+                        }
+                        "mcp-startup-empty-name" => send(startup("", "starting", Value::Null)),
+                        "mcp-startup-status" => send(startup("server", "future", Value::Null)),
+                        "mcp-startup-starting-error" => {
+                            send(startup("server", "starting", json!("unexpected")))
+                        }
+                        "mcp-startup-ready-error" => {
+                            send(startup("server", "ready", json!("unexpected")))
+                        }
+                        "mcp-startup-failed-null" => send(startup("server", "failed", Value::Null)),
+                        "mcp-startup-terminal-first" => {
+                            send(startup("server", "ready", Value::Null))
+                        }
+                        "mcp-startup-duplicate-start" => {
+                            send(startup("server", "starting", Value::Null));
+                            send(startup("server", "starting", Value::Null));
+                        }
+                        "mcp-startup-duplicate-terminal" => {
+                            send(startup("server", "starting", Value::Null));
+                            send(startup("server", "ready", Value::Null));
+                            send(startup("server", "ready", Value::Null));
+                        }
+                        "mcp-startup-conflicting-terminal" => {
+                            send(startup("server", "starting", Value::Null));
+                            send(startup("server", "ready", Value::Null));
+                            send(startup("server", "failed", json!("conflicting failure")));
+                        }
+                        _ => {
+                            send(startup("fixture-ready", "starting", Value::Null));
+                            send(startup("fixture-ready", "ready", Value::Null));
+                            send(startup("fixture-failed", "starting", Value::Null));
+                            send(startup(
+                                "fixture-failed",
+                                "failed",
+                                json!("fixture failure"),
+                            ));
+                        }
+                    }
                 }
             }
             Some("thread/resume") => {

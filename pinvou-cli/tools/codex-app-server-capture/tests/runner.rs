@@ -90,6 +90,9 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
     assert!(capture.contains(r#"\"method\":\"thread/started\""#));
     assert!(capture.contains(r#"\"type\":\"userMessage\""#));
     assert!(capture.contains(r#"\"method\":\"rawResponseItem/completed\""#));
+    assert!(capture.contains(r#"\"method\":\"mcpServer/startupStatus/updated\""#));
+    assert!(capture.contains(r#"\"status\":\"ready\""#));
+    assert!(capture.contains(r#"\"status\":\"failed\""#));
     assert!(capture.contains(r#"\"phase\":\"final_answer\""#));
     assert!(capture.contains(r#"\"phase\":null"#));
     let sanitized = format!(
@@ -227,6 +230,64 @@ fn agent_only_lifecycle_is_stateful_and_rejects_malformed_or_tool_raw_items() {
             capture.contains(&format!(r#"\"method\":\"{expected_method}\""#)),
             "{mode} capture lacked the offending {expected_method} frame"
         );
+        std::fs::remove_dir_all(output).unwrap();
+    }
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn mcp_startup_status_wiring_rejects_bad_shape_identity_error_and_transitions() {
+    for mode in [
+        "mcp-startup-extra",
+        "mcp-startup-null-thread",
+        "mcp-startup-wrong-thread",
+        "mcp-startup-empty-name",
+        "mcp-startup-status",
+        "mcp-startup-starting-error",
+        "mcp-startup-ready-error",
+        "mcp-startup-failed-null",
+        "mcp-startup-terminal-first",
+        "mcp-startup-duplicate-start",
+        "mcp-startup-duplicate-terminal",
+        "mcp-startup-conflicting-terminal",
+    ] {
+        let output = temp_output(mode);
+        let result = run_s2_for_test(S2RunConfig {
+            output_dir: Some(output.clone()),
+            executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+            trusted_approval_wrapper: None,
+            model: None,
+            scenario_timeout: Duration::from_secs(10),
+            global_timeout: Duration::from_secs(60),
+            test_child_env: vec![(OsString::from("S2_FAKE_MODE"), OsString::from(mode))],
+        });
+        let error = format!(
+            "{:#}",
+            result.expect_err("bad MCP status unexpectedly passed")
+        );
+        let expected = match mode {
+            "mcp-startup-wrong-thread" => {
+                "MCP startup status had mismatched thread identity or order"
+            }
+            "mcp-startup-terminal-first"
+            | "mcp-startup-duplicate-start"
+            | "mcp-startup-duplicate-terminal"
+            | "mcp-startup-conflicting-terminal" => "invalid MCP startup status transition",
+            _ => "malformed MCP startup status notification",
+        };
+        assert!(
+            error.contains(expected),
+            "{mode} did not execute target rejection {expected}: {error}"
+        );
+        let evidence: Value =
+            serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
+        assert!(
+            evidence["protocol_errors"]
+                .as_u64()
+                .is_some_and(|count| count > 0)
+        );
+        let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+        assert!(capture.contains(r#"\"method\":\"mcpServer/startupStatus/updated\""#));
         std::fs::remove_dir_all(output).unwrap();
     }
 }

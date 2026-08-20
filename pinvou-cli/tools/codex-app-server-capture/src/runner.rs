@@ -1632,6 +1632,7 @@ struct AgentOnlyState<'a> {
     user_raw_seen: bool,
     user_item_id: Option<String>,
     user_completed: bool,
+    mcp_startup: HashMap<String, PinnedMcpStartupProgress>,
     items: HashMap<String, AgentItemState>,
     expected_raw_order: VecDeque<String>,
     raw_items: Vec<Value>,
@@ -1642,6 +1643,12 @@ enum AgentItemKind {
     AgentMessage,
     Reasoning,
     Plan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PinnedMcpStartupProgress {
+    Starting,
+    Terminal,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1662,6 +1669,7 @@ impl<'a> AgentOnlyState<'a> {
             user_raw_seen: false,
             user_item_id: None,
             user_completed: false,
+            mcp_startup: HashMap::new(),
             items: HashMap::new(),
             expected_raw_order: VecDeque::new(),
             raw_items: Vec::new(),
@@ -1702,6 +1710,60 @@ impl<'a> AgentOnlyState<'a> {
                     bail!("protocol error: duplicate or out-of-order turn/started");
                 }
                 self.turn_started = true;
+            }
+            "mcpServer/startupStatus/updated" => {
+                let params = frame
+                    .get("params")
+                    .and_then(Value::as_object)
+                    .context("protocol error: malformed MCP startup status notification")?;
+                if params.len() != 4
+                    || ["threadId", "name", "status", "error"]
+                        .iter()
+                        .any(|field| !params.contains_key(*field))
+                {
+                    bail!("protocol error: malformed MCP startup status notification");
+                }
+                let status = serde_json::from_value::<PinnedMcpStartupStatusParams>(Value::Object(
+                    params.clone(),
+                ))
+                .context("protocol error: malformed MCP startup status notification")?;
+                if status.name.is_empty()
+                    || match status.status {
+                        PinnedMcpStartupStatus::Failed => {
+                            status.error.as_deref().is_none_or(str::is_empty)
+                        }
+                        _ => status.error.is_some(),
+                    }
+                {
+                    bail!("protocol error: malformed MCP startup status notification");
+                }
+                if !self.thread_started || self.turn_started || status.thread_id != thread_id {
+                    bail!(
+                        "protocol error: MCP startup status had mismatched thread identity or order"
+                    );
+                }
+                match status.status {
+                    PinnedMcpStartupStatus::Starting => match self.mcp_startup.entry(status.name) {
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(PinnedMcpStartupProgress::Starting);
+                        }
+                        std::collections::hash_map::Entry::Occupied(_) => {
+                            bail!("protocol error: invalid MCP startup status transition");
+                        }
+                    },
+                    PinnedMcpStartupStatus::Ready
+                    | PinnedMcpStartupStatus::Failed
+                    | PinnedMcpStartupStatus::Cancelled => {
+                        let progress = self
+                            .mcp_startup
+                            .get_mut(&status.name)
+                            .context("protocol error: invalid MCP startup status transition")?;
+                        if *progress != PinnedMcpStartupProgress::Starting {
+                            bail!("protocol error: invalid MCP startup status transition");
+                        }
+                        *progress = PinnedMcpStartupProgress::Terminal;
+                    }
+                }
             }
             "turn/completed" | "turn/plan/updated" => {
                 if !exact_thread || !exact_turn || !self.turn_started || !self.user_completed {
@@ -1952,6 +2014,24 @@ struct PinnedThread {
     git_info: Option<PinnedGitInfo>,
     name: Option<String>,
     turns: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PinnedMcpStartupStatusParams {
+    thread_id: String,
+    name: String,
+    status: PinnedMcpStartupStatus,
+    error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+enum PinnedMcpStartupStatus {
+    Starting,
+    Ready,
+    Failed,
+    Cancelled,
 }
 
 #[derive(Deserialize)]
@@ -3503,6 +3583,131 @@ mod tests {
             error.to_string(),
             "protocol error: malformed, duplicate, or out-of-order thread/started"
         );
+    }
+
+    #[test]
+    fn mcp_startup_status_is_strictly_typed_and_stateful_before_turn_start() {
+        let workspace = std::env::temp_dir().canonicalize().unwrap();
+        let mut state = super::AgentOnlyState::new("prompt", &workspace);
+        state
+            .validate(&pinned_thread_frame(&workspace), "t", "u")
+            .unwrap();
+        for frame in [
+            json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"t","name":"ready-server","status":"starting","error":null}}),
+            json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"t","name":"ready-server","status":"ready","error":null}}),
+            json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"t","name":"failed-server","status":"starting","error":null}}),
+            json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"t","name":"failed-server","status":"failed","error":"fixture failure"}}),
+            json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"t","name":"still-starting","status":"starting","error":null}}),
+        ] {
+            state.validate(&frame, "t", "u").unwrap();
+        }
+        assert!(!state.turn_started);
+        state
+            .validate(
+                &json!({"method":"turn/started","params":{"threadId":"t","turn":{"id":"u","status":"inProgress"}}}),
+                "t",
+                "u",
+            )
+            .unwrap();
+        let late = json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"t","name":"late","status":"starting","error":null}});
+        let error = state.validate(&late, "t", "u").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "protocol error: MCP startup status had mismatched thread identity or order"
+        );
+        let mut before_thread = super::AgentOnlyState::new("prompt", &workspace);
+        let error = before_thread.validate(&late, "t", "u").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "protocol error: MCP startup status had mismatched thread identity or order"
+        );
+
+        let malformed = [
+            json!({"threadId":null,"name":"server","status":"starting","error":null}),
+            json!({"threadId":"t","name":"","status":"starting","error":null}),
+            json!({"threadId":"t","name":"server","status":"future","error":null}),
+            json!({"threadId":"t","name":"server","status":"starting"}),
+            json!({"threadId":"t","name":"server","status":"starting","error":null,"extra":true}),
+            json!({"threadId":"t","name":"server","status":"starting","error":"unexpected"}),
+            json!({"threadId":"t","name":"server","status":"ready","error":"unexpected"}),
+            json!({"threadId":"t","name":"server","status":"cancelled","error":"unexpected"}),
+            json!({"threadId":"t","name":"server","status":"failed","error":null}),
+            json!({"threadId":"t","name":"server","status":"failed","error":""}),
+        ];
+        for params in malformed {
+            let mut state = super::AgentOnlyState::new("prompt", &workspace);
+            state
+                .validate(&pinned_thread_frame(&workspace), "t", "u")
+                .unwrap();
+            let error = state
+                .validate(
+                    &json!({"method":"mcpServer/startupStatus/updated","params":params}),
+                    "t",
+                    "u",
+                )
+                .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "protocol error: malformed MCP startup status notification"
+            );
+        }
+
+        for params in [
+            json!({"threadId":"wrong","name":"server","status":"starting","error":null}),
+            json!({"threadId":"t","name":"server","status":"ready","error":null}),
+        ] {
+            let mut state = super::AgentOnlyState::new("prompt", &workspace);
+            state
+                .validate(&pinned_thread_frame(&workspace), "t", "u")
+                .unwrap();
+            let error = state
+                .validate(
+                    &json!({"method":"mcpServer/startupStatus/updated","params":params}),
+                    "t",
+                    "u",
+                )
+                .unwrap_err();
+            let expected = if params["threadId"] == "wrong" {
+                "protocol error: MCP startup status had mismatched thread identity or order"
+            } else {
+                "protocol error: invalid MCP startup status transition"
+            };
+            assert_eq!(error.to_string(), expected);
+        }
+
+        for terminal in ["ready", "failed", "cancelled"] {
+            let mut state = super::AgentOnlyState::new("prompt", &workspace);
+            state
+                .validate(&pinned_thread_frame(&workspace), "t", "u")
+                .unwrap();
+            let starting = json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"t","name":"server","status":"starting","error":null}});
+            state.validate(&starting, "t", "u").unwrap();
+            let error = state.validate(&starting, "t", "u").unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "protocol error: invalid MCP startup status transition"
+            );
+            let error = if terminal == "failed" { "failure" } else { "" };
+            let terminal = json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"t","name":"server","status":terminal,"error":if error.is_empty() { serde_json::Value::Null } else { json!(error) }}});
+            state.validate(&terminal, "t", "u").unwrap();
+            let duplicate = state.validate(&terminal, "t", "u").unwrap_err();
+            assert_eq!(
+                duplicate.to_string(),
+                "protocol error: invalid MCP startup status transition"
+            );
+            let (conflicting_status, conflicting_error) =
+                if terminal["params"]["status"] == "failed" {
+                    ("ready", serde_json::Value::Null)
+                } else {
+                    ("failed", json!("conflicting failure"))
+                };
+            let conflicting = json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"t","name":"server","status":conflicting_status,"error":conflicting_error}});
+            let error = state.validate(&conflicting, "t", "u").unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "protocol error: invalid MCP startup status transition"
+            );
+        }
     }
 
     #[test]
