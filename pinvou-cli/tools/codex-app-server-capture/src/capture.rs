@@ -385,10 +385,100 @@ pub(crate) fn create_capture_file(path: &Path) -> Result<File> {
     }
     #[cfg(not(unix))]
     {
-        options
+        let file = options
             .open(path)
-            .with_context(|| format!("failed to create capture {}", path.display()))
+            .with_context(|| format!("failed to create capture {}", path.display()))?;
+        #[cfg(windows)]
+        if let Err(error) = harden_windows_capture_acl(path) {
+            drop(file);
+            let _ = std::fs::remove_file(path);
+            return Err(error)
+                .with_context(|| format!("failed to restrict capture ACL for {}", path.display()));
+        }
+        Ok(file)
     }
+}
+
+#[cfg(windows)]
+fn harden_windows_capture_acl(path: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        EXPLICIT_ACCESS_W, GetNamedSecurityInfoW, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW,
+        SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mut owner: PSID = null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+    // SAFETY: all output pointers are valid and the NUL-terminated path lives through the call.
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        bail!("GetNamedSecurityInfoW failed with {status}");
+    }
+
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: FILE_ALL_ACCESS,
+        grfAccessMode: SET_ACCESS,
+        grfInheritance: 0,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: null_mut(),
+            MultipleTrusteeOperation: 0,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: owner.cast(),
+        },
+    };
+    let mut acl: *mut ACL = null_mut();
+    // SAFETY: `entry` and `acl` are valid for the call; the owner SID is owned by descriptor.
+    let acl_status = unsafe { SetEntriesInAclW(1, &entry, null(), &mut acl) };
+    if acl_status != ERROR_SUCCESS {
+        // SAFETY: descriptor was allocated by GetNamedSecurityInfoW.
+        unsafe { LocalFree(descriptor.cast()) };
+        bail!("SetEntriesInAclW failed with {acl_status}");
+    }
+    // SAFETY: path and ACL are valid; null owner/group/SACL mean those fields are unchanged.
+    let set_status = unsafe {
+        SetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            acl,
+            null(),
+        )
+    };
+    // SAFETY: both allocations are returned by Win32 local-allocation APIs.
+    unsafe {
+        LocalFree(acl.cast());
+        LocalFree(descriptor.cast());
+    }
+    if set_status != ERROR_SUCCESS {
+        bail!("SetNamedSecurityInfoW failed with {set_status}");
+    }
+    Ok(())
 }
 
 fn record_and_send_client_frame<RW, C, SW>(
@@ -462,26 +552,115 @@ where
     }
 
     pub fn record(&mut self, channel: CaptureChannel, line: &str) -> Result<()> {
+        self.record_timestamped(channel, line).map(|_| ())
+    }
+
+    pub fn record_timestamped(&mut self, channel: CaptureChannel, line: &str) -> Result<u64> {
         if line.contains(['\r', '\n']) {
             bail!("capture payload must be a single line");
         }
+        let monotonic_ns = (self.clock)();
         serde_json::to_writer(
             &mut self.writer,
             &CaptureRecord {
-                monotonic_ns: (self.clock)(),
+                monotonic_ns,
                 channel,
                 line: line.to_owned(),
             },
         )?;
         self.writer.write_all(b"\n")?;
         self.writer.flush()?;
-        Ok(())
+        Ok(monotonic_ns)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    fn capture_acl_is_owner_only(path: &Path) -> Result<bool> {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ptr::null_mut;
+        use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+        use windows_sys::Win32::Security::Authorization::{
+            EXPLICIT_ACCESS_W, GRANT_ACCESS, GetExplicitEntriesFromAclW, GetNamedSecurityInfoW,
+            SE_FILE_OBJECT, TRUSTEE_IS_SID,
+        };
+        use windows_sys::Win32::Security::{
+            ACL, DACL_SECURITY_INFORMATION, EqualSid, OWNER_SECURITY_INFORMATION,
+            PSECURITY_DESCRIPTOR, PSID,
+        };
+        use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+        let wide = path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let mut owner: PSID = null_mut();
+        let mut acl: *mut ACL = null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+        // SAFETY: output pointers and NUL-terminated path are valid for the call.
+        let status = unsafe {
+            GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                null_mut(),
+                &mut acl,
+                null_mut(),
+                &mut descriptor,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            bail!("GetNamedSecurityInfoW failed with {status}");
+        }
+        let mut count = 0_u32;
+        let mut entries: *mut EXPLICIT_ACCESS_W = null_mut();
+        // SAFETY: ACL is owned by descriptor and output pointers are valid.
+        let entries_status = unsafe { GetExplicitEntriesFromAclW(acl, &mut count, &mut entries) };
+        let valid = if entries_status == ERROR_SUCCESS && count == 1 && !entries.is_null() {
+            // SAFETY: Win32 returned one initialized entry.
+            let entry = unsafe { &*entries };
+            // SetEntriesInAclW normalizes SET_ACCESS input into an effective
+            // GRANT_ACCESS entry when enumerated back from the resulting ACL.
+            entry.grfAccessMode == GRANT_ACCESS
+                && entry.grfAccessPermissions == FILE_ALL_ACCESS
+                && entry.grfInheritance == 0
+                && entry.Trustee.TrusteeForm == TRUSTEE_IS_SID
+                // SAFETY: both SIDs remain live until descriptor/entries are freed below.
+                && unsafe { EqualSid(owner, entry.Trustee.ptstrName.cast()) } != 0
+        } else {
+            false
+        };
+        // SAFETY: allocations are returned by Win32 local-allocation APIs.
+        unsafe {
+            if !entries.is_null() {
+                LocalFree(entries.cast());
+            }
+            LocalFree(descriptor.cast());
+        }
+        Ok(valid)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn raw_capture_windows_acl_grants_only_the_file_owner() {
+        let path = std::env::temp_dir().join(format!(
+            "codex-capture-acl-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let file = create_capture_file(&path).unwrap();
+        assert!(capture_acl_is_owner_only(&path).unwrap());
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
 
     struct LockCheckingWriter<'a, W, C> {
         recorder: &'a Mutex<JsonlRecorder<W, C>>,

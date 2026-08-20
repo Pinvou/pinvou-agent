@@ -40,7 +40,10 @@ only for ordering and durations within a capture and has no wall-clock meaning.
 Capture files contain raw, unredacted protocol traffic and may include prompts,
 tool arguments, account metadata, or other sensitive values. Store and share
 them accordingly. On Unix the harness creates them with owner-only `0600`
-permissions (and tightens an existing output file before writing).
+permissions (and tightens an existing output file before writing). On Windows
+it immediately replaces inherited permissions with a protected DACL granting
+full access only to the file owner, before any capture bytes are written. ACL
+hardening failure aborts capture and removes the empty file.
 
 The sanitized, zero-cost handshake fixture is
 `tests/fixtures/zero-cost-handshake.jsonl`. It documents line-delimited frames,
@@ -82,10 +85,18 @@ leaves model/provider selection to the installed Codex configuration.
 
 Scenario C creates one inert probe script inside the isolated workspace and
 accepts only an `item/commandExecution/requestApproval` whose command exactly
-matches that script and whose working directory remains inside the workspace.
+matches that script, whose thread/turn IDs match scenario C, and whose working
+directory remains inside the workspace. Exactly one such approval is required.
 Every other server request, command, or target is rejected and invalidates the
-run. Scenario D sends `turn/interrupt` immediately after the first real agent
-message delta. Auth, quota, malformed protocol, timeout, missing approval,
+run. Scenario D sends `turn/interrupt` only after a real backlog of at least
+eight nonempty deltas and 2 KiB, and reports request-write-to-response and
+request-write-to-interrupted-terminal latency.
+
+Production gates require scenario A to span at least 30 seconds with at least
+eight nonempty deltas and 2 KiB, and scenario B to contain at least 32 nonempty
+deltas and 32 KiB. Peak rates, event sizes, and 50 ms merge inputs are computed
+from scenario B alone. These thresholds cannot be lowered through the CLI.
+Auth, quota, malformed protocol, timeout, missing approval,
 missing interrupt response, and terminal-state mismatches all produce sanitized
 INVALID artifacts and a nonzero exit. Account identifiers are never copied into
 evidence, reports, summaries, or stdout; they can exist only in the restricted

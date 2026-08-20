@@ -1,5 +1,9 @@
+use std::ffi::OsString;
 use std::process::Command;
+use std::time::Duration;
 
+use codex_app_server_capture::protocol::{CaptureChannel, CaptureRecord};
+use codex_app_server_capture::runner::{S2RunConfig, run_s2_for_test};
 use serde_json::Value;
 
 fn temp_output(label: &str) -> std::path::PathBuf {
@@ -39,12 +43,15 @@ fn run_fake(
 #[test]
 fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
     let output = temp_output("success");
-    let result = run_fake("success", &output, 2_000);
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    let outcome = run_s2_for_test(S2RunConfig {
+        output_dir: Some(output.clone()),
+        executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        model: None,
+        scenario_timeout: Duration::from_secs(2),
+        global_timeout: Duration::from_secs(10),
+    })
+    .unwrap();
+    assert!(outcome.report.valid);
 
     for name in [
         "capture.jsonl",
@@ -59,6 +66,12 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
     assert_eq!(evidence["scenarios"].as_array().unwrap().len(), 4);
     assert_eq!(evidence["scenarios"][3]["terminal_state"], "interrupted");
     assert_eq!(evidence["performance"]["merge_window_ms"], 50);
+    assert_eq!(evidence["performance"]["event_sizes"]["samples"], 40);
+    assert!(evidence["candidate_percentiles"]["interrupt_response_latency_ms"].is_number());
+    assert!(evidence["candidate_percentiles"]["interrupt_terminal_latency_ms"].is_number());
+    let summary = std::fs::read_to_string(output.join("summary.txt")).unwrap();
+    assert!(summary.contains("interrupt_response_latency_ms="));
+    assert!(summary.contains("interrupt_terminal_latency_ms="));
     let report: Value =
         serde_json::from_slice(&std::fs::read(output.join("validation-report.json")).unwrap())
             .unwrap();
@@ -74,8 +87,27 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
 }
 
 #[test]
+fn production_thresholds_reject_short_a_and_tiny_b() {
+    let output = temp_output("production-thresholds");
+    let result = run_fake("success", &output, 250);
+    assert!(!result.status.success());
+    let evidence: Value =
+        serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
+    assert_eq!(evidence["scenarios"][0]["r1_sufficient"], false);
+    assert_eq!(evidence["scenarios"][1]["r1_sufficient"], false);
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
 fn run_s2_fails_closed_on_auth_and_quota_preflight_without_leaking_account_data() {
-    for (mode, counter) in [("auth", "auth_errors"), ("quota", "quota_errors")] {
+    for (mode, counter) in [
+        ("auth", "auth_errors"),
+        ("quota", "quota_errors"),
+        ("bad-init", "protocol_errors"),
+        ("bad-account", "protocol_errors"),
+        ("bad-limits", "protocol_errors"),
+        ("quota-float", "quota_errors"),
+    ] {
         let output = temp_output(mode);
         let result = run_fake(mode, &output, 1_000);
         assert!(!result.status.success(), "{mode} unexpectedly passed");
@@ -131,6 +163,8 @@ fn run_s2_rejects_unexpected_approval_method_instead_of_auto_approving_it() {
         "unexpected-approval",
         "unexpected-command",
         "outside-approval",
+        "wrong-approval-thread",
+        "wrong-approval-turn",
     ] {
         let output = temp_output(mode);
         let result = run_fake(mode, &output, 1_000);
@@ -140,6 +174,83 @@ fn run_s2_rejects_unexpected_approval_method_instead_of_auto_approving_it() {
         assert!(!capture.contains(r#"\"decision\":\"accept\""#));
         std::fs::remove_dir_all(output).unwrap();
     }
+}
+
+#[test]
+fn interrupt_timings_start_at_the_correlated_request_write() {
+    let output = temp_output("timing");
+    run_s2_for_test(S2RunConfig {
+        output_dir: Some(output.clone()),
+        executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+        model: None,
+        scenario_timeout: Duration::from_secs(2),
+        global_timeout: Duration::from_secs(10),
+    })
+    .unwrap();
+    let records = std::fs::read_to_string(output.join("capture.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<CaptureRecord>(line).unwrap())
+        .collect::<Vec<_>>();
+    let interrupt = records
+        .iter()
+        .enumerate()
+        .find_map(|(index, record)| {
+            let frame: Value = serde_json::from_str(&record.line).ok()?;
+            (record.channel == CaptureChannel::ClientToServer
+                && frame["method"] == "turn/interrupt")
+                .then(|| (index, record.monotonic_ns, frame["id"].clone()))
+        })
+        .unwrap();
+    let d_deltas = records[..interrupt.0]
+        .iter()
+        .filter_map(|record| serde_json::from_str::<Value>(&record.line).ok())
+        .filter(|frame| {
+            frame["method"] == "item/agentMessage/delta"
+                && frame.pointer("/params/threadId") == Some(&Value::String("thread-3".to_owned()))
+        })
+        .collect::<Vec<_>>();
+    assert!(d_deltas.len() >= 2);
+    assert!(
+        d_deltas
+            .iter()
+            .filter_map(|frame| frame.pointer("/params/delta").and_then(Value::as_str))
+            .map(str::len)
+            .sum::<usize>()
+            >= 64
+    );
+    let response_ns = records
+        .iter()
+        .find_map(|record| {
+            let frame: Value = serde_json::from_str(&record.line).ok()?;
+            (record.channel == CaptureChannel::ServerToClient
+                && frame.get("id") == Some(&interrupt.2)
+                && frame.get("method").is_none())
+            .then_some(record.monotonic_ns)
+        })
+        .unwrap();
+    let terminal_ns = records
+        .iter()
+        .find_map(|record| {
+            let frame: Value = serde_json::from_str(&record.line).ok()?;
+            (record.channel == CaptureChannel::ServerToClient
+                && frame["method"] == "turn/completed"
+                && frame.pointer("/params/turn/status")
+                    == Some(&Value::String("interrupted".to_owned())))
+            .then_some(record.monotonic_ns)
+        })
+        .unwrap();
+    let evidence: Value =
+        serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
+    let response_ms = evidence["candidate_percentiles"]["interrupt_response_latency_ms"]
+        .as_f64()
+        .unwrap();
+    let terminal_ms = evidence["candidate_percentiles"]["interrupt_terminal_latency_ms"]
+        .as_f64()
+        .unwrap();
+    assert!((response_ms - (response_ns - interrupt.1) as f64 / 1_000_000.0).abs() < 0.01);
+    assert!((terminal_ms - (terminal_ns - interrupt.1) as f64 / 1_000_000.0).abs() < 0.01);
+    std::fs::remove_dir_all(output).unwrap();
 }
 
 #[test]

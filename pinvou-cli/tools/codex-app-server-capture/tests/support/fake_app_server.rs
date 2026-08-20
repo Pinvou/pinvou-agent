@@ -18,7 +18,13 @@ fn main() {
         match method {
             Some("initialize") => {
                 send(json!({"method":"fixture/noise","params":{}}));
-                send(json!({"id":id,"result":{"serverInfo":{"name":"fake","version":"1"}}}));
+                if mode == "bad-init" {
+                    send(json!({"id":id,"result":{}}));
+                } else {
+                    send(
+                        json!({"id":id,"result":{"codexHome":std::env::current_dir().unwrap(),"platformFamily":if cfg!(windows) {"windows"} else {"unix"},"platformOs":std::env::consts::OS,"userAgent":"fake/0.139"}}),
+                    );
+                }
             }
             Some("initialized") => {}
             Some("account/read") => {
@@ -31,6 +37,8 @@ fn main() {
                     send(json!({"id":id,"result":{"requiresOpenaiAuth":true,"account":null}}));
                 } else if mode == "timeout" {
                     continue;
+                } else if mode == "bad-account" {
+                    send(json!({"id":id,"result":{}}));
                 } else {
                     send(
                         json!({"id":id,"result":{"requiresOpenaiAuth":true,"account":{"type":"chatgpt","email":"private@example.invalid","planType":"pro"}}}),
@@ -38,9 +46,17 @@ fn main() {
                 }
             }
             Some("account/rateLimits/read") => {
-                send(
-                    json!({"id":id,"result":{"rateLimits":{"primary":{"usedPercent":10},"rateLimitReachedType":null}}}),
-                );
+                if mode == "bad-limits" {
+                    send(json!({"id":id,"result":{}}));
+                } else if mode == "quota-float" {
+                    send(
+                        json!({"id":id,"result":{"rateLimits":{"primary":{"usedPercent":100.0},"rateLimitReachedType":null}}}),
+                    );
+                } else {
+                    send(
+                        json!({"id":id,"result":{"rateLimits":{"primary":{"usedPercent":10},"rateLimitReachedType":null}}}),
+                    );
+                }
             }
             Some("thread/start") => {
                 send(json!({"id":id,"result":{"thread":{"id":format!("thread-{turn}")}}}));
@@ -84,8 +100,18 @@ fn main() {
                                 .map(|path| json!(path))
                                 .unwrap_or(Value::Null);
                         }
+                        let approval_thread = if mode == "wrong-approval-thread" {
+                            "wrong-thread".to_owned()
+                        } else {
+                            format!("thread-{}", turn - 1)
+                        };
+                        let approval_turn = if mode == "wrong-approval-turn" {
+                            "wrong-turn".to_owned()
+                        } else {
+                            turn_id.clone()
+                        };
                         send(
-                            json!({"id":900,"method":if mode == "unexpected-approval" {"item/fileChange/requestApproval"} else {"item/commandExecution/requestApproval"},"params":{"threadId":format!("thread-{}", turn - 1),"turnId":turn_id,"itemId":"approval-item","startedAtMs":1,"command":command,"cwd":cwd}}),
+                            json!({"id":900,"method":if mode == "unexpected-approval" {"item/fileChange/requestApproval"} else {"item/commandExecution/requestApproval"},"params":{"threadId":approval_thread,"turnId":approval_turn,"itemId":"approval-item","startedAtMs":1,"command":command,"cwd":cwd}}),
                         );
                         continue;
                     }

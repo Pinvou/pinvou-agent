@@ -38,6 +38,40 @@ pub struct S2RunOutcome {
     pub report: S2Report,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct RunnerThresholds {
+    a_min_span: Duration,
+    a_min_bytes: u64,
+    a_min_events: usize,
+    b_min_bytes: u64,
+    b_min_events: usize,
+    d_min_bytes: u64,
+    d_min_events: usize,
+}
+
+impl RunnerThresholds {
+    const PRODUCTION: Self = Self {
+        a_min_span: Duration::from_secs(30),
+        a_min_bytes: 2 * 1024,
+        a_min_events: 8,
+        b_min_bytes: 32 * 1024,
+        b_min_events: 32,
+        d_min_bytes: 2 * 1024,
+        d_min_events: 8,
+    };
+
+    #[cfg(debug_assertions)]
+    const FAST_TEST: Self = Self {
+        a_min_span: Duration::ZERO,
+        a_min_bytes: 64,
+        a_min_events: 2,
+        b_min_bytes: 64,
+        b_min_events: 2,
+        d_min_bytes: 64,
+        d_min_events: 2,
+    };
+}
+
 #[derive(Clone, Debug)]
 struct ContentEvent {
     timestamp_ns: u64,
@@ -54,6 +88,20 @@ enum Inbound {
 type Recorder = JsonlRecorder<BufWriter<std::fs::File>, Box<dyn FnMut() -> u64 + Send>>;
 
 pub fn run_s2(config: S2RunConfig) -> Result<S2RunOutcome> {
+    run_s2_with_thresholds(config, RunnerThresholds::PRODUCTION)
+}
+
+/// Deterministic debug-build seam for the fake app-server integration tests.
+/// Production/release builds and the CLI cannot lower the real S2 gates.
+#[cfg(debug_assertions)]
+pub fn run_s2_for_test(config: S2RunConfig) -> Result<S2RunOutcome> {
+    run_s2_with_thresholds(config, RunnerThresholds::FAST_TEST)
+}
+
+fn run_s2_with_thresholds(
+    config: S2RunConfig,
+    thresholds: RunnerThresholds,
+) -> Result<S2RunOutcome> {
     let output_dir = match config.output_dir.clone() {
         Some(path) => path,
         None => default_output_dir(),
@@ -75,7 +123,7 @@ pub fn run_s2(config: S2RunConfig) -> Result<S2RunOutcome> {
     })?;
 
     let mut evidence = empty_evidence();
-    let execution = execute(&config, &output_dir, &workspace, &mut evidence);
+    let execution = execute(&config, &output_dir, &workspace, &mut evidence, thresholds);
     if let Err(error) = &execution {
         classify_failure(error, &mut evidence);
     }
@@ -95,6 +143,7 @@ fn execute(
     output_dir: &Path,
     workspace: &Path,
     evidence: &mut S2Evidence,
+    thresholds: RunnerThresholds,
 ) -> Result<()> {
     let clock = Arc::new(HostMonotonicClock::new()?);
     let recorder_clock = Arc::clone(&clock);
@@ -105,40 +154,36 @@ fn execute(
     let mut session = Session::spawn(
         CommandSpec::codex(config.executable.clone()),
         recorder,
-        clock,
         config.global_timeout,
     )?;
 
     let result = (|| {
-        session.request(
+        let initialized = session.request(
             "initialize",
             json!({"clientInfo":{"name":"codex-s2-runner","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}),
             config.scenario_timeout,
         )?;
+        validate_initialize(&initialized)?;
         session.notify("initialized", json!({}))?;
         let account = session.request(
             "account/read",
             json!({"refreshToken":false}),
             config.scenario_timeout,
         )?;
-        if account.pointer("/result/requiresOpenaiAuth") == Some(&Value::Bool(true))
-            && account
-                .pointer("/result/account")
-                .is_none_or(Value::is_null)
-        {
-            bail!("authentication required: account/read returned no account");
-        }
+        validate_account(&account)?;
         let limits = session.request(
             "account/rateLimits/read",
             json!({}),
             config.scenario_timeout,
         )?;
+        validate_rate_limits(&limits)?;
         if quota_exhausted(limits.get("result").unwrap_or(&Value::Null)) {
             bail!("quota exhausted: account rate limit is reached");
         }
 
-        let mut all_content = Vec::new();
-        let mut interrupt_control_latency_ms = None;
+        let mut scenario_b_content = Vec::new();
+        let mut interrupt_response_latency_ms = None;
+        let mut interrupt_terminal_latency_ms = None;
         let approval_command = create_approval_probe(workspace)?;
         for name in ["A", "B", "C", "D"] {
             let approval_policy = if name == "C" { "untrusted" } else { "never" };
@@ -178,12 +223,14 @@ fn execute(
                 workspace,
                 &approval_command,
                 config.scenario_timeout,
+                thresholds,
             )?;
-            if name == "A" || name == "B" {
-                all_content.extend(observed.content.iter().cloned());
+            if name == "B" {
+                scenario_b_content.extend(observed.content.iter().cloned());
             }
             if name == "D" {
-                interrupt_control_latency_ms = observed.interrupt_control_latency_ms;
+                interrupt_response_latency_ms = observed.interrupt_response_latency_ms;
+                interrupt_terminal_latency_ms = observed.interrupt_terminal_latency_ms;
             }
             evidence.scenarios = evidence
                 .scenarios
@@ -198,11 +245,12 @@ fn execute(
                 })
                 .collect();
         }
-        evidence.performance = Some(performance(&all_content)?);
+        evidence.performance = Some(performance(&scenario_b_content)?);
         evidence.candidate_percentiles = Some(json!({
-            "content_event_samples": all_content.len(),
+            "content_event_samples": scenario_b_content.len(),
             "merge_rate": evidence.performance.as_ref().map(|p| p.merge_output_events as f64 / p.merge_input_events as f64),
-            "interrupt_control_latency_ms": interrupt_control_latency_ms
+            "interrupt_response_latency_ms": interrupt_response_latency_ms,
+            "interrupt_terminal_latency_ms": interrupt_terminal_latency_ms
         }));
         Ok(())
     })();
@@ -213,7 +261,8 @@ fn execute(
 struct ObservedScenario {
     evidence: ScenarioEvidence,
     content: Vec<ContentEvent>,
-    interrupt_control_latency_ms: Option<f64>,
+    interrupt_response_latency_ms: Option<f64>,
+    interrupt_terminal_latency_ms: Option<f64>,
 }
 
 struct Session {
@@ -221,7 +270,6 @@ struct Session {
     stdin: ChildStdin,
     incoming: mpsc::Receiver<Inbound>,
     recorder: Arc<Mutex<Recorder>>,
-    clock: Arc<HostMonotonicClock>,
     next_id: u64,
     pending: VecDeque<(u64, Value)>,
     global_deadline: Instant,
@@ -233,7 +281,6 @@ impl Session {
     fn spawn(
         command: CommandSpec,
         recorder: Arc<Mutex<Recorder>>,
-        clock: Arc<HostMonotonicClock>,
         global_timeout: Duration,
     ) -> Result<Self> {
         let mut child = Command::new(&command.program)
@@ -258,8 +305,8 @@ impl Session {
             .take()
             .context("app-server stderr unavailable")?;
         let (tx, incoming) = mpsc::channel();
+        let stderr_tx = tx.clone();
         let stdout_recorder = Arc::clone(&recorder);
-        let stdout_clock = Arc::clone(&clock);
         let stdout_thread = thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let line = match line {
@@ -269,10 +316,25 @@ impl Session {
                         break;
                     }
                 };
-                let timestamp_ns = stdout_clock.now_ns().unwrap_or(0);
-                if let Ok(mut guard) = stdout_recorder.lock() {
-                    let _ = guard.record(CaptureChannel::ServerToClient, &line);
-                }
+                let timestamp_ns = match stdout_recorder.lock() {
+                    Ok(mut guard) => {
+                        match guard.record_timestamped(CaptureChannel::ServerToClient, &line) {
+                            Ok(timestamp) => timestamp,
+                            Err(error) => {
+                                let _ = tx.send(Inbound::Malformed(format!(
+                                    "raw capture write failed: {error}"
+                                )));
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        let _ = tx.send(Inbound::Malformed(
+                            "raw capture recorder lock poisoned".to_owned(),
+                        ));
+                        break;
+                    }
+                };
                 match serde_json::from_str::<Value>(&line) {
                     Ok(value) if value.is_object() => {
                         if tx
@@ -304,8 +366,15 @@ impl Session {
         let stderr_recorder = Arc::clone(&recorder);
         let stderr_thread = thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if let Ok(mut guard) = stderr_recorder.lock() {
-                    let _ = guard.record(CaptureChannel::Stderr, &line);
+                let result = stderr_recorder
+                    .lock()
+                    .map_err(|_| anyhow!("raw capture recorder lock poisoned"))
+                    .and_then(|mut guard| guard.record(CaptureChannel::Stderr, &line));
+                if let Err(error) = result {
+                    let _ = stderr_tx.send(Inbound::Malformed(format!(
+                        "raw stderr capture write failed: {error}"
+                    )));
+                    break;
                 }
             }
         });
@@ -314,7 +383,6 @@ impl Session {
             stdin,
             incoming,
             recorder,
-            clock,
             next_id: 1,
             pending: VecDeque::new(),
             global_deadline: Instant::now() + global_timeout,
@@ -323,21 +391,23 @@ impl Session {
         })
     }
 
-    fn send(&mut self, value: &Value) -> Result<()> {
+    fn send(&mut self, value: &Value) -> Result<u64> {
         let line = serde_json::to_string(value)?;
-        self.recorder
+        let timestamp_ns = self
+            .recorder
             .lock()
             .map_err(|_| anyhow!("capture recorder lock poisoned"))?
-            .record(CaptureChannel::ClientToServer, &line)?;
+            .record_timestamped(CaptureChannel::ClientToServer, &line)?;
         writeln!(self.stdin, "{line}").context("failed writing app-server stdin")?;
         self.stdin
             .flush()
             .context("failed flushing app-server stdin")?;
-        Ok(())
+        Ok(timestamp_ns)
     }
 
     fn notify(&mut self, method: &str, params: Value) -> Result<()> {
         self.send(&json!({"method":method,"params":params}))
+            .map(|_| ())
     }
 
     fn request(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
@@ -379,13 +449,17 @@ impl Session {
         workspace: &Path,
         approval_command: &str,
         timeout: Duration,
+        thresholds: RunnerThresholds,
     ) -> Result<ObservedScenario> {
         let deadline = Instant::now() + timeout;
         let mut content = Vec::new();
         let mut approval_seen = false;
         let mut interrupt_response_seen = false;
         let mut interrupt_id = None;
-        let mut interrupt_control_latency_ms = None;
+        let mut interrupt_request_ns = None;
+        let mut interrupt_response_latency_ms = None;
+        let mut interrupt_terminal_latency_ms = None;
+        let mut pending_terminal = None;
         loop {
             let (timestamp_ns, frame) = self.recv(deadline)?;
             fail_on_error_notification(&frame)?;
@@ -394,7 +468,13 @@ impl Session {
                     self.reject_server_request(&frame)?;
                     bail!("scenario {name}: unexpected or duplicate approval request");
                 }
-                self.approve_exact_command(&frame, workspace, approval_command)?;
+                self.approve_exact_command(
+                    &frame,
+                    thread_id,
+                    turn_id,
+                    workspace,
+                    approval_command,
+                )?;
                 approval_seen = true;
                 continue;
             }
@@ -404,6 +484,12 @@ impl Session {
                         bail!("scenario D: malformed interrupt response");
                     }
                     interrupt_response_seen = true;
+                    interrupt_response_latency_ms = interrupt_request_ns.map(|request_ns: u64| {
+                        timestamp_ns.saturating_sub(request_ns) as f64 / 1_000_000.0
+                    });
+                    if pending_terminal.is_some() {
+                        break;
+                    }
                     continue;
                 }
             }
@@ -418,13 +504,16 @@ impl Session {
                         timestamp_ns,
                         bytes,
                     });
-                    if name == "D" && interrupt_id.is_none() {
+                    let content_bytes = content.iter().map(|event| event.bytes).sum::<u64>();
+                    if name == "D"
+                        && interrupt_id.is_none()
+                        && content.len() >= thresholds.d_min_events
+                        && content_bytes >= thresholds.d_min_bytes
+                    {
                         let id = self.next_id;
                         self.next_id += 1;
-                        self.send(&json!({"id":id,"method":"turn/interrupt","params":{"threadId":thread_id,"turnId":turn_id}}))?;
-                        let sent_ns = self.clock.now_ns()?;
-                        interrupt_control_latency_ms =
-                            Some(sent_ns.saturating_sub(timestamp_ns) as f64 / 1_000_000.0);
+                        let request_ns = self.send(&json!({"id":id,"method":"turn/interrupt","params":{"threadId":thread_id,"turnId":turn_id}}))?;
+                        interrupt_request_ns = Some(request_ns);
                         interrupt_id = Some(id);
                     }
                 }
@@ -435,27 +524,60 @@ impl Session {
                     "interrupted" => TerminalState::Interrupted,
                     _ => TerminalState::Failed,
                 };
-                let bytes: u64 = content.iter().map(|event| event.bytes).sum();
-                return Ok(ObservedScenario {
-                    evidence: ScenarioEvidence {
-                        name: name.to_owned(),
-                        turn_completed: terminal_state == TerminalState::Completed,
-                        terminal_state,
-                        first_delta_seen: !content.is_empty(),
-                        r1_sufficient: content.len() >= 2 && bytes >= 64,
-                        approval_seen,
-                        interrupt_response_seen,
-                    },
-                    content,
-                    interrupt_control_latency_ms,
-                });
+                if name == "D" && interrupt_request_ns.is_some() {
+                    interrupt_terminal_latency_ms = interrupt_request_ns.map(|request_ns| {
+                        timestamp_ns.saturating_sub(request_ns) as f64 / 1_000_000.0
+                    });
+                    pending_terminal = Some(terminal_state);
+                    if !interrupt_response_seen {
+                        continue;
+                    }
+                    break;
+                }
+                pending_terminal = Some(terminal_state);
+                break;
             }
         }
+        let terminal_state = pending_terminal.unwrap_or(TerminalState::Missing);
+        let bytes: u64 = content.iter().map(|event| event.bytes).sum();
+        let span = content
+            .first()
+            .zip(content.last())
+            .map(|(first, last)| {
+                Duration::from_nanos(last.timestamp_ns.saturating_sub(first.timestamp_ns))
+            })
+            .unwrap_or_default();
+        let r1_sufficient = match name {
+            "A" => {
+                content.len() >= thresholds.a_min_events
+                    && bytes >= thresholds.a_min_bytes
+                    && span >= thresholds.a_min_span
+            }
+            "B" => content.len() >= thresholds.b_min_events && bytes >= thresholds.b_min_bytes,
+            "D" => content.len() >= thresholds.d_min_events && bytes >= thresholds.d_min_bytes,
+            _ => false,
+        };
+        Ok(ObservedScenario {
+            evidence: ScenarioEvidence {
+                name: name.to_owned(),
+                turn_completed: terminal_state == TerminalState::Completed,
+                terminal_state,
+                first_delta_seen: !content.is_empty(),
+                r1_sufficient,
+                approval_seen,
+                interrupt_response_seen,
+            },
+            content,
+            interrupt_response_latency_ms,
+            interrupt_terminal_latency_ms,
+        })
     }
 
     fn approve_exact_command(
         &mut self,
         frame: &Value,
+        thread_id: &str,
+        turn_id: &str,
         workspace: &Path,
         command: &str,
     ) -> Result<()> {
@@ -466,6 +588,8 @@ impl Session {
         let workspace_root = workspace.canonicalize().ok();
         let canonical_cwd = cwd.as_deref().and_then(|path| path.canonicalize().ok());
         let safe = method == Some("item/commandExecution/requestApproval")
+            && params.get("threadId").and_then(Value::as_str) == Some(thread_id)
+            && params.get("turnId").and_then(Value::as_str) == Some(turn_id)
             && params.get("command").and_then(Value::as_str) == Some(command)
             && workspace_root.as_ref().is_some_and(|root| {
                 canonical_cwd
@@ -479,6 +603,7 @@ impl Session {
             );
         }
         self.send(&json!({"id":id,"result":{"decision":"accept"}}))
+            .map(|_| ())
     }
 
     fn reject_server_request(&mut self, frame: &Value) -> Result<()> {
@@ -561,11 +686,98 @@ fn sanitized_error(value: &Value) -> String {
         .collect()
 }
 
+fn validate_initialize(frame: &Value) -> Result<()> {
+    let result = frame
+        .get("result")
+        .and_then(Value::as_object)
+        .context("initialize malformed success: result must be an object")?;
+    let nonempty_string = |key: &str| {
+        result
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    };
+    if !nonempty_string("userAgent")
+        || !nonempty_string("platformFamily")
+        || !nonempty_string("platformOs")
+        || !result
+            .get("codexHome")
+            .and_then(Value::as_str)
+            .is_some_and(|path| Path::new(path).is_absolute())
+    {
+        bail!("initialize malformed success: missing pinned 0.139 structural fields");
+    }
+    Ok(())
+}
+
+fn validate_account(frame: &Value) -> Result<()> {
+    let result = frame
+        .get("result")
+        .and_then(Value::as_object)
+        .context("account/read malformed success: result must be an object")?;
+    let requires_auth = result
+        .get("requiresOpenaiAuth")
+        .and_then(Value::as_bool)
+        .context("account/read malformed success: requiresOpenaiAuth must be boolean")?;
+    match result.get("account") {
+        None | Some(Value::Null) if requires_auth => {
+            bail!("authentication required: account/read returned no account")
+        }
+        None => bail!("account/read malformed success: account field is missing"),
+        Some(Value::Null) => Ok(()),
+        Some(Value::Object(account)) => match account.get("type").and_then(Value::as_str) {
+            Some("apiKey") | Some("amazonBedrock") => Ok(()),
+            Some("chatgpt")
+                if account.get("email").is_some_and(Value::is_string)
+                    && account.get("planType").is_some_and(Value::is_string) =>
+            {
+                Ok(())
+            }
+            _ => bail!("account/read malformed success: invalid account structure"),
+        },
+        Some(_) => bail!("account/read malformed success: account must be object or null"),
+    }
+}
+
+fn validate_rate_limits(frame: &Value) -> Result<()> {
+    let result = frame
+        .get("result")
+        .and_then(Value::as_object)
+        .context("account/rateLimits/read malformed success: result must be an object")?;
+    let snapshot = result
+        .get("rateLimits")
+        .and_then(Value::as_object)
+        .context("account/rateLimits/read malformed success: rateLimits must be an object")?;
+    for window_name in ["primary", "secondary"] {
+        if let Some(value) = snapshot.get(window_name).filter(|value| !value.is_null()) {
+            let window = value.as_object().with_context(|| {
+                format!(
+                    "account/rateLimits/read malformed success: {window_name} must be an object"
+                )
+            })?;
+            if !window.get("usedPercent").is_some_and(Value::is_number) {
+                bail!(
+                    "account/rateLimits/read malformed success: {window_name} usedPercent must be numeric"
+                );
+            }
+        }
+    }
+    if snapshot
+        .get("rateLimitReachedType")
+        .is_some_and(|value| !value.is_null() && !value.is_string())
+    {
+        bail!(
+            "account/rateLimits/read malformed success: rateLimitReachedType must be string or null"
+        );
+    }
+    Ok(())
+}
+
 fn quota_exhausted(value: &Value) -> bool {
     match value {
         Value::Object(map) => map.iter().any(|(key, value)| {
             (key == "rateLimitReachedType" && !value.is_null())
-                || (key == "usedPercent" && value.as_u64().is_some_and(|used| used >= 100))
+                || (key == "usedPercent" && value.as_f64().is_some_and(|used| used >= 100.0))
                 || quota_exhausted(value)
         }),
         Value::Array(values) => values.iter().any(quota_exhausted),
@@ -575,8 +787,8 @@ fn quota_exhausted(value: &Value) -> bool {
 
 fn scenario_prompt(name: &str, approval_command: &str) -> String {
     match name {
-        "A" => "S2-A: Produce a long, continuous plain-text technical explanation of streaming backpressure, at least 1200 words. Do not call tools.".to_owned(),
-        "B" => "S2-B: Produce at least 4000 words of dense generated content in one response for a real peak-output measurement. Do not call tools.".to_owned(),
+        "A" => "S2-A: Sustain a continuous plain-text technical explanation of streaming backpressure for at least 35 seconds and at least 2 KiB. Do not call tools.".to_owned(),
+        "B" => "S2-B: Produce at least 40 KiB of dense generated content in one response for a real peak-output measurement. Do not call tools.".to_owned(),
         "C" => format!("S2-C: Execute exactly the following single benign local probe command, requesting approval before execution. Do not run any other command or tool. APPROVAL_COMMAND_JSON:{}", serde_json::to_string(approval_command).unwrap()),
         "D" => "S2-D: Begin producing at least 8000 words of dense generated content immediately and continuously. Do not call tools.".to_owned(),
         _ => unreachable!(),
@@ -661,7 +873,9 @@ fn empty_evidence() -> S2Evidence {
 
 fn classify_failure(error: &anyhow::Error, evidence: &mut S2Evidence) {
     let message = format!("{error:#}").to_ascii_lowercase();
-    if message.contains("auth") || message.contains("unauthorized") {
+    if message.contains("malformed success") {
+        evidence.protocol_errors = 1;
+    } else if message.contains("auth") || message.contains("unauthorized") {
         evidence.auth_errors = 1;
     } else if message.contains("quota")
         || message.contains("usage limit")
@@ -695,11 +909,23 @@ fn write_artifacts(
         None if report.valid => "all F1-F3 gates passed".to_owned(),
         None => report.reasons.join("; "),
     };
+    let timing = evidence
+        .candidate_percentiles
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|metrics| {
+            Some(format!(
+                "interrupt_response_latency_ms={:.3} interrupt_terminal_latency_ms={:.3}",
+                metrics.get("interrupt_response_latency_ms")?.as_f64()?,
+                metrics.get("interrupt_terminal_latency_ms")?.as_f64()?
+            ))
+        })
+        .unwrap_or_else(|| "interrupt_timings=unavailable".to_owned());
     std::fs::write(
         output_dir.join(SUMMARY_FILE),
         format!(
-            "S2 {status}\nF1={} F2={} F3={}\n{detail}\n",
-            report.f1.passed, report.f2.passed, report.f3.passed
+            "S2 {status}\nF1={} F2={} F3={}\n{timing}\n{detail}\n",
+            report.f1.passed, report.f2.passed, report.f3.passed,
         ),
     )?;
     Ok(())
