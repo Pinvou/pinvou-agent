@@ -141,7 +141,7 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
 
 #[test]
 #[cfg(debug_assertions)]
-fn run_s2_disables_hooks_and_legacy_notify_only_for_app_server_invocation() {
+fn run_s2_isolates_startup_commands_only_for_app_server_invocation() {
     let output = temp_output("argv spaces & semicolon ; user-input");
     let argv_log = output.join("fake-argv.jsonl");
     run_s2_for_test(S2RunConfig {
@@ -170,8 +170,16 @@ fn run_s2_disables_hooks_and_legacy_notify_only_for_app_server_invocation() {
                 "app-server",
                 "--disable",
                 "hooks",
+                "--disable",
+                "plugins",
+                "--disable",
+                "apps",
+                "--disable",
+                "shell_snapshot",
                 "-c",
                 "notify=[]",
+                "-c",
+                "mcp_servers={}",
                 "--stdio",
             ],
         ]
@@ -1162,7 +1170,9 @@ fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim(
     assert!(capture.contains("thread/start"));
     let command_line = std::fs::read_to_string(&command_line_marker).unwrap();
     assert!(command_line.contains("codex.cmd"));
-    assert!(command_line.contains("app-server --disable hooks -c notify=[] --stdio"));
+    assert!(command_line.contains(
+        "app-server --disable hooks --disable plugins --disable apps --disable shell_snapshot -c notify=[] -c mcp_servers={} --stdio"
+    ));
     std::fs::remove_dir_all(root).unwrap();
 }
 

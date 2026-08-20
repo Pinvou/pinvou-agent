@@ -101,16 +101,21 @@ terminates the complete spawned tree and bounds pipe-reader shutdown. On Windows
 children are created suspended, assigned to a Job Object, and only then resumed;
 on Unix they are placed in a dedicated process group before exec.
 
-For `run-s2` only, the app-server invocation adds the official fixed
-`--disable hooks -c notify=[]` overrides while the version preflight remains
-exactly `--version`. The public 0.139 feature name is `hooks`; the internal
-`CodexHooks`/legacy `codex_hooks` names are not valid substitutes for this CLI
-flag. Clearing `notify` separately disables the legacy end-of-turn notifier,
-which is independent of the hooks feature. These overrides keep the operator's
-existing `CODEX_HOME` account and authentication available while preventing
-user-configured lifecycle commands from executing during evidence collection.
-Any `hook/started` notification that still arrives is rejected fail-closed as
-tool activity.
+For `run-s2` only, the app-server invocation adds the official fixed overrides
+`--disable hooks`, `--disable plugins`, `--disable apps`,
+`--disable shell_snapshot`, `-c notify=[]`, and `-c mcp_servers={}`, while the
+version preflight remains exactly `--version`. The public 0.139 feature names are
+`hooks`, `plugins`,
+`apps`, and `shell_snapshot`; internal enum or legacy names are not valid
+substitutes for these CLI flags. Clearing `notify` separately disables the
+legacy end-of-turn notifier, which is independent of the hooks feature, and
+clearing `mcp_servers` prevents configured MCP processes from starting.
+Disabling plugins and apps also prevents their contributed MCP configuration
+from being loaded; disabling the shell snapshot prevents sourcing the user's
+shell profile. These overrides keep the operator's existing `CODEX_HOME`
+account, authentication, model, and network configuration available while
+isolating startup-time external command surfaces during evidence collection.
+Any hook or tool notification that still arrives is rejected fail-closed.
 
 On Windows the default executable lookup searches PATH specifically for
 `codex.cmd`; it does not fall through to an extensionless POSIX shim or a later

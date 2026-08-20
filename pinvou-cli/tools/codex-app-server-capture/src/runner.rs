@@ -33,8 +33,16 @@ const APP_SERVER_ARGS: &[&str] = &[
     "app-server",
     "--disable",
     "hooks",
+    "--disable",
+    "plugins",
+    "--disable",
+    "apps",
+    "--disable",
+    "shell_snapshot",
     "-c",
     "notify=[]",
+    "-c",
+    "mcp_servers={}",
     "--stdio",
 ];
 
@@ -403,7 +411,7 @@ impl SafeInvocation {
                 arg.is_empty()
                     || !arg.bytes().all(|byte| {
                         byte.is_ascii_alphanumeric()
-                            || matches!(byte, b'-' | b'_' | b'=' | b'[' | b']')
+                            || matches!(byte, b'-' | b'_' | b'=' | b'[' | b']' | b'{' | b'}')
                     })
             }) {
                 bail!("unsafe requested argument for cmd invocation");
