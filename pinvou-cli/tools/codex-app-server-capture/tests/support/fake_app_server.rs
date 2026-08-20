@@ -281,9 +281,59 @@ fn main() {
                 send(
                     json!({"method":"turn/started","params":{"threadId":format!("thread-{}", turn - 1),"turn":{"id":turn_id,"status":"inProgress"}}}),
                 );
+                let agent_only_violation = match mode.as_str() {
+                    "agent-tool-command" => Some(
+                        json!({"method":"item/started","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id,"item":{"type":"commandExecution"}}}),
+                    ),
+                    "agent-tool-file" => Some(
+                        json!({"method":"item/fileChange/outputDelta","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id,"delta":"x"}}),
+                    ),
+                    "agent-tool-mcp" => Some(
+                        json!({"method":"item/mcpToolCall/progress","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id}}),
+                    ),
+                    "agent-tool-dynamic" => Some(
+                        json!({"method":"item/started","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id,"item":{"type":"dynamicToolCall"}}}),
+                    ),
+                    "agent-tool-web" => Some(
+                        json!({"method":"item/started","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id,"item":{"type":"webSearch"}}}),
+                    ),
+                    "agent-tool-collab" => Some(
+                        json!({"method":"item/started","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id,"item":{"type":"collabAgentToolCall"}}}),
+                    ),
+                    "agent-tool-unknown" => Some(
+                        json!({"method":"item/unknownTool/progress","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id}}),
+                    ),
+                    _ => None,
+                };
+                if let Some(violation) = agent_only_violation {
+                    send(violation);
+                    continue;
+                }
+                if mode == "agent-server-request" {
+                    send(
+                        json!({"id":901,"method":"item/dynamicToolCall/requestApproval","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id}}),
+                    );
+                    continue;
+                }
+                if mode == "agent-aggregated-only" || (mode == "agent-early-complete" && turn == 1)
+                {
+                    if mode == "agent-aggregated-only" {
+                        send(
+                            json!({"method":"item/completed","params":{"threadId":format!("thread-{}",turn-1),"turnId":turn_id,"item":{"type":"agentMessage","text":"aggregated only"}}}),
+                        );
+                    }
+                    send(
+                        json!({"method":"turn/completed","params":{"threadId":format!("thread-{}",turn-1),"turn":{"id":turn_id,"status":"completed"}}}),
+                    );
+                    continue;
+                }
                 let count = if prompt.contains("S2-B") { 40 } else { 12 };
                 for index in 0..count {
-                    let delta = "x".repeat(8 + (index % 8) * 7);
+                    let delta = if mode == "agent-empty-delta" {
+                        String::new()
+                    } else {
+                        "x".repeat(8 + (index % 8) * 7)
+                    };
                     let delta_method = if mode == "command-output-success" {
                         "item/commandExecution/outputDelta"
                     } else {
@@ -297,9 +347,20 @@ fn main() {
                             json!({"method":"fixture/unrelatedDelta","params":{"threadId":format!("thread-{}", turn - 1),"turnId":turn_id,"delta":"UNRELATED_NOISE"}}),
                         );
                     }
+                    let delta_thread = if mode == "agent-wrong-ids" {
+                        "wrong-thread".to_owned()
+                    } else {
+                        format!("thread-{}", turn - 1)
+                    };
                     send(
-                        json!({"method":delta_method,"params":{"threadId":format!("thread-{}", turn - 1),"turnId":turn_id,"itemId":format!("item-{turn}"),"delta":delta}}),
+                        json!({"method":delta_method,"params":{"threadId":delta_thread,"turnId":turn_id,"itemId":format!("item-{turn}"),"delta":delta}}),
                     );
+                    if mode == "agent-d-early-complete" && prompt.contains("S2-D") && index == 0 {
+                        send(
+                            json!({"method":"turn/completed","params":{"threadId":format!("thread-{}",turn-1),"turn":{"id":turn_id,"status":"completed"}}}),
+                        );
+                        break;
+                    }
                 }
                 if prompt.contains("S2-C") {
                     if mode != "missing-approval" {

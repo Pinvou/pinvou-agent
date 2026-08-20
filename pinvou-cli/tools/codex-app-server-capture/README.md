@@ -109,25 +109,17 @@ line breaks. It is invoked through the absolute trusted System32 `cmd.exe` with
 fixed `/d /s /c` arguments and fail-closed quoting. Explicit regular `.cmd`
 scripts use the same path, while explicit `.exe` test overrides remain direct.
 
-Scenarios A, B, and D request exactly one fixed, side-effect-free command built
-from deterministic, non-sensitive restricted ASCII bytes and constants. A
-emits 36 one-KiB chunks at one-second cadence, B emits 56 one-KiB chunks at
-50 ms cadence, and D emits 64 256-byte chunks at 250 ms cadence so interruption
-can occur after a real backlog. Commands use the canonical OS-protected Windows
-PowerShell path derived from `GetSystemDirectoryW` on Windows, or absolute
-shell and sleep programs on Linux, and never consult PATH or interpolate caller
-paths. Linux canonicalizes `/bin/sh` and an absolute `/bin/sleep` or
-`/usr/bin/sleep`, then requires regular root-owned executables that are not
-group/other writable; other Unix platforms fail closed as unsupported. Each
-scenario still gets a fresh runner-owned workspace, but A/B/D create no files.
-Their prompts contain a short readable inline command with fixed integers. The
-Windows command generates a deterministic byte array and writes and flushes it
-through standard output; Linux uses shell-builtin `command printf`, variable
-doubling, and the validated absolute sleep command. Neither form uses Base64,
-PATH lookup, network, or file operations. Prompts forbid other tools and prose
-before completion, and sanitized artifacts exclude prompts and commands. Gates
-still use only real, correlated R1 timestamps and content, including official
-agent message and command-execution output deltas.
+Scenarios A, B, and D request deterministic restricted-ASCII text directly in
+the final agent response. Their short prompts specify a fixed 64-character seed
+and six-digit increasing line numbers, with enough output headroom for the
+production gates; A additionally requests steady emission for at least 40
+seconds. The prompts forbid commands, files, network access, MCP, web/search,
+code fences, commentary, and every other tool. Any server request, tool item, or
+tool notification makes the run invalid. Only nonempty, exactly correlated
+`item/agentMessage/delta` notifications count as R1 content; reasoning, plans,
+aggregated messages, and command output never contribute to thresholds or
+performance metrics. Each scenario still gets a fresh runner-owned workspace,
+and sanitized artifacts exclude prompts and generated content.
 
 Scenario C uses `on-request` approval and a read-only sandbox, then requests one
 fixed platform-specific command that writes `.codex-s2-approval-marker` relative

@@ -28,12 +28,6 @@ const APPROVAL_MARKER_CONTENT: &str = "S2_APPROVED";
 const APPROVAL_MARKER_BYTES: &[u8] = APPROVAL_MARKER_CONTENT.as_bytes();
 const APPROVAL_MARKER_MAX_BYTES: u64 = 64;
 
-struct ScenarioPrograms {
-    shell: PathBuf,
-    #[cfg(target_os = "linux")]
-    sleep: PathBuf,
-}
-
 #[derive(Clone, Debug)]
 pub struct S2RunConfig {
     pub output_dir: Option<PathBuf>,
@@ -146,7 +140,6 @@ fn run_s2_with_thresholds(
 
     let explicit_approval_wrapper =
         validate_explicit_approval_wrapper(config.trusted_approval_wrapper.as_deref())?;
-    let scenario_programs = trusted_scenario_programs()?;
     let global_deadline = Instant::now() + config.global_timeout;
     let mut evidence = empty_evidence();
     let execution = SafeInvocation::resolve(config.executable.as_ref()).and_then(|invocation| {
@@ -161,7 +154,6 @@ fn run_s2_with_thresholds(
                 global_deadline,
                 explicit_approval_wrapper.as_ref(),
                 &marker_helper,
-                &scenario_programs,
             )
         })
     });
@@ -621,7 +613,6 @@ fn execute(
     global_deadline: Instant,
     explicit_approval_wrapper: Option<&TrustedApprovalWrapper>,
     marker_helper: &Arc<MarkerHelperInvocation>,
-    scenario_programs: &ScenarioPrograms,
 ) -> Result<()> {
     remaining_global(global_deadline)?;
     let clock = Arc::new(HostMonotonicClock::new()?);
@@ -717,18 +708,7 @@ fn execute(
                     format!("scenario {name}: thread/start response missing thread.id")
                 })?
                 .to_owned();
-            let streaming_command = if matches!(name, "A" | "B" | "D") {
-                let (chunk_bytes, chunks, cadence_ms) = streaming_parameters(name)?;
-                Some(streaming_command(
-                    scenario_programs,
-                    chunk_bytes,
-                    chunks,
-                    cadence_ms,
-                )?)
-            } else {
-                None
-            };
-            let prompt = scenario_prompt(name, &approval_command, streaming_command.as_deref())?;
+            let prompt = scenario_prompt(name, &approval_command)?;
             let mut turn_params = json!({
                 "threadId":thread_id,
                 "cwd":scenario_workspace,
@@ -1169,7 +1149,10 @@ impl Session {
                     continue;
                 }
             }
-            if let Some(bytes) = delta_bytes(&frame, thread_id, turn_id) {
+            if matches!(name, "A" | "B" | "D") {
+                validate_agent_only_notification(&frame, thread_id, turn_id)?;
+            }
+            if let Some(bytes) = agent_delta_bytes(&frame, thread_id, turn_id) {
                 content.push(ContentEvent {
                     timestamp_ns,
                     bytes,
@@ -1575,6 +1558,7 @@ unsafe extern "C" {
     fn kill(pid: i32, signal: i32) -> i32;
 }
 
+#[cfg(test)]
 fn delta_bytes(frame: &Value, thread_id: &str, turn_id: &str) -> Option<u64> {
     let method = frame.get("method").and_then(Value::as_str)?;
     if !matches!(
@@ -1590,6 +1574,83 @@ fn delta_bytes(frame: &Value, thread_id: &str, turn_id: &str) -> Option<u64> {
         .and_then(Value::as_str)
         .filter(|delta| !delta.is_empty())
         .map(|delta| delta.len() as u64)
+}
+
+fn agent_delta_bytes(frame: &Value, thread_id: &str, turn_id: &str) -> Option<u64> {
+    (frame.get("method").and_then(Value::as_str) == Some("item/agentMessage/delta")
+        && frame.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id)
+        && frame.pointer("/params/turnId").and_then(Value::as_str) == Some(turn_id))
+    .then(|| {
+        frame
+            .pointer("/params/delta")
+            .and_then(Value::as_str)
+            .filter(|delta| !delta.is_empty())
+            .map(|delta| delta.len() as u64)
+    })
+    .flatten()
+}
+
+fn validate_agent_only_notification(frame: &Value, thread_id: &str, turn_id: &str) -> Result<()> {
+    let Some(method) = frame.get("method").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let params = frame.get("params").and_then(Value::as_object);
+    let exact_thread = params
+        .and_then(|value| value.get("threadId"))
+        .and_then(Value::as_str)
+        == Some(thread_id);
+    let exact_turn = params
+        .and_then(|value| value.get("turnId"))
+        .and_then(Value::as_str)
+        .or_else(|| frame.pointer("/params/turn/id").and_then(Value::as_str))
+        == Some(turn_id);
+    match method {
+        "turn/started" | "turn/completed" | "turn/plan/updated" => {
+            if !exact_thread || !exact_turn {
+                bail!("protocol error: agent-only notification had mismatched turn identity");
+            }
+        }
+        "thread/tokenUsage/updated" | "turn/moderationMetadata" => {
+            if !exact_thread || !exact_turn {
+                bail!("protocol error: benign notification had mismatched turn identity");
+            }
+        }
+        "thread/name/updated" | "thread/status/changed" => {
+            if !exact_thread {
+                bail!("protocol error: benign notification had mismatched thread identity");
+            }
+        }
+        "item/agentMessage/delta"
+        | "item/plan/delta"
+        | "item/reasoning/textDelta"
+        | "item/reasoning/summaryTextDelta"
+        | "item/reasoning/summaryPartAdded" => {
+            if !exact_thread || !exact_turn {
+                bail!("protocol error: agent-only notification had mismatched turn identity");
+            }
+        }
+        "item/started" | "item/completed" => {
+            let item_type = frame.pointer("/params/item/type").and_then(Value::as_str);
+            if !exact_thread
+                || !exact_turn
+                || !matches!(item_type, Some("agentMessage" | "reasoning" | "plan"))
+            {
+                bail!("protocol error: tool or unknown item is forbidden in agent-only scenario");
+            }
+        }
+        "item/commandExecution/outputDelta"
+        | "item/commandExecution/terminalInteraction"
+        | "item/fileChange/outputDelta"
+        | "item/fileChange/patchUpdated"
+        | "item/mcpToolCall/progress"
+        | "item/autoApprovalReview/started"
+        | "item/autoApprovalReview/completed"
+        | "turn/diff/updated" => {
+            bail!("protocol error: tool activity is forbidden in agent-only scenario");
+        }
+        _ => bail!("protocol error: unexpected notification in agent-only scenario"),
+    }
+    Ok(())
 }
 
 fn terminal_status<'a>(frame: &'a Value, thread_id: &str, turn_id: &str) -> Option<&'a str> {
@@ -1720,16 +1781,10 @@ fn quota_exhausted(value: &Value) -> bool {
     }
 }
 
-const CORPUS_BYTES: usize = 1024;
-const A_CHUNKS: usize = 36;
-const A_CADENCE_MS: usize = 1_000;
-const B_CHUNKS: usize = 56;
-const B_CADENCE_MS: usize = 50;
-const D_CHUNK_BYTES: usize = 256;
-const D_CHUNKS: usize = 64;
-const D_CADENCE_MS: usize = 250;
-#[cfg(target_os = "linux")]
-const LINUX_STREAM_SEED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKL";
+const AGENT_OUTPUT_SEED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKL";
+const A_OUTPUT_LINES: usize = 900;
+const B_OUTPUT_LINES: usize = 800;
+const D_OUTPUT_LINES: usize = 800;
 
 fn create_scenario_workspace(path: &Path) -> Result<()> {
     std::fs::create_dir(path).map_err(|_| anyhow!("scenario workspace creation failed"))?;
@@ -1742,121 +1797,41 @@ fn create_scenario_workspace(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-#[derive(Debug)]
-struct ScenarioStimulus {
-    prompt: String,
-    command: String,
-    chunk_bytes: usize,
-    chunks: usize,
-    cadence_ms: usize,
-    target_bytes: usize,
-}
-
-fn streaming_parameters(name: &str) -> Result<(usize, usize, usize)> {
+fn agent_output_lines(name: &str) -> Result<usize> {
     Ok(match name {
-        "A" => (CORPUS_BYTES, A_CHUNKS, A_CADENCE_MS),
-        "B" => (CORPUS_BYTES, B_CHUNKS, B_CADENCE_MS),
-        "D" => (D_CHUNK_BYTES, D_CHUNKS, D_CADENCE_MS),
-        _ => bail!("unknown streaming scenario {name}"),
+        "A" => A_OUTPUT_LINES,
+        "B" => B_OUTPUT_LINES,
+        "D" => D_OUTPUT_LINES,
+        _ => bail!("unknown agent-output scenario {name}"),
     })
 }
 
 #[cfg(test)]
-fn streaming_stimulus(name: &str, programs: &ScenarioPrograms) -> Result<ScenarioStimulus> {
-    let (chunk_bytes, chunks, cadence_ms) = streaming_parameters(name)?;
-    let command = streaming_command(programs, chunk_bytes, chunks, cadence_ms)?;
-    let prompt = format!(
-        "S2-{name}: Execute exactly this command once now. Use no other tool or command. Emit no prose before completion.\nCOMMAND_BEGIN\n{command}\nCOMMAND_END"
-    );
-    Ok(ScenarioStimulus {
-        prompt,
-        command,
-        chunk_bytes,
-        chunks,
-        cadence_ms,
-        target_bytes: chunk_bytes * chunks,
-    })
+fn agent_prompt_target_bytes(name: &str) -> Result<usize> {
+    Ok(agent_output_lines(name)? * (6 + 1 + AGENT_OUTPUT_SEED.len() + 1))
 }
 
-fn scenario_prompt(
-    name: &str,
-    approval_command: &str,
-    streaming_command: Option<&str>,
-) -> Result<String> {
+fn agent_scenario_prompt(name: &str) -> Result<String> {
+    let lines = agent_output_lines(name)?;
+    let pacing = if name == "A" {
+        " Emit steadily for at least 40 seconds; do not finish earlier."
+    } else {
+        ""
+    };
+    Ok(format!(
+        "S2-{name}: Output exactly {lines} lines in the final response body only. Each line is a six-digit increasing decimal index from 000001 through {lines:06}, one ASCII space, then this fixed 64-character ASCII seed: {AGENT_OUTPUT_SEED}. Use no tools, no commands, no files, no network, no MCP, no web, no search, no code fence, and no commentary. Do not summarize or omit lines.{pacing}"
+    ))
+}
+
+fn scenario_prompt(name: &str, approval_command: &str) -> Result<String> {
     match name {
-        "A" | "B" | "D" => {
-            let command = streaming_command.context("streaming command was missing")?;
-            Ok(format!(
-                "S2-{name}: Execute exactly this command once now. Use no other tool or command. Emit no prose before completion.\nCOMMAND_BEGIN\n{command}\nCOMMAND_END"
-            ))
-        }
+        "A" | "B" | "D" => agent_scenario_prompt(name),
         "C" => Ok(format!(
             "S2-C: Execute exactly this command once now. Emit no prose. Use no other command or tool. APPROVAL_COMMAND_JSON:{}",
             serde_json::to_string(approval_command).unwrap()
         )),
         _ => unreachable!(),
     }
-}
-
-fn streaming_command(
-    programs: &ScenarioPrograms,
-    chunk_bytes: usize,
-    chunks: usize,
-    cadence_ms: usize,
-) -> Result<String> {
-    let shell = programs
-        .shell
-        .to_str()
-        .context("trusted scenario shell path was not valid Unicode")?;
-    if shell.contains(['\r', '\n', '\'', '"']) {
-        bail!("trusted scenario shell path contained unsafe characters");
-    }
-    #[cfg(windows)]
-    {
-        let script = format!(
-            "$n={chunk_bytes}; $count={chunks}; $delay={cadence_ms}; $c=New-Object byte[] $n; for($j=0; $j -lt $c.Length; $j++){{$c[$j]=[byte](65+(($j*17+11)%26))}}; $o=[Console]::OpenStandardOutput(); for($i=0; $i -lt $count; $i++){{$o.Write($c,0,$c.Length); $o.Flush(); if($i+1 -lt $count){{Start-Sleep -Milliseconds $delay}}}}"
-        );
-        return Ok(format!(
-            "& \"{shell}\" -NoProfile -NonInteractive -Command '{script}'"
-        ));
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let sleep = programs
-            .sleep
-            .to_str()
-            .context("trusted sleep path was not valid Unicode")?;
-        if sleep.contains(['\r', '\n', '\'', '"']) {
-            bail!("trusted sleep path contained unsafe characters");
-        }
-        let doubles = match chunk_bytes {
-            256 => 2,
-            1024 => 4,
-            _ => bail!("unsupported streaming chunk size"),
-        };
-        let mut expansion = String::new();
-        for _ in 0..doubles {
-            expansion.push_str("p=$p$p; ");
-        }
-        let cadence = format!("{}.{:03}", cadence_ms / 1_000, cadence_ms % 1_000);
-        Ok(format!(
-            "{shell} -p -c 'p={LINUX_STREAM_SEED}; {expansion}i=0; while [ \"$i\" -lt {chunks} ]; do command printf %s \"$p\"; i=$((i+1)); [ \"$i\" -eq {chunks} ] || {sleep} {cadence}; done'"
-        ))
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = (chunk_bytes, chunks, cadence_ms);
-        bail!("streaming scenarios are unsupported on this platform")
-    }
-}
-
-#[cfg(test)]
-fn expected_stream_bytes(chunk_bytes: usize, chunks: usize) -> Vec<u8> {
-    let chunk = (0..chunk_bytes)
-        .map(|index| 65 + ((index * 17 + 11) % 26) as u8)
-        .collect::<Vec<_>>();
-    chunk.repeat(chunks)
 }
 
 fn approval_command() -> Result<String> {
@@ -2217,68 +2192,14 @@ fn read_approval_marker_atomically(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn trusted_scenario_programs() -> Result<ScenarioPrograms> {
-    #[cfg(windows)]
-    {
-        let system_root = canonical_safe_windows_root(system_directory()?, "system directory")?;
-        let candidate = system_root.join(r"WindowsPowerShell\v1.0\powershell.exe");
-        let canonical = canonical_safe_windows_executable(
-            &candidate,
-            "powershell.exe",
-            "system Windows PowerShell",
-        )?;
-        if !canonical.starts_with(&system_root)
-            || !canonical
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case("powershell.exe"))
-        {
-            bail!("system Windows PowerShell escaped the protected system directory");
-        }
-        return Ok(ScenarioPrograms { shell: canonical });
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let shell = trusted_linux_executable(Path::new("/bin/sh"))?;
-        let sleep = [Path::new("/bin/sleep"), Path::new("/usr/bin/sleep")]
-            .into_iter()
-            .find_map(|candidate| trusted_linux_executable(candidate).ok())
-            .context("trusted scenario programs validation failed")?;
-        return Ok(ScenarioPrograms { shell, sleep });
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        bail!("streaming scenarios are unsupported on this platform")
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn trusted_linux_executable(candidate: &Path) -> Result<PathBuf> {
-    use std::os::unix::fs::MetadataExt;
-
-    if !candidate.is_absolute() {
-        bail!("trusted scenario programs validation failed");
-    }
-    let canonical = candidate
-        .canonicalize()
-        .map_err(|_| anyhow!("trusted scenario programs validation failed"))?;
-    let metadata = canonical
-        .metadata()
-        .map_err(|_| anyhow!("trusted scenario programs validation failed"))?;
-    if !canonical.is_absolute()
-        || !metadata.is_file()
-        || metadata.uid() != 0
-        || metadata.mode() & 0o022 != 0
-    {
-        bail!("trusted scenario programs validation failed");
-    }
-    Ok(canonical)
-}
-
-#[cfg(test)]
+#[cfg(all(test, windows))]
 fn trusted_scenario_shell() -> Result<PathBuf> {
-    let programs = trusted_scenario_programs()?;
-    Ok(programs.shell)
+    let system_root = canonical_safe_windows_root(system_directory()?, "system directory")?;
+    canonical_safe_windows_executable(
+        &system_root.join(r"WindowsPowerShell\v1.0\powershell.exe"),
+        "powershell.exe",
+        "system Windows PowerShell",
+    )
 }
 
 #[cfg(windows)]
@@ -2755,12 +2676,32 @@ mod tests {
     }
 
     #[test]
-    fn scenario_stream_bytes_are_deterministic_restricted_ascii() {
-        let first = super::expected_stream_bytes(1024, 1);
-        let second = super::expected_stream_bytes(1024, 1);
-        assert_eq!(first, second);
-        assert_eq!(first.len(), 1024);
-        assert!(first.iter().all(u8::is_ascii_uppercase));
+    fn agent_prompts_are_short_tool_free_and_have_output_headroom() {
+        for (name, minimum_bytes) in [("A", 60 * 1024), ("B", 50 * 1024), ("D", 50 * 1024)] {
+            let prompt = super::agent_scenario_prompt(name).unwrap();
+            assert!(prompt.len() < 1_024);
+            assert!(prompt.contains("64-character ASCII seed"));
+            assert!(prompt.contains("six-digit"));
+            assert!(prompt.contains("final response body"));
+            for forbidden in [
+                "command",
+                "file",
+                "network",
+                "MCP",
+                "web",
+                "search",
+                "code fence",
+                "commentary",
+            ] {
+                assert!(prompt.contains(&format!("no {forbidden}")));
+            }
+            assert!(super::agent_prompt_target_bytes(name).unwrap() >= minimum_bytes);
+        }
+        assert!(
+            super::agent_scenario_prompt("A")
+                .unwrap()
+                .contains("at least 40 seconds")
+        );
     }
 
     #[test]
@@ -2786,160 +2727,70 @@ mod tests {
             "params":{"threadId":"thread-a","turnId":"turn-a","output":"not-a-delta"}
         });
         assert_eq!(super::delta_bytes(&unrelated, "thread-a", "turn-a"), None);
-    }
-
-    #[test]
-    fn deterministic_streaming_commands_have_safe_output_and_cadence_headroom() {
-        #[cfg(windows)]
-        let programs = super::ScenarioPrograms {
-            shell: Path::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
-                .to_path_buf(),
-        };
-        #[cfg(target_os = "linux")]
-        let programs = super::trusted_scenario_programs().unwrap();
-        let a = super::streaming_stimulus("A", &programs).unwrap();
-        let b = super::streaming_stimulus("B", &programs).unwrap();
-        let d = super::streaming_stimulus("D", &programs).unwrap();
-
-        assert_eq!(a.chunk_bytes, 1024);
-        assert_eq!(a.chunks, 36);
-        assert_eq!(a.cadence_ms, 1_000);
-        assert!(a.command.contains("$n=1024; $count=36; $delay=1000;"));
-        assert!((a.chunks - 1) * a.cadence_ms >= 35_000);
-        assert_eq!(b.chunk_bytes, 1024);
-        assert!(b.chunks >= 56);
-        assert_eq!(b.cadence_ms, 50);
-        assert!(b.command.contains("$n=1024; $count=56; $delay=50;"));
-        assert_eq!(d.chunk_bytes, 256);
-        assert!(d.chunks >= 64);
-        assert!(d.cadence_ms >= 200);
-        assert!(d.command.contains("$n=256; $count=64; $delay=250;"));
-        assert!(d.chunk_bytes * 8 >= 2 * 1024);
-        #[cfg(windows)]
-        for stimulus in [&a, &b, &d] {
-            assert!(stimulus.command.contains(" -Command '"));
-            assert!(stimulus.command.contains("New-Object byte[]"));
-            assert!(stimulus.command.contains("OpenStandardOutput"));
-            assert!(stimulus.command.contains(".Write("));
-            assert!(stimulus.command.contains(".Flush()"));
-            assert!(stimulus.command.contains("Start-Sleep"));
-            assert!(stimulus.command.len() < 768);
-            assert!(!stimulus.command.contains(" -EncodedCommand "));
-            assert!(!stimulus.command.contains(" -File "));
-            assert!(!stimulus.command.contains("http"));
-            assert!(!stimulus.command.contains("Invoke-"));
-        }
-        for stimulus in [a, b, d] {
-            assert_eq!(
-                stimulus.target_bytes,
-                stimulus.chunk_bytes * stimulus.chunks
-            );
-            assert!(stimulus.prompt.contains(&stimulus.command));
-            assert!(stimulus.prompt.contains("exactly this command once"));
-            assert!(stimulus.prompt.contains("Use no other tool or command"));
-            assert!(stimulus.prompt.contains("Emit no prose before completion"));
-            assert!(!stimulus.command.contains("caller-controlled"));
-        }
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn generated_windows_streaming_command_executes_through_outer_powershell() {
-        let programs = super::trusted_scenario_programs().unwrap();
-        let shell = programs.shell.clone();
-        for (index, (chunk_bytes, chunks, cadence_ms)) in [(4, 3, 100), (8, 4, 20), (16, 8, 10)]
-            .into_iter()
-            .enumerate()
-        {
-            let command =
-                super::streaming_command(&programs, chunk_bytes, chunks, cadence_ms).unwrap();
-            let started = std::time::Instant::now();
-            let output = std::process::Command::new(&shell)
-                .args(["-NoProfile", "-NonInteractive", "-Command"])
-                .arg(&command)
-                .output()
-                .unwrap();
-            let elapsed = started.elapsed();
-
-            assert!(
-                output.status.success(),
-                "stderr={}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert_eq!(
-                output.stdout,
-                super::expected_stream_bytes(chunk_bytes, chunks)
-            );
-            assert!(output.stderr.is_empty(), "case {index}");
-            assert!(
-                elapsed >= std::time::Duration::from_millis(((chunks - 1) * cadence_ms) as u64),
-                "case {index} completed before its requested cadence"
-            );
-            assert!(elapsed < std::time::Duration::from_secs(10));
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn linux_inline_streaming_uses_only_trusted_absolute_programs() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let programs = super::trusted_scenario_programs().unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "codex-s2-path-plants-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        for name in ["awk", "sleep", "sh"] {
-            let planted = root.join(name);
-            std::fs::write(&planted, b"#!/bin/sh\ntouch planted-marker\nexit 97\n").unwrap();
-            std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        let command = super::streaming_command(&programs, 256, 3, 10).unwrap();
-        assert!(!command.contains("awk"));
-        assert!(!command.contains(root.to_string_lossy().as_ref()));
-        assert!(command.contains(programs.sleep.to_string_lossy().as_ref()));
-        let started = std::time::Instant::now();
-        let output = std::process::Command::new(&programs.shell)
-            .args(["-p", "-c"])
-            .arg(&command)
-            .env("PATH", &root)
-            .current_dir(&root)
-            .output()
-            .unwrap();
-        assert!(output.status.success());
         assert_eq!(
-            output.stdout,
-            super::LINUX_STREAM_SEED.repeat(4).repeat(3).as_bytes()
+            super::agent_delta_bytes(&command_output, "thread-a", "turn-a"),
+            None
         );
-        assert!(started.elapsed() >= std::time::Duration::from_millis(20));
-        assert!(!root.join("planted-marker").exists());
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    #[cfg(windows)]
-    fn inline_streaming_command_has_no_file_or_user_controlled_tokens() {
-        let programs = super::trusted_scenario_programs().unwrap();
-        let command = super::streaming_command(&programs, 1024, 36, 1_000).unwrap();
-        for forbidden in [
-            "-File",
-            "EncodedCommand",
-            "APPDATA",
-            "TEMP",
-            "http",
-            "\\.\\",
+    fn agent_only_frame_gate_allows_benign_and_rejects_tools() {
+        for method in [
+            "item/commandExecution/outputDelta",
+            "item/commandExecution/terminalInteraction",
+            "item/fileChange/outputDelta",
+            "item/fileChange/patchUpdated",
+            "item/mcpToolCall/progress",
+            "item/autoApprovalReview/started",
+            "item/autoApprovalReview/completed",
+            "turn/diff/updated",
+            "item/unknownTool/progress",
         ] {
+            let frame = json!({"method":method,"params":{"threadId":"t","turnId":"u","delta":"x"}});
             assert!(
-                !command.contains(forbidden),
-                "found forbidden token {forbidden}"
+                super::validate_agent_only_notification(&frame, "t", "u").is_err(),
+                "{method}"
             );
         }
-        assert!(command.ends_with("}'"));
+        for item_type in ["agentMessage", "reasoning", "plan"] {
+            let frame = json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","item":{"type":item_type}}});
+            super::validate_agent_only_notification(&frame, "t", "u").unwrap();
+        }
+        for item_type in [
+            "commandExecution",
+            "fileChange",
+            "mcpToolCall",
+            "dynamicToolCall",
+            "webSearch",
+            "collabAgentToolCall",
+            "imageGeneration",
+            "imageView",
+            "hookPrompt",
+            "contextCompaction",
+            "enteredReviewMode",
+            "exitedReviewMode",
+            "unknownItem",
+        ] {
+            let frame = json!({"method":"item/started","params":{"threadId":"t","turnId":"u","item":{"type":item_type}}});
+            assert!(
+                super::validate_agent_only_notification(&frame, "t", "u").is_err(),
+                "{item_type}"
+            );
+        }
+        let plan = json!({"method":"item/plan/delta","params":{"threadId":"t","turnId":"u","delta":"not R1"}});
+        super::validate_agent_only_notification(&plan, "t", "u").unwrap();
+        assert_eq!(super::agent_delta_bytes(&plan, "t", "u"), None);
+        for frame in [
+            json!({"method":"thread/name/updated","params":{"threadId":"t","threadName":"name"}}),
+            json!({"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"active"}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"t","turnId":"u","tokenUsage":{}}}),
+            json!({"method":"turn/moderationMetadata","params":{"threadId":"t","turnId":"u","metadata":{}}}),
+        ] {
+            super::validate_agent_only_notification(&frame, "t", "u").unwrap();
+            assert_eq!(super::agent_delta_bytes(&frame, "t", "u"), None);
+        }
+        let aggregate = json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","item":{"type":"agentMessage","text":"not R1"}}});
+        assert_eq!(super::agent_delta_bytes(&aggregate, "t", "u"), None);
     }
 
     #[test]

@@ -97,47 +97,44 @@ fn run_s2_orchestrates_a_through_d_and_writes_sanitized_artifacts() {
 
 #[test]
 #[cfg(debug_assertions)]
-fn command_execution_output_deltas_contribute_only_when_correlated() {
+fn command_execution_output_deltas_are_rejected_in_agent_only_scenarios() {
     let output = temp_output("command-output-success");
-    let outcome = run_s2_for_test(S2RunConfig {
-        output_dir: Some(output.clone()),
-        executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
-        trusted_approval_wrapper: None,
-        model: None,
-        scenario_timeout: Duration::from_secs(10),
-        global_timeout: Duration::from_secs(60),
-    })
-    .unwrap();
-    assert!(outcome.report.valid);
-    let evidence: Value =
-        serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
-    assert_eq!(evidence["performance"]["event_sizes"]["samples"], 40);
-    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
-    let prompts = capture
-        .lines()
-        .filter_map(|line| serde_json::from_str::<CaptureRecord>(line).ok())
-        .filter_map(|record| serde_json::from_str::<Value>(&record.line).ok())
-        .filter(|frame| frame["method"] == "turn/start")
-        .filter_map(|frame| {
-            frame
-                .pointer("/params/input/0/text")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .filter(|prompt| {
-            ["S2-A", "S2-B", "S2-D"]
-                .iter()
-                .any(|name| prompt.contains(name))
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(prompts.len(), 3);
-    #[cfg(windows)]
-    assert!(prompts.iter().all(|prompt| {
-        prompt.contains(" -Command '")
-            && !prompt.contains(" -EncodedCommand ")
-            && !prompt.contains(" -File ")
-    }));
+    let outcome = run_fake("command-output-success", &output, 10_000);
+    assert!(!outcome.status.success());
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(output.join("validation-report.json")).unwrap())
+            .unwrap();
+    assert_eq!(report["valid"], false);
     std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn agent_only_scenarios_fail_closed_on_tools_requests_and_non_delta_output() {
+    for mode in [
+        "agent-tool-command",
+        "agent-tool-file",
+        "agent-tool-mcp",
+        "agent-tool-dynamic",
+        "agent-tool-web",
+        "agent-tool-collab",
+        "agent-tool-unknown",
+        "agent-server-request",
+        "agent-aggregated-only",
+        "agent-wrong-ids",
+        "agent-empty-delta",
+        "agent-early-complete",
+        "agent-d-early-complete",
+    ] {
+        let output = temp_output(mode);
+        let result = run_fake(mode, &output, 10_000);
+        assert!(!result.status.success(), "{mode} unexpectedly passed");
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(output.join("validation-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(report["valid"], false, "{mode}");
+        std::fs::remove_dir_all(output).unwrap();
+    }
 }
 
 #[test]
@@ -207,8 +204,10 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
             })
             .find(|prompt| prompt.contains(scenario))
             .unwrap();
-        assert!(prompt.contains("Execute exactly this command once"));
-        assert!(prompt.contains("COMMAND_BEGIN"));
+        assert!(prompt.contains("final response body only"));
+        assert!(prompt.contains("fixed 64-character ASCII seed"));
+        assert!(prompt.contains("Use no tools, no commands, no files"));
+        assert!(!prompt.contains("COMMAND_BEGIN"));
         assert!(!prompt.contains(output.to_string_lossy().as_ref()));
     }
     let approvals = records
@@ -243,7 +242,7 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         let sanitized = std::fs::read_to_string(output.join(artifact)).unwrap();
         assert!(!sanitized.contains("S2_APPROVED"));
         assert!(!sanitized.contains(".codex-s2-approval-marker"));
-        assert!(!sanitized.contains("OpenStandardOutput"));
+        assert!(!sanitized.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKL"));
     }
     assert!(workspace.join("cmd.exe").exists());
     #[cfg(windows)]
@@ -558,63 +557,6 @@ fn path_with_planted_pwsh(root: &std::path::Path) -> (std::path::PathBuf, std::f
     let mut paths = vec![planted_dir];
     paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
     (planted, std::env::join_paths(paths).unwrap())
-}
-
-#[test]
-#[cfg(windows)]
-fn windows_streaming_stimuli_ignore_path_planted_pwsh() {
-    let root = temp_output("protected-streaming-shell");
-    let output = root.join("output");
-    let (planted, path) = path_with_planted_pwsh(&root);
-    let result = Command::new(env!("CARGO_BIN_EXE_codex-app-server-capture"))
-        .args(["run-s2", "--output-dir"])
-        .arg(&output)
-        .args([
-            "--executable",
-            env!("CARGO_BIN_EXE_fake-app-server"),
-            "--scenario-timeout-ms",
-            "10000",
-            "--global-timeout-ms",
-            "60000",
-        ])
-        .env("PATH", path)
-        .output()
-        .unwrap();
-    assert!(
-        !result.status.success(),
-        "production thresholds must stay strict"
-    );
-    let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
-    let planted = planted.to_string_lossy();
-    let prompts = capture
-        .lines()
-        .filter_map(|line| serde_json::from_str::<CaptureRecord>(line).ok())
-        .filter_map(|record| serde_json::from_str::<Value>(&record.line).ok())
-        .filter(|frame| frame["method"] == "turn/start")
-        .filter_map(|frame| {
-            frame
-                .pointer("/params/input/0/text")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .filter(|prompt| {
-            ["S2-A", "S2-B", "S2-D"]
-                .iter()
-                .any(|name| prompt.contains(name))
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(prompts.len(), 3);
-    assert!(
-        prompts
-            .iter()
-            .all(|prompt| !prompt.contains(planted.as_ref()))
-    );
-    assert!(prompts.iter().all(|prompt| {
-        prompt
-            .to_ascii_lowercase()
-            .contains(r"windowspowershell\v1.0\powershell.exe")
-    }));
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
