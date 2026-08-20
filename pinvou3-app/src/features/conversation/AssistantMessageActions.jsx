@@ -210,8 +210,9 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
 
   const handleSystemShare = async () => {
     closeMenu('share', true);
+    let value = null;
     try {
-      const value = await responseText();
+      value = await responseText();
       const result = await shareAssistantResponseWithSystem({
         title: copy.shareReplyTitle,
         text: value,
@@ -224,8 +225,15 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
       const copied = await copyClipboardText(value);
       showFeedback(copied ? copy.shareUnavailable : copy.shareFailed, !copied);
     } catch {
-      const copied = await copyForShare();
-      showFeedback(copied ? copy.shareUnavailable : copy.shareFailed, !copied);
+      // responseText 可能因 turndown chunk 拉取失败 reject——此时 catch 里再调
+      // copyForShare() 会二次 reject 逃出 catch(unhandled rejection 且无反馈)。
+      // 只复用 try 里已解析成功的 value 复制;连 value 都没有时如实报分享失败。
+      try {
+        const copied = value !== null ? await copyClipboardText(value) : false;
+        showFeedback(copied ? copy.shareUnavailable : copy.shareFailed, !copied);
+      } catch {
+        showFeedback(copy.shareFailed, true);
+      }
     }
   };
 

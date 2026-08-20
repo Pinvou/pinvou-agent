@@ -70,8 +70,9 @@ function genericLog(hljsApi) {
 
 // 别名表是反查表(LAZY_ALIAS_TO_CANONICAL)与注册后别名注册(registerAliasesFor)
 // 的单一真相源:核心语言的常用别名 + 懒语言的 hljs 内建别名(注册前围栏写这些
-// 别名也必须能触发懒加载,否则永久回落纯文本)。内建别名清单来自 highlight.js
-// 11.11.1 各语言模块自带 aliases(注册后回读核验)。
+// 别名也必须能触发懒加载,否则永久回落纯文本)。内建别名清单须与 lockfile 实际
+// 版本的各语言模块 aliases 保持一致(测试 lazy_alias_table_covers_installed_aliases
+// 会从安装版回读断言全覆盖,升级 highlight.js 时漂移会被测试拦下)。
 const EXPLICIT_ALIASES = {
   javascript: ['js', 'jsx', 'mjs', 'cjs'],
   typescript: ['ts', 'tsx', 'mts', 'cts'],
@@ -82,7 +83,7 @@ const EXPLICIT_ALIASES = {
   fsharp: ['fs', 'f#'],
   bash: ['sh', 'zsh'],
   powershell: ['ps1', 'pwsh'],
-  dos: ['bat', 'cmd'],
+  dos: ['bat', 'batch', 'cmd'],
   yaml: ['yml'],
   markdown: ['md', 'mdown'],
   protobuf: ['proto'],
@@ -103,7 +104,7 @@ const EXPLICIT_ALIASES = {
   erlang: ['erl'],
   graphql: ['gql'],
   haskell: ['hs'],
-  kotlin: ['kt', 'kts'],
+  kotlin: ['kt', 'kts', 'ktm', 'ktx'],
   latex: ['tex'],
   lua: ['pluto'],
   mipsasm: ['mips'],
@@ -139,6 +140,12 @@ for (const [canonical, aliases] of Object.entries(EXPLICIT_ALIASES)) {
   if (!Object.hasOwn(LAZY_LANGUAGE_LOADERS, canonical)) continue;
   for (const alias of aliases) LAZY_ALIAS_TO_CANONICAL[alias] = canonical;
 }
+
+// 供契约测试只读内省:反查表必须覆盖安装版 highlight.js 各懒语言模块自带的
+// 全部 aliases(见 tests/markdown_syntax_highlight.test.mjs 的防漂移断言),
+// 否则别名围栏在注册前无法命中懒加载、永久回落纯文本。
+export const lazyLanguageNames = Object.freeze(Object.keys(LAZY_LANGUAGE_LOADERS));
+export const lazyAliasTable = LAZY_ALIAS_TO_CANONICAL;
 
 // 懒语言注册完成的版本号与订阅:静态消费方(renderMarkdown/highlightCode 的
 // useMemo)把版本号纳入 deps,注册完成后重算,让已渲染内容恢复高亮。

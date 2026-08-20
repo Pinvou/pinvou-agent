@@ -765,19 +765,23 @@ mod tests {
         assert!(!MODEL_DEFERRED_NO_USAGE.load(Ordering::SeqCst));
     }
 
-    /// 工具门控语义（lib.rs tool_policy 的纯函数投影）：模型卸载（!ready）后
-    /// 只要有已入库内容,kb_search/kb_open_source 就必须保持可见——否则快照式
-    /// 重算会把工具写进 disallowed,工具内按需重载的自愈路径不可达。
+    /// 工具门控语义：锚定 lib.rs tool_policy 实际引用的纯函数
+    /// KnowledgeService::kb_tools_usable（此前该测试断言测试内自定义闭包，属
+    /// 同义反复——生产判定若回退掺回 semantic_ready 此灯不会红）。模型卸载
+    /// （!ready）后只要有已入库内容,kb_search/kb_open_source 就必须保持可见
+    /// ——否则快照式重算会把工具写进 disallowed,工具内按需重载的自愈路径不可达。
+    /// 函数签名刻意不含模型状态参数:任何把 semantic_ready 掺回来的改动会直接
+    /// 编译错或在此红灯。
     #[test]
     fn kb_tools_stay_visible_after_model_unload_when_content_present() {
-        let kb_usable = |indexed_content: bool, _semantic_ready: bool| indexed_content;
-        // 有内容 + 模型已卸载：工具仍可见（自愈重载路径可达）。
-        assert!(kb_usable(true, false));
-        // 有内容 + 模型在位：工具可见（原语义）。
-        assert!(kb_usable(true, true));
-        // 库空：无论模型在位与否都不可见（不空宣传能力）。
-        assert!(!kb_usable(false, true));
-        assert!(!kb_usable(false, false));
+        use super::KnowledgeService;
+        // 有内容（本地任一分支）+ 模型已卸载：工具仍可见（自愈重载路径可达）。
+        assert!(KnowledgeService::kb_tools_usable(true, false));
+        // 有内容 + 远程连接：工具可见（远程检索不依赖本地模型）。
+        assert!(KnowledgeService::kb_tools_usable(false, true));
+        assert!(KnowledgeService::kb_tools_usable(true, true));
+        // 库空且无远程连接：工具不可见（不空宣传能力）。
+        assert!(!KnowledgeService::kb_tools_usable(false, false));
     }
 
     /// 集成层：空闲卸载语义（set_embedder(None)）不改变 has_indexed_content 的

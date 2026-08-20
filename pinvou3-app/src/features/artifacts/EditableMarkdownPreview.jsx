@@ -46,6 +46,11 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   const saveNowRef = useRef(null);
   const pendingSaveRef = useRef(false);
   const applyingHtmlRef = useRef(false);
+  // turndown 就绪前用户敲进 contentEditable 的编辑只存在于 DOM,尚未投影进
+  // latestDraftRef(见 handleInput 早退分支)。此标志让懒语言重放 effect 跳过
+  // (refs 相等不代表 DOM 无编辑,重放会抹掉这段输入),并让 dirty 状态/保存
+  // 调度不至于把窗口内的编辑误判为「干净」。
+  const pendingDomEditRef = useRef(false);
   const turndownRef = useRef(null);
   const turndownReadyRef = useRef(null);
   // applyMarkdownToDom 定义在下方;懒语言重放 effect 声明在其前,经 ref 取用。
@@ -58,10 +63,12 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   const [aiInputOpen, setAiInputOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState('');
   // 懒语言注册完成后 bump 版本号:仅在没有未保存编辑时把当前草稿重新渲染进
-  // DOM 恢复高亮;有编辑时不重放,避免覆盖 DOM 里尚未投影的修改。
+  // DOM 恢复高亮;有编辑时不重放,避免覆盖 DOM 里尚未投影的修改。除 refs 相等
+  // 外还须查 pendingDomEditRef:投影未就绪窗口内 refs 恒相等,但 DOM 里可能
+  // 已有未投影的用户输入,此刻重放会把它抹掉。
   const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
   useEffect(() => {
-    if (latestDraftRef.current === lastSavedRef.current) {
+    if (!pendingDomEditRef.current && latestDraftRef.current === lastSavedRef.current) {
       applyMarkdownToDomRef.current?.(latestDraftRef.current);
     }
   }, [syntaxVersion]);
@@ -81,6 +88,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
           setDraft(projected);
         }
       }
+      pendingDomEditRef.current = false;
       return instance;
     }).catch(() => {
       turndownReadyRef.current = null;
@@ -109,6 +117,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     const text = initialText || '';
     latestDraftRef.current = text;
     lastSavedRef.current = text;
+    pendingDomEditRef.current = false;
     setDraft(text);
     setSaveState('idle');
     setErrorText('');
@@ -117,6 +126,16 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     setAiInstruction('');
     applyMarkdownToDom(text);
   }, [artifact?.path, applyMarkdownToDom]);
+
+  // 输入是高频事件,turndown 未就绪时不做 DOM→Markdown 投影(编辑暂存于 DOM,
+  // 由 loadTurndown 的就绪回调补投影),就绪后恢复逐键同步。声明在 saveNow 之前
+  // (saveNow 的未投影编辑兜底也用它)。
+  const markdownFromDom = useCallback(() => {
+    const el = editableRef.current;
+    const instance = turndownRef.current;
+    if (!el || !instance) return '';
+    return instance.turndown(el.innerHTML).trim();
+  }, []);
 
   const saveNow = useCallback(async () => {
     if (!artifact?.path) return true;
@@ -132,8 +151,21 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
       return latestDraftRef.current === lastSavedRef.current;
     }
 
+    // 卸载保存/外部 flush 可能赶在 turndown 就绪投影之前:refs 相等但 DOM 里
+    // 还有未投影编辑。turndown 尚未就绪时无法同步投影(动态 import),只能如实
+    // 报告未保存,让调用方(ArtifactsPanel 关闭确认)走「保存失败」路径而不是
+    // 误以为已保存;就绪回调的投影随后由调度 effect 正常收尾。
     const content = latestDraftRef.current;
-    if (content === lastSavedRef.current) return true;
+    if (content === lastSavedRef.current) {
+      if (!pendingDomEditRef.current) return true;
+      if (!turndownRef.current) return false;
+      const projected = markdownFromDom();
+      if (projected === lastSavedRef.current) {
+        pendingDomEditRef.current = false;
+        return true;
+      }
+      latestDraftRef.current = projected;
+    }
 
     setSaveState('saving');
     setErrorText('');
@@ -194,11 +226,14 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
 
   useImperativeHandle(ref, () => ({
     flush: saveNow,
-    hasDirty: () => latestDraftRef.current !== lastSavedRef.current,
+    // 外部删除保护(ArtifactsPanel)也要看见未投影的 DOM 编辑。
+    hasDirty: () => pendingDomEditRef.current || latestDraftRef.current !== lastSavedRef.current,
     reloadFromDisk,
   }), [saveNow, reloadFromDisk]);
 
   useEffect(() => {
+    // pendingDomEditRef 置位时 draft 已被拨动(见 handleInput),与 refs 相等的
+    // 情形互斥;真正的防抖保存仍以 draft 为准。
     if (draft === lastSavedRef.current) return;
     setSaveState('dirty');
     const timer = setTimeout(() => { saveNow(); }, 1000);
@@ -206,24 +241,20 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   }, [draft, saveNow]);
 
   useEffect(() => () => {
-    if (latestDraftRef.current !== lastSavedRef.current) {
+    if (pendingDomEditRef.current || latestDraftRef.current !== lastSavedRef.current) {
       saveNowRef.current?.();
     }
-  }, []);
-
-  // 输入是高频事件,turndown 未就绪时不做 DOM→Markdown 投影(编辑暂存于 DOM,
-  // 由 loadTurndown 的就绪回调补投影),就绪后恢复逐键同步。
-  const markdownFromDom = useCallback(() => {
-    const el = editableRef.current;
-    const instance = turndownRef.current;
-    if (!el || !instance) return '';
-    return instance.turndown(el.innerHTML).trim();
   }, []);
 
   const handleInput = useCallback(() => {
     if (applyingHtmlRef.current) return;
     if (!turndownRef.current) {
       // 预热未完成或此前失败:触发(重)加载,就绪回调会把 DOM 里的编辑补进草稿。
+      // 先记下「DOM 有未投影编辑」:该标志挡住懒语言重放 effect(防止重放抹掉
+      // 这段输入),并驱动下方保存 effect 立即标 dirty——否则窗口内关面板时
+      // flush 因 refs 相等短路,这段输入会被静默丢弃。
+      pendingDomEditRef.current = true;
+      setDraft((prev) => (prev === lastSavedRef.current ? `${prev}\u200b` : prev));
       loadTurndown();
       return;
     }

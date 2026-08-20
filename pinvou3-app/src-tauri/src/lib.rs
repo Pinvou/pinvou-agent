@@ -386,19 +386,17 @@ pub fn run() {
             let tool_policy: crate::features::assistant::engine_pool::ToolPolicy =
                 std::sync::Arc::new(|app| {
                     let mut tools = crate::features::marketplace::disabled_tool_names();
-                    // kb 工具可见性只看「有没有内容」：模型可能被空闲卸载/首帧门控
-                    // 跳过，可见性若随之波动，快照式重算会把 kb_search 写进
-                    // disallowed，新 spawn 的 engine 看不到工具，工具内的按需重载
-                    // 自愈路径反而不可达。模型缺位由 kb_search 执行时走租约化重载
-                    // 兜底（失败降级纯全文，不阻断检索）。
-                    let kb_usable = app
-                        .try_state::<knowledge::KnowledgeService>()
-                        .map(|service| service.has_indexed_content())
-                        .unwrap_or(false)
-                        || app
-                            .try_state::<RemoteKnowledgeService>()
+                    // 语义与单一真相源见 KnowledgeService::kb_tools_usable:
+                    // 只看有没有内容,不看模型在位状态(可见性随模型波动会让
+                    // 自愈重载路径不可达)。
+                    let kb_usable = knowledge::KnowledgeService::kb_tools_usable(
+                        app.try_state::<knowledge::KnowledgeService>()
+                            .map(|service| service.has_indexed_content())
+                            .unwrap_or(false),
+                        app.try_state::<RemoteKnowledgeService>()
                             .map(|service| service.has_connections())
-                            .unwrap_or(false);
+                            .unwrap_or(false),
+                    );
                     if !kb_usable {
                         tools.push("kb_search".to_string());
                         tools.push("kb_open_source".to_string());

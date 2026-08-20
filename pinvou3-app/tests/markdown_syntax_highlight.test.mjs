@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +8,8 @@ import { renderMarkdownMarkup } from '../src/shared/markdown-renderer.js';
 import {
   highlightCode,
   highlightDiffCode,
+  lazyAliasTable,
+  lazyLanguageNames,
   MAX_HIGHLIGHT_SOURCE_BYTES,
   normalizeSyntaxLanguage,
   subscribeSyntaxHighlight,
@@ -328,5 +331,31 @@ assert.equal(texAfter.language, 'latex', 'tex alias must normalize to latex afte
 const cljAfter = await waitForLazyHighlight('clj', '(defn probe [x] x)\n');
 assert.equal(cljAfter.highlighted, true, 'builtin alias clj must highlight after clojure loads');
 assert.equal(cljAfter.language, 'clojure', 'clj alias must normalize to clojure after loading');
+
+// 防漂移契约:反查表(lazyAliasTable)必须覆盖安装版 highlight.js 各懒语言模块
+// 自带的全部 aliases。别名表是人工维护的,升级 highlight.js 或语言模块新增
+// 别名时(11.11.1→11.12.0 曾漏 batch/ktm/ktx 导致 ```batch 围栏永久纯文本),
+// 这里从安装版回读断言全覆盖,漂移即刻红灯。
+{
+  const require = createRequire(import.meta.url);
+  const missing = [];
+  for (const name of lazyLanguageNames) {
+    const module = require(`highlight.js/lib/languages/${name}`);
+    const definition = typeof module === 'function' ? module : module.default;
+    assert.equal(typeof definition, 'function', `installed language module missing: ${name}`);
+    // 工厂函数带 hljs 参数运行后才携带 aliases;用一个最小桩执行到能读出
+    // aliases 的程度——registerLanguage 后 hljs 会把 aliases 归档到注册表,
+    // 这里直接用一个隔离 core 实例完成同样的事,不污染生产 hljs 单例。
+    const core = require('highlight.js/lib/core');
+    core.registerLanguage(name, definition);
+    const registered = core.getLanguage(name);
+    const aliases = (registered && registered.aliases) || [];
+    assert.ok(Array.isArray(aliases), `installed language ${name} must expose aliases array`);
+    for (const alias of aliases) {
+      if (lazyAliasTable[alias] !== name) missing.push(`${name}: '${alias}'`);
+    }
+  }
+  assert.deepEqual(missing, [], `lazy alias table must cover every installed alias (missing: ${missing.join(', ')})`);
+}
 
 console.log('Markdown syntax highlighting contract: ok');

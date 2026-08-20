@@ -308,6 +308,16 @@ impl KnowledgeService {
         self.l1.has_any_document().unwrap_or(false)
     }
 
+    /// kb 工具可见性判定（lib.rs tool_policy 的单一真相源）：
+    /// **只看有没有内容，不看 embedding 模型在位状态**。模型可能被空闲卸载/首帧
+    /// 门控跳过，可见性若随之波动，快照式重算会把 kb_search 写进 disallowed，
+    /// 新 spawn 的 engine 看不到工具，工具内的按需重载自愈路径反而不可达——
+    /// 这是审阅 blocker 的修复语义，回归测试锚定在 model_download.rs
+    /// （`kb_tools_stay_visible_after_model_unload_when_content_present`）。
+    /// 模型缺位由 kb_search 执行时走租约化重载兜底（失败降级纯全文，不阻断检索）。
+    pub fn kb_tools_usable(indexed_content: bool, remote_connections: bool) -> bool {
+        indexed_content || remote_connections
+    }
     pub fn index_status(&self) -> IndexState {
         self.imports
             .latest_state()

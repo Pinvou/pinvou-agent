@@ -195,16 +195,18 @@
     });
   </script>
   <!-- 内置卡牌 en/ja 名称 overlay(141KB):中文用户零读取(personaText 对 zh 短路),
-       按系统语言条件加载——zh 跳过,非 zh 注入。所有读取点都有空值兜底。 -->
+       按系统语言首选 tag 条件加载——口径与 i18n.js languageFromLocaleTags 一致
+       (取首个有效 tag 的主语言;zh 首选即跳过)。用「任一 tag 含 en/ja」判定会让
+       zh 首选+en 次选的常见中文用户白读 141KB,而 UI 语言解析为 zh、personaText
+       短路。首选不受支持(如 fr)时 App 落 en,由 main.jsx 的 UI 语言兜底注入。 -->
   <script>
     (function () {
       var tags = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || 'zh'];
-      var needsPersonaI18n = tags.some(function (tag) {
-        // 前缀比较,避免正则转义陷阱(此前 \b 被写成字面 0x08 导致永不匹配)
-        var primary = String(tag || '').slice(0, 2).toLowerCase();
-        return primary === 'en' || primary === 'ja';
-      });
-      if (!needsPersonaI18n) { __PINVOU_STARTUP__.mark('app:personas_i18n_skipped', 'lang=' + tags[0]); return; }
+      var primaryTag = String(tags.find(function (t) { return t && String(t).trim(); }) || tags[0] || 'zh');
+      // 前缀比较,避免正则转义陷阱(此前 \b 被写成字面 0x08 导致永不匹配)
+      var primary = primaryTag.slice(0, 2).toLowerCase();
+      var needsPersonaI18n = primary === 'en' || primary === 'ja';
+      if (!needsPersonaI18n) { __PINVOU_STARTUP__.mark('app:personas_i18n_skipped', 'lang=' + primaryTag); return; }
       var s = document.createElement('script');
       // data-personas-i18n:main.jsx 按 UI 语言兜底注入时据此识别在途脚本,防止重复加载
       s.setAttribute('data-personas-i18n', '1');

@@ -558,6 +558,13 @@ function workspaceDisplayName(path) {
         setWebAccessOpen(true);
       }
 
+      // 冷路径预取:该 modal 唯一入口在聊天「存入卡牌池」,此前 cardpool chunk
+      // 可能从未加载;提前发起 import 避免打开动作撞上 chunk 冷启动/失败。
+      function handleOpenPersonaEditor(initial) {
+        prefetchView('cardpool');
+        setPersonaEditor({ initial });
+      }
+
       function handleActivateSkill(name) {
         setChatPrefill(t.skillPrefill(name));
         setCurrentView('chat');
@@ -2179,7 +2186,7 @@ function workspaceDisplayName(path) {
             )}
             {currentView === 'toolStore' && <LazyToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
             {codexAcpSupported && currentView === 'codex' && (
               <LazyCodexAcpView
                 theme={activeTheme}
@@ -2199,7 +2206,7 @@ function workspaceDisplayName(path) {
             )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
-                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
+                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
               ) : (
                 <LazyScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} onGotoModelSettings={() => openSettingsSection('model')} />
               )
@@ -2244,14 +2251,17 @@ function workspaceDisplayName(path) {
             </ViewErrorBoundary>
             )}
 
-            {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
+            {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条。错误边界与
+                WebAccessModal 同款:lazy chunk 拉取失败不能卸载整个应用窗口。 */}
             {personaEditor && (
+              <ViewErrorBoundary t={t}>
               <Suspense fallback={null}>
               <LazyPersonaEditorModal initial={personaEditor.initial} isDark={activeTheme === 'dark'} t={t}
                 onClose={() => setPersonaEditor(null)}
                 onSaved={(sum) => { const isEdit = personaEditor.initial && personaEditor.initial.id; setPersonaEditor(null); if (!isEdit) setSavedConfirm({ name: sum && sum.name }); }}
                 onDeleted={() => setPersonaEditor(null)} />
               </Suspense>
+              </ViewErrorBoundary>
             )}
 
             {/* 存入成功 → iOS 确认窗:去查看我的卡牌 / 暂不 */}

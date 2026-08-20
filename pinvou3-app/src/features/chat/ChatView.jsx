@@ -110,6 +110,22 @@ const DESIGN_MODE_SUBTABS = [
   { key: 'ppt', labelKey: 'pptDesign', Icon: Presentation, disabled: true, disabledReasonKey: 'pptUnavailable' },
 ];
 
+// legacy assistant 气泡由 item.text 现算 markdown(懒语言注册后恢复高亮所必需),
+// 但 ChatBubble 未 memo 化:输入框每个按键、流式每个 delta、秒级 tick 都会全量
+// 重渲染,长会话下每次全量重跑 marked+DOMPurify。content-visibility(#275)只省
+// 浏览器合成,不省 React 渲染。item 引用稳定(bridge 会话数据),按 item 键控、
+// text+syntaxVersion 未变直接复用上次结果;版本号 bump(懒语言注册)自然失效重算。
+const legacyMarkdownCache = new WeakMap();
+function renderLegacyMarkdownCached(item, syntaxVersion) {
+  const cached = legacyMarkdownCache.get(item);
+  if (cached && cached.text === item.text && cached.version === syntaxVersion) {
+    return cached.html;
+  }
+  const html = renderMarkdown(item.text);
+  legacyMarkdownCache.set(item, { text: item.text, version: syntaxVersion, html });
+  return html;
+}
+
 function localizeSceneTabs(items, copy) {
   return items.map(item => ({
     ...item,
@@ -2691,11 +2707,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (item.streaming && !item.html) return null; // 空流式气泡交给 ThinkingBubble 表示
         // 旧会话(legacy)的 assistant 气泡由 item.text 现算 markdown:懒语言注册后
         // (ChatBubble 顶部订阅 syntaxVersion 触发重渲染)历史消息恢复高亮——若
-        // 沿用冻结的 item.html,首次渲染时未注册的语言将永久纯文本。流式消息仍
+        // 沿用冻结的 item.html,首次渲染时未注册的语言将永久纯文本。现算结果按
+        // item 缓存(见 renderLegacyMarkdownCached),重渲染零解析成本。流式消息仍
         // 走 item.html(增量渲染管线);仅存 html 无 text 的旧消息无法现算,保持
         // 原样(其语言在启动核心集内,不受懒注册影响)。
         const html = (!item.streaming && item.text)
-          ? renderMarkdown(item.text)
+          ? renderLegacyMarkdownCached(item, syntaxVersion)
           : (item.html || '');
         const streamingDraftLabel = /scheduled-task-draft/.test(html) ? t.uiChatExtra.draftingScheduled : (t && t.cpDesigning);
         const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
