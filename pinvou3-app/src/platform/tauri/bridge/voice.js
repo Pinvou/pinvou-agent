@@ -398,6 +398,9 @@
       scheduleVoiceTimingExport(session);
       emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
     } catch (err) {
+      // Cancellation clears activeVoiceInput and owns the terminal `cancelled`
+      // state. A late ASR rejection must not overwrite it with `failed`.
+      if (activeVoiceInput !== session) return;
       var normalized = normalizeVoiceError(err, "transcribing");
       markVoiceTiming(session, "failed", { category: normalized.category, stage: normalized.stage });
       setVoiceInputStatus("failed", {

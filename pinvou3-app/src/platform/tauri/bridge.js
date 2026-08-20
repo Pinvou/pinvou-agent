@@ -637,6 +637,10 @@
   // buffer 跑同步逻辑再切回(saveWorkingSetTo/loadWorkingSetFrom),期间 suppressNotify
   // 避免把后台渲染成 active。异步收尾(落盘)按显式 session_id 路由,不依赖工作集。
   var sessionStates = {};
+  // sessions.js is installed before chat-events.js. Keep a late-bound disposer
+  // so deletion/LRU pruning can still cancel the coalescer's per-session timer.
+  var discardPendingChatDeltasForSession = function () {};
+  var flushPendingChatDeltasForSession = function () { return false; };
   var authoritativeTranscriptSyncs = Object.create(null);
   var scheduledRunSessionOwners = Object.create(null);
   var MAX_SCHEDULED_SESSION_BUFFERS = 64;
@@ -787,6 +791,9 @@
     userMessageDisplayText: userMessageDisplayText,
     extractArtifactPaths: extractArtifactPaths,
     fileMutationAction: fileMutationAction,
+    flushPendingChatDeltas: function () {
+      return flushPendingChatDeltasForSession.apply(null, arguments);
+    },
     parseScheduledTaskDraftFromText: function () { return parseScheduledTaskDraftFromText.apply(null, arguments); },
     autoCreateScheduledTaskDraft: function () { return autoCreateScheduledTaskDraft.apply(null, arguments); },
     get currentStreamText() { return currentStreamText; },
@@ -819,6 +826,10 @@
   var doSendFor = chatFeature.doSendFor;
   var publishRemoteUserMessage = chatFeature.publishRemoteUserMessage;
   var flushQueued = chatFeature.flushQueued;
+  var enqueueBehindSubagentCompletionHold = chatFeature.enqueueBehindSubagentCompletionHold;
+  var renewSubagentCompletionHold = chatFeature.renewSubagentCompletionHold;
+  var startSubagentCompletionHoldHeartbeat = chatFeature.startSubagentCompletionHoldHeartbeat;
+  var releaseSubagentCompletionHoldIfUnused = chatFeature.releaseSubagentCompletionHoldIfUnused;
   var sendMessageToSession = chatFeature.sendMessageToSession;
   var sendMessage = chatFeature.sendMessage;
   var getComposerDraft = chatFeature.getComposerDraft;
@@ -863,6 +874,12 @@
     bt: bt, userMessageDisplayText: userMessageDisplayText,
     loadPinvouSceneEventsForSession: loadPinvouSceneEventsForSession,
     syncPinvouSceneEventsForSession: syncPinvouSceneEventsForSession,
+    discardPendingChatDeltas: function (sessionId) {
+      return discardPendingChatDeltasForSession(sessionId);
+    },
+    flushPendingChatDeltas: function () {
+      return flushPendingChatDeltasForSession.apply(null, arguments);
+    },
     loadMemoryOverview: function () { return loadMemoryOverview.apply(null, arguments); },
     isScheduledRunSession: isScheduledRunSession,
     get currentStreamText() { return currentStreamText; },
@@ -1244,6 +1261,31 @@
     for (var i = 0; i < domains.length; i++) Object.assign(result, snapshotStateSlice(domains[i]));
     return result;
   }
+  function snapshotStateShallow() {
+    var snapshot = Object.assign({}, state);
+    // Streaming mutates the current item in place. A fresh array identity keeps
+    // memoized projections (notably VoiceShell) live without cloning its large
+    // item payloads.
+    if (Array.isArray(state.chatItems)) snapshot.chatItems = state.chatItems.slice();
+    return snapshot;
+  }
+  function snapshotStateSlicesShallow(domains) {
+    if (!Array.isArray(domains) || domains.length === 0) {
+      throw new Error("Tauri bridge state.getMany requires at least one domain");
+    }
+    var result = {};
+    for (var domainIndex = 0; domainIndex < domains.length; domainIndex++) {
+      var fields = STATE_SLICE_FIELDS[domains[domainIndex]];
+      if (!fields) throw new Error("Unknown Tauri bridge state slice: " + domains[domainIndex]);
+      for (var fieldIndex = 0; fieldIndex < fields.length; fieldIndex++) {
+        var field = fields[fieldIndex];
+        result[field] = field === "chatItems" && Array.isArray(state[field])
+          ? state[field].slice()
+          : state[field];
+      }
+    }
+    return result;
+  }
   function cloneJson(value, fallback) {
     try { return JSON.parse(JSON.stringify(value == null ? fallback : value)); }
     catch (_) { return fallback; }
@@ -1317,27 +1359,62 @@
     });
     return true;
   }
-  function notify() {
-    if (suppressNotify) return;
-    // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
+  function refreshSessionBusyProjection() {
     state.sessionBusy = {};
     for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
-    var snapshot = snapshotState();
-    for (var i = 0; i < subscribers.length; i++) subscribers[i](snapshot);
+  }
+  function publishSubscribers(shallow) {
+    for (var i = 0; i < subscribers.length; i++) {
+      var subscriber = subscribers[i];
+      var snapshot;
+      if (!subscriber.domains) {
+        snapshot = shallow ? snapshotStateShallow() : snapshotState();
+      } else {
+        snapshot = shallow
+          ? snapshotStateSlicesShallow(subscriber.domains)
+          : snapshotStateSlices(subscriber.domains);
+      }
+      subscriber.fn(snapshot);
+    }
+  }
+  function notify() {
+    if (suppressNotify) return;
+    // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
+    refreshSessionBusyProjection();
+    publishSubscribers(false);
+  }
+  function notifyStreamingChat() {
+    if (suppressNotify) return;
+    refreshSessionBusyProjection();
+    // Streaming mutations stay internal to this bridge and subscribers receive
+    // a fresh top-level object, which is enough to schedule a React render.
+    // Nested values remain read-only bridge state references for this hot tick;
+    // ordinary semantic boundaries still publish isolated deep snapshots.
+    publishSubscribers(true);
   }
   function subscribe(fn) {
-    subscribers.push(fn);
+    var subscriber = { fn: fn, domains: null };
+    subscribers.push(subscriber);
     return function () {
-      subscribers = subscribers.filter(function (f) { return f !== fn; });
+      subscribers = subscribers.filter(function (candidate) { return candidate !== subscriber; });
     };
   }
   function subscribeStateSlice(domain, fn) {
-    return subscribe(function () { fn(snapshotStateSlice(domain)); });
+    if (!STATE_SLICE_FIELDS[domain]) throw new Error("Unknown Tauri bridge state slice: " + domain);
+    var subscriber = { fn: fn, domains: [domain] };
+    subscribers.push(subscriber);
+    return function () {
+      subscribers = subscribers.filter(function (candidate) { return candidate !== subscriber; });
+    };
   }
   function subscribeStateSlices(domains, fn) {
     snapshotStateSlices(domains);
-    return subscribe(function () { fn(snapshotStateSlices(domains)); });
+    var subscriber = { fn: fn, domains: domains.slice() };
+    subscribers.push(subscriber);
+    return function () {
+      subscribers = subscribers.filter(function (candidate) { return candidate !== subscriber; });
+    };
   }
 
   var scheduledFeature = installBridgeFeature("scheduled", { state: state, notify: notify, invoke: invoke, bt: bt, runSyncOnSession: runSyncOnSession, addSystemItem: addSystemItem, rememberScheduledRunOwner: rememberScheduledRunOwner, isScheduledRunTerminal: isScheduledRunTerminal, purgeSessionBuffer: purgeSessionBuffer, createNewSession: createNewSession, prefillComposer: prefillComposer, sessionStates: sessionStates });
@@ -1807,10 +1884,11 @@
     return invoke("cancel_shell_task", { sessionId: sessionId, taskId: taskId });
   }
 
-  installBridgeFeature("chat-events", {
+  var chatEventsFeature = installBridgeFeature("chat-events", {
     state: state, listen: listen, invoke: invoke, turnUsageDirty: turnUsageDirty,
     sessionStates: sessionStates, renderMarkdown: renderMarkdown, bt: bt,
-    notify: notify, onSessionEvent: onSessionEvent, runSyncOnSession: runSyncOnSession,
+    notify: notify, notifyStreamingChat: notifyStreamingChat,
+    onSessionEvent: onSessionEvent, runSyncOnSession: runSyncOnSession,
     // 与历史重载路径共用同一信封判定（userMessageDisplayText 的 isInternalRuntimeEnvelopeText），
     // 避免 live/restore 两处守卫实现漂移。
     isInternalRuntimeUserMessage: isInternalRuntimeEnvelopeText,
@@ -1823,6 +1901,10 @@
     flushPendingTextBlock: flushPendingTextBlock,
     flushAssistantMessageToHistory: flushAssistantMessageToHistory,
     resetPendingAssistant: resetPendingAssistant, flushQueued: flushQueued,
+    enqueueBehindSubagentCompletionHold: enqueueBehindSubagentCompletionHold,
+    renewSubagentCompletionHold: renewSubagentCompletionHold,
+    startSubagentCompletionHoldHeartbeat: startSubagentCompletionHoldHeartbeat,
+    releaseSubagentCompletionHoldIfUnused: releaseSubagentCompletionHoldIfUnused,
     isBusyFor: isBusyFor, doSendFor: doSendFor,
     ensureSessionBufferLoaded: ensureSessionBufferLoaded,
     getBuffer: getBuffer, markRemoteTurn: markRemoteTurn,
@@ -1878,6 +1960,8 @@
     get toolMeta() { return toolMeta; },
     set toolMeta(value) { toolMeta = value; },
   });
+  discardPendingChatDeltasForSession = chatEventsFeature.discardPendingChatDeltas;
+  flushPendingChatDeltasForSession = chatEventsFeature.flushPendingChatDeltas;
 
   var monitorFeature = installBridgeFeature("monitor", { state: state, notify: notify, invoke: invoke, bt: bt, safeConsoleInfo: safeConsoleInfo, sessionStates: sessionStates });
   var startMonitorPolling = monitorFeature.startMonitorPolling;

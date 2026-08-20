@@ -42,6 +42,7 @@ pub async fn chat(
     attachments: Option<Vec<crate::features::files::file_ingest::IngestResult>>,
     session_id: Option<String>,
     restrict_tools: Option<bool>,
+    completion_holder_id: Option<String>,
     pool: State<'_, EnginePool>,
     acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
     store: State<'_, SessionStore>,
@@ -57,20 +58,88 @@ pub async fn chat(
     if acp_pool.is_acp(&sid) {
         return Err("ACP 代码会话必须通过独立代码页面发送".to_string());
     }
+    let completion_holder_id =
+        normalize_subagent_completion_holder_id(completion_holder_id.as_deref())?;
     let reservation = pool
-        .reserve_turn(&sid)
+        .reserve_turn_with_completion_hold(&sid, completion_holder_id.as_deref())
+        .await
         .map_err(|error| format!("reserve chat turn: {error:#}"))?;
     chat_with_reservation(
         message,
         attachments,
         sid,
         restrict_tools,
+        completion_holder_id,
         reservation,
         &pool,
         &store,
         &app,
     )
     .await
+}
+
+const SUBAGENT_COMPLETION_HOLDER_MAX_BYTES: usize = 128;
+
+pub(crate) fn normalize_subagent_completion_holder_id(
+    holder_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(holder_id) = holder_id else {
+        return Ok(None);
+    };
+    let holder_id = holder_id.trim();
+    if holder_id.is_empty()
+        || holder_id.len() > SUBAGENT_COMPLETION_HOLDER_MAX_BYTES
+        || !holder_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.'))
+    {
+        return Err("invalid sub-agent completion holder id".to_string());
+    }
+    Ok(Some(holder_id.to_string()))
+}
+
+/// Register or release one volatile Host FIFO ahead of detached sub-agent
+/// completion delivery. This does not start, cancel, or steer a model turn.
+/// The engine owns a bounded idle watchdog, so a crashed renderer cannot leave
+/// background results held forever.
+#[tauri::command]
+pub async fn set_subagent_completion_hold(
+    session_id: String,
+    holder_id: String,
+    held: bool,
+    pool: State<'_, EnginePool>,
+) -> Result<bool, String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err("session id is required".to_string());
+    }
+    let holder_id = normalize_subagent_completion_holder_id(Some(&holder_id))?
+        .expect("required holder id must normalize to a value");
+    pool.set_subagent_completion_hold(session_id, holder_id, held)
+        .await
+        .map_err(|error| format!("set sub-agent completion hold: {error:#}"))
+}
+
+/// Confirm that a previously published holder has crossed every earlier
+/// runtime turn and its serial App lifecycle cleanup. Hosts call this before
+/// claiming local ownership or promoting a queued input; the chat command
+/// independently repeats the barrier before it reserves, protecting stale
+/// clients and direct IPC callers as well.
+#[tauri::command]
+pub async fn ensure_subagent_completion_hold_ready(
+    session_id: String,
+    holder_id: String,
+    pool: State<'_, EnginePool>,
+) -> Result<bool, String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err("session id is required".to_string());
+    }
+    let holder_id = normalize_subagent_completion_holder_id(Some(&holder_id))?
+        .expect("required holder id must normalize to a value");
+    pool.ensure_subagent_completion_hold_ready(session_id, holder_id)
+        .await
+        .map_err(|error| format!("ensure sub-agent completion hold ready: {error:#}"))
 }
 
 /// Complete a turn after its session was atomically reserved. Web access uses
@@ -80,6 +149,7 @@ pub(crate) async fn chat_with_reservation(
     attachments: Option<Vec<crate::features::files::file_ingest::IngestResult>>,
     sid: String,
     restrict_tools: Option<bool>,
+    completion_holder_id: Option<String>,
     reservation: TurnReservation,
     pool: &EnginePool,
     store: &SessionStore,
@@ -291,6 +361,7 @@ pub(crate) async fn chat_with_reservation(
             mode.to_app_mode(),
             restrict_tools.unwrap_or(false),
             prepared_delegation.expert_snapshot,
+            completion_holder_id,
             reservation,
         )
         .await

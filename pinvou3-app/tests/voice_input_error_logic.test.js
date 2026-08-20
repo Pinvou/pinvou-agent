@@ -193,8 +193,10 @@ assert.match(timingInvocations[1].args.entries[0].detail, /data=\{"samples":4096
   assert.strictEqual(stoppedTracks, 1, "late microphone stream must be stopped after timeout");
 
   let resolveAsrStatus;
+  let rejectTranscription;
   let stoppedRacingTracks = 0;
   let audioGraphCreated = 0;
+  let latestProcessor = null;
   const racingStream = {
     getTracks: () => [{ stop: () => { stoppedRacingTracks += 1; } }],
   };
@@ -205,7 +207,10 @@ assert.match(timingInvocations[1].args.entries[0].detail, /data=\{"samples":4096
     }
     close() { this.state = "closed"; return Promise.resolve(); }
     createMediaStreamSource() { audioGraphCreated += 1; return { connect() {}, disconnect() {} }; }
-    createScriptProcessor() { return { connect() {}, disconnect() {}, onaudioprocess: null }; }
+    createScriptProcessor() {
+      latestProcessor = { connect() {}, disconnect() {}, onaudioprocess: null };
+      return latestProcessor;
+    }
     createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} }; }
     get destination() { return {}; }
   }
@@ -243,6 +248,9 @@ assert.match(timingInvocations[1].args.entries[0].detail, /data=\{"samples":4096
       if (command === "voice_asr_status") {
         return new Promise(resolve => { resolveAsrStatus = resolve; });
       }
+      if (command === "transcribe_voice_audio") {
+        return new Promise((resolve, reject) => { rejectTranscription = reject; });
+      }
       return Promise.resolve(null);
     },
   });
@@ -264,6 +272,23 @@ assert.match(timingInvocations[1].args.entries[0].detail, /data=\{"samples":4096
   assert.strictEqual(stoppedRacingTracks, 2, "microtask-window cancellation must stop the acquired microphone stream exactly once");
   assert.strictEqual(audioGraphCreated, 0, "a cancelled status query must not resume recording graph creation");
   assert.strictEqual(racingState.voiceInput.status, "cancelled");
+
+  let lateWritebacks = 0;
+  const transcribingStart = voiceFeature.startVoiceInput("", () => { lateWritebacks += 1; });
+  resolveAsrStatus({ ready: true });
+  await transcribingStart;
+  assert.strictEqual(racingState.voiceInput.status, "recording");
+  latestProcessor.onaudioprocess({
+    inputBuffer: { getChannelData: () => new Float32Array(24_000) },
+  });
+  voiceFeature.startVoiceInput("", () => {});
+  assert.strictEqual(racingState.voiceInput.status, "transcribing");
+  voiceFeature.cancelVoiceInput();
+  assert.strictEqual(racingState.voiceInput.status, "cancelled");
+  rejectTranscription(new Error("late ASR failure after cancellation"));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(racingState.voiceInput.status, "cancelled", "late ASR failure must preserve cancellation");
+  assert.strictEqual(lateWritebacks, 0, "cancelled transcription must never write text back");
 
   const chatPath = path.join(__dirname, "..", "src", "features", "chat", "ChatView.jsx");
   const chatSource = fs.readFileSync(chatPath, "utf8");

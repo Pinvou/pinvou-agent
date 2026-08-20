@@ -278,6 +278,16 @@
   var currentStreamId = 0;
   var pendingAssistantText = "";
   var pendingAssistantBlocks = [];
+  // Transport deltas arrive at token/chunk cadence. Keep their unpublished
+  // tail outside React state until a bounded visual cadence or semantic
+  // boundary settles it; otherwise every tiny frame reparses the full answer
+  // and structured-clones the complete application state.
+  var pendingChatDeltas = Object.create(null);
+  var terminalChatStreams = Object.create(null);
+  var STREAMING_PREVIEW_CHAR_LIMIT = 16384;
+  var STREAMING_PENDING_CHAR_LIMIT = 8192;
+  var STREAMING_STRUCTURED_PROBE_CHAR_LIMIT = 1024;
+  var streamingStructuredDraftProbes = new WeakMap();
   var itemIdSeq = 0;
   var toolMeta = {};       // id → { name, args }
   var shellPollState = Object.create(null); // session_id → { timer, inFlight, waitBudget }
@@ -330,6 +340,7 @@
       deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 20 MB attachment limit`,
       deviceUploadFailed: "⚠️ Upload failed: ",
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
+      queuedOutcomeUnknown: "Outcome unknown — this message will not be sent again automatically · ",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       gpuUnavailable: "GPU info unavailable",
@@ -436,6 +447,7 @@
       deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 20 MB を超えています`,
       deviceUploadFailed: "⚠️ アップロードに失敗: ",
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
+      queuedOutcomeUnknown: "送信結果が不明です（自動再送しません）· ",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       gpuUnavailable: "GPU 情報を取得できません",
@@ -542,6 +554,7 @@
       deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 20 MB 上限`,
       deviceUploadFailed: "⚠️ 上传失败: ",
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
+      queuedOutcomeUnknown: "发送结果未知（不会自动重发）· ",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       gpuUnavailable: "GPU 信息不可用",
@@ -660,9 +673,34 @@
   // Web 草稿首条消息的本地提交记录。内容只留在当前页面内，用固定 RPC ID
   // 支撑断线重发与人工重试；切走草稿后不会把待发内容泄漏到其他会话。
   var firstTurnSubmissions = Object.create(null);
+  // The engine event stream and RPC response share a Relay but are produced by
+  // different desktop tasks. A very fast terminal can therefore arrive before
+  // create_session_and_chat returns the new Session id to this renderer. Keep a
+  // tiny in-memory rendezvous instead of dropping that terminal and resurrecting
+  // an already-finished first turn as permanently busy.
+  var earlyFirstTurnTerminals = Object.create(null);
+  var MAX_EARLY_FIRST_TURN_TERMINALS = 8;
+  // The Relay RPC can remain pending for 180 seconds. Keep the bounded
+  // terminal rendezvous beyond that transport window so a late metadata
+  // response cannot resurrect an already-completed first turn as busy.
+  var EARLY_FIRST_TURN_TERMINAL_MAX_AGE_MS = 300000;
   var authoritativeTranscriptSyncs = Object.create(null);
   var scheduledRunSessionOwners = Object.create(null);
   var scheduledRunOpenInFlight = Object.create(null);
+  // A queued user interjection lives only in this renderer. Pair that volatile
+  // FIFO with an equally volatile, renderer-unique engine hold so a ready
+  // detached completion cannot overtake the FIFO at the next turn boundary.
+  // All hold/send/release work for one Session shares one promise chain; the
+  // remote RPC transport may execute different requests concurrently otherwise.
+  var completionHolds = Object.create(null);
+  var completionHoldCommandChains = Object.create(null);
+  // One logical ordinary Web input owns one stable Relay request id. This map
+  // exists only while its RPC is unresolved, so an authoritative admission /
+  // terminal event can settle an ambiguous transport result without creating a
+  // second optimistic turn.
+  var activeWebChatSubmissions = Object.create(null);
+  var completionHoldSeq = 0;
+  var completionHoldInstanceNonce = webRequestId("renderer");
   var MAX_SCHEDULED_SESSION_BUFFERS = 64;
   var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
   var sessionBufferTouchClock = 0;
@@ -672,6 +710,330 @@
   // 卡牌名只在「加了卡但还没开口」时当临时标题;一旦开始对话,对话内容更能区分同卡会话。
   // 内存态(不持久化):重启后丢标记仅影响「加卡→重启→才发首条消息」这一冷门路径。
   var personaPlaceholderTitles = {};
+
+  function completionQueueFor(sid) {
+    var buffer = sid === state.activeSessionId ? state : sessionStates[sid];
+    return buffer && Array.isArray(buffer.queued) ? buffer.queued : null;
+  }
+
+  function webRpcErrorCode(errorOrCode) {
+    if (typeof errorOrCode === "string") return errorOrCode.trim().toLowerCase();
+    return String(errorOrCode && (
+      errorOrCode.code || errorOrCode.error_code || errorOrCode.errorCode
+    ) || "").trim().toLowerCase();
+  }
+
+  function isAmbiguousWebRpcError(errorOrCode) {
+    var code = webRpcErrorCode(errorOrCode);
+    return code === "rpc_timeout" || code === "rpc_timed_out" || code === "outcome_unknown";
+  }
+
+  function createQueuedChatItem(sid, text, displayText, attachments, meta, restrictTools) {
+    var item = {
+      id: ++itemIdSeq,
+      text: text,
+      displayText: displayText,
+      originalDisplayText: displayText,
+      attachments: attachments || [],
+      meta: meta || null,
+      restrictTools: !!restrictTools,
+    };
+    if (IS_WEB && !isScheduledRunSession(sid)) {
+      item.rpcRequestId = webRequestId("chat_turn");
+      item.submissionState = "queued";
+      item.baseTranscriptRevision = "";
+      item.admissionObserved = false;
+      item.terminalObserved = false;
+    }
+    return item;
+  }
+
+  function ensureWebChatSubmission(sid, item, text, displayText, attachments, meta, restrictTools) {
+    if (!IS_WEB || isScheduledRunSession(sid)) return null;
+    var submission = item || createQueuedChatItem(
+      sid,
+      text,
+      displayText,
+      attachments,
+      meta,
+      restrictTools,
+    );
+    if (!submission.rpcRequestId) submission.rpcRequestId = webRequestId("chat_turn");
+    if (submission.originalDisplayText == null) {
+      submission.originalDisplayText = submission.displayText == null
+        ? displayText
+        : submission.displayText;
+    }
+    return submission;
+  }
+
+  function resetWebChatSubmissionForRetry(item) {
+    if (!item) return;
+    item.rpcRequestId = webRequestId("chat_turn");
+    item.submissionState = "queued";
+    item.baseTranscriptRevision = "";
+    item.admissionObserved = false;
+    item.terminalObserved = false;
+    item.deliveryError = "";
+    item.rpcErrorCode = "";
+    item.displayText = item.originalDisplayText == null
+      ? item.displayText
+      : item.originalDisplayText;
+  }
+
+  function retainUncertainWebChatSubmission(sid, item, error) {
+    if (!item) return false;
+    item.submissionState = "uncertain";
+    item.deliveryError = String(error && error.message ? error.message : error || "");
+    item.rpcErrorCode = webRpcErrorCode(error);
+    item.displayText = bt("queuedOutcomeUnknown") + String(
+      item.originalDisplayText == null ? item.text || "" : item.originalDisplayText,
+    );
+    var queue = completionQueueFor(sid);
+    if (!queue) return false;
+    if (queue.indexOf(item) < 0) queue.unshift(item);
+    return true;
+  }
+
+  function webSubmissionMatchesUserEvent(sid, item, event) {
+    if (!item || !event) return false;
+    var payload = event.payload || {};
+    var eventSid = String(payload.session_id || "");
+    var baseRevision = String(payload.base_transcript_revision || "");
+    var expectedRevision = String(item.baseTranscriptRevision || "");
+    var operation = String(payload.operation || "append");
+    return !!expectedRevision && !!baseRevision && eventSid === String(sid || "") &&
+      operation === "append" && baseRevision === expectedRevision &&
+      String(payload.content || "") === String(item.text || "");
+  }
+
+  function observeWebChatAdmissionEvent(sid, event) {
+    var active = activeWebChatSubmissions[sid];
+    if (active && webSubmissionMatchesUserEvent(sid, active, event)) {
+      active.admissionObserved = true;
+    }
+    var queue = completionQueueFor(sid);
+    var head = queue && queue[0];
+    if (!head || head.submissionState !== "uncertain" ||
+        !webSubmissionMatchesUserEvent(sid, head, event)) {
+      return false;
+    }
+    head.admissionObserved = true;
+    head.submissionState = "observed";
+    queue.shift();
+    return true;
+  }
+
+  function queueCompletionHoldWork(sid, work) {
+    var previous = completionHoldCommandChains[sid] || Promise.resolve();
+    var next = previous.catch(function () {}).then(work);
+    completionHoldCommandChains[sid] = next;
+    next.finally(function () {
+      if (completionHoldCommandChains[sid] === next) {
+        delete completionHoldCommandChains[sid];
+      }
+    }).catch(function () {});
+    return next;
+  }
+
+  function setSubagentCompletionHoldNow(sid, entry, held) {
+    return invoke("set_subagent_completion_hold", {
+      sessionId: sid,
+      holderId: entry.holderId,
+      held: !!held,
+    }).then(function (accepted) {
+      if (held && accepted !== true) {
+        throw new Error("sub-agent completion hold was not accepted");
+      }
+      return accepted;
+    });
+  }
+
+  function ensureSubagentCompletionHoldReadyNow(sid, entry) {
+    return invoke("ensure_subagent_completion_hold_ready", {
+      sessionId: sid,
+      holderId: entry.holderId,
+    }).then(function (accepted) {
+      if (accepted !== true) {
+        throw new Error("sub-agent completion hold barrier was not confirmed");
+      }
+      if (completionHolds[sid] !== entry || entry.releasing) {
+        throw new Error("sub-agent completion hold was superseded");
+      }
+      entry.established = true;
+      return true;
+    });
+  }
+
+  function nextCompletionHolderId() {
+    completionHoldSeq += 1;
+    return "pinvou-web:" + completionHoldInstanceNonce + ":" + completionHoldSeq.toString(36);
+  }
+
+  function createCompletionHoldEntry(sid, holderId) {
+    var entry = {
+      holderId: holderId || nextCompletionHolderId(),
+      established: false,
+      pendingEnqueues: 0,
+      releasing: false,
+      heartbeatId: null,
+      admissionPromise: null,
+    };
+    completionHolds[sid] = entry;
+    return entry;
+  }
+
+  function releaseCompletionHoldEntryNow(sid, entry) {
+    if (completionHolds[sid] !== entry || entry.releasing) return Promise.resolve(false);
+    entry.releasing = true;
+    if (entry.heartbeatId != null) {
+      clearInterval(entry.heartbeatId);
+      entry.heartbeatId = null;
+    }
+    return setSubagentCompletionHoldNow(sid, entry, false)
+      .then(function (accepted) {
+        if (completionHolds[sid] === entry) delete completionHolds[sid];
+        return accepted;
+      })
+      .catch(function (error) {
+        entry.releasing = false;
+        // Release failure is an unknown Engine-side outcome. Mark the local
+        // lease unestablished so the next ordinary turn atomically replays the
+        // same Hold -> SendMessage boundary instead of trusting stale state.
+        entry.established = false;
+        entry.admissionPromise = null;
+        console.warn("[pinvou3][web-chat] completion hold release failed", error);
+        var queued = completionQueueFor(sid);
+        if (completionHolds[sid] === entry && !isBusyFor(sid) &&
+            queued && queued.length > 0) {
+          startSubagentCompletionHoldHeartbeat(sid);
+          void renewSubagentCompletionHold(sid);
+        }
+        return false;
+      });
+  }
+
+  function releaseSubagentCompletionHoldIfUnused(sid) {
+    var entry = completionHolds[sid];
+    if (!entry || entry.releasing || entry.pendingEnqueues > 0 || isBusyFor(sid)) {
+      return Promise.resolve(false);
+    }
+    var queued = completionQueueFor(sid);
+    if (queued && queued.length > 0) return Promise.resolve(false);
+    return queueCompletionHoldWork(sid, function () {
+      if (completionHolds[sid] !== entry || entry.releasing ||
+          entry.pendingEnqueues > 0 || isBusyFor(sid)) {
+        return false;
+      }
+      var currentQueue = completionQueueFor(sid);
+      if (currentQueue && currentQueue.length > 0) return false;
+      return releaseCompletionHoldEntryNow(sid, entry);
+    });
+  }
+
+  function renewSubagentCompletionHold(sid) {
+    var entry = completionHolds[sid];
+    if (!entry || entry.releasing) return Promise.resolve(false);
+    return queueCompletionHoldWork(sid, function () {
+      if (completionHolds[sid] !== entry || entry.releasing) return false;
+      return setSubagentCompletionHoldNow(sid, entry, true).then(function (accepted) {
+        entry.established = true;
+        return accepted;
+      });
+    }).catch(function (error) {
+      // A renewal failure must not forget an already accepted holder. The
+      // engine may still own it, and a later renewal/release must use the same
+      // opaque id instead of leaking it behind a replacement token.
+      console.warn("[pinvou3][web-chat] completion hold renewal failed", error);
+      return false;
+    });
+  }
+
+  function startSubagentCompletionHoldHeartbeat(sid) {
+    var entry = completionHolds[sid];
+    if (!entry || entry.releasing || entry.heartbeatId != null) return false;
+    entry.heartbeatId = setInterval(function () {
+      if (completionHolds[sid] !== entry || entry.releasing) {
+        if (entry.heartbeatId != null) clearInterval(entry.heartbeatId);
+        entry.heartbeatId = null;
+        return;
+      }
+      if (entry.admissionPromise) {
+        // flushQueued owns the per-Session command chain until the admission
+        // RPC resolves. Renew directly while reserve/attachment preparation is
+        // pending; queueing this behind that chain would starve the lease for
+        // the full transport timeout. Rust's turn lock serializes both calls.
+        void setSubagentCompletionHoldNow(sid, entry, true).then(function () {
+          if (completionHolds[sid] === entry && !entry.releasing) {
+            entry.established = true;
+          }
+        }).catch(function (error) {
+          console.warn("[pinvou3][web-chat] pending admission hold renewal failed", error);
+        });
+        return;
+      }
+      var queued = completionQueueFor(sid);
+      if (!isBusyFor(sid) && queued && queued.length > 0) {
+        void renewSubagentCompletionHold(sid);
+      }
+    }, 10000);
+    return true;
+  }
+
+  function enqueueBehindSubagentCompletionHold(sid, enqueue) {
+    // Scheduled runs intentionally keep the Eager delivery policy. They may
+    // queue UI input, but the ordinary Front-only completion lease is invalid
+    // for their Engine configuration.
+    if (isScheduledRunSession(sid)) {
+      enqueue();
+      return Promise.resolve(true);
+    }
+    var entry = completionHolds[sid];
+    var created = false;
+    if (!entry || entry.releasing) {
+      entry = createCompletionHoldEntry(sid);
+      created = true;
+    }
+    entry.pendingEnqueues += 1;
+    return queueCompletionHoldWork(sid, function () {
+      if (completionHolds[sid] !== entry || entry.releasing) {
+        throw new Error("sub-agent completion hold was superseded");
+      }
+      var admitted = entry.admissionPromise || Promise.resolve(entry.established);
+      return admitted.catch(function () { return false; }).then(function () {
+        if (completionHolds[sid] !== entry || entry.releasing) {
+          throw new Error("sub-agent completion hold was superseded");
+        }
+        if (entry.established) return true;
+        return setSubagentCompletionHoldNow(sid, entry, true).then(function () {
+          entry.established = true;
+          return true;
+        });
+      }).then(function () {
+        enqueue();
+        startSubagentCompletionHoldHeartbeat(sid);
+        return true;
+      });
+    }).catch(function (error) {
+      // Only the call that introduced a never-accepted entry may forget it.
+      // A failed repeat Hold is a lease-renewal failure: deleting that token
+      // would make a later Release unable to match the hold still in Engine.
+      if (created && completionHolds[sid] === entry && !entry.established) {
+        delete completionHolds[sid];
+      }
+      throw error;
+    }).finally(function () {
+      entry.pendingEnqueues = Math.max(0, entry.pendingEnqueues - 1);
+      if (completionHolds[sid] === entry && entry.established &&
+          entry.pendingEnqueues === 0 && !isBusyFor(sid)) {
+        var queued = completionQueueFor(sid);
+        if (!queued || queued.length === 0) {
+          void releaseSubagentCompletionHoldIfUnused(sid);
+        }
+      }
+    });
+  }
+
   var PINVOU_SCENE_EVENTS_STORAGE_PREFIX = "pinvou_scene_events_v1:";
   function normalizePinvouScene(scene) {
     scene = String(scene || "").trim();
@@ -825,6 +1187,7 @@
       var id = scheduledIds[i];
       var buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
+      discardPendingChatDeltas(id);
       delete sessionStates[id];
       delete turnUsageDirty[id];
       // The owner tombstone has its own bounded LRU and must outlive a
@@ -842,6 +1205,7 @@
   }
   function purgeSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;
+    discardPendingChatDeltas(id);
     delete sessionStates[id];
     delete turnUsageDirty[id];
     delete personaPlaceholderTitles[id];
@@ -974,6 +1338,7 @@
     if (current.scheduledInitialTurnPhase === "terminal") return;
     if (current.lastTouched !== snapshot.activationTouch) return;
     if (!snapshot.existed) {
+      discardPendingChatDeltas(snapshot.id);
       delete sessionStates[snapshot.id];
     } else {
       current.scheduledInitialTurnPhase = snapshot.previousPhase;
@@ -1153,7 +1518,10 @@
   }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
   function switchActiveTo(id, opts) {
-    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    if (state.activeSessionId) {
+      flushPendingChatDeltas(state.activeSessionId);
+      saveWorkingSetTo(getBuffer(state.activeSessionId));
+    }
     state.activeSessionId = id;
     var buf = sessionStates[id];
     if (!buf || (opts && opts.fresh)) {
@@ -1431,14 +1799,34 @@
     }
     return JSON.parse(JSON.stringify(state));
   }
-  function notify() {
-    if (suppressNotify) return;
-    // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
+  function snapshotStateShallow() {
+    var snapshot = Object.assign({}, state);
+    // Streaming mutates the active item in place. A fresh array identity keeps
+    // memoized React projections live without copying the potentially huge raw
+    // answer or unrelated application domains on every visual tick.
+    if (Array.isArray(state.chatItems)) snapshot.chatItems = state.chatItems.slice();
+    return snapshot;
+  }
+  function refreshSessionBusyProjection() {
     state.sessionBusy = {};
     for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
+  }
+  function notify() {
+    if (suppressNotify) return;
+    // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
+    refreshSessionBusyProjection();
     var snapshot = snapshotState();
     for (var i = 0; i < subscribers.length; i++) subscribers[i](snapshot);
+  }
+  function notifyStreamingChat() {
+    if (suppressNotify) return;
+    refreshSessionBusyProjection();
+    // Hot streaming snapshots deliberately share nested, read-only bridge
+    // values. Ordinary semantic notifications remain deep isolated.
+    var snapshot = snapshotStateShallow();
+    var publication = { streaming: true };
+    for (var i = 0; i < subscribers.length; i++) subscribers[i](snapshot, publication);
   }
   function subscribe(fn) {
     subscribers.push(fn);
@@ -2416,7 +2804,10 @@
       notify();
       return;
     }
-    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    if (state.activeSessionId) {
+      flushPendingChatDeltas(state.activeSessionId);
+      saveWorkingSetTo(getBuffer(state.activeSessionId));
+    }
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
     // freshBuffer 的 modeState 是通用缺省（yolo）；草稿显示须覆盖为本 lane
@@ -2783,7 +3174,10 @@
     }
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
-    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    if (state.activeSessionId) {
+      flushPendingChatDeltas(state.activeSessionId);
+      saveWorkingSetTo(getBuffer(state.activeSessionId));
+    }
     if (!preserveScheduledRunContext) state.scheduledRunContext = null;
     state.scheduledTaskPendingGuide = null;
     state.activeSessionId = saved.metadata.id;
@@ -2968,6 +3362,8 @@
       state.scheduledRunContext = null;
     }
     if (state.activeSessionId !== id) return;
+    flushPendingChatDeltas(id);
+    saveWorkingSetTo(getBuffer(id));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
   }
@@ -3950,10 +4346,38 @@
     }
     return text;
   }
+  function showTurnErrorNotice(sid, err) {
+    var notice = "⚠️ " + displayTurnError(err);
+    runSyncOnSession(sid, function () {
+      var kept = false;
+      state.chatItems = state.chatItems.filter(function (item) {
+        if (!item || !item.turnErrorNotice) return true;
+        if (!kept && item.text === notice) {
+          kept = true;
+          return true;
+        }
+        return false;
+      });
+      if (!kept) {
+        addSystemItem(notice, { turnErrorNotice: true });
+      } else {
+        notify();
+      }
+    });
+  }
+  function handlePreAdmissionFailure(sid, err, surfaceFailure, scope) {
+    console.warn("[pinvou3][web-chat] " + scope + " failed", {
+      sid: sid,
+      error: err && err.toString ? err.toString() : err,
+    });
+    showTurnErrorNotice(sid, err);
+    if (surfaceFailure) throw err;
+    return false;
+  }
 
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
-  function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
+  function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure, completionBarrierReady, queuedSubmission) {
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     var turnOwnerBuffer = getBuffer(sid);
     var submittedMessage = null;
@@ -3962,6 +4386,62 @@
     var submittedStreamId = 0;
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
       return Promise.reject(new Error(bt("turnSyncRejected")));
+    }
+    var useCompletionLease = !isScheduledRunSession(sid);
+    var webSubmission = ensureWebChatSubmission(
+      sid,
+      queuedSubmission,
+      text,
+      displayText,
+      attachmentsPayload,
+      meta,
+      restrictTools,
+    );
+    var completionEntry = useCompletionLease ? completionHolds[sid] : null;
+    if (useCompletionLease && (!completionEntry || completionEntry.releasing)) {
+      completionEntry = createCompletionHoldEntry(sid);
+    }
+    if (useCompletionLease && completionBarrierReady !== true) {
+      return ensureSubagentCompletionHoldReadyNow(sid, completionEntry).then(
+        function () {
+          return doSendFor(
+            sid,
+            text,
+            displayText,
+            attachmentsPayload,
+            meta,
+            restrictTools,
+            surfaceFailure,
+            true,
+            webSubmission,
+          );
+        },
+        function (error) {
+          return handlePreAdmissionFailure(
+            sid,
+            error,
+            surfaceFailure,
+            "completion barrier",
+          );
+        },
+      );
+    }
+    var acquireCompletionLeaseWithTurn = !!(
+      useCompletionLease && completionEntry && !completionEntry.established
+    );
+    if (webSubmission) {
+      webSubmission.baseTranscriptRevision = String(
+        turnOwnerBuffer && turnOwnerBuffer.sessionRevision || "",
+      );
+      webSubmission.submissionState = "in_flight";
+      webSubmission.admissionObserved = false;
+      webSubmission.terminalObserved = false;
+      webSubmission.deliveryError = "";
+      webSubmission.rpcErrorCode = "";
+      webSubmission.displayText = webSubmission.originalDisplayText == null
+        ? displayText
+        : webSubmission.originalDisplayText;
+      activeWebChatSubmissions[sid] = webSubmission;
     }
     if (turnOwnerBuffer) {
       turnOwnerBuffer.localTurnOwned = true;
@@ -4004,21 +4484,82 @@
           }).filter(Boolean),
           sessionId: sid,
           restrictTools: !!restrictTools,
+          completionHolderId: useCompletionLease ? completionEntry.holderId : null,
         }
-      : { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools };
-    return invoke(chatCommand, chatArgs)
+      : {
+          message: text,
+          attachments: attachmentsPayload,
+          sessionId: sid,
+          restrictTools: !!restrictTools,
+          completionHolderId: useCompletionLease ? completionEntry.holderId : null,
+        };
+    var turnAdmission = webSubmission
+      ? invokeWithRequestId(chatCommand, chatArgs, webSubmission.rpcRequestId)
+      : invoke(chatCommand, chatArgs);
+    var turnLeaseReady = turnAdmission.then(function () {
+      if (useCompletionLease && completionHolds[sid] === completionEntry &&
+          !completionEntry.releasing) {
+        completionEntry.established = true;
+        // A late response for turn N must not clear the admission promise for
+        // turn N+1, which reuses this same holder across the Host FIFO.
+        if (completionEntry.admissionPromise === turnLeaseReady) {
+          completionEntry.admissionPromise = null;
+        }
+      }
+      return true;
+    });
+    if (useCompletionLease) {
+      completionEntry.admissionPromise = turnLeaseReady;
+      startSubagentCompletionHoldHeartbeat(sid);
+    }
+    return turnLeaseReady
       .then(function () {
+        if (webSubmission) {
+          webSubmission.submissionState = "admitted";
+          if (activeWebChatSubmissions[sid] === webSubmission) {
+            delete activeWebChatSubmissions[sid];
+          }
+        }
         if (turnOwnerBuffer) turnOwnerBuffer.deferredRemoteUserEvent = null;
         if (meta && meta.pinvouScene) {
-          runSyncOnSession(sid, function () {
-            recordPinvouSceneForMessage(sid, submittedMessagePos, meta.pinvouScene);
-          });
+          try {
+            runSyncOnSession(sid, function () {
+              recordPinvouSceneForMessage(sid, submittedMessagePos, meta.pinvouScene);
+            });
+          } catch (error) {
+            console.warn("[pinvou3][web-chat] scene sidecar write failed after turn admission", error);
+          }
         }
         return true;
       })
       .catch(function (err) {
         var errorText = String(err && err.message ? err.message : err || "");
         var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
+        var ambiguousOutcome = !!webSubmission && isAmbiguousWebRpcError(err);
+        if (useCompletionLease && completionHolds[sid] === completionEntry &&
+            completionEntry.admissionPromise === turnLeaseReady) {
+          completionEntry.admissionPromise = null;
+        }
+        // A matching admission+terminal event is stronger authority than an
+        // ambiguous transport error. handleChatDone already finalized this
+        // exact optimistic turn, so rolling it back here would resurrect it as
+        // a duplicate queue item and leave the cached response permanently busy.
+        if (ambiguousOutcome && webSubmission.admissionObserved &&
+            webSubmission.terminalObserved) {
+          webSubmission.submissionState = "observed";
+          webSubmission.deliveryError = errorText;
+          webSubmission.rpcErrorCode = webRpcErrorCode(err);
+          if (activeWebChatSubmissions[sid] === webSubmission) {
+            delete activeWebChatSubmissions[sid];
+          }
+          return true;
+        }
+        if (!ambiguousOutcome && acquireCompletionLeaseWithTurn &&
+            completionHolds[sid] === completionEntry &&
+            !completionEntry.established) {
+          if (completionEntry.heartbeatId != null) clearInterval(completionEntry.heartbeatId);
+          delete completionHolds[sid];
+        }
         if (turnOwnerBuffer) turnOwnerBuffer.localTurnOwned = false;
         emitPetEvent("pet:turn_end", sid);
         runSyncOnSession(sid, function () {
@@ -4031,7 +4572,39 @@
           stopThinking();
         });
         var deferredApplied = applyDeferredRemoteUserMessage(sid, turnOwnerBuffer);
+        if (ambiguousOutcome && webSubmission.admissionObserved) {
+          // chat:user_message includes both the exact pre-turn transcript
+          // revision and payload. That pair uniquely proves admission of this
+          // logical input even when its RPC reply was lost.
+          webSubmission.submissionState = "observed";
+          webSubmission.deliveryError = errorText;
+          webSubmission.rpcErrorCode = webRpcErrorCode(err);
+          if (turnOwnerBuffer && !deferredApplied) markRemoteTurn(sid, turnOwnerBuffer);
+          if (activeWebChatSubmissions[sid] === webSubmission) {
+            delete activeWebChatSubmissions[sid];
+          }
+          notify();
+          return true;
+        }
+        if (ambiguousOutcome) {
+          // Never guess or mint a new id after an outcome-unknown response.
+          // The exact item remains cancelable at the FIFO head and blocks later
+          // inputs until an authoritative admission event arrives or the user
+          // explicitly removes it.
+          retainUncertainWebChatSubmission(sid, webSubmission, err);
+          if (activeWebChatSubmissions[sid] === webSubmission) {
+            delete activeWebChatSubmissions[sid];
+          }
+          notify();
+          return false;
+        }
         if (concurrentTurn && turnOwnerBuffer && !deferredApplied) markRemoteTurn(sid, turnOwnerBuffer);
+        if (webSubmission) {
+          resetWebChatSubmissionForRetry(webSubmission);
+          if (activeWebChatSubmissions[sid] === webSubmission) {
+            delete activeWebChatSubmissions[sid];
+          }
+        }
         runSyncOnSession(sid, function () {
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")
@@ -4040,6 +4613,10 @@
           });
         });
         notify();
+        // Known RPC failures cannot rely on chat:done for cleanup. A queued
+        // submission is restored by flushQueued before this serialized release
+        // executes; only a truly idle direct Send releases the holder here.
+        if (useCompletionLease) void releaseSubagentCompletionHoldIfUnused(sid);
         if (surfaceFailure) throw err;
         return false;
       });
@@ -4047,32 +4624,67 @@
   // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 严格按 FIFO
   // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
   // 连续输入的多个独立任务合并成一个模型请求。
-  function flushQueued(sid) {
+  async function flushQueued(sid) {
     var pendingBuffer = sessionStates[sid];
     if (pendingBuffer && pendingBuffer.remoteTurnActive) {
       reconcileRemoteTurn(sid).then(function (ready) {
-        if (ready) flushQueued(sid);
+        if (ready) void flushQueued(sid);
       }).catch(function () {});
       return;
     }
-    if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
-    var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
-    if (!q || q.length === 0) return;
-    var item = q.shift();
-    var attachments = item.attachments || [];
-    var displayText = item.displayText == null
-      ? formatAttachmentDisplayText(item.text, attachments)
-      : item.displayText;
-    notify();
-    doSendFor(sid, item.text, displayText, attachments, item.meta || null, !!item.restrictTools, true)
-      .catch(function () {
-        var retryQueue = sid === state.activeSessionId
-          ? state.queued
-          : (sessionStates[sid] && sessionStates[sid].queued);
-        if (!retryQueue) return;
-        retryQueue.unshift(item);
+    return queueCompletionHoldWork(sid, function () {
+      // Re-check inside the per-Session chain. Two terminal/reconcile events
+      // may request a flush together; only one may remove the FIFO head.
+      if (isBusyFor(sid)) return false;
+      var q = completionQueueFor(sid);
+      if (!q || q.length === 0) return false;
+      var item = q[0];
+      if (item && item.submissionState === "uncertain") return false;
+      var useCompletionLease = !isScheduledRunSession(sid);
+      var entry = useCompletionLease ? completionHolds[sid] : null;
+      if (useCompletionLease && (!entry || entry.releasing)) {
+        entry = createCompletionHoldEntry(sid);
+      }
+      var ready = useCompletionLease
+        ? ensureSubagentCompletionHoldReadyNow(sid, entry)
+        : Promise.resolve(true);
+      return ready.then(function () {
+        if (isBusyFor(sid)) return false;
+        var currentQueue = completionQueueFor(sid);
+        if (!currentQueue || currentQueue[0] !== item) return false;
+        if (item && item.submissionState === "uncertain") return false;
+        currentQueue.shift();
+        var attachments = item.attachments || [];
+        var displayText = item.displayText == null
+          ? formatAttachmentDisplayText(item.text, attachments)
+          : item.displayText;
         notify();
+        return doSendFor(
+          sid,
+          item.text,
+          displayText,
+          attachments,
+          item.meta || null,
+          !!item.restrictTools,
+          true,
+          true,
+          item,
+        ).catch(function (error) {
+          var retryQueue = sid === state.activeSessionId
+            ? state.queued
+            : (sessionStates[sid] && sessionStates[sid].queued);
+          if (!retryQueue) throw error;
+          // The removed item was the FIFO head, so unshift restores its exact
+          // original position. Keep the holder: no SendMessage was admitted.
+          if (retryQueue.indexOf(item) < 0) retryQueue.unshift(item);
+          notify();
+          throw error;
+        });
       });
+    }).catch(function (error) {
+      showTurnErrorNotice(sid, error);
+      return false;
+    });
   }
 
   async function sendMessageToSession(sessionId, text, meta) {
@@ -4087,18 +4699,20 @@
     var targetBuffer = getBuffer(sid);
     var targetQueue = targetBuffer && targetBuffer.queued;
     if (isBusyFor(sid) || (targetQueue && targetQueue.length > 0)) {
-      runSyncOnSession(sid, function () {
-        state.queued.push({
-          id: ++itemIdSeq,
-          text: content,
-          displayText: content,
-          attachments: [],
-          meta: meta || null,
-          restrictTools: false,
+      await enqueueBehindSubagentCompletionHold(sid, function () {
+        runSyncOnSession(sid, function () {
+          state.queued.push(createQueuedChatItem(
+            sid,
+            content,
+            content,
+            [],
+            meta || null,
+            false,
+          ));
         });
       });
       notify();
-      if (!isBusyFor(sid)) flushQueued(sid);
+      if (!isBusyFor(sid)) void flushQueued(sid);
       return { accepted: true, queued: true };
     }
     if (targetBuffer && targetBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
@@ -4106,23 +4720,29 @@
     }
     targetBuffer = getBuffer(sid);
     if (isBusyFor(sid) || (targetBuffer.queued && targetBuffer.queued.length > 0)) {
-      runSyncOnSession(sid, function () {
-        state.queued.push({
-          id: ++itemIdSeq,
-          text: content,
-          displayText: content,
-          attachments: [],
-          meta: meta || null,
-          restrictTools: false,
+      await enqueueBehindSubagentCompletionHold(sid, function () {
+        runSyncOnSession(sid, function () {
+          state.queued.push(createQueuedChatItem(
+            sid,
+            content,
+            content,
+            [],
+            meta || null,
+            false,
+          ));
         });
       });
       notify();
-      if (!isBusyFor(sid)) flushQueued(sid);
+      if (!isBusyFor(sid)) void flushQueued(sid);
       return { accepted: true, queued: true };
     }
     var completion = doSendFor(sid, content, content, [], meta || null, false, true)
       .then(
-        function () { return { ok: true }; },
+        function (accepted) {
+          return accepted === false
+            ? { ok: false, outcomeUnknown: true }
+            : { ok: true };
+        },
         function (error) { return { ok: false, error: error }; }
       );
     return { accepted: true, queued: false, completion: completion };
@@ -4139,6 +4759,41 @@
       !state.activeSessionId &&
       state.draftEpoch === submission.draftEpoch &&
       !!findFirstTurnItem(submission.clientMessageId);
+  }
+
+  function hasInFlightFirstTurnSubmission() {
+    return Object.keys(firstTurnSubmissions).some(function (clientMessageId) {
+      var submission = firstTurnSubmissions[clientMessageId];
+      return !!(submission && submission.inFlight);
+    });
+  }
+
+  function pruneEarlyFirstTurnTerminals(now) {
+    Object.keys(earlyFirstTurnTerminals).forEach(function (sid) {
+      var entry = earlyFirstTurnTerminals[sid];
+      if (!entry || now - Number(entry.receivedAt || 0) > EARLY_FIRST_TURN_TERMINAL_MAX_AGE_MS) {
+        delete earlyFirstTurnTerminals[sid];
+      }
+    });
+  }
+
+  function rememberEarlyFirstTurnTerminal(sid, event, processed) {
+    if (!sid || !hasInFlightFirstTurnSubmission()) return false;
+    var now = Date.now();
+    pruneEarlyFirstTurnTerminals(now);
+    earlyFirstTurnTerminals[sid] = {
+      receivedAt: now,
+      processed: !!processed,
+      event: {
+        event: "chat:done",
+        payload: Object.assign({}, event && event.payload || {}, { session_id: sid }),
+      },
+    };
+    var sessionIds = Object.keys(earlyFirstTurnTerminals);
+    while (sessionIds.length > MAX_EARLY_FIRST_TURN_TERMINALS) {
+      delete earlyFirstTurnTerminals[sessionIds.shift()];
+    }
+    return true;
   }
 
   function restoreFirstTurnUiState(submission) {
@@ -4246,11 +4901,49 @@
     else state.sessions.unshift(metadata);
 
     var buffer = getBuffer(sessionId);
+    pruneEarlyFirstTurnTerminals(Date.now());
+    var earlyTerminalEntry = earlyFirstTurnTerminals[sessionId] || null;
+    var earlyTerminal = earlyTerminalEntry && !earlyTerminalEntry.processed
+      ? earlyTerminalEntry.event
+      : null;
+    delete earlyFirstTurnTerminals[sessionId];
+    var terminalAlreadyProcessed = !!buffer.remoteTerminalSeen || !!(
+      earlyTerminalEntry && earlyTerminalEntry.processed
+    );
     buffer.loadedFromDisk = true;
     buffer.sessionRevision = String(
       metadata.transcript_revision || metadata.transcriptRevision || buffer.sessionRevision || "",
     );
     seedAcceptedFirstTurn(sessionId, buffer, submission);
+    if (earlyTerminal) {
+      // No earlier turn event materialized this Session. Treat the replay as a
+      // remote-authority terminal so reconciliation loads the committed answer
+      // instead of trusting the locally seeded optimistic user-only buffer.
+      buffer.localTurnOwned = false;
+      markRemoteTurn(sessionId, buffer, true);
+    }
+    if (terminalAlreadyProcessed) {
+      // A turn event created this buffer before the RPC response and chat:done
+      // already finalized it. `seedAcceptedFirstTurn` may have filled a missing
+      // optimistic user item, but it must not make that terminal turn active.
+      buffer.localTurnOwned = false;
+      buffer.remoteTurnActive = true;
+      buffer.remoteTerminalSeen = true;
+      buffer.busy = false;
+      buffer.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 };
+    }
+    var completionEntry = completionHolds[sessionId];
+    if (!completionEntry || completionEntry.releasing ||
+        completionEntry.holderId !== submission.completionHolderId) {
+      completionEntry = createCompletionHoldEntry(
+        sessionId,
+        submission.completionHolderId,
+      );
+    }
+    completionEntry.established = true;
+    if (!terminalAlreadyProcessed && !earlyTerminal) {
+      startSubagentCompletionHoldHeartbeat(sessionId);
+    }
 
     // The desktop consumed these one-shot handles even if the user navigated
     // away while the atomic first turn was in flight. Remove the exact
@@ -4271,6 +4964,13 @@
       delete firstTurnSubmissions[submission.clientMessageId];
     }
     syncNewFirstTurnSessionInBackground();
+    if (earlyTerminal) {
+      // Replay only after metadata/buffer ownership exists so the normal
+      // terminal path can release the turn lease and reconcile the transcript.
+      handleChatDone(earlyTerminal);
+    } else if (terminalAlreadyProcessed) {
+      void releaseSubagentCompletionHoldIfUnused(sessionId);
+    }
   }
 
   async function runFirstTurnSubmission(submission) {
@@ -4296,7 +4996,7 @@
       if (!firstTurnStillVisible(submission)) return;
       var failedItem = findFirstTurnItem(submission.clientMessageId);
       if (failedItem) {
-        failedItem.deliveryState = submission.lastErrorCode === "outcome_unknown"
+        failedItem.deliveryState = isAmbiguousWebRpcError(submission.lastErrorCode)
           ? "unknown"
           : "failed";
         failedItem.deliveryError = submission.lastError;
@@ -4310,6 +5010,7 @@
     var prepared = consumeFirstTurnUiState(text, meta);
     var clientMessageId = webRequestId("chat");
     var requestId = "first_turn_" + clientMessageId;
+    var completionHolderId = nextCompletionHolderId();
     var time = timeStr();
     var optimisticItem = {
       type: "user",
@@ -4330,6 +5031,7 @@
       time: time,
       displayText: displayText,
       pinvouScene: meta && meta.pinvouScene,
+      completionHolderId: completionHolderId,
       readyAttachments: readyAttachments.slice(),
       uiSnapshot: prepared.snapshot,
       args: {
@@ -4338,6 +5040,7 @@
           return attachment && attachment.handle;
         }).filter(Boolean),
         restrictTools: !!prepared.restrictTools,
+        completionHolderId: completionHolderId,
       },
       inFlight: false,
       lastErrorCode: "",
@@ -4351,7 +5054,7 @@
   function retryFirstTurn(clientMessageId) {
     var submission = firstTurnSubmissions[String(clientMessageId || "")];
     if (!submission || submission.inFlight || !firstTurnStillVisible(submission)) return;
-    if (submission.lastErrorCode !== "rpc_timeout") {
+    if (!isAmbiguousWebRpcError(submission.lastErrorCode)) {
       submission.requestId = "first_turn_" + webRequestId("retry");
     }
     runFirstTurnSubmission(submission);
@@ -4422,26 +5125,37 @@
       state.activeSkill = consumed.activeSkill;
     }
     function queuePrepared(prepared) {
-      state.queued.push({
-        id: ++itemIdSeq,
-        text: prepared.payloadText,
-        displayText: displayText,
-        attachments: attachmentsPayload,
-        meta: meta || null,
-        restrictTools: prepared.restrictTools,
-      });
+      var item = createQueuedChatItem(
+        sid,
+        prepared.payloadText,
+        displayText,
+        attachmentsPayload,
+        meta || null,
+        prepared.restrictTools,
+      );
+      state.queued.push(item);
       state.attachments = state.attachments.filter(function (attachment) {
         return readyAttachments.indexOf(attachment) < 0;
       });
       notify();
+      return item;
     }
 
     // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
     // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
     if (isBusyFor(sid) || state.queued.length > 0) {
-      var queuedPreparation = consumeUiTurnState();
-      queuePrepared(queuedPreparation);
-      if (!isBusyFor(sid)) flushQueued(sid);
+      try {
+        await enqueueBehindSubagentCompletionHold(sid, function () {
+          if (state.activeSessionId !== sid) {
+            throw new Error("chat session changed while queueing input");
+          }
+          queuePrepared(consumeUiTurnState());
+        });
+      } catch (error) {
+        handlePreAdmissionFailure(sid, error, false, "queued input hold");
+        return;
+      }
+      if (!isBusyFor(sid)) void flushQueued(sid);
       return;
     }
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
@@ -4454,13 +5168,35 @@
     // originated in Session A drift into Session B if the user navigated away.
     if (state.activeSessionId !== sid) return;
     if (isBusyFor(sid) || state.queued.length > 0) {
-      var racedQueuePreparation = consumeUiTurnState();
-      queuePrepared(racedQueuePreparation);
-      if (!isBusyFor(sid)) flushQueued(sid);
+      try {
+        await enqueueBehindSubagentCompletionHold(sid, function () {
+          if (state.activeSessionId !== sid) {
+            throw new Error("chat session changed while queueing input");
+          }
+          queuePrepared(consumeUiTurnState());
+        });
+      } catch (error) {
+        handlePreAdmissionFailure(sid, error, false, "queued input hold");
+        return;
+      }
+      if (!isBusyFor(sid)) void flushQueued(sid);
       return;
     }
 
     var preparation = consumeUiTurnState();
+    if (IS_WEB && !isScheduledRunSession(sid)) {
+      // Make an ordinary idle input visible and cancelable before waiting on
+      // the two-phase completion barrier. flushQueued promotes this exact item
+      // and carries its stable Relay request id into web_access_chat.
+      var queuedItem = queuePrepared(preparation);
+      var promoted = await flushQueued(sid);
+      var postBarrierBuffer = getBuffer(sid);
+      if (promoted === false && postBarrierBuffer && postBarrierBuffer.remoteTurnActive &&
+          state.queued.indexOf(queuedItem) >= 0) {
+        throw new Error(bt("turnSyncRejected"));
+      }
+      return;
+    }
     var accepted = await doSendFor(
       sid,
       preparation.payloadText,
@@ -4498,6 +5234,13 @@
   function removeQueued(id) {
     state.queued = state.queued.filter(function (q) { return q.id !== id; });
     notify();
+    if (state.queued.length > 0 && state.activeSessionId && !isBusyFor(state.activeSessionId)) {
+      // Removing an outcome-unknown head is the user's explicit decision to
+      // unblock the FIFO. Promote the next item through the normal barrier.
+      void flushQueued(state.activeSessionId);
+    } else if (state.queued.length === 0 && state.activeSessionId) {
+      void releaseSubagentCompletionHoldIfUnused(state.activeSessionId);
+    }
   }
 
   // ── Pinvou v4 召唤式检阅:Boss 主动呼叫,审当前 session 前面的工作 ──
@@ -4613,8 +5356,12 @@
 
   async function cancelGeneration() {
     if (!state.busy) return;
+    var cancelSessionId = state.activeSessionId;
+    // Settle the exact visible partial answer before crossing the asynchronous
+    // cancel RPC. The eventual chat:done event remains terminal authority.
+    flushPendingChatDeltas(cancelSessionId, { finalize: true, notify: true });
     try {
-      await invoke("cancel_generation", { sessionId: state.activeSessionId });
+      await invoke("cancel_generation", { sessionId: cancelSessionId });
     } catch (e) {
       console.warn("cancel failed", e);
     }
@@ -4654,12 +5401,197 @@
       /<\/codewhale:runtime_event>\s*$/i.test(text);
   }
 
+  function streamSessionId(e) {
+    return String((e && e.payload && e.payload.session_id) || state.activeSessionId || "");
+  }
+
+  function updateStreamingPreview(item, fullText) {
+    item.streamingPreviewOmitted = fullText.length > STREAMING_PREVIEW_CHAR_LIMIT;
+    item.streamingPreviewText = item.streamingPreviewOmitted
+      ? fullText.slice(-STREAMING_PREVIEW_CHAR_LIMIT)
+      : fullText;
+  }
+
+  function structuredDraftKind(scanText) {
+    var explicit = /(?:`{3,}|~{3,})[^\r\n]{0,96}\b(persona-card|card-question|scheduled-task-draft)\b/i.exec(scanText);
+    if (explicit) return String(explicit[1] || "").toLowerCase();
+    // Keep the same bounded fallback as the terminal card/task parsers for
+    // small-model fenced JSON that omits the explicit protocol language.
+    if (/(?:`{3,}|~{3,})[^\r\n]{0,96}(?:\r?\n)[\s\S]{0,1536}?\{[\s\S]{0,512}?["']?(?:name|body|rrule)["']?\s*:/i.test(scanText)) {
+      return "structured";
+    }
+    return "";
+  }
+
+  function detectStreamingStructuredDraft(item, text) {
+    if (!item || item.streamingStructuredDraft || !text) return;
+    var probe = streamingStructuredDraftProbes.get(item) || "";
+    var incoming = String(text);
+    // Each new character is scanned once in bounded slices. No regex input can
+    // exceed 2 KiB, even when the exact answer grows to hundreds of KiB.
+    for (var offset = 0; offset < incoming.length; offset += STREAMING_STRUCTURED_PROBE_CHAR_LIMIT) {
+      var part = incoming.slice(offset, offset + STREAMING_STRUCTURED_PROBE_CHAR_LIMIT);
+      var scan = probe + part;
+      var kind = structuredDraftKind(scan);
+      if (kind) {
+        item.streamingStructuredDraft = kind;
+        streamingStructuredDraftProbes.delete(item);
+        return;
+      }
+      probe = scan.slice(-STREAMING_STRUCTURED_PROBE_CHAR_LIMIT);
+    }
+    streamingStructuredDraftProbes.set(item, probe);
+  }
+
+  function finalizeCurrentAssistantMarkdown() {
+    var item = state.chatItems.find(function (candidate) {
+      return candidate && candidate.id === currentStreamId;
+    });
+    if (!item) return;
+    item.text = currentStreamText;
+    if (item.streamingPreviewText !== undefined || (!item.html && currentStreamText)) {
+      item.html = renderMarkdown(currentStreamText);
+    }
+    streamingStructuredDraftProbes.delete(item);
+    delete item.streamingStructuredDraft;
+    delete item.streamingPreviewText;
+    delete item.streamingPreviewOmitted;
+    item.streaming = false;
+  }
+
+  function applyChatDeltaText(text) {
+    if (!text) return currentStreamText.length;
+    finalizeStreamingReasoning();
+    pendingAssistantText += text;
+    currentStreamText += text;
+    var item = state.chatItems.find(function (candidate) {
+      return candidate && candidate.id === currentStreamId;
+    });
+    if (!item) {
+      currentStreamId = ++itemIdSeq;
+      item = {
+        id: currentStreamId,
+        type: "assistant",
+        text: currentStreamText,
+        html: "",
+        time: timeStr(),
+        streaming: true,
+      };
+      state.chatItems.push(item);
+    }
+    item.text = currentStreamText;
+    detectStreamingStructuredDraft(item, text);
+    updateStreamingPreview(item, currentStreamText);
+    item.streaming = true;
+    return currentStreamText.length;
+  }
+
+  function streamingCadenceMs(totalLength) {
+    if (totalLength < 4096) return 40;
+    if (totalLength < 16384) return 64;
+    if (totalLength < 65536) return 96;
+    return 160;
+  }
+
+  function discardPendingChatDeltas(sessionId) {
+    var sid = String(sessionId || "");
+    if (!sid) return false;
+    var entry = pendingChatDeltas[sid];
+    if (entry) {
+      if (entry.timer != null) clearTimeout(entry.timer);
+      delete pendingChatDeltas[sid];
+    }
+    delete terminalChatStreams[sid];
+    return !!entry;
+  }
+
+  function flushPendingChatDeltas(sessionId, options) {
+    var sid = String(sessionId || "");
+    if (!sid) return false;
+    var opts = options || {};
+    var entry = pendingChatDeltas[sid];
+    if (!entry && !opts.finalize && !opts.seal) return false;
+    if (entry) {
+      if (entry.timer != null) clearTimeout(entry.timer);
+      entry.timer = null;
+      delete pendingChatDeltas[sid];
+    }
+    // A deletion/LRU prune may race a visual timer. Never recreate a removed
+    // background working set from that stale callback.
+    if (sid !== state.activeSessionId && !sessionStates[sid]) return false;
+    var buffer = getBuffer(sid);
+    if (entry && entry.markRemote && buffer) markRemoteTurn(sid, buffer);
+    var text = entry && entry.chunks.length ? entry.chunks.join("") : "";
+    runSyncOnSession(sid, function () {
+      if (text) applyChatDeltaText(text);
+      if (opts.seal) flushPendingTextBlock();
+      if (opts.finalize || opts.seal) finalizeCurrentAssistantMarkdown();
+      if (opts.seal) {
+        currentStreamText = "";
+        currentStreamId = 0;
+      }
+    });
+    if (opts.notify) notifyStreamingChat();
+    return !!(entry || text || opts.finalize || opts.seal);
+  }
+
+  function schedulePendingChatDeltaFlush(sid, entry) {
+    entry.timer = setTimeout(function () {
+      if (pendingChatDeltas[sid] !== entry) return;
+      entry.timer = null;
+      flushPendingChatDeltas(sid, { notify: true });
+    }, streamingCadenceMs(entry.totalLength));
+  }
+
+  function enqueueChatDelta(e) {
+    var sid = streamSessionId(e);
+    var text = String(e && e.payload && e.payload.text || "");
+    if (!sid || !text) return;
+    var buffer = getBuffer(sid);
+    if (terminalChatStreams[sid]) {
+      var turnIsActive = sid === state.activeSessionId ? !!state.busy : !!(buffer && buffer.busy);
+      if (!turnIsActive) return;
+      delete terminalChatStreams[sid];
+    }
+    var eventName = String(e && e.event || "");
+    var shouldMarkRemote = !!(buffer && (buffer.busy || eventName === "chat:delta"));
+    if (shouldMarkRemote) markRemoteTurn(sid, buffer);
+    var entry = pendingChatDeltas[sid];
+    if (!entry) {
+      entry = pendingChatDeltas[sid] = {
+        chunks: [], pendingLength: 0, totalLength: 0, timer: null,
+        markRemote: shouldMarkRemote,
+      };
+      // Establish exact raw text and the bubble synchronously, but defer its
+      // publication. Session switching can therefore never strand this chunk.
+      runSyncOnSession(sid, function () {
+        entry.totalLength = applyChatDeltaText(text);
+      });
+      schedulePendingChatDeltaFlush(sid, entry);
+      return;
+    }
+    if (shouldMarkRemote) entry.markRemote = true;
+    entry.chunks.push(text);
+    entry.pendingLength += text.length;
+    entry.totalLength += text.length;
+    // A timer already exists, so merely choosing a shorter delay here would be
+    // a dead branch. Enforce the queue waterline synchronously instead.
+    if (entry.pendingLength >= STREAMING_PENDING_CHAR_LIMIT) {
+      flushPendingChatDeltas(sid, { notify: true });
+    }
+  }
+
+  function flushDeltasBeforeEvent(e, options) {
+    return flushPendingChatDeltas(streamSessionId(e), options || { finalize: true });
+  }
+
   function applyRemoteUserMessageEvent(e, force) {
     var payload = e && e.payload || {};
     var sid = payload.session_id || state.activeSessionId;
     if (!sid) return false;
     var userBuffer = getBuffer(sid);
     if (!userBuffer) return false;
+    observeWebChatAdmissionEvent(sid, e);
     if (userBuffer.localTurnOwned && !force) {
       // Usually this is the acknowledgement for our optimistic bubble. Keep
       // it briefly so a losing admission race can replay the competing UI's
@@ -4749,6 +5681,11 @@
   }
 
   listen("chat:user_message", function (e) {
+    var sid = streamSessionId(e);
+    if (sid) {
+      delete terminalChatStreams[sid];
+      flushPendingChatDeltas(sid, { finalize: true, seal: true });
+    }
     applyRemoteUserMessageEvent(e, false);
   });
 
@@ -4756,6 +5693,7 @@
     var payload = e && e.payload || {};
     var sid = payload.session_id || state.activeSessionId;
     if (!sid) return;
+    flushPendingChatDeltas(sid, { finalize: true });
     var committedBuffer = getBuffer(sid);
     if (!committedBuffer) return;
     var revision = String(payload.transcript_revision || payload.transcriptRevision || "");
@@ -4842,12 +5780,19 @@
     pendingAssistantBlocks = [];
   }
 
-  listen("chat:turn_started", function (e) { onSessionEvent(e, function () {
+  listen("chat:turn_started", function (e) {
+    var sid = streamSessionId(e);
+    if (sid) {
+      delete terminalChatStreams[sid];
+      flushPendingChatDeltas(sid, { finalize: true, seal: true });
+    }
+    onSessionEvent(e, function () {
     state.busy = true;
     if (!state.thinking.active) startThinking();
     recordTurnStarted();
     notify();
-  }); });
+    });
+  });
 
   function reasoningEventIndex(e) {
     var value = e && e.payload && e.payload.index;
@@ -4878,6 +5823,7 @@
 
   function finalizeAssistantStreamBeforeReasoning() {
     flushPendingTextBlock();
+    finalizeCurrentAssistantMarkdown();
     var item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
     if (item) {
       if (item.html) item.streaming = false;
@@ -4912,12 +5858,17 @@
     else pendingAssistantBlocks.push({ type: "thinking", thinking: text });
   }
 
-  listen("chat:reasoning_start", function (e) { onSessionEvent(e, function () {
+  listen("chat:reasoning_start", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true });
+    onSessionEvent(e, function () {
     startReasoningBlock(reasoningEventIndex(e));
     notify();
-  }); });
+    });
+  });
 
-  listen("chat:reasoning_delta", function (e) { onSessionEvent(e, function () {
+  listen("chat:reasoning_delta", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true });
+    onSessionEvent(e, function () {
     var text = String(e.payload && e.payload.text || "");
     if (!text) return;
     var index = reasoningEventIndex(e);
@@ -4927,10 +5878,13 @@
     }
     item.text += text;
     appendReasoningBlock(text);
-    notify();
-  }); });
+    notifyStreamingChat();
+    });
+  });
 
-  listen("chat:reasoning_done", function (e) { onSessionEvent(e, function () {
+  listen("chat:reasoning_done", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true });
+    onSessionEvent(e, function () {
     var index = reasoningEventIndex(e);
     var item = streamingReasoningItem(index);
     finalizeStreamingReasoning(index);
@@ -4940,33 +5894,12 @@
       if (last && last.type === "thinking" && !last.thinking) pendingAssistantBlocks.pop();
     }
     notify();
-  }); });
+    });
+  });
 
-  listen("chat:delta", function (e) { onSessionEvent(e, function () {
-    finalizeStreamingReasoning();
-    var text = e.payload && e.payload.text || "";
-    pendingAssistantText += text;
-    currentStreamText += text;
-    // Update the streaming chat item
-    var item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
-    if (item) {
-      item.text = currentStreamText;
-      item.html = renderMarkdown(currentStreamText);
-      item.streaming = true;
-    } else {
-      // New bubble needed (after tool card)
-      currentStreamId = ++itemIdSeq;
-      state.chatItems.push({
-        id: currentStreamId,
-        type: "assistant",
-        text: currentStreamText,
-        html: renderMarkdown(currentStreamText),
-        time: timeStr(),
-        streaming: true,
-      });
-    }
-    notify();
-  }); });
+  listen("chat:delta", function (e) {
+    enqueueChatDelta(e);
+  });
 
   listen("scheduled_task:run_updated", function (e) {
     scheduleScheduledRunRefresh();
@@ -5022,7 +5955,9 @@
     return fallbackPath;
   }
 
-  listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
+  listen("chat:tool_start", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true });
+    onSessionEvent(e, function () {
     var p = e.payload || {};
     // Relay reconnects and the desktop event bridge may replay the last frame.
     // Tool-call ids are durable identities, so never create a second message/card
@@ -5033,6 +5968,7 @@
     finalizeStreamingReasoning();
     thinkingTool(p.name);
     flushPendingTextBlock();
+    finalizeCurrentAssistantMarkdown();
     pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
 
     // Finalize current streaming bubble
@@ -5070,9 +6006,12 @@
       scheduleShellPoll(p.session_id || state.activeSessionId, true);
     }
     notify();
-  }); });
+    });
+  });
 
-  listen("chat:tool_end", function (e) { onSessionEvent(e, function () {
+  listen("chat:tool_end", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true });
+    onSessionEvent(e, function () {
     var p = e.payload || {};
     if (toolCallAlreadyFinished(p.id)) return;
     var meta = toolMeta[p.id];
@@ -5218,31 +6157,55 @@
     currentStreamText = "";
     currentStreamId = 0;
     notify();
-  }); });
+    });
+  });
 
   // chat:done 特殊:同步收尾(flush/busy=false/mode 复位)走 runSyncOnSession
   // 路由到对应 session;异步收尾(discard_plan/落盘/刷新列表)按显式 sid 路由,
   // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
-  listen("chat:done", function (e) {
+  function handleChatDone(e) {
     var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
+    if (sid) flushPendingChatDeltas(sid, { finalize: true });
+    var activeWebSubmission = sid && activeWebChatSubmissions[sid];
+    if (activeWebSubmission && activeWebSubmission.admissionObserved) {
+      activeWebSubmission.terminalObserved = true;
+    }
+    // Renew before transcript reconciliation/persistence. Those remote reads
+    // can be slow enough to consume the engine's idle abandonment window.
+    void renewSubagentCompletionHold(sid);
+    startSubagentCompletionHoldHeartbeat(sid);
     var knownDoneSession = !!sid && state.sessions.some(function (session) { return session.id === sid; });
     var scheduledDoneSession = isScheduledRunSession(sid);
+    var firstTurnTerminalRendezvous = !!sid && !knownDoneSession &&
+      !scheduledDoneSession && hasInFlightFirstTurnSubmission();
     if (sid && sid !== state.activeSessionId && !sessionStates[sid] &&
         !knownDoneSession && !scheduledDoneSession) {
       // A stale/malformed terminal for an unknown ordinary Session must not
       // allocate a background buffer or persist the active Session into it.
+      // The sole exception is an in-flight atomic first-turn RPC whose new id
+      // has not reached this renderer yet; rendezvous it by the server-issued id.
+      if (rememberEarlyFirstTurnTerminal(sid, e, false)) return;
       return;
     }
+    if (sid) terminalChatStreams[sid] = true;
     var doneBuffer = sid ? getBuffer(sid) : null;
+    if (firstTurnTerminalRendezvous) {
+      // `chat:user_message` may have materialized the new Session before the
+      // create-and-chat RPC returns. Reconciliation is allowed to clear
+      // `remoteTerminalSeen`, so retain a bounded processed tombstone until
+      // RPC metadata binds the server id to the original completion holder.
+      rememberEarlyFirstTurnTerminal(sid, e, true);
+    }
+    var requiresAuthorityReconcile = !isScheduledRunSession(sid);
     var completedLocalTurn = !!(
-      doneBuffer && doneBuffer.localTurnOwned && !isScheduledRunSession(sid)
+      requiresAuthorityReconcile && doneBuffer && doneBuffer.localTurnOwned
     );
-    if (doneBuffer && !doneBuffer.localTurnOwned) {
+    if (requiresAuthorityReconcile && doneBuffer && !doneBuffer.localTurnOwned) {
       // transcript_committed precedes chat:done. Preserve its revision when a
       // reconnecting client first materializes the turn at the terminal tail.
       markRemoteTurn(sid, doneBuffer, true);
     }
-    if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
+    if (!requiresAuthorityReconcile) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       var error = e.payload && e.payload.error;
@@ -5305,7 +6268,7 @@
       currentStreamText = "";
       currentStreamId = 0;
     });
-    if (doneBuffer && !completedLocalTurn) {
+    if (requiresAuthorityReconcile && doneBuffer && !completedLocalTurn) {
       // Rust has already committed the final transcript before chat:done. Keep
       // both UIs behind a short authority barrier until that snapshot is loaded.
       var finalAssistantMessage = null;
@@ -5340,10 +6303,17 @@
       if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
     }
     notify();
-    // 异步收尾(按 sid 路由,active/后台通用)
+    var doneQueue = sid ? completionQueueFor(sid) : null;
+    if (!doneQueue || doneQueue.length === 0) {
+      void releaseSubagentCompletionHoldIfUnused(sid);
+    }
+    // 异步收尾(按 sid 路由,active/后台通用)。per-holder heartbeat 在
+    // authority reconcile 失败后也保留；renderer 崩溃才由 Engine watchdog 回收。
     (async function () {
       await persistMessagesFor(sid);
-      var reconciled = completedLocalTurn ? true : await reconcileRemoteTurn(sid);
+      var reconciled = requiresAuthorityReconcile && !completedLocalTurn
+        ? await reconcileRemoteTurn(sid)
+        : true;
       if (reconciled) await persistMessagesFor(sid);
       await refreshHistoryList();
       if (!reconciled) {
@@ -5352,10 +6322,10 @@
         });
       }
       notify();
-      // 排队式:本轮跑完,若该 session 不忙且有待发消息 → 自动发下一条
-      if (reconciled) flushQueued(sid);
+      if (reconciled) await flushQueued(sid);
     })();
-  });
+  }
+  listen("chat:done", handleChatDone);
 
   listen("chat:usage", function (e) { onSessionEvent(e, function () {
     var sid = e.payload && e.payload.session_id;
@@ -5375,7 +6345,9 @@
     }
   }); });
 
-  listen("chat:compaction", function (e) { onSessionEvent(e, function () {
+  listen("chat:compaction", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true, seal: true });
+    onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
     var phase = e.payload && e.payload.phase;
     var msg = e.payload && e.payload.message || "";
@@ -5395,11 +6367,14 @@
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
-  }); });
+    });
+  });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────
   // payload: { id: tool_call_id, questions: [{header, id, question, options:[{label, description}]}] }
-  listen("chat:user_input_required", function (e) { onSessionEvent(e, function () {
+  listen("chat:user_input_required", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true });
+    onSessionEvent(e, function () {
     var p = e.payload || {};
     var questions = p.questions || [];
     if (!Array.isArray(questions) || questions.length === 0) return;
@@ -5409,11 +6384,14 @@
       resolved: false, cardState: "active", time: timeStr(),
     });
     notify();
-  }); });
+    });
+  });
 
   // 可恢复的瞬态错误（SSE idle timeout / 瞬态工具失败）：turn 没结束，引擎会 retry，
   // 绝不 setBusy(false)，只飘一条 ⚠️ 提示。
-  listen("chat:transient_error", function (e) { onSessionEvent(e, function () {
+  listen("chat:transient_error", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true, seal: true });
+    onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     var error = e.payload && e.payload.error;
     if (error) {
@@ -5427,7 +6405,8 @@
     // 兜底启动检测被绕过/中途删 key 的场景。
     // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
     if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
-  }); });
+    });
+  });
 
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。
   // 路由到对应 session 的产物列表(后台 session 的产物也跟踪)。
@@ -5480,7 +6459,9 @@
   }); });
 
   // chat:plan_ready —— 底座式:Plan 模式调过 update_plan 即弹方案卡(快照非空)
-  listen("chat:plan_ready", function (e) { onSessionEvent(e, function () {
+  listen("chat:plan_ready", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true, seal: true });
+    onSessionEvent(e, function () {
     var p = e.payload || {};
     var planId = String(p.plan_id || p.planId || "").trim();
     var readyMode = p.mode_state || p.modeState;
@@ -5504,7 +6485,8 @@
       statusLabel: planId ? "" : bt("planHistorical"), time: timeStr(),
     });
     notify();
-  }); });
+    });
+  });
 
   // A discard is a shared plan-state transition but not a model turn. Apply it
   // directly to the matching ticket without marking the Session busy or adding
@@ -7932,6 +8914,9 @@
       setVoiceInputStatus("completed", { message: bt("voiceWritten"), completedAt: Date.now() });
       emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
     } catch (err) {
+      // Cancellation clears activeVoiceInput and owns the terminal `cancelled`
+      // state. A late ASR rejection must not overwrite it with `failed`.
+      if (activeVoiceInput !== session) return;
       var normalized = normalizeVoiceError(err, "transcribing");
       setVoiceInputStatus("failed", {
         message: normalized.message,
@@ -8031,31 +9016,10 @@
       }
     }
 
-    // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
-    try {
-      var asrStatus = await invoke("voice_asr_status");
-      // VoiceAsrStatus 只有 engine/ffmpeg/model/ready/missing,无 installable 字段。
-      // 未装好即弹安装引导;平台 gating 若要做,需先给后端补 installable(当前无此需求)。
-      if (asrStatus && !asrStatus.ready) {
-        if (IS_WEB) {
-          if (primedAudioContext) primedAudioContext.close().catch(function () {});
-          setVoiceInputStatus("failed", {
-            message: bt("voiceNeedDesktopAsr"),
-            error: "voice_asr_not_ready",
-            category: "dependency_unavailable",
-            stage: "dependency",
-            completedAt: Date.now(),
-          });
-          return;
-        }
-        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, progress: null, error: null };
-        notify();
-        return;
-      }
-    } catch (e) {
-      // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
-    }
-
+    // Publish a cancellable session before the first await. The ASR status
+    // probe and getUserMedia permission prompt are both asynchronous; a
+    // second mic click must be able to cancel either one without a late
+    // resolve/reject overwriting the terminal `cancelled` state.
     var session = {
       id: Date.now().toString(36),
       sessionId: state.activeSessionId || null,
@@ -8074,6 +9038,41 @@
       stage: "permission",
     });
     emitVoiceDiagnostic("permission", "info", "requesting microphone permission", "", "");
+
+    // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
+    try {
+      var asrStatus = await invoke("voice_asr_status");
+      if (activeVoiceInput !== session) {
+        cleanupVoiceInputSession(session);
+        return;
+      }
+      // VoiceAsrStatus 只有 engine/ffmpeg/model/ready/missing,无 installable 字段。
+      // 未装好即弹安装引导;平台 gating 若要做,需先给后端补 installable(当前无此需求)。
+      if (asrStatus && !asrStatus.ready) {
+        cleanupVoiceInputSession(session);
+        activeVoiceInput = null;
+        if (IS_WEB) {
+          setVoiceInputStatus("failed", {
+            message: bt("voiceNeedDesktopAsr"),
+            error: "voice_asr_not_ready",
+            category: "dependency_unavailable",
+            stage: "dependency",
+            completedAt: Date.now(),
+          });
+          return;
+        }
+        setVoiceInputStatus("idle", { message: "", stage: null, sessionId: null });
+        state.voiceAsrSetup = { open: true, status: asrStatus, installing: false, progress: null, error: null };
+        notify();
+        return;
+      }
+    } catch (e) {
+      // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
+    }
+    if (activeVoiceInput !== session) {
+      cleanupVoiceInputSession(session);
+      return;
+    }
 
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -8118,7 +9117,8 @@
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);
-      if (activeVoiceInput === session) activeVoiceInput = null;
+      if (activeVoiceInput !== session) return;
+      activeVoiceInput = null;
       var normalized = normalizeVoiceError(err, "recording");
       setVoiceInputStatus("failed", {
         message: normalized.message,

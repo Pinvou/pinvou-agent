@@ -29,8 +29,240 @@
     var basename = context.basename;
     var userMessageDisplayText = context.userMessageDisplayText;
     var extractArtifactPaths = context.extractArtifactPaths;
+    var flushPendingChatDeltas = context.flushPendingChatDeltas || function () { return false; };
     var parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
     var autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
+    var completionHolds = Object.create(null);
+    var completionHoldCommandChains = Object.create(null);
+    var completionHoldSeq = 0;
+
+  function completionHoldInstanceId() {
+    try {
+      if (window.crypto && typeof window.crypto.randomUUID === "function") {
+        return window.crypto.randomUUID();
+      }
+      if (window.crypto && typeof window.crypto.getRandomValues === "function") {
+        var bytes = new Uint32Array(4);
+        window.crypto.getRandomValues(bytes);
+        return Array.prototype.map.call(bytes, function (value) {
+          return value.toString(36);
+        }).join("-");
+      }
+    } catch (_) {}
+    return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+  }
+
+  // One nonce per renderer instance prevents a desktop/Web/reloaded bridge
+  // created in the same millisecond from sharing a release token.
+  var completionHoldInstance = completionHoldInstanceId();
+
+  function completionQueueFor(sid) {
+    var buffer = sid === state.activeSessionId ? state : sessionStates[sid];
+    return buffer && Array.isArray(buffer.queued) ? buffer.queued : null;
+  }
+
+  function queueCompletionHoldWork(sid, work) {
+    var previous = completionHoldCommandChains[sid] || Promise.resolve();
+    var next = previous.catch(function () {}).then(work);
+    completionHoldCommandChains[sid] = next;
+    next.finally(function () {
+      if (completionHoldCommandChains[sid] === next) {
+        delete completionHoldCommandChains[sid];
+      }
+    }).catch(function () {});
+    return next;
+  }
+
+  function setSubagentCompletionHoldNow(sid, entry, held) {
+    return invoke("set_subagent_completion_hold", {
+      sessionId: sid,
+      holderId: entry.holderId,
+      held: !!held,
+    }).then(function (accepted) {
+      if (held && accepted !== true) {
+        throw new Error("sub-agent completion hold was not accepted");
+      }
+      return accepted;
+    });
+  }
+
+  function ensureSubagentCompletionHoldReadyNow(sid, entry) {
+    return invoke("ensure_subagent_completion_hold_ready", {
+      sessionId: sid,
+      holderId: entry.holderId,
+    }).then(function (accepted) {
+      if (accepted !== true) {
+        throw new Error("sub-agent completion hold barrier was not confirmed");
+      }
+      if (completionHolds[sid] !== entry || entry.releasing) {
+        throw new Error("sub-agent completion hold was superseded");
+      }
+      entry.established = true;
+      return true;
+    });
+  }
+
+  function createCompletionHoldEntry(sid) {
+    completionHoldSeq += 1;
+    var entry = {
+      holderId: "pinvou-ui:" + completionHoldInstance + ":" + completionHoldSeq.toString(36),
+      established: false,
+      releasing: false,
+      pendingEnqueues: 0,
+      heartbeatId: null,
+      admissionPromise: null,
+    };
+    completionHolds[sid] = entry;
+    return entry;
+  }
+
+  function releaseCompletionHoldEntryNow(sid, entry) {
+    if (completionHolds[sid] !== entry || entry.releasing) return Promise.resolve(false);
+    entry.releasing = true;
+    if (entry.heartbeatId != null) {
+      clearInterval(entry.heartbeatId);
+      entry.heartbeatId = null;
+    }
+    return setSubagentCompletionHoldNow(sid, entry, false)
+      .then(function (accepted) {
+        if (completionHolds[sid] === entry) delete completionHolds[sid];
+        return accepted;
+      })
+      .catch(function (error) {
+        entry.releasing = false;
+        // A failed/unknown Release cannot leave the renderer believing that
+        // the Engine still holds this lease. Reusing the same holder id is
+        // safe: the next ordinary turn atomically sends Hold -> SendMessage.
+        // Active turns never consume the Engine's idle-only deadline, so only
+        // an idle renderer with queued input needs heartbeat renewal.
+        entry.established = false;
+        entry.admissionPromise = null;
+        console.warn("[pinvou3][chat-ui] completion hold release failed", error);
+        var queued = completionQueueFor(sid);
+        if (completionHolds[sid] === entry && !isBusyFor(sid) &&
+            queued && queued.length > 0) {
+          startSubagentCompletionHoldHeartbeat(sid);
+          void renewSubagentCompletionHold(sid);
+        }
+        return false;
+      });
+  }
+
+  function releaseSubagentCompletionHoldIfUnused(sid) {
+    var entry = completionHolds[sid];
+    if (!entry || entry.releasing || entry.pendingEnqueues > 0 || isBusyFor(sid)) {
+      return Promise.resolve(false);
+    }
+    var queued = completionQueueFor(sid);
+    if (queued && queued.length > 0) return Promise.resolve(false);
+    return queueCompletionHoldWork(sid, function () {
+      if (completionHolds[sid] !== entry || entry.releasing ||
+          entry.pendingEnqueues > 0 || isBusyFor(sid)) {
+        return false;
+      }
+      var currentQueue = completionQueueFor(sid);
+      if (currentQueue && currentQueue.length > 0) return false;
+      return releaseCompletionHoldEntryNow(sid, entry);
+    });
+  }
+
+  function renewSubagentCompletionHold(sid) {
+    var entry = completionHolds[sid];
+    if (!entry || entry.releasing) return Promise.resolve(false);
+    return queueCompletionHoldWork(sid, function () {
+      if (completionHolds[sid] !== entry || entry.releasing) return false;
+      return setSubagentCompletionHoldNow(sid, entry, true).then(function (accepted) {
+        entry.established = true;
+        return accepted;
+      });
+    }).catch(function (error) {
+      console.warn("[pinvou3][chat-ui] completion hold renewal failed", error);
+      return false;
+    });
+  }
+
+  function startSubagentCompletionHoldHeartbeat(sid) {
+    var entry = completionHolds[sid];
+    if (!entry || entry.releasing || entry.heartbeatId != null) return false;
+    entry.heartbeatId = setInterval(function () {
+      if (completionHolds[sid] !== entry || entry.releasing) {
+        if (entry.heartbeatId != null) clearInterval(entry.heartbeatId);
+        entry.heartbeatId = null;
+        return;
+      }
+      var queued = completionQueueFor(sid);
+      if (entry.admissionPromise) {
+        // The Engine is still idle while the backend prepares a reserved turn
+        // (attachment staging, KB/image routing, and the second barrier). Its
+        // idle crash lease must stay alive throughout that admission window.
+        // Do not append this renewal to queueCompletionHoldWork: flushQueued
+        // owns that chain until the chat RPC settles, which could otherwise
+        // postpone the heartbeat beyond the 30-second Engine deadline.
+        void setSubagentCompletionHoldNow(sid, entry, true).catch(function (error) {
+          console.warn("[pinvou3][chat-ui] pending turn lease renewal failed", error);
+        });
+      } else if (!isBusyFor(sid) && queued && queued.length > 0) {
+        void renewSubagentCompletionHold(sid);
+      }
+    }, 10000);
+    return true;
+  }
+
+  function enqueueBehindSubagentCompletionHold(sid, enqueue) {
+    // Scheduled runs retain CodeWhale's Eager completion behavior. Their
+    // follow-up messages still use the UI FIFO, but must never acquire the
+    // Front-only BoundaryOnly completion lease.
+    if (isScheduledRunSession(sid)) {
+      enqueue();
+      return Promise.resolve(true);
+    }
+    var entry = completionHolds[sid];
+    var created = false;
+    if (!entry || entry.releasing) {
+      entry = createCompletionHoldEntry(sid);
+      created = true;
+    }
+    entry.pendingEnqueues += 1;
+    return queueCompletionHoldWork(sid, function () {
+      if (completionHolds[sid] !== entry || entry.releasing) {
+        throw new Error("sub-agent completion hold was superseded");
+      }
+      var admitted = entry.admissionPromise || Promise.resolve(entry.established);
+      return admitted.catch(function () { return false; }).then(function () {
+        if (completionHolds[sid] !== entry || entry.releasing) {
+          throw new Error("sub-agent completion hold was superseded");
+        }
+        if (entry.established) return true;
+        return setSubagentCompletionHoldNow(sid, entry, true).then(function () {
+          entry.established = true;
+          return true;
+        });
+      }).then(function () {
+        enqueue();
+        startSubagentCompletionHoldHeartbeat(sid);
+        return true;
+      });
+    })
+      .catch(function (error) {
+        // A failed first acquisition was never promised to the user. A failed
+        // renewal must retain the existing token so its matching release can
+        // still clear the Engine-side hold (or the idle watchdog can recover).
+        if (created && completionHolds[sid] === entry && !entry.established) {
+          delete completionHolds[sid];
+        }
+        throw error;
+      })
+      .finally(function () {
+        entry.pendingEnqueues = Math.max(0, entry.pendingEnqueues - 1);
+        if (completionHolds[sid] === entry && entry.established &&
+            entry.pendingEnqueues === 0 && !isBusyFor(sid)) {
+          var queued = completionQueueFor(sid);
+          if (!queued || queued.length === 0) {
+            void releaseSubagentCompletionHoldIfUnused(sid);
+          }
+        }
+      });
+  }
 
   // Composer 草稿是纯前端短期状态：写入时不 notify，避免每次按键都克隆
   // 整个 chat slice 并触发 App 重渲染。会话切换本身会 notify，ChatView 会在
@@ -114,6 +346,43 @@
       return item && item.authoritySyncNotice;
     })) return;
     addSystemItem(text, { authoritySyncNotice: true });
+  }
+  function displayTurnError(err) {
+    var text = String(err && err.toString ? err.toString() : err || "");
+    if (text.indexOf("image_input_unsupported") === 0) {
+      return text.indexOf("能力未知") >= 0
+        ? bt("imageUnknown")
+        : bt("imageUnsupported");
+    }
+    return text;
+  }
+  function showTurnErrorNotice(sid, err) {
+    var notice = "⚠️ " + displayTurnError(err);
+    runSyncOnSession(sid, function () {
+      var kept = false;
+      state.chatItems = state.chatItems.filter(function (item) {
+        if (!item || !item.turnErrorNotice) return true;
+        if (!kept && item.text === notice) {
+          kept = true;
+          return true;
+        }
+        return false;
+      });
+      if (!kept) {
+        addSystemItem(notice, { turnErrorNotice: true });
+      } else {
+        notify();
+      }
+    });
+  }
+  function handlePreAdmissionFailure(sid, err, surfaceFailure, scope) {
+    console.warn("[pinvou3][chat-ui] " + scope + " failed", {
+      sid: sid,
+      error: err && err.toString ? err.toString() : err,
+    });
+    showTurnErrorNotice(sid, err);
+    if (surfaceFailure) throw err;
+    return false;
   }
   function compactPruneRollupText(count) {
     return bt("compactDone") + bt("compactAuto") + " " +
@@ -210,7 +479,7 @@
 
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
-  function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
+  function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure, completionBarrierReady) {
     safeConsoleInfo("[pinvou3][chat-ui] send start", {
       sid: sid,
       textLen: (text || "").length,
@@ -225,6 +494,42 @@
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
       return Promise.reject(new Error(bt("sessionSyncingTurn")));
     }
+    var useCompletionLease = !isScheduledRunSession(sid);
+    var completionEntry = useCompletionLease ? completionHolds[sid] : null;
+    if (useCompletionLease && (!completionEntry || completionEntry.releasing)) {
+      completionEntry = createCompletionHoldEntry(sid);
+    }
+    // Never claim local ownership or create the optimistic assistant until the
+    // two-phase Engine/App watermark confirms that any runtime-authored turn
+    // which already won the idle boundary has fully completed. Busy inputs are
+    // still made visible immediately by the fast Hold + FIFO path.
+    if (useCompletionLease && completionBarrierReady !== true) {
+      return ensureSubagentCompletionHoldReadyNow(sid, completionEntry).then(
+        function () {
+          return doSendFor(
+            sid,
+            text,
+            displayText,
+            attachmentsPayload,
+            meta,
+            restrictTools,
+            surfaceFailure,
+            true,
+          );
+        },
+        function (error) {
+          return handlePreAdmissionFailure(
+            sid,
+            error,
+            surfaceFailure,
+            "completion barrier",
+          );
+        },
+      );
+    }
+    var acquireCompletionLeaseWithTurn = !!(
+      useCompletionLease && completionEntry && !completionEntry.established
+    );
     if (turnOwnerBuffer) {
       turnOwnerBuffer.localTurnOwned = true;
       turnOwnerBuffer.remoteTurnActive = false;
@@ -258,13 +563,45 @@
     notify();
     emitPetEvent("pet:turn_start", sid);
     publishRemoteUserMessage(sid, displayText, meta && meta.remoteClientMessageId);
-    return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools })
+    var turnAdmission = invoke("chat", {
+      message: text,
+      attachments: attachmentsPayload,
+      sessionId: sid,
+      restrictTools: !!restrictTools,
+      // Every ordinary turn replays the same idempotent Hold immediately
+      // before SendMessage in the Engine mailbox. This repairs a holder that
+      // expired while the renderer was throttled without minting a new FIFO.
+      completionHolderId: useCompletionLease ? completionEntry.holderId : null,
+    });
+    var turnLeaseReady = turnAdmission.then(function () {
+        if (useCompletionLease && completionHolds[sid] === completionEntry &&
+            !completionEntry.releasing) {
+          completionEntry.established = true;
+          // A previous RPC may resolve after this holder has already admitted
+          // the next FIFO turn. Never let the older response erase the newer
+          // admission barrier that a concurrent interjection must await.
+          if (completionEntry.admissionPromise === turnLeaseReady) {
+            completionEntry.admissionPromise = null;
+          }
+          startSubagentCompletionHoldHeartbeat(sid);
+        }
+        return true;
+    });
+    if (useCompletionLease) {
+      completionEntry.admissionPromise = turnLeaseReady;
+      startSubagentCompletionHoldHeartbeat(sid);
+    }
+    return turnLeaseReady
       .then(function () {
         if (turnOwnerBuffer) turnOwnerBuffer.deferredRemoteUserEvent = null;
         if (meta && meta.pinvouScene) {
-          runSyncOnSession(sid, function () {
-            recordPinvouSceneForMessage(sid, submittedMessagePos, meta.pinvouScene);
-          });
+          try {
+            runSyncOnSession(sid, function () {
+              recordPinvouSceneForMessage(sid, submittedMessagePos, meta.pinvouScene);
+            });
+          } catch (error) {
+            console.warn("[pinvou3][chat-ui] scene sidecar write failed after turn admission", error);
+          }
         }
         return true;
       })
@@ -276,6 +613,15 @@
         emitPetEvent("pet:turn_end", sid);
         var errorText = String(err && err.message ? err.message : err || "");
         var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
+        if (useCompletionLease && completionHolds[sid] === completionEntry &&
+            completionEntry.admissionPromise === turnLeaseReady) {
+          completionEntry.admissionPromise = null;
+        }
+        if (acquireCompletionLeaseWithTurn && completionHolds[sid] === completionEntry &&
+            !completionEntry.established) {
+          if (completionEntry.heartbeatId != null) clearInterval(completionEntry.heartbeatId);
+          delete completionHolds[sid];
+        }
         if (turnOwnerBuffer) turnOwnerBuffer.localTurnOwned = false;
         runSyncOnSession(sid, function () {
           state.messages = state.messages.filter(function (message) { return message !== submittedMessage; });
@@ -305,6 +651,10 @@
           });
         });
         notify();
+        // A direct known-failure has no terminal event to release the holder.
+        // Queue-driven sends reinsert their exact head in the outer serialized
+        // flush before this deferred release re-checks, so they retain it.
+        if (useCompletionLease) void releaseSubagentCompletionHoldIfUnused(sid);
         if (surfaceFailure) throw err;
         return false;
       });
@@ -320,32 +670,63 @@
   // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 严格按 FIFO
   // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
   // 连续输入的多个独立任务合并成一个模型请求。
-  function flushQueued(sid) {
+  async function flushQueued(sid) {
     var pendingBuffer = sessionStates[sid];
     if (pendingBuffer && pendingBuffer.remoteTurnActive) {
-      reconcileRemoteTurn(sid).then(function (ready) {
-        if (ready) flushQueued(sid);
-      }).catch(function () {});
-      return;
+      try {
+        if (await reconcileRemoteTurn(sid)) return flushQueued(sid);
+      } catch (_) {}
+      return false;
     }
-    if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
-    var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
-    if (!q || q.length === 0) return;
-    var item = q.shift();
-    var attachments = item.attachments || [];
-    var displayText = item.displayText == null
-      ? formatAttachmentDisplayText(item.text, attachments)
-      : item.displayText;
-    notify();
-    doSendFor(sid, item.text, displayText, attachments, item.meta || null, !!item.restrictTools, true)
-      .catch(function () {
-        var retryQueue = sid === state.activeSessionId
-          ? state.queued
-          : (sessionStates[sid] && sessionStates[sid].queued);
-        if (!retryQueue) return;
-        retryQueue.unshift(item);
+    return queueCompletionHoldWork(sid, function () {
+      // Re-check inside the per-Session chain. Duplicate terminal/reconcile
+      // callbacks may request a flush together; only one may remove the head.
+      if (isBusyFor(sid)) return false;
+      var q = completionQueueFor(sid);
+      if (!q || q.length === 0) return false;
+      var item = q[0];
+      var useCompletionLease = !isScheduledRunSession(sid);
+      var entry = useCompletionLease ? completionHolds[sid] : null;
+      if (useCompletionLease && (!entry || entry.releasing)) {
+        entry = createCompletionHoldEntry(sid);
+      }
+      var ready = useCompletionLease
+        ? ensureSubagentCompletionHoldReadyNow(sid, entry)
+        : Promise.resolve(true);
+      return ready.then(function () {
+        // The barrier may have waited for a runtime completion. The user can
+        // cancel the visible chip during that wait, so peek first and remove
+        // it only after confirmation and a fresh identity/busy check.
+        if (isBusyFor(sid)) return false;
+        var currentQueue = completionQueueFor(sid);
+        if (!currentQueue || currentQueue[0] !== item) return false;
+        currentQueue.shift();
+        var attachments = item.attachments || [];
+        var displayText = item.displayText == null
+          ? formatAttachmentDisplayText(item.text, attachments)
+          : item.displayText;
         notify();
+        return doSendFor(
+          sid,
+          item.text,
+          displayText,
+          attachments,
+          item.meta || null,
+          !!item.restrictTools,
+          true,
+          true,
+        ).catch(function (error) {
+          var retryQueue = completionQueueFor(sid);
+          if (!retryQueue) throw error;
+          retryQueue.unshift(item);
+          notify();
+          throw error;
+        });
       });
+    }).catch(function (error) {
+      showTurnErrorNotice(sid, error);
+      return false;
+    });
   }
 
   async function sendMessageToSession(sessionId, text, meta) {
@@ -360,18 +741,20 @@
     var targetBuffer = getBuffer(sid);
     var targetQueue = targetBuffer && targetBuffer.queued;
     if (isBusyFor(sid) || (targetQueue && targetQueue.length > 0)) {
-      runSyncOnSession(sid, function () {
-        state.queued.push({
-          id: ++context.itemIdSeq,
-          text: content,
-          displayText: content,
-          attachments: [],
-          meta: meta || null,
-          restrictTools: false,
+      await enqueueBehindSubagentCompletionHold(sid, function () {
+        runSyncOnSession(sid, function () {
+          state.queued.push({
+            id: ++context.itemIdSeq,
+            text: content,
+            displayText: content,
+            attachments: [],
+            meta: meta || null,
+            restrictTools: false,
+          });
         });
       });
       notify();
-      if (!isBusyFor(sid)) flushQueued(sid);
+      if (!isBusyFor(sid)) void flushQueued(sid);
       return { accepted: true, queued: true };
     }
     if (targetBuffer && targetBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
@@ -379,18 +762,20 @@
     }
     targetBuffer = getBuffer(sid);
     if (isBusyFor(sid) || (targetBuffer.queued && targetBuffer.queued.length > 0)) {
-      runSyncOnSession(sid, function () {
-        state.queued.push({
-          id: ++context.itemIdSeq,
-          text: content,
-          displayText: content,
-          attachments: [],
-          meta: meta || null,
-          restrictTools: false,
+      await enqueueBehindSubagentCompletionHold(sid, function () {
+        runSyncOnSession(sid, function () {
+          state.queued.push({
+            id: ++context.itemIdSeq,
+            text: content,
+            displayText: content,
+            attachments: [],
+            meta: meta || null,
+            restrictTools: false,
+          });
         });
       });
       notify();
-      if (!isBusyFor(sid)) flushQueued(sid);
+      if (!isBusyFor(sid)) void flushQueued(sid);
       return { accepted: true, queued: true };
     }
     var completion = doSendFor(sid, content, content, [], meta || null, false, true)
@@ -473,9 +858,18 @@
     // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
     // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
     if (isBusyFor(sid) || state.queued.length > 0) {
-      var queuedPreparation = consumeUiTurnState();
-      queuePrepared(queuedPreparation);
-      if (!isBusyFor(sid)) flushQueued(sid);
+      try {
+        await enqueueBehindSubagentCompletionHold(sid, function () {
+          if (state.activeSessionId !== sid) {
+            throw new Error("chat session changed while queueing input");
+          }
+          queuePrepared(consumeUiTurnState());
+        });
+      } catch (error) {
+        handlePreAdmissionFailure(sid, error, false, "queued input hold");
+        return;
+      }
+      if (!isBusyFor(sid)) void flushQueued(sid);
       return;
     }
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
@@ -486,9 +880,18 @@
     }
     if (state.activeSessionId !== sid) return;
     if (isBusyFor(sid) || state.queued.length > 0) {
-      var racedQueuePreparation = consumeUiTurnState();
-      queuePrepared(racedQueuePreparation);
-      if (!isBusyFor(sid)) flushQueued(sid);
+      try {
+        await enqueueBehindSubagentCompletionHold(sid, function () {
+          if (state.activeSessionId !== sid) {
+            throw new Error("chat session changed while queueing input");
+          }
+          queuePrepared(consumeUiTurnState());
+        });
+      } catch (error) {
+        handlePreAdmissionFailure(sid, error, false, "queued input hold");
+        return;
+      }
+      if (!isBusyFor(sid)) void flushQueued(sid);
       return;
     }
 
@@ -526,6 +929,7 @@
     }
     state.queued = state.queued.filter(function (q) { return q.id !== id; });
     notify();
+    if (state.queued.length === 0) void releaseSubagentCompletionHoldIfUnused(state.activeSessionId);
   }
 
   // ── Pinvou v4 召唤式检阅:Boss 主动呼叫,审当前 session 前面的工作 ──
@@ -640,18 +1044,23 @@
   }
 
   async function cancelGeneration() {
+    var cancelSessionId = state.activeSessionId;
     safeConsoleInfo("[pinvou3][chat-ui] cancel clicked", {
-      sid: state.activeSessionId,
+      sid: cancelSessionId,
       busy: state.busy,
     });
     if (!state.busy) return;
+    // The cancel RPC can take long enough for a cadence timer to fire behind
+    // the user's action. Settle the exact partial text and Markdown once before
+    // crossing that asynchronous boundary; chat:done remains authoritative.
+    flushPendingChatDeltas(cancelSessionId, { finalize: true, notify: true });
     try {
-      safeConsoleInfo("[pinvou3][chat-ui] cancel invoke start", { sid: state.activeSessionId });
-      await invoke("cancel_generation", { sessionId: state.activeSessionId });
-      safeConsoleInfo("[pinvou3][chat-ui] cancel invoke ok", { sid: state.activeSessionId });
+      safeConsoleInfo("[pinvou3][chat-ui] cancel invoke start", { sid: cancelSessionId });
+      await invoke("cancel_generation", { sessionId: cancelSessionId });
+      safeConsoleInfo("[pinvou3][chat-ui] cancel invoke ok", { sid: cancelSessionId });
     } catch (e) {
       console.warn("[pinvou3][chat-ui] cancel invoke failed", {
-        sid: state.activeSessionId,
+        sid: cancelSessionId,
         error: e && e.toString ? e.toString() : e,
       });
       console.warn("cancel failed", e);
@@ -708,6 +1117,10 @@
       doSendFor: doSendFor,
       publishRemoteUserMessage: publishRemoteUserMessage,
       flushQueued: flushQueued,
+      enqueueBehindSubagentCompletionHold: enqueueBehindSubagentCompletionHold,
+      renewSubagentCompletionHold: renewSubagentCompletionHold,
+      startSubagentCompletionHoldHeartbeat: startSubagentCompletionHoldHeartbeat,
+      releaseSubagentCompletionHoldIfUnused: releaseSubagentCompletionHoldIfUnused,
       sendMessageToSession: sendMessageToSession,
       sendMessage: sendMessage,
       getComposerDraft: getComposerDraft,

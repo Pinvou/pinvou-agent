@@ -1279,7 +1279,7 @@
   <div class="hero">
     <div class="hero-inner">
       <div>
-        <div class="eyebrow"><span class="eyebrow-dot"></span>PinvouOS Architecture · 2026-08-19</div>
+        <div class="eyebrow"><span class="eyebrow-dot"></span>PinvouOS Architecture · 2026-08-20</div>
         <h1>交互 Agent<br />到底能做什么？</h1>
         <p class="hero-lead">
           这份文档把 <strong>Front Agent 的真实能力、软约定和目标设计</strong> 分开说明。
@@ -1288,8 +1288,8 @@
         </p>
       </div>
       <div class="hero-meta">
-        <div class="meta-card"><span class="meta-label">代码基线</span><span class="meta-value mono">pinvou-agent · 8c356239</span></div>
-        <div class="meta-card"><span class="meta-label">执行底座</span><span class="meta-value mono">CodeWhale · 3f64e41e</span></div>
+        <div class="meta-card"><span class="meta-label">代码基线</span><span class="meta-value mono">pinvou-agent · 0b1b3a5 + 2026-08-20 工作树</span></div>
+        <div class="meta-card"><span class="meta-label">执行底座</span><span class="meta-value mono">CodeWhale · 2f1f851e · 回流边界 checkpoint</span></div>
         <div class="meta-card"><span class="meta-label">阅读方式</span><span class="meta-value">先看状态标签，再看硬边界</span></div>
       </div>
     </div>
@@ -1297,9 +1297,9 @@
 
   <div class="truth-strip" aria-label="关键事实">
     <div class="truth-strip-grid">
-      <p class="truth-lead">当前 Front 已经能稳定回答、使用广泛工具并在三轮后强制收口；但还不是完整 Runtime 化的“全屏交互 Agent”。</p>
+      <p class="truth-lead">当前 Front 已能稳定回答、使用广泛工具，并允许 busy 期间继续提交输入；输入先在 turn 边界排队，不是实时打断。它还不是完整 Runtime 化的“全屏交互 Agent”。</p>
       <div class="truth-fact"><b>1</b><span>唯一用户态回答流</span></div>
-      <div class="truth-fact"><b>3 轮</b><span>Direct 工具硬预算</span></div>
+      <div class="truth-fact"><b>3 轮</b><span>Engine 工具循环安全上限</span></div>
       <div class="truth-fact"><b>0</b><span>当前可写的 front/* Surface</span></div>
     </div>
   </div>
@@ -1359,8 +1359,8 @@
         </article>
         <article class="route-card">
           <div class="route-number">02</div><h3>Direct · 直接完成</h3>
-          <p>闲聊、解释、改写、翻译，或边界清楚、低风险且能在三轮工具内验证完成的短任务。</p>
-          <span class="status live">预算硬实现</span>
+          <p>闲聊、解释、改写、翻译，或边界清楚、低风险且能用少量工具验证完成的短任务；三轮只是 Engine 上限，不是延迟目标。</p>
+          <span class="status live">安全上限硬实现</span>
         </article>
         <article class="route-card">
           <div class="route-number">03</div><h3>Clarify · 只问关键问题</h3>
@@ -1376,7 +1376,7 @@
 
       <div class="callout warn" style="margin-top:18px">
         <div class="callout-icon">!</div>
-        <div><strong>必须区分“规则写在 Prompt 里”与“内核真的拦得住”</strong><p>四路由选择、只问一个问题、只启动一个 <code>pinvou-orchestrator</code> 目前主要靠 Prompt；真正硬化的是三轮 Direct 工具预算及其执行期复检。</p></div>
+        <div><strong>必须区分“规则写在 Prompt 里”与“内核真的拦得住”</strong><p>四路由选择、只问一个问题、只启动一个 <code>pinvou-orchestrator</code> 与拿到启动回执后尽快结束前台 turn，目前主要靠 Prompt；真正硬化的是三轮 Direct 工具安全上限及其执行期复检。上限不是前台时间预算，也不意味着 Front 应等待三轮才 handoff。</p></div>
       </div>
     </section>
 
@@ -1407,8 +1407,8 @@
           <div class="evidence">由 CodeWhale 工具目录与产品白名单约束</div>
         </article>
         <article class="card capability-card">
-          <div class="capability-top"><h3>三轮 Direct 预算</h3><span class="status live">硬门禁</span></div>
-          <p>并行工具同批只算一轮；第三轮后仅允许一个 handoff 批次，之后本轮工具面彻底关闭；同批多个 agent call 尚未被禁止。</p>
+          <div class="capability-top"><h3>三轮 Direct 安全上限</h3><span class="status live">硬门禁</span></div>
+          <p>并行工具同批只算一轮；第三轮后仅允许一个 handoff 批次，之后本轮工具面彻底关闭；它防止无界循环，不规定 3 秒、30 秒或任何前台 SLA。同批多个 agent call 尚未被禁止。</p>
           <div class="evidence">目录收窄 + 执行入口二次复检</div>
         </article>
         <article class="card capability-card">
@@ -1439,6 +1439,9 @@
           <thead><tr><th scope="col">能力</th><th scope="col">核心代码</th><th scope="col">Front 可调用</th><th scope="col">后台持续运行</th><th scope="col">端到端闭环</th><th scope="col">准确结论</th></tr></thead>
           <tbody>
             <tr><td>主回答流</td><td class="yes">是</td><td class="yes">是</td><td>按交互运行</td><td class="yes">是</td><td>当前最成熟的 Front 能力</td></tr>
+            <tr><td>busy 期间继续输入</td><td class="yes">普通 chat</td><td class="partial-text">turn 后消费</td><td class="no">仅内存</td><td class="partial-text">边界 FIFO + lease</td><td>语音/文字进入可见、可撤销 FIFO；快速 Hold 后以两阶段 barrier 再确认 turn ownership，同一 Host lease 跨越所有 queued turn，最后一个 terminal 后才释放；Web outcome-unknown 保持同一 request id 并阻塞队首，不自动重发；不是 live steering，重载不可恢复</td></tr>
+            <tr><td>语音采集控制</td><td class="yes">是</td><td class="yes">是</td><td>独立于 generation</td><td class="yes">本地闭环</td><td>请求权限/转写可取消，录音可停止；generation busy 不得锁住麦克风控制</td></tr>
+            <tr><td>后台完成回流</td><td class="yes">Engine 策略</td><td class="partial-text">独立回流 turn</td><td>CodeWhale 子 Agent</td><td class="partial-text">兼容层闭环</td><td>不注入活跃用户 turn；以 typed SubAgentHandoff provenance 回流，尚不是 Runtime Mission receipt</td></tr>
             <tr><td>Runtime 状态查询</td><td class="yes">是</td><td class="yes">是</td><td>投影来自 Runtime</td><td class="partial-text">只读闭环</td><td>可看状态，不能直接改 Runtime</td></tr>
             <tr><td>Orchestrator 计划</td><td class="yes">是</td><td class="yes">是</td><td class="no">否</td><td class="no">否</td><td>生成临时计划，不启动 Mission</td></tr>
             <tr><td>Mission / Runtime Run</td><td class="partial-text">核心 API 有</td><td class="no">未接</td><td class="partial-text">部分</td><td class="no">否</td><td>复杂任务当前仍走 CodeWhale subagent</td></tr>
@@ -1486,7 +1489,7 @@
       </div>
 
       <div class="budget" style="margin-top:18px">
-        <div class="budget-head"><h3>三轮 Direct 是怎样“硬”起来的</h3><p class="budget-note">一轮 = 一次 assistant batch 里整批工具调用；同批并行多个工具仍只算一轮。</p></div>
+        <div class="budget-head"><h3>三轮 Direct 安全上限是怎样“硬”起来的</h3><p class="budget-note">一轮 = 一次 assistant batch 里整批工具调用；同批并行多个工具仍只算一轮。计数只约束工具循环，不测量墙钟时间。</p></div>
         <div class="budget-flow">
           <div class="budget-step"><b>第 1 轮</b><span>普通工具开放；尽量并行取证。</span></div>
           <div class="budget-step"><b>第 2 轮</b><span>基于结果补充执行或验证。</span></div>
@@ -1497,6 +1500,8 @@
           <div class="budget-step closed"><b>本轮工具关闭</b><span>agent batch 出现后，无论成功失败，后续工具都拒绝。</span></div>
         </div>
       </div>
+
+      <div class="callout warn" style="margin-top:18px"><div class="callout-icon">!</div><div><strong>不要把“三轮”换算成“三秒”或“前台可占用时间”</strong><p>模型请求、工具批次和验证的耗时差异很大；Engine 当前没有 30 秒自动 handoff 或 45 秒硬 lease。Front 应在一开始就把明显慢、复杂或多阶段任务交给 Orchestrator，而不是等上限耗尽。</p></div></div>
     </section>
 
     <section id="orchestration">
@@ -1538,7 +1543,7 @@
       <div class="grid-3">
         <div class="card"><span class="status live">硬状态机</span><h3 style="margin-top:16px">一个 terminal</h3><p>成功打开的 InteractionRun 只能以一个 terminal outcome 结束；状态迁移和 resume 绑定有硬校验。</p></div>
         <div class="card"><span class="status partial">best-effort trace</span><h3 style="margin-top:16px">只存摘要</h3><p>记录工具 start/finish、消息 digest 与终态，不保存参数和完整输出；入账失败只告警，交互继续。</p></div>
-        <div class="card"><span class="status off">用户链未闭环</span><h3 style="margin-top:16px">busy 时不可 steering</h3><p><code>request_user_input</code> 可产生精确 interrupt/resume，但 VoiceShell 忙时锁定输入，用户尚不能自然取消或改目标。</p></div>
+        <div class="card"><span class="status partial">边界插话</span><h3 style="margin-top:16px">busy 可继续说，但不可 live steering</h3><p>普通 VoiceShell / chat 的本机语音与兼容文字入口会进入可见、可撤销的内存 FIFO。快速 Hold 先登记 mailbox 顺序；队首在 reserve、认领本地 turn 和创建乐观回答前，还必须完成 <code>Acquire → Applied → Confirm → Confirmed(active)</code> 两阶段 barrier。同一 lease 跨越后续 queued turn，直到最后一个 terminal 才释放；不会注入正在执行的模型请求或工具批次，也不能跨重载恢复。不同 Host 不共享全局 FIFO，旧 plan-accept / edit 入口尚不在该 lease 保证内。</p></div>
       </div>
 
       <div class="callout warn" style="margin-top:18px"><div class="callout-icon">!</div><div><strong>当前 modality 还不是完整真实输入通道</strong><p>生产链普通输入目前统一标为 Voice，<code>request_user_input</code> 恢复输入标为 Touch；Text / System 的真实 plumbing 尚未接通，不能把投影里的 modality 当成完整多模态事实。</p></div></div>
@@ -1849,7 +1854,7 @@
         <article class="example"><div class="example-input"><small>用户</small><p>“解释一下这段架构文档。”</p></div><div class="example-output"><span class="status live">Direct</span><p style="margin-top:14px">无需启动 Orchestrator；Front 直接读取、解释并给结论。若用工具，仍受三轮预算。</p></div></article>
         <article class="example"><div class="example-input"><small>用户</small><p>“MegaBook 现在热不热？”</p></div><div class="example-output"><span class="status live">Direct + 只读状态</span><p style="margin-top:14px">Front 可读取 Runtime / Resource 投影后回答；不会凭一个 Running 徽标夸大设备能力。</p></div></article>
         <article class="example"><div class="example-input"><small>用户</small><p>“把这个模块重构、部署，再做白盒和黑盒验证。”</p></div><div class="example-output"><span class="status partial">Orchestrate</span><p style="margin-top:14px">按 Prompt 契约应进入、happy-path 会进入 CodeWhale 子 Agent；目标态应建立 Runtime Mission、Work Graph、回执和验证终态。</p></div></article>
-        <article class="example"><div class="example-input"><small>用户</small><p>“先停，部署范围改成只动前端。”</p></div><div class="example-output"><span class="status off">Interrupt 链未闭环</span><p style="margin-top:14px">Prompt 会要求先打断，但当前忙时 UI 不能自然 steering；这是 AG-UI 接线必须补齐的关键体验。</p></div></article>
+        <article class="example"><div class="example-input"><small>用户</small><p>“先停，部署范围改成只动前端。”</p></div><div class="example-output"><span class="status partial">边界 FIFO</span><p style="margin-top:14px">输入可见排队并在当前 turn 结束后处理；它不会中途注入当前工具批次。真正的即时 cancel / steering 与耐久恢复仍需 AG-UI 接线。</p></div></article>
         <article class="example span-2"><div class="example-input"><small>用户</small><p>“把整个屏幕整理成这项工作的操作台。”</p></div><div class="example-output"><span class="status target">front/* Canvas</span><p style="margin-top:14px">目标不是让 Front 输出任意 HTML，而是声明 Mission、产物、风险、等待决定等语义块；Host 用统一设计系统渲染，并由 Policy / Kernel 保护 Action。</p></div></article>
       </div>
     </section>
@@ -1875,7 +1880,7 @@
         <a class="source" href="README.md"><strong>PinvouOS 架构权威索引</strong><span>跨文档不变量、当前实现边界与裁决顺序。</span></a>
         <div class="source"><strong>Front / VoiceShell / ToolStore / Artifact 实现</strong><span>Front 工具面、首页 early return、旧 QR 事件卡，以及 ArtifactCard → Host ArtifactBrowser 的统一静态预览边界。</span></div>
         <div class="source"><strong>src/shared/markdown-renderer.js · VoiceShell · Chromium 安全探针</strong><span>当前净化仍允许 fixed style、dialog、form/input、远程图片与直接链接；尚缺覆盖这五类 payload 的持久回归 fixture。</span></div>
-        <div class="source"><strong>CodeWhale Engine · 3f64e41e</strong><span>Direct 三轮目录收窄与执行期 hard admission。</span></div>
+        <div class="source"><strong>CodeWhale Engine · 2f1f851e</strong><span>Direct 三轮 hard admission、BoundaryOnly 独立回流、typed provenance 与两阶段 completion barrier。</span></div>
         <a class="source" href="pinvouos-interaction-surface-agui-a2ui.html"><strong>AG-UI × A2UI 交互画布架构</strong><span>协议职责、Surface 写权、Catalog、Host Renderer 与唯一迁移路线。</span></a>
         <div class="source"><strong>内部 UI Agent 卡片协议 + Obsidian 产品主张</strong><span>继承动态 Canvas、白名单组件与 Host 控制视觉；废弃旧 Session 与独立 UI Agent 假设。</span></div>
         <a class="source" href="https://github.com/a2ui-project/a2ui/blob/main/specification/v1_0/docs/a2ui_protocol.md"><strong>A2UI v1 官方协议</strong><span>声明式 Surface、受信 Catalog、数据绑定、Action 与 Host 自定义组件。</span></a>
@@ -1890,7 +1895,7 @@
 
   <footer>
     <div class="footer-inner">
-      <p>PinvouOS Front Agent · 能力与设计真相源 · 基于 feature checkpoint 8c356239</p>
+      <p>PinvouOS Front Agent · 能力与设计真相源 · 基于 CodeWhale feature checkpoint 2f1f851e 与父仓 2026-08-20 候选</p>
       <p><a href="README.md">返回架构权威索引</a> · <a href="pinvouos-interaction-surface-agui-a2ui.html">查看交互画布协议</a></p>
     </div>
   </footer>

@@ -74,7 +74,15 @@ command_protocol!(
     "assistant_response.rs",
     ["export_assistant_response", "open_assistant_share_target"]
 );
-command_protocol!(chat_protocol, "chat.rs", ["chat"]);
+command_protocol!(
+    chat_protocol,
+    "chat.rs",
+    [
+        "chat",
+        "set_subagent_completion_hold",
+        "ensure_subagent_completion_hold_ready"
+    ]
+);
 command_protocol!(
     connectors_protocol,
     "connectors.rs",

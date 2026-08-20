@@ -19,6 +19,7 @@ test('PinvouOS home exposes one Pinvou instead of conversation navigation', () =
   assert.match(main, /multiAgentAvailable=\{LEGACY_EXPERT_SURFACES_ENABLED\}/);
   assert.match(main, /<PinvouOsVoiceShell/);
   assert.match(main, /onSubmitPrompt=\{handlePinvouOsVoicePrompt\}/);
+  assert.match(main, /handlePinvouOsVoicePrompt[\s\S]*?bridge\.chat\.sendMessage\(prompt\)/);
 });
 
 test('PinvouOS retires the Three Departments and expert card-pool surfaces', () => {
@@ -57,11 +58,36 @@ test('Agent Runtime dock is backed by native runtime truth and has no legacy ter
   assert.match(dock, /inference\.lastSuccessAtMs/);
   assert.match(dock, /connectivity\.reasonCode/);
   assert.match(shell, /data-testid="pinvou-os-microphone"/);
-  assert.match(shell, /bridge\.voice\.startVoiceInput/);
+  assert.match(shell, /voiceBridge\.startVoiceInput/);
   assert.match(shell, /<Sparkles size=\{30\} className="pinvou-os-mic-processing" \/>/);
   assert.doesNotMatch(shell, /pinvou-os-mic-spinner|RotateCcw/);
-  assert.match(shell, /aria-label=\{recording \? t\.voiceStop : transcribing \? t\.voiceTranscribing/);
+  assert.match(shell, /aria-label=\{recording \? t\.voiceStop : requesting \|\| transcribing \? t\.voiceCancel/);
+  assert.match(shell, /disabled=\{voiceControl\.disabled\}/);
+  assert.doesNotMatch(shell, /transcribing \|\| busy|busy \|\| transcribing/);
+  assert.match(shell, /const captureActive = isVoiceCaptureActive\(voiceInput\.status\)/);
+  assert.match(shell, /transcribing \? 'is-voice-transcribing'/);
+  assert.match(shell, /const visibleAssistantText = !captureActive/);
+  assert.match(shell, /const visibleArtifact = !captureActive/);
+  assert.match(shell, /const queued = \(bs && bs\.queued\) \|\| \[\]/);
+  assert.match(shell, /bridge\.chat\.removeQueued\(id\)/);
+  assert.match(shell, /latestOpenTurnStart\(turnTimeline\)/);
+  assert.match(shell, /getTurnFeedback\(turnTimeline, turnFeedbackNow\)/);
+  assert.doesNotMatch(shell, /thinking\.startedAt/);
+  assert.match(shell, /voiceTurnFeedbackReady/);
+  assert.match(shell, /voiceTurnFeedbackLong/);
+  assert.match(shell, /voiceTurnFeedbackExtended/);
+  assert.match(shell, /data-testid="pinvou-os-queued-inputs"/);
+  assert.match(shell, /data-testid="pinvou-os-queued-input"/);
+  assert.match(shell, /data-testid="pinvou-os-queued-cancel"/);
+  assert.match(shell, /data-testid="pinvou-os-turn-feedback"/);
+  assert.match(shell, /visibleUnqueuedUtterance\(lastUtterance, queued\)/);
+  assert.match(shellCss, /\.pinvou-os-queued-cancel[\s\S]*width: 2\.75rem;[\s\S]*height: 2\.75rem;/);
+  assert.match(shellCss, /\.pinvou-os-queued-inputs/);
+  assert.match(shellCss, /\.pinvou-os-queued-input/);
+  assert.match(shellCss, /\.pinvou-os-queued-cancel:focus-visible/);
+  assert.match(shellCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.pinvou-os-queued-cancel \{ transition: none !important; \}/);
   assert.match(shellCss, /\.pinvou-os-mic\.is-transcribing \* \{ animation: none !important; \}/);
+  assert.match(shellCss, /\.pinvou-os-voice-shell\.is-voice-transcribing \*[\s\S]*animation: none !important;/);
   assert.doesNotMatch(shellCss, /pinvouOsSpin|pinvou-os-mic-spinner/);
   assert.doesNotMatch(shell, /title=\{recording \? t\.voiceStop/);
   assert.match(shell, /<PinvouOsAgentDock theme=\{theme\} t=\{t\} \/>/);
@@ -92,7 +118,7 @@ test('PinvouOS canvas consumes a read-only namespaced A2UI v0.9 projection', () 
   const api = read('src/features/pinvou_os/runtime-api.js');
   const nativeProjection = read('src-tauri/src/features/pinvou_os/interaction_projection.rs');
 
-  assert.match(shell, /<PinvouOsProjectionSurface t=\{t\}/);
+  assert.match(shell, /<PinvouOsProjectionSurface[\s\S]*?t=\{t\}/);
   assert.match(shell, /data-testid="pinvou-os-user-input-card"/);
   assert.match(shell, /<UserInputCard item=\{pendingUserInput\} t=\{t\} \/>/);
   assert.match(shell, /data-testid="pinvou-os-artifact-card"/);

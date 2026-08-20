@@ -1149,7 +1149,7 @@
       </div>
       <aside class="hero-meta" aria-label="文档元数据">
         <div class="meta-card"><span class="meta-label">Decision status</span><span class="meta-value">首阶段已实施 · MegaBook 已验证</span></div>
-        <div class="meta-card"><span class="meta-label">Last audited</span><span class="meta-value">2026-08-19 · Asia/Shanghai</span></div>
+        <div class="meta-card"><span class="meta-label">Last audited</span><span class="meta-value">2026-08-20 · Asia/Shanghai</span></div>
         <div class="meta-card"><span class="meta-label">Owns</span><span class="meta-value">Interaction / Presentation Plane</span></div>
         <div class="scope-pills">
           <span class="scope-pill">MegaBook 部署态</span>
@@ -1201,12 +1201,15 @@
 
         <div class="truth-panel" role="tabpanel" id="truth-worktree" aria-labelledby="tab-worktree" hidden>
           <div class="truth-title-row">
-            <div><h3>本次交互切片与 MegaBook 部署代码一致</h3><p>本地仍有其他并行开发改动；这里只声明已按哈希同步并验证的 Interaction / Presentation 范围。</p></div>
+            <div><h3>2026-08-20 checkpoint 已超出 MegaBook 最近验收版本</h3><p>下面的插话、麦克风解锁、后台回流隔离与长流内存修复尚待 x86_64 release canary；“实际部署”页签仍保留上一版实机事实，不能混写。</p></div>
             <span class="status working">INTEGRATING</span>
           </div>
           <div class="truth-grid">
             <div class="fact"><b>系统角色扩展</b><span>代码中增加 Connectivity、Inference 等 Agent，并为 Front 注入 PinvouOS Runtime 工具。</span></div>
-            <div class="fact"><b>Front 执行约束随组合切片部署</b><span>三轮 Direct 硬门禁与 pinvou-orchestrator happy-path 被保留；唯一 profile 与同批单实例仍是 Prompt 契约。本次只在外层增加 interaction trace。</span></div>
+            <div class="fact"><b>Front 执行约束继续收口</b><span>三轮 Direct 是工具循环安全上限，不是时间预算；pinvou-orchestrator happy-path 被保留，唯一 profile 与同批单实例仍是 Prompt 契约。</span></div>
+            <div class="fact"><b>插话是 turn 边界 FIFO</b><span>普通 VoiceShell / chat 先用快速 Hold 登记 mailbox 顺序；队首在 reserve 与认领本地 turn 前还需完成 forwarder 水位参与的两阶段 barrier。同一 lease 跨越后续 queued turn，最后一个 terminal 后才释放；排队项可见、可撤销，不是 live steering，也不耐久。Web outcome-unknown 保持同一 request id、阻塞队首且不自动重发；不同 Host 不组成全局 FIFO，旧 plan-accept / edit 尚未纳入该保证。</span></div>
+            <div class="fact"><b>麦克风与 generation 正交</b><span>请求权限、录音与转写不再被 busy 锁住；录音可停止，请求/转写可取消，采集期间后台 summary 与 artifact 延后显示。</span></div>
+            <div class="fact"><b>后台完成独立回流</b><span>Front 专用 BoundaryOnly 策略不把子 Agent 完成结果注入活跃用户 turn；回流另开 typed SubAgentHandoff turn，但仍不是 Runtime Mission receipt。</span></div>
             <div class="fact"><b>Memory Runtime 核心已随 Runtime 部署</b><span>MemoryOrganizer 在同一账本维护 decision / checkpoint / replay 和结构 Top-K；异步 worker、VerifiedTaskOutcome 与 Front Context Compiler 仍待接。</span></div>
             <div class="fact risk"><b>Mission 生命周期不完整</b><span>Runtime 有 Mission / Run 结构和 Opened / Started 事件，但缺少完成、暂停、恢复、取消等完整事件闭环。</span></div>
             <div class="fact risk"><b>“存在”不等于“可调用”</b><span>open/register/report/ack 命令函数已写出，但当前 invoke handler 只暴露 snapshot、explain、list events。</span></div>
@@ -1231,14 +1234,14 @@
         </div>
       </div>
 
-      <div class="split-title">当前用户链路：运行事实已进画布，内容流仍待统一</div>
+      <div class="split-title">本地 checkpoint 用户链路：输入可排队，长流已做有界背压</div>
       <div class="current-chain" aria-label="当前交互链">
         <div class="chain-node"><small>Input</small><b>Voice / Text</b><span>语音识别后提交</span></div>
-        <div class="chain-node"><small>Shell</small><b>VoiceShell</b><span>busy 锁麦克风</span></div>
+        <div class="chain-node"><small>Shell</small><b>VoiceShell</b><span>busy 可继续录音；输入在 turn 边界排队</span></div>
         <div class="chain-node"><small>Compat</small><b>Hidden Session</b><span>仍承载执行上下文</span></div>
         <div class="chain-node"><small>Agent</small><b>Front + Engine</b><span>工具与 Orchestrator</span></div>
         <div class="chain-node break"><small>Migration seam</small><b>chat:* + A2UI</b><span>正文兼容流 / 状态投影流</span></div>
-        <div class="chain-node break"><small>Output</small><b>Latest Markdown</b><span>不是全画布</span></div>
+        <div class="chain-node break"><small>Output</small><b>Bounded tail → Markdown</b><span>流中纯文本尾部；终态一次完整渲染</span></div>
       </div>
     </section>
 
@@ -1402,7 +1405,7 @@
             <thead><tr><th scope="col">现有 Pinvou 事件</th><th scope="col">目标 AG-UI 事件</th><th scope="col">处理方式</th><th scope="col">当前缺口</th></tr></thead>
             <tbody>
               <tr><td>chat:turn_started</td><td>RUN_STARTED</td><td><code>interactionScopeId → threadId</code>，<code>interactionRunId → runId</code>；Mission / Runtime Run 作为关联</td><td class="gap-text">独立 interactionRunId 已入账；Mission / Runtime Run 权威关联仍缺</td></tr>
-              <tr><td>chat:delta</td><td>TEXT_MESSAGE_CONTENT</td><td>Adapter 补齐 message start / end 与 messageId</td><td class="gap-text">VoiceShell 只消费最终聚合文本</td></tr>
+              <tr><td>chat:delta</td><td>TEXT_MESSAGE_CONTENT</td><td>Adapter 补齐 message start / end 与 messageId</td><td class="gap-text">VoiceShell 流中只消费 16 KiB 有界纯文本尾部，终态才做一次完整 Markdown；标准 message start / end 仍待适配</td></tr>
               <tr><td>chat:tool_start / end</td><td>TOOL_CALL_* / TOOL_CALL_RESULT</td><td>把当前 start 内 args 拆成标准流；保留 toolCallId</td><td class="gap-text">原始输出需要安全裁剪与用户态摘要</td></tr>
               <tr><td>chat:plan_snapshot</td><td>ACTIVITY_* 或 STATE_DELTA</td><td>计划进度做活动投影，不成为 Mission 真相</td><td class="gap-text">Plan 与 Runtime Run 仍分离</td></tr>
               <tr><td>chat:user_input_required</td><td>RUN_FINISHED · interrupt outcome</td><td>先发恢复所需 snapshot，再以 <code>outcome.type=interrupt</code> 终止本次交互 run；同 scope 的新 run 精确引用 interruptId</td><td class="gap-text">Runtime contract 已落；标准 AG-UI resume wire 与重连 snapshot 待接</td></tr>
@@ -1622,7 +1625,7 @@
             <span class="source-link source-path">pinvou3-app/src-tauri/src/features/pinvou_os/model.rs · Runtime event model</span>
             <span class="source-link source-path">pinvou3-app/src/features/pinvou_os/runtime-api.js · current frontend projection</span>
           </div>
-          <p class="source-meta">文档版本 v0.3 · 实施切片验收于 2026-08-18；认证、原生互动与 AppSurface 设计复核于 2026-08-19 · 自包含 HTML：无外部脚本、字体、样式或图片依赖。</p>
+          <p class="source-meta">文档版本 v0.4 · 实施切片验收于 2026-08-18；认证、原生互动与 AppSurface 设计复核于 2026-08-19；插话与长流 checkpoint 复核于 2026-08-20 · 自包含 HTML：无外部脚本、字体、样式或图片依赖。</p>
         </div>
       </div>
     </section>

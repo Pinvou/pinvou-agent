@@ -2688,9 +2688,15 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }
 
       if (item.type === 'assistant') {
-        if (item.streaming && !item.html) return null; // 空流式气泡交给 ThinkingBubble 表示
+        const streamingStructuredDraft = item.streaming && Boolean(item.streamingStructuredDraft);
+        const streamingPreview = item.streaming && !streamingStructuredDraft && typeof item.streamingPreviewText === 'string'
+          ? item.streamingPreviewText
+          : '';
+        if (item.streaming && !item.html && !streamingPreview && !streamingStructuredDraft) return null; // 空流式气泡交给 ThinkingBubble 表示
         const html = item.html || '';
-        const streamingDraftLabel = /scheduled-task-draft/.test(html) ? t.uiChatExtra.draftingScheduled : (t && t.cpDesigning);
+        const streamingDraftLabel = item.streamingStructuredDraft === 'scheduled-task-draft' || /scheduled-task-draft/.test(html)
+          ? t.uiChatExtra.draftingScheduled
+          : (t && t.cpDesigning);
         const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
         const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
         const cq = item.streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
@@ -2715,8 +2721,19 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     invokeTauri('open_user_external_url', { url: href }).catch(() => {});
                   }
                 }}
-                dangerouslySetInnerHTML={{ __html: cq.html || '' }}
-              />
+                {...((streamingPreview || streamingStructuredDraft) ? {} : { dangerouslySetInnerHTML: { __html: cq.html || '' } })}
+              >
+                {streamingStructuredDraft ? (
+                  <span className="text-[13px] opacity-70">{streamingDraftLabel || '…'}</span>
+                ) : streamingPreview ? (
+                  <span className="whitespace-pre-wrap break-words">
+                    {item.streamingPreviewOmitted && (
+                      <span className="mb-1 block text-[#8E8E93]" aria-hidden="true">…</span>
+                    )}
+                    {streamingPreview}
+                  </span>
+                ) : null}
+              </div>
               <SelectionCopyButton hostRef={assistantSelectionHostRef} targetRef={assistantSelectionTargetRef} theme={theme} t={t} />
               {cq.q ? (
                 <div className="mt-2 w-full" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>

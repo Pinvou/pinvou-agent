@@ -205,6 +205,18 @@
   line-height: 1.75;
 }
 
+.pinvou-os-answer-stream-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pinvou-os-stream-omitted {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--voice-shell-muted);
+  letter-spacing: 0.18em;
+}
+
 .pinvou-os-canvas-content {
   display: grid;
   gap: 1rem;
@@ -236,20 +248,44 @@
 .pinvou-os-thinking {
   display: flex;
   min-height: 3.5rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.85rem;
+}
+
+.pinvou-os-thinking-dots {
+  display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.55rem;
 }
 
-.pinvou-os-thinking span {
+.pinvou-os-thinking-dots span {
   width: 0.62rem;
   height: 0.62rem;
   border-radius: 50%;
   background: var(--voice-shell-blue);
   animation: pinvouOsThinking 1.15s ease-in-out infinite;
 }
-.pinvou-os-thinking span:nth-child(2) { animation-delay: 130ms; }
-.pinvou-os-thinking span:nth-child(3) { animation-delay: 260ms; }
+.pinvou-os-thinking-dots span:nth-child(2) { animation-delay: 130ms; }
+.pinvou-os-thinking-dots span:nth-child(3) { animation-delay: 260ms; }
+
+.pinvou-os-turn-feedback {
+  max-width: 36rem;
+  margin: 0;
+  color: var(--voice-shell-muted);
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.pinvou-os-turn-feedback.is-inline {
+  max-width: none;
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(100, 116, 139, 0.14);
+}
 
 .pinvou-os-error-card {
   display: flex;
@@ -271,6 +307,98 @@
   flex-direction: column;
   align-items: center;
   transform: translateX(-50%);
+}
+
+.pinvou-os-interjection-tray {
+  position: absolute;
+  bottom: calc(100% + 1rem);
+  left: 50%;
+  display: grid;
+  width: min(38rem, calc(100vw - 3rem));
+  max-height: min(15rem, calc(100vh - 20rem));
+  gap: 0.55rem;
+  overflow-y: auto;
+  transform: translateX(-50%);
+  scrollbar-width: thin;
+}
+
+.pinvou-os-queued-inputs {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.pinvou-os-queued-input {
+  display: grid;
+  min-height: 3.25rem;
+  grid-template-columns: auto minmax(0, 1fr) 2.75rem;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.25rem 0.25rem 0.25rem 0.85rem;
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  border-radius: 1.05rem;
+  color: var(--voice-shell-ink);
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: 0 8px 24px rgba(52, 65, 95, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(22px) saturate(1.22);
+  -webkit-backdrop-filter: blur(22px) saturate(1.22);
+}
+
+.dark .pinvou-os-queued-input {
+  border-color: rgba(255, 255, 255, 0.11);
+  background: rgba(25, 30, 43, 0.66);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.pinvou-os-queued-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  color: var(--voice-shell-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.pinvou-os-queued-dot {
+  width: 0.42rem;
+  height: 0.42rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #0a84ff;
+  box-shadow: 0 0 0 0.22rem rgba(10, 132, 255, 0.12);
+}
+
+.pinvou-os-queued-text {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pinvou-os-queued-cancel {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  place-items: center;
+  border: 0;
+  border-radius: 0.82rem;
+  color: var(--voice-shell-muted);
+  background: transparent;
+  transition: color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.pinvou-os-queued-cancel:hover {
+  color: #b42318;
+  background: rgba(180, 35, 24, 0.08);
+}
+
+.pinvou-os-queued-cancel:active { transform: scale(0.94); }
+.pinvou-os-queued-cancel:focus-visible {
+  outline: 2px solid var(--voice-shell-blue);
+  outline-offset: 2px;
 }
 
 .pinvou-os-mic {
@@ -321,6 +449,11 @@
    visually explicit without any continuous animation. */
 .pinvou-os-mic.is-transcribing,
 .pinvou-os-mic.is-transcribing * { animation: none !important; }
+.pinvou-os-voice-shell.is-voice-transcribing *,
+.pinvou-os-voice-shell.is-voice-transcribing *::before,
+.pinvou-os-voice-shell.is-voice-transcribing *::after {
+  animation: none !important;
+}
 .pinvou-os-mic.is-failed { color: #b42318; }
 
 .pinvou-os-mic-ripple {
@@ -340,17 +473,17 @@
 
 .pinvou-os-voice-status,
 .pinvou-os-utterance {
-  position: absolute;
-  left: 50%;
   width: max-content;
   max-width: min(36rem, calc(100vw - 3rem));
-  transform: translateX(-50%);
   color: var(--voice-shell-muted);
   text-align: center;
 }
 
 .pinvou-os-voice-status {
+  position: absolute;
   top: calc(100% + 0.9rem);
+  left: 50%;
+  transform: translateX(-50%);
   font-size: 0.8rem;
   font-weight: 600;
 }
@@ -358,7 +491,7 @@
 .dark .pinvou-os-voice-status.is-failed { color: #fca5a5; }
 
 .pinvou-os-utterance {
-  bottom: calc(100% + 1rem);
+  justify-self: center;
   padding: 0.55rem 0.9rem;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.4);
@@ -408,12 +541,20 @@
     max-height: calc(100vh - 14.5rem);
     border-radius: 1.5rem;
   }
+  .pinvou-os-interjection-tray { max-height: min(12rem, calc(100vh - 21rem)); }
+  .pinvou-os-queued-input { grid-template-columns: minmax(0, 1fr) 2.75rem; }
+  .pinvou-os-queued-state { grid-column: 1; }
+  .pinvou-os-queued-text { grid-column: 1; }
+  .pinvou-os-queued-cancel { grid-column: 2; grid-row: 1 / span 2; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .pinvou-os-answer-stage,
   .pinvou-os-projection,
   .pinvou-os-interaction-state.is-running > span,
-  .pinvou-os-thinking span,
+  .pinvou-os-thinking-dots span,
+  .pinvou-os-queued-cancel,
   .pinvou-os-mic-ripple { animation: none !important; }
+  .pinvou-os-queued-cancel { transition: none !important; }
+  .pinvou-os-queued-cancel:active { transform: none; }
 }

@@ -668,6 +668,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
+            commands::chat::set_subagent_completion_hold,
+            commands::chat::ensure_subagent_completion_hold_ready,
             commands::assistant_response::export_assistant_response,
             commands::assistant_response::open_assistant_share_target,
             commands::startup::report_frontend_startup,

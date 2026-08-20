@@ -399,9 +399,13 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   assert.match(assistantBridgeSource, /MULTI_AGENT_WORK_MAX_ADMITTED:\s*usize\s*=\s*8/);
   assert.match(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_CONCURRENT:\s*usize\s*=\s*6/);
   assert.match(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_ADMITTED:\s*usize\s*=\s*12/);
+  const multiAgentSendStart = assistantBridgeSource.indexOf('pub(crate) fn build_multi_agent_send_message_op');
+  const multiAgentSendEnd = assistantBridgeSource.indexOf('\n    fn ensure_session_skills_for_send', multiAgentSendStart);
+  assert.ok(multiAgentSendStart >= 0 && multiAgentSendEnd > multiAgentSendStart, '必须能定位多智能体发送函数体');
+  const multiAgentSendBody = assistantBridgeSource.slice(multiAgentSendStart, multiAgentSendEnd);
   assert.match(
-    assistantBridgeSource,
-    /build_multi_agent_send_message_op[\s\S]{0,700}build_multi_agent_hook_executor/,
+    multiAgentSendBody,
+    /self\.build_multi_agent_hook_executor\(workspace\)/,
     'SendMessage 每轮覆盖 engine hook，因此多智能体发送路径必须重新携带深度护栏',
   );
   assert.match(
@@ -718,8 +722,24 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   assert.match(
     engineSource,
-    /transition\.newly_active[\s\S]{0,400}emit_turn_started\(app, session_id\)/,
-    '无 admission 的续跑轮（子智能体完成后的父汇总轮）必须发 turn_started——否则界面空闲、停止缺席、再发消息撞"已有运行中轮次"（复核 P1）',
+    /if transition\.newly_active/,
+    '无 admission 的续跑轮必须显式走 newly_active 分支宣告忙碌',
+  );
+  assert.match(
+    engineSource,
+    /emit_turn_started\(app, session_id, provenance\.as_str\(\)\)/,
+    '无 admission 的续跑轮必须连同 typed provenance 发 turn_started，前端不能把后台回流误认成外部用户轮',
+  );
+  assert.match(
+    engineSource,
+    /subagent_completion_delivery_policy\s*=\s*[\s\S]{0,160}SubAgentCompletionDeliveryPolicy::BoundaryOnly/,
+    'PinvouOS Front 必须把后台 Agent 完成消息隔离到完整 turn 边界，不能注入活跃用户轮',
+  );
+  const forwarderSource = read('src-tauri', 'src', 'features', 'assistant', 'forwarder.rs');
+  assert.match(
+    forwarderSource,
+    /Event::TurnStarted\s*\{[\s\S]*?provenance[\s\S]*?emit_started_admission\([\s\S]*?provenance,\s*\)/,
+    'Engine 的 TurnStarted provenance 必须透传到应用事件，不能在 forwarder 丢失',
   );
   // Wave-2 拆分后 remote_control manager 拆成 manager/ 子目录(persistence/rpc/
   // transfer 等),统一校验点与封禁表可能分布在子模块,故拼接整个目录。

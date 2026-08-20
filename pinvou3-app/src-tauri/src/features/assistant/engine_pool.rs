@@ -877,6 +877,68 @@ impl EnginePool {
             .map(|e| e.engine.clone())
     }
 
+    /// Linearize a host-owned interjection FIFO against detached completion
+    /// delivery without reserving or starting another model turn.
+    ///
+    /// Only the ordinary native Pinvou Front uses BoundaryOnly delivery. The
+    /// control is intentionally a no-spawn operation: a stale frontend cannot
+    /// manufacture an engine merely by publishing a hold.
+    pub async fn set_subagent_completion_hold(
+        &self,
+        session_id: &str,
+        holder_id: String,
+        held: bool,
+    ) -> Result<bool> {
+        if self.store.scheduled_profile(session_id).is_some()
+            || self.bridge.is_code_session(session_id)
+            || !self.bridge.multi_agent_mode_available(session_id)
+        {
+            bail!("sub-agent completion holds are available only to the native Pinvou Front");
+        }
+        // Standalone renew/release controls and a holder-bearing chat admission
+        // must share one session gate. Otherwise another renderer can enqueue a
+        // Release between AppEngine's Hold and SendMessage awaits, producing
+        // Hold -> Release -> SendMessage in the Engine mailbox. Whichever caller
+        // acquires this lock first may run first, but Hold -> SendMessage itself
+        // remains indivisible with respect to every standalone holder control.
+        let turn_lock = self.turn_locks.for_session(session_id).await;
+        let _turn = turn_lock.lock().await;
+        let Some(engine) = self.handle_for(session_id).await else {
+            return Ok(false);
+        };
+        let op = if held {
+            Op::HoldSubAgentCompletions { holder_id }
+        } else {
+            Op::ReleaseSubAgentCompletions { holder_id }
+        };
+        engine.handle.send(op).await?;
+        Ok(true)
+    }
+
+    /// Cross the Engine/App event watermark for one holder before the Host
+    /// promotes an input into a real local turn. Unlike the fast Hold control,
+    /// this may wait for an already-started runtime-authored turn to finish and
+    /// for its serial forwarder cleanup to complete.
+    pub async fn ensure_subagent_completion_hold_ready(
+        &self,
+        session_id: &str,
+        holder_id: String,
+    ) -> Result<bool> {
+        if self.store.scheduled_profile(session_id).is_some()
+            || self.bridge.is_code_session(session_id)
+            || !self.bridge.multi_agent_mode_available(session_id)
+        {
+            bail!("sub-agent completion holds are available only to the native Pinvou Front");
+        }
+        let turn_lock = self.turn_locks.for_session(session_id).await;
+        let _turn = turn_lock.lock().await;
+        let engine = self.get_or_spawn(session_id).await?;
+        engine
+            .ensure_subagent_completion_hold_ready(holder_id)
+            .await?;
+        Ok(true)
+    }
+
     /// 回收某 session 的 engine:cancel 在跑的 turn → Shutdown engine → abort forwarder。
     /// 删除 session 时调。
     pub async fn evict(&self, session_id: &str) {
@@ -1108,6 +1170,36 @@ impl EnginePool {
         Ok(reservation)
     }
 
+    /// Reserve an ordinary Front turn only after its completion holder crossed
+    /// the serial Engine/App barrier. Holding the same per-session gate used by
+    /// standalone Hold/Release prevents another Host control from slipping
+    /// between the barrier confirmation and lifecycle reservation.
+    pub(crate) async fn reserve_turn_with_completion_hold(
+        &self,
+        session_id: &str,
+        completion_holder_id: Option<&str>,
+    ) -> Result<TurnReservation> {
+        let Some(holder_id) = completion_holder_id else {
+            return self.reserve_turn(session_id);
+        };
+        if self.store.scheduled_profile(session_id).is_some()
+            || self.bridge.is_code_session(session_id)
+            || !self.bridge.multi_agent_mode_available(session_id)
+        {
+            bail!("sub-agent completion holds are available only to the native Pinvou Front");
+        }
+        let turn_lock = self.turn_locks.for_session(session_id).await;
+        let _turn = turn_lock.lock().await;
+        let engine = self.get_or_spawn(session_id).await?;
+        engine
+            .ensure_subagent_completion_hold_ready(holder_id.to_string())
+            .await?;
+        let mut reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
+        let baseline = self.store.load(session_id)?;
+        reservation.set_base_transcript_revision(transcript_revision(&baseline.messages)?);
+        Ok(reservation)
+    }
+
     /// 该 session 当前是否有进行中的 turn（供前端 remount 后恢复 busy 展示）。
     pub fn is_turn_active(&self, session_id: &str) -> bool {
         self.turn_lifecycles
@@ -1160,6 +1252,7 @@ impl EnginePool {
             mode,
             restrict_tools_for_turn,
             expert_snapshot,
+            None,
             reservation,
         )
         .await
@@ -1175,6 +1268,7 @@ impl EnginePool {
         mode: AppMode,
         restrict_tools_for_turn: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
+        completion_holder_id: Option<String>,
         mut reservation: TurnReservation,
     ) -> Result<()> {
         let baseline_revision = reservation
@@ -1189,6 +1283,13 @@ impl EnginePool {
         let scheduled_profile = self.store.scheduled_profile(session_id);
         if scheduled_profile.is_none() && session_id.starts_with("sched-") {
             bail!("Scheduled session '{session_id}' no longer exists");
+        }
+        if completion_holder_id.is_some()
+            && (scheduled_profile.is_some()
+                || self.bridge.is_code_session(session_id)
+                || !self.bridge.multi_agent_mode_available(session_id))
+        {
+            bail!("sub-agent completion holds are available only to the native Pinvou Front");
         }
         let turn_lock = self.turn_locks.for_session(session_id).await;
         let _turn = turn_lock.lock().await;
@@ -1223,6 +1324,7 @@ impl EnginePool {
                 persona_reminder,
                 restrict_tools,
                 expert_snapshot,
+                completion_holder_id,
                 reservation,
             )
             .await

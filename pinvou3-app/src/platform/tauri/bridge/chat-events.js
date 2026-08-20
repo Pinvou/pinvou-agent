@@ -28,6 +28,10 @@
     var flushAssistantMessageToHistory = context.flushAssistantMessageToHistory;
     var resetPendingAssistant = context.resetPendingAssistant;
     var flushQueued = context.flushQueued;
+    var enqueueBehindSubagentCompletionHold = context.enqueueBehindSubagentCompletionHold;
+    var renewSubagentCompletionHold = context.renewSubagentCompletionHold;
+    var startSubagentCompletionHoldHeartbeat = context.startSubagentCompletionHoldHeartbeat;
+    var releaseSubagentCompletionHoldIfUnused = context.releaseSubagentCompletionHoldIfUnused;
     var isBusyFor = context.isBusyFor;
     var doSendFor = context.doSendFor;
     var ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
@@ -60,6 +64,11 @@
           notify();
         })
         .catch(function () {});
+    }
+
+    function hasQueuedInput(sid) {
+      var buffer = sid === state.activeSessionId ? state : sessionStates[sid];
+      return !!(buffer && Array.isArray(buffer.queued) && buffer.queued.length > 0);
     }
 
     function visibleUserTurnIndex() {
@@ -236,6 +245,10 @@
     var markScheduledInitialTurnTerminal = context.markScheduledInitialTurnTerminal;
     var isAbsPath = context.isAbsPath;
     var addOrMergePruneCompaction = context.addOrMergePruneCompaction;
+    // Streaming is the hottest bridge path. A normal notify() deep-clones the
+    // complete application state, so chat deltas use a shallow publication
+    // after their presentation mutations have been coalesced.
+    var notifyStreamingChat = context.notifyStreamingChat || notify;
 
   // ── Event listeners ──────────────────────────────────────────────
   // 所有 chat:* 事件都带 session_id(后端 spawn_event_forwarder 打的 tag)。
@@ -243,6 +256,222 @@
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
   var isInternalRuntimeUserMessage = context.isInternalRuntimeUserMessage;
+
+  var pendingChatDeltas = Object.create(null);
+  var terminalChatStreams = Object.create(null);
+  var STREAMING_PREVIEW_CHAR_LIMIT = 16384;
+  var STREAMING_STRUCTURED_PROBE_CHAR_LIMIT = 1024;
+  var streamingStructuredDraftProbes = new WeakMap();
+
+  function streamSessionId(e) {
+    return String((e && e.payload && e.payload.session_id) || state.activeSessionId || "");
+  }
+
+  function streamSetTimeout(callback, delay) {
+    if (typeof context.setTimeout === "function") return context.setTimeout(callback, delay);
+    if (typeof setTimeout === "function") return setTimeout(callback, delay);
+    return null;
+  }
+
+  function streamClearTimeout(timer) {
+    if (timer == null) return;
+    if (typeof context.clearTimeout === "function") context.clearTimeout(timer);
+    else if (typeof clearTimeout === "function") clearTimeout(timer);
+  }
+
+  function updateStreamingPreview(item, fullText) {
+    item.streamingPreviewOmitted = fullText.length > STREAMING_PREVIEW_CHAR_LIMIT;
+    item.streamingPreviewText = item.streamingPreviewOmitted
+      ? fullText.slice(-STREAMING_PREVIEW_CHAR_LIMIT)
+      : fullText;
+  }
+
+  function structuredDraftKind(scanText) {
+    var explicit = /(?:`{3,}|~{3,})[^\r\n]{0,96}\b(persona-card|card-question|scheduled-task-draft)\b/i.exec(scanText);
+    if (explicit) return String(explicit[1] || "").toLowerCase();
+    // Generic fenced JSON remains supported for small-model output that omits
+    // the protocol language. These are the same shape hints used by the final
+    // card/task parser; ordinary prose and unfenced JSON remain visible.
+    if (/(?:`{3,}|~{3,})[^\r\n]{0,96}(?:\r?\n)[\s\S]{0,1536}?\{[\s\S]{0,512}?["']?(?:name|body|rrule)["']?\s*:/i.test(scanText)) {
+      return "structured";
+    }
+    return "";
+  }
+
+  function detectStreamingStructuredDraft(item, text) {
+    if (!item || item.streamingStructuredDraft || !text) return;
+    var probe = streamingStructuredDraftProbes.get(item) || "";
+    var incoming = String(text);
+    // Scan each new character at most once in bounded slices. The regex never
+    // sees more than 2 KiB (one retained 1 KiB tail plus one new 1 KiB slice),
+    // so a 100 KiB structured payload cannot re-scan the accumulated answer.
+    for (var offset = 0; offset < incoming.length; offset += STREAMING_STRUCTURED_PROBE_CHAR_LIMIT) {
+      var part = incoming.slice(offset, offset + STREAMING_STRUCTURED_PROBE_CHAR_LIMIT);
+      var scan = probe + part;
+      var kind = structuredDraftKind(scan);
+      if (kind) {
+        item.streamingStructuredDraft = kind;
+        streamingStructuredDraftProbes.delete(item);
+        return;
+      }
+      probe = scan.slice(-STREAMING_STRUCTURED_PROBE_CHAR_LIMIT);
+    }
+    streamingStructuredDraftProbes.set(item, probe);
+  }
+
+  function finalizeCurrentAssistantMarkdown() {
+    var item = state.chatItems.find(function (candidate) {
+      return candidate && candidate.id === context.currentStreamId;
+    });
+    if (!item) return;
+    item.text = context.currentStreamText;
+    if (item.streamingPreviewText !== undefined || (!item.html && context.currentStreamText)) {
+      item.html = renderMarkdown(context.currentStreamText);
+    }
+    streamingStructuredDraftProbes.delete(item);
+    delete item.streamingStructuredDraft;
+    delete item.streamingPreviewText;
+    delete item.streamingPreviewOmitted;
+    item.streaming = false;
+  }
+
+  function applyChatDeltaText(text) {
+    if (!text) return context.currentStreamText.length;
+    finalizeStreamingReasoning();
+    context.pendingAssistantText += text;
+    context.currentStreamText += text;
+    var item = state.chatItems.find(function (candidate) {
+      return candidate && candidate.id === context.currentStreamId;
+    });
+    if (!item) {
+      context.currentStreamId = ++context.itemIdSeq;
+      item = {
+        id: context.currentStreamId,
+        type: "assistant",
+        text: context.currentStreamText,
+        html: "",
+        time: timeStr(),
+        streaming: true,
+      };
+      state.chatItems.push(item);
+    }
+    item.text = context.currentStreamText;
+    detectStreamingStructuredDraft(item, text);
+    updateStreamingPreview(item, context.currentStreamText);
+    item.streaming = true;
+    return context.currentStreamText.length;
+  }
+
+  // Short answers stay visually fluid; as the accumulated answer grows, the
+  // cadence backs off so WebKit/JSC never has to allocate a new large snapshot
+  // on every token. The 40–160 ms bounds keep both latency and work predictable.
+  function streamingCadenceMs(totalLength) {
+    if (totalLength < 4096) return 40;
+    if (totalLength < 16384) return 64;
+    if (totalLength < 65536) return 96;
+    return 160;
+  }
+
+  function discardPendingChatDeltas(sessionId) {
+    var sid = String(sessionId || "");
+    if (!sid) return false;
+    var entry = pendingChatDeltas[sid];
+    if (entry) {
+      streamClearTimeout(entry.timer);
+      delete pendingChatDeltas[sid];
+    }
+    delete terminalChatStreams[sid];
+    return !!entry;
+  }
+
+  function flushPendingChatDeltas(sessionId, options) {
+    var sid = String(sessionId || "");
+    if (!sid) return false;
+    var opts = options || {};
+    var entry = pendingChatDeltas[sid];
+    if (!entry && !opts.finalize && !opts.seal) return false;
+    if (entry) {
+      streamClearTimeout(entry.timer);
+      entry.timer = null;
+      delete pendingChatDeltas[sid];
+    }
+    // A deletion/prune may race a scheduled cadence. Never recreate a removed
+    // background working set from that stale timer.
+    if (sid !== state.activeSessionId && !sessionStates[sid]) return false;
+    var buffer = typeof getBuffer === "function" ? getBuffer(sid) : null;
+    if (entry && entry.markRemote && buffer && typeof markRemoteTurn === "function") {
+      markRemoteTurn(sid, buffer);
+    }
+    var text = entry && entry.chunks.length ? entry.chunks.join("") : "";
+    runSyncOnSession(sid, function () {
+      if (text) applyChatDeltaText(text);
+      if (opts.seal) flushPendingTextBlock();
+      if (opts.finalize || opts.seal) finalizeCurrentAssistantMarkdown();
+      if (opts.seal) {
+        context.currentStreamText = "";
+        context.currentStreamId = 0;
+      }
+    });
+    if (opts.notify) notifyStreamingChat();
+    return !!(entry || text || opts.finalize || opts.seal);
+  }
+
+  function schedulePendingChatDeltaFlush(sid, entry) {
+    var delay = streamingCadenceMs(entry.totalLength);
+    entry.timer = streamSetTimeout(function () {
+      if (pendingChatDeltas[sid] !== entry) return;
+      entry.timer = null;
+      flushPendingChatDeltas(sid, { notify: true });
+    }, delay);
+    // Tiny direct-unit harnesses may intentionally omit timers. Preserve their
+    // synchronous semantics without changing production behavior.
+    if (entry.timer == null) flushPendingChatDeltas(sid, { notify: true });
+  }
+
+  function enqueueChatDelta(e) {
+    var sid = streamSessionId(e);
+    var text = String(e && e.payload && e.payload.text || "");
+    if (!sid || !text) return;
+    var buffer = typeof getBuffer === "function" ? getBuffer(sid) : null;
+    if (terminalChatStreams[sid]) {
+      var turnIsActive = sid === state.activeSessionId ? !!state.busy : !!(buffer && buffer.busy);
+      if (!turnIsActive) return;
+      delete terminalChatStreams[sid];
+    }
+    var eventName = String(e && e.event || "");
+    var shouldMarkRemote = !!(buffer && (buffer.busy || eventName === "chat:delta"));
+    if (shouldMarkRemote && typeof markRemoteTurn === "function") markRemoteTurn(sid, buffer);
+    var entry = pendingChatDeltas[sid];
+    if (!entry) {
+      entry = pendingChatDeltas[sid] = {
+        chunks: [], pendingLength: 0, totalLength: 0, timer: null,
+        markRemote: shouldMarkRemote,
+      };
+      // Establish the bubble and exact raw-text accumulator synchronously, but
+      // defer publication. This keeps session switching/hydration deterministic
+      // while avoiding Markdown and state cloning on the first token.
+      runSyncOnSession(sid, function () {
+        entry.totalLength = applyChatDeltaText(text);
+      });
+    } else {
+      if (shouldMarkRemote) entry.markRemote = true;
+      entry.chunks.push(text);
+      entry.pendingLength += text.length;
+      entry.totalLength += text.length;
+    }
+    // Timers are cooperative and can be starved by a saturated Tauri event
+    // queue. Enforce an independent byte/character waterline so queued chunks
+    // cannot grow without bound even when the cadence callback cannot run.
+    if (entry.pendingLength >= 8192) {
+      flushPendingChatDeltas(sid, { notify: true });
+      return;
+    }
+    if (entry.timer == null) schedulePendingChatDeltaFlush(sid, entry);
+  }
+
+  function flushDeltasBeforeEvent(e, options) {
+    return flushPendingChatDeltas(streamSessionId(e), options || { finalize: true });
+  }
 
   function applyRemoteUserMessageEvent(e, force) {
     var payload = e && e.payload || {};
@@ -321,6 +550,10 @@
   listen("chat:user_message", async function (e) {
     var payload = e && e.payload || {};
     var sid = payload.session_id || state.activeSessionId;
+    if (sid) {
+      delete terminalChatStreams[sid];
+      flushPendingChatDeltas(sid, { finalize: true, seal: true });
+    }
     if (sid && sid !== state.activeSessionId) {
       try { await ensureSessionBufferLoaded(sid); }
       catch (err) {
@@ -335,6 +568,7 @@
     var payload = e && e.payload || {};
     var sid = payload.session_id || state.activeSessionId;
     if (!sid) return;
+    flushPendingChatDeltas(sid, { finalize: true });
     var committedBuffer = getBuffer(sid);
     if (!committedBuffer) return;
     var revision = String(payload.transcript_revision || payload.transcriptRevision || "");
@@ -349,12 +583,19 @@
     }
   });
 
-  listen("chat:turn_started", function (e) { onSessionEvent(e, function () {
+  listen("chat:turn_started", function (e) {
+    var sid = streamSessionId(e);
+    if (sid) {
+      delete terminalChatStreams[sid];
+      flushPendingChatDeltas(sid, { finalize: true, seal: true });
+    }
+    onSessionEvent(e, function () {
     state.busy = true;
     if (!state.thinking.active) startThinking();
     recordTurnStarted();
     notify();
-  }); });
+    });
+  });
 
   function reasoningEventIndex(e) {
     var value = e && e.payload && e.payload.index;
@@ -385,6 +626,7 @@
 
   function finalizeAssistantStreamBeforeReasoning() {
     flushPendingTextBlock();
+    finalizeCurrentAssistantMarkdown();
     var item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (item) {
       if (item.html) item.streaming = false;
@@ -422,12 +664,17 @@
     else blocks.push({ type: "thinking", thinking: text });
   }
 
-  listen("chat:reasoning_start", function (e) { onSessionEvent(e, function () {
+  listen("chat:reasoning_start", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true });
+    onSessionEvent(e, function () {
     startReasoningBlock(reasoningEventIndex(e));
     notify();
-  }); });
+    });
+  });
 
-  listen("chat:reasoning_delta", function (e) { onSessionEvent(e, function () {
+  listen("chat:reasoning_delta", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true });
+    onSessionEvent(e, function () {
     var text = String(e.payload && e.payload.text || "");
     if (!text) return;
     var index = reasoningEventIndex(e);
@@ -437,10 +684,13 @@
     }
     item.text += text;
     appendReasoningBlock(text);
-    notify();
-  }); });
+    notifyStreamingChat();
+    });
+  });
 
-  listen("chat:reasoning_done", function (e) { onSessionEvent(e, function () {
+  listen("chat:reasoning_done", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true });
+    onSessionEvent(e, function () {
     var index = reasoningEventIndex(e);
     var item = streamingReasoningItem(index);
     finalizeStreamingReasoning(index);
@@ -450,33 +700,12 @@
       if (last && last.type === "thinking" && !last.thinking) context.pendingAssistantBlocks.pop();
     }
     notify();
-  }); });
+    });
+  });
 
-  listen("chat:delta", function (e) { onSessionEvent(e, function () {
-    finalizeStreamingReasoning();
-    var text = e.payload && e.payload.text || "";
-    context.pendingAssistantText += text;
-    context.currentStreamText += text;
-    // Update the streaming chat item
-    var item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
-    if (item) {
-      item.text = context.currentStreamText;
-      item.html = renderMarkdown(context.currentStreamText);
-      item.streaming = true;
-    } else {
-      // New bubble needed (after tool card)
-      context.currentStreamId = ++context.itemIdSeq;
-      state.chatItems.push({
-        id: context.currentStreamId,
-        type: "assistant",
-        text: context.currentStreamText,
-        html: renderMarkdown(context.currentStreamText),
-        time: timeStr(),
-        streaming: true,
-      });
-    }
-    notify();
-  }); });
+  listen("chat:delta", function (e) {
+    enqueueChatDelta(e);
+  });
 
   listen("scheduled_task:run_updated", function (e) {
     scheduleScheduledRunRefresh();
@@ -489,7 +718,9 @@
   // present_artifact MCP 工具名匹配:兼容底座 MCP adapter 可能加的 server 前缀
   // (实测透传名若带前缀仍命中)。命中则渲染成品卡而非灰色工具卡。
 
-  listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
+  listen("chat:tool_start", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true });
+    onSessionEvent(e, function () {
     var p = e.payload || {};
     if (toolCallAlreadyStarted(p.id) || toolCallAlreadyFinished(p.id)) return;
     if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
@@ -497,6 +728,7 @@
     finalizeStreamingReasoning();
     thinkingTool(p.name);
     flushPendingTextBlock();
+    finalizeCurrentAssistantMarkdown();
     context.pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
 
     // Finalize current streaming bubble
@@ -535,7 +767,8 @@
       scheduleShellPoll(p.session_id || state.activeSessionId, true);
     }
     notify();
-  }); });
+    });
+  });
 
   listen("chat:tool_delta", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
@@ -543,7 +776,9 @@
     scheduleShellNotify();
   }); });
 
-  listen("chat:tool_end", function (e) { onSessionEvent(e, function () {
+  listen("chat:tool_end", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true });
+    onSessionEvent(e, function () {
     var p = e.payload || {};
     if (toolCallAlreadyFinished(p.id)) return;
     var meta = context.toolMeta[p.id];
@@ -694,7 +929,8 @@
     context.currentStreamText = "";
     context.currentStreamId = 0;
     notify();
-  }); });
+    });
+  });
 
   listen("chat:shell_task_status", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
@@ -707,12 +943,20 @@
   // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
   listen("chat:done", function (e) {
     var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
+    if (sid) flushPendingChatDeltas(sid, { finalize: true });
     var knownDoneSession = !!sid && state.sessions.some(function (session) { return session.id === sid; });
     var scheduledDoneSession = isScheduledRunSession(sid);
     if (sid && sid !== state.activeSessionId && !sessionStates[sid] &&
         !knownDoneSession && !scheduledDoneSession) {
       return;
     }
+    if (sid) terminalChatStreams[sid] = true;
+    // The Engine starts the abandonment lease only after this turn becomes
+    // idle. Renew immediately, then keep a short heartbeat during authority
+    // reconciliation/persistence so slow Host bookkeeping cannot consume the
+    // 30s crash-recovery window before the queued SendMessage is enqueued.
+    void renewSubagentCompletionHold(sid);
+    startSubagentCompletionHoldHeartbeat(sid);
     safeConsoleInfo("[pinvou3][chat-ui] chat done event", {
       sid: sid,
       error: e.payload && e.payload.error || null,
@@ -819,6 +1063,7 @@
     }
     notify();
     refreshAuthoritativeTurnTimeline(sid);
+    if (!hasQueuedInput(sid)) void releaseSubagentCompletionHoldIfUnused(sid);
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       await persistMessagesFor(sid);
@@ -834,8 +1079,9 @@
       }
       notify();
       publishRemoteLiveSnapshot(sid).catch(function () {});
-      // 排队式:本轮跑完,若该 session 不忙且有待发消息 → 自动发下一条
-      if (reconciled) flushQueued(sid);
+      // The per-holder heartbeat remains active across a failed authority
+      // reconciliation and stops only with final Send→Release/cancel-last.
+      if (reconciled) await flushQueued(sid);
     })();
   });
 
@@ -857,7 +1103,9 @@
     }
   }); });
 
-  listen("chat:compaction", function (e) { onSessionEvent(e, function () {
+  listen("chat:compaction", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true, seal: true });
+    onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
     var phase = e.payload && e.payload.phase;
     var msg = e.payload && e.payload.message || "";
@@ -877,11 +1125,14 @@
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
-  }); });
+    });
+  });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────
   // payload: { id: tool_call_id, questions: [{header, id, question, options:[{label, description}]}] }
-  listen("chat:user_input_required", function (e) { onSessionEvent(e, function () {
+  listen("chat:user_input_required", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true });
+    onSessionEvent(e, function () {
     var p = e.payload || {};
     if (hasChatItemForTool("user_input", p.id)) return;
     var questions = p.questions || [];
@@ -891,11 +1142,14 @@
       resolved: false, cardState: "active", time: timeStr(),
     });
     notify();
-  }); });
+    });
+  });
 
   // 可恢复的瞬态错误（SSE idle timeout / 瞬态工具失败）：turn 没结束，引擎会 retry，
   // 绝不 setBusy(false)，只飘一条 ⚠️ 提示。
-  listen("chat:transient_error", function (e) { onSessionEvent(e, function () {
+  listen("chat:transient_error", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true, seal: true });
+    onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     var error = e.payload && e.payload.error;
     refreshEffectiveModelConfigAfterAuthError(error);
@@ -906,7 +1160,8 @@
       });
       if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
     }
-  }); });
+    });
+  });
 
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。
   // 路由到对应 session 的产物列表(后台 session 的产物也跟踪)。
@@ -942,20 +1197,49 @@
       : content;
     var remoteBuffer = getBuffer(sid);
     if (isBusyFor(sid) || (remoteBuffer && remoteBuffer.queued && remoteBuffer.queued.length > 0)) {
-      runSyncOnSession(sid, function () {
-        state.queued.push({
-          id: ++context.itemIdSeq,
-          text: content,
-          displayText: displayText,
-          attachments: attachments,
-          meta: { remoteClientMessageId: p.client_message_id || null },
+      try {
+        // Do not tell the remote client its interjection was queued until the
+        // Engine mailbox contains the matching boundary hold.
+        await enqueueBehindSubagentCompletionHold(sid, function () {
+          runSyncOnSession(sid, function () {
+            state.queued.push({
+              id: ++context.itemIdSeq,
+              text: content,
+              displayText: displayText,
+              attachments: attachments,
+              meta: { remoteClientMessageId: p.client_message_id || null },
+            });
+          });
         });
-      });
+      } catch (error) {
+        console.warn("remote interjection hold failed", error);
+        // The relay event has already been accepted upstream; never drop it
+        // silently. Preserve FIFO visibility but tell the user this one entry
+        // lost the stronger background-completion priority guarantee.
+        runSyncOnSession(sid, function () {
+          state.queued.push({
+            id: ++context.itemIdSeq,
+            text: content,
+            displayText: displayText,
+            attachments: attachments,
+            meta: {
+              remoteClientMessageId: p.client_message_id || null,
+              completionPriorityDegraded: true,
+            },
+          });
+          addSystemItem(bt("queuedPriorityDegraded"), {
+            authoritySyncNotice: true,
+          });
+        });
+        notify();
+        if (!isBusyFor(sid)) void flushQueued(sid);
+        return;
+      }
       notify();
-      if (!isBusyFor(sid)) flushQueued(sid);
+      if (!isBusyFor(sid)) void flushQueued(sid);
       return;
     }
-    doSendFor(sid, content, displayText, attachments, { remoteClientMessageId: p.client_message_id || null });
+    void doSendFor(sid, content, displayText, attachments, { remoteClientMessageId: p.client_message_id || null });
   });
 
   // 远程 mobile 改工具开关 → Rust emit remote_control:tools_changed → 这里桥接到
@@ -1052,7 +1336,9 @@
   }); });
 
   // chat:plan_ready —— 底座式:Plan 模式调过 update_plan 即弹方案卡(快照非空)
-  listen("chat:plan_ready", function (e) { onSessionEvent(e, function () {
+  listen("chat:plan_ready", function (e) {
+    flushDeltasBeforeEvent(e, { finalize: true, seal: true });
+    onSessionEvent(e, function () {
     var p = e.payload || {};
     var planId = String(p.plan_id || p.planId || "").trim();
     var readyMode = p.mode_state || p.modeState;
@@ -1077,7 +1363,8 @@
       statusLabel: planId ? "" : bt("planHistorical"), time: timeStr(),
     });
     notify();
-  }); });
+    });
+  });
 
   listen("chat:plan_resolved", function (e) {
     var p = e && e.payload || {};
@@ -1105,6 +1392,8 @@
       latestTimelineCompletion: latestTimelineCompletion,
       authoritativeTimelineMissesKnownCompletion: authoritativeTimelineMissesKnownCompletion,
       refreshAuthoritativeTurnTimeline: refreshAuthoritativeTurnTimeline,
+      flushPendingChatDeltas: flushPendingChatDeltas,
+      discardPendingChatDeltas: discardPendingChatDeltas,
     };
   };
 })();

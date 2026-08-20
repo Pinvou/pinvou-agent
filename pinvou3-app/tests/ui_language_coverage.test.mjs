@@ -49,6 +49,14 @@ for (const language of ['zh', 'en', 'ja']) {
   assert.ok(dict[language].uiSettingsDetail.restartNow, `${language}.uiSettingsDetail.restartNow must exist`);
   assert.ok(dict[language].uiSettingsDetail.deleteModelTitle, `${language}.uiSettingsDetail.deleteModelTitle must exist`);
   assert.ok(dict[language].uiChat.asrDownloadTitle, `${language}.uiChat.asrDownloadTitle must exist`);
+  assert.ok(dict[language].voiceRequestingCancelable, `${language}.voiceRequestingCancelable must exist`);
+  assert.ok(dict[language].voiceTranscribingCancelable, `${language}.voiceTranscribingCancelable must exist`);
+  assert.ok(dict[language].voiceQueuedRegion, `${language}.voiceQueuedRegion must exist`);
+  assert.ok(dict[language].voiceQueuedStatus, `${language}.voiceQueuedStatus must exist`);
+  assert.equal(typeof dict[language].voiceQueuedCancel, 'function', `${language}.voiceQueuedCancel must be a function`);
+  assert.ok(dict[language].voiceTurnFeedbackReady, `${language}.voiceTurnFeedbackReady must exist`);
+  assert.ok(dict[language].voiceTurnFeedbackLong, `${language}.voiceTurnFeedbackLong must exist`);
+  assert.ok(dict[language].voiceTurnFeedbackExtended, `${language}.voiceTurnFeedbackExtended must exist`);
   assert.ok(dict[language].uiChat.memoryMeta.preference, `${language}.uiChat.memoryMeta.preference must exist`);
   assert.ok(dict[language].uiChat.sceneModes.personalWorkbench, `${language}.uiChat.sceneModes.personalWorkbench must exist`);
   assert.ok(dict[language].uiChat.sceneModes.documentWriting, `${language}.uiChat.sceneModes.documentWriting must exist`);

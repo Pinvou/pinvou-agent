@@ -385,6 +385,7 @@ pub async fn web_access_create_session_and_chat(
     message: String,
     attachment_handles: Option<Vec<String>>,
     restrict_tools: Option<bool>,
+    completion_holder_id: Option<String>,
     manager: State<'_, RemoteControlManager>,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
@@ -400,6 +401,7 @@ pub async fn web_access_create_session_and_chat(
         attachment_handles,
         session_id.clone(),
         restrict_tools,
+        completion_holder_id,
         &manager,
         &pool,
         &store,
@@ -433,6 +435,7 @@ pub async fn web_access_chat(
     attachment_handles: Option<Vec<String>>,
     session_id: String,
     restrict_tools: Option<bool>,
+    completion_holder_id: Option<String>,
     manager: State<'_, RemoteControlManager>,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
@@ -443,6 +446,7 @@ pub async fn web_access_chat(
         attachment_handles,
         session_id,
         restrict_tools,
+        completion_holder_id,
         &manager,
         &pool,
         &store,
@@ -456,11 +460,14 @@ async fn web_access_chat_for_session(
     attachment_handles: Option<Vec<String>>,
     session_id: String,
     restrict_tools: Option<bool>,
+    completion_holder_id: Option<String>,
     manager: &RemoteControlManager,
     pool: &EnginePool,
     store: &SessionStore,
     app: &AppHandle,
 ) -> Result<(), String> {
+    let completion_holder_id =
+        super::chat::normalize_subagent_completion_holder_id(completion_holder_id.as_deref())?;
     crate::features::sessions::validate_session_id(&session_id)
         .map_err(|error| format!("invalid Session id: {error:#}"))?;
     ensure_web_chat_session_supported(store.mode_state(&session_id).multi_agent)?;
@@ -471,7 +478,8 @@ async fn web_access_chat_for_session(
     // guarantees that a competing desktop/Web submission cannot consume the
     // browser's one-shot attachment reservation or other per-turn state.
     let turn_reservation = pool
-        .reserve_turn(&session_id)
+        .reserve_turn_with_completion_hold(&session_id, completion_holder_id.as_deref())
+        .await
         .map_err(|error| format!("reserve Web chat turn: {error:#}"))?;
     let attachment_handles = attachment_handles.unwrap_or_default();
     let (attachment_reservation, attachments) =
@@ -496,6 +504,7 @@ async fn web_access_chat_for_session(
         Some(attachments),
         session_id,
         restrict_tools,
+        completion_holder_id,
         turn_reservation,
         pool,
         store,

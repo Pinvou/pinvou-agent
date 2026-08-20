@@ -104,8 +104,8 @@ for (const relativePath of [
   const bridgeSource = await readFile(new URL(relativePath, import.meta.url), 'utf8');
   assert.match(
     bridgeSource,
-    /var item = q\.shift\(\);[\s\S]*var displayText = item\.displayText == null[\s\S]*formatAttachmentDisplayText\(item\.text, attachments\)/,
-    `${relativePath} must preserve each queued message's own display text and attachment fallback`,
+    /var item = q\[0\];[\s\S]*currentQueue\[0\] !== item[\s\S]*currentQueue\.shift\(\);[\s\S]*var displayText = item\.displayText == null[\s\S]*formatAttachmentDisplayText\(item\.text, attachments\)/,
+    `${relativePath} must preserve each queued message's identity, display text and attachment fallback across an asynchronous admission barrier`,
   );
   assert.doesNotMatch(
     bridgeSource,

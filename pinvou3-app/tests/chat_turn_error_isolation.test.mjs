@@ -19,7 +19,12 @@ const { conversationItemsForMode } = await import(
   '../src/features/conversation/deepseek-conversation.js'
 );
 
-const sandbox = { window: {} };
+const sandbox = {
+  window: {},
+  console,
+  setInterval() { return 1; },
+  clearInterval() {},
+};
 vm.runInNewContext(chatSource, sandbox, { filename: 'chat.js' });
 const installChat = sandbox.window.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
 
@@ -78,6 +83,8 @@ const context = {
   state,
   invoke(command) {
     if (command === 'remote_control_publish_user_message') return Promise.resolve();
+    if (command === 'ensure_subagent_completion_hold_ready') return Promise.resolve(true);
+    if (command === 'set_subagent_completion_hold') return Promise.resolve(true);
     return rejectChat ? Promise.reject(new Error('当前模型不可用')) : Promise.resolve();
   },
   notify() {},
@@ -128,6 +135,130 @@ assert.equal(
 );
 assert.ok(state.chatItems.some(item => item.type === 'user' && item.text === '重试'));
 
+function createCompletionGateHarness({ busy = false } = {}) {
+  const gateState = {
+    activeSessionId: 'gate-session',
+    attachments: [],
+    queued: [],
+    chatItems: [
+      { id: 101, type: 'system', text: '⚠️ 上一次准入失败', turnErrorNotice: true },
+      { id: 102, type: 'system', text: '应保留的会话通知' },
+    ],
+    messages: [],
+    busy,
+  };
+  const gateBuffer = {
+    localTurnOwned: false,
+    remoteTurnActive: false,
+    remoteTerminalSeen: false,
+    deferredRemoteUserEvent: null,
+  };
+  const calls = [];
+  let rejectedCommand = null;
+  let rejectedMessage = '';
+  const gateContext = {
+    ...context,
+    state: gateState,
+    invoke(command, args) {
+      calls.push({ command, args });
+      if (command === 'remote_control_publish_user_message') return Promise.resolve();
+      if (command === rejectedCommand) return Promise.reject(new Error(rejectedMessage));
+      if (command === 'ensure_subagent_completion_hold_ready') return Promise.resolve(true);
+      if (command === 'set_subagent_completion_hold') return Promise.resolve(true);
+      return Promise.resolve();
+    },
+    sessionStates: { 'gate-session': gateBuffer },
+    getBuffer() { return gateBuffer; },
+    turnUsageDirty: {},
+    pendingAssistantText: '',
+    pendingAssistantBlocks: [],
+    currentStreamText: '',
+    currentStreamId: 0,
+    itemIdSeq: 102,
+  };
+  return {
+    state: gateState,
+    buffer: gateBuffer,
+    calls,
+    chat: installChat(gateContext),
+    reject(command, message) {
+      rejectedCommand = command;
+      rejectedMessage = message;
+    },
+  };
+}
+
+const idleBarrier = createCompletionGateHarness();
+idleBarrier.reject('ensure_subagent_completion_hold_ready', '准入闸门不可用');
+assert.equal(
+  await idleBarrier.chat.doSendFor(
+    'gate-session',
+    '不得提交的问题',
+    '不得提交的问题',
+    [],
+    null,
+    false,
+    false,
+  ),
+  false,
+  '准入闸门拒绝应收口为已知失败，不向公开调用泄漏 rejected Promise',
+);
+assert.equal(idleBarrier.buffer.localTurnOwned, false);
+assert.equal(idleBarrier.state.busy, false);
+assert.equal(
+  idleBarrier.calls.filter(call => call.command === 'chat').length,
+  0,
+  '准入闸门失败后不得调用 chat',
+);
+assert.ok(!idleBarrier.state.chatItems.some(item => item.type === 'user'));
+assert.equal(
+  idleBarrier.state.chatItems.filter(item => item.type === 'assistant' && item.streaming).length,
+  0,
+  '准入闸门失败后不得产生乐观 assistant',
+);
+assert.equal(idleBarrier.state.chatItems.filter(item => item.turnErrorNotice).length, 1);
+assert.match(
+  idleBarrier.state.chatItems.find(item => item.turnErrorNotice).text,
+  /准入闸门不可用/,
+);
+assert.ok(idleBarrier.state.chatItems.some(item => item.text === '应保留的会话通知'));
+await idleBarrier.chat.doSendFor(
+  'gate-session',
+  '不得重复的问题',
+  '不得重复的问题',
+  [],
+  null,
+  false,
+  false,
+);
+assert.equal(
+  idleBarrier.state.chatItems.filter(item => item.turnErrorNotice).length,
+  1,
+  '同一准入错误重试不得叠加系统错误',
+);
+
+const busyHold = createCompletionGateHarness({ busy: true });
+busyHold.reject('set_subagent_completion_hold', '排队保护不可用');
+await busyHold.chat.sendMessage('不得进队的插话');
+assert.equal(busyHold.state.busy, true, '排队失败不得改写正在运行的回合');
+assert.deepEqual(busyHold.state.queued, [], '未取得 Hold 的插话不得对用户谎报已排队');
+assert.equal(
+  busyHold.calls.filter(call => call.command === 'chat').length,
+  0,
+  'Hold 失败不得绕过 FIFO 直接发送',
+);
+assert.equal(busyHold.state.chatItems.filter(item => item.turnErrorNotice).length, 1);
+assert.match(
+  busyHold.state.chatItems.find(item => item.turnErrorNotice).text,
+  /排队保护不可用/,
+);
+await busyHold.chat.sendMessage('再次不得进队的插话');
+assert.equal(
+  busyHold.state.chatItems.filter(item => item.turnErrorNotice).length,
+  1,
+  '同一 Hold 错误重试不得叠加系统错误',
+);
+
 const legacyFinalError = {
   id: 3,
   type: 'system',
@@ -176,13 +307,14 @@ assert.match(
   webBridgeSource,
   /if \(item\.turnErrorNotice && !item\.legacyConversationOnly\) return false/,
 );
-assert.match(
-  webBridgeSource.slice(
+const webDoneHandlerStart = webBridgeSource.indexOf('function handleChatDone');
+const webDoneSection = webDoneHandlerStart >= 0
+  ? webBridgeSource.slice(webDoneHandlerStart, webBridgeSource.indexOf('listen("chat:done"', webDoneHandlerStart))
+  : webBridgeSource.slice(
     webBridgeSource.indexOf('listen("chat:done"'),
     webBridgeSource.indexOf('listen("chat:usage"'),
-  ),
-  /legacyConversationOnly: true/,
-);
+  );
+assert.match(webDoneSection, /legacyConversationOnly: true/);
 assert.match(bridgeMessagesSource, /payload\.shell_cleanup_failed/);
 assert.match(webBridgeSource, /PinvouBridgeMessages\.showShellCleanupFailure/);
 assert.equal(

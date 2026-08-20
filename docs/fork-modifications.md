@@ -4,26 +4,35 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-18 · v0.9.5 r7 四主题公开基线）
+## 0. 当前状态（2026-08-20 · v0.9.5 r7 + PinvouOS feature checkpoints）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
 | 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `a36e6cd53` |
 | 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r7` |
-| 发布状态 | `pinvou3-clean` 与 `pinvou-v0.9.5-r7` 仍指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a`；PinvouOS feature 父仓 gitlink 指向 `3f64e41e971167aede9390dbecc0a307224562ba` |
+| 发布状态 | `pinvou3-clean` 与 `pinvou-v0.9.5-r7` 仍指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a`；`feat/pinvouos-front-round-policy` 与 PinvouOS feature 父仓 gitlink 精确指向 `2f1f851ed038ffa161b42404bf478b1d9d4aeff2` |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r7 公开基线 `46 files changed, +1852/-269`；净增 1583 行 |
-| 守护 | r7 公开基线 23 条 + PinvouOS feature 3 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试 |
+| drift | r7 公开基线 `46 files, +1852/-269`；checkpoint B 相对 A `15 files, +1547/-129`；feature 累计相对 r7 `15 files, +1849/-135`；累计相对 upstream `50 files, +3678/-381` |
+| 守护 | r7 公开基线 23 条 + PinvouOS feature 15 条（3 条 direct-round、12 条 completion-boundary），CodeWhale `forkguard_*` 共 38 条；另有通用工具兼容与父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
 
-### PinvouOS feature checkpoint（已提交到 feature 分支）
+### PinvouOS feature checkpoint A：Direct 工具轮次边界
 
 - 为 PinvouOS Front 增加通用、默认关闭的 `DirectToolRoundPolicy` Engine 配置。底座只按“一个 assistant 工具批次算一轮”计数，在宿主设定的轮次耗尽后把工具面收窄到指定 handoff 工具，并在 handoff 执行后关闭本轮工具面。
 - Pinvou app 将该策略配置为最多 3 轮 direct 工具批次、溢出时仅保留 `agent`；普通 CodeWhale 与其他 Pinvou Engine 保持 `None`，行为不变。产品如何判断完成、何时编排仍由 app instructions 定义。
 - `forkguard_direct_tool_round_budget_narrows_to_one_handoff_then_closes` 锁定模型可见目录；另外两条真实 Engine 回归锁定执行门：旧/幻觉 direct 工具不能绕过收窄，handoff 后任何工具都不能继续执行。
 - CodeWhale feature 分支为 `feat/pinvouos-front-round-policy`，commit `3f64e41e971167aede9390dbecc0a307224562ba`。它不移动 r7 公开 head 与不可变标签；父仓 feature 通过 gitlink 精确固定该提交。
+
+### PinvouOS feature checkpoint B：Front 插话与后台完成回流边界
+
+- 新增通用、默认保持 `Eager` 的 `SubAgentCompletionDeliveryPolicy`。PinvouOS Front 选择 `BoundaryOnly` 后，后台子 Agent 完成不会再注入当前用户 turn，而是在完整 turn 边界后以 typed `SubAgentHandoff` provenance 开启独立回流 turn；普通 CodeWhale 与 host-managed 显式 claim 行为不变。
+- `HoldSubAgentCompletions` / `ReleaseSubAgentCompletions` 提供快速的 mailbox admission 与精确释放；`Acquire → Applied → Confirm → Confirmed(active)` 两阶段 barrier 另外保证 Host forwarder 已串行处理此前的 turn 终态，普通 chat 只有在 barrier 确认后才 reserve、认领本地 turn 或创建乐观回答。Pinvou app 仅为普通 chat 建立 renderer/session-local turn lease；同一 Host 的 FIFO 可以跨多个用户 turn 保持 lease，但不同 Host 之间不宣称全局 FIFO。
+- holder id 最多 128 bytes、重复 Hold 幂等、Release 只影响同 id。Engine 只在 idle 边界为每个 holder 独立计算 30 秒 fail-open；活跃 turn 不消耗期限，一个存活 Host 的心跳也不会延长另一个已崩 Host 的 holder。
+- BoundaryOnly 在 channel frame 丢失时会从 manager 的当前 boot/root 未交付终态恢复一次；live holder 与已进入 mailbox 的用户操作也先于 Engine 自有 goal continuation。Web Host 对 RPC timeout / outcome-unknown 使用稳定 request id，并把该 FIFO 队首停在 `uncertain`：只有精确权威 user/terminal 事件或用户取消才能收敛，绝不自动换 id 重发。
+- 12 条新增 `forkguard_*` 锁定 active-turn 隔离、独立 handoff、已入 mailbox 用户操作优先、跨 FIFO turn lease、精确释放与控制前进、idle-only 过期、per-holder 心跳隔离、manager-only terminal once、goal continuation 排序、两阶段匹配确认、非 BoundaryOnly fail-closed，以及默认 Eager / host-managed 兼容。
+- CodeWhale feature 分支为 `feat/pinvouos-front-round-policy`，checkpoint commit `2f1f851ed038ffa161b42404bf478b1d9d4aeff2`；父仓 gitlink 与公开 feature ref 精确指向该提交。它不移动 `pinvou3-clean` 或不可变标签 `pinvou-v0.9.5-r7`。
 
 ### 本次会话修复（已验证并发布）
 
@@ -55,9 +64,9 @@
 
 ### T1：宿主嵌入与路由边界
 
-- **commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`Pinvou/CodeWhale#11`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）。
+- **commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`Pinvou/CodeWhale#11`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）、`2f1f851ed038ffa161b42404bf478b1d9d4aeff2`。
 - **公开规模**：10 文件，`+394/-31`；仓库级 CI 恢复不计入 T1 主题规模。
-- **核心文件**：`crates/tui/src/lib.rs`、`core/engine.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`、`session_manager.rs`。
+- **核心文件**：`crates/tui/src/lib.rs`、`core/engine.rs`、`core/engine/turn_loop.rs`、`core/events.rs`、`core/ops.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`、`session_manager.rs`。
 - **内容**：
   - 在 v0.9.5 原生 library target 上只公开 Pinvou 实际使用的模块和宿主类型，不恢复旧的全量 bin facade。
   - 以根级窄重导出公开 `FleetRoster` 与工作区角色目录常量，供嵌入宿主在写入角色文件后装配和热刷新名册；不公开整个 `fleet` 模块。
@@ -66,12 +75,13 @@
   - 保留宿主需要的 runtime thread / Automation 接口和 `EngineConfig` 注入边界。
   - 将无副作用的运行时 session snapshot 与已知进程重启后的显式 tool history recovery 分开，避免嵌入宿主把仍在执行的工具调用误判为崩溃。
   - 提供通用的宿主批量取消操作和失败终态标记，供会话停止与 Engine 回收安全收敛后台子智能体。
-- **边界**：不实现 Pinvou 产品工具策略或专用编排完成语义。
-- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，以及父仓启动恢复、resolved-route、取消级联和 compaction 合约测试。
+  - 提供默认关闭的后台完成边界交付策略、typed turn provenance、快速 Hold/Release 与经过 forwarder 水位确认的两阶段 barrier；opaque holder id 有 128-byte 上限并由 per-holder idle watchdog 回收，产品 FIFO、显示与 heartbeat 仍由嵌入宿主负责。
+- **边界**：不实现 Pinvou 产品工具策略、跨 Host 全局 FIFO 或耐久消息队列；30 秒仅是 renderer 消失后的 idle fail-open，不是任务 SLA。
+- **守护**：除既有 embedding/session/cancel 守护外，本轮 12 条 completion-boundary 守护覆盖 active-turn 隔离、queued-op 优先、跨 FIFO turn lease、matching release、idle fail-open、per-holder heartbeat、默认 Eager、host-managed explicit claim、manager-only terminal once、goal continuation 排序、两阶段 matching confirm 和非 BoundaryOnly fail-closed；父仓另锁定 reserve/ownership 前 barrier、Web outcome-unknown 与语音/队列行为。
 
 ### T2：工具兼容与命令执行安全
 
-- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`Pinvou/CodeWhale#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）。
+- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`Pinvou/CodeWhale#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）、`3f64e41e971167aede9390dbecc0a307224562ba`。
 - **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/ops.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
 - **内容**：
   - `EngineConfig.extra_tools` 让宿主工具在 Plan、Agent、Yolo 等 turn registry 中一致注册。
@@ -150,10 +160,15 @@ CodeWhale 当前已通过：
 cargo fmt --all -- --check
 cargo check -p codewhale-tui --lib --locked
 cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-26 passed / 0 failed（含 PinvouOS feature 新增 3 条）
+cargo test -p codewhale-tui --lib --locked -- --test-threads=1
+38 条 forkguard 全部通过；全量 lib：10087 passed / 0 failed / 11 ignored
 ```
 
-父仓当前已通过：
+进程级 integration 聚合运行得到 `261 passed / 2 failed`；两条失败都位于既有 telemetry 共享夹具，分别以原命令精确单跑时 `2 / 2` 通过。`cargo clippy --workspace --all-targets --locked -- -D warnings` 仍被 29 条既有基线 lint 阻断（包括已登记的 `private_interfaces`），本 checkpoint 没有把它写成已通过门禁。
+
+父仓本 checkpoint 当前已通过 `cargo fmt`、locked `cargo check`、完整 Rust lib（`1381 passed / 0 failed / 12 ignored`）、完整 fork guard、架构 guard、公开 submodule 校验、UI lint 以及桌面/Web UI build。全量 Node 自动发现为 `151 passed / 1 failed`，唯一失败是本轮 diff 之外的既有 macOS overlay `fullscreen` 配置断言。因此本 checkpoint 不声称全仓 `npm test` 全绿。
+
+r7 发布时的历史产品门禁如下；这组数字不是 2026-08-20 候选的新鲜证据：
 
 ```text
 cargo fmt --all -- --check
@@ -161,7 +176,7 @@ cargo check --locked
 cargo test --locked --lib -- --test-threads=1
 1220 passed / 0 failed / 12 ignored
 ./scripts/fork-guard.sh
-CodeWhale 26 passed；pinvou3-app 19 passed
+CodeWhale 23 passed；pinvou3-app 19 passed
 python3 scripts/architecture-guard.py
 npm test
 npm run lint:ui
@@ -170,7 +185,7 @@ npm run build:web
 cargo build --locked --no-default-features --features local-embed --bin pinvou3-tauri
 ```
 
-完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。12 个 ignored 测试依赖真实模型、外部工具或专用 fixture；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r7` 与父仓 gitlink 一致。
+上述 r7 历史结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。当前 checkpoint 已通过完整 `scripts/fork-guard.sh`（CodeWhale 38 / pinvou3-app 19）、`scripts/architecture-guard.py` 与 `scripts/verify-public-submodule.sh`。`scripts/verify-public-submodule.sh` 分别锁定不可变公开基线标签 `pinvou-v0.9.5-r7` 与已登记 feature ref，并要求当前父仓 gitlink 精确匹配该 feature ref，不再把 r7 基线误当成 feature checkpoint。
 
 ## 5. 后续修改规则
 

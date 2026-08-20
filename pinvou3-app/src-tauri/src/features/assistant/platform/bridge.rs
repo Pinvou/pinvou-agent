@@ -1263,6 +1263,7 @@ impl Pinvou3Bridge {
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
             max_tool_calls,
             direct_tool_round_policy,
+            subagent_completion_delivery_policy,
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
@@ -1464,6 +1465,7 @@ impl Pinvou3Bridge {
             },
             max_tool_calls,
             direct_tool_round_policy,
+            subagent_completion_delivery_policy,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。

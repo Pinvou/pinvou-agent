@@ -70,13 +70,74 @@ pub(crate) fn spawn_event_forwarder(
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
-                Event::TurnStarted { turn_id, .. } => {
+                Event::SubAgentCompletionHoldApplied {
+                    holder_id,
+                    barrier_id,
+                    receipt,
+                } => {
+                    // This forwarder is the serial lifecycle watermark. By the
+                    // time Applied reaches this arm, every earlier runtime turn
+                    // has completed its persistence, chat:done emission and
+                    // lifecycle cleanup. Confirm through the Engine mailbox;
+                    // do not resolve the original caller from phase one.
+                    if let Err(error) = approve_handle
+                        .send(Op::ConfirmSubAgentCompletionHold {
+                            holder_id,
+                            barrier_id,
+                            receipt,
+                        })
+                        .await
+                    {
+                        log::warn!(
+                            "[pinvou3][chat] failed to confirm completion hold barrier sid={}: {error:#}",
+                            session_id
+                        );
+                    }
+                }
+                Event::SubAgentCompletionHoldConfirmed {
+                    holder_id,
+                    barrier_id,
+                    active,
+                    receipt,
+                } => {
+                    if active {
+                        match receipt.lock() {
+                            Ok(mut sender) => {
+                                if let Some(sender) = sender.take() {
+                                    let _ = sender.send(());
+                                }
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "[pinvou3][chat] poisoned completion hold receipt sid={} holder={} barrier={}: {}",
+                                    session_id,
+                                    holder_id,
+                                    barrier_id,
+                                    error
+                                );
+                            }
+                        }
+                    }
+                    // `active = false` deliberately drops the final receipt
+                    // owner. The waiting admission fails closed and retries
+                    // from a fresh generation; stale confirms never resurrect
+                    // an expired or explicitly released holder.
+                }
+                Event::TurnStarted {
+                    turn_id,
+                    provenance,
+                    ..
+                } => {
                     // Publish admission from the authoritative engine event,
                     // before this serial forwarder can observe any delta or
                     // terminal event for the same turn. Reclaim uses the same
                     // emission gate, so it cannot overtake this pair.
-                    let admitted =
-                        turn_lifecycle.emit_started_admission(&app, &session_id, turn_id.clone());
+                    let admitted = turn_lifecycle.emit_started_admission(
+                        &app,
+                        &session_id,
+                        turn_id.clone(),
+                        provenance,
+                    );
                     // 消费 pending_cancel（无论 admitted 与否，防止跨轮泄漏）。
                     // reset_cancel_token() 在 TurnStarted 之前已执行，若 cancel
                     // 在此之前 arm 了标记，现在重新 cancel 命中的是本轮活跃 token。

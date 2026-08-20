@@ -96,9 +96,14 @@ assert.deepEqual(JSON.parse(JSON.stringify(context.pendingAssistantBlocks)), [
 
 emit('chat:delta', { text: '第一段回答' });
 assert.deepEqual(state.chatItems.map(item => item.type), ['reasoning', 'reasoning', 'assistant']);
-assert.equal(state.chatItems[2].html, '<p>第一段回答</p>');
+assert.equal(state.chatItems[2].text, '第一段回答');
+assert.equal(state.chatItems[2].html, '');
+assert.equal(state.chatItems[2].streamingPreviewText, '第一段回答',
+  'live answer text should use the bounded React text presentation');
 
 emit('chat:reasoning_start', { index: 2 });
+assert.equal(state.chatItems[2].html, '<p>第一段回答</p>',
+  'a reasoning boundary must settle the preceding answer as Markdown');
 emit('chat:reasoning_delta', { index: 2, text: '重试前思考' });
 emit('chat:transient_error', { error: 'SSE idle timeout' });
 emit('chat:delta', { text: '最终结论' });

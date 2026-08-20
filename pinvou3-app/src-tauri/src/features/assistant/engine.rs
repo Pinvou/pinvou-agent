@@ -20,7 +20,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
-use deepseek_tui::core::ops::Op;
+use deepseek_tui::core::ops::{Op, SubAgentCompletionHoldReceipt, UserInputProvenance};
 use deepseek_tui::models::Message;
 use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tools::shell::{new_shared_shell_manager, SharedShellManager};
@@ -570,8 +570,11 @@ pub(crate) fn emit_chat_terminal(
     crate::features::remote_control::forward_app_event(app, "chat:done", payload);
 }
 
-fn emit_turn_started(app: &AppHandle, session_id: &str) {
-    let started_payload = json!({ "session_id": session_id });
+fn emit_turn_started(app: &AppHandle, session_id: &str, provenance: &str) {
+    let started_payload = json!({
+        "session_id": session_id,
+        "provenance": provenance,
+    });
     let _ = app.emit("chat:turn_started", started_payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:turn_started", started_payload);
 }
@@ -580,7 +583,7 @@ fn emit_turn_admission(app: &AppHandle, session_id: &str, admission: TurnAdmissi
     let user_payload = admission.user_payload(session_id);
     let _ = app.emit("chat:user_message", user_payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:user_message", user_payload);
-    emit_turn_started(app, session_id);
+    emit_turn_started(app, session_id, "external_user");
 }
 
 impl TurnLifecycle {
@@ -837,10 +840,39 @@ impl TurnLifecycle {
         }
     }
 
-    fn on_started_transition(&self, turn_id: String) -> Option<StartedTransition> {
+    fn on_started_transition(
+        &self,
+        turn_id: String,
+        provenance: UserInputProvenance,
+    ) -> Option<StartedTransition> {
         let mut state = self.state.lock();
         if state.reclaimed || state.terminal_closing {
             return None;
+        }
+        // A runtime-authored handoff may already have won the Engine's idle
+        // select immediately before the Host acquires its completion hold. A
+        // reservation marks the UI busy before its SendMessage is admitted, so
+        // binding that runtime TurnStarted to the pending reservation would
+        // publish the wrong user admission and let the runtime terminal erase
+        // the user's turn. The processed hold barrier prevents this on the
+        // ordinary chat path; this provenance check is the fail-closed backstop
+        // for excluded/legacy callers and for a stale Host.
+        //
+        // TurnLifecycle is deliberately a single active-engine-turn slot. It
+        // cannot represent a pending external reservation and an already-active
+        // runtime turn at once, so invalidate only the unsubmitted reservation
+        // and bind the real runtime turn. The caller then receives an invalid
+        // reservation error instead of silently corrupting transcript order.
+        let displaced_unsubmitted_reservation = provenance != UserInputProvenance::ExternalUser
+            && !state.submitted
+            && state.active_reservation_id.is_some();
+        if displaced_unsubmitted_reservation {
+            if let Some(reservation_id) = state.active_reservation_id.take() {
+                Self::remove_unsubmitted_rule_locked(&mut state, reservation_id);
+            }
+            state.active = false;
+            state.turn_id = None;
+            state.admission_emitted = false;
         }
         let newly_active = !state.active;
         if newly_active {
@@ -873,12 +905,18 @@ impl TurnLifecycle {
 
     #[cfg(test)]
     fn on_started(&self, turn_id: String) {
-        let _ = self.on_started_transition(turn_id);
+        let _ = self.on_started_transition(turn_id, UserInputProvenance::ExternalUser);
     }
 
-    fn emit_started_admission(&self, app: &AppHandle, session_id: &str, turn_id: String) -> bool {
+    fn emit_started_admission(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        turn_id: String,
+        provenance: UserInputProvenance,
+    ) -> bool {
         let _emission = self.emission.lock();
-        let Some(transition) = self.on_started_transition(turn_id) else {
+        let Some(transition) = self.on_started_transition(turn_id, provenance) else {
             return false;
         };
         if let Some(admission) = transition.admission {
@@ -888,7 +926,7 @@ impl TurnLifecycle {
             // admission：不发 user_message，但 turn_started 必须照发——否则
             // 界面显示空闲、停止按钮缺席、再发消息撞"已有运行中轮次"，且与
             // "停止级联取消"的既定语义冲突（复核 P1）。
-            emit_turn_started(app, session_id);
+            emit_turn_started(app, session_id, provenance.as_str());
         }
         true
     }
@@ -1317,6 +1355,33 @@ async fn finish_reclaimed_lifecycle_turn(
 }
 
 impl AppEngine {
+    /// Wait until a BoundaryOnly completion hold has crossed the serial App
+    /// event forwarder and is still live in the Engine mailbox.
+    ///
+    /// A plain `HoldSubAgentCompletions` is intentionally fire-and-forget so a
+    /// busy interjection can become visible immediately. Promoting that input
+    /// into a real local turn needs this stronger two-phase barrier: otherwise
+    /// a detached completion that already won the idle select could still be
+    /// mistaken for the newly reserved external turn.
+    pub(crate) async fn ensure_subagent_completion_hold_ready(
+        &self,
+        holder_id: String,
+    ) -> Result<()> {
+        let barrier_id = format!("pinvou-barrier:{:032x}", rand::random::<u128>());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let receipt: SubAgentCompletionHoldReceipt = Arc::new(std::sync::Mutex::new(Some(tx)));
+        self.handle
+            .send(Op::AcquireSubAgentCompletionHold {
+                holder_id,
+                barrier_id,
+                receipt,
+            })
+            .await
+            .context("submit sub-agent completion hold barrier")?;
+        rx.await
+            .context("sub-agent completion hold barrier was not confirmed")
+    }
+
     /// 为指定 session spawn 一个**独立** engine:绑定该 session 专属的 workspace +
     /// instructions(spawn 时由 [`build_engine_config_for_session`] 固化进 config,
     /// 不再靠 `Op::SyncSession` 动态切),并启一个带 `session_id` 的 event forwarder。
@@ -1414,6 +1479,11 @@ impl AppEngine {
                     max_direct_rounds: 3,
                     overflow_tools: vec!["agent".to_string()],
                 });
+            // Front 的当前用户轮保持原子性：后台子 Agent 的完成消息只在完整
+            // turn 边界后开启独立回流轮，不能插入用户正在进行的模型/工具链。
+            // 这样前端可继续接收并按 FIFO 排队插话，而不会把后台总结混进当前答复。
+            engine_config.subagent_completion_delivery_policy =
+                deepseek_tui::core::engine::SubAgentCompletionDeliveryPolicy::BoundaryOnly;
             // PinvouOS 原子能力直接读取同一份进程内 Runtime 投影。只装到唯一
             // Front engine；Orchestrator 子 Agent 继承该工具面，原生 Code 与
             // unattended automation 不得看到 OS 私有控制面。
@@ -1598,6 +1668,7 @@ impl AppEngine {
         persona_reminder: Option<String>,
         restrict_tools: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
+        completion_holder_id: Option<String>,
         reservation: TurnReservation,
     ) -> Result<()> {
         let trace_content = content.clone();
@@ -1613,7 +1684,10 @@ impl AppEngine {
                 "[pinvou-os][interaction] reserved submission start not recorded: {error:#}"
             );
         }
-        if let Err(error) = self.send_reserved_turn_op(op, reservation).await {
+        if let Err(error) = self
+            .send_reserved_turn_op(op, completion_holder_id, reservation)
+            .await
+        {
             self.interaction_trace.finish(
                 crate::features::pinvou_os::InteractionRunOutcome::Error {
                     error_code: "submission_failed".to_string(),
@@ -1741,7 +1815,12 @@ impl AppEngine {
         }
     }
 
-    async fn send_reserved_turn_op(&self, op: Op, reservation: TurnReservation) -> Result<()> {
+    async fn send_reserved_turn_op(
+        &self,
+        op: Op,
+        completion_holder_id: Option<String>,
+        reservation: TurnReservation,
+    ) -> Result<()> {
         if !reservation.belongs_to(&self.turn_lifecycle) {
             anyhow::bail!("turn reservation belongs to a different session");
         }
@@ -1761,6 +1840,14 @@ impl AppEngine {
             ),
             None => None,
         };
+        if let Some(holder_id) = completion_holder_id.as_ref() {
+            self.handle
+                .send(Op::HoldSubAgentCompletions {
+                    holder_id: holder_id.clone(),
+                })
+                .await
+                .context("acquire sub-agent completion turn lease")?;
+        }
         match self.handle.send(op).await {
             Ok(()) => {
                 if let Some(scope) = shell_scope {
@@ -1769,7 +1856,20 @@ impl AppEngine {
                 reservation.mark_submitted();
                 Ok(())
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                if let Some(holder_id) = completion_holder_id {
+                    if let Err(release_error) = self
+                        .handle
+                        .send(Op::ReleaseSubAgentCompletions { holder_id })
+                        .await
+                    {
+                        log::warn!(
+                            "[pinvou-os][interaction] failed to release completion turn lease after submission error: {release_error:#}"
+                        );
+                    }
+                }
+                Err(error)
+            }
         }
     }
 
@@ -1818,7 +1918,7 @@ impl AppEngine {
         new_message: String,
         reservation: TurnReservation,
     ) -> Result<()> {
-        self.send_reserved_turn_op(Op::EditLastTurn { new_message }, reservation)
+        self.send_reserved_turn_op(Op::EditLastTurn { new_message }, None, reservation)
             .await
     }
 
@@ -2003,6 +2103,7 @@ mod front_agent_instruction_tests {
 mod turn_lifecycle_tests {
     use super::{EmittedTerminal, TranscriptOperation, TurnAdmissionMetadata, TurnLifecycle};
     use crate::features::sessions::SessionModeState;
+    use deepseek_tui::core::ops::UserInputProvenance;
     use deepseek_tui::models::{ContentBlock, Message};
     use std::cell::Cell;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2087,7 +2188,10 @@ mod turn_lifecycle_tests {
         // 路径（TurnComplete 终态），不能再由 invalidate 补发，否则会双发 chat:done。
         let reservation2 = lifecycle.reserve().expect("reserve again");
         assert!(lifecycle
-            .on_started_transition("turn-submitted".to_string())
+            .on_started_transition(
+                "turn-submitted".to_string(),
+                UserInputProvenance::ExternalUser,
+            )
             .is_some());
         assert!(!lifecycle.invalidate_unsubmitted_reservation());
         reservation2.mark_submitted();
@@ -2121,7 +2225,10 @@ mod turn_lifecycle_tests {
         // 已 submitted 的 turn 不能再被 claim（engine 已接手，走 cancel_current 路径）。
         let reservation2 = lifecycle.reserve().expect("reserve");
         assert!(lifecycle
-            .on_started_transition("turn-submitted".to_string())
+            .on_started_transition(
+                "turn-submitted".to_string(),
+                UserInputProvenance::ExternalUser,
+            )
             .is_some());
         assert!(!lifecycle.claim_unsubmitted_terminal());
         reservation2.mark_submitted();
@@ -2582,7 +2689,7 @@ mod turn_lifecycle_tests {
 
         // on_started_transition 从 idle 激活（newly_active 分支）推进到 epoch=3。
         assert!(lifecycle
-            .on_started_transition("turn-stale".to_string())
+            .on_started_transition("turn-stale".to_string(), UserInputProvenance::ExternalUser,)
             .is_some());
         assert_eq!(lifecycle.current_turn_generation(), Some(3));
         assert!(lifecycle.finish_once(|| {}).is_some());
@@ -2690,7 +2797,7 @@ mod turn_lifecycle_tests {
         // The engine can publish TurnStarted before EngineHandle::send returns
         // to the command future. That event is authoritative submission.
         let started = lifecycle
-            .on_started_transition("turn-fast".to_string())
+            .on_started_transition("turn-fast".to_string(), UserInputProvenance::ExternalUser)
             .expect("started transition");
         let payload = started
             .admission
@@ -2708,6 +2815,52 @@ mod turn_lifecycle_tests {
         assert!(matched);
         assert_eq!(sanitized, vec![message("user", "visible prompt")]);
         assert!(lifecycle.claim_terminal().is_some());
+    }
+
+    #[test]
+    fn runtime_started_never_steals_an_unsubmitted_external_reservation() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve external turn");
+        reservation.set_base_transcript_revision("revision-before".to_string());
+        reservation
+            .set_transcript_with_baseline(
+                TranscriptOperation::Append,
+                message("user", "queued user prompt"),
+                "revision-before".to_string(),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content("<private>queued user prompt</private>".to_string())
+            .expect("actual prompt");
+
+        let started = lifecycle
+            .on_started_transition(
+                "runtime-handoff".to_string(),
+                UserInputProvenance::SubAgentHandoff,
+            )
+            .expect("runtime turn starts independently");
+        assert!(
+            started.admission.is_none(),
+            "runtime handoff must not publish the pending external admission"
+        );
+        assert!(started.newly_active);
+        assert!(
+            reservation.ensure_active().is_err(),
+            "the displaced caller must fail closed instead of sending into the runtime turn"
+        );
+
+        assert_eq!(
+            lifecycle.claim_terminal(),
+            Some(EmittedTerminal {
+                turn_id: Some("runtime-handoff".to_string()),
+            })
+        );
+        lifecycle.finish_terminal_emission();
+        drop(reservation);
+        assert!(
+            lifecycle.reserve().is_ok(),
+            "the external caller may retry only after the runtime turn is terminal"
+        );
     }
 
     #[test]
@@ -2788,7 +2941,7 @@ mod turn_lifecycle_tests {
         assert!(lifecycle.claim_reclaimed_transition().is_none());
         assert!(
             lifecycle
-                .on_started_transition("late-turn".to_string())
+                .on_started_transition("late-turn".to_string(), UserInputProvenance::ExternalUser,)
                 .is_none(),
             "late TurnStarted cannot resurrect a reclaimed turn"
         );

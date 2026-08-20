@@ -7,8 +7,8 @@ TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_HEAD="3f64e41e971167aede9390dbecc0a307224562ba"
-EXPECTED_COMMITS=10
+EXPECTED_HEAD="2f1f851ed038ffa161b42404bf478b1d9d4aeff2"
+EXPECTED_COMMITS=11
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -21,10 +21,25 @@ fail=0
 bold "── 第 0 层：v0.9.5 r7 + PinvouOS feature checkpoint 拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记的 PinvouOS feature checkpoint $EXPECTED_HEAD"
+  green "  ✓ CodeWhale 工作树 HEAD 指向登记的 PinvouOS feature checkpoint $EXPECTED_HEAD"
 else
   red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，feature checkpoint 登记为 $EXPECTED_HEAD"
   fail=1
+fi
+
+index_gitlink="$(git -C "$REPO" ls-files --stage -- CodeWhale 2>/dev/null | awk '$1 == "160000" { print $2; exit }')"
+if [[ "$index_gitlink" == "$EXPECTED_HEAD" ]]; then
+  green "  ✓ 父仓索引 gitlink 精确固定同一 checkpoint"
+else
+  red "  ✗ 父仓索引 gitlink 为 ${index_gitlink:-<unreadable>}，checkpoint 登记为 $EXPECTED_HEAD"
+  fail=1
+fi
+
+if [[ -n "$(git -C "$TUI" status --porcelain 2>/dev/null)" ]]; then
+  red "  ✗ CodeWhale 工作树含未提交修改，HEAD/gitlink 不能证明当前内容"
+  fail=1
+else
+  green "  ✓ CodeWhale 工作树干净，checkpoint 可由 HEAD 精确复现"
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null \
@@ -58,6 +73,28 @@ fingerprints=(
   "T1|宿主批量取消运行中子智能体          |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
   "T1|批量取消幂等行为回归                |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_host_bulk_cancel_stops_all_running_children_idempotently"
   "T1|通用完成事件携带失败终态            |CodeWhale/crates/tui/src/core/events.rs|failed: bool"
+  "T1|后台完成交付策略默认保持 Eager      |CodeWhale/crates/tui/src/core/engine.rs|pub enum SubAgentCompletionDeliveryPolicy"
+  "T1|TurnStarted 携带 typed provenance   |CodeWhale/crates/tui/src/core/events.rs|provenance: UserInputProvenance"
+  "T1|宿主可临时保持后台完成              |CodeWhale/crates/tui/src/core/ops.rs|HoldSubAgentCompletions { holder_id: String }"
+  "T1|宿主按 opaque id 精确释放保持       |CodeWhale/crates/tui/src/core/ops.rs|ReleaseSubAgentCompletions { holder_id: String }"
+  "T1|两阶段 barrier 先申请再确认          |CodeWhale/crates/tui/src/core/ops.rs|AcquireSubAgentCompletionHold {"
+  "T1|两阶段 barrier 确认不复活过期 holder |CodeWhale/crates/tui/src/core/ops.rs|ConfirmSubAgentCompletionHold {"
+  "T1|forwarder 水位事件 Applied          |CodeWhale/crates/tui/src/core/events.rs|SubAgentCompletionHoldApplied {"
+  "T1|forwarder 水位事件 Confirmed        |CodeWhale/crates/tui/src/core/events.rs|SubAgentCompletionHoldConfirmed {"
+  "T1|后台完成保持仅在 idle 计 30 秒      |CodeWhale/crates/tui/src/core/engine.rs|const SUBAGENT_COMPLETION_HOLD_IDLE_TIMEOUT: Duration = Duration::from_secs(30);"
+  "T1|后台完成 holder id 限制 128 bytes  |CodeWhale/crates/tui/src/core/engine.rs|const SUBAGENT_COMPLETION_HOLDER_MAX_BYTES: usize = 128;"
+  "T1|BoundaryOnly 隔离当前用户 turn      |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_boundary_only_keeps_active_turn_clean_then_delivers_one_dedicated_handoff"
+  "T1|BoundaryOnly 优先已入邮箱用户操作    |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_boundary_only_prefers_an_already_queued_external_op_over_idle_completion"
+  "T1|Host lease 跨 FIFO turn 后再回流    |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_host_completion_hold_linearizes_fifo_before_ready_handoff"
+  "T1|错误 holder 释放不越权且控制不饥饿  |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_completion_hold_requires_matching_release_and_never_starves_controls"
+  "T1|遗弃 holder 只在 idle 边界过期      |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_abandoned_completion_hold_expires_only_at_idle_boundary"
+  "T1|存活心跳不延长其他 holder           |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_live_holder_heartbeat_does_not_extend_crashed_holder_deadline"
+  "T1|默认 Eager 保持历史回流行为          |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_default_eager_delivery_still_resumes_inside_the_active_turn"
+  "T1|Host-managed 显式 claim 行为不变     |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_host_managed_engine_preserves_explicit_claim_delivery_under_boundary_policy"
+  "T1|BoundaryOnly 回收 manager-only 终态  |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_boundary_only_recovers_manager_terminal_without_channel_frame_once"
+  "T1|用户操作与 holder 先于 goal 续轮     |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_live_holder_and_queued_user_op_precede_goal_continuation"
+  "T1|两阶段 barrier 只接受匹配确认        |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_two_phase_hold_requires_matching_confirmed_event"
+  "T1|非 BoundaryOnly acquire fail closed |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_acquire_fails_closed_outside_boundary_only"
 
   "T2|宿主额外工具入口                    |CodeWhale/crates/tui/src/core/engine.rs|pub struct ExtraTools("
   "T2|动态禁用工具操作                    |CodeWhale/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"
@@ -102,6 +139,11 @@ fingerprints=(
   "APP|进程启动显式恢复中断工具调用且幂等    |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_boot_repairs_interrupted_tool_call_once"
   "APP|仅进程启动入口触发工具历史恢复        |pinvou3-app/src-tauri/src/lib.rs|SessionStore::boot_for_process_startup()"
   "APP|工具卡隐藏已知内部 runtime suffix    |pinvou3-app/src/platform/tauri/bridge.js|function stripInternalToolRuntimeSuffix("
+  "APP|Pinvou Front 选择 BoundaryOnly       |pinvou3-app/src-tauri/src/features/assistant/engine.rs|SubAgentCompletionDeliveryPolicy::BoundaryOnly"
+  "APP|普通 chat 原子提交 holder 与消息      |pinvou3-app/src-tauri/src/features/assistant/engine.rs|Op::HoldSubAgentCompletions"
+  "APP|EnginePool 暴露窄 completion hold API|pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|set_subagent_completion_hold"
+  "APP|普通 chat reserve 前等待两阶段 barrier|pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|ensure_subagent_completion_hold_ready"
+  "APP|forwarder 串行推进 Applied 水位       |pinvou3-app/src-tauri/src/features/assistant/forwarder.rs|Event::SubAgentCompletionHoldApplied"
 )
 
 for fp in "${fingerprints[@]}"; do

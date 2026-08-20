@@ -612,12 +612,17 @@ function tick() {
 function createBridgeHarness(sharedStorage, runtimeOptions) {
   runtimeOptions = runtimeOptions || {};
   var bridgeKind = runtimeOptions.bridgeKind === "web" ? "web" : "tauri";
+  var webInvokableCommands = Array.isArray(runtimeOptions.webInvokableCommands)
+    ? runtimeOptions.webInvokableCommands
+    : [];
   var listeners = Object.create(null);
   var handlers = Object.create(null);
   var calls = [];
   var dialogCalls = [];
   var dialogResult = null;
   var createdSession = 0;
+  var intervalSeq = 0;
+  var intervals = Object.create(null);
   var storageData = sharedStorage || Object.create(null);
   var storage = {
     getItem: function (key) { return Object.prototype.hasOwnProperty.call(storageData, key) ? storageData[key] : null; },
@@ -628,6 +633,20 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     readyState: "loading",
     addEventListener: function () {},
   };
+
+  function captureInterval(callback, delay) {
+    intervalSeq += 1;
+    intervals[intervalSeq] = {
+      callback: callback,
+      delay: Number(delay || 0),
+      active: true,
+    };
+    return intervalSeq;
+  }
+
+  function clearCapturedInterval(id) {
+    if (intervals[id]) intervals[id].active = false;
+  }
 
   function defaultInvoke(cmd, args) {
     if (cmd === "load_session") {
@@ -660,6 +679,8 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
         cmd === "find_resumable_run" || cmd === "check_for_update") return null;
     if (cmd === "get_settings") return { theme: "genesis", language: "zh-Hans" };
     if (cmd === "get_backend_status") return {};
+    if (cmd === "set_subagent_completion_hold" ||
+        cmd === "ensure_subagent_completion_hold_ready") return true;
     if (cmd === "scheduled_task_chat_prompt") return "scheduled guide";
     if (cmd === "read_scheduled_task") return { id: args.id, name: args.id };
     if (cmd === "create_scheduled_task") {
@@ -671,10 +692,12 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     return null;
   }
 
-  function invoke(cmd, args) {
-    calls.push({ cmd: cmd, args: args || null });
+  function invokeCore(cmd, args, requestId) {
+    var call = { cmd: cmd, args: args || null };
+    if (requestId != null) call.requestId = String(requestId);
+    calls.push(call);
     try {
-      if (handlers[cmd]) return Promise.resolve(handlers[cmd](args || {}));
+      if (handlers[cmd]) return Promise.resolve(handlers[cmd](args || {}, requestId));
       if (cmd === "web_access_load_session_chunk") {
         var saved = handlers.load_session
           ? handlers.load_session({ id: args.id })
@@ -695,9 +718,17 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     }
   }
 
+  function invoke(cmd, args) {
+    return invokeCore(cmd, args, null);
+  }
+
+  function invokeWithRequestId(cmd, args, requestId) {
+    return invokeCore(cmd, args, requestId);
+  }
+
   var window = {
     __TAURI__: {
-      core: { invoke: invoke },
+      core: { invoke: invoke, invokeWithRequestId: invokeWithRequestId },
       event: {
         listen: function (name, fn) {
           if (!listeners[name]) listeners[name] = [];
@@ -724,7 +755,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
       isWeb: true,
       capabilities: {},
       can: function () { return false; },
-      canInvoke: function () { return false; },
+      canInvoke: function (command) { return webInvokableCommands.indexOf(command) >= 0; },
     };
   }
   window.window = window;
@@ -736,8 +767,8 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     console: { log: function () {}, warn: function () {}, error: function () {} },
     setTimeout: runtimeOptions.setTimeout || setTimeout,
     clearTimeout: runtimeOptions.clearTimeout || clearTimeout,
-    setInterval: function () { return 0; },
-    clearInterval: function () {},
+    setInterval: captureInterval,
+    clearInterval: clearCapturedInterval,
     structuredClone: function (value) { return JSON.parse(JSON.stringify(value)); },
     TextDecoder: TextDecoder,
     Uint8Array: Uint8Array,
@@ -751,13 +782,24 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   var rawBridge = window.TauriBridge;
   var bridge = bridgeKind === "web" ? {
     sessions: {
+      createNewSession: function () { return rawBridge.createNewSession(); },
       switchToSession: function (id) { return rawBridge.switchToSession(id); },
     },
     chat: {
       sendMessage: function (text, meta) { return rawBridge.sendMessage(text, meta); },
+      sendMessageToSession: function (id, text, meta) {
+        return rawBridge.sendMessageToSession(id, text, meta);
+      },
+      removeQueued: function (id) { return rawBridge.removeQueued(id); },
+      retryFirstTurn: function (id) { return rawBridge.retryFirstTurn(id); },
+    },
+    scheduled: {
+      openScheduledRunChat: function (run, task) { return rawBridge.openScheduledRunChat(run, task); },
+      exitScheduledRunChat: function () { return rawBridge.exitScheduledRunChat(); },
     },
     state: {
       get: function () { return rawBridge.getState(); },
+      getMany: function () { return rawBridge.getState(); },
     },
   } : rawBridge;
 
@@ -768,10 +810,31 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     calls: calls,
     storageData: storageData,
     dialogCalls: dialogCalls,
+    fireIntervals: function (rounds, delay) {
+      var count = Math.max(1, Number(rounds || 1));
+      for (var round = 0; round < count; round++) {
+        Object.keys(intervals).forEach(function (id) {
+          var entry = intervals[id];
+          if (!entry || !entry.active) return;
+          if (delay != null && entry.delay !== Number(delay)) return;
+          entry.callback();
+        });
+      }
+    },
+    activeIntervalCount: function (delay) {
+      return Object.keys(intervals).filter(function (id) {
+        var entry = intervals[id];
+        return !!entry && entry.active &&
+          (delay == null || entry.delay === Number(delay));
+      }).length;
+    },
     setDialogResult: function (value) { dialogResult = value; },
     emit: function (name, payload) {
       assert.ok(listeners[name] && listeners[name].length, "expected listener " + name);
-      var event = { payload: payload || {} };
+      var event = {
+        payload: payload || {},
+        event: runtimeOptions.includeEventName ? name : undefined,
+      };
       return Promise.all(listeners[name].map(function (listener) { return listener(event); }));
     },
   };
@@ -1427,46 +1490,91 @@ async function openingRunningMarksBusyBeforeHydration() {
 }
 
 async function followupQueuedUntilScheduledInitialTurnTerminal() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  await bridge.sessions.switchToSession("chat-origin");
-  assert.strictEqual(await bridge.scheduled.openScheduledRunChat({
-    id: "run-followup",
-    automationId: "automation-followup",
-    sessionId: "sched-followup",
-    status: "running",
-    unread: false,
-  }, { id: "automation-followup", name: "Follow-up task" }), true);
-  harness.emit("chat:delta", { session_id: "sched-followup", text: "initial scheduled output" });
-  var initialAssistantCount = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.filter(function (item) {
-    return item.type === "assistant";
-  }).length;
+  for (var bridgeKind of ["tauri", "web"]) {
+    var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+    var bridge = harness.bridge;
+    var sessionId = "sched-followup-" + bridgeKind;
+    var chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
 
-  await bridge.chat.sendMessage("follow up after the scheduled run");
-  var queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(queued.queued.length, 1, "follow-up input must queue while the initial scheduled turn is active");
-  assert.strictEqual(
-    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
-    0,
-    "a queued follow-up must not overlap the scheduled engine turn"
-  );
-  assert.strictEqual(
-    queued.chatItems.filter(function (item) { return item.type === "assistant"; }).length,
-    initialAssistantCount,
-    "queueing a follow-up must not create an overlapping assistant placeholder"
-  );
+    await bridge.sessions.switchToSession("chat-origin-" + bridgeKind);
+    assert.strictEqual(await bridge.scheduled.openScheduledRunChat({
+      id: "run-followup-" + bridgeKind,
+      automationId: "automation-followup-" + bridgeKind,
+      sessionId: sessionId,
+      status: "running",
+      unread: false,
+    }, {
+      id: "automation-followup-" + bridgeKind,
+      name: "Follow-up task",
+    }), true);
+    harness.emit("chat:delta", {
+      session_id: sessionId,
+      text: "initial scheduled output",
+    });
+    var initialAssistantCount = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.filter(function (item) {
+      return item.type === "assistant";
+    }).length;
 
-  harness.emit("chat:done", { session_id: "sched-followup" });
-  await tick();
-  await tick();
-  var flushed = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(flushed.queued.length, 0);
-  assert.strictEqual(
-    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
-    1,
-    "the queued follow-up should flush only after the scheduled terminal event"
-  );
-  assert.strictEqual(flushed.busy, true, "the flushed follow-up should own the next busy turn");
+    await bridge.chat.sendMessage("follow up after the scheduled run");
+    var queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+    assert.strictEqual(
+      queued.queued.length,
+      1,
+      bridgeKind + " follow-up input must queue while the initial scheduled turn is active"
+    );
+    assert.strictEqual(
+      harness.calls.filter(function (call) { return call.cmd === chatCommand; }).length,
+      0,
+      bridgeKind + " queued follow-up must not overlap the scheduled engine turn"
+    );
+    assert.strictEqual(
+      harness.calls.filter(function (call) {
+        return call.cmd === "set_subagent_completion_hold";
+      }).length,
+      0,
+      bridgeKind + " scheduled sessions must not acquire the ordinary Front completion lease"
+    );
+    assert.strictEqual(
+      queued.chatItems.filter(function (item) { return item.type === "assistant"; }).length,
+      initialAssistantCount,
+      bridgeKind + " queueing a follow-up must not create an overlapping assistant placeholder"
+    );
+
+    harness.emit("chat:done", { session_id: sessionId });
+    for (var settleTick = 0; settleTick < 12; settleTick++) await tick();
+    var flushed = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+    assert.strictEqual(
+      flushed.queued.length,
+      0,
+      bridgeKind + " scheduled terminal must flush the one queued follow-up"
+    );
+    var followupCalls = harness.calls.filter(function (call) {
+      return call.cmd === chatCommand;
+    });
+    assert.strictEqual(
+      followupCalls.length,
+      1,
+      bridgeKind + " queued follow-up should flush only after the scheduled terminal event"
+    );
+    assert.ok(
+      followupCalls.every(function (call) {
+        return call.args.completionHolderId == null;
+      }),
+      bridgeKind + " every scheduled follow-up must stay outside ordinary completion holders"
+    );
+    assert.strictEqual(
+      harness.calls.filter(function (call) {
+        return call.cmd === "set_subagent_completion_hold";
+      }).length,
+      0,
+      bridgeKind + " scheduled terminal and follow-up must stay outside completion lease control"
+    );
+    assert.strictEqual(
+      flushed.busy,
+      true,
+      bridgeKind + " flushed follow-up should own the next busy turn"
+    );
+  }
 }
 
 async function terminalEventWinsStaleRunningOpen() {
@@ -2025,6 +2133,1406 @@ async function localCompletedTurnNeverBlocksTheNextMessage() {
     assert.ok(source.includes("authoritySyncNotice"),
       "desktop and Web bridges must deduplicate authority-sync notices");
   });
+}
+
+async function webFirstTurnTerminalBeforeRpcResponseReleasesLease() {
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webInvokableCommands: ["web_access_create_session_and_chat"],
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-web-first-turn-early-terminal";
+  var firstTurnAdmission = deferred();
+  harness.handlers.web_access_create_session_and_chat = function () {
+    return firstTurnAdmission.promise;
+  };
+
+  await bridge.chat.sendMessage("first web turn");
+  await tick();
+  var firstTurnCall = harness.calls.find(function (call) {
+    return call.cmd === "web_access_create_session_and_chat";
+  });
+  assert.ok(firstTurnCall, "Web draft first turn must use the atomic create-and-chat RPC");
+  var holderId = firstTurnCall.args && firstTurnCall.args.completionHolderId;
+  assert.ok(
+    typeof holderId === "string" && holderId.length > 0,
+    "Web first-turn RPC must carry its completion holder before the Session id is known"
+  );
+
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Completed",
+    error: null,
+  });
+  await tick();
+  assert.strictEqual(
+    harness.calls.filter(function (call) {
+      return call.cmd === "set_subagent_completion_hold";
+    }).length,
+    0,
+    "an early terminal cannot release until the RPC maps the holder to its new Session"
+  );
+
+  firstTurnAdmission.resolve({
+    id: sessionId,
+    title: "First Web turn",
+    message_count: 2,
+    transcript_revision: "first-turn-terminal",
+  });
+  for (var settleTick = 0; settleTick < 16; settleTick++) await tick();
+
+  var finalState = bridge.state.get("chat");
+  assert.strictEqual(finalState.activeSessionId, sessionId);
+  assert.strictEqual(
+    finalState.busy,
+    false,
+    "an early terminal replay must not resurrect the accepted first turn as busy"
+  );
+  var holderCalls = harness.calls.filter(function (call) {
+    return call.cmd === "set_subagent_completion_hold" &&
+      call.args.holderId === holderId;
+  });
+  assert.strictEqual(
+    holderCalls.filter(function (call) { return call.args.held === false; }).length,
+    1,
+    "the early-terminal first-turn holder must be released exactly once"
+  );
+  assert.ok(
+    harness.calls.filter(function (call) {
+      return call.cmd === "set_subagent_completion_hold";
+    }).every(function (call) { return call.args.holderId === holderId; }),
+    "early-terminal replay must never mint or release a different holder"
+  );
+}
+
+async function webFirstTurnRealEventOrderHydratesBeforeRpcResponse() {
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webInvokableCommands: ["web_access_create_session_and_chat"],
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-web-first-turn-real-event-order";
+  var transcriptRevision = "first-turn-real-terminal";
+  var assistantText = "authoritative answer from the completed first turn";
+  var firstTurnAdmission = deferred();
+  harness.handlers.web_access_create_session_and_chat = function () {
+    return firstTurnAdmission.promise;
+  };
+  harness.handlers.load_session = function (args) {
+    assert.strictEqual(args.id, sessionId);
+    return {
+      metadata: {
+        id: sessionId,
+        title: "Real first-turn event order",
+        message_count: 2,
+      },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "first web turn with events" }] },
+        { role: "assistant", content: [{ type: "text", text: assistantText }] },
+      ],
+      artifacts: [],
+      transcript_revision: transcriptRevision,
+    };
+  };
+
+  await bridge.chat.sendMessage("first web turn with events");
+  await tick();
+  var firstTurnCall = harness.calls.find(function (call) {
+    return call.cmd === "web_access_create_session_and_chat";
+  });
+  assert.ok(firstTurnCall, "Web real-order test must keep the create-and-chat RPC pending");
+  var holderId = firstTurnCall.args && firstTurnCall.args.completionHolderId;
+  assert.ok(holderId, "Web real-order first turn must advertise one holder in its atomic RPC");
+
+  await harness.emit("chat:user_message", {
+    session_id: sessionId,
+    content: "first web turn with events",
+    operation: "append",
+  });
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: transcriptRevision,
+  });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Completed",
+    error: null,
+  });
+  for (var preMetadataTick = 0; preMetadataTick < 16; preMetadataTick++) await tick();
+  assert.ok(
+    harness.calls.some(function (call) {
+      return call.cmd === "web_access_load_session_chunk" && call.args.id === sessionId;
+    }),
+    "the forced-remote terminal path must hydrate the committed transcript before RPC metadata arrives"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) {
+      return call.cmd === "set_subagent_completion_hold";
+    }).length,
+    0,
+    "the event-created buffer still cannot release a holder until RPC metadata maps its identity"
+  );
+
+  firstTurnAdmission.resolve({
+    id: sessionId,
+    title: "Real first-turn event order",
+    message_count: 2,
+    transcript_revision: transcriptRevision,
+  });
+  for (var settleTick = 0; settleTick < 20; settleTick++) await tick();
+
+  var finalState = bridge.state.get("chat");
+  assert.strictEqual(finalState.activeSessionId, sessionId);
+  assert.strictEqual(
+    finalState.busy,
+    false,
+    "the real early event sequence must remain terminal after create RPC acceptance"
+  );
+  assert.ok(
+    JSON.stringify(finalState.chatItems).includes(assistantText),
+    "forced-remote replay hydration must render the authoritative assistant answer"
+  );
+  var releaseCalls = harness.calls.filter(function (call) {
+    return call.cmd === "set_subagent_completion_hold" &&
+      call.args.holderId === holderId && call.args.held === false;
+  });
+  assert.strictEqual(
+    releaseCalls.length,
+    1,
+    "the real early event sequence must release the original holder exactly once"
+  );
+  var allHolderIds = harness.calls.filter(function (call) {
+    return call.args && typeof call.args.completionHolderId === "string" &&
+      call.args.completionHolderId.length > 0;
+  }).map(function (call) {
+    return call.args.completionHolderId;
+  }).concat(harness.calls.filter(function (call) {
+    return call.cmd === "set_subagent_completion_hold";
+  }).map(function (call) {
+    return call.args.holderId;
+  }));
+  assert.deepStrictEqual(
+    Array.from(new Set(allHolderIds)),
+    [holderId],
+    "the real early event sequence must not mint a second completion holder"
+  );
+}
+
+async function queuedChatInputsStayCancelableAndFlushInFifoOrder() {
+  for (var bridgeKind of ["tauri", "web"]) {
+    var harness = createBridgeHarness(null, {
+      bridgeKind: bridgeKind,
+      setTimeout: function (callback) { return setImmediate(callback); },
+    });
+    var bridge = harness.bridge;
+    var sessionId = "chat-queued-fifo-" + bridgeKind;
+    var chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
+
+    function chatMessages() {
+      return harness.calls.filter(function (call) {
+        return call.cmd === chatCommand;
+      }).map(function (call) {
+        return call.args && call.args.message;
+      });
+    }
+
+    function queuedTexts() {
+      return Array.from(bridge.state.get("chat").queued || []).map(function (item) {
+        return item.text;
+      });
+    }
+
+    function holdCalls() {
+      return harness.calls.filter(function (call) {
+        return call.cmd === "set_subagent_completion_hold";
+      });
+    }
+
+    async function settleTerminalWork() {
+      for (var settleTick = 0; settleTick < 12; settleTick++) await tick();
+    }
+
+    await bridge.sessions.switchToSession(sessionId);
+    await bridge.chat.sendMessage("turn already running");
+    var initialTurnCall = harness.calls.find(function (call) {
+      return call.cmd === chatCommand && call.args.message === "turn already running";
+    });
+    var holderId = initialTurnCall && initialTurnCall.args.completionHolderId;
+    assert.deepStrictEqual(
+      chatMessages(),
+      ["turn already running"],
+      bridgeKind + " must invoke the engine for the initial idle send"
+    );
+    assert.ok(
+      typeof holderId === "string" && holderId.length > 0,
+      bridgeKind + " ordinary initial Send must atomically carry a completion holder"
+    );
+    assert.strictEqual(
+      bridge.state.get("chat").busy,
+      true,
+      bridgeKind + " initial send must leave the session busy until chat:done"
+    );
+    assert.strictEqual(
+      holdCalls().length,
+      0,
+      bridgeKind + " initial lease must be admitted by chat, not a racy standalone Hold"
+    );
+
+    await bridge.chat.sendMessage("cancel this queued input");
+    assert.deepStrictEqual(
+      chatMessages(),
+      ["turn already running"],
+      bridgeKind + " busy send must queue without invoking the engine"
+    );
+    assert.deepStrictEqual(
+      queuedTexts(),
+      ["cancel this queued input"],
+      bridgeKind + " busy send must remain visible as one queued input"
+    );
+    assert.strictEqual(
+      holdCalls().length,
+      0,
+      bridgeKind + " busy enqueue must reuse the turn-scoped holder without an extra Hold"
+    );
+
+    var queuedId = bridge.state.get("chat").queued[0].id;
+    bridge.chat.removeQueued(queuedId);
+    await tick();
+    await tick();
+    assert.deepStrictEqual(
+      queuedTexts(),
+      [],
+      bridgeKind + " removeQueued must remove the exact queued id"
+    );
+    assert.deepStrictEqual(
+      chatMessages(),
+      ["turn already running"],
+      bridgeKind + " removing a queued input must not invoke the engine"
+    );
+    assert.strictEqual(
+      holdCalls().filter(function (call) { return call.args.held === false; }).length,
+      0,
+      bridgeKind + " cancelling the last queued item must not release an active turn lease"
+    );
+
+    await bridge.chat.sendMessage("queued A");
+    await bridge.chat.sendMessage("queued B");
+    assert.deepStrictEqual(
+      queuedTexts(),
+      ["queued A", "queued B"],
+      bridgeKind + " must preserve local queue insertion order"
+    );
+    assert.deepStrictEqual(
+      chatMessages(),
+      ["turn already running"],
+      bridgeKind + " must not invoke either queued input before chat:done"
+    );
+    assert.strictEqual(
+      holdCalls().length,
+      0,
+      bridgeKind + " every busy enqueue in the same turn must reuse the original holder"
+    );
+
+    if (bridgeKind === "tauri") {
+      await harness.emit("remote_control:mobile_user_message", {
+        session_id: sessionId,
+        content: "remote queued C",
+        client_message_id: "remote-queued-c",
+      });
+      assert.deepStrictEqual(
+        queuedTexts(),
+        ["queued A", "queued B", "remote queued C"],
+        "tauri remote input must join the tail without overtaking the local queue"
+      );
+      assert.deepStrictEqual(
+        chatMessages(),
+        ["turn already running"],
+        "tauri remote input must not invoke while the local turn or queue is pending"
+      );
+    }
+
+    await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+    await settleTerminalWork();
+    assert.deepStrictEqual(
+      chatMessages(),
+      ["turn already running", "queued A"],
+      bridgeKind + " first chat:done must flush exactly the FIFO head"
+    );
+    assert.deepStrictEqual(
+      queuedTexts(),
+      bridgeKind === "tauri" ? ["queued B", "remote queued C"] : ["queued B"],
+      bridgeKind + " first chat:done must leave every later input queued"
+    );
+    assert.strictEqual(
+      holdCalls().filter(function (call) { return call.args.held === false; }).length,
+      0,
+      bridgeKind + " dispatching a queued head must retain the lease for that new active turn"
+    );
+
+    await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+    await settleTerminalWork();
+    assert.deepStrictEqual(
+      chatMessages(),
+      ["turn already running", "queued A", "queued B"],
+      bridgeKind + " second chat:done must flush only the next FIFO item"
+    );
+    assert.deepStrictEqual(
+      queuedTexts(),
+      bridgeKind === "tauri" ? ["remote queued C"] : [],
+      bridgeKind + " second chat:done must not skip or coalesce queued inputs"
+    );
+    assert.strictEqual(
+      holdCalls().filter(function (call) { return call.args.held === false; }).length,
+      0,
+      bridgeKind + " emptying the visible queue by Send admission must not release a busy turn"
+    );
+
+    if (bridgeKind === "tauri") {
+      await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+      await settleTerminalWork();
+      assert.deepStrictEqual(
+        chatMessages(),
+        ["turn already running", "queued A", "queued B", "remote queued C"],
+        "tauri remote input must dispatch only after both earlier local inputs"
+      );
+      assert.deepStrictEqual(queuedTexts(), [], "tauri queue must drain after the remote turn starts");
+      assert.strictEqual(
+        holdCalls().filter(function (call) { return call.args.held === false; }).length,
+        0,
+        "tauri final queued Send admission must retain the lease until its own terminal"
+      );
+    }
+
+    var finalQueuedText = bridgeKind === "tauri" ? "remote queued C" : "queued B";
+    var finalSend = harness.calls.find(function (call) {
+      return call.cmd === chatCommand && call.args.message === finalQueuedText;
+    });
+    assert.ok(finalSend, bridgeKind + " final queued turn must reach the engine");
+    var queuedTurnCalls = harness.calls.filter(function (call) {
+      return call.cmd === chatCommand && call.args.message !== "turn already running";
+    });
+    assert.strictEqual(
+      queuedTurnCalls.length,
+      bridgeKind === "tauri" ? 3 : 2,
+      bridgeKind + " must dispatch every queued ordinary input as its own turn"
+    );
+    assert.ok(
+      queuedTurnCalls.every(function (call) {
+        return call.args.completionHolderId === holderId;
+      }),
+      bridgeKind + " every queued ordinary Send must carry the initial stable holder"
+    );
+    assert.strictEqual(
+      finalSend.args.completionHolderId,
+      holderId,
+      bridgeKind + " every queued turn must replay the same idempotent Hold before Send"
+    );
+
+    await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+    await settleTerminalWork();
+    var holderControlCalls = holdCalls().filter(function (call) {
+      return call.args.holderId === holderId;
+    });
+    assert.strictEqual(
+      holderControlCalls.filter(function (call) { return call.args.held === false; }).length,
+      1,
+      bridgeKind + " must release the initial holder exactly once after the final queued turn terminates"
+    );
+    assert.ok(
+      holdCalls().every(function (call) { return call.args.holderId === holderId; }),
+      bridgeKind + " renewals and release must keep the one stable turn-scoped holder"
+    );
+    var finalSendIndex = harness.calls.map(function (call) {
+      return call.cmd === chatCommand && call.args.message === finalQueuedText;
+    }).lastIndexOf(true);
+    var finalReleaseIndex = harness.calls.map(function (call) {
+      return call.cmd === "set_subagent_completion_hold" &&
+        call.args.holderId === holderId && call.args.held === false;
+    }).lastIndexOf(true);
+    assert.ok(finalSendIndex >= 0 && finalReleaseIndex > finalSendIndex,
+      bridgeKind + " must linearize the final queued turn terminal after its Send before Release");
+  }
+}
+
+async function activeQueuedHeartbeatsNeverIssueStandaloneHold() {
+  for (var bridgeKind of ["tauri", "web"]) {
+    var harness = createBridgeHarness(null, {
+      bridgeKind: bridgeKind,
+      setTimeout: function (callback) { return setImmediate(callback); },
+    });
+    var bridge = harness.bridge;
+    var sessionId = "chat-active-heartbeat-" + bridgeKind;
+    var chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
+
+    function holdCalls() {
+      return harness.calls.filter(function (call) {
+        return call.cmd === "set_subagent_completion_hold";
+      });
+    }
+
+    async function settle() {
+      for (var settleTick = 0; settleTick < 16; settleTick++) await tick();
+    }
+
+    await bridge.sessions.switchToSession(sessionId);
+    await bridge.chat.sendMessage("active heartbeat turn");
+    var initialTurnCall = harness.calls.find(function (call) {
+      return call.cmd === chatCommand && call.args.message === "active heartbeat turn";
+    });
+    var holderId = initialTurnCall && initialTurnCall.args.completionHolderId;
+    assert.ok(holderId, bridgeKind + " heartbeat test needs an atomically admitted holder");
+
+    await bridge.chat.sendMessage("queued behind active heartbeat turn");
+    assert.strictEqual(bridge.state.get("chat").busy, true);
+    assert.strictEqual(bridge.state.get("chat").queued.length, 1);
+    assert.ok(
+      harness.activeIntervalCount(10000) > 0,
+      bridgeKind + " active ordinary turn must arm its completion heartbeat"
+    );
+
+    harness.fireIntervals(4, 10000);
+    await settle();
+    assert.strictEqual(
+      holdCalls().length,
+      0,
+      bridgeKind + " repeated heartbeat callbacks during active+queued work must not issue standalone Hold"
+    );
+
+    await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+    await settle();
+    var queuedTurnCall = harness.calls.find(function (call) {
+      return call.cmd === chatCommand &&
+        call.args.message === "queued behind active heartbeat turn";
+    });
+    assert.ok(queuedTurnCall, bridgeKind + " first terminal must dispatch the queued turn");
+    assert.strictEqual(
+      queuedTurnCall.args.completionHolderId,
+      holderId,
+      bridgeKind + " queued heartbeat turn must replay the original holder atomically with Send"
+    );
+    assert.strictEqual(
+      holdCalls().filter(function (call) { return call.args.held === false; }).length,
+      0,
+      bridgeKind + " queued Send admission must keep the holder until that turn terminates"
+    );
+
+    var controlCallCountBeforeActiveHeartbeat = holdCalls().length;
+    harness.fireIntervals(4, 10000);
+    await settle();
+    assert.strictEqual(
+      holdCalls().length,
+      controlCallCountBeforeActiveHeartbeat,
+      bridgeKind + " heartbeat callbacks during the queued active turn must remain side-effect free"
+    );
+
+    await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+    await settle();
+    assert.strictEqual(
+      holdCalls().filter(function (call) {
+        return call.args.holderId === holderId && call.args.held === false;
+      }).length,
+      1,
+      bridgeKind + " final terminal must release the original holder exactly once"
+    );
+    assert.ok(
+      holdCalls().every(function (call) { return call.args.holderId === holderId; }),
+      bridgeKind + " terminal control calls must never switch holder identity"
+    );
+    assert.strictEqual(
+      harness.activeIntervalCount(10000),
+      0,
+      bridgeKind + " releasing the final turn must clear its heartbeat interval"
+    );
+  }
+}
+
+async function busyInterjectionWaitsForInitialLeaseAdmission() {
+  for (var bridgeKind of ["tauri", "web"]) {
+    var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+    var bridge = harness.bridge;
+    var sessionId = "chat-pending-turn-lease-" + bridgeKind;
+    var chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
+    var initialAdmission = deferred();
+    harness.handlers[chatCommand] = function (args) {
+      if (args.message === "active turn") return initialAdmission.promise;
+      return null;
+    };
+
+    await bridge.sessions.switchToSession(sessionId);
+    var activeSend = bridge.chat.sendMessage("active turn");
+    await tick();
+    var initialTurnCall = harness.calls.find(function (call) {
+      return call.cmd === chatCommand && call.args.message === "active turn";
+    });
+    var holderId = initialTurnCall && initialTurnCall.args.completionHolderId;
+    assert.ok(holderId, bridgeKind + " pending initial Send must already carry its stable holder");
+
+    var enqueue = bridge.chat.sendMessage("queued behind pending admission");
+    await tick();
+    assert.deepStrictEqual(
+      Array.from(bridge.state.get("chat").queued || []),
+      [],
+      bridgeKind + " interjection must not become accepted before the atomic Hold→Send admission resolves"
+    );
+    assert.strictEqual(
+      harness.calls.filter(function (call) {
+        return call.cmd === "set_subagent_completion_hold";
+      }).length,
+      0,
+      bridgeKind + " a pending atomic chat admission must not be bypassed by a standalone Hold"
+    );
+
+    initialAdmission.resolve(null);
+    await activeSend;
+    await enqueue;
+    await tick();
+    assert.deepStrictEqual(
+      Array.from(bridge.state.get("chat").queued).map(function (item) { return item.text; }),
+      ["queued behind pending admission"],
+      bridgeKind + " interjection becomes visible only after the initial holder is established"
+    );
+    assert.strictEqual(
+      harness.calls.filter(function (call) {
+        return call.cmd === "set_subagent_completion_hold";
+      }).length,
+      0,
+      bridgeKind + " accepted interjection must reuse the holder from the initial chat command"
+    );
+
+    bridge.chat.removeQueued(bridge.state.get("chat").queued[0].id);
+    await tick();
+    await tick();
+    assert.strictEqual(
+      harness.calls.filter(function (call) {
+        return call.cmd === "set_subagent_completion_hold" &&
+          call.args.holderId === holderId && call.args.held === false;
+      }).length,
+      0,
+      bridgeKind + " cancel-last while the initial turn is active must retain its holder"
+    );
+
+    await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+    for (var settleTick = 0; settleTick < 12; settleTick++) await tick();
+    assert.strictEqual(
+      harness.calls.filter(function (call) {
+        return call.cmd === "set_subagent_completion_hold" &&
+          call.args.holderId === holderId && call.args.held === false;
+      }).length,
+      1,
+      bridgeKind + " the empty cancelled queue may release only after the active turn terminates"
+    );
+  }
+}
+
+async function completionBarrierPrecedesLocalTurnOwnership() {
+  for (var bridgeKind of ["tauri", "web"]) {
+    var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+    var bridge = harness.bridge;
+    var sessionId = "chat-completion-barrier-owner-" + bridgeKind;
+    var chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
+    var barrier = deferred();
+    harness.handlers.ensure_subagent_completion_hold_ready = function () {
+      return barrier.promise;
+    };
+
+    await bridge.sessions.switchToSession(sessionId);
+    var send = bridge.chat.sendMessage("barrier-gated turn");
+    for (var pendingTick = 0; pendingTick < 12; pendingTick++) await tick();
+
+    var ensureCalls = harness.calls.filter(function (call) {
+      return call.cmd === "ensure_subagent_completion_hold_ready";
+    });
+    assert.strictEqual(
+      ensureCalls.length,
+      1,
+      bridgeKind + " idle Send must wait on exactly one completion barrier"
+    );
+    var holderId = ensureCalls[0].args && ensureCalls[0].args.holderId;
+    assert.ok(holderId, bridgeKind + " completion barrier must carry a stable holder id");
+
+    var pendingState = bridge.state.get("chat");
+    assert.strictEqual(
+      pendingState.busy,
+      false,
+      bridgeKind + " must not enter optimistic busy state before the barrier confirms"
+    );
+    assert.ok(
+      !pendingState.chatItems.some(function (item) {
+        return item && item.type === "user" && item.text === "barrier-gated turn";
+      }),
+      bridgeKind + " must not render the optimistic user bubble before barrier confirmation"
+    );
+    assert.ok(
+      !pendingState.chatItems.some(function (item) {
+        return item && item.type === "assistant" && item.streaming;
+      }),
+      bridgeKind + " must not create the optimistic assistant before barrier confirmation"
+    );
+    assert.strictEqual(
+      harness.calls.filter(function (call) { return call.cmd === chatCommand; }).length,
+      0,
+      bridgeKind + " must not invoke chat before barrier confirmation"
+    );
+
+    barrier.resolve(true);
+    await send;
+    for (var acceptedTick = 0; acceptedTick < 4; acceptedTick++) await tick();
+
+    var chatCalls = harness.calls.filter(function (call) {
+      return call.cmd === chatCommand && call.args.message === "barrier-gated turn";
+    });
+    assert.strictEqual(
+      chatCalls.length,
+      1,
+      bridgeKind + " barrier confirmation must admit the user turn exactly once"
+    );
+    assert.strictEqual(
+      chatCalls[0].args.completionHolderId,
+      holderId,
+      bridgeKind + " confirmed Send must reuse the exact barrier holder"
+    );
+    var acceptedState = bridge.state.get("chat");
+    assert.strictEqual(acceptedState.busy, true);
+    assert.ok(
+      acceptedState.chatItems.some(function (item) {
+        return item && item.type === "user" && item.text === "barrier-gated turn";
+      }),
+      bridgeKind + " confirmed Send must render its user bubble"
+    );
+    assert.strictEqual(
+      acceptedState.chatItems.filter(function (item) {
+        return item && item.type === "assistant" && item.streaming;
+      }).length,
+      1,
+      bridgeKind + " confirmed Send must create one optimistic assistant"
+    );
+
+    // localTurnOwned is intentionally private buffer state. Probe it through
+    // the event boundary: a runtime turn arriving while the barrier is still
+    // pending must be applied immediately, not deferred behind a false local
+    // ownership claim.
+    var ownershipHarness = createBridgeHarness(null, {
+      bridgeKind: bridgeKind,
+      includeEventName: true,
+    });
+    var ownershipBridge = ownershipHarness.bridge;
+    var ownershipSessionId = "chat-completion-barrier-runtime-wins-" + bridgeKind;
+    var ownershipBarrier = deferred();
+    ownershipHarness.handlers.ensure_subagent_completion_hold_ready = function () {
+      return ownershipBarrier.promise;
+    };
+    await ownershipBridge.sessions.switchToSession(ownershipSessionId);
+    var losingSend = ownershipBridge.chat.sendMessage("local turn waiting at barrier");
+    for (var ownershipTick = 0; ownershipTick < 8; ownershipTick++) await tick();
+    await ownershipHarness.emit("chat:user_message", {
+      session_id: ownershipSessionId,
+      content: "runtime turn wins pending boundary",
+      operation: "append",
+    });
+    assert.ok(
+      ownershipBridge.state.get("chat").chatItems.some(function (item) {
+        return item && item.type === "user" && item.text === "runtime turn wins pending boundary";
+      }),
+      bridgeKind + " pending barrier must not defer a runtime turn as locally owned"
+    );
+    ownershipBarrier.resolve(true);
+    await assert.rejects(losingSend,
+      bridgeKind + " local Send must lose if a runtime turn wins during its barrier");
+    assert.strictEqual(
+      ownershipHarness.calls.filter(function (call) {
+        return call.cmd === chatCommand && call.args.message === "local turn waiting at barrier";
+      }).length,
+      0,
+      bridgeKind + " a runtime winner during the barrier must prevent the stale local chat invoke"
+    );
+  }
+}
+
+async function admissionGateFailuresAreVisibleAndFailClosed() {
+  for (var bridgeKind of ["tauri", "web"]) {
+    var chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
+    var idleHarness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+    var idleBridge = idleHarness.bridge;
+    var idleSessionId = "chat-admission-error-idle-" + bridgeKind;
+    idleHarness.handlers.ensure_subagent_completion_hold_ready = function () {
+      throw new Error("completion barrier unavailable");
+    };
+
+    await idleBridge.sessions.switchToSession(idleSessionId);
+    await idleBridge.chat.sendMessage("must stay outside the turn");
+    for (var idleTick = 0; idleTick < 8; idleTick++) await tick();
+
+    var idleState = idleBridge.state.get("chat");
+    assert.strictEqual(idleState.busy, false,
+      bridgeKind + " barrier rejection must not claim local busy state");
+    assert.strictEqual(
+      idleHarness.calls.filter(function (call) { return call.cmd === chatCommand; }).length,
+      0,
+      bridgeKind + " barrier rejection must not invoke chat"
+    );
+    assert.ok(
+      !idleState.chatItems.some(function (item) {
+        return item && item.type === "user" && item.text === "must stay outside the turn";
+      }),
+      bridgeKind + " barrier rejection must not create an optimistic user bubble"
+    );
+    assert.strictEqual(
+      idleState.chatItems.filter(function (item) {
+        return item && item.type === "assistant" && item.streaming;
+      }).length,
+      0,
+      bridgeKind + " barrier rejection must not create an optimistic assistant"
+    );
+    assert.strictEqual(
+      idleState.chatItems.filter(function (item) { return item && item.turnErrorNotice; }).length,
+      1,
+      bridgeKind + " barrier rejection must surface exactly one user-visible error"
+    );
+    assert.ok(
+      idleState.chatItems.some(function (item) {
+        return item && item.turnErrorNotice && /completion barrier unavailable/.test(item.text);
+      }),
+      bridgeKind + " barrier rejection must preserve the backend reason"
+    );
+    // Web keeps its pre-barrier FIFO chip visible; another public Send retries
+    // the failed promotion. Tauri starts another gated idle admission. Neither
+    // host may stack an identical transient system error.
+    await idleBridge.chat.sendMessage("second gated input");
+    for (var retryTick = 0; retryTick < 4; retryTick++) await tick();
+    assert.strictEqual(
+      idleBridge.state.get("chat").chatItems.filter(function (item) {
+        return item && item.turnErrorNotice;
+      }).length,
+      1,
+      bridgeKind + " repeated barrier failures must not duplicate system errors"
+    );
+
+    var busyHarness = createBridgeHarness(null, {
+      bridgeKind: bridgeKind,
+      includeEventName: true,
+    });
+    var busyBridge = busyHarness.bridge;
+    var busySessionId = "chat-admission-error-busy-" + bridgeKind;
+    busyHarness.handlers.set_subagent_completion_hold = function () {
+      throw new Error("queued hold unavailable");
+    };
+    await busyBridge.sessions.switchToSession(busySessionId);
+    await busyHarness.emit("chat:turn_started", { session_id: busySessionId });
+    assert.strictEqual(busyBridge.state.get("chat").busy, true);
+
+    await busyBridge.chat.sendMessage("must not enter the fifo");
+    await busyBridge.chat.sendMessage("must still not enter the fifo");
+    for (var busyTick = 0; busyTick < 4; busyTick++) await tick();
+    var busyState = busyBridge.state.get("chat");
+    assert.deepStrictEqual(Array.from(busyState.queued || []), [],
+      bridgeKind + " input without an accepted Hold must not be reported as queued");
+    assert.strictEqual(busyState.busy, true,
+      bridgeKind + " failed interjection admission must not mutate the active turn");
+    assert.strictEqual(
+      busyHarness.calls.filter(function (call) { return call.cmd === chatCommand; }).length,
+      0,
+      bridgeKind + " failed Hold must not bypass FIFO with a direct chat call"
+    );
+    assert.strictEqual(
+      busyState.chatItems.filter(function (item) { return item && item.turnErrorNotice; }).length,
+      1,
+      bridgeKind + " repeated Hold failures must surface one deduplicated system error"
+    );
+    assert.ok(
+      busyState.chatItems.some(function (item) {
+        return item && item.turnErrorNotice && /queued hold unavailable/.test(item.text);
+      }),
+      bridgeKind + " Hold rejection must be visible to the user"
+    );
+  }
+}
+
+async function directKnownSendFailureReleasesIdleHolderExactlyOnce() {
+  for (var bridgeKind of ["tauri", "web"]) {
+    var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+    var bridge = harness.bridge;
+    var expectedSessionId = "chat-direct-known-failure-" + bridgeKind;
+    var chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
+    function createdSession() {
+      return { id: expectedSessionId, title: "New chat" };
+    }
+    harness.handlers.create_session = createdSession;
+    harness.handlers.web_access_create_session = createdSession;
+    harness.handlers.list_sessions = function () {
+      return [{ id: expectedSessionId, title: "New chat", message_count: 0 }];
+    };
+    harness.handlers[chatCommand] = function (args) {
+      if (args.message === "materialize direct-failure session") return null;
+      throw new Error("known direct admission failure");
+    };
+
+    await bridge.sessions.createNewSession();
+    await bridge.chat.sendMessage("materialize direct-failure session");
+    var sessionId = bridge.state.getMany(["sessions", "chat"]).activeSessionId;
+    assert.strictEqual(sessionId, expectedSessionId,
+      bridgeKind + " direct-failure setup must materialize the expected session");
+    await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+    for (var setupTick = 0; setupTick < 8; setupTick++) await tick();
+    var result = await bridge.chat.sendMessageToSession(
+      sessionId,
+      "direct message that will fail",
+    );
+    assert.strictEqual(result.accepted, true);
+    assert.strictEqual(result.queued, false);
+    var completion = await result.completion;
+    assert.strictEqual(completion.ok, false,
+      bridgeKind + " direct known failure must settle its public completion without rejection");
+    for (var settleTick = 0; settleTick < 8; settleTick++) await tick();
+
+    var ensureCall = harness.calls.find(function (call) {
+      return call.cmd === "ensure_subagent_completion_hold_ready";
+    });
+    assert.ok(ensureCall && ensureCall.args.holderId,
+      bridgeKind + " direct Send must establish a concrete holder before chat admission");
+    var releases = harness.calls.filter(function (call) {
+      return call.cmd === "set_subagent_completion_hold" &&
+        call.args.holderId === ensureCall.args.holderId && call.args.held === false;
+    });
+    assert.strictEqual(releases.length, 1,
+      bridgeKind + " direct known failure must release its idle holder exactly once");
+    assert.strictEqual(
+      bridge.state.get("chat").chatItems.filter(function (item) {
+        return item && item.turnErrorNotice;
+      }).length,
+      1,
+      bridgeKind + " direct known failure must surface one error"
+    );
+  }
+}
+
+async function queuedCompletionBarrierIsCancelableAndFailClosed() {
+  for (var bridgeKind of ["tauri", "web"]) {
+    var chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
+
+    async function createQueuedBarrierHarness(suffix, queuedText) {
+      var harness = createBridgeHarness(null, {
+        bridgeKind: bridgeKind,
+        setTimeout: function (callback) { return setImmediate(callback); },
+      });
+      var bridge = harness.bridge;
+      var sessionId = "chat-queued-completion-barrier-" + suffix + "-" + bridgeKind;
+      await bridge.sessions.switchToSession(sessionId);
+      await bridge.chat.sendMessage("active turn " + suffix);
+      var activeCall = harness.calls.find(function (call) {
+        return call.cmd === chatCommand && call.args.message === "active turn " + suffix;
+      });
+      assert.ok(activeCall && activeCall.args.completionHolderId,
+        bridgeKind + " queued barrier setup must establish one holder");
+      await bridge.chat.sendMessage(queuedText);
+      var queued = bridge.state.get("chat").queued;
+      assert.strictEqual(queued.length, 1);
+      return {
+        harness: harness,
+        bridge: bridge,
+        sessionId: sessionId,
+        holderId: activeCall.args.completionHolderId,
+        queuedId: queued[0].id,
+      };
+    }
+
+    async function waitForQueuedBarrier(record, previousEnsureCount) {
+      for (var barrierTick = 0; barrierTick < 40; barrierTick++) {
+        if (record.harness.calls.filter(function (call) {
+          return call.cmd === "ensure_subagent_completion_hold_ready";
+        }).length > previousEnsureCount) return;
+        await tick();
+      }
+      assert.fail(bridgeKind + " queued flush did not reach the completion barrier");
+    }
+
+    // A confirmed queued head stays visible and unowned while waiting, then
+    // crosses the barrier exactly once with the holder established by the
+    // preceding active turn.
+    var admittedText = "queued head after barrier";
+    var admitted = await createQueuedBarrierHarness("admit", admittedText);
+    var admittedBarrier = deferred();
+    var admittedEnsureBefore = admitted.harness.calls.filter(function (call) {
+      return call.cmd === "ensure_subagent_completion_hold_ready";
+    }).length;
+    admitted.harness.handlers.ensure_subagent_completion_hold_ready = function () {
+      return admittedBarrier.promise;
+    };
+    await admitted.harness.emit("chat:done", {
+      session_id: admitted.sessionId,
+      status: "Completed",
+    });
+    await waitForQueuedBarrier(admitted, admittedEnsureBefore);
+
+    var admittedPending = admitted.bridge.state.get("chat");
+    assert.deepStrictEqual(
+      Array.from(admittedPending.queued).map(function (item) { return item.text; }),
+      [admittedText],
+      bridgeKind + " queued head must remain visible while its barrier is pending"
+    );
+    assert.strictEqual(admittedPending.busy, false,
+      bridgeKind + " pending queued barrier must remain idle until Send admission");
+    assert.ok(
+      !admittedPending.chatItems.some(function (item) {
+        return item && item.type === "user" && item.text === admittedText;
+      }),
+      bridgeKind + " pending queued barrier must not create an optimistic user bubble"
+    );
+    assert.ok(
+      !admittedPending.chatItems.some(function (item) {
+        return item && item.type === "assistant" && item.streaming;
+      }),
+      bridgeKind + " pending queued barrier must not create an optimistic assistant"
+    );
+    assert.strictEqual(
+      admitted.harness.calls.filter(function (call) {
+        return call.cmd === chatCommand && call.args.message === admittedText;
+      }).length,
+      0,
+      bridgeKind + " pending queued barrier must not invoke chat"
+    );
+
+    var admittedEnsure = admitted.harness.calls.filter(function (call) {
+      return call.cmd === "ensure_subagent_completion_hold_ready";
+    }).slice(-1)[0];
+    assert.strictEqual(admittedEnsure.args.holderId, admitted.holderId,
+      bridgeKind + " queued barrier must reuse the active turn holder");
+    admittedBarrier.resolve(true);
+    for (var admitTick = 0; admitTick < 20; admitTick++) await tick();
+    var admittedCalls = admitted.harness.calls.filter(function (call) {
+      return call.cmd === chatCommand && call.args.message === admittedText;
+    });
+    assert.strictEqual(admittedCalls.length, 1,
+      bridgeKind + " confirmed queued barrier must invoke its head exactly once");
+    assert.strictEqual(admittedCalls[0].args.completionHolderId, admitted.holderId,
+      bridgeKind + " confirmed queued Send must preserve the original holder");
+    assert.deepStrictEqual(Array.from(admitted.bridge.state.get("chat").queued), []);
+    assert.strictEqual(admitted.bridge.state.get("chat").busy, true,
+      bridgeKind + " only a confirmed queued Send may enter local busy state");
+
+    // Cancellation is allowed while the two-phase barrier is pending. Its
+    // eventual confirmation must re-check FIFO identity instead of sending a
+    // user request that no longer exists.
+    var cancelledText = "cancel during barrier";
+    var cancelled = await createQueuedBarrierHarness("cancel", cancelledText);
+    var cancelledBarrier = deferred();
+    var cancelledEnsureBefore = cancelled.harness.calls.filter(function (call) {
+      return call.cmd === "ensure_subagent_completion_hold_ready";
+    }).length;
+    cancelled.harness.handlers.ensure_subagent_completion_hold_ready = function () {
+      return cancelledBarrier.promise;
+    };
+    await cancelled.harness.emit("chat:done", {
+      session_id: cancelled.sessionId,
+      status: "Completed",
+    });
+    await waitForQueuedBarrier(cancelled, cancelledEnsureBefore);
+    cancelled.bridge.chat.removeQueued(cancelled.queuedId);
+    assert.deepStrictEqual(Array.from(cancelled.bridge.state.get("chat").queued), [],
+      bridgeKind + " pending barrier queue chip must remain cancelable");
+    cancelledBarrier.resolve(true);
+    for (var cancelTick = 0; cancelTick < 20; cancelTick++) await tick();
+    assert.strictEqual(
+      cancelled.harness.calls.filter(function (call) {
+        return call.cmd === chatCommand && call.args.message === cancelledText;
+      }).length,
+      0,
+      bridgeKind + " resolving a cancelled barrier must not invoke chat"
+    );
+    var cancelledState = cancelled.bridge.state.get("chat");
+    assert.ok(
+      !cancelledState.chatItems.some(function (item) {
+        return item && item.type === "user" && item.text === cancelledText;
+      }),
+      bridgeKind + " cancelled queued barrier must not leave an optimistic user bubble"
+    );
+    assert.ok(
+      !cancelledState.chatItems.some(function (item) {
+        return item && item.type === "assistant" && item.streaming;
+      }),
+      bridgeKind + " cancelled queued barrier must not leave an optimistic assistant"
+    );
+    await cancelled.harness.emit("chat:user_message", {
+      session_id: cancelled.sessionId,
+      content: "remote turn after cancelled barrier",
+      operation: "append",
+    });
+    assert.ok(
+      cancelled.bridge.state.get("chat").chatItems.some(function (item) {
+        return item && item.type === "user" && item.text === "remote turn after cancelled barrier";
+      }),
+      bridgeKind + " cancelled barrier must not defer a later remote turn as locally owned"
+    );
+
+    // Barrier failure is outcome-known and fail-closed: keep the exact head
+    // available for retry, without pretending that the renderer owns a turn.
+    var failedText = "retain after barrier failure";
+    var failed = await createQueuedBarrierHarness("failure", failedText);
+    var failedEnsureBefore = failed.harness.calls.filter(function (call) {
+      return call.cmd === "ensure_subagent_completion_hold_ready";
+    }).length;
+    failed.harness.handlers.ensure_subagent_completion_hold_ready = function () {
+      throw new Error("deterministic barrier failure");
+    };
+    await failed.harness.emit("chat:done", {
+      session_id: failed.sessionId,
+      status: "Completed",
+    });
+    await waitForQueuedBarrier(failed, failedEnsureBefore);
+    for (var failureTick = 0; failureTick < 20; failureTick++) await tick();
+
+    var failedState = failed.bridge.state.get("chat");
+    assert.deepStrictEqual(
+      Array.from(failedState.queued).map(function (item) { return { id: item.id, text: item.text }; }),
+      [{ id: failed.queuedId, text: failedText }],
+      bridgeKind + " failed queued barrier must retain the exact FIFO head"
+    );
+    assert.strictEqual(failedState.busy, false,
+      bridgeKind + " failed queued barrier must remain idle for a later retry");
+    assert.strictEqual(
+      failed.harness.calls.filter(function (call) {
+        return call.cmd === chatCommand && call.args.message === failedText;
+      }).length,
+      0,
+      bridgeKind + " failed queued barrier must not invoke chat"
+    );
+    assert.ok(
+      !failedState.chatItems.some(function (item) {
+        return item && item.type === "user" && item.text === failedText;
+      }),
+      bridgeKind + " failed queued barrier must not create an optimistic user bubble"
+    );
+    assert.ok(
+      !failedState.chatItems.some(function (item) {
+        return item && item.type === "assistant" && item.streaming;
+      }),
+      bridgeKind + " failed queued barrier must not create an optimistic assistant"
+    );
+    await failed.harness.emit("chat:user_message", {
+      session_id: failed.sessionId,
+      content: "remote turn after failed barrier",
+      operation: "append",
+    });
+    assert.ok(
+      failed.bridge.state.get("chat").chatItems.some(function (item) {
+        return item && item.type === "user" && item.text === "remote turn after failed barrier";
+      }),
+      bridgeKind + " failed barrier must not defer a later remote turn as locally owned"
+    );
+  }
+}
+
+async function failedQueuedSendRestoresHeadWithoutReleasingHold() {
+  for (var bridgeKind of ["tauri", "web"]) {
+    var harness = createBridgeHarness(null, {
+      bridgeKind: bridgeKind,
+      setTimeout: function (callback) { return setImmediate(callback); },
+    });
+    var bridge = harness.bridge;
+    var sessionId = "chat-held-send-failure-" + bridgeKind;
+    var chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
+
+    await bridge.sessions.switchToSession(sessionId);
+    await bridge.chat.sendMessage("active turn");
+    var initialTurnCall = harness.calls.find(function (call) {
+      return call.cmd === chatCommand && call.args.message === "active turn";
+    });
+    var holderId = initialTurnCall && initialTurnCall.args.completionHolderId;
+    assert.ok(holderId, bridgeKind + " initial turn must establish the holder used by retries");
+    await bridge.chat.sendMessage("retry me");
+    assert.strictEqual(
+      harness.calls.filter(function (call) {
+        return call.cmd === "set_subagent_completion_hold";
+      }).length,
+      0,
+      bridgeKind + " queueing a retry must not acquire a second holder"
+    );
+    harness.handlers[chatCommand] = function (args) {
+      if (args.message === "retry me") throw new Error("deterministic admission failure");
+      return null;
+    };
+
+    await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+    for (var settleTick = 0; settleTick < 12; settleTick++) await tick();
+    assert.deepStrictEqual(
+      Array.from(bridge.state.get("chat").queued).map(function (item) { return item.text; }),
+      ["retry me"],
+      bridgeKind + " failed send must restore the exact FIFO head"
+    );
+    assert.strictEqual(
+      harness.calls.filter(function (call) {
+        return call.cmd === "set_subagent_completion_hold" &&
+          call.args.holderId === holderId && call.args.held === false;
+      }).length,
+      0,
+      bridgeKind + " failed SendMessage admission must not release the holder"
+    );
+    var failedSend = harness.calls.find(function (call) {
+      return call.cmd === chatCommand && call.args.message === "retry me";
+    });
+    assert.ok(failedSend, bridgeKind + " the queued FIFO head must attempt one Send");
+    assert.strictEqual(
+      failedSend.args.completionHolderId,
+      holderId,
+      bridgeKind + " a queued retry must replay the same holder during Send admission"
+    );
+    assert.ok(
+      harness.calls.filter(function (call) {
+        return call.cmd === "set_subagent_completion_hold";
+      }).every(function (call) { return call.args.holderId === holderId; }),
+      bridgeKind + " failed queued Send must retain the original holder identity"
+    );
+
+    bridge.chat.removeQueued(bridge.state.get("chat").queued[0].id);
+    await tick();
+    await tick();
+    assert.strictEqual(
+      harness.calls.filter(function (call) {
+        return call.cmd === "set_subagent_completion_hold" &&
+          call.args.holderId === holderId && call.args.held === false;
+      }).length,
+      1,
+      bridgeKind + " cancelling the restored idle head must release the retained holder exactly once"
+    );
+  }
+}
+
+async function webOutcomeUnknownRetainsStableCancelableFifoHead() {
+  var harness = createBridgeHarness(null, { bridgeKind: "web" });
+  var bridge = harness.bridge;
+  var sessionId = "chat-web-outcome-unknown-fifo";
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: sessionId, title: "Outcome unknown", message_count: 0 },
+      messages: [],
+      artifacts: [],
+      transcript_revision: "revision-before-uncertain-a",
+    };
+  };
+  harness.handlers.web_access_chat = function (args) {
+    if (args.message !== "uncertain A") return null;
+    var error = new Error("relay response timed out after admission may have happened");
+    error.code = "rpc_timeout";
+    throw error;
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("uncertain A");
+
+  var unknownState = bridge.state.get("chat");
+  assert.strictEqual(unknownState.busy, false,
+    "ambiguous Web admission must roll back optimistic busy state");
+  assert.strictEqual(unknownState.queued.length, 1,
+    "the exact logical input must return to the FIFO head");
+  var uncertain = unknownState.queued[0];
+  assert.strictEqual(uncertain.text, "uncertain A");
+  assert.strictEqual(uncertain.submissionState, "uncertain");
+  assert.ok(/^chat_turn_/.test(String(uncertain.rpcRequestId || "")),
+    "ordinary Web queue items must own a stable Relay request id");
+  assert.ok(String(uncertain.displayText).indexOf("发送结果未知") >= 0,
+    "the cancelable queue chip must state that its outcome is unknown");
+  var firstCall = harness.calls.find(function (call) {
+    return call.cmd === "web_access_chat" && call.args.message === "uncertain A";
+  });
+  assert.ok(firstCall);
+  assert.strictEqual(firstCall.requestId, uncertain.rpcRequestId,
+    "web_access_chat must use the request id stored on the logical queue item");
+  assert.strictEqual(
+    unknownState.chatItems.filter(function (item) {
+      return item && item.type === "user" && item.text === "uncertain A";
+    }).length,
+    0,
+    "an unknown outcome must not leave a second optimistic user turn"
+  );
+
+  await bridge.chat.sendMessage("queued B");
+  for (var blockedTick = 0; blockedTick < 8; blockedTick++) await tick();
+  var blockedQueue = bridge.state.get("chat").queued;
+  assert.deepStrictEqual(
+    Array.from(blockedQueue).map(function (item) { return item.text; }),
+    ["uncertain A", "queued B"],
+    "later ordinary input must remain behind the uncertain head"
+  );
+  var queuedB = blockedQueue[1];
+  assert.notStrictEqual(queuedB.rpcRequestId, uncertain.rpcRequestId,
+    "different logical inputs must never share a Relay request id");
+  harness.fireIntervals(2, 10000);
+  for (var heartbeatTick = 0; heartbeatTick < 4; heartbeatTick++) await tick();
+  assert.strictEqual(
+    harness.calls.filter(function (call) {
+      return call.cmd === "web_access_chat" && call.args.message === "uncertain A";
+    }).length,
+    1,
+    "heartbeats and later sends must never automatically replay an ambiguous input"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) {
+      return call.cmd === "web_access_chat" && call.args.message === "queued B";
+    }).length,
+    0,
+    "an uncertain head must block later FIFO promotion"
+  );
+
+  bridge.chat.removeQueued(uncertain.id);
+  for (var cancelTick = 0; cancelTick < 16; cancelTick++) await tick();
+  var promotedB = harness.calls.filter(function (call) {
+    return call.cmd === "web_access_chat" && call.args.message === "queued B";
+  });
+  assert.strictEqual(promotedB.length, 1,
+    "explicitly cancelling the uncertain head must promote the next FIFO item once");
+  assert.strictEqual(promotedB[0].requestId, queuedB.rpcRequestId,
+    "promotion must keep the next item's original stable request id");
+  assert.strictEqual(bridge.state.get("chat").queued.length, 0);
+  assert.strictEqual(bridge.state.get("chat").busy, true);
+}
+
+async function webAuthoritativeAdmissionAndTerminalSettleAmbiguousRpc() {
+  var harness = createBridgeHarness(null, { bridgeKind: "web" });
+  var bridge = harness.bridge;
+  var sessionId = "chat-web-authoritative-ambiguous-settlement";
+  var admission = deferred();
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: sessionId, title: "Exact settlement", message_count: 0 },
+      messages: [],
+      artifacts: [],
+      transcript_revision: "revision-before-exact-turn",
+    };
+  };
+  harness.handlers.web_access_chat = function () { return admission.promise; };
+
+  await bridge.sessions.switchToSession(sessionId);
+  var send = bridge.chat.sendMessage("exact admitted turn");
+  for (var invokeTick = 0; invokeTick < 12; invokeTick++) {
+    if (harness.calls.some(function (call) { return call.cmd === "web_access_chat"; })) break;
+    await tick();
+  }
+  var chatCall = harness.calls.find(function (call) { return call.cmd === "web_access_chat"; });
+  assert.ok(chatCall && chatCall.requestId,
+    "pending ordinary Web admission must already carry its stable request id");
+
+  await harness.emit("chat:user_message", {
+    session_id: sessionId,
+    content: "exact admitted turn",
+    operation: "append",
+    base_transcript_revision: "revision-before-exact-turn",
+  });
+  await harness.emit("chat:delta", {
+    session_id: sessionId,
+    text: "authoritative answer",
+  });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Completed",
+  });
+  var timeout = new Error("RPC reply was lost after the terminal event");
+  timeout.code = "rpc_timed_out";
+  admission.reject(timeout);
+  await send;
+  for (var settleTick = 0; settleTick < 8; settleTick++) await tick();
+
+  var settled = bridge.state.get("chat");
+  assert.strictEqual(settled.busy, false,
+    "an exact admission followed by its terminal must stay terminal after RPC ambiguity");
+  assert.strictEqual(settled.queued.length, 0,
+    "authoritative events must settle the logical item instead of resurrecting it as uncertain");
+  assert.strictEqual(
+    settled.chatItems.filter(function (item) {
+      return item && item.type === "user" && item.text === "exact admitted turn";
+    }).length,
+    1,
+    "terminal-before-RPC ordering must retain exactly one user turn"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "web_access_chat"; }).length,
+    1,
+    "settlement through authority events must not invoke a cached response a second time"
+  );
+}
+
+async function webPendingAdmissionRenewsCompletionHoldOutsideFlushChain() {
+  var harness = createBridgeHarness(null, { bridgeKind: "web" });
+  var bridge = harness.bridge;
+  var sessionId = "chat-web-pending-admission-heartbeat";
+  var admission = deferred();
+  harness.handlers.web_access_chat = function () { return admission.promise; };
+
+  await bridge.sessions.switchToSession(sessionId);
+  var send = bridge.chat.sendMessage("slow attachment admission");
+  for (var invokeTick = 0; invokeTick < 12; invokeTick++) {
+    if (harness.calls.some(function (call) { return call.cmd === "web_access_chat"; })) break;
+    await tick();
+  }
+  var chatCall = harness.calls.find(function (call) { return call.cmd === "web_access_chat"; });
+  assert.ok(chatCall && chatCall.args.completionHolderId);
+  assert.strictEqual(bridge.state.get("chat").busy, true);
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "set_subagent_completion_hold"; }).length,
+    0,
+    "the barrier should establish the holder before the first heartbeat"
+  );
+
+  harness.fireIntervals(1, 10000);
+  for (var renewalTick = 0; renewalTick < 4; renewalTick++) await tick();
+  var pendingRenewals = harness.calls.filter(function (call) {
+    return call.cmd === "set_subagent_completion_hold" &&
+      call.args.holderId === chatCall.args.completionHolderId && call.args.held === true;
+  });
+  assert.strictEqual(pendingRenewals.length, 1,
+    "a pending admission must renew directly even while flushQueued owns the command chain");
+
+  admission.resolve(null);
+  await send;
+  var renewalCountAfterAdmission = harness.calls.filter(function (call) {
+    return call.cmd === "set_subagent_completion_hold" && call.args.held === true;
+  }).length;
+  harness.fireIntervals(1, 10000);
+  for (var busyTick = 0; busyTick < 4; busyTick++) await tick();
+  assert.strictEqual(
+    harness.calls.filter(function (call) {
+      return call.cmd === "set_subagent_completion_hold" && call.args.held === true;
+    }).length,
+    renewalCountAfterAdmission,
+    "once admission resolves, ordinary busy time must stop renewing the holder"
+  );
+}
+
+async function webFirstTurnAmbiguousRetryKeepsRequestIdentity() {
+  for (var errorCode of ["rpc_timeout", "rpc_timed_out", "outcome_unknown"]) {
+    var harness = createBridgeHarness(null, {
+      bridgeKind: "web",
+      webInvokableCommands: ["web_access_create_session_and_chat"],
+    });
+    var bridge = harness.bridge;
+    harness.handlers.web_access_create_session_and_chat = function () {
+      var error = new Error("ambiguous first-turn result");
+      error.code = errorCode;
+      throw error;
+    };
+
+    await bridge.chat.sendMessage("ambiguous first turn " + errorCode);
+    for (var firstTick = 0; firstTick < 8; firstTick++) await tick();
+    var firstTurnCalls = harness.calls.filter(function (call) {
+      return call.cmd === "web_access_create_session_and_chat";
+    });
+    assert.strictEqual(firstTurnCalls.length, 1);
+    var firstTurnItem = bridge.state.get("chat").chatItems.find(function (item) {
+      return item && item.clientMessageId;
+    });
+    assert.ok(firstTurnItem);
+    assert.strictEqual(firstTurnItem.deliveryState, "unknown",
+      errorCode + " must be presented as outcome-unknown, without a normal resend action");
+
+    bridge.chat.retryFirstTurn(firstTurnItem.clientMessageId);
+    for (var retryTick = 0; retryTick < 8; retryTick++) await tick();
+    firstTurnCalls = harness.calls.filter(function (call) {
+      return call.cmd === "web_access_create_session_and_chat";
+    });
+    assert.strictEqual(firstTurnCalls.length, 2);
+    assert.strictEqual(firstTurnCalls[1].requestId, firstTurnCalls[0].requestId,
+      errorCode + " must never mint a new Relay id for the same ambiguous first turn");
+  }
 }
 
 async function completedTurnUsesCommittedRevisionAsAuthority() {
@@ -4484,7 +5992,6 @@ Promise.resolve()
   .then(scheduledRunNavigationBehavior)
   .then(scheduledRunUnreadBehavior)
   .then(openingRunningMarksBusyBeforeHydration)
-  .then(followupQueuedUntilScheduledInitialTurnTerminal)
   .then(terminalEventWinsStaleRunningOpen)
   .then(completedRunReopenPreservesStreamingFollowup)
   .then(scheduledDoneBeforeBufferCreatesTerminalTombstone)
@@ -4494,6 +6001,21 @@ Promise.resolve()
   .then(remoteInterruptedTurnKeepsItsDisplayPosition)
   .then(interruptedTurnWithoutUserItemDropsPartial)
   .then(localCompletedTurnNeverBlocksTheNextMessage)
+  .then(webFirstTurnTerminalBeforeRpcResponseReleasesLease)
+  .then(webFirstTurnRealEventOrderHydratesBeforeRpcResponse)
+  .then(queuedChatInputsStayCancelableAndFlushInFifoOrder)
+  .then(activeQueuedHeartbeatsNeverIssueStandaloneHold)
+  .then(busyInterjectionWaitsForInitialLeaseAdmission)
+  .then(completionBarrierPrecedesLocalTurnOwnership)
+  .then(admissionGateFailuresAreVisibleAndFailClosed)
+  .then(directKnownSendFailureReleasesIdleHolderExactlyOnce)
+  .then(queuedCompletionBarrierIsCancelableAndFailClosed)
+  .then(failedQueuedSendRestoresHeadWithoutReleasingHold)
+  .then(webOutcomeUnknownRetainsStableCancelableFifoHead)
+  .then(webAuthoritativeAdmissionAndTerminalSettleAmbiguousRpc)
+  .then(webPendingAdmissionRenewsCompletionHoldOutsideFlushChain)
+  .then(webFirstTurnAmbiguousRetryKeepsRequestIdentity)
+  .then(followupQueuedUntilScheduledInitialTurnTerminal)
   .then(completedTurnWaitsForAssistantInAuthoritySnapshot)
   .then(completedTurnUsesCommittedRevisionAsAuthority)
   .then(completedTurnKeepsWarningWhenRevisionMismatches)

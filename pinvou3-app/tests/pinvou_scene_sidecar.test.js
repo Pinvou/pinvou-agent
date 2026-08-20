@@ -26,6 +26,8 @@ function createFeature(options = {}) {
   const sandbox = {
     window: { __PINVOU_TAURI_BRIDGE_FEATURES__: {} },
     console,
+    setInterval() { return 0; },
+    clearInterval() {},
   };
   vm.runInNewContext(source, sandbox, { filename: 'bridge/chat.js' });
   const factory = sandbox.window.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
@@ -48,6 +50,10 @@ function createFeature(options = {}) {
     state,
     invoke(command, args) {
       invokes.push({ command, args });
+      if (command === 'ensure_subagent_completion_hold_ready' ||
+          command === 'set_subagent_completion_hold') {
+        return Promise.resolve(true);
+      }
       if (options.failChat && command === 'chat') {
         return Promise.reject(new Error('admission failed'));
       }
@@ -172,8 +178,7 @@ function rec(name, pass, detail = '') {
       { id: 1, text: 'payload 1', displayText: '第一条\n\n📎 ["first.pdf"]', attachments: [{ basename: 'first.pdf' }], meta: { pinvouScene: 'design:poster' }, restrictTools: false },
       { id: 2, text: 'payload 2', displayText: '第二条\n\n📎 ["second.png"]', attachments: [{ basename: 'second.png' }], meta: { pinvouScene: 'design:poster' }, restrictTools: true },
     );
-    feature.flushQueued('s1');
-    await Promise.resolve();
+    await feature.flushQueued('s1');
     const firstUsers = state.chatItems.filter(item => item.type === 'user');
     const firstInvokes = invokes.filter(item => item.command === 'chat');
     const firstPass =
@@ -186,8 +191,7 @@ function rec(name, pass, detail = '') {
       firstInvokes[0].args.restrictTools === false;
 
     state.busy = false;
-    feature.flushQueued('s1');
-    await Promise.resolve();
+    await feature.flushQueued('s1');
     const users = state.chatItems.filter(item => item.type === 'user');
     const chatInvokes = invokes.filter(item => item.command === 'chat');
     rec('queued 多条同一 scene 按 FIFO 分成独立 turn 并各自保留标签',
@@ -210,11 +214,9 @@ function rec(name, pass, detail = '') {
       { id: 1, text: 'payload 1', displayText: '第一条', attachments: [], meta: { pinvouScene: 'design:poster' }, restrictTools: false },
       { id: 2, text: 'payload 2', displayText: '第二条', attachments: [], meta: { pinvouScene: 'design:data-visualization' }, restrictTools: false },
     );
-    feature.flushQueued('s1');
-    await Promise.resolve();
+    await feature.flushQueued('s1');
     state.busy = false;
-    feature.flushQueued('s1');
-    await Promise.resolve();
+    await feature.flushQueued('s1');
     const users = state.chatItems.filter(item => item.type === 'user');
     const chatInvokes = invokes.filter(item => item.command === 'chat');
     rec('queued 多条不同 scene 按 FIFO 分发且标签互不污染',
@@ -235,8 +237,7 @@ function rec(name, pass, detail = '') {
       { id: 1, text: 'payload 1', displayText: '第一条', attachments: [], meta: null, restrictTools: false },
       { id: 2, text: 'payload 2', displayText: '第二条', attachments: [], meta: null, restrictTools: false },
     );
-    feature.flushQueued('s1');
-    await new Promise(resolve => setImmediate(resolve));
+    await feature.flushQueued('s1');
     rec('queued 队首发送失败时按原顺序回队且不吞后续消息',
       state.queued.length === 2 &&
         state.queued[0].id === 1 && state.queued[1].id === 2 &&
@@ -268,9 +269,9 @@ function rec(name, pass, detail = '') {
     'normalize allowlist must register work:personal-workbench across tauri bridge, web bridge and Rust backend');
 
   rec('远程消息不会越过已有 FIFO 队列',
-    /var remoteBuffer = getBuffer\(sid\);/.test(chatEventsSource) &&
+      /var remoteBuffer = getBuffer\(sid\);/.test(chatEventsSource) &&
       /isBusyFor\(sid\) \|\| \(remoteBuffer && remoteBuffer\.queued && remoteBuffer\.queued\.length > 0\)/.test(chatEventsSource) &&
-      /if \(!isBusyFor\(sid\)\) flushQueued\(sid\);/.test(chatEventsSource),
+      /if \(!isBusyFor\(sid\)\) void flushQueued\(sid\);/.test(chatEventsSource),
     'mobile user messages must enqueue behind pending local turns');
 
   const failed = results.filter(item => !item.pass);

@@ -42,6 +42,8 @@
     var loadPinvouSceneEventsForSession = context.loadPinvouSceneEventsForSession || function () { return []; };
     var syncPinvouSceneEventsForSession = context.syncPinvouSceneEventsForSession ||
       function (sid) { return Promise.resolve(loadPinvouSceneEventsForSession(sid)); };
+    var discardPendingChatDeltas = context.discardPendingChatDeltas || function () {};
+    var flushPendingChatDeltas = context.flushPendingChatDeltas || function () { return false; };
     var MAX_SCHEDULED_SESSION_BUFFERS = 64;
     var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
     var sessionBufferTouchClock = 0;
@@ -108,6 +110,7 @@
       var id = scheduledIds[i];
       var buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
+      discardPendingChatDeltas(id);
       delete sessionStates[id];
       delete turnUsageDirty[id];
       pruneScheduledRunSessionOwner(id);
@@ -123,6 +126,7 @@
   }
   function purgeSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;
+    discardPendingChatDeltas(id);
     delete sessionStates[id];
     delete turnUsageDirty[id];
     delete personaPlaceholderTitles[id];
@@ -259,6 +263,7 @@
     if (current.scheduledInitialTurnPhase === "terminal") return;
     if (current.lastTouched !== snapshot.activationTouch) return;
     if (!snapshot.existed) {
+      discardPendingChatDeltas(snapshot.id);
       delete sessionStates[snapshot.id];
     } else {
       current.scheduledInitialTurnPhase = snapshot.previousPhase;
@@ -387,7 +392,10 @@
   function switchActiveTo(id, opts) {
     // 离开草稿（无论物化还是切去既有会话），未消费的开关寄存意图作废。
     state.pendingDraftMultiAgent = false;
-    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    if (state.activeSessionId) {
+      flushPendingChatDeltas(state.activeSessionId);
+      saveWorkingSetTo(getBuffer(state.activeSessionId));
+    }
     state.activeSessionId = id;
     var buf = sessionStates[id];
     if (!buf || (opts && opts.fresh)) buf = sessionStates[id] = freshBuffer();
@@ -433,7 +441,10 @@
       notify();
       return;
     }
-    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    if (state.activeSessionId) {
+      flushPendingChatDeltas(state.activeSessionId);
+      saveWorkingSetTo(getBuffer(state.activeSessionId));
+    }
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
     // freshBuffer 的 modeState 是通用缺省（yolo）；草稿显示须覆盖为本 lane
@@ -743,7 +754,10 @@
     if (requestToken !== sessionSwitchRequestToken) return false;
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
-    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    if (state.activeSessionId) {
+      flushPendingChatDeltas(state.activeSessionId);
+      saveWorkingSetTo(getBuffer(state.activeSessionId));
+    }
     if (!preserveScheduledRunContext) state.scheduledRunContext = null;
     state.scheduledTaskPendingGuide = null;
     state.activeSessionId = saved.metadata.id;
@@ -920,6 +934,8 @@
       state.scheduledRunContext = null;
     }
     if (state.activeSessionId !== id) return;
+    flushPendingChatDeltas(id);
+    saveWorkingSetTo(getBuffer(id));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
   }

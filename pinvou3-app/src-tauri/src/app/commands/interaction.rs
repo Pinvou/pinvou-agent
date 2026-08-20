@@ -195,6 +195,7 @@ pub async fn accept_plan(
             SerializableMode::Yolo.to_app_mode(),
             false,
             prepared_delegation.expert_snapshot,
+            None,
             reservation,
         )
         .await

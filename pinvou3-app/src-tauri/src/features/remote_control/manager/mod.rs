@@ -98,7 +98,9 @@ const MULTI_AGENT_WEB_EXECUTION_DENYLIST: &[&str] = &[
     "compact_now",
     "discard_plan",
     "edit_last_turn",
+    "ensure_subagent_completion_hold_ready",
     "exit_plan_to_yolo",
+    "set_subagent_completion_hold",
     "submit_user_input",
     "summon_pinvou",
     "web_access_chat",
@@ -149,6 +151,43 @@ const MAX_PENDING_REVOCATIONS_FILE_BYTES: usize = 256 * 1024;
 const MAX_WEB_SESSION_UPLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const WEB_SESSION_TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
+const WEB_ACCESS_INACTIVE_ERROR: &str = "Web access endpoint is not active";
+
+#[derive(Debug, PartialEq, Eq)]
+enum EventPublishError {
+    /// Rust application events are emitted regardless of whether Web access
+    /// has ever been enabled. With no endpoint there is no stream or relay to
+    /// recover, so this is an expected idle state rather than an operational
+    /// failure worth logging once per event.
+    Inactive,
+    Failure(String),
+}
+
+impl EventPublishError {
+    fn into_frontend_error(self) -> String {
+        match self {
+            Self::Inactive => WEB_ACCESS_INACTIVE_ERROR.to_string(),
+            Self::Failure(error) => error,
+        }
+    }
+}
+
+impl From<String> for EventPublishError {
+    fn from(error: String) -> Self {
+        Self::Failure(error)
+    }
+}
+
+fn report_local_forward_result(
+    event: &str,
+    result: Result<(), EventPublishError>,
+    report: impl FnOnce(&str),
+) {
+    if let Err(EventPublishError::Failure(error)) = result {
+        let message = format!("[web-access] forward {event} failed: {error}");
+        report(&message);
+    }
+}
 
 /// 从事件 payload 提取会话 id（不同事件用不同字段名）。
 fn event_session_id(payload: &Value) -> Option<&str> {
@@ -1507,13 +1546,16 @@ impl RemoteControlManager {
     }
 
     pub fn forward_local_event(&self, event: &str, payload: Value) {
-        if let Err(error) = self.publish_event_inner(event, payload, EventSource::Rust) {
-            eprintln!("[web-access] forward {event} failed: {error}");
-        }
+        report_local_forward_result(
+            event,
+            self.publish_event_inner(event, payload, EventSource::Rust),
+            |message| eprintln!("{message}"),
+        );
     }
 
     pub fn publish_frontend_event(&self, event: &str, payload: Value) -> Result<(), String> {
         self.publish_event_inner(event, payload, EventSource::Frontend)
+            .map_err(EventPublishError::into_frontend_error)
     }
 
     /// Register a concrete desktop WebView generation. Unacknowledged work may
@@ -2554,9 +2596,11 @@ impl RemoteControlManager {
         event: &str,
         payload: Value,
         source: EventSource,
-    ) -> Result<(), String> {
+    ) -> Result<(), EventPublishError> {
         if !self.policy.events.contains(event) {
-            return Err(format!("远程控制不允许发送该事件：{event}"));
+            return Err(EventPublishError::Failure(format!(
+                "远程控制不允许发送该事件：{event}"
+            )));
         }
         // The engine/file watcher already call `forward_app_event` directly.
         // The desktop WebView proxy also sees the corresponding Tauri event;
@@ -2570,18 +2614,14 @@ impl RemoteControlManager {
         // 品悟原生代码会话（仅原生，不含 ACP 会话）时不转发。远程 WebUI 不会收到
         // 它无法展示/授权的代码会话消息流；predicate 只对真实代码会话 id 返回
         // true，普通会话不受影响。
-        if should_filter_code_session_event(
-            self.inner.lock().code_session_predicate.as_ref(),
-            &payload,
-        ) {
-            return Ok(());
-        }
         {
             let mut inner = self.inner.lock();
-            let endpoint = inner
-                .endpoint
-                .as_ref()
-                .ok_or_else(|| "Web access endpoint is not active".to_string())?;
+            if should_filter_code_session_event(inner.code_session_predicate.as_ref(), &payload) {
+                return Ok(());
+            }
+            let Some(endpoint) = inner.endpoint.as_ref() else {
+                return Err(EventPublishError::Inactive);
+            };
             let endpoint_id = endpoint.config.endpoint_id.clone();
             let lease_id = endpoint.lease_id.clone();
             let client_ready = endpoint.client_ready;
@@ -2619,9 +2659,9 @@ impl RemoteControlManager {
                                 ),
                             );
                         }
-                        return Err(error.to_string());
+                        return Err(EventPublishError::Failure(error.to_string()));
                     }
-                    Err(error) => return Err(error.to_string()),
+                    Err(error) => return Err(EventPublishError::Failure(error.to_string())),
                 };
             let Some(lease_id) = lease_id.as_deref() else {
                 // Keep the event in the journal for a reconnecting subscribed
@@ -2680,9 +2720,9 @@ impl RemoteControlManager {
                     rebase_result.map_err(|error| {
                         format!("远程控制事件入队失败后重建事件流失败：{error}")
                     })?;
-                    Err(format!(
+                    Err(EventPublishError::Failure(format!(
                         "远程控制实时事件入队失败，已安排事件流恢复：{send_error}"
-                    ))
+                    )))
                 }
             }
         }
@@ -2726,6 +2766,41 @@ mod tests {
 
     const TEST_ENDPOINT_ID: &str = "ep_test";
     const TEST_LEASE_ID: &str = "lease_000000000000000000000000";
+
+    #[test]
+    fn inactive_local_event_burst_is_silent_but_active_failure_is_reported() {
+        let mut reports = Vec::new();
+        for _ in 0..63_927 {
+            report_local_forward_result(
+                "chat:delta",
+                Err(EventPublishError::Inactive),
+                |message| reports.push(message.to_string()),
+            );
+        }
+        assert!(
+            reports.is_empty(),
+            "an inactive endpoint is an expected no-op, not a per-delta error path"
+        );
+
+        report_local_forward_result(
+            "chat:delta",
+            Err(EventPublishError::Failure(
+                "relay queue rejected live event".to_string(),
+            )),
+            |message| reports.push(message.to_string()),
+        );
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0],
+            "[web-access] forward chat:delta failed: relay queue rejected live event"
+        );
+
+        assert_eq!(
+            EventPublishError::Inactive.into_frontend_error(),
+            WEB_ACCESS_INACTIVE_ERROR,
+            "explicit frontend publishes retain their existing inactive error contract"
+        );
+    }
 
     #[test]
     fn event_delivery_requires_current_web_subscription() {
@@ -3468,8 +3543,10 @@ mod tests {
             "cancel_generation",
             "compact_now",
             "edit_last_turn",
+            "ensure_subagent_completion_hold_ready",
             "get_session_pinvou_scene_events",
             "get_session_timeline",
+            "set_subagent_completion_hold",
             "save_session_pinvou_scene_events",
             "web_access_chat",
         ] {
@@ -3498,6 +3575,8 @@ mod tests {
             ("submit_user_input", "sessionId"),
             ("cancel_user_input", "sessionId"),
             ("cancel_generation", "sessionId"),
+            ("ensure_subagent_completion_hold_ready", "sessionId"),
+            ("set_subagent_completion_hold", "sessionId"),
             ("web_access_chat", "sessionId"),
             ("delete_session", "id"),
             ("rename_session", "id"),
@@ -3573,6 +3652,7 @@ mod tests {
             "accept_plan",
             "discard_plan",
             "exit_plan_to_yolo",
+            "set_subagent_completion_hold",
             "submit_user_input",
             "cancel_generation",
             "cancel_shell_task",

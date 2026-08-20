@@ -57,14 +57,36 @@
     return clone(result);
   }
 
+  function pickMany(full, domains) {
+    var result = {};
+    domains.forEach(function (domainName) { Object.assign(result, pick(full, domainName)); });
+    return result;
+  }
+
+  function isStreamingPublication(snapshot, publication) {
+    return !!(snapshot && publication && publication.streaming === true);
+  }
+
   function subscribe(domainName, callback) {
     get(domainName);
-    return flat.subscribe(function () { callback(get(domainName)); });
+    return flat.subscribe(function (snapshot, publication) {
+      // The transport already gives streaming publications a fresh top-level
+      // object and chatItems array. Consuming that read-only view directly is
+      // what keeps token cadence off both flat.getState() and structuredClone.
+      // Ordinary semantic notifications retain the historical isolated read.
+      callback(isStreamingPublication(snapshot, publication)
+        ? pick(snapshot, domainName)
+        : get(domainName));
+    });
   }
 
   function subscribeMany(domains, callback) {
     getMany(domains);
-    return flat.subscribe(function () { callback(getMany(domains)); });
+    return flat.subscribe(function (snapshot, publication) {
+      callback(isStreamingPublication(snapshot, publication)
+        ? pickMany(snapshot, domains)
+        : getMany(domains));
+    });
   }
 
   function domain(names, aliases) {

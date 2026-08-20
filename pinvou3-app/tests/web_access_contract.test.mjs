@@ -58,6 +58,19 @@ const policy = JSON.parse(fs.readFileSync(path.join(root, 'src', 'platform', 'we
 const allowed = new Set(policy.allowed_commands);
 const allowedEvents = new Set(policy.allowed_events);
 
+const firstTurnTerminalTtl = Number(
+  webBridge.match(/EARLY_FIRST_TURN_TERMINAL_MAX_AGE_MS\s*=\s*([0-9_]+)/)?.[1]?.replaceAll('_', ''),
+);
+const relayRpcTimeout = Number(
+  bootstrap.match(/error\.requestId\s*=\s*id;[\s\S]{0,100}reject\(error\);\s*},\s*([0-9_]+)\s*\)/)?.[1]?.replaceAll('_', ''),
+);
+assert.ok(Number.isFinite(firstTurnTerminalTtl), 'first-turn terminal rendezvous TTL must remain explicit');
+assert.ok(Number.isFinite(relayRpcTimeout), 'Relay RPC timeout must remain explicit');
+assert.ok(
+  firstTurnTerminalTtl > relayRpcTimeout,
+  'first-turn terminal rendezvous must outlive the Relay RPC timeout',
+);
+
 for (const command of [
   'chat',
   'ingest_file',
