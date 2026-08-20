@@ -583,6 +583,16 @@ fn main() {
                     json!({"method":"turn/started","params":{"threadId":format!("thread-{}", turn - 1),"turn":{"id":turn_id,"status":"inProgress"}}}),
                 );
                 let thread_id = format!("thread-{}", turn - 1);
+                let mut active_status = json!({"method":"thread/status/changed","params":{
+                    "threadId":thread_id,"status":{"type":"active","activeFlags":[]}
+                }});
+                if mode == "thread-status-wrong-thread" && turn == 1 {
+                    active_status["params"]["threadId"] = json!("wrong-thread");
+                } else if mode == "thread-status-duplicate-flag" && turn == 1 {
+                    active_status["params"]["status"]["activeFlags"] =
+                        json!(["waitingOnApproval", "waitingOnApproval"]);
+                }
+                send(active_status);
                 if !mode.starts_with("mcp-startup-") && mode != "agent-thread-missing" {
                     send(json!({"method":"mcpServer/startupStatus/updated","params":{
                         "threadId":thread_id,"name":"fixture-ready","status":"ready","error":null
@@ -881,6 +891,62 @@ fn main() {
                                 json!({"method":"rawResponseItem/completed","params":{"threadId":thread_id,"turnId":turn_id,"item":duplicate_raw_item}}),
                             );
                         }
+                    }
+                }
+                if prompt.contains("S2-A") {
+                    send(json!({"method":"thread/tokenUsage/updated","params":{
+                        "threadId":thread_id,"turnId":turn_id,"tokenUsage":{}
+                    }}));
+                    let mut rate_limits = json!({"method":"account/rateLimits/updated","params":{"rateLimits":{
+                        "limitId":"codex","limitName":"Codex",
+                        "primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":123},
+                        "secondary":null,
+                        "credits":{"hasCredits":true,"unlimited":false,"balance":"1.00"},
+                        "individualLimit":null,"planType":"pro","rateLimitReachedType":null
+                    }}});
+                    match mode.as_str() {
+                        "rate-telemetry-quota" => {
+                            rate_limits["params"]["rateLimits"]["rateLimitReachedType"] =
+                                json!("rate_limit_reached");
+                        }
+                        "rate-telemetry-extra" => {
+                            rate_limits["params"]["rateLimits"]["extra"] = json!(true);
+                        }
+                        "rate-telemetry-bad-window" => {
+                            rate_limits["params"]["rateLimits"]["primary"]["windowDurationMins"] =
+                                json!(0);
+                        }
+                        "rate-telemetry-bad-enum" => {
+                            rate_limits["params"]["rateLimits"]["planType"] = json!("private");
+                        }
+                        "rate-telemetry-bad-credits" => {
+                            rate_limits["params"]["rateLimits"]["credits"]["hasCredits"] =
+                                json!("yes");
+                        }
+                        "rate-telemetry-bad-individual" => {
+                            rate_limits["params"]["rateLimits"]["individualLimit"] = json!({
+                                "limit":"10","used":"1","remainingPercent":101,"resetsAt":123
+                            });
+                        }
+                        _ => {}
+                    }
+                    let copies = if mode == "rate-telemetry-spam" { 33 } else { 1 };
+                    for _ in 0..copies {
+                        send(rate_limits.clone());
+                    }
+                    let mut idle = json!({"method":"thread/status/changed","params":{
+                        "threadId":thread_id,"status":{"type":"idle"}
+                    }});
+                    if mode == "thread-status-idle-extra" {
+                        idle["params"]["status"]["extra"] = json!(true);
+                    } else if mode == "thread-status-system-error" {
+                        idle["params"]["status"]["type"] = json!("systemError");
+                    }
+                    send(idle);
+                    if mode == "thread-status-active-after-idle" {
+                        send(json!({"method":"thread/status/changed","params":{
+                            "threadId":thread_id,"status":{"type":"active","activeFlags":[]}
+                        }}));
                     }
                 }
                 if mode.starts_with("agent-raw-") {

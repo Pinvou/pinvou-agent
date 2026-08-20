@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -28,6 +28,7 @@ const EVIDENCE_FILE: &str = "evidence.json";
 const REPORT_FILE: &str = "validation-report.json";
 const SUMMARY_FILE: &str = "summary.txt";
 const MAX_TRANSPORT_RETRIES_PER_TURN: u64 = 5;
+const MAX_RATE_LIMIT_UPDATES_PER_TURN: u64 = 32;
 const APPROVAL_MARKER_NAME: &str = ".codex-s2-approval-marker";
 const APPROVAL_MARKER_CONTENT: &str = "S2_APPROVED";
 const APPROVAL_MARKER_BYTES: &[u8] = APPROVAL_MARKER_CONTENT.as_bytes();
@@ -1812,6 +1813,8 @@ impl Session {
         let mut interrupt_terminal_latency_ms = None;
         let mut pending_terminal = None;
         let mut transport_retry_count = 0;
+        let mut rate_limit_update_count = 0;
+        let mut thread_status = ThreadStatusProgress::default();
         let mut agent_only_state =
             matches!(name, "A" | "B" | "D").then(|| AgentOnlyState::new(prompt, workspace));
         loop {
@@ -1839,6 +1842,20 @@ impl Session {
                 if transport_retry_count > MAX_TRANSPORT_RETRIES_PER_TURN {
                     bail!("scenario {name}: transport retry limit exceeded");
                 }
+                continue;
+            }
+            if frame.get("method").and_then(Value::as_str) == Some("account/rateLimits/updated") {
+                rate_limit_update_count += 1;
+                if rate_limit_update_count > MAX_RATE_LIMIT_UPDATES_PER_TURN {
+                    bail!("scenario {name}: rate-limit telemetry limit exceeded");
+                }
+                if validate_rate_limit_update(&frame)? {
+                    bail!("quota exhausted: account rate-limit telemetry reported exhaustion");
+                }
+                continue;
+            }
+            if frame.get("method").and_then(Value::as_str) == Some("thread/status/changed") {
+                thread_status.observe(&frame, thread_id)?;
                 continue;
             }
             fail_on_error_notification(&frame)?;
@@ -2468,7 +2485,7 @@ impl<'a> AgentOnlyState<'a> {
                     bail!("protocol error: benign notification had mismatched turn identity");
                 }
             }
-            "thread/name/updated" | "thread/status/changed" => {
+            "thread/name/updated" => {
                 if !exact_thread {
                     bail!("protocol error: benign notification had mismatched thread identity");
                 }
@@ -3104,6 +3121,227 @@ fn strict_retryable_transport_error(frame: &Value, thread_id: &str, turn_id: &st
         return false;
     };
     disconnected.len() == 1 && disconnected.get("httpStatusCode") == Some(&Value::Null)
+}
+
+#[derive(Default)]
+struct ThreadStatusProgress {
+    idle_seen: bool,
+}
+
+impl ThreadStatusProgress {
+    fn observe(&mut self, frame: &Value, thread_id: &str) -> Result<()> {
+        let frame = exact_object(frame, &["method", "params"])
+            .context("protocol error: malformed thread status notification")?;
+        if frame.get("method").and_then(Value::as_str) != Some("thread/status/changed") {
+            bail!("protocol error: malformed thread status notification");
+        }
+        let params = frame
+            .get("params")
+            .and_then(|value| exact_object(value, &["threadId", "status"]))
+            .context("protocol error: malformed thread status notification")?;
+        if params.get("threadId").and_then(Value::as_str) != Some(thread_id) {
+            bail!("protocol error: thread status had mismatched thread identity");
+        }
+        let status = params
+            .get("status")
+            .and_then(Value::as_object)
+            .context("protocol error: malformed thread status notification")?;
+        match status.get("type").and_then(Value::as_str) {
+            Some("active") => {
+                if self.idle_seen || status.len() != 2 || !status.contains_key("activeFlags") {
+                    bail!("protocol error: invalid thread status transition");
+                }
+                let flags = status
+                    .get("activeFlags")
+                    .and_then(Value::as_array)
+                    .context("protocol error: malformed thread status notification")?;
+                let mut seen = HashSet::new();
+                for flag in flags {
+                    let flag = flag
+                        .as_str()
+                        .filter(|flag| matches!(*flag, "waitingOnApproval" | "waitingOnUserInput"))
+                        .context("protocol error: malformed thread status notification")?;
+                    if !seen.insert(flag) {
+                        bail!("protocol error: malformed thread status notification");
+                    }
+                }
+            }
+            Some("idle") => {
+                if self.idle_seen || status.len() != 1 {
+                    bail!("protocol error: invalid thread status transition");
+                }
+                self.idle_seen = true;
+            }
+            Some("notLoaded" | "systemError") => {
+                if status.len() != 1 {
+                    bail!("protocol error: malformed thread status notification");
+                }
+                bail!("protocol error: thread entered a failed status");
+            }
+            _ => bail!("protocol error: malformed thread status notification"),
+        }
+        Ok(())
+    }
+}
+
+fn exact_object<'a>(
+    value: &'a Value,
+    fields: &[&str],
+) -> Option<&'a serde_json::Map<String, Value>> {
+    let object = value.as_object()?;
+    (object.len() == fields.len() && fields.iter().all(|field| object.contains_key(*field)))
+        .then_some(object)
+}
+
+fn validate_rate_limit_update(frame: &Value) -> Result<bool> {
+    let frame = exact_object(frame, &["method", "params"])
+        .context("protocol error: malformed rate-limit telemetry")?;
+    if frame.get("method").and_then(Value::as_str) != Some("account/rateLimits/updated") {
+        bail!("protocol error: malformed rate-limit telemetry");
+    }
+    let params = frame
+        .get("params")
+        .and_then(|value| exact_object(value, &["rateLimits"]))
+        .context("protocol error: malformed rate-limit telemetry")?;
+    let snapshot = params
+        .get("rateLimits")
+        .and_then(Value::as_object)
+        .context("protocol error: malformed rate-limit telemetry")?;
+    const SNAPSHOT_FIELDS: [&str; 8] = [
+        "credits",
+        "individualLimit",
+        "limitId",
+        "limitName",
+        "planType",
+        "primary",
+        "rateLimitReachedType",
+        "secondary",
+    ];
+    if snapshot
+        .keys()
+        .any(|field| !SNAPSHOT_FIELDS.contains(&field.as_str()))
+    {
+        bail!("protocol error: malformed rate-limit telemetry");
+    }
+    for field in ["limitId", "limitName"] {
+        if let Some(value) = snapshot.get(field) {
+            validate_nullable_nonempty_string(value)?;
+        }
+    }
+    for field in ["primary", "secondary"] {
+        if let Some(value) = snapshot.get(field).filter(|value| !value.is_null()) {
+            validate_rate_limit_window(value)?;
+        }
+    }
+    if let Some(value) = snapshot.get("credits").filter(|value| !value.is_null()) {
+        validate_credits(value)?;
+    }
+    if let Some(value) = snapshot
+        .get("individualLimit")
+        .filter(|value| !value.is_null())
+    {
+        validate_individual_limit(value)?;
+    }
+    if let Some(value) = snapshot.get("planType") {
+        validate_nullable_enum(
+            value,
+            &[
+                "free",
+                "go",
+                "plus",
+                "pro",
+                "prolite",
+                "team",
+                "self_serve_business_usage_based",
+                "business",
+                "enterprise_cbp_usage_based",
+                "enterprise",
+                "edu",
+                "unknown",
+            ],
+        )?;
+    }
+    let reached = snapshot.get("rateLimitReachedType");
+    if let Some(value) = reached {
+        validate_nullable_enum(
+            value,
+            &[
+                "rate_limit_reached",
+                "workspace_owner_credits_depleted",
+                "workspace_member_credits_depleted",
+                "workspace_owner_usage_limit_reached",
+                "workspace_member_usage_limit_reached",
+            ],
+        )?;
+    }
+    Ok(reached.is_some_and(|value| !value.is_null()))
+}
+
+fn validate_nullable_nonempty_string(value: &Value) -> Result<()> {
+    if value.is_null() || value.as_str().is_some_and(|value| !value.is_empty()) {
+        Ok(())
+    } else {
+        bail!("protocol error: malformed rate-limit telemetry")
+    }
+}
+
+fn validate_nullable_enum(value: &Value, allowed: &[&str]) -> Result<()> {
+    if value.is_null() || value.as_str().is_some_and(|value| allowed.contains(&value)) {
+        Ok(())
+    } else {
+        bail!("protocol error: malformed rate-limit telemetry")
+    }
+}
+
+fn validate_rate_limit_window(value: &Value) -> Result<()> {
+    let window = exact_object(value, &["usedPercent", "windowDurationMins", "resetsAt"])
+        .context("protocol error: malformed rate-limit telemetry")?;
+    let used = window.get("usedPercent").and_then(Value::as_i64);
+    let duration = window.get("windowDurationMins").and_then(Value::as_i64);
+    let reset = window.get("resetsAt").and_then(Value::as_i64);
+    if !used.is_some_and(|value| (0..=100).contains(&value))
+        || !duration.is_some_and(|value| value > 0)
+        || !reset.is_some_and(|value| value >= 0)
+    {
+        bail!("protocol error: malformed rate-limit telemetry");
+    }
+    Ok(())
+}
+
+fn validate_credits(value: &Value) -> Result<()> {
+    let credits = exact_object(value, &["hasCredits", "unlimited", "balance"])
+        .context("protocol error: malformed rate-limit telemetry")?;
+    if !credits.get("hasCredits").is_some_and(Value::is_boolean)
+        || !credits.get("unlimited").is_some_and(Value::is_boolean)
+    {
+        bail!("protocol error: malformed rate-limit telemetry");
+    }
+    validate_nullable_nonempty_string(credits.get("balance").unwrap())
+}
+
+fn validate_individual_limit(value: &Value) -> Result<()> {
+    let limit = exact_object(value, &["limit", "used", "remainingPercent", "resetsAt"])
+        .context("protocol error: malformed rate-limit telemetry")?;
+    if !limit
+        .get("limit")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.is_empty())
+        || !limit
+            .get("used")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        || !limit
+            .get("remainingPercent")
+            .and_then(Value::as_i64)
+            .is_some_and(|value| (0..=100).contains(&value))
+        || !limit
+            .get("resetsAt")
+            .and_then(Value::as_i64)
+            .is_some_and(|value| value >= 0)
+    {
+        bail!("protocol error: malformed rate-limit telemetry");
+    }
+    Ok(())
 }
 
 fn sanitized_error(value: &Value) -> String {
@@ -5115,7 +5353,6 @@ mod tests {
             .unwrap();
         for frame in [
             json!({"method":"thread/name/updated","params":{"threadId":"t","threadName":"name"}}),
-            json!({"method":"thread/status/changed","params":{"threadId":"t","status":{"type":"active"}}}),
             json!({"method":"thread/tokenUsage/updated","params":{"threadId":"t","turnId":"u","tokenUsage":{}}}),
             json!({"method":"turn/moderationMetadata","params":{"threadId":"t","turnId":"u","metadata":{}}}),
         ] {

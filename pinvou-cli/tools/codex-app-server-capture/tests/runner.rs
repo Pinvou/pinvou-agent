@@ -765,6 +765,41 @@ fn strict_retryable_transport_error_is_nonfatal_and_counted_without_resetting_th
 
 #[test]
 #[cfg(debug_assertions)]
+fn rate_limit_telemetry_and_thread_status_are_strict_non_evidence_sideband_frames() {
+    for (mode, counter) in [
+        ("rate-telemetry-quota", "quota_errors"),
+        ("rate-telemetry-extra", "protocol_errors"),
+        ("rate-telemetry-bad-window", "protocol_errors"),
+        ("rate-telemetry-bad-enum", "protocol_errors"),
+        ("rate-telemetry-bad-credits", "protocol_errors"),
+        ("rate-telemetry-bad-individual", "protocol_errors"),
+        ("rate-telemetry-spam", "protocol_errors"),
+        ("thread-status-wrong-thread", "protocol_errors"),
+        ("thread-status-duplicate-flag", "protocol_errors"),
+        ("thread-status-idle-extra", "protocol_errors"),
+        ("thread-status-system-error", "protocol_errors"),
+        ("thread-status-active-after-idle", "protocol_errors"),
+    ] {
+        let output = temp_output(mode);
+        let result = run_s2_for_test(S2RunConfig {
+            output_dir: Some(output.clone()),
+            executable: Some(OsString::from(env!("CARGO_BIN_EXE_fake-app-server"))),
+            trusted_approval_wrapper: None,
+            model: None,
+            scenario_timeout: Duration::from_secs(10),
+            global_timeout: Duration::from_secs(60),
+            test_child_env: vec![(OsString::from("S2_FAKE_MODE"), OsString::from(mode))],
+        });
+        assert!(result.is_err(), "{mode} unexpectedly passed");
+        let evidence: Value =
+            serde_json::from_slice(&std::fs::read(output.join("evidence.json")).unwrap()).unwrap();
+        assert_eq!(evidence[counter], 1, "{mode}: {evidence}");
+        std::fs::remove_dir_all(output).unwrap();
+    }
+}
+
+#[test]
+#[cfg(debug_assertions)]
 fn transport_retry_is_fatal_on_false_malformed_identity_or_retry_spam_and_still_times_out() {
     for mode in [
         "transport-retry-fatal",
