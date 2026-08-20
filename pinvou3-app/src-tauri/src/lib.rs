@@ -704,6 +704,7 @@ pub fn run() {
             commands::llama_engine::llama_engine_cancel_download,
             commands::llama_engine::llama_engine_start,
             commands::llama_engine::llama_engine_stop,
+            commands::llama_engine::llama_engine_delete_model,
             commands::sessions::list_sessions,
             commands::sessions::create_session,
             commands::sessions::load_session,

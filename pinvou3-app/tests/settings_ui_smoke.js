@@ -1113,8 +1113,15 @@ async function modalWidth(page, headingText) {
       && clearedLocalEngineVision.vision_model_id === null,
     JSON.stringify(clearedLocalEngineVision && { prefer: clearedLocalEngineVision.vision_prefer_local_engine, vision: clearedLocalEngineVision.vision_model_id }));
 
-  // ⑦.llama 本地多模态引擎区块:自动启动三档持久化 + 退出提示文案。
-  await clickSettingsSection(page, '本地多模态引擎');
+  // ⑦.llama 本地识图子页(原「本地多模态引擎」侧栏分节并入模型页胶囊):自动启动三档持久化 + 退出提示文案。
+  await clickSettingsSection(page, '模型');
+  const llamaTabDebug = await page.evaluate(() => {
+    const tab = document.querySelector('[data-testid="settings-model-tab-llama"]');
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    return { hasTab: !!tab, dialogOpen: !!dialog };
+  });
+  rec('⑦.llama.0 模型页胶囊含「本地识图」且无残留弹窗', llamaTabDebug.hasTab && !llamaTabDebug.dialogOpen, JSON.stringify(llamaTabDebug));
+  await page.click('[data-testid="settings-model-tab-llama"]');
   await sleep(400);
   const llamaSection = await page.evaluate(() => {
     const text = document.body.innerText;
@@ -1143,8 +1150,8 @@ async function modalWidth(page, headingText) {
   });
   rec('⑦.llama.3 选择 GPU 写入 advanced.llama_engine_default_device', llamaDeviceSaved === 'gpu', String(llamaDeviceSaved));
 
-  // 回到模型页继续 ⑦.img.6 图片能力测试。
-  await clickSettingsSection(page, '模型');
+  // 回到模型子页继续 ⑦.img.6 图片能力测试。
+  await page.click('[data-testid="settings-model-tab-models"]');
   await sleep(300);
 
   // ⑦.img.6-11 测试图片能力(设计 §7.3):按钮渲染、supported/unsupported/error 分态、表单变更清除结果。

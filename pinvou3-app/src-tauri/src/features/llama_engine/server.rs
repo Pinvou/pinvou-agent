@@ -132,7 +132,7 @@ pub(crate) fn build_args(
     // 线程数钉物理核数：llama.cpp 默认按逻辑核调度，超线程在纯 CPU 推理上
     // 通常零/负收益；GPU 档该值只影响少量 CPU 侧算子，无副作用。
     let threads = crate::platform::os::physical_core_count();
-    vec![
+    let mut args = vec![
         bin.as_os_str().to_owned(),
         "--model".into(),
         download::model_gguf_path(spec).into_os_string(),
@@ -158,20 +158,33 @@ pub(crate) fn build_args(
         "--ubatch-size".into(),
         "1024".into(),
         // FlashAttention：图像 token 多时显著降低 KV 访存与显存占用。
+        // 新版 llama.cpp 的 -fa/--flash-attn 必须带值(on|off|auto)，裸 flag
+        // 会打印 usage 并以退出码 1 拒绝启动。
         "--flash-attn".into(),
+        "on".into(),
         // KV cache q8_0 量化：视觉任务 KV 常驻占用大，q8_0 精度损失可忽略、
         // 内存近减半（8GB 内存机器跑 2B 档的保命项）。
         "--cache-type-k".into(),
         "q8_0".into(),
         "--cache-type-v".into(),
         "q8_0".into(),
-        // mlock：模型常驻物理内存，防系统换页导致解码中途卡顿；
-        // 权限/内存不足时 llama.cpp 仅告警继续运行，无失败风险。
-        "--mlock".into(),
+        // 注意：不传 --mlock。b10362 起 --mlock（及其替代 --load-mode mlock）
+        // 与 -ngl 0（纯 CPU 加载）组合会在模型 mmap 阶段触发
+        // llama-mmap.cpp GGML_ASSERT(addr) 崩溃（真机二分定位：两参单独
+        // 均正常，组合必崩），属引擎侧回归；mlock 只是常驻内存优化，移除
+        // 代价可接受。
         "-ngl".into(),
         ngl.into(),
         "--no-webui".into(),
-    ]
+    ];
+    // CPU 档禁 mmproj GPU 卸载：llama.cpp 默认把视觉编码器卸载到 GPU
+    // （--mmproj-offload enabled），但弱核显实测 CPU 编码反而快 ~27%
+    // （UHD 750 Vulkan 1027 token 46.5s vs CPU 33.8s，两轮一致）；独显
+    // 保持默认卸载，编码算力是真优势。
+    if device == EngineDevice::Cpu {
+        args.push("--no-mmproj-offload".into());
+    }
+    args
 }
 
 /// 启动引擎（幂等守卫：Running/Starting 时拒绝重复启动）。
@@ -701,7 +714,7 @@ fn stderr_tail_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::llama_engine::download::MODEL_Q3_K_S;
+    use crate::features::llama_engine::download::MODEL_Q4_K_M;
 
     #[test]
     fn pick_free_port_returns_bindable_port() {
@@ -718,12 +731,12 @@ mod tests {
             (EngineDevice::Gpu, "99"),
             (EngineDevice::Cpu, "0"),
         ] {
-            let args = build_args(bin, &MODEL_Q3_K_S, port, device);
+            let args = build_args(bin, &MODEL_Q4_K_M, port, device);
             let text: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
             assert_eq!(text[0], "llama-server");
             assert!(
                 text.windows(2).any(|w| w[0] == "--model"
-                    && w[1].ends_with(MODEL_Q3_K_S.gguf.filename)),
+                    && w[1].ends_with(MODEL_Q4_K_M.gguf.filename)),
                 "must pass the gguf model path; got {text:?}"
             );
             assert!(text.iter().any(|a| a == "--mmproj"));
@@ -733,7 +746,7 @@ mod tests {
             assert!(text.windows(2).any(|w| w[0] == "-ngl" && w[1] == expected_ngl));
             assert!(text.iter().any(|a| a == "--no-webui"));
             // PR3 启动参数调优：物理核线程数 / batch 1024 / flash-attn /
-            // KV q8_0 / mlock（缺一项即回归，逐项断言）。
+            // KV q8_0（缺一项即回归，逐项断言）。
             assert!(
                 text.windows(2)
                     .any(|w| w[0] == "-t" && w[1].parse::<usize>().is_ok()),
@@ -741,10 +754,26 @@ mod tests {
             );
             assert!(text.windows(2).any(|w| w[0] == "--batch-size" && w[1] == "1024"));
             assert!(text.windows(2).any(|w| w[0] == "--ubatch-size" && w[1] == "1024"));
-            assert!(text.iter().any(|a| a == "--flash-attn"));
+            assert!(
+                text.windows(2)
+                    .any(|w| w[0] == "--flash-attn" && w[1] == "on"),
+                "flash-attn 必须带值(on|off|auto),裸 flag 会被新版引擎拒绝; got {text:?}"
+            );
             assert!(text.windows(2).any(|w| w[0] == "--cache-type-k" && w[1] == "q8_0"));
             assert!(text.windows(2).any(|w| w[0] == "--cache-type-v" && w[1] == "q8_0"));
-            assert!(text.iter().any(|a| a == "--mlock"));
+            // --mlock 与 -ngl 0 组合在 b10362 上 mmap 崩溃,必须不传。
+            assert!(
+                !text.iter().any(|a| a == "--mlock"),
+                "--mlock 与 -ngl 0 组合会触发引擎 mmap 断言,不得再传; got {text:?}"
+            );
+            // mmproj GPU 卸载按设备条件化:CPU 档必须禁(弱核显实测 CPU 编码
+            // 快 ~27%),GPU 档必须保持默认(不传该 flag)。
+            let has_no_offload = text.iter().any(|a| a == "--no-mmproj-offload");
+            assert_eq!(
+                has_no_offload,
+                device == EngineDevice::Cpu,
+                "--no-mmproj-offload 应仅在 CPU 档出现; device={device:?}; got {text:?}"
+            );
         }
     }
 

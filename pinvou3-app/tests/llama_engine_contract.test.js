@@ -31,7 +31,7 @@ assert(
 );
 assert(!/--alias/.test(bridge), "bridge.rs 不得引入 --alias");
 
-// 2. 命令注册：6 条 llama_engine_* 命令齐全，且 #[tauri::command] 只在 app/commands/ 宿主。
+// 2. 命令注册：7 条 llama_engine_* 命令齐全，且 #[tauri::command] 只在 app/commands/ 宿主。
 const commands = read("app/commands/llama_engine.rs");
 for (const name of [
   "llama_engine_status",
@@ -40,6 +40,7 @@ for (const name of [
   "llama_engine_cancel_download",
   "llama_engine_start",
   "llama_engine_stop",
+  "llama_engine_delete_model",
 ]) {
   assert(
     new RegExp(name).test(commands),
@@ -54,6 +55,7 @@ for (const name of [
   "llama_engine_cancel_download",
   "llama_engine_start",
   "llama_engine_stop",
+  "llama_engine_delete_model",
 ]) {
   assert(
     new RegExp(`commands::llama_engine::${name}`).test(lib),
@@ -129,12 +131,13 @@ for (const lang of ["zh", "en", "ja"]) {
   );
 }
 const i18n = readRoot("src/shared/i18n.js");
-for (const label of ["本地多模态引擎", "Local Multimodal Engine", "ローカルマルチモーダルエンジン"]) {
+// 「本地识图」已并入模型页胶囊（对齐 ACP 管理分页），导航文案为三语 localVision。
+for (const label of ["本地识图", "Local Vision", "ローカル画像認識"]) {
   assert(i18n.includes(label), `i18n.js 必须包含导航文案: ${label}`);
 }
 const settingsView = readRoot("src/features/settings/SettingsView.jsx");
-assert(settingsView.includes("activeSection === 'llama'"), "SettingsView 必须分发 llama 区块");
-assert(/id="llama"/.test(settingsView), "SettingsView 必须注册 llama SectionButton");
+assert(settingsView.includes("modelTab === 'llama'"), "SettingsView 必须以模型页胶囊分发本地识图子页");
+assert(settingsView.includes('data-testid={`settings-model-tab-${tab.key}`}'), "SettingsView 必须渲染模型页胶囊按钮");
 
 // 8. 本地识图引擎选项 + 自动启动/关闭契约：
 //    SavedModel.vision_prefer_local_engine（is_false 序列化省略）、
@@ -168,9 +171,13 @@ const chatView = readRoot("src/features/chat/ChatView.jsx");
 assert(chatView.includes("ensureLocalEngineForSend"), "ChatView 必须实现本地识图引擎发送门");
 assert(chatView.includes("local_engine_state"), "ChatView 发送门必须消费 capability.local_engine_state");
 
-// 9. PR3 引擎调优：三档模型表 + Q8_0 mmproj + 默认 q4km。
-for (const id of ["qwen3vl-2b-iq2m", "qwen3vl-2b-q4km", "qwen3vl-4b-q4km", "qwen3vl-2b-q3k-s"]) {
+// 9. 模型表：默认 2B q4km + 独显 4B q4km 两档 + Q8_0 mmproj。
+// （IQ2_M / Q3_K_S 量化过低已下线，不得再回到可选列表。）
+for (const id of ["qwen3vl-2b-q4km", "qwen3vl-4b-q4km"]) {
   assert(download.includes(id), `download.rs 必须包含模型档 ${id}`);
+}
+for (const removed of ["qwen3vl-2b-iq2m", "qwen3vl-2b-q3k-s"]) {
+  assert(!download.includes(`id: "${removed}"`), `已下线模型档不得残留: ${removed}`);
 }
 assert(
   /fn default_model\(\)[\s\S]*?MODEL_Q4_K_M/.test(download),
@@ -179,15 +186,15 @@ assert(
 for (const mmproj of ["mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf", "mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf"]) {
   assert(download.includes(mmproj), `download.rs 必须使用 Q8_0 mmproj: ${mmproj}`);
 }
-// legacy 档保留但标注不推荐（老安装继续可用）。
-assert(/旧版不推荐/.test(download), "legacy q3k-s 档必须标注不推荐");
 
-// 10. PR3 启动参数与运行时:物理核线程/batch 1024/flash-attn/KV q8_0/mlock、
+// 10. PR3 启动参数与运行时:物理核线程/batch 1024/flash-attn/KV q8_0、
 //     warmup、会话失效钩子、停止标志消费、自愈复用旧端口。
+//     注意:--mlock 与 -ngl 0 组合在 b10362 上 mmap 崩溃,已刻意移除。
 const server = read("features/llama_engine/server.rs");
-for (const flag of ["--flash-attn", "--ubatch-size", "--batch-size", "--cache-type-k", "--cache-type-v", "--mlock"]) {
+for (const flag of ["--flash-attn", "--ubatch-size", "--batch-size", "--cache-type-k", "--cache-type-v"]) {
   assert(server.includes(`"${flag}"`), `build_args 必须含 ${flag}`);
 }
+assert(!server.includes('"--mlock".into()'), "--mlock 与 -ngl 0 组合触发引擎 mmap 断言,不得再传");
 assert(server.includes("physical_core_count()"), "build_args 必须用物理核数设置 -t");
 assert(server.includes("spawn_warmup"), "引擎就绪后必须发 warmup 请求");
 assert(server.includes("set_session_invalidation_hook"), "server.rs 必须提供会话失效钩子");

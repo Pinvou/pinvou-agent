@@ -37,8 +37,9 @@
   Option 字段，`None` 回落默认重试）：llama-server 等进程级引擎启动/崩溃窗口
   的 5xx 重试只会加剧资源争抢，由应用层置 `Some(false)` 跳过；vLLM/云端保持
   默认。URL 启发式不进底座，通道拆分决策在应用层
-  （`bridge.rs::resolve_vision_model_config`：规则 0 本地引擎 → `Some(false)`，
-  规则 1/2 服务级通道 → `None`）。
+  （`bridge.rs::resolve_vision_model_config`：规则 0 显式选本地引擎与规则 3
+  本地兜底 → `Some(false)`，规则 1/2 服务级通道 → `None`；兜底仅接管
+  未配置视觉模型的纯文本模型，不覆盖显式配置）。
 - 验证：`cargo test -p codewhale-tui --lib vision::tools` 23 个用例全过
   （含新增 `should_retry_transient_respects_config_field`、
   `empty_delta_after_data_event_triggers_unified_error` 与 `ea5bdf566` 补的

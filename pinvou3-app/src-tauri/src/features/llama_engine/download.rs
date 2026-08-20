@@ -49,26 +49,7 @@ pub(crate) struct ModelAsset {
     pub fallback_url: &'static str,
 }
 
-/// 极致低配档：Qwen3-VL-2B IQ2_M（bartowski 转换，实测 663MB）。
-/// ⚠️ 跨仓混用：主权重来自 bartowski 转换仓、mmproj 来自官方仓，两者均由
-/// 同源 bf16 权重转出、量化格式兼容；上线前需真机冒烟确认组合可用。
-pub(crate) const MODEL_IQ2_M: LlamaModelSpec = LlamaModelSpec {
-    id: "qwen3vl-2b-iq2m",
-    display_name: "Qwen3-VL-2B IQ2_M（1.14GB，极致低配）",
-    size_bytes: 695_182_656 + 445_053_216,
-    gguf: ModelAsset {
-        filename: "Qwen_Qwen3-VL-2B-Instruct-IQ2_M.gguf",
-        expected_size: 695_182_656,
-        // HF API 未取到该文件 lfs oid，先以尺寸校验兜底（发布后回填实测 sha256）。
-        sha256: "",
-        primary_url: "https://modelscope.cn/models/bartowski/Qwen_Qwen3-VL-2B-Instruct-GGUF/resolve/master/Qwen_Qwen3-VL-2B-Instruct-IQ2_M.gguf",
-        mirror_url: "https://huggingface.co/bartowski/Qwen_Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen_Qwen3-VL-2B-Instruct-IQ2_M.gguf",
-        fallback_url: "https://hf-mirror.com/bartowski/Qwen_Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen_Qwen3-VL-2B-Instruct-IQ2_M.gguf",
-    },
-    mmproj: MMPROJ_2B_Q8_0,
-};
-
-/// 2B 官方仓 Q8_0 视觉投影器（IQ2_M 与 Q4_K_M 两档共用，磁盘上只存一份）。
+/// 2B 官方仓 Q8_0 视觉投影器。
 /// 相比 F16（819MB）省约 46%，视觉编码精度损失可忽略。
 const MMPROJ_2B_Q8_0: ModelAsset = ModelAsset {
     filename: "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
@@ -77,30 +58,6 @@ const MMPROJ_2B_Q8_0: ModelAsset = ModelAsset {
     primary_url: "https://modelscope.cn/models/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/master/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
     mirror_url: "https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
     fallback_url: "https://hf-mirror.com/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
-};
-
-/// 旧版档（legacy）：Qwen3-VL-2B Q3_K_S + F16 mmproj（bartowski 转换）。
-/// 仅为兼容已下载的老安装保留，不再推荐；新装请用 q4km / iq2m。
-pub(crate) const MODEL_Q3_K_S: LlamaModelSpec = LlamaModelSpec {
-    id: "qwen3vl-2b-q3k-s",
-    display_name: "Qwen3-VL-2B Q3_K_S（1.61GB，旧版不推荐）",
-    size_bytes: 867_253_568 + 819_394_848,
-    gguf: ModelAsset {
-        filename: "Qwen_Qwen3-VL-2B-Instruct-Q3_K_S.gguf",
-        expected_size: 867_253_568,
-        sha256: "",
-        primary_url: "https://modelscope.cn/models/bartowski/Qwen_Qwen3-VL-2B-Instruct-GGUF/resolve/master/Qwen_Qwen3-VL-2B-Instruct-Q3_K_S.gguf",
-        mirror_url: "https://huggingface.co/bartowski/Qwen_Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen_Qwen3-VL-2B-Instruct-Q3_K_S.gguf",
-        fallback_url: "https://hf-mirror.com/bartowski/Qwen_Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen_Qwen3-VL-2B-Instruct-Q3_K_S.gguf",
-    },
-    mmproj: ModelAsset {
-        filename: "mmproj-Qwen_Qwen3-VL-2B-Instruct-f16.gguf",
-        expected_size: 819_394_848,
-        sha256: "",
-        primary_url: "https://modelscope.cn/models/bartowski/Qwen_Qwen3-VL-2B-Instruct-GGUF/resolve/master/mmproj-Qwen_Qwen3-VL-2B-Instruct-f16.gguf",
-        mirror_url: "https://huggingface.co/bartowski/Qwen_Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen_Qwen3-VL-2B-Instruct-f16.gguf",
-        fallback_url: "https://hf-mirror.com/bartowski/Qwen_Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen_Qwen3-VL-2B-Instruct-f16.gguf",
-    },
 };
 
 /// 默认档：官方 Qwen3-VL-2B Q4_K_M + Q8_0 mmproj（实测合计 1.45GB）。
@@ -144,12 +101,12 @@ pub(crate) const MODEL_4B_Q4_K_M: LlamaModelSpec = LlamaModelSpec {
     },
 };
 
-/// 档位顺序即设置页展示顺序：极致低配 → 默认 → 独显 → legacy 垫底。
+/// 档位顺序即设置页展示顺序：默认 → 独显。
+/// （2026-08 移除 IQ2_M 极致低配档与 Q3_K_S legacy 档：量化过低识图质量
+/// 不可用，老安装残留文件不受影响，只是不再出现在可选列表。）
 const MODEL_SPECS: &[LlamaModelSpec] = &[
-    MODEL_IQ2_M,
     MODEL_Q4_K_M,
     MODEL_4B_Q4_K_M,
-    MODEL_Q3_K_S,
 ];
 
 pub(crate) fn model_specs() -> &'static [LlamaModelSpec] {
@@ -654,6 +611,33 @@ pub(crate) fn model_files_verified(spec: &LlamaModelSpec) -> bool {
         && model_file_verified(&mmproj_path(spec), &spec.mmproj)
 }
 
+/// 删除已安装模型的权重文件，返回实际删除的文件数（0 = 本就没装）。
+/// mmproj 仅在无其他已安装档位共用同一文件时一并删除（历史上 2B 两档
+/// 共享 Q8_0 mmproj；当前只余 Q4_K_M 一档使用，逻辑保留以防后续加档）。
+pub(crate) fn delete_model_files(spec: &LlamaModelSpec) -> Result<u32, String> {
+    let mut removed = 0u32;
+    let gguf = model_gguf_path(spec);
+    if gguf.exists() {
+        std::fs::remove_file(&gguf)
+            .map_err(|e| format!("删除模型文件失败 {}: {e}", gguf.display()))?;
+        removed += 1;
+    }
+    let mmproj_in_use = model_specs().iter().any(|other| {
+        other.id != spec.id
+            && other.mmproj.filename == spec.mmproj.filename
+            && model_file_verified(&model_gguf_path(other), &other.gguf)
+    });
+    if !mmproj_in_use {
+        let mmproj = mmproj_path(spec);
+        if mmproj.exists() {
+            std::fs::remove_file(&mmproj)
+                .map_err(|e| format!("删除视觉投影器失败 {}: {e}", mmproj.display()))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 // ---------------- 解压 ----------------
 
 /// zip 解压（防 zip-slip：拒绝 `..` / 根路径 / 盘符前缀条目）。
@@ -747,20 +731,20 @@ mod tests {
             assert!(spec.gguf.mirror_url.starts_with("https://"));
             assert!(spec.mmproj.primary_url.starts_with("https://"));
         }
-        assert_eq!(default_model().id, MODEL_Q3_K_S.id);
-        assert!(MODEL_Q3_K_S.size_bytes > 0);
+        assert_eq!(default_model().id, MODEL_Q4_K_M.id);
+        assert!(MODEL_Q4_K_M.size_bytes > 0);
     }
 
     #[test]
     fn model_spec_resolves_known_and_rejects_unknown() {
-        assert_eq!(model_spec("qwen3vl-2b-q3k-s").unwrap().id, "qwen3vl-2b-q3k-s");
         assert_eq!(model_spec("qwen3vl-2b-q4km").unwrap().id, "qwen3vl-2b-q4km");
+        assert_eq!(model_spec("qwen3vl-4b-q4km").unwrap().id, "qwen3vl-4b-q4km");
         assert!(model_spec("no-such-model").is_err());
     }
 
     #[test]
     fn asset_urls_prefer_env_override_and_fallback_mirror() {
-        let asset = &MODEL_Q3_K_S.gguf;
+        let asset = &MODEL_Q4_K_M.gguf;
         let urls = asset_urls(asset);
         assert_eq!(urls[0], asset.primary_url);
         assert_eq!(urls[1], asset.mirror_url);

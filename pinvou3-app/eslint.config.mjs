@@ -1,7 +1,7 @@
 import { defineConfig } from 'eslint/config';
 
 const browserGlobals = Object.fromEntries([
-  'Blob', 'CustomEvent', 'DOMParser', 'Event', 'FileReader', 'Image', 'TextDecoder', 'TextEncoder',
+  'Blob', 'CustomEvent', 'DOMParser', 'Event', 'File', 'FileReader', 'Image', 'TextDecoder', 'TextEncoder',
   'IntersectionObserver', 'ResizeObserver', 'URL', 'URLSearchParams',
   'WebSocket', 'atob', 'btoa', 'cancelAnimationFrame', 'clearInterval', 'clearTimeout', 'console', 'crypto', 'document', 'fetch',
   'localStorage', 'navigator', 'performance', 'requestAnimationFrame',

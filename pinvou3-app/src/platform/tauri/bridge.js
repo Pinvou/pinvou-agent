@@ -2215,6 +2215,7 @@
   var llamaEngineCancelDownload = llamaEngineFeature.cancelDownload;
   var llamaEngineStart = llamaEngineFeature.startEngine;
   var llamaEngineStop = llamaEngineFeature.stopEngine;
+  var llamaEngineDeleteModel = llamaEngineFeature.deleteModel;
 
   var multiAgentFeature = installBridgeFeature("multiagent", { state: state, notify: notify, invoke: invoke, listen: listen });
   var listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
@@ -2359,6 +2360,7 @@
       cancelDownload: llamaEngineCancelDownload,
       startEngine: llamaEngineStart,
       stopEngine: llamaEngineStop,
+      deleteModel: llamaEngineDeleteModel,
     },
     scheduled: {
       loadScheduledTasks: loadScheduledTasks,

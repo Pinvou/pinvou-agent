@@ -90,13 +90,25 @@
       await refreshStatus();
     }
 
+    async function deleteModel(modelId) {
+      try {
+        await invoke("llama_engine_delete_model", { model: modelId });
+      } catch (e) {
+        merge({ error: String(e) });
+        notify();
+        throw e;
+      }
+      await refreshStatus();
+    }
+
     return {
       refreshStatus: refreshStatus,
       installEngine: installEngine,
       installModel: installModel,
       cancelDownload: cancelDownload,
       startEngine: startEngine,
-      stopEngine: stopEngine
+      stopEngine: stopEngine,
+      deleteModel: deleteModel
     };
   };
 })(window);
