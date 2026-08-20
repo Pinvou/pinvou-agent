@@ -3146,30 +3146,30 @@ fn validate_effective_config(frame: &Value, isolated_codex_home: &Path) -> Resul
     let result = frame
         .get("result")
         .and_then(Value::as_object)
-        .ok_or_else(|| anyhow!("config preflight failed"))?;
+        .ok_or_else(|| anyhow!("config preflight failed [CFG_RESULT_SHAPE]"))?;
     if result
         .keys()
         .any(|key| !matches!(key.as_str(), "config" | "origins" | "layers"))
     {
-        bail!("config preflight failed");
+        bail!("config preflight failed [CFG_RESULT_SHAPE]");
     }
     let config_value = result
         .get("config")
-        .ok_or_else(|| anyhow!("config preflight failed"))?;
+        .ok_or_else(|| anyhow!("config preflight failed [CFG_RESULT_SHAPE]"))?;
     let config = config_value
         .as_object()
-        .ok_or_else(|| anyhow!("config preflight failed"))?;
+        .ok_or_else(|| anyhow!("config preflight failed [CFG_RESULT_SHAPE]"))?;
     let layers = result
         .get("layers")
         .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("config preflight failed"))?;
+        .ok_or_else(|| anyhow!("config preflight failed [CFG_RESULT_SHAPE]"))?;
     let origins = result
         .get("origins")
         .and_then(Value::as_object)
-        .ok_or_else(|| anyhow!("config preflight failed"))?;
+        .ok_or_else(|| anyhow!("config preflight failed [CFG_RESULT_SHAPE]"))?;
     let expected_user_config = isolated_codex_home.join("config.toml");
-    let expected_system_config =
-        expected_system_config_path().map_err(|_| anyhow!("config preflight failed"))?;
+    let expected_system_config = expected_system_config_path()
+        .map_err(|_| anyhow!("config preflight failed [CFG_SYSTEM_PATH]"))?;
     let session_name = json!({"type":"sessionFlags"});
     let user_name_matches = |name: &Value| {
         name.as_object().is_some_and(|object| {
@@ -3184,18 +3184,13 @@ fn validate_effective_config(frame: &Value, isolated_codex_home: &Path) -> Resul
                     })
         })
     };
-    let system_name_matches = |name: &Value| {
-        name.as_object().is_some_and(|object| {
-            object.len() == 2
-                && object.get("type") == Some(&json!("system"))
-                && object
-                    .get("file")
-                    .and_then(Value::as_str)
-                    .is_some_and(|file| {
-                        pinned_thread_cwd_matches(Path::new(file), &expected_system_config)
-                    })
-        })
-    };
+    fn system_name_file(name: &Value) -> Option<&str> {
+        let object = name.as_object()?;
+        if object.len() != 2 || object.get("type") != Some(&json!("system")) {
+            return None;
+        }
+        object.get("file").and_then(Value::as_str)
+    }
     fn layer_object(layer: &Value) -> Option<&serde_json::Map<String, Value>> {
         layer.as_object().filter(|object| {
             object.len() == 3
@@ -3204,24 +3199,36 @@ fn validate_effective_config(frame: &Value, isolated_codex_home: &Path) -> Resul
                 && object.contains_key("config")
         })
     }
+    if layers.len() != 3 {
+        bail!("config preflight failed [CFG_LAYER_COUNT]");
+    }
     let Some(session_layer) = layers.first().and_then(layer_object) else {
-        bail!("config preflight failed");
+        bail!("config preflight failed [CFG_LAYER_SESSION]");
     };
     let Some(user_layer) = layers.get(1).and_then(layer_object) else {
-        bail!("config preflight failed");
+        bail!("config preflight failed [CFG_LAYER_USER]");
     };
     let Some(system_layer) = layers.get(2).and_then(layer_object) else {
-        bail!("config preflight failed");
+        bail!("config preflight failed [CFG_LAYER_SYSTEM]");
     };
-    if layers.len() != 3
-        || session_layer.get("name") != Some(&session_name)
+    if session_layer.get("name") != Some(&session_name)
         || session_layer.get("config") != Some(&expected_session_layer_config())
-        || !user_layer.get("name").is_some_and(user_name_matches)
-        || user_layer.get("config") != Some(&expected_user_layer_config())
-        || !system_layer.get("name").is_some_and(system_name_matches)
-        || system_layer.get("config") != Some(&json!({}))
     {
-        bail!("config preflight failed");
+        bail!("config preflight failed [CFG_LAYER_SESSION]");
+    }
+    if !user_layer.get("name").is_some_and(user_name_matches)
+        || user_layer.get("config") != Some(&expected_user_layer_config())
+    {
+        bail!("config preflight failed [CFG_LAYER_USER]");
+    }
+    let Some(system_file) = system_layer.get("name").and_then(system_name_file) else {
+        bail!("config preflight failed [CFG_LAYER_SYSTEM]");
+    };
+    if system_layer.get("config") != Some(&json!({})) {
+        bail!("config preflight failed [CFG_LAYER_SYSTEM]");
+    }
+    if !pinned_thread_cwd_matches(Path::new(system_file), &expected_system_config) {
+        bail!("config preflight failed [CFG_SYSTEM_PATH]");
     }
     let session_version = session_layer.get("version").unwrap();
     let user_version = user_layer.get("version").unwrap();
@@ -3254,15 +3261,20 @@ fn validate_effective_config(frame: &Value, isolated_codex_home: &Path) -> Resul
         "features.shell_snapshot",
         "features.memories",
     ];
-    if origins.len() != SESSION_ORIGINS.len() + 1
-        || !origins
-            .get("cli_auth_credentials_store")
-            .is_some_and(user_origin_matches)
-        || SESSION_ORIGINS
-            .iter()
-            .any(|key| !origins.get(*key).is_some_and(session_origin_matches))
+    if origins.len() != SESSION_ORIGINS.len() + 1 {
+        bail!("config preflight failed [CFG_ORIGIN_COUNT]");
+    }
+    if !origins
+        .get("cli_auth_credentials_store")
+        .is_some_and(user_origin_matches)
     {
-        bail!("config preflight failed");
+        bail!("config preflight failed [CFG_ORIGIN_USER]");
+    }
+    if SESSION_ORIGINS
+        .iter()
+        .any(|key| !origins.get(*key).is_some_and(session_origin_matches))
+    {
+        bail!("config preflight failed [CFG_ORIGIN_SESSION]");
     }
     let exact = |pointer: &str, expected: &Value| config_value.pointer(pointer) == Some(expected);
     if !exact("/cli_auth_credentials_store", &json!("file"))
@@ -3288,11 +3300,14 @@ fn validate_effective_config(frame: &Value, isolated_codex_home: &Path) -> Resul
             .get("experimental_thread_config_endpoint")
             .is_some_and(|value| !value.is_null())
     {
-        bail!("config preflight failed");
+        bail!("config preflight failed [CFG_EFFECTIVE_FIXED]");
     }
     for feature in ["hooks", "plugins", "apps", "shell_snapshot", "memories"] {
         if config_value.pointer(&format!("/features/{feature}")) != Some(&json!(false)) {
-            bail!("config preflight failed");
+            bail!(
+                "config preflight failed [CFG_FEATURE_{}]",
+                feature.to_ascii_uppercase()
+            );
         }
     }
     Ok(())
@@ -5366,7 +5381,7 @@ mod tests {
                 super::validate_effective_config(&frame, &home)
                     .unwrap_err()
                     .to_string(),
-                "config preflight failed"
+                "config preflight failed [CFG_LAYER_COUNT]"
             );
         }
         for pointer in [
@@ -5375,20 +5390,25 @@ mod tests {
         ] {
             let mut frame = valid_config_frame(&home);
             *frame.pointer_mut(pointer).unwrap() = json!({"unsafe":{}});
-            assert!(super::validate_effective_config(&frame, &home).is_err());
+            assert_eq!(
+                super::validate_effective_config(&frame, &home)
+                    .unwrap_err()
+                    .to_string(),
+                "config preflight failed [CFG_EFFECTIVE_FIXED]"
+            );
         }
         let mut frame = valid_config_frame(&home);
         frame["result"]["config"]["experimental_thread_config_endpoint"] =
             json!("https://private.invalid");
         assert!(super::validate_effective_config(&frame, &home).is_err());
-        for mutation in [
-            "order",
-            "duplicate",
-            "system-config",
-            "system-path",
-            "user-config",
-            "session-config",
-            "origins",
+        for (mutation, code) in [
+            ("order", "CFG_LAYER_USER"),
+            ("duplicate", "CFG_LAYER_COUNT"),
+            ("system-config", "CFG_LAYER_SYSTEM"),
+            ("system-path", "CFG_SYSTEM_PATH"),
+            ("user-config", "CFG_LAYER_USER"),
+            ("session-config", "CFG_LAYER_SESSION"),
+            ("origins", "CFG_ORIGIN_COUNT"),
         ] {
             let mut frame = valid_config_frame(&home);
             match mutation {
@@ -5414,9 +5434,12 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
-            assert!(
-                super::validate_effective_config(&frame, &home).is_err(),
-                "mutation {mutation} was accepted"
+            assert_eq!(
+                super::validate_effective_config(&frame, &home)
+                    .unwrap_err()
+                    .to_string(),
+                format!("config preflight failed [{code}]"),
+                "mutation {mutation} returned the wrong predicate code"
             );
         }
 
@@ -5424,11 +5447,58 @@ mod tests {
             let mut frame = valid_config_frame(&home);
             frame["result"]["origins"][legacy_key] =
                 frame["result"]["origins"]["project_root_markers.0"].clone();
-            assert!(
-                super::validate_effective_config(&frame, &home).is_err(),
-                "non-leaf origin {legacy_key} was accepted"
+            assert_eq!(
+                super::validate_effective_config(&frame, &home)
+                    .unwrap_err()
+                    .to_string(),
+                "config preflight failed [CFG_ORIGIN_COUNT]",
+                "non-leaf origin {legacy_key} returned the wrong predicate code"
             );
         }
+
+        for (origin, code) in [
+            ("cli_auth_credentials_store", "CFG_ORIGIN_USER"),
+            ("analytics.enabled", "CFG_ORIGIN_SESSION"),
+        ] {
+            let mut frame = valid_config_frame(&home);
+            frame["result"]["origins"][origin]["version"] = json!("wrong-version");
+            assert_eq!(
+                super::validate_effective_config(&frame, &home)
+                    .unwrap_err()
+                    .to_string(),
+                format!("config preflight failed [{code}]")
+            );
+        }
+
+        for feature in ["hooks", "plugins", "apps", "shell_snapshot", "memories"] {
+            let mut frame = valid_config_frame(&home);
+            frame["result"]["config"]["features"][feature] = json!(true);
+            assert_eq!(
+                super::validate_effective_config(&frame, &home)
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "config preflight failed [CFG_FEATURE_{}]",
+                    feature.to_ascii_uppercase()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn config_predicate_codes_are_the_only_diagnostic_detail_in_sanitized_artifacts() {
+        let sanitized = super::sanitized_error_text(
+            r"config preflight failed [CFG_SYSTEM_PATH]: C:\private\account\config.toml",
+        );
+        assert_eq!(
+            sanitized,
+            "protocol/scenario precondition failed [CFG_SYSTEM_PATH]"
+        );
+        assert!(!sanitized.contains("private"));
+        assert_eq!(
+            super::sanitized_error_text("untrusted server text CFG_PRIVATE_VALUE"),
+            "protocol/scenario precondition failed"
+        );
     }
 
     #[test]
@@ -5564,6 +5634,33 @@ fn write_artifacts(
 }
 
 fn sanitized_error_text(text: &str) -> String {
+    if let Some(code) = text
+        .split(|character: char| {
+            !(character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_')
+        })
+        .find(|token| {
+            matches!(
+                *token,
+                "CFG_RESULT_SHAPE"
+                    | "CFG_LAYER_COUNT"
+                    | "CFG_LAYER_SESSION"
+                    | "CFG_LAYER_USER"
+                    | "CFG_LAYER_SYSTEM"
+                    | "CFG_SYSTEM_PATH"
+                    | "CFG_ORIGIN_COUNT"
+                    | "CFG_ORIGIN_USER"
+                    | "CFG_ORIGIN_SESSION"
+                    | "CFG_EFFECTIVE_FIXED"
+                    | "CFG_FEATURE_HOOKS"
+                    | "CFG_FEATURE_PLUGINS"
+                    | "CFG_FEATURE_APPS"
+                    | "CFG_FEATURE_SHELL_SNAPSHOT"
+                    | "CFG_FEATURE_MEMORIES"
+            )
+        })
+    {
+        return format!("protocol/scenario precondition failed [{code}]");
+    }
     let lower = text.to_ascii_lowercase();
     if lower.contains("usage limit") || lower.contains("quota") || lower.contains("rate limit") {
         "quota/rate-limit precondition failed".to_owned()

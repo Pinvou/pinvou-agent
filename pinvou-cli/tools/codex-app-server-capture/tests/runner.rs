@@ -397,11 +397,11 @@ fn run_s2_rejects_missing_auth_generically_before_raw_capture() {
 
 #[test]
 fn config_preflight_rejects_layers_requirements_and_side_effects_before_threads() {
-    for mode in [
-        "config-managed-layer",
-        "config-side-effect",
-        "config-malformed",
-        "config-requirements",
+    for (mode, expected_code) in [
+        ("config-managed-layer", Some("CFG_LAYER_COUNT")),
+        ("config-side-effect", Some("CFG_EFFECTIVE_FIXED")),
+        ("config-malformed", Some("CFG_RESULT_SHAPE")),
+        ("config-requirements", None),
     ] {
         let output = temp_output(mode);
         let result = run_fake(mode, &output, 1_000);
@@ -411,6 +411,9 @@ fn config_preflight_rejects_layers_requirements_and_side_effects_before_threads(
         assert!(!capture.contains("thread/start"));
         let summary = std::fs::read_to_string(output.join("summary.txt")).unwrap();
         assert!(summary.contains("protocol/scenario precondition failed"));
+        if let Some(expected_code) = expected_code {
+            assert!(summary.contains(expected_code));
+        }
         assert!(!summary.contains("enterpriseManaged"));
         assert!(!summary.contains("mcp_servers"));
         std::fs::remove_dir_all(output).unwrap();
