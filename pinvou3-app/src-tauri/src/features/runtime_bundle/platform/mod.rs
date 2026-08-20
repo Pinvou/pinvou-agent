@@ -51,30 +51,13 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
-/// 14 个企微域技能目录名(门控写 / 删共用)。wecom-cli 1.1.0 起上游按服务模型
-/// 重排(`msg`→`message`、`schedule`→`calendar`,新增 disk/doc-manage/email/media/
-/// sheet/smartpage/shared),本地结构跟随上游,不再维持 0.1.9 时代的「sheet/smartpage
-/// 并入 doc」合并形态。
-const WECOM_SKILL_DIRS: [&str; 14] = [
-    "wecomcli-calendar",
-    "wecomcli-contact",
-    "wecomcli-disk",
-    "wecomcli-doc",
-    "wecomcli-doc-manage",
-    "wecomcli-email",
-    "wecomcli-media",
-    "wecomcli-meeting",
-    "wecomcli-message",
-    "wecomcli-shared",
-    "wecomcli-sheet",
-    "wecomcli-smartpage",
-    "wecomcli-smartsheet",
-    "wecomcli-todo",
-];
-
-/// 0.1.9 时代的旧技能目录名:1.1.0 重排后已不存在于包内,但存量用户解包目录里
-/// 可能残留,继续加载会教模型已死的命令(`msg`/`schedule` 服务),每次门控时清理。
-const WECOM_LEGACY_SKILL_DIRS: [&str; 2] = ["wecomcli-msg", "wecomcli-schedule"];
+// 企微技能目录表（14 新名 + 0.1.9 legacy 名）已下沉到
+// `crate::platform::connector_skills` 作为单一真相源：marketplace 注册表
+// （wecom 卡 skills 列表）、扁平布局迁移、`cli_bundle_of_skill` 反查与
+// `legacy_cli_records` 首启登记与本模块的门控写/删共用（五轮评审必修 3：
+// marketplace 侧曾按 0.1.9 旧表写死 7 技能，与本表分叉）。
+// 此处 re-export 保持本模块及 extraction 的既有引用不变。
+pub(crate) use crate::platform::connector_skills::{WECOM_LEGACY_SKILL_DIRS, WECOM_SKILL_DIRS};
 
 const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
 const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];

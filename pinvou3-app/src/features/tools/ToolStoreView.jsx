@@ -709,9 +709,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 勾选/取消某工具在某模式的可见性：checked = 可见。
       const toggleModeVisibility = (id, mode, checked) => {
         if (!canMutateToolStore || !visibilityLoaded || !id) return;
+        // 可见性按包 id 落库（后端 save_hidden_bundles_for 经 to_package_id 归一为包
+        // id，scope.rs；get_bundle_visibility 原样返回包 id）：companion 技能卡
+        // （government-writing→gongwen 等）先经 skillToMcp 映射为所属 MCP 包 id——
+        // 与安装态联动同一映射源（manifest companion_skills 反建，不随安装态变化），
+        // 否则写技能 id、读回包 id，勾选永不命中（五轮评审）。
+        const pkgId = skillToMcp[id] || id;
         const prev = hiddenByModeRef.current;
         const next = new Set(prev[mode] || []);
-        if (checked) next.delete(id); else next.add(id);
+        // 恢复可见时同时删包 id 与原始技能 id：兼容历史版本按独立技能 id 落库的
+        // hidden 条目（未装→装边界），该条目随本次整集写回被后端归一清理。
+        if (checked) { next.delete(pkgId); next.delete(id); } else next.add(pkgId);
         const nextState = { ...prev, [mode]: next };
         hiddenByModeRef.current = nextState;
         setHiddenByMode(nextState);
@@ -2033,7 +2041,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                             // 可见性读取未成功（visibilityLoaded=false）时同样禁用——handler 虽有
                                             // 早退，但可点而无反馈的勾选框会误导用户以为配置已生效（四轮评审）。
                                             const checkDisabled = !tool.backendId || !visibilityLoaded;
-                                            const visible = !(hiddenByMode[m.key] || new Set()).has(tool.backendId);
+                                            // 读回比对与写入同口径：后端 hidden 集按包 id 返回，companion 卡先经
+                                            // skillToMcp 映射为所属包 id；同时回退比对原始技能 id，兼容历史版本
+                                            // 按独立技能 id 落库的条目（未装→装边界）（五轮评审）。
+                                            const visPkgId = skillToMcp[tool.backendId] || tool.backendId;
+                                            const hiddenSet = hiddenByMode[m.key] || new Set();
+                                            const visible = !hiddenSet.has(visPkgId) && !hiddenSet.has(tool.backendId);
                                             return (
                                               <label key={m.key} className={`flex items-center gap-2 ${checkDisabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
                                                 <input

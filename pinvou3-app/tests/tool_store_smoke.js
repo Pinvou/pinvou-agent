@@ -47,7 +47,8 @@ function injectSource() {
     const BLOCKING_INSTALL_OAUTH_TOOLS=new Set(['yuandian-mcp','canva-mcp']);
     const state=window.__TOOL_STORE_TEST__={
       installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false,ima:false},
-      oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0,failVisibility:false
+      oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0,failVisibility:false,
+      hidden:{plain:[],code:[]}
     };
     window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
     window.__TAURI_EVENT_HANDLERS__={};
@@ -61,6 +62,16 @@ function injectSource() {
       {id:'tencent-docs-skill',title:'腾讯文档 MCP',subtitle:'官方远程 MCP:在线文档/表格/幻灯片读写与协作',description:'接入腾讯文档官方远程 MCP',icon:'FileText',color:'bg-gradient-to-b from-blue-500 to-indigo-600',installed:!!state.installed['tencent-docs'],user_uploaded:false},
     ];
     function record(cmd,args){state.calls.push({cmd,args:args||{}});}
+    // 复刻后端 to_package_id 归一（scope.rs + bundle.rs 条件认领）：剥 skill: 前缀后，
+    // companion 技能在所属 MCP 包已装时归一为包 id，未装保持技能 id 自身。
+    function toPackageId(raw){
+      const id=String(raw).replace(/^skill:/,'');
+      if(id==='ima-skills')return 'ima';
+      for(const [tid,[,companions]] of Object.entries(TOOL_META)){
+        if(companions.includes(id))return state.installed[tid]?tid:id;
+      }
+      return id;
+    }
     function invoke(cmd,args){
       record(cmd,args);
       switch(cmd){
@@ -154,9 +165,11 @@ function injectSource() {
           return Promise.reject(new Error('未知能力包 '+id));
         }
         case 'feishu_ensure_cli': case 'wecom_ensure_cli': case 'dingtalk_ensure_cli': case 'tmeet_ensure_cli': case 'feishu_connect_begin': case 'wecom_connect_begin': case 'dingtalk_connect_begin': case 'tmeet_connect_begin': return Promise.resolve(null);
-        // 按会话模式的可见性读写：failVisibility 模拟读取失败（四轮评审冒烟）。
-        case 'get_bundle_visibility': return state.failVisibility ? Promise.reject(new Error('mock visibility read failure')) : Promise.resolve([]);
-        case 'set_bundle_visibility': return Promise.resolve(null);
+        // 按会话模式的可见性读写：failVisibility 模拟读取失败（四轮评审冒烟）；
+        // 写入复刻后端 save_hidden_bundles_for 归一为包 id、读回原样返回（五轮评审：
+        // mock 不再 no-op，勾选往返才可测）。
+        case 'get_bundle_visibility': return state.failVisibility ? Promise.reject(new Error('mock visibility read failure')) : Promise.resolve(state.hidden[args.scope]||[]);
+        case 'set_bundle_visibility': state.hidden[args.scope]=(args.bundleIds||[]).map(toPackageId); return Promise.resolve(null);
         case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': case 'open_external_url': return Promise.resolve(null);
         default: return Promise.resolve(null);
       }
@@ -231,6 +244,29 @@ async function closeDetail(page, title) {
     if(close)close.click();
   },title);
   await sleep(100);
+}
+// 管理可见性开关按当前文案状态切换（zh-Hans：管理可见性/完成），避免告警遮罩吞掉
+// 上一次点击后盲切导致的相位错乱。
+async function setManaging(page, want) {
+  const on=await page.evaluate(()=>[...document.querySelectorAll('[data-testid="tool-store-manage-visibility"]')]
+    .some(b=>(b.textContent||'').trim()==='完成'));
+  if(on!==want){await page.click('[data-testid="tool-store-manage-visibility"]');await sleep(300);}
+}
+// 管理可见性编辑态下定位某卡某模式的勾选框（modeLabel 取 zh-Hans 文案，冒烟默认语言）；
+// click=true 时点击（勾选态在点击后异步更新，调用方需 sleep 后重新查询）。
+async function visibilityBox(page, cardText, modeLabel, click) {
+  return page.evaluate((cardText, modeLabel, click) => {
+    const labels=[...document.querySelectorAll('label')].filter(l=>{
+      const input=l.querySelector('input[type="checkbox"]');
+      const span=l.querySelector('span');
+      return input&&span&&(span.textContent||'').trim()===modeLabel;
+    });
+    const label=labels.find(l=>{let p=l;for(let i=0;i<10&&p;i++,p=p.parentElement){if((p.textContent||'').includes(cardText))return true;}return false;});
+    if(!label)return {found:false};
+    const box=label.querySelector('input[type="checkbox"]');
+    if(click&&!box.disabled)box.click();
+    return {found:true,checked:box.checked,disabled:box.disabled};
+  }, cardText, modeLabel, click);
 }
 
 (async () => {
@@ -472,6 +508,40 @@ async function closeDetail(page, title) {
   }));
   await page.click('[data-testid="tool-store-manage-visibility"]');
   await dismiss(page);
+
+  // companion 卡可见性 id 往返（五轮评审）：勾选隐藏的写入须归一为所属包 id
+  // （government-writing→gongwen，与安装态联动同源 skillToMcp）；mock 复刻后端归一后
+  // 重进管理态读回，勾选态须保持——旧实现写技能 id、读回包 id，勾选永不命中。
+  await page.evaluate(()=>{window.__TOOL_STORE_TEST__.failVisibility=false;});
+  await search(page,'党政机关公文写作');
+  // 上一轮读取失败的告警遮罩可能吞掉关闭点击，先按实际状态确保已退出管理态。
+  await setManaging(page,false);
+  await setManaging(page,true);
+  const boxBefore=await visibilityBox(page,'党政机关公文写作','普通会话',false);
+  rec('companion 卡可见性勾选框初始为可见',boxBefore.found&&boxBefore.checked&&!boxBefore.disabled,
+    boxBefore.found?'':await page.evaluate(()=>JSON.stringify({
+      boxes:[...document.querySelectorAll('input[type="checkbox"]')].length,
+      labels:[...document.querySelectorAll('label')].map(l=>(l.textContent||'').trim()).slice(0,10),
+      hasCard:document.body.innerText.includes('党政机关公文写作'),
+      managing:[...document.querySelectorAll('[data-testid="tool-store-manage-visibility"]')].map(b=>(b.textContent||'').trim()),
+    })));
+  await visibilityBox(page,'党政机关公文写作','普通会话',true);
+  await sleep(250);
+  rec('companion 卡隐藏写入归一为所属包 id',await page.evaluate(()=>{
+    const call=[...window.__TOOL_STORE_TEST__.calls].reverse().find(x=>x.cmd==='set_bundle_visibility'&&x.args.scope==='plain');
+    return !!call&&call.args.bundleIds.includes('gongwen')&&!call.args.bundleIds.includes('government-writing');
+  }));
+  await setManaging(page,false);
+  await setManaging(page,true);
+  const boxAfterHide=await visibilityBox(page,'党政机关公文写作','普通会话',false);
+  rec('companion 卡隐藏后重进读回仍为隐藏（往返一致）',boxAfterHide.found&&!boxAfterHide.checked);
+  await visibilityBox(page,'党政机关公文写作','普通会话',true);
+  await sleep(250);
+  await setManaging(page,false);
+  await setManaging(page,true);
+  const boxAfterShow=await visibilityBox(page,'党政机关公文写作','普通会话',false);
+  rec('companion 卡恢复可见后重进读回为可见',boxAfterShow.found&&boxAfterShow.checked);
+  await setManaging(page,false);
 
   const calls=await page.evaluate(()=>window.__TOOL_STORE_TEST__.calls);
   rec('用户 Key 工具安装调用携带对应配置',calls.filter(x=>x.cmd==='install_marketplace_tool').every(x=>{

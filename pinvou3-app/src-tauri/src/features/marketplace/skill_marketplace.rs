@@ -558,8 +558,10 @@ impl SkillMarketplaceManager {
 
         let result = (|| -> Result<String, String> {
             // 实际写盘字节计量：pass1 只累计 zip 头部声明 size，可被伪造（声明很小、
-            // 真实解压很大的 zip bomb）。按 read_to_end 的真实字节兜底，口径与
-            // plugin_import 一致（四轮评审 M-4）。超限由外层清 staged 拒收。
+            // 真实解压很大的 zip bomb）。读取经 read_zip_entry_bounded 有界收口
+            // （take(声明+1)，伪造 size=0 头部的单条 zip bomb 先被拒，不会完整读入
+            // 内存，与新管线 plugin_import 对齐，五轮评审 M-5），再按真实字节累计
+            // 兜底（四轮评审 M-4）。超限由外层清 staged 拒收。
             let mut actual_total: u64 = 0;
             for i in 0..archive.len() {
                 let mut entry = archive
@@ -595,10 +597,9 @@ impl SkillMarketplaceManager {
                 if let Some(p) = target.parent() {
                     std::fs::create_dir_all(p).map_err(|e| format!("建目录: {e}"))?;
                 }
-                let mut buf = Vec::new();
-                entry
-                    .read_to_end(&mut buf)
-                    .map_err(|e| format!("读条目: {e}"))?;
+                let declared = entry.size();
+                let buf =
+                    super::plugin_import::read_zip_entry_bounded(&mut entry, declared, "条目")?;
                 actual_total = actual_total.saturating_add(buf.len() as u64);
                 if actual_total > MAX_SKILL_SIZE_BYTES {
                     return Err(format!(
@@ -642,6 +643,9 @@ impl SkillMarketplaceManager {
     ///
     /// - 市场技能（带 `.installed-from` 标记）→ 移动到所属包目录；预置技能迁移后
     ///   把目录指纹补写进既有 BundleStore 记录（update_available 的比对基准）；
+    /// - 企微 0.1.9 退役目录（msg/schedule，无标记）→ 删除而非搬移：搬进
+    ///   `bundles/wecom/skills/` 后门控的 legacy 清理（只扫旧扁平目录）够不到，
+    ///   退役技能会永久残留并被物化进会话（五轮评审必修 3）；
     /// - CLI companion（无标记，内置清单目录名）：连接器当前可见才移动；不可见 =
     ///   断开后的残留，按门控语义删除（immutable 资源，重连重解包，无用户数据）；
     /// - 无标记的其它目录（内置释放技能 visual-design、手放目录）→ 不动；
@@ -675,6 +679,17 @@ impl SkillMarketplaceManager {
                 .trim()
                 .to_string();
             if marker.is_empty() {
+                // 企微 0.1.9 退役目录（msg/schedule）：不搬移、直接删除——它们已
+                // 不在内置清单（cli_bundle_of_skill 反查不命中），且无论连接器
+                // 可见与否都已退役；门控的 legacy 清理只扫旧扁平目录，搬进新布局
+                // 会永久残留（五轮评审必修 3）。
+                if crate::platform::connector_skills::WECOM_LEGACY_SKILL_DIRS
+                    .contains(&name.as_str())
+                {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    report.removed_stale.push(name);
+                    continue;
+                }
                 if let Some(cli) = super::bundle::cli_bundle_of_skill(&name) {
                     if crate::platform::connector_state::skills_visible_for(cli) {
                         self.move_skill_dir(&dir, &name, &target, &mut report);
@@ -1538,6 +1553,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// 伪造 zip 头部（中央目录声明 size=0、压缩流真实解压非空）的条目必须被
+    /// pass2 有界读取（read_zip_entry_bounded）响亮拒收，不能完整读入内存
+    /// （五轮评审 M-5：旧管线与新管线 plugin_import 防护对齐）。
+    #[test]
+    fn import_package_named_rejects_forged_size_header() {
+        use std::io::Write;
+        let tmp = fresh_dir("forged_header");
+        let zip_path = tmp.join("pkg.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("bomb-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: bomb-skill\ndescription: d\n---\n# hi")
+                .unwrap();
+            zw.start_file("bomb-skill/big.txt", opts).unwrap();
+            zw.write_all(&[b'x'; 64]).unwrap();
+            zw.finish().unwrap();
+        }
+        // 篡改中央目录：把 big.txt 条目的「未压缩大小」字段（条目内偏移 24）
+        // 改为 0（伪造头部）；压缩流保持原样，真实解压仍非空。
+        let mut bytes = std::fs::read(&zip_path).unwrap();
+        let name = b"bomb-skill/big.txt";
+        let sig = 0x02014b50u32.to_le_bytes();
+        let pos = (0..bytes.len().saturating_sub(50 + name.len()))
+            .find(|&p| bytes[p..p + 4] == sig && &bytes[p + 46..p + 46 + name.len()] == name)
+            .expect("中央目录应含 big.txt 条目");
+        bytes[pos + 24..pos + 28].copy_from_slice(&0u32.to_le_bytes());
+        std::fs::write(&zip_path, &bytes).unwrap();
+
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        let err = mgr
+            .import_package_named(zip_path.to_str().unwrap(), "pkg.zip")
+            .unwrap_err();
+        assert!(
+            err.contains("超过 zip 头声明"),
+            "伪造头部条目应被有界读取拒收，实际: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// 更新检测（指纹口径）：刚安装（记录=嵌入=磁盘）→ false；本地篡改/删除/新增
     /// 文件（磁盘 ≠ 记录）→ true；模拟上游更新（记录指纹滞后于嵌入资源）→ true；
     /// 重装后恢复 false。未安装恒 false。
@@ -1860,6 +1916,45 @@ mod tests {
                 "不应迁移出连接器包目录"
             );
             assert_eq!(report.removed_stale, vec!["lark-shared".to_string()]);
+        });
+    }
+
+    /// 企微 0.1.9 退役目录（msg/schedule）迁移走删除而非搬移：搬进
+    /// `bundles/wecom/skills/` 后门控的 legacy 清理（只扫旧扁平目录）够不到，
+    /// 退役技能会永久残留并被物化进会话（五轮评审必修 3）。14 个新名正常搬移。
+    #[test]
+    fn migrate_deletes_retired_wecom_skills_instead_of_moving() {
+        with_temp_home(|| {
+            let home = paths::pinvou3_home();
+            let legacy = paths::bundle_skills_dir();
+            // 退役名 + 一个新名（连接器可见 = 无 wecom_disabled 文件）
+            for name in ["wecomcli-msg", "wecomcli-schedule", "wecomcli-message"] {
+                let dir = legacy.join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\n---\n")).unwrap();
+            }
+
+            let report = SkillMarketplaceManager::new().migrate_flat_skills_layout();
+
+            for retired in ["wecomcli-msg", "wecomcli-schedule"] {
+                assert!(!legacy.join(retired).exists(), "{retired} 旧位置应删除");
+                assert!(
+                    !home
+                        .join(format!("bundles/wecom/skills/{retired}"))
+                        .exists(),
+                    "{retired} 不得搬入新布局"
+                );
+                assert!(
+                    report.removed_stale.contains(&retired.to_string()),
+                    "{retired} 应记入 removed_stale: {report:?}"
+                );
+            }
+            assert!(
+                home.join("bundles/wecom/skills/wecomcli-message/SKILL.md")
+                    .is_file(),
+                "新名应正常搬移到连接器包目录"
+            );
+            assert_eq!(report.moved, vec!["wecomcli-message".to_string()]);
         });
     }
 }

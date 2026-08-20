@@ -214,7 +214,16 @@ async_command_passthrough!(feishu_domain, feishu_status() -> Result<Value, Strin
 async_command_passthrough!(feishu_domain, feishu_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(feishu_domain, feishu_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(feishu_domain, feishu_logout() -> Result<Value, String>);
-async_command_passthrough!(feishu_domain, feishu_apply_skills() -> Result<Value, String>);
+/// 连接成功/断开后的技能门控收口：domain 层按 show 增删技能落盘、show=true 时
+/// 同步各 scope 禁用集 → 热刷 execpolicy 规则集（五轮评审 M-6：纯转发不刷
+/// ruleset，在跑引擎 CLI 硬拦截过期 = fail-open）。对照 `ima_connect` 与
+/// `set_feishu_enabled`（M-6a）的热刷做法。
+#[tauri::command]
+pub async fn feishu_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
+    let result = feishu_domain::feishu_apply_skills().await?;
+    pool.refresh_permission_rulesets().await;
+    Ok(result)
+}
 /// 连接器开关：domain 层写停用标志并同步各 scope 禁用集 → 热刷 execpolicy 规则集
 /// （四轮评审 M-6a：纯转发不刷 ruleset，在跑引擎 CLI 硬拦截过期 = fail-open）。
 /// 对照 `set_disabled_connectors` 的热刷做法。
@@ -241,7 +250,14 @@ async_command_passthrough!(wecom_domain, wecom_status() -> Result<Value, String>
 async_command_passthrough!(wecom_domain, wecom_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(wecom_domain, wecom_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(wecom_domain, wecom_logout() -> Result<Value, String>);
-async_command_passthrough!(wecom_domain, wecom_apply_skills() -> Result<Value, String>);
+/// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
+/// execpolicy 规则集。
+#[tauri::command]
+pub async fn wecom_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
+    let result = wecom_domain::wecom_apply_skills().await?;
+    pool.refresh_permission_rulesets().await;
+    Ok(result)
+}
 /// 同 `set_feishu_enabled`（M-6a）：开关落盘后热刷 execpolicy 规则集。
 #[tauri::command]
 pub async fn set_wecom_enabled(
@@ -266,7 +282,14 @@ async_command_passthrough!(dingtalk_domain, dingtalk_status() -> Result<Value, S
 async_command_passthrough!(dingtalk_domain, dingtalk_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(dingtalk_domain, dingtalk_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(dingtalk_domain, dingtalk_logout() -> Result<Value, String>);
-async_command_passthrough!(dingtalk_domain, dingtalk_apply_skills() -> Result<Value, String>);
+/// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
+/// execpolicy 规则集。
+#[tauri::command]
+pub async fn dingtalk_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
+    let result = dingtalk_domain::dingtalk_apply_skills().await?;
+    pool.refresh_permission_rulesets().await;
+    Ok(result)
+}
 /// 同 `set_feishu_enabled`（M-6a）：开关落盘后热刷 execpolicy 规则集。
 #[tauri::command]
 pub async fn set_dingtalk_enabled(
@@ -291,7 +314,14 @@ async_command_passthrough!(tmeet_domain, tmeet_status() -> Result<Value, String>
 async_command_passthrough!(tmeet_domain, tmeet_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(tmeet_domain, tmeet_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(tmeet_domain, tmeet_logout() -> Result<Value, String>);
-async_command_passthrough!(tmeet_domain, tmeet_apply_skills() -> Result<Value, String>);
+/// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
+/// execpolicy 规则集。
+#[tauri::command]
+pub async fn tmeet_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
+    let result = tmeet_domain::tmeet_apply_skills().await?;
+    pool.refresh_permission_rulesets().await;
+    Ok(result)
+}
 /// 同 `set_feishu_enabled`（M-6a）：开关落盘后热刷 execpolicy 规则集。
 #[tauri::command]
 pub async fn set_tmeet_enabled(

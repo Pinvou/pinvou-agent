@@ -44,16 +44,11 @@ pub const LARK_SKILL_DIRS: &[&str] = &[
     "lark-wiki",
     "lark-base",
 ];
-/// 7 个企微域技能目录名。
-pub const WECOM_SKILL_DIRS: &[&str] = &[
-    "wecomcli-msg",
-    "wecomcli-doc",
-    "wecomcli-meeting",
-    "wecomcli-schedule",
-    "wecomcli-todo",
-    "wecomcli-contact",
-    "wecomcli-smartsheet",
-];
+/// 企微域技能目录名（wecom-cli 1.1.0 服务模型重排后 14 个）。真相源在
+/// `crate::platform::connector_skills`（runtime_bundle 解包门控与 marketplace
+/// 注册表/迁移/反查/首启登记共用，五轮评审必修 3：曾按 0.1.9 旧表写死 7 技能
+/// 与门控侧分叉）；0.1.9 退役名（msg/schedule）见同模块 `WECOM_LEGACY_SKILL_DIRS`。
+pub const WECOM_SKILL_DIRS: &[&str] = &crate::platform::connector_skills::WECOM_SKILL_DIRS;
 /// 钉钉 mono skill 目录名。
 pub const DINGTALK_SKILL_DIRS: &[&str] = &["dws"];
 /// 腾讯会议 mono skill 目录名。
@@ -889,6 +884,35 @@ mod tests {
         assert_eq!(keyring_target(CredentialTarget::Credential), "credential");
     }
 
+    /// 五轮评审必修 3：wecom 技能表与 `platform::connector_skills` 单一真相源
+    /// 一致（1.1.0 的 14 新名）；9 个新名反查命中 wecom 包（DenyAll 默认集 /
+    /// `skill_owner_package` 归属推导），0.1.9 退役名（msg/schedule）不进表、
+    /// 反查不命中。
+    #[test]
+    fn wecom_skill_dirs_track_platform_truth() {
+        let dirs = cli_bundle_skill_dirs("wecom");
+        assert_eq!(
+            dirs,
+            crate::platform::connector_skills::WECOM_SKILL_DIRS.as_slice(),
+            "marketplace 侧表必须引用 platform 单一真相源"
+        );
+        assert_eq!(dirs.len(), 14);
+        // 新名（0.1.9 旧表里没有的）反查命中
+        for name in ["wecomcli-calendar", "wecomcli-message", "wecomcli-disk"] {
+            assert_eq!(
+                cli_bundle_of_skill(name),
+                Some("wecom"),
+                "{name} 应反查命中"
+            );
+            assert_eq!(skill_owner_package(name), "wecom", "{name} 归属应为 wecom");
+        }
+        // 退役名不再是合法 companion
+        for legacy in crate::platform::connector_skills::WECOM_LEGACY_SKILL_DIRS {
+            assert!(!dirs.contains(&legacy), "{legacy} 不应在现行表");
+            assert_eq!(cli_bundle_of_skill(legacy), None, "{legacy} 反查应不命中");
+        }
+    }
+
     #[test]
     fn collects_tool_credentials() {
         let tool = super::super::ToolManifest {
@@ -1008,6 +1032,25 @@ mod tests {
                 !bundles.iter().any(|b| b.id == "ima-skills"),
                 "ima-skills 不得独立成包"
             );
+            // wecom 卡 skills = 1.1.0 的 14 新名（五轮评审必修 3：曾按 0.1.9 旧表
+            // 显示 7 个含已死的 msg/schedule、漏 9 个新名）；退役名不得出现
+            let wecom = bundles
+                .iter()
+                .find(|b| b.id == "wecom")
+                .expect("wecom 包应存在");
+            assert_eq!(wecom.skills.len(), 14, "wecom 卡应列 14 个新技能");
+            for new_name in ["wecomcli-calendar", "wecomcli-message", "wecomcli-disk"] {
+                assert!(
+                    wecom.skills.contains(&new_name.to_string()),
+                    "wecom 卡应含新技能 {new_name}"
+                );
+            }
+            for legacy in crate::platform::connector_skills::WECOM_LEGACY_SKILL_DIRS {
+                assert!(
+                    !wecom.skills.contains(&legacy.to_string()),
+                    "wecom 卡不得含退役技能 {legacy}"
+                );
+            }
             // id 唯一（一个包 = 一个开关的前提）
             let mut ids: Vec<&str> = bundles.iter().map(|b| b.id.as_str()).collect();
             ids.sort_unstable();

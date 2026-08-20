@@ -128,35 +128,132 @@ pub fn is_safe_component_id(id: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
-/// 目标包目录与本次导入是否「同一包」：带 plugin.json 的包按 plugin.json **语义**
-/// 比对（落盘是 `to_string_pretty` 规范化字节，与 zip 原始字节直比必误判冲突）；
-/// 裸技能包（无 plugin.json）按落盘后的 SKILL.md（`skills/<id>/SKILL.md`）比对；
-/// 裸 MCP 包（无 plugin.json 无 SKILL.md）按规范化落盘的 `mcp/manifest.json` 语义
-/// 比对。任一主内容一致即视为同包重导（允许原子替换），否则视为不同包冲突。
+/// 目标包目录与本次导入是否「同一包」：全内容比对（五轮评审）——此前带
+/// plugin.json 的包只比对 plugin.json 语义，`mcp/manifest.json`、`server.py`、
+/// `skills/*/SKILL.md` 等执行代码都不参与冲突比对，重导同 id 包可静默替换
+/// 已装工具的代码。现在按「落盘后的规范化布局」全量比对：
+/// - plugin.json 按**语义**比对（落盘是 `to_string_pretty` 规范化字节，裸包为
+///   派生清单，与 zip 原始字节直比必误判冲突）；
+/// - 其余可落盘条目按 zip 字节与磁盘字节逐一比对（pass2 原样写字节，无规范化，
+///   `server.py` / SKILL.md 正文 / `mcp/manifest.json` 任一改动都判冲突）；
+/// - 包内图标参与比对；磁盘侧 `mcp/`、`skills/` 下多出的文件（zip 已不再携带
+///   的内容）同样判不同，但容忍 Python 运行缓存（`__pycache__/`、`*.pyc`）。
+/// 全部一致才视为同包重导（允许原子替换），任一不符视为不同包冲突。
 fn same_package_content(
     pkg_dir: &std::path::Path,
-    incoming_plugin: Option<&[u8]>,
-    incoming_skill: Option<&(String, Vec<u8>)>,
-    incoming_mcp: Option<&[u8]>,
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    manifest_bytes: Option<&[u8]>,
+    det: &ComponentDetection,
+    all_paths: &[String],
+    icon_entry: Option<&(String, Vec<u8>)>,
 ) -> bool {
-    if let Some(bytes) = incoming_plugin {
-        return plugin_manifest_semantic_eq(&pkg_dir.join("plugin.json"), bytes);
+    // 1) plugin.json 语义比对：带声明的包比原始声明，裸包比确定性派生清单。
+    let plugin_eq = match manifest_bytes {
+        Some(bytes) => plugin_manifest_semantic_eq(&pkg_dir.join("plugin.json"), bytes),
+        None => {
+            let synth = serde_json::to_value(synthesized_manifest(det)).ok();
+            let disk = std::fs::read(pkg_dir.join("plugin.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+            match (disk, synth) {
+                (Some(disk), Some(synth)) => disk == synth,
+                _ => false,
+            }
+        }
+    };
+    if !plugin_eq {
+        return false;
     }
-    if let Some((_, bytes)) = incoming_skill {
-        let name = pkg_dir
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned());
-        if let Some(name) = name {
-            let skill_md = pkg_dir.join("skills").join(name).join("SKILL.md");
-            return std::fs::read(&skill_md)
-                .map(|existing| existing.as_slice() == bytes)
-                .unwrap_or(false);
+
+    // 2) 可落盘条目逐一比对（landing 与跳过口径与 pass2 完全一致）。
+    let bare_skill = det
+        .bare_skill
+        .as_ref()
+        .map(|(r, n)| (r.as_str(), n.as_str()));
+    let bare_mcp = det.bare_mcp.as_ref().map(|(r, n)| (r.as_str(), n.as_str()));
+    let mut landed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for path_str in all_paths {
+        let Some((subdir, rel)) = landing_target(path_str, bare_skill, bare_mcp) else {
+            continue; // plugin.json / icon 单独比对
+        };
+        if rel.is_empty() || rel.split('/').any(|c| c.starts_with('.')) {
+            continue; // 与 pass2 相同的跳过口径（未落盘，不参与比对）
+        }
+        let Ok(mut entry) = archive.by_name(path_str) else {
+            return false;
+        };
+        let declared_size = entry.size();
+        let Ok(buf) = read_zip_entry_bounded(&mut entry, declared_size, path_str) else {
+            return false; // 条目不可读/伪造头部 → 保守判冲突
+        };
+        let Ok(existing) = std::fs::read(pkg_dir.join(&subdir).join(&rel)) else {
+            return false; // zip 有而磁盘无 → 内容不同
+        };
+        if existing != buf {
+            return false;
+        }
+        landed.insert(format!("{subdir}/{rel}"));
+    }
+
+    // 3) 包内图标比对（缺省图标是常量 DEFAULT_ICON_SVG，无需比对）。
+    if let Some((icon_path, bytes)) = icon_entry {
+        let ext = if icon_path.to_ascii_lowercase().ends_with(".png") {
+            "png"
+        } else {
+            "svg"
+        };
+        match std::fs::read(pkg_dir.join(format!("icon.{ext}"))) {
+            Ok(existing) if existing == *bytes => {}
+            _ => return false,
         }
     }
-    if let Some(bytes) = incoming_mcp {
-        return json_bytes_semantic_eq(&pkg_dir.join("mcp").join("manifest.json"), bytes);
+
+    // 4) 反向比对：磁盘 `mcp/`、`skills/` 下存在而本次 zip 不再携带的文件 →
+    //    内容不同（容忍 Python 运行缓存，其余子树如 plugin.json/icon 已单独处理）。
+    for subdir in ["mcp", "skills"] {
+        let root = pkg_dir.join(subdir);
+        if !root.is_dir() {
+            continue;
+        }
+        let mut disk_files = Vec::new();
+        if collect_landed_disk_files(&root, &root, &mut disk_files).is_err() {
+            return false;
+        }
+        for rel in disk_files {
+            if !landed.contains(&format!("{subdir}/{rel}")) {
+                return false;
+            }
+        }
     }
-    false
+    true
+}
+
+/// 收集包子树（`mcp/`、`skills/`）下已落盘文件的相对路径，排除 Python 运行
+/// 缓存（`__pycache__/` 子树与 `*.pyc`，MCP server 跑过会就地生成，不算内容差异）。
+fn collect_landed_disk_files(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<String>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_landed_disk_files(root, &path, out)?;
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if rel.split('/').any(|c| c == "__pycache__") || rel.to_ascii_lowercase().ends_with(".pyc")
+        {
+            continue;
+        }
+        out.push(rel);
+    }
+    Ok(())
 }
 
 /// 目录 rename 的 Windows 瞬时占用重试：杀毒/索引器会短暂持有新建目录内
@@ -199,26 +296,13 @@ fn plugin_manifest_semantic_eq(disk_path: &std::path::Path, incoming: &[u8]) -> 
     }
 }
 
-/// 落盘 JSON 文件与 zip 内原始字节的语义比对：各自解析为 `serde_json::Value` 后
-/// 比较（键序/空白/格式化差异不误判）；任一侧解析失败回退字节直比（保守）。
-fn json_bytes_semantic_eq(disk_path: &std::path::Path, incoming: &[u8]) -> bool {
-    let Ok(existing) = std::fs::read(disk_path) else {
-        return false;
-    };
-    match (
-        serde_json::from_slice::<serde_json::Value>(&existing),
-        serde_json::from_slice::<serde_json::Value>(incoming),
-    ) {
-        (Ok(existing), Ok(incoming)) => existing == incoming,
-        _ => existing.as_slice() == incoming,
-    }
-}
-
 /// 有界读取 zip 条目到内存（四轮评审 M-5）：`take(声明 size + 1)` 截断底层流——
 /// 伪造 `size=0` 头部的条目在不受限 `read_to_end` 下会绕过声明预算先撑爆内存；
 /// 多读 1 字节用于发现「实际 > 声明」的伪造头部并响亮拒收（zip 规范要求解压
 /// 大小等于头部声明，诚实的条目不会触发）。
-fn read_zip_entry_bounded(
+/// `pub(crate)`：旧 zip 技能包管线（skill_marketplace pass2）复用同一收口
+/// （五轮评审 M-5 残留：两条管线防护对齐）。
+pub(crate) fn read_zip_entry_bounded(
     entry: &mut impl std::io::Read,
     declared_size: u64,
     what: &str,
@@ -669,6 +753,21 @@ pub fn import_plugin_package(
     let kind = crate::features::marketplace::bundle::derive_bundle_kind(&mcp_servers, &skills, &[])
         .map_err(|_| "插件包不含任何组件（空包）".to_string())?;
 
+    // 未声明技能子树拒收（五轮评审）：detect 只登记声明/识别出的技能，而落盘的
+    // `skills/` 前缀分支按路径无条件放行——zip 额外夹带的 `skills/<other>/` 会
+    // 静默落盘成无卡片、无开关、卸载保护残留的不可见孤儿技能（与四轮 M-3 相反
+    // 方向的缺口：M-3 修「声明的不落盘」，这里修「落盘的不在声明里」）。
+    for p in &all_paths {
+        if let Some(rest) = p.strip_prefix("skills/") {
+            let name = rest.split('/').next().unwrap_or("");
+            if !name.is_empty() && !skills.iter().any(|s| s == name) {
+                return Err(format!(
+                    "技能子树 'skills/{name}/' 未在包声明/识别的技能列表中，拒收（避免不可见孤儿技能落盘）"
+                ));
+            }
+        }
+    }
+
     // 拒绝与预置/内置包 id 冲突：用户上传包顶替市场预置会让 UI/默认值/资源池
     // 全部错位，且无法回滚（预置版本指纹与上传不同）。内置 CLI 连接器另由
     // `mcp_catalog` 索引覆盖（结构 Rust 函数式 API）。
@@ -735,21 +834,6 @@ pub fn import_plugin_package(
     // 落盘到 staged：mcp/ + skills/ 子树 + 裸包回退规范化 → bundles/<id>/ 原子 rename。
     // 注：旧 spanner/ 与 runtime/ 子树已删除，导入侧不再识别这两类前缀。
     let pkg_dir = crate::platform::paths::bundles_root().join(&id);
-    // 裸 MCP 重导比对输入：规范化 `mcp/manifest.json` 优先；裸包（manifest.json 在
-    // 任意目录）取识别出的回退根 manifest 原始字节。
-    let incoming_mcp: Option<&[u8]> = mcp_manifest_bytes.as_deref().or_else(|| {
-        det.bare_mcp.as_ref().and_then(|(root, _)| {
-            let rel = if root.is_empty() {
-                "manifest.json".to_string()
-            } else {
-                format!("{root}/manifest.json")
-            };
-            other_manifests
-                .iter()
-                .find(|(p, _)| *p == rel)
-                .map(|(_, b)| b.as_slice())
-        })
-    });
     // 进程内导入互斥（四轮评审 M-4）：同 id 并发导入共享 staged `.tmp` 与 `.old`
     // 备份路径，且冲突检查与原子 rename 之间无锁即 TOCTOU——持锁覆盖「冲突检查
     // → 原子 rename 完成」整段临界区（guard 至函数尾生效，详见 import_lock_for）。
@@ -757,13 +841,17 @@ pub fn import_plugin_package(
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
-    // 重导/升级，允许走原子替换。
+    // 重导/升级，允许走原子替换。比对为全内容口径（五轮评审，详见
+    // same_package_content）：plugin.json 语义 + 全部可落盘条目字节 + 图标 +
+    // 磁盘多余文件，server.py/SKILL.md 等执行代码改动同样判冲突。
     if pkg_dir.exists()
         && !same_package_content(
             &pkg_dir,
+            &mut archive,
             manifest_bytes.as_deref(),
-            best_skill_md.as_ref(),
-            incoming_mcp,
+            &det,
+            &all_paths,
+            icon_entry.as_ref(),
         )
     {
         return Err(format!(
@@ -1584,6 +1672,161 @@ mod tests {
         );
         assert!(
             !dir.join("bundles").join("demo").exists(),
+            "拒收不得落盘包目录"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 全内容比对（五轮评审必修 1）：重导同 id 包，plugin.json 语义不变但
+    /// server.py 换代码 / SKILL.md 正文全换（frontmatter name 保持以过 §8）——
+    /// 此前只比对 plugin.json，冲突检查放行导致已装工具的执行代码被静默替换；
+    /// 现在任一可落盘条目字节不同都必须判「内容不同」冲突。
+    #[test]
+    fn reimport_with_changed_component_content_is_rejected() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-reimport-content-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let write_zip = |server_py: &[u8], skill_md: &[u8]| {
+            let zip_path = dir.join("combo.zip");
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("plugin.json", opts).unwrap();
+            zw.write_all(
+                r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("mcp/manifest.json", opts).unwrap();
+            zw.write_all(
+                r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["demo"]}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("mcp/server.py", opts).unwrap();
+            zw.write_all(server_py).unwrap();
+            zw.start_file("skills/demo/SKILL.md", opts).unwrap();
+            zw.write_all(skill_md).unwrap();
+            zw.finish().unwrap();
+            zip_path
+        };
+
+        let zip_path = write_zip(b"print('v1')", b"---\nname: demo\n---\n# v1");
+        let first = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap();
+        assert_eq!(first.id, "demo");
+        // 同包同内容重导仍放行（原子替换）。
+        import_plugin_package(&zip_path.to_string_lossy(), "combo.zip")
+            .unwrap_or_else(|e| panic!("同包同内容重导应放行，实际报错: {e}"));
+
+        // 对照 1：plugin.json 不变、server.py 换任意代码 → 必须报冲突。
+        let zip_path = write_zip(b"print('pwned')", b"---\nname: demo\n---\n# v1");
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap_err();
+        assert!(
+            err.contains("内容不同"),
+            "server.py 变更应报冲突，实际: {err}"
+        );
+
+        // 对照 2：plugin.json 不变、SKILL.md 正文全换（frontmatter name 保持）→
+        // 必须报冲突。
+        let zip_path = write_zip(
+            b"print('v1')",
+            "---\nname: demo\n---\n# 全部改写".as_bytes(),
+        );
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap_err();
+        assert!(
+            err.contains("内容不同"),
+            "SKILL.md 正文变更应报冲突，实际: {err}"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 未声明技能子树拒收（五轮评审必修 2）：detect 只登记声明/识别的技能，
+    /// zip 额外夹带的 `skills/<other>/` 会静默落盘成不可见孤儿技能（无卡片、
+    /// 无开关、卸载残留）。声明包与裸包两种形态都必须响亮拒收。
+    #[test]
+    fn undeclared_skills_subtree_is_rejected() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-undeclared-skill-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        // 形态 1：plugin.json 只声明 skills:[demo]，zip 夹带 skills/other/。
+        let zip_path = dir.join("declared.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("plugin.json", opts).unwrap();
+            zw.write_all(
+                r#"{"manifest_version":1,"id":"demo","name":"d","components":{"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("skills/demo/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
+            zw.start_file("skills/other/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: other\n---\n# stowaway").unwrap();
+            zw.finish().unwrap();
+        }
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "declared.zip").unwrap_err();
+        assert!(
+            err.contains("未在包声明/识别的技能列表中"),
+            "未声明技能子树应拒收，实际: {err}"
+        );
+        assert!(
+            !dir.join("bundles").join("demo").exists(),
+            "拒收不得落盘包目录"
+        );
+
+        // 形态 2：裸技能包（无 plugin.json），夹带无 SKILL.md 的 skills/other/ 子树。
+        let zip_path = dir.join("bare.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("my-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: greet\n---\n# hi").unwrap();
+            zw.start_file("skills/other/notes.txt", opts).unwrap();
+            zw.write_all(b"stowaway").unwrap();
+            zw.finish().unwrap();
+        }
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "bare.zip").unwrap_err();
+        assert!(
+            err.contains("未在包声明/识别的技能列表中"),
+            "裸包夹带技能子树应拒收，实际: {err}"
+        );
+        assert!(
+            !dir.join("bundles").join("greet").exists(),
             "拒收不得落盘包目录"
         );
 

@@ -861,6 +861,33 @@ mod tests {
         });
     }
 
+    /// 首启登记：企微按 1.1.0 的 14 新名识别「连接过」（五轮评审必修 3：旧 7 名
+    /// 表会让升级自 wecom-cli 1.1.0 的用户漏登 wecom 安装记录——`legacy_imported`
+    /// 闸一次性置位，错过即永久错过）。
+    #[test]
+    fn import_legacy_registers_wecom_by_new_skill_dirs() {
+        with_temp_home(|| {
+            let legacy = paths::bundle_skills_dir();
+            // 只放 1.1.0 新名（0.1.9 旧 7 名表覆盖不到的名字）
+            let dir = legacy.join("wecomcli-calendar");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), "---\nname: wecomcli-calendar\n---\n").unwrap();
+
+            let store = BundleStore::new();
+            store.import_legacy().unwrap();
+            let file = store.load().unwrap();
+            let wecom = file
+                .records
+                .iter()
+                .find(|r| r.id == "wecom")
+                .expect("新名 companion 技能在盘应归并出 wecom 包");
+            assert_eq!(wecom.source, BundleSource::Builtin);
+            assert!(wecom.installed);
+            // companion 技能目录自身不独立登记
+            assert!(!file.records.iter().any(|r| r.id == "wecomcli-calendar"));
+        });
+    }
+
     /// 导入幂等：二次调用直接跳过；已有同 id 记录永远保留，不被反推结果覆盖。
     #[test]
     fn import_legacy_is_idempotent_and_never_overwrites_existing() {

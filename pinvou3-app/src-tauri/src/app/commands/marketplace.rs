@@ -925,6 +925,21 @@ pub struct BundleReadinessResult {
 /// - MCP/技能/上传包 → 注册表 `readiness_for`（credentials 必填项查系统凭据现算）
 #[tauri::command]
 pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult, String> {
+    bundle_readiness_with_store(bundle_id, SystemCredentialStore::new()).await
+}
+
+/// 凭据存储可注入的内层实现（与 ima.rs `status_with_store` 同风格）：命令入口注入
+/// `SystemCredentialStore`，测试注入 `MemoryCredentialStore` —— 测试线程在任何平台都
+/// 不触碰真实系统凭据仓库（current_thread runtime 的 `block_on` 会把 spawn_blocking
+/// 任务泵回测试线程执行，真 keychain 在 macOS 会触发授权弹窗挂起）。
+/// store 按值传入并 move 进 spawn_blocking，要求 `Send + 'static`。
+async fn bundle_readiness_with_store<S>(
+    bundle_id: String,
+    store: S,
+) -> Result<BundleReadinessResult, String>
+where
+    S: CredentialStore + Send + 'static,
+{
     use crate::features::marketplace::bundle::{
         keyring_target, readiness_for, BundleKind, BundleRegistry, Readiness,
     };
@@ -1011,7 +1026,6 @@ pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult
             let id = bundle_id.clone();
             let present: std::collections::HashSet<String> =
                 tokio::task::spawn_blocking(move || {
-                    let store = crate::platform::credential_store::SystemCredentialStore::new();
                     specs
                         .into_iter()
                         .filter(|(key, target)| {
@@ -1097,6 +1111,8 @@ mod tests {
     use super::*;
 
     /// 第九刀：bundle_readiness 响应携带完整 BundleInfo（前端功能事实数据源）。
+    /// 凭据存在性经 `bundle_readiness_with_store` 注入 MemoryCredentialStore 现算，
+    /// 不触碰真实系统凭据仓库（真 keychain 在 macOS 会触发授权弹窗挂起测试线程）。
     #[test]
     fn bundle_readiness_carries_bundle_facts() {
         let _g = crate::platform::paths::tests::ENV_LOCK
@@ -1134,8 +1150,13 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
+        // 空内存凭据库：必填凭据缺失 → 未就绪（任何平台结果确定，不依赖本机 keychain 状态）
+        let cred_store = crate::platform::credential_store::MemoryCredentialStore::default();
         let result = rt
-            .block_on(bundle_readiness("weather".to_string()))
+            .block_on(bundle_readiness_with_store(
+                "weather".to_string(),
+                cred_store.clone(),
+            ))
             .unwrap();
 
         assert!(result.installed, "store 有记录应已安装");
@@ -1148,6 +1169,24 @@ mod tests {
         assert_eq!(bundle.config_fields.len(), 1);
         assert_eq!(bundle.config_fields[0].key, "AMAP_KEY");
         assert!(bundle.config_fields[0].secret);
+
+        // 反向断言：内存库写入必填凭据后应就绪——证明就绪判定确实消费注入的
+        // store（而非恒定返回缺失）。target 缺省映射 env，与 tool_credentials 一致。
+        cred_store
+            .set(
+                &crate::platform::credential_store::CredentialReference::for_mcp_secret(
+                    "weather", "env", "AMAP_KEY",
+                ),
+                "test-amap-key",
+            )
+            .unwrap();
+        let result = rt
+            .block_on(bundle_readiness_with_store(
+                "weather".to_string(),
+                cred_store,
+            ))
+            .unwrap();
+        assert!(result.ready, "必填凭据已注入内存库应就绪");
 
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
