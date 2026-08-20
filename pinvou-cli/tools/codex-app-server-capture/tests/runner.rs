@@ -133,10 +133,9 @@ fn command_execution_output_deltas_contribute_only_when_correlated() {
     assert_eq!(prompts.len(), 3);
     #[cfg(windows)]
     assert!(prompts.iter().all(|prompt| {
-        prompt.contains(" -ExecutionPolicy Bypass -File \".\\.codex-s2-stream.ps1\" ")
+        prompt.contains(" -Command '")
             && !prompt.contains(" -EncodedCommand ")
-            && !prompt.contains(r#"\""#)
-            && !prompt.contains(" -Command ")
+            && !prompt.contains(" -File ")
     }));
     std::fs::remove_dir_all(output).unwrap();
 }
@@ -244,7 +243,7 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         let sanitized = std::fs::read_to_string(output.join(artifact)).unwrap();
         assert!(!sanitized.contains("S2_APPROVED"));
         assert!(!sanitized.contains(".codex-s2-approval-marker"));
-        assert!(!sanitized.contains(".codex-s2-stream"));
+        assert!(!sanitized.contains("OpenStandardOutput"));
     }
     assert!(workspace.join("cmd.exe").exists());
     #[cfg(windows)]

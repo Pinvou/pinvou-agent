@@ -115,18 +115,19 @@ emits 36 one-KiB chunks at one-second cadence, B emits 56 one-KiB chunks at
 50 ms cadence, and D emits 64 256-byte chunks at 250 ms cadence so interruption
 can occur after a real backlog. Commands use the canonical OS-protected Windows
 PowerShell path derived from `GetSystemDirectoryW` on Windows, or absolute
-`/bin/sh` on Unix, and never consult PATH or interpolate caller paths. Each
-scenario gets a fresh runner-owned workspace. The runner exclusively creates a
-fixed relative streaming script there, restricts it to the owner and read-only
-use, and validates the same identity and exact fixed bytes before and after the
-scenario. On Windows a read handle denying write/delete sharing remains held
-during execution; Unix uses a mode-0700 directory, a mode-0400 file, and
-pre/post identity and content checks. The human prompt contains only a short
-`-File` command with fixed integer arguments, not an opaque Base64 payload.
-Prompts forbid other tools and prose before completion. Script names, paths, and
-contents stay out of sanitized artifacts; the restricted raw capture may contain
-the command. Gates still use only real, correlated R1 timestamps and content,
-including official agent message and command-execution output deltas.
+shell and sleep programs on Linux, and never consult PATH or interpolate caller
+paths. Linux canonicalizes `/bin/sh` and an absolute `/bin/sleep` or
+`/usr/bin/sleep`, then requires regular root-owned executables that are not
+group/other writable; other Unix platforms fail closed as unsupported. Each
+scenario still gets a fresh runner-owned workspace, but A/B/D create no files.
+Their prompts contain a short readable inline command with fixed integers. The
+Windows command generates a deterministic byte array and writes and flushes it
+through standard output; Linux uses shell-builtin `command printf`, variable
+doubling, and the validated absolute sleep command. Neither form uses Base64,
+PATH lookup, network, or file operations. Prompts forbid other tools and prose
+before completion, and sanitized artifacts exclude prompts and commands. Gates
+still use only real, correlated R1 timestamps and content, including official
+agent message and command-execution output deltas.
 
 Scenario C uses `on-request` approval and a read-only sandbox, then requests one
 fixed platform-specific command that writes `.codex-s2-approval-marker` relative

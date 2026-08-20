@@ -1,8 +1,6 @@
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, BufWriter, Read, Seek, Write};
-#[cfg(windows)]
-use std::os::windows::io::AsRawHandle;
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,8 +11,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
-#[cfg(windows)]
-use crate::capture::harden_windows_capture_acl;
 use crate::capture::{JsonlRecorder, create_capture_file};
 use crate::clock::{HostMonotonicClock, MonotonicClock};
 use crate::protocol::CaptureChannel;
@@ -31,10 +27,12 @@ const APPROVAL_MARKER_NAME: &str = ".codex-s2-approval-marker";
 const APPROVAL_MARKER_CONTENT: &str = "S2_APPROVED";
 const APPROVAL_MARKER_BYTES: &[u8] = APPROVAL_MARKER_CONTENT.as_bytes();
 const APPROVAL_MARKER_MAX_BYTES: u64 = 64;
-#[cfg(windows)]
-const STREAMING_SCRIPT_NAME: &str = ".codex-s2-stream.ps1";
-#[cfg(unix)]
-const STREAMING_SCRIPT_NAME: &str = ".codex-s2-stream.sh";
+
+struct ScenarioPrograms {
+    shell: PathBuf,
+    #[cfg(target_os = "linux")]
+    sleep: PathBuf,
+}
 
 #[derive(Clone, Debug)]
 pub struct S2RunConfig {
@@ -148,6 +146,7 @@ fn run_s2_with_thresholds(
 
     let explicit_approval_wrapper =
         validate_explicit_approval_wrapper(config.trusted_approval_wrapper.as_deref())?;
+    let scenario_programs = trusted_scenario_programs()?;
     let global_deadline = Instant::now() + config.global_timeout;
     let mut evidence = empty_evidence();
     let execution = SafeInvocation::resolve(config.executable.as_ref()).and_then(|invocation| {
@@ -162,6 +161,7 @@ fn run_s2_with_thresholds(
                 global_deadline,
                 explicit_approval_wrapper.as_ref(),
                 &marker_helper,
+                &scenario_programs,
             )
         })
     });
@@ -621,6 +621,7 @@ fn execute(
     global_deadline: Instant,
     explicit_approval_wrapper: Option<&TrustedApprovalWrapper>,
     marker_helper: &Arc<MarkerHelperInvocation>,
+    scenario_programs: &ScenarioPrograms,
 ) -> Result<()> {
     remaining_global(global_deadline)?;
     let clock = Arc::new(HostMonotonicClock::new()?);
@@ -663,7 +664,6 @@ fn execute(
         let mut scenario_b_content = Vec::new();
         let mut interrupt_response_latency_ms = None;
         let mut interrupt_terminal_latency_ms = None;
-        let scenario_shell = trusted_scenario_shell()?;
         let approval_command = approval_command()?;
         #[cfg(windows)]
         let approval_wrapper_shell = match explicit_approval_wrapper {
@@ -682,18 +682,6 @@ fn execute(
             let scenario_deadline = Instant::now() + config.scenario_timeout;
             let scenario_workspace = workspace.join(name.to_ascii_lowercase());
             create_scenario_workspace(&scenario_workspace)?;
-            let mut streaming_script = if matches!(name, "A" | "B" | "D") {
-                let (chunk_bytes, chunks, cadence_ms) = streaming_parameters(name)?;
-                Some(StreamingScript::create(
-                    &scenario_workspace,
-                    &scenario_shell,
-                    chunk_bytes,
-                    chunks,
-                    cadence_ms,
-                )?)
-            } else {
-                None
-            };
             if name == "C" {
                 ensure_approval_marker_absent_bounded(
                     marker_helper,
@@ -729,16 +717,18 @@ fn execute(
                     format!("scenario {name}: thread/start response missing thread.id")
                 })?
                 .to_owned();
-            if let Some(script) = streaming_script.as_mut() {
-                script.verify()?;
-            }
-            let prompt = scenario_prompt(
-                name,
-                &approval_command,
-                streaming_script
-                    .as_ref()
-                    .map(|script| script.command.as_str()),
-            )?;
+            let streaming_command = if matches!(name, "A" | "B" | "D") {
+                let (chunk_bytes, chunks, cadence_ms) = streaming_parameters(name)?;
+                Some(streaming_command(
+                    scenario_programs,
+                    chunk_bytes,
+                    chunks,
+                    cadence_ms,
+                )?)
+            } else {
+                None
+            };
+            let prompt = scenario_prompt(name, &approval_command, streaming_command.as_deref())?;
             let mut turn_params = json!({
                 "threadId":thread_id,
                 "cwd":scenario_workspace,
@@ -775,9 +765,6 @@ fn execute(
                 scenario_deadline,
                 thresholds,
             )?;
-            if let Some(script) = streaming_script.as_mut() {
-                script.verify()?;
-            }
             if name == "C" && observed.evidence.terminal_state == TerminalState::Completed {
                 verify_approval_marker_bounded(
                     marker_helper,
@@ -1741,6 +1728,8 @@ const B_CADENCE_MS: usize = 50;
 const D_CHUNK_BYTES: usize = 256;
 const D_CHUNKS: usize = 64;
 const D_CADENCE_MS: usize = 250;
+#[cfg(target_os = "linux")]
+const LINUX_STREAM_SEED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKL";
 
 fn create_scenario_workspace(path: &Path) -> Result<()> {
     std::fs::create_dir(path).map_err(|_| anyhow!("scenario workspace creation failed"))?;
@@ -1774,9 +1763,9 @@ fn streaming_parameters(name: &str) -> Result<(usize, usize, usize)> {
 }
 
 #[cfg(test)]
-fn streaming_stimulus(name: &str, shell: &Path) -> Result<ScenarioStimulus> {
+fn streaming_stimulus(name: &str, programs: &ScenarioPrograms) -> Result<ScenarioStimulus> {
     let (chunk_bytes, chunks, cadence_ms) = streaming_parameters(name)?;
-    let command = streaming_command(shell, chunk_bytes, chunks, cadence_ms)?;
+    let command = streaming_command(programs, chunk_bytes, chunks, cadence_ms)?;
     let prompt = format!(
         "S2-{name}: Execute exactly this command once now. Use no other tool or command. Emit no prose before completion.\nCOMMAND_BEGIN\n{command}\nCOMMAND_END"
     );
@@ -1797,7 +1786,7 @@ fn scenario_prompt(
 ) -> Result<String> {
     match name {
         "A" | "B" | "D" => {
-            let command = streaming_command.context("streaming script command was missing")?;
+            let command = streaming_command.context("streaming command was missing")?;
             Ok(format!(
                 "S2-{name}: Execute exactly this command once now. Use no other tool or command. Emit no prose before completion.\nCOMMAND_BEGIN\n{command}\nCOMMAND_END"
             ))
@@ -1811,36 +1800,56 @@ fn scenario_prompt(
 }
 
 fn streaming_command(
-    shell: &Path,
+    programs: &ScenarioPrograms,
     chunk_bytes: usize,
     chunks: usize,
     cadence_ms: usize,
 ) -> Result<String> {
-    let shell = shell
+    let shell = programs
+        .shell
         .to_str()
         .context("trusted scenario shell path was not valid Unicode")?;
-    if shell.contains(['\r', '\n', '"']) {
+    if shell.contains(['\r', '\n', '\'', '"']) {
         bail!("trusted scenario shell path contained unsafe characters");
     }
     #[cfg(windows)]
     {
+        let script = format!(
+            "$n={chunk_bytes}; $count={chunks}; $delay={cadence_ms}; $c=New-Object byte[] $n; for($j=0; $j -lt $c.Length; $j++){{$c[$j]=[byte](65+(($j*17+11)%26))}}; $o=[Console]::OpenStandardOutput(); for($i=0; $i -lt $count; $i++){{$o.Write($c,0,$c.Length); $o.Flush(); if($i+1 -lt $count){{Start-Sleep -Milliseconds $delay}}}}"
+        );
         return Ok(format!(
-            "& \"{shell}\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \".\\{STREAMING_SCRIPT_NAME}\" {chunk_bytes} {chunks} {cadence_ms}"
+            "& \"{shell}\" -NoProfile -NonInteractive -Command '{script}'"
         ));
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
+        let sleep = programs
+            .sleep
+            .to_str()
+            .context("trusted sleep path was not valid Unicode")?;
+        if sleep.contains(['\r', '\n', '\'', '"']) {
+            bail!("trusted sleep path contained unsafe characters");
+        }
+        let doubles = match chunk_bytes {
+            256 => 2,
+            1024 => 4,
+            _ => bail!("unsupported streaming chunk size"),
+        };
+        let mut expansion = String::new();
+        for _ in 0..doubles {
+            expansion.push_str("p=$p$p; ");
+        }
+        let cadence = format!("{}.{:03}", cadence_ms / 1_000, cadence_ms % 1_000);
         Ok(format!(
-            "/bin/sh ./{STREAMING_SCRIPT_NAME} {chunk_bytes} {chunks} {cadence_ms}"
+            "{shell} -p -c 'p={LINUX_STREAM_SEED}; {expansion}i=0; while [ \"$i\" -lt {chunks} ]; do command printf %s \"$p\"; i=$((i+1)); [ \"$i\" -eq {chunks} ] || {sleep} {cadence}; done'"
         ))
     }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = (chunk_bytes, chunks, cadence_ms);
+        bail!("streaming scenarios are unsupported on this platform")
+    }
 }
-
-#[cfg(windows)]
-const STREAMING_SCRIPT_BYTES: &[u8] = b"param([int]$ChunkBytes,[int]$Chunks,[int]$CadenceMs)\r\nif($ChunkBytes-lt 1-or$ChunkBytes-gt 1024-or$Chunks-lt 1-or$Chunks-gt 64-or$CadenceMs-lt 0-or$CadenceMs-gt 1000){exit 64}\r\n$c=New-Object byte[] $ChunkBytes\r\nfor($j=0;$j-lt$c.Length;$j++){$c[$j]=[byte](65+(($j*17+11)%26))}\r\n$o=[Console]::OpenStandardOutput()\r\nfor($i=0;$i-lt$Chunks;$i++){$o.Write($c,0,$c.Length);$o.Flush();if($i+1-lt$Chunks){Start-Sleep -Milliseconds $CadenceMs}}\r\n";
-
-#[cfg(unix)]
-const STREAMING_SCRIPT_BYTES: &[u8] = b"#!/bin/sh\nexec awk -v n=\"$1\" -v count=\"$2\" -v ms=\"$3\" 'BEGIN{for(i=0;i<count;i++){for(j=0;j<n;j++)printf \"%c\",65+((j*17+11)%26);fflush();if(i+1<count)system(\"sleep \" ms/1000)}}'\n";
 
 #[cfg(test)]
 fn expected_stream_bytes(chunk_bytes: usize, chunks: usize) -> Vec<u8> {
@@ -1848,123 +1857,6 @@ fn expected_stream_bytes(chunk_bytes: usize, chunks: usize) -> Vec<u8> {
         .map(|index| 65 + ((index * 17 + 11) % 26) as u8)
         .collect::<Vec<_>>();
     chunk.repeat(chunks)
-}
-
-struct StreamingScript {
-    command: String,
-    path: PathBuf,
-    file: std::fs::File,
-    #[cfg(windows)]
-    identity: WindowsFileIdentity,
-    #[cfg(unix)]
-    identity: (u64, u64),
-}
-
-impl StreamingScript {
-    fn create(
-        workspace: &Path,
-        shell: &Path,
-        chunk_bytes: usize,
-        chunks: usize,
-        cadence_ms: usize,
-    ) -> Result<Self> {
-        let path = workspace.join(STREAMING_SCRIPT_NAME);
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true).write(true).create_new(true);
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
-            use windows_sys::Win32::Storage::FileSystem::{
-                FILE_SHARE_READ, READ_CONTROL, WRITE_DAC,
-            };
-            options.access_mode(GENERIC_READ | GENERIC_WRITE | READ_CONTROL | WRITE_DAC);
-            options.share_mode(FILE_SHARE_READ);
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o400);
-        }
-        let mut file = options
-            .open(&path)
-            .map_err(|_| anyhow!("streaming script creation failed"))?;
-        #[cfg(windows)]
-        harden_windows_capture_acl(&file)
-            .map_err(|_| anyhow!("streaming script creation failed"))?;
-        file.write_all(STREAMING_SCRIPT_BYTES)
-            .and_then(|_| file.flush())
-            .map_err(|_| anyhow!("streaming script creation failed"))?;
-        let mut permissions = file.metadata()?.permissions();
-        permissions.set_readonly(true);
-        file.set_permissions(permissions)?;
-        #[cfg(windows)]
-        let identity = wrapper_file_identity(file.as_raw_handle())
-            .map_err(|_| anyhow!("streaming script validation failed"))?;
-        #[cfg(unix)]
-        let identity = {
-            use std::os::unix::fs::MetadataExt;
-            let metadata = file.metadata()?;
-            (metadata.dev(), metadata.ino())
-        };
-        #[cfg(windows)]
-        let file = {
-            drop(file);
-            use std::os::windows::fs::OpenOptionsExt;
-            use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
-            let mut locked = std::fs::OpenOptions::new();
-            locked.read(true).share_mode(FILE_SHARE_READ);
-            let locked = locked
-                .open(&path)
-                .map_err(|_| anyhow!("streaming script validation failed"))?;
-            if wrapper_file_identity(locked.as_raw_handle())
-                .map_err(|_| anyhow!("streaming script validation failed"))?
-                != identity
-            {
-                bail!("streaming script validation failed");
-            }
-            locked
-        };
-        let mut script = Self {
-            command: streaming_command(shell, chunk_bytes, chunks, cadence_ms)?,
-            path,
-            file,
-            identity,
-        };
-        script.verify()?;
-        Ok(script)
-    }
-
-    fn verify(&mut self) -> Result<()> {
-        let metadata = std::fs::symlink_metadata(&self.path)
-            .map_err(|_| anyhow!("streaming script validation failed"))?;
-        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-            bail!("streaming script validation failed");
-        }
-        #[cfg(windows)]
-        if wrapper_file_identity(self.file.as_raw_handle())
-            .map_err(|_| anyhow!("streaming script validation failed"))?
-            != self.identity
-        {
-            bail!("streaming script validation failed");
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if (metadata.dev(), metadata.ino()) != self.identity {
-                bail!("streaming script validation failed");
-            }
-        }
-        self.file.seek(std::io::SeekFrom::Start(0))?;
-        let mut bytes = Vec::with_capacity(STREAMING_SCRIPT_BYTES.len() + 1);
-        std::io::Read::by_ref(&mut self.file)
-            .take((STREAMING_SCRIPT_BYTES.len() + 1) as u64)
-            .read_to_end(&mut bytes)?;
-        if bytes != STREAMING_SCRIPT_BYTES {
-            bail!("streaming script validation failed");
-        }
-        Ok(())
-    }
 }
 
 fn approval_command() -> Result<String> {
@@ -2325,7 +2217,7 @@ fn read_approval_marker_atomically(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn trusted_scenario_shell() -> Result<PathBuf> {
+fn trusted_scenario_programs() -> Result<ScenarioPrograms> {
     #[cfg(windows)]
     {
         let system_root = canonical_safe_windows_root(system_directory()?, "system directory")?;
@@ -2343,16 +2235,50 @@ fn trusted_scenario_shell() -> Result<PathBuf> {
         {
             bail!("system Windows PowerShell escaped the protected system directory");
         }
-        return Ok(canonical);
+        return Ok(ScenarioPrograms { shell: canonical });
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
-        let shell = PathBuf::from("/bin/sh");
-        if !shell.is_file() {
-            bail!("trusted /bin/sh was not a regular file");
-        }
-        Ok(shell)
+        let shell = trusted_linux_executable(Path::new("/bin/sh"))?;
+        let sleep = [Path::new("/bin/sleep"), Path::new("/usr/bin/sleep")]
+            .into_iter()
+            .find_map(|candidate| trusted_linux_executable(candidate).ok())
+            .context("trusted scenario programs validation failed")?;
+        return Ok(ScenarioPrograms { shell, sleep });
     }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        bail!("streaming scenarios are unsupported on this platform")
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn trusted_linux_executable(candidate: &Path) -> Result<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    if !candidate.is_absolute() {
+        bail!("trusted scenario programs validation failed");
+    }
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|_| anyhow!("trusted scenario programs validation failed"))?;
+    let metadata = canonical
+        .metadata()
+        .map_err(|_| anyhow!("trusted scenario programs validation failed"))?;
+    if !canonical.is_absolute()
+        || !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.mode() & 0o022 != 0
+    {
+        bail!("trusted scenario programs validation failed");
+    }
+    Ok(canonical)
+}
+
+#[cfg(test)]
+fn trusted_scenario_shell() -> Result<PathBuf> {
+    let programs = trusted_scenario_programs()?;
+    Ok(programs.shell)
 }
 
 #[cfg(windows)]
@@ -2865,38 +2791,43 @@ mod tests {
     #[test]
     fn deterministic_streaming_commands_have_safe_output_and_cadence_headroom() {
         #[cfg(windows)]
-        let shell = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
-        #[cfg(not(windows))]
-        let shell = Path::new("/bin/sh");
-        let a = super::streaming_stimulus("A", shell).unwrap();
-        let b = super::streaming_stimulus("B", shell).unwrap();
-        let d = super::streaming_stimulus("D", shell).unwrap();
+        let programs = super::ScenarioPrograms {
+            shell: Path::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+                .to_path_buf(),
+        };
+        #[cfg(target_os = "linux")]
+        let programs = super::trusted_scenario_programs().unwrap();
+        let a = super::streaming_stimulus("A", &programs).unwrap();
+        let b = super::streaming_stimulus("B", &programs).unwrap();
+        let d = super::streaming_stimulus("D", &programs).unwrap();
 
         assert_eq!(a.chunk_bytes, 1024);
         assert_eq!(a.chunks, 36);
         assert_eq!(a.cadence_ms, 1_000);
-        assert!(a.command.ends_with("1024 36 1000"));
+        assert!(a.command.contains("$n=1024; $count=36; $delay=1000;"));
         assert!((a.chunks - 1) * a.cadence_ms >= 35_000);
         assert_eq!(b.chunk_bytes, 1024);
         assert!(b.chunks >= 56);
         assert_eq!(b.cadence_ms, 50);
-        assert!(b.command.ends_with("1024 56 50"));
+        assert!(b.command.contains("$n=1024; $count=56; $delay=50;"));
         assert_eq!(d.chunk_bytes, 256);
         assert!(d.chunks >= 64);
         assert!(d.cadence_ms >= 200);
-        assert!(d.command.ends_with("256 64 250"));
+        assert!(d.command.contains("$n=256; $count=64; $delay=250;"));
         assert!(d.chunk_bytes * 8 >= 2 * 1024);
         #[cfg(windows)]
         for stimulus in [&a, &b, &d] {
-            assert!(
-                stimulus
-                    .command
-                    .contains(" -ExecutionPolicy Bypass -File \".\\.codex-s2-stream.ps1\" ")
-            );
-            assert!(stimulus.command.len() < 512);
+            assert!(stimulus.command.contains(" -Command '"));
+            assert!(stimulus.command.contains("New-Object byte[]"));
+            assert!(stimulus.command.contains("OpenStandardOutput"));
+            assert!(stimulus.command.contains(".Write("));
+            assert!(stimulus.command.contains(".Flush()"));
+            assert!(stimulus.command.contains("Start-Sleep"));
+            assert!(stimulus.command.len() < 768);
             assert!(!stimulus.command.contains(" -EncodedCommand "));
-            assert!(!stimulus.command.contains(r#"\""#));
-            assert!(!stimulus.command.contains(" -Command "));
+            assert!(!stimulus.command.contains(" -File "));
+            assert!(!stimulus.command.contains("http"));
+            assert!(!stimulus.command.contains("Invoke-"));
         }
         for stimulus in [a, b, d] {
             assert_eq!(
@@ -2914,29 +2845,21 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn generated_windows_streaming_command_executes_through_outer_powershell() {
-        let shell = super::trusted_scenario_shell().unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "codex-s2-stream-script-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        for (index, (chunk_bytes, chunks, cadence_ms)) in
-            [(4, 3, 1), (8, 4, 2), (16, 8, 1)].into_iter().enumerate()
+        let programs = super::trusted_scenario_programs().unwrap();
+        let shell = programs.shell.clone();
+        for (index, (chunk_bytes, chunks, cadence_ms)) in [(4, 3, 100), (8, 4, 20), (16, 8, 10)]
+            .into_iter()
+            .enumerate()
         {
-            let workspace = root.join(index.to_string());
-            std::fs::create_dir_all(&workspace).unwrap();
-            let mut script =
-                super::StreamingScript::create(&workspace, &shell, chunk_bytes, chunks, cadence_ms)
-                    .unwrap();
+            let command =
+                super::streaming_command(&programs, chunk_bytes, chunks, cadence_ms).unwrap();
+            let started = std::time::Instant::now();
             let output = std::process::Command::new(&shell)
                 .args(["-NoProfile", "-NonInteractive", "-Command"])
-                .arg(&script.command)
-                .current_dir(&workspace)
+                .arg(&command)
                 .output()
                 .unwrap();
+            let elapsed = started.elapsed();
 
             assert!(
                 output.status.success(),
@@ -2947,16 +2870,23 @@ mod tests {
                 output.stdout,
                 super::expected_stream_bytes(chunk_bytes, chunks)
             );
-            script.verify().unwrap();
+            assert!(output.stderr.is_empty(), "case {index}");
+            assert!(
+                elapsed >= std::time::Duration::from_millis(((chunks - 1) * cadence_ms) as u64),
+                "case {index} completed before its requested cadence"
+            );
+            assert!(elapsed < std::time::Duration::from_secs(10));
         }
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    #[cfg(windows)]
-    fn streaming_script_creation_rejects_preexisting_and_tampering() {
+    #[cfg(target_os = "linux")]
+    fn linux_inline_streaming_uses_only_trusted_absolute_programs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let programs = super::trusted_scenario_programs().unwrap();
         let root = std::env::temp_dir().join(format!(
-            "codex-s2-stream-script-negative-{}-{}",
+            "codex-s2-path-plants-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2964,23 +2894,52 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let shell = super::trusted_scenario_shell().unwrap();
-        let path = root.join(super::STREAMING_SCRIPT_NAME);
-        std::fs::write(&path, b"planted").unwrap();
-        assert!(super::StreamingScript::create(&root, &shell, 4, 3, 1).is_err());
-        std::fs::remove_file(&path).unwrap();
-        let target = root.join("target.ps1");
-        std::fs::write(&target, b"planted").unwrap();
-        if std::os::windows::fs::symlink_file(&target, &path).is_ok() {
-            assert!(super::StreamingScript::create(&root, &shell, 4, 3, 1).is_err());
-            std::fs::remove_file(&path).unwrap();
+        for name in ["awk", "sleep", "sh"] {
+            let planted = root.join(name);
+            std::fs::write(&planted, b"#!/bin/sh\ntouch planted-marker\nexit 97\n").unwrap();
+            std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
-        std::fs::remove_file(target).unwrap();
-        let mut script = super::StreamingScript::create(&root, &shell, 4, 3, 1).unwrap();
-        assert!(std::fs::write(&path, b"tampered").is_err());
-        script.verify().unwrap();
-        drop(script);
+        let command = super::streaming_command(&programs, 256, 3, 10).unwrap();
+        assert!(!command.contains("awk"));
+        assert!(!command.contains(root.to_string_lossy().as_ref()));
+        assert!(command.contains(programs.sleep.to_string_lossy().as_ref()));
+        let started = std::time::Instant::now();
+        let output = std::process::Command::new(&programs.shell)
+            .args(["-p", "-c"])
+            .arg(&command)
+            .env("PATH", &root)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            output.stdout,
+            super::LINUX_STREAM_SEED.repeat(4).repeat(3).as_bytes()
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(20));
+        assert!(!root.join("planted-marker").exists());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn inline_streaming_command_has_no_file_or_user_controlled_tokens() {
+        let programs = super::trusted_scenario_programs().unwrap();
+        let command = super::streaming_command(&programs, 1024, 36, 1_000).unwrap();
+        for forbidden in [
+            "-File",
+            "EncodedCommand",
+            "APPDATA",
+            "TEMP",
+            "http",
+            "\\.\\",
+        ] {
+            assert!(
+                !command.contains(forbidden),
+                "found forbidden token {forbidden}"
+            );
+        }
+        assert!(command.ends_with("}'"));
     }
 
     #[test]
