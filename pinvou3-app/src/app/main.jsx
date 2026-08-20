@@ -935,6 +935,7 @@ function workspaceDisplayName(path) {
       };
       const beginSidebarResize = useCallback((event) => {
         event.preventDefault();
+        const handle = event.currentTarget;
         const startX = event.clientX;
         const startWidth = sidebarWidthRef.current;
         setSidebarResizing(true);
@@ -945,14 +946,23 @@ function workspaceDisplayName(path) {
           setSidebarResizing(false);
           window.removeEventListener('pointermove', onMove);
           window.removeEventListener('pointerup', onUp);
+          window.removeEventListener('pointercancel', onUp);
           try {
             localStorage.setItem('pinvou_sidebar_width', String(sidebarWidthRef.current));
           } catch {
             // WebView 禁用 storage 时仅当次生效。
           }
         };
+        // 捕获指针并监听 pointercancel:窗口失焦/触摸被系统手势接管时也能收尾,
+        // 否则 resizing 卡 true(过渡动画永久禁用)且监听器泄漏。
+        try {
+          handle.setPointerCapture(event.pointerId);
+        } catch {
+          // 旧 WebView 不支持捕获时退化为 window 监听。
+        }
         window.addEventListener('pointermove', onMove);
         window.addEventListener('pointerup', onUp);
+        window.addEventListener('pointercancel', onUp);
       }, []);
       const resetSidebarWidth = useCallback(() => {
         applySidebarWidth(SIDEBAR_WIDTH_DEFAULT);
@@ -1108,6 +1118,9 @@ function workspaceDisplayName(path) {
         }
         if (beforeNavigate) beforeNavigate();
         setCurrentView(nextView);
+        // 落回普通聊天视图(折叠栏「当前对话」、移动端底部 tab)必须退出 code 模式:
+        // 模式跟随会话类型,否则 code 边栏样式与「新对话」建 codex 草稿的行为残留到 chat 视图。
+        if (nextView === 'chat') setCodeModeOn(false);
         closeMobileSidebar();
         return true;
       }
@@ -1157,7 +1170,12 @@ function workspaceDisplayName(path) {
         }
         // 跟随 code 模式而非当前页面:code 模式下即使停在输出/监控等工具页,
         // 「新对话」仍建 code 会话草稿;forceMode 供 AI 造卡等必须落普通聊天的调用点使用。
-        const wantCode = forceMode ? forceMode === 'code' : codeModeOn;
+        // 带工具意图的调用(工具商店「用此工具新对话」)同样必须落普通聊天:
+        // 工具欢迎卡只由 ChatView 消费,落 codex 草稿会静默丢弃意图并残留到下一个会话。
+        const hasToolIntent = typeof installedToolId === 'string' && !!installedToolId;
+        const wantCode = forceMode
+          ? forceMode === 'code'
+          : !hasToolIntent && codeModeOn;
         if (wantCode && codexAcpSupported) {
           updateActiveCodexSession(null);
           setCodexDraftEpoch(value => value + 1);
@@ -1925,7 +1943,9 @@ function workspaceDisplayName(path) {
           <div
             data-testid="app-sidebar"
             style={{
-              width: isSidebarOpen ? sidebarWidth : undefined,
+              // 紧凑壳抽屉不继承桌面持久化宽度:抽屉无拖把手可调,
+              // 宽于视口时会盖死点遮罩关闭的通道(z-30 在侧栏 z-40 之下)。
+              width: isSidebarOpen && !isCompactShell ? sidebarWidth : undefined,
               ...(isCompactShell ? {
                 display: isSidebarOpen ? 'flex' : 'none',
                 position: 'fixed',
@@ -1934,7 +1954,7 @@ function workspaceDisplayName(path) {
                 bottom: 56,
               } : {}),
             }}
-            className={`${isSidebarOpen ? '' : 'w-[68px]'} relative shrink-0 flex flex-col z-40 ${sidebarResizing ? '' : 'transition-all duration-300'} ${
+            className={`${isSidebarOpen ? (isCompactShell ? 'w-[280px]' : '') : 'w-[68px]'} relative shrink-0 flex flex-col z-40 ${sidebarResizing ? '' : 'transition-all duration-300'} ${
               activeTheme === 'light'
                 ? 'bg-[#F0F4F9]'
                 : (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]')
@@ -2350,7 +2370,7 @@ function workspaceDisplayName(path) {
                 title={t.sidebarResize}
                 onPointerDown={beginSidebarResize}
                 onDoubleClick={resetSidebarWidth}
-                className={`absolute top-0 bottom-0 right-0 w-[6px] cursor-col-resize z-50 transition-colors ${
+                className={`absolute top-0 bottom-0 right-0 w-[6px] cursor-col-resize z-50 touch-none transition-colors ${
                   sidebarResizing
                     ? 'bg-[#0B57D0]/40'
                     : (activeTheme === 'dark' ? 'hover:bg-[#A8C7FA]/30' : 'hover:bg-[#0B57D0]/25')
