@@ -51,16 +51,30 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
-/// 7 个企微域技能目录名(门控写 / 删共用)。
-const WECOM_SKILL_DIRS: [&str; 7] = [
-    "wecomcli-msg",
-    "wecomcli-doc",
-    "wecomcli-meeting",
-    "wecomcli-schedule",
-    "wecomcli-todo",
+/// 14 个企微域技能目录名(门控写 / 删共用)。wecom-cli 1.1.0 起上游按服务模型
+/// 重排(`msg`→`message`、`schedule`→`calendar`,新增 disk/doc-manage/email/media/
+/// sheet/smartpage/shared),本地结构跟随上游,不再维持 0.1.9 时代的「sheet/smartpage
+/// 并入 doc」合并形态。
+const WECOM_SKILL_DIRS: [&str; 14] = [
+    "wecomcli-calendar",
     "wecomcli-contact",
+    "wecomcli-disk",
+    "wecomcli-doc",
+    "wecomcli-doc-manage",
+    "wecomcli-email",
+    "wecomcli-media",
+    "wecomcli-meeting",
+    "wecomcli-message",
+    "wecomcli-shared",
+    "wecomcli-sheet",
+    "wecomcli-smartpage",
     "wecomcli-smartsheet",
+    "wecomcli-todo",
 ];
+
+/// 0.1.9 时代的旧技能目录名:1.1.0 重排后已不存在于包内,但存量用户解包目录里
+/// 可能残留,继续加载会教模型已死的命令(`msg`/`schedule` 服务),每次门控时清理。
+const WECOM_LEGACY_SKILL_DIRS: [&str; 2] = ["wecomcli-msg", "wecomcli-schedule"];
 
 const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
 const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
@@ -91,7 +105,10 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.22: 连接器技能全量同步（lark 1.0.87 / dws 1.0.58 / tmeet 1.0.15 / wecom 适配）。
 ///       四棵技能树不参与内容哈希，须 bump 语义版本让已连接用户启动即同步刷新
 ///       （否则要等首帧后 refresh_connector_auth_gates 补刷）
-pub const BUNDLE_VERSION: &str = concat!("0.22-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.23: wecom-cli 升 1.1.0：技能树按上游服务模型重排为 14 个（msg→message、
+///       schedule→calendar，新增 disk/doc-manage/email/media/shared/sheet/smartpage），
+///       旧目录（wecomcli-msg/wecomcli-schedule）启动门控时清理。
+pub const BUNDLE_VERSION: &str = concat!("0.23-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
@@ -458,6 +475,35 @@ mod tests {
         assert!(
             !canva_pkg_mcp.join("server.py").exists(),
             "Canva 远程 MCP 不应解包本地 server.py"
+        );
+        // 腾讯文档 manifest 应解包,且四个官方远程 server + 无 scheme Authorization 声明完整。
+        let tdoc_dir = paths::bundle_mcp_servers_dir().join("tencent-docs");
+        let tdoc_manifest = tdoc_dir.join("manifest.json");
+        assert!(tdoc_manifest.is_file(), "腾讯文档 manifest 应被解包");
+        let tdoc_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&tdoc_manifest).unwrap()).unwrap();
+        assert_eq!(tdoc_json["id"], "tencent-docs");
+        let server_names: Vec<&str> = tdoc_json["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            server_names,
+            vec!["tencent-docs", "tdoc-slide", "tdoc-doc", "tdoc-sheet"]
+        );
+        assert_eq!(
+            tdoc_json["secret_headers"][0]["header"], "Authorization",
+            "Token 走 Authorization 头"
+        );
+        assert_eq!(
+            tdoc_json["secret_headers"][0]["scheme"], "",
+            "scheme 必须为空——官方端点要求原始 Token,不能加 Bearer 前缀"
+        );
+        assert!(
+            !tdoc_dir.join("server.py").exists(),
+            "腾讯文档远程 MCP 不应解包本地 server.py"
         );
         // 已下线 skills(legacy-ppt-workflow / pinvou-review-*)不应再被写出。
         for retired in [
@@ -1032,6 +1078,71 @@ mod tests {
         bundle.apply_dingtalk_skills(false).unwrap();
         assert!(!skill.exists());
         assert!(!pkg_skills.join("NOTICE-dingtalk.md").exists());
+
+        cleanup(&tmp);
+    }
+
+    /// `WECOM_SKILL_DIRS` 清单必须与内嵌 wecom-skills 资源树的实际目录一致:
+    /// 漏列会让技能静默不可见(cached_wecom_skills_visible 的 all() 不查多余目录),
+    /// 多列会让门控删除/缓存判定指向不存在的目录——两侧都对齐才有报警。
+    #[test]
+    fn wecom_skill_dirs_match_embedded_resources() {
+        let mut embedded: Vec<&str> = WECOM_SKILLS_DIR
+            .dirs()
+            .map(|d| d.path().to_str().expect("目录名应为 UTF-8"))
+            .collect();
+        embedded.sort_unstable();
+        let mut listed = WECOM_SKILL_DIRS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(
+            embedded, listed,
+            "WECOM_SKILL_DIRS 与 bundle/wecom-skills 实际目录不一致"
+        );
+        // 每个技能目录都必须带 SKILL.md(门控可见性按它判定)
+        for d in WECOM_SKILL_DIRS {
+            assert!(
+                WECOM_SKILLS_DIR.get_file(format!("{d}/SKILL.md")).is_some(),
+                "wecom-skills/{d} 缺 SKILL.md"
+            );
+        }
+    }
+
+    /// 0.1.9 时代的 legacy 目录(wecomcli-msg/schedule)无论显示与否都要被清掉,
+    /// 防残留技能教已死的命令(`msg`/`schedule` 服务)。
+    #[test]
+    fn wecom_skill_gate_cleans_legacy_dirs() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+
+        for d in WECOM_LEGACY_SKILL_DIRS {
+            let legacy = bundle.skills_dir.join(d);
+            std::fs::create_dir_all(&legacy).unwrap();
+            std::fs::write(legacy.join("SKILL.md"), "legacy").unwrap();
+        }
+
+        // 隐藏门控:清 legacy + 删当前技能
+        bundle.apply_wecom_skills(false).unwrap();
+        for d in WECOM_LEGACY_SKILL_DIRS {
+            assert!(!bundle.skills_dir.join(d).exists(), "{d} 应被清理");
+        }
+
+        // 显示门控:同样先清 legacy(开头无条件清理),再解包 14 个当前技能
+        for d in WECOM_LEGACY_SKILL_DIRS {
+            std::fs::create_dir_all(bundle.skills_dir.join(d)).unwrap();
+        }
+        bundle.apply_wecom_skills(true).unwrap();
+        for d in WECOM_LEGACY_SKILL_DIRS {
+            assert!(!bundle.skills_dir.join(d).exists(), "{d} 应被清理");
+        }
+        for d in WECOM_SKILL_DIRS {
+            assert!(
+                bundle.skills_dir.join(d).join("SKILL.md").is_file(),
+                "{d} 应被解包"
+            );
+        }
 
         cleanup(&tmp);
     }

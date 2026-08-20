@@ -59,12 +59,18 @@
 
   function subscribe(domainName, callback) {
     get(domainName);
-    return flat.subscribe(function () { callback(get(domainName)); });
+    return flat.subscribe(function (full) {
+      callback(Object.freeze(pick(full, domainName)));
+    });
   }
 
   function subscribeMany(domains, callback) {
     getMany(domains);
-    return flat.subscribe(function () { callback(getMany(domains)); });
+    return flat.subscribe(function (full) {
+      var result = {};
+      domains.forEach(function (domainName) { Object.assign(result, pick(full, domainName)); });
+      callback(Object.freeze(result));
+    });
   }
 
   function domain(names, aliases) {

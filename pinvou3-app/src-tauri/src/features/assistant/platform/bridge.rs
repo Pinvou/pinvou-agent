@@ -3320,7 +3320,7 @@ mod tests {
             "https://api.deepseek.com",
             "sk-main",
         );
-        // 候选视觉模型默认 Auto(Unknown):可解析。
+        // 候选视觉模型默认 Pinvou(Unknown):可解析。
         push_vision_model(&mut bridge, "vision-unknown", "my-finetune-7b", "sk-vision");
         bridge.prefs.advanced.saved_models[0].vision_model_id = Some("vision-unknown".to_string());
         assert!(

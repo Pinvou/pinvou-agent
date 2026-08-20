@@ -186,7 +186,7 @@
     mountedCollections: [],
     mountedCollectionsRevision: 0,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
-    // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
+    // 不进 state/订阅快照，避免每个流式 token 都复制完整卡池。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
     // 应用内升级: updateInfo = check_for_update 返回值(available=true 才有意义)
     appVersion: null,
@@ -336,7 +336,7 @@
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
       acceptPlanFailed: "⚠️ accept_plan failed: ",
-      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ",
+      planDiscarded: "🚪 Plan discarded", discardPlanFailed: "⚠️ discard_plan failed: ", exitPlanFailed: "⚠️ Failed to exit Plan: ", switchModeFailed: "⚠️ Failed to switch mode: ", planContinueFailed: "⚠️ Failed to send continue instruction: ",
       replanRequested: "📋 Asking the AI to re-plan…",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
@@ -443,7 +443,7 @@
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
       acceptPlanFailed: "⚠️ accept_plan に失敗: ",
-      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ",
+      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ", planContinueFailed: "⚠️ 継続指示の送信に失敗: ",
       replanRequested: "📋 AI にプランを出し直させています…",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
@@ -550,7 +550,7 @@
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
       acceptPlanFailed: "⚠️ accept_plan 失败: ",
-      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ",
+      planDiscarded: "🚪 已放弃此方案", discardPlanFailed: "⚠️ discard_plan 失败: ", exitPlanFailed: "⚠️ 退出 Plan 失败: ", switchModeFailed: "⚠️ 切换模式失败: ", planContinueFailed: "⚠️ 发送继续执行指令失败: ",
       replanRequested: "📋 让 AI 重出方案…",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
@@ -1434,14 +1434,121 @@
     }
     return JSON.parse(JSON.stringify(state));
   }
+  // Build immutable persistent subscription snapshots. Reconcile nested values
+  // so unchanged transcript history is shared across notifications, while each
+  // in-place streaming mutation gets a detached changed path.
+  function defineSubscriptionStateProperty(target, key, value) {
+    Object.defineProperty(target, key, {
+      configurable: true,
+      enumerable: true,
+      value: value,
+      writable: true,
+    });
+  }
+  function copySubscriptionStateObject(source) {
+    var result = {};
+    Object.keys(source).forEach(function (key) {
+      defineSubscriptionStateProperty(result, key, source[key]);
+    });
+    return result;
+  }
+  function subscriptionStateValue(value, previous, ancestors) {
+    var valueType = typeof value;
+    if (!value || valueType !== "object") {
+      if (valueType === "function" || valueType === "symbol" || valueType === "bigint") {
+        throw new TypeError("Subscription state only supports JSON-like scalar values");
+      }
+      return value;
+    }
+    var isArray = Array.isArray(value);
+    if (!isArray) {
+      var prototype = Object.getPrototypeOf(value);
+      var isPlainObject = prototype === null || (
+        Object.getPrototypeOf(prototype) === null &&
+        Object.prototype.hasOwnProperty.call(prototype, "constructor") &&
+        prototype.constructor && prototype.constructor.name === "Object"
+      );
+      if (!isPlainObject) {
+        throw new TypeError("Subscription state only supports arrays and plain objects");
+      }
+    }
+    ancestors = ancestors || new WeakSet();
+    if (ancestors.has(value)) throw new TypeError("Subscription state must not contain cycles");
+    ancestors.add(value);
+    try {
+      if (isArray) {
+        var previousArray = Array.isArray(previous) ? previous : null;
+        if (!previousArray) {
+          return Object.freeze(value.map(function (item) {
+            return subscriptionStateValue(item, undefined, ancestors);
+          }));
+        }
+        var nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
+        for (var arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
+          var nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex], ancestors);
+          if (!Object.is(nextItem, previousArray[arrayIndex])) {
+            if (!nextArray) nextArray = previousArray.slice();
+            nextArray[arrayIndex] = nextItem;
+          }
+        }
+        return nextArray ? Object.freeze(nextArray) : previousArray;
+      }
+
+      var keys = Object.keys(value);
+      var previousObject = previous && typeof previous === "object" && !Array.isArray(previous)
+        ? previous
+        : null;
+      var previousKeys = previousObject ? Object.keys(previousObject) : [];
+      var sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
+        return Object.prototype.hasOwnProperty.call(previousObject, key);
+      });
+      var nextObject = sameShape ? null : {};
+      for (var objectIndex = 0; objectIndex < keys.length; objectIndex++) {
+        var key = keys[objectIndex];
+        var nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key], ancestors);
+        if (!sameShape || !Object.is(nextValue, previousObject[key])) {
+          if (!nextObject) nextObject = copySubscriptionStateObject(previousObject);
+          defineSubscriptionStateProperty(nextObject, key, nextValue);
+        }
+      }
+      return nextObject ? Object.freeze(nextObject) : previousObject;
+    } finally {
+      ancestors.delete(value);
+    }
+  }
+  var subscriptionSnapshot = null;
+  function subscriptionState() {
+    subscriptionSnapshot = subscriptionStateValue(state, subscriptionSnapshot);
+    return subscriptionSnapshot;
+  }
+  var notificationQueue = [];
+  var notificationDispatching = false;
   function notify() {
     if (suppressNotify) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
     state.sessionBusy = {};
     for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
-    var snapshot = snapshotState();
-    for (var i = 0; i < subscribers.length; i++) subscribers[i](snapshot);
+    var snapshot = subscriptionState();
+    // Each queued round fixes both state and membership. Callback-time
+    // subscription changes apply only to rounds queued afterwards.
+    notificationQueue.push({ snapshot: snapshot, subscribers: subscribers.slice() });
+    if (notificationDispatching) return;
+    notificationDispatching = true;
+    try {
+      while (notificationQueue.length) {
+        var round = notificationQueue.shift();
+        for (var i = 0; i < round.subscribers.length; i++) round.subscribers[i](round.snapshot);
+      }
+    } catch (error) {
+      // Preserve synchronous callback error propagation. Later queued rounds may
+      // depend on the interrupted callback, so discard them instead of replaying
+      // stale work on the next notification.
+      notificationQueue = [];
+      throw error;
+    } finally {
+      notificationDispatching = false;
+    }
   }
   function subscribe(fn) {
     subscribers.push(fn);
@@ -1634,7 +1741,8 @@
   function isCurrentScheduledTaskRequest(stamp) {
     if (!stamp || stamp.generation !== scheduledTaskSelectionGeneration) return false;
     if (scheduledTaskRequestTokens[stamp.kind] !== stamp.token) return false;
-    if (stamp.kind !== "tasks" && state.selectedScheduledTaskId !== stamp.id) return false;
+    // id 检查省略：selectedScheduledTaskId 唯一写者是 selectScheduledTask（每次
+    // 改写前 generation+1），id 变化必然被上方 generation 检查拦截（审计清理）。
     return true;
   }
 
@@ -1793,10 +1901,14 @@
   }
 
   // 聊天创建拿到合法参数后立即落成任务。草稿不会进入可渲染 state，避免再出现一层确认卡。
+  // autoOpenId 全局 last-writer：两会话并发创建时后完成者覆盖，且 startScheduledTaskChat
+  // 清空后陈旧 completion 会复活 auto-open（审计 f）。全局单调创建序号，仅最新意图可写。
+  var scheduledTaskAutoCreateSeq = 0;
   function autoCreateScheduledTaskDraft(draft, creationSessionId) {
     if (!draft || !creationSessionId || scheduledTaskAutoCreateInFlight[creationSessionId]) return;
     var lockedDraft = lockScheduledTaskDraftModel(draft);
     state.scheduledTaskDraft = null;
+    var creationSeq = ++scheduledTaskAutoCreateSeq;
     var creation = Promise.resolve()
       .then(function () {
         return createScheduledTask(scheduledTaskInputFromDraft(lockedDraft));
@@ -1807,7 +1919,8 @@
         }
         var creationBuffer = sessionStates[creationSessionId];
         if (creationBuffer) creationBuffer.scheduledTaskDraft = null;
-        if (created && created.id) state.scheduledTaskAutoOpenId = created.id;
+        // 仅最新创建意图可写 autoOpenId（陈旧 completion 不得复活 auto-open，审计 f）
+        if (created && created.id && creationSeq === scheduledTaskAutoCreateSeq) state.scheduledTaskAutoOpenId = created.id;
         notify();
         return created;
       })
@@ -2033,11 +2146,23 @@
         : SCHEDULED_LINK_POLL_SLOW_MS);
     }
 
+    function taskStillListed() {
+      return (state.scheduledTasks || []).some(function (item) {
+        return item && item.id === automationId;
+      });
+    }
+
     function poll(attempt) {
       invoke("list_scheduled_task_runs", { id: automationId }).then(function (runs) {
+        // 任务已被删除时不再回填：陈旧轮询响应会把已删任务以 fallback 名
+        // 复活回侧边栏（审计 R1）。任务不在列表即收工，不 merge、不续排。
         var task = (state.scheduledTasks || []).find(function (item) {
           return item && item.id === automationId;
-        }) || { id: automationId, name: bt("scheduledTaskFallbackName") };
+        });
+        if (!task) {
+          stop();
+          return;
+        }
         mergeScheduledTaskRecentRuns(task, runs);
         notify();
         // 必须看原始响应:mergeScheduledTaskRecentRuns 会滤掉尚无 sessionId 的记录,
@@ -2052,7 +2177,15 @@
           return;
         }
         again(attempt);
-      }).catch(function () { again(attempt); });
+      }).catch(function () {
+        // 已删任务的后端响应是 Err 而非空列表（get_automation 文件已移除）。
+        // 任务不在列表即收工，否则会以 1s/5s 空转重试到 30 分钟兜底。
+        if (!taskStillListed()) {
+          stop();
+          return;
+        }
+        again(attempt);
+      });
     }
 
     poll(0);
@@ -2171,6 +2304,10 @@
     return runScheduledTaskAction("delete", async function () {
       invalidateScheduledRecentRuns();
       var deleted = await invoke("delete_scheduled_task", { id: id });
+      // 作废删除前在途的整表 list / detail / runs 读（与 run-now 同模式）：否则
+      // 3 秒轮询的旧 list 响应落地时会把刚删的任务复活回侧边栏（含本 feature
+      // run-now 轮询依赖的 taskStillListed 判断，幽灵窗口会击穿 R1 守卫）。
+      invalidateScheduledTaskReads(id);
       var deletedSessionIds = deleted && Array.isArray(deleted.deletedSessionIds)
         ? deleted.deletedSessionIds
         : [];
@@ -2219,6 +2356,7 @@
       var prompt = await invoke("scheduled_task_chat_prompt");
       state.scheduledTaskDraft = null;
       state.scheduledTaskCreationSessionId = null;
+      scheduledTaskAutoCreateSeq++; // 清空意图：作废在途 auto-create 的陈旧 completion（审计 f）
       state.scheduledTaskAutoOpenId = null;
       await createNewSession();
       state.scheduledTaskPendingGuide = prompt;
@@ -2507,6 +2645,11 @@
     // syncModeState 读取互不感知（各自独立校验），不 bump 则两条读取链可
     // 互相覆盖（评审 P1）。
     modeSyncSeq += 1;
+    // persona/memory 写回同理 bump 各自序号：本通道与会话切换并发在途的
+    // syncActivePersona / loadMemoryOverview 读取互不感知（各自独立校验
+    // sid+seq），不 bump 则 A→B→A 快速切回时可被旧 sync 响应覆盖(二审补充)。
+    personaSyncSeq += 1;
+    memoryOverviewSeq += 1;
     var mode = results[0];
     var persona = results[1];
     var snapshot = results[2];
@@ -4032,6 +4175,9 @@
         if (turnOwnerBuffer) turnOwnerBuffer.localTurnOwned = false;
         emitPetEvent("pet:turn_end", sid);
         runSyncOnSession(sid, function () {
+          // 按引用移除本地乐观提交：buffer 权威重载后引用自然消失，无需按位置
+          // 二次限定（位置过滤在"引用仍在但位置移动"时会残留本地消息，且与
+          // tauri 端纯身份过滤分叉——审计后回退该谓词微调）。
           state.messages = state.messages.filter(function (message) { return message !== submittedMessage; });
           state.chatItems = state.chatItems.filter(function (item) {
             return item.id !== submittedUserItemId && item.id !== submittedStreamId;
@@ -6035,12 +6181,18 @@
   }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
+  // 整表覆盖加载：保存/删除/切换链式 loadModels 并发时旧列表不得覆盖新列表
+  // （审计 b）。请求序号后发者胜（与 tauri settings 侧一致）。
+  var modelsLoadSeq = 0;
   async function loadModels() {
+    var seq = ++modelsLoadSeq;
     try {
       var v = await invoke("list_models");
+      if (seq !== modelsLoadSeq) return;
       state.savedModels = (v && v.models) || [];
       state.activeModelId = (v && v.active_model_id) || null;
     } catch (e) {
+      if (seq !== modelsLoadSeq) return;
       state.savedModels = []; state.activeModelId = null;
     }
     notify();
@@ -6048,14 +6200,9 @@
   // model 对象字段须是 snake_case(SavedModel serde):
   // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action,image_capability_override,vision_model_id}
  async function saveModel(model) {
-   // probe_image_capability 是保存命令的独立参数(「自动探测」档),不落 SavedModel。
-   var probeImageCapability = !!model.probe_image_capability;
-   var clean = Object.assign({}, model);
-   delete clean.probe_image_capability;
-   var outcome = await invoke("save_model", { model: clean, probeImageCapability: probeImageCapability });
+   await invoke("save_model", { model: model });
    await loadModels();
    await loadEffectiveModelConfig();
-   return outcome || null;
  }
  async function revealModelApiKey(id) {
    return await invoke("reveal_model_api_key", { id: id });
@@ -6436,54 +6583,84 @@
     var pending = overview && Array.isArray(overview.pending) ? overview.pending : [];
     pending.forEach(upsertPendingMemoryCandidate);
   }
+  // 记忆面板混合两类数据：runtime 按 session 分文件，profile/preferences/
+  // pending 等为全局单文件(见后端 paths.rs)。加载仍必须带归属+序号校验
+  // (与 tauri memory.js 对齐，审计)：await 挂起期间切会话或再次加载，旧
+  // 响应不得覆盖当前显示(尤其 runtime 属于别的会话)，也不得把候选卡
+  // rehydrate 进当前对话流。
+  var memoryOverviewSeq = 0;
   async function loadMemoryOverview(options) {
     if (!invoke) return null;
     options = options || {};
+    var sid = state.activeSessionId;
+    var seq = ++memoryOverviewSeq;
     state.memory = Object.assign({}, state.memory, { loading: true, error: null });
     notify();
     try {
       var overview = await invoke("get_memory_overview", { sessionId: state.activeSessionId });
+      if (sid !== state.activeSessionId || seq !== memoryOverviewSeq) return discardStaleLoad(seq);
       applyMemoryOverview(overview);
       if (options.rehydratePending) rehydratePendingMemoryCandidates(overview);
       notify();
       return overview;
     } catch (e) {
+      if (sid !== state.activeSessionId || seq !== memoryOverviewSeq) return discardStaleLoad(seq);
       state.memory = Object.assign({}, state.memory, { loading: false, error: String(e) });
       notify();
       return null;
     }
   }
+  // 守卫命中的善后：序号已被更新加载接管时由它负责收尾 loading；仅会话
+  // 变化、无人接管时(如切草稿不续发加载)必须自己清掉 loading，否则面板
+  // 永远停在"同步中"(与 tauri 对齐，审计补充)。
+  function discardStaleLoad(seq) {
+    if (seq === memoryOverviewSeq) {
+      state.memory = Object.assign({}, state.memory, { loading: false });
+      notify();
+    }
+    return null;
+  }
   async function saveMemoryProfilePatch(patch) {
     if (!invoke) return null;
+    // 入口捕获触发会话：invoke 往返期间切走，A 的写结果/错误不得渲染进
+    // B 的面板(与 tauri memory.js 对齐，审计补充)。
+    var sid = state.activeSessionId;
     try {
       var result = await invoke("update_memory_profile", { patch: patch || {}, sessionId: state.activeSessionId });
-      applyMemoryProfileState(result);
-      notify();
+      if (sid === state.activeSessionId) { applyMemoryProfileState(result); notify(); }
       var overview = await loadMemoryOverview();
       return overview || result;
     } catch (e) {
-      state.memory = Object.assign({}, state.memory, { error: String(e) });
-      notify();
+      if (sid === state.activeSessionId) {
+        state.memory = Object.assign({}, state.memory, { error: String(e) });
+        notify();
+      }
       throw e;
     }
   }
   async function deleteMemoryPreference(id) {
     if (!id || !invoke) return false;
+    var sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
     try {
       var res = await invoke("delete_memory_preference", { id: id, sessionId: state.activeSessionId });
-      applyMemoryWriteState(res, function (next, changed) {
-        if (changed) next.preferences = (next.preferences || []).filter(function (item) { return item.id !== id; });
-      });
+      if (sid === state.activeSessionId) {
+        applyMemoryWriteState(res, function (next, changed) {
+          if (changed) next.preferences = (next.preferences || []).filter(function (item) { return item.id !== id; });
+        });
+      }
       await loadMemoryOverview();
       return !!(res && res.value);
     } catch (e) {
-      state.memory = Object.assign({}, state.memory, { error: String(e) });
-      notify();
+      if (sid === state.activeSessionId) {
+        state.memory = Object.assign({}, state.memory, { error: String(e) });
+        notify();
+      }
       throw e;
     }
   }
   async function updateMemoryItem(kind, id, patch) {
     if (!id || !invoke) return null;
+    var sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
     try {
       var command = kind === "preference" ? "update_memory_preference"
         : kind === "work_context" ? "update_work_context_memory"
@@ -6493,21 +6670,26 @@
       var args = { id: id, patch: patch || {}, sessionId: state.activeSessionId };
       if (command === "update_timed_memory") args.kind = kind;
       var res = await invoke(command, args);
-      applyMemoryWriteState(res, function (next, value) {
-        if (!value) return;
-        var source = kind === "preference" ? "preferences" : kind;
-        next[source] = upsertMemoryValue(next[source], value, id);
-      });
+      if (sid === state.activeSessionId) {
+        applyMemoryWriteState(res, function (next, value) {
+          if (!value) return;
+          var source = kind === "preference" ? "preferences" : kind;
+          next[source] = upsertMemoryValue(next[source], value, id);
+        });
+      }
       await loadMemoryOverview();
       return res && res.value;
     } catch (e) {
-      state.memory = Object.assign({}, state.memory, { error: String(e) });
-      notify();
+      if (sid === state.activeSessionId) {
+        state.memory = Object.assign({}, state.memory, { error: String(e) });
+        notify();
+      }
       throw e;
     }
   }
   async function deleteMemoryItem(kind, id) {
     if (!id || !invoke) return false;
+    var sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
     try {
       var command = kind === "preference" ? "delete_memory_preference"
         : kind === "work_context" ? "delete_work_context_memory"
@@ -6517,77 +6699,94 @@
       var args = { id: id, sessionId: state.activeSessionId };
       if (command === "delete_timed_memory") args.kind = kind;
       var res = await invoke(command, args);
-      applyMemoryWriteState(res, function (next, changed) {
-        if (!changed) return;
-        var source = kind === "preference" ? "preferences" : kind;
-        next[source] = (next[source] || []).filter(function (item) { return item.id !== id; });
-      });
+      if (sid === state.activeSessionId) {
+        applyMemoryWriteState(res, function (next, changed) {
+          if (!changed) return;
+          var source = kind === "preference" ? "preferences" : kind;
+          next[source] = (next[source] || []).filter(function (item) { return item.id !== id; });
+        });
+      }
       await loadMemoryOverview();
       return !!(res && res.value);
     } catch (e) {
-      state.memory = Object.assign({}, state.memory, { error: String(e) });
-      notify();
+      if (sid === state.activeSessionId) {
+        state.memory = Object.assign({}, state.memory, { error: String(e) });
+        notify();
+      }
       throw e;
     }
   }
   async function archiveRecentWorkMemory(id) {
     if (!id || !invoke) return false;
+    var sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
     try {
       var res = await invoke("archive_recent_work_memory", { id: id, sessionId: state.activeSessionId });
-      applyMemoryWriteState(res, function (next, changed) {
-        if (changed) next.recent_work = (next.recent_work || []).filter(function (item) { return item.id !== id; });
-      });
+      if (sid === state.activeSessionId) {
+        applyMemoryWriteState(res, function (next, changed) {
+          if (changed) next.recent_work = (next.recent_work || []).filter(function (item) { return item.id !== id; });
+        });
+      }
       await loadMemoryOverview();
       return !!(res && res.value);
     } catch (e) {
-      state.memory = Object.assign({}, state.memory, { error: String(e) });
-      notify();
+      if (sid === state.activeSessionId) {
+        state.memory = Object.assign({}, state.memory, { error: String(e) });
+        notify();
+      }
       throw e;
     }
   }
   async function confirmMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
-    var sid = state.activeSessionId;
+    var sid = state.activeSessionId; // 入口捕获：候选卡 patch 与面板写入都定向回发起会话(与 tauri 对齐，审计补充)
     try {
       var result = await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
-      applyMemoryWriteState(result, function (next) {
-        next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
-      });
-      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已记住" });
+      if (sid === state.activeSessionId) {
+        applyMemoryWriteState(result, function (next) {
+          next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
+        });
+      }
+      // patch 必须按发起会话路由(而非当前显示)：切走后写 B 的 chatItems 是
+      // no-op，A 的候选卡会永远停留在"可点击未决"态，切回再点会二次提交。
+      if (chatItemId) patchItemByIdFor(sid, chatItemId, { resolved: true, statusLabel: "已记住" });
       await loadMemoryOverview();
       notify();
     } catch (e) {
-      addSystemItem(bt("memoryWriteFailed") + e);
+      if (sid === state.activeSessionId) addSystemItem(bt("memoryWriteFailed") + e);
     }
   }
   async function ignoreMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
-    var sid = state.activeSessionId;
+    var sid = state.activeSessionId; // 同 confirmMemoryCandidate：定向回发起会话(与 tauri 对齐，审计补充)
     try {
       var result = await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
-      applyMemoryWriteState(result, function (next) {
-        next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
-      });
-      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已忽略" });
+      if (sid === state.activeSessionId) {
+        applyMemoryWriteState(result, function (next) {
+          next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
+        });
+      }
+      if (chatItemId) patchItemByIdFor(sid, chatItemId, { resolved: true, statusLabel: "已忽略" });
       await loadMemoryOverview();
       notify();
     } catch (e) {
-      addSystemItem(bt("memoryIgnoreFailed") + e);
+      if (sid === state.activeSessionId) addSystemItem(bt("memoryIgnoreFailed") + e);
     }
   }
   async function neverMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
-    var sid = state.activeSessionId;
+    var sid = state.activeSessionId; // 同 confirmMemoryCandidate：定向回发起会话(与 tauri 对齐，审计补充)
     try {
       var result = await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
-      applyMemoryWriteState(result, function (next) {
-        next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
-      });
-      if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "不再提示" });
+      if (sid === state.activeSessionId) {
+        applyMemoryWriteState(result, function (next) {
+          next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
+        });
+      }
+      if (chatItemId) patchItemByIdFor(sid, chatItemId, { resolved: true, statusLabel: "不再提示" });
       await loadMemoryOverview();
       notify();
     } catch (e) {
-      addSystemItem(bt("memoryNeverFailed") + e);
+      if (sid === state.activeSessionId) addSystemItem(bt("memoryNeverFailed") + e);
     }
   }
   // ── 思考指示器状态（每次阶段切换重置计时）──────────────────────
@@ -6635,7 +6834,8 @@
       notify();
       return;
     }
-    if (state.activeSessionId !== sid || isBusyFor(sid) || !isActionablePlanCard(sid, itemId, planTicket)) return;
+    // sid 前缀省略：isActionablePlanCard 首判已校验 sid === active（审计清理）。
+    if (isBusyFor(sid) || !isActionablePlanCard(sid, itemId, planTicket)) return;
     if (planBuffer) {
       planBuffer.localTurnOwned = true;
       planBuffer.remoteTurnActive = false;
@@ -6761,9 +6961,17 @@
     await sendMessage("请用 todo_write 工具输出完整方案步骤,不要直接调写工具。");
   }
   async function planStuckGo(itemId) {
+    var sid = state.activeSessionId;
+    if (!sid) return;
     patchItemById(itemId, { resolved: true }); notify();
     await exitPlanToYolo();
-    await sendMessage("按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
+    // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
+    // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
+    // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并
+    // 定向提示，否则成为 React onClick 上的 unhandled rejection，用户无感知。
+    try {
+      await sendMessageToSession(sid, "按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
+    } catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
@@ -6805,6 +7013,7 @@
   }
   async function cancelUserInput(itemId, toolCallId) {
     var sid = state.activeSessionId;
+    if (!sid) return;
     try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: sid }); } catch (_) {}
     patchItemByIdFor(sid, itemId, { resolved: true, cardState: "cancelled" });
     notify();
@@ -6818,7 +7027,8 @@
     var sid = state.activeSessionId;
     var editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addAuthoritySyncNotice(bt("turnSyncRetry"));
+      // 对账失败通知定向触发会话：await 期间切走后不得落进当前显示（与 acceptPlan 同）。
+      runOnSession(sid, function () { addAuthoritySyncNotice(bt("turnSyncRetry")); });
       notify();
       return;
     }
@@ -6887,7 +7097,9 @@
     }
   }
   async function compactNow() {
-    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItem(bt("compactFail") + ": " + e); }
+    var sid = state.activeSessionId;
+    if (!sid) return;
+    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItemFor(sid, bt("compactFail") + ": " + e); }
   }
 
   // ── 产物面板 ─────────────────────────────────────────────────────
@@ -7414,12 +7626,17 @@
       await ensureSession(); // 草稿态加卡 → 先物化 session(lazy session)
       if (!state.activeSessionId) return; // 物化失败,放弃
     }
-    var prev = state.activePersona; // 换卡前的旧专家(同 session 切换时先播报卸下)
+    // 入口捕获触发会话：await 期间用户可能切走，UI 写入不得落进别的会话
+    // （错误会话被重命名/插卡是持久化污染，不可自愈）。后端已按发起会话
+    // 定向；切走后放弃前端播报，挂件靠 syncActivePersona 恢复（与 tauri
+    // personas.js 对齐，审计）。
+    var sid = state.activeSessionId;
     try {
       var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
+      lastEquippedSid = sid; // 成功加持的目标会话(即使已切走)：供紧随其后的引导卡定向(与 tauri 对齐，审计补充)
+      if (sid !== state.activeSessionId) return card; // 已切走：不写当前显示
       // 标题仍是默认占位(三语哨兵,见 isDefaultChatTitle)→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
       // 用户已主动改名 / 已被首条消息命名的会话不动)。决策:卡牌优先于首条消息。
-      var sid = state.activeSessionId;
       var m = state.sessions.find(function (s) { return s.id === sid; });
       // 标题还是默认值 / 仍是卡牌占位(换卡场景)→ 用(新)卡牌名命名,并标记为占位。
       // 占位名会被首条用户消息覆盖(见 persistMessages*),让同卡会话靠对话内容区分。
@@ -7427,37 +7644,81 @@
         var newTitle = personaName(card);
         if (newTitle) {
           try { await invoke("rename_session", { id: sid, title: newTitle }); } catch (_) {}
+          if (sid !== state.activeSessionId) return card; // rename 挂起期间切走:放弃后续 UI 写入(审计补充)
           m.title = newTitle;
           personaPlaceholderTitles[sid] = true;
         }
       }
       // 同 session 换了一张不同的卡 → 先弹一条"已卸下旧专家",再弹新加持。
+      // 旧专家在写点复核而非入口捕获：同会话快速连续换卡时,入口值可能已被
+      // 上一次 equip 的权威写覆盖,陈旧值会播报错误的"已卸下"(与 tauri 对齐,二审补充)。
+      var prev = state.activePersona;
       if (prev && prev.id !== card.id) {
         addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() });
         recordPersonaEvent({ kind: "unequip", name: personaName(prev) });
       }
+      personaSyncSeq++; // 权威写前 bump：作废在途 syncActivePersona 的旧快照(与 tauri 对齐，审计补充)
       state.activePersona = card;
       addChatItem({ type: "persona_equip", card: card, time: timeStr() });
       recordPersonaEvent({ kind: "equip", card: card });
       notify();
       return card;
-    } catch (e) { addSystemItem(bt("equipFailed") + e); return null; }
+    } catch (e) {
+      // 失败也守住归属：失败气泡只落发起会话,不得插进 await 窗口内切到的
+      // 会话(addSystemItem 随消息流持久化);同时作废 lastEquippedSid——失败
+      // equip 后紧随的引导卡不得回退定向到历史成功 equip 的无关会话(与 tauri 对齐,二审补充)。
+      lastEquippedSid = null;
+      if (sid === state.activeSessionId) addSystemItem(bt("equipFailed") + e);
+      return null;
+    }
   }
   // 摘下当前 session 的专家面具。
   async function unequipPersona() {
     if (!state.activeSessionId) return;
-    var prev = state.activePersona;
+    // 入口捕获触发会话：await 期间切走，卸下播报不得写进别的会话（与 tauri 对齐，审计）。
+    var sid = state.activeSessionId;
     try { await invoke("unequip_persona", { sessionId: state.activeSessionId }); } catch (e) { /* 忽略,前端照样摘 */ }
+    if (sid !== state.activeSessionId) return; // 已切走：不写当前显示
+    personaSyncSeq++; // 权威写前 bump：作废在途 syncActivePersona 的旧快照(与 tauri 对齐，审计补充)
+    // 旧专家同样在写点复核：await 窗口内若已被 equip 换成新卡,播报新卡,
+    // 入口捕获的陈旧值会重复播报早已卸下的旧卡(与 tauri 对齐,二审补充)。
+    var prev = state.activePersona;
     state.activePersona = null;
     if (prev) { addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() }); recordPersonaEvent({ kind: "unequip", name: personaName(prev) }); }
     notify();
   }
+  // 挂件还原的请求序号 + 最近成功加持的目标会话(与 tauri personas.js 对齐)：
+  // - syncActivePersona 仅 sid 校验挡不住 A→B→A 的 ABA 与同会话乱序(慢响应
+  //   返回 null 会把刚加持的挂件覆盖掉,且无人再纠正)。序号在每次 sync 发起
+  //   与 equip/unequip 权威写时递增,旧快照一律作废(审计补充)。
+  // - lastEquippedSid 供 equip 后紧随的播报(如卡牌制造者引导卡)定向回
+  //   发起会话——equip 的 await 窗口用户可能已切走。
+  var personaSyncSeq = 0;
+  var lastEquippedSid = null;
   // 切换/重载 session 后,从后端拉该 session 的加持状态还原挂件(backend 是真相)。
   async function syncActivePersona() {
     if (!state.activeSessionId) { state.activePersona = null; return; }
+    var sid = state.activeSessionId;
+    var seq = ++personaSyncSeq;
     try {
-      state.activePersona = await invoke("get_active_persona", { sessionId: state.activeSessionId }) || null;
+      var persona = await invoke("get_active_persona", { sessionId: state.activeSessionId }) || null;
+      if (sid !== state.activeSessionId || seq !== personaSyncSeq) return; // 已切走或被权威写/新 sync 作废
+      state.activePersona = persona;
     } catch (e) { /* 旧 session 无加持,忽略 */ }
+  }
+  // 在【指定 session】追加卡牌制造者引导卡并落 sidecar(持久化,重载按 pos 插回)。
+  // 默认定向最近一次成功 equip 的目标会话：AI 造卡链路 equip→intro 之间用户
+  // 切走时,intro 必须仍落在发起(已加持)会话,而不是写进切走后的当前显示
+  // (错误会话被插卡是持久化污染,不可自愈)。显式传 sid 可覆盖(与 tauri 对齐，
+  // 审计补充)。
+  function postCardCreatorIntro(sid) {
+    var target = sid || lastEquippedSid || state.activeSessionId;
+    if (!target) return;
+    runOnSession(target, function () {
+      addChatItem({ type: "card_creator_intro", time: "" });
+      recordPersonaEvent({ kind: "card_creator_intro" });
+      notify();
+    });
   }
 
   // ── 多知识库挂载(会话级粘连,仿 persona) ──
@@ -8496,7 +8757,7 @@
     neverMemoryCandidate: neverMemoryCandidate,
     // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
     // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
-    postCardCreatorIntro: function () { addChatItem({ type: "card_creator_intro", time: "" }); recordPersonaEvent({ kind: "card_creator_intro" }); notify(); },
+    postCardCreatorIntro: postCardCreatorIntro,
     // 用户自创卡
     createPersona: createPersona,
     updatePersona: updatePersona,

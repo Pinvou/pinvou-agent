@@ -74,6 +74,11 @@ command_protocol!(
     "assistant_response.rs",
     ["export_assistant_response", "open_assistant_share_target"]
 );
+command_protocol!(
+    behavior_telemetry_protocol,
+    "behavior_telemetry.rs",
+    ["track_behavior_event"]
+);
 command_protocol!(chat_protocol, "chat.rs", ["chat"]);
 command_protocol!(
     connectors_protocol,

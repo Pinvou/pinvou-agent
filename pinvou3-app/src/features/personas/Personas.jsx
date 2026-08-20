@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AppWindow, Award, Briefcase, Check, ChevronLeft, ChevronRight, Cpu, Feather, Globe, Palette, Plus, Radio, Sparkles, Terminal, TrendingUp, User, X } from '../../components/icons.jsx';
+import { AppWindow, Award, Briefcase, Check, ChevronLeft, ChevronRight, Cpu, Feather, Globe, Lock, Navigation, Palette, Plus, Radio, Sparkles, Terminal, TrendingUp, User, X } from '../../components/icons.jsx';
 import { IosSearchField } from '../../components/IosControls.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 
-const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', finance:'金融', 'game-development':'游戏', hr:'人力', legal:'法务', marketing:'营销', 'paid-media':'投放', product:'产品', 'project-management':'项管', sales:'销售', 'spatial-computing':'空间计算', specialized:'专项', 'supply-chain':'供应链', support:'客服', testing:'测试', tool:'工具' };
+const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', finance:'金融', 'game-development':'游戏', gis:'地理信息', hr:'人力', legal:'法务', marketing:'营销', 'paid-media':'投放', product:'产品', 'project-management':'项管', sales:'销售', security:'安全', 'spatial-computing':'空间计算', specialized:'专项', 'supply-chain':'供应链', support:'客服', testing:'测试', tool:'工具' };
     // 部门标签按当前 UI 语言取词(t.depts),DEPT_LABELS(中文)兜底
     function deptLabelFor(t, k) { return (t && t.depts && t.depts[k]) || DEPT_LABELS[k] || k; }
     // 内置卡名称/简介按 UI 语言显示(personas-i18n.js overlay,按 id 查),中文兜底;自制卡不翻
@@ -16,9 +16,9 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       if (!tr) return c;
       return { ...c, name: tr.name || c.name, description: tr.description || c.description };
     }
-    const DEPT_ORDER = ['engineering','marketing','specialized','design','product','finance','sales','testing','project-management','paid-media','support','academic','game-development','spatial-computing','supply-chain','hr','legal','tool'];
+    const DEPT_ORDER = ['engineering','marketing','specialized','design','product','finance','sales','testing','project-management','paid-media','support','academic','game-development','spatial-computing','gis','security','supply-chain','hr','legal','tool'];
     const ALL_DEPT = '__all__'; // 分类「全部」哨兵(语言中立,显示走 t.cpAll)
-    const DEPT_COLOR = { academic:'#8B5CF6', design:'#EC4899', engineering:'#06B6D4', finance:'#10B981', 'game-development':'#F59E0B', hr:'#F472B6', legal:'#6B7280', marketing:'#F97316', 'paid-media':'#EF4444', product:'#7C3AED', 'project-management':'#3B82F6', sales:'#14B8A6', 'spatial-computing':'#6366F1', specialized:'#64748B', 'supply-chain':'#84CC16', support:'#22D3EE', testing:'#A855F7', tool:'#7C3AED' };
+    const DEPT_COLOR = { academic:'#8B5CF6', design:'#EC4899', engineering:'#06B6D4', finance:'#10B981', 'game-development':'#F59E0B', gis:'#0EA5E9', hr:'#F472B6', legal:'#6B7280', marketing:'#F97316', 'paid-media':'#EF4444', product:'#7C3AED', 'project-management':'#3B82F6', sales:'#14B8A6', security:'#F43F5E', 'spatial-computing':'#6366F1', specialized:'#64748B', 'supply-chain':'#84CC16', support:'#22D3EE', testing:'#A855F7', tool:'#7C3AED' };
     // 可在编辑器下拉选的部门(排除 tool —— 那是内置工具卡专用)
     const DEPT_OPTIONS = DEPT_ORDER.filter(function(d){ return d !== 'tool'; });
     const deptColor = (d) => DEPT_COLOR[d] || '#9aa0a6';
@@ -31,7 +31,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       return 'avatars/avatar-' + (n < 10 ? '0' + n : n) + '.svg';
     }
     // 头像加载失败时按部门降级到本地图标
-    const DEPT_ICON = { engineering: Terminal, design: Palette, product: AppWindow, marketing: TrendingUp, finance: Briefcase, sales: TrendingUp, testing: Cpu, 'project-management': Briefcase, 'paid-media': Radio, support: User, academic: Award, 'game-development': Cpu, 'spatial-computing': Globe, 'supply-chain': Briefcase, hr: User, legal: Award, specialized: Feather, tool: Cpu };
+    const DEPT_ICON = { engineering: Terminal, design: Palette, product: AppWindow, marketing: TrendingUp, finance: Briefcase, sales: TrendingUp, testing: Cpu, 'project-management': Briefcase, 'paid-media': Radio, support: User, academic: Award, 'game-development': Cpu, 'spatial-computing': Globe, gis: Navigation, security: Lock, 'supply-chain': Briefcase, hr: User, legal: Award, specialized: Feather, tool: Cpu };
     // App Store 风头像块:本地头像图,失败降级图标(绝不显示文字)
     const AppIcon = ({ card, cls = 'w-14 h-14 rounded-[14px]', fb = 26 }) => {
       const [err, setErr] = useState(false);
@@ -272,7 +272,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
     const CardPoolView = ({ theme, t, bs, onEquipped, onAICreate, initialMyOnly }) => {
       const isDark = theme === 'dark';
       const pool = (bs && bs.personaPool) || { loadState: 'idle' };
-      // 201 张卡走模块级缓存(不进 notify 快照),loadState 变化驱动重渲染。
+      // 268 张卡走模块级缓存(不进 notify 快照),loadState 变化驱动重渲染。
       const list = (bridge.available && bridge.personas.getPersonas) ? bridge.personas.getPersonas() : [];
       const active = (bs && bs.activePersona) || null;
       // 加持目标 = 当前对话(equipPersona 注入到 state.activeSessionId)。让用户始终知道注入到哪。

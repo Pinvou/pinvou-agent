@@ -1,7 +1,7 @@
 //! 专家面具池（卡牌池）—— **Side B: agency-agents-zh 全正文版 + 用户自创卡**。
 //!
 //! 三个数据源（[`all_summaries`] / [`get`] 合并）:
-//! 1. **agency 内嵌**（`source="builtin"`）: jnMetaCode/agency-agents-zh(MIT, 201 个),
+//! 1. **agency 内嵌**（`source="builtin"`）: jnMetaCode/agency-agents-zh(MIT, 268 个),
 //!    每个带 ~6K 字完整人设正文。编译期 `include_str!`，OnceLock 缓存。
 //! 2. **pinvou3 内置卡**（`source="builtin"`）: 目前只有「卡牌制造专家」(见 [`builtin_extra`])。
 //! 3. **用户自创卡**（`source="user"`）: 扫 `~/.pinvou3/user/personas/<id>.json`,
@@ -353,7 +353,7 @@ const CARD_CREATOR_BODY: &str = r##"# 卡牌制造专家
    - **关键规则 / 质量标准**:必须遵守什么、什么算合格
    - **典型交付物**:产出什么、什么格式
    - **沟通风格**:怎么跟用户说话
-3. **选部门 dept**(英文 code):engineering / design / product / marketing / finance / sales / testing / project-management / paid-media / support / academic / game-development / spatial-computing / supply-chain / hr / legal / specialized。挑最贴的一个。
+3. **选部门 dept**(英文 code):engineering / design / product / marketing / finance / sales / testing / project-management / paid-media / support / academic / game-development / spatial-computing / gis / security / supply-chain / hr / legal / specialized。挑最贴的一个。
 4. **产出成品**:把设计好的卡以一个 `persona-card` 代码块输出,里面是严格 JSON:
 
 ```persona-card

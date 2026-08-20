@@ -89,6 +89,23 @@ pub const MCP_PACKAGES: &[McpPackageSpec] = &[
             ),
         ],
     },
+    // 腾讯文档（官方远程 MCP ×4，个人 Token 经无 scheme Authorization 头注入
+    // ——官方端点要求原始 Token，不能加 Bearer 前缀）。
+    McpPackageSpec {
+        id: "tencent-docs",
+        manifest_json: include_str!("../../../../resources/mcp-servers/tencent-docs/manifest.json"),
+        files: &[],
+    },
+    // 企微群机器人（本地 stdio，包装企业微信官方群机器人 webhook 消息推送 API；
+    // key 走凭据库 + ${ENV} 占位符，不落明文）。
+    McpPackageSpec {
+        id: "wecom-bot",
+        manifest_json: include_str!("../../../../resources/mcp-servers/wecom-bot/manifest.json"),
+        files: &[(
+            "server.py",
+            include_str!("../../../../resources/mcp-servers/wecom-bot/server.py"),
+        )],
+    },
 ];
 
 /// 按 id 取内嵌包（不在目录 = 自定义/手放工具，走旧布局回退）。
@@ -215,7 +232,7 @@ mod tests {
                 assert!(!content.is_empty(), "{} 的 {name} 为空", spec.id);
             }
         }
-        // 已知 9 个内置包
-        assert_eq!(MCP_PACKAGES.len(), 9);
+        // 已知 11 个内置包
+        assert_eq!(MCP_PACKAGES.len(), 11);
     }
 }

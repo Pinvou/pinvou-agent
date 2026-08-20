@@ -1634,21 +1634,31 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   />
                 ) : (
                   <>
-                    {visibleChatItems.map((item) => (
-                      <ChatBubble
-                        key={item.id}
-                        item={item}
-                        sessionId={activeSessionId}
-                        theme={theme}
-                        t={t}
-                        onPrefill={(text) => setInputText(text)}
-                        onSend={sendChatMessage}
-                        editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
-                        onOpenEditor={onOpenEditor}
-                        isLatestArtifact={latestArtifactIds.has(item.id)}
-                        allowScheduledTaskDraft={isScheduledTaskCreationChat}
-                      />
-                    ))}
+                    {visibleChatItems.map((item) => {
+                      // reasoning 由统一 UI 的 ConversationTimeline 负责，legacy 路径不展示；
+                      // ChatBubble 不认识该类型会返回 null。其余 ChatBubble 返回 null 的情况
+                      // （空流式 assistant、已忽略的记忆候选、未知类型）由 .cv-bubble:empty
+                      // 兜底。空内容绝不能被 content-visibility wrapper 包裹：离屏时空 div 会按
+                      // contain-intrinsic-size 各占 600px，污染 scrollHeight 造成滚动条缩跳与
+                      // 滚底跳变（http://localhost 无关，Safari 18+/Chromium 均复现）。
+                      if (item.type === 'reasoning') return null;
+                      return (
+                        <div key={item.id} className="cv-bubble" style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 600px' }}>
+                          <ChatBubble
+                            item={item}
+                            sessionId={activeSessionId}
+                            theme={theme}
+                            t={t}
+                            onPrefill={(text) => setInputText(text)}
+                            onSend={sendChatMessage}
+                            editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
+                            onOpenEditor={onOpenEditor}
+                            isLatestArtifact={latestArtifactIds.has(item.id)}
+                            allowScheduledTaskDraft={isScheduledTaskCreationChat}
+                          />
+                        </div>
+                      );
+                    })}
                     {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
                   </>
                 )}

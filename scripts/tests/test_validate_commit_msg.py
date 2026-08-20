@@ -14,8 +14,17 @@ SPEC.loader.exec_module(validate_commit_msg)
 
 
 class ValidateCommitTextTests(unittest.TestCase):
+    def test_standard_english_description_is_allowed(self) -> None:
+        self.assertEqual(
+            validate_commit_msg.validate_text(
+                "fix(session): prevent duplicate sync attempts",
+                "regular commit",
+            ),
+            [],
+        )
+
     def test_github_pr_suffix_is_not_counted_towards_description_limit(self) -> None:
-        description = "修" * 50
+        description = "a" * 50
 
         self.assertEqual(
             validate_commit_msg.validate_text(
@@ -26,7 +35,7 @@ class ValidateCommitTextTests(unittest.TestCase):
         )
 
     def test_description_over_limit_is_rejected_before_github_pr_suffix(self) -> None:
-        description = "修" * 51
+        description = "a" * 51
 
         errors = validate_commit_msg.validate_text(
             f"fix: {description} (#191)",
@@ -37,7 +46,7 @@ class ValidateCommitTextTests(unittest.TestCase):
         self.assertIn("description must be 50 characters or fewer, got 51", errors[0])
 
     def test_only_terminal_github_pr_suffix_is_excluded(self) -> None:
-        description = f"{'修' * 50} (#191) 后续"
+        description = f"{'a' * 50} (#191) followup"
 
         errors = validate_commit_msg.validate_text(
             f"fix: {description}",
@@ -52,7 +61,7 @@ class ValidateCommitTextTests(unittest.TestCase):
 
     def test_github_pr_suffix_does_not_hide_forbidden_punctuation(self) -> None:
         errors = validate_commit_msg.validate_text(
-            "fix: 修复权限声明。 (#191)",
+            "fix: prevent duplicate sync attempts. (#191)",
             "squash commit",
         )
 
@@ -61,12 +70,30 @@ class ValidateCommitTextTests(unittest.TestCase):
 
     def test_github_pr_suffix_does_not_hide_vague_description(self) -> None:
         errors = validate_commit_msg.validate_text(
-            "fix: 修改代码 (#191)",
+            "fix: fix bug (#191)",
             "squash commit",
         )
 
         self.assertEqual(len(errors), 1)
-        self.assertIn("description is too vague: 修改代码", errors[0])
+        self.assertIn("description is too vague: fix bug", errors[0])
+
+    def test_language_is_not_enforced(self) -> None:
+        self.assertEqual(
+            validate_commit_msg.validate_text(
+                "fix(会话): 修复同步重试逻辑",
+                "regular commit",
+            ),
+            [],
+        )
+
+    def test_description_must_contain_an_english_letter(self) -> None:
+        errors = validate_commit_msg.validate_text(
+            "fix: 12345",
+            "regular commit",
+        )
+
+        self.assertTrue(errors)
+        self.assertIn("description must contain a letter", errors[0])
 
 
 class ValidateCommitRangeTests(unittest.TestCase):
@@ -77,7 +104,7 @@ class ValidateCommitRangeTests(unittest.TestCase):
         ):
             git_mock.side_effect = [
                 "0123456789abcdef",
-                "hexin\x00372726039@qq.com\x00fix: 修复提交门禁范围",
+                "hexin\x00372726039@qq.com\x00fix: enforce English commit subjects",
             ]
 
             self.assertEqual(validate_commit_msg.validate_range("base", "head"), [])
@@ -101,7 +128,7 @@ class ValidateCommitRangeTests(unittest.TestCase):
         ):
             git_mock.side_effect = [
                 "0123456789abcdef",
-                "hexin\x00372726039@qq.com\x00chore: 初始化社区版源码",
+                "hexin\x00372726039@qq.com\x00chore: initialize community source",
             ]
 
             self.assertEqual(validate_commit_msg.validate_range("base", "head"), [])
@@ -116,20 +143,20 @@ class ValidateCommitRangeTests(unittest.TestCase):
             ),
         )
 
-    def test_range_still_rejects_new_nonconforming_commit(self) -> None:
+    def test_range_rejects_new_nonconforming_commit(self) -> None:
         with (
             patch.object(validate_commit_msg, "git_commit_exists", side_effect=[True, False]),
             patch.object(validate_commit_msg, "git") as git_mock,
         ):
             git_mock.side_effect = [
                 "fedcba9876543210",
-                "hexin\x00372726039@qq.com\x00fix: english only",
+                "hexin\x00372726039@qq.com\x00fix missing separator",
             ]
 
             errors = validate_commit_msg.validate_range("base", "head")
 
         self.assertTrue(errors)
-        self.assertIn("description must use Chinese", errors[0])
+        self.assertIn("first line must be", errors[0])
 
     def test_range_allows_exact_trusted_bot_identity(self) -> None:
         with (
@@ -154,13 +181,13 @@ class ValidateCommitRangeTests(unittest.TestCase):
         ):
             git_mock.side_effect = [
                 "fedcba9876543210",
-                "dependabot[bot]\x00attacker@example.com\x00fix: english only",
+                "dependabot[bot]\x00attacker@example.com\x00fix missing separator",
             ]
 
             errors = validate_commit_msg.validate_range("base", "head")
 
         self.assertTrue(errors)
-        self.assertIn("description must use Chinese", errors[0])
+        self.assertIn("first line must be", errors[0])
 
     def test_missing_base_validates_the_complete_rewritten_history(self) -> None:
         with (
@@ -169,7 +196,7 @@ class ValidateCommitRangeTests(unittest.TestCase):
         ):
             git_mock.side_effect = [
                 "0123456789abcdef",
-                "hexin\x0013790929+h3c-hexin@users.noreply.github.com\x00chore: 重建安全的社区版开源基线",
+                "hexin\x0013790929+h3c-hexin@users.noreply.github.com\x00chore: 重建社区版开源基线",
             ]
 
             self.assertEqual(
@@ -186,7 +213,5 @@ class ValidateCommitRangeTests(unittest.TestCase):
                 "clean-head",
             ),
         )
-
-
 if __name__ == "__main__":
     unittest.main()

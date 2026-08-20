@@ -1,174 +1,137 @@
 ---
 name: wecomcli-doc
-description: 何时用:仅当用户明确指向企业微信文档(写个企微文档、读 `https://doc.weixin.qq.com/` 链接)时使用;泛指做个文档默认走本地工具,不要误用。企微文档/表格/智能表格/智能文档管理:文档创建、Markdown 读取与覆写,智能表格创建,智能文档创建与导出,支持 docid 或 URL 定位;智能表格结构管理见 wecomcli-smartsheet。
+description: 何时用:仅当用户明确指定 doc/docx/word/在线文档或提供 doc.weixin.qq.com/doc/ 链接时使用;泛指「做个文档/写文档/整理成文档」默认走 wecomcli-smartpage 或本地工具,本技能不得抢占。doc 内容操作:新建、导入、读取、追加、覆盖写入;结构化数据需求改用智能文档/智能表格;公共管理走 wecomcli-doc-manage。
 metadata:
   requires:
     bins: ["wecom-cli"]
-  cliHelp: "wecom-cli doc --help"
 ---
 
-# 企业微信文档管理
+# 企业微信doc文档管理
 
-管理企业微信文档和智能文档（原名智能主页）的创建、读取和编辑。文档接口支持通过 `docid` 或 `url` 二选一定位文档。
+> 执行任何 `wecom-cli` 命令前，必须先读取并完成 `wecomcli-shared` 技能的公共前置检查。
 
-> ⚠️ **重要触发规则**：只有当用户明确提到「**智能文档**」或「**智能主页**」时，才使用智能文档相关接口（`smartpage_*` 系列）。其他所有涉及「文档」的场景（如"创建文档"、"写个文档"、"帮我建个文档"等），一律使用企微文档接口（`create_doc` / `get_doc_content` / `edit_doc_content`）。
+资源型 skill，负责doc文档（`doc`）的新建、导入与内容读写。
 
-## URL 品类识别与接口路由
+## 适用范围
 
-企业微信文档有四种品类，**URL 格式不同，读取内容所用的接口也不同**，切勿混用。其中**表格（在线表格）与智能表格是两类不同品类**，请通过 URL 严格区分：
+### 适用
 
-| URL 模式 | 品类 | 读取内容接口 |
-|---|---|---|
-| `https://doc.weixin.qq.com/doc/*` | **文档**（doc_type=3） | `get_doc_content` |
-| `https://doc.weixin.qq.com/sheet/*` | **表格 / 在线表格** | `get_doc_content` |
-| `https://doc.weixin.qq.com/smartsheet/*` | **智能表格**（doc_type=10） | 参阅 `wecomcli-smartsheet` skill |
-| `https://doc.weixin.qq.com/smartpage/*` | **智能文档**（原名智能主页） | `smartpage_export_task` → `smartpage_get_export_result` |
+- 新建 / 导入企微 doc 文档
+- 读取 doc 文档内容
+- 向 doc 文档追加一行 / 覆盖写入doc 文档
 
-> ⚠️ `/sheet/`（表格）与 `/smartsheet/`（智能表格）是不同品类；表格读取用 `get_doc_content`，智能表格的读取与结构/记录管理见 `wecomcli-smartsheet` skill。
+### 不适用
 
-## 调用方式
+- 搜索文档 / 修改文档权限 / 重命名 / 加成员 → 改用 `wecomcli-doc-manage`
 
-通过 `wecom-cli` 调用，品类为 `doc`：
+### 易混淆场景路由
+
+- 用户说"创建文档 / 写文档 / 整理成文档" 且未指定 doc 类型 → 改用 `wecomcli-smartpage`（智能文档为默认）
+- 用户给的链接是 `https://doc.weixin.qq.com/smartpage/...` 或者 `https://page.weixin.qq.com/smartpage/...` → 改用 `wecomcli-smartpage`
+- 若遇到的 `docid` 以 `a1` 或者 `b1` 开头（形如 `a1_xxxx`, `b1_xxxx`）→ 改用 `wecomcli-smartpage`
+
+## 接口路由表
+
+路由表第二列若是 `references/xxx.md` 链接 → 必须先用 `File(action="read")` 读完该文件，再构造命令。
+
+| 用户意图 | 参考位置                                                          |
+|---|---------------------------------------------------------------|
+| 新建doc文档（在线） | 见下方「新建doc文档」                                                  |
+| 导入本地文件为企微doc文档 | 见下方「导入doc文档」                                                  |
+| 读取doc文档内容 | 见下方「读取doc文档内容」                                                |
+| 追加文本到doc文档末尾 | [+contents-append](references/doc-contents-append.md)       |
+| 全量覆盖doc文档内容 | [+contents-overwrite](references/doc-contents-overwrite.md) |
+
+### 写入语义裁定（追加 vs 覆盖）
+
+- 默认追加：用户用「写入 / 写到 / 记录 / 补充 / 加进去 / 记一下」等中性动词，且未明确要求清空或替换时，一律走 `append`（追加，不破坏原有内容）。
+- 仅显式覆盖：仅当用户明确出现「覆盖 / 重写 / 替换 / 清空重写 / 整个换成」等强语义词时，才走 `overwrite`。
+
+## 接口详述
+
+### 新建doc文档
+
+新建企微doc文档统一走「**生成 `.docx` → 导入**」两步流程：
+
+1. 生成 `.docx` 文件：按 [+doc-create](references/doc-create.md) 生成 `.docx` 文件。
+2. 导入为企微doc文档：使用下方「导入doc文档」接口将生成的 `.docx` 文件导入为企微doc文档。注意import导入的时候 `file_name` 应和文档标题保持一致。
+
+### 导入doc文档
+
+把本地文件（`.doc` / `.docx` / `.txt`）导入为企微doc文档。
+
+**命令**
 
 ```bash
-wecom-cli doc <tool_name> '<json_params>'
+wecom-cli doc import --json '<JSON 参数>'
 ```
 
-## 返回格式说明
+**参数**
 
-所有接口返回 JSON 对象，包含以下公共字段：
+| 字段          | 类型 | 必填 | 默认值 | 语义 |
+|-------------|---|---|---|---|
+| `doc_type`  | string | 是 | `doc` | 固定为 `doc`（doc文档） |
+| `file_name` | string | 是 | — | 二进制文件名（含后缀），用于业务判断源文件类型 |
+| `file_path` | string | 是 | — | 源文件的本地绝对路径 |
+| `passwd`    | string | 否 | — | Office 文件加密密码（若有） |
+
+**返回**
 
 | 字段 | 类型 | 说明 |
-|------|------|------|
-| `errcode` | integer | 返回码，`0` 表示成功，非 `0` 表示失败 |
-| `errmsg` | string | 错误信息，成功时为 `"ok"` |
+|---|---|---|
+| `docid` | string | 导入完成后的文档 ID |
+| `url` | string | 导入完成后的访问链接 |
+| `task_status` | string | 任务状态枚举，如 `succ` 成功 |
 
-当 `errcode` 不为 `0` 时，说明接口调用失败，可重试 1 次；若仍失败，将 `errcode` 和 `errmsg` 展示给用户。
+### 读取doc文档内容
 
-### 特殊错误码
+读取**doc文档**的文档内容。
 
-| errcode | errmsg | 含义 | 处理方式 |
-|---------|--------|------|----------|
-| `851002` | `incompatible doc type` | 文档品类与所调用的接口不匹配 | 根据文档 URL 重新确认品类（参见上方「URL 品类识别与接口路由」表），然后使用该品类对应的正确接口重试 |
-
----
-
-## 文档
-
-### get_doc_content
-
-获取**文档 / 表格（在线表格）**的完整内容数据，统一以 Markdown 格式返回。采用**异步轮询机制**：首次调用无需传 `task_id`，接口返回 `task_id`；若 `task_done` 为 false，需携带该 `task_id` 再次调用，直到 `task_done` 为 true 时返回完整内容。
-
-> 适用 URL：`/doc/*`、`/sheet/*`。`/smartsheet/*`（智能表格）不适用，请改用 `wecomcli-smartsheet` skill；`/smartpage/*`（智能文档）不适用，请改用 `smartpage_export_task`。
-
-- 首次调用（不传 task_id）：
-```bash
-wecom-cli doc get_doc_content '{"docid": "DOCID", "type": 2}'
-```
-- 轮询（携带上次返回的 task_id）：
-```bash
-wecom-cli doc get_doc_content '{"docid": "DOCID", "type": 2, "task_id": "xxx"}'
-```
-- 通过 URL 读取文档：
-```bash
-wecom-cli doc get_doc_content '{"url": "https://doc.weixin.qq.com/doc/xxx", "type": 2}'
-```
-- 通过 URL 读取表格（在线表格）：
-```bash
-wecom-cli doc get_doc_content '{"url": "https://doc.weixin.qq.com/sheet/xxx", "type": 2}'
-```
-
-> ⚠️ **智能表格（`/smartsheet/*`）不适用此接口**，请使用 `wecomcli-smartsheet` skill 进行操作。
-
-参见 [API 详情](references/get-doc-content.md)。
-
-### create_doc
-
-新建文档（doc_type=3）或智能表格（doc_type=10）。创建成功返回 url 和 docid。
-
-- 创建文档：
-```bash
-wecom-cli doc create_doc '{"doc_type": 3, "doc_name": "项目周报"}'
-```
-- 创建智能表格：
-```bash
-wecom-cli doc create_doc '{"doc_type": 10, "doc_name": "项目任务表"}'
-```
-
-**注意**：
-- docid 仅在创建时返回，需妥善保存
-- 智能表格（doc_type=10）的详细管理功能（子表、字段、数据记录等）已迁移到 `wecomcli-smartsheet` skill，请使用该 skill 进行高级操作
-- 普通表格（在线表格，URL 含 `/sheet/`）本 skill **仅支持读取**（通过 `get_doc_content`），不支持创建
-
-参见 [API 详情](references/create-doc.md)。
-
-### edit_doc_content
-
-用 Markdown 内容覆写文档正文。`content_type` 固定为 `1`（Markdown）。
+**命令**
 
 ```bash
-wecom-cli doc edit_doc_content '{"docid": "DOCID", "content": "# 标题\n\n正文内容", "content_type": 1}'
+wecom-cli doc contents get --json '<JSON 参数>'
 ```
 
-参见 [API 详情](references/edit-doc-content.md)。
+**参数**
 
----
+| 字段 | 类型 | 必填 | 默认值 | 语义                                      |
+|---|---|----|---|-----------------------------------------|
+| `docid` | string | 是  | — | doc文档 ID                                |
+| `content_type` | string | 否  | `markdown` | 返回内容格式枚举：`text` / `markdown` / `ooxml`； |
 
-## 智能文档（原名智能主页）
+**返回**
 
-适用品类：智能文档（用户说「智能文档」或「智能主页」时触发）
-适用 URL：`/smartpage/*`
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `url` | string | 文档访问链接 |
+| `name` | string | 文档名称 |
+| `content` | string | 文档内容较短时直接返回的原文 |
+| `file_path` | string | 文档内容较长时自动落盘的**本地文件路径**；需用 `File(action="read")` 读取路径内文本后再展示 |
+| `document` | object | `content_type=ooxml` 时返回的文档对象 |
+| `version` | int | 文档版本号 |
 
-适用场景：
-1. 将本地 Markdown 文件创建为智能文档
-2. 异步导出智能文档内容为 Markdown
+## 跨技能依赖
 
-### smartpage_create
+| 依赖技能 | 何时触发 | 使用被依赖 skill 做什么                                                                                                             |
+|---|---|-----------------------------------------------------------------------------------------------------------------------------|
+| `wecomcli-doc-manage` | 用户只给文档名称/关键词，需先拿 `docid` 再读写内容 | 使用 `wecomcli-doc-manage` skill 搜索文档拿 `docid`                                                                                   |
+| `wecomcli-smartpage` | 读取doc文档内容后，用户要求"做成智能文档/排版成 smartpage" | 使用 `wecomcli-smartpage` skill 生成智能文档                                                                                           |
 
-创建智能文档（原名智能主页），支持传入标题和多个子页面。每个子页面可指定标题、内容类型和本地文件路径。创建成功返回 docid 和 url。
+> 参数缺失 / `docid` 搜索多候选等歧义场景，用简洁自然语言仅追问缺失或有歧义的信息；有候选项时在文字中列出供用户选择，不得自行猜测。
 
-> ⚠️ **特殊语法**：此命令必须使用 `+smartpage_create`（带 `+` 前缀），加号不可省略；不要自行给其他 `doc` 子命令加 `+`，带 `+` 的命令（如此命令及 smartsheet 的 `+smartsheet_add_records_auto_file` / `+smartsheet_update_records_auto_file`）必须原样保留加号。
+## `docid` 使用规则
 
-```bash
-wecom-cli doc +smartpage_create '{"title": "项目概览", "pages": [{"page_title": "需求文档", "content_type": 1, "page_filepath": "/path/to/requirements.md"}]}'
+`docid`仅cli使用。
+最终展示用户时，不应展示 `docid`，而是使用文档 URL：
+
+```
+[doc_name](doc_url)
 ```
 
-**注意**：
-- `content_type` **必须与文件实际内容匹配**：`.md` 文件或包含 Markdown 语法的内容必须传 `1`（Markdown），仅纯文本才传 `0`。绝大多数场景应传 `1`
-- docid 仅在创建时返回，需妥善保存
-- 每个子页面的 Markdown 文件大小不得超过 **10MB**，超过会导致创建失败。如果文件过大，需先拆分为多个子页面再创建
 
-参见 [API 详情](references/smartpage-create.md)。
+`docid` 是文档的唯一标识符，调用任何文档内容操作技能时均需提供。禁止自造 `docid`，按以下优先级获取：
 
-### smartpage_export_task
-
-发起智能文档内容导出任务（异步）。传入 docid（或 url）和 content_type，返回 task_id。这是异步导出的第一步，需配合 `smartpage_get_export_result` 轮询获取导出结果。
-
-- 通过 docid：
-```bash
-wecom-cli doc smartpage_export_task '{"docid": "DOCID", "content_type": 1}'
-```
-- 或通过 URL：
-```bash
-wecom-cli doc smartpage_export_task '{"url": "https://doc.weixin.qq.com/smartpage/xxx", "content_type": 1}'
-```
-
-参见 [API 详情](references/smartpage-export.md)。
-
-### smartpage_get_export_result
-
-查询智能文档导出任务进度。传入 task_id 进行轮询，当 `task_done` 为 `true` 时返回 `content`（导出的完整文档内容）。
-
-```bash
-wecom-cli doc smartpage_get_export_result '{"task_id": "TASK_ID"}'
-```
-
-当 `task_done` 为 `true` 时，`content` 字段即为导出的 Markdown 内容。
-
-参见 [API 详情](references/smartpage-export.md)。
-
-## 典型工作流
-- 读内容：先按 URL 表定品类 → `/doc/`、`/sheet/` 走 `get_doc_content`（轮询至 `task_done`）；`/smartpage/` 走 `smartpage_export_task` → `smartpage_get_export_result`。
-- 建文档：`create_doc`（doc_type=3），保存返回的 docid（仅创建时返回）。
-- 改文档：先 `get_doc_content` 了解现状，再 `edit_doc_content` 覆写。
-
+1. 从文档链接提取（优先）：用户提供了企微文档 URL 时，直接从 URL 中解析。URL 格式为 `https://doc.weixin.qq.com/<type>/<docid>?scode=...`，取 `/<type>/` 后、`?` 前的部分即为 docid。
+2. 通过文档搜索获取（备选）：用户仅提供文档名称或关键词、未给链接时，先调用 `wecomcli-doc-manage` 搜索文档，从返回结果中取 `docid`。
+3. 用户直接提供：用户明确给出了完整 `docid`，可直接使用，无需再提取或搜索。

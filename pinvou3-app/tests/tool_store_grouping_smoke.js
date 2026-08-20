@@ -27,7 +27,7 @@ if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome'); process.exit(2)
 
 function injectSource() {
   return `(function(){
-    const TOOLS=[['weather',[]],['iwencai',[]],['qcc',[]],['patsnap-search',[]],['canva-mcp',[]],['yuandian-mcp',[]],['obsidian',[]],['pptx',['pptx']],['gongwen',['government-writing']],['my-uploaded-mcp',[]]];
+    const TOOLS=[['weather',[]],['iwencai',[]],['qcc',[]],['patsnap-search',[]],['tencent-docs',['tencent-docs-skill']],['canva-mcp',[]],['yuandian-mcp',[]],['obsidian',[]],['pptx',['pptx']],['gongwen',['government-writing']],['my-uploaded-mcp',[]]];
     window.__TAURI_EVENT_HANDLERS__={};
     function invoke(cmd){
       switch(cmd){

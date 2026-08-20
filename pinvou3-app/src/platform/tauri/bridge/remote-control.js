@@ -159,6 +159,12 @@
       }
     }
 
+    // webAccess 状态写入无意图排序：start/stop/rotate 并发时后完成者会把
+    // UI 指示写反（审计 a）。用户操作意图序号——陈旧响应作废，终态由最新
+    // 意图的完成写入收敛：web_access:status 事件 payload 不含 starting，
+    // 事件无法清理该标志，须由每个意图完成路径（含失败）显式兜底。
+    var webAccessIntentSeq = 0;
+
     async function refreshRemoteControlStatus() {
       try {
         var status = await invoke("web_access_status");
@@ -170,16 +176,19 @@
     }
 
     async function startRemoteControl() {
+      var seq = ++webAccessIntentSeq;
       state.webAccess = Object.assign({}, state.webAccess, { starting: true, last_error: null });
       notify();
       try {
         var info = await invoke("web_access_enable");
+        if (seq !== webAccessIntentSeq) return info; // 已有更新的用户操作，不写反状态
         state.webAccess = Object.assign({}, state.webAccess, info || {}, {
           active: true, starting: false, last_error: null,
         });
         await refreshRemoteControlStatus();
         return info;
       } catch (error) {
+        if (seq !== webAccessIntentSeq) throw error;
         state.webAccess = Object.assign({}, state.webAccess, {
           active: false, web_client_connected: false, starting: false,
           status: "error", last_error: String(error),
@@ -190,31 +199,37 @@
     }
 
     async function stopRemoteControl() {
+      var seq = ++webAccessIntentSeq;
       try {
         await invoke("web_access_disable");
       } catch (error) {
-        state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(error) });
+        if (seq !== webAccessIntentSeq) return; // 陈旧失败不向调用者抛错：已有更新的用户操作接管状态（审计补充）
+        state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(error), starting: false });
         notify();
         throw error;
       }
+      if (seq !== webAccessIntentSeq) return; // 已有更新的用户操作，不写反状态
       state.webAccess = Object.assign({}, state.webAccess, {
         active: false, endpoint_id: null, url: null, qr_data_url: null,
-        web_client_connected: false, status: "stopped",
+        web_client_connected: false, status: "stopped", starting: false,
       });
       notify();
     }
 
     async function refreshRemoteControlQr() {
+      var seq = ++webAccessIntentSeq;
       try {
         var info = await invoke("web_access_rotate");
+        if (seq !== webAccessIntentSeq) return info;
         state.webAccess = Object.assign({}, state.webAccess, info || {}, {
-          active: true, web_client_connected: false, last_error: null,
+          active: true, web_client_connected: false, last_error: null, starting: false,
         });
         notify();
         await refreshRemoteControlStatus();
         return info;
       } catch (error) {
-        state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(error) });
+        if (seq !== webAccessIntentSeq) throw error;
+        state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(error), starting: false });
         notify();
         throw error;
       }

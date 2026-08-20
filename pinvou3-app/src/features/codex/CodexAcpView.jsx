@@ -3319,10 +3319,19 @@ export function CodexAcpView({
                     } ${nativeVoiceDisabled ? 'opacity-70 cursor-wait' : ''}`}>
                     <Mic size={18} />
                   </button>
-                  <button type="button" ref={commandMenuTriggerRef} onClick={() => setCommandOpen(value => !value)}
-                    disabled={!availableCommands.length}
-                    className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40"
-                    title={availableCommands.length ? codexCopy.commandsAvailable : codexCopy.commandsAfterSession}>/</button>
+                  {/* 斜杠命令菜单依赖 ACP 的 available_commands_update，原生车道不经 ACP、
+                      命令永不到达；在原生车道隐藏按钮，避免一个永远禁用且提示会误导的控件。 */}
+                  {!isNativeAgent && (
+                    <button type="button" ref={commandMenuTriggerRef} onClick={() => setCommandOpen(value => !value)}
+                      disabled={!availableCommands.length}
+                      className={`h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07] ${
+                        // 父容器是 text-gray-400，可用态必须显式加深，否则与禁用态肉眼无差别。
+                        availableCommands.length
+                          ? 'font-semibold text-gray-900 dark:text-gray-100'
+                          : 'opacity-40'
+                      }`}
+                      title={availableCommands.length ? codexCopy.commandsAvailable : codexCopy.commandsAfterSession}>/</button>
+                  )}
                   {isNativeAgent && (
                     // 原生（品悟）车道的底栏控件：与工作/设计页共用同一套共享 composer
                     // 控件（ComposerModeChip / ComposerModelSelector / ComposerKbSelector，

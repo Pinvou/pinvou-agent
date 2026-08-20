@@ -132,9 +132,9 @@ pub fn effective_image_capability(model: &SavedModel) -> EffectiveImageCapabilit
     match model.image_capability_override {
         ImageCapabilityOverride::Enabled => return EffectiveImageCapability::Supported,
         ImageCapabilityOverride::Disabled => return EffectiveImageCapability::Unsupported,
-        // Auto(自动探测,保存后即被回填,残留值按 pinvou 决策兜底)
-        // 与 Pinvou(pinvou 决策)共用同一条内置表判断链。
-        ImageCapabilityOverride::Auto | ImageCapabilityOverride::Pinvou => {}
+        // Pinvou(pinvou 决策,默认;旧 auto 档残留反序列化时已迁移到这里)
+        // 走内置表判断链。
+        ImageCapabilityOverride::Pinvou => {}
     }
     // ②(v0.9.5 起移除)底座 model_catalog 不再公开,目录级 modalities 查询
     // 不可用;模型目录的 image 判定由底座 image_attach::strip_images_when_unsupported
@@ -187,7 +187,7 @@ mod tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
-            image_capability_override: ImageCapabilityOverride::Auto,
+            image_capability_override: ImageCapabilityOverride::Pinvou,
             vision_model_id: None,
             api_key: String::new(),
             credential_ref: None,
@@ -373,8 +373,8 @@ mod tests {
     }
 
     #[test]
-    fn pinvou_decision_follows_builtin_table_like_auto() {
-        // Pinvou(pinvou 决策)= 原 Auto 判定链:内置表命中 → Supported,
+    fn pinvou_decision_follows_builtin_table() {
+        // Pinvou(pinvou 决策,默认)= 原 Auto 判定链:内置表命中 → Supported,
         // 未命中 → Unknown;不参与探测回填。
         let mut hit = saved_model(ModelPreset::OpenaiCompatible, "gpt-4o");
         hit.image_capability_override = ImageCapabilityOverride::Pinvou;
@@ -387,17 +387,6 @@ mod tests {
         assert_eq!(
             effective_image_capability(&miss),
             EffectiveImageCapability::Unknown
-        );
-        // Auto 与 Pinvou 对同一模型判定一致。
-        let auto = saved_model(ModelPreset::OpenaiCompatible, "gpt-4o");
-        let pinvou = {
-            let mut m = saved_model(ModelPreset::OpenaiCompatible, "gpt-4o");
-            m.image_capability_override = ImageCapabilityOverride::Pinvou;
-            m
-        };
-        assert_eq!(
-            effective_image_capability(&auto),
-            effective_image_capability(&pinvou)
         );
     }
 

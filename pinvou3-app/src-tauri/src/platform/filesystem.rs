@@ -613,11 +613,12 @@ pub(crate) mod tests {
     fn windows_failed_first_promotion_preserves_the_complete_replacement() {
         let (root, target, replacement, backup) = windows_replace_fixture("promotion-blocked");
         std::fs::write(&replacement, "complete-new-value").unwrap();
-        // 首写(target 尚无文件)时 promote 就是 std::fs::rename。让目标名被目录
-        // 占用,rename 必然失败(ERROR_ACCESS_DENIED)且 target.is_file() 为 false
-        // → RecoveryRequired。此前版本用 share_mode(0) 独占打开 replacement 期望
-        // rename 失败,但 NTFS 的 rename 只改目录项、不受源文件独占句柄影响,
-        // Windows CI 上 rename 直接成功,前提不成立(与 memory 侧
+        // 目标名被目录占用:target.exists() 为 true,走 ReplaceFileW(目标是目录,
+        // 必然失败)→ 收敛分支 promote_replacement,rename(文件→目录名)同样必然
+        // ERROR_ACCESS_DENIED,且 target.is_file() 为 false → RecoveryRequired。
+        // 此前版本用 share_mode(0) 独占打开 replacement 期望首写提升的 rename
+        // 失败,但 NTFS 的 rename 只改目录项、不受源文件独占句柄影响,Windows CI
+        // 上 rename 直接成功,前提不成立(与 memory 侧
         // memory_write_cleans_tmp_backup_on_permanently_occupied_target 同构)。
         std::fs::create_dir(&target).unwrap();
 

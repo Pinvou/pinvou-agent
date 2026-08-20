@@ -29,6 +29,8 @@ fn tmeet(args: &[&str]) -> std::process::Command {
 }
 
 fn parse_tmeet_version(s: &str) -> Option<(u64, u64, u64)> {
+    // tmeet 的 --version 程序名侧可能带数字,先定位到 "version" 标记之后
+    // (v 前缀也吃掉),再交给共享的三段解析。
     let lower = s.to_ascii_lowercase();
     let marker = lower
         .find("version")
@@ -40,16 +42,7 @@ fn parse_tmeet_version(s: &str) -> Option<(u64, u64, u64)> {
         .find(|(_, c)| c.is_ascii_digit() || *c == 'v')?
         .0;
     let version = tail[start..].trim_start_matches(['v', 'V']);
-    let mut nums = version
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|p| !p.is_empty())
-        .take(3)
-        .filter_map(|p| p.parse::<u64>().ok());
-    Some((
-        nums.next()?,
-        nums.next().unwrap_or(0),
-        nums.next().unwrap_or(0),
-    ))
+    cc::parse_semver3(version)
 }
 
 fn version_at_least(v: (u64, u64, u64), min: (u64, u64, u64)) -> bool {

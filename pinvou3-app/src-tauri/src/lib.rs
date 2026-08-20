@@ -319,6 +319,8 @@ pub fn run() {
                 move |event, payload| remote_event_transport.forward_local_event(event, payload),
             ));
             app.handle().manage(remote_control_manager.clone());
+            app.handle()
+                .manage(features::behavior_telemetry::BehaviorTelemetry::new());
             // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
             // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
             let handle = app.handle().clone();
@@ -532,6 +534,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
+            commands::behavior_telemetry::track_behavior_event,
             commands::assistant_response::export_assistant_response,
             commands::assistant_response::open_assistant_share_target,
             commands::startup::report_frontend_startup,

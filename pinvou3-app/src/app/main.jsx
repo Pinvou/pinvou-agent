@@ -445,6 +445,10 @@ function workspaceDisplayName(path) {
       const [petFocusComposerTick, setPetFocusComposerTick] = useState(0);
       const petSnapshotRef = useRef([]);
       const petSnapshotSequenceRef = useRef(0);
+      // 上次广播的快照内容指纹。ref 而非 effect 局部变量:effect 依赖
+      // bs.sessionBusy/sessions 引用,多会话并发时每次 notify 都换引用导致
+      // effect 重跑;指纹必须跨重跑保持,才能挡住"内容没变"的重复广播。
+      const petSnapshotFingerprintRef = useRef('');
 
       // ── 多窗口(撕离/tear-off):长按标签 → 浮起跟手 → 拖到目标屏 → 松手 → 该屏最大化打开 ──
       // dragAvatar = 被拎起的标签副本(跟随光标的 DOM 元素);null=没在拖。原生只判落点,视觉全在这。
@@ -904,15 +908,27 @@ function workspaceDisplayName(path) {
         if (!ev) return undefined;
         let disposed = false;
         let unlisten = null;
-        const broadcast = () => {
+        // 内容指纹:多会话并发时 sessionBusy/sessions 每次 notify 都换新引用,
+        // effect 重跑导致快照风暴,桌宠窗口被高频快照淹没。只有会话集合
+        // (id/title/working)真实变化才广播,同一内容的重跑直接跳过。
+        const fingerprint = () => JSON.stringify(
+          (petSnapshotRef.current || []).map(s => [s.id, s.title, !!s.working]),
+        );
+        const broadcast = (force = false) => {
           if (typeof ev.emit !== 'function') return Promise.resolve();
+          const next = fingerprint();
+          if (!force && next === petSnapshotFingerprintRef.current) {
+            return Promise.resolve(false);
+          }
+          petSnapshotFingerprintRef.current = next;
           return ev.emit('pet:activity_snapshot', {
             sequence: ++petSnapshotSequenceRef.current,
             sessions: petSnapshotRef.current,
           }).catch(() => {});
         };
         broadcast();
-        ev.listen('pet:request_snapshot', broadcast).then((fn) => {
+        // 桌宠窗口冷启动/重连时的主动请求必须无条件应答,不能用指纹挡掉。
+        ev.listen('pet:request_snapshot', () => broadcast(true)).then((fn) => {
           if (disposed) fn();
           else unlisten = fn;
         }).catch(() => {});
@@ -1028,8 +1044,8 @@ function workspaceDisplayName(path) {
       async function startAICard() {
         handleNewChat();
         if (!bridge.available) return;
-        await bridge.personas.equipPersona('pinvou-card-creator');           // 先加持(落新 session + 加持气泡)
-        bridge.personas.postCardCreatorIntro();                              // 再排在加持气泡之后(持久化,切会话/重启不丢)
+        var card = await bridge.personas.equipPersona('pinvou-card-creator'); // 先加持(落新 session + 加持气泡)
+        if (card) bridge.personas.postCardCreatorIntro();                     // 加持成功才追加引导卡(持久化,切会话/重启不丢);失败则放弃后续,避免错投(二审补充)
       }
 
       async function handleSwitchSession(id) {

@@ -23,6 +23,7 @@
 ## Submission checklist
 
 - [ ] I based this PR on the latest `main`.
+- [ ] The PR title and description are written in English, and the title follows the commit subject convention.
 - [ ] Every commit includes a matching `Signed-off-by` trailer (`git commit -s`).
 - [ ] I removed credentials, private data, internal URLs, and sensitive logs.
 - [ ] I updated tests and documentation where behavior changed.

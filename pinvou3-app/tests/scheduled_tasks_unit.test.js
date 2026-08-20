@@ -618,6 +618,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   var dialogCalls = [];
   var dialogResult = null;
   var createdSession = 0;
+  var structuredCloneCalls = 0;
   var storageData = sharedStorage || Object.create(null);
   var storage = {
     getItem: function (key) { return Object.prototype.hasOwnProperty.call(storageData, key) ? storageData[key] : null; },
@@ -738,7 +739,10 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     clearTimeout: runtimeOptions.clearTimeout || clearTimeout,
     setInterval: function () { return 0; },
     clearInterval: function () {},
-    structuredClone: function (value) { return JSON.parse(JSON.stringify(value)); },
+    structuredClone: function (value) {
+      structuredCloneCalls += 1;
+      return JSON.parse(JSON.stringify(value));
+    },
     TextDecoder: TextDecoder,
     Uint8Array: Uint8Array,
   };
@@ -768,6 +772,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     calls: calls,
     storageData: storageData,
     dialogCalls: dialogCalls,
+    getStructuredCloneCalls: function () { return structuredCloneCalls; },
     setDialogResult: function (value) { dialogResult = value; },
     emit: function (name, payload) {
       assert.ok(listeners[name] && listeners[name].length, "expected listener " + name);
@@ -775,6 +780,327 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
       return Promise.all(listeners[name].map(function (listener) { return listener(event); }));
     },
   };
+}
+
+async function subscriptionSnapshotsAvoidTranscriptDeepClone() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var chatUpdates = [];
+  var combinedUpdates = [];
+  var unsubscribeChat = bridge.state.subscribe("chat", function (snapshot) {
+    chatUpdates.push(snapshot);
+  });
+  var unsubscribeCombined = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
+    combinedUpdates.push(snapshot);
+  });
+  var cloneCallsBeforeNotify = harness.getStructuredCloneCalls();
+
+  await bridge.sessions.createNewSession();
+
+  assert.strictEqual(chatUpdates.length, 1, "one bridge notification should publish one chat subscription update");
+  assert.strictEqual(combinedUpdates.length, 1, "one bridge notification should publish one combined subscription update");
+  assert.strictEqual(
+    harness.getStructuredCloneCalls(),
+    cloneCallsBeforeNotify,
+    "subscription notifications must not deep-clone the transcript"
+  );
+  assert.ok(Object.isFrozen(chatUpdates[0]) && Object.isFrozen(combinedUpdates[0]),
+    "subscription envelopes should be read-only");
+
+  assert.throws(function () {
+    chatUpdates[0].chatItems.push({ type: "system", text: "subscriber-only" });
+  }, /not extensible|read only|frozen/i, "subscription array containers should be read-only");
+  assert.strictEqual(bridge.state.get("chat").chatItems.length, 0,
+    "subscription array containers must not mutate bridge state");
+  var detached = bridge.state.get("chat");
+  detached.thinking.active = true;
+  assert.strictEqual(bridge.state.get("chat").thinking.active, false,
+    "get/getMany must retain their defensive deep-copy contract");
+
+  unsubscribeChat();
+  unsubscribeCombined();
+}
+
+async function reentrantSubscriptionNotificationsStayOrdered() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var firstOrder = [];
+  var secondOrder = [];
+  var unsubscribeFirst = bridge.state.subscribe("chat", function (snapshot) {
+    var text = snapshot.composerPrefill.text;
+    firstOrder.push(text);
+    if (text === "outer") bridge.chat.prefillComposer("nested");
+  });
+  var unsubscribeSecond = bridge.state.subscribe("chat", function (snapshot) {
+    secondOrder.push(snapshot.composerPrefill.text);
+  });
+
+  bridge.chat.prefillComposer("outer");
+  assert.deepStrictEqual(firstOrder, ["outer", "nested"], "the first subscriber should receive queued revisions in order");
+  assert.deepStrictEqual(secondOrder, ["outer", "nested"], "a later subscriber must not observe nested before outer");
+  assert.strictEqual(bridge.state.get("chat").composerPrefill.text, "nested");
+  unsubscribeFirst();
+  unsubscribeSecond();
+
+  var membershipHarness = createBridgeHarness();
+  var membershipBridge = membershipHarness.bridge;
+  var membershipFirst = [];
+  var membershipSecond = [];
+  var membershipAdded = [];
+  var unsubscribeMembershipSecond;
+  var unsubscribeAdded = function () {};
+  var unsubscribeMembershipFirst = membershipBridge.state.subscribe("chat", function (snapshot) {
+    var text = snapshot.composerPrefill.text;
+    membershipFirst.push(text);
+    if (text === "membership-outer") {
+      unsubscribeMembershipSecond();
+      unsubscribeAdded = membershipBridge.state.subscribe("chat", function (next) {
+        membershipAdded.push(next.composerPrefill.text);
+      });
+      membershipBridge.chat.prefillComposer("membership-nested");
+    }
+  });
+  unsubscribeMembershipSecond = membershipBridge.state.subscribe("chat", function (snapshot) {
+    membershipSecond.push(snapshot.composerPrefill.text);
+  });
+
+  membershipBridge.chat.prefillComposer("membership-outer");
+  assert.deepStrictEqual(membershipFirst, ["membership-outer", "membership-nested"]);
+  assert.deepStrictEqual(membershipSecond, ["membership-outer"],
+    "unsubscribe during a round should apply only to rounds queued afterwards");
+  assert.deepStrictEqual(membershipAdded, ["membership-nested"],
+    "subscribe during a round should apply only to rounds queued afterwards");
+  unsubscribeMembershipFirst();
+  unsubscribeAdded();
+
+  var errorHarness = createBridgeHarness();
+  var errorBridge = errorHarness.bridge;
+  var interruptedSecond = [];
+  var unsubscribeThrowing = errorBridge.state.subscribe("chat", function (snapshot) {
+    if (snapshot.composerPrefill.text === "error-outer") {
+      errorBridge.chat.prefillComposer("discarded-nested");
+      throw new Error("subscriber failed");
+    }
+  });
+  var unsubscribeInterruptedSecond = errorBridge.state.subscribe("chat", function (snapshot) {
+    interruptedSecond.push(snapshot.composerPrefill.text);
+  });
+  assert.throws(function () { errorBridge.chat.prefillComposer("error-outer"); }, /subscriber failed/,
+    "subscriber errors should retain their synchronous propagation behavior");
+  assert.deepStrictEqual(interruptedSecond, [], "a callback error should interrupt the current subscriber round");
+  unsubscribeThrowing();
+  unsubscribeInterruptedSecond();
+
+  var recovered = [];
+  var unsubscribeRecovered = errorBridge.state.subscribe("chat", function (snapshot) {
+    recovered.push(snapshot.composerPrefill.text);
+  });
+  errorBridge.chat.prefillComposer("recovered");
+  assert.deepStrictEqual(recovered, ["recovered"],
+    "queued revisions from an interrupted callback must be discarded before the next notification");
+  unsubscribeRecovered();
+}
+
+async function persistentSubscriptionSnapshotsPreserveJsonEdges() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var snapshots = [];
+  var negativeZero = true;
+  function settingsResult() {
+    var result = JSON.parse('{"language":"en","__proto__":{"marker":"own-value"}}');
+    Object.defineProperty(result, "nan", { enumerable: true, value: NaN, writable: true });
+    result.zero = negativeZero ? -0 : 0;
+    return result;
+  }
+  harness.handlers.update_settings = settingsResult;
+  harness.handlers.get_effective_model_config = function () { return null; };
+  var unsubscribe = bridge.state.subscribe("settings", function (snapshot) { snapshots.push(snapshot); });
+
+  assert.strictEqual(await bridge.settings.saveSettings({ language: "en" }), true);
+  assert.ok(snapshots.length >= 2, "settings save should publish its effective-model and saved revisions");
+  var first = snapshots[0];
+  var repeated = snapshots[1];
+  assert.ok(Object.prototype.hasOwnProperty.call(first.settings, "__proto__"));
+  assert.strictEqual(first.settings["__proto__"].marker, "own-value");
+  assert.strictEqual(Object.getPrototypeOf(first.settings), Object.getPrototypeOf(first),
+    "snapshots with own __proto__ data must retain the default object prototype");
+  assert.strictEqual(Object.getPrototypeOf(first.settings).marker, undefined, "snapshot prototypes must not be polluted");
+  assert.strictEqual(first.settings, repeated.settings, "Object.is should reuse an unchanged subtree containing NaN");
+  assert.ok(Number.isNaN(first.settings.nan));
+  assert.ok(Object.is(first.settings.zero, -0));
+
+  negativeZero = false;
+  assert.strictEqual(await bridge.settings.saveSettings({ language: "en" }), true);
+  var changed = snapshots[snapshots.length - 1];
+  assert.notStrictEqual(changed.settings, repeated.settings, "Object.is should distinguish -0 from +0");
+  assert.ok(Object.is(changed.settings.zero, 0));
+  assert.ok(Object.prototype.hasOwnProperty.call(changed.settings, "__proto__"),
+    "copy-on-write updates must retain an existing own __proto__ value");
+  assert.strictEqual(changed.settings["__proto__"].marker, "own-value");
+  assert.strictEqual(Object.getPrototypeOf(changed.settings).marker, undefined,
+    "copy-on-write updates must not route __proto__ through the prototype setter");
+  unsubscribe();
+}
+
+async function persistentSubscriptionSnapshotsRejectUnsupportedValues() {
+  async function rejects(result, pattern) {
+    var harness = createBridgeHarness();
+    harness.handlers.ingest_file = function () { return result; };
+    var unsubscribe = harness.bridge.state.subscribe("chat", function () {});
+    await assert.rejects(harness.bridge.attachments.addAttachmentByPath("C:\\snapshot-edge.txt"), pattern);
+    unsubscribe();
+  }
+  await rejects(new Date(0), /only supports arrays and plain objects/);
+  var cyclic = { value: "cycle" };
+  cyclic.self = cyclic;
+  await rejects(cyclic, /must not contain cycles/);
+}
+
+async function longSessionStreamingAvoidsPerDeltaDeepClone() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-long-stream";
+  var messages = [
+    {
+      role: "assistant",
+      content: [{
+        type: "tool_use",
+        id: "tool-stable-history",
+        name: "shell",
+        input: { command: "echo stable", options: { cwd: "history", environment: { MODE: "test" } } },
+      }],
+    },
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "tool-stable-history", content: "stable output" }],
+    },
+  ];
+  for (var index = messages.length; index < 469; index++) {
+    messages.push({
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: [{ type: "text", text: "history-" + index + "-" + "x".repeat(1024) }],
+    });
+  }
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: sessionId, title: "Long stream", message_count: messages.length },
+      messages: messages,
+      artifacts: [],
+    };
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
+
+  var updates = 0;
+  var secondSubscriberUpdates = 0;
+  var snapshots = [];
+  var secondSubscriberSnapshots = [];
+  var unsubscribe = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
+    updates += 1;
+    snapshots.push(snapshot);
+  });
+  var unsubscribeSecond = bridge.state.subscribe("chat", function (snapshot) {
+    secondSubscriberUpdates += 1;
+    secondSubscriberSnapshots.push(snapshot);
+  });
+  var cloneCallsBeforeStream = harness.getStructuredCloneCalls();
+  harness.emit("chat:turn_started", { session_id: sessionId });
+  harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
+
+  var firstDeltaSnapshot = snapshots[1];
+  var firstDeltaItem = firstDeltaSnapshot.chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop();
+  assert.strictEqual(firstDeltaItem.text, "abcd", "the first delta snapshot should capture its own text");
+  assert.ok(Object.isFrozen(firstDeltaItem), "nested subscription items should be immutable");
+  assert.strictEqual(Reflect.set(firstDeltaItem, "text", "subscriber-only"), false,
+    "a subscriber must not mutate a nested item");
+  assert.strictEqual(secondSubscriberSnapshots[1].chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop().text, "abcd", "one subscriber must not affect a second subscriber");
+  assert.strictEqual(bridge.state.get("chat").chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop().text, "abcd", "one subscriber must not affect bridge state");
+  assert.strictEqual(harness.getStructuredCloneCalls(), cloneCallsBeforeStream + 1,
+    "the explicit state.get isolation check should retain its defensive deep copy");
+  var cloneCallsAfterDefensiveRead = harness.getStructuredCloneCalls();
+
+  harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
+  assert.strictEqual(firstDeltaItem.text, "abcd", "an older subscription snapshot must remain stable");
+  assert.strictEqual(snapshots[2].chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop().text, "abcdabcd", "the next snapshot should observe the next delta");
+
+  for (var delta = 2; delta < 1000; delta++) {
+    harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
+  }
+  await tick();
+
+  assert.strictEqual(updates, 1001, "stream boundaries and deltas should remain immediately observable");
+  assert.strictEqual(secondSubscriberUpdates, 1001,
+    "all subscribers should receive one immediate update per stream boundary and delta");
+  assert.strictEqual(snapshots.length, 1001, "the regression must retain every persistent snapshot");
+  assert.strictEqual(secondSubscriberSnapshots.length, 1001,
+    "the second subscriber must retain every same-round snapshot for identity checks");
+  assert.strictEqual(
+    harness.getStructuredCloneCalls(),
+    cloneCallsAfterDefensiveRead,
+    "a long transcript must not be deep-cloned for each streamed delta"
+  );
+
+  var representativeFrames = [0, 1, 499, 500, 999, 1000];
+  var stableMessages = snapshots[0].messages;
+  var stableHistoryMessage = stableMessages[0];
+  var stableHistoryContent = stableHistoryMessage.content;
+  var stableHistoryBlock = stableHistoryContent[0];
+  var stableToolItem = snapshots[0].chatItems.find(function (item) {
+    return item.type === "tool" && item.toolId === "tool-stable-history";
+  });
+  assert.ok(stableToolItem, "the fixture should expose a historical tool chat item");
+  assert.strictEqual(stableToolItem.args.options.environment.MODE, "test");
+  representativeFrames.forEach(function (frame) {
+    var snapshot = snapshots[frame];
+    var secondSnapshot = secondSubscriberSnapshots[frame];
+    var toolItem = snapshot.chatItems.find(function (item) {
+      return item.type === "tool" && item.toolId === "tool-stable-history";
+    });
+    assert.strictEqual(snapshot.messages, stableMessages,
+      "unchanged history messages arrays must be shared across first/middle/last and adjacent frames");
+    assert.strictEqual(snapshot.messages[0], stableHistoryMessage,
+      "unchanged history message objects must be structurally shared");
+    assert.strictEqual(snapshot.messages[0].content, stableHistoryContent,
+      "unchanged history content arrays must be structurally shared");
+    assert.strictEqual(snapshot.messages[0].content[0], stableHistoryBlock,
+      "unchanged history content blocks must be structurally shared");
+    assert.strictEqual(toolItem, stableToolItem,
+      "unchanged historical tool chat items must be structurally shared");
+    assert.strictEqual(toolItem.args, stableToolItem.args,
+      "unchanged historical tool args must be structurally shared");
+    assert.strictEqual(toolItem.args.options.environment, stableToolItem.args.options.environment,
+      "unchanged historical tool deep subtrees must be structurally shared");
+    assert.strictEqual(secondSnapshot.messages, snapshot.messages,
+      "two subscribers in the same revision must share the messages domain subtree");
+    assert.strictEqual(secondSnapshot.chatItems, snapshot.chatItems,
+      "two subscribers in the same revision must share the chatItems domain subtree");
+  });
+
+  function streamingItemAt(frame) {
+    return snapshots[frame].chatItems.filter(function (item) {
+      return item.type === "assistant" && item.streaming;
+    }).pop();
+  }
+  for (var frame = 1; frame < snapshots.length; frame++) {
+    assert.notStrictEqual(streamingItemAt(frame - 1), streamingItemAt(frame),
+      "the changed streaming item must receive a new reference in every adjacent revision");
+  }
+  assert.strictEqual(streamingItemAt(1).text, "abcd", "the first retained delta must remain stable");
+  assert.strictEqual(streamingItemAt(500).text.length, 2000, "the middle retained delta must remain stable");
+  assert.strictEqual(streamingItemAt(1000).text.length, 4000, "the final retained delta must be complete");
+  var finalAssistant = bridge.state.get("chat").chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop();
+  assert.strictEqual(finalAssistant.text.length, 4000, "subscription snapshot optimization must not lose text");
+  unsubscribe();
+  unsubscribeSecond();
 }
 
 async function deepSeekTurnTimelineLifecycleBehavior() {
@@ -4550,6 +4876,11 @@ async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
 }
 
 Promise.resolve()
+  .then(subscriptionSnapshotsAvoidTranscriptDeepClone)
+  .then(reentrantSubscriptionNotificationsStayOrdered)
+  .then(persistentSubscriptionSnapshotsPreserveJsonEdges)
+  .then(persistentSubscriptionSnapshotsRejectUnsupportedValues)
+  .then(longSessionStreamingAvoidsPerDeltaDeepClone)
   .then(multipleKnowledgeMountBehavior)
   .then(queuedKnowledgeMountKeepsOriginalSession)
   .then(staleKnowledgeSnapshotDoesNotCrossSessions)

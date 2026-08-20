@@ -186,10 +186,10 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.kimi.com/coding/v1',
       endpointAliases: ['https://api.kimi.com/coding/v1/chat/completions'],
       items: [
-        { model: 'k3', title: 'k3', desc: 'K3 长上下文模型' },
-        { model: 'k3-256k', title: 'k3-256k', desc: 'K3 256K 上下文，价格更低' },
-        { model: 'kimi-for-coding', title: 'kimi-for-coding', desc: '标准编码模型' },
-        { model: 'kimi-for-coding-highspeed', title: 'kimi-for-coding-highspeed', desc: '高速编码模型' },
+        { model: 'k3', imageCapable: true, title: 'k3', desc: 'K3 长上下文模型' },
+        { model: 'k3-256k', imageCapable: true, title: 'k3-256k', desc: 'K3 256K 上下文，价格更低' },
+        { model: 'kimi-for-coding', imageCapable: true, title: 'kimi-for-coding', desc: '标准编码模型' },
+        { model: 'kimi-for-coding-highspeed', imageCapable: true, title: 'kimi-for-coding-highspeed', desc: '高速编码模型' },
         { model: '', title: '自定义 Kimi Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
     },
@@ -218,10 +218,10 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'kimi',
       items: [
-        { model: 'kimi-k3', title: 'kimi-k3', desc: '最新通用模型' },
-        { model: 'kimi-k2.7-code', title: 'kimi-k2.7-code', desc: '代码场景' },
-        { model: 'kimi-k2.7-code-highspeed', title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景' },
-        { model: 'kimi-k2.6', title: 'kimi-k2.6', desc: '稳定可用' },
+        { model: 'kimi-k3', imageCapable: true, title: 'kimi-k3', desc: '最新通用模型' },
+        { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: '代码场景' },
+        { model: 'kimi-k2.7-code-highspeed', imageCapable: true, title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景' },
+        { model: 'kimi-k2.6', imageCapable: true, title: 'kimi-k2.6', desc: '稳定可用' },
         { model: '', title: '自定义 Kimi 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -236,10 +236,10 @@ const MODEL_CATALOG = {
       vendor: 'kimi',
       baseUrl: 'https://api.moonshot.ai/v1',
       items: [
-        { model: 'kimi-k3', title: 'kimi-k3', desc: '最新通用模型' },
-        { model: 'kimi-k2.7-code', title: 'kimi-k2.7-code', desc: '代码场景' },
-        { model: 'kimi-k2.7-code-highspeed', title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景' },
-        { model: 'kimi-k2.6', title: 'kimi-k2.6', desc: '稳定可用' },
+        { model: 'kimi-k3', imageCapable: true, title: 'kimi-k3', desc: '最新通用模型' },
+        { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: '代码场景' },
+        { model: 'kimi-k2.7-code-highspeed', imageCapable: true, title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景' },
+        { model: 'kimi-k2.6', imageCapable: true, title: 'kimi-k2.6', desc: '稳定可用' },
         { model: '', title: '自定义 Kimi 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -288,7 +288,7 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'minimax',
       items: [
-        { model: 'MiniMax-M3', title: 'MiniMax-M3', desc: '最新推荐' },
+        { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新推荐' },
         { model: 'MiniMax-M2.7', title: 'MiniMax-M2.7', desc: '通用能力' },
         { model: 'MiniMax-M2.7-highspeed', title: 'MiniMax-M2.7-highspeed', desc: '高速响应' },
         { model: 'MiniMax-M2.5', title: 'MiniMax-M2.5', desc: '官方已转 Legacy，兼容保留' },
@@ -307,7 +307,7 @@ const MODEL_CATALOG = {
       vendor: 'minimax',
       baseUrl: 'https://api.minimax.io/v1',
       items: [
-        { model: 'MiniMax-M3', title: 'MiniMax-M3', desc: '最新推荐' },
+        { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新推荐' },
         { model: 'MiniMax-M2.7', title: 'MiniMax-M2.7', desc: '通用能力' },
         { model: 'MiniMax-M2.7-highspeed', title: 'MiniMax-M2.7-highspeed', desc: '高速响应' },
         { model: 'MiniMax-M2.5', title: 'MiniMax-M2.5', desc: '官方已转 Legacy，兼容保留' },
@@ -338,9 +338,9 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'qwen',
       items: [
-        { model: 'qwen3.8-max', title: 'qwen3.8-max', desc: '最新旗舰' },
+        { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '最新旗舰' },
         { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '上代旗舰推理' },
-        { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '均衡性价比' },
+        { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.7-flash', title: 'qwen3.7-flash', desc: '快速高性价比' },
         { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
       ],
@@ -357,9 +357,9 @@ const MODEL_CATALOG = {
       baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
       endpointAliases: ['https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1'],
       items: [
-        { model: 'qwen3.8-max', title: 'qwen3.8-max', desc: '正式旗舰，夜间五折' },
+        { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '正式旗舰，夜间五折' },
         { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '上代旗舰推理' },
-        { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '均衡性价比' },
+        { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.6-flash', title: 'qwen3.6-flash', desc: '兼容保留' },
         { model: 'glm-5.2', title: 'glm-5.2', desc: '最新推荐' },
         { model: 'deepseek-v4-pro', title: 'deepseek-v4-pro', desc: '高能力模型' },
@@ -378,9 +378,9 @@ const MODEL_CATALOG = {
       vendor: 'qwen',
       baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
       items: [
-        { model: 'qwen3.8-max', title: 'qwen3.8-max', desc: '最新旗舰' },
+        { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '最新旗舰' },
         { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '上代旗舰推理' },
-        { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '均衡性价比' },
+        { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.7-flash', title: 'qwen3.7-flash', desc: '快速高性价比' },
         { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
       ],
@@ -394,11 +394,11 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'doubao',
       items: [
-        { model: 'doubao-seed-evolving', title: 'doubao-seed-evolving', desc: '最新推荐' },
-        { model: 'doubao-seed-2-1-pro-260628', title: 'doubao-seed-2-1-pro-260628', desc: '高能力模型' },
-        { model: 'doubao-seed-2-1-turbo-260628', title: 'doubao-seed-2-1-turbo-260628', desc: '快速响应' },
-        { model: 'doubao-seed-2-0-pro-260215', title: 'doubao-seed-2-0-pro-260215', desc: '稳定通用' },
-        { model: 'doubao-seed-2-0-lite-260428', title: 'doubao-seed-2-0-lite-260428', desc: '轻量模型' },
+        { model: 'doubao-seed-evolving', imageCapable: true, title: 'doubao-seed-evolving', desc: '最新推荐' },
+        { model: 'doubao-seed-2-1-pro-260628', imageCapable: true, title: 'doubao-seed-2-1-pro-260628', desc: '高能力模型' },
+        { model: 'doubao-seed-2-1-turbo-260628', imageCapable: true, title: 'doubao-seed-2-1-turbo-260628', desc: '快速响应' },
+        { model: 'doubao-seed-2-0-pro-260215', imageCapable: true, title: 'doubao-seed-2-0-pro-260215', desc: '稳定通用' },
+        { model: 'doubao-seed-2-0-lite-260428', imageCapable: true, title: 'doubao-seed-2-0-lite-260428', desc: '轻量模型' },
         { model: '', title: '自定义豆包模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -413,11 +413,11 @@ const MODEL_CATALOG = {
       vendor: 'openai',
       baseUrl: 'https://api.openai.com/v1',
       items: [
-        { model: 'gpt-5.6-sol', title: 'gpt-5.6-sol', desc: '旗舰推理与编码' },
-        { model: 'gpt-5.6-terra', title: 'gpt-5.6-terra', desc: '均衡智能与成本' },
-        { model: 'gpt-5.6-luna', title: 'gpt-5.6-luna', desc: '低成本高并发' },
-        { model: 'gpt-5.5', title: 'gpt-5.5', desc: '上代旗舰' },
-        { model: 'gpt-5.4-mini', title: 'gpt-5.4-mini', desc: '快速经济' },
+        { model: 'gpt-5.6-sol', imageCapable: true, title: 'gpt-5.6-sol', desc: '旗舰推理与编码' },
+        { model: 'gpt-5.6-terra', imageCapable: true, title: 'gpt-5.6-terra', desc: '均衡智能与成本' },
+        { model: 'gpt-5.6-luna', imageCapable: true, title: 'gpt-5.6-luna', desc: '低成本高并发' },
+        { model: 'gpt-5.5', imageCapable: true, title: 'gpt-5.5', desc: '上代旗舰' },
+        { model: 'gpt-5.4-mini', imageCapable: true, title: 'gpt-5.4-mini', desc: '快速经济' },
         { model: '', title: '自定义 OpenAI 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -432,10 +432,10 @@ const MODEL_CATALOG = {
       vendor: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1',
       items: [
-        { model: 'claude-fable-5', title: 'claude-fable-5', desc: '最强旗舰，长程 Agent' },
-        { model: 'claude-opus-5', title: 'claude-opus-5', desc: '复杂 Agent 编码' },
-        { model: 'claude-sonnet-5', title: 'claude-sonnet-5', desc: '速度与智能均衡' },
-        { model: 'claude-haiku-4-5', title: 'claude-haiku-4-5', desc: '最快，接近旗舰' },
+        { model: 'claude-fable-5', imageCapable: true, title: 'claude-fable-5', desc: '最强旗舰，长程 Agent' },
+        { model: 'claude-opus-5', imageCapable: true, title: 'claude-opus-5', desc: '复杂 Agent 编码' },
+        { model: 'claude-sonnet-5', imageCapable: true, title: 'claude-sonnet-5', desc: '速度与智能均衡' },
+        { model: 'claude-haiku-4-5', imageCapable: true, title: 'claude-haiku-4-5', desc: '最快，接近旗舰' },
         { model: '', title: '自定义 Claude 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -450,10 +450,10 @@ const MODEL_CATALOG = {
       vendor: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
       items: [
-        { model: 'gemini-3.6-flash', title: 'gemini-3.6-flash', desc: '最新 Flash，均衡高性价比' },
-        { model: 'gemini-3.5-flash', title: 'gemini-3.5-flash', desc: '均衡' },
-        { model: 'gemini-3.5-flash-lite', title: 'gemini-3.5-flash-lite', desc: '快速经济' },
-        { model: 'gemini-3.1-pro-preview', title: 'gemini-3.1-pro-preview', desc: '旗舰推理（预览）' },
+        { model: 'gemini-3.6-flash', imageCapable: true, title: 'gemini-3.6-flash', desc: '最新 Flash，均衡高性价比' },
+        { model: 'gemini-3.5-flash', imageCapable: true, title: 'gemini-3.5-flash', desc: '均衡' },
+        { model: 'gemini-3.5-flash-lite', imageCapable: true, title: 'gemini-3.5-flash-lite', desc: '快速经济' },
+        { model: 'gemini-3.1-pro-preview', imageCapable: true, title: 'gemini-3.1-pro-preview', desc: '旗舰推理（预览）' },
         { model: '', title: '自定义 Gemini 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -471,8 +471,8 @@ const MODEL_CATALOG = {
         { model: 'grok-4.20-0309-reasoning', title: 'grok-4.20-0309-reasoning', desc: '4.20 推理' },
         { model: 'grok-4.20-0309-non-reasoning', title: 'grok-4.20-0309-non-reasoning', desc: '4.20 非推理' },
         { model: 'grok-4.5', title: 'grok-4.5', desc: '旗舰编码与 Agent' },
-        { model: 'grok-4.3', title: 'grok-4.3', desc: '通用推理，默认推荐' },
-        { model: 'grok-build-0.1', title: 'grok-build-0.1', desc: '代码 Agent' },
+        { model: 'grok-4.3', imageCapable: true, title: 'grok-4.3', desc: '通用推理，默认推荐' },
+        { model: 'grok-build-0.1', imageCapable: true, title: 'grok-build-0.1', desc: '代码 Agent' },
         { model: '', title: '自定义 Grok 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -548,6 +548,31 @@ function isCodingPlanModel(model) {
 function catalogItemMatchesModel(item, model) {
   if (typeof item.model !== 'string' || typeof model !== 'string') return false;
   return item.model === model || (item.legacyAliases || []).includes(model);
+}
+
+// 目录项视觉能力标注(imageCapable):已验证多模态的条目标注 true,模型表单按
+// 此预填「图片输入能力」。收录原则与后端内置已验证表(image_capability.rs
+// VERIFIED_IMAGE_CAPABLE_MODELS)一致:只标有仓内 preset/公开事实/实测佐证的
+// 明确多模态模型;拿不准的不标——未标注不等于「不支持」,只是回退「自动处理」
+// 链(内置表→Unknown)。新增目录条目时请同步评估是否需要标注。
+// 现有标注于 2026-08 按各厂商官方文档/发布信息逐条联网核查;kimi-k3 等
+// Kimi 官方已宣布视觉能力的模型以 platform.kimi.com 视觉文档为准(晚于
+// 后端内置表「kimi 文本模型不收」的旧口径,内置表仅作非目录模型的兜底)。
+// grok-4.3/grok-build-0.1 有 OpenRouter 输入模态与 AWS Bedrock 模型卡佐证;
+// grok-4.5/grok-4.20-0309-* 未找到可复现的官方口径,按「拿不准不标」回退。
+// 返回 true/false(条目显式标注)/null(未命中或未标注)。
+function catalogImageCapableForModel(model) {
+  if (typeof model !== 'string' || !model) return null;
+  for (const scope of ['local', 'cloud']) {
+    for (const group of MODEL_CATALOG[scope] || []) {
+      for (const item of group.items || []) {
+        if (item.custom || !catalogItemMatchesModel(item, model)) continue;
+        if (item.imageCapable === true) return true;
+        if (item.imageCapable === false) return false;
+      }
+    }
+  }
+  return null;
 }
 
 function isPresetModel(m) {
@@ -896,6 +921,7 @@ export {
   providerLabelForModel,
   isCodingPlanModel,
   catalogItemMatchesModel,
+  catalogImageCapableForModel,
   isPresetModel,
   groupModelsForSelector,
   localUserNamed,

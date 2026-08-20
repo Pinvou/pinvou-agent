@@ -173,8 +173,10 @@ def main():
         "yuandian-mcp",
         "canva-mcp",
         "patsnap-search",
+        "wecom-bot",
+        "tencent-docs",
     }
-    print("✅ manifest: 9 个可安装 MCP 清单完整且目录 ID 一致")
+    print("✅ manifest: 11 个可安装 MCP 清单完整且目录 ID 一致")
 
     expected = {
         "weather": {"get_weather"},
@@ -187,6 +189,7 @@ def main():
         "obsidian": {"search", "read_note", "list", "create_note", "edit_note", "rename_note", "delete_note"},
         "pptx": {"make_pptx"},
         "gongwen": {"make_gongwen"},
+        "wecom-bot": {"send_text", "send_markdown", "send_news", "send_image", "send_file"},
     }
     for tool_id, names in expected.items():
         check_protocol(tool_id, names)
@@ -195,6 +198,11 @@ def main():
         result = content_json(rpc.call("tools/call", {"name": "get_weather", "arguments": {"city": "杭州"}}))
         assert result == {"error": "AMAP_KEY 未配置"}
     print("✅ weather: 未配置凭据返回稳定错误，不发起外网请求")
+
+    with RpcServer(MCP_ROOT / "wecom-bot", {"WECOM_BOT_KEY": ""}) as rpc:
+        result = content_json(rpc.call("tools/call", {"name": "send_text", "arguments": {"content": "测试"}}))
+        assert result == {"error": "WECOM_BOT_KEY 未配置，请在工具详情里填写群机器人 webhook key"}
+    print("✅ wecom-bot: 未配置凭据返回稳定错误，不发起外网请求")
 
     with RpcServer(MCP_ROOT / "iwencai", {"IWENCAI_API_KEY": ""}) as rpc:
         response = rpc.call("tools/call", {"name": "news_search", "arguments": {"query": "黄金价格"}})
@@ -263,6 +271,17 @@ def main():
         "secret": True,
     }]
     print("✅ iwencai: 用户自填问财 API Key 清单契约")
+
+    wecom_bot = manifests["wecom-bot"]
+    assert wecom_bot["secret_env"] == [{"key": "WECOM_BOT_KEY", "provider": "wecom-bot", "required": True}]
+    assert wecom_bot["config_fields"] == [{
+        "key": "WECOM_BOT_KEY",
+        "label": "群机器人 Webhook Key",
+        "required": True,
+        "target": "env",
+        "secret": True,
+    }]
+    print("✅ wecom-bot: 用户自填群机器人 Webhook Key 清单契约")
 
     qcc = manifests["qcc"]
     assert qcc.get("secret_headers") in (None, [])
@@ -337,6 +356,30 @@ def main():
         "secret": True,
     }]
     print("✅ patsnap-search: 唯一远程端点 + bearer secret + 安装校验契约")
+
+    tdoc = manifests["tencent-docs"]
+    assert tdoc["mcp_tools"] == [] and not tdoc["command"]
+    assert tdoc["servers"] == [
+        {"name": "tencent-docs", "url": "https://docs.qq.com/openapi/mcp"},
+        {"name": "tdoc-slide", "url": "https://docs.qq.com/api/v6/slide/mcp"},
+        {"name": "tdoc-doc", "url": "https://docs.qq.com/api/v6/doc/mcp"},
+        {"name": "tdoc-sheet", "url": "https://docs.qq.com/api/v6/sheet/mcp"},
+    ]
+    assert tdoc["validate_on_install"] is True
+    assert tdoc["secret_headers"] == [{
+        "header": "Authorization",
+        "scheme": "",
+        "source_key": "TENCENT_DOCS_TOKEN",
+        "provider": "tencent-docs",
+        "required": True,
+    }]
+    # 不变量:Token 通道唯一。若再引入 config_fields target="bearer",安装时两通道会
+    # 同写 Authorization(scheme 分歧→bearer_token_env_var 与 env_headers 并存),
+    # 最终请求头是否带 Bearer 前缀将取决于底座合并顺序——禁止这种自相矛盾。
+    assert tdoc.get("config_fields", []) == [], (
+        "tencent-docs 的 Token 只经 secret_headers 声明,不得再加 config_fields"
+    )
+    print("✅ tencent-docs: 四官方远程端点 + 无 scheme 原始 Token 注入 + 安装校验契约")
 
     print("\n✅ ALL MCP SERVER CONTRACTS PASS")
 
