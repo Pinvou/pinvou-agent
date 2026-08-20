@@ -111,4 +111,4 @@ function buildComposerToolMenuState({
   };
 }
 
-export { DEFAULT_BUILTIN_SKILLS, buildComposerToolMenuState };
+export { buildComposerToolMenuState };
