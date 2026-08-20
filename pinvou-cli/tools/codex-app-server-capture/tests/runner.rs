@@ -210,7 +210,7 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         .and_then(Value::as_str)
         .unwrap();
     assert!(!command.contains("spaces & semicolon ; safe"));
-    assert!(!command.contains('&'));
+    assert_eq!(command.matches('&').count(), 1);
     assert!(!command.contains(';'));
     assert!(command.contains(".codex-s2-approval-marker"));
     let response = records
@@ -226,7 +226,7 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
     #[cfg(windows)]
     {
         let executable = command
-            .strip_prefix('"')
+            .strip_prefix("& \"")
             .unwrap()
             .split('"')
             .next()
@@ -277,8 +277,14 @@ fn scenario_c_accepts_only_the_exact_observed_pwsh_wrapper() {
         let result = run_fake(mode, &output, 1_000);
         assert!(!result.status.success(), "{mode} unexpectedly passed");
         let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
-        assert!(capture.contains(r#"\"decision\":\"cancel\""#));
-        assert!(!capture.contains(r#"\"decision\":\"accept\""#));
+        assert!(
+            capture.contains(r#"\"decision\":\"cancel\""#),
+            "{mode} did not cancel"
+        );
+        assert!(
+            !capture.contains(r#"\"decision\":\"accept\""#),
+            "{mode} unexpectedly accepted"
+        );
         std::fs::remove_dir_all(output).unwrap();
     }
 }
@@ -828,6 +834,9 @@ fn run_s2_rejects_unexpected_approval_method_instead_of_auto_approving_it() {
         "outside-approval",
         "wrong-approval-thread",
         "wrong-approval-turn",
+        "direct-extra-action",
+        "direct-mismatched-action",
+        "direct-malformed-action",
     ] {
         let output = temp_output(mode);
         let result = run_fake(mode, &output, 1_000);

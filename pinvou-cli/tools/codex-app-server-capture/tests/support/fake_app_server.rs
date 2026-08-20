@@ -272,10 +272,11 @@ fn main() {
                                 command =
                                     add_backslash_before_wrapper_quotes(command, Some(ordinal));
                             } else if mode == "wrapper-inner-backslash-missing" {
-                                let inner =
+                                let inner_start =
                                     command.find(" -Command \"").unwrap() + " -Command \"".len();
-                                assert_eq!(command.as_bytes()[inner], b'\\');
-                                command.remove(inner);
+                                let backslash =
+                                    inner_start + command[inner_start..].find('\\').unwrap();
+                                command.remove(backslash);
                             }
                         }
                         let mut cwd = frame.pointer("/params/cwd").cloned().unwrap_or(Value::Null);
@@ -318,6 +319,19 @@ fn main() {
                             } else {
                                 json!([{"command":expected}])
                             };
+                        }
+                        let expected = prompt
+                            .split("APPROVAL_COMMAND_JSON:")
+                            .nth(1)
+                            .and_then(|raw| serde_json::from_str::<String>(raw.trim()).ok())
+                            .unwrap();
+                        if mode == "direct-extra-action" {
+                            params["commandActions"] =
+                                json!([{"command":expected},{"command":"extra"}]);
+                        } else if mode == "direct-mismatched-action" {
+                            params["commandActions"] = json!([{"command":"different"}]);
+                        } else if mode == "direct-malformed-action" {
+                            params["commandActions"] = json!({"command":expected});
                         }
                         send(
                             json!({"id":900,"method":if mode == "unexpected-approval" {"item/fileChange/requestApproval"} else {"item/commandExecution/requestApproval"},"params":params}),

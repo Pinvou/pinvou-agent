@@ -1027,16 +1027,17 @@ impl Session {
         let workspace_root = workspace.canonicalize().ok();
         let canonical_cwd = cwd.as_deref().and_then(|path| path.canonicalize().ok());
         let raw_command = params.get("command").and_then(Value::as_str);
-        let direct_command = raw_command == Some(command);
+        let action_consistency = params.get("commandActions").map(|value| {
+            value.as_array().is_some_and(|actions| {
+                actions.len() == 1
+                    && actions[0].get("command").and_then(Value::as_str) == Some(command)
+            })
+        });
+        let direct_command =
+            raw_command == Some(command) && action_consistency.is_none_or(|consistent| consistent);
         let exact_wrapped_command = wrapper_candidate.is_some_and(|wrapper| {
             raw_command == Some(wrapper)
-                && params
-                    .get("commandActions")
-                    .and_then(Value::as_array)
-                    .is_some_and(|actions| {
-                        actions.len() == 1
-                            && actions[0].get("command").and_then(Value::as_str) == Some(command)
-                    })
+                && action_consistency == Some(true)
                 && explicit_wrapper.map_or(true, TrustedApprovalWrapper::path_identity_matches)
         });
         let safe = method == Some("item/commandExecution/requestApproval")
@@ -1610,7 +1611,7 @@ fn approval_command() -> Result<String> {
             bail!("system cmd.exe path contained an unsafe quote");
         }
         return Ok(format!(
-            "\"{path}\" /d /s /c \"echo S2_APPROVED> .codex-s2-approval-marker\""
+            "& \"{path}\" /d /s /c \"echo S2_APPROVED> .codex-s2-approval-marker\""
         ));
     }
     #[cfg(not(windows))]
@@ -2244,8 +2245,40 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn approval_inner_command_executes_only_in_the_exact_outer_powershell_cwd() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "codex-s2-approval-command-{}-{nonce}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let command = super::approval_command().unwrap();
+        let shell = super::trusted_scenario_shell().unwrap();
+        let output = std::process::Command::new(shell)
+            .args(["-NoProfile", "-NonInteractive", "-Command"])
+            .arg(&command)
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(workspace.join(".codex-s2-approval-marker").is_file());
+        assert!(!root.join(".codex-s2-approval-marker").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn approval_wrapper_is_byte_exact_and_escapes_backslashes_before_quotes() {
-        let expected = r#"\"C:\Windows\System32\cmd.exe\" /d /s /c \"echo S2_APPROVED> .codex-s2-approval-marker\""#;
+        let expected = r#"& \"C:\Windows\System32\cmd.exe\" /d /s /c \"echo S2_APPROVED> .codex-s2-approval-marker\""#;
         let pwsh = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
         let wrapped = super::approval_wrapper_candidate(pwsh, expected).unwrap();
         let escaped = expected.replace('\\', r"\\").replace('"', r#"\""#);
