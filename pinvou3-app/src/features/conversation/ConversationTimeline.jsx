@@ -790,7 +790,7 @@ export function ConversationTurn({
       : null;
 
   return (
-    <section className="space-y-4" data-conversation-turn={turn.id}>
+    <section className="space-y-4" data-conversation-turn={turn.id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 600px' }}>
       {userContent}
       <div className="flex items-start gap-3">
         {assistantAvatar || (
