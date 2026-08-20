@@ -8,19 +8,8 @@ const repoRoot = path.join(appRoot, "..");
 const read = (relativePath) =>
   fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
 
-const macConfig = JSON.parse(
-  read("pinvou3-app/src-tauri/config/platforms/macos/tauri.conf.json"),
-);
-const macResources = macConfig.bundle.resources || {};
-assert.equal(
-  macResources["resources/platforms/macos/aarch64/asr/"],
-  undefined,
-  "macOS must not bundle the legacy SenseVoice runtime",
-);
-assert.ok(
-  !Object.values(macResources).some((destination) => destination === "runtime/asr"),
-  "macOS resources must not target runtime/asr",
-);
+// asr/ 目录排除与 runtime/asr 目标禁令由 tauri_effective_config.test.js 在
+// effective config + resource manifest 双层断言(更强),此处不重复。
 
 const legacyAsrDir = path.join(
   appRoot,

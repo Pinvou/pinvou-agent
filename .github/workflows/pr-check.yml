@@ -173,7 +173,6 @@ jobs:
               - 'scripts/check-linux-glibc-floor.sh'
               - 'scripts/tests/sync-version.test.mjs'
               - 'scripts/tests/test_ci_gate_policy.py'
-              - 'scripts/tests/test_ci_trigger_routing_policy.py'
               - 'scripts/tests/test_release_arm64_policy.py'
               - 'scripts/tests/test_release_linux_floor_policy.py'
               - 'scripts/tests/test_release_manifest_probe.py'

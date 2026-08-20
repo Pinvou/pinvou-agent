@@ -409,48 +409,6 @@ mod tests {
     }
 
     #[test]
-    fn finish_turn_with_usage_records_usage_field() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3-timing-usage-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::env::set_var("PINVOU3_HOME", &tmp);
-
-        let sid = "session-usage";
-        start_turn(sid);
-        finish_turn_with_usage(
-            sid,
-            "Completed",
-            None,
-            Some(TurnUsage {
-                input_tokens: 1200,
-                output_tokens: 350,
-                cache_hit_tokens: 800,
-                cache_miss_tokens: 400,
-                ..Default::default()
-            }),
-        );
-
-        let timeline = read_timeline(sid).unwrap();
-        assert_eq!(timeline.len(), 2);
-        let done = timeline
-            .iter()
-            .find(|e| e.event == "assistant_done")
-            .expect("has assistant_done");
-        let u = done.usage.expect("usage recorded");
-        assert_eq!(u.input_tokens, 1200);
-        assert_eq!(u.output_tokens, 350);
-        assert_eq!(u.cache_hit_tokens, 800);
-        assert_eq!(u.cache_miss_tokens, 400);
-
-        let _ = std::fs::remove_dir_all(tmp);
-    }
-
-    #[test]
     fn read_timeline_handles_missing_file() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         std::env::set_var(
@@ -759,10 +717,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp);
     }
 
-    /// [F3] TurnUsage 新字段(cache_write_tokens / reasoning_tokens)落盘 + 读取 +
-    /// compute_stats 累加全链路。验证 forward-compat 字段集不丢字段。
+    /// TurnUsage 全字段落盘 + 读取 + compute_stats 累加全链路。[F3] 验证
+    /// forward-compat 字段集(cache_write_tokens / reasoning_tokens)不丢字段,
+    /// 同时覆盖基本字段(input/output/cache_hit/cache_miss)的记录。
     #[test]
-    fn finish_turn_with_usage_records_extended_usage_fields() {
+    fn finish_turn_with_usage_records_all_usage_fields() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-timing-extended-usage-{}",
@@ -790,11 +749,16 @@ mod tests {
         );
 
         let timeline = read_timeline(sid).unwrap();
+        assert_eq!(timeline.len(), 2);
         let done = timeline
             .iter()
             .find(|e| e.event == "assistant_done")
             .expect("has assistant_done");
         let u = done.usage.expect("usage recorded");
+        assert_eq!(u.input_tokens, 100);
+        assert_eq!(u.output_tokens, 50);
+        assert_eq!(u.cache_hit_tokens, 30);
+        assert_eq!(u.cache_miss_tokens, 20);
         assert_eq!(u.cache_write_tokens, 80);
         assert_eq!(u.reasoning_tokens, 500);
 

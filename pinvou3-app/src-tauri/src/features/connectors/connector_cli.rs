@@ -404,25 +404,25 @@ mod tests {
         auth_domains: &["work.weixin.qq.com", "weixin.qq.com"],
     };
 
-    /// 命中白名单域、且在空白处截断(扫码 URL 常带 `&` 查询串,不能被切断)。
+    /// extract_url 三分支矩阵:命中白名单域(在空白处截断,扫码 URL 常带 `&`
+    /// 查询串不能被切断)、非白名单域不算本连接器的 URL、无 URL 返回 None。
     #[test]
-    fn extract_url_picks_auth_domain_url() {
-        assert_eq!(
-            TEST_CTX.extract_url("请打开 https://work.weixin.qq.com/x?a=1&b=2 扫码"),
-            Some("https://work.weixin.qq.com/x?a=1&b=2".to_string())
-        );
-    }
-
-    /// 非白名单域不算本连接器的 URL。
-    #[test]
-    fn extract_url_rejects_non_auth_domain() {
-        assert_eq!(TEST_CTX.extract_url("https://example.com/foo"), None);
-    }
-
-    /// 没有 URL 时返回 None。
-    #[test]
-    fn extract_url_none_without_url() {
-        assert_eq!(TEST_CTX.extract_url("纯文本,没有链接"), None);
+    fn extract_url_matrix() {
+        let cases = [
+            (
+                "请打开 https://work.weixin.qq.com/x?a=1&b=2 扫码",
+                Some("https://work.weixin.qq.com/x?a=1&b=2"),
+            ),
+            ("https://example.com/foo", None),
+            ("纯文本,没有链接", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                TEST_CTX.extract_url(input),
+                expected.map(str::to_string),
+                "{input:?}"
+            );
+        }
     }
 
     struct ReadErrorThenPanic {

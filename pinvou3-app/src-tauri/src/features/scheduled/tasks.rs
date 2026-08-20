@@ -1766,15 +1766,30 @@ mod tests {
     }
 
     #[test]
-    fn humanize_daily_weekly_rrule() {
-        let label = humanize_rrule("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30");
-        assert_eq!(label, "每天 08:30");
-    }
-
-    #[test]
-    fn humanize_workday_weekly_rrule() {
-        let label = humanize_rrule("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=0");
-        assert_eq!(label, "工作日 09:00");
+    fn humanize_rrule_labels() {
+        let cases = [
+            (
+                "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
+                "每天 08:30",
+            ),
+            (
+                "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=0",
+                "工作日 09:00",
+            ),
+            ("FREQ=HOURLY;INTERVAL=6", "每 6 小时"),
+            (
+                "FREQ=HOURLY;INTERVAL=2;BYHOUR=8;BYMINUTE=30",
+                "每 2 小时 · 08:30 起",
+            ),
+            ("FREQ=HOURLY;INTERVAL=2;BYDAY=MO,TU", "周一、周二 每 2 小时"),
+            (
+                "FREQ=HOURLY;INTERVAL=2;BYDAY=MO,TU,WE,TH,FR",
+                "工作日 每 2 小时",
+            ),
+        ];
+        for (rrule, expected) in cases {
+            assert_eq!(humanize_rrule(rrule), expected, "rrule: {rrule}");
+        }
     }
 
     // ── 删除一次定时运行的级联 ────────────────────────────────────────
@@ -2124,30 +2139,6 @@ mod tests {
             None => std::env::remove_var("PINVOU3_HOME"),
         }
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn humanize_hourly_rrule() {
-        let label = humanize_rrule("FREQ=HOURLY;INTERVAL=6");
-        assert_eq!(label, "每 6 小时");
-    }
-
-    #[test]
-    fn humanize_hourly_rrule_with_anchor() {
-        let label = humanize_rrule("FREQ=HOURLY;INTERVAL=2;BYHOUR=8;BYMINUTE=30");
-        assert_eq!(label, "每 2 小时 · 08:30 起");
-    }
-
-    #[test]
-    fn humanize_hourly_rrule_with_byday() {
-        let label = humanize_rrule("FREQ=HOURLY;INTERVAL=2;BYDAY=MO,TU");
-        assert_eq!(label, "周一、周二 每 2 小时");
-    }
-
-    #[test]
-    fn humanize_hourly_rrule_on_workdays() {
-        let label = humanize_rrule("FREQ=HOURLY;INTERVAL=2;BYDAY=MO,TU,WE,TH,FR");
-        assert_eq!(label, "工作日 每 2 小时");
     }
 
     #[test]

@@ -1086,6 +1086,100 @@ mod tests {
         }
     }
 
+    /// 三个 CLI ConfigWriter 的共享行为契约,参数化统一锁定(各 writer 的
+    /// 格式细节测试仍留在各自文件):无受管键 revert 不写备份、损坏文件
+    /// apply 报错且字节不变、首次 apply 建备份且二次 apply 复用同一备份。
+    /// 每个 writer 用独立子目录——codex/kimi 同名 config.toml,共享目录会
+    /// 让前一用例的备份污染后一用例的「备份不存在」断言。
+    #[test]
+    fn shared_writer_contract_matrix() {
+        fn target(provider_id: &str) -> ProviderTarget {
+            ProviderTarget {
+                provider_id: provider_id.into(),
+                name: "中转".into(),
+                base_url: "https://api.example.com/relay/".into(),
+                model: Some("demo-model".into()),
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                api_key: Some("test-api-key-1234567890".into()),
+            }
+        }
+        fn run_case(
+            name: &str,
+            writer: &dyn AgentConfigWriter,
+            dir: &Path,
+            config_name: &str,
+            initial: &str,
+            broken: &str,
+        ) {
+            let config = dir.join(config_name);
+            let backup = dir.join(format!("{config_name}.pinvou3-bak"));
+
+            // 契约 1:无受管键时 revert 不写备份。
+            std::fs::write(&config, initial).unwrap();
+            writer.revert_to_official(None).unwrap();
+            assert!(!backup.exists(), "{name}: revert 无受管键不得写备份");
+
+            // 契约 2:损坏文件 apply 报错且字节不变(不得静默覆盖不可解析配置)。
+            std::fs::write(&config, broken).unwrap();
+            assert!(
+                writer.apply(&target("pv-aaaaaaaaaaaa")).is_err(),
+                "{name}: 损坏配置 apply 必须 Err"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&config).unwrap(),
+                broken,
+                "{name}: 损坏配置字节不得变化"
+            );
+
+            // 契约 3:首次 apply 建备份(保留初始内容),二次 apply 复用同一备份。
+            std::fs::write(&config, initial).unwrap();
+            writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
+            writer.apply(&target("pv-bbbbbbbbbbbb")).unwrap();
+            assert!(backup.exists(), "{name}: 首次 apply 后应存在备份");
+            assert_eq!(
+                std::fs::read_to_string(&backup).unwrap(),
+                initial,
+                "{name}: 备份保留初始状态"
+            );
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-acp-writer-contract-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cases: [(&str, &str, &str, &str); 3] = [
+            ("claude", "settings.json", r#"{"model":"x"}"#, "{not json"),
+            (
+                "codex",
+                "config.toml",
+                "model = \"gpt-5.2\"\n",
+                "model_provider = \"pv-x\"\n[unclosed",
+            ),
+            (
+                "kimi",
+                "config.toml",
+                "default_model = \"kimi-k2.5\"\n",
+                "default_model = \"x\"\n[unclosed",
+            ),
+        ];
+        for (name, config_name, initial, broken) in cases {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let writer: Box<dyn AgentConfigWriter> = match name {
+                "claude" => Box::new(claude::ClaudeConfigWriter::new(&dir)),
+                "codex" => Box::new(codex::CodexConfigWriter::new(&dir)),
+                _ => Box::new(kimi::KimiConfigWriter::new(&dir)),
+            };
+            run_case(name, writer.as_ref(), &dir, config_name, initial, broken);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn store_roundtrip_and_atomic() {
         let current = std::thread::current();

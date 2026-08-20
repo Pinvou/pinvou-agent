@@ -451,40 +451,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn revert_noop_without_managed_blocks_skips_write() {
-        let dir = tmp_dir();
-        let writer = CodexConfigWriter::new(&dir);
-        fs::write(dir.join("config.toml"), "model = \"gpt-5.2\"\n").unwrap();
-        writer.revert_to_official(None).unwrap();
-        assert!(!dir.join("config.toml.pinvou3-bak").exists());
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn refuses_to_overwrite_unparseable_file() {
-        let dir = tmp_dir();
-        let writer = CodexConfigWriter::new(&dir);
-        let broken = "model_provider = \"pv-x\"\n[unclosed";
-        fs::write(dir.join("config.toml"), broken).unwrap();
-        assert!(writer.apply(&target("pv-aaaaaaaaaaaa")).is_err());
-        assert_eq!(fs::read_to_string(dir.join("config.toml")).unwrap(), broken);
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn backup_created_once() {
-        let dir = tmp_dir();
-        let writer = CodexConfigWriter::new(&dir);
-        fs::write(dir.join("config.toml"), "model = \"gpt-5.2\"\n").unwrap();
-        writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
-        writer.apply(&target("pv-bbbbbbbbbbbb")).unwrap();
-        assert_eq!(
-            fs::read_to_string(dir.join("config.toml.pinvou3-bak")).unwrap(),
-            "model = \"gpt-5.2\"\n"
-        );
-        let _ = fs::remove_dir_all(&dir);
-    }
+    // 共享契约(revert 不写备份/损坏文件拒绝覆盖/备份只建一次)已参数化上移到
+    // providers::tests::shared_writer_contract_matrix,此处只留 Codex 特有行为。
 
     #[test]
     fn effective_errors_on_unparseable_file() {

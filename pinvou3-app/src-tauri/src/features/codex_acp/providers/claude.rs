@@ -347,44 +347,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn revert_noop_without_managed_keys_skips_write() {
-        let dir = tmp_dir();
-        let writer = ClaudeConfigWriter::new(&dir);
-        fs::write(dir.join("settings.json"), r#"{"model":"x"}"#).unwrap();
-        writer.revert_to_official(None).unwrap();
-        assert!(!dir.join("settings.json.pinvou3-bak").exists());
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn refuses_to_overwrite_unparseable_file() {
-        let dir = tmp_dir();
-        let writer = ClaudeConfigWriter::new(&dir);
-        let broken = "{not json";
-        fs::write(dir.join("settings.json"), broken).unwrap();
-        assert!(writer.apply(&target("pv-aaaaaaaaaaaa")).is_err());
-        // 字节不变
-        assert_eq!(
-            fs::read_to_string(dir.join("settings.json")).unwrap(),
-            broken
-        );
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn backup_created_once_on_first_write() {
-        let dir = tmp_dir();
-        let writer = ClaudeConfigWriter::new(&dir);
-        fs::write(dir.join("settings.json"), r#"{"model":"x"}"#).unwrap();
-        writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
-        writer.apply(&target("pv-bbbbbbbbbbbb")).unwrap();
-        let backup = dir.join("settings.json.pinvou3-bak");
-        assert!(backup.exists());
-        // 备份保留初始状态且只写一次
-        assert_eq!(fs::read_to_string(backup).unwrap(), r#"{"model":"x"}"#);
-        let _ = fs::remove_dir_all(&dir);
-    }
+    // 共享契约(revert 不写备份/损坏文件拒绝覆盖/备份只建一次)已参数化上移到
+    // providers::tests::shared_writer_contract_matrix,此处只留 Claude 特有行为。
 
     #[test]
     fn effective_detects_relay() {

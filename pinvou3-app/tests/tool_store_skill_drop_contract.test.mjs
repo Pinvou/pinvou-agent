@@ -14,10 +14,6 @@ const toolStoreSource = await readFile(
   new URL('../src/features/tools/ToolStoreView.jsx', import.meta.url),
   'utf8',
 );
-const importLogicSource = await readFile(
-  new URL('../src/features/tools/skill-import-logic.js', import.meta.url),
-  'utf8',
-);
 const tauriConfigSource = await readFile(
   new URL('../src-tauri/tauri.conf.json', import.meta.url),
   'utf8',
@@ -81,7 +77,12 @@ assert.equal(
   'dragDropEnabled must stay false (WebView2 drag feedback + no path access)',
 );
 
-// 4. 纯逻辑:拖放通道前端软限 50MiB(后端另以 200MiB 强校验)
-assert.match(importLogicSource, /50 \* 1024 \* 1024/);
+// 4. 纯逻辑:拖放通道前端软限对齐后端(50MiB;后端另以 200MiB 强校验)。
+// 直接断言真实常量;skill_zip_import_logic 测试已覆盖同一常量的行为边界,
+// 此处仅锁前后端对齐口径。
+const { MAX_SKILL_ZIP_BYTES } = await import(
+  new URL('../src/features/tools/skill-import-logic.js', import.meta.url)
+);
+assert.equal(MAX_SKILL_ZIP_BYTES, 50 * 1024 * 1024);
 
 console.log('tool store skill drop contract tests passed');
