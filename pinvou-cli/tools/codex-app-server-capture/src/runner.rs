@@ -520,7 +520,7 @@ fn execute(
         for name in ["A", "B", "C", "D"] {
             let scenario_deadline = Instant::now() + config.scenario_timeout;
             if name == "C" {
-                ensure_approval_marker_absent(workspace)?;
+                ensure_approval_marker_absent_bounded(workspace, scenario_deadline)?;
             }
             let approval_policy = if name == "C" { "on-request" } else { "never" };
             let sandbox = if name == "C" {
@@ -558,7 +558,7 @@ fn execute(
             if name == "C" {
                 turn_params["approvalPolicy"] = json!("on-request");
                 turn_params["sandboxPolicy"] = json!({"type":"readOnly"});
-                ensure_approval_marker_absent(workspace)?;
+                ensure_approval_marker_absent_bounded(workspace, scenario_deadline)?;
             }
             let turn = session.request(
                 "turn/start",
@@ -582,7 +582,7 @@ fn execute(
                 thresholds,
             )?;
             if name == "C" && observed.evidence.terminal_state == TerminalState::Completed {
-                verify_and_remove_approval_marker(workspace, scenario_deadline)?;
+                verify_approval_marker_bounded(workspace, scenario_deadline)?;
             }
             if name == "B" {
                 scenario_b_content.extend(observed.content.iter().cloned());
@@ -929,6 +929,7 @@ impl Session {
                     approval_command,
                     approval_wrapper,
                     explicit_approval_wrapper,
+                    deadline,
                 )?;
                 approval_seen = true;
                 continue;
@@ -1030,6 +1031,7 @@ impl Session {
         command: &str,
         wrapper_candidate: Option<&str>,
         explicit_wrapper: Option<&TrustedApprovalWrapper>,
+        deadline: Instant,
     ) -> Result<()> {
         let id = frame.get("id").cloned().context("approval missing id")?;
         let method = frame.get("method").and_then(Value::as_str);
@@ -1063,6 +1065,10 @@ impl Session {
             bail!(
                 "unexpected approval rejected: method/command/cwd was outside the exact allowlist"
             );
+        }
+        if let Err(error) = ensure_approval_marker_absent_bounded(workspace, deadline) {
+            self.send(&json!({"id":id,"result":{"decision":"cancel"}}))?;
+            return Err(error);
         }
         self.send(&json!({"id":id,"result":{"decision":"accept"}}))
             .map(|_| ())
@@ -1635,48 +1641,194 @@ fn approval_marker_path(workspace: &Path) -> PathBuf {
     workspace.join(APPROVAL_MARKER_NAME)
 }
 
-fn ensure_approval_marker_absent(workspace: &Path) -> Result<()> {
-    match std::fs::symlink_metadata(approval_marker_path(workspace)) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+fn run_marker_io_worker<T>(
+    deadline: Instant,
+    operation: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T>
+where
+    T: Send + 'static,
+{
+    let remaining = remaining_until(deadline)?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = sender.send(operation());
+    });
+    match receiver.recv_timeout(remaining) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            bail!("scenario C approval marker I/O timeout")
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            bail!("scenario C approval marker I/O worker failed")
+        }
+    }
+}
+
+fn ensure_approval_marker_absent_bounded(workspace: &Path, deadline: Instant) -> Result<()> {
+    let path = approval_marker_path(workspace);
+    run_marker_io_worker(deadline, move || {
+        ensure_approval_marker_absent_atomically(&path)
+    })
+}
+
+fn verify_approval_marker_bounded(workspace: &Path, deadline: Instant) -> Result<()> {
+    let path = approval_marker_path(workspace);
+    let bytes = run_marker_io_worker(deadline, move || read_approval_marker_atomically(&path))?;
+    if bytes != APPROVAL_MARKER_BYTES {
+        bail!("scenario C approval marker verification failed");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+struct OwnedMarkerHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for OwnedMarkerHandle {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+#[cfg(windows)]
+fn open_approval_marker_nofollow(path: &Path) -> std::io::Result<OwnedMarkerHandle> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, OPEN_EXISTING,
+    };
+
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(OwnedMarkerHandle(handle))
+}
+
+#[cfg(windows)]
+fn ensure_approval_marker_absent_atomically(path: &Path) -> Result<()> {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};
+
+    match open_approval_marker_nofollow(path) {
         Ok(_) => bail!("scenario C approval marker precondition failed"),
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(code) if code == ERROR_FILE_NOT_FOUND as i32 || code == ERROR_PATH_NOT_FOUND as i32
+            ) =>
+        {
+            Ok(())
+        }
         Err(_) => bail!("scenario C approval marker precondition failed"),
     }
 }
 
-fn verify_and_remove_approval_marker(workspace: &Path, deadline: Instant) -> Result<()> {
+#[cfg(unix)]
+fn open_approval_marker_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)
+}
+
+#[cfg(unix)]
+fn ensure_approval_marker_absent_atomically(path: &Path) -> Result<()> {
+    match open_approval_marker_nofollow(path) {
+        Ok(_) => bail!("scenario C approval marker precondition failed"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => bail!("scenario C approval marker precondition failed"),
+    }
+}
+
+#[cfg(windows)]
+fn read_approval_marker_atomically(path: &Path) -> Result<Vec<u8>> {
+    read_approval_marker_with_post_open(path, || {})
+}
+
+#[cfg(windows)]
+fn read_approval_marker_with_post_open(path: &Path, post_open: impl FnOnce()) -> Result<Vec<u8>> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_TYPE_DISK, GetFileInformationByHandle, GetFileType, ReadFile,
+    };
+
+    let handle = open_approval_marker_nofollow(path)
+        .map_err(|_| anyhow!("scenario C approval marker verification failed"))?;
+    post_open();
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(handle.0, &mut info) } == 0
+        || unsafe { GetFileType(handle.0) } != FILE_TYPE_DISK
+        || info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
+    {
+        bail!("scenario C approval marker verification failed");
+    }
+    let size = ((info.nFileSizeHigh as u64) << 32) | info.nFileSizeLow as u64;
+    if size > APPROVAL_MARKER_MAX_BYTES || size != APPROVAL_MARKER_BYTES.len() as u64 {
+        bail!("scenario C approval marker verification failed");
+    }
+    let mut bytes = vec![0_u8; (APPROVAL_MARKER_MAX_BYTES + 1) as usize];
+    let mut total = 0_usize;
+    while total < bytes.len() {
+        let mut read = 0_u32;
+        if unsafe {
+            ReadFile(
+                handle.0,
+                bytes[total..].as_mut_ptr(),
+                (bytes.len() - total) as u32,
+                &mut read,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            bail!("scenario C approval marker verification failed");
+        }
+        if read == 0 {
+            break;
+        }
+        total += read as usize;
+    }
+    bytes.truncate(total);
+    Ok(bytes)
+}
+
+#[cfg(unix)]
+fn read_approval_marker_atomically(path: &Path) -> Result<Vec<u8>> {
     use std::io::Read;
 
-    remaining_until(deadline)?;
-    let path = approval_marker_path(workspace);
-    let metadata = std::fs::symlink_metadata(&path)
+    let file = open_approval_marker_nofollow(path)
         .map_err(|_| anyhow!("scenario C approval marker verification failed"))?;
-    let file_type = metadata.file_type();
-    let mut safe_regular_file = file_type.is_file() && !file_type.is_symlink();
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-        safe_regular_file &= metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0;
-    }
-    if !safe_regular_file
+    let metadata = file
+        .metadata()
+        .map_err(|_| anyhow!("scenario C approval marker verification failed"))?;
+    if !metadata.file_type().is_file()
         || metadata.len() > APPROVAL_MARKER_MAX_BYTES
         || metadata.len() != APPROVAL_MARKER_BYTES.len() as u64
     {
         bail!("scenario C approval marker verification failed");
     }
     let mut bytes = Vec::with_capacity(APPROVAL_MARKER_BYTES.len());
-    std::fs::File::open(&path)
-        .map_err(|_| anyhow!("scenario C approval marker verification failed"))?
-        .take(APPROVAL_MARKER_MAX_BYTES + 1)
+    file.take(APPROVAL_MARKER_MAX_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| anyhow!("scenario C approval marker verification failed"))?;
-    remaining_until(deadline)?;
-    if bytes != APPROVAL_MARKER_BYTES {
-        bail!("scenario C approval marker verification failed");
-    }
-    std::fs::remove_file(path).map_err(|_| anyhow!("scenario C approval marker cleanup failed"))?;
-    remaining_until(deadline)?;
-    Ok(())
+    Ok(bytes)
 }
 
 fn trusted_scenario_shell() -> Result<PathBuf> {
@@ -2383,6 +2535,98 @@ mod tests {
             super::normalize_windows_command_path(wrapper_path.canonicalize().unwrap()).unwrap()
         );
         drop(wrapper);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn marker_io_worker_obeys_the_absolute_deadline() {
+        let start = std::time::Instant::now();
+        let result =
+            super::run_marker_io_worker(start + std::time::Duration::from_millis(25), || {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                Ok(())
+            });
+        assert!(result.is_err());
+        assert!(start.elapsed() < std::time::Duration::from_millis(250));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn marker_reader_locks_the_opened_identity_before_observing_content() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "codex-s2-marker-identity-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let marker = root.join(super::APPROVAL_MARKER_NAME);
+        let displaced = root.join("displaced-marker");
+        std::fs::write(&marker, super::APPROVAL_MARKER_BYTES).unwrap();
+
+        let bytes = super::read_approval_marker_with_post_open(&marker, || {
+            assert!(
+                std::fs::rename(&marker, &displaced).is_err(),
+                "the opened marker must already exclude delete sharing"
+            );
+        })
+        .unwrap();
+
+        assert_eq!(bytes, super::APPROVAL_MARKER_BYTES);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn marker_reader_rejects_a_static_symlink_when_supported() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "codex-s2-marker-symlink-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("target");
+        let marker = root.join(super::APPROVAL_MARKER_NAME);
+        std::fs::write(&target, super::APPROVAL_MARKER_BYTES).unwrap();
+        if std::os::windows::fs::symlink_file(&target, &marker).is_ok() {
+            assert!(super::read_approval_marker_atomically(&marker).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn marker_reader_rejects_symlinks_and_fifos_without_blocking() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::symlink;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "codex-s2-marker-special-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("target");
+        std::fs::write(&target, super::APPROVAL_MARKER_BYTES).unwrap();
+        let link = root.join("link");
+        symlink(&target, &link).unwrap();
+        assert!(super::read_approval_marker_atomically(&link).is_err());
+
+        let fifo = root.join("fifo");
+        let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        let started = std::time::Instant::now();
+        assert!(super::read_approval_marker_atomically(&fifo).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_millis(250));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

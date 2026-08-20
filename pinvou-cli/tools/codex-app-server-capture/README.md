@@ -139,7 +139,11 @@ and file ID, and revalidates path identity immediately before approval. In both
 modes, escaping, argument shape, and the sole `commandActions` entry must exactly
 preserve the allowlisted inner command. Other shells, child directories, and all
 wrapper variations are rejected. No caller-controlled path is interpolated into
-the command. Exactly one such approval is required.
+the command. Immediately before accepting, the runner atomically rejects any
+preexisting marker object. After completion it reads the exact marker bytes from
+one no-follow, identity-stable handle under the scenario deadline; the marker is
+left inside the runner-owned temporary workspace rather than removed by path.
+Exactly one such approval is required.
 Every other server request, command, or target is rejected and invalidates the
 run. Scenario D sends `turn/interrupt` only after a real backlog of at least
 eight nonempty deltas and 2 KiB, and reports request-write-to-response and

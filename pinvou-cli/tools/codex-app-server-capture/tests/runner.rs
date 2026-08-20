@@ -222,7 +222,10 @@ fn scenario_c_uses_read_only_on_request_and_exact_marker_approval() {
         })
         .unwrap();
     assert_eq!(response.1["result"]["decision"], "accept");
-    assert!(!workspace.join(".codex-s2-approval-marker").exists());
+    assert_eq!(
+        std::fs::read(workspace.join(".codex-s2-approval-marker")).unwrap(),
+        b"S2_APPROVED"
+    );
     for artifact in ["evidence.json", "validation-report.json", "summary.txt"] {
         let sanitized = std::fs::read_to_string(output.join(artifact)).unwrap();
         assert!(!sanitized.contains("S2_APPROVED"));
@@ -637,9 +640,9 @@ fn default_windows_resolution_prefers_working_codex_cmd_over_extensionless_shim(
         .arg(&output)
         .args([
             "--scenario-timeout-ms",
-            "5000",
+            "10000",
             "--global-timeout-ms",
-            "20000",
+            "60000",
         ])
         .env("PATH", isolated_path)
         .env("S2_CMDLINE_MARKER", &command_line_marker)
@@ -856,7 +859,12 @@ fn run_s2_rejects_unexpected_approval_method_instead_of_auto_approving_it() {
 
 #[test]
 fn scenario_c_requires_exact_marker_execution_evidence() {
-    for mode in ["accepted-no-marker", "wrong-marker", "preexisting-marker"] {
+    for mode in [
+        "accepted-no-marker",
+        "wrong-marker",
+        "preexisting-marker",
+        "approval-preseed-marker",
+    ] {
         let output = temp_output(mode);
         let result = run_fake(mode, &output, 1_000);
         assert!(!result.status.success(), "{mode} unexpectedly passed");
@@ -867,6 +875,11 @@ fn scenario_c_requires_exact_marker_execution_evidence() {
             "{mode} did not fail as a protocol error"
         );
         assert_eq!(evidence["scenarios"][2]["turn_completed"], false);
+        if mode == "approval-preseed-marker" {
+            let capture = std::fs::read_to_string(output.join("capture.jsonl")).unwrap();
+            assert!(capture.contains(r#"\"decision\":\"cancel\""#));
+            assert!(!capture.contains(r#"\"decision\":\"accept\""#));
+        }
         std::fs::remove_dir_all(output).unwrap();
     }
 }

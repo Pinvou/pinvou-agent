@@ -318,6 +318,13 @@ fn main() {
                             turn_id.clone()
                         };
                         approval_cwd = cwd.as_str().map(std::path::PathBuf::from);
+                        if mode == "approval-preseed-marker" {
+                            std::fs::write(
+                                approval_cwd.as_ref().unwrap().join(APPROVAL_MARKER_NAME),
+                                APPROVAL_MARKER_BYTES,
+                            )
+                            .unwrap();
+                        }
                         let mut params = json!({"threadId":approval_thread,"turnId":approval_turn,"itemId":"approval-item","startedAtMs":1,"command":command,"cwd":cwd});
                         #[cfg(windows)]
                         if mode.starts_with("wrapper-") {
