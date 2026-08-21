@@ -40,6 +40,33 @@ assert.equal(
   'both PlatformToolAction sites must receive onEditDisplay',
 );
 
+// 2a. 上传 MCP/组合包必须进 readiness 批量取数：edit_display 动作与展示名覆盖都
+// 来自 bundle_readiness，这类 id 不在 tsToolsData/skillList 里，漏并入则编辑按钮
+// 永不渲染、卡面也不消费覆盖值（后端 bundle_readiness 已下发，前端断路）。
+assert.match(
+  toolStoreSource,
+  /customToolIds/,
+  'uploaded MCP/combo ids must join the readiness batch (customToolIds)',
+);
+assert.match(
+  toolStoreSource,
+  /\.\.\.tsToolsData\.map\(x => x\.backendId\)\.filter\(Boolean\),\s*\.\.\.customToolIds,/,
+  'readiness batch ids must include customToolIds',
+);
+
+// 2b. 自定义 MCP 卡面标题/说明优先消费 readiness bundle 生效值（后端已应用 extra
+// 覆盖），否则编辑保存成功后卡面不变。
+assert.match(
+  toolStoreSource,
+  /title: \(bf && bf\.name\) \|\| x\.name \|\| x\.id/,
+  'custom MCP card title must prefer the readiness bundle name (override applied)',
+);
+assert.match(
+  toolStoreSource,
+  /desc: \(bf && bf\.description\) \|\| x\.description \|\| ''/,
+  'custom MCP card desc must prefer the readiness bundle description (override applied)',
+);
+
 // 3. 保存调 update_bundle_display_meta（camelCase 参数映射），成功后刷新列表。
 assert.match(
   toolStoreSource,

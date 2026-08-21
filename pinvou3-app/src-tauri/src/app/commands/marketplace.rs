@@ -574,6 +574,13 @@ pub async fn update_bundle_display_meta(
                 "包 '{id}' 非用户上传来源，预置/内置包不允许覆盖展示名/说明"
             ));
         }
+        // 长度校验前置（与 set_display_meta 同口径）：回写会先改 SKILL.md 并重算
+        // 指纹，校验若只留在 set_display_meta，超长值会先落盘再报错，留下
+        // 「报错但包内容已变」的中间态。
+        crate::features::marketplace::store::validate_display_meta(
+            display_name.as_deref(),
+            display_description.as_deref(),
+        )?;
         // 单技能包回写（多技能/纯 MCP 包内部跳过不报错）；trim 空串 = 清覆盖，
         // 展示回退 SKILL.md 现状，无需回写。
         if let Some(desc) = display_description
