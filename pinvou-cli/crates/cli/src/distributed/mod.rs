@@ -105,8 +105,19 @@ pub fn map_error_causes(causes: impl IntoIterator<Item = ExitCause>) -> StableEx
 pub enum ProjectionAction {
     None,
     WriteText(String),
-    AskApproval { approval_id: String, prompt: String },
-    AskInput { input_id: String, prompt: String },
+    AskApproval {
+        approval_id: String,
+        prompt: String,
+    },
+    AskInput {
+        input_id: String,
+        prompt: String,
+    },
+    RuntimeError {
+        code: StableExitCode,
+        runtime_code: String,
+        message: String,
+    },
     TurnEnded(StableExitCode),
 }
 
@@ -161,9 +172,15 @@ impl TerminalProjection {
                 };
                 Ok(ProjectionAction::TurnEnded(code))
             }
-            RuntimeEventKind::ErrorRaised => Ok(ProjectionAction::TurnEnded(
-                stable_code_for_runtime_error(&required_string(&payload, "code")?),
-            )),
+            RuntimeEventKind::ErrorRaised => {
+                let runtime_code = required_string(&payload, "code")?;
+                let message = required_string(&payload, "message")?;
+                Ok(ProjectionAction::RuntimeError {
+                    code: stable_code_for_runtime_error(&runtime_code),
+                    runtime_code,
+                    message,
+                })
+            }
             _ => Ok(ProjectionAction::None),
         }
     }
@@ -204,6 +221,12 @@ fn stable_code_for_runtime_error(code: &str) -> StableExitCode {
         "cancelled" | "timeout" => StableExitCode::Cancelled,
         _ => StableExitCode::RuntimeFailed,
     }
+}
+
+fn format_runtime_error_for_chat(runtime_code: &str, message: &str) -> String {
+    format!(
+        "\nruntime error: {runtime_code}\nmessage: {message}\nhint: run /detect to inspect the active runtime, or /runtime <id> to switch.\n"
+    )
 }
 
 pub struct ControllerWire<S> {
@@ -614,6 +637,26 @@ fn execute_chat_with_io<R: BufRead, W: Write, S: Read + Write>(
                         DistributedError::new(StableExitCode::Internal, "terminal read failed")
                     })?;
                     client.resolve_input(&input_id, answer.trim_end())?;
+                }
+                ProjectionAction::RuntimeError {
+                    code,
+                    runtime_code,
+                    message,
+                } => {
+                    if let Some(text) = projection.flush_pending() {
+                        write_terminal_to(output, &text)?;
+                    }
+                    write_terminal_to(
+                        output,
+                        &format_runtime_error_for_chat(&runtime_code, &message),
+                    )?;
+                    if let Ok(mut active) = active_turn.lock() {
+                        *active = None;
+                    }
+                    return Err(DistributedError::new(
+                        code,
+                        format!("runtime {runtime_code}"),
+                    ));
                 }
                 ProjectionAction::TurnEnded(code) => {
                     if let Some(text) = projection.flush_pending() {
@@ -1062,6 +1105,51 @@ mod tests {
         let requests = client.into_inner().requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method(), Some("runtime.detect"));
+    }
+
+    #[test]
+    fn chat_loop_prints_actionable_runtime_errors_before_returning() {
+        let runtime_error = runtime_event(
+            "turn-auth",
+            1,
+            "control",
+            "R0",
+            "error.raised",
+            json!({
+                "code": "blocked_auth",
+                "message": "Codex runtime is not signed in",
+                "fatal": true,
+                "source": "runtime"
+            }),
+        );
+        let stream = TestDuplex::with_responses([IpcMessage::event(
+            "runtime.event",
+            serde_json::to_value(runtime_error).unwrap(),
+        )
+        .unwrap()]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut input = std::io::Cursor::new(b"hello codex\n".to_vec());
+        let mut output = Vec::new();
+
+        let error = execute_chat_with_io(
+            &mut input,
+            &mut output,
+            &mut client,
+            interrupted,
+            Arc::clone(&active_turn),
+            true,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.exit_code(), StableExitCode::BlockedAuth);
+        assert_eq!(error.to_string(), "runtime blocked_auth");
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("runtime error: blocked_auth"));
+        assert!(output.contains("Codex runtime is not signed in"));
+        assert!(output.contains("hint: run /detect"));
+        assert_eq!(active_turn.lock().unwrap().as_deref(), None);
     }
 
     #[test]
