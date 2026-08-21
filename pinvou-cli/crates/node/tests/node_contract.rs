@@ -348,11 +348,19 @@ fn node_control_surface_uses_the_injected_runtime_host_seam() {
 #[derive(Debug, Default)]
 struct FakeAdapter {
     calls: Arc<Mutex<Vec<String>>>,
+    events: Vec<RuntimeEventEnvelope>,
 }
 
 impl FakeAdapter {
     fn calls(&self) -> Arc<Mutex<Vec<String>>> {
         Arc::clone(&self.calls)
+    }
+
+    fn with_events(events: Vec<RuntimeEventEnvelope>) -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            events,
+        }
     }
 }
 
@@ -437,25 +445,17 @@ impl AgentRuntimeAdapter for FakeAdapter {
         _: &RuntimeSession,
     ) -> Result<RuntimeEventSubscription, AdapterError> {
         self.calls.lock().unwrap().push("subscribe".into());
-        let event = RuntimeEventEnvelope::from_value(serde_json::json!({
-            "protocol_version":pinvou_protocol::IPC_VERSION,
-            "schema_version":1,
-            "node_id":"adapter-node",
-            "logical_session_id":"adapter-logical",
-            "attachment_id":"adapter-attachment",
-            "work_id":null,
-            "collaborative_run_id":null,
-            "stream_id":"main",
-            "turn_id":"adapter-turn",
-            "seq":1,
-            "source_span":null,
-            "timestamp":"2026-08-21T00:00:00.000Z",
-            "rate_class":"R1",
-            "kind":"text.delta",
-            "payload":{"role":"assistant","content":"from-adapter","merged_count":1}
-        }))
-        .unwrap();
-        Ok(Box::new(vec![Ok(event)].into_iter()))
+        let events = if self.events.is_empty() {
+            vec![runtime_event(
+                "text.delta",
+                "R1",
+                "main",
+                serde_json::json!({"role":"assistant","content":"from-adapter","merged_count":1}),
+            )]
+        } else {
+            std::mem::take(&mut self.events)
+        };
+        Ok(Box::new(events.into_iter().map(Ok)))
     }
 
     fn close(&mut self, session: &RuntimeSession) -> Result<(), AdapterError> {
@@ -465,6 +465,32 @@ impl AgentRuntimeAdapter for FakeAdapter {
             .push(format!("close:{}", session.as_str()));
         Ok(())
     }
+}
+
+fn runtime_event(
+    kind: &str,
+    rate_class: &str,
+    stream_id: &str,
+    payload: serde_json::Value,
+) -> RuntimeEventEnvelope {
+    RuntimeEventEnvelope::from_value(serde_json::json!({
+        "protocol_version":pinvou_protocol::IPC_VERSION,
+        "schema_version":1,
+        "node_id":"adapter-node",
+        "logical_session_id":"adapter-logical",
+        "attachment_id":"adapter-attachment",
+        "work_id":null,
+        "collaborative_run_id":null,
+        "stream_id":stream_id,
+        "turn_id":"adapter-turn",
+        "seq":1,
+        "source_span":null,
+        "timestamp":"2026-08-21T00:00:00.000Z",
+        "rate_class":rate_class,
+        "kind":kind,
+        "payload":payload
+    }))
+    .unwrap()
 }
 
 #[test]
@@ -524,6 +550,49 @@ fn adapter_runtime_host_drives_probe_create_send_events_and_control_methods() {
             "interrupt:adapter-session",
             "close:adapter-session",
         ]
+    );
+}
+
+#[test]
+fn adapter_runtime_host_skips_lifecycle_events_until_text_delta() {
+    let adapter = FakeAdapter::with_events(vec![
+        runtime_event(
+            "attachment.started",
+            "R0",
+            "control",
+            serde_json::json!({"runtime_id":"codex","agent_kind":"codex","capabilities_snapshot":{}}),
+        ),
+        runtime_event(
+            "turn.started",
+            "R0",
+            "control",
+            serde_json::json!({"user_input_ref":"codex"}),
+        ),
+        runtime_event(
+            "text.delta",
+            "R1",
+            "main",
+            serde_json::json!({"role":"assistant","content":"visible codex text","merged_count":1}),
+        ),
+    ]);
+    let session = NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(AdapterRuntimeHost::new(Box::new(adapter))),
+    )
+    .unwrap();
+
+    let echo = IpcMessage::request(
+        serde_json::json!(15),
+        "runtime.echo",
+        serde_json::json!({"instance_id":"node-instance", "text":"hello-codex"}),
+    )
+    .unwrap();
+    let event = session.handle(echo).unwrap();
+    let envelope = RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap();
+    assert_eq!(envelope.kind(), "text.delta");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(envelope.payload().get()).unwrap()["content"],
+        "visible codex text"
     );
 }
 

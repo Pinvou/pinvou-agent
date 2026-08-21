@@ -1,5 +1,7 @@
 use pinvou_agent_adapter_codex::{CodexAdapter, CodexAdapterConfig};
-use pinvou_protocol::{HelloClient, HelloServer, IpcMessage, IpcMessageKind, RuntimeEventEnvelope};
+use pinvou_protocol::{
+    HelloClient, HelloServer, IpcMessage, IpcMessageKind, RuntimeEventEnvelope, RuntimeEventKind,
+};
 use pinvou_runtime_api::{AgentRuntimeAdapter, RuntimeCommand, RuntimeOperation, RuntimeSession};
 use serde_json::json;
 use std::{
@@ -83,11 +85,13 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
         let session = ensure_adapter_session(&mut inner)?;
         inner.adapter.send(&session, RuntimeCommand::text(text)?)?;
         let mut events = inner.adapter.subscribe_events(&session)?;
-        match events.next() {
-            Some(Ok(event)) => Ok(event),
-            Some(Err(error)) => Err(error.into()),
-            None => Err(NodeError::InvalidMessage),
+        for event in events.by_ref() {
+            let event = event?;
+            if event.event_kind() == RuntimeEventKind::TextDelta {
+                return Ok(event);
+            }
         }
+        Err(NodeError::InvalidMessage)
     }
 
     fn resolve_approval(
