@@ -105,8 +105,9 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
   现算（`unavailable_bundles_for`；物化侧同口径，见 `skill_materialization.rs`）；
 - hidden 只决定包是否出现在 composer 列表，不决定 on/off；disabled 只决定
   开关态，不影响列表可见性；
-- 卸载/断开走 `remove_bundle_from_disabled_scopes`，同时清 disabled 与 hidden
-  （防残留 hidden 误隐藏未来同名重装）；
+- 卸载走 `remove_bundle_from_disabled_scopes`，同时清 disabled 与 hidden
+  （防残留 hidden 误隐藏未来同名重装；ima 断开随技能卸载走同一入口）；
+  CLI 连接器「断开」（logout，删授权不删记录）不走该入口，两个集合均不动；
 - 能力开关写路径（`save_disabled_bundles_for`）只写 `scopes`，不动 hidden；
 - 连接器开关（`sync_disabled_bundles_for_connector_switch`）：关闭只写
   disabled、不动 hidden；**开回复用卸载清理入口，会连带清 hidden**——即

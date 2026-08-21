@@ -1534,8 +1534,13 @@ impl Pinvou3Bridge {
     /// 覆盖面边界（四轮评审登记，仅注释、不改行为）：规则按 CLI **二进制名**做
     /// word-boundary 前缀匹配（同 `skill_script_deny_rules` 的 DSL 现状），只拦
     /// 「首 token 即该二进制名」的直接调用；每个二进制同时发 `{bin}.exe` /
-    /// `{bin}.cmd` 变体（六轮评审 R4：Windows 带扩展名拼写绕过），配合底座的
-    /// basename 折叠，`C:\...\lark-cli.exe` 这类路径拼写也可命中。已知残余绕过面：
+    /// `{bin}.cmd` 变体（六轮评审 R4：Windows 带扩展名拼写绕过）。已知残余绕过面：
+    /// - 首 token 拼成路径（`C:\...\lark-cli.exe`、`/usr/local/bin/lark-cli`、
+    ///   `./bin/lark-cli`）——typed ask 规则走底座 `allow_rule_matches` 纯前缀
+    ///   比对，无 basename 折叠（底座折叠仅作用于 `denied_prefixes` 字符串通道），
+    ///   路径拼写仍绕过（七轮评审实证）；
+    /// - Windows PATHEXT 其余变体（`.bat`/`.com`/`.ps1` 等）未发规则——npm shim
+    ///   为 `.cmd`、原生二进制为 `.exe`，其余拼写被模型生成的现实概率低；
     /// - shell 包装前缀（`cmd /c lark-cli …`、`powershell -Command …`、`sh -c …`、
     ///   `env lark-cli …`、`env python …` 等）——首 token 是包装器；
     /// - 重命名/拷贝后的同功能二进制。
