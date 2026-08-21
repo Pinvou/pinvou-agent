@@ -25,7 +25,7 @@ const READY_POLL: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DistributedCommand {
-    Chat,
+    Chat { runtime: Option<String> },
     RuntimeDetect,
     RuntimeList,
     RuntimeSwitch(String),
@@ -38,13 +38,18 @@ pub(crate) fn parse_command(values: &[String]) -> Result<Option<DistributedComma
         .collect::<Vec<_>>()
         .as_slice()
     {
-        ["chat"] => Ok(Some(DistributedCommand::Chat)),
+        ["chat"] => Ok(Some(DistributedCommand::Chat { runtime: None })),
+        ["chat", "--runtime", runtime] if !runtime.is_empty() => {
+            Ok(Some(DistributedCommand::Chat {
+                runtime: Some((*runtime).into()),
+            }))
+        }
         ["runtime", "detect"] => Ok(Some(DistributedCommand::RuntimeDetect)),
         ["runtime", "list"] => Ok(Some(DistributedCommand::RuntimeList)),
         ["runtime", "switch", runtime] if !runtime.is_empty() => {
             Ok(Some(DistributedCommand::RuntimeSwitch((*runtime).into())))
         }
-        ["chat", ..] => Err(CliError::usage("usage: pinvou chat")),
+        ["chat", ..] => Err(CliError::usage("usage: pinvou chat [--runtime <runtime>]")),
         ["runtime", ..] => Err(CliError::usage(
             "usage: pinvou runtime detect|list|switch <runtime>",
         )),
@@ -479,7 +484,7 @@ pub(crate) fn execute(
     output: OutputMode,
 ) -> Result<String, DistributedError> {
     match command {
-        DistributedCommand::Chat => execute_chat(),
+        DistributedCommand::Chat { runtime } => execute_chat(runtime.as_deref()),
         DistributedCommand::RuntimeDetect => {
             let response = ensure_controller()?.runtime_detect()?;
             Ok(match output {
@@ -513,7 +518,7 @@ pub(crate) fn execute(
     }
 }
 
-fn execute_chat() -> Result<String, DistributedError> {
+fn execute_chat(initial_runtime: Option<&str>) -> Result<String, DistributedError> {
     if !assume_interactive_for_test() {
         require_interactive_terminal(io::stdin().is_terminal(), io::stdout().is_terminal())?;
     }
@@ -521,10 +526,23 @@ fn execute_chat() -> Result<String, DistributedError> {
     let active_turn = Arc::new(Mutex::new(None::<String>));
     install_interrupt_handler(Arc::clone(&interrupted), Arc::clone(&active_turn))?;
     let mut client = ensure_controller()?;
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
     let stdout = io::stdout();
     let mut output = stdout.lock();
+    if let Some(runtime) = initial_runtime {
+        let response = client.runtime_switch(runtime)?;
+        let selected = response
+            .payload()
+            .get("runtime")
+            .and_then(Value::as_str)
+            .unwrap_or(runtime);
+        let detect = client.runtime_detect()?;
+        write_terminal_to(
+            &mut output,
+            &format_runtime_switch_human(selected, detect.payload()),
+        )?;
+    }
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
     execute_chat_with_io(
         &mut input,
         &mut output,

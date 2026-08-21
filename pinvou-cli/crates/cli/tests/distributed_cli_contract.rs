@@ -93,7 +93,7 @@ fn no_arguments_prints_stage_one_help_without_starting_a_daemon() {
     assert_eq!(parsed.command(), &CliCommand::Help);
     let outcome = execute(parsed).unwrap();
     assert_eq!(outcome.exit_code, ExitCode::Success);
-    assert!(outcome.stdout.contains("pinvou chat"));
+    assert!(outcome.stdout.contains("pinvou chat [--runtime <id>]"));
     assert!(outcome.stdout.contains("pinvou runtime detect"));
     assert!(outcome.stdout.contains("pinvou runtime list"));
     assert!(outcome.stdout.contains("pinvou runtime switch"));
@@ -103,7 +103,15 @@ fn no_arguments_prints_stage_one_help_without_starting_a_daemon() {
 fn distributed_commands_are_explicit_and_unknown_shapes_are_usage_errors() {
     assert_eq!(
         parse_args(["pinvou", "chat"]).unwrap().command(),
-        &CliCommand::Distributed(DistributedCommand::Chat)
+        &CliCommand::Distributed(DistributedCommand::Chat { runtime: None })
+    );
+    assert_eq!(
+        parse_args(["pinvou", "chat", "--runtime", "codex"])
+            .unwrap()
+            .command(),
+        &CliCommand::Distributed(DistributedCommand::Chat {
+            runtime: Some("codex".into())
+        })
     );
     assert_eq!(
         parse_args(["pinvou", "runtime", "detect"])
@@ -128,6 +136,9 @@ fn distributed_commands_are_explicit_and_unknown_shapes_are_usage_errors() {
         vec!["pinvou", "runtime", "switch", ""],
         vec!["pinvou", "runtime", "switch", "codex", "extra"],
         vec!["pinvou", "chat", "unexpected"],
+        vec!["pinvou", "chat", "--runtime"],
+        vec!["pinvou", "chat", "--runtime", ""],
+        vec!["pinvou", "chat", "--runtime", "codex", "extra"],
     ] {
         assert_eq!(parse_args(args).unwrap_err().exit_code(), ExitCode::Usage);
     }
@@ -473,7 +484,7 @@ fn chat_binary_auto_starts_controller_and_real_node_for_one_turn() {
     std::fs::create_dir_all(root.join("runtime")).unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_pinvou"))
-        .args(["chat"])
+        .args(["chat", "--runtime", "echo"])
         .env("LOCALAPPDATA", &root)
         .env("HOME", &root)
         .env("XDG_DATA_HOME", root.join("data"))
@@ -504,7 +515,7 @@ fn chat_binary_auto_starts_controller_and_real_node_for_one_turn() {
     assert!(output.stderr.is_empty());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "You: real node echo\n"
+        "runtime switched to echo\nruntime: echo\nstatus: available\nauth: not_required\ninteractive_chat: yes\ntool_approval: no\nelicitation: no\nYou: real node echo\n"
     );
 }
 
