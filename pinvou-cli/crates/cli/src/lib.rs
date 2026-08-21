@@ -453,7 +453,7 @@ pub fn render_help() -> String {
     #[cfg(feature = "distributed")]
     commands.extend([
         "  pinvou chat [--runtime <id>]  Start an interactive local chat",
-        "  pinvou runtime detect         Detect available runtimes",
+        "  pinvou runtime detect [id]    Detect active or named runtime",
         "  pinvou runtime list           List selectable runtimes",
         "  pinvou runtime switch         Switch the active runtime",
     ]);

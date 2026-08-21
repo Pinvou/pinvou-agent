@@ -26,7 +26,7 @@ const READY_POLL: Duration = Duration::from_millis(25);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DistributedCommand {
     Chat { runtime: Option<String> },
-    RuntimeDetect,
+    RuntimeDetect { runtime: Option<String> },
     RuntimeList,
     RuntimeSwitch(String),
 }
@@ -44,14 +44,19 @@ pub(crate) fn parse_command(values: &[String]) -> Result<Option<DistributedComma
                 runtime: Some((*runtime).into()),
             }))
         }
-        ["runtime", "detect"] => Ok(Some(DistributedCommand::RuntimeDetect)),
+        ["runtime", "detect"] => Ok(Some(DistributedCommand::RuntimeDetect { runtime: None })),
+        ["runtime", "detect", runtime] if !runtime.is_empty() => {
+            Ok(Some(DistributedCommand::RuntimeDetect {
+                runtime: Some((*runtime).into()),
+            }))
+        }
         ["runtime", "list"] => Ok(Some(DistributedCommand::RuntimeList)),
         ["runtime", "switch", runtime] if !runtime.is_empty() => {
             Ok(Some(DistributedCommand::RuntimeSwitch((*runtime).into())))
         }
         ["chat", ..] => Err(CliError::usage("usage: pinvou chat [--runtime <runtime>]")),
         ["runtime", ..] => Err(CliError::usage(
-            "usage: pinvou runtime detect|list|switch <runtime>",
+            "usage: pinvou runtime detect [runtime]|list|switch <runtime>",
         )),
         _ => Ok(None),
     }
@@ -274,8 +279,15 @@ impl<S: Read + Write> ControllerWire<S> {
     pub fn interrupt_turn(&mut self, turn_id: &str) -> Result<IpcMessage, DistributedError> {
         self.request("turn.interrupt", json!({"turn_id": turn_id}))
     }
-    pub fn runtime_detect(&mut self) -> Result<IpcMessage, DistributedError> {
-        self.request("runtime.detect", json!({}))
+    pub fn runtime_detect(
+        &mut self,
+        runtime: Option<&str>,
+    ) -> Result<IpcMessage, DistributedError> {
+        let mut payload = json!({});
+        if let Some(runtime) = runtime {
+            payload["runtime"] = json!(runtime);
+        }
+        self.request("runtime.detect", payload)
     }
     pub fn runtime_list(&mut self) -> Result<IpcMessage, DistributedError> {
         self.request("runtime.list", json!({}))
@@ -485,8 +497,8 @@ pub(crate) fn execute(
 ) -> Result<String, DistributedError> {
     match command {
         DistributedCommand::Chat { runtime } => execute_chat(runtime.as_deref()),
-        DistributedCommand::RuntimeDetect => {
-            let response = ensure_controller()?.runtime_detect()?;
+        DistributedCommand::RuntimeDetect { runtime } => {
+            let response = ensure_controller()?.runtime_detect(runtime.as_deref())?;
             Ok(match output {
                 OutputMode::Json => response.payload().to_string(),
                 OutputMode::Human => format_runtime_detect(response.payload()),
@@ -510,7 +522,7 @@ pub(crate) fn execute(
                         .get("runtime")
                         .and_then(Value::as_str)
                         .unwrap_or(&runtime);
-                    let detect = controller.runtime_detect()?;
+                    let detect = controller.runtime_detect(None)?;
                     format_runtime_switch_human(selected, detect.payload())
                 }
             })
@@ -535,7 +547,7 @@ fn execute_chat(initial_runtime: Option<&str>) -> Result<String, DistributedErro
             .get("runtime")
             .and_then(Value::as_str)
             .unwrap_or(runtime);
-        let detect = client.runtime_detect()?;
+        let detect = client.runtime_detect(None)?;
         let detect_payload = detect.payload();
         write_terminal_to(
             &mut output,
@@ -743,12 +755,12 @@ fn handle_slash_command<S: Read + Write>(
                 .and_then(Value::as_str)
                 .unwrap_or(runtime);
             write_terminal_to(output, &format!("runtime switched to {selected}\n"))?;
-            let response = client.runtime_detect()?;
+            let response = client.runtime_detect(None)?;
             write_terminal_to(output, &format_runtime_detect(response.payload()))?;
             Ok(true)
         }
-        (Some("detect"), None, None) => {
-            let response = client.runtime_detect()?;
+        (Some("detect"), maybe_runtime, None) => {
+            let response = client.runtime_detect(maybe_runtime)?;
             write_terminal_to(output, &format_runtime_detect(response.payload()))?;
             Ok(true)
         }
@@ -760,7 +772,7 @@ fn handle_slash_command<S: Read + Write>(
 }
 
 fn chat_help_text() -> &'static str {
-    "/help - show chat commands\n/runtime - list selectable runtimes\n/runtime <id> - switch active runtime\n/detect - show active runtime status\n/exit or /quit - leave chat\n"
+    "/help - show chat commands\n/runtime - list selectable runtimes\n/runtime <id> - switch active runtime\n/detect [id] - show active or named runtime status\n/exit or /quit - leave chat\n"
 }
 
 fn format_runtime_detect(payload: &Value) -> String {
@@ -1179,7 +1191,7 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("/runtime - list selectable runtimes"));
         assert!(output.contains("/runtime <id> - switch active runtime"));
-        assert!(output.contains("/detect - show active runtime status"));
+        assert!(output.contains("/detect [id] - show active or named runtime status"));
         assert!(client.into_inner().requests().is_empty());
     }
 
@@ -1220,6 +1232,46 @@ mod tests {
         let requests = client.into_inner().requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method(), Some("runtime.detect"));
+    }
+
+    #[test]
+    fn chat_loop_detect_can_probe_a_named_runtime_without_starting_a_turn() {
+        let detect_response = IpcMessage::response(
+            json!(1),
+            json!({
+                "runtime": "codex",
+                "status": "available",
+                "auth_status": "authenticated",
+                "capabilities": {
+                    "interactive_chat": true
+                }
+            }),
+        )
+        .unwrap();
+        let stream = TestDuplex::with_responses([detect_response]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut input = std::io::Cursor::new(b"/detect codex\n/exit\n".to_vec());
+        let mut output = Vec::new();
+
+        execute_chat_with_io(
+            &mut input,
+            &mut output,
+            &mut client,
+            interrupted,
+            active_turn,
+            true,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("runtime: codex"));
+        assert!(output.contains("status: available"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method(), Some("runtime.detect"));
+        assert_eq!(requests[0].payload()["runtime"], "codex");
     }
 
     #[test]

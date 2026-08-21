@@ -163,7 +163,12 @@ impl ControllerSession {
                     if let Some(route) = &self.local_node {
                         let mut client =
                             LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
-                        client.runtime_detect()?.payload().clone()
+                        let runtime = request
+                            .payload()
+                            .get("runtime")
+                            .and_then(|value| value.as_str())
+                            .filter(|value| !value.is_empty());
+                        client.runtime_detect(runtime)?.payload().clone()
                     } else {
                         json!({
                             "status": "unavailable",

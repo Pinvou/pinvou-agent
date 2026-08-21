@@ -55,8 +55,15 @@ impl LocalNodeClient {
         self.request("runtime.list", serde_json::json!({}))
     }
 
-    pub fn runtime_detect(&mut self) -> Result<IpcMessage, ControllerError> {
-        self.request("runtime.detect", serde_json::json!({}))
+    pub fn runtime_detect(&mut self, runtime: Option<&str>) -> Result<IpcMessage, ControllerError> {
+        let mut payload = serde_json::json!({});
+        if let Some(runtime) = runtime {
+            if runtime.is_empty() {
+                return Err(ControllerError::InvalidMessage);
+            }
+            payload["runtime"] = serde_json::json!(runtime);
+        }
+        self.request("runtime.detect", payload)
     }
 
     pub fn runtime_switch(&mut self, runtime: &str) -> Result<IpcMessage, ControllerError> {
@@ -121,5 +128,64 @@ impl LocalNodeClient {
             .write_all(&encode_frame(&request).map_err(|_| ControllerError::InvalidMessage)?)?;
         self.stream.flush()?;
         read_frame(&mut self.stream).map_err(|_| ControllerError::InvalidMessage)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    use pinvou_protocol::{decode_frame, encode_frame};
+
+    use super::*;
+
+    #[test]
+    fn runtime_detect_can_forward_a_named_runtime_without_switching() {
+        let response = IpcMessage::response(
+            serde_json::json!(1),
+            serde_json::json!({"runtime":"codex", "status":"available"}),
+        )
+        .unwrap();
+        let outbound = Arc::new(Mutex::new(Vec::new()));
+        let stream = FakeStream {
+            inbound: std::io::Cursor::new(encode_frame(&response).unwrap()),
+            outbound: Arc::clone(&outbound),
+        };
+        let mut client = LocalNodeClient {
+            stream: Box::new(stream),
+            instance_id: "node-instance".into(),
+            next_id: 1,
+        };
+
+        let response = client.runtime_detect(Some("codex")).unwrap();
+
+        assert_eq!(response.payload()["runtime"], "codex");
+        let request: IpcMessage = decode_frame(&outbound.lock().unwrap()).unwrap();
+        assert_eq!(request.method(), Some("runtime.detect"));
+        assert_eq!(request.payload()["instance_id"], "node-instance");
+        assert_eq!(request.payload()["runtime"], "codex");
+    }
+
+    struct FakeStream {
+        inbound: std::io::Cursor<Vec<u8>>,
+        outbound: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Read for FakeStream {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.inbound.read(buffer)
+        }
+    }
+
+    impl Write for FakeStream {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.outbound.lock().unwrap().extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 }

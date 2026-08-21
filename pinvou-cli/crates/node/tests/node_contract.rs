@@ -643,6 +643,34 @@ fn runtime_detect_probes_adapter_without_creating_a_chat_session() {
 }
 
 #[test]
+fn runtime_detect_can_probe_a_named_runtime_without_switching_the_active_runtime() {
+    let session = NodeSession::with_runtime("node-instance", Arc::new(PrefixRuntime)).unwrap();
+    let detect = IpcMessage::request(
+        serde_json::json!(34),
+        "runtime.detect",
+        serde_json::json!({"instance_id":"node-instance", "runtime":"echo"}),
+    )
+    .unwrap();
+
+    let response = session.handle(detect).unwrap();
+    assert_eq!(response.payload()["runtime"], "echo");
+    assert_eq!(response.payload()["status"], "available");
+
+    let echo = IpcMessage::request(
+        serde_json::json!(35),
+        "runtime.echo",
+        serde_json::json!({"instance_id":"node-instance", "text":"still-active"}),
+    )
+    .unwrap();
+    let event = session.handle(echo).unwrap();
+    let envelope = RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(envelope.payload().get()).unwrap()["content"],
+        "runtime:still-active"
+    );
+}
+
+#[test]
 fn runtime_detect_reports_adapter_probe_failures_as_status_payloads() {
     let adapter = FakeAdapter::with_probe_error(AdapterError::BlockedAuth);
     let calls = adapter.calls();

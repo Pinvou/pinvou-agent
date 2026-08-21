@@ -334,10 +334,17 @@ impl NodeSession {
                 })
             }
             Some("runtime.detect") => {
-                let runtime = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
-                let runtime_id = runtime.id.clone();
-                let host = runtime.host.clone();
-                drop(runtime);
+                let (runtime_id, host) = if let Some(runtime) = request
+                    .payload()
+                    .get("runtime")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                {
+                    (runtime.to_owned(), create_runtime_host(runtime)?)
+                } else {
+                    let runtime = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
+                    (runtime.id.clone(), runtime.host.clone())
+                };
                 let mut payload = host.detect()?;
                 payload["runtime"] = json!(runtime_id);
                 payload["protocol_version"] = json!(pinvou_protocol::IPC_VERSION);
