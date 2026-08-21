@@ -51,6 +51,11 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
+/// 微博 CLI Pinvou 适配技能(weibo-cli,MIT CLI,技能为 Pinvou 本地适配)。
+/// 独立放 `weibo-skills/`，按微博连接 / 停用状态单独门控。
+static WEIBO_SKILLS_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/weibo-skills");
+
 // 企微技能目录表（14 新名 + 0.1.9 legacy 名）已下沉到
 // `crate::platform::connector_skills` 作为单一真相源：marketplace 注册表
 // （wecom 卡 skills 列表）、扁平布局迁移、`cli_bundle_of_skill` 反查与
@@ -61,6 +66,7 @@ pub(crate) use crate::platform::connector_skills::{WECOM_LEGACY_SKILL_DIRS, WECO
 
 const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
 const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
+const WEIBO_SKILL_DIRS: [&str; 1] = ["weibo-cli"];
 
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。
@@ -121,7 +127,11 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 ///       connected users to refresh at startup (otherwise the refresh
 ///       waits for the post-first-frame refresh_connector_auth_gates
 ///       backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.25-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.29: 接入微博 CLI Pinvou 适配技能（weibo-cli 0.9.1）。0.24 是 #333 的
+///       预留槽位，但 0.25–0.28 已先行落地，故 #333 取下一空闲槽位。
+///       五棵技能树不参与内容哈希，须 bump 语义版本让已连接用户启动即同步刷新
+///       （否则要等首帧后 refresh_connector_auth_gates 补刷）。
+pub const BUNDLE_VERSION: &str = concat!("0.29-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
@@ -1114,6 +1124,7 @@ mod tests {
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
         assert!(!bundle.cached_tmeet_skills_visible());
+        assert!(!bundle.cached_weibo_skills_visible());
 
         for dir in LARK_SKILL_DIRS {
             let path = pkg_skills("feishu").join(dir);
@@ -1135,23 +1146,32 @@ mod tests {
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
+        for dir in WEIBO_SKILL_DIRS {
+            let path = bundle.skills_dir.join(dir);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), "test").unwrap();
+        }
         assert!(bundle.cached_feishu_skills_visible());
         assert!(bundle.cached_wecom_skills_visible());
         assert!(bundle.cached_dingtalk_skills_visible());
         assert!(bundle.cached_tmeet_skills_visible());
+        assert!(bundle.cached_weibo_skills_visible());
 
         std::fs::write(paths::pinvou3_home().join("feishu_disabled"), "1").unwrap();
         std::fs::write(paths::pinvou3_home().join("wecom_disabled"), "1").unwrap();
         std::fs::write(paths::pinvou3_home().join("dingtalk_disabled"), "1").unwrap();
         std::fs::write(paths::pinvou3_home().join("tmeet_disabled"), "1").unwrap();
+        std::fs::write(paths::pinvou3_home().join("weibo_disabled"), "1").unwrap();
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
         assert!(!bundle.cached_tmeet_skills_visible());
+        assert!(!bundle.cached_weibo_skills_visible());
         std::fs::remove_file(paths::pinvou3_home().join("feishu_disabled")).unwrap();
         std::fs::remove_file(paths::pinvou3_home().join("wecom_disabled")).unwrap();
         std::fs::remove_file(paths::pinvou3_home().join("dingtalk_disabled")).unwrap();
         std::fs::remove_file(paths::pinvou3_home().join("tmeet_disabled")).unwrap();
+        std::fs::remove_file(paths::pinvou3_home().join("weibo_disabled")).unwrap();
 
         std::fs::remove_file(
             pkg_skills("feishu")
@@ -1177,10 +1197,17 @@ mod tests {
                 .join("SKILL.md"),
         )
         .unwrap();
+        std::fs::remove_file(
+            pkg_skills("weibo")
+                .join(WEIBO_SKILL_DIRS[0])
+                .join("SKILL.md"),
+        )
+        .unwrap();
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
         assert!(!bundle.cached_tmeet_skills_visible());
+        assert!(!bundle.cached_weibo_skills_visible());
         cleanup(&tmp);
     }
 
@@ -1212,6 +1239,8 @@ mod tests {
             .env("CUSTOM_SDK_HOME", "/opt/custom-sdk")
             .env("HTTPS_PROXY", "http://127.0.0.1:7890")
             .env("OPENAI_API_KEY", "must-not-leak")
+            .env("WEIBO_CLI_TOKEN", "must-not-leak")
+            .env("WEIBO_REFRESH_TOKEN", "must-not-leak")
             .env("PINVOU3_MCP_SECRET_AMAP_KEY", "must-not-leak")
             .env("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent")
             .env("NODE_OPTIONS", "--require=/tmp/inject.js")
@@ -1258,6 +1287,8 @@ mod tests {
         );
         for key in [
             "OPENAI_API_KEY",
+            "WEIBO_CLI_TOKEN",
+            "WEIBO_REFRESH_TOKEN",
             "PINVOU3_MCP_SECRET_AMAP_KEY",
             "SSH_AUTH_SOCK",
             "NODE_OPTIONS",

@@ -197,6 +197,8 @@ for (const command of [
   'dingtalk_skills_state',
   'tmeet_status',
   'tmeet_skills_state',
+  'weibo_status',
+  'weibo_skills_state',
   'ima_status',
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (authorized connector status queries)`);
@@ -207,7 +209,7 @@ for (const command of [
 // OAuth 中断（*_cancel）、授权门重算（refresh_connector_auth_gates）。
 // 清单须与 lib.rs 连接器注册面保持同步。
 const deniedConnectorMutations = [];
-for (const connector of ["feishu", "wecom", "dingtalk", "tmeet"]) {
+for (const connector of ["feishu", "wecom", "dingtalk", "tmeet", "weibo"]) {
   deniedConnectorMutations.push(
     `${connector}_connect_begin`,
     `${connector}_logout`,

@@ -228,7 +228,7 @@ impl Pinvou3Bundle {
                 heal.converged_builtin_dirs.len()
             ),
         );
-        // 飞书 / 企微 / 钉钉鉴权 CLI 不得阻塞 Tauri setup。启动阶段只沿用上次落盘的完整
+        // 飞书 / 企微 / 钉钉 / 腾讯会议 / 微博鉴权 CLI 不得阻塞 Tauri setup。启动阶段只沿用上次落盘的完整
         // 技能目录作为缓存；React 首屏提交后调用 refresh_connector_auth_gates 并行
         // 实时探测，再按真实状态修正目录。bundle 升级时仅刷新当前可见的缓存目录。
         crate::platform::startup::mark("bundle_extract:apply_skill_gates:start");
@@ -267,6 +267,15 @@ impl Pinvou3Bundle {
         );
         if bundle_changed || !tmeet_show {
             self.apply_tmeet_skills(tmeet_show)?;
+        }
+        let weibo_show = self.cached_weibo_skills_visible();
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:weibo_cached_gate",
+            &format!("show={weibo_show}"),
+        );
+        if bundle_changed || !weibo_show {
+            self.apply_weibo_skills(weibo_show)?;
         }
         crate::platform::startup::mark("bundle_extract:apply_skill_gates:done");
 
@@ -627,6 +636,28 @@ impl Pinvou3Bundle {
             && TMEET_SKILL_DIRS
                 .iter()
                 .all(|dir| target.join(dir).join("SKILL.md").is_file())
+    }
+
+    /// 微博 mono skill 门控:`show` → 解包 `weibo-cli` 到 `skills_dir`;否则删除。
+    /// 出处声明用 `NOTICE-weibo.md`,避免覆盖其他 CLI 连接器 NOTICE。
+    pub fn apply_weibo_skills(&self, show: bool) -> std::io::Result<()> {
+        if show {
+            Self::extract_dir(&WEIBO_SKILLS_DIR, &self.skills_dir)?;
+        } else {
+            for d in WEIBO_SKILL_DIRS {
+                let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+            }
+            let _ = std::fs::remove_file(self.skills_dir.join("NOTICE-weibo.md"));
+        }
+        Ok(())
+    }
+
+    /// 同 [`cached_feishu_skills_visible`]，以完整的微博技能目录作为启动缓存。
+    pub(super) fn cached_weibo_skills_visible(&self) -> bool {
+        crate::platform::connector_state::weibo_skills_visible()
+            && WEIBO_SKILL_DIRS
+                .iter()
+                .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
     }
     /// 递归解包 `include_dir::Dir` 到磁盘目标路径。
     /// `root` 是磁盘目标根(对应 include_dir 的顶层),`dir` 可以是任意层级子目录。

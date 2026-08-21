@@ -212,7 +212,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             'bg-white border-slate-100 shadow-lg shadow-slate-200/30 dark:bg-[#1E1F20] dark:border-[#3A3A3C]/60'
           }`}>
             <div className={`relative p-5 border-b flex items-center gap-3.5 ${
-              'bg-gradient-to-b from-blue-50/80 to-white border-slate-100 dark:bg-[#1E1F20] dark:border-[#3A3A3C]/60'
+              'bg-gradient-to-b from-blue-50/80 to-white border-slate-100 dark:bg-none dark:bg-[#1E1F20] dark:border-[#3A3A3C]/60'
             }`}>
               <div className="bg-gradient-to-tr from-blue-600 to-indigo-500 p-2.5 rounded-xl shadow-lg shadow-blue-500/30">
                 <ToolIcon size={22} className="text-white" />
