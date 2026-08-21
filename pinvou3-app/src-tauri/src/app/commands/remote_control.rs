@@ -187,11 +187,13 @@ pub struct SessionDataChunk {
 pub async fn web_access_load_session_chunk(
     id: String,
     download_id: Option<String>,
+    requested_download_id: Option<String>,
     offset: u64,
     limit: Option<usize>,
     manager: State<'_, RemoteControlManager>,
     store: State<'_, SessionStore>,
 ) -> Result<SessionDataChunk, String> {
+    let started = std::time::Instant::now();
     crate::features::sessions::validate_session_id(&id)
         .map_err(|error| format!("invalid Session id: {error:#}"))?;
     let limit = limit.unwrap_or(manager::MAX_SESSION_CHUNK_BYTES);
@@ -216,8 +218,12 @@ pub async fn web_access_load_session_chunk(
             let reserved_bytes = persisted_size
                 .checked_add(WEB_SESSION_SERIALIZATION_HEADROOM)
                 .ok_or_else(|| "Session payload size overflow".to_string())?;
-            let reservation = manager.begin_web_session_download(&id, reserved_bytes)?;
-            let output_path = reservation.path().to_path_buf();
+            let reservation = manager.begin_web_session_download(
+                &id,
+                requested_download_id.as_deref(),
+                reserved_bytes,
+            )?;
+            let output_file = reservation.try_clone_writer()?;
             let store = store.inner().clone();
             let session_id = id.clone();
             let revision = tokio::task::spawn_blocking(move || -> Result<String, String> {
@@ -228,12 +234,7 @@ pub async fn web_access_load_session_chunk(
                     .map_err(|error| {
                         format!("compute Session {session_id} transcript revision: {error:#}")
                     })?;
-                let file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&output_path)
-                    .map_err(|error| format!("create serialized Session download: {error}"))?;
-                let mut writer = BufWriter::new(file);
+                let mut writer = BufWriter::new(output_file);
                 serde_json::to_writer(
                     &mut writer,
                     &WebSavedSession {
@@ -253,6 +254,21 @@ pub async fn web_access_load_session_chunk(
         }
     };
     let chunk = manager.read_web_session_download(&download_id, &id, offset, limit)?;
+    if offset == 0 || chunk.eof {
+        crate::features::sessions::diagnostics::record_backend(
+            "web_session_chunk_served",
+            serde_json::json!({
+                "session_id": id,
+                "download_id": download_id,
+                "offset": offset,
+                "chunk_bytes": chunk.data.len(),
+                "total_bytes": chunk.total,
+                "eof": chunk.eof,
+                "transcript_revision": transcript_revision,
+                "elapsed_ms": started.elapsed().as_millis(),
+            }),
+        );
+    }
     Ok(SessionDataChunk {
         download_id,
         offset: offset as u64,
@@ -261,6 +277,29 @@ pub async fn web_access_load_session_chunk(
         eof: chunk.eof,
         transcript_revision,
     })
+}
+
+/// Idempotently release a browser Session download that did not reach EOF.
+/// This is a separate bounded command because a dropped Relay connection can
+/// leave the desktop-side temporary file alive after the browser has stopped
+/// requesting chunks.
+#[tauri::command]
+pub fn web_access_cancel_session_download(
+    id: String,
+    download_id: String,
+    manager: State<'_, RemoteControlManager>,
+) -> Result<bool, String> {
+    crate::features::sessions::validate_session_id(&id)
+        .map_err(|error| format!("invalid Session id: {error:#}"))?;
+    if download_id.len() < 8
+        || download_id.len() > 128
+        || !download_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("invalid Session download id".into());
+    }
+    manager.cancel_web_session_download(&download_id, &id)
 }
 
 /// Parse a desktop-host file without returning its extracted markdown to the

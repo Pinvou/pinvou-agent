@@ -31,6 +31,7 @@
 //! 散布在子模块里），并直接读 `&self` 的私有字段——struct 字段对后代模块
 //! 可见。pub 面在本文件集中 re-export，保持外部调用路径不变。
 
+pub(crate) mod diagnostics;
 mod injections;
 pub(crate) mod mode_state;
 mod retention;

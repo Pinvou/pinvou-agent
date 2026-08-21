@@ -387,6 +387,7 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "save_session_artifacts"
         | "set_session_archived"
         | "set_session_pinned"
+        | "web_access_cancel_session_download"
         | "web_access_load_session_chunk"
         | "web_access_save_session_messages_chunk" => Required("id"),
 
@@ -425,11 +426,12 @@ pub(super) fn validate_web_rpc_scope(
     crate::features::sessions::validate_session_id(session_id)
         .map_err(|error| format!("远程控制会话 ID 无效：{error:#}"))?;
     super::validate_multi_agent_session_web_scope(app, command, session_id)?;
-    if (command == "web_access_load_session_chunk"
-        && args
-            .get("downloadId")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty()))
+    if command == "web_access_cancel_session_download"
+        || (command == "web_access_load_session_chunk"
+            && args
+                .get("downloadId")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty()))
         || (command == "web_access_save_session_messages_chunk"
             && args.get("offset").and_then(Value::as_u64).unwrap_or(0) > 0)
     {
