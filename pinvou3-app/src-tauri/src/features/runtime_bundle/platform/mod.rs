@@ -707,6 +707,31 @@ mod tests {
         cleanup(&tmp);
     }
 
+    #[test]
+    fn apply_weibo_skills_extracts_and_removes_skill_tree() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+
+        bundle.apply_weibo_skills(true).unwrap();
+        for dir in WEIBO_SKILL_DIRS {
+            assert!(bundle.skills_dir.join(dir).join("SKILL.md").is_file());
+        }
+        assert!(bundle.skills_dir.join("NOTICE-weibo.md").is_file());
+        assert!(bundle.cached_weibo_skills_visible());
+
+        bundle.apply_weibo_skills(false).unwrap();
+        for dir in WEIBO_SKILL_DIRS {
+            assert!(!bundle.skills_dir.join(dir).exists());
+        }
+        assert!(!bundle.skills_dir.join("NOTICE-weibo.md").exists());
+        assert!(!bundle.cached_weibo_skills_visible());
+
+        cleanup(&tmp);
+    }
+
     #[cfg(unix)]
     #[test]
     fn shell_env_hook_keeps_cli_context_and_filters_credentials() {

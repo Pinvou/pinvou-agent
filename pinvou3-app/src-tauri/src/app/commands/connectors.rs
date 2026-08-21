@@ -334,7 +334,14 @@ pub async fn set_tmeet_enabled(
 }
 async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, String>);
 
-async_command_passthrough!(weibo_domain, weibo_ensure_cli() -> Result<Value, String>);
+#[tauri::command]
+pub async fn weibo_ensure_cli(app: AppHandle) -> Result<Value, String> {
+    let result = weibo_domain::weibo_ensure_cli().await?;
+    if was_new_cli_install(&result) {
+        track_cli_install(&app, "weibo", "微博");
+    }
+    Ok(result)
+}
 async_command_passthrough!(weibo_domain, weibo_status() -> Result<Value, String>);
 async_command_passthrough!(weibo_domain, weibo_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(weibo_domain, weibo_cancel(app: AppHandle) -> Result<Value, String>);
