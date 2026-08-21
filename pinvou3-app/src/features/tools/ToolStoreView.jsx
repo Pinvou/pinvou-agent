@@ -621,11 +621,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const [desc, setDesc] = useState(dialog.description || '');
       const inputCls = "w-full px-3 py-2 rounded-lg text-[14px] outline-none transition-colors border bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:border-[#3A3A3C] dark:text-white dark:placeholder-slate-500 dark:focus:border-[#0A84FF]";
       return (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onCancel}>
           <div
             data-testid="edit-display-dialog"
             className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
             style={{ animation: 'tsAlertIn .2s ease-out' }}
+            onClick={e => e.stopPropagation()}
           >
             <div className="px-6 pt-6 pb-4 text-center max-h-[70vh] overflow-y-auto">
               <div className={`text-[17px] font-semibold mb-3 text-slate-900 dark:text-white`}>
@@ -896,8 +897,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         // 统一 readiness 批量取数：未知包（companion 被认领后不再独立成包等）
         // 单条失败只记日志、该包回退旧来源（list_marketplace_* 的状态位）。
         try {
+          // 上传 MCP/组合包不在 tsToolsData（内置）也不在 skillList（技能），
+          // 但 edit_display 动作下发与卡面展示名覆盖都来自 bundle_readiness，
+          // 必须并入批量取数（否则上传 MCP 卡永远拿不到 actions/覆盖值）。
+          const customToolIds = toolBackend
+            .map(x => x.id)
+            .filter(id => id && !tsToolsData.some(t => t.backendId === id));
           const ids = [
             ...tsToolsData.map(x => x.backendId).filter(Boolean),
+            ...customToolIds,
             ...skillList.map(x => x.id),
           ];
           const entries = await Promise.all(ids.map(async (id) => {
@@ -1097,11 +1105,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         .filter(x => tsToolsData.every(t => t.backendId !== x.id))
         .map(x => {
           const bs = bundleStates[x.id] || null;
+          // 卡面标题/说明优先取 readiness bundle 的生效值（后端已应用 extra
+          // 展示名/说明覆盖）；无 readiness 回退 list_marketplace_tools 现状。
+          const bf = (bs && bs.bundle) || null;
           const base = {
-            id: 'mcp-' + x.id, backendId: x.id, title: x.name || x.id, subtitle: '',
+            id: 'mcp-' + x.id, backendId: x.id, title: (bf && bf.name) || x.name || x.id, subtitle: '',
             category: 'other', type: 'MCP Server', mcpServer: true,
             version: x.version ? `v${String(x.version).replace(/^v/i, '')}` : '—',
-            latency: storeCopy.localLatency, desc: x.description || '',
+            latency: storeCopy.localLatency, desc: (bf && bf.description) || x.description || '',
             icon: Server, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: bs ? bs.installed : !!x.installed,
             authRequired: false, userUploaded: true,
@@ -1562,6 +1573,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             displayDescription: values.description,
           });
           await loadBackendState();
+          // 详情弹窗持的是卡对象快照，loadBackendState 只刷新列表数据源；
+          // 打开中的详情须单独补拉生效值（覆盖后的 name/description）。
+          if (selectedTool && selectedTool.backendId === dlg.backendId) {
+            try {
+              const bs = await invokeTauri('bundle_readiness', { bundleId: dlg.backendId });
+              const b = (bs && bs.bundle) || null;
+              if (b) setSelectedTool(prev => ({ ...prev, title: b.name || prev.title, desc: b.description != null ? b.description : prev.desc }));
+            } catch (err) {
+              console.error('bundle_readiness refresh failed:', dlg.backendId, err);
+            }
+          }
           setAlert({ visible: true, loading: false, title: storeCopy.editDisplaySaved, isInstall: true, isError: false });
         } catch (e) {
           console.error('update bundle display meta failed:', e);

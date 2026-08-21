@@ -264,7 +264,10 @@ mod tests {
         let mut b = bundle(BundleKind::Skill);
         b.installed = true;
         b.user_uploaded = true;
-        assert_eq!(ids(&actions_for(&b, Readiness::Ready)), ["edit_display", "uninstall"]);
+        assert_eq!(
+            ids(&actions_for(&b, Readiness::Ready)),
+            ["edit_display", "uninstall"]
+        );
     }
 
     #[test]

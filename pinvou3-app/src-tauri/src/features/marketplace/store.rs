@@ -443,6 +443,32 @@ fn apply_display_meta(
     Ok(())
 }
 
+/// 展示名/说明的长度预检（`update_bundle_display_meta` 在回写 SKILL.md **之前**
+/// 调用；`apply_display_meta` 内仍有同口径校验兜底）。回写会先改包内容并重算
+/// 指纹，校验若只留在 `set_display_meta`，超长值会先落盘再报错，留下
+/// 「报错但包内容已变」的中间态——所以命令侧必须前置预检。None / trim 后空
+/// （= 清覆盖）不检；非空超上限 → Err。
+pub fn validate_display_meta(
+    display_name: Option<&str>,
+    display_description: Option<&str>,
+) -> Result<(), String> {
+    for (field, value, max_chars) in [
+        (EXTRA_DISPLAY_NAME, display_name, MAX_DISPLAY_NAME_CHARS),
+        (
+            EXTRA_DISPLAY_DESCRIPTION,
+            display_description,
+            MAX_DISPLAY_DESCRIPTION_CHARS,
+        ),
+    ] {
+        if let Some(v) = value.map(str::trim).filter(|s| !s.is_empty()) {
+            if v.chars().count() > max_chars {
+                return Err(format!("{field} 超过 {max_chars} 字符上限"));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 读记录的用户自定义展示字段（trim 后非空才生效；缺 key/空串/非字符串 = None，
 /// 调用方回退默认展示）。list 组装与 BundleInfo 组装共用此口径。
 pub(crate) fn display_override(record: &BundleRecord, key: &str) -> Option<String> {
@@ -1189,7 +1215,9 @@ mod tests {
     fn set_display_meta_rejects_invalid_targets_and_lengths() {
         with_temp_home(|| {
             let store = BundleStore::new();
-            store.upsert(record("weather", BundleSource::Preset)).unwrap();
+            store
+                .upsert(record("weather", BundleSource::Preset))
+                .unwrap();
             store
                 .upsert(record("feishu", BundleSource::Builtin))
                 .unwrap();
@@ -1214,8 +1242,12 @@ mod tests {
 
             let long_name = "名".repeat(MAX_DISPLAY_NAME_CHARS + 1);
             let long_desc = "述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS + 1);
-            assert!(store.set_display_meta("up", Some(&long_name), None).is_err());
-            assert!(store.set_display_meta("up", None, Some(&long_desc)).is_err());
+            assert!(store
+                .set_display_meta("up", Some(&long_name), None)
+                .is_err());
+            assert!(store
+                .set_display_meta("up", None, Some(&long_desc))
+                .is_err());
             // 边界：恰好上限可写
             let ok_name = "名".repeat(MAX_DISPLAY_NAME_CHARS);
             let ok_desc = "述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS);
@@ -1232,5 +1264,28 @@ mod tests {
                 Some(ok_desc.as_str())
             );
         });
+    }
+
+    /// 长度预检（update_bundle_display_meta 在回写 SKILL.md 之前调用）：
+    /// 超限 Err、None/清空（trim 后空）放行、恰好上限放行——与 apply_display_meta
+    /// 同口径，保证命令前置校验不会先改包内容再报错。
+    #[test]
+    fn validate_display_meta_matches_apply_limits() {
+        assert!(
+            validate_display_meta(Some(&"名".repeat(MAX_DISPLAY_NAME_CHARS + 1)), None).is_err()
+        );
+        assert!(
+            validate_display_meta(None, Some(&"述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS + 1)))
+                .is_err()
+        );
+        // None / trim 后空（= 清覆盖，不触发回写）不检
+        assert!(validate_display_meta(None, None).is_ok());
+        assert!(validate_display_meta(Some("   "), Some("")).is_ok());
+        // 恰好上限可过
+        assert!(validate_display_meta(
+            Some(&"名".repeat(MAX_DISPLAY_NAME_CHARS)),
+            Some(&"述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS))
+        )
+        .is_ok());
     }
 }

@@ -1012,8 +1012,11 @@ impl SkillMarketplaceManager {
         if new_content != content {
             deepseek_tui::utils::write_atomic(&md_path, new_content.as_bytes())
                 .map_err(|e| format!("写入 {} 失败: {e}", md_path.display()))?;
-            // 内容变了 → 重算内容指纹补写登记；登记已不在（并发卸载）则跳过。
-            let fingerprint = dir_fingerprint(&dirs[0])?;
+            // 内容变了 → 重算内容指纹补写登记（**整包目录口径**，与 plugin_import
+            // 的登记基线一致——算技能子目录会把上传包的整包指纹静默缩窄，未来任何
+            // 按整包口径重算比对的完整性校验都会对编辑过的包永久误报）；登记已
+            // 不在（并发卸载）则跳过。
+            let fingerprint = dir_fingerprint(&self.packages_root.join(bundle_id))?;
             if let Some(mut record) = self.bundle_store.get(bundle_id)? {
                 record.content_fingerprint = Some(fingerprint);
                 self.bundle_store
@@ -1432,6 +1435,8 @@ fn read_skill_description(md_path: &Path) -> Option<String> {
 
 /// 解析 SKILL.md frontmatter 的 `description:`(仅展示用)。支持单行(含引号)与
 /// `|`/`>` 块状(取块内非空行,折叠拼接为单行);缺失/空 → None;超 240 字截断。
+/// 只认**顶层** description（缩进行的 `description:` 是嵌套 map 字段，不是技能
+/// 描述——与 [`rewrite_frontmatter_description`] 的写端口径对齐）。
 fn read_skill_description_from_str(content: &str) -> Option<String> {
     let mut lines = content.lines();
     if lines.next()?.trim() != "---" {
@@ -1443,43 +1448,46 @@ fn read_skill_description_from_str(content: &str) -> Option<String> {
         if t == "---" {
             break;
         }
-        if let Some(rest) = t.strip_prefix("description:") {
-            let v = rest.trim();
-            if v.is_empty() {
-                return None;
-            }
-            if v == "|" || v == ">" {
-                // 块状:收集后续缩进行,空行跳过,遇顶层字段(无缩进)结束
-                let mut parts: Vec<String> = Vec::new();
-                let mut total: usize = 0;
-                for l in lines {
-                    let lt = l.trim();
-                    if lt.is_empty() {
-                        continue;
-                    }
-                    let indent = l.len() - l.trim_start().len();
-                    if indent == 0 {
-                        break;
-                    }
-                    total += lt.chars().count();
-                    parts.push(lt.to_string());
-                    if total > 240 {
-                        break;
-                    }
+        let is_top_level = line.len() == line.trim_start().len();
+        if is_top_level {
+            if let Some(rest) = t.strip_prefix("description:") {
+                let v = rest.trim();
+                if v.is_empty() {
+                    return None;
                 }
-                let s = parts.join(" ");
-                return if s.trim().is_empty() {
+                if v == "|" || v == ">" {
+                    // 块状:收集后续缩进行,空行跳过,遇顶层字段(无缩进)结束
+                    let mut parts: Vec<String> = Vec::new();
+                    let mut total: usize = 0;
+                    for l in lines {
+                        let lt = l.trim();
+                        if lt.is_empty() {
+                            continue;
+                        }
+                        let indent = l.len() - l.trim_start().len();
+                        if indent == 0 {
+                            break;
+                        }
+                        total += lt.chars().count();
+                        parts.push(lt.to_string());
+                        if total > 240 {
+                            break;
+                        }
+                    }
+                    let s = parts.join(" ");
+                    return if s.trim().is_empty() {
+                        None
+                    } else {
+                        Some(s.trim().chars().take(240).collect())
+                    };
+                }
+                let v = v.trim_matches('"').trim_matches('\'').trim();
+                return if v.is_empty() {
                     None
                 } else {
-                    Some(s.trim().chars().take(240).collect())
+                    Some(v.chars().take(240).collect())
                 };
             }
-            let v = v.trim_matches('"').trim_matches('\'').trim();
-            return if v.is_empty() {
-                None
-            } else {
-                Some(v.chars().take(240).collect())
-            };
         }
     }
     None
@@ -1488,14 +1496,18 @@ fn read_skill_description_from_str(content: &str) -> Option<String> {
 /// 把 SKILL.md frontmatter 的 description 重写为单行值（`writeback_single_skill_description`
 /// 用），写口径与 [`read_skill_description_from_str`] 的读口径互洽：
 ///
-/// - 已有 description（含 `|`/`>` 块状——其缩进/空行续行与读端消费口径一致地一并
-///   删除）→ 原地替换；没有 → 插在 name 行之后（无 name 行则插在 opening `---` 后）；
+/// - 已有**顶层** description（含 `|`/`>` 块状及其 `|-`/`>-`/`|+`/`>+` chomping
+///   变体——续行按读端消费口径一并删除）→ 原地替换（大小写不敏感，统一写小写
+///   规范形）；嵌套 map 的缩进 `description:` 行**不在原位替换**（会破坏嵌套
+///   结构），改为在 frontmatter 末尾插入顶层行——CodeWhale 平铺解析重复键
+///   last-wins，插在嵌套行之前会被盖回旧值；
+/// - 没有 description → 插在 name 行之后（无 name 行则插在 opening `---` 后）；
 /// - 统一写单行。读端只做「剥成对双/单引号」、不做反转义，因此值含 `"` 或 `\` 时
 ///   双引号包裹转义会与读值不符（不互洽），含换行也无法单行表达——这两类值连同
 ///   首尾成对引号（读端会剥掉丢字符）一律 Err 拒绝，不猜；
 /// - 值在 YAML plain scalar 下不安全（前导指示符、内嵌 `: ` / ` #`、块状标记、
 ///   关键字/数字形态）时整体双引号包裹——此时值内已无 `"` 和 `\`，包裹后读端剥
-///   引号即得原值，真实 YAML 解析器也得同一字符串。
+///   引号即得原值。
 fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<String, String> {
     let v = description.trim();
     if v.is_empty() {
@@ -1505,7 +1517,9 @@ fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<S
         return Err("说明含控制字符/换行，无法写入单行 frontmatter".to_string());
     }
     if v.contains('"') || v.contains('\\') {
-        return Err("说明含双引号或反斜杠，frontmatter 单行写法无法与读口径互洽，拒绝回写".to_string());
+        return Err(
+            "说明含双引号或反斜杠，frontmatter 单行写法无法与读口径互洽，拒绝回写".to_string(),
+        );
     }
     if v.starts_with('\'') || v.ends_with('\'') {
         return Err("说明首尾的单引号会被读取端剥除，拒绝回写".to_string());
@@ -1516,14 +1530,22 @@ fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<S
         format!("description: {v}")
     };
 
-    let newline = if content.contains("\r\n") { "\r\n" } else { "\n" };
+    let newline = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let had_trailing_newline = content.ends_with('\n');
     let lines: Vec<&str> = content.lines().collect();
     if lines.first().map(|l| l.trim()) != Some("---") {
         return Err("SKILL.md 缺 frontmatter（首行非 ---），拒绝回写".to_string());
     }
     // 前两个 --- 区间为 frontmatter；缺结束标记 = 畸形 frontmatter，拒绝改。
-    let Some(fm_end) = lines.iter().skip(1).position(|l| l.trim() == "---").map(|p| p + 1)
+    let Some(fm_end) = lines
+        .iter()
+        .skip(1)
+        .position(|l| l.trim() == "---")
+        .map(|p| p + 1)
     else {
         return Err("SKILL.md frontmatter 缺结束 ---，拒绝回写".to_string());
     };
@@ -1532,33 +1554,60 @@ fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<S
     out.push(lines[0].to_string());
     let mut name_line_at: Option<usize> = None;
     let mut replaced = false;
+    // 嵌套 map 里的 description（缩进行，任意大小写）：不动它，但插入点须在其后。
+    let mut nested_desc_seen = false;
     let mut i = 1;
     while i < fm_end {
-        let t = lines[i].trim();
-        if let Some(rest) = t.strip_prefix("description:") {
-            out.push(new_line.clone());
-            replaced = true;
-            i += 1;
-            // 块状：续行 = 空行或缩进行（与读端消费口径一致），遇顶层字段结束。
-            if rest.trim() == "|" || rest.trim() == ">" {
-                while i < fm_end {
-                    let l = lines[i];
-                    if !l.trim().is_empty() && l.len() == l.trim_start().len() {
-                        break;
-                    }
+        let raw = lines[i];
+        let t = raw.trim();
+        let indent = raw.len() - raw.trim_start().len();
+        // 键匹配只认顶层（indent == 0）：缩进行的 `description:`/`name:` 属嵌套
+        // map 字段，原位改写会破坏嵌套结构（trim 后前缀匹配会误命中）。
+        if indent == 0 {
+            if let Some(colon) = t.find(':') {
+                let key = &t[..colon];
+                let rest = t[colon + 1..].trim();
+                if key.eq_ignore_ascii_case("description") {
+                    out.push(new_line.clone());
+                    replaced = true;
                     i += 1;
+                    // 块状：续行 = 空行或缩进行（与读端消费口径一致），遇顶层字段
+                    // 结束。起始 `|`/`>` 一律算（含 |- >- |+ >+ chomping 变体与
+                    // 缩进指示符；平摊解析器只认六个变体，但顶层标量后跟缩进内容
+                    // 在真实 YAML 里本就只能是块，一并消费使两种读法都得到新值）。
+                    if rest.starts_with('|') || rest.starts_with('>') {
+                        while i < fm_end {
+                            let l = lines[i];
+                            if !l.trim().is_empty() && l.len() == l.trim_start().len() {
+                                break;
+                            }
+                            i += 1;
+                        }
+                    }
+                    continue;
+                }
+                if key.eq_ignore_ascii_case("name") {
+                    name_line_at = Some(out.len());
                 }
             }
-            continue;
-        }
-        if t.starts_with("name:") {
-            name_line_at = Some(out.len());
+        } else if t
+            .split(':')
+            .next()
+            .is_some_and(|k| k.trim().eq_ignore_ascii_case("description"))
+        {
+            nested_desc_seen = true;
         }
         out.push(lines[i].to_string());
         i += 1;
     }
     if !replaced {
-        let at = name_line_at.map_or(1, |x| x + 1);
+        let at = if nested_desc_seen {
+            // frontmatter 末尾（closing --- 之前）：CodeWhale 平摊解析重复键
+            // last-wins，插在嵌套 description 之前会被盖回旧值（模型侧不同步）。
+            out.len()
+        } else {
+            name_line_at.map_or(1, |x| x + 1)
+        };
         out.insert(at, new_line);
     }
     for l in &lines[fm_end..] {
@@ -1582,8 +1631,22 @@ fn yaml_plain_needs_quotes(v: &str) -> bool {
     // 真指示符，但包裹无害）。
     if matches!(
         first,
-        '!' | '&' | '*' | '?' | '|' | '>' | '%' | '@' | '`' | '#' | ',' | '[' | ']' | '{' | '}'
-            | '-' | ':'
+        '!' | '&'
+            | '*'
+            | '?'
+            | '|'
+            | '>'
+            | '%'
+            | '@'
+            | '`'
+            | '#'
+            | ','
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '-'
+            | ':'
     ) {
         return true;
     }
@@ -3090,10 +3153,63 @@ mod tests {
     fn rewrite_description_replaces_block_and_drops_continuations() {
         let md = "---\nname: x\ndescription: |\n  第一行\n\n  第二行\nversion: 1\n---\n";
         let out = rewrite_frontmatter_description(md, "折叠后的新描述").unwrap();
-        assert_eq!(out, "---\nname: x\ndescription: 折叠后的新描述\nversion: 1\n---\n");
+        assert_eq!(
+            out,
+            "---\nname: x\ndescription: 折叠后的新描述\nversion: 1\n---\n"
+        );
         assert_eq!(
             read_skill_description_from_str(&out).as_deref(),
             Some("折叠后的新描述")
+        );
+    }
+
+    /// 块状 chomping 变体（|- >- |+ >+）同样替换并清除续行：模型侧解析器
+    /// （CodeWhale parse_skill）支持四种变体，只认 `|`/`>` 会残留续行——
+    /// 续行里再出现 `description:` 形态时 last-wins 会取回旧值，回写静默失效。
+    #[test]
+    fn rewrite_description_replaces_chomping_variants() {
+        for marker in ["|-", ">-", "|+", ">+"] {
+            let md = format!("---\nname: x\ndescription: {marker}\n  第一行\n  description: 旧文案\nversion: 1\n---\n");
+            let out = rewrite_frontmatter_description(&md, "新描述").unwrap();
+            assert_eq!(
+                out, "---\nname: x\ndescription: 新描述\nversion: 1\n---\n",
+                "chomping 变体 {marker} 的续行必须一并清除"
+            );
+            assert_eq!(
+                read_skill_description_from_str(&out).as_deref(),
+                Some("新描述")
+            );
+        }
+    }
+
+    /// 嵌套 map 的缩进 `description:` 行不在原位替换（会破坏嵌套结构）：
+    /// 顶层新行插在 frontmatter 末尾——平摊解析（CodeWhale）重复键 last-wins，
+    /// 插在嵌套行之前会被盖回旧值。嵌套行原样保留。
+    #[test]
+    fn rewrite_description_appends_top_level_when_nested_description_present() {
+        let md = "---\nname: x\nmetadata:\n  description: 内部备注\n  author: 张三\n---\n";
+        let out = rewrite_frontmatter_description(md, "新描述").unwrap();
+        assert_eq!(
+            out,
+            "---\nname: x\nmetadata:\n  description: 内部备注\n  author: 张三\ndescription: 新描述\n---\n"
+        );
+        // 本模块读端取首个顶层 description → 新值
+        assert_eq!(
+            read_skill_description_from_str(&out).as_deref(),
+            Some("新描述")
+        );
+    }
+
+    /// 顶层 `Description:`（大写）原地替换为规范小写形——平摊解析键不区分大小写，
+    /// 不识别会走插入分支，留下重复键且 last-wins 取旧值（模型侧不同步）。
+    #[test]
+    fn rewrite_description_matches_top_level_case_insensitively() {
+        let md = "---\nname: x\nDescription: 旧描述\n---\n";
+        let out = rewrite_frontmatter_description(md, "新描述").unwrap();
+        assert_eq!(out, "---\nname: x\ndescription: 新描述\n---\n");
+        assert_eq!(
+            read_skill_description_from_str(&out).as_deref(),
+            Some("新描述")
         );
     }
 
@@ -3146,27 +3262,40 @@ mod tests {
             "---\nname: wb-skill\ndescription: 旧描述\n---\n",
         )
         .unwrap();
-        let store = crate::features::marketplace::store::BundleStore::with_file(
-            tmp.join("bundles.json"),
-        );
+        let store =
+            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
         store
-            .upsert(crate::features::marketplace::store::BundleRecord::installed_now(
-                "wb-skill",
-                crate::features::marketplace::store::BundleSource::Upload("pkg.zip".to_string()),
-            ))
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "wb-skill",
+                    crate::features::marketplace::store::BundleSource::Upload(
+                        "pkg.zip".to_string(),
+                    ),
+                ),
+            )
             .unwrap();
         store
             .set_display_meta("wb-skill", Some("我的技能"), Some("新描述"))
             .unwrap();
         let fp_before = store.get("wb-skill").unwrap().unwrap().content_fingerprint;
 
-        assert!(mgr.writeback_single_skill_description("wb-skill", "新描述").unwrap());
+        assert!(mgr
+            .writeback_single_skill_description("wb-skill", "新描述")
+            .unwrap());
         let md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
         assert!(md.contains("description: 新描述"), "{md}");
         let rec = store.get("wb-skill").unwrap().unwrap();
         assert!(
             rec.content_fingerprint.is_some() && rec.content_fingerprint != fp_before,
             "回写后指纹应被重算补写"
+        );
+        // 指纹口径 = 整包目录（与 plugin_import 的登记基线一致），非技能子目录。
+        assert_eq!(
+            rec.content_fingerprint.as_deref(),
+            dir_fingerprint(&tmp.join("bundles/wb-skill"))
+                .ok()
+                .as_deref(),
+            "回写后指纹应为整包目录口径（plugin_import 同口径）"
         );
         assert_eq!(
             crate::features::marketplace::store::display_override(
@@ -3177,7 +3306,10 @@ mod tests {
             Some("我的技能"),
             "指纹补写不得丢 extra 展示覆盖"
         );
-        assert_eq!(rec.source, crate::features::marketplace::store::BundleSource::Upload("pkg.zip".to_string()));
+        assert_eq!(
+            rec.source,
+            crate::features::marketplace::store::BundleSource::Upload("pkg.zip".to_string())
+        );
     }
 
     /// 多技能包 / 无 skills 目录（纯 MCP 包）→ 跳过回写，不报错、不动文件。
@@ -3191,7 +3323,9 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("SKILL.md"), format!("---\nname: {s}\n---\n")).unwrap();
         }
-        assert!(!mgr.writeback_single_skill_description("multi", "x").unwrap());
+        assert!(!mgr
+            .writeback_single_skill_description("multi", "x")
+            .unwrap());
         assert_eq!(
             std::fs::read_to_string(tmp.join("bundles/multi/skills/s1/SKILL.md")).unwrap(),
             "---\nname: s1\n---\n",
@@ -3215,14 +3349,17 @@ mod tests {
             "---\nname: ov-skill\ndescription: frontmatter 描述\n---\n",
         )
         .unwrap();
-        let store = crate::features::marketplace::store::BundleStore::with_file(
-            tmp.join("bundles.json"),
-        );
+        let store =
+            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
         store
-            .upsert(crate::features::marketplace::store::BundleRecord::installed_now(
-                "ov-skill",
-                crate::features::marketplace::store::BundleSource::Upload("pkg.zip".to_string()),
-            ))
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "ov-skill",
+                    crate::features::marketplace::store::BundleSource::Upload(
+                        "pkg.zip".to_string(),
+                    ),
+                ),
+            )
             .unwrap();
 
         // 无覆盖：回退现状（title=id，description=frontmatter）
@@ -3251,7 +3388,9 @@ mod tests {
         assert_eq!(listed.display_description.as_deref(), Some("覆盖后的说明"));
 
         // 清空（trim 空串删 key）→ 回退
-        store.set_display_meta("ov-skill", Some(" "), Some(" ")).unwrap();
+        store
+            .set_display_meta("ov-skill", Some(" "), Some(" "))
+            .unwrap();
         let listed = mgr
             .list_skills()
             .into_iter()
