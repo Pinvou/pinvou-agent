@@ -235,8 +235,14 @@ class CiGatePolicyTests(unittest.TestCase):
         contract = self.pr_workflow.split("\n  benchmark-contract:", maxsplit=1)[1].split(
             "\n  benchmark-test:", maxsplit=1
         )[0]
-        self.assertIn("needs.changes.outputs.benchmark == 'true'", contract)
+        self.assertIn("github.event_name == 'pull_request'", contract)
         self.assertIn("github.event.pull_request.draft == false", contract)
+        self.assertIn(
+            "contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark')",
+            contract,
+        )
+        contract_header = contract.split("\n    runs-on:", maxsplit=1)[0]
+        self.assertNotIn("needs.changes.outputs.benchmark == 'true'", contract_header)
         self.assertIn("runs-on: ubuntu-latest", contract)
         self.assertIn(
             "RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper",

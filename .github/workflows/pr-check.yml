@@ -1034,7 +1034,8 @@ jobs:
   benchmark-contract:
     name: benchmark-contract
     needs: changes
-    if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.benchmark == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    # Benchmark 契约默认关闭；需要诊断时与完整 benchmark 矩阵一起显式启用。
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.draft == false && contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
