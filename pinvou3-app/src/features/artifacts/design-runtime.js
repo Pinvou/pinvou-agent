@@ -168,7 +168,7 @@ function buildDesignRuntimeScript() {
     function makeHandleLayer() {
       var layer = document.createElement('div');
       layer.setAttribute('data-pinvou-design-handles', 'true');
-      // 不用 inset 简写:字符串原样进产物,Safari 14.0 不识别简写,句柄层会失去全屏铺底。
+      // No inset shorthand: the string reaches the bundle verbatim, Safari 14.0 cannot parse it, and the handle layer would lose its full-screen base.
       layer.style.cssText = 'position:fixed;top:0;right:0;bottom:0;left:0;z-index:2147483647;pointer-events:none;display:none';
       document.documentElement.appendChild(layer);
       return layer;

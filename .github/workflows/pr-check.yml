@@ -371,9 +371,10 @@ jobs:
       - name: Vite build
         run: npm run build:ui
 
-      # dist 产物层兼容审计(marked@16 后行断言类解析期回归正是靠这一层拦截);
-      # 上一步 build:ui 已产出 dist/,契约测试本身只覆盖 static/inline 两层。
-      - name: WebView 兼容审计 (Safari 14 基线)
+      # Dist-layer compatibility audit (a marked@16-style lookbehind parse
+      # regression is caught by exactly this layer); build:ui above already
+      # produced dist/, while the contract test only covers static/inline layers.
+      - name: WebView compatibility audit (Safari 14 baseline)
         run: npm run audit:compat
 
       - name: 前端逻辑测试 (pet 全套 + diff parser + markdown)

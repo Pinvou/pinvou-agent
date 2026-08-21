@@ -33,7 +33,7 @@ export const PET_REGISTRY = Object.freeze(Object.fromEntries(
 ));
 
 export function normalizePetId(id) {
-  // hasOwnProperty.call 而非 Object.hasOwn：Safari 14(WKWebView)无后者。
+  // hasOwnProperty.call instead of Object.hasOwn: Safari 14 (WKWebView) lacks the latter.
   return typeof id === 'string' && Object.prototype.hasOwnProperty.call(PET_REGISTRY, id)
     ? id
     : DEFAULT_PET_ID;

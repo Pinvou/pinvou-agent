@@ -1,8 +1,10 @@
-// Safari 14.0（macOS 11 初版 WKWebView）基线 polyfill。
-// 以经典脚本在每个窗口入口(index/pet/reader)的 tailwind.js 之前同步加载：
-// 既覆盖 vendored Tailwind 运行时(postcss 内部用 .at())，也覆盖其后执行的
-// 所有 module chunk（打包器只降语法、不补运行时 API）。
-// 全部特性检测：现代引擎零开销，直接走原生实现。
+// Baseline polyfills for Safari 14.0 (WKWebView of the first macOS 11 release).
+// Loaded synchronously as a classic script before tailwind.js in every window
+// entry (index/pet/reader): this covers both the vendored Tailwind runtime
+// (postcss uses .at() internally) and every module chunk that runs after it
+// (bundlers downlevel syntax, not runtime APIs).
+// Everything is feature-detected: zero overhead on modern engines, which keep
+// the native implementations.
 (function () {
   'use strict';
 

@@ -30,7 +30,7 @@
     }
     html.compact-web-viewport body {
       position: fixed;
-      /* 不用 inset 简写：Safari 14.0(macOS 11 初版)不识别，展开为物理属性 */
+      /* No inset shorthand: Safari 14.0 (first macOS 11 release) cannot parse it; expanded to physical properties */
       top: 0;
       right: 0;
       bottom: 0;
