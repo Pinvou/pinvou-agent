@@ -98,6 +98,20 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
 映射到所属包（companion → MCP/CLI 包，独立技能 → 自身），`skill:` 前缀跨文件借道
 残留统一剥除。旧文件本版本内保留为惰性历史（只读新文件），下个版本周期随旧布局退役。
 
+`hidden_scopes`（可见性）与 `scopes`（disabled，开关）是两套**正交**门控
+（`marketplace/scope.rs`）：
+
+- 对模型两者都「不可见」：供给/执行排除按并集 `unavailable = disabled ∪ hidden`
+  现算（`unavailable_bundles_for`；物化侧同口径，见 `skill_materialization.rs`）；
+- hidden 只决定包是否出现在 composer 列表，不决定 on/off；disabled 只决定
+  开关态，不影响列表可见性；
+- 卸载/断开走 `remove_bundle_from_disabled_scopes`，同时清 disabled 与 hidden
+  （防残留 hidden 误隐藏未来同名重装）；
+- 能力开关写路径（`save_disabled_bundles_for`）只写 `scopes`，不动 hidden；
+- 连接器开关（`sync_disabled_bundles_for_connector_switch`）：关闭只写
+  disabled、不动 hidden；**开回复用卸载清理入口，会连带清 hidden**——即
+  开关开回后该包在所有 scope 恢复可见。
+
 每个模式的默认策略显式声明为**模式身份**（`core/session_mode.rs` 的
 `SessionMode::pack_default_policy()`），不再是存储层的硬编码分支：
 
@@ -191,7 +205,27 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
 - UI：设置页「能力管理」区，plain/code scope 切换 + 能力包分组
   （类型徽标）+ 项目级技能独立开关；界面文案三语走 `shared/i18n.js`。
 
-## 7. 相关文件
+## 7. 已知限制
+
+#279 遗留、按 `marketplace-unification.md` Phase 4 承诺登记于此：
+
+- **OAuth 远程包 readiness 恒 Ready**：远程 OAuth MCP 包（manifest `servers`
+  非空）没有必填凭据声明——`tool_credentials` 只收敛
+  `config_fields`/`secret_env`/`secret_headers`，不含 `servers`
+  （`bundle.rs`），而 `readiness_for` 对 Mcp/Bundle 只查 credentials 必填项
+  是否在系统凭据存储，因此远程包恒报 Ready。**无法用 readiness 门控 OAuth
+  授权是否完成**；授权态由 `connect`（flow=oauth）流程自理，UI 只能依赖
+  `oauth` 标记打徽标，不能给「未授权」态。
+- **`tool_credentials` / `tool_config_fields` 不按 (key, target) 去重**：
+  两个收敛函数把 `config_fields`、`secret_env`、`secret_headers` 三路声明
+  简单拼接（`bundle.rs`），同一 `(key, target)` 在多路重复声明时会重复出现在
+  `BundleInfo.credentials` / `config_fields` 与落盘的 `credential_keys` 中，
+  凭据收集弹窗与缺失判定可能重复处理同一凭据。
+
+另有两条限制已随文内联登记：会话中关闭的上下文不可撤回边界（§3.3 末）、
+CLI 包真实执行面经 `Bash` 的开放侧翼（§5 末）。
+
+## 8. 相关文件
 
 | 项 | 位置 |
 |---|---|

@@ -176,17 +176,35 @@ detect_plugin(zip):
   视为 MCP server，server id 取 manifest `id`。
 - 直接根级 `manifest.json` 且含 `command`/`servers` → 单 server MCP 包。
 
+> 现状注记（六轮评审补）：当前实现（`plugin_import.rs::detect_components`）
+> 只识别 `mcp_servers` / `skills` 两类组件（含裸技能/裸 MCP 回退），伪代码中的
+> `workflow_roots` 与 §6 的 `Workflow` 变体为 v2 草案（§1 表），`derive_bundle_kind`
+> 现行签名为 `(mcp_servers, skills, cli)`，不含 workflows。
+
 ### 5.3 识别结果（`PluginImportReport`）
 
+现状（六轮评审更正，与代码一致）：统一导入管线的返回类型是
+`PluginImportReport`（`plugin_import.rs`），仅三个字段：
+
 ```rust
-pub struct DetectedPlugin {
-    pub id: String,                     // 落盘目录名（manifest.id 或派生）
+pub struct PluginImportReport {
+    pub id: String,
     pub kind: BundleKind,
-    pub components: PluginComponents,   // { mcp_servers, skills, workflows }
-    pub has_executables: bool,          // 扫描派生（§9.3），不信自报
-    pub manifest: PluginManifest,       // 规范化后的清单（落盘副本用）
+    /// 落盘后的图标相对路径（`icon.svg`/`icon.png`）。
+    pub icon: String,
 }
 ```
+
+- 识别阶段的中间结果是**私有** `ComponentDetection { id, mcp_servers, skills,
+  bare_skill, bare_mcp }`（`plugin_import.rs`，不跨模块暴露），组件向量当前只有
+  `mcp_servers` / `skills` 两类，无 `workflows`。
+- `PluginImportReport` 不含 `components` / `has_executables` / `manifest`：
+  组件清单随规范化 `plugin.json` 落盘在 `bundles/<id>/`（裸包由导入层合成
+  派生清单，带声明的包按解析后规范化字节写回），`BundleRecord` 登记
+  `credential_keys` / `content_fingerprint` 等镜像字段（§7）；`has_executables`
+  显式确认流程为 §9.5 目标形态（⏳ 未实现），规范化 manifest 副本不回传调用方。
+- 早期草案的五字段 `DetectedPlugin` 类型从未落地，已按现状删除；若未来需要
+  向命令层回传组件向量，再按「目标形态」单独立项并回改本节。
 
 ---
 
@@ -244,9 +262,10 @@ workflows 非空                              → Workflow
    解包后的内容目录（`skill_marketplace::dir_fingerprint` 同口径，跳过隐藏/
    标记文件）。
 3. 登记 `BundleRecord { id, source: Upload("<zip名>"), installed: true,
-   content_fingerprint, credential_keys, assets: [], … }`；插件语义版本与
-   组件清单进 `extra`（如 `{"plugin_version":"1.2.0","components":{…}}`），
-   保持 store 前向兼容。
+   content_fingerprint, credential_keys, assets: [], … }`，保持 store 前向兼容。
+   （现状：`credential_keys` 由 `tool_credentials` 从落盘 manifest 收敛、
+   `content_fingerprint` 走 `dir_fingerprint` 同口径；「插件语义版本与组件清单
+   进 `extra`」未实施——组件清单由 `bundles/<id>/plugin.json` 自描述承担。）
 4. 纯 Skill 插件落盘后与现有上传技能**目录完全同构**（`bundles/<id>/skills/<name>/`），
    因此既有物化/开关/卸载路径零改动即可消费。
 
@@ -297,7 +316,7 @@ workflows 非空                              → Workflow
 §6 的 upload 分支），单入口 `import_plugin_package(zip, display_name)`：
 
 ```
-1. 解析     —— 安全枚举 + 识别（§5）→ DetectedPlugin；manifest 校验
+1. 解析     —— 安全枚举 + 识别（§5）→ 内部 `ComponentDetection`（§5.3）；manifest 校验
 2. 预检     —— schema（空包拒收）/ 穿越 / symlink / 体积 / 名字 / has_executables 确认
 3. 凭据     —— 按 credentials[].target 入 keyring（v1 上传后按需在 install/configure 阶段收集）
 4. 依赖     —— 记录 dependencies 进 extra；pip 安装延后到 install（同现有 MCP 管线）
