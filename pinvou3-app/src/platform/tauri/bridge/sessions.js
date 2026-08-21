@@ -467,6 +467,10 @@
   async function ensureSession() {
     if (state.activeSessionId) return state.activeSessionId;
     if (ensureSessionInFlight) return ensureSessionInFlight;
+    // 捕获导航 token：仅判 activeSessionId 覆盖不了「再进草稿」——enterDraft
+    // 只推进 token 不改 activeSessionId（仍为 null），在途 create_session 返回
+    // 后必须连同 token 一起校验，否则会劫持用户新进的草稿（三审 P1）。
+    var navToken = sessionSwitchRequestToken;
     var p = (async function () {
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
@@ -477,7 +481,9 @@
         // create_session 等待期间用户可能已退出草稿（切到既有会话或再进草稿）：
         // 物化不得劫持 active（审计 F1），新会话登记为后台 buffer 等下次切换，
         // 调用方按 null 处理不发送本条消息。离开草稿的寄存开关意图一并作废。
-        if (state.activeSessionId) {
+        // 「切到既有会话」→ activeSessionId 非空；「再进草稿」→ activeSessionId
+        // 仍为 null 但导航 token 已前移——两种导航都中止物化（三审 P1）。
+        if (state.activeSessionId || navToken !== sessionSwitchRequestToken) {
           state.pendingDraftMultiAgent = false;
           sessionStates[meta.id] = freshBuffer();
           sessionStates[meta.id].loadedFromDisk = true;
@@ -539,12 +545,14 @@
         await syncActivePersona();
         await syncMountedCollection();
         notify();
-        // 尾部这些 await 期间用户仍可能切走（activeSessionId 已是别的会话）：
-        // 与 create_session 窗口同一契约——切走即物化中止，返回 null 让调用方
-        // 放弃（消息回填输入框），不得返回切走后的 active 让操作漂进新会话
-        // （二审 F1）。返回非 null 时 active 必等于 meta.id，调用方重读
+        // 尾部这些 await 期间用户仍可能切走（activeSessionId 已是别的会话）或
+        // 再进草稿（activeSessionId 仍为 null 但 token 已前移）：与 create_session
+        // 窗口同一契约——导航即物化中止，返回 null 让调用方放弃（消息回填输入框），
+        // 不得返回切走后的 active 让操作漂进新会话（二审 F1、三审 P1）。
+        // 返回非 null 时 active 必等于 meta.id 且无任何新导航，调用方重读
         // state.activeSessionId 即为目标会话。
-        return state.activeSessionId === meta.id ? meta.id : null;
+        return navToken === sessionSwitchRequestToken
+          && state.activeSessionId === meta.id ? meta.id : null;
       } catch (e) {
         addSystemItem(bt("newChatFailed") + e);
         return null;
@@ -1100,6 +1108,10 @@
       var previousRuns = state.scheduledTaskRecentRuns || [];
       var wasViewingRun = state.activeSessionId === id;
       var previousContext = state.scheduledRunContext;
+      // 归档等待期间的导航 token：失败回滚时「activeSessionId === null」不足以
+      // 证明无新导航——用户再进草稿也保持 null（enterDraft 只推进 token），
+      // 仅 token 未前移才允许把 active 拽回归档会话（三审 P1）。
+      var navToken = sessionSwitchRequestToken;
       // 与普通会话收纳同语义:保留 buffer(还能从设置页还原后重开),但要离开当前视图。
       if (wasViewingRun) saveWorkingSetTo(getBuffer(id));
       state.scheduledTaskRecentRuns = previousRuns.filter(function (run) {
@@ -1114,8 +1126,9 @@
       } catch (e) {
         state.scheduledTaskRecentRuns = previousRuns;
         // 回滚 active 仅当用户没有新导航（leaveSessionView 已置 null）：
-        // await 期间切到别的会话时不得劫持 active（审计）。
-        if (wasViewingRun && state.activeSessionId === null) {
+        // await 期间切到别的会话/再进草稿都不得劫持 active（审计、三审 P1）。
+        if (wasViewingRun && state.activeSessionId === null
+            && navToken === sessionSwitchRequestToken) {
           // active 与 scheduledRunContext 必须成对回滚,否则会落到
           // 「active 有值但 context 空」的错位态(界面回任务列表却仍持有会话)。
           state.activeSessionId = id;
@@ -1130,6 +1143,9 @@
     var s = state.sessions[idx];
     var archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
     var wasActive = state.activeSessionId === id;
+    // 与 scheduled 分支同源：失败回滚须以导航 token 证明「无新导航」——
+    // 归档等待期间再进草稿 activeSessionId 仍为 null（三审 P1）。
+    var navToken = sessionSwitchRequestToken;
     if (wasActive) saveWorkingSetTo(getBuffer(id));
     state.sessions.splice(idx, 1);
     state.archivedSessions = [archived].concat((state.archivedSessions || []).filter(function (x) { return x.id !== id; }));
@@ -1143,8 +1159,9 @@
       state.sessions.splice(idx, 0, s);
       state.archivedSessions = (state.archivedSessions || []).filter(function (x) { return x.id !== id; });
       // 回滚 active 仅当用户没有新导航（leaveSessionView 已置 null）：
-      // await 期间切到别的会话时不得劫持 active（审计）。
-      if (wasActive && state.activeSessionId === null) {
+      // await 期间切到别的会话/再进草稿都不得劫持 active（审计、三审 P1）。
+      if (wasActive && state.activeSessionId === null
+          && navToken === sessionSwitchRequestToken) {
         state.activeSessionId = id;
         loadWorkingSetFrom(getBuffer(id));
       }
