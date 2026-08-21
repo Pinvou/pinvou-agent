@@ -285,7 +285,7 @@ impl Pinvou3Bundle {
     pub(super) fn cleanup_removed_marketplace_tools(&self) -> std::io::Result<()> {
         {
             let tool_id = "data_analysis";
-// 退役 id 保护（二轮评审）：`bundles/` 已是用户上传落盘区，用户可能上传过
+            // 退役 id 保护（二轮评审）：`bundles/` 已是用户上传落盘区，用户可能上传过
             // 同名包——其 Upload 记录存在时跳过整段清理（不删登记、不删 mcp.json），
             // 只清理确定无主的内嵌退役残留。
             let user_uploaded = crate::features::marketplace::store::BundleStore::new()
