@@ -2,12 +2,12 @@ use std::{
     io::Write,
     process::{Command, Stdio},
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
     ControllerError, ControllerPaths, ControllerSession, HostPlatform, InstanceLock,
-    LocalIpcListener, RollingLog,
+    LocalIpcListener, LocalNodeSpec, LocalNodeSupervisor, RollingLog, error::io_context,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -64,9 +64,14 @@ pub fn run_from_env() -> Result<(), ControllerError> {
 
 fn run_controller() -> Result<(), ControllerError> {
     let paths = ControllerPaths::discover()?;
-    paths.prepare_data_root()?;
-    let _lock = InstanceLock::acquire(paths.lock_file())?;
-    let log = Arc::new(Mutex::new(RollingLog::open(paths.log_file().to_owned())?));
+    paths
+        .prepare_data_root()
+        .map_err(controller_context("prepare controller data root"))?;
+    let _lock = InstanceLock::acquire(paths.lock_file())
+        .map_err(controller_context("acquire controller lock"))?;
+    let log = Arc::new(Mutex::new(
+        RollingLog::open(paths.log_file().to_owned()).map_err(io_context("open controller log"))?,
+    ));
     let instance_id = format!(
         "{}-{}",
         std::process::id(),
@@ -75,17 +80,75 @@ fn run_controller() -> Result<(), ControllerError> {
             .map_err(|_| ControllerError::InvalidMessage)?
             .as_nanos()
     );
-    let session = ControllerSession::new(instance_id)?;
-    let mut listener = LocalIpcListener::bind(paths.endpoint())?;
+    let node_instance_id = format!("node-{instance_id}");
+    let node_spec = LocalNodeSpec::for_controller(
+        &paths,
+        sibling_node_executable()?,
+        node_instance_id.clone(),
+    )?;
+    let node_endpoint = node_spec.endpoint().to_owned();
+    let mut node_supervisor = LocalNodeSupervisor::new(node_spec);
+    node_supervisor.start().map_err(|error| match error {
+        ControllerError::Io(source) => ControllerError::IoContext {
+            context: "start local node",
+            source,
+        },
+        other => other,
+    })?;
+    let node_supervisor = Arc::new(Mutex::new(node_supervisor));
+    let session = ControllerSession::with_local_node(instance_id, node_endpoint, node_instance_id)?;
+    let mut listener = LocalIpcListener::bind(paths.endpoint())
+        .map_err(controller_context("bind controller IPC"))?;
     {
         let mut writer = log.lock().map_err(|_| ControllerError::InvalidMessage)?;
         writeln!(writer, "controller started")?;
         writer.flush()?;
     }
+    let monitor = Arc::clone(&node_supervisor);
+    let monitor_log = Arc::clone(&log);
+    std::thread::Builder::new()
+        .name("pinvou-local-node-supervisor".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(100));
+                let result = monitor
+                    .lock()
+                    .map_err(|_| ControllerError::InvalidMessage)
+                    .and_then(|mut supervisor| supervisor.poll(Instant::now()));
+                if let Err(error) = result {
+                    if let Ok(mut writer) = monitor_log.lock() {
+                        let _ = writeln!(writer, "local node supervision failed: {error}");
+                        let _ = writer.flush();
+                    }
+                    break;
+                }
+            }
+        })?;
     loop {
         // Per-client errors are handled in its worker; accept errors terminate instead of spinning.
         listener.serve_one_logged(&session, Arc::clone(&log))?;
     }
+}
+
+fn controller_context(context: &'static str) -> impl FnOnce(ControllerError) -> ControllerError {
+    move |error| match error {
+        ControllerError::Io(source) => ControllerError::IoContext { context, source },
+        other => other,
+    }
+}
+
+fn sibling_node_executable() -> Result<std::path::PathBuf, ControllerError> {
+    let current = std::env::current_exe()?.canonicalize()?;
+    let directory = current.parent().ok_or(ControllerError::PathUnavailable)?;
+    #[cfg(windows)]
+    let candidate = directory.join("pinvou-node.exe");
+    #[cfg(not(windows))]
+    let candidate = directory.join("pinvou-node");
+    let candidate = candidate.canonicalize()?;
+    if !candidate.is_absolute() || !candidate.metadata()?.is_file() {
+        return Err(ControllerError::PathUnavailable);
+    }
+    Ok(candidate)
 }
 
 #[cfg(windows)]

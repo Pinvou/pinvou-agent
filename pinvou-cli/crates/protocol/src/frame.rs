@@ -6,7 +6,7 @@ use thiserror::Error;
 
 pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 const LENGTH_PREFIX_LEN: usize = size_of::<u32>();
-const IPC_VERSION: u16 = 1;
+pub const IPC_VERSION: u16 = 1;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]

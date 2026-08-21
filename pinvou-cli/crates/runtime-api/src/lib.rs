@@ -1,4 +1,15 @@
-//! Long-lived agent runtime seam.
+//! Versioned, long-lived agent runtime seam.
+
+mod adapter;
+mod error;
+mod model;
+
+pub use adapter::{AgentRuntimeAdapter, RuntimeEventSubscription};
+pub use error::AdapterError;
+pub use model::{
+    AuthStatus, NegotiatedCapabilities, RuntimeCapabilities, RuntimeCommand, RuntimeOperation,
+    RuntimeSession,
+};
 
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 pub const PROTOCOL_CRATE_NAME: &str = pinvou_protocol::CRATE_NAME;

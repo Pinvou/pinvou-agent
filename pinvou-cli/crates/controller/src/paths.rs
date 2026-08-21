@@ -127,11 +127,36 @@ impl ControllerPaths {
     }
 
     pub fn prepare_data_root(&self) -> Result<(), ControllerError> {
+        #[cfg(target_os = "linux")]
+        prepare_linux_private_directory(&self.data_root)?;
+        #[cfg(not(target_os = "linux"))]
         std::fs::create_dir_all(&self.data_root)?;
         #[cfg(windows)]
         crate::windows_security::apply_current_logon_dacl(&self.data_root)?;
         Ok(())
     }
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_linux_private_directory(path: &Path) -> Result<(), ControllerError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(ControllerError::PathUnavailable);
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(path)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(ControllerError::PathUnavailable);
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
 }
 
 fn path_contains_legacy_root(path: &Path) -> bool {

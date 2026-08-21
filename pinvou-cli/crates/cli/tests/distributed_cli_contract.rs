@@ -1,0 +1,250 @@
+#![cfg(feature = "distributed")]
+
+use std::time::{Duration, Instant};
+
+use pinvou_cli::distributed::{
+    CHAT_TEXT_FRAME, ControllerWire, DistributedCommand, ProjectionAction, TerminalProjection,
+    map_error_causes,
+};
+use pinvou_cli::{CliCommand, ExitCode, execute, parse_args};
+use pinvou_protocol::{
+    ExitCause, IpcMessage, RuntimeEventEnvelope, StableExitCode, decode_frame, encode_frame,
+};
+
+#[derive(Default)]
+struct FakeDuplex {
+    inbound: std::io::Cursor<Vec<u8>>,
+    outbound: Vec<u8>,
+}
+
+impl FakeDuplex {
+    fn with_responses(responses: impl IntoIterator<Item = IpcMessage>) -> Self {
+        let inbound = responses
+            .into_iter()
+            .flat_map(|message| encode_frame(&message).unwrap())
+            .collect();
+        Self {
+            inbound: std::io::Cursor::new(inbound),
+            outbound: Vec::new(),
+        }
+    }
+
+    fn requests(&self) -> Vec<IpcMessage> {
+        let mut bytes = self.outbound.as_slice();
+        let mut requests = Vec::new();
+        while !bytes.is_empty() {
+            let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+            requests.push(decode_frame(&bytes[..4 + len]).unwrap());
+            bytes = &bytes[4 + len..];
+        }
+        requests
+    }
+}
+
+impl std::io::Read for FakeDuplex {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(&mut self.inbound, buffer)
+    }
+}
+
+impl std::io::Write for FakeDuplex {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.outbound.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn event(kind: &str, rate: &str, stream: &str, payload: serde_json::Value) -> RuntimeEventEnvelope {
+    RuntimeEventEnvelope::from_value(serde_json::json!({
+        "protocol_version": 1,
+        "schema_version": 1,
+        "node_id": "local-node",
+        "logical_session_id": "session-1",
+        "attachment_id": "attachment-1",
+        "work_id": null,
+        "collaborative_run_id": null,
+        "stream_id": stream,
+        "turn_id": "turn-1",
+        "seq": 1,
+        "source_span": null,
+        "timestamp": "2026-08-21T00:00:00Z",
+        "rate_class": rate,
+        "kind": kind,
+        "payload": payload
+    }))
+    .unwrap()
+}
+
+#[test]
+fn no_arguments_prints_stage_one_help_without_starting_a_daemon() {
+    let parsed = parse_args(["pinvou"]).expect("no arguments are valid in stage one");
+    assert_eq!(parsed.command(), &CliCommand::Help);
+    let outcome = execute(parsed).unwrap();
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(outcome.stdout.contains("pinvou chat"));
+    assert!(outcome.stdout.contains("pinvou runtime detect"));
+}
+
+#[test]
+fn distributed_commands_are_explicit_and_unknown_shapes_are_usage_errors() {
+    assert_eq!(
+        parse_args(["pinvou", "chat"]).unwrap().command(),
+        &CliCommand::Distributed(DistributedCommand::Chat)
+    );
+    assert_eq!(
+        parse_args(["pinvou", "runtime", "detect"])
+            .unwrap()
+            .command(),
+        &CliCommand::Distributed(DistributedCommand::RuntimeDetect)
+    );
+    for args in [
+        vec!["pinvou", "runtime"],
+        vec!["pinvou", "runtime", "unknown"],
+        vec!["pinvou", "chat", "unexpected"],
+    ] {
+        assert_eq!(parse_args(args).unwrap_err().exit_code(), ExitCode::Usage);
+    }
+}
+
+#[test]
+fn interactive_chat_rejects_non_tty_before_controller_startup() {
+    let error = pinvou_cli::distributed::require_interactive_terminal(false, true).unwrap_err();
+    assert_eq!(error.exit_code().as_i32(), 2);
+    assert!(error.to_string().contains("interactive terminal"));
+    assert!(pinvou_cli::distributed::require_interactive_terminal(true, true).is_ok());
+}
+
+#[test]
+fn text_projection_uses_one_fifty_millisecond_frame_without_a_second_window() {
+    let start = Instant::now();
+    let mut projection = TerminalProjection::new(start);
+    let first = event(
+        "text.delta",
+        "R1",
+        "main",
+        serde_json::json!({"role":"assistant","content":"pin"}),
+    );
+    let second = event(
+        "text.delta",
+        "R1",
+        "main",
+        serde_json::json!({"role":"assistant","content":"vou"}),
+    );
+    assert_eq!(
+        projection.push(&first, start).unwrap(),
+        ProjectionAction::WriteText("pin".into())
+    );
+    assert_eq!(
+        projection
+            .push(&second, start + CHAT_TEXT_FRAME - Duration::from_millis(1))
+            .unwrap(),
+        ProjectionAction::None
+    );
+    assert_eq!(
+        projection.flush_due(start + CHAT_TEXT_FRAME),
+        Some("vou".into())
+    );
+    assert!(projection.flush_due(start + CHAT_TEXT_FRAME * 2).is_none());
+}
+
+#[test]
+fn approval_and_turn_end_events_drive_terminal_actions() {
+    let now = Instant::now();
+    let mut projection = TerminalProjection::new(now);
+    let approval = event(
+        "approval.requested",
+        "R0",
+        "control",
+        serde_json::json!({
+            "approval_id":"approval-1",
+            "tool":"command",
+            "summary":"run tests",
+            "options":["allow","deny"]
+        }),
+    );
+    assert_eq!(
+        projection.push(&approval, now).unwrap(),
+        ProjectionAction::AskApproval {
+            approval_id: "approval-1".into(),
+            prompt: "run tests [y/N] ".into()
+        }
+    );
+    assert_eq!(projection.parse_approval("y\n"), Some(true));
+    assert_eq!(projection.parse_approval("N\n"), Some(false));
+    assert_eq!(projection.parse_approval("later\n"), None);
+
+    let ended = event(
+        "turn.ended",
+        "R0",
+        "control",
+        serde_json::json!({"end_reason":"interrupted"}),
+    );
+    assert_eq!(
+        projection.push(&ended, now).unwrap(),
+        ProjectionAction::TurnEnded(StableExitCode::Cancelled)
+    );
+}
+
+#[test]
+fn causal_first_error_mapping_covers_all_stable_exit_codes() {
+    let cases = [
+        (ExitCause::Internal, 1),
+        (ExitCause::Usage, 2),
+        (ExitCause::ControllerUnavailable, 3),
+        (ExitCause::BlockedAuth, 4),
+        (ExitCause::RuntimeFailed, 5),
+        (ExitCause::Cancelled, 6),
+        (ExitCause::ResourceExhausted, 7),
+        (ExitCause::DataCorruption, 8),
+        (ExitCause::Unmapped, 1),
+    ];
+    for (cause, expected) in cases {
+        assert_eq!(map_error_causes([cause]).as_i32(), expected);
+    }
+    assert_eq!(
+        map_error_causes([ExitCause::ControllerUnavailable, ExitCause::BlockedAuth]),
+        StableExitCode::ControllerUnavailable
+    );
+}
+
+#[test]
+fn cli_uses_only_formal_controller_methods_and_binds_the_instance_challenge() {
+    let responses = (1..=5).map(|id| {
+        IpcMessage::response(serde_json::json!(id), serde_json::json!({"ok":true})).unwrap()
+    });
+    let mut client = ControllerWire::from_authenticated(
+        FakeDuplex::with_responses(responses),
+        "controller-instance",
+    );
+    client.chat_start("hello").unwrap();
+    client.resolve_approval("approval-1", true).unwrap();
+    client.resolve_input("input-1", "answer").unwrap();
+    client.interrupt_turn("turn-1").unwrap();
+    client.runtime_detect().unwrap();
+
+    let requests = client.into_inner().requests();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.method().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "chat.start",
+            "approval.resolve",
+            "input.resolve",
+            "turn.interrupt",
+            "runtime.detect"
+        ]
+    );
+    assert!(requests.iter().all(|request| {
+        request.payload()["instance_id"] == serde_json::json!("controller-instance")
+    }));
+    assert_eq!(requests[0].payload()["prompt"], "hello");
+    assert_eq!(requests[1].payload()["accepted"], true);
+    assert_eq!(requests[2].payload()["value"], "answer");
+    assert_eq!(requests[3].payload()["turn_id"], "turn-1");
+}

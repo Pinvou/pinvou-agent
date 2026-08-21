@@ -12,8 +12,8 @@ pub use event::{
 };
 pub use exit_code::{ExitCause, StableExitCode};
 pub use frame::{
-    FrameError, HelloClient, HelloServer, IpcMessage, IpcMessageKind, MAX_FRAME_LEN, decode_frame,
-    decode_length_prefix, encode_frame, read_frame,
+    FrameError, HelloClient, HelloServer, IPC_VERSION, IpcMessage, IpcMessageKind, MAX_FRAME_LEN,
+    decode_frame, decode_length_prefix, encode_frame, read_frame,
 };
 
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");

@@ -1,0 +1,13 @@
+{
+  "schema_source": "codex app-server generate-json-schema (0.139.0)",
+  "transport": "newline-delimited JSON; responses may omit jsonrpc",
+  "client_methods": [
+    "initialize", "account/read", "account/rateLimits/read", "account/login/start",
+    "thread/start", "thread/resume", "thread/inject_items", "turn/start", "turn/steer", "turn/interrupt"
+  ],
+  "server_requests": [
+    "item/commandExecution/requestApproval", "item/fileChange/requestApproval",
+    "item/permissions/requestApproval", "item/tool/requestUserInput",
+    "account/chatgptAuthTokens/refresh", "execCommandApproval", "applyPatchApproval"
+  ]
+}

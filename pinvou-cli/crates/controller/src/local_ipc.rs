@@ -121,8 +121,12 @@ fn serve_connection(
     loop {
         let request: IpcMessage =
             read_frame(stream).map_err(|_| ControllerError::InvalidMessage)?;
-        let response = session.handle_bound(request)?;
-        stream.write_all(&encode_frame(&response).map_err(|_| ControllerError::InvalidMessage)?)?;
+        let responses = session.handle_bound_many(request)?;
+        for response in responses {
+            stream.write_all(
+                &encode_frame(&response).map_err(|_| ControllerError::InvalidMessage)?,
+            )?;
+        }
         stream.flush()?;
     }
 }

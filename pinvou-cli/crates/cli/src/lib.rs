@@ -32,6 +32,12 @@ pub enum ExitCode {
     Success,
     Failed,
     Usage,
+    ControllerUnavailable,
+    BlockedAuth,
+    RuntimeFailed,
+    Cancelled,
+    ResourceExhausted,
+    DataCorruption,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +141,12 @@ impl ExitCode {
             Self::Success => 0,
             Self::Failed => 1,
             Self::Usage => 2,
+            Self::ControllerUnavailable => 3,
+            Self::BlockedAuth => 4,
+            Self::RuntimeFailed => 5,
+            Self::Cancelled => 6,
+            Self::ResourceExhausted => 7,
+            Self::DataCorruption => 8,
         }
     }
 }
@@ -170,7 +182,10 @@ pub enum BenchmarkCommand {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliCommand {
+    Help,
     Benchmark(BenchmarkCommand),
+    #[cfg(feature = "distributed")]
+    Distributed(distributed::DistributedCommand),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,6 +271,19 @@ where
         } else {
             index += 1;
         }
+    }
+    if values.is_empty() || values.as_slice() == ["--help"] || values.as_slice() == ["-h"] {
+        return Ok(ParsedCli {
+            command: CliCommand::Help,
+            output,
+        });
+    }
+    #[cfg(feature = "distributed")]
+    if let Some(command) = distributed::parse_command(&values)? {
+        return Ok(ParsedCli {
+            command: CliCommand::Distributed(command),
+            output,
+        });
     }
     if values.first().map(String::as_str) != Some("benchmark") {
         return Err(CliError::usage("usage: pinvou benchmark <command>"));
@@ -412,6 +440,24 @@ fn required_value(values: &[String], command: &str) -> Result<String, CliError> 
     Ok(values[2].clone())
 }
 
+pub fn render_help() -> String {
+    let mut commands = vec![
+        "Pinvou command line",
+        "",
+        "USAGE:",
+        "  pinvou <command>",
+        "",
+        "COMMANDS:",
+        "  benchmark ...          Run benchmark workflows",
+    ];
+    #[cfg(feature = "distributed")]
+    commands.extend([
+        "  pinvou chat             Start an interactive local chat",
+        "  pinvou runtime detect   Detect available runtimes",
+    ]);
+    commands.join("\n")
+}
+
 pub fn render_list(output: OutputMode) -> String {
     match output {
         OutputMode::Human => benchmark_registry()
@@ -453,6 +499,28 @@ pub struct CliOutcome {
 pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
     let output = parsed.output;
     match parsed.command {
+        CliCommand::Help => Ok(success(render_help())),
+        #[cfg(feature = "distributed")]
+        CliCommand::Distributed(command) => distributed::execute(command, output)
+            .map(|stdout| success(stdout))
+            .map_err(|error| CliError {
+                message: error.to_string(),
+                exit_code: match error.exit_code() {
+                    pinvou_protocol::StableExitCode::Success => ExitCode::Success,
+                    pinvou_protocol::StableExitCode::Internal => ExitCode::Failed,
+                    pinvou_protocol::StableExitCode::Usage => ExitCode::Usage,
+                    pinvou_protocol::StableExitCode::ControllerUnavailable => {
+                        ExitCode::ControllerUnavailable
+                    }
+                    pinvou_protocol::StableExitCode::BlockedAuth => ExitCode::BlockedAuth,
+                    pinvou_protocol::StableExitCode::RuntimeFailed => ExitCode::RuntimeFailed,
+                    pinvou_protocol::StableExitCode::Cancelled => ExitCode::Cancelled,
+                    pinvou_protocol::StableExitCode::ResourceExhausted => {
+                        ExitCode::ResourceExhausted
+                    }
+                    pinvou_protocol::StableExitCode::DataCorruption => ExitCode::DataCorruption,
+                },
+            }),
         CliCommand::Benchmark(BenchmarkCommand::List) => Ok(success(render_list(output))),
         CliCommand::Benchmark(BenchmarkCommand::Status(run_id)) => status(&run_id, output),
         CliCommand::Benchmark(BenchmarkCommand::Report(run_id)) => report(&run_id, output),

@@ -55,6 +55,46 @@ fn paths_are_machine_local_and_never_reuse_desktop_data() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn controller_data_root_is_tightened_to_0700_and_rejects_symlinks() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let root = temp_dir("private-data-root");
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let paths = ControllerPaths::from_roots(
+        HostPlatform::Linux,
+        data.clone(),
+        root.join("runtime"),
+        "ignored",
+    )
+    .unwrap();
+    paths.prepare_data_root().unwrap();
+    assert_eq!(
+        std::fs::metadata(&data).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+
+    let target = root.join("target");
+    let link = root.join("linked-data");
+    std::fs::create_dir(&target).unwrap();
+    symlink(&target, &link).unwrap();
+    let linked = ControllerPaths::from_roots(
+        HostPlatform::Linux,
+        link,
+        root.join("runtime-linked"),
+        "ignored",
+    )
+    .unwrap();
+    assert!(matches!(
+        linked.prepare_data_root(),
+        Err(ControllerError::PathUnavailable)
+    ));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn local_ipc_policy_has_no_tcp_and_requires_platform_hardening() {
     let policy = LocalIpcPolicy::for_platform(HostPlatform::Windows);
@@ -100,6 +140,21 @@ fn hello_challenge_and_health_request_have_stable_contracts() {
     assert_eq!(response.id(), Some(&serde_json::json!(7)));
     assert_eq!(response.payload()["status"], "ok");
     assert_eq!(response.payload()["instance_id"], "instance-test");
+
+    let detect = IpcMessage::request(
+        serde_json::json!(8),
+        "runtime.detect",
+        serde_json::json!({}),
+    )
+    .unwrap();
+    let response = session.handle(detect).unwrap();
+    assert_eq!(response.id(), Some(&serde_json::json!(8)));
+    assert_eq!(response.payload()["status"], "unavailable");
+    assert_eq!(response.payload()["runtime"], "local-node");
+    assert_eq!(
+        response.payload()["protocol_version"],
+        pinvou_protocol::IPC_VERSION
+    );
 
     let mismatch = ControllerError::ProtocolMismatch;
     assert_eq!(mismatch.exit_code(), StableExitCode::ControllerUnavailable);
