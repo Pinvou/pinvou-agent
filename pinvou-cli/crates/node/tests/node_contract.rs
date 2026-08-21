@@ -53,6 +53,90 @@ fn node_hello_health_and_echo_are_instance_bound() {
 }
 
 #[test]
+fn node_runtime_control_lists_detects_and_switches_runtime_profiles() {
+    let session = NodeSession::new("node-instance").unwrap();
+    let list = IpcMessage::request(
+        serde_json::json!(10),
+        "runtime.list",
+        serde_json::json!({"instance_id": "node-instance"}),
+    )
+    .unwrap();
+    let response = session.handle(list).unwrap();
+    assert_eq!(response.payload()["current"], "echo");
+    assert_eq!(response.payload()["runtimes"][0]["id"], "echo");
+    assert_eq!(response.payload()["runtimes"][0]["available"], true);
+
+    let switch = IpcMessage::request(
+        serde_json::json!(11),
+        "runtime.switch",
+        serde_json::json!({"instance_id": "node-instance", "runtime": "echo"}),
+    )
+    .unwrap();
+    let response = session.handle(switch).unwrap();
+    assert_eq!(response.payload()["status"], "ok");
+    assert_eq!(response.payload()["runtime"], "echo");
+
+    let detect = IpcMessage::request(
+        serde_json::json!(12),
+        "runtime.detect",
+        serde_json::json!({"instance_id": "node-instance"}),
+    )
+    .unwrap();
+    let response = session.handle(detect).unwrap();
+    assert_eq!(response.payload()["status"], "available");
+    assert_eq!(response.payload()["runtime"], "echo");
+
+    let unknown = IpcMessage::request(
+        serde_json::json!(13),
+        "runtime.switch",
+        serde_json::json!({"instance_id": "node-instance", "runtime": "missing"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        session.handle(unknown),
+        Err(NodeError::UnsupportedRequest)
+    ));
+}
+
+#[test]
+fn node_runtime_switch_replaces_the_active_runtime_host() {
+    let session = NodeSession::with_runtime("node-instance", Arc::new(PrefixRuntime)).unwrap();
+    let before = IpcMessage::request(
+        serde_json::json!(14),
+        "runtime.echo",
+        serde_json::json!({"instance_id":"node-instance", "text":"before"}),
+    )
+    .unwrap();
+    let event = session.handle(before).unwrap();
+    let envelope = RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(envelope.payload().get()).unwrap()["content"],
+        "runtime:before"
+    );
+
+    let switch = IpcMessage::request(
+        serde_json::json!(15),
+        "runtime.switch",
+        serde_json::json!({"instance_id":"node-instance", "runtime":"echo"}),
+    )
+    .unwrap();
+    assert_eq!(session.handle(switch).unwrap().payload()["runtime"], "echo");
+
+    let after = IpcMessage::request(
+        serde_json::json!(16),
+        "runtime.echo",
+        serde_json::json!({"instance_id":"node-instance", "text":"after"}),
+    )
+    .unwrap();
+    let event = session.handle(after).unwrap();
+    let envelope = RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(envelope.payload().get()).unwrap()["content"],
+        "after"
+    );
+}
+
+#[test]
 fn node_control_surface_is_instance_bound_and_stably_unsupported_until_runtime_attachment() {
     let session = NodeSession::new("node-instance").unwrap();
     for (id, method, payload, echoed_field) in [

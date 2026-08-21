@@ -51,6 +51,21 @@ impl LocalNodeClient {
             .map_err(|_| ControllerError::InvalidMessage)
     }
 
+    pub fn runtime_list(&mut self) -> Result<IpcMessage, ControllerError> {
+        self.request("runtime.list", serde_json::json!({}))
+    }
+
+    pub fn runtime_detect(&mut self) -> Result<IpcMessage, ControllerError> {
+        self.request("runtime.detect", serde_json::json!({}))
+    }
+
+    pub fn runtime_switch(&mut self, runtime: &str) -> Result<IpcMessage, ControllerError> {
+        if runtime.is_empty() {
+            return Err(ControllerError::InvalidMessage);
+        }
+        self.request("runtime.switch", serde_json::json!({"runtime":runtime}))
+    }
+
     pub fn resolve_approval(
         &mut self,
         approval_id: &str,

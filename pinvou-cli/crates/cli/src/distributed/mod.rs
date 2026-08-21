@@ -241,6 +241,12 @@ impl<S: Read + Write> ControllerWire<S> {
     pub fn runtime_detect(&mut self) -> Result<IpcMessage, DistributedError> {
         self.request("runtime.detect", json!({}))
     }
+    pub fn runtime_list(&mut self) -> Result<IpcMessage, DistributedError> {
+        self.request("runtime.list", json!({}))
+    }
+    pub fn runtime_switch(&mut self, runtime: &str) -> Result<IpcMessage, DistributedError> {
+        self.request("runtime.switch", json!({"runtime": runtime}))
+    }
     pub fn health(&mut self) -> Result<IpcMessage, DistributedError> {
         self.request("health", json!({}))
     }
@@ -525,6 +531,9 @@ fn execute_chat_with_io<R: BufRead, W: Write, S: Read + Write>(
         if prompt.is_empty() {
             continue;
         }
+        if handle_slash_command(prompt, output, client)? {
+            continue;
+        }
 
         let first = client.chat_start(prompt)?;
         let mut next = Some(first);
@@ -608,6 +617,81 @@ fn execute_chat_with_io<R: BufRead, W: Write, S: Read + Write>(
             }
         }
     }
+}
+
+fn handle_slash_command<S: Read + Write>(
+    prompt: &str,
+    output: &mut impl Write,
+    client: &mut ControllerWire<S>,
+) -> Result<bool, DistributedError> {
+    let Some(command) = prompt.strip_prefix('/') else {
+        return Ok(false);
+    };
+    let mut parts = command.split_whitespace();
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("runtime"), None, None) => {
+            let response = client.runtime_list()?;
+            write_terminal_to(output, &format_runtime_list(response.payload()))?;
+            Ok(true)
+        }
+        (Some("runtime"), Some(runtime), None) => {
+            let response = client.runtime_switch(runtime)?;
+            let selected = response
+                .payload()
+                .get("runtime")
+                .and_then(Value::as_str)
+                .unwrap_or(runtime);
+            write_terminal_to(output, &format!("runtime switched to {selected}\n"))?;
+            Ok(true)
+        }
+        (Some("detect"), None, None) => {
+            let response = client.runtime_detect()?;
+            let runtime = response
+                .payload()
+                .get("runtime")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let status = response
+                .payload()
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            write_terminal_to(output, &format!("runtime: {runtime} ({status})\n"))?;
+            Ok(true)
+        }
+        _ => Err(DistributedError::new(
+            StableExitCode::Usage,
+            "unknown chat command",
+        )),
+    }
+}
+
+fn format_runtime_list(payload: &Value) -> String {
+    let current = payload
+        .get("current")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let mut text = format!("runtime: {current}\n");
+    if let Some(runtimes) = payload.get("runtimes").and_then(Value::as_array) {
+        for runtime in runtimes {
+            let id = runtime
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let label = runtime.get("label").and_then(Value::as_str).unwrap_or(id);
+            let status = if runtime
+                .get("available")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                "available"
+            } else {
+                "unavailable"
+            };
+            text.push_str(&format!("{id} - {label} ({status})\n"));
+        }
+    }
+    text
 }
 
 fn install_interrupt_handler(
@@ -817,6 +901,48 @@ mod tests {
 
         assert_eq!(String::from_utf8(output).unwrap(), "You: finished");
         assert_eq!(active_turn.lock().unwrap().as_deref(), None);
+    }
+
+    #[test]
+    fn chat_loop_supports_runtime_slash_commands_without_starting_a_turn() {
+        let list_response = IpcMessage::response(
+            json!(1),
+            json!({
+                "current": "echo",
+                "runtimes": [
+                    {"id": "echo", "label": "Stage 1 Echo", "available": true}
+                ]
+            }),
+        )
+        .unwrap();
+        let switch_response =
+            IpcMessage::response(json!(2), json!({"status": "ok", "runtime": "echo"})).unwrap();
+        let stream = TestDuplex::with_responses([list_response, switch_response]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut input = std::io::Cursor::new(b"/runtime\n/runtime echo\n/exit\n".to_vec());
+        let mut output = Vec::new();
+
+        execute_chat_with_io(
+            &mut input,
+            &mut output,
+            &mut client,
+            interrupted,
+            Arc::clone(&active_turn),
+            true,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("runtime: echo"));
+        assert!(output.contains("echo - Stage 1 Echo (available)"));
+        assert!(output.contains("runtime switched to echo"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method(), Some("runtime.list"));
+        assert_eq!(requests[1].method(), Some("runtime.switch"));
+        assert_eq!(requests[1].payload()["runtime"], "echo");
     }
 
     #[test]

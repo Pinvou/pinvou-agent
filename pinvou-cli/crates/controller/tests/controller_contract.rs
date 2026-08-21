@@ -152,7 +152,7 @@ fn hello_challenge_and_health_request_have_stable_contracts() {
     let response = session.handle(detect).unwrap();
     assert_eq!(response.id(), Some(&serde_json::json!(8)));
     assert_eq!(response.payload()["status"], "unavailable");
-    assert_eq!(response.payload()["runtime"], "local-node");
+    assert_eq!(response.payload()["runtime"], "none");
     assert_eq!(
         response.payload()["protocol_version"],
         pinvou_protocol::IPC_VERSION
@@ -160,6 +160,42 @@ fn hello_challenge_and_health_request_have_stable_contracts() {
 
     let mismatch = ControllerError::ProtocolMismatch;
     assert_eq!(mismatch.exit_code(), StableExitCode::ControllerUnavailable);
+}
+
+#[test]
+fn controller_runtime_control_is_formal_and_instance_bound() {
+    let session = ControllerSession::new("instance-test").unwrap();
+    let list =
+        IpcMessage::request(serde_json::json!(20), "runtime.list", serde_json::json!({})).unwrap();
+    let response = session.handle(list).unwrap();
+    assert_eq!(response.payload()["current"], "none");
+    assert!(
+        response.payload()["runtimes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let detect = IpcMessage::request(
+        serde_json::json!(21),
+        "runtime.detect",
+        serde_json::json!({}),
+    )
+    .unwrap();
+    let response = session.handle(detect).unwrap();
+    assert_eq!(response.payload()["status"], "unavailable");
+    assert_eq!(response.payload()["runtime"], "none");
+
+    let switch = IpcMessage::request(
+        serde_json::json!(22),
+        "runtime.switch",
+        serde_json::json!({"runtime": "echo"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        session.handle(switch),
+        Err(ControllerError::UnsupportedRequest)
+    ));
 }
 
 #[cfg(debug_assertions)]

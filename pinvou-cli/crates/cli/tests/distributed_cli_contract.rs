@@ -336,7 +336,7 @@ fn runtime_detect_binary_uses_the_real_controller_ipc_wire() {
     assert!(output.stderr.is_empty());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["status"], "unavailable");
-    assert_eq!(value["runtime"], "local-node");
+    assert_eq!(value["runtime"], "none");
     assert_eq!(value["protocol_version"], pinvou_protocol::IPC_VERSION);
 }
 

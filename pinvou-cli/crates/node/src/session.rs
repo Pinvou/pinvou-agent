@@ -147,26 +147,44 @@ fn ensure_adapter_session(state: &mut AdapterRuntimeState) -> Result<RuntimeSess
 pub struct NodeSession {
     instance_id: String,
     next_seq: Arc<AtomicU64>,
-    runtime: Arc<dyn NodeRuntimeHost>,
+    runtime: Arc<Mutex<RuntimeSlot>>,
+}
+
+#[derive(Debug)]
+struct RuntimeSlot {
+    id: String,
+    host: Arc<dyn NodeRuntimeHost>,
 }
 
 impl NodeSession {
     pub fn new(instance_id: impl Into<String>) -> Result<Self, NodeError> {
-        Self::with_runtime(instance_id, Arc::new(StageOneEchoRuntime))
+        Self::with_runtime_id(instance_id, "echo", Arc::new(StageOneEchoRuntime))
     }
 
     pub fn with_runtime(
         instance_id: impl Into<String>,
         runtime: Arc<dyn NodeRuntimeHost>,
     ) -> Result<Self, NodeError> {
+        Self::with_runtime_id(instance_id, "custom", runtime)
+    }
+
+    fn with_runtime_id(
+        instance_id: impl Into<String>,
+        runtime_id: impl Into<String>,
+        runtime: Arc<dyn NodeRuntimeHost>,
+    ) -> Result<Self, NodeError> {
         let instance_id = instance_id.into();
+        let runtime_id = runtime_id.into();
         if instance_id.is_empty() {
             Err(NodeError::InvalidMessage)
         } else {
             Ok(Self {
                 instance_id,
                 next_seq: Arc::new(AtomicU64::new(1)),
-                runtime,
+                runtime: Arc::new(Mutex::new(RuntimeSlot {
+                    id: runtime_id,
+                    host: runtime,
+                })),
             })
         }
     }
@@ -195,6 +213,38 @@ impl NodeSession {
             Some("health") => {
                 json!({"status":"ok", "instance_id":self.instance_id, "protocol_version":pinvou_protocol::IPC_VERSION})
             }
+            Some("runtime.list") => {
+                let runtime = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
+                json!({
+                    "current": runtime.id,
+                    "runtimes": [
+                        {"id":"echo", "label":"Stage 1 Echo", "available":true}
+                    ]
+                })
+            }
+            Some("runtime.detect") => {
+                let runtime = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
+                json!({
+                    "status": "available",
+                    "runtime": runtime.id,
+                    "protocol_version": pinvou_protocol::IPC_VERSION
+                })
+            }
+            Some("runtime.switch") => {
+                let runtime = request
+                    .payload()
+                    .get("runtime")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(NodeError::InvalidMessage)?;
+                if runtime != "echo" {
+                    return Err(NodeError::UnsupportedRequest);
+                }
+                let mut active = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
+                active.id = "echo".into();
+                active.host = Arc::new(StageOneEchoRuntime);
+                json!({"status":"ok", "runtime":"echo"})
+            }
             Some("runtime.echo") => {
                 let text = request
                     .payload()
@@ -202,7 +252,8 @@ impl NodeSession {
                     .and_then(|value| value.as_str())
                     .ok_or(NodeError::InvalidMessage)?;
                 let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-                let envelope = self.runtime.echo(&self.instance_id, text, seq)?;
+                let runtime = self.current_runtime_host()?;
+                let envelope = runtime.echo(&self.instance_id, text, seq)?;
                 return IpcMessage::event(
                     "runtime.event",
                     serde_json::to_value(envelope).map_err(|_| NodeError::InvalidMessage)?,
@@ -224,7 +275,7 @@ impl NodeSession {
                 {
                     return Err(NodeError::InvalidMessage);
                 }
-                self.runtime.resolve_approval(
+                self.current_runtime_host()?.resolve_approval(
                     approval_id,
                     request
                         .payload()
@@ -247,7 +298,7 @@ impl NodeSession {
                 {
                     return Err(NodeError::InvalidMessage);
                 }
-                self.runtime.resolve_input(
+                self.current_runtime_host()?.resolve_input(
                     input_id,
                     request
                         .payload()
@@ -262,11 +313,20 @@ impl NodeSession {
                     .and_then(|value| value.as_str())
                     .filter(|value| !value.is_empty())
                     .ok_or(NodeError::InvalidMessage)?;
-                self.runtime.interrupt_turn(turn_id)?
+                self.current_runtime_host()?.interrupt_turn(turn_id)?
             }
             _ => return Err(NodeError::UnsupportedRequest),
         };
         IpcMessage::response(id, payload).map_err(|_| NodeError::InvalidMessage)
+    }
+
+    fn current_runtime_host(&self) -> Result<Arc<dyn NodeRuntimeHost>, NodeError> {
+        Ok(self
+            .runtime
+            .lock()
+            .map_err(|_| NodeError::InvalidMessage)?
+            .host
+            .clone())
     }
 }
 

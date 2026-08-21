@@ -157,15 +157,54 @@ impl ControllerSession {
                 }
                 Ok(responses)
             }
-            Some("runtime.detect") => Ok(vec![IpcMessage::response(
-                id,
-                json!({
-                    "status": if self.local_node.is_some() { "available" } else { "unavailable" },
-                    "runtime": "local-node",
-                    "protocol_version": pinvou_protocol::IPC_VERSION
-                }),
-            )
-            .map_err(|_| ControllerError::InvalidMessage)?]),
+            Some("runtime.detect") => Ok(vec![
+                IpcMessage::response(
+                    id,
+                    if let Some(route) = &self.local_node {
+                        let mut client =
+                            LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
+                        client.runtime_detect()?.payload().clone()
+                    } else {
+                        json!({
+                            "status": "unavailable",
+                            "runtime": "none",
+                            "protocol_version": pinvou_protocol::IPC_VERSION
+                        })
+                    },
+                )
+                .map_err(|_| ControllerError::InvalidMessage)?,
+            ]),
+            Some("runtime.list") => Ok(vec![
+                IpcMessage::response(
+                    id,
+                    if let Some(route) = &self.local_node {
+                        let mut client =
+                            LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
+                        client.runtime_list()?.payload().clone()
+                    } else {
+                        json!({"current":"none", "runtimes":[]})
+                    },
+                )
+                .map_err(|_| ControllerError::InvalidMessage)?,
+            ]),
+            Some("runtime.switch") => {
+                let route = self
+                    .local_node
+                    .as_ref()
+                    .ok_or(ControllerError::UnsupportedRequest)?;
+                let runtime = request
+                    .payload()
+                    .get("runtime")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(ControllerError::InvalidMessage)?;
+                let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
+                let response = client.runtime_switch(runtime)?;
+                Ok(vec![
+                    IpcMessage::response(id, response.payload().clone())
+                        .map_err(|_| ControllerError::InvalidMessage)?,
+                ])
+            }
             Some("approval.resolve") => {
                 let route = self
                     .local_node
