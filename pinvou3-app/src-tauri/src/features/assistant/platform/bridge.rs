@@ -1278,6 +1278,10 @@ impl Pinvou3Bridge {
             terminal_chrome_enabled,
             advisor_config,
             subagent_state_root,
+            // v0.9.5-r8（CodeWhale#15）上游新增字段,透传 default ——
+            //   turn_tool_security: 受限嵌入式轮次的进程级工具安全策略
+            //   （只读分发/目录投影）。pinvou3 会话不受限 → None 保全全部既有行为。
+            turn_tool_security: _,
         } = EngineConfig::default();
 
         // hook 有两条消费路径：turn_loop 从 EngineConfig.hook_executor 跑
@@ -1482,6 +1486,10 @@ impl Pinvou3Bridge {
             terminal_chrome_enabled,
             advisor_config,
             subagent_state_root,
+            // v0.9.5-r8（CodeWhale#15）上游新增字段,透传 default ——
+            //   turn_tool_security: 受限嵌入式轮次的进程级工具安全策略
+            //   （只读分发/目录投影）。pinvou3 会话不受限 → None 保全全部既有行为。
+            turn_tool_security: None,
         }
     }
 
@@ -2124,6 +2132,9 @@ impl Pinvou3Bridge {
             dynamic_tools: Vec::new(),
             // provenance: 消息来源。build_send_message_op 是用户内容 → ExternalUser。
             provenance: deepseek_tui::core::ops::UserInputProvenance::ExternalUser,
+            // v0.9.5-r8（CodeWhale#15）上游新增。turn_tool_security: 受限嵌入式
+            // 轮次的进程级安全策略；pinvou3 普通用户消息不受限 → None 保全既有行为。
+            turn_tool_security: None,
         })
     }
 }
@@ -5069,6 +5080,38 @@ mod tests {
                 .and_then(|providers| providers.zai.reasoning_stream_style.as_deref()),
             Some(SEPARATE_REASONING_FIELD)
         );
+    }
+
+    #[test]
+    fn zai_direct_route_survives_model_casing_mismatch() {
+        // 底座 zai 目录行是市场拼写 GLM-5.2；设置页与存量配置可能保存小写
+        // glm-5.2。resolve_runtime_route_for_model 是 send_user_message 实际使用
+        // 的路由入口，两种拼写在 z.ai 直连端点都必须解析成功，且上线模型收敛
+        // 为底座目录的规范拼写（与 CodeWhale resolver 的大小写折叠回退配套，
+        // Pinvou/CodeWhale#18，上游 Hmbown/CodeWhale#5475 同源）。
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        for model in ["glm-5.2", "GLM-5.2"] {
+            let mut bridge = fixture_bridge();
+            set_active_model(
+                &mut bridge,
+                ModelPreset::OpenaiCompatible,
+                model,
+                "https://api.z.ai/api/coding/paas/v4",
+                "sk-zai",
+            );
+            bridge.prefs.normalize_saved_model_metadata();
+            assert_eq!(bridge.provider(), "zai", "vendor=glm 应路由到 zai provider");
+
+            let route = bridge
+                .resolve_runtime_route_for_model(model)
+                .unwrap_or_else(|error| panic!("{model} 路由解析失败: {error}"));
+            assert_eq!(route.model(), "GLM-5.2", "{model} 应上线底座目录规范拼写");
+        }
     }
 
     #[test]

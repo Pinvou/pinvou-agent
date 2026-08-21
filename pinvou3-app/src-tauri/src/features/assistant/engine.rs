@@ -2647,6 +2647,7 @@ mod scheduled_turn_tests {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::Runtime,
+            turn_tool_security: None,
         }
     }
 
