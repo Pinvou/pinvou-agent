@@ -62,4 +62,11 @@ if [ "${PINVOU3_RUN_L1:-0}" = "1" ]; then
     --test l1_dialog_harness -- --ignored --test-threads=1
 fi
 
+# memory_e2e(集成测试文件,默认 #[ignore]):env 隔离域测试全量 + 真机 vLLM 记忆
+# 行为,与 L1 同为手动验收路径;此前无任何 runner 入口(审计孤儿),在此接线。
+if [ "${PINVOU3_RUN_MEMORY_E2E:-0}" = "1" ]; then
+  run_required cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml \
+    --test memory_e2e -- --ignored --test-threads=1
+fi
+
 echo "ALL USER JOURNEY SMOKES PASSED"

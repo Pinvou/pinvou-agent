@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // artifact 面板「成品」门控单测:tmp/ 路径段(中间文件)+ 成品扩展名。
-// 三处实现同源——tauri artifact-tracker.js、web bridge.js、remote-control-relay/web/index.html;
+// 两侧实现同源——tauri artifact-tracker.js、web bridge.js(v1 relay 页第三侧已随页面退役);
 // 全部从真实源码抽取函数执行,不在测试里复刻逻辑。
 const assert = require("assert");
 const fs = require("fs");
@@ -10,7 +10,7 @@ const vm = require("vm");
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(appRoot, "..");
 
-// 三侧同一组预期:tmp/ 段一律 false,成品扩展名普通路径 true
+// 两侧同一组预期:tmp/ 段一律 false,成品扩展名普通路径 true
 const CASES = [
   ["tmp/draft.md", false],
   ["./tmp/x.png", false],
@@ -106,21 +106,8 @@ function evalIsDeliverable(snippet, label) {
   );
 }
 
-// 3) remote-control-relay web(第三侧):从 index.html 内联脚本抽取 isTmpPath/isDeliverable
-{
-  const src = fs.readFileSync(path.join(repoRoot, "remote-control-relay", "web", "index.html"), "utf8");
-  const snippet = extractFunction(src, "isTmpPath") + "\n" + extractFunction(src, "isDeliverable");
-  const isDeliverable = evalIsDeliverable(snippet, "remote-control-relay index.html");
-  // relay 侧扩展名清单与主 app 不同(含 markdown、无 zip/doc/xls),只断言 tmp/ 门控与共有项
-  for (const [p, expected] of CASES) {
-    if (p === "report.txt") continue; // 两侧清单本就不同,不交叉断言
-    assert.strictEqual(
-      isDeliverable(p),
-      expected,
-      `remote-control-relay index.html: isDeliverable(${JSON.stringify(p)}) 应为 ${expected}`,
-    );
-  }
-}
+// 3) remote-control-relay v1 页面已退役(2026-08):原第三侧 isTmpPath/isDeliverable
+//    抽测随 web/index.html 一并移除;v2 WebUI 走 web bridge.js 实现(上方第 2 侧)。
 
 // 4) 回放(rerender)兜底补首卡门控:两侧 bridge 的预扫只在 isDeliverable 通过时
 //    记 writtenArtifacts → tmp/ 文件切 session 重放后不再冒出成品卡
