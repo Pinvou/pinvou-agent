@@ -276,7 +276,6 @@
     });
     notify();
     emitPetEvent("pet:turn_start", sid);
-    publishRemoteUserMessage(sid, displayText, meta && meta.remoteClientMessageId);
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools })
       .then(function () {
         recordAuthoritySyncDiagnostic("local_turn_admitted", Object.assign({
@@ -340,14 +339,10 @@
         return false;
       });
   }
-  function publishRemoteUserMessage(sid, content, clientMessageId) {
-    if (!sid || !content) return;
-    invoke("remote_control_publish_user_message", {
-      sessionId: sid,
-      content: content,
-      clientMessageId: clientMessageId || null,
-    }).catch(function () { /* 没开远控时静默跳过 */ });
-  }
+  // 远端用户消息不再由前端单独 invoke 发布:turn admission 时 Engine 侧统一
+  // emit + 转发 chat:user_message(engine.rs emit_turn_admission),前端重复
+  // 发布会造成远端双份气泡(旧 remote_control_publish_user_message 命令名
+  // 在 Rust 侧从未注册,属 v1 遗留死调用,已删除)。
   // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 严格按 FIFO
   // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
   // 连续输入的多个独立任务合并成一个模型请求。
@@ -776,7 +771,6 @@
       isBusyFor: isBusyFor,
       emitPetEvent: emitPetEvent,
       doSendFor: doSendFor,
-      publishRemoteUserMessage: publishRemoteUserMessage,
       flushQueued: flushQueued,
       sendMessageToSession: sendMessageToSession,
       sendMessage: sendMessage,

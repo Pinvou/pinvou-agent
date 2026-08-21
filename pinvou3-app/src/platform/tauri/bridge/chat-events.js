@@ -218,7 +218,6 @@
     var findPresentedArtifact = context.findPresentedArtifact;
     var isDeliverable = context.isDeliverable;
     var noteArtifactChange = context.noteArtifactChange;
-    var publishRemoteLiveSnapshot = context.publishRemoteLiveSnapshot;
     var persistMessagesFor = context.persistMessagesFor;
     var composePlanMarkdown = context.composePlanMarkdown;
     var refreshHistoryList = context.refreshHistoryList;
@@ -850,7 +849,6 @@
         });
       }
       notify();
-      publishRemoteLiveSnapshot(sid).catch(function () {});
       // 排队式:本轮跑完,若该 session 不忙且有待发消息 → 自动发下一条
       if (reconciled) flushQueued(sid);
     })();
