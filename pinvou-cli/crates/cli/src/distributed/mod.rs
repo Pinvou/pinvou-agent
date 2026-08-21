@@ -583,6 +583,9 @@ fn execute_chat_with_io<R: BufRead, W: Write, S: Read + Write>(
                     if let Some(text) = projection.flush_pending() {
                         write_terminal_to(output, &text)?;
                     }
+                    if let Ok(mut active) = active_turn.lock() {
+                        *active = None;
+                    }
                     if code == StableExitCode::Success {
                         if peek_eof_before_prompt
                             && input
@@ -693,7 +696,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(String::from_utf8(output).unwrap(), "You: hello from node");
-        assert_eq!(active_turn.lock().unwrap().as_deref(), Some("turn-a"));
+        assert_eq!(active_turn.lock().unwrap().as_deref(), None);
         let requests = client.into_inner().requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method(), Some("chat.start"));
@@ -765,13 +768,55 @@ mod tests {
             String::from_utf8(output).unwrap(),
             "You: first reply\nYou: second reply\nYou: "
         );
-        assert_eq!(active_turn.lock().unwrap().as_deref(), Some("turn-b"));
+        assert_eq!(active_turn.lock().unwrap().as_deref(), None);
         let requests = client.into_inner().requests();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].method(), Some("chat.start"));
         assert_eq!(requests[0].payload()["prompt"], "first");
         assert_eq!(requests[1].method(), Some("chat.start"));
         assert_eq!(requests[1].payload()["prompt"], "second");
+    }
+
+    #[test]
+    fn chat_loop_clears_active_turn_after_turn_end_before_waiting_for_next_prompt() {
+        let text = runtime_event(
+            "turn-clean",
+            1,
+            "main",
+            "R1",
+            "text.delta",
+            json!({"role":"assistant","content":"finished","merged_count":1}),
+        );
+        let ended = runtime_event(
+            "turn-clean",
+            1,
+            "control",
+            "R0",
+            "turn.ended",
+            json!({"end_reason":"completed","error":null}),
+        );
+        let stream = TestDuplex::with_responses([
+            IpcMessage::event("runtime.event", serde_json::to_value(text).unwrap()).unwrap(),
+            IpcMessage::event("runtime.event", serde_json::to_value(ended).unwrap()).unwrap(),
+        ]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut input = std::io::Cursor::new(b"finish once\n".to_vec());
+        let mut output = Vec::new();
+
+        execute_chat_with_io(
+            &mut input,
+            &mut output,
+            &mut client,
+            interrupted,
+            Arc::clone(&active_turn),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(String::from_utf8(output).unwrap(), "You: finished");
+        assert_eq!(active_turn.lock().unwrap().as_deref(), None);
     }
 
     #[test]
