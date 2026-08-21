@@ -625,11 +625,12 @@ assert.match(bridge, /if \(client && !client\.stateReady\) \{[\s\S]{0,120}initPr
 // UI mutation affordances must follow the browser capability allowlist while
 // leaving desktop defaults and per-session model switching intact.
 assert.match(settingsView, /const canManageModels = can\('modelManagement'\);/);
-assert.match(settingsView, /const canSwitchModels = can\('sessionModelSwitch'\);/);
-assert.match(settingsView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
-assert.match(settingsView, /const toolSwitchDisabled = !canMutateToolStore;/);
-assert.match(settingsView, /if \(toolSwitchDisabled \|\| \(hasActiveSession && (enabled|projectSkillsEnabled)\)\) return;/);
-assert.match(settingsView, /bridge\.models\.switchModel\(activeSessionId, id\)/);
+const composerShared = fs.readFileSync(path.join(root, 'src', 'features', 'settings', 'composer-shared.jsx'), 'utf8');
+assert.match(composerShared, /const canSwitchModels = can\('sessionModelSwitch'\);/);
+assert.match(composerShared, /const canMutateToolStore = can\('toolStoreMutations'\);/);
+assert.match(composerShared, /const toolSwitchDisabled = !canMutateToolStore;/);
+assert.match(composerShared, /if \(toolSwitchDisabled \|\| \(hasActiveSession && (enabled|projectSkillsEnabled)\)\) return;/);
+assert.match(composerShared, /bridge\.models\.switchModel\(activeSessionId, id\)/);
 assert.match(settingsView, /\{canManageModels && editingModel && \(/);
 assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
 assert.match(toolStoreView, /const canMutateToolStore = can\('toolStoreMutations'\);/);

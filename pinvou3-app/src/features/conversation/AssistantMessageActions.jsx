@@ -129,8 +129,10 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
     };
   }, [closeMenu, menu]);
 
-  const responseText = () => normalizeAssistantMessageText(
-    typeof resolveText === 'function' ? resolveText() : text,
+  // resolveText 可能返回 Promise(旧 HTML 会话的 turndown 懒加载转换);
+  // 消费方都在 async 处理器里,统一 await。
+  const responseText = async () => normalizeAssistantMessageText(
+    typeof resolveText === 'function' ? await resolveText() : text,
   );
 
   const showFeedback = (message, failed = false) => {
@@ -142,7 +144,7 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
   const handleCopy = async () => {
     let copied = false;
     try {
-      const value = responseText();
+      const value = await responseText();
       copied = await copyClipboardText(value);
     } catch {
       copied = false;
@@ -188,7 +190,7 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
   const handleExport = async format => {
     closeMenu('export', true);
     try {
-      const generated = buildAssistantResponseExport(responseText(), format, {
+      const generated = buildAssistantResponseExport(await responseText(), format, {
         title: copy.exportReplyTitle,
         language: document.documentElement.lang || 'zh-CN',
       });
@@ -204,12 +206,13 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
     }
   };
 
-  const copyForShare = async () => copyClipboardText(responseText());
+  const copyForShare = async () => copyClipboardText(await responseText());
 
   const handleSystemShare = async () => {
     closeMenu('share', true);
+    let value = null;
     try {
-      const value = responseText();
+      value = await responseText();
       const result = await shareAssistantResponseWithSystem({
         title: copy.shareReplyTitle,
         text: value,
@@ -222,8 +225,15 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
       const copied = await copyClipboardText(value);
       showFeedback(copied ? copy.shareUnavailable : copy.shareFailed, !copied);
     } catch {
-      const copied = await copyForShare();
-      showFeedback(copied ? copy.shareUnavailable : copy.shareFailed, !copied);
+      // responseText 可能因 turndown chunk 拉取失败 reject——此时 catch 里再调
+      // copyForShare() 会二次 reject 逃出 catch(unhandled rejection 且无反馈)。
+      // 只复用 try 里已解析成功的 value 复制;连 value 都没有时如实报分享失败。
+      try {
+        const copied = value !== null ? await copyClipboardText(value) : false;
+        showFeedback(copied ? copy.shareUnavailable : copy.shareFailed, !copied);
+      } catch {
+        showFeedback(copy.shareFailed, true);
+      }
     }
   };
 

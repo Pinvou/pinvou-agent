@@ -281,6 +281,19 @@ impl ConnectorConn {
             m.entry(id).or_default().pid = pid;
         }
     }
+
+    /// 退出收割（lib.rs RunEvent::Exit 调）：杀掉所有槽位登记的长驻子进程树。
+    /// 这些 CLI 子进程（.cmd 拉起的 node）没有 kill_on_drop 兜底，宿主进程
+    /// 退出后若不显式清理会变孤儿进程继续驻留。
+    pub fn kill_all_pids(&self) {
+        if let Ok(m) = self.slots.lock() {
+            for slot in m.values() {
+                if let Some(pid) = slot.pid {
+                    kill_pid_tree(pid);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

@@ -10,7 +10,7 @@ import {
   subagentTreeIsDone,
   visibleSubagentDescendantRows,
 } from '../multiagent/subagent-conversation.mjs';
-import { AppIcon } from '../personas/Personas.jsx';
+import { AppIcon } from '../personas/persona-shared.jsx';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { AcShieldCheck, AcSparkles, ArtifactCard, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, outBox, parseReceipt, toolBasename, toolSummary, tryParseJson, tryTailJson } from './tool-common.jsx';
 

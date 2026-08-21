@@ -195,7 +195,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
             className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden text-[10px] font-semibold tracking-[0.02em]"
             style={{ color: meta.color }}
           >
-            <img src={fileIconSrc(ext, category)} alt="" className={`${isImageIcon ? 'h-9 w-9' : 'h-10 w-10'} object-contain`} draggable={false} />
+            <img src={fileIconSrc(ext, category)} alt="" loading="lazy" decoding="async" className={`${isImageIcon ? 'h-9 w-9' : 'h-10 w-10'} object-contain`} draggable={false} />
             <span className="sr-only">{code}</span>
           </span>
         );
@@ -376,7 +376,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
             <div className="h-2 w-[54%] rounded-full bg-white/10 animate-pulse"></div>
           </div>
         );
-        if (pv.kind === 'image') return shell(<img src={pv.url} alt="" className="w-full h-full object-cover" />);
+        if (pv.kind === 'image') return shell(<img src={pv.url} alt="" decoding="async" className="w-full h-full object-cover" />);
         if (pv.kind === 'html') return shell(
           <>
             {!frameReady && <div className="absolute inset-0 bg-[#15171a]"></div>}
@@ -500,7 +500,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
             <div className="h-2 w-[62%] rounded-full bg-white/10 animate-pulse"></div>
           </div>
         );
-        if (pv.kind === 'image') return shell(<img src={pv.url} alt="" className="w-full h-full object-cover" />);
+        if (pv.kind === 'image') return shell(<img src={pv.url} alt="" decoding="async" className="w-full h-full object-cover" />);
         if (pv.kind === 'html') return shell(
           <>
             {!frameReady && <div className="absolute inset-0 bg-[#15171a]"></div>}
@@ -693,8 +693,12 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       const modelReadyKnown = effectiveKbModel && typeof effectiveKbModel.ready === 'boolean';
       const modelLoading = !!(kbm.startupLoading || (effectiveKbModel && effectiveKbModel.loading));
       const modelReady = !modelReadyKnown || effectiveKbModel.ready === true || kbm.startupReady === true;
-      const modelFailed = modelInstalled && modelReadyKnown && !modelReady && !modelLoading;
-      const modelUsable = modelInstalled && modelReady;
+      // 故意延迟：模型已装但首帧门控因「本地无已入库内容且远程无连接」跳过加载。
+      // 这不是失败——显示正常知识库 UI（空状态可建库/导入，导入会触发真实补载），
+      // 语义检索按既有口径退化为全文（embedInfo.enabled=false 徽标已表达）。
+      const modelDeferred = !!(effectiveKbModel && effectiveKbModel.deferredNoUsage);
+      const modelFailed = modelInstalled && modelReadyKnown && !modelReady && !modelLoading && !modelDeferred;
+      const modelUsable = modelInstalled && (modelReady || modelDeferred);
       const dlProg = kbm.progress || null;
       const downloading = !!kbm.downloading;
       const mb = (n) => Math.round((n || 0) / 1048576);

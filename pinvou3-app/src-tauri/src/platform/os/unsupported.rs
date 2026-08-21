@@ -223,8 +223,19 @@ pub fn connector_cli_command(_cli_bin: &str, program: &str) -> Command {
 
 pub fn apply_user_npm_prefix(_cmd: &mut Command) {}
 
+/// 退出收割用的树杀(macOS 走此实现)。连接器 CLI 是 npm shim(shell→node),
+/// spawn 侧已 `process_group(0)` 成组,这里按负 pid 杀整组;单杀 shim pid 会把
+/// node 孙进程孤儿化。组杀失败(进程未成组的旧登记)追加单 pid 兜底。
 pub fn kill_pid_tree(pid: u32) {
-    let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+    let group_arg = format!("-{pid}");
+    let group_ok = Command::new("kill")
+        .args(["-9", group_arg.as_str()])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !group_ok {
+        let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+    }
 }
 
 pub fn super_permission_is_enabled() -> bool {

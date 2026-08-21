@@ -82,6 +82,11 @@ async function clickChip(page, text) {
     await page.waitForFunction(() => document.querySelector('[data-nav="toolstore"]'), { timeout: 20000 });
     await page.evaluate(() => { document.querySelector('[data-nav="toolstore"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); });
     await page.waitForFunction(() => document.body.innerText.includes('插件中心'), { timeout: 10000 });
+    // 懒加载视图:标题来自静态 i18n,首帧即有;类型 chip 里的「插件包」依赖
+    // list_marketplace_tools 返回后 skillToMcp 建立的二次渲染——视图切换包在
+    // startTransition 里时该重渲染会比首帧晚一帧提交。等数据驱动的「插件包」
+    // chip 出现再读全量 chip 列表(其余 chip 与它同批渲染)。
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].some(b => (b.textContent || '').trim() === '插件包'), { timeout: 2000 });
 
     const chipText = await page.evaluate(() => [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()));
     for (const label of ['按类型', '按业务', '全部', '插件包', 'MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {

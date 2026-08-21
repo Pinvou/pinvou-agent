@@ -110,6 +110,21 @@ fn allow_embedded_document_navigation(url: &tauri::Url, main_origin_initialized:
     main_origin_initialized && matches!(url.as_str(), "about:blank" | "about:srcdoc")
 }
 
+/// 子进程收割：退出(RunEvent::Exit)与重启(`app.restart()`,Tauri 2 中跳过 Exit
+/// 事件)前共用的收口。managed state 不保证被 drop(kill_on_drop 只在 Child drop
+/// 时生效),显式关停 ACP/连接器子进程防孤儿。各收口内部幂等,超时风险最大的
+/// shutdown() 也只发 oneshot + kill,不做长等待。
+pub(crate) async fn harvest_child_processes(app: &tauri::AppHandle) {
+    if let Some(acp_pool) = app.try_state::<crate::features::codex_acp::AcpPool>() {
+        acp_pool.shutdown_all().await;
+    }
+    if let Some(connector_conn) =
+        app.try_state::<crate::features::connectors::connector_cli::ConnectorConn>()
+    {
+        connector_conn.kill_all_pids();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 必须最先执行:进程级选定 rustls CryptoProvider。
@@ -303,9 +318,8 @@ pub fn run() {
             startup::mark("session_store:start");
             let session_store = match SessionStore::boot_for_process_startup() {
                 Ok(store) => {
-                    store.load_session_models();
-                    store.load_pinned_sessions();
-                    store.load_hidden_sessions();
+                    // sidecar(per-session 模型 / 置顶 / 隐藏)已由 SessionStore::boot_inner
+                    // 在 boot 时统一加载,setup 不再重复读同一批文件。
                     eprintln!("[pinvou3-app] session store ready");
                     Some(store)
                 }
@@ -344,6 +358,9 @@ pub fn run() {
                     Ok(pool) => {
                         let agents = pool.agents().clone();
                         let capability_pool = pool.clone();
+                        // 空闲回收巡检：ACP 会话是活的子进程，空闲超阈值回收
+                        // （回到 lazy spawn 语义，下次使用重新拉起）。
+                        pool.start_idle_reaper();
                         handle.manage(pool);
                         eprintln!("[pinvou3-app] Codex ACP pool ready (lazy spawn per session)");
                         (agents, capability_pool)
@@ -369,14 +386,17 @@ pub fn run() {
             let tool_policy: crate::features::assistant::engine_pool::ToolPolicy =
                 std::sync::Arc::new(|app| {
                     let mut tools = crate::features::marketplace::disabled_tool_names();
-                    let kb_usable = app
-                        .try_state::<knowledge::KnowledgeService>()
-                        .map(|service| service.has_indexed_content() && service.semantic_ready())
-                        .unwrap_or(false)
-                        || app
-                            .try_state::<RemoteKnowledgeService>()
+                    // 语义与单一真相源见 KnowledgeService::kb_tools_usable:
+                    // 只看有没有内容,不看模型在位状态(可见性随模型波动会让
+                    // 自愈重载路径不可达)。
+                    let kb_usable = knowledge::KnowledgeService::kb_tools_usable(
+                        app.try_state::<knowledge::KnowledgeService>()
+                            .map(|service| service.has_indexed_content())
+                            .unwrap_or(false),
+                        app.try_state::<RemoteKnowledgeService>()
                             .map(|service| service.has_connections())
-                            .unwrap_or(false);
+                            .unwrap_or(false),
+                    );
                     if !kb_usable {
                         tools.push("kb_search".to_string());
                         tools.push("kb_open_source".to_string());
@@ -439,7 +459,10 @@ pub fn run() {
                             eprintln!("[pinvou3-app] scheduled tasks runtime init failed: {e:#}");
                         }
                     }
-                    handle.manage(pool);
+                    handle.manage(pool.clone());
+                    // 空闲回收巡检：engine 常驻但不再无限常驻，空闲超阈值回收
+                    // （回到 lazy spawn 语义，下次发消息重建 + 注水历史）。
+                    pool.start_idle_reaper();
                     eprintln!("[pinvou3-app] engine pool ready (lazy spawn per session)");
                     match remote_control_manager.resume() {
                         Ok(true) => eprintln!("[pinvou3-app] persistent Web access resumed"),
@@ -965,11 +988,18 @@ pub fn run() {
     startup::mark("tauri:build:done");
     startup::mark("tauri:event_loop:run_enter");
     let mut resumed_reported = false;
-    app.run(move |_app, event| match event {
+    app.run(move |app, event| match event {
         tauri::RunEvent::Ready => startup::mark("tauri:event_loop:ready"),
         tauri::RunEvent::Resumed if !resumed_reported => {
             resumed_reported = true;
             startup::mark("tauri:event_loop:first_resumed");
+        }
+        tauri::RunEvent::Exit => {
+            // 退出收割:同步执行——Exit 后进程即将结束,这是最后的清理窗口。
+            // 重启(app.restart())跳过本事件,调用点在 restart 前主动调同一辅助函数。
+            startup::mark("exit:cleanup:start");
+            tauri::async_runtime::block_on(harvest_child_processes(app));
+            startup::mark("exit:cleanup:done");
         }
         _ => {}
     });

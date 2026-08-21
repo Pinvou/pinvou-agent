@@ -3,7 +3,7 @@ import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { Download, ExternalLink, FolderOpen, Maximize2, Minimize2, XCircle } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
-import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
+import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
 import { cardBtnCls } from '../tools/tool-renderers.jsx';
 import { DESIGN_MESSAGE_TYPES, buildDesignRuntimeScript } from './design-runtime.js';
 import { DesignInspectorPanel } from './DesignInspectorPanel.jsx';

@@ -187,11 +187,6 @@
     window.addEventListener('DOMContentLoaded', function () {
       const isPetWindow = new URLSearchParams(window.location.search).get('window') === 'pet';
       if (isPetWindow) return;
-      if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
-        window.__TAURI__.core.invoke('get_monitor_snapshot').catch(function (e) {
-          console.warn('[monitor] direct boot probe failed', e);
-        });
-      }
       if (window.TauriBridge && typeof window.TauriBridge.init === 'function') {
         window.TauriBridge.init().catch(function (e) {
           console.warn('[TauriBridge] boot init failed', e);
@@ -199,7 +194,33 @@
       }
     });
   </script>
-  <script src="%BASE_URL%features/personas/personas-i18n.js" onload="__PINVOU_STARTUP__.mark('app:personas_i18n_loaded')" onerror="__PINVOU_STARTUP__.mark('app:personas_i18n_error')"></script>
+  <!-- 内置卡牌 en/ja 名称 overlay(141KB):中文用户零读取(personaText 对 zh 短路),
+       按系统语言首选 tag 条件加载——口径与 i18n.js languageFromLocaleTags 一致
+       (取首个有效 tag 的主语言;zh 首选即跳过)。用「任一 tag 含 en/ja」判定会让
+       zh 首选+en 次选的常见中文用户白读 141KB,而 UI 语言解析为 zh、personaText
+       短路。首选不受支持(如 fr)时 App 落 en,由 main.jsx 的 UI 语言兜底注入。 -->
+  <script>
+    (function () {
+      var tags = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || 'zh'];
+      var primaryTag = String(tags.find(function (t) { return t && String(t).trim(); }) || tags[0] || 'zh');
+      // 前缀比较,避免正则转义陷阱(此前 \b 被写成字面 0x08 导致永不匹配)
+      var primary = primaryTag.slice(0, 2).toLowerCase();
+      var needsPersonaI18n = primary === 'en' || primary === 'ja';
+      if (!needsPersonaI18n) { __PINVOU_STARTUP__.mark('app:personas_i18n_skipped', 'lang=' + primaryTag); return; }
+      var s = document.createElement('script');
+      // data-personas-i18n:main.jsx 按 UI 语言兜底注入时据此识别在途脚本,防止重复加载
+      s.setAttribute('data-personas-i18n', '1');
+      s.src = '%BASE_URL%features/personas/personas-i18n.js';
+      s.onload = function () { __PINVOU_STARTUP__.mark('app:personas_i18n_loaded'); };
+      // 加载失败必须移除元素:main.jsx 的 UI 语言兜底靠 querySelector 找在途
+      // 脚本,元素残留会让兜底只挂一个永不触发的 load 监听,形成死路。
+      s.onerror = function () {
+        __PINVOU_STARTUP__.mark('app:personas_i18n_error');
+        s.remove();
+      };
+      document.head.appendChild(s);
+    })();
+  </script>
   <script src="%BASE_URL%features/updater/update-notice-logic.js" onload="__PINVOU_STARTUP__.mark('app:update_notice_logic_loaded')" onerror="__PINVOU_STARTUP__.mark('app:update_notice_logic_error')"></script>
   <script type="module" src="/app/main.jsx" onload="__PINVOU_STARTUP__.mark('app:main_module_loaded'); __PINVOU_STARTUP__.flush()" onerror="__PINVOU_STARTUP__.mark('app:main_module_error'); __PINVOU_STARTUP__.flush()"></script>
 </body>

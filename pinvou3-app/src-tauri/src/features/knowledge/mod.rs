@@ -32,7 +32,7 @@ pub use l1::{Collection, Document};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -61,6 +61,9 @@ pub struct ScanState {
 }
 
 /// 知识服务：L0 元数据库 + 后台扫描状态 + L1 知识库(共享同一连接)。Tauri managed state。
+/// Clone 是句柄语义（内部全 Arc/连接池）：后台导入线程持 clone 补载模型并
+/// 经 `install_embedder` 启动空闲巡检，与 managed state 共享同一份运行时状态。
+#[derive(Clone)]
 pub struct KnowledgeService {
     store: Store,
     l1: l1::L1Store,
@@ -73,7 +76,44 @@ pub struct KnowledgeService {
     imports: import_jobs::ImportJobStore,
     active_import: Arc<Mutex<Option<String>>>,
     index_cancel: Arc<AtomicBool>,
+    /// embedder 空闲卸载巡检任务句柄 + 防振荡时钟。模型常驻 ~570MB 内存；
+    /// 巡检在空闲超阈值时 `set_embedder(None)` 卸载，kb_model_status 的热加载
+    /// 钩子（用户意图）会自动重载。放 Option 使「未装模型 → 不起巡检」零开销。
+    embedder_reaper: Arc<Mutex<Option<EmbedderReaper>>>,
+    /// 上次自动卸载 embedding 模型的 UNIX 秒（防振荡）：距上次卸载不足
+    /// EMBEDDER_UNLOAD_COOLDOWN_SECS 时不再自动卸载。放在服务级字段（而非
+    /// 巡检任务内）是因为卸载/热加载会重启巡检任务，冷却必须跨任务存活。
+    embedder_last_unload_epoch: Arc<AtomicI64>,
 }
+
+/// embedder 空闲卸载巡检任务句柄（Drop 即停）。
+struct EmbedderReaper {
+    #[allow(dead_code)]
+    guard: EmbedderReaperGuard,
+}
+
+struct EmbedderReaperGuard {
+    cancel: tokio_util::sync::CancellationToken,
+    handle: tauri::async_runtime::JoinHandle<()>,
+}
+
+impl Drop for EmbedderReaperGuard {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.handle.abort();
+    }
+}
+
+/// embedder 空闲卸载阈值：无检索/索引活动超过该时长 → 卸载模型释放 ~570MB。
+/// 20 分钟取偏保守值：语义检索是聊天增强路径，卸载后下一次检索退化为纯全文，
+/// 宁可多留一会儿也不让常用用户频繁掉级。
+const EMBEDDER_IDLE_UNLOAD_AFTER_SECS: u64 = 20 * 60;
+/// embedder 空闲卸载巡检间隔（与 AcpPool/EnginePool 空闲回收节奏一致）。
+const EMBEDDER_REAP_INTERVAL_SECS: u64 = 5 * 60;
+/// 卸载冷却：距上次自动卸载不足该时长时不再自动卸载。防「kb_model_status
+/// 热加载（用户查状态=用户意图）→ 巡检立刻又卸载」的振荡循环；热加载视为
+/// 用户意图，重载后空闲时钟与冷却都重新计时。
+const EMBEDDER_UNLOAD_COOLDOWN_SECS: i64 = 10 * 60;
 
 impl KnowledgeService {
     /// 只用磁盘库初始化（`~/.pinvou3/knowledge/index.db`）。embedding 模型必须在首帧后
@@ -107,6 +147,8 @@ impl KnowledgeService {
             imports,
             active_import: Arc::new(Mutex::new(None)),
             index_cancel: Arc::new(AtomicBool::new(false)),
+            embedder_reaper: Arc::new(Mutex::new(None)),
+            embedder_last_unload_epoch: Arc::new(AtomicI64::new(0)),
         })
     }
 
@@ -145,14 +187,110 @@ impl KnowledgeService {
     }
 
     /// 将后台构建完成的模型原子换入共享槽；所有 L1Store clone 立即可见。
+    /// 同时重置空闲时钟并确保巡检在跑：热加载（下载完成 / kb_model_status
+    /// 状态查询 / 导入前补载）都视为用户意图，从加载时刻重新计空闲。
     fn install_embedder(&self, embedder: Arc<embed::Embedder>) -> bool {
         eprintln!(
             "[knowledge] L1 embedding 已启用: {} ({})",
             embedder.model(),
             embedder.source()
         );
+        self.l1.note_embed_activity();
         self.l1.set_embedder(Some(embedder));
+        self.ensure_embedder_reaper();
         true
+    }
+
+    /// 启动 embedder 空闲卸载巡检（幂等）。巡检常驻直到服务释放：模型在场
+    /// 才可能触发卸载，已卸载时每轮只做一次原子读，开销可忽略。
+    fn ensure_embedder_reaper(&self) {
+        let mut slot = self.embedder_reaper.lock();
+        if slot.is_some() {
+            return;
+        }
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let l1 = self.l1.clone();
+        let last_unload = self.embedder_last_unload_epoch.clone();
+        let handle = tauri::async_runtime::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(EMBEDDER_REAP_INTERVAL_SECS));
+            // tokio::interval 首个 tick 立即到期：跳过，统一走周期节奏。
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = task_cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                // 单轮 panic 隔离：巡检循环 panic 会让整个 async task 静默终止
+                // （guard Drop 只在服务释放时触发），模型从此常驻不再卸载。风险
+                // 本就低（条件读取 + 原子写），兜底只为「停摆不静默」。
+                let tick_l1 = l1.clone();
+                let tick_unload = last_unload.clone();
+                if let Err(panic) = catch_unwind(AssertUnwindSafe(move || {
+                    // 条件逐轮重读：模型可能已被热卸载/热加载。
+                    let should_unload = tick_l1.has_embedder()
+                        && tick_l1.embedder_idle_secs() >= EMBEDDER_IDLE_UNLOAD_AFTER_SECS
+                        && now() - tick_unload.load(Ordering::Acquire)
+                            >= EMBEDDER_UNLOAD_COOLDOWN_SECS;
+                    if should_unload {
+                        eprintln!(
+                            "[knowledge] embedding 模型空闲超过 {} 秒，卸载释放内存（下次状态查询/导入自动重载）",
+                            EMBEDDER_IDLE_UNLOAD_AFTER_SECS
+                        );
+                        // set_embedder(None) 后所有 L1Store clone 即刻回到纯全文检索；
+                        // 正在跑的推理持有 Arc 副本，跑完自然释放。
+                        tick_l1.set_embedder(None);
+                        tick_unload.store(now(), Ordering::Release);
+                    }
+                })) {
+                    eprintln!(
+                        "[knowledge] embedding 空闲巡检单轮 panic（已隔离，下轮继续）: {panic:?}"
+                    );
+                }
+            }
+        });
+        *slot = Some(EmbedderReaper {
+            guard: EmbedderReaperGuard { cancel, handle },
+        });
+    }
+
+    /// 后台索引入口的补载：模型被空闲卸载或被首帧门控跳过（deferred）后，导入
+    /// 线程在向量化开始前同步重载（阻塞读 ONNX ~570MB，只在导入线程，不占 UI）。
+    /// 索引需要向量化，模型缺位会让整个导入静默降级为纯全文（chunks.vec 全
+    /// NULL，事后无法补）。必须经 `install_embedder` 落位：补载是首帧门控主干
+    /// 路径（deferred→导入）上的**首次也是唯一**一次加载，绕过它会让空闲卸载
+    /// 巡检永不启动，~570MB 常驻直到退出。
+    fn reload_embedder_if_import_needed(&self) {
+        self.reload_embedder_if_import_needed_with(model_download::model_installed(), || {
+            Self::load_embedder(Some(&model_dir()))
+        });
+    }
+
+    /// 上一方法的可测核心：`model_installed` 与加载器注入，便于断言门控与
+    /// 失败路径不落 embedder、不误起巡检。成功路径经 install_embedder 语义
+    /// 由既有 KbModelStatus/deferred 契约测试覆盖。
+    fn reload_embedder_if_import_needed_with(
+        &self,
+        model_installed: bool,
+        load: impl FnOnce() -> Result<Arc<embed::Embedder>, String>,
+    ) {
+        if self.l1.has_embedder() || !model_installed {
+            return;
+        }
+        // 门控放行 = 即将真实加载:清除「故意延迟」标记,此后的失败按真实失败
+        // 上报,不被 deferred 状态掩盖(与 kb_model_status 热加载同语义)。
+        model_download::clear_deferred_no_usage();
+        match load() {
+            Ok(embedder) => {
+                self.install_embedder(embedder);
+                eprintln!("[knowledge] 导入前重载 embedding 模型完成（向量化解锁）");
+            }
+            Err(error) => {
+                // 与首帧加载同语义：加载失败保持全文降级，不阻断导入。
+                eprintln!("[knowledge] 导入前重载 embedding 模型失败（降级仅全文）: {error}");
+            }
+        }
     }
 
     /// 热加载 embedding 模型（按需下载完成后调）：按 dev-env 优先 / 下载落点兜底重新定位并加载，
@@ -170,6 +308,16 @@ impl KnowledgeService {
         self.l1.has_any_document().unwrap_or(false)
     }
 
+    /// kb 工具可见性判定（lib.rs tool_policy 的单一真相源）：
+    /// **只看有没有内容，不看 embedding 模型在位状态**。模型可能被空闲卸载/首帧
+    /// 门控跳过，可见性若随之波动，快照式重算会把 kb_search 写进 disallowed，
+    /// 新 spawn 的 engine 看不到工具，工具内的按需重载自愈路径反而不可达——
+    /// 这是审阅 blocker 的修复语义，回归测试锚定在 model_download.rs
+    /// （`kb_tools_stay_visible_after_model_unload_when_content_present`）。
+    /// 模型缺位由 kb_search 执行时走租约化重载兜底（失败降级纯全文，不阻断检索）。
+    pub fn kb_tools_usable(indexed_content: bool, remote_connections: bool) -> bool {
+        indexed_content || remote_connections
+    }
     pub fn index_status(&self) -> IndexState {
         self.imports
             .latest_state()
@@ -269,7 +417,9 @@ impl KnowledgeService {
     fn launch_import(&self, job_id: String) {
         self.index_cancel.store(false, Ordering::Relaxed);
         let imports = self.imports.clone();
-        let l1 = self.l1.clone();
+        // 服务句柄（Clone 共享同一份 embedder 槽/巡检状态）：导入线程用它补载
+        // 模型，必须经 install_embedder 语义落位，否则空闲卸载巡检不会启动。
+        let service = self.clone();
         let cancel = self.index_cancel.clone();
         let active = self.active_import.clone();
         // panic 兜底需要一份不被闭包 move 走的句柄，否则 panic 后无法清理。
@@ -281,6 +431,11 @@ impl KnowledgeService {
             // 进程死亡已由启动时的 recover_interrupted 兜底，但进程内线程 panic 不会
             // 触发它：若不在此兜住，active_import 会永久卡在已死的任务上，直到完全重启。
             let outcome = catch_unwind(AssertUnwindSafe(move || {
+                // 模型可能已被空闲卸载或被首帧门控跳过：索引需要向量化，模型缺位
+                // 会让整个导入静默降级为纯全文（chunks.vec 全 NULL，事后无法补），
+                // 先经 install_embedder 补载。
+                service.reload_embedder_if_import_needed();
+                let l1 = service.l1().clone();
                 let state = match imports.state(&job_id) {
                     Ok(v) => v,
                     Err(_) => {
@@ -439,6 +594,10 @@ impl KnowledgeService {
         self.scan_state.lock().clone()
     }
 }
+
+/// 后台索引入口的补载实现已上收到 `KnowledgeService::
+/// reload_embedder_if_import_needed`（导入线程持有服务句柄，补载必须经
+/// install_embedder 启动空闲巡检，自由函数直写 l1 槽会绕过巡检启动）。
 
 fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
     let ex = Excluder::default();
@@ -733,4 +892,45 @@ pub async fn kb_search(
 pub async fn kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, String> {
     let store = state.store.clone();
     spawn_db(move || store.stats().map_err(|e| e.to_string())).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn service() -> KnowledgeService {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3_kb_import_reload_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        KnowledgeService::new(&dir.join("index.db")).expect("KnowledgeService::new")
+    }
+
+    /// 导入补载的门控契约：模型未安装或已在位时不发起加载（加载器注入计数
+    /// 验证门控短路），加载失败不落 embedder、不误起空闲巡检（补载失败走
+    /// 纯全文降级，起巡检只会空转）。
+    #[test]
+    fn import_reload_skips_when_installed_or_ready_and_survives_load_failure() {
+        let svc = service();
+        let mut calls = 0;
+        svc.reload_embedder_if_import_needed_with(false, || {
+            calls += 1;
+            unreachable!("模型未安装不应触发加载")
+        });
+        assert_eq!(calls, 0);
+        assert!(!svc.semantic_ready());
+
+        let svc = service();
+        svc.reload_embedder_if_import_needed_with(true, || Err("模拟加载失败".into()));
+        assert!(!svc.semantic_ready(), "加载失败不得落入 embedder 槽");
+        assert!(
+            svc.embedder_reaper.lock().is_none(),
+            "加载失败不应启动空闲巡检"
+        );
+
+        let svc = service();
+        svc.reload_embedder_if_import_needed_with(true, || Err("再次失败".into()));
+        assert!(!svc.semantic_ready(), "失败后再次导入仍应重试补载");
+    }
 }

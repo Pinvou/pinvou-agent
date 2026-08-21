@@ -162,6 +162,9 @@ fn run_connect_flow(app: &AppHandle) {
 /// 返回 Ok(true)=注册成功;Ok(false)=被取消;Err=失败。
 fn phase_register(app: &AppHandle) -> Result<bool, String> {
     let mut cmd = lark(&["config", "init", "--new"]);
+    // 独立进程组:npm shim(shell→node)派生的孙进程与 shim 同组,退出收割的
+    // kill_pid_tree 按负 pid 组杀整棵树,单杀 shim pid 会把 node 孤儿化。
+    crate::platform::process::std_process_group_leader(&mut cmd);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

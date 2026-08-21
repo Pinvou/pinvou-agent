@@ -1,6 +1,7 @@
-import React, { useEffect, useId, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
+import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -119,7 +120,9 @@ function localizedSemanticLabel(value, copy) {
 }
 
 export function ConversationMarkdown({ text, className = '', onOpenExternal, onOpenResource }) {
-  const html = useMemo(() => renderMarkdown(text), [text]);
+  // 懒加载语言注册完成会 bump 版本号:加入 deps 让历史消息重算,恢复高亮。
+  const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
+  const html = useMemo(() => renderMarkdown(text), [text, syntaxVersion]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
     if (!anchor) return;
