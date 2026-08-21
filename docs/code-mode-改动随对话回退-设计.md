@@ -158,9 +158,9 @@ feat 分支没有的部分，本方案新增：
 - 启用底座 journal 分支（物理截断 + sidecar 已满足 v1 语义）。
 - **编辑重发与回退的整合**（2026-08-21 审阅补充）：语义上「编辑第 N 轮重发」= 回退到第 N-1 轮 + 发送，但代码会话里既有的 `Op::EditLastTurn` 只截对话、不动代码，会制造本功能要消灭的「对话没了代码还在」。在 turn 锚定的漂移问题（§12）有解之前不做整合；v1 期间代码会话的编辑重发入口如需暴露，必须同样走 checkpoint 恢复，否则禁用并引导到「回退后重发」。
 
-## 12. 已知限制（2026-08-21 设计审阅留痕）
+## 12. 已知限制（2026-08-21 设计审阅留痕；同日后两项已落地）
 
-- **compaction 摘要残留**：`merge_compaction_summary` 把压缩摘要合进 system_prompt 并持久化；回退只截 messages，system_prompt 不动——经历过压缩的会话回退后，模型上下文可能带着描述「被截掉的未来」的摘要。v1 不做 system_prompt 同步修正，后续迭代评估（最低限度：回退后提示「该会话经历过压缩，上下文可能含摘要残留」）。
+- **compaction 摘要残留**：`merge_compaction_summary` 把压缩摘要合进 system_prompt 并持久化；回退只截 messages，system_prompt 不动——经历过压缩的会话回退后，模型上下文可能带着描述「被截掉的未来」的摘要。v1 落地最低限度方案：`rewind_to_turn` 返回 `hadCompaction`（按底座 marker 字面量检测），前端回退后如实提示「该会话经历过对话压缩，回退后上下文可能仍含早期摘要」；system_prompt 同步修正后续迭代评估。
 - **compaction 导致 turn 计数漂移**：`count_user_turns` 按当前消息序列计数，compaction 替换序列后 user prompt 数量变化，checkpoint 的 turn 号（压缩前计数）与新序列错位，chip 对齐可能失准。turn 序号漂移有三个来源（截断/压缩/编辑），本设计只处理了截断（§4 步骤 5）。彻底解法是持久化稳定 turn 锚（动存储格式），v2 评估。
-- **代码反悔缺 UI 入口**：PreRestore 机制在（恢复前强制快照），但其条目 `turn=None` 不进 chip 对齐，`restore_checkpoint` 命令在 UI 上无触达路径——回退错了实际无法反悔。补「撤销上次回退」入口成本低，待排期。
+- **代码反悔缺 UI 入口**：已落地（2026-08-21）。`rewind_undo_state`（可反悔 ⟺ sidecar 有备份 + 回退后未发新轮次 + 有 PreRestore）+ `undo_last_rewind`（恢复代码到最新 PreRestore + 对话从 sidecar 还原 + engine 重建；restore 自身会再打 PreRestore，反悔可再反悔）+ 时间线「撤销回退」chip（发过新轮次自动消失）。
 - **他会话基线漂移**：共享执行根的其他会话在回退后继续创作时，其下一次快照会以被回退后的工作区为基线，其 checkpoint 序列语义已悄悄改变。无解，与 §6 的「恢复单位是执行根」声明一致。
