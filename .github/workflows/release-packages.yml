@@ -82,7 +82,11 @@ jobs:
     name: 构建 Linux x86_64 deb
     needs: check-version-bump
     if: needs.check-version-bump.outputs.build_required == 'true'
-    runs-on: ubuntu-latest
+    # Linux 发布基线是 Ubuntu 22.04 (glibc 2.35)。发布二进制链接构建机的 glibc,
+    # 在更新的 Ubuntu runner(当前 latest 指向 24.04/glibc 2.39)上构建会引入
+    # 22.04 没有的 GLIBC_2.3x+ 符号引用,导致 22.04 用户启动即崩。runner 必须钉在
+    # ubuntu-22.04,升级前先确认新基线决策(配套 glibc 下限守护步骤见构建尾部)。
+    runs-on: ubuntu-22.04
     timeout-minutes: 90
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
@@ -110,7 +114,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: pinvou3-app/src-tauri
-          shared-key: release-linux-x64
+          # jammy 后缀:runner 从 24.04 降到 22.04 时必须换 key,防止 24.04
+          # glibc 环境编译的 target 产物被复用进 22.04 构建混入新符号引用。
+          shared-key: release-linux-x64-jammy
           # 手动分支验证只读，main 正式发布保存。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -174,6 +180,14 @@ jobs:
           echo "$SHA  $DST" > "$DST.sha256"
           ls -lh "$DST"
 
+      # glibc 下限守护:解包 deb,对每个 ELF 断言 GLIBC_ 符号版本 ≤ 2.35
+      # (Ubuntu 22.04 基线)。runner 被误升或依赖引入新符号时在此挡下,
+      # 而不是等 22.04 用户启动崩溃。deb 内 ELF = 主二进制 + codex-bridge
+      # 的 node + knowledge-host 的 pinvou-knowledge-server(asr 是 python、
+      # knowledge-host 的 helper 是 shell、连接器 CLI 首用下载)。
+      - name: glibc 下限守护 (Ubuntu 22.04 = glibc 2.35)
+        run: ./scripts/check-linux-glibc-floor.sh "pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${VERSION}-linux-x64.deb"
+
       - name: 上传 deb artifact
         uses: actions/upload-artifact@v7
         with:
@@ -189,7 +203,9 @@ jobs:
     name: 构建 Linux arm64 deb
     needs: check-version-bump
     if: needs.check-version-bump.outputs.build_required == 'true'
-    runs-on: ubuntu-24.04-arm
+    # 与 build-linux-x64 同理:Linux 发布基线是 Ubuntu 22.04 (glibc 2.35),
+    # runner 钉在 ubuntu-22.04-arm,升级前先确认新基线决策。
+    runs-on: ubuntu-22.04-arm
     timeout-minutes: 90
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
@@ -214,7 +230,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: pinvou3-app/src-tauri
-          shared-key: release-linux-arm64
+          # jammy 后缀:同 x64,换 runner 基座后必须换 key 防止旧 glibc 产物混链。
+          shared-key: release-linux-arm64-jammy
           # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 1.2GB+ 缓存。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -271,6 +288,10 @@ jobs:
           echo "deb sha256: $SHA"
           echo "$SHA  $DEB" > "$DEB.sha256"
           ls -lh "$DEB"
+
+      # glibc 下限守护(同 build-linux-x64,断言全部 ELF 的 GLIBC_ 符号 ≤ 2.35)。
+      - name: glibc 下限守护 (Ubuntu 22.04 = glibc 2.35)
+        run: ./scripts/check-linux-glibc-floor.sh "pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${VERSION}-linux-arm64.deb"
 
       - name: 上传 deb artifact
         uses: actions/upload-artifact@v7
