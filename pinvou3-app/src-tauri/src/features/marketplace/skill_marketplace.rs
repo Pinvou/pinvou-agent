@@ -160,6 +160,12 @@ pub struct MarketplaceSkillInfo {
     /// 无版本号概念:打开商店列表时做无状态目录树比对(见
     /// [`SkillMarketplaceManager::preset_update_available`])。未安装/上传技能恒 false。
     pub update_available: bool,
+    /// 用户自定义展示名/说明覆盖的**原值**（仅上传技能；存于 bundles.json extra，
+    /// 供前端编辑弹窗预填）。title/description 已是应用覆盖后的生效值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_description: Option<String>,
 }
 
 // 停用开关(按模式 scope 持久化)------------------------------------------------
@@ -254,6 +260,8 @@ impl SkillMarketplaceManager {
                 installed: self.is_installed(m.skill_name),
                 user_uploaded: false,
                 update_available: self.preset_update_available(m),
+                display_name: None,
+                display_description: None,
             })
             .collect();
 
@@ -271,20 +279,31 @@ impl SkillMarketplaceManager {
                     if !dir.join("SKILL.md").is_file() {
                         continue;
                     }
+                    // 用户自定义展示覆盖（bundles.json extra）优先；空/缺 key 回退
+                    // 现状（title=记录 id、description=SKILL.md frontmatter）。
+                    let display_name =
+                        super::store::display_override(&record, super::store::EXTRA_DISPLAY_NAME);
+                    let display_description = super::store::display_override(
+                        &record,
+                        super::store::EXTRA_DISPLAY_DESCRIPTION,
+                    );
                     out.push(MarketplaceSkillInfo {
                         id: record.id.clone(),
-                        title: record.id.clone(),
+                        title: display_name.clone().unwrap_or_else(|| record.id.clone()),
                         // 空 subtitle 让前端回退三语 localized 文案(上传技能无自有副标题)
                         subtitle: String::new(),
                         // 解析 SKILL.md frontmatter description 展示;缺失则空
-                        description: read_skill_description(&dir.join("SKILL.md"))
-                            .unwrap_or_default(),
+                        description: display_description.clone().unwrap_or_else(|| {
+                            read_skill_description(&dir.join("SKILL.md")).unwrap_or_default()
+                        }),
                         icon: "Package".to_string(),
                         color: "bg-gradient-to-b from-slate-400 to-slate-600".to_string(),
                         installed: true,
                         user_uploaded: true,
                         // 上传技能无嵌入对应物,不参与更新检测
                         update_available: false,
+                        display_name,
+                        display_description,
                     });
                 }
             }
@@ -637,6 +656,51 @@ impl SkillMarketplaceManager {
             log::warn!("[skill-marketplace] bundles.json 镜像写入失败（import {name}）: {e}");
         }
         Ok(name)
+    }
+
+    /// 单技能上传包的 SKILL.md description 回写（编辑展示说明时联动，让模型侧看到的
+    /// 技能描述同步；展示层仍由 bundles.json extra 覆盖优先）。
+    ///
+    /// 仅当 `bundles/<id>/skills/` 下恰有一个技能目录且内含 SKILL.md 时回写；
+    /// 多技能包、纯 MCP 包、目录缺失一律跳过（返回 Ok(false)，不报错）。回写后
+    /// 重算技能目录内容指纹并经 upsert_preserving 补写登记（保留 extra/来源/首装时间）。
+    pub fn writeback_single_skill_description(
+        &self,
+        bundle_id: &str,
+        description: &str,
+    ) -> Result<bool, String> {
+        let skills_dir = self.packages_root.join(bundle_id).join("skills");
+        let Ok(rd) = std::fs::read_dir(&skills_dir) else {
+            return Ok(false); // 非按包布局（纯 MCP 包/旧扁平残留）→ 跳过
+        };
+        let dirs: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        if dirs.len() != 1 {
+            return Ok(false); // 多技能包/空包 → 跳过
+        }
+        let md_path = dirs[0].join("SKILL.md");
+        if !md_path.is_file() {
+            return Ok(false);
+        }
+        let content = std::fs::read_to_string(&md_path)
+            .map_err(|e| format!("读取 {} 失败: {e}", md_path.display()))?;
+        let new_content = rewrite_frontmatter_description(&content, description)?;
+        if new_content != content {
+            deepseek_tui::utils::write_atomic(&md_path, new_content.as_bytes())
+                .map_err(|e| format!("写入 {} 失败: {e}", md_path.display()))?;
+            // 内容变了 → 重算内容指纹补写登记；登记已不在（并发卸载）则跳过。
+            let fingerprint = dir_fingerprint(&dirs[0])?;
+            if let Some(mut record) = self.bundle_store.get(bundle_id)? {
+                record.content_fingerprint = Some(fingerprint);
+                self.bundle_store
+                    .upsert_preserving(record)
+                    .map_err(|e| format!("更新 {bundle_id} 内容指纹失败: {e}"))?;
+            }
+        }
+        Ok(true)
     }
 
     /// 扁平技能布局（`bundle/skills/<name>/`）→ 按包聚合（`bundles/<pkg>/skills/
@@ -1045,6 +1109,123 @@ fn read_skill_description_from_str(content: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// 把 SKILL.md frontmatter 的 description 重写为单行值（`writeback_single_skill_description`
+/// 用），写口径与 [`read_skill_description_from_str`] 的读口径互洽：
+///
+/// - 已有 description（含 `|`/`>` 块状——其缩进/空行续行与读端消费口径一致地一并
+///   删除）→ 原地替换；没有 → 插在 name 行之后（无 name 行则插在 opening `---` 后）；
+/// - 统一写单行。读端只做「剥成对双/单引号」、不做反转义，因此值含 `"` 或 `\` 时
+///   双引号包裹转义会与读值不符（不互洽），含换行也无法单行表达——这两类值连同
+///   首尾成对引号（读端会剥掉丢字符）一律 Err 拒绝，不猜；
+/// - 值在 YAML plain scalar 下不安全（前导指示符、内嵌 `: ` / ` #`、块状标记、
+///   关键字/数字形态）时整体双引号包裹——此时值内已无 `"` 和 `\`，包裹后读端剥
+///   引号即得原值，真实 YAML 解析器也得同一字符串。
+fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<String, String> {
+    let v = description.trim();
+    if v.is_empty() {
+        return Err("回写说明为空（清空覆盖走 extra 删 key，不回写 SKILL.md）".to_string());
+    }
+    if v.chars().any(|c| c.is_control()) {
+        return Err("说明含控制字符/换行，无法写入单行 frontmatter".to_string());
+    }
+    if v.contains('"') || v.contains('\\') {
+        return Err("说明含双引号或反斜杠，frontmatter 单行写法无法与读口径互洽，拒绝回写".to_string());
+    }
+    if v.starts_with('\'') || v.ends_with('\'') {
+        return Err("说明首尾的单引号会被读取端剥除，拒绝回写".to_string());
+    }
+    let new_line = if yaml_plain_needs_quotes(v) {
+        format!("description: \"{v}\"")
+    } else {
+        format!("description: {v}")
+    };
+
+    let newline = if content.contains("\r\n") { "\r\n" } else { "\n" };
+    let had_trailing_newline = content.ends_with('\n');
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.first().map(|l| l.trim()) != Some("---") {
+        return Err("SKILL.md 缺 frontmatter（首行非 ---），拒绝回写".to_string());
+    }
+    // 前两个 --- 区间为 frontmatter；缺结束标记 = 畸形 frontmatter，拒绝改。
+    let Some(fm_end) = lines.iter().skip(1).position(|l| l.trim() == "---").map(|p| p + 1)
+    else {
+        return Err("SKILL.md frontmatter 缺结束 ---，拒绝回写".to_string());
+    };
+
+    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 1);
+    out.push(lines[0].to_string());
+    let mut name_line_at: Option<usize> = None;
+    let mut replaced = false;
+    let mut i = 1;
+    while i < fm_end {
+        let t = lines[i].trim();
+        if let Some(rest) = t.strip_prefix("description:") {
+            out.push(new_line.clone());
+            replaced = true;
+            i += 1;
+            // 块状：续行 = 空行或缩进行（与读端消费口径一致），遇顶层字段结束。
+            if rest.trim() == "|" || rest.trim() == ">" {
+                while i < fm_end {
+                    let l = lines[i];
+                    if !l.trim().is_empty() && l.len() == l.trim_start().len() {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if t.starts_with("name:") {
+            name_line_at = Some(out.len());
+        }
+        out.push(lines[i].to_string());
+        i += 1;
+    }
+    if !replaced {
+        let at = name_line_at.map_or(1, |x| x + 1);
+        out.insert(at, new_line);
+    }
+    for l in &lines[fm_end..] {
+        out.push((*l).to_string());
+    }
+    let mut s = out.join(newline);
+    if had_trailing_newline {
+        s.push_str(newline);
+    }
+    Ok(s)
+}
+
+/// 值按 YAML plain scalar 写是否不安全（需双引号包裹）。保守口径：宁可多引。
+/// 调用方已保证值内无 `"` / `\`，包裹后两种解析口径（本模块剥引号读法与真实
+/// YAML 解析器）得到同一字符串。
+fn yaml_plain_needs_quotes(v: &str) -> bool {
+    let Some(first) = v.chars().next() else {
+        return false;
+    };
+    // 起始指示符（含读端的块状标记 | >）；- ? : 保守一律算（后随空白/结尾才是
+    // 真指示符，但包裹无害）。
+    if matches!(
+        first,
+        '!' | '&' | '*' | '?' | '|' | '>' | '%' | '@' | '`' | '#' | ',' | '[' | ']' | '{' | '}'
+            | '-' | ':'
+    ) {
+        return true;
+    }
+    // 内嵌 ": " / " #"、以 ':' 结尾
+    if v.contains(": ") || v.contains(" #") || v.ends_with(':') {
+        return true;
+    }
+    // YAML 非字符串形态（真实 YAML 解析器会变类型）
+    if matches!(
+        v.to_ascii_lowercase().as_str(),
+        "null" | "true" | "false" | "yes" | "no" | "on" | "off" | "~"
+    ) || v.parse::<f64>().is_ok()
+    {
+        return true;
+    }
+    false
 }
 
 /// SKILL.md 布局优先级(越小越优先):根 SKILL.md(0) > `*/skills/<n>/SKILL.md`(1)
@@ -1994,5 +2175,198 @@ mod tests {
             );
             assert_eq!(report.moved, vec!["wecomcli-message".to_string()]);
         });
+    }
+
+    // ------------------------------------------------------------------
+    // SKILL.md description 回写（编辑上传包展示说明时联动）
+    // ------------------------------------------------------------------
+
+    /// 单行替换 + 读口径互洽：改写后再经 read_skill_description_from_str 读回原值。
+    #[test]
+    fn rewrite_description_replaces_single_line() {
+        let md = "---\nname: x\ndescription: 旧描述\n---\n# 正文\n";
+        let out = rewrite_frontmatter_description(md, "新描述").unwrap();
+        assert_eq!(out, "---\nname: x\ndescription: 新描述\n---\n# 正文\n");
+        assert_eq!(
+            read_skill_description_from_str(&out).as_deref(),
+            Some("新描述"),
+            "写完必须能读回同一值"
+        );
+    }
+
+    /// 块状 `|` 替换：缩进/空行续行被一并清除（与读端消费口径一致），后续顶层字段保留。
+    #[test]
+    fn rewrite_description_replaces_block_and_drops_continuations() {
+        let md = "---\nname: x\ndescription: |\n  第一行\n\n  第二行\nversion: 1\n---\n";
+        let out = rewrite_frontmatter_description(md, "折叠后的新描述").unwrap();
+        assert_eq!(out, "---\nname: x\ndescription: 折叠后的新描述\nversion: 1\n---\n");
+        assert_eq!(
+            read_skill_description_from_str(&out).as_deref(),
+            Some("折叠后的新描述")
+        );
+    }
+
+    /// 无 description → 插在 name 行之后；无 name 行 → 插在 opening --- 之后。
+    #[test]
+    fn rewrite_description_inserts_after_name_line() {
+        let out = rewrite_frontmatter_description("---\nname: x\n---\n", "补充描述").unwrap();
+        assert_eq!(out, "---\nname: x\ndescription: 补充描述\n---\n");
+        let no_name =
+            rewrite_frontmatter_description("---\nversion: 1\n---\n", "补充描述").unwrap();
+        assert_eq!(no_name, "---\ndescription: 补充描述\nversion: 1\n---\n");
+    }
+
+    /// YAML plain scalar 不安全的值整体双引号包裹（值内无 "/\\ 时两种读法同值）。
+    #[test]
+    fn rewrite_description_quotes_yaml_unsafe_values() {
+        for v in ["true", "123", "含: 冒号", "|开头"] {
+            let out = rewrite_frontmatter_description("---\nname: x\n---\n", v).unwrap();
+            assert!(
+                out.contains(&format!("description: \"{v}\"")),
+                "{v} 应被双引号包裹: {out}"
+            );
+            assert_eq!(read_skill_description_from_str(&out).as_deref(), Some(v));
+        }
+    }
+
+    /// 不互洽的值拒绝回写：换行/控制字符、双引号、反斜杠、首尾单引号。
+    #[test]
+    fn rewrite_description_rejects_non_roundtrippable_values() {
+        for v in ["含\n换行", "含\"双引号", "含\\反斜杠", "'首尾单引号'"] {
+            assert!(
+                rewrite_frontmatter_description("---\nname: x\n---\n", v).is_err(),
+                "{v:?} 应拒绝回写"
+            );
+        }
+        // 畸形 frontmatter（缺 opening/closing ---）也拒绝
+        assert!(rewrite_frontmatter_description("no frontmatter", "x").is_err());
+        assert!(rewrite_frontmatter_description("---\nname: x\n", "x").is_err());
+    }
+
+    /// 单技能上传包：回写落盘 + 内容指纹重算补写登记（extra 展示覆盖必须保留）。
+    #[test]
+    fn writeback_updates_skill_md_and_fingerprint_preserving_extra() {
+        let tmp = fresh_dir("writeback_single");
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        let skill_dir = tmp.join("bundles/wb-skill/skills/wb-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: wb-skill\ndescription: 旧描述\n---\n",
+        )
+        .unwrap();
+        let store = crate::features::marketplace::store::BundleStore::with_file(
+            tmp.join("bundles.json"),
+        );
+        store
+            .upsert(crate::features::marketplace::store::BundleRecord::installed_now(
+                "wb-skill",
+                crate::features::marketplace::store::BundleSource::Upload("pkg.zip".to_string()),
+            ))
+            .unwrap();
+        store
+            .set_display_meta("wb-skill", Some("我的技能"), Some("新描述"))
+            .unwrap();
+        let fp_before = store.get("wb-skill").unwrap().unwrap().content_fingerprint;
+
+        assert!(mgr.writeback_single_skill_description("wb-skill", "新描述").unwrap());
+        let md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(md.contains("description: 新描述"), "{md}");
+        let rec = store.get("wb-skill").unwrap().unwrap();
+        assert!(
+            rec.content_fingerprint.is_some() && rec.content_fingerprint != fp_before,
+            "回写后指纹应被重算补写"
+        );
+        assert_eq!(
+            crate::features::marketplace::store::display_override(
+                &rec,
+                crate::features::marketplace::store::EXTRA_DISPLAY_NAME
+            )
+            .as_deref(),
+            Some("我的技能"),
+            "指纹补写不得丢 extra 展示覆盖"
+        );
+        assert_eq!(rec.source, crate::features::marketplace::store::BundleSource::Upload("pkg.zip".to_string()));
+    }
+
+    /// 多技能包 / 无 skills 目录（纯 MCP 包）→ 跳过回写，不报错、不动文件。
+    #[test]
+    fn writeback_skips_multi_skill_and_non_skill_packages() {
+        let tmp = fresh_dir("writeback_skip");
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        // 多技能包
+        for s in ["s1", "s2"] {
+            let dir = tmp.join(format!("bundles/multi/skills/{s}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), format!("---\nname: {s}\n---\n")).unwrap();
+        }
+        assert!(!mgr.writeback_single_skill_description("multi", "x").unwrap());
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("bundles/multi/skills/s1/SKILL.md")).unwrap(),
+            "---\nname: s1\n---\n",
+            "多技能包不得改写"
+        );
+        // 无 bundles/<id>/skills/ 目录（纯 MCP 包）
+        assert!(!mgr
+            .writeback_single_skill_description("pure-mcp", "x")
+            .unwrap());
+    }
+
+    /// 展示优先级：extra 覆盖优先于 record.id / SKILL.md frontmatter；清空后回退。
+    #[test]
+    fn list_skills_prefers_display_overrides_for_uploads() {
+        let tmp = fresh_dir("display_override");
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        let skill_dir = tmp.join("bundles/ov-skill/skills/ov-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: ov-skill\ndescription: frontmatter 描述\n---\n",
+        )
+        .unwrap();
+        let store = crate::features::marketplace::store::BundleStore::with_file(
+            tmp.join("bundles.json"),
+        );
+        store
+            .upsert(crate::features::marketplace::store::BundleRecord::installed_now(
+                "ov-skill",
+                crate::features::marketplace::store::BundleSource::Upload("pkg.zip".to_string()),
+            ))
+            .unwrap();
+
+        // 无覆盖：回退现状（title=id，description=frontmatter）
+        let listed = mgr
+            .list_skills()
+            .into_iter()
+            .find(|s| s.id == "ov-skill")
+            .expect("上传技能应列出");
+        assert_eq!(listed.title, "ov-skill");
+        assert_eq!(listed.description, "frontmatter 描述");
+        assert_eq!(listed.display_name, None);
+        assert_eq!(listed.display_description, None);
+
+        // 覆盖优先
+        store
+            .set_display_meta("ov-skill", Some("我的天气"), Some("覆盖后的说明"))
+            .unwrap();
+        let listed = mgr
+            .list_skills()
+            .into_iter()
+            .find(|s| s.id == "ov-skill")
+            .unwrap();
+        assert_eq!(listed.title, "我的天气");
+        assert_eq!(listed.description, "覆盖后的说明");
+        assert_eq!(listed.display_name.as_deref(), Some("我的天气"));
+        assert_eq!(listed.display_description.as_deref(), Some("覆盖后的说明"));
+
+        // 清空（trim 空串删 key）→ 回退
+        store.set_display_meta("ov-skill", Some(" "), Some(" ")).unwrap();
+        let listed = mgr
+            .list_skills()
+            .into_iter()
+            .find(|s| s.id == "ov-skill")
+            .unwrap();
+        assert_eq!(listed.title, "ov-skill");
+        assert_eq!(listed.description, "frontmatter 描述");
     }
 }

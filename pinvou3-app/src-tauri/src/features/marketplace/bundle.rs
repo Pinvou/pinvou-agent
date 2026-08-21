@@ -266,6 +266,13 @@ pub struct BundleInfo {
     /// 图标相对包目录路径（`icon.svg`/`icon.png`；缺省 None → 前端用默认图标）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// 用户自定义展示名/说明覆盖的**原值**（仅 source=Upload 的包；存于
+    /// bundles.json extra，供前端编辑弹窗预填）。name/description 已是应用
+    /// 覆盖后的生效值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_description: Option<String>,
 }
 
 /// 注册表：从现有源汇总包清单。只读；安装/门禁/投影迁移见后续步骤。
@@ -343,9 +350,21 @@ impl BundleRegistry {
                 || !tool.secret_env.is_empty()
                 || !tool.secret_headers.is_empty()
                 || !tool.servers.is_empty();
+            // 上传来源的包：用户自定义展示名/说明（bundles.json extra）覆盖
+            // manifest 的 name/description；空/缺 key 回退 manifest 现状。
+            let upload_record = store_records.as_ref().and_then(|records| {
+                records
+                    .iter()
+                    .find(|r| r.id == tool.id)
+                    .filter(|r| matches!(r.source, store::BundleSource::Upload(_)))
+            });
+            let display_name =
+                upload_record.and_then(|r| store::display_override(r, store::EXTRA_DISPLAY_NAME));
+            let display_description = upload_record
+                .and_then(|r| store::display_override(r, store::EXTRA_DISPLAY_DESCRIPTION));
             out.push(BundleInfo {
                 id: tool.id.clone(),
-                name: tool.name.clone(),
+                name: display_name.clone().unwrap_or_else(|| tool.name.clone()),
                 kind: if companions.is_empty() {
                     BundleKind::Mcp
                 } else {
@@ -355,17 +374,21 @@ impl BundleRegistry {
                 skills: companions,
                 cli: Vec::new(),
                 credentials,
-                description: tool.description.clone(),
+                description: display_description
+                    .clone()
+                    .unwrap_or_else(|| tool.description.clone()),
                 version: tool.version.clone(),
                 auth_required,
                 config_fields,
                 installed,
-                user_uploaded: false,
+                user_uploaded: upload_record.is_some(),
                 degraded,
                 update_available: false,
                 oauth: !tool.servers.is_empty(),
                 category: tool.category.clone(),
                 icon: bundle_icon_path(&tool.id),
+                display_name,
+                display_description,
             });
         }
 
@@ -404,6 +427,8 @@ impl BundleRegistry {
                 oauth: false,
                 category: "skill".to_string(),
                 icon: bundle_icon_path(&skill.id),
+                display_name: None,
+                display_description: None,
             });
         }
 
@@ -413,6 +438,8 @@ impl BundleRegistry {
                 continue;
             }
             let (installed, degraded) = store_state(&skill.id).unwrap_or((true, None));
+            // name/description 已在 list_skills 应用 extra 展示覆盖；覆盖原值透传
+            // 给前端编辑弹窗预填。
             out.push(BundleInfo {
                 id: skill.id.clone(),
                 name: skill.title.clone(),
@@ -432,6 +459,8 @@ impl BundleRegistry {
                 oauth: false,
                 category: "skill".to_string(),
                 icon: bundle_icon_path(&skill.id),
+                display_name: skill.display_name.clone(),
+                display_description: skill.display_description.clone(),
             });
         }
 
@@ -468,6 +497,8 @@ impl BundleRegistry {
                 oauth: false,
                 category: "collab".to_string(),
                 icon: bundle_icon_path(id),
+                display_name: None,
+                display_description: None,
             });
         }
 
@@ -531,6 +562,8 @@ impl BundleRegistry {
             oauth: false,
             category: "docs".to_string(),
             icon: bundle_icon_path("ima"),
+            display_name: None,
+            display_description: None,
         });
 
         out
@@ -838,6 +871,8 @@ mod tests {
             oauth: false,
             category: String::new(),
             icon: None,
+            display_name: None,
+            display_description: None,
         };
         // 本地免凭据 → 恒 Ready
         assert_eq!(

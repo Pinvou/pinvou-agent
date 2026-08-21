@@ -31,6 +31,16 @@ const SCHEMA_VERSION: u32 = 1;
 /// 包只引用不拥有 —— §4 规则 2）。后续收编 pip 依赖时新增种类常量。
 pub const ASSET_KIND_CLI: &str = "cli";
 
+/// 上传包的用户自定义 UI 展示名/说明在记录 `extra` map 里的 key（只改展示，
+/// 机读 id / 目录 / frontmatter name 一律不动；见 docs/plugin-package-spec.md）。
+pub const EXTRA_DISPLAY_NAME: &str = "display_name";
+pub const EXTRA_DISPLAY_DESCRIPTION: &str = "display_description";
+
+/// 展示名校验上限（字符数）。
+pub const MAX_DISPLAY_NAME_CHARS: usize = 64;
+/// 展示说明校验上限（字符数；对齐 skill_marketplace 的 description 展示截断口径）。
+pub const MAX_DISPLAY_DESCRIPTION_CHARS: usize = 240;
+
 /// `bundles.json` 读-改-写的进程内串行化：统一管线登记、首启导入、后续开关命令
 /// 都可能并发触发同一份文件的读-改-写，串行化避免交错丢更新（与
 /// `disabled_connectors.json` / `disabled_skills.json` 同一范式）。
@@ -329,6 +339,47 @@ impl BundleStore {
         Ok(true)
     }
 
+    /// 设置上传包的用户自定义 UI 展示名/说明（写在记录 `extra` map 的
+    /// `display_name` / `display_description` key，不动包目录与包清单）。
+    ///
+    /// - 记录不存在 → Err；`source` 非 Upload → Err（预置/内置包不可覆盖）；
+    /// - `Some(v)`：trim 后为空 = 删除该 key（清空回退默认展示）；非空 = 长度
+    ///   校验后写入 trim 值，超限 → Err；
+    /// - `None` = 该字段不动；两个都 None = no-op 成功（仍要求记录存在且为 Upload）。
+    pub fn set_display_meta(
+        &self,
+        id: &str,
+        display_name: Option<&str>,
+        display_description: Option<&str>,
+    ) -> Result<(), String> {
+        let _guard = file_lock();
+        let mut file = load_locked(&self.file)?;
+        let Some(record) = file.records.iter_mut().find(|r| r.id == id) else {
+            return Err(format!("包 '{id}' 未登记，无法设置展示名/说明"));
+        };
+        if !matches!(record.source, BundleSource::Upload(_)) {
+            return Err(format!(
+                "包 '{id}' 非用户上传来源，预置/内置包不允许覆盖展示名/说明"
+            ));
+        }
+        if display_name.is_none() && display_description.is_none() {
+            return Ok(());
+        }
+        apply_display_meta(
+            &mut record.extra,
+            EXTRA_DISPLAY_NAME,
+            display_name,
+            MAX_DISPLAY_NAME_CHARS,
+        )?;
+        apply_display_meta(
+            &mut record.extra,
+            EXTRA_DISPLAY_DESCRIPTION,
+            display_description,
+            MAX_DISPLAY_DESCRIPTION_CHARS,
+        )?;
+        save_locked(&self.file, &file)
+    }
+
     /// 首启一次性导入（§9）：从旧布局（installed.json + bundle/skills/* 的
     /// `.installed-from` 标记 + connectors/<platform>/bin/ 存量 CLI 二进制）反推
     /// 已装包，登记进 bundles.json。
@@ -365,6 +416,44 @@ impl BundleStore {
 // ---------------------------------------------------------------------------
 // 已持锁实现（取锁包装之上的内层；调用前必须已持有 BUNDLES_FILE_LOCK）
 // ---------------------------------------------------------------------------
+
+/// 单个展示字段的写入语义（`set_display_meta` 用）：None 不动；trim 后空 = 删 key
+/// （回退默认展示）；非空校验字符上限后写 trim 值。
+fn apply_display_meta(
+    extra: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<&str>,
+    max_chars: usize,
+) -> Result<(), String> {
+    let Some(v) = value else {
+        return Ok(());
+    };
+    let trimmed = v.trim();
+    if trimmed.is_empty() {
+        extra.remove(key);
+        return Ok(());
+    }
+    if trimmed.chars().count() > max_chars {
+        return Err(format!("{key} 超过 {max_chars} 字符上限"));
+    }
+    extra.insert(
+        key.to_string(),
+        serde_json::Value::String(trimmed.to_string()),
+    );
+    Ok(())
+}
+
+/// 读记录的用户自定义展示字段（trim 后非空才生效；缺 key/空串/非字符串 = None，
+/// 调用方回退默认展示）。list 组装与 BundleInfo 组装共用此口径。
+pub(crate) fn display_override(record: &BundleRecord, key: &str) -> Option<String> {
+    record
+        .extra
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
 
 /// 内层读：与取锁包装分离，已持锁的 import/upsert 直接调用，避免 Mutex 重入。
 fn load_locked(path: &Path) -> Result<BundlesFile, String> {
@@ -1025,6 +1114,119 @@ mod tests {
             assert_eq!(
                 store.get("new-one").unwrap().unwrap().source,
                 BundleSource::Preset
+            );
+        });
+    }
+
+    /// 展示名/说明覆盖：设置 → 读回；trim 空串 = 删 key 回退默认；None = 不动；
+    /// 镜像写（upsert_preserving）不得丢 extra 里的展示覆盖。
+    #[test]
+    fn set_display_meta_roundtrip_and_clear() {
+        with_temp_home(|| {
+            let store = BundleStore::new();
+            store
+                .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
+                .unwrap();
+
+            store
+                .set_display_meta("up", Some("  我的天气包 "), Some("查天气、看预警"))
+                .unwrap();
+            let rec = store.get("up").unwrap().unwrap();
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_NAME).as_deref(),
+                Some("我的天气包"),
+                "写入值应 trim 后落盘"
+            );
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_DESCRIPTION).as_deref(),
+                Some("查天气、看预警")
+            );
+
+            // None = 该字段不动
+            store.set_display_meta("up", None, Some("新说明")).unwrap();
+            let rec = store.get("up").unwrap().unwrap();
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_NAME).as_deref(),
+                Some("我的天气包")
+            );
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_DESCRIPTION).as_deref(),
+                Some("新说明")
+            );
+
+            // trim 后空串 = 删除该 key（回退默认展示）
+            store.set_display_meta("up", Some("   "), None).unwrap();
+            let rec = store.get("up").unwrap().unwrap();
+            assert_eq!(display_override(&rec, EXTRA_DISPLAY_NAME), None);
+            assert!(!rec.extra.contains_key(EXTRA_DISPLAY_NAME));
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_DESCRIPTION).as_deref(),
+                Some("新说明")
+            );
+
+            // 两个都 None = no-op 成功
+            store.set_display_meta("up", None, None).unwrap();
+
+            // 镜像写保留 extra 里的展示覆盖（重装不丢用户设置）
+            store
+                .upsert_preserving(record("up", BundleSource::Preset))
+                .unwrap();
+            let rec = store.get("up").unwrap().unwrap();
+            assert_eq!(rec.source, BundleSource::Upload("pkg.zip".to_string()));
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_DESCRIPTION).as_deref(),
+                Some("新说明"),
+                "upsert_preserving 不得丢展示覆盖"
+            );
+        });
+    }
+
+    /// 展示覆盖的写入门禁：记录不存在 / 非 Upload 来源 / 超长一律 Err 且不写盘。
+    #[test]
+    fn set_display_meta_rejects_invalid_targets_and_lengths() {
+        with_temp_home(|| {
+            let store = BundleStore::new();
+            store.upsert(record("weather", BundleSource::Preset)).unwrap();
+            store
+                .upsert(record("feishu", BundleSource::Builtin))
+                .unwrap();
+            store
+                .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
+                .unwrap();
+
+            assert!(
+                store.set_display_meta("ghost", Some("x"), None).is_err(),
+                "记录不存在应 Err"
+            );
+            for id in ["weather", "feishu"] {
+                assert!(
+                    store.set_display_meta(id, Some("x"), None).is_err(),
+                    "非 Upload 来源（{id}）应拒绝覆盖"
+                );
+                assert!(
+                    store.get(id).unwrap().unwrap().extra.is_empty(),
+                    "拒绝后不得写入 extra"
+                );
+            }
+
+            let long_name = "名".repeat(MAX_DISPLAY_NAME_CHARS + 1);
+            let long_desc = "述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS + 1);
+            assert!(store.set_display_meta("up", Some(&long_name), None).is_err());
+            assert!(store.set_display_meta("up", None, Some(&long_desc)).is_err());
+            // 边界：恰好上限可写
+            let ok_name = "名".repeat(MAX_DISPLAY_NAME_CHARS);
+            let ok_desc = "述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS);
+            store
+                .set_display_meta("up", Some(&ok_name), Some(&ok_desc))
+                .unwrap();
+            let rec = store.get("up").unwrap().unwrap();
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_NAME).as_deref(),
+                Some(ok_name.as_str())
+            );
+            assert_eq!(
+                display_override(&rec, EXTRA_DISPLAY_DESCRIPTION).as_deref(),
+                Some(ok_desc.as_str())
             );
         });
     }
