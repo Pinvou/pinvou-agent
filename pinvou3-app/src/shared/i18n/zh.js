@@ -56,6 +56,7 @@ const codexZh = {
   connectedSuffix:'已连接', notReadySuffix:'未就绪',
   notSet:'未设置', choiceTitle:'Agent 需要你的选择', submit:'提交', cancel:'取消', submitted:'已提交', canceled:'已取消', inputExpired:'该输入请求已过期',
   checking:'正在检查 ACP Agent…', bridgeUnavailable:'Codex ACP Bridge 不可用',
+  viewLoading:'正在加载代码模式…', viewLoadFailed:'代码模式加载失败，可能是网络连接不稳定。', viewRetry:'重试',
   bridgeRepair:'请修复或重新安装 Pinvou。开发环境可运行 npm run prepare:codex-bridge。',
   cliMissing:agent=>`未检测到 ${agent} CLI`, cliOutdated:(version,minVersion)=>`检测到旧版本 ${version}（需要 ≥ ${minVersion}）`,
   cliUpdateAvailable:(agent,version,latest)=>`${agent} 当前版本 ${version || '未知'}，官方最新版 ${latest || '未知'}，建议升级`,

@@ -58,6 +58,7 @@ const codexJa = {
   connectedSuffix:'接続済み', notReadySuffix:'は準備できていません',
   notSet:'未設定', choiceTitle:'Agent が選択を求めています', submit:'送信', cancel:'キャンセル', submitted:'送信済み', canceled:'キャンセル済み', inputExpired:'この入力リクエストは期限切れです',
   checking:'ACP Agent を確認中…', bridgeUnavailable:'Codex ACP Bridge を利用できません',
+  viewLoading:'コードモードを読み込み中…', viewLoadFailed:'コードモードの読み込みに失敗しました。ネットワーク接続が不安定な可能性があります。', viewRetry:'再試行',
   bridgeRepair:'Pinvou を修復または再インストールしてください。開発環境では npm run prepare:codex-bridge を実行できます。',
   cliMissing:agent=>`${agent} CLI が見つかりません`, cliOutdated:(version,minVersion)=>`古いバージョン ${version} を検出しました（${minVersion} 以上が必要です）`,
   cliUpdateAvailable:(agent,version,latest)=>`${agent} の現在のバージョンは ${version || '不明'}、公式最新版は ${latest || '不明'} です。アップグレードを推奨します`,

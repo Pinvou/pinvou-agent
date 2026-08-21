@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -35,6 +36,22 @@ impl AgentAuthProbeState {
             AgentBackend::KimiAcp => &self.kimi,
             AgentBackend::Deepseek => unreachable!("Deepseek does not use ACP authentication"),
         }
+    }
+
+    /// Cache validity rule, kept as pure logic for unit testing: the entry is
+    /// usable only when the seqlock generation, executable path, and TTL all
+    /// match the probe that wants to reuse it.
+    pub(super) fn cached_auth_valid(
+        cache: &HashMap<AgentBackend, CachedAuthStatus>,
+        backend: AgentBackend,
+        executable: &Path,
+        generation: u64,
+    ) -> Option<bool> {
+        let cached = cache.get(&backend).cloned()?;
+        (cached.generation == generation
+            && cached.executable == executable
+            && cached.checked_at.elapsed() < AUTH_STATUS_TTL)
+            .then_some(cached.authenticated)
     }
 }
 
@@ -102,11 +119,12 @@ impl AcpPool {
         executable: &Path,
         generation: u64,
     ) -> Option<bool> {
-        let cached = self.auth_cache.read().get(&backend).cloned()?;
-        (cached.generation == generation
-            && cached.executable == executable
-            && cached.checked_at.elapsed() < AUTH_STATUS_TTL)
-            .then_some(cached.authenticated)
+        AgentAuthProbeState::cached_auth_valid(
+            &self.auth_cache.read(),
+            backend,
+            executable,
+            generation,
+        )
     }
 
     fn store_auth_cache_if_current(
@@ -147,5 +165,56 @@ impl AcpPool {
             .generation
             .fetch_add(1, Ordering::AcqRel);
         self.auth_cache.write().remove(&backend);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn auth_cache_validity_follows_generation_executable_and_ttl() {
+        let backend = AgentBackend::ClaudeAcp;
+        let executable = PathBuf::from("/opt/cli/agent");
+        let mut cache = HashMap::new();
+
+        let entry = |generation: u64, authenticated: bool, age: Duration| CachedAuthStatus {
+            executable: executable.clone(),
+            authenticated,
+            checked_at: Instant::now() - age,
+            generation,
+        };
+
+        // Nothing cached yet.
+        assert!(AgentAuthProbeState::cached_auth_valid(&cache, backend, &executable, 0).is_none());
+
+        // Matching generation/executable/fresh entry is valid.
+        cache.insert(backend, entry(0, true, Duration::ZERO));
+        assert_eq!(
+            AgentAuthProbeState::cached_auth_valid(&cache, backend, &executable, 0),
+            Some(true)
+        );
+
+        // A bumped generation (invalidate) must reject the cached entry.
+        assert!(AgentAuthProbeState::cached_auth_valid(&cache, backend, &executable, 1).is_none());
+
+        // A different executable path must not reuse the cached verdict.
+        let other = PathBuf::from("/opt/cli/other");
+        assert!(AgentAuthProbeState::cached_auth_valid(&cache, backend, &other, 0).is_none());
+
+        // An expired TTL must invalidate even a matching entry.
+        cache.insert(
+            backend,
+            entry(0, true, AUTH_STATUS_TTL + Duration::from_secs(1)),
+        );
+        assert!(AgentAuthProbeState::cached_auth_valid(&cache, backend, &executable, 0).is_none());
+
+        // A false verdict with a fresh matching entry round-trips as false.
+        cache.insert(backend, entry(0, false, Duration::ZERO));
+        assert_eq!(
+            AgentAuthProbeState::cached_auth_valid(&cache, backend, &executable, 0),
+            Some(false)
+        );
     }
 }

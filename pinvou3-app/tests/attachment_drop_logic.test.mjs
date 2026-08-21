@@ -102,10 +102,10 @@ for (const [name, bridgeSource] of [
   ['Tauri', tauriBridgeSource],
   ['Web', webDomainAdapterSource],
 ]) {
-  assert.match(
+  assert.doesNotMatch(
     bridgeSource,
     /chat: \[[^\]]*"attachmentDragActive"/,
-    `${name} chat state slice must publish attachmentDragActive to React`,
+    `${name} chat state slice must not publish the dead attachmentDragActive flag`,
   );
 }
 

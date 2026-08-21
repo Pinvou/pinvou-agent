@@ -273,7 +273,6 @@
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
     attachments: [],
-    attachmentDragActive: false,
     // token 预算（input_tokens / maxModelLen）
     tokens: { input: 0, max: 32768 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
@@ -1316,7 +1315,7 @@
   const STATE_SLICE_FIELDS = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
-    chat: ["activeSkill", "artifacts", "artifactChange", "attachmentDragActive", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
+    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedRemoteCollections", "mountedCollectionsRevision"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],

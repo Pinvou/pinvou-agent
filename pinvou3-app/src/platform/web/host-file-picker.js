@@ -77,7 +77,6 @@
       const selected = new Map();
       let currentPath = null;
       let parentPath = null;
-      let currentWorkspaceHandle = null;
       let rootEntries = [];
       let showingRoots = false;
       let disposed = false;
@@ -147,9 +146,7 @@
         selectionLabel.textContent = directoryMode
           ? (currentPath ? labels.currentFolder(currentPath) : "")
           : (count ? labels.selectedCount(count) : "");
-        confirm.disabled = directoryMode
-          ? (!currentPath || (options.workspaceGrant === true && !currentWorkspaceHandle))
-          : count === 0;
+        confirm.disabled = directoryMode ? !currentPath : count === 0;
       }
 
       function chooseEntry(entry, row) {
@@ -226,7 +223,6 @@
         showingRoots = true;
         currentPath = null;
         parentPath = null;
-        currentWorkspaceHandle = null;
         pathLabel.textContent = labels.thisComputer;
         rootsButton.disabled = false;
         up.disabled = true;
@@ -238,25 +234,36 @@
         showingRoots = false;
         currentPath = listing && (listing.path || listing.current_path || listing.currentPath) || null;
         parentPath = listing && (listing.parent || listing.parent_path || listing.parentPath) || null;
-        currentWorkspaceHandle = listing
-          && (listing.workspace_handle || listing.workspaceHandle) || null;
         pathLabel.textContent = currentPath || labels.thisComputer;
         rootsButton.disabled = rootEntries.length === 0;
         up.disabled = !parentPath && rootEntries.length === 0;
         renderEntries(listing && Array.isArray(listing.entries) ? [...listing.entries] : [], false);
       }
 
+      // Maps stable host-workspace authorization codes to localized copy for
+      // both the listing and the confirm-mint failure paths.
+      function localizedPickerError(error) {
+        const message = String(error && error.message ? error.message : error);
+        const code = String(error && error.code ? error.code : "");
+        if (code === "host_workspace_not_authorized" || message === "host_workspace_not_authorized") {
+          return labels.workspaceNotAuthorized;
+        }
+        return message;
+      }
+
       function load(path) {
         const generation = ++loadGeneration;
         showingRoots = false;
-        currentWorkspaceHandle = null;
         rootsButton.disabled = rootEntries.length === 0;
         up.disabled = true;
         confirm.disabled = true;
         body.replaceChildren(element("div", "pinvou-host-picker-status", labels.loadingPath));
         client.invoke("web_access_list_host_files", {
           path: path || null,
-          issueWorkspaceHandle: options.workspaceGrant === true,
+          // Grants are minted only for the directory the user finally
+          // confirms (see the confirm handler); navigating must not mint
+          // one-shot handles for every folder visited along the way.
+          issueWorkspaceHandle: false,
         }).then(function (listing) {
           if (disposed || generation !== loadGeneration) return;
           if (initialPathPending && path === initialPath) initialPathPending = false;
@@ -269,12 +276,8 @@
             return;
           }
           rootsButton.disabled = rootEntries.length === 0;
-          let message = String(error && error.message ? error.message : error);
-          const code = String(error && error.code ? error.code : "");
-          if (code === "host_workspace_not_authorized" || message === "host_workspace_not_authorized") {
-            message = labels.workspaceNotAuthorized;
-          }
-          body.replaceChildren(element("div", "pinvou-host-picker-error", labels.loadFailed(message)));
+          body.replaceChildren(element("div", "pinvou-host-picker-error",
+            labels.loadFailed(localizedPickerError(error))));
         });
       }
 
@@ -291,7 +294,24 @@
       });
       confirm.addEventListener("click", function () {
         if (directoryMode && options.workspaceGrant === true) {
-          finish({ path: currentPath, workspaceHandle: currentWorkspaceHandle });
+          // Capture the path at click time so a navigation that lands while
+          // the mint RPC is in flight cannot pair the new display path with
+          // the handle minted for the confirmed directory.
+          const confirmedPath = currentPath;
+          confirm.disabled = true;
+          client.invoke("web_access_list_host_files", {
+            path: confirmedPath,
+            issueWorkspaceHandle: true,
+          }).then(function (listing) {
+            const handle = listing
+              && (listing.workspace_handle || listing.workspaceHandle) || null;
+            if (!handle) throw new Error("workspace handle missing");
+            finish({ path: confirmedPath, workspaceHandle: handle });
+          }).catch(function (error) {
+            confirm.disabled = false;
+            body.replaceChildren(element("div", "pinvou-host-picker-error",
+              labels.loadFailed(localizedPickerError(error))));
+          });
         } else if (directoryMode) finish(currentPath);
         else finish(multiple ? [...selected.keys()] : [...selected.keys()][0] || null);
       });

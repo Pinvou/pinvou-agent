@@ -25,6 +25,39 @@
     return typeof size === "number" && Number.isSafeInteger(size) && size >= 0;
   }
 
+  function integrityError(reason) {
+    const error = new Error("device attachment integrity check failed" + (reason ? ": " + reason : ""));
+    error.code = "device_upload_integrity_failed";
+    return error;
+  }
+
+  function toHex(bytes) {
+    let hex = "";
+    for (let i = 0; i < bytes.length; i += 1) {
+      hex += (bytes[i] + 0x100).toString(16).slice(1);
+    }
+    return hex;
+  }
+
+  // Web Crypto has no incremental digest, so the whole file (bounded by
+  // MAX_FILE_BYTES) is hashed once before the first chunk is sent. The hash
+  // rides the final chunk and the desktop re-verifies the assembled bytes.
+  async function fileSha256Hex(file) {
+    const subtle = root.crypto && root.crypto.subtle;
+    if (!subtle || typeof subtle.digest !== "function" || typeof file.arrayBuffer !== "function") {
+      return null;
+    }
+    try {
+      const buffer = await file.arrayBuffer();
+      const digest = await subtle.digest("SHA-256", buffer);
+      return toHex(new Uint8Array(digest));
+    } catch (_) {
+      // A hash we cannot compute locally degrades to an unchecked transfer;
+      // the desktop side still verifies whatever digest does arrive.
+      return null;
+    }
+  }
+
   function bytesToBase64(bytes) {
     let binary = "";
     for (let offset = 0; offset < bytes.length; offset += 0x8000) {
@@ -59,6 +92,8 @@
     let offset = 0;
     let result = null;
     let commitAcknowledged = false;
+    const integrity = options.integrity !== false;
+    let sha256Hex = null;
     function assertActive() {
       if (typeof options.isCancelled === "function" && options.isCancelled()) {
         throw cancelledError();
@@ -66,6 +101,9 @@
     }
 
     try {
+      if (integrity) {
+        sha256Hex = await fileSha256Hex(file);
+      }
       while (offset < file.size) {
         const end = Math.min(offset + CHUNK_BYTES, file.size);
         const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer());
@@ -77,6 +115,7 @@
           total: file.size,
           dataBase64: bytesToBase64(bytes),
           commit: end === file.size,
+          ...(end === file.size && sha256Hex ? { sha256: sha256Hex } : {}),
         });
         commitAcknowledged = end === file.size;
         offset = end;
@@ -112,6 +151,7 @@
     MAX_FILE_BYTES,
     bytesToBase64,
     cancelledError,
+    integrityError,
     uploadFile,
     uploadId,
   });

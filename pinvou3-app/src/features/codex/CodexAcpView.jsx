@@ -115,6 +115,8 @@ import {
   listAcpSessions,
   openAcpExternalUrl,
   pickAcpWorkspace,
+  respondAcpElicitation,
+  respondAcpPermission,
   setAcpConfigOption,
   setAcpMode,
   setAcpModel,
@@ -2322,16 +2324,17 @@ export function CodexAcpView({
   }, []);
 
   useEffect(() => {
-    // 草稿态按需读取选中 Agent 的缓存状态；已有会话由 loadSession 读取，
-    // 避免切换时并发执行两次 CLI/认证探测。外部安装变化由“重新检测”强制刷新。
-    // 原生（品悟）会话没有 ACP 状态机，跳过 get_acp_agent_status（后端会拒绝非 ACP agent）。
+    // 草稿态按需读取选中 Agent 的状态：切换即强制重探测（CLI 可能刚在
+    // App 外安装/升级，缓存会停留在旧的未安装结论）。已有会话由 loadSession
+    // 读取，跳过以避免并发执行两次 CLI/认证探测。原生（品悟）会话没有 ACP
+    // 状态机，跳过 get_acp_agent_status（后端会拒绝非 ACP agent）。
     if (activeAgentId === 'pinvou') {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- native sessions have no ACP state machine; synchronously clear the status display
       setStatus(null);
       return;
     }
     if (activeId) return;
-    refreshStatus(activeAgentId).catch(showError);
+    refreshStatus(activeAgentId, true).catch(showError);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- probe only on agent/session switch edges; refreshStatus/showError reference changes must not retrigger probing
   }, [activeAgentId, activeId]);
 
@@ -2654,6 +2657,11 @@ export function CodexAcpView({
       if (canApplyAcpSendOperation(operation)) {
         showError(err);
         setDraft(message);
+      } else {
+        // The user switched sessions before this send failed. The draft
+        // belongs to the original session, so keep the new session's UI
+        // untouched, but never swallow the failure silently.
+        console.error('[codex] background ACP send failed', err);
       }
     } finally {
       finishAcpSendOperation(operation);
@@ -2763,6 +2771,11 @@ export function CodexAcpView({
       if (canApplyAcpSendOperation(operation)) {
         showError(err);
         setDraft(message);
+      } else {
+        // The user switched sessions before this send failed. The draft
+        // belongs to the original session, so keep the new session's UI
+        // untouched, but never swallow the failure silently.
+        console.error('[codex] background native send failed', err);
       }
     } finally {
       finishAcpSendOperation(operation);
@@ -3021,11 +3034,7 @@ export function CodexAcpView({
     if (!targetId || targetId !== activeIdRef.current) return;
     setRespondingSessionId(targetId); setError('');
     try {
-      await invoke(isWeb ? 'web_access_respond_codex_acp_permission' : 'respond_codex_acp_permission', {
-        sessionId: targetId,
-        toolCallId,
-        optionId,
-      });
+      await respondAcpPermission({ sessionId: targetId, toolCallId, optionId });
       setPending(current => current.filter(item => (
         item.sessionId !== targetId || item.toolCallId !== toolCallId
       )));
@@ -3043,12 +3052,7 @@ export function CodexAcpView({
     if (!targetId || targetId !== activeIdRef.current) return;
     setRespondingSessionId(targetId); setError('');
     try {
-      await invoke(isWeb ? 'web_access_respond_codex_acp_elicitation' : 'respond_codex_acp_elicitation', {
-        sessionId: targetId,
-        elicitationId,
-        action,
-        content,
-      });
+      await respondAcpElicitation({ sessionId: targetId, elicitationId, action, content });
       setPendingElicitations(current => current.filter(
         item => item.sessionId !== targetId || item.elicitationId !== elicitationId,
       ));

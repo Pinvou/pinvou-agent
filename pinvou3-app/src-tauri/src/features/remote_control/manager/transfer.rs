@@ -100,6 +100,7 @@ pub(super) fn append_web_attachment_upload_chunk(
     total: usize,
     data: &[u8],
     commit: bool,
+    sha256: Option<&str>,
 ) -> Result<Option<(String, Vec<u8>)>, String> {
     if upload_id.len() < 8
         || upload_id.len() > 128
@@ -183,6 +184,19 @@ pub(super) fn append_web_attachment_upload_chunk(
             "远程控制附件上传不完整：已上传 {} / {total} 字节",
             upload.data.len()
         ));
+    }
+    if let Some(expected) = sha256 {
+        let expected = expected.trim().to_ascii_lowercase();
+        if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("远程控制附件完整性校验值无效".into());
+        }
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&upload.data);
+        let actual = crate::platform::encoding::hex_lower(&hasher.finalize());
+        if actual != expected {
+            return Err("远程控制附件完整性校验失败，上传内容在传输中损坏".into());
+        }
     }
     let completed = inner
         .web_attachment_uploads
