@@ -1,8 +1,12 @@
 use pinvou_protocol::{HelloClient, HelloServer, IpcMessage, IpcMessageKind, RuntimeEventEnvelope};
+use pinvou_runtime_api::{AgentRuntimeAdapter, RuntimeCommand, RuntimeOperation, RuntimeSession};
 use serde_json::json;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    fmt,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use crate::NodeError;
@@ -29,6 +33,114 @@ pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
     fn interrupt_turn(&self, turn_id: &str) -> Result<serde_json::Value, NodeError> {
         Ok(json!({"status":"unsupported", "method":"turn.interrupt", "turn_id":turn_id}))
     }
+}
+
+pub struct AdapterRuntimeHost {
+    inner: Mutex<AdapterRuntimeState>,
+}
+
+struct AdapterRuntimeState {
+    adapter: Box<dyn AgentRuntimeAdapter>,
+    probed: bool,
+    session: Option<RuntimeSession>,
+}
+
+impl AdapterRuntimeHost {
+    pub fn new(adapter: Box<dyn AgentRuntimeAdapter>) -> Self {
+        Self {
+            inner: Mutex::new(AdapterRuntimeState {
+                adapter,
+                probed: false,
+                session: None,
+            }),
+        }
+    }
+}
+
+impl fmt::Debug for AdapterRuntimeHost {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AdapterRuntimeHost")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for AdapterRuntimeHost {
+    fn drop(&mut self) {
+        let Ok(state) = self.inner.get_mut() else {
+            return;
+        };
+        if let Some(session) = state.session.take() {
+            let _ = state.adapter.close(&session);
+        }
+    }
+}
+
+impl NodeRuntimeHost for AdapterRuntimeHost {
+    fn echo(&self, _: &str, text: &str, _: u64) -> Result<RuntimeEventEnvelope, NodeError> {
+        let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
+        let session = ensure_adapter_session(&mut inner)?;
+        inner.adapter.send(&session, RuntimeCommand::text(text)?)?;
+        let mut events = inner.adapter.subscribe_events(&session)?;
+        match events.next() {
+            Some(Ok(event)) => Ok(event),
+            Some(Err(error)) => Err(error.into()),
+            None => Err(NodeError::InvalidMessage),
+        }
+    }
+
+    fn resolve_approval(
+        &self,
+        approval_id: &str,
+        accepted: bool,
+    ) -> Result<serde_json::Value, NodeError> {
+        let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
+        let session = ensure_adapter_session(&mut inner)?;
+        inner.adapter.approve(
+            &session,
+            RuntimeOperation::new(
+                approval_id,
+                json!({"decision": if accepted { "accept" } else { "decline" }}),
+            )?,
+        )?;
+        Ok(json!({"status":"ok", "method":"approval.resolve", "approval_id":approval_id}))
+    }
+
+    fn resolve_input(
+        &self,
+        input_id: &str,
+        value: &serde_json::Value,
+    ) -> Result<serde_json::Value, NodeError> {
+        let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
+        let session = ensure_adapter_session(&mut inner)?;
+        inner.adapter.respond_input(
+            &session,
+            RuntimeOperation::new(input_id, json!({"value":value}))?,
+        )?;
+        Ok(json!({"status":"ok", "method":"input.resolve", "input_id":input_id}))
+    }
+
+    fn interrupt_turn(&self, turn_id: &str) -> Result<serde_json::Value, NodeError> {
+        let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
+        let session = ensure_adapter_session(&mut inner)?;
+        inner.adapter.interrupt(&session)?;
+        Ok(json!({"status":"ok", "method":"turn.interrupt", "turn_id":turn_id}))
+    }
+}
+
+fn ensure_adapter_session(state: &mut AdapterRuntimeState) -> Result<RuntimeSession, NodeError> {
+    if !state.probed {
+        state.adapter.probe()?;
+        state.probed = true;
+    }
+    if let Some(session) = &state.session {
+        return Ok(session.clone());
+    }
+    let session = state
+        .adapter
+        .create(RuntimeOperation::new("node-runtime", json!({}))?)?;
+    state.session = Some(session.clone());
+    Ok(session)
 }
 
 #[derive(Clone, Debug)]

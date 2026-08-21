@@ -1,8 +1,15 @@
 use std::sync::{Arc, Mutex};
 
-use pinvou_node::{NodeError, NodeInstanceLock, NodeRuntimeHost, NodeSession, NodeTransportPolicy};
+use pinvou_node::{
+    AdapterRuntimeHost, NodeError, NodeInstanceLock, NodeRuntimeHost, NodeSession,
+    NodeTransportPolicy,
+};
 use pinvou_protocol::{
     HelloClient, IpcMessage, IpcMessageKind, RuntimeEventEnvelope, StableExitCode,
+};
+use pinvou_runtime_api::{
+    AdapterError, AgentRuntimeAdapter, AuthStatus, RuntimeCapabilities, RuntimeCommand,
+    RuntimeEventSubscription, RuntimeOperation, RuntimeSession,
 };
 
 #[test]
@@ -217,6 +224,188 @@ fn node_control_surface_uses_the_injected_runtime_host_seam() {
             "approval:approval-2:false",
             "input:input-2:\"answer\"",
             "interrupt:turn-2",
+        ]
+    );
+}
+
+#[derive(Debug, Default)]
+struct FakeAdapter {
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl FakeAdapter {
+    fn calls(&self) -> Arc<Mutex<Vec<String>>> {
+        Arc::clone(&self.calls)
+    }
+}
+
+impl AgentRuntimeAdapter for FakeAdapter {
+    fn probe(&mut self) -> Result<(), AdapterError> {
+        self.calls.lock().unwrap().push("probe".into());
+        Ok(())
+    }
+
+    fn capabilities(&self) -> Result<RuntimeCapabilities, AdapterError> {
+        Ok(RuntimeCapabilities {
+            interactive_chat: true,
+            tool_approval: true,
+            elicitation: true,
+            ..RuntimeCapabilities::default()
+        })
+    }
+
+    fn auth_status(&mut self) -> Result<AuthStatus, AdapterError> {
+        Ok(AuthStatus::NotRequired)
+    }
+
+    fn create(&mut self, operation: RuntimeOperation) -> Result<RuntimeSession, AdapterError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("create:{}", operation.operation_id));
+        RuntimeSession::new("adapter-session")
+    }
+
+    fn send(
+        &mut self,
+        session: &RuntimeSession,
+        command: RuntimeCommand,
+    ) -> Result<(), AdapterError> {
+        self.calls.lock().unwrap().push(format!(
+            "send:{}:{}",
+            session.as_str(),
+            command.payload.as_str().unwrap()
+        ));
+        Ok(())
+    }
+
+    fn approve(
+        &mut self,
+        session: &RuntimeSession,
+        operation: RuntimeOperation,
+    ) -> Result<(), AdapterError> {
+        self.calls.lock().unwrap().push(format!(
+            "approve:{}:{}:{}",
+            session.as_str(),
+            operation.operation_id,
+            operation.options["decision"].as_str().unwrap()
+        ));
+        Ok(())
+    }
+
+    fn respond_input(
+        &mut self,
+        session: &RuntimeSession,
+        operation: RuntimeOperation,
+    ) -> Result<(), AdapterError> {
+        self.calls.lock().unwrap().push(format!(
+            "input:{}:{}:{}",
+            session.as_str(),
+            operation.operation_id,
+            operation.options["value"].as_str().unwrap()
+        ));
+        Ok(())
+    }
+
+    fn interrupt(&mut self, session: &RuntimeSession) -> Result<(), AdapterError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("interrupt:{}", session.as_str()));
+        Ok(())
+    }
+
+    fn subscribe_events(
+        &mut self,
+        _: &RuntimeSession,
+    ) -> Result<RuntimeEventSubscription, AdapterError> {
+        self.calls.lock().unwrap().push("subscribe".into());
+        let event = RuntimeEventEnvelope::from_value(serde_json::json!({
+            "protocol_version":pinvou_protocol::IPC_VERSION,
+            "schema_version":1,
+            "node_id":"adapter-node",
+            "logical_session_id":"adapter-logical",
+            "attachment_id":"adapter-attachment",
+            "work_id":null,
+            "collaborative_run_id":null,
+            "stream_id":"main",
+            "turn_id":"adapter-turn",
+            "seq":1,
+            "source_span":null,
+            "timestamp":"2026-08-21T00:00:00.000Z",
+            "rate_class":"R1",
+            "kind":"text.delta",
+            "payload":{"role":"assistant","content":"from-adapter","merged_count":1}
+        }))
+        .unwrap();
+        Ok(Box::new(vec![Ok(event)].into_iter()))
+    }
+
+    fn close(&mut self, session: &RuntimeSession) -> Result<(), AdapterError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("close:{}", session.as_str()));
+        Ok(())
+    }
+}
+
+#[test]
+fn adapter_runtime_host_drives_probe_create_send_events_and_control_methods() {
+    let adapter = FakeAdapter::default();
+    let calls = adapter.calls();
+    let host = Arc::new(AdapterRuntimeHost::new(Box::new(adapter)));
+    let session = NodeSession::with_runtime("node-instance", host.clone()).unwrap();
+
+    let echo = IpcMessage::request(
+        serde_json::json!(11),
+        "runtime.echo",
+        serde_json::json!({"instance_id":"node-instance", "text":"hello-adapter"}),
+    )
+    .unwrap();
+    let event = session.handle(echo).unwrap();
+    let envelope = RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(envelope.payload().get()).unwrap()["content"],
+        "from-adapter"
+    );
+
+    for (id, method, payload) in [
+        (
+            12,
+            "approval.resolve",
+            serde_json::json!({"instance_id":"node-instance", "approval_id":"approval-a", "accepted":true}),
+        ),
+        (
+            13,
+            "input.resolve",
+            serde_json::json!({"instance_id":"node-instance", "input_id":"input-a", "value":"typed"}),
+        ),
+        (
+            14,
+            "turn.interrupt",
+            serde_json::json!({"instance_id":"node-instance", "turn_id":"turn-a"}),
+        ),
+    ] {
+        let request = IpcMessage::request(serde_json::json!(id), method, payload).unwrap();
+        let response = session.handle(request).unwrap();
+        assert_eq!(response.payload()["status"], "ok");
+    }
+
+    drop(session);
+    drop(host);
+
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        [
+            "probe",
+            "create:node-runtime",
+            "send:adapter-session:hello-adapter",
+            "subscribe",
+            "approve:adapter-session:approval-a:accept",
+            "input:adapter-session:input-a:typed",
+            "interrupt:adapter-session",
+            "close:adapter-session",
         ]
     );
 }

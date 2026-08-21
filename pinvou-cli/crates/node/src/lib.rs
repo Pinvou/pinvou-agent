@@ -13,7 +13,7 @@ pub use daemon::run_from_env;
 pub use error::NodeError;
 pub use instance_lock::NodeInstanceLock;
 pub use local_ipc::NodeTransportPolicy;
-pub use session::{NodeRuntimeHost, NodeSession};
+pub use session::{AdapterRuntimeHost, NodeRuntimeHost, NodeSession};
 pub use spool::{NodeSpool, RawSpoolRecord, SpoolError, SpoolRecovery, TransportRecord};
 
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
