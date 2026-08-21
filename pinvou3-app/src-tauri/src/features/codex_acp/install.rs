@@ -325,14 +325,23 @@ pub(super) fn brew_package_installed(backend: AgentBackend) -> bool {
         AgentBackend::KimiAcp => &["list", "kimi-code"],
         AgentBackend::Deepseek => return false,
     };
-    std::process::Command::new(platform::brew_bin())
+    let mut command = std::process::Command::new(platform::brew_bin());
+    command
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+        .stderr(std::process::Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    match child.wait_timeout(Duration::from_secs(10)) {
+        Ok(Some(status)) => status.success(),
+        Ok(None) | Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            false
+        }
+    }
 }
 /// 各 Agent CLI 对应的 npm 全局包名。
 pub(super) fn npm_package(backend: AgentBackend) -> Option<&'static str> {

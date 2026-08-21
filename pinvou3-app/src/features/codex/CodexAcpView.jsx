@@ -24,6 +24,17 @@ import {
   RuntimeNotice,
   runtimeSourceLabel,
 } from './AcpRuntimeNotices.jsx';
+import { acpErrorMessage } from './acpErrors.js';
+import {
+  cancelPendingAcpAttachments,
+  isPendingAcpAttachment,
+  runAcpAttachmentTask,
+} from './acp-attachment-lifecycle.js';
+import {
+  createAcpSessionOperationTracker,
+  removeAcpDraftItems,
+  transferAcpDraftItems,
+} from './acp-session-operation.js';
 import { ComposerPopover, useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import {
   appendAcpEvent,
@@ -89,6 +100,7 @@ import {
   openTauriDialog,
 } from '../../platform/tauri/client.js';
 import {
+  cancelAcpSession,
   createAcpSession,
   discardAcpAttachment,
   getAcpSessionInfo,
@@ -104,7 +116,7 @@ import {
   setAcpModel,
   submitAcpPrompt,
   uploadAcpDeviceAttachment,
-} from '../../platform/acp/client.js';
+} from './acpClient.js';
 import { can, canInvoke, isWeb, onPlatformConnectionChange } from '../../shared/platform.js';
 const invoke = invokeTauri;
 const RECENT_WORKSPACES_KEY = 'pinvou_codex_recent_workspaces';
@@ -994,16 +1006,41 @@ export function CodexAcpView({
   const [workspaceChangeCount, setWorkspaceChangeCount] = useState(0);
   const [now, setNow] = useState(Date.now());
   const useUnifiedConversationUi = unifiedConversationUiEnabled();
-  const [configApplying, setConfigApplying] = useState('');
-  const [working, setWorking] = useState(false);
+  const [localConfigApplying, setConfigApplying] = useState('');
+  const acpConfigOperationTrackerRef = useRef(null);
+  if (!acpConfigOperationTrackerRef.current) {
+    acpConfigOperationTrackerRef.current = createAcpSessionOperationTracker(activeId);
+  }
+  const acpConfigOperationTracker = acpConfigOperationTrackerRef.current;
+  const [acpConfigOperation, setAcpConfigOperation] = useState(null);
+  const activeAcpConfigOperation = acpConfigOperationTracker.isCurrent(acpConfigOperation)
+    && acpConfigOperation?.sessionId === activeId
+    ? acpConfigOperation
+    : null;
+  const configApplying = localConfigApplying || activeAcpConfigOperation?.key || '';
+  const acpSendOperationTrackerRef = useRef(null);
+  if (!acpSendOperationTrackerRef.current) {
+    acpSendOperationTrackerRef.current = createAcpSessionOperationTracker(
+      activeId || DRAFT_ATTACHMENT_KEY,
+    );
+  }
+  const acpSendOperationTracker = acpSendOperationTrackerRef.current;
+  const [acpSendOperation, setAcpSendOperation] = useState(null);
+  const activeAcpSendOperation = acpSendOperationTracker.isCurrent(acpSendOperation)
+    && acpSendOperation?.sessionId === (activeId || DRAFT_ATTACHMENT_KEY)
+    ? acpSendOperation
+    : null;
+  const [localWorking, setWorking] = useState(false);
+  const working = localWorking || Boolean(activeAcpSendOperation);
   const [runtimeOperations, setRuntimeOperations] = useState({});
   const [runtimeErrors, setRuntimeErrors] = useState({});
   const [error, setError] = useState('');
   const showError = (nextError) => {
     console.error('Codex operation failed:', nextError);
-    setError(codexCopy.showRawErrors ? String(nextError) : codexCopy.operationFailed);
+    setError(acpErrorMessage(nextError, codexCopy, { allowRaw: !isWeb }));
   };
-  const [responding, setResponding] = useState(false);
+  const [respondingSessionId, setRespondingSessionId] = useState(null);
+  const responding = Boolean(activeId && respondingSessionId === activeId);
   const [commandOpen, setCommandOpen] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
@@ -1048,6 +1085,10 @@ export function CodexAcpView({
   const lastActiveSessionIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   if (activeId) lastActiveSessionIdRef.current = activeId;
+  useLayoutEffect(() => {
+    acpConfigOperationTracker.switchSession(activeId);
+    acpSendOperationTracker.switchSession(activeId || DRAFT_ATTACHMENT_KEY);
+  }, [acpConfigOperationTracker, acpSendOperationTracker, activeId]);
   const projection = useMemo(() => projectAcpTimeline(events), [events]);
   // 草稿态（!activeId）没有会话，退回使用该 agent 缓存的配置快照来预展示选项。
   const draftControlsInfo = !activeId ? draftControlsCache[draftAgentId] || null : null;
@@ -1305,6 +1346,38 @@ export function CodexAcpView({
     return info;
   }
 
+  function beginAcpConfigOperation(sessionId, key) {
+    const operation = acpConfigOperationTracker.begin(sessionId, key);
+    setAcpConfigOperation(operation);
+    return operation;
+  }
+
+  function canApplyAcpConfigOperation(operation) {
+    return operation?.sessionId === activeIdRef.current
+      && acpConfigOperationTracker.isCurrent(operation);
+  }
+
+  function finishAcpConfigOperation(operation) {
+    if (!acpConfigOperationTracker.finish(operation)) return;
+    setAcpConfigOperation(current => current?.token === operation.token ? null : current);
+  }
+
+  function beginAcpSendOperation(sessionId) {
+    const operation = acpSendOperationTracker.begin(sessionId || DRAFT_ATTACHMENT_KEY, 'send');
+    setAcpSendOperation(operation);
+    return operation;
+  }
+
+  function canApplyAcpSendOperation(operation) {
+    return operation?.sessionId === (activeIdRef.current || DRAFT_ATTACHMENT_KEY)
+      && acpSendOperationTracker.isCurrent(operation);
+  }
+
+  function finishAcpSendOperation(operation) {
+    if (!acpSendOperationTracker.finish(operation)) return;
+    setAcpSendOperation(current => current?.token === operation.token ? null : current);
+  }
+
   function stageDraftConfigSelection(patch) {
     setDraftConfigSelections(current => {
       const prev = current[draftAgentId] || {};
@@ -1320,8 +1393,7 @@ export function CodexAcpView({
   // 首次发送创建会话后，把草稿态预选的模型/权限模式/配置应用到新会话。
   // 以新会话实际上报的 config_options 为准自适应：走 config 的项用 set_config_option，
   // 否则退回 set_model/set_mode；与当前值相同或会话未暴露的项跳过。
-  async function applyDraftConfigSelections(targetId, info) {
-    const staged = draftConfigSelections[draftAgentId];
+  async function applyDraftConfigSelections(targetId, info, staged, canReportError = () => true) {
     if (!staged) return info;
     let current = info || null;
     const currentOptionValue = (configId) => {
@@ -1358,7 +1430,7 @@ export function CodexAcpView({
         current = await setAcpConfigOption(targetId, configId, valueId);
       }
     } catch (err) {
-      showError(err);
+      if (canReportError()) showError(err);
     }
     return current;
   }
@@ -1402,8 +1474,7 @@ export function CodexAcpView({
   /// 草稿态暂存的控件选择在新会话上应用；失败报错不静默（逐个应用，多智能体最后）。
   /// 任一步失败即整体失败：清空暂存并上抛，由 sendNative 外层 catch 兜住（会话已创建，
   /// 保留半份暂存会在下次创建会话时把过期的部分选择悄悄应用，形成孤儿暂存）。
-  async function applyNativeDraftControls(sessionId) {
-    const staged = nativeDraftControls;
+  async function applyNativeDraftControls(sessionId, staged) {
     const hasMultiAgentSelection = Object.prototype.hasOwnProperty.call(staged, 'multiAgent');
     const hasStaged = staged.modelId || staged.mountedId != null || staged.mode || hasMultiAgentSelection;
     if (!hasStaged) return;
@@ -1427,11 +1498,11 @@ export function CodexAcpView({
           enabled: Boolean(staged.multiAgent),
         });
       }
-      setNativeDraftControls({});
+      setNativeDraftControls(current => current === staged ? {} : current);
     } catch (err) {
       // 会话已经创建且部分配置可能已生效：清空暂存避免未来复用过期选择，
       // 错误继续上抛，由 sendNative 的 catch 提示用户并恢复输入框文本。
-      setNativeDraftControls({});
+      setNativeDraftControls(current => current === staged ? {} : current);
       throw err;
     }
     // 暂存落地后必须再刷新一次实测值：会话物化时 effect 触发的
@@ -1651,19 +1722,21 @@ export function CodexAcpView({
   const sessionProviderValue = (sessionControlsInfo && sessionControlsInfo.provider) || '__official__';
   async function changeSessionProvider(value) {
     const targetId = activeId;
-    if (!targetId) return;
-    setConfigApplying('provider');
+    const targetAgentId = activeAgentId;
+    if (!targetId || configApplying) return;
+    const operation = beginAcpConfigOperation(targetId, 'provider');
+    if (!operation) return;
     try {
       const next = await invoke('set_codex_acp_session_provider', {
         sessionId: targetId,
         providerId: value === '__official__' ? null : value,
       });
-      applySessionInfo(next);
-      refreshProviders(activeAgentId);
+      if (canApplyAcpConfigOperation(operation)) applySessionInfo(next, targetId);
+      refreshProviders(targetAgentId);
     } catch (err) {
-      showError(err);
+      if (canApplyAcpConfigOperation(operation)) showError(err);
     } finally {
-      setConfigApplying('');
+      finishAcpConfigOperation(operation);
     }
   }
 
@@ -1745,23 +1818,34 @@ export function CodexAcpView({
     }
   }
 
-  async function createSession() {
+  async function createSession({ shouldActivate = () => true } = {}) {
+    const requestedWorkspacePath = draftWorkspacePath;
+    const requestedWorkspaceHandle = draftWorkspaceHandle;
+    const requestedAgentId = draftAgentId;
     setError('');
     setWorkspaceMenuOpen(false);
     const metadata = await createAcpSession({
-      workspacePath: draftWorkspacePath,
-      workspaceHandle: draftWorkspaceHandle,
-      agentId: draftAgentId,
+      workspacePath: requestedWorkspacePath,
+      workspaceHandle: requestedWorkspaceHandle,
+      agentId: requestedAgentId,
     });
     // loadSession 用 nativeSessionIdsRef 判定分流；新会话先登记，避免它读到旧 prop。
-    if (draftAgentId === 'pinvou') nativeSessionIdsRef.current.add(metadata.id);
-    if (draftWorkspacePath) setRecentWorkspaces(rememberWorkspace(draftWorkspacePath));
-    setDraftWorkspaceHandle(null);
+    if (requestedAgentId === 'pinvou') nativeSessionIdsRef.current.add(metadata.id);
+    if (requestedWorkspacePath) setRecentWorkspaces(rememberWorkspace(requestedWorkspacePath));
+    setDraftWorkspaceHandle(current => (
+      current === requestedWorkspaceHandle ? null : current
+    ));
     await refreshSessions();
+    if (!shouldActivate()) {
+      const info = requestedAgentId === 'pinvou'
+        ? null
+        : await getAcpSessionInfo(metadata.id);
+      return { id: metadata.id, info, activated: false };
+    }
     skipNextActiveLoadRef.current = metadata.id;
     if (onActiveSessionChange) onActiveSessionChange(metadata.id);
     const info = await loadSession(metadata.id);
-    return { id: metadata.id, info };
+    return { id: metadata.id, info, activated: true };
   }
 
   function beginDraft(
@@ -1781,8 +1865,9 @@ export function CodexAcpView({
         activeId || lastActiveSessionIdRef.current,
       ].filter(Boolean);
       keysToClear.forEach(key => {
-        (attachmentDraftsRef.current[key] || []).forEach(attachment => {
-          if (attachment.status === 'uploading') cancelledAttachmentIdsRef.current.add(attachment.id);
+        const attachmentsToClear = attachmentDraftsRef.current[key] || [];
+        cancelPendingAcpAttachments(attachmentsToClear, cancelledAttachmentIdsRef.current);
+        attachmentsToClear.forEach(attachment => {
           if (attachment.result) discardAcpAttachment(attachment.result).catch(() => {});
         });
       });
@@ -1853,21 +1938,30 @@ export function CodexAcpView({
   async function addAttachmentByPath(path, sessionId = attachmentKey) {
     if (!path || !sessionId) return;
     const id = `codex-attachment-${++attachmentIdRef.current}`;
+    cancelledAttachmentIdsRef.current.delete(id);
     const basename = String(path).split(/[\\/]/).filter(Boolean).pop() || String(path);
     updateAttachments(sessionId, current => [
       ...current,
       { id, basename, status: 'parsing', result: null, error: null },
     ]);
-    try {
-      const result = await ingestAcpAttachmentPath(path);
-      setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
-        ...attachment, basename: result.basename || basename, status: 'ready', result,
-      })));
-    } catch (err) {
-      setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
-        ...attachment, status: 'error', error: String(err),
-      })));
-    }
+    await runAcpAttachmentTask({
+      id,
+      cancelledIds: cancelledAttachmentIdsRef.current,
+      load: () => ingestAcpAttachmentPath(path),
+      discard: discardAcpAttachment,
+      onReady: result => setAttachmentDrafts(current => updateAcpAttachmentDraft(
+        current,
+        id,
+        attachment => ({
+          ...attachment, basename: result.basename || basename, status: 'ready', result,
+        }),
+      )),
+      onError: err => setAttachmentDrafts(current => updateAcpAttachmentDraft(
+        current,
+        id,
+        attachment => ({ ...attachment, status: 'error', error: String(err) }),
+      )),
+    });
   }
 
   async function pickAttachments() {
@@ -1882,11 +1976,11 @@ export function CodexAcpView({
   }
 
   function removeAttachment(id) {
-    cancelledAttachmentIdsRef.current.add(id);
     const removed = attachments.find(attachment => attachment.id === id);
+    if (isPendingAcpAttachment(removed)) cancelledAttachmentIdsRef.current.add(id);
+    else cancelledAttachmentIdsRef.current.delete(id);
     updateAttachments(attachmentKey, current => current.filter(attachment => attachment.id !== id));
     if (removed?.result) discardAcpAttachment(removed.result).catch(() => {});
-    if (removed?.status !== 'uploading') cancelledAttachmentIdsRef.current.delete(id);
   }
 
   async function uploadDeviceFiles(files, sessionId = attachmentKey) {
@@ -1905,35 +1999,43 @@ export function CodexAcpView({
           error: null,
         },
       ]);
-      try {
-        const result = await uploadAcpDeviceAttachment(file, {
+      await runAcpAttachmentTask({
+        id,
+        cancelledIds: cancelledAttachmentIdsRef.current,
+        load: () => uploadAcpDeviceAttachment(file, {
           isCancelled: () => cancelledAttachmentIdsRef.current.has(id),
           onProgress: progress => setAttachmentDrafts(current => updateAcpAttachmentDraft(
             current, id, attachment => ({ ...attachment, progress }),
           )),
-        });
-        if (cancelledAttachmentIdsRef.current.has(id)) {
-          await discardAcpAttachment(result).catch(() => {});
-          continue;
-        }
-        setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
-          ...attachment,
-          basename: result.basename || file.name,
-          status: 'ready',
-          progress: 100,
-          result,
-        })));
-      } catch (err) {
-        if (err?.code === 'device_upload_cancelled') continue;
-        const displayError = err?.code === 'device_upload_too_large'
-          ? t.uiAttachments.deviceUploadTooLarge(file.name)
-          : String(err?.message || err);
-        setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
-          ...attachment, status: 'error', error: displayError,
-        })));
-      } finally {
-        cancelledAttachmentIdsRef.current.delete(id);
-      }
+        }),
+        discard: discardAcpAttachment,
+        onReady: result => setAttachmentDrafts(current => updateAcpAttachmentDraft(
+          current,
+          id,
+          attachment => ({
+            ...attachment,
+            basename: result.basename || file.name,
+            status: 'ready',
+            progress: 100,
+            result,
+          }),
+        )),
+        onError: err => {
+          if (err?.code === 'device_upload_cancelled') return;
+          const displayError = err?.code === 'device_upload_too_large'
+            ? t.uiAttachments.deviceUploadTooLarge(file.name)
+            : err?.code === 'device_upload_empty'
+              ? t.uiAttachments.deviceUploadEmpty(file.name)
+              : err?.code === 'device_upload_unavailable'
+                ? t.uiAttachments.deviceUploadUnavailable
+                : err?.code === 'device_upload_invalid'
+                  ? t.uiAttachments.deviceUploadInvalid(file.name)
+                  : t.uiAttachments.deviceUploadFailed(file.name);
+          setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
+            ...attachment, status: 'error', error: displayError,
+          })));
+        },
+      });
     }
   }
 
@@ -2100,8 +2202,9 @@ export function CodexAcpView({
   }, []);
 
   useEffect(() => () => {
-    Object.values(attachmentDraftsRef.current).flat().forEach(attachment => {
-      if (attachment.status === 'uploading') cancelledAttachmentIdsRef.current.add(attachment.id);
+    const pendingAttachments = Object.values(attachmentDraftsRef.current).flat();
+    cancelPendingAcpAttachments(pendingAttachments, cancelledAttachmentIdsRef.current);
+    pendingAttachments.forEach(attachment => {
       if (attachment.result) discardAcpAttachment(attachment.result).catch(() => {});
     });
   }, []);
@@ -2307,7 +2410,9 @@ export function CodexAcpView({
 
   function showRuntimeError(agentId, nextError) {
     console.error(`${agentId} runtime operation failed:`, nextError);
-    const message = codexCopy.showRawErrors ? String(nextError) : codexCopy.operationFailed;
+    const message = !isWeb && codexCopy.showRawErrors
+      ? String(nextError)
+      : codexCopy.operationFailed;
     setRuntimeErrors(current => ({ ...current, [agentId]: message }));
   }
 
@@ -2378,11 +2483,15 @@ export function CodexAcpView({
 
   async function send() {
     const message = draft.trim();
+    const attachmentsAtSend = attachments;
     const readyAttachments = attachments.filter(attachment => (
       attachment.status === 'ready' && attachment.result
     ));
+    const workspaceReferencesAtSend = workspaceReferences;
+    const draftAgentAtSend = draftAgentId;
+    const draftConfigAtSend = draftConfigSelections[draftAgentAtSend];
     if ((!message && !readyAttachments.length && !workspaceReferences.length)
-      || busy || working || activeRuntimeBusy) return;
+      || busy || working || activeRuntimeBusy || configApplying) return;
     if (!isNativeAgent && !activeStatus?.authenticated) {
       setError(codexCopy.loginRequiredBeforeSend);
       return;
@@ -2397,83 +2506,121 @@ export function CodexAcpView({
       await sendNative(message, readyAttachments);
       return;
     }
-    setWorking(true); setError('');
+    let targetId = activeId;
+    let operation = beginAcpSendOperation(targetId);
+    if (!operation) return;
+    setError('');
     try {
-      let targetId = activeId;
       if (!targetId) {
-        const created = await createSession();
+        const created = await createSession({
+          shouldActivate: () => canApplyAcpSendOperation(operation),
+        });
         targetId = created.id;
-        const appliedInfo = await applyDraftConfigSelections(targetId, created.info);
+        if (created.activated && activeIdRef.current === targetId) {
+          acpSendOperationTracker.switchSession(targetId);
+          operation = beginAcpSendOperation(targetId);
+        }
+        const appliedInfo = await applyDraftConfigSelections(
+          targetId,
+          created.info,
+          draftConfigAtSend,
+          () => canApplyAcpSendOperation(operation),
+        );
         if (appliedInfo && appliedInfo !== created.info) applySessionInfo(appliedInfo, targetId);
         setDraftConfigSelections(current => {
+          if (current[draftAgentAtSend] !== draftConfigAtSend) return current;
           const next = { ...current };
-          delete next[draftAgentId];
+          delete next[draftAgentAtSend];
           return next;
         });
-        setAttachmentDrafts(current => {
-          const draftAttachments = current[DRAFT_ATTACHMENT_KEY] || [];
-          const next = { ...current, [targetId]: draftAttachments };
-          delete next[DRAFT_ATTACHMENT_KEY];
-          return next;
-        });
-        setWorkspaceReferenceDrafts(current => {
-          const draftReferences = current[DRAFT_ATTACHMENT_KEY] || [];
-          const next = { ...current, [targetId]: draftReferences };
-          delete next[DRAFT_ATTACHMENT_KEY];
-          return next;
-        });
+        setAttachmentDrafts(current => transferAcpDraftItems(
+          current,
+          DRAFT_ATTACHMENT_KEY,
+          targetId,
+          attachmentsAtSend,
+          attachment => attachment.id,
+        ));
+        setWorkspaceReferenceDrafts(current => transferAcpDraftItems(
+          current,
+          DRAFT_ATTACHMENT_KEY,
+          targetId,
+          workspaceReferencesAtSend,
+          reference => reference,
+        ));
       }
-      autoScrollRef.current = true;
-      setShowScrollBottom(false);
-      setDraft('');
+      if (canApplyAcpSendOperation(operation)) {
+        autoScrollRef.current = true;
+        setShowScrollBottom(false);
+        setDraft('');
+      }
       await submitAcpPrompt({
         sessionId: targetId,
         message,
         attachments: readyAttachments.map(attachment => attachment.result),
-        workspaceReferences,
+        workspaceReferences: workspaceReferencesAtSend,
       });
       updateAttachments(targetId, current => current.filter(
         attachment => !readyAttachments.some(ready => ready.id === attachment.id),
       ));
-      setWorkspaceReferenceDrafts(current => ({ ...current, [targetId]: [] }));
+      setWorkspaceReferenceDrafts(current => removeAcpDraftItems(
+        current,
+        targetId,
+        workspaceReferencesAtSend,
+        reference => reference,
+      ));
     } catch (err) {
-      showError(err);
-      setDraft(message);
+      if (canApplyAcpSendOperation(operation)) {
+        showError(err);
+        setDraft(message);
+      }
     } finally {
-      setWorking(false);
+      finishAcpSendOperation(operation);
     }
   }
 
   /// 原生（品悟 Engine）发送：草稿态先建会话（强制临时工作区），随后走 chat 命令；
   /// 用户气泡乐观插入 lane，chat 命令同步失败（空消息 / turn 占用等）时回滚。
   async function sendNative(message, readyAttachments) {
-    setWorking(true); setError('');
+    const attachmentsAtSend = attachments;
+    const workspaceReferencesAtSend = workspaceReferences;
+    const nativeDraftControlsAtSend = nativeDraftControls;
+    let targetId = activeId;
+    let operation = beginAcpSendOperation(targetId);
+    if (!operation) return;
+    setError('');
     try {
-      let targetId = activeId;
       if (!targetId) {
-        const created = await createSession();
+        const created = await createSession({
+          shouldActivate: () => canApplyAcpSendOperation(operation),
+        });
         targetId = created.id;
+        if (created.activated && activeIdRef.current === targetId) {
+          acpSendOperationTracker.switchSession(targetId);
+          operation = beginAcpSendOperation(targetId);
+        }
         // 草稿态暂存的模型/知识库/模式/多智能体选择先落到新会话（失败会显式报错）。
-        await applyNativeDraftControls(targetId);
+        await applyNativeDraftControls(targetId, nativeDraftControlsAtSend);
         // createSession 内的首次 load 发生在草稿控件落盘之前；若用户在草稿态
         // 开启了多智能体，那次 load 读到的是旧的 false。首条消息发送前必须
         // 再读一次后端权威状态，保证输入框开关及时反映刚落盘的会话配置。
         await refreshNativeControls(targetId);
-        setAttachmentDrafts(current => {
-          const draftAttachments = current[DRAFT_ATTACHMENT_KEY] || [];
-          const next = { ...current, [targetId]: draftAttachments };
-          delete next[DRAFT_ATTACHMENT_KEY];
-          return next;
-        });
-        setWorkspaceReferenceDrafts(current => {
-          const draftReferences = current[DRAFT_ATTACHMENT_KEY] || [];
-          const next = { ...current, [targetId]: draftReferences };
-          delete next[DRAFT_ATTACHMENT_KEY];
-          return next;
-        });
+        setAttachmentDrafts(current => transferAcpDraftItems(
+          current,
+          DRAFT_ATTACHMENT_KEY,
+          targetId,
+          attachmentsAtSend,
+          attachment => attachment.id,
+        ));
+        setWorkspaceReferenceDrafts(current => transferAcpDraftItems(
+          current,
+          DRAFT_ATTACHMENT_KEY,
+          targetId,
+          workspaceReferencesAtSend,
+          reference => reference,
+        ));
       }
-      const referencePrefix = workspaceReferences.length
-        ? `${workspaceReferences.map(path => `@${path}`).join(' ')}\n\n`
+      const referencePrefix = workspaceReferencesAtSend.length
+        ? `${workspaceReferencesAtSend.map(path => `@${path}`).join(' ')}\n\n`
         : '';
       const displayText = message + (readyAttachments.length
         ? `${message ? '\n' : ''}📎 ${readyAttachments.map(attachment => attachment.basename).join(', ')}`
@@ -2481,9 +2628,11 @@ export function CodexAcpView({
       const lane = getNativeLane(targetId);
       const optimisticId = appendLocalUserMessage(lane, displayText);
       setNativeLaneTick(tick => tick + 1);
-      autoScrollRef.current = true;
-      setShowScrollBottom(false);
-      setDraft('');
+      if (canApplyAcpSendOperation(operation)) {
+        autoScrollRef.current = true;
+        setShowScrollBottom(false);
+        setDraft('');
+      }
       try {
         await invoke('chat', {
           message: referencePrefix + message,
@@ -2502,12 +2651,19 @@ export function CodexAcpView({
       updateAttachments(targetId, current => current.filter(
         attachment => !readyAttachments.some(ready => ready.id === attachment.id),
       ));
-      setWorkspaceReferenceDrafts(current => ({ ...current, [targetId]: [] }));
+      setWorkspaceReferenceDrafts(current => removeAcpDraftItems(
+        current,
+        targetId,
+        workspaceReferencesAtSend,
+        reference => reference,
+      ));
     } catch (err) {
-      showError(err);
-      setDraft(message);
+      if (canApplyAcpSendOperation(operation)) {
+        showError(err);
+        setDraft(message);
+      }
     } finally {
-      setWorking(false);
+      finishAcpSendOperation(operation);
     }
   }
 
@@ -2517,7 +2673,7 @@ export function CodexAcpView({
       await invoke('cancel_generation', { sessionId: activeId }).catch(showError);
       return;
     }
-    await invoke('cancel_codex_acp', { sessionId: activeId }).catch(showError);
+    await cancelAcpSession(activeId).catch(showError);
   }
 
   /// 原生会话的选择确认卡提交/取消：chat:user_input_required → submit_user_input /
@@ -2528,23 +2684,29 @@ export function CodexAcpView({
     // activeId 会把 restoredAnswers 写进（或找不到卡而漏写）错误 lane——与 bridge
     // submitUserInput 的 sid 捕获同一约定。
     const sid = activeId;
-    setResponding(true); setError('');
+    setRespondingSessionId(sid); setError('');
     try {
       await invoke('submit_user_input', { toolCallId, answers, sessionId: sid });
       markNativeInputResolved(sid, toolCallId, 'submitted', answers);
-    } catch (err) { showError(err); }
-    finally { setResponding(false); }
+    } catch (err) {
+      if (sid === activeIdRef.current) showError(err);
+    } finally {
+      setRespondingSessionId(current => current === sid ? null : current);
+    }
   }
 
   async function cancelNativeInput(toolCallId) {
     if (!activeId) return;
     const sid = activeId;
-    setResponding(true); setError('');
+    setRespondingSessionId(sid); setError('');
     try {
       await invoke('cancel_user_input', { toolCallId, sessionId: sid });
       markNativeInputResolved(sid, toolCallId, 'cancelled');
-    } catch (err) { showError(err); }
-    finally { setResponding(false); }
+    } catch (err) {
+      if (sid === activeIdRef.current) showError(err);
+    } finally {
+      setRespondingSessionId(current => current === sid ? null : current);
+    }
   }
 
   function markNativeInputResolved(sessionId, toolCallId, cardState, answers) {
@@ -2677,7 +2839,7 @@ export function CodexAcpView({
         <ConversationMarkdown
           text={item.legacyItem.text}
           onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
-          onOpenResource={openWorkspaceResource}
+          onOpenResource={isWeb ? undefined : openWorkspaceResource}
         />
       );
     }
@@ -2746,68 +2908,107 @@ export function CodexAcpView({
   }
 
   async function respond(toolCallId, optionId) {
-    if (!activeId) return;
-    setResponding(true); setError('');
+    const request = pending.find(item => item.toolCallId === toolCallId);
+    const targetId = request?.sessionId || activeId;
+    if (!targetId || targetId !== activeIdRef.current) return;
+    setRespondingSessionId(targetId); setError('');
     try {
-      await invoke('respond_codex_acp_permission', { sessionId: activeId, toolCallId, optionId });
-      setPending(current => current.filter(item => item.toolCallId !== toolCallId));
-    } catch (err) { showError(err); }
-    finally { setResponding(false); }
+      await invoke(isWeb ? 'web_access_respond_codex_acp_permission' : 'respond_codex_acp_permission', {
+        sessionId: targetId,
+        toolCallId,
+        optionId,
+      });
+      setPending(current => current.filter(item => (
+        item.sessionId !== targetId || item.toolCallId !== toolCallId
+      )));
+    } catch (err) {
+      if (targetId === activeIdRef.current) showError(err);
+    }
+    finally {
+      setRespondingSessionId(current => current === targetId ? null : current);
+    }
   }
 
   async function respondElicitation(elicitationId, action, content) {
-    if (!activeId) return;
-    setResponding(true); setError('');
+    const request = pendingElicitations.find(item => item.elicitationId === elicitationId);
+    const targetId = request?.sessionId || activeId;
+    if (!targetId || targetId !== activeIdRef.current) return;
+    setRespondingSessionId(targetId); setError('');
     try {
-      await invoke('respond_codex_acp_elicitation', {
-        sessionId: activeId,
+      await invoke(isWeb ? 'web_access_respond_codex_acp_elicitation' : 'respond_codex_acp_elicitation', {
+        sessionId: targetId,
         elicitationId,
         action,
         content,
       });
       setPendingElicitations(current => current.filter(
-        item => item.elicitationId !== elicitationId,
+        item => item.sessionId !== targetId || item.elicitationId !== elicitationId,
       ));
-    } catch (err) { showError(err); }
-    finally { setResponding(false); }
+    } catch (err) {
+      if (targetId === activeIdRef.current) showError(err);
+    }
+    finally {
+      setRespondingSessionId(current => current === targetId ? null : current);
+    }
   }
 
   async function changeModel(modelId) {
-    if (!modelId || activeRuntimeBusy) return;
+    if (!modelId || activeRuntimeBusy || configApplying) return;
     if (!activeId) {
       stageDraftConfigSelection({ model: modelId });
       return;
     }
-    setWorking(true); setConfigApplying('model');
-    try { applySessionInfo(await setAcpModel(activeId, modelId)); }
-    catch (err) { showError(err); }
-    finally { setWorking(false); setConfigApplying(''); }
+    const targetId = activeId;
+    const operation = beginAcpConfigOperation(targetId, 'model');
+    if (!operation) return;
+    try {
+      const next = await setAcpModel(targetId, modelId);
+      if (canApplyAcpConfigOperation(operation)) applySessionInfo(next, targetId);
+    } catch (err) {
+      if (canApplyAcpConfigOperation(operation)) showError(err);
+    } finally {
+      finishAcpConfigOperation(operation);
+    }
   }
 
   async function changeConfig(configId, valueId) {
-    if (activeRuntimeBusy) return;
+    if (activeRuntimeBusy || configApplying) return;
     if (!activeId) {
       stageDraftConfigSelection({ configs: { [configId]: valueId } });
       return;
     }
-    setWorking(true); setConfigApplying(configId); setError('');
+    const targetId = activeId;
+    const operation = beginAcpConfigOperation(targetId, configId);
+    if (!operation) return;
+    setError('');
     try {
-      applySessionInfo(await setAcpConfigOption(activeId, configId, valueId));
-    } catch (err) { showError(err); }
-    finally { setWorking(false); setConfigApplying(''); }
+      const next = await setAcpConfigOption(targetId, configId, valueId);
+      if (canApplyAcpConfigOperation(operation)) applySessionInfo(next, targetId);
+    } catch (err) {
+      if (canApplyAcpConfigOperation(operation)) showError(err);
+    } finally {
+      finishAcpConfigOperation(operation);
+    }
   }
 
   async function changeMode(modeId) {
-    if (!modeId || activeRuntimeBusy) return;
+    if (!modeId || activeRuntimeBusy || configApplying) return;
     if (!activeId) {
       stageDraftConfigSelection({ mode: modeId });
       return;
     }
-    setWorking(true); setConfigApplying('mode'); setError('');
+    const targetId = activeId;
+    const operation = beginAcpConfigOperation(targetId, 'mode');
+    if (!operation) return;
+    setError('');
     try {
-      applySessionInfo(await setAcpMode(activeId, modeId));
-    } catch (err) { showError(err); }
-    finally { setWorking(false); setConfigApplying(''); }
+      const next = await setAcpMode(targetId, modeId);
+      if (canApplyAcpConfigOperation(operation)) applySessionInfo(next, targetId);
+    } catch (err) {
+      if (canApplyAcpConfigOperation(operation)) showError(err);
+    } finally {
+      finishAcpConfigOperation(operation);
+    }
   }
 
   return (
@@ -2987,7 +3188,7 @@ export function CodexAcpView({
                       : undefined}
                     agentLabel={activeAgentName}
                     onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
-                    onOpenResource={openWorkspaceResource}
+                    onOpenResource={isWeb ? undefined : openWorkspaceResource}
                   />
                 )
               : (
@@ -3001,7 +3202,7 @@ export function CodexAcpView({
                     onRespondElicitation={respondElicitation}
                     responding={responding}
                     onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
-                    onOpenResource={openWorkspaceResource} />
+                    onOpenResource={isWeb ? undefined : openWorkspaceResource} />
                 ))}
           </div>
         </div>
@@ -3465,7 +3666,7 @@ export function CodexAcpView({
                             tag: activeAgentId === 'claude' ? model.id : undefined,
                           }))}
                           onChange={changeModel}
-                          disabled={busy || working || activeRuntimeBusy}
+                          disabled={busy || working || activeRuntimeBusy || Boolean(configApplying)}
                           unsetLabel={codexCopy.notSet}
                         />
                       )}
@@ -3479,7 +3680,7 @@ export function CodexAcpView({
                             name: item.name || item.id,
                           }))}
                           onChange={changeMode}
-                          disabled={busy || working || activeRuntimeBusy}
+                          disabled={busy || working || activeRuntimeBusy || Boolean(configApplying)}
                           title={codexCopy.sessionModeTitle}
                           unsetLabel={codexCopy.notSet}
                         />
@@ -3499,7 +3700,7 @@ export function CodexAcpView({
                               }))
                             : configChoices(option)}
                           onChange={value => changeConfig(option.id, value)}
-                          disabled={busy || working || activeRuntimeBusy}
+                          disabled={busy || working || activeRuntimeBusy || Boolean(configApplying)}
                           title={option.description || option.name}
                           unsetLabel={codexCopy.notSet}
                         />
@@ -3525,7 +3726,7 @@ export function CodexAcpView({
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
+                  <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || Boolean(configApplying) || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
                     className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                     <Send size={16} />
                   </button>

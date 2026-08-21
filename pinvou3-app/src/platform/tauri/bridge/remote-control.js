@@ -164,12 +164,17 @@
     // 意图的完成写入收敛：web_access:status 事件 payload 不含 starting，
     // 事件无法清理该标志，须由每个意图完成路径（含失败）显式兜底。
     var webAccessIntentSeq = 0;
+    var webAccessStatusSeq = 0;
 
-    async function refreshRemoteControlStatus() {
+    async function refreshRemoteControlStatus(expectedIntentSeq) {
+      var intentSeq = expectedIntentSeq === undefined ? webAccessIntentSeq : expectedIntentSeq;
+      var statusSeq = ++webAccessStatusSeq;
       try {
         var status = await invoke("web_access_status");
+        if (intentSeq !== webAccessIntentSeq || statusSeq !== webAccessStatusSeq) return status;
         state.webAccess = Object.assign({}, state.webAccess, status || {});
       } catch (error) {
+        if (intentSeq !== webAccessIntentSeq || statusSeq !== webAccessStatusSeq) return;
         state.webAccess = Object.assign({}, state.webAccess, { last_error: String(error) });
       }
       notify();
@@ -184,11 +189,13 @@
         var info = await invoke("web_access_enable", {
           allowHostWorkspace: !!(options && options.allowHostWorkspace),
         });
-        if (seq !== webAccessIntentSeq) return info; // 已有更新的用户操作，不写反状态
+        // A newer user action owns the state now; discard this stale result.
+        if (seq !== webAccessIntentSeq) return info;
         state.webAccess = Object.assign({}, state.webAccess, info || {}, {
           active: true, starting: false, last_error: null,
         });
-        await refreshRemoteControlStatus();
+        notify();
+        await refreshRemoteControlStatus(seq);
         return info;
       } catch (error) {
         if (seq !== webAccessIntentSeq) throw error;
@@ -228,7 +235,7 @@
           active: true, web_client_connected: false, last_error: null, starting: false,
         });
         notify();
-        await refreshRemoteControlStatus();
+        await refreshRemoteControlStatus(seq);
         return info;
       } catch (error) {
         if (seq !== webAccessIntentSeq) throw error;
@@ -243,14 +250,18 @@
     }
 
     async function setWebRelayAddress(address) {
+      var seq = ++webAccessIntentSeq;
       var info = await invoke("web_access_set_relay", { address: address });
-      await refreshRemoteControlStatus();
+      if (seq !== webAccessIntentSeq) return info;
+      await refreshRemoteControlStatus(seq);
       return info;
     }
 
     async function resetWebRelayAddress() {
+      var seq = ++webAccessIntentSeq;
       var info = await invoke("web_access_reset_relay");
-      await refreshRemoteControlStatus();
+      if (seq !== webAccessIntentSeq) return info;
+      await refreshRemoteControlStatus(seq);
       return info;
     }
 

@@ -6,6 +6,7 @@
 use anyhow::Context;
 use deepseek_tui::session_manager::SessionMetadata;
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 use tauri::State;
 
 use crate::features::assistant::engine_pool::EnginePool;
@@ -41,6 +42,30 @@ fn ensure_codex_workspace_root(
             .with_context(|| format!("创建 Codex 临时工作目录失败: {}", path.display()))?;
     }
     Ok(())
+}
+
+pub(crate) type WorkspaceBindingVerifier<'a> =
+    dyn Fn(&Path) -> Result<(), String> + Send + Sync + 'a;
+
+fn verify_workspace_binding(
+    project_workspace: Option<&Path>,
+    verifier: Option<&WorkspaceBindingVerifier<'_>>,
+) -> Result<(), String> {
+    let Some(verifier) = verifier else {
+        return Ok(());
+    };
+    let workspace = project_workspace
+        .ok_or_else(|| "Authorized workspace binding requires a project directory".to_string())?;
+    verifier(workspace)
+}
+
+fn rollback_created_code_session(session_id: &str, store: &SessionStore, acp_pool: &AcpPool) {
+    if let Err(error) = acp_pool.agents().remove(session_id) {
+        log::warn!("[codex_acp] rollback Session Agent binding {session_id} failed: {error:#}");
+    }
+    if let Err(error) = store.delete(session_id) {
+        log::warn!("[codex_acp] rollback Session {session_id} failed: {error:#}");
+    }
 }
 
 #[tauri::command]
@@ -675,16 +700,49 @@ pub async fn create_codex_acp_session(
     pool: State<'_, EnginePool>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<SessionMetadata, String> {
+    create_codex_acp_session_with_workspace_binding(
+        workspace_path.map(PathBuf::from),
+        agent_id,
+        store,
+        pool,
+        acp_pool,
+        None,
+    )
+    .await
+}
+
+/// Internal code-Session creation entry point used by Web workspace grants.
+/// The public desktop command remains path-based; only the Web bridge injects
+/// an identity verifier. The verifier is deliberately lock-free and is run
+/// before persistence, after Agent/workspace binding, and after baseline
+/// capture so a replaced directory causes the newly-created Session to be
+/// rolled back instead of becoming durable.
+pub(crate) async fn create_codex_acp_session_with_workspace_binding(
+    workspace_path: Option<PathBuf>,
+    agent_id: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    acp_pool: State<'_, AcpPool>,
+    workspace_verifier: Option<&WorkspaceBindingVerifier<'_>>,
+) -> Result<SessionMetadata, String> {
     let backend = AgentBackend::parse(agent_id.as_deref().or(Some("pinvou")))
         .map_err(|error| format!("{error:#}"))?;
-    if !backend.is_acp() {
-        return create_code_native_session(workspace_path, &pool, &store, &acp_pool).await;
-    }
     let project_workspace = workspace_path
         .as_deref()
-        .map(|path| validate_codex_project_workspace(std::path::Path::new(path)))
+        .map(validate_codex_project_workspace)
         .transpose()
         .map_err(|error| format!("{error:#}"))?;
+    verify_workspace_binding(project_workspace.as_deref(), workspace_verifier)?;
+    if !backend.is_acp() {
+        return create_code_native_session(
+            project_workspace,
+            &pool,
+            &store,
+            &acp_pool,
+            workspace_verifier,
+        )
+        .await;
+    }
     let metadata_workspace = project_workspace
         .clone()
         .unwrap_or_else(|| pool.bridge.workspace.clone());
@@ -710,16 +768,24 @@ pub async fn create_codex_acp_session(
             return Err(format!("{error:#}"));
         }
     }
-    if let Err(error) =
-        acp_pool
-            .agents()
-            .set_acp_workspace(&session.metadata.id, backend, kind, project_workspace)
-    {
-        let _ = store.delete(&session.metadata.id);
+    if let Err(error) = acp_pool.agents().set_acp_workspace(
+        &session.metadata.id,
+        backend,
+        kind,
+        project_workspace.clone(),
+    ) {
+        rollback_created_code_session(&session.metadata.id, &store, &acp_pool);
         return Err(format!("保存 Codex ACP 会话工作目录失败: {error:#}"));
     }
-    let baseline_root = acp_pool
-        .workspace_info(&session.metadata.id)
+    if let Err(error) = verify_workspace_binding(project_workspace.as_deref(), workspace_verifier) {
+        rollback_created_code_session(&session.metadata.id, &store, &acp_pool);
+        return Err(error);
+    }
+    let baseline_workspace = acp_pool.workspace_info(&session.metadata.id);
+    if baseline_workspace.is_err() {
+        rollback_created_code_session(&session.metadata.id, &store, &acp_pool);
+    }
+    let baseline_root = baseline_workspace
         .map_err(|error| format!("读取 Codex ACP 会话工作目录失败: {error:#}"))?
         .workspace_path;
     let baseline_session_id = session.metadata.id.clone();
@@ -730,9 +796,12 @@ pub async fn create_codex_acp_session(
     .map_err(|error| anyhow::anyhow!("工作区基线任务失败: {error}"))
     .and_then(|result| result)
     {
-        let _ = acp_pool.agents().remove(&session.metadata.id);
-        let _ = store.delete(&session.metadata.id);
+        rollback_created_code_session(&session.metadata.id, &store, &acp_pool);
         return Err(format!("创建 Codex 工作区基线失败: {error:#}"));
+    }
+    if let Err(error) = verify_workspace_binding(project_workspace.as_deref(), workspace_verifier) {
+        rollback_created_code_session(&session.metadata.id, &store, &acp_pool);
+        return Err(error);
     }
     Ok(session.metadata)
 }
@@ -744,16 +813,12 @@ pub async fn create_codex_acp_session(
 /// `validate_codex_project_workspace` 校验），执行根由 resolver 在
 /// engine/shell 启动时解析，发消息走现有 `chat` 命令。
 async fn create_code_native_session(
-    workspace_path: Option<String>,
+    project_workspace: Option<PathBuf>,
     pool: &EnginePool,
     store: &SessionStore,
     acp_pool: &AcpPool,
+    workspace_verifier: Option<&WorkspaceBindingVerifier<'_>>,
 ) -> Result<SessionMetadata, String> {
-    let project_workspace = workspace_path
-        .as_deref()
-        .map(|path| validate_codex_project_workspace(std::path::Path::new(path)))
-        .transpose()
-        .map_err(|error| format!("{error:#}"))?;
     let kind = if project_workspace.is_some() {
         CodexWorkspaceKind::Project
     } else {
@@ -774,13 +839,17 @@ async fn create_code_native_session(
         kind,
         project_workspace.clone(),
     ) {
-        let _ = store.delete(&session.metadata.id);
+        rollback_created_code_session(&session.metadata.id, store, acp_pool);
         return Err(format!("保存原生代码会话标记失败: {error:#}"));
     }
     // 基线根：项目会话用项目目录（capture_baseline 对 git 仓库只指纹 dirty 文件，
     // 与 ACP 项目会话一致）；临时会话先确保私有目录存在。
+    if let Err(error) = verify_workspace_binding(project_workspace.as_deref(), workspace_verifier) {
+        rollback_created_code_session(&session.metadata.id, store, acp_pool);
+        return Err(error);
+    }
     let baseline_root = match kind {
-        CodexWorkspaceKind::Project => project_workspace.expect("项目会话必有工作目录"),
+        CodexWorkspaceKind::Project => project_workspace.clone().expect("项目会话必有工作目录"),
         CodexWorkspaceKind::Temporary => {
             let temporary_workspace = match store
                 .session_roots(&session.metadata.id)
@@ -811,9 +880,12 @@ async fn create_code_native_session(
     .map_err(|error| anyhow::anyhow!("工作区基线任务失败: {error}"))
     .and_then(|result| result)
     {
-        let _ = acp_pool.agents().remove(&session.metadata.id);
-        let _ = store.delete(&session.metadata.id);
+        rollback_created_code_session(&session.metadata.id, store, acp_pool);
         return Err(format!("创建代码工作区基线失败: {error:#}"));
+    }
+    if let Err(error) = verify_workspace_binding(project_workspace.as_deref(), workspace_verifier) {
+        rollback_created_code_session(&session.metadata.id, store, acp_pool);
+        return Err(error);
     }
     Ok(session.metadata)
 }
@@ -821,6 +893,31 @@ async fn create_code_native_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_binding_is_fail_closed_and_repeatable() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let checks = AtomicUsize::new(0);
+        let verifier = |path: &Path| {
+            assert_eq!(path, Path::new("workspace"));
+            let attempt = checks.fetch_add(1, Ordering::SeqCst);
+            if attempt < 2 {
+                Ok(())
+            } else {
+                Err("workspace identity changed".to_string())
+            }
+        };
+        assert!(verify_workspace_binding(Some(Path::new("workspace")), Some(&verifier)).is_ok());
+        assert!(verify_workspace_binding(Some(Path::new("workspace")), Some(&verifier)).is_ok());
+        assert_eq!(
+            verify_workspace_binding(Some(Path::new("workspace")), Some(&verifier)).unwrap_err(),
+            "workspace identity changed"
+        );
+        assert_eq!(checks.load(Ordering::SeqCst), 3);
+        assert!(verify_workspace_binding(None, Some(&verifier)).is_err());
+        assert!(verify_workspace_binding(None, None).is_ok());
+    }
 
     #[test]
     fn code_session_agent_id_maps_native_backend_to_pinvou() {

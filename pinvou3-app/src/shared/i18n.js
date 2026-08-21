@@ -2149,7 +2149,7 @@ dict.zh.uiArtifacts = {
   diChangesLog:n=>`设计变更 ${n}`, diEmpty:'空',
 };
 dict.zh.uiCodexView = { ended:'已结束', stepsFailed:'执行步骤包含失败', processing:'正在处理', codexTool:'Codex 工具' };
-Object.assign(dict.zh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`, deviceUploadTooLarge:name=>`${name} 超过 20 MB 附件上限` });
+Object.assign(dict.zh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`, deviceUploadTooLarge:name=>`${name} 超过 20 MB 附件上限`, deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试` });
 dict.en.uiArtifacts = {
   zoomFit:'Fit window', zoomActual:'Actual size', zoomCustom:'Custom', zoomOut:'Zoom out', zoomIn:'Zoom in',
   switchArtifact:'Switch artifact', currentMtime:time=>`Last modified ${time}`,
@@ -2190,7 +2190,7 @@ dict.en.uiArtifacts = {
   diChangesLog:n=>`Design changes: ${n}`, diEmpty:'empty',
 };
 dict.en.uiCodexView = { ended:'Finished', stepsFailed:'Steps include failures', processing:'Processing', codexTool:'Codex tool' };
-Object.assign(dict.en.uiAttachments, { uploading:pct=>`Uploading ${pct}%`, deviceUploadTooLarge:name=>`${name} exceeds the 20 MB attachment limit` });
+Object.assign(dict.en.uiAttachments, { uploading:pct=>`Uploading ${pct}%`, deviceUploadTooLarge:name=>`${name} exceeds the 20 MB attachment limit`, deviceUploadEmpty:name=>`${name} is empty and cannot be attached`, deviceUploadUnavailable:'Uploading from this device is currently unavailable', deviceUploadInvalid:name=>`${name} is not a valid attachment`, deviceUploadFailed:name=>`${name} could not be uploaded. Try again.` });
 dict.ja.uiArtifacts = {
   zoomFit:'ウィンドウに合わせる', zoomActual:'実際のサイズ', zoomCustom:'カスタム', zoomOut:'キャンバスを縮小', zoomIn:'キャンバスを拡大',
   switchArtifact:'成果物を切り替え', currentMtime:time=>`現在の更新日時 ${time}`,
@@ -2231,7 +2231,7 @@ dict.ja.uiArtifacts = {
   diChangesLog:n=>`デザイン変更 ${n} 件`, diEmpty:'空',
 };
 dict.ja.uiCodexView = { ended:'終了', stepsFailed:'失敗を含む実行手順', processing:'処理中', codexTool:'Codex ツール' };
-Object.assign(dict.ja.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`, deviceUploadTooLarge:name=>`${name} は添付ファイル上限の 20 MB を超えています` });
+Object.assign(dict.ja.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`, deviceUploadTooLarge:name=>`${name} は添付ファイル上限の 20 MB を超えています`, deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。` });
 
 // uiToolStore 词条补充（ToolStoreView / oauth-marketplace-logic）：命名空间已在 dict 主体定义，这里增量合并。
 Object.assign(dict.zh.uiToolStore, {

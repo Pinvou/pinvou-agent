@@ -39,9 +39,21 @@ fn is_stale(metadata: &std::fs::Metadata, now: SystemTime, stale_age: Duration) 
         .is_some_and(|age| age >= stale_age)
 }
 
+#[cfg(any(unix, test))]
+fn device_numbers_match<T>(stat_device: T, metadata_device: u64) -> bool
+where
+    T: TryInto<u64>,
+{
+    // `dev_t` is unsigned on Linux but signed on macOS. Reject values that
+    // cannot be represented losslessly instead of truncating or wrapping.
+    stat_device
+        .try_into()
+        .is_ok_and(|stat_device| stat_device == metadata_device)
+}
+
 #[cfg(unix)]
 mod platform {
-    use super::{is_stale, NameValidator};
+    use super::{device_numbers_match, is_stale, NameValidator};
     use std::ffi::{CStr, CString};
     use std::fs::File;
     use std::io;
@@ -269,7 +281,7 @@ mod platform {
             return Ok(false);
         }
         let current = unsafe { current.assume_init() };
-        if current.st_dev != metadata.dev()
+        if !device_numbers_match(current.st_dev, metadata.dev())
             || current.st_ino != metadata.ino()
             || current.st_nlink != 1
             || current.st_mode & libc::S_IFMT != libc::S_IFREG
@@ -286,6 +298,31 @@ mod platform {
             return Ok(false);
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_numbers_match;
+
+    #[test]
+    fn device_number_comparison_accepts_linux_and_macos_representations() {
+        let linux_device: u64 = 42;
+        let macos_device: i32 = 42;
+
+        assert!(device_numbers_match(linux_device, 42));
+        assert!(device_numbers_match(macos_device, 42));
+        assert!(device_numbers_match(u64::MAX, u64::MAX));
+        assert!(device_numbers_match(i32::MAX, i32::MAX as u64));
+        assert!(!device_numbers_match(linux_device, 43));
+        assert!(!device_numbers_match(macos_device, 43));
+    }
+
+    #[test]
+    fn device_number_comparison_fails_closed_when_conversion_is_invalid() {
+        let invalid_macos_device: i32 = -1;
+
+        assert!(!device_numbers_match(invalid_macos_device, u64::MAX));
     }
 }
 

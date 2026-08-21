@@ -4,18 +4,24 @@ import vm from 'node:vm';
 
 globalThis.window = {
   __PINVOU_TAURI_BRIDGE_FEATURES__: {},
+  btoa: value => Buffer.from(value, 'binary').toString('base64'),
 };
 globalThis.btoa = value => Buffer.from(value, 'binary').toString('base64');
+
+const uploaderSource = await readFile(
+  new URL('../src/shared/chunked-file-upload.js', import.meta.url),
+  'utf8',
+);
+vm.runInThisContext(uploaderSource, { filename: 'chunked-file-upload.js' });
 
 const bridgeSource = await readFile(
   new URL('../src/platform/tauri/bridge/artifacts.js', import.meta.url),
   'utf8',
 );
-assert.match(
-  bridgeSource,
-  /if \(att\.uploadId && \(att\.cancelled \|\| commitAcknowledged\)\)/,
-  'a backend upload error must not cancel a prior completed upload with the same ID',
-);
+assert.match(bridgeSource, /att\.cancelled \|\| upload\.commitAcknowledged/,
+  'cleanup must only cancel an explicitly cancelled or acknowledged upload');
+assert.doesNotMatch(bridgeSource, /192 \* 1024/,
+  'desktop attachments must use the shared 256 KiB uploader');
 assert.doesNotMatch(
   bridgeSource,
   /PinvouAttachmentDropController\.install/,

@@ -65,6 +65,7 @@ use wait_timeout::ChildExt;
 use crate::features::sessions::SessionStore;
 use attachments::{prepare_codex_prompt, CodexDisplayAttachment};
 use deepseek_tui::session_manager::SessionMetadata;
+pub(crate) use events::project_acp_value_for_web;
 use events::{
     load_timeline, load_web_timeline_page, persist_acp_state, EventBridge, WebAcpTimelineSlice,
 };
@@ -130,7 +131,14 @@ fn same_workspace(left: &Path, right: &Path) -> bool {
 }
 
 pub(super) fn codex_authenticated(codex: &Path) -> bool {
-    if nonempty_env("OPENAI_API_KEY") || auth_probe::codex_oauth_credentials_present() {
+    if [
+        "OPENAI_API_KEY",
+        "OPENAI_CODEX_ACCESS_TOKEN",
+        "CODEX_ACCESS_TOKEN",
+    ]
+    .into_iter()
+    .any(nonempty_env)
+    {
         return true;
     }
     // 第三方 Provider（中转）激活时，注入的 key 只存在于被 spawn 的 Codex 子进程
@@ -903,6 +911,18 @@ struct RuntimeProbeCache {
     /// 供版本过旧时按来源分派 brew/npm 升级。
     codex_install_source: Option<&'static str>,
     system_codex_incompatible: bool,
+}
+
+fn remove_agent_paths(paths: Vec<PathBuf>) -> Result<()> {
+    for path in paths {
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("删除 {} 失败", path.display()))?;
+        } else if path.exists() {
+            std::fs::remove_file(&path).with_context(|| format!("删除 {} 失败", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 impl AcpPool {
@@ -1873,7 +1893,12 @@ impl AcpPool {
                 backend.display_name()
             );
         }
-        if let Some(path) = self.stale_official_install(backend) {
+        let pool = self.clone();
+        let stale_install =
+            tokio::task::spawn_blocking(move || pool.stale_official_install(backend))
+                .await
+                .context("检查官方安装残留任务异常退出")?;
+        if let Some(path) = stale_install {
             bail!(
                 "检测到不完整的 {} 安装残留：{} 存在但当前不可用。为避免安装出错，\
                  请先删除它后重试安装（或点击「重新检测」确认环境）",
@@ -2574,11 +2599,13 @@ impl AcpPool {
         };
         // 卸载前自检：刷新探测后既无安装来源、官方脚本路径也无残留时，明确告知
         // 「无需卸载」，而不是静默执行空操作给用户「卸完了」的错觉。
-        if install_source.is_none()
-            && !providers::lifecycle::official_script_paths(backend)
-                .into_iter()
-                .any(|path| path.exists())
-        {
+        let official_paths = providers::lifecycle::official_script_paths(backend);
+        let has_official_residual = tokio::task::spawn_blocking(move || {
+            official_paths.into_iter().any(|path| path.exists())
+        })
+        .await
+        .context("检查 Agent 安装路径任务异常退出")?;
+        if install_source.is_none() && !has_official_residual {
             bail!("未检测到已安装的 {} CLI，无需卸载", backend.display_name());
         }
         let command = providers::lifecycle::uninstall_command(backend, install_source.as_deref());
@@ -2623,26 +2650,18 @@ impl AcpPool {
                     "uninstall:remove_paths",
                     format!("agent={agent} paths={rendered}"),
                 );
-                for path in paths {
-                    if path.is_dir() {
-                        std::fs::remove_dir_all(&path)
-                            .with_context(|| format!("删除 {} 失败", path.display()))?;
-                    } else if path.exists() {
-                        std::fs::remove_file(&path)
-                            .with_context(|| format!("删除 {} 失败", path.display()))?;
-                    }
-                }
+                tokio::task::spawn_blocking(move || remove_agent_paths(paths))
+                    .await
+                    .context("删除 Agent 文件任务异常退出")??;
             }
         }
         self.refresh_agent_cli_probe(backend).await;
         if cleanup {
             let agent_id = backend.agent_id().context("非 ACP 后端")?;
-            for path in providers::lifecycle::config_paths(backend) {
-                if path.exists() {
-                    std::fs::remove_dir_all(&path)
-                        .with_context(|| format!("删除配置目录 {} 失败", path.display()))?;
-                }
-            }
+            let config_paths = providers::lifecycle::config_paths(backend);
+            tokio::task::spawn_blocking(move || remove_agent_paths(config_paths))
+                .await
+                .context("删除 Agent 配置任务异常退出")??;
             for record in self.providers.store().state(agent_id).providers {
                 let _ = self.providers.delete(agent_id, &record.id);
             }

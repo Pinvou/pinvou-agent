@@ -1,6 +1,9 @@
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkspaceIdentity(u64);
+
 pub(super) fn configure_private_open_options(_options: &mut OpenOptions) {}
 
 pub(super) fn enforce_private_permissions(_file: &File, _path: &Path) -> std::io::Result<()> {
@@ -21,6 +24,18 @@ pub(super) fn display_path(path: &Path) -> String {
 
 pub(super) fn host_file_roots() -> Vec<(String, PathBuf)> {
     Vec::new()
+}
+
+pub(super) fn workspace_identity(_path: &Path) -> std::io::Result<WorkspaceIdentity> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "workspace identity is unsupported on this platform",
+    ))
+}
+
+#[cfg(test)]
+pub(super) fn test_workspace_identity(seed: u64) -> WorkspaceIdentity {
+    WorkspaceIdentity(seed)
 }
 
 #[cfg(test)]

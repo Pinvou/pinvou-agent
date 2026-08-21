@@ -10,7 +10,7 @@ use agent_client_protocol::schema::v1::{
 };
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{Condvar, Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
@@ -22,6 +22,7 @@ const TIMELINE_FILE: &str = "acp-timeline.jsonl";
 const STATE_FILE: &str = "acp-state.json";
 /// Leaves headroom for the remote event/RPC envelope below the 2 MiB Relay cap.
 const MAX_WEB_ACP_EVENT_BYTES: usize = 1_750_000;
+const HOST_PATH_REDACTION: &str = "[host path omitted]";
 
 /// Codex ACP 页面唯一消费的事件合同。
 ///
@@ -98,8 +99,7 @@ fn project_acp_event_for_web_bounded(
     fallback
 }
 
-#[cfg(test)]
-fn project_acp_value_for_web(value: Value) -> Value {
+pub(crate) fn project_acp_value_for_web(value: Value) -> Value {
     sanitize_web_value(value)
 }
 
@@ -275,17 +275,12 @@ fn sanitize_web_value(value: Value) -> Value {
         Value::Object(values) => {
             let mut projected = serde_json::Map::new();
             for (key, value) in values {
-                if web_redacted_key(&key) {
+                if web_redacted_key(&key) || absolute_host_path_fragment_start(&key).is_some() {
                     continue;
                 }
                 if key.eq_ignore_ascii_case("error") {
                     if let Value::String(message) = value {
-                        projected.insert(
-                            key,
-                            Value::String(crate::platform::credential_store::redact_secret(
-                                &message,
-                            )),
-                        );
+                        projected.insert(key, Value::String(sanitize_web_string(&message)));
                     }
                     continue;
                 }
@@ -311,11 +306,18 @@ fn sanitize_web_value(value: Value) -> Value {
             }
             Value::Object(projected)
         }
-        Value::String(message) => {
-            Value::String(crate::platform::credential_store::redact_secret(&message))
-        }
+        Value::String(message) => Value::String(sanitize_web_string(&message)),
         scalar => scalar,
     }
+}
+
+fn sanitize_web_string(message: &str) -> String {
+    if let Some(path_start) = absolute_host_path_fragment_start(message) {
+        let visible_prefix =
+            crate::platform::credential_store::redact_secret(&message[..path_start]);
+        return format!("{visible_prefix}{HOST_PATH_REDACTION}");
+    }
+    crate::platform::credential_store::redact_secret(message)
 }
 
 fn web_path_key(key: &str) -> bool {
@@ -335,7 +337,7 @@ fn sanitize_web_path_value(value: Value) -> Value {
             } else {
                 &path
             };
-            Value::String(crate::platform::credential_store::redact_secret(display))
+            Value::String(sanitize_web_string(display))
         }
         other => sanitize_web_value(other),
     }
@@ -352,6 +354,79 @@ fn absolute_host_path(path: &str) -> bool {
             && matches!(bytes[2], b'/' | b'\\'))
 }
 
+/// Detect absolute host paths embedded in otherwise free-form adapter text.
+/// Explicit path fields retain a basename through `sanitize_web_path_value`;
+/// free-form strings fail closed because path boundaries with quoting and
+/// spaces cannot be reconstructed safely from arbitrary shell output.
+fn absolute_host_path_fragment_start(message: &str) -> Option<usize> {
+    let bytes = message.as_bytes();
+    let starts_at_boundary = |index: usize| {
+        index == 0
+            || bytes[index - 1].is_ascii_whitespace()
+            || matches!(
+                bytes[index - 1],
+                b'\''
+                    | b'"'
+                    | b'('
+                    | b'['
+                    | b'{'
+                    | b'='
+                    | b':'
+                    | b','
+                    | b';'
+                    | b'<'
+                    | b'>'
+                    | b'|'
+                    | b'&'
+            )
+    };
+    for index in 0..bytes.len() {
+        if index + 5 < bytes.len()
+            && bytes[index..index + 5].eq_ignore_ascii_case(b"file:")
+            && matches!(bytes[index + 5], b'/' | b'\\')
+        {
+            return Some(index);
+        }
+        if index + 2 < bytes.len()
+            && starts_at_boundary(index)
+            && bytes[index].is_ascii_alphabetic()
+            && bytes[index + 1] == b':'
+            && matches!(bytes[index + 2], b'/' | b'\\')
+        {
+            return Some(index);
+        }
+        if index + 1 < bytes.len()
+            && starts_at_boundary(index)
+            && bytes[index] == b'~'
+            && matches!(bytes[index + 1], b'/' | b'\\')
+        {
+            return Some(index);
+        }
+        if index + 1 < bytes.len()
+            && starts_at_boundary(index)
+            && bytes[index] == b'\\'
+            && bytes[index + 1] == b'\\'
+        {
+            return Some(index);
+        }
+        if bytes[index] != b'/' {
+            continue;
+        }
+        if index + 1 < bytes.len() && bytes[index + 1] == b'/' {
+            // `scheme://...` is a URL, while a leading or delimited `//...`
+            // is a UNC-style host path.
+            if index == 0 || bytes[index - 1] != b':' {
+                return Some(index);
+            }
+            continue;
+        }
+        if starts_at_boundary(index) {
+            return Some(index);
+        }
+    }
+    None
+}
+
 fn sanitize_web_schema(value: Value) -> Value {
     let Value::Object(values) = value else {
         return Value::Object(serde_json::Map::new());
@@ -366,9 +441,9 @@ fn sanitize_web_schema(value: Value) -> Value {
                 let properties = properties
                     .into_iter()
                     .filter_map(|(name, definition)| {
-                        definition
-                            .is_object()
-                            .then(|| (name, sanitize_web_schema(definition)))
+                        (absolute_host_path_fragment_start(&name).is_none()
+                            && definition.is_object())
+                        .then(|| (name, sanitize_web_schema(definition)))
                     })
                     .collect();
                 projected.insert(key, Value::Object(properties));
@@ -599,22 +674,52 @@ pub struct EventBridge {
     turn_serial: Arc<AtomicU64>,
     current_turn: Arc<RwLock<Option<String>>>,
     event_order: Arc<Mutex<()>>,
+    web_delivery: OrderedWebDelivery,
     tools: Arc<Mutex<HashMap<String, ToolCall>>>,
+}
+
+#[derive(Clone)]
+struct OrderedWebDelivery {
+    last_seq: Arc<Mutex<u64>>,
+    ready: Arc<Condvar>,
+}
+
+impl OrderedWebDelivery {
+    fn new(last_seq: u64) -> Self {
+        Self {
+            last_seq: Arc::new(Mutex::new(last_seq)),
+            ready: Arc::new(Condvar::new()),
+        }
+    }
+
+    fn deliver(&self, seq: u64, delivery: impl FnOnce()) {
+        let mut last_seq = self.last_seq.lock();
+        while seq > last_seq.saturating_add(1) {
+            self.ready.wait(&mut last_seq);
+        }
+        if seq <= *last_seq {
+            return;
+        }
+        delivery();
+        *last_seq = seq;
+        self.ready.notify_all();
+    }
 }
 
 impl EventBridge {
     pub fn new(app: AppHandle, pinvou_session_id: String) -> Self {
-        let seq = load_timeline(&pinvou_session_id)
+        let last_seq = load_timeline(&pinvou_session_id)
             .ok()
             .and_then(|events| events.last().map(|event| event.seq))
             .unwrap_or(0);
         Self {
             app,
             pinvou_session_id,
-            seq: Arc::new(AtomicU64::new(seq)),
+            seq: Arc::new(AtomicU64::new(last_seq)),
             turn_serial: Arc::new(AtomicU64::new(0)),
             current_turn: Arc::new(RwLock::new(None)),
             event_order: Arc::new(Mutex::new(())),
+            web_delivery: OrderedWebDelivery::new(last_seq),
             tools: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -793,62 +898,74 @@ impl EventBridge {
         event_type: &str,
         data: Value,
     ) -> AcpEventEnvelope {
-        // Sequence allocation, append, and publication form one ordered unit.
-        // ACP callbacks may arrive concurrently; serializing here prevents
-        // interleaved JSONL writes and live events overtaking their timeline.
-        let _order = self.event_order.lock();
-        let envelope = AcpEventEnvelope {
-            version: EVENT_VERSION,
-            session_id: self.pinvou_session_id.clone(),
-            turn_id,
-            seq: self.seq.fetch_add(1, Ordering::AcqRel) + 1,
-            timestamp: Utc::now().to_rfc3339(),
-            event: AcpEvent {
-                event_type: event_type.to_string(),
-                data,
-            },
-        };
-        if let Err(error) = append_timeline(&envelope) {
-            eprintln!(
-                "[pinvou3-app] append Codex ACP timeline failed for {}: {error:#}",
-                self.pinvou_session_id
-            );
-        }
-        let last_status = match event_type {
-            "turn_started" => Some("running"),
-            "turn_completed" => envelope.event.data["status"].as_str(),
-            "permission_requested" => Some("waiting_permission"),
-            "permission_resolved" => Some("running"),
-            "elicitation_requested" => Some("waiting_input"),
-            "elicitation_resolved" => Some("running"),
-            "cancel_requested" => Some("cancelling"),
-            "runtime_error" => Some("error"),
-            _ => None,
-        };
-        if let Some(status) = last_status {
-            if let Err(error) = patch_acp_state(
-                &self.pinvou_session_id,
-                json!({ "lastStatus": status, "lastSeq": envelope.seq }),
-            ) {
+        let has_web_subscriber =
+            crate::platform::app_events::has_active_app_event_subscriber(&self.app, "acp:event");
+        let envelope = {
+            // Sequence allocation, persistence, and native publication remain
+            // one ordered unit. Potentially large Web projection and Relay
+            // serialization happen after this lock is released.
+            let _order = self.event_order.lock();
+            let envelope = AcpEventEnvelope {
+                version: EVENT_VERSION,
+                session_id: self.pinvou_session_id.clone(),
+                turn_id,
+                seq: self.seq.fetch_add(1, Ordering::AcqRel) + 1,
+                timestamp: Utc::now().to_rfc3339(),
+                event: AcpEvent {
+                    event_type: event_type.to_string(),
+                    data,
+                },
+            };
+            if let Err(error) = append_timeline(&envelope) {
                 eprintln!(
-                    "[pinvou3-app] update Codex ACP state failed for {}: {error:#}",
+                    "[pinvou3-app] append Codex ACP timeline failed for {}: {error:#}",
                     self.pinvou_session_id
                 );
             }
-        }
-        // Keep the native desktop event lossless. Only the optional remote
-        // transport receives the normalized user-visible projection; Web
-        // timeline reloads apply the same projection again.
-        let _ = self.app.emit("acp:event", &envelope);
-        match serde_json::to_value(project_acp_event_for_web_bounded(
-            &envelope,
-            MAX_WEB_ACP_EVENT_BYTES,
-        )) {
-            Ok(payload) => {
-                crate::platform::app_events::forward_app_event(&self.app, "acp:event", payload)
+            let last_status = match event_type {
+                "turn_started" => Some("running"),
+                "turn_completed" => envelope.event.data["status"].as_str(),
+                "permission_requested" => Some("waiting_permission"),
+                "permission_resolved" => Some("running"),
+                "elicitation_requested" => Some("waiting_input"),
+                "elicitation_resolved" => Some("running"),
+                "cancel_requested" => Some("cancelling"),
+                "runtime_error" => Some("error"),
+                _ => None,
+            };
+            if let Some(status) = last_status {
+                if let Err(error) = patch_acp_state(
+                    &self.pinvou_session_id,
+                    json!({ "lastStatus": status, "lastSeq": envelope.seq }),
+                ) {
+                    eprintln!(
+                        "[pinvou3-app] update Codex ACP state failed for {}: {error:#}",
+                        self.pinvou_session_id
+                    );
+                }
             }
-            Err(error) => eprintln!("[acp] serialize Web event projection failed: {error}"),
-        }
+            // The native desktop event remains lossless and in the exact same
+            // order as its durable timeline entry.
+            let _ = self.app.emit("acp:event", &envelope);
+            envelope
+        };
+
+        let web_payload = has_web_subscriber.then(|| {
+            serde_json::to_value(project_acp_event_for_web_bounded(
+                &envelope,
+                MAX_WEB_ACP_EVENT_BYTES,
+            ))
+        });
+        self.web_delivery
+            .deliver(envelope.seq, || match web_payload {
+                Some(Ok(payload)) => {
+                    crate::platform::app_events::forward_app_event(&self.app, "acp:event", payload)
+                }
+                Some(Err(error)) => {
+                    eprintln!("[acp] serialize Web event projection failed: {error}")
+                }
+                None => {}
+            });
         envelope
     }
 }
@@ -1284,6 +1401,95 @@ mod tests {
     }
 
     #[test]
+    fn web_projection_redacts_absolute_paths_inside_arbitrary_nested_strings() {
+        let mut event = event(8, Some("turn-1"), "tool_call_update");
+        event.event.data = json!({
+            "update": {
+                "toolCallId": "tool-1",
+                "rawInput": {
+                    "command": "type C:\\Users\\alice\\private\\secrets.txt",
+                    "arguments": [
+                        { "text": "cat /home/alice/private/config.toml" },
+                        { "message": "read file:///Users/alice/private/key.txt" },
+                        { "text": "tail ~/.pinvou3/sessions/private.jsonl" }
+                    ],
+                    "C:\\Users\\alice\\private\\as-a-key": "must-not-cross-web",
+                    "relativeHint": "docs/guide.md",
+                    "publicUrl": "https://example.test/docs/guide"
+                },
+                "rawOutput": [{
+                    "message": "opened \\\\fileserver\\private\\report.txt"
+                }]
+            }
+        });
+
+        let projected = serde_json::to_value(project_acp_event_for_web(&event)).unwrap();
+        let update = &projected["event"]["data"]["update"];
+        assert_eq!(
+            update["rawInput"]["command"],
+            format!("type {HOST_PATH_REDACTION}")
+        );
+        assert_eq!(
+            update["rawInput"]["arguments"][0]["text"],
+            format!("cat {HOST_PATH_REDACTION}")
+        );
+        assert_eq!(
+            update["rawInput"]["arguments"][1]["message"],
+            format!("read {HOST_PATH_REDACTION}")
+        );
+        assert_eq!(
+            update["rawInput"]["arguments"][2]["text"],
+            format!("tail {HOST_PATH_REDACTION}")
+        );
+        assert_eq!(
+            update["rawOutput"][0]["message"],
+            format!("opened {HOST_PATH_REDACTION}")
+        );
+        assert_eq!(update["rawInput"]["relativeHint"], "docs/guide.md");
+        assert_eq!(
+            update["rawInput"]["publicUrl"],
+            "https://example.test/docs/guide"
+        );
+
+        let wire = serde_json::to_string(&projected).unwrap();
+        for private_fragment in [
+            "C:\\\\Users",
+            "/home/alice",
+            "file:///Users",
+            "~/.pinvou3",
+            "fileserver",
+        ] {
+            assert!(
+                !wire.contains(private_fragment),
+                "private path fragment crossed Web projection: {private_fragment}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordered_web_delivery_preserves_sequence_under_concurrency() {
+        let delivery = OrderedWebDelivery::new(0);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut threads = Vec::new();
+        for seq in [2_u64, 1_u64] {
+            let delivery = delivery.clone();
+            let seen = Arc::clone(&seen);
+            let barrier = Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                delivery.deliver(seq, || seen.lock().push(seq));
+            }));
+        }
+        barrier.wait();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        assert_eq!(*seen.lock(), vec![1, 2]);
+    }
+
+    #[test]
     fn web_projection_preserves_elicitation_form_metadata_and_property_names() {
         let projected = project_acp_value_for_web(json!({
             "request": {
@@ -1347,6 +1553,54 @@ mod tests {
         let error = projected["error"].as_str().unwrap();
         assert!(!error.contains("synthetic-redaction-value"));
         assert!(error.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn web_session_info_projection_preserves_shape_and_redacts_adapter_strings() {
+        let projected = project_acp_value_for_web(json!({
+            "session_id": "session-1",
+            "current_model_id": "model-1",
+            "models": [{
+                "id": "model-1",
+                "name": "loaded from C:\\Users\\alice\\.codex\\models.json",
+                "description": "cache /home/alice/.cache/acp/model.json"
+            }],
+            "modes": {
+                "currentModeId": "agent",
+                "availableModes": [{
+                    "id": "agent",
+                    "name": "Agent",
+                    "description": "reads \\\\server\\private\\workspace"
+                }]
+            },
+            "config_options": [{
+                "id": "provider",
+                "name": "Provider",
+                "description": "file:///Users/alice/.config/provider.json",
+                "currentValue": "safe"
+            }],
+            "provider": "synthetic-redaction-value-1234567890",
+            "pending_permissions": [],
+            "pending_elicitations": []
+        }));
+
+        assert_eq!(projected["session_id"], "session-1");
+        assert_eq!(projected["models"][0]["id"], "model-1");
+        assert_eq!(projected["modes"]["currentModeId"], "agent");
+        assert!(projected["config_options"].is_array());
+        let wire = serde_json::to_string(&projected).unwrap();
+        for private_fragment in [
+            "C:\\\\Users",
+            "/home/alice",
+            "file:///Users",
+            "server",
+            "synthetic-redaction-value",
+        ] {
+            assert!(
+                !wire.contains(private_fragment),
+                "private adapter string crossed SessionInfo projection: {private_fragment}"
+            );
+        }
     }
 
     #[test]

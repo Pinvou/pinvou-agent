@@ -7,7 +7,7 @@ import { CardPoolView } from '../features/personas/Personas.jsx';
 import { CodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
 import { useBridgeState } from '../hooks/useBridge.js';
 import { emitTauri, invokeTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
-import { listAcpSessions } from '../platform/acp/client.js';
+import { listAcpSessions } from '../features/codex/acpClient.js';
 import { dict, initialSystemLanguage, TAG_TO_LANG } from '../shared/i18n.js';
 
 function useDetachedBase() {

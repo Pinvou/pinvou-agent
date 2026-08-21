@@ -91,6 +91,58 @@ test('stop clears host-workspace authorization together with terminal state', as
   assert.equal(rt.state.webAccess.status, 'stopped');
 });
 
+test('a late status refresh cannot overwrite a newer stop intent', async () => {
+  const rt = loadRemoteControlFeature({ active: true, status: 'connected' });
+  const status = rt.defer('web_access_status');
+  const pendingRefresh = rt.api.refreshRemoteControlStatus();
+
+  await rt.api.stopRemoteControl();
+  status.resolve({ active: true, status: 'connected', endpoint_id: 'stale' });
+  await pendingRefresh;
+
+  assert.equal(rt.state.webAccess.active, false);
+  assert.equal(rt.state.webAccess.status, 'stopped');
+  assert.equal(rt.state.webAccess.endpoint_id, null);
+});
+
+test('a stale relay-setting mutation does not start a status readback', async () => {
+  for (const [command, startMutation] of [
+    ['web_access_set_relay', rt => rt.api.setWebRelayAddress('relay.example')],
+    ['web_access_reset_relay', rt => rt.api.resetWebRelayAddress()],
+  ]) {
+    const rt = loadRemoteControlFeature({ active: true, status: 'connected' });
+    const mutation = rt.defer(command);
+    const pendingMutation = startMutation(rt);
+
+    await rt.api.stopRemoteControl();
+    mutation.resolve({ relay_url: 'stale' });
+    await pendingMutation;
+
+    assert.equal(rt.calls.filter(call => call.name === 'web_access_status').length, 0);
+    assert.equal(rt.state.webAccess.active, false);
+    assert.equal(rt.state.webAccess.status, 'stopped');
+  }
+});
+
+test('a late relay-setting status readback cannot overwrite a newer stop intent', async () => {
+  const rt = loadRemoteControlFeature({ active: true, status: 'connected' });
+  const status = rt.defer('web_access_status');
+  const pendingMutation = rt.api.setWebRelayAddress('relay.example');
+
+  for (let attempt = 0; attempt < 4
+    && !rt.calls.some(call => call.name === 'web_access_status'); attempt += 1) {
+    await Promise.resolve();
+  }
+  assert.equal(rt.calls.some(call => call.name === 'web_access_status'), true);
+  await rt.api.stopRemoteControl();
+  status.resolve({ active: true, status: 'connected', endpoint_id: 'stale' });
+  await pendingMutation;
+
+  assert.equal(rt.state.webAccess.active, false);
+  assert.equal(rt.state.webAccess.status, 'stopped');
+  assert.equal(rt.state.webAccess.endpoint_id, null);
+});
+
 test('stop 顶掉在途 start 后 starting 必须被清除（不残留启动中）', async () => {
   const rt = loadRemoteControlFeature();
   // 用户点启动：starting:true 置位，enable 在途（seq=1）。

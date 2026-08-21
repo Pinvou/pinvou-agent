@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { getAcpAgentStatus, listAcpAgents } from '../../platform/acp/client.js';
+import { getAcpAgentStatus, listAcpAgents } from './acpClient.js';
 
 export function useAcpAgentStatus(activeAgentIdRef, setStatus) {
   const mountedRef = useRef(true);

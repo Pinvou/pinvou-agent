@@ -6,12 +6,15 @@ import {
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
   listAcpWorkspace,
+  loadAcpWorkspaceChanges,
+  loadAcpWorkspaceDiff,
   previewAcpWorkspaceFile,
   searchAcpWorkspace,
-} from '../../platform/acp/client.js';
+} from './acpClient.js';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { CodeViewerModal } from './CodeViewerModal.jsx';
-import { can } from '../../shared/platform.js';
+import { can, isWeb } from '../../shared/platform.js';
+import { acpErrorMessage } from './acpErrors.js';
 
 const invoke = invokeTauri;
 const WORKSPACE_WIDTH_KEY = 'pinvou_codex_workspace_width';
@@ -219,7 +222,7 @@ export function CodexWorkspacePanel({
   const previewRequestRef = useRef(0);
   const showError = (nextError) => {
     console.error('Codex workspace operation failed:', nextError);
-    setError(copy.showRawErrors ? String(nextError) : copy.operationFailed);
+    setError(acpErrorMessage(nextError, copy, { allowRaw: !isWeb }));
   };
   const [panelWidth, setPanelWidth] = useState(savedWorkspaceWidth);
   const panelRef = useRef(null);
@@ -324,7 +327,7 @@ export function CodexWorkspacePanel({
   async function loadChanges() {
     if (!sessionId) return;
     try {
-      const result = await invoke('get_codex_workspace_changes', { sessionId });
+      const result = await loadAcpWorkspaceChanges({ sessionId });
       setChanges(result);
       if (onChangeCount) onChangeCount((result.changes || []).length);
       setError('');
@@ -439,7 +442,7 @@ export function CodexWorkspacePanel({
         relativePath: entry.relativePath,
         preview: null,
         loading: false,
-        error: copy.showRawErrors ? String(nextError) : copy.operationFailed,
+        error: acpErrorMessage(nextError, copy, { allowRaw: !isWeb }),
       });
     }
   }
@@ -451,7 +454,7 @@ export function CodexWorkspacePanel({
     const requestId = ++previewRequestRef.current;
     setViewer({ name, relativePath: change.relativePath, preview: null, diff: null, loading: true, error: '' });
     try {
-      const diff = await invoke('get_codex_workspace_diff', {
+      const diff = await loadAcpWorkspaceDiff({
         sessionId,
         relativePath: change.relativePath,
       });
@@ -467,7 +470,7 @@ export function CodexWorkspacePanel({
         preview: null,
         diff: null,
         loading: false,
-        error: copy.showRawErrors ? String(nextError) : copy.operationFailed,
+        error: acpErrorMessage(nextError, copy, { allowRaw: !isWeb }),
       });
     }
   }

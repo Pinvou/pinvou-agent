@@ -7,11 +7,13 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, State, WebviewWindow};
 
 use crate::features::assistant::engine_pool::EnginePool;
-use crate::features::codex_acp::workspace::{WorkspaceEntry, WorkspaceListing, WorkspacePreview};
+use crate::features::codex_acp::workspace::{
+    WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing, WorkspacePreview,
+};
 use crate::features::codex_acp::{
     project_acp_elicitation_request_for_web, project_acp_permission_request_for_web,
-    AcpEventEnvelope, AcpPool, AgentBackend, CodexAcpPendingElicitation, CodexAcpPendingPermission,
-    CodexAcpSessionInfo,
+    project_acp_value_for_web, AcpEventEnvelope, AcpPool, AgentBackend, CodexAcpPendingElicitation,
+    CodexAcpPendingPermission, CodexAcpSessionInfo,
 };
 use crate::features::remote_control::{file_access, manager, MAX_TRANSFER_CHUNK_BYTES};
 use crate::features::remote_control::{
@@ -37,10 +39,23 @@ fn web_acp_agent_id(agent_id: Option<String>) -> Result<String, String> {
         .ok_or_else(|| "Web code sessions support ACP agents only".to_string())
 }
 
-fn web_workspace_result<T>(operation: &str, result: Result<T, String>) -> Result<T, String> {
+fn web_workspace_result<T, E: std::fmt::Display>(
+    operation: &str,
+    result: Result<T, E>,
+) -> Result<T, String> {
     result.map_err(|error| {
         log::warn!("[remote_control] Web code workspace {operation} failed: {error}");
-        format!("Web code workspace {operation} failed")
+        format!("web_workspace_{operation}_failed")
+    })
+}
+
+fn web_acp_result<T, E: std::fmt::Display>(
+    operation: &str,
+    result: Result<T, E>,
+) -> Result<T, String> {
+    result.map_err(|error| {
+        log::warn!("[remote_control] Web ACP {operation} failed: {error:#}");
+        format!("web_acp_{operation}_failed")
     })
 }
 
@@ -298,6 +313,16 @@ fn is_absolute_host_path(path: &str) -> bool {
 
 fn normalized_host_path(path: &str) -> String {
     let normalized = path.replace('\\', "/");
+    let normalized = if normalized
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("//?/UNC/"))
+    {
+        format!("//{}", &normalized[8..])
+    } else if normalized.starts_with("//?/") {
+        normalized[4..].to_string()
+    } else {
+        normalized
+    };
     if normalized == "/" {
         normalized
     } else {
@@ -689,23 +714,55 @@ pub async fn web_access_create_codex_acp_session(
     pool: State<'_, EnginePool>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<deepseek_tui::session_manager::SessionMetadata, String> {
-    // Validate before consuming the one-shot workspace grant. A malformed or
-    // desktop-only request must not burn a capability that the user selected.
-    let agent_id = web_acp_agent_id(agent_id)?;
-    let workspace_path = workspace_handle
-        .as_deref()
-        .map(|handle| manager.consume_web_workspace_grant(handle))
-        .transpose()?
-        .map(|path| path.to_string_lossy().into_owned());
-    let metadata = super::codex::create_codex_acp_session(
-        workspace_path,
-        Some(agent_id),
-        store,
-        pool,
-        acp_pool,
-    )
-    .await?;
-    Ok(super::codex::redact_session_metadata_for_web(metadata))
+    let outcome = async {
+        // Validate before consuming the one-shot workspace grant. A malformed
+        // or desktop-only request must not burn a capability that the user selected.
+        let agent_id = web_acp_agent_id(agent_id)?;
+        let workspace_reservation = workspace_handle
+            .as_deref()
+            .map(|handle| manager.reserve_web_workspace_grant(handle))
+            .transpose()?;
+        let workspace_path = workspace_reservation
+            .as_ref()
+            .map(|reservation| reservation.path().to_path_buf());
+        let result = {
+            let verify_workspace = |path: &Path| {
+                workspace_reservation
+                    .as_ref()
+                    .ok_or_else(|| "Web workspace authorization is missing".to_string())?
+                    .verify_bound_path(path)
+            };
+            let workspace_verifier = workspace_reservation.as_ref().map(|_| {
+                &verify_workspace as &(dyn Fn(&Path) -> Result<(), String> + Send + Sync)
+            });
+            super::codex::create_codex_acp_session_with_workspace_binding(
+                workspace_path,
+                Some(agent_id),
+                store,
+                pool,
+                acp_pool,
+                workspace_verifier,
+            )
+            .await
+        };
+        let metadata = match result {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                if workspace_reservation
+                    .map(|reservation| manager.restore_web_workspace_grant(reservation))
+                    .is_some_and(|restored| !restored)
+                {
+                    log::warn!(
+                        "[remote_control] failed to restore Web workspace authorization after Session creation failure"
+                    );
+                }
+                return Err(error);
+            }
+        };
+        Ok(super::codex::redact_session_metadata_for_web(metadata))
+    }
+    .await;
+    web_acp_result("session_create", outcome)
 }
 
 /// Session-bound Web workspace reads. Draft browsing is intentionally owned
@@ -745,6 +802,34 @@ pub async fn web_access_preview_codex_workspace_file(
     web_workspace_result("preview", result)
 }
 
+#[tauri::command]
+pub async fn web_access_get_codex_workspace_changes(
+    session_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WorkspaceChanges, String> {
+    let result = super::codex::get_codex_workspace_changes(session_id, acp_pool).await;
+    web_workspace_result("changes", result)
+}
+
+#[tauri::command]
+pub async fn web_access_get_codex_workspace_diff(
+    session_id: String,
+    relative_path: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WorkspaceDiff, String> {
+    let result = super::codex::get_codex_workspace_diff(session_id, relative_path, acp_pool).await;
+    web_workspace_result("diff", result)
+}
+
+#[tauri::command]
+pub async fn web_access_cancel_codex_acp(
+    session_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<(), String> {
+    let result = super::codex::cancel_codex_acp(session_id, acp_pool).await;
+    web_acp_result("cancel", result)
+}
+
 /// Web-safe ACP prompt entry point. Browser and host-picked attachments are
 /// represented only by one-shot opaque handles; native paths and parsed
 /// contents never cross Relay. The underlying ACP command remains the single
@@ -759,66 +844,70 @@ pub async fn web_access_codex_acp_prompt(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<(), String> {
-    crate::features::sessions::validate_session_id(&session_id)
-        .map_err(|error| format!("invalid ACP Session id: {error:#}"))?;
-    store
-        .load(&session_id)
-        .map_err(|error| format!("load ACP Session {session_id}: {error:#}"))?;
-    if !acp_pool.is_acp(&session_id) {
-        return Err("当前会话不是 ACP 会话".to_string());
-    }
+    let outcome = async {
+        crate::features::sessions::validate_session_id(&session_id)
+            .map_err(|error| format!("invalid ACP Session id: {error:#}"))?;
+        store
+            .load(&session_id)
+            .map_err(|error| format!("load ACP Session {session_id}: {error:#}"))?;
+        if !acp_pool.is_acp(&session_id) {
+            return Err("当前会话不是 ACP 会话".to_string());
+        }
 
-    let attachment_handles = attachment_handles.unwrap_or_default();
-    let (attachment_reservation, attachments) =
-        manager.reserve_web_attachments(&attachment_handles)?;
-    let (attachments, staged_sources) =
-        match stage_uploaded_attachments(attachments, &session_id, &store) {
-            Ok(staged) => staged,
-            Err(error) => {
-                if let Err(release_error) = manager.finish_web_attachment_reservation(
-                    &attachment_reservation,
-                    &attachment_handles,
-                    false,
-                ) {
-                    eprintln!(
+        let attachment_handles = attachment_handles.unwrap_or_default();
+        let (attachment_reservation, attachments) =
+            manager.reserve_web_attachments(&attachment_handles)?;
+        let (attachments, staged_sources) =
+            match stage_uploaded_attachments(attachments, &session_id, &store) {
+                Ok(staged) => staged,
+                Err(error) => {
+                    if let Err(release_error) = manager.finish_web_attachment_reservation(
+                        &attachment_reservation,
+                        &attachment_handles,
+                        false,
+                    ) {
+                        eprintln!(
                         "[web-access] release ACP attachment reservation failed: {release_error}"
                     );
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
-        };
-    let result = super::codex::codex_acp_prompt_with_attachments(
-        session_id,
-        message,
-        attachments,
-        workspace_references.unwrap_or_default(),
-        &store,
-        &acp_pool,
-    )
-    .await;
-    if result.is_err() {
-        cleanup_staged_attachment_sources(&staged_sources);
-    }
-    let consume = result.is_ok();
-    if let Err(error) = manager.finish_web_attachment_reservation(
-        &attachment_reservation,
-        &attachment_handles,
-        consume,
-    ) {
-        if consume {
-            eprintln!("[web-access] finalize accepted ACP attachments failed: {error}");
-        } else {
-            return Err(format!(
-                "{}; additionally failed to release attachments: {error}",
-                result
-                    .as_ref()
-                    .err()
-                    .cloned()
-                    .unwrap_or_else(|| "ACP prompt submission failed".to_string())
-            ));
+            };
+        let result = super::codex::codex_acp_prompt_with_attachments(
+            session_id,
+            message,
+            attachments,
+            workspace_references.unwrap_or_default(),
+            &store,
+            &acp_pool,
+        )
+        .await;
+        if result.is_err() {
+            cleanup_staged_attachment_sources(&staged_sources);
         }
+        let consume = result.is_ok();
+        if let Err(error) = manager.finish_web_attachment_reservation(
+            &attachment_reservation,
+            &attachment_handles,
+            consume,
+        ) {
+            if consume {
+                eprintln!("[web-access] finalize accepted ACP attachments failed: {error}");
+            } else {
+                return Err(format!(
+                    "{}; additionally failed to release attachments: {error}",
+                    result
+                        .as_ref()
+                        .err()
+                        .cloned()
+                        .unwrap_or_else(|| "ACP prompt submission failed".to_string())
+                ));
+            }
+        }
+        result
     }
-    result
+    .await;
+    web_acp_result("prompt", outcome)
 }
 
 #[derive(Debug, Serialize)]
@@ -840,28 +929,31 @@ pub fn web_access_get_codex_acp_timeline(
     limit: Option<usize>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<WebAcpTimelinePage, String> {
-    let limit = limit.unwrap_or(DEFAULT_WEB_ACP_TIMELINE_PAGE_EVENTS);
-    if limit == 0 || limit > MAX_WEB_ACP_TIMELINE_PAGE_EVENTS {
-        return Err(format!(
-            "Web ACP timeline page limit must be between 1 and {MAX_WEB_ACP_TIMELINE_PAGE_EVENTS}"
-        ));
-    }
-    let page = acp_pool
-        .web_timeline_page(
-            &session_id,
-            after_seq.unwrap_or(0),
-            after_cursor,
-            limit,
-            MAX_WEB_ACP_TIMELINE_PAGE_BYTES,
-            MAX_WEB_ACP_TIMELINE_EVENT_BYTES,
-        )
-        .map_err(|error| format!("读取 Web ACP timeline 失败: {error:#}"))?;
-    Ok(WebAcpTimelinePage {
-        next_after_seq: page.events.last().map(|event| event.seq),
-        next_cursor: page.next_cursor,
-        has_more: page.has_more,
-        events: page.events,
-    })
+    let outcome = (|| {
+        let limit = limit.unwrap_or(DEFAULT_WEB_ACP_TIMELINE_PAGE_EVENTS);
+        if limit == 0 || limit > MAX_WEB_ACP_TIMELINE_PAGE_EVENTS {
+            return Err(format!(
+                "Web ACP timeline page limit must be between 1 and {MAX_WEB_ACP_TIMELINE_PAGE_EVENTS}"
+            ));
+        }
+        let page = acp_pool
+            .web_timeline_page(
+                &session_id,
+                after_seq.unwrap_or(0),
+                after_cursor,
+                limit,
+                MAX_WEB_ACP_TIMELINE_PAGE_BYTES,
+                MAX_WEB_ACP_TIMELINE_EVENT_BYTES,
+            )
+            .map_err(|error| format!("{error:#}"))?;
+        Ok(WebAcpTimelinePage {
+            next_after_seq: page.events.last().map(|event| event.seq),
+            next_cursor: page.next_cursor,
+            has_more: page.has_more,
+            events: page.events,
+        })
+    })();
+    web_acp_result("timeline", outcome)
 }
 
 fn project_acp_pending_permission_for_web(
@@ -878,7 +970,7 @@ fn project_acp_pending_elicitation_for_web(
     pending
 }
 
-fn project_acp_session_info_for_web(mut info: CodexAcpSessionInfo) -> CodexAcpSessionInfo {
+fn project_acp_session_info_for_web(mut info: CodexAcpSessionInfo) -> anyhow::Result<Value> {
     info.pending_permissions = info
         .pending_permissions
         .into_iter()
@@ -889,19 +981,19 @@ fn project_acp_session_info_for_web(mut info: CodexAcpSessionInfo) -> CodexAcpSe
         .into_iter()
         .map(project_acp_pending_elicitation_for_web)
         .collect();
-    info
+    Ok(project_acp_value_for_web(serde_json::to_value(info)?))
 }
 
 #[tauri::command]
 pub async fn web_access_get_codex_acp_session_info(
     session_id: String,
     acp_pool: State<'_, AcpPool>,
-) -> Result<CodexAcpSessionInfo, String> {
-    acp_pool
+) -> Result<Value, String> {
+    let outcome = acp_pool
         .session_info(&session_id)
         .await
-        .map(project_acp_session_info_for_web)
-        .map_err(|error| format!("读取 Web ACP 会话信息失败: {error:#}"))
+        .and_then(project_acp_session_info_for_web);
+    web_acp_result("session_info", outcome)
 }
 
 #[tauri::command]
@@ -909,12 +1001,12 @@ pub async fn web_access_set_codex_acp_model(
     session_id: String,
     model_id: String,
     acp_pool: State<'_, AcpPool>,
-) -> Result<CodexAcpSessionInfo, String> {
-    acp_pool
+) -> Result<Value, String> {
+    let outcome = acp_pool
         .set_model(&session_id, &model_id)
         .await
-        .map(project_acp_session_info_for_web)
-        .map_err(|error| format!("切换 Web ACP 模型失败: {error:#}"))
+        .and_then(project_acp_session_info_for_web);
+    web_acp_result("set_model", outcome)
 }
 
 #[tauri::command]
@@ -922,12 +1014,12 @@ pub async fn web_access_set_codex_acp_mode(
     session_id: String,
     mode_id: String,
     acp_pool: State<'_, AcpPool>,
-) -> Result<CodexAcpSessionInfo, String> {
-    acp_pool
+) -> Result<Value, String> {
+    let outcome = acp_pool
         .set_mode(&session_id, &mode_id)
         .await
-        .map(project_acp_session_info_for_web)
-        .map_err(|error| format!("切换 Web ACP 权限模式失败: {error:#}"))
+        .and_then(project_acp_session_info_for_web);
+    web_acp_result("set_mode", outcome)
 }
 
 #[tauri::command]
@@ -936,12 +1028,12 @@ pub async fn web_access_set_codex_acp_config_option(
     config_id: String,
     value_id: String,
     acp_pool: State<'_, AcpPool>,
-) -> Result<CodexAcpSessionInfo, String> {
-    acp_pool
+) -> Result<Value, String> {
+    let outcome = acp_pool
         .set_config_option(&session_id, &config_id, &value_id)
         .await
-        .map(project_acp_session_info_for_web)
-        .map_err(|error| format!("更新 Web ACP 会话配置失败: {error:#}"))
+        .and_then(project_acp_session_info_for_web);
+    web_acp_result("set_config_option", outcome)
 }
 
 #[tauri::command]
@@ -949,15 +1041,32 @@ pub async fn web_access_get_codex_acp_pending_permissions(
     session_id: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<CodexAcpPendingPermission>, String> {
-    if !acp_pool.is_acp(&session_id) {
-        return Err("当前会话不是 ACP 会话".to_string());
+    let outcome = async {
+        if !acp_pool.is_acp(&session_id) {
+            return Err("当前会话不是 ACP 会话".to_string());
+        }
+        Ok(acp_pool
+            .pending_permissions_for(&session_id)
+            .await
+            .into_iter()
+            .map(project_acp_pending_permission_for_web)
+            .collect())
     }
-    Ok(acp_pool
-        .pending_permissions_for(&session_id)
-        .await
-        .into_iter()
-        .map(project_acp_pending_permission_for_web)
-        .collect())
+    .await;
+    web_acp_result("pending_permissions", outcome)
+}
+
+#[tauri::command]
+pub async fn web_access_respond_codex_acp_permission(
+    session_id: String,
+    tool_call_id: String,
+    option_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<(), String> {
+    let outcome = acp_pool
+        .respond_permission(&session_id, &tool_call_id, &option_id)
+        .await;
+    web_acp_result("respond_permission", outcome)
 }
 
 #[tauri::command]
@@ -965,15 +1074,33 @@ pub async fn web_access_get_codex_acp_pending_elicitations(
     session_id: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<CodexAcpPendingElicitation>, String> {
-    if !acp_pool.is_acp(&session_id) {
-        return Err("当前会话不是 ACP 会话".to_string());
+    let outcome = async {
+        if !acp_pool.is_acp(&session_id) {
+            return Err("当前会话不是 ACP 会话".to_string());
+        }
+        Ok(acp_pool
+            .pending_elicitations_for(&session_id)
+            .await
+            .into_iter()
+            .map(project_acp_pending_elicitation_for_web)
+            .collect())
     }
-    Ok(acp_pool
-        .pending_elicitations_for(&session_id)
-        .await
-        .into_iter()
-        .map(project_acp_pending_elicitation_for_web)
-        .collect())
+    .await;
+    web_acp_result("pending_elicitations", outcome)
+}
+
+#[tauri::command]
+pub async fn web_access_respond_codex_acp_elicitation(
+    session_id: String,
+    elicitation_id: String,
+    action: String,
+    content: Value,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<(), String> {
+    let outcome = acp_pool
+        .respond_elicitation(&session_id, &elicitation_id, &action, content)
+        .await;
+    web_acp_result("respond_elicitation", outcome)
 }
 
 fn project_acp_status_for_web(
@@ -995,14 +1122,16 @@ pub async fn web_access_list_codex_acp_sessions(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<crate::app::commands::codex::CodexAcpSessionListItem>, String> {
-    super::codex::list_codex_acp_sessions_for_web(&store, &acp_pool).await
+    let outcome = super::codex::list_codex_acp_sessions_for_web(&store, &acp_pool).await;
+    web_acp_result("list_sessions", outcome)
 }
 
 #[tauri::command]
 pub async fn web_access_list_acp_agents(
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Vec<crate::features::codex_acp::AcpAgentDescriptor>, String> {
-    super::codex::list_acp_agents_for_pool(&acp_pool).await
+    let outcome = super::codex::list_acp_agents_for_pool(&acp_pool).await;
+    web_acp_result("list_agents", outcome)
 }
 
 #[tauri::command]
@@ -1011,9 +1140,10 @@ pub async fn web_access_get_acp_agent_status(
     recheck: Option<bool>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<crate::features::codex_acp::CodexAcpStatus, String> {
-    super::codex::get_acp_agent_status_for_pool(agent_id, recheck, &acp_pool)
+    let outcome = super::codex::get_acp_agent_status_for_pool(agent_id, recheck, &acp_pool)
         .await
-        .map(project_acp_status_for_web)
+        .map(project_acp_status_for_web);
+    web_acp_result("agent_status", outcome)
 }
 
 async fn web_access_chat_for_session(
@@ -1376,8 +1506,8 @@ pub async fn web_access_render_artifact_visual(
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_web_chat_session_supported, web_acp_agent_id, web_workspace_result, WebSavedSession,
-        WebSessionMetadata,
+        ensure_web_chat_session_supported, web_acp_agent_id, web_acp_result,
+        web_artifact_storage_path, web_workspace_result, WebSavedSession, WebSessionMetadata,
     };
     use deepseek_tui::session_manager::{create_saved_session, SavedSession};
     use serde_json::{json, Value};
@@ -1458,14 +1588,46 @@ mod tests {
 
     #[test]
     fn web_workspace_errors_do_not_expose_host_paths() {
-        let private_path = r#"C:\Users\alice\secret-project"#;
-        let error = web_workspace_result::<()>(
-            "preview",
-            Err(format!("workspace unavailable: {private_path}")),
-        )
-        .unwrap_err();
-        assert_eq!(error, "Web code workspace preview failed");
-        assert!(!error.contains(private_path));
+        for private_path in [
+            r#"C:\Users\alice\secret-project"#,
+            r#"\\server\private\project"#,
+            "/Users/alice/secret-project",
+            "/home/alice/secret-project",
+        ] {
+            let error = web_workspace_result::<(), _>(
+                "preview",
+                Err(format!("workspace unavailable: {private_path}")),
+            )
+            .unwrap_err();
+            assert_eq!(error, "web_workspace_preview_failed");
+            assert!(!error.contains(private_path));
+
+            for operation in [
+                "timeline",
+                "session_create",
+                "prompt",
+                "session_info",
+                "set_model",
+                "set_mode",
+                "set_config_option",
+                "pending_permissions",
+                "pending_elicitations",
+                "respond_permission",
+                "respond_elicitation",
+                "list_sessions",
+                "list_agents",
+                "agent_status",
+                "cancel",
+            ] {
+                let acp_error = web_acp_result::<(), _>(
+                    operation,
+                    Err(format!("ACP unavailable: {private_path}")),
+                )
+                .unwrap_err();
+                assert_eq!(acp_error, format!("web_acp_{operation}_failed"));
+                assert!(!acp_error.contains(private_path));
+            }
+        }
     }
 
     #[test]
@@ -1546,6 +1708,40 @@ mod tests {
             assert_value_does_not_contain(&projected, private_artifact_root);
             assert_value_does_not_contain(&projected, outside_artifact);
         }
+    }
+
+    #[test]
+    fn web_artifact_projection_normalizes_windows_verbatim_paths() {
+        for (workspace, storage_path, expected) in [
+            (
+                r#"C:\Users\alice\secret-project"#,
+                r#"\\?\C:\Users\alice\secret-project\artifacts\report.md"#,
+                "artifacts/report.md",
+            ),
+            (
+                r#"\\?\C:\Users\alice\secret-project"#,
+                r#"C:\Users\alice\secret-project\artifacts\report.md"#,
+                "artifacts/report.md",
+            ),
+            (
+                r#"\\server\private\secret-project"#,
+                r#"\\?\UNC\server\private\secret-project\artifacts\report.md"#,
+                "artifacts/report.md",
+            ),
+        ] {
+            assert_eq!(
+                web_artifact_storage_path(Path::new(storage_path), Path::new(workspace)),
+                Some(expected.into())
+            );
+        }
+        assert_eq!(
+            web_artifact_storage_path(
+                Path::new(r#"\\?\UNC\other\private\secret-project\artifacts\report.md"#),
+                Path::new(r#"\\server\private\secret-project"#),
+            ),
+            None,
+            "a verbatim UNC path from another authority must fail closed"
+        );
     }
 
     #[test]

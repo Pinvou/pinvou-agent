@@ -118,47 +118,43 @@
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
-  function encodeBase64Bytes(bytes) {
-    var binary = "";
-    var stride = 0x8000;
-    for (var offset = 0; offset < bytes.length; offset += stride) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + stride));
-    }
-    return btoa(binary);
-  }
-
   async function addDroppedFileAttachment(file) {
     if (!file) return;
     var id = ++attachIdSeq;
     var att = { id: id, basename: file.name || "attachment", status: "parsing", result: null, error: null, cancelled: false, uploadId: null };
-    var commitAcknowledged = false;
     state.attachments.push(att);
     notify();
     try {
-      if (!file.size || file.size > 20 * 1024 * 1024) {
-        throw new Error(file.size ? bt("attachTooLarge") : bt("attachEmptyFile"));
+      var uploader = root.PinvouChunkedFileUpload;
+      if (!uploader || typeof uploader.uploadFile !== "function") {
+        throw new Error("chunked attachment uploader is unavailable");
       }
-      var uploadId = "desktop_attach_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 12);
+      var uploadId = uploader.uploadId("desktop_attach");
       att.uploadId = uploadId;
-      var offset = 0;
-      var result = null;
-      while (offset < file.size) {
-        if (att.cancelled) throw new Error(bt("attachAddCancelled"));
-        var end = Math.min(offset + 192 * 1024, file.size);
-        var bytes = await file.slice(offset, end).arrayBuffer();
-        result = await invoke("ingest_draft_file_chunk", {
-          uploadId: uploadId,
-          filename: file.name || "attachment",
-          offset: offset,
-          total: file.size,
-          dataBase64: encodeBase64Bytes(new Uint8Array(bytes)),
-          commit: end === file.size
-        });
-        if (end === file.size) commitAcknowledged = true;
-        offset = end;
-      }
-      if (att.cancelled) throw new Error(bt("attachAddCancelled"));
-      if (!result || !result.basename) throw new Error(bt("attachInvalidResult"));
+      var completed = await uploader.uploadFile({
+        file: file,
+        uploadId: uploadId,
+        isCancelled: function () { return att.cancelled; },
+        sendChunk: function (chunk) {
+          return invoke("ingest_draft_file_chunk", {
+            uploadId: chunk.uploadId,
+            filename: chunk.fileName,
+            offset: chunk.offset,
+            total: chunk.total,
+            dataBase64: chunk.dataBase64,
+            commit: chunk.commit,
+          });
+        },
+        validateResult: function (result) { return Boolean(result && result.basename); },
+        cleanup: function (upload) {
+          // 后端命令失败时已清理 staging。只有用户取消，或最后一块已确认后
+          // 前端校验失败，才允许删除这个 uploadId 对应的已完成目录。
+          if (att.cancelled || upload.commitAcknowledged) {
+            return invoke("cancel_draft_file_upload", { uploadId: upload.uploadId });
+          }
+        },
+      });
+      var result = completed.result;
       Object.defineProperty(result, "__pinvouManagedDraftAttachmentId", {
         configurable: true,
         value: uploadId,
@@ -168,16 +164,16 @@
       att.status = "ready";
       att.result = result;
     } catch (e) {
-      // The command already removes staging on backend errors. Only the user's
-      // explicit cancellation, or an acknowledged commit with an invalid
-      // response, may delete the completed directory.
-      if (att.uploadId && (att.cancelled || commitAcknowledged)) {
-        await invoke("cancel_draft_file_upload", {
-          uploadId: att.uploadId,
-        }).catch(function () {});
-      }
       att.status = "error";
-      att.error = String(e);
+      att.error = e && e.code === "device_upload_empty"
+        ? bt("attachEmptyFile")
+        : e && e.code === "device_upload_too_large"
+          ? bt("attachTooLarge")
+          : e && e.code === "device_upload_cancelled"
+            ? bt("attachAddCancelled")
+            : e && e.code === "device_upload_invalid_result"
+              ? bt("attachInvalidResult")
+              : String(e);
     }
     notify();
   }

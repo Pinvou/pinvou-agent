@@ -320,8 +320,10 @@ pub fn run() {
             }
             let remote_control_manager = RemoteControlManager::new(app.handle().clone());
             let remote_event_transport = remote_control_manager.clone();
+            let remote_event_subscriptions = remote_control_manager.clone();
             app.handle().manage(platform::app_events::AppEventBus::new(
                 move |event, payload| remote_event_transport.forward_local_event(event, payload),
+                move |event| remote_event_subscriptions.has_active_subscription(event),
             ));
             app.handle().manage(remote_control_manager.clone());
             app.handle()
@@ -720,6 +722,9 @@ pub fn run() {
             commands::remote_control::web_access_list_codex_workspace,
             commands::remote_control::web_access_search_codex_workspace,
             commands::remote_control::web_access_preview_codex_workspace_file,
+            commands::remote_control::web_access_get_codex_workspace_changes,
+            commands::remote_control::web_access_get_codex_workspace_diff,
+            commands::remote_control::web_access_cancel_codex_acp,
             commands::remote_control::web_access_codex_acp_prompt,
             commands::remote_control::web_access_get_codex_acp_timeline,
             commands::remote_control::web_access_get_codex_acp_session_info,
@@ -727,7 +732,9 @@ pub fn run() {
             commands::remote_control::web_access_set_codex_acp_mode,
             commands::remote_control::web_access_set_codex_acp_config_option,
             commands::remote_control::web_access_get_codex_acp_pending_permissions,
+            commands::remote_control::web_access_respond_codex_acp_permission,
             commands::remote_control::web_access_get_codex_acp_pending_elicitations,
+            commands::remote_control::web_access_respond_codex_acp_elicitation,
             commands::remote_control::web_access_list_codex_acp_sessions,
             commands::remote_control::web_access_list_acp_agents,
             commands::remote_control::web_access_get_acp_agent_status,

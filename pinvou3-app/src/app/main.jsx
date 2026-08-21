@@ -36,7 +36,7 @@ import {
   tauriCommands,
   tauriEvents,
 } from '../platform/tauri/client.js';
-import { listAcpSessions } from '../platform/acp/client.js';
+import { listAcpSessions } from '../features/codex/acpClient.js';
 import { revealStartupWindow } from '../platform/tauri/startup-window.js';
 
 // 定时任务创建与运行链路已恢复，展示入口并允许自动跳转。

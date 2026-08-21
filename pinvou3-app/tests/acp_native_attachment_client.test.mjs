@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 
 const invocations = [];
+let failDraftChunk = false;
 globalThis.window = {
   PinvouPlatform: {
     kind: 'desktop',
     isWeb: false,
     capabilities: { deviceFileUpload: false },
   },
+  btoa: value => Buffer.from(value, 'binary').toString('base64'),
 };
 globalThis.window.window = globalThis.window;
 globalThis.btoa = value => Buffer.from(value, 'binary').toString('base64');
@@ -15,6 +17,7 @@ globalThis.__TAURI__ = {
     async invoke(command, args) {
       invocations.push({ command, args });
       if (command === 'ingest_draft_file_chunk') {
+        if (failDraftChunk) throw new Error('backend rejected chunk');
         return args.commit ? {
           basename: args.filename,
           kind: 'text',
@@ -41,7 +44,8 @@ globalThis.__TAURI__ = {
   },
 };
 
-const acp = await import(`../src/platform/acp/client.js?native-test=${Date.now()}`);
+await import(`../src/shared/chunked-file-upload.js?native-test=${Date.now()}`);
+const acp = await import(`../src/features/codex/acpClient.js?native-test=${Date.now()}`);
 
 function mockFile(name = 'notes.txt') {
   const bytes = Uint8Array.from([1, 2, 3]);
@@ -86,5 +90,13 @@ assert.equal(invocations.at(-1).command, 'discard_dropped_attachment');
 const cancelled = await acp.uploadAcpDeviceAttachment(mockFile('cancel.txt'));
 await acp.discardAcpAttachment(cancelled);
 assert.equal(invocations.at(-1).command, 'cancel_draft_file_upload');
+
+invocations.length = 0;
+failDraftChunk = true;
+await assert.rejects(acp.uploadAcpDeviceAttachment(mockFile('backend-error.txt')),
+  /backend rejected chunk/);
+failDraftChunk = false;
+assert.deepEqual(invocations.map(item => item.command), ['ingest_draft_file_chunk'],
+  'a backend chunk error already cleans staging and must not delete a prior completed upload ID');
 
 console.log('ACP native draft attachment client tests passed');

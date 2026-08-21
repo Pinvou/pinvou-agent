@@ -67,7 +67,10 @@ use transfer::{
     sweep_stale_web_session_downloads, take_web_session_download,
 };
 pub(crate) use transfer::{sweep_stale_web_attachment_uploads, web_attachment_uploads_base};
-use workspace_grants::{require_host_workspace_authorization, WebWorkspaceGrantStore};
+use workspace_grants::{
+    require_host_workspace_authorization, WebWorkspaceGrantReservation, WebWorkspaceGrantStore,
+    WebWorkspaceIdentity,
+};
 
 // 正式安装包默认连接生产 Relay；本地联调由 run-dev.sh 显式覆盖到隔离的
 // remote-test 端点。用户保存的自定义 Relay 设置仍具有最高优先级。
@@ -1055,6 +1058,15 @@ impl RemoteControlManager {
     /// browser may display the host path, but code-session creation receives
     /// only this opaque, endpoint-bound, one-shot handle.
     pub fn issue_web_workspace_grant(&self, raw_path: &str) -> Result<String, String> {
+        let authorized_endpoint_id = {
+            let inner = self.inner.lock();
+            let endpoint = inner
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| "Web access endpoint is not active".to_string())?;
+            require_host_workspace_authorization(endpoint.config.allow_host_workspace)?;
+            endpoint.config.endpoint_id.clone()
+        };
         let path = crate::features::files::file_ingest::validate_browsable_path(raw_path)?;
         if !path.is_dir() {
             return Err(format!(
@@ -1062,12 +1074,16 @@ impl RemoteControlManager {
                 path.display()
             ));
         }
+        let identity = WebWorkspaceIdentity::capture(&path)?;
         let mut inner = self.inner.lock();
         let endpoint = inner
             .endpoint
             .as_ref()
             .ok_or_else(|| "Web access endpoint is not active".to_string())?;
         require_host_workspace_authorization(endpoint.config.allow_host_workspace)?;
+        if endpoint.config.endpoint_id != authorized_endpoint_id {
+            return Err("Web access endpoint changed while authorizing workspace".to_string());
+        }
         let endpoint_id = endpoint.config.endpoint_id.clone();
         let handle = loop {
             let candidate = format!(
@@ -1078,25 +1094,53 @@ impl RemoteControlManager {
                 break candidate;
             }
         };
-        inner
-            .web_workspace_grants
-            .issue(handle.clone(), endpoint_id, path, Instant::now());
+        inner.web_workspace_grants.issue(
+            handle.clone(),
+            endpoint_id,
+            path,
+            identity,
+            Instant::now(),
+        );
         Ok(handle)
     }
 
-    /// Atomically consume a workspace capability. Removing the entry before
-    /// validation makes expired, cross-endpoint, and replayed handles fail
-    /// closed without leaving a reusable authorization behind.
-    pub fn consume_web_workspace_grant(&self, handle: &str) -> Result<PathBuf, String> {
+    /// Atomically reserve a workspace capability while Session creation runs.
+    /// Invalid, expired, cross-endpoint, and concurrent replays still consume
+    /// or fail the one-shot handle. Only the original reservation can be
+    /// restored after a failed creation, for the same endpoint and TTL.
+    pub(crate) fn reserve_web_workspace_grant(
+        &self,
+        handle: &str,
+    ) -> Result<WebWorkspaceGrantReservation, String> {
         let mut inner = self.inner.lock();
         let endpoint_id = inner
             .endpoint
             .as_ref()
             .map(|endpoint| endpoint.config.endpoint_id.clone())
             .ok_or_else(|| "Web access endpoint is not active".to_string())?;
+        let reservation =
+            inner
+                .web_workspace_grants
+                .reserve(handle, &endpoint_id, Instant::now())?;
+        drop(inner);
+        reservation.revalidate()
+    }
+
+    pub(crate) fn restore_web_workspace_grant(
+        &self,
+        reservation: WebWorkspaceGrantReservation,
+    ) -> bool {
+        let mut inner = self.inner.lock();
+        let Some(endpoint_id) = inner
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.config.endpoint_id.clone())
+        else {
+            return false;
+        };
         inner
             .web_workspace_grants
-            .consume(handle, &endpoint_id, Instant::now())
+            .restore(reservation, &endpoint_id, Instant::now())
     }
 
     /// Keep parsed attachment contents on the desktop. The browser receives
@@ -1624,6 +1668,17 @@ impl RemoteControlManager {
         if let Err(error) = self.publish_event_inner(event, payload, EventSource::Rust) {
             eprintln!("[web-access] forward {event} failed: {error}");
         }
+    }
+
+    /// Cheap, read-only projection gate for optional event transports.
+    /// Delivery revalidates the same state in `publish_event_inner`.
+    pub(crate) fn has_active_subscription(&self, event: &str) -> bool {
+        let inner = self.inner.lock();
+        let web_client_connected = inner
+            .endpoint
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.web_client_connected);
+        has_active_event_subscription(web_client_connected, &inner.subscriptions, event)
     }
 
     pub fn publish_frontend_event(&self, event: &str, payload: Value) -> Result<(), String> {
@@ -2831,6 +2886,14 @@ impl RemoteControlManager {
     }
 }
 
+fn has_active_event_subscription(
+    web_client_connected: bool,
+    subscriptions: &HashSet<String>,
+    event: &str,
+) -> bool {
+    web_client_connected && is_event_subscribed(subscriptions, event)
+}
+
 #[cfg(test)]
 mod tests {
     use super::persistence::{
@@ -2850,6 +2913,16 @@ mod tests {
 
         assert!(is_event_subscribed(&subscriptions, "session:deleted"));
         assert!(!is_event_subscribed(&subscriptions, "session:list_changed"));
+        assert!(!has_active_event_subscription(
+            false,
+            &subscriptions,
+            "session:deleted"
+        ));
+        assert!(has_active_event_subscription(
+            true,
+            &subscriptions,
+            "session:deleted"
+        ));
     }
 
     #[test]
@@ -3324,6 +3397,7 @@ mod tests {
             "web_access_list_sessions",
             "web_access_list_archived_sessions",
             "web_access_chat",
+            "web_access_cancel_codex_acp",
             "web_access_ingest_file",
             "web_access_upload_attachment_chunk",
             "web_access_abort_attachment_upload",
@@ -3336,6 +3410,8 @@ mod tests {
             "web_access_get_codex_acp_session_info",
             "web_access_get_codex_acp_pending_permissions",
             "web_access_get_codex_acp_pending_elicitations",
+            "web_access_get_codex_workspace_changes",
+            "web_access_get_codex_workspace_diff",
             "web_access_list_acp_agents",
             "web_access_get_acp_agent_status",
             "web_access_set_codex_acp_model",
@@ -3612,13 +3688,19 @@ mod tests {
     #[test]
     fn native_active_session_fallbacks_are_not_valid_web_scopes() {
         for command in [
+            "cancel_codex_acp",
             "cancel_generation",
             "compact_now",
             "edit_last_turn",
             "get_session_pinvou_scene_events",
             "get_session_timeline",
+            "get_codex_workspace_changes",
+            "get_codex_workspace_diff",
             "save_session_pinvou_scene_events",
             "web_access_chat",
+            "web_access_cancel_codex_acp",
+            "web_access_get_codex_workspace_changes",
+            "web_access_get_codex_workspace_diff",
         ] {
             assert_eq!(
                 web_session_scope(command),

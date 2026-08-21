@@ -15,6 +15,9 @@ const allowedCommands = new Set([
   'web_access_list_codex_workspace',
   'web_access_search_codex_workspace',
   'web_access_preview_codex_workspace_file',
+  'web_access_get_codex_workspace_changes',
+  'web_access_get_codex_workspace_diff',
+  'web_access_cancel_codex_acp',
   'web_access_list_host_files',
   'web_access_upload_attachment_chunk',
   'web_access_abort_attachment_upload',
@@ -34,6 +37,7 @@ const platform = {
 };
 globalThis.window = {
   PinvouPlatform: platform,
+  btoa: value => Buffer.from(value, 'binary').toString('base64'),
   PinvouHostFilePicker: {
     async openWorkspace(options) {
       return {
@@ -73,7 +77,38 @@ globalThis.__TAURI__ = {
   },
 };
 
-const acp = await import(`../src/platform/acp/client.js?test=${Date.now()}`);
+await import(`../src/shared/chunked-file-upload.js?test=${Date.now()}`);
+const acp = await import(`../src/features/codex/acpClient.js?test=${Date.now()}`);
+
+{
+  invocations.length = 0;
+  allowedCommands.delete('web_access_get_codex_acp_session_info');
+  await assert.rejects(
+    acp.getAcpSessionInfo('session-1'),
+    error => error.code === 'web_acp_command_unavailable',
+  );
+  assert.deepEqual(invocations, [], 'Web ACP must not fall back to a native command');
+  allowedCommands.add('web_access_get_codex_acp_session_info');
+}
+
+{
+  invocations.length = 0;
+  for (const [webCommand, action] of [
+    ['web_access_get_codex_acp_timeline', () => acp.loadAcpTimeline('session-1')],
+    ['web_access_codex_acp_prompt', () => acp.submitAcpPrompt({
+      sessionId: 'session-1',
+      message: 'must stay on the Web lane',
+      attachments: [],
+      workspaceReferences: [],
+    })],
+  ]) {
+    allowedCommands.delete(webCommand);
+    await assert.rejects(action, error => error.code === 'web_acp_command_unavailable');
+    allowedCommands.add(webCommand);
+  }
+  assert.deepEqual(invocations, [],
+    'custom Web ACP paths must not fall back to native timeline or prompt commands');
+}
 
 {
   invocations.length = 0;
@@ -93,6 +128,9 @@ const acp = await import(`../src/platform/acp/client.js?test=${Date.now()}`);
   await acp.listAcpWorkspace({ sessionId: 'session-1', relativePath: 'src' });
   await acp.searchAcpWorkspace({ sessionId: 'session-1', query: 'main' });
   await acp.previewAcpWorkspaceFile({ sessionId: 'session-1', relativePath: 'src/main.rs' });
+  await acp.loadAcpWorkspaceChanges({ sessionId: 'session-1' });
+  await acp.loadAcpWorkspaceDiff({ sessionId: 'session-1', relativePath: 'src/main.rs' });
+  await acp.cancelAcpSession('session-1');
   assert.deepEqual(invocations, [
     {
       command: 'web_access_create_codex_acp_session',
@@ -110,16 +148,28 @@ const acp = await import(`../src/platform/acp/client.js?test=${Date.now()}`);
       command: 'web_access_preview_codex_workspace_file',
       args: { sessionId: 'session-1', relativePath: 'src/main.rs' },
     },
+    {
+      command: 'web_access_get_codex_workspace_changes',
+      args: { sessionId: 'session-1' },
+    },
+    {
+      command: 'web_access_get_codex_workspace_diff',
+      args: { sessionId: 'session-1', relativePath: 'src/main.rs' },
+    },
+    {
+      command: 'web_access_cancel_codex_acp',
+      args: { sessionId: 'session-1' },
+    },
   ]);
   assert.equal(JSON.stringify(invocations).includes('E:\\\\Code'), false,
     'Web ACP RPCs must never contain a native workspace path');
   await assert.rejects(
     acp.createAcpSession({ workspacePath: 'C:\\private', agentId: 'codex' }),
-    /workspace authorization/,
+    error => error.code === 'web_workspace_authorization_required',
   );
   await assert.rejects(
     acp.listAcpWorkspace({ workspacePath: 'C:\\private', relativePath: '' }),
-    /require a Session/,
+    error => error.code === 'web_workspace_session_required',
   );
 }
 
@@ -196,7 +246,7 @@ const acp = await import(`../src/platform/acp/client.js?test=${Date.now()}`);
   ];
   await assert.rejects(
     acp.loadAcpTimeline('session-1'),
-    /invalid ACP timeline pagination response/,
+    error => error.code === 'web_acp_timeline_response_invalid',
   );
 }
 
@@ -241,6 +291,15 @@ function mockFile(name, size) {
   cancelAfterFirstChunk = false;
   assert.equal(invocations.some(item => item.command === 'web_access_abort_attachment_upload'), true,
     'a cancelled partial upload must release the desktop buffer');
+}
+
+{
+  invocations.length = 0;
+  await assert.rejects(
+    acp.uploadAcpDeviceAttachment(mockFile('empty.txt', 0)),
+    error => error.code === 'device_upload_empty',
+  );
+  assert.equal(invocations.length, 0, 'empty files must fail before crossing Relay');
 }
 
 {

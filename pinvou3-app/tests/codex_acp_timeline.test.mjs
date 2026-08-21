@@ -348,7 +348,7 @@ try {
   assert.ok(codexCommands.includes('list_codex_acp_sessions'));
   assert.ok(codexCommands.includes('workspace_path: Option<String>'), 'Codex creation must accept an explicit project directory');
   assert.ok(codexCommands.includes('agent_id: Option<String>')
-    && codexCommands.includes('set_acp_workspace(&session.metadata.id, backend'),
+    && /set_acp_workspace\(\s*&session\.metadata\.id,\s*backend,/.test(codexCommands),
   'code-session creation must bind the selected ACP Agent for the lifetime of the session');
   assert.ok(codexCommands.includes('or(Some("pinvou"))'),
     'code-session creation without an explicit agent must default to the built-in Pinwu backend');
@@ -393,7 +393,7 @@ try {
 
   const codexView = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
   const runtimeNotices = readFileSync(path.join(root, 'src', 'features', 'codex', 'AcpRuntimeNotices.jsx'), 'utf8');
-  const acpClient = readFileSync(path.join(root, 'src', 'platform', 'acp', 'client.js'), 'utf8');
+  const acpClient = readFileSync(path.join(root, 'src', 'features', 'codex', 'acpClient.js'), 'utf8');
   const runtimeNoticeState = readFileSync(
     path.join(root, 'src', 'features', 'codex', 'runtimeNoticeState.js'),
     'utf8',
@@ -442,13 +442,15 @@ try {
   assert.ok(acpClient.includes("directory: true")
     && codexView.includes('pickAcpWorkspace'),
   'new code sessions must expose the platform-specific directory picker');
-  assert.ok(codexView.includes('workspaceHandle: draftWorkspaceHandle')
+  assert.ok(codexView.includes('const requestedWorkspaceHandle = draftWorkspaceHandle')
+    && codexView.includes('workspaceHandle: requestedWorkspaceHandle')
     && acpClient.includes("invokeTauri('create_codex_acp_session', { workspacePath, agentId })")
     && acpClient.includes("invokeRequiredWebCommand('web_access_create_codex_acp_session'"),
   'selected project directories must use native paths on desktop and opaque grants on Web');
   assert.ok(!codexView.includes('data-testid="acp-agent-selector"')
     && codexView.includes('onCodeAgentChange={selectDraftAgent}')
-    && codexView.includes('agentId: draftAgentId')
+    && codexView.includes('const requestedAgentId = draftAgentId')
+    && codexView.includes('agentId: requestedAgentId')
     && runtimeStatus.includes('listAcpAgents()'),
   'the top code tabs must be the only Agent selector and bind the selected Agent on first send');
   assert.ok(codexView.includes("const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection'")
@@ -467,9 +469,9 @@ try {
   'the code page must host browser/device-code login, block unauthenticated prompts, and refresh after token expiry');
   assert.ok(codexView.includes('codexCopy.temporarySession'), 'temporary sessions must remain an explicit choice');
   assert.ok(codexView.includes('DRAFT_ATTACHMENT_KEY')
-    && codexView.includes('const created = await createSession()')
-    && codexView.includes('workspacePath: draftWorkspacePath')
-    && codexView.includes('workspaceHandle: draftWorkspaceHandle'),
+    && codexView.includes('const created = await createSession({')
+    && codexView.includes('workspacePath: requestedWorkspacePath')
+    && codexView.includes('workspaceHandle: requestedWorkspaceHandle'),
   'the code home must keep a temporary draft and create its Codex session only on first send');
   assert.ok(!codexView.includes('createSession(null)'),
   'the native (pinvou) first-send path must also forward the selected draft workspace');
@@ -508,7 +510,7 @@ try {
     && codexView.includes('acp-draft-controls.js')
     && codexView.includes('resolveAcpSessionControls(sessionControlsInfo || draftControlsInfo)')
     && codexView.includes('stageDraftConfigSelection')
-    && codexView.includes('applyDraftConfigSelections(targetId, created.info)'),
+    && /applyDraftConfigSelections\(\s*targetId,\s*created\.info,\s*draftConfigAtSend,/.test(codexView),
   'the draft composer must prefill model, mode and config controls from the agent cache and apply staged choices on first send');
   assert.ok(codexView.includes('function CodexComposerConfigSelect')
     && codexView.includes('data-testid={testId || `codex-config-${id}`}')
@@ -617,8 +619,8 @@ try {
   'the Codex workspace panel must support persisted drag resizing and double-click reset');
   assert.ok(codexWorkspace.includes('listAcpWorkspace({')
     && codexWorkspace.includes('previewAcpWorkspaceFile({')
-    && codexWorkspace.includes("invoke('get_codex_workspace_changes'")
-    && codexWorkspace.includes("invoke('get_codex_workspace_diff'"),
+    && codexWorkspace.includes('loadAcpWorkspaceChanges({')
+    && codexWorkspace.includes('loadAcpWorkspaceDiff({'),
   'the workspace panel must use scoped file, preview, and read-only change commands');
   assert.ok(!codexWorkspace.includes('discard') && !codexWorkspace.includes('stage_codex'),
     'the first workspace panel must not expose destructive discard or staging actions');
@@ -628,7 +630,7 @@ try {
     'Codex and DeepSeek must share the same choice-card presentation');
   assert.ok(codexView.includes('loadAcpPendingElicitations(id)'),
     'pending Codex input requests must recover when a session is reopened');
-  assert.ok(codexView.includes("invoke('respond_codex_acp_elicitation'"),
+  assert.ok(codexView.includes("isWeb ? 'web_access_respond_codex_acp_elicitation' : 'respond_codex_acp_elicitation'"),
     'Codex input answers must be returned through the ACP request');
   assert.ok(conversationView.includes('className={`codex-markdown'), 'conversation Markdown must keep the isolated Codex style scope');
   assert.ok(codexView.includes('<ConversationTurn'), 'Codex must render through the shared Turn renderer by default');
@@ -728,12 +730,22 @@ try {
     && !codexView.includes('bridge.interaction.')
     && !codexView.includes('bridge.chat.'),
   'the code lane must never call bridge chat-active-bound methods for composer controls');
+  const nativeDraftApplyStart = codexView.indexOf('async function applyNativeDraftControls(sessionId, staged)');
+  const nativeDraftMultiAgent = codexView.indexOf("invoke('set_multi_agent_mode'", nativeDraftApplyStart);
+  const nativeDraftClear = codexView.indexOf('setNativeDraftControls(current => current === staged ? {} : current)', nativeDraftMultiAgent);
+  const nativeSendCreate = codexView.indexOf('const created = await createSession({', codexView.indexOf('async function sendNative'));
+  const nativeSendApply = codexView.indexOf('await applyNativeDraftControls(targetId, nativeDraftControlsAtSend)', nativeSendCreate);
   assert.ok(codexView.includes('nativeDraftControls')
-    && /applyNativeDraftControls\(sessionId\)[\s\S]{0,1400}set_multi_agent_mode[\s\S]{0,250}setNativeDraftControls\(\{\}\)/.test(codexView)
-    && /const created = await createSession\(\)[\s\S]{0,180}await applyNativeDraftControls\(targetId\)/.test(codexView),
+    && nativeDraftApplyStart >= 0
+    && nativeDraftMultiAgent > nativeDraftApplyStart
+    && nativeDraftClear > nativeDraftMultiAgent
+    && nativeSendCreate >= 0
+    && nativeSendApply > nativeSendCreate,
   'draft-state control selections, including multi-agent mode, must be applied after session creation and before first send');
   assert.ok(
-    /await applyNativeDraftControls\(targetId\);[\s\S]{0,520}await refreshNativeControls\(targetId\);[\s\S]{0,1800}await invoke\('chat'/.test(codexView),
+    nativeSendApply < codexView.indexOf('await refreshNativeControls(targetId)', nativeSendApply)
+      && codexView.indexOf('await refreshNativeControls(targetId)', nativeSendApply)
+        < codexView.indexOf("await invoke('chat'", nativeSendApply),
     'a newly created native session must refresh authoritative multi-agent state after applying draft controls and before its first turn',
   );
   assert.ok(codexView.includes('nativeControlsSessionRef.current === activeId'),

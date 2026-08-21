@@ -269,7 +269,10 @@
           }
           rootsButton.disabled = rootEntries.length === 0;
           var message = String(error && error.message ? error.message : error);
-          if (message.indexOf("host_workspace_not_authorized") >= 0) message = labels.workspaceNotAuthorized;
+          var code = String(error && error.code ? error.code : "");
+          if (code === "host_workspace_not_authorized" || message === "host_workspace_not_authorized") {
+            message = labels.workspaceNotAuthorized;
+          }
           body.replaceChildren(element("div", "pinvou-host-picker-error", labels.loadFailed(message)));
         });
       }
