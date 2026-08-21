@@ -1,4 +1,6 @@
-use pinvou_node::{NodeError, NodeInstanceLock, NodeSession, NodeTransportPolicy};
+use std::sync::Arc;
+
+use pinvou_node::{NodeError, NodeInstanceLock, NodeRuntimeHost, NodeSession, NodeTransportPolicy};
 use pinvou_protocol::{
     HelloClient, IpcMessage, IpcMessageKind, RuntimeEventEnvelope, StableExitCode,
 };
@@ -84,6 +86,51 @@ fn node_control_surface_is_instance_bound_and_stably_unsupported_until_runtime_a
         session.handle(malformed),
         Err(NodeError::InvalidMessage)
     ));
+}
+
+#[derive(Debug)]
+struct PrefixRuntime;
+
+impl NodeRuntimeHost for PrefixRuntime {
+    fn echo(&self, node_id: &str, text: &str, seq: u64) -> Result<RuntimeEventEnvelope, NodeError> {
+        RuntimeEventEnvelope::from_value(serde_json::json!({
+            "protocol_version":pinvou_protocol::IPC_VERSION,
+            "schema_version":1,
+            "node_id":node_id,
+            "logical_session_id":"runtime-session",
+            "attachment_id":"runtime-attachment",
+            "work_id":null,
+            "collaborative_run_id":null,
+            "stream_id":"main",
+            "turn_id":"runtime-turn",
+            "seq":seq,
+            "source_span":{"start":seq,"end":seq},
+            "timestamp":"2026-08-21T00:00:00.000Z",
+            "rate_class":"R1",
+            "kind":"text.delta",
+            "payload":{"role":"assistant","content":format!("runtime:{text}"),"merged_count":1}
+        }))
+        .map_err(|_| NodeError::InvalidMessage)
+    }
+}
+
+#[test]
+fn node_echo_uses_the_injected_runtime_host_seam() {
+    let session = NodeSession::with_runtime("node-instance", Arc::new(PrefixRuntime)).unwrap();
+    let echo = IpcMessage::request(
+        serde_json::json!(7),
+        "runtime.echo",
+        serde_json::json!({"instance_id":"node-instance", "text":"M2"}),
+    )
+    .unwrap();
+    let event = session.handle(echo).unwrap();
+    let envelope = RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap();
+    assert_eq!(envelope.node_id(), "node-instance");
+    assert_eq!(envelope.seq(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(envelope.payload().get()).unwrap()["content"],
+        "runtime:M2"
+    );
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use pinvou_protocol::{HelloClient, HelloServer, IpcMessage, IpcMessageKind};
+use pinvou_protocol::{HelloClient, HelloServer, IpcMessage, IpcMessageKind, RuntimeEventEnvelope};
 use serde_json::json;
 use std::sync::{
     Arc,
@@ -7,14 +7,26 @@ use std::sync::{
 
 use crate::NodeError;
 
+pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
+    fn echo(&self, node_id: &str, text: &str, seq: u64) -> Result<RuntimeEventEnvelope, NodeError>;
+}
+
 #[derive(Clone, Debug)]
 pub struct NodeSession {
     instance_id: String,
     next_seq: Arc<AtomicU64>,
+    runtime: Arc<dyn NodeRuntimeHost>,
 }
 
 impl NodeSession {
     pub fn new(instance_id: impl Into<String>) -> Result<Self, NodeError> {
+        Self::with_runtime(instance_id, Arc::new(StageOneEchoRuntime))
+    }
+
+    pub fn with_runtime(
+        instance_id: impl Into<String>,
+        runtime: Arc<dyn NodeRuntimeHost>,
+    ) -> Result<Self, NodeError> {
         let instance_id = instance_id.into();
         if instance_id.is_empty() {
             Err(NodeError::InvalidMessage)
@@ -22,6 +34,7 @@ impl NodeSession {
             Ok(Self {
                 instance_id,
                 next_seq: Arc::new(AtomicU64::new(1)),
+                runtime,
             })
         }
     }
@@ -57,15 +70,7 @@ impl NodeSession {
                     .and_then(|value| value.as_str())
                     .ok_or(NodeError::InvalidMessage)?;
                 let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-                let envelope = pinvou_protocol::RuntimeEventEnvelope::from_value(json!({
-                    "protocol_version":pinvou_protocol::IPC_VERSION,"schema_version":1,"node_id":self.instance_id,
-                    "logical_session_id":"m1-session","attachment_id":"m1-attachment",
-                    "work_id":null,"collaborative_run_id":null,"stream_id":"main",
-                    "turn_id":"m1-turn","seq":seq,"source_span":{"start":seq,"end":seq},
-                    "timestamp":utc_timestamp_now(),"rate_class":"R1","kind":"text.delta",
-                    "payload":{"role":"assistant","content":text,"merged_count":1}
-                }))
-                .map_err(|_| NodeError::InvalidMessage)?;
+                let envelope = self.runtime.echo(&self.instance_id, text, seq)?;
                 return IpcMessage::event(
                     "runtime.event",
                     serde_json::to_value(envelope).map_err(|_| NodeError::InvalidMessage)?,
@@ -117,6 +122,23 @@ impl NodeSession {
             _ => return Err(NodeError::UnsupportedRequest),
         };
         IpcMessage::response(id, payload).map_err(|_| NodeError::InvalidMessage)
+    }
+}
+
+#[derive(Debug)]
+struct StageOneEchoRuntime;
+
+impl NodeRuntimeHost for StageOneEchoRuntime {
+    fn echo(&self, node_id: &str, text: &str, seq: u64) -> Result<RuntimeEventEnvelope, NodeError> {
+        pinvou_protocol::RuntimeEventEnvelope::from_value(json!({
+            "protocol_version":pinvou_protocol::IPC_VERSION,"schema_version":1,"node_id":node_id,
+            "logical_session_id":"m1-session","attachment_id":"m1-attachment",
+            "work_id":null,"collaborative_run_id":null,"stream_id":"main",
+            "turn_id":"m1-turn","seq":seq,"source_span":{"start":seq,"end":seq},
+            "timestamp":utc_timestamp_now(),"rate_class":"R1","kind":"text.delta",
+            "payload":{"role":"assistant","content":text,"merged_count":1}
+        }))
+        .map_err(|_| NodeError::InvalidMessage)
     }
 }
 
