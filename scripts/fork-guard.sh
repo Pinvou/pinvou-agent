@@ -6,9 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_COMMITS=9
+PUBLISHED_HEAD="d127aed113529dc93754d044b9f352e9746f6b83"
+PUBLISHED_COMMITS=10
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -18,28 +17,29 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r7 公开四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r8 公开四主题基线拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
-if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记的四主题公开基线 $EXPECTED_HEAD"
+if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
+  expected_commits="$PUBLISHED_COMMITS"
+  green "  ✓ CodeWhale gitlink 指向 r8 四主题公开基线 $PUBLISHED_HEAD"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，公开基线登记为 $EXPECTED_HEAD"
+  expected_commits=""
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r8 公开 head $PUBLISHED_HEAD"
   fail=1
 fi
 
-if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null \
-  && git -C "$TUI" merge-base --is-ancestor "$PUBLISHED_HEAD" HEAD 2>/dev/null; then
-  green "  ✓ 公开基线继承官方 v0.9.5 并与 r7 维护 head 一致"
+if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
+  green "  ✓ r8 公开基线继承官方 v0.9.5"
 else
-  red "  ✗ 基线未同时继承官方 v0.9.5 与 r7 公开维护 head $PUBLISHED_HEAD"
+  red "  ✗ r8 公开基线未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
   fail=1
 fi
 
 commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
-if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
-  green "  ✓ v0.9.5 之上 $EXPECTED_COMMITS 个公开维护提交"
+if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
+  green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，公开基线登记为 $EXPECTED_COMMITS"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r8 合法拓扑应为 ${expected_commits:-10}"
   fail=1
 fi
 
@@ -84,6 +84,21 @@ fingerprints=(
   "T4|同一 Automation 不重叠              |CodeWhale/crates/tui/src/automation_manager.rs|fn forkguard_scheduler_does_not_overlap_active_automation_run"
   "T4|Pinvou 历史 v3/v4 schema 窄兼容     |CodeWhale/crates/tui/src/task_manager.rs|const PINVOU_LEGACY_TASK_SCHEMA_VERSIONS"
   "T4|conversation/thread 跨 worker 持久化|CodeWhale/crates/tui/src/task_manager.rs|async fn forkguard_conversation_key_and_created_thread_survive_worker_boundary"
+
+  "T2|会话 trusted roots 可完全覆盖       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_session_trusted_roots_override_persisted_workspace_trust"
+  "T2|执行分发白名单 fail-closed          |CodeWhale/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends"
+  "T2|排队控制操作继承受限权限             |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_queued_control_op_keeps_restricted_turn_authority"
+  "T2|受限续轮、编辑与 MCP reload 拒绝     |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_queued_goal_continuation_and_mcp_reload_keeps_restricted_turn_authority"
+  "T2|受限轮次延迟空闲子代理续轮           |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message"
+  "T2|受限轮次延迟后台 Shell 唤醒          |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_restricted_turn_defers_idle_shell_wake_until_new_message"
+  "T2|受限 Bash 使用只读 Shell 加固        |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_agent_uses_hardened_read_only_shell_context"
+  "T2|受限轮次 Hook 默认关闭              |CodeWhale/crates/tui/src/core/ops.rs|fn forkguard_restricted_turn_hooks_require_explicit_host_opt_in"
+  "T2|受限工具审计固定脱敏                 |CodeWhale/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_restricted_tool_audit_redacts_private_sentinel"
+  "T2|受限轮次 File schema 只读           |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_agent_uses_read_only_file_schema"
+  "T2|只读动作最终分发 fail-closed        |CodeWhale/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_read_only_turn_rejects_write_action_at_final_dispatch"
+  "T2|受限轮后子智能体完成等待新消息      |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message"
+  "T2|只读轮次启用 Shell 加固上下文       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_agent_uses_hardened_read_only_shell_context"
+  "T2|受限轮后 Shell 唤醒等待新消息       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_turn_defers_idle_shell_wake_until_new_message"
 
   "APP|产品白名单复用原生 allowed_tools   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
   "APP|会话工具开关走动态禁用整形          |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("
