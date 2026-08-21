@@ -44,6 +44,49 @@ fn node_hello_health_and_echo_are_instance_bound() {
 }
 
 #[test]
+fn node_control_surface_is_instance_bound_and_stably_unsupported_until_runtime_attachment() {
+    let session = NodeSession::new("node-instance").unwrap();
+    for (id, method, payload, echoed_field) in [
+        (
+            3,
+            "approval.resolve",
+            serde_json::json!({"instance_id":"node-instance", "approval_id":"approval-1", "accepted":true}),
+            "approval_id",
+        ),
+        (
+            4,
+            "input.resolve",
+            serde_json::json!({"instance_id":"node-instance", "input_id":"input-1", "value":"answer"}),
+            "input_id",
+        ),
+        (
+            5,
+            "turn.interrupt",
+            serde_json::json!({"instance_id":"node-instance", "turn_id":"turn-1"}),
+            "turn_id",
+        ),
+    ] {
+        let request = IpcMessage::request(serde_json::json!(id), method, payload).unwrap();
+        let response = session.handle(request).unwrap();
+        assert_eq!(response.id(), Some(&serde_json::json!(id)));
+        assert_eq!(response.payload()["status"], "unsupported");
+        assert_eq!(response.payload()["method"], method);
+        assert!(response.payload()[echoed_field].is_string());
+    }
+
+    let malformed = IpcMessage::request(
+        serde_json::json!(6),
+        "approval.resolve",
+        serde_json::json!({"instance_id":"node-instance", "approval_id":"approval-1"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        session.handle(malformed),
+        Err(NodeError::InvalidMessage)
+    ));
+}
+
+#[test]
 fn node_home_uses_an_os_lock_handle_and_pid_is_diagnostic_only() {
     let path = std::env::temp_dir().join(format!("pinvou-node-lock-{}", std::process::id()));
     let first = NodeInstanceLock::acquire(&path).unwrap();

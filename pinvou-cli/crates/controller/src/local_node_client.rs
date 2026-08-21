@@ -51,6 +51,41 @@ impl LocalNodeClient {
             .map_err(|_| ControllerError::InvalidMessage)
     }
 
+    pub fn resolve_approval(
+        &mut self,
+        approval_id: &str,
+        accepted: bool,
+    ) -> Result<IpcMessage, ControllerError> {
+        if approval_id.is_empty() {
+            return Err(ControllerError::InvalidMessage);
+        }
+        self.request(
+            "approval.resolve",
+            serde_json::json!({"approval_id":approval_id, "accepted":accepted}),
+        )
+    }
+
+    pub fn resolve_input(
+        &mut self,
+        input_id: &str,
+        value: serde_json::Value,
+    ) -> Result<IpcMessage, ControllerError> {
+        if input_id.is_empty() {
+            return Err(ControllerError::InvalidMessage);
+        }
+        self.request(
+            "input.resolve",
+            serde_json::json!({"input_id":input_id, "value":value}),
+        )
+    }
+
+    pub fn interrupt_turn(&mut self, turn_id: &str) -> Result<IpcMessage, ControllerError> {
+        if turn_id.is_empty() {
+            return Err(ControllerError::InvalidMessage);
+        }
+        self.request("turn.interrupt", serde_json::json!({"turn_id":turn_id}))
+    }
+
     fn request(
         &mut self,
         method: &str,

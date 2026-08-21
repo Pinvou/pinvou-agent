@@ -125,6 +125,70 @@ impl ControllerSession {
                 }),
             )
             .map_err(|_| ControllerError::InvalidMessage)?]),
+            Some("approval.resolve") => {
+                let route = self
+                    .local_node
+                    .as_ref()
+                    .ok_or(ControllerError::UnsupportedRequest)?;
+                let approval_id = request
+                    .payload()
+                    .get("approval_id")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(ControllerError::InvalidMessage)?;
+                let accepted = request
+                    .payload()
+                    .get("accepted")
+                    .and_then(|value| value.as_bool())
+                    .ok_or(ControllerError::InvalidMessage)?;
+                let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
+                let response = client.resolve_approval(approval_id, accepted)?;
+                Ok(vec![
+                    IpcMessage::response(id, response.payload().clone())
+                        .map_err(|_| ControllerError::InvalidMessage)?,
+                ])
+            }
+            Some("input.resolve") => {
+                let route = self
+                    .local_node
+                    .as_ref()
+                    .ok_or(ControllerError::UnsupportedRequest)?;
+                let input_id = request
+                    .payload()
+                    .get("input_id")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(ControllerError::InvalidMessage)?;
+                let value = request
+                    .payload()
+                    .get("value")
+                    .cloned()
+                    .ok_or(ControllerError::InvalidMessage)?;
+                let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
+                let response = client.resolve_input(input_id, value)?;
+                Ok(vec![
+                    IpcMessage::response(id, response.payload().clone())
+                        .map_err(|_| ControllerError::InvalidMessage)?,
+                ])
+            }
+            Some("turn.interrupt") => {
+                let route = self
+                    .local_node
+                    .as_ref()
+                    .ok_or(ControllerError::UnsupportedRequest)?;
+                let turn_id = request
+                    .payload()
+                    .get("turn_id")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(ControllerError::InvalidMessage)?;
+                let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
+                let response = client.interrupt_turn(turn_id)?;
+                Ok(vec![
+                    IpcMessage::response(id, response.payload().clone())
+                        .map_err(|_| ControllerError::InvalidMessage)?,
+                ])
+            }
             _ => Err(ControllerError::UnsupportedRequest),
         }
     }

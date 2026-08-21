@@ -72,6 +72,48 @@ impl NodeSession {
                 )
                 .map_err(|_| NodeError::InvalidMessage);
             }
+            Some("approval.resolve") => {
+                let approval_id = request
+                    .payload()
+                    .get("approval_id")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(NodeError::InvalidMessage)?;
+                if request
+                    .payload()
+                    .get("accepted")
+                    .and_then(|value| value.as_bool())
+                    .is_none()
+                {
+                    return Err(NodeError::InvalidMessage);
+                }
+                json!({"status":"unsupported", "method":"approval.resolve", "approval_id":approval_id})
+            }
+            Some("input.resolve") => {
+                let input_id = request
+                    .payload()
+                    .get("input_id")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(NodeError::InvalidMessage)?;
+                if !request
+                    .payload()
+                    .as_object()
+                    .is_some_and(|payload| payload.contains_key("value"))
+                {
+                    return Err(NodeError::InvalidMessage);
+                }
+                json!({"status":"unsupported", "method":"input.resolve", "input_id":input_id})
+            }
+            Some("turn.interrupt") => {
+                let turn_id = request
+                    .payload()
+                    .get("turn_id")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(NodeError::InvalidMessage)?;
+                json!({"status":"unsupported", "method":"turn.interrupt", "turn_id":turn_id})
+            }
             _ => return Err(NodeError::UnsupportedRequest),
         };
         IpcMessage::response(id, payload).map_err(|_| NodeError::InvalidMessage)

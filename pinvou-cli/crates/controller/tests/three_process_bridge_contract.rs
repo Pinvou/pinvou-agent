@@ -89,6 +89,32 @@ fn raw_client_reaches_node_chat_start_through_controller_daemon() {
     assert_eq!(terminal_value["seq"], 1);
     assert_eq!(terminal_value["payload"]["end_reason"], "completed");
 
+    for (id, method, payload) in [
+        (
+            2,
+            "approval.resolve",
+            serde_json::json!({"instance_id":server.instance_id(), "approval_id":"approval-1", "accepted":true}),
+        ),
+        (
+            3,
+            "input.resolve",
+            serde_json::json!({"instance_id":server.instance_id(), "input_id":"input-1", "value":"answer"}),
+        ),
+        (
+            4,
+            "turn.interrupt",
+            serde_json::json!({"instance_id":server.instance_id(), "turn_id":"turn-1"}),
+        ),
+    ] {
+        let request = IpcMessage::request(serde_json::json!(id), method, payload).unwrap();
+        stream.write_all(&encode_frame(&request).unwrap()).unwrap();
+        stream.flush().unwrap();
+        let response: IpcMessage = read_frame(&mut stream).unwrap();
+        assert_eq!(response.id(), Some(&serde_json::json!(id)));
+        assert_eq!(response.payload()["status"], "unsupported");
+        assert_eq!(response.payload()["method"], method);
+    }
+
     guard.child.kill().unwrap();
     guard.child.wait().unwrap();
 }
