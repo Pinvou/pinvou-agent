@@ -169,7 +169,7 @@ fn parse_connector_scope(
 
 use crate::features::connectors::{
     connector_cli as connector_cli_domain, dingtalk as dingtalk_domain, feishu as feishu_domain,
-    ima as ima_domain, tmeet as tmeet_domain, wecom as wecom_domain,
+    ima as ima_domain, tmeet as tmeet_domain, wecom as wecom_domain, weibo as weibo_domain,
 };
 use connector_cli_domain::*;
 use serde_json::Value;
@@ -333,6 +333,22 @@ pub async fn set_tmeet_enabled(
     Ok(result)
 }
 async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, String>);
+
+#[tauri::command]
+pub async fn weibo_ensure_cli(app: AppHandle) -> Result<Value, String> {
+    let result = weibo_domain::weibo_ensure_cli().await?;
+    if was_new_cli_install(&result) {
+        track_cli_install(&app, "weibo", "微博");
+    }
+    Ok(result)
+}
+async_command_passthrough!(weibo_domain, weibo_status() -> Result<Value, String>);
+async_command_passthrough!(weibo_domain, weibo_connect_begin(app: AppHandle) -> Result<Value, String>);
+async_command_passthrough!(weibo_domain, weibo_cancel(app: AppHandle) -> Result<Value, String>);
+async_command_passthrough!(weibo_domain, weibo_logout() -> Result<Value, String>);
+async_command_passthrough!(weibo_domain, weibo_apply_skills() -> Result<Value, String>);
+async_command_passthrough!(weibo_domain, set_weibo_enabled(enabled: bool) -> Result<Value, String>);
+async_command_passthrough!(weibo_domain, weibo_skills_state() -> Result<Value, String>);
 
 async_command_passthrough!(ima_domain, ima_status() -> Result<Value, String>);
 

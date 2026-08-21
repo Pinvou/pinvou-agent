@@ -50,7 +50,7 @@ pub fn connector_cli_command(cli_bin: &str, program: &str) -> Command {
     let resolved = connector_cli_program(cli_bin, program);
     // npm 的 Unix bin 是带 `#!/usr/bin/env node` 的 JS shim；GUI 环境不保证系统
     // PATH 有 node，因此腾讯会议也显式交给随包 Node 执行。
-    if program == cli_bin && cli_bin == "tmeet" {
+    if program == cli_bin && matches!(cli_bin, "tmeet" | "weibo-cli") {
         let script = PathBuf::from(&resolved);
         if script.is_file() {
             if let Some(node) = crate::platform::paths::bundled_connector_node() {

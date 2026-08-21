@@ -1465,25 +1465,25 @@ const dict = {
     dict.zh.uiToolDetails.flow = {
       incomplete:name=>`${name}接入未完成`, connected:name=>`已连接${name}`, connecting:name=>`正在接入${name}`,
       cancel:'取消', extracting:pct=>`解压中 ${pct}%`, elapsed:seconds=>`已 ${seconds}s`, installStarting:'在线安装：正在开始…', browserOpened:'已打开浏览器登录页',
-      browserHint:'请在浏览器中扫码确认。未弹出时可重新打开。', reopen:'重新打开', qrAlt:name=>`${name}二维码`,
+      browserHint:'请在浏览器中扫码确认。未弹出时可重新打开。', browserHintCode:'请在浏览器中输入验证码并确认授权。未弹出时可重新打开。', browserOpenFailed:'浏览器未能自动打开，请点击重新打开。', reopen:'重新打开', qrAlt:name=>`${name}二维码`,
       authorizeStep:'第 2 步 / 共 2 步：扫码授权', registerStep:'第 1 步 / 共 2 步：扫码注册应用',
-      scanLogin:name=>`扫码登录${name}`, scanHint:name=>`用${name} App 扫一扫 → 确认`, userCode:'页面验证码',
+      scanLogin:name=>`扫码登录${name}`, scanHint:name=>`用${name} App 扫一扫 → 确认`, userCode:'页面验证码', copyCode:'复制验证码', copiedCode:'已复制',
       openBrowser:'在浏览器打开 ↗', connectionIncomplete:'连接未完成', close:'关闭', retry:'重试',
     };
     dict.en.uiToolDetails.flow = {
       incomplete:name=>`${name} connection incomplete`, connected:name=>`${name} connected`, connecting:name=>`Connecting ${name}`,
       cancel:'Cancel', extracting:pct=>`Extracting ${pct}%`, elapsed:seconds=>`${seconds}s elapsed`, installStarting:'Online install: starting…', browserOpened:'Browser sign-in page opened',
-      browserHint:'Confirm the sign-in in your browser. Reopen the page if it did not appear.', reopen:'Reopen', qrAlt:name=>`${name} QR code`,
+      browserHint:'Confirm the sign-in in your browser. Reopen the page if it did not appear.', browserHintCode:'Enter the verification code in your browser and confirm authorization. Reopen the page if it did not appear.', browserOpenFailed:'The browser could not be opened automatically. Click reopen.', reopen:'Reopen', qrAlt:name=>`${name} QR code`,
       authorizeStep:'Step 2 of 2: scan to authorize', registerStep:'Step 1 of 2: scan to register the app',
-      scanLogin:name=>`Sign in to ${name}`, scanHint:name=>`Scan with the ${name} app and confirm`, userCode:'Verification code',
+      scanLogin:name=>`Sign in to ${name}`, scanHint:name=>`Scan with the ${name} app and confirm`, userCode:'Verification code', copyCode:'Copy code', copiedCode:'Copied',
       openBrowser:'Open in browser ↗', connectionIncomplete:'Connection incomplete', close:'Close', retry:'Retry',
     };
     dict.ja.uiToolDetails.flow = {
       incomplete:name=>`${name} の接続が未完了`, connected:name=>`${name} に接続済み`, connecting:name=>`${name} に接続中`,
       cancel:'キャンセル', extracting:pct=>`展開中 ${pct}%`, elapsed:seconds=>`${seconds}秒経過`, installStarting:'オンラインインストール：開始中…', browserOpened:'ブラウザーのログインページを開きました',
-      browserHint:'ブラウザーで QR コードを読み取り、確認してください。表示されない場合は再度開けます。', reopen:'再度開く', qrAlt:name=>`${name} QR コード`,
+      browserHint:'ブラウザーで QR コードを読み取り、確認してください。表示されない場合は再度開けます。', browserHintCode:'ブラウザーで確認コードを入力して認証してください。表示されない場合は再度開けます。', browserOpenFailed:'ブラウザーを自動で開けませんでした。再度開いてください。', reopen:'再度開く', qrAlt:name=>`${name} QR コード`,
       authorizeStep:'2 / 2：QR コードで認証', registerStep:'1 / 2：QR コードでアプリを登録',
-      scanLogin:name=>`${name} にログイン`, scanHint:name=>`${name} アプリで読み取り、確認`, userCode:'確認コード',
+      scanLogin:name=>`${name} にログイン`, scanHint:name=>`${name} アプリで読み取り、確認`, userCode:'確認コード', copyCode:'コードをコピー', copiedCode:'コピー済み',
       openBrowser:'ブラウザーで開く ↗', connectionIncomplete:'接続が完了していません', close:'閉じる', retry:'再試行',
     };
     dict.zh.uiToolDetails.actions = { connectedTmeet:'已连接腾讯会议', enabled:'官方技能已启用，可新建对话直接用', disconnectedTmeet:'已断开腾讯会议', connectingIma:'正在连接「腾讯 ima」', validatingIma:'正在校验 OpenAPI 凭证并启用 Skill…', connectedIma:'已连接「腾讯 ima」', imaEnabled:'IMA OpenAPI Skill 已启用，可新建对话直接使用。', imaFailed:'IMA 连接失败', disconnectedIma:'已断开「腾讯 ima」', operationFailed:'操作失败，请重试' };
@@ -1507,6 +1507,7 @@ const dict = {
       feishu:{ title:'飞书（Lark）', subtitle:'以你本人身份操作飞书文档/日历/表格/消息', type:'CLI + 官方技能', latency:'云端', desc:'接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）与电子表格、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。', welcomeQueries:['读飞书文档帮我做一份 PPT','把飞书文档整理成摘要','查我今天的飞书日历','看看我飞书里的待办任务'] },
       wecom:{ title:'企业微信', subtitle:'以你本人身份操作企微消息/邮件/文档/会议/日程', type:'CLI + 官方技能', latency:'云端', desc:'接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、收发邮件、读写文档/智能表格/在线表格/智能文档、管理微盘文件、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。', welcomeQueries:['把这段内容写成企微智能文档','读一下我企微某篇文档的内容','在企微智能表格里新建一张子表','查一下企微智能表格里的数据'] },
       dingtalk:{ title:'钉钉', subtitle:'以你本人身份操作钉钉文档/日历/表格/消息', type:'CLI + 官方技能', latency:'云端', desc:'接入钉钉官方 DingTalk Workspace CLI（dws，Apache-2.0）+ 官方技能：让 AI 以你本人身份读写钉钉文档、查改日历、操作 AI 表格/在线表格、收发群聊消息、处理待办/审批/日志/邮箱等。点「连接」用钉钉 App 扫码授权，全程不填 key。', welcomeQueries:['读一下我的钉钉文档','查我今天的钉钉日程','在钉钉 AI 表格里查数据','看看我的钉钉待办'] },
+      weibo:{ title:'微博', subtitle:'以你本人身份操作微博发布、互动、检索和趋势', type:'CLI + Pinvou 适配技能', latency:'云端', desc:'接入微博官方 CLI（@weibo-ai/weibo-cli，MIT）+ Pinvou 适配技能：让 AI 以你本人身份检索微博、查看用户和关系、处理评论互动，并在确认后执行发布类操作。点「连接」打开微博授权页登录，全程不填 key。', welcomeQueries:['查一下微博热搜趋势','搜索某个关键词的微博','查询这个微博用户的信息','帮我草拟一条微博，确认后发布'] },
       card11:{ title:'TAPD 敏捷研发', subtitle:'缺陷与迭代的自动化追踪', desc:'研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。' },
       card12:{ title:'CNB 云原生管线', subtitle:'代码仓库与 CI/CD 调度', desc:'将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。' },
       qcc:{ title:'企查查', subtitle:'企业工商数据授权查询', latency:'云端', desc:'接入企查查智能体数据平台 qcc-company 远程 MCP。点「连接」后会打开浏览器进行企查查账号 OAuth 授权，全程不填写 API Key。', welcomeQueries:['查一下华为的工商信息','腾讯的工商登记信息','比亚迪有哪些对外投资','阿里巴巴的股东结构'] },
@@ -1527,6 +1528,7 @@ const dict = {
       feishu:{ title:'Feishu (Lark)', subtitle:'Manage Feishu docs, calendars, Bases, spreadsheets, and messages as yourself', type:'CLI + Official Skill', latency:'Cloud', desc:'Connect the official Feishu CLI and official domain skills (MIT): let AI read and write cloud docs, view and edit calendars, work with Bases and spreadsheets, send and receive messages, and manage knowledge bases and tasks as yourself. Click \u201cConnect Feishu\u201d to authorize in the browser with one click\u2014no key required. Data goes through the Feishu cloud OpenAPI (optional online feature, opt-in).', welcomeQueries:['Read a Feishu doc and make a PPT for me','Summarize my Feishu docs','Check my Feishu calendar today','Show my Feishu to-do tasks'] },
       wecom:{ title:'WeCom', subtitle:'Manage WeCom messages, mail, docs, meetings, and schedules as yourself', type:'CLI + Official Skill', latency:'Cloud', desc:'Connect the official WeCom CLI (@wecom/cli, MIT) and official domain skills: let AI send and receive messages and mail, read and write docs, smart sheets, spreadsheets, and smart pages, manage Drive files, create and query meetings and schedules, manage to-dos, and look up contacts as yourself. Click \u201cConnect\u201d and authorize by scanning a QR code with the WeCom app\u2014no key required. Data goes through the WeCom cloud (optional online feature, opt-in).', welcomeQueries:['Turn this content into a WeCom smart doc','Read the content of one of my WeCom docs','Create a new sub-sheet in a WeCom smart sheet','Query data in a WeCom smart sheet'] },
       dingtalk:{ title:'DingTalk', subtitle:'Manage DingTalk docs, calendars, sheets, and messages as yourself', type:'CLI + Official Skill', latency:'Cloud', desc:'Connect the official DingTalk Workspace CLI (dws, Apache-2.0) and official skills: let AI read and write DingTalk docs, view and edit calendars, work with AI sheets and online sheets, send and receive group messages, and handle to-dos, approvals, logs, and mail as yourself. Click \u201cConnect\u201d and authorize by scanning a QR code with the DingTalk app\u2014no key required.', welcomeQueries:['Read my DingTalk docs','Check my DingTalk schedule today','Query data in a DingTalk AI sheet','Show my DingTalk to-dos'] },
+      weibo:{ title:'Weibo', subtitle:'Post, interact, search, and inspect trends as yourself', type:'CLI + Pinvou-adapted Skill', latency:'Cloud', desc:'Connect the official Weibo CLI (@weibo-ai/weibo-cli, MIT) with a Pinvou-adapted skill: let AI search Weibo, inspect users and relationships, handle comment interactions, and perform publishing actions only after confirmation. Click \u201cConnect\u201d to open Weibo authorization\u2014no key required.', welcomeQueries:['Show Weibo trending topics','Search Weibo for a keyword','Look up this Weibo user','Draft a Weibo post and publish after confirmation'] },
       card11:{ title:'TAPD Agile R&D', subtitle:'Automated tracking of defects and iterations', desc:'A core R&D management tool. Lets AI query project iteration progress, automatically break down requirement items, and update defect status, digitizing the full R&D lifecycle from requirements to release.' },
       card12:{ title:'CNB Cloud-Native Pipeline', subtitle:'Code repositories and CI/CD orchestration', desc:'Brings cloud-native development capabilities to the model. Use natural language to search code repositories, file issues, review PRs, and trigger and monitor pipeline deployments.' },
       qcc:{ title:'Qichacha', subtitle:'Authorized queries of business registration data', latency:'Cloud', desc:'Connect the qcc-company remote MCP from the Qichacha agent data platform. Clicking \u201cConnect\u201d opens the browser for OAuth authorization with your Qichacha account\u2014no API Key required.', welcomeQueries:['Look up Huawei\u2019s business registration info','Tencent\u2019s business registration details','BYD\u2019s outbound investments','Alibaba\u2019s shareholder structure'] },
@@ -1547,6 +1549,7 @@ const dict = {
       feishu:{ title:'Feishu (Lark)', subtitle:'本人として Feishu のドキュメント、カレンダー、Base、スプレッドシート、メッセージを操作', type:'CLI + 公式 Skill', latency:'クラウド', desc:'Feishu 公式 CLI と公式ドメイン Skill（MIT）に接続：AI が本人としてクラウドドキュメントの読み書き、カレンダーの確認・変更、Base（多次元表）とスプレッドシートの操作、メッセージの送受信、ナレッジベースとタスクの管理を行えます。「Feishu に接続」を押すとブラウザーでワンクリック認証。キー入力は不要です。データは Feishu クラウド OpenAPI を経由します（任意のオンライン機能、opt-in）。', welcomeQueries:['Feishu ドキュメントを読んで PPT を作成','Feishu ドキュメントを要約','今日の Feishu カレンダーを確認','Feishu の ToDo タスクを表示'] },
       wecom:{ title:'WeCom', subtitle:'本人として WeCom のメッセージ、メール、ドキュメント、会議、スケジュールを操作', type:'CLI + 公式 Skill', latency:'クラウド', desc:'WeCom 公式 CLI（@wecom/cli、MIT）と公式ドメイン Skill に接続：AI が本人としてメッセージとメールの送受信、ドキュメント・スマートシート・スプレッドシート・スマートページの読み書き、ドライブファイル管理、会議とスケジュールの作成・照会、ToDo 管理、アドレス帳の照会を行えます。「接続」を押して WeCom アプリで QR コード認証。キー入力は不要です。データは WeCom クラウドを経由します（任意のオンライン機能、opt-in）。', welcomeQueries:['この内容を WeCom スマートドキュメントに変換','WeCom のドキュメントを読む','WeCom スマートシートに子シートを作成','WeCom スマートシートのデータを照会'] },
       dingtalk:{ title:'DingTalk', subtitle:'本人として DingTalk のドキュメント、カレンダー、表、メッセージを操作', type:'CLI + 公式 Skill', latency:'クラウド', desc:'DingTalk 公式 DingTalk Workspace CLI（dws、Apache-2.0）と公式 Skill に接続：AI が本人として DingTalk ドキュメントの読み書き、カレンダーの確認・変更、AI 表・オンライン表の操作、グループメッセージの送受信、ToDo・承認・日誌・メールの処理を行えます。「接続」を押して DingTalk アプリで QR コード認証。キー入力は不要です。', welcomeQueries:['DingTalk ドキュメントを読む','今日の DingTalk スケジュールを確認','DingTalk AI 表のデータを照会','DingTalk の ToDo を表示'] },
+      weibo:{ title:'Weibo', subtitle:'本人として投稿、交流、検索、トレンド確認を行う', type:'CLI + Pinvou 適応 Skill', latency:'クラウド', desc:'Weibo 公式 CLI（@weibo-ai/weibo-cli、MIT）と Pinvou 適応 Skill に接続：AI が本人として Weibo の検索、ユーザーや関係の確認、コメント対応を行い、確認後に投稿操作を実行できます。「接続」を押すと Weibo の認証ページが開きます。キー入力は不要です。', welcomeQueries:['Weibo のトレンドを確認','キーワードで Weibo を検索','この Weibo ユーザーを調べる','Weibo 投稿を下書きし、確認後に投稿'] },
       card11:{ title:'TAPD アジャイル開発', subtitle:'不具合とイテレーションの自動追跡', desc:'開発管理の中核ツール。AI がプロジェクトのイテレーション進捗を照会し、要件項目を自動分割し、不具合ステータスを更新することで、要件からリリースまでの開発ライフサイクル全体をデジタル化します。' },
       card12:{ title:'CNB クラウドネイティブパイプライン', subtitle:'コードリポジトリと CI/CD オーケストレーション', desc:'クラウドネイティブ開発機能を大規模モデルに提供します。自然言語でコードリポジトリの検索、Issue の作成、PR のレビュー、パイプラインデプロイの実行と監視ができます。' },
       qcc:{ title:'Qichacha（企查查）', subtitle:'企業工商データの認証照会', latency:'クラウド', desc:'企查查エージェントデータプラットフォームの qcc-company リモート MCP に接続します。「接続」を押すとブラウザーが開き、企查查アカウントの OAuth 認証を行います。API Key の入力は不要です。', welcomeQueries:['ファーウェイの工商情報を照会','Tencent の工商登記情報','BYD の対外投資一覧','アリババの株主構成'] },
@@ -1983,6 +1986,7 @@ dict.zh.uiSettingsView = {
   serviceWecom: '企业微信',
   serviceDingtalk: '钉钉',
   serviceTmeet: '腾讯会议',
+  serviceWeibo: '微博',
   detectFailed: '检测失败',
   modelLabel: '模型',
   codingPlanModelIdPlaceholder: '例如 glm-5',
@@ -2042,6 +2046,7 @@ dict.en.uiSettingsView = {
   serviceWecom: 'WeCom',
   serviceDingtalk: 'DingTalk',
   serviceTmeet: 'Tencent Meeting',
+  serviceWeibo: 'Weibo',
   detectFailed: 'Detection failed',
   modelLabel: 'Model',
   codingPlanModelIdPlaceholder: 'e.g. glm-5',
@@ -2101,6 +2106,7 @@ dict.ja.uiSettingsView = {
   serviceWecom: 'WeCom',
   serviceDingtalk: 'DingTalk',
   serviceTmeet: 'Tencent Meeting',
+  serviceWeibo: 'Weibo',
   detectFailed: '検出に失敗しました',
   modelLabel: 'モデル',
   codingPlanModelIdPlaceholder: '例：glm-5',
@@ -2235,7 +2241,7 @@ Object.assign(dict.ja.uiAttachments, { uploading:pct=>`アップロード中 ${p
 
 // uiToolStore 词条补充（ToolStoreView / oauth-marketplace-logic）：命名空间已在 dict 主体定义，这里增量合并。
 Object.assign(dict.zh.uiToolStore, {
-  toolNames:{ feishu:'飞书', wecom:'企业微信', dingtalk:'钉钉', tmeet:'腾讯会议', ima:'腾讯 ima' },
+  toolNames:{ feishu:'飞书', wecom:'企业微信', dingtalk:'钉钉', tmeet:'腾讯会议', weibo:'微博', ima:'腾讯 ima' },
   connected:'已连接', installed:'已安装', builtin:'内置', internalDirect:'内网直连', keyRequired:'需密钥', localLatency:'本地',
   cancel:'取消', ok:'知道了', newChat:'新建会话',
   installHint:'新工具需要在新会话中生效', removeHint:'已移除，新会话将不再加载该工具', firstUseOnlineInstall:'首次连接会联网下载并校验官方 CLI',
@@ -2282,7 +2288,12 @@ Object.assign(dict.zh.uiToolStore, {
     { key:'cli', label:'安装连接组件', sub:'dws · 首次约 40 秒' },
     { key:'qr', label:'扫码登录', sub:'钉钉 App 扫一扫' },
   ],
-  connFailed:'连接失败', dingtalkSkillsFailed:err=>`钉钉已授权，但技能启用失败：${err}`, tmeetAuthIncomplete:'腾讯会议授权未完成，请完成浏览器登录后重试',
+  weiboSteps:[
+    { key:'runtime', label:'准备运行时', sub:'使用应用自带 Node' },
+    { key:'cli', label:'安装连接组件', sub:'weibo-cli · 首次约 40 秒' },
+    { key:'qr', label:'浏览器授权', sub:'微博授权页和验证码' },
+  ],
+  connFailed:'连接失败', dingtalkSkillsFailed:err=>`钉钉已授权，但技能启用失败：${err}`, weiboSkillsFailed:err=>`微博已授权，但技能启用失败：${err}`, tmeetAuthIncomplete:'腾讯会议授权未完成，请完成浏览器登录后重试', weiboAuthIncomplete:'微博授权未完成，请完成浏览器登录后重试',
   emptyNoMatch:'未找到匹配的工具', emptyNoInstalled:'还没有已安装的工具', emptyNoTools:'未检索到工具',
   emptyNoMatchHint:'换个关键词试试，或检查一下拼写。', emptyNoInstalledHint:'去商店安装连接器或技能后，会出现在这里。', emptyNoInstalledHintReadonly:'桌面端尚未安装工具或技能。',
   emptyNoToolsHint:'请尝试修改搜索词或查阅 API 开发文档。',
@@ -2295,7 +2306,7 @@ Object.assign(dict.zh.uiToolStore, {
   },
 });
 Object.assign(dict.en.uiToolStore, {
-  toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },
+  toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', weibo:'Weibo', ima:'Tencent ima' },
   connected:'Connected', installed:'Installed', builtin:'Built-in', internalDirect:'Direct intranet', keyRequired:'Key required', localLatency:'Local',
   cancel:'Cancel', ok:'Got it', newChat:'New Chat',
   installHint:'New tools take effect in a new conversation', removeHint:'Removed; new conversations will no longer load this tool', firstUseOnlineInstall:'The first connection downloads and verifies the official CLI',
@@ -2342,7 +2353,12 @@ Object.assign(dict.en.uiToolStore, {
     { key:'cli', label:'Install connector', sub:'dws · about 40 seconds on first use' },
     { key:'qr', label:'Scan to sign in', sub:'Scan with the DingTalk app' },
   ],
-  connFailed:'Connection failed', dingtalkSkillsFailed:err=>`DingTalk authorized, but enabling the skill failed: ${err}`, tmeetAuthIncomplete:'Tencent Meeting authorization is incomplete—finish the browser sign-in and retry',
+  weiboSteps:[
+    { key:'runtime', label:'Prepare runtime', sub:'Use the app-provided Node runtime' },
+    { key:'cli', label:'Install connector', sub:'weibo-cli · about 40 seconds on first use' },
+    { key:'qr', label:'Authorize in browser', sub:'Weibo authorization page and user code' },
+  ],
+  connFailed:'Connection failed', dingtalkSkillsFailed:err=>`DingTalk authorized, but enabling the skill failed: ${err}`, weiboSkillsFailed:err=>`Weibo authorized, but enabling the skill failed: ${err}`, tmeetAuthIncomplete:'Tencent Meeting authorization is incomplete—finish the browser sign-in and retry', weiboAuthIncomplete:'Weibo authorization is incomplete. Finish the browser sign-in and retry',
   emptyNoMatch:'No matching tools found', emptyNoInstalled:'No tools installed yet', emptyNoTools:'No tools found',
   emptyNoMatchHint:'Try a different keyword, or check the spelling.', emptyNoInstalledHint:'Install connectors or skills from the store and they will appear here.', emptyNoInstalledHintReadonly:'No tools or skills installed on the desktop yet.',
   emptyNoToolsHint:'Try another search term or check the API documentation.',
@@ -2355,7 +2371,7 @@ Object.assign(dict.en.uiToolStore, {
   },
 });
 Object.assign(dict.ja.uiToolStore, {
-  toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },
+  toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', weibo:'Weibo', ima:'Tencent ima' },
   connected:'接続済み', installed:'インストール済み', builtin:'内蔵', internalDirect:'社内ネットワーク直結', keyRequired:'キーが必要', localLatency:'ローカル',
   cancel:'キャンセル', ok:'了解', newChat:'新しいチャット',
   installHint:'新しいツールは新しい会話で有効になります', removeHint:'削除しました。新しい会話ではこのツールは読み込まれません', firstUseOnlineInstall:'初回接続時に公式 CLI をダウンロードして検証します',
@@ -2402,7 +2418,12 @@ Object.assign(dict.ja.uiToolStore, {
     { key:'cli', label:'接続コンポーネントをインストール', sub:'dws · 初回は約 40 秒' },
     { key:'qr', label:'スキャンしてログイン', sub:'DingTalk アプリでスキャン' },
   ],
-  connFailed:'接続に失敗しました', dingtalkSkillsFailed:err=>`DingTalk は認証されましたが、スキルの有効化に失敗しました：${err}`, tmeetAuthIncomplete:'Tencent Meeting の認証が完了していません。ブラウザーでログインを完了してから再試行してください',
+  weiboSteps:[
+    { key:'runtime', label:'ランタイムを準備', sub:'アプリ同梱の Node を使用' },
+    { key:'cli', label:'接続コンポーネントをインストール', sub:'weibo-cli · 初回は約 40 秒' },
+    { key:'qr', label:'ブラウザーで認証', sub:'Weibo 認証ページと確認コード' },
+  ],
+  connFailed:'接続に失敗しました', dingtalkSkillsFailed:err=>`DingTalk は認証されましたが、スキルの有効化に失敗しました：${err}`, weiboSkillsFailed:err=>`Weibo は認証されましたが、スキルの有効化に失敗しました：${err}`, tmeetAuthIncomplete:'Tencent Meeting の認証が完了していません。ブラウザーでログインを完了してから再試行してください', weiboAuthIncomplete:'Weibo の認証が完了していません。ブラウザーでログインを完了してから再試行してください',
   emptyNoMatch:'一致するツールが見つかりません', emptyNoInstalled:'インストール済みのツールはまだありません', emptyNoTools:'ツールが見つかりません',
   emptyNoMatchHint:'別のキーワードを試すか、綴りを確認してください。', emptyNoInstalledHint:'ストアでコネクターやスキルをインストールすると、ここに表示されます。', emptyNoInstalledHintReadonly:'デスクトップにツールやスキルはまだインストールされていません。',
   emptyNoToolsHint:'検索語を変更するか、API 開発ドキュメントをご確認ください。',

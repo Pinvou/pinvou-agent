@@ -51,6 +51,11 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
+/// 微博 CLI Pinvou 适配技能(weibo-cli,MIT CLI,技能为 Pinvou 本地适配)。
+/// 独立放 `weibo-skills/`，按微博连接 / 停用状态单独门控。
+static WEIBO_SKILLS_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/weibo-skills");
+
 // 企微技能目录表（14 新名 + 0.1.9 legacy 名）已下沉到
 // `crate::platform::connector_skills` 作为单一真相源：marketplace 注册表
 // （wecom 卡 skills 列表）、扁平布局迁移、`cli_bundle_of_skill` 反查与
@@ -61,6 +66,7 @@ pub(crate) use crate::platform::connector_skills::{WECOM_LEGACY_SKILL_DIRS, WECO
 
 const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
 const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
+const WEIBO_SKILL_DIRS: [&str; 1] = ["weibo-cli"];
 
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。
@@ -91,7 +97,8 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.23: wecom-cli 升 1.1.0：技能树按上游服务模型重排为 14 个（msg→message、
 ///       schedule→calendar，新增 disk/doc-manage/email/media/shared/sheet/smartpage），
 ///       旧目录（wecomcli-msg/wecomcli-schedule）启动门控时清理。
-pub const BUNDLE_VERSION: &str = concat!("0.23-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.24: 接入微博 CLI Pinvou 适配技能（weibo-cli 0.9.1）。
+pub const BUNDLE_VERSION: &str = concat!("0.24-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
@@ -606,6 +613,7 @@ mod tests {
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
         assert!(!bundle.cached_tmeet_skills_visible());
+        assert!(!bundle.cached_weibo_skills_visible());
 
         for dir in LARK_SKILL_DIRS {
             let path = pkg_skills("feishu").join(dir);
@@ -627,23 +635,32 @@ mod tests {
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
+        for dir in WEIBO_SKILL_DIRS {
+            let path = bundle.skills_dir.join(dir);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), "test").unwrap();
+        }
         assert!(bundle.cached_feishu_skills_visible());
         assert!(bundle.cached_wecom_skills_visible());
         assert!(bundle.cached_dingtalk_skills_visible());
         assert!(bundle.cached_tmeet_skills_visible());
+        assert!(bundle.cached_weibo_skills_visible());
 
         std::fs::write(paths::pinvou3_home().join("feishu_disabled"), "1").unwrap();
         std::fs::write(paths::pinvou3_home().join("wecom_disabled"), "1").unwrap();
         std::fs::write(paths::pinvou3_home().join("dingtalk_disabled"), "1").unwrap();
         std::fs::write(paths::pinvou3_home().join("tmeet_disabled"), "1").unwrap();
+        std::fs::write(paths::pinvou3_home().join("weibo_disabled"), "1").unwrap();
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
         assert!(!bundle.cached_tmeet_skills_visible());
+        assert!(!bundle.cached_weibo_skills_visible());
         std::fs::remove_file(paths::pinvou3_home().join("feishu_disabled")).unwrap();
         std::fs::remove_file(paths::pinvou3_home().join("wecom_disabled")).unwrap();
         std::fs::remove_file(paths::pinvou3_home().join("dingtalk_disabled")).unwrap();
         std::fs::remove_file(paths::pinvou3_home().join("tmeet_disabled")).unwrap();
+        std::fs::remove_file(paths::pinvou3_home().join("weibo_disabled")).unwrap();
 
         std::fs::remove_file(
             pkg_skills("feishu")
@@ -669,10 +686,42 @@ mod tests {
                 .join("SKILL.md"),
         )
         .unwrap();
+        std::fs::remove_file(
+            pkg_skills("weibo")
+                .join(WEIBO_SKILL_DIRS[0])
+                .join("SKILL.md"),
+        )
+        .unwrap();
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
         assert!(!bundle.cached_tmeet_skills_visible());
+        assert!(!bundle.cached_weibo_skills_visible());
+        cleanup(&tmp);
+    }
+
+    #[test]
+    fn apply_weibo_skills_extracts_and_removes_skill_tree() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+
+        bundle.apply_weibo_skills(true).unwrap();
+        for dir in WEIBO_SKILL_DIRS {
+            assert!(bundle.skills_dir.join(dir).join("SKILL.md").is_file());
+        }
+        assert!(bundle.skills_dir.join("NOTICE-weibo.md").is_file());
+        assert!(bundle.cached_weibo_skills_visible());
+
+        bundle.apply_weibo_skills(false).unwrap();
+        for dir in WEIBO_SKILL_DIRS {
+            assert!(!bundle.skills_dir.join(dir).exists());
+        }
+        assert!(!bundle.skills_dir.join("NOTICE-weibo.md").exists());
+        assert!(!bundle.cached_weibo_skills_visible());
+
         cleanup(&tmp);
     }
 
@@ -704,6 +753,8 @@ mod tests {
             .env("CUSTOM_SDK_HOME", "/opt/custom-sdk")
             .env("HTTPS_PROXY", "http://127.0.0.1:7890")
             .env("OPENAI_API_KEY", "must-not-leak")
+            .env("WEIBO_CLI_TOKEN", "must-not-leak")
+            .env("WEIBO_REFRESH_TOKEN", "must-not-leak")
             .env("PINVOU3_MCP_SECRET_AMAP_KEY", "must-not-leak")
             .env("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent")
             .env("NODE_OPTIONS", "--require=/tmp/inject.js")
@@ -750,6 +801,8 @@ mod tests {
         );
         for key in [
             "OPENAI_API_KEY",
+            "WEIBO_CLI_TOKEN",
+            "WEIBO_REFRESH_TOKEN",
             "PINVOU3_MCP_SECRET_AMAP_KEY",
             "SSH_AUTH_SOCK",
             "NODE_OPTIONS",

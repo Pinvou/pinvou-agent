@@ -110,6 +110,8 @@
     "summon_pinvou",
     "tmeet_skills_state",
     "tmeet_status",
+    "weibo_skills_state",
+    "weibo_status",
     "unequip_persona",
     "update_memory_profile",
     "update_memory_preference",
