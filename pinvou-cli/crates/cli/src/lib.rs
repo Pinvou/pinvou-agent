@@ -750,7 +750,9 @@ fn score_gaia(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
     let (adapter, run) = open_gaia_run(run_id)?;
     let report = adapter.score(&run).map_err(core_error)?;
     let store = RunStore::open(&benchmark_base()?, run_id).map_err(core_error)?;
-    publish_gaia_score_artifacts(&store, run_id, &report)?;
+    if report.is_complete() {
+        publish_gaia_score_artifacts(&store, run_id, &report)?;
+    }
     let comparable = report.comparable_accuracy();
     let text = match (output, comparable) {
         (OutputMode::Human, Some(accuracy)) => format!(
@@ -793,6 +795,9 @@ fn publish_gaia_score_artifacts(
     run_id: &str,
     report: &OfficialScoreReport,
 ) -> Result<(), CliError> {
+    if !report.is_complete() {
+        return Err(CliError::failed("gaia_score_incomplete"));
+    }
     let (status, comparable_accuracy) = match report.comparable_accuracy() {
         Some(accuracy) => ("official_compatible_local", Some(accuracy)),
         None => ("unofficial_partial", None),
@@ -1333,6 +1338,39 @@ mod tests {
         assert!(markdown.contains("Complete: true"));
         assert!(markdown.contains("Official dataset compatible: true"));
         assert!(markdown.contains("31 / 53"));
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn gaia_partial_score_never_publishes_fixed_artifacts() {
+        use adapter_gaia::GaiaAdapter;
+        use benchmark_core::{
+            BenchmarkAdapter, ModelIdentity, OfficialScoreReport, RunManifest, Split, ToolPolicyId,
+        };
+
+        let base = temp_base("gaia-partial-score-artifacts");
+        let adapter = GaiaAdapter::new();
+        let manifest = RunManifest::new(
+            "gaia-partial-score-artifacts",
+            adapter.descriptor(),
+            Split::new(GAIA_SPLIT),
+            ModelIdentity::new("fixture", "model").unwrap(),
+            ToolPolicyId::new("pinvou-gaia-public-web/v1"),
+            1,
+        )
+        .unwrap();
+        let store = RunStore::create(&base, &manifest).unwrap();
+        let report = OfficialScoreReport::partial(12, 4, GAIA_SPLIT, "1");
+
+        assert_eq!(
+            publish_gaia_score_artifacts(&store, "gaia-partial-score-artifacts", &report,)
+                .unwrap_err()
+                .to_string(),
+            "gaia_score_incomplete"
+        );
+        assert!(!store.run_dir().join("score.json").exists());
+        assert!(!store.run_dir().join("report.md").exists());
 
         std::fs::remove_dir_all(base).unwrap();
     }

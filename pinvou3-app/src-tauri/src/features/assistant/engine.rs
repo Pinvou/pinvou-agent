@@ -1192,9 +1192,8 @@ impl AppEngine {
         // Instructions 走 Inline，不写入远端工作区。所有会话共享产品工具面；
         // 子智能体仍由 CodeWhale 的通用角色与运行时策略进一步收窄。
         let scheduled_profile = store.scheduled_profile(session_id);
-        let persisted_total_tokens = store.load(session_id)?.metadata.total_tokens;
         let scheduled_base_total_tokens = if scheduled_profile.is_some() {
-            Some(persisted_total_tokens)
+            Some(store.load(session_id)?.metadata.total_tokens)
         } else {
             None
         };

@@ -326,6 +326,44 @@ impl RunStore {
         Ok(())
     }
 
+    /// 将重新生成的固定计划与已持久化计划对齐。规划阶段中断可能只留下前缀；
+    /// resume 会补写缺失任务，但拒绝磁盘上不属于当前固定计划的任务。
+    pub fn reconcile_planned_tasks<'a>(
+        &self,
+        task_ids: impl IntoIterator<Item = &'a str>,
+    ) -> Result<()> {
+        let expected = task_ids
+            .into_iter()
+            .map(|task_id| {
+                validate_component(task_id)?;
+                Ok(task_id.to_owned())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let expected_set: BTreeSet<&str> = expected.iter().map(String::as_str).collect();
+        if expected_set.len() != expected.len() {
+            return Err(BenchmarkError::coded("duplicate_planned_task"));
+        }
+
+        let persisted: BTreeSet<String> = self
+            .read_json_lines::<RunEvent>(EVENT_FILE)?
+            .into_iter()
+            .filter(|event| event.kind() == RunEventKind::Planned)
+            .map(|event| event.task_id().to_owned())
+            .collect();
+        if persisted
+            .iter()
+            .any(|task_id| !expected_set.contains(task_id.as_str()))
+        {
+            return Err(BenchmarkError::coded("resume_plan_mismatch"));
+        }
+        self.plan_tasks(
+            expected
+                .iter()
+                .filter(|task_id| !persisted.contains(task_id.as_str()))
+                .map(String::as_str),
+        )
+    }
+
     pub fn mark_running(&self, task_id: &str) -> Result<()> {
         self.append_event(&RunEvent::new(task_id, RunEventKind::Running))
     }
@@ -703,6 +741,37 @@ mod tests {
         reopened
             .claim_execution()
             .expect("execution lock released after guard drop");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn resume_reconciles_a_partially_persisted_plan() {
+        let (base, store) = test_store("reconcile-plan");
+        store.plan_tasks(["first"]).unwrap();
+
+        store
+            .reconcile_planned_tasks(["first", "second", "third"])
+            .unwrap();
+
+        assert_eq!(
+            store.recover().unwrap().runnable_task_ids(),
+            &["first", "second", "third"]
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn resume_rejects_tasks_outside_the_regenerated_plan() {
+        let (base, store) = test_store("reconcile-plan-mismatch");
+        store.plan_tasks(["unexpected"]).unwrap();
+
+        assert_eq!(
+            store
+                .reconcile_planned_tasks(["expected"])
+                .unwrap_err()
+                .code(),
+            "resume_plan_mismatch"
+        );
         fs::remove_dir_all(base).unwrap();
     }
 

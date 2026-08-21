@@ -21,8 +21,8 @@ name: PR Check
 # - windows-rust-test:Windows 专属原语在原生 runner 执行;Ready PR/Merge Queue
 #   按 Rust 路径触发;main 每次保留下来的 push 无条件累计验证(防 pending 替换盲区)。
 # - windows-codex-runtime-test:相关 PR 在 Windows 原生准备 Node + ACP Bridge，并核对安装包资源。
-# - benchmark-contract:Benchmark 相关 Ready PR/Merge Queue/main 在 Linux 运行核心测试并
-#   编译 headless 集成契约，作为 required-gate 的最小必跑门禁。
+# - benchmark-contract / benchmark-test:评测代码保持 CI 隔离，仓库工作流中硬关闭；
+#   不得通过 PR 标签、路径或 Merge Queue 事件启用，避免影响主工程门禁与运行资源。
 # - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
 # - merge_group:按 base/head 的真实组合 diff 运行适用门禁，保证验证对象就是
 #   最新 main + 入队 PR；因此无冲突 PR 不需要为主线日常前进反复人工 rebase。
@@ -1034,8 +1034,9 @@ jobs:
   benchmark-contract:
     name: benchmark-contract
     needs: changes
-    # Benchmark 契约默认关闭；需要诊断时与完整 benchmark 矩阵一起显式启用。
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.draft == false && contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark') }}
+    # Benchmark CI 在本 PR 中必须保持硬关闭：不接受 label/path/event 开启。
+    # 如需验证，由维护者在隔离环境本地执行，不得占用主工程 PR/MQ 门禁。
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -1114,9 +1115,8 @@ jobs:
   benchmark-test:
     name: benchmark-test
     needs: changes
-    # Benchmark 契约耗时较长，默认不自动运行，也不参与 required-gate。
-    # 需要诊断时给非草稿 PR 添加 ci:full-benchmark 标签，显式运行完整矩阵。
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.draft == false && contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark') }}
+    # 完整 Benchmark 矩阵同样硬关闭；PR 标签不得绕过隔离边界。
+    if: ${{ false }}
     runs-on: windows-latest
     timeout-minutes: 90
     env:

@@ -218,7 +218,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("- knowledge-rust", required_gate)
         self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
 
-    def test_benchmark_minimum_contract_is_required_and_diagnostics_are_label_only(self):
+    def test_benchmark_jobs_are_hard_disabled_and_cannot_be_enabled_by_label(self):
         changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
             "\n  fast-gate:", maxsplit=1
         )[0]
@@ -235,13 +235,10 @@ class CiGatePolicyTests(unittest.TestCase):
         contract = self.pr_workflow.split("\n  benchmark-contract:", maxsplit=1)[1].split(
             "\n  benchmark-test:", maxsplit=1
         )[0]
-        self.assertIn("github.event_name == 'pull_request'", contract)
-        self.assertIn("github.event.pull_request.draft == false", contract)
-        self.assertIn(
-            "contains(github.event.pull_request.labels.*.name, 'ci:full-benchmark')",
-            contract,
-        )
         contract_header = contract.split("\n    runs-on:", maxsplit=1)[0]
+        self.assertIn("if: ${{ false }}", contract_header)
+        self.assertNotIn("ci:full-benchmark", contract_header)
+        self.assertNotIn("github.event_name", contract_header)
         self.assertNotIn("needs.changes.outputs.benchmark == 'true'", contract_header)
         self.assertIn("runs-on: ubuntu-latest", contract)
         self.assertIn(
@@ -284,10 +281,11 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("cargo test --manifest-path CodeWhale/Cargo.toml", benchmark)
         self.assertIn("-p codewhale-tui --lib --locked forkguard_", benchmark)
         self.assertIn("            CodeWhale", benchmark)
-        self.assertIn("github.event_name == 'pull_request'", benchmark)
+        self.assertIn("if: ${{ false }}", benchmark_header)
+        self.assertNotIn("ci:full-benchmark", benchmark_header)
+        self.assertNotIn("github.event_name", benchmark_header)
         self.assertNotIn("github.event_name == 'merge_group'", benchmark)
         self.assertNotIn("github.event_name == 'push'", benchmark)
-        self.assertIn("ci:full-benchmark", benchmark)
         self.assertNotIn("needs.changes.outputs.benchmark", benchmark_header)
         self.assertNotIn("\n        if:", benchmark)
 

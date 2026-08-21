@@ -163,6 +163,7 @@ where
         }
         let plan = adapter.plan(dataset, selection)?;
         let prepared = self.prepare_plan(adapter, &store, &manifest, &plan)?;
+        store.reconcile_planned_tasks(prepared.tasks().iter().map(|task| task.task_id()))?;
         self.execute(
             &store,
             &manifest,
