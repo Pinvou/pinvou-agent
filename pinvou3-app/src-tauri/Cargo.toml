@@ -77,6 +77,10 @@ codewhale-secrets = { path = "../../CodeWhale/crates/secrets" }
 # 直接引 crate;它已在依赖图内,Cargo.lock 几乎不动。
 codewhale-config = { path = "../../CodeWhale/crates/config" }
 
+# CLI 连接器硬拦截(scope 门禁的 execpolicy 通道):按会话构造 deny 规则集
+# (Ruleset/ToolAskRule/PermissionAction),底座 spawn 前硬拒被禁 CLI 二进制。
+codewhale-execpolicy = { path = "../../CodeWhale/crates/execpolicy" }
+
 # Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
 # 0.13 与 CodeWhale 子模块对齐；feature `rustls`(0.13 改名,自带 aws-lc-rs)。
 # aws-lc-rs 构建需 cmake,CI 已加安装步骤。

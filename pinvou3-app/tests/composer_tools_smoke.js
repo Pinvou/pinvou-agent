@@ -106,10 +106,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   rec('companion 技能不重复展示', !menu.includes('党政机关公文写作'));
   rec('所属 MCP 工具仍展示', menu.includes('公文写作'));
 
-  await page.evaluate(() => document.querySelector('button[aria-label="skill:visualizer"]').click());
+  await page.evaluate(() => document.querySelector('button[aria-label="visualizer"]').click());
   await sleep(150);
-  const disabledSkills = await page.evaluate(() => window.__COMPOSER_TOOLS_TEST__.disabledSkills);
-  rec('关闭独立技能调用 set_disabled_skills(裸 id)', disabledSkills.includes('visualizer') && !disabledSkills.some(id => id.startsWith('skill:')), JSON.stringify(disabledSkills));
+  const disabled = await page.evaluate(() => window.__COMPOSER_TOOLS_TEST__.disabled);
+  rec('关闭独立技能调用 set_disabled_connectors(裸 id)', disabled.includes('visualizer') && !disabled.some(id => id.startsWith('skill:')), JSON.stringify(disabled));
 
   rec('页面无未处理 JavaScript 异常', errors.length === 0, errors.slice(0, 2).join(' | '));
 

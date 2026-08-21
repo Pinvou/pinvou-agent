@@ -1,32 +1,41 @@
 /**
- * 技能包导入纯逻辑:pickSkillZip 挑 zip、fileToBase64 读字节转 base64、大小软限。
+ * 技能包导入纯逻辑:pickSkillDrop 挑 zip/md、fileToBase64 读字节转 base64、大小软限。
  */
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { MAX_SKILL_ZIP_BYTES, pickSkillZip, fileToBase64 } = require('../src/features/tools/skill-import-logic.js');
+const { MAX_SKILL_ZIP_BYTES, pickSkillDrop, fileToBase64 } = require('../src/features/tools/skill-import-logic.js');
 
-test('pickSkillZip: 大小写不敏感挑第一个 .zip', () => {
-  assert.equal(pickSkillZip([{ name: 'a.txt' }, { name: 'my-skill.ZIP' }]).name, 'my-skill.ZIP');
-  assert.equal(pickSkillZip([{ name: 'SKILL.zip' }]).name, 'SKILL.zip');
+test('pickSkillDrop: 大小写不敏感挑第一个 .zip', () => {
+  const picked = pickSkillDrop([{ name: 'a.txt' }, { name: 'my-skill.ZIP' }]);
+  assert.equal(picked.file.name, 'my-skill.ZIP');
+  assert.equal(picked.kind, 'zip');
+  assert.equal(pickSkillDrop([{ name: 'SKILL.zip' }]).file.name, 'SKILL.zip');
 });
 
-test('pickSkillZip: 无 zip / 空数组 / null → null', () => {
-  assert.equal(pickSkillZip([{ name: 'a.txt' }]), null);
-  assert.equal(pickSkillZip([]), null);
-  assert.equal(pickSkillZip(null), null);
-  // null 等非法元素跳过,继续找下一个 zip
-  assert.equal(pickSkillZip([null, { name: 'x.zip' }]).name, 'x.zip');
+test('pickSkillDrop: 单个 .md/.markdown 技能文件', () => {
+  const picked = pickSkillDrop([{ name: 'notes.md' }]);
+  assert.equal(picked.file.name, 'notes.md');
+  assert.equal(picked.kind, 'md');
+  assert.equal(pickSkillDrop([{ name: 'guide.MARKDOWN' }]).kind, 'md');
 });
 
-test('pickSkillZip: 缺 name 的文件跳过', () => {
-  assert.equal(pickSkillZip([{}]), null);
-  assert.equal(pickSkillZip([{ name: undefined }]), null);
+test('pickSkillDrop: 无可导入文件 / 空数组 / null → null', () => {
+  assert.equal(pickSkillDrop([{ name: 'a.txt' }]), null);
+  assert.equal(pickSkillDrop([]), null);
+  assert.equal(pickSkillDrop(null), null);
+  // null 等非法元素跳过,继续找下一个可导入文件
+  assert.equal(pickSkillDrop([null, { name: 'x.zip' }]).file.name, 'x.zip');
 });
 
-test('MAX_SKILL_ZIP_BYTES 对齐后端 5MiB 软限', () => {
-  assert.equal(MAX_SKILL_ZIP_BYTES, 5 * 1024 * 1024);
+test('pickSkillDrop: 缺 name 的文件跳过', () => {
+  assert.equal(pickSkillDrop([{}]), null);
+  assert.equal(pickSkillDrop([{ name: undefined }]), null);
+});
+
+test('MAX_SKILL_ZIP_BYTES 拖放通道前端软限 50MiB', () => {
+  assert.equal(MAX_SKILL_ZIP_BYTES, 50 * 1024 * 1024);
 });
 
 test('fileToBase64: 小文件与 Buffer 基准一致', async () => {

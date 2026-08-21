@@ -356,6 +356,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             Ok(Some(status)) => {
                 conn.set_pid(ID, None);
                 if is_authenticated() {
+                    cc::bundle_store_on_connected(ID);
                     cc::emit(app, "dingtalk:connected", json!({ "ok": true }));
                     return Ok(());
                 }
@@ -387,12 +388,14 @@ pub async fn dingtalk_cancel(app: AppHandle) -> Result<Value, String> {
 pub async fn dingtalk_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if !dws_cli_present() {
+            cc::bundle_store_on_disconnected(ID);
             return Ok::<Value, String>(json!({ "ok": true, "installed": false }));
         }
         let (ok, _, _) = cc::run(dws(&["auth", "logout", "--yes"]))?;
         if !ok {
             return Err("钉钉 CLI 退出登录失败，请重试".to_string());
         }
+        cc::bundle_store_on_disconnected(ID);
         Ok::<Value, String>(json!({ "ok": ok, "installed": true }))
     })
     .await
@@ -441,11 +444,19 @@ pub async fn dingtalk_apply_skills() -> Result<Value, String> {
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))??;
+    // scope 门禁同步：见 feishu_apply_skills 同名注释（code 默认关语义对齐）。
+    if show {
+        crate::features::marketplace::sync_deny_all_scopes_after_install("dingtalk");
+    }
     Ok(json!({ "visible": show }))
 }
 pub async fn set_dingtalk_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         set_dingtalk_disabled_flag(!enabled)?;
+        // 停用标志 ↔ 统一禁用集桥接（见 set_feishu_enabled 同名注释）。
+        crate::features::marketplace::sync_disabled_bundles_for_connector_switch(
+            "dingtalk", enabled,
+        );
         let show = dingtalk_skills_should_show();
         GATE.apply_skills(show)?;
         Ok(show)

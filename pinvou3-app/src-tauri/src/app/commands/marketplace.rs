@@ -215,6 +215,8 @@ pub async fn install_marketplace_tool(
     // （下一轮 prompt 即生效，与 uninstall_marketplace_tool 对称，skill 双 scope
     // 治理事件驱动时机 §2.3.2）。
     pool.refresh_live_sessions_skills().await;
+    // 新装包的 CLI/技能脚本纳入/移出 deny 规则集（M-6：install 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     crate::features::behavior_telemetry::track(
         &app,
         crate::features::behavior_telemetry::BehaviorEvent::new("tool_install_completed")
@@ -428,14 +430,17 @@ pub async fn cancel_marketplace_tool_oauth_login(
 }
 
 #[tauri::command]
-pub fn uninstall_marketplace_tool(
+pub async fn uninstall_marketplace_tool(
     tool_id: String,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
     uninstall_marketplace_tool_sync(&tool_id)?;
     // 联动卸载的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
-    // （阻塞版：命令保持同步，目录体量小、重写极快）。
-    pool.refresh_live_sessions_skills_blocking();
+    // （async 命令必须用 async 版：blocking 版的 blocking_lock 在 tokio runtime
+    // 线程上必 panic）。
+    pool.refresh_live_sessions_skills().await;
+    // 卸载包的 CLI/技能脚本移出 deny 规则集（M-6：uninstall 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(())
 }
 
@@ -494,6 +499,8 @@ pub async fn install_marketplace_skill(
     // code scope 已初始化时新装技能默认仍关闭（sync 进 code 禁用集，见下面
     // install_marketplace_skill_sync），plain 会话立即可见。
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     crate::features::behavior_telemetry::track(
         &app,
         crate::features::behavior_telemetry::BehaviorEvent::new("tool_install_completed")
@@ -509,6 +516,35 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
     // 新装技能默认加入 DenyAll scope（当前 code）禁用集（与连接器同语义：
     // 外部能力显式开启）；组合目录由调用方在命令层重写（install_marketplace_skill）。
     crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(skill_id);
+    Ok(())
+}
+
+/// 更新已安装的预置技能:复用 `install` 的原子覆盖管线落最新嵌入资源。
+/// 与"新装"的差异:不调 `sync_code_scope_after_skill_install`——更新保留
+/// 用户现有的启用/停用状态,不把技能重新塞回 code 禁用集。
+#[tauri::command]
+pub async fn update_marketplace_skill(
+    skill_id: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        // 只接受"已安装的预置技能";未安装走 install,上传技能无嵌入新版可更。
+        let installed = mgr
+            .list_skills()
+            .into_iter()
+            .any(|s| s.id == skill_id && s.installed && !s.user_uploaded);
+        if !installed {
+            return Err(format!("技能 '{skill_id}' 非已安装预置技能,无法更新"));
+        }
+        mgr.install(&skill_id)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 内容变了:重写在线会话组合目录（下一轮 prompt 生效,与安装/卸载一致）。
+    pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(())
 }
 
@@ -544,6 +580,235 @@ pub async fn import_skill_package(
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 重写在线会话组合目录（下一轮 prompt 生效）。
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
+    Ok(true)
+}
+
+/// FNV-1a 64 位（确定性、跨平台稳定）：中文文件名 md 导入的无 frontmatter 兜底
+/// id 派生。与 DefaultHasher 不同，不依赖进程内随机种子，重导/跨进程 id 一致。
+fn stable_stem_hash(stem: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in stem.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// 把单个 `.md`/`.markdown` 技能文件的内容包装成「根放 SKILL.md 的裸 skill 包」走
+/// 统一导入。frontmatter 有 `name` 用之；没有则用文件名 stem 兜底并注入最小
+/// frontmatter。返回 PluginImportReport（调用方负责热刷 skills 组合目录）。
+fn import_skill_md_content(
+    md: String,
+    filename: &str,
+) -> Result<crate::features::marketplace::plugin_import::PluginImportReport, String> {
+    use std::io::Write;
+    let stem = filename
+        .rfind('.')
+        .map(|i| &filename[..i])
+        .unwrap_or(filename);
+    let fallback = crate::features::marketplace::skill_marketplace::sanitize_skill_name(stem);
+    // 中文/纯符号文件名：sanitize 全映射为 `-` 后兜底恒为 "skill"，两个不同文件会
+    // 静默互覆盖（二轮评审）。用文件名的稳定哈希派生唯一 id——同一文件重导 = 同 id
+    // = 升级覆盖；不同文件 = 不同 id（FNV-1a 64 位，确定性、跨平台稳定）。
+    let fallback = if fallback == "skill" && !stem.is_empty() {
+        format!("skill-{}", stable_stem_hash(stem))
+    } else {
+        fallback
+    };
+    let mut md = md;
+    if crate::features::marketplace::skill_marketplace::read_skill_name_from_str(&md).is_none() {
+        md = format!("---\nname: {fallback}\n---\n\n{md}");
+    }
+    // 包装成临时 zip（根放 SKILL.md）走统一导入。
+    let tmp = std::env::temp_dir().join(format!(
+        "pinvou3-skillmd-{}-{}.zip",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    {
+        let f = std::fs::File::create(&tmp).map_err(|e| format!("写临时文件: {e}"))?;
+        let mut zw = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default();
+        zw.start_file("SKILL.md", opts).map_err(|e| e.to_string())?;
+        zw.write_all(md.as_bytes()).map_err(|e| e.to_string())?;
+        zw.finish().map_err(|e| e.to_string())?;
+    }
+    // 展示名 = 原始文件名（写 bundles.json 的 upload 来源标记）。
+    let display: String = filename
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+        .take(128)
+        .collect();
+    let result = crate::features::marketplace::plugin_import::import_plugin_package(
+        &tmp.to_string_lossy(),
+        &display,
+    );
+    let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
+    result
+}
+
+/// 弹文件选择框选插件包并导入（plugin-protocol 统一上传：mcp/skill/组合包），
+/// 或选单个 `.md`/`.markdown` 技能文件（包装成裸 skill 包）。返回 true=已导入，
+/// false=用户取消。
+///
+/// 注：旧名 `import_spanner_package` 已重命名——脚本可执行能力并入 skill 包
+/// 通过 SKILL.md frontmatter `tools[]` 段声明，不再有独立 spanner 组件。
+#[tauri::command]
+pub async fn import_plugin_package_cmd(
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("技能/插件包 (zip, md)", &["zip", "md", "markdown"])
+        .blocking_pick_file()
+    else {
+        return Ok(false); // 用户取消
+    };
+    let path = picked
+        .into_path()
+        .map_err(|e| format!("解析文件路径: {e}"))?;
+    let display = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "plugin.zip".to_string());
+    let is_md = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
+        .unwrap_or(false);
+
+    let report = tokio::task::spawn_blocking(move || {
+        if is_md {
+            let md = std::fs::read_to_string(&path)
+                .map_err(|e| format!("读技能文件失败（{}）: {e}", path.display()))?;
+            import_skill_md_content(md, &display)
+        } else {
+            crate::features::marketplace::plugin_import::import_plugin_package(
+                &path.to_string_lossy(),
+                &display,
+            )
+        }
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 上传安全默认：插件包导入后加入 DenyAll 禁用集，需用户在前端开关显式开启。
+    // 与 `install_marketplace_tool` / `import_skill_package_bytes` 同口径。
+    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
+    // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
+    pool.refresh_disallowed_tools().await;
+    pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
+    log::info!(
+        "[marketplace] 插件导入: id={} kind={:?} icon={}",
+        report.id,
+        report.kind,
+        report.icon
+    );
+    Ok(true)
+}
+
+/// 拖放导入插件包（统一上传，与 `import_plugin_package_cmd` 同语义）：前端把 zip 读成
+/// base64 传这里，临时落盘后走 `import_plugin_package`。返回 true=已导入。
+///
+/// 注：旧名 `import_spanner_package_bytes` 已重命名——见上面注释。
+#[tauri::command]
+pub async fn import_plugin_package_bytes_cmd(
+    filename: String,
+    data_base64: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<bool, String> {
+    use base64::Engine as _;
+    if !filename.to_ascii_lowercase().ends_with(".zip") {
+        return Err("仅支持 .zip 插件包".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data_base64)
+        .map_err(|e| format!("解码 zip 数据失败: {e}"))?;
+    let max_bytes = crate::features::marketplace::plugin_import::MAX_PLUGIN_SIZE_BYTES;
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!("插件包超过 {} MiB 上限", max_bytes / 1024 / 1024));
+    }
+    // 展示名净化(仅写 bundles.json 的 upload 来源标记用):去路径分隔符/控制字符,截 128
+    let safe_name: String = filename
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+        .take(128)
+        .collect();
+    let tmp = std::env::temp_dir().join(format!(
+        "pinvou3-plugin-{}-{}.zip",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("写临时文件: {e}"))?;
+    let tmp_for_import = tmp.clone();
+    let report = tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::plugin_import::import_plugin_package(
+            &tmp_for_import.to_string_lossy(),
+            &safe_name,
+        )
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))?;
+    let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
+    let report = report?;
+    // 上传安全默认：拖放导入插件包后加入 DenyAll 禁用集，需用户开关显式开启。
+    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
+    // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
+    pool.refresh_disallowed_tools().await;
+    pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
+    Ok(true)
+}
+
+/// 拖放导入单个 `.md`/`.markdown` 技能文件：把裸 markdown 包装成「根放 SKILL.md 的
+/// 裸 skill 包」走统一导入（复用裸技能回退识别 + 落盘 + 登记）。frontmatter 有
+/// `name` 用之；没有则用文件名 stem 兜底并注入一个最小 frontmatter。返回 true=已导入。
+#[tauri::command]
+pub async fn import_skill_md_bytes(
+    filename: String,
+    data_base64: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<bool, String> {
+    use base64::Engine as _;
+    let lower = filename.to_ascii_lowercase();
+    if !lower.ends_with(".md") && !lower.ends_with(".markdown") {
+        return Err("仅支持 .md / .markdown 技能文件".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data_base64)
+        .map_err(|e| format!("解码数据失败: {e}"))?;
+    // 上传字节大小上限：与 zip 通道对齐，避免单条 .md 把磁盘写爆。
+    use crate::features::marketplace::plugin_import::MAX_PLUGIN_SIZE_BYTES;
+    if bytes.len() as u64 > MAX_PLUGIN_SIZE_BYTES {
+        return Err(format!(
+            "技能文件超过 {} MiB 上限",
+            MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
+        ));
+    }
+    let md = String::from_utf8(bytes).map_err(|e| format!("技能文件须为 UTF-8 文本: {e}"))?;
+    let filename_for_import = filename.clone();
+    let report =
+        tokio::task::spawn_blocking(move || import_skill_md_content(md, &filename_for_import))
+            .await
+            .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 上传安全默认：与 `import_skill_package_bytes` 同口径，加入 DenyAll scope。
+    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&report.id);
+    pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(true)
 }
 
@@ -601,6 +866,8 @@ pub async fn import_skill_package_bytes(
     name?;
     // 与对话框导入一致:重写在线会话组合目录(下一轮 prompt 生效)。
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(true)
 }
 
@@ -614,6 +881,8 @@ pub async fn uninstall_marketplace_skill(
         .map_err(|e| format!("任务执行失败: {e}"))??;
     // 卸载影响两个 scope 的启用集：重写在线会话的组合目录。
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(())
 }
 
@@ -637,6 +906,15 @@ pub struct BundleReadinessResult {
     pub reason: Option<String>,
     /// 原连接器 status 的完整 detail（CLI/ima 型透传，向前兼容）
     pub detail: Option<serde_json::Value>,
+    /// 动作下发（§3.3）：后端按当前状态推导的可用动作集。serde default 保持
+    /// 契约纯增量；前端切换为动作渲染器在后续 PR。
+    #[serde(default)]
+    pub actions: Vec<crate::features::marketplace::actions::BundleAction>,
+    /// 包功能事实全量（§3.1：description/version/category/config_fields 等，
+    /// 第九刀增补）——前端详情三栏与配置弹窗的后端数据源；serde default 保持
+    /// 契约纯增量。
+    #[serde(default)]
+    pub bundle: Option<crate::features::marketplace::bundle::BundleInfo>,
 }
 
 /// 统一就绪态查询：
@@ -647,6 +925,21 @@ pub struct BundleReadinessResult {
 /// - MCP/技能/上传包 → 注册表 `readiness_for`（credentials 必填项查系统凭据现算）
 #[tauri::command]
 pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult, String> {
+    bundle_readiness_with_store(bundle_id, SystemCredentialStore::new()).await
+}
+
+/// 凭据存储可注入的内层实现（与 ima.rs `status_with_store` 同风格）：命令入口注入
+/// `SystemCredentialStore`，测试注入 `MemoryCredentialStore` —— 测试线程在任何平台都
+/// 不触碰真实系统凭据仓库（current_thread runtime 的 `block_on` 会把 spawn_blocking
+/// 任务泵回测试线程执行，真 keychain 在 macOS 会触发授权弹窗挂起）。
+/// store 按值传入并 move 进 spawn_blocking，要求 `Send + 'static`。
+async fn bundle_readiness_with_store<S>(
+    bundle_id: String,
+    store: S,
+) -> Result<BundleReadinessResult, String>
+where
+    S: CredentialStore + Send + 'static,
+{
     use crate::features::marketplace::bundle::{
         keyring_target, readiness_for, BundleKind, BundleRegistry, Readiness,
     };
@@ -733,7 +1026,6 @@ pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult
             let id = bundle_id.clone();
             let present: std::collections::HashSet<String> =
                 tokio::task::spawn_blocking(move || {
-                    let store = crate::platform::credential_store::SystemCredentialStore::new();
                     specs
                         .into_iter()
                         .filter(|(key, target)| {
@@ -760,12 +1052,24 @@ pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult
             (bundle.installed, ready, reason, None)
         }
     };
+    // 动作推导输入的 Readiness 重建：CLI/ima 分支的 reason 是自定义字符串，
+    // 推导只区分 Ready / missing_credentials / 其它（见 actions.rs 规则注释）。
+    let readiness = if ready {
+        Readiness::Ready
+    } else if reason.as_deref() == Some("missing_credentials") {
+        Readiness::NotReady("missing_credentials")
+    } else {
+        Readiness::NotReady("not_ready")
+    };
+    let actions = crate::features::marketplace::actions::actions_for(&bundle, readiness);
     Ok(BundleReadinessResult {
         bundle_id,
         installed,
         ready,
         reason,
         detail,
+        actions,
+        bundle: Some(bundle),
     })
 }
 
@@ -775,3 +1079,119 @@ fn connected_of(v: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 use super::prelude::*;
+
+/// 导出《插件包设计规范》Markdown：打开系统保存对话框写入规范文档，方便用户
+/// 直接下载、分发给第三方包作者。规范单一真相源在 `docs/plugin-package-spec.md`
+/// （编译期内嵌，离线可用，不与运行时磁盘状态耦合）。
+#[tauri::command]
+pub async fn export_plugin_spec(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    const SPEC_MD: &str = include_str!("../../../../../docs/plugin-package-spec.md");
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_file_name("pinvou-plugin-package-spec.md")
+        .add_filter("Markdown", &["md"])
+        .blocking_save_file()
+    else {
+        return Ok(false); // 用户取消保存对话框
+    };
+    let path = picked
+        .into_path()
+        .map_err(|error| format!("resolve_spec_export_path: {error}"))?;
+    tokio::task::spawn_blocking(move || std::fs::write(&path, SPEC_MD))
+        .await
+        .map_err(|error| format!("spec_export_task_failed: {error}"))?
+        .map_err(|error| format!("spec_export_write_failed: {error}"))?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 第九刀：bundle_readiness 响应携带完整 BundleInfo（前端功能事实数据源）。
+    /// 凭据存在性经 `bundle_readiness_with_store` 注入 MemoryCredentialStore 现算，
+    /// 不触碰真实系统凭据仓库（真 keychain 在 macOS 会触发授权弹窗挂起测试线程）。
+    #[test]
+    fn bundle_readiness_carries_bundle_facts() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-readiness-test-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        // 带必填凭据的 MCP manifest + BundleStore 安装记录
+        let manifest_dir = crate::features::marketplace::mcp_catalog::package_mcp_dir("weather");
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+        std::fs::write(
+            manifest_dir.join("manifest.json"),
+            r#"{"id":"weather","name":"高德天气","description":"天气查询","version":"1.2.3","icon":"","category":"life","mcp_tools":[],"command":"","args":[],"config_fields":[{"key":"AMAP_KEY","label":"k","required":true,"secret":true}]}"#,
+        )
+        .unwrap();
+        let store = crate::features::marketplace::store::BundleStore::new();
+        store
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "weather",
+                    crate::features::marketplace::store::BundleSource::Preset,
+                ),
+            )
+            .unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // 空内存凭据库：必填凭据缺失 → 未就绪（任何平台结果确定，不依赖本机 keychain 状态）
+        let cred_store = crate::platform::credential_store::MemoryCredentialStore::default();
+        let result = rt
+            .block_on(bundle_readiness_with_store(
+                "weather".to_string(),
+                cred_store.clone(),
+            ))
+            .unwrap();
+
+        assert!(result.installed, "store 有记录应已安装");
+        assert!(!result.ready, "缺必填凭据应未就绪");
+        assert!(result.actions.iter().any(|a| a.id == "configure"));
+        let bundle = result.bundle.expect("响应应携带 BundleInfo");
+        assert_eq!(bundle.version, "1.2.3");
+        assert_eq!(bundle.description, "天气查询");
+        assert_eq!(bundle.category, "life");
+        assert_eq!(bundle.config_fields.len(), 1);
+        assert_eq!(bundle.config_fields[0].key, "AMAP_KEY");
+        assert!(bundle.config_fields[0].secret);
+
+        // 反向断言：内存库写入必填凭据后应就绪——证明就绪判定确实消费注入的
+        // store（而非恒定返回缺失）。target 缺省映射 env，与 tool_credentials 一致。
+        cred_store
+            .set(
+                &crate::platform::credential_store::CredentialReference::for_mcp_secret(
+                    "weather", "env", "AMAP_KEY",
+                ),
+                "test-amap-key",
+            )
+            .unwrap();
+        let result = rt
+            .block_on(bundle_readiness_with_store(
+                "weather".to_string(),
+                cred_store,
+            ))
+            .unwrap();
+        assert!(result.ready, "必填凭据已注入内存库应就绪");
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

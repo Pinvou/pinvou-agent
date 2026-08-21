@@ -524,6 +524,8 @@
       var skArg = ((p.args && (p.args.name || p.args.skill)) || "").toString();
       var skLower = skArg.toLowerCase();
       if (skArg.indexOf("视觉设计") >= 0 || skLower.indexOf("visual-design") >= 0) state.activeSkill = "visual-design";
+      else if (skArg.indexOf("插件包标准化") >= 0 || skLower.indexOf("package-author") >= 0) state.activeSkill = "package-author";
+      else if (skArg.indexOf("技能创建") >= 0 || skLower.indexOf("skill-author") >= 0) state.activeSkill = "skill-author";
       else if (skArg.indexOf("公文写作") >= 0 || skLower.indexOf("government-writing") >= 0) state.activeSkill = "government-writing";
       else if (skArg.indexOf("PPT") >= 0 || skArg.indexOf("幻灯片") >= 0 || skLower.indexOf("pptx") >= 0) state.activeSkill = "pptx";
       else if (skArg.indexOf("数据分析可视化") >= 0 || skArg.indexOf("数据可视化") >= 0 || skLower.indexOf("visualizer") >= 0) state.activeSkill = "visualizer";

@@ -45,6 +45,10 @@ pub(crate) struct ModeCapabilities {
     /// Git 家族，决策放开——底座能力不做用户级开关）。
     /// `load_skill` 不在此列：其隐藏与否由组合目录是否为空动态决定。
     pub unavailable_tools: &'static [&'static str],
+    /// 该模式不提供的内置自动技能（设计期差量）：组合目录物化时按 scope 排除，
+    /// composer 内置技能行也不显示。code：视觉设计属产物能力（直出网页/海报/
+    /// 简历），代码车道无 UI 消费者，故排除。
+    pub unavailable_builtin_skills: &'static [&'static str],
     /// 组合目录为空时是否隐藏 `load_skill`（空态保护，V-5 联动；判定在
     /// bridge 侧做——目录检查是磁盘 I/O，策略对象保持纯数据）。
     pub skills_empty_hides_load_skill: bool,
@@ -60,6 +64,7 @@ const MODE_TABLE: &[(SessionMode, ModeCapabilities)] = &[
         SessionMode::Plain,
         ModeCapabilities {
             unavailable_tools: &[],
+            unavailable_builtin_skills: &[],
             skills_empty_hides_load_skill: false,
             project_skills_opt_in: false,
         },
@@ -68,6 +73,7 @@ const MODE_TABLE: &[(SessionMode, ModeCapabilities)] = &[
         SessionMode::Code,
         ModeCapabilities {
             unavailable_tools: &["mcp_pinvou3_present_artifact"],
+            unavailable_builtin_skills: &["visual-design"],
             skills_empty_hides_load_skill: true,
             project_skills_opt_in: true,
         },
@@ -88,6 +94,12 @@ fn capabilities_for(mode: SessionMode) -> ModeCapabilities {
 /// 来源门用（skill_materialization 拿到的是 scope 不是策略对象）。
 pub(crate) fn project_skills_opt_in_for(scope: SessionMode) -> bool {
     capabilities_for(scope).project_skills_opt_in
+}
+
+/// 按 scope（即模式）查 `unavailable_builtin_skills` 表字段。技能组合目录物化
+/// 用它排除该模式不提供的内置自动技能（如 code 模式的视觉设计）。
+pub(crate) fn unavailable_builtin_skills_for(scope: SessionMode) -> &'static [&'static str] {
+    capabilities_for(scope).unavailable_builtin_skills
 }
 
 /// 单一会话模式的策略对象：共享链路（发送 op 构造、工具整形）按它取数，
@@ -123,6 +135,11 @@ impl SessionPolicy {
     /// 该模式不提供的底座工具（编译期常量表字段，disallowed_tools 通道）。
     pub fn unavailable_tools(&self) -> &'static [&'static str] {
         self.capabilities().unavailable_tools
+    }
+
+    /// 该模式不提供的内置自动技能（编译期常量表字段，组合目录物化排除）。
+    pub fn unavailable_builtin_skills(&self) -> &'static [&'static str] {
+        self.capabilities().unavailable_builtin_skills
     }
 
     // ── 运行行为语义方法 ──────────────────────────────────────────────
@@ -169,6 +186,8 @@ mod tests {
         // load_skill 不在模式缺席列表：其隐藏与否由组合目录空否动态决定
         // （bridge::shape_disallowed_tools，表字段 skills_empty_hides_load_skill 驱动）。
         assert_eq!(policy.unavailable_tools(), ["mcp_pinvou3_present_artifact"]);
+        // 设计期差量：code 不提供内置自动技能「视觉设计」（产物能力）
+        assert_eq!(policy.unavailable_builtin_skills(), ["visual-design"]);
         // 表字段：code 空目录隐藏 load_skill、项目 skills 可选开启
         assert!(policy.capabilities().skills_empty_hides_load_skill);
         assert!(policy.capabilities().project_skills_opt_in);

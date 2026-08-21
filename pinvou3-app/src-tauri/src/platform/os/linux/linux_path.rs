@@ -65,6 +65,12 @@ pub fn connector_cli_command(cli_bin: &str, program: &str) -> Command {
 
 fn connector_cli_program(cli_bin: &str, program: &str) -> OsString {
     if program == cli_bin {
+        // 版本化资产库（lock 表单点解析）优先；旧布局（未迁移存量）其次。
+        if let Some(path) = crate::platform::connector_lock::locked_cli_path(cli_bin) {
+            if path.is_file() {
+                return path.into_os_string();
+            }
+        }
         if let Some(bin_dir) = crate::platform::paths::managed_connector_bin_dir() {
             let bundled = bin_dir.join(cli_bin);
             if bundled.is_file() {

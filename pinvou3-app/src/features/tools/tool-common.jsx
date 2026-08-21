@@ -468,6 +468,28 @@ const AcFmtIcon = FileTypeIcon;
         </div>
       );
     };
+    // ══ 编入新工具/技能指南(2026-08 能力包归一后) ════════════════════════════
+    // 一个产品 = 一张卡。禁止「连接器卡 + 技能卡」双卡并存,历史上 PPT/公文/ima
+    // 都踩过(重复卡、分类漂移),归一后规则如下:
+    // 1. 纯 MCP 工具:在 resources/mcp-servers/<id>/manifest.json 声明,本文件加
+    //    连接器条目(category 直接落业务类 id:collab/docs/dev/finance/life)。
+    // 2. 组合包(MCP + 配套技能):manifest 加 companion_skills 声明 + 预置技能落
+    //    skill-marketplace/<name>/SKILL.md。✦不要✦加连接器条目以外的第二张卡——
+    //    商店卡由后端技能数据自动合成(companionSkillCards),连接器条目只作元数据
+    //    源(详情/配置/欢迎语),渲染层按 bundleMcpIds 自动过滤,不会出现两张卡。
+    // 3. 纯技能:只注册预置技能(preset_manifests),不加 tsSkillsData 静态卡——
+    //    静态卡机制已随 s4/s7 删除,合成路径全覆盖。
+    // 4. 连接器认领的技能(如 ima-skills 归 ima):加入 ToolStoreView 的
+    //    CONNECTOR_CLAIMED_SKILLS,防止单独成卡。
+    // 5. 占位卡(未上线)用 backendId: null;builtin 技能(如视觉设计)保留 builtin 标记。
+    // 6. 文案三语走 i18n overlay(uiToolDetails/storeData),本文件只留中文原文。
+    // 旧实现待更新:7 个 MCP manifest 仍内嵌 routing_rules/tool_table_entries
+    // (weather/iwencai/obsidian/patsnap-search/qcc/canva-mcp/yuandian-mcp)——
+    // 非组合包无双写问题,新增组合包时勿模仿,知识一律进 SKILL.md。
+    // 版本号:feishu/wecom/dingtalk/tmeet 卡片 version 与 connectors.lock.json /
+    // npm pin 强一致，由 connector_online_install_contract 测试钉住防腐化；运行时
+    // 仍以后端 bundle_readiness 的 bundle.version 为准，卡片值作 overlay 回退。
+    // ════════════════════════════════════════════════════════════════════════
     // 输出渲染分发：失败→红字；大输出→receipt；高频工具→定制视图；其余→纯文本
     const tsToolsData = [
       { id: 1, backendId: 'weather', mcpServer: true, title: '高德天气', subtitle: '高德地图实时天气与多日预报', category: 'life', type: 'MCP Server', version: 'v1.0.0', latency: '<50ms', desc: '通过高德地图 Web 服务 API 查询全国城市实时天气与未来多日预报。需要填写你自己的高德 Web 服务 API Key，密钥只写入本机系统凭据。', icon: CloudSun, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: true, configTitle: '高德天气 Key', configDescription: 'Key 只保存在本机凭据，不写入 mcp.json。', configDocUrl: 'https://console.amap.com/dev/key/app', configDocLabel: '去创建 Web 服务 Key', configFields: [{ key: 'AMAP_KEY', label: 'API Key', required: true, target: 'env', secret: true, placeholder: '粘贴高德 Web 服务 Key', helpText: '请选择「Web 服务」类型。' }], welcomeQueries: ['杭州今天天气', '北京这周会下雨吗', '上海明天穿什么'] },
@@ -488,11 +510,16 @@ const AcFmtIcon = FileTypeIcon;
       { id: 21, backendId: 'canva-mcp', oauthMcp: true, oauthServerName: 'canva_mcp', title: 'Canva 可画', subtitle: '海报、演示文稿、封面与品牌模板设计', category: 'life', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入 Canva 可画远程 MCP。支持通过自然语言生成和编辑海报、演示文稿、小红书封面、品牌模板等设计内容；点「连接」后会打开浏览器进行 Canva 可画账号授权，全程不填写 API Key。设计指令、素材、文件夹和品牌模板相关内容会发送到 Canva 可画远程 MCP 服务。', icon: Palette, color: 'bg-gradient-to-b from-cyan-500 to-pink-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['帮我生成一张新品发布海报', '做一份三页产品介绍演示文稿', '设计一张小红书封面', '用品牌模板生成活动宣传图'] },
       { id: 14, backendId: 'obsidian', mcpServer: true, title: 'Obsidian 知识库', subtitle: '检索并管理本机 Obsidian 笔记，读写你的个人知识', category: 'docs', type: 'MCP Server', version: 'v1.1.0', latency: '<30ms', desc: '把你本机的 Obsidian 笔记库（vault）接入大模型。支持全文检索、读取、新建、编辑、改名（自动修双链）与删除——让 AI 基于并维护你自己沉淀的知识。自动识别当前打开的库，无需手动配置；笔记不出本机、模型也在本机，知识与算力全链路不出域。', icon: BookOpen, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: false, welcomeQueries: ['帮我搜一下我的笔记', '帮我新建一篇笔记记录今天的想法', '我的知识库有哪些文档？', '总结一下我的笔记'] },
       { id: 19, backendId: 'yuandian-mcp', oauthMcp: true, oauthServerName: 'yuandian_mcp', title: '华宇元典法律数据', subtitle: '法律法规、案例文书与企业司法风险查询', category: 'docs', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入华宇元典开放平台远程 MCP。支持法律法规、裁判案例、企业司法风险等法律数据检索；点「连接」后会打开浏览器进行元典账号授权，全程不填写 API Key。', icon: BookOpen, color: 'bg-gradient-to-b from-emerald-500 to-cyan-700', installed: false, authRequired: true, configFields: [], welcomeQueries: ['检索一下劳动合同解除相关案例', '查一下公司股权责任相关法规', '帮我分析企业司法风险', '找一下最近的裁判观点'] },
-      { id: 15, backendId: 'pptx', mcpServer: true, title: 'PPT 生成', subtitle: '本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', category: 'docs', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', icon: Presentation, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: false, welcomeQueries: ['做个 Q2 季度汇报 PPT', '帮我做一份产品介绍 PPT', '做个项目方案演示', '做个公司介绍 PPT'] },
       { id: 16, backendId: 'gongwen', mcpServer: true, title: '公文写作', subtitle: '党政机关公文直出 GB/T 9704 合规 .docx', category: 'docs', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“写个通知 / 起草意见”，AI 按文种结构与固定话术写好内容，渲染器套党政机关公文国标格式（方正小标宋标题、仿宋_GB2312 正文、国标页边距、红头与红色分隔线）直出 .docx，全程本地、数据不出机。配合「党政机关公文写作」技能效果最佳。首次安装自动下载 python-docx 依赖（需联网）。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false, welcomeQueries: ['起草一份关于印发管理办法的通知', '写一份加强某项工作的实施意见', '拟一份会议通知', '写一份情况报告'] },
     ];
 
-    // overlay 命中规则：有 backendId 按 backendId 查，占位卡(backendId=null)按 'card'+id 查。
+    // 本地能力的元数据(非商店连接器卡):组合包化的 pptx 已无连接器卡,但安装后
+    // 「去新对话」引导卡按 backendId 取标题/描述/欢迎问题(三语 overlay 同 localizeTool);
+    // category 同时供商店组合包合成卡确定业务分区。
+    const tsToolWelcomeData = [
+      { backendId: 'pptx', title: 'PPT 生成', category: 'docs', desc: '说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', icon: Presentation, welcomeQueries: ['做个 Q2 季度汇报 PPT', '帮我做一份产品介绍 PPT', '做个项目方案演示', '做个公司介绍 PPT'] },
+    ];
+
     // overlay 提供 configFields 时按字段 key 深合并，只覆盖 label/helpText/placeholder，其余源字段保留。
     const localizeTool = (tool, t) => {
       if (!tool) return tool;
@@ -510,6 +537,16 @@ const AcFmtIcon = FileTypeIcon;
         });
       }
       return merged;
+    };
+
+    // 后端 config_fields（key/required/secret/target 功能事实，bundle_readiness 的
+    // bundle 字段）× 本地 overlay（label/placeholder/helpText 展示文案）按 key 合并；
+    // 后端无字段时原样使用 overlay。
+    const mergeConfigFields = (backendFields, overlayFields) => {
+      if (!Array.isArray(backendFields) || backendFields.length === 0) return overlayFields;
+      const overlayByKey = {};
+      (overlayFields || []).forEach((f) => { if (f && f.key) overlayByKey[f.key] = f; });
+      return backendFields.map((f) => ({ ...(overlayByKey[f.key] || {}), ...f }));
     };
 
     const weatherIconSvg = (code) => {
@@ -641,12 +678,17 @@ const AcFmtIcon = FileTypeIcon;
 
     // 技能市场预置卡(backendId 必须匹配 Rust SkillManifest.id)。技能=SKILL.md 目录,
     // 装到 bundle/skills/ 进 system prompt;与上方 MCP 工具(tsToolsData)并列两个子页。
+    // ⚠ 此表已近退役:预置技能卡一律由后端数据合成(companionSkillCards),不要再往
+    // 这里加条目(编入规则见 tsToolsData 头部指南)。s5 是唯一遗留——builtin 内置技能
+    // (visual-design 在 bundle/skills/,无需安装),其包模型归属待决策,决策后此表应清空。
+    // 注:pptx 不在此——它是「PPT 生成」MCP 的同名 companion 技能,卡片由后端
+    // list_marketplace_skills 数据合成(见 ToolStoreView 的 companionSkillCards)。
     const tsSkillsData = [
-      { id: 's4', backendId: 'government-writing', title: '党政机关公文写作', subtitle: '通知/意见等法定文种，套话术、层级序号、自检', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false },
-      { id: 's6', backendId: 'pptx', title: 'PPT 生成', subtitle: '本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '本地直出可编辑 PowerPoint:套主题模板、真图表、带封面,输入主题即可快速生成结构化演示文稿。', icon: Presentation, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: false },
-      { id: 's7', backendId: 'visualizer', title: '数据分析可视化', subtitle: 'Chart.js 仪表盘 / 图表分析 / HTML 可视化', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。', icon: LineChart, color: 'bg-gradient-to-b from-blue-500 to-cyan-600', installed: false, authRequired: false },
       { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'skill', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true },
     ];
+
+    // 后端合成技能卡的补充展示数据(按 backendId 取):
+    const tsSkillIconByName = { Presentation, FileText, LineChart, BookOpen };
 
     const tsCategories = [
       { id: 'all', label: '全部' },
@@ -664,6 +706,11 @@ const AcFmtIcon = FileTypeIcon;
     const TOOL_TYPE_GROUPS = ['bundle', 'mcp', 'skill', 'cli', 'api', 'upcoming'];
     const getToolTypeGroup = (tool, bundleMcpIds) => {
       if (!tool) return 'upcoming';
+      // companion 合成卡优先判 bundle:卡面 category 恒为 skill,须先于 skill 规则短路
+      if (tool.companionBundle) return 'bundle';
+      // mcpServer/oauthMcp 显式标记位须先于 userUploaded/skill 分支（二轮评审：
+      // 自定义上传的 MCP 卡同时带 userUploaded + mcpServer，旧顺序被错归为 Skill 组）。
+      if (tool.mcpServer || tool.oauthMcp) return 'mcp';
       if (tool.userUploaded || tool.builtin || tool.category === 'skill') return 'skill';
       if (!tool.backendId) return 'upcoming';
       if (tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli) return 'cli';
@@ -681,7 +728,7 @@ const AcFmtIcon = FileTypeIcon;
       return TOOL_BUSINESS_GROUPS.includes(tool.category) ? tool.category : 'life';
     };
 
-    const TsActionBtn = ({ tool, busy, onAction, size = 'sm', t }) => {
+    const TsActionBtn = ({ tool, busy, onAction, onUpdate, size = 'sm', t }) => {
       const T = tc(t);
       const isLg = size === 'lg';
       const actionAttrs = {
@@ -708,8 +755,57 @@ const AcFmtIcon = FileTypeIcon;
           </button>
         );
       }
-      if (tool.installed) {
+      // Phase 2 第八刀：后端动作下发优先（bundle_readiness 的 actions，§3.3）。
+      // 动作 id → 现有按钮样式/行为的映射表；flow 只标记交互形态（oauth 五态弹窗 /
+      // CLI 流程卡都在 onAction 路由里分流）。OAuth MCP 本刀不下发 actions（后端
+      // ready 尚未纳入 token 态），走下方旧分支；无 actions（取数失败/未知包）
+      // 同样回退旧分支 —— 回退分支 Phase 3 清理。
+      if (Array.isArray(tool.actions)) {
+        const btnCls = {
+          primary: `${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`,
+          danger: `${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`,
+          outline: `${isLg ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 whitespace-nowrap`,
+        };
+        const specs = {
+          install: { label: T.install, cls: btnCls.primary, run: () => onAction(tool.backendId, false) },
+          configure: { label: T.configure, cls: btnCls.primary, run: () => onAction(tool.backendId, false) },
+          connect: { label: (tool.authStatus && tool.authStatus !== 'not_installed') ? T.reauthorize : T.connect, cls: btnCls.primary, run: () => onAction(tool.backendId, false) },
+          disconnect: { label: T.disconnect, cls: btnCls.danger, run: () => onAction(tool.backendId, true) },
+          uninstall: { label: T.uninstall, cls: btnCls.danger, run: () => onAction(tool.backendId, true) },
+          update: { label: T.update, cls: btnCls.outline, testid: 'tool-store-update', run: () => onUpdate && onUpdate(tool.backendId) },
+          // repair：CLI 包重连（flow=cli_connect）走 onAction；技能包覆盖重装即修复，走 onUpdate
+          repair: { label: T.repair, cls: btnCls.outline, run: (a) => (a.flow && a.flow.kind === 'cli_connect' ? onAction(tool.backendId, false) : onUpdate && onUpdate(tool.backendId)) },
+        };
+        const list = tool.actions.filter(a => specs[a.id]);
+        // ima 等认领技能的 update 挂在连接器卡上，后端 actions 不含它——沿用
+        // updateAvailable 本地补一个 update 按钮（V5 认领退出后清理）。
+        if (tool.updateAvailable && onUpdate && !list.some(a => a.id === 'update')) {
+          list.push({ id: 'update', enabled: true });
+        }
         return (
+          <div className="flex items-center gap-2">
+            {list.map((a) => {
+              const s = specs[a.id];
+              return (
+                <button
+                  key={a.id}
+                  {...actionAttrs}
+                  {...(s.testid ? { 'data-testid': s.testid } : {})}
+                  disabled={!a.enabled}
+                  title={a.reason || undefined}
+                  onClick={(e) => { e.stopPropagation(); if (a.enabled) s.run(a); }}
+                  className={`${s.cls} ${a.enabled ? '' : 'opacity-50 cursor-not-allowed'}`}
+                >
+                  {s.label}
+                </button>
+              );
+            })}
+          </div>
+        );
+      }
+      // —— 以下为无 actions 时的旧分支（回退；Phase 3 清理）——
+      if (tool.installed) {
+        const uninstallBtn = (
           <button
             {...actionAttrs}
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
@@ -717,6 +813,23 @@ const AcFmtIcon = FileTypeIcon;
           >
             {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.imaOpenapi || tool.oauthMcp) ? T.disconnect : T.uninstall}
           </button>
+        );
+        // 预置技能内容落后于商店版本(App 升级带入新版)时,并列给出"更新"入口;
+        // 仅技能卡传 onUpdate 且带 updateAvailable,MCP/连接器卡行为不变。
+        if (!tool.updateAvailable || !onUpdate) return uninstallBtn;
+        return (
+          <div className="flex items-center gap-2">
+            <button
+              data-testid="tool-store-update"
+              data-tool-id={tool.backendId || ''}
+              data-tool-title={tool.title || ''}
+              onClick={(e) => { e.stopPropagation(); onUpdate(tool.backendId); }}
+              className={`${isLg ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 whitespace-nowrap`}
+            >
+              {T.update}
+            </button>
+            {uninstallBtn}
+          </div>
         );
       }
       if (tool.oauthMcp) {
@@ -745,4 +858,4 @@ const AcFmtIcon = FileTypeIcon;
 
     // ── 飞书连接流程卡（内联、非阻塞；取代旧的阻塞式扫码浮层）──
 
-export { AcFmtIcon, AcShieldCheck, AcSparkles, AcArrowUpRight, AcFolder, ArtifactCard, QUIET_TOOLS, isQuietTool, toolBasename, toolSummary, isReceipt, parseReceipt, ReceiptBlock, tryParseJson, tryTailJson, looksDiff, outBox, TODO_SYM, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, localizeTool, weatherIconSvg, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn };
+export { AcFmtIcon, AcShieldCheck, AcSparkles, AcArrowUpRight, AcFolder, ArtifactCard, QUIET_TOOLS, isQuietTool, toolBasename, toolSummary, isReceipt, parseReceipt, ReceiptBlock, tryParseJson, tryTailJson, looksDiff, outBox, TODO_SYM, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, tsToolWelcomeData, localizeTool, mergeConfigFields, weatherIconSvg, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsSkillIconByName, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn };

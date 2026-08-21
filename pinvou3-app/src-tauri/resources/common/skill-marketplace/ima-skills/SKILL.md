@@ -1,6 +1,6 @@
 ---
 name: ima-skills
-description: Tencent IMA OpenAPI skill for notes and knowledge-base operations. Use after the user connects IMA in Pinvou tool store.
+description: Tencent IMA OpenAPI skill for notes and knowledge-base operations. Use after the user connects IMA in Pinvou Plugin Center.
 version: 1.1.8-pinvou2
 display_name: "腾讯 ima"
 ---
@@ -17,7 +17,7 @@ Do not ask the user to paste credentials into the chat. Do not write credentials
 
 Do not probe credentials with shell commands, environment inspection, local files, or ad-hoc network requests. Never pass a host, URL, Client ID, API Key, or HTTP header as tool input.
 
-To verify access or perform any IMA operation, call `ima_openapi`. If it reports missing credentials, tell the user to connect "腾讯 ima" from the Pinvou tool store.
+To verify access or perform any IMA operation, call `ima_openapi`. If it reports missing credentials, tell the user to connect "腾讯 ima" from the Pinvou Plugin Center.
 
 ## Module Routing
 

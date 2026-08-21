@@ -86,6 +86,8 @@ command_protocol!(
     [
         "set_disabled_connectors",
         "get_disabled_connectors",
+        "set_bundle_visibility",
+        "get_bundle_visibility",
         "set_disabled_skills",
         "get_disabled_skills",
         "set_project_skills_enabled",
@@ -233,10 +235,15 @@ command_protocol!(
         "uninstall_marketplace_tool",
         "list_marketplace_skills",
         "install_marketplace_skill",
+        "update_marketplace_skill",
         "import_skill_package",
+        "import_plugin_package_cmd",
+        "import_plugin_package_bytes_cmd",
+        "import_skill_md_bytes",
         "import_skill_package_bytes",
         "uninstall_marketplace_skill",
-        "bundle_readiness"
+        "bundle_readiness",
+        "export_plugin_spec"
     ]
 );
 command_protocol!(

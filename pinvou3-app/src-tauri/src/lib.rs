@@ -61,7 +61,12 @@ fn ensure_release_env() {
         if let Some(old) = env::var_os("PATH") {
             let mut dirs = Vec::new();
             if let Some(connector_bin) = crate::platform::paths::managed_connector_bin_dir() {
+                // 旧布局（过渡期保留：未迁移的存量二进制还能按名解析）
                 dirs.push(connector_bin);
+            }
+            // 版本化 CLI 资产目录进 PATH（按 lock 表当前版本逐个登记）
+            for (name, pin) in crate::platform::connector_lock::all_artifact_pins() {
+                dirs.push(crate::platform::paths::assets_cli_dir(&name, &pin.version));
             }
             if let Ok(prefix) = env::var("NPM_CONFIG_PREFIX") {
                 dirs.push(std::path::Path::new(&prefix).join("bin"));
@@ -443,9 +448,9 @@ pub fn run() {
             }
             startup::mark("engine_pool:done");
 
-            // 技能双 scope 治理(skill-scope-governance):启动时
-            //   1. 读一次 disabled_skills.json——触发旧数据迁移(裸数组 / 借道
-            //      disabled_connectors.json 的 `skill:` 条目 → plain scope);
+            // 技能/工具开关 scope 治理(已收敛为 disabled_bundles.json):启动时
+            //   1. 读一次 disabled_bundles.json——触发旧双文件迁移(disabled_connectors
+            //      .json / disabled_skills.json → 包 id × SessionMode 单一禁用集);
             //   2. 退役进程级全局 DISABLED_SKILLS(过滤职责移交组合目录,组合目录
             //      空 → 整个 `## Skills` 块不渲染,路径泄露面随之封闭)。
             // 组合目录的物化在 engine spawn 时按会话进行(build_engine_config 注入
@@ -716,6 +721,8 @@ pub fn run() {
             commands::remote_control::web_access_render_artifact_visual,
             commands::connectors::set_disabled_connectors,
             commands::connectors::get_disabled_connectors,
+            commands::connectors::set_bundle_visibility,
+            commands::connectors::get_bundle_visibility,
             commands::connectors::set_disabled_skills,
             commands::connectors::get_disabled_skills,
             commands::connectors::set_project_skills_enabled,
@@ -912,10 +919,15 @@ pub fn run() {
             commands::remote_knowledge::session_remove_mounted_remote_collection,
             commands::marketplace::list_marketplace_skills,
             commands::marketplace::install_marketplace_skill,
+            commands::marketplace::update_marketplace_skill,
             commands::marketplace::import_skill_package,
             commands::marketplace::import_skill_package_bytes,
+            commands::marketplace::import_plugin_package_cmd,
+            commands::marketplace::import_plugin_package_bytes_cmd,
+            commands::marketplace::import_skill_md_bytes,
             commands::marketplace::uninstall_marketplace_skill,
             commands::marketplace::bundle_readiness,
+            commands::marketplace::export_plugin_spec,
             commands::files::verify_upload,
         ]);
 

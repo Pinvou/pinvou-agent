@@ -1180,8 +1180,12 @@ mod tests {
     #[test]
     pub(super) fn path_install_source_recognizes_official_script_dirs() {
         let home = crate::platform::os::user_home_dir();
+        // Codex 官方安装路径平台分叉（Unix ~/.local/bin，Windows
+        // %LOCALAPPDATA%\Programs\OpenAI\Codex\bin）：断言走平台函数自身，
+        // 各平台语义一致且不引入 cfg 分支（架构守卫）。
+        let codex_official = super::super::platform::codex_official_install_path();
         assert_eq!(
-            path_install_source(AgentBackend::CodexAcp, &home.join(".local/bin/codex")),
+            path_install_source(AgentBackend::CodexAcp, &codex_official),
             Some("script")
         );
         assert_eq!(

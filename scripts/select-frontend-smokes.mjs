@@ -20,8 +20,8 @@ export const FULL_FRONTEND_SMOKES = Object.freeze([
   command("npm", "test:diff-ui"),
   command("npm", "test:choice-card-ui"),
   command("node", "tests/pet_selector_ui_smoke.js"),
-  command("npm", "test:tool-store-import"),
   command("npm", "test:tool-store-grouping"),
+  command("npm", "test:tool-store-import"),
   command("npm", "test:webui"),
 ]);
 

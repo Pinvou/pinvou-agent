@@ -1,12 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronLeft, Globe, Package, Search, Server, Upload, User, XIcon, Zap } from '../../components/icons.jsx';
+import { BookOpen, Check, ChevronLeft, Download, Globe, Package, Search, Server, Settings, Upload, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
-import { localizeTool, TsActionBtn, tsCategories, tsSkillsData, tsToolsData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
-import { MAX_SKILL_ZIP_BYTES, pickSkillZip, fileToBase64 } from './skill-import-logic.js';
+import { localizeTool, mergeConfigFields, TsActionBtn, tsCategories, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
+import { MAX_SKILL_ZIP_BYTES, pickSkillDrop, fileToBase64 } from './skill-import-logic.js';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
-import { IosSegmentedControl } from '../../components/IosControls.jsx';
 import { can } from '../../shared/platform.js';
 
 const OAUTH_UI_TIMEOUT_MS = 90_000;
@@ -419,8 +418,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       ev.listen('tmeet:connected', async () => {
         tmeetConn.stopTick();
         try {
-          const status = await invokeTauri('tmeet_status');
-          if (!(status && status.connected)) {
+          // 二次确认真实登录态（统一 readiness；原 tmeet_status 调用已退役）
+          const status = await invokeTauri('bundle_readiness', { bundleId: 'tmeet' });
+          if (!(status && status.ready)) {
             throw new Error(authIncomplete);
           }
           await invokeTauri('tmeet_apply_skills');
@@ -629,7 +629,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const ToolStoreView = ({ theme, t, onNewChat }) => {
       const storeCopy = t.uiToolStore;
       const detailCopy = t.uiToolDetails;
-      // 数据文件(tool-common.jsx)里技能/分类的中文 label/title/subtitle/desc:
+      // 数据文件(tool-common.jsx)里技能/分类/精选的中文 label/title/subtitle/desc:
       // 按 localizeTool() 同款 overlay 模式,从 uiToolStore 词条做三语覆盖,数据文件本身不改。
       const storeData = storeCopy.storeData || {};
       const localizeSkill = (s) => {
@@ -642,6 +642,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const [activeCategory, setActiveCategory] = useState('all');
       const [selectedTool, setSelectedTool] = useState(null);
       const [toolStates, setToolStates] = useState({});
+      // list_marketplace_tools 原始返回：自定义 MCP（不在内置 tsToolsData 里的）
+      // 据此动态合成卡片（安装时显示、卸载后消失），不依赖前端硬编码。
+      const [toolBackend, setToolBackend] = useState([]);
       const [toolAuthStates, setToolAuthStates] = useState({});
       // 配套技能 id → 所属 MCP id(由 list_marketplace_tools 的 companion_skills 反建,manifest 单一真源)。
       // 有配套 MCP 的技能卡据此把状态/装卸联动到该 MCP,避免命名不一致(government-writing↔gongwen)时状态分叉。
@@ -670,64 +673,153 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const [groupBy, setGroupBy] = useState('type'); // 列表视图主维度:'type'(按类型) | 'business'(按业务)
       const [installedOnly, setInstalledOnly] = useState(false); // 头像入口:只看已安装
       const [skillBackend, setSkillBackend] = useState([]); // list_marketplace_skills 原始返回
-      // 连接器 tab 只显示"需连外部数据"的工具,排除本地生成类(PPT / 公文)
-      const LOCAL_TOOLS = ['pptx', 'gongwen'];
-      // 飞书(CLI 路线)连接态:不走 marketplace,由 lark-cli auth status 判定
-      const [feishuConnected, setFeishuConnected] = useState(false);
+      // 按会话模式配置工具可见性（预过滤，与开关正交）：managingVisibility = 编辑态；
+      // hiddenByMode = { plain: Set, code: Set }——每个模式被设为「不可见」的包 id。
+      const [managingVisibility, setManagingVisibility] = useState(false);
+      const [hiddenByMode, setHiddenByMode] = useState({ plain: new Set(), code: new Set() });
+      // ref 镜像：setState updater 执行时机不保证同步，后端载荷以 ref 为基准，
+      // 与 UI 同一份 prev，快速连续勾选不丢写。
+      const hiddenByModeRef = useRef({ plain: new Set(), code: new Set() });
+      // 插件指南弹窗：拖入安装说明 + 插件包介绍 + 规范文档下载。
+      const [showGuide, setShowGuide] = useState(false);
+      // 下载规范文档（桌面端走保存对话框；web 平台无此命令，静默忽略）。
+      const downloadSpec = () => {
+        invokeTauri('export_plugin_spec').catch(() => {});
+      };
+      const [visibilityLoaded, setVisibilityLoaded] = useState(false);
+      const loadHiddenByMode = () => {
+        Promise.all([
+          invokeTauri('get_bundle_visibility', { scope: 'plain' }),
+          invokeTauri('get_bundle_visibility', { scope: 'code' }),
+        ]).then(([plain, code]) => {
+          const loaded = { plain: new Set(plain || []), code: new Set(code || []) };
+          hiddenByModeRef.current = loaded;
+          setHiddenByMode(loaded);
+          setVisibilityLoaded(true);
+        }).catch(() => {
+          // 读失败不静默清空（后端整集覆盖语义下会把用户已配置的可见性规则冲掉）：
+          // 保留现有状态并提示；加载成功前勾选入口不可用（二轮评审）。
+          setVisibilityLoaded(false);
+          setAlert({ visible: true, loading: false, title: storeCopy.visibilityLoadFailed, isInstall: false, isError: true });
+        });
+      };
+      useEffect(() => {
+        if (managingVisibility) loadHiddenByMode();
+      }, [managingVisibility]);
+      // 勾选/取消某工具在某模式的可见性：checked = 可见。
+      const toggleModeVisibility = (id, mode, checked) => {
+        if (!canMutateToolStore || !visibilityLoaded || !id) return;
+        // 可见性按包 id 落库（后端 save_hidden_bundles_for 经 to_package_id 归一为包
+        // id，scope.rs；get_bundle_visibility 原样返回包 id）：companion 技能卡
+        // （government-writing→gongwen 等）先经 skillToMcp 映射为所属 MCP 包 id——
+        // 与安装态联动同一映射源（manifest companion_skills 反建，不随安装态变化），
+        // 否则写技能 id、读回包 id，勾选永不命中（五轮评审）。
+        const pkgId = skillToMcp[id] || id;
+        const prev = hiddenByModeRef.current;
+        const next = new Set(prev[mode] || []);
+        // 恢复可见时同时删包 id 与原始技能 id：兼容历史版本按独立技能 id 落库的
+        // hidden 条目（未装→装边界），该条目随本次整集写回被后端归一清理。
+        if (checked) { next.delete(pkgId); next.delete(id); } else next.add(pkgId);
+        const nextState = { ...prev, [mode]: next };
+        hiddenByModeRef.current = nextState;
+        setHiddenByMode(nextState);
+        invokeTauri('set_bundle_visibility', { bundleIds: Array.from(next), scope: mode })
+          .catch((e) => {
+            // 写失败：回滚本地勾选态（重读后端为基准）并提示，不静默吞错（三轮评审）。
+            loadHiddenByMode();
+            setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+          });
+      };
+      // bundle_readiness 统一取数（Phase 2 第八刀，§3.3）：逐连接器 status 命令
+      // （feishu/wecom/dingtalk/tmeet/ima_status）的前端调用全部移除，installed /
+      // ready / actions 均来自统一命令。CLI/ima 的「已连接」= ready（授权现算）。
+      const [bundleStates, setBundleStates] = useState({}); // bundleId → BundleReadinessResult
+      // 空 actions 视为「无动作数据」回退旧分支（后端实现对每个状态至少下发一个
+      // 动作，空数组只可能是异常中间态——不能让卡片没有按钮）。
+      const actionsOf = (bs) => (bs && Array.isArray(bs.actions) && bs.actions.length > 0 ? bs.actions : undefined);
+      const feishuConnected = !!bundleStates.feishu?.ready;
+      const wecomConnected = !!bundleStates.wecom?.ready;
+      const dingtalkConnected = !!bundleStates.dingtalk?.ready;
+      const tmeetConnected = !!bundleStates.tmeet?.ready;
+      const imaConnected = !!bundleStates.ima?.ready;
       // 飞书连接流程状态机（取代旧阻塞式扫码浮层）：null=idle
       // { phase:'running'|'qr'|'error'|'done', steps:{runtime,cli,connect,qr}, active, pct, sec, log, err, qr, qrUrl, qrPhase }
       const [feishuFlow, setFeishuFlow] = useState(feishuConn.flow); // 从跨视图 store 水合：切走再回来不丢进度
-      const refreshFeishu = async () => {
-        try {
-          const s = await invokeTauri('feishu_status');
-          setFeishuConnected(!!(s && s.connected));
-        } catch (e) { console.error('feishu_status failed:', e); }
-      };
-      useEffect(() => { refreshFeishu(); }, []);
 
-      // 企业微信(CLI 路线)连接态:同飞书,由 wecom-cli auth show --status 判定
-      const [wecomConnected, setWecomConnected] = useState(false);
+      // 企业微信(CLI 路线)连接流程卡(跨视图水合);连接态由 bundleStates 派生(见上)
       const [wecomQr, setWecomQr] = useState(null); // { qr: dataUrl, url } 扫码弹窗(单段)
       const [wecomFlow, setWecomFlow] = useState(wecomConn.flow); // 企微连接流程卡(跨视图水合)
-      const refreshWecom = async () => {
-        try {
-          const s = await invokeTauri('wecom_status');
-          setWecomConnected(!!(s && s.connected));
-        } catch (e) { console.error('wecom_status failed:', e); }
-      };
-      useEffect(() => { refreshWecom(); }, []);
 
-      // 钉钉(CLI 路线)连接态:由 dws auth status 判定
-      const [dingtalkConnected, setDingtalkConnected] = useState(false);
+      // 钉钉(CLI 路线)连接流程卡;连接态由 bundleStates 派生
       const [dingtalkFlow, setDingtalkFlow] = useState(dingtalkConn.flow);
-      const refreshDingtalk = async () => {
-        try {
-          const s = await invokeTauri('dingtalk_status');
-          setDingtalkConnected(!!(s && s.connected));
-        } catch (e) { console.error('dingtalk_status failed:', e); }
-      };
-      useEffect(() => { refreshDingtalk(); }, []);
 
-      // 腾讯会议(CLI 路线)连接态:由 tmeet auth status 判定
-      const [tmeetConnected, setTmeetConnected] = useState(false);
+      // 腾讯会议(CLI 路线)连接流程卡;连接态由 bundleStates 派生
       const [tmeetFlow, setTmeetFlow] = useState(tmeetConn.flow);
-      const refreshTmeet = async () => {
-        try {
-          const s = await invokeTauri('tmeet_status');
-          setTmeetConnected(!!(s && s.connected));
-        } catch (e) { console.error('tmeet_status failed:', e); }
-      };
-      useEffect(() => { refreshTmeet(); }, []);
 
-      // 腾讯 IMA(OpenAPI Skill)连接态:本机凭据 + ima-skills 均就绪才算已连接。
-      const [imaConnected, setImaConnected] = useState(false);
-      const refreshIma = async () => {
+      // 从后端加载已安装状态 + 统一 readiness（Phase 2 第八刀：逐连接器 status
+      // 命令退役，installed/ready/actions 统一经 bundle_readiness 取数）。
+      // 前置声明在所有订阅副作用之前（它们在事件回调里调用本函数）。
+      const loadBackendState = async () => {
         try {
-          const s = await invokeTauri('ima_status');
-          setImaConnected(!!(s && s.connected));
-        } catch (e) { console.error('ima_status failed:', e); }
+          const list = await invokeTauri('list_marketplace_tools');
+          const states = {};
+          const s2m = {}; // 配套技能 → 所属 MCP(manifest companion_skills 反建,单一真源)
+          list.forEach(t => {
+            states[t.id] = t.installed;
+            (t.companion_skills || []).forEach(sid => { s2m[sid] = t.id; });
+          });
+          setToolStates(states);
+          setSkillToMcp(s2m);
+          setToolBackend(Array.isArray(list) ? list : []);
+          const authEntries = await Promise.all(tsToolsData
+            .filter(tool => tool.oauthMcp && tool.backendId)
+            .map(async (tool) => {
+              try {
+                const status = await invokeTauri('get_marketplace_tool_auth_status', { toolId: tool.backendId });
+                return [tool.backendId, status];
+              } catch (err) {
+                console.error('get_marketplace_tool_auth_status failed:', tool.backendId, err);
+                return null;
+              }
+            }));
+          setToolAuthStates(prev => {
+            const next = { ...prev };
+            authEntries.filter(Boolean).forEach(([id, status]) => { next[id] = status; });
+            return next;
+          });
+        } catch (e) {
+          console.error('list_marketplace_tools failed:', e);
+        }
+        let skillList = [];
+        try {
+          const skills = await invokeTauri('list_marketplace_skills');
+          skillList = Array.isArray(skills) ? skills : [];
+          setSkillBackend(skillList);
+        } catch (e) {
+          console.error('list_marketplace_skills failed:', e);
+        }
+        // 统一 readiness 批量取数：未知包（companion 被认领后不再独立成包等）
+        // 单条失败只记日志、该包回退旧来源（list_marketplace_* 的状态位）。
+        try {
+          const ids = [
+            ...tsToolsData.map(x => x.backendId).filter(Boolean),
+            ...skillList.map(x => x.id),
+          ];
+          const entries = await Promise.all(ids.map(async (id) => {
+            try {
+              return [id, await invokeTauri('bundle_readiness', { bundleId: id })];
+            } catch (err) {
+              console.error('bundle_readiness failed:', id, err);
+              return null;
+            }
+          }));
+          setBundleStates(Object.fromEntries(entries.filter(Boolean)));
+        } catch (e) {
+          console.error('bundle_readiness batch failed:', e);
+        }
       };
-      useEffect(() => { refreshIma(); }, []);
+
+      useEffect(() => { loadBackendState(); }, []);
 
       // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
       //（弹窗、刷新连接态）。真正的事件监听/秒表在模块级 feishuConn 里，切视图不丢。
@@ -740,7 +832,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const ph = flow && flow.phase;
           if (ph !== prevPhase) {
             if (ph === 'done') {
-              setFeishuConnected(true); setBusyId(null);
+              setBusyId(null);
+              loadBackendState();
               setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.feishu), subtitle: detailCopy.actions.enabled, isInstall: true, isError: false, toolId: 'feishu' });
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
@@ -763,7 +856,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const ph = flow && flow.phase;
           if (ph !== prevPhase) {
             if (ph === 'done') {
-              setWecomConnected(true); setBusyId(null);
+              setBusyId(null);
+              loadBackendState();
               setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: detailCopy.actions.enabled, isInstall: true, isError: false, toolId: 'wecom' });
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
@@ -786,7 +880,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const ph = flow && flow.phase;
           if (ph !== prevPhase) {
             if (ph === 'done') {
-              setDingtalkConnected(true); setBusyId(null);
+              setBusyId(null);
+              loadBackendState();
               setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.dingtalk), subtitle: detailCopy.actions.enabled, isInstall: true, isError: false, toolId: 'dingtalk' });
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
@@ -809,7 +904,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const ph = flow && flow.phase;
           if (ph !== prevPhase) {
             if (ph === 'done') {
-              setTmeetConnected(true); setBusyId(null);
+              setBusyId(null);
+              loadBackendState();
               setAlert({ visible: true, loading: false, title: detailCopy.actions.connectedTmeet, subtitle: detailCopy.actions.enabled, isInstall: true, isError: false, toolId: 'tmeet' });
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
@@ -834,9 +930,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setWecomQr({ qr: p.qr_data_url, url: p.url, phase: p.phase });
         }).then(u => unlisten.push(u));
         ev.listen('wecom:connected', () => {
-          setWecomQr(null); setWecomConnected(true); setBusyId(null);
-          // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见。
+          setWecomQr(null); setBusyId(null);
+          // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见;连接态经 readiness 重取。
           invokeTauri('wecom_apply_skills').catch(() => {});
+          loadBackendState();
           setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
           notifyComposerToolsChanged();
         }).then(u => unlisten.push(u));
@@ -850,10 +947,21 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
       // 合并后端安装状态到 mock 数据(飞书/企微/钉钉的 installed = 已连接)
       // 业务分类直接取条目数据 category(tool-common.jsx 已落业务类 id),不再按 id 硬编码映射。
-      const tools = tsToolsData.map(baseTool => localizeTool(baseTool, t)).map(t => {
+      const builtinTools = tsToolsData.map(baseTool => localizeTool(baseTool, t)).map(t => {
         const authState = t.oauthMcp && t.backendId ? toolAuthStates[t.backendId] : null;
+        // 统一 readiness（刀8）：CLI/ima 卡的「已连接」= ready；其余包 = installed
+        // （BundleStore 真相源）。readiness 缺失（未知包/取数失败）回退旧来源。
+        const bs = t.backendId ? bundleStates[t.backendId] : null;
+        // 功能事实（刀9）：版本号与配置弹窗字段定义切后端 bundle 源——版本取
+        // lock 表钉住值（飞书从腐化的 v1.0.56 修正为 1.0.65）；tmeet（npm 自报）/
+        // ima（无版本概念）后端为空时回退 overlay。desc/category 维持 overlay：
+        // desc 已由 uiToolDetails 三语本地化，category 的 manifest 中文词汇与前端
+        // 分组 id 不兼容（统一词汇属后续清理）。
+        const bf = bs && bs.bundle ? bs.bundle : null;
         return {
           ...t,
+          version: bf && bf.version ? `v${String(bf.version).replace(/^v/i, '')}` : t.version,
+          configFields: mergeConfigFields(bf ? bf.config_fields : null, t.configFields),
           logoSrc: THIRD_PARTY_TOOL_LOGOS[t.backendId] || THIRD_PARTY_TOOL_LOGOS[t.id] || null,
           installed: t.feishuCli
             ? feishuConnected
@@ -867,13 +975,41 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             ? imaConnected
             : t.oauthMcp
             ? authState?.status === 'connected'
-            : (t.backendId ? (toolStates[t.backendId] || false) : false),
+            : (t.backendId ? (bs ? bs.installed : (toolStates[t.backendId] || false)) : false),
           authStatus: authState?.status || 'not_installed',
           authMessage: authState?.message || '',
           mcpConfigured: !!authState?.mcp_configured,
           oauthTokenPresent: !!authState?.oauth_token_present,
+          // OAuth MCP 暂不下发 actions（后端 ready 未纳入 token 态），走 TsActionBtn
+          // 旧分支；其余包动作驱动渲染。
+          actions: t.oauthMcp ? undefined : actionsOf(bs),
+          // ima 连接器卡认领 ima-skills(不单独成卡):其可更新态挂在连接器卡上,
+          // 更新时映射回 update_marketplace_skill('ima-skills')(见 handleSkillUpdate)。
+          updateAvailable: t.imaOpenapi
+            ? !!(skillBackend.find(x => x.id === 'ima-skills') || {}).update_available
+            : false,
         };
       });
+      // 自定义 MCP（上传的，不在内置 tsToolsData 里的）动态合成卡片：安装时显示、
+      // 卸载后从 list_marketplace_tools 消失，不依赖前端硬编码。展示文案走 i18n
+      // overlay（localizeTool，按 backendId 三语覆盖），后端 name/desc 兜底。
+      const customMcpTools = toolBackend
+        .filter(x => !tsToolsData.some(t => t.backendId === x.id))
+        .map(x => {
+          const bs = bundleStates[x.id] || null;
+          const base = {
+            id: 'mcp-' + x.id, backendId: x.id, title: x.name || x.id, subtitle: '',
+            category: 'life', type: 'MCP Server', mcpServer: true,
+            version: x.version ? `v${String(x.version).replace(/^v/i, '')}` : '—',
+            latency: storeCopy.localLatency, desc: x.description || '',
+            icon: Server, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
+            installed: bs ? bs.installed : !!x.installed,
+            authRequired: false, userUploaded: true,
+            actions: actionsOf(bs),
+          };
+          return localizeTool(base, t);
+        });
+      const tools = [...builtinTools, ...customMcpTools];
       // 按 backendId 取已 localize 的工具卡;兜底分支也走 localizeTool,避免 en/ja 下漏出中文原文。
       const findLocalizedTool = (backendId) =>
         tools.find(x => x.backendId === backendId) || localizeTool(tsToolsData.find(x => x.backendId === backendId), t);
@@ -882,32 +1018,81 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         || !isRestrictedExternalAuthTool(tool)
         || !!tool.installed
       );
-      // 技能卡 = 预置(合并安装状态) + 用户上传(后端动态返回,默认图标)
+      // 技能卡 = 预置(静态卡合并安装状态) + companion 技能(后端数据合成) + 用户上传
       const presetSkills = tsSkillsData.map(localizeSkill).map(s => {
         if (s.builtin) return { ...s, installed: true };
         // 有配套 MCP 的技能(公文=gongwen,manifest companion_skills 声明)→ 跟随该 MCP 工具态;
-        // 同名工具的展示别名(PPT=pptx)同样跟工具态;都不命中才读独立 skill 后端(纯技能/上传)。
-        const mcpId = skillToMcp[s.backendId]
-          || (tsToolsData.some(t => t.backendId === s.backendId) ? s.backendId : null);
-        if (mcpId) return { ...s, installed: !!toolStates[mcpId] };
+        // 否则读统一 readiness(store 真相源),缺失回退技能后端。
+        // 可更新态始终读技能后端(内容与嵌入资源比对),与安装态来源无关。
         const be = skillBackend.find(x => x.id === s.backendId);
-        return { ...s, installed: be ? be.installed : false };
+        const updateAvailable = !!(be && be.update_available);
+        const mcpId = skillToMcp[s.backendId] || null;
+        if (mcpId) {
+          const mcpBs = bundleStates[mcpId];
+          return {
+            ...s,
+            installed: mcpBs ? mcpBs.installed : !!toolStates[mcpId],
+            updateAvailable,
+            actions: actionsOf(mcpBs),
+          };
+        }
+        const bs = s.backendId ? bundleStates[s.backendId] : null;
+        return {
+          ...s,
+          installed: bs ? bs.installed : (be ? be.installed : false),
+          updateAvailable,
+          actions: actionsOf(bs),
+        };
       });
+      // 后端技能卡合成(统一路径):预置技能中无静态卡的(公文/PPT/可视化等)由
+      // list_marketplace_skills 数据合成——真实预置技能取代前端空壳卡,
+      // 展示文案走 i18n overlay(localizeSkill),精选位图片/版式走 tsSkillFeaturedAssets,
+      // 安装态:有配套 MCP(companion 声明)跟随 MCP 工具态,纯技能读后端 installed。
+      const staticSkillIds = new Set(tsSkillsData.map(s => s.backendId).filter(Boolean));
+      // 已被非 MCP 连接器认领的技能不再单独成卡:ima-skills 归 ima 连接器包(后端注册表 V5 预认领;
+      // ima 非 MCP、不在 companion_skills 反建范围),其连接器卡即包卡,避免「一个产品两张卡」。
+      const CONNECTOR_CLAIMED_SKILLS = new Set(['ima-skills']);
+      const companionSkillCards = skillBackend
+        .filter(x => !x.user_uploaded && !staticSkillIds.has(x.id) && !CONNECTOR_CLAIMED_SKILLS.has(x.id))
+        .map(x => {
+          const mcpId = skillToMcp[x.id] || null;
+          // 组合包卡的业务分类跟随配套 MCP(公文=gongwen→docs;pptx 连接器卡已删,元数据在 tsToolWelcomeData)
+          const mcpEntry = mcpId
+            ? (tsToolsData.find(t => t.backendId === mcpId) || tsToolWelcomeData.find(t => t.backendId === mcpId))
+            : null;
+          // 安装态/动作：companion 卡跟随所属 MCP 包（统一 readiness，store 真相源）；
+          // 独立技能读自身 readiness；缺失回退技能后端状态位。
+          const stateBs = mcpId ? bundleStates[mcpId] : bundleStates[x.id];
+          return localizeSkill({
+            id: 'mcp-skill-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || '',
+            // 有配套 MCP(companion)的卡 = 工具包:徽标与分组归 bundle,安装态跟随 MCP
+            category: mcpEntry ? (mcpEntry.category || 'skill') : 'skill',
+            type: mcpId ? ((storeCopy.typeGroups || {}).bundle || 'Bundle') : 'Skill',
+            companionBundle: !!mcpId,
+            version: '—', latency: storeCopy.localLatency, desc: x.description || '',
+            icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-gradient-to-b from-slate-400 to-slate-600',
+            installed: stateBs ? stateBs.installed : (mcpId ? !!toolStates[mcpId] : !!x.installed),
+            updateAvailable: !!x.update_available,
+            actions: actionsOf(stateBs),          });
+        });
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
         category: 'skill', type: 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
         icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600', installed: true, userUploaded: true,
+        actions: actionsOf(bundleStates[x.id]),
       }));
-      const skillCards = [...presetSkills, ...uploadedSkills];
+      const skillCards = [...presetSkills, ...companionSkillCards, ...uploadedSkills];
 
-      const connectorTools = tools.filter(t => !LOCAL_TOOLS.includes(t.backendId) && isToolVisibleOnPlatform(t));
+      // 双维度分组:主维度(groupBy)决定二级筛选集合,另一维度决定下方分区(section)。
+      // 含 companion_skills 的 MCP = 工具包(skillToMcp 的值即其 id,manifest 反建,单一真源)。
+      const bundleMcpIds = Object.values(skillToMcp);
+      // 组合包的 MCP 连接器卡不进列表:包由 companion 合成卡唯一代表(取代已删的 LOCAL_TOOLS 硬编码)。
+      // 条目数据仍保留在 tsToolsData(详情/安装/配置流程经 findLocalizedTool 消费)。
+      const connectorTools = tools.filter(t => !bundleMcpIds.includes(t.backendId) && isToolVisibleOnPlatform(t));
       const listItems = [...connectorTools, ...skillCards]; // 连接器 + 技能全放一起
       // 搜索全局:有搜索词时跨「连接器 + 全部技能」检索,不受分类限制(「我的工具」内搜索仍限已安装)
       const searching = searchQuery.trim() !== '';
       const isLaunchedTool = tool => !!tool.backendId || !!tool.builtin || !!tool.userUploaded;
-      // 双维度分组:主维度(groupBy)决定二级筛选集合,另一维度决定下方分区(section)。
-      // 含 companion_skills 的 MCP = 工具包(skillToMcp 的值即其 id,manifest 反建,单一真源)。
-      const bundleMcpIds = Object.values(skillToMcp);
       const typeGroupOf = tool => getToolTypeGroup(tool, bundleMcpIds);
       const catLabel = id => (storeData.categories || {})[id] || (tsCategories.find(c => c.id === id) || {}).label || id;
       const typeLabel = id => ((storeCopy.typeGroups || {})[id]) || id;
@@ -921,13 +1106,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           .map(id => ({ id, label: groupBy === 'type' ? typeLabel(id) : catLabel(id) }))
           .filter(chip => listItems.some(tool => primaryGroupOf(tool) === chip.id))];
       const filteredTools = listItems.filter(tool => {
-        // 即将上线占位卡(无 backendId)在「我的工具」外可见,可检索、进分区,操作按钮自身置灰。
+        // 即将上线占位卡(无 backendId)在「仅显示已安装」下隐藏；其余照常检索、进分区。
         if (!isLaunchedTool(tool) && installedOnly) return false;
         const q = searchQuery.toLowerCase();
         const matchesSearch = tool.title.toLowerCase().includes(q) || (tool.desc || '').toLowerCase().includes(q);
-        if (installedOnly) return matchesSearch && tool.installed;
         const matchesCategory = searching || activeCategory === 'all' || primaryGroupOf(tool) === activeCategory;
-        return matchesSearch && matchesCategory;
+        const matchesInstalled = !installedOnly || tool.installed;
+        return matchesSearch && matchesCategory && matchesInstalled;
       }).sort((a, b) => {
         // 已上线(有 backendId 或内置)排在未上线(即将上线)之前
         const onA = !!a.backendId || !!a.builtin, onB = !!b.backendId || !!b.builtin;
@@ -936,12 +1121,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         if (!a.installed && b.installed) return 1;
         return 0;
       });
-      // 分区:仅非搜索/非「我的工具」时分区;搜索与我的工具保持平铺。组内沿用 filteredTools 排序。
-      const sectioned = !installedOnly && !searching;
+      // 分区:非搜索即分区(仅显示已安装仍保持原分区视图,只是过滤到已装条目)。组内沿用 filteredTools 排序。
+      const sectioned = !searching;
+      // 即将上线占位卡(无 backendId)单拎到独立栏，不参与类型/业务分组。
+      const upcomingTools = filteredTools.filter(t => !isLaunchedTool(t));
+      const launchedTools = filteredTools.filter(t => isLaunchedTool(t));
       const listSections = [];
       if (sectioned) {
         const buckets = new Map();
-        filteredTools.forEach(tool => {
+        launchedTools.forEach(tool => {
           const key = sectionGroupOf(tool);
           if (!buckets.has(key)) buckets.set(key, []);
           buckets.get(key).push(tool);
@@ -951,53 +1139,20 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           buckets.delete(key);
         });
         buckets.forEach((items, key) => listSections.push({ id: key, label: sectionLabelOf(key), items }));
+        if (upcomingTools.length) {
+          listSections.push({ id: 'upcoming', label: typeLabel('upcoming'), items: upcomingTools });
+        }
       }
+      // 左侧二级分类快速导航 = 分区列表（含「即将上线」独立栏）。
+      const navSections = sectioned ? listSections : [];
+      const scrollToSection = (id) => {
+        document.getElementById(`store-section-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      };
       useEffect(() => {
         if (!installedOnly && !searching && activeCategory !== 'all' && !groupChips.some(chip => chip.id === activeCategory)) {
           setActiveCategory('all');
         }
       }, [activeCategory, installedOnly, searching, groupChips]);
-
-      // 从后端加载已安装状态
-      const loadBackendState = async () => {
-        try {
-          const list = await invokeTauri('list_marketplace_tools');
-          const states = {};
-          const s2m = {}; // 配套技能 → 所属 MCP(manifest companion_skills 反建,单一真源)
-          list.forEach(t => {
-            states[t.id] = t.installed;
-            (t.companion_skills || []).forEach(sid => { s2m[sid] = t.id; });
-          });
-          setToolStates(states);
-          setSkillToMcp(s2m);
-          const authEntries = await Promise.all(tsToolsData
-            .filter(tool => tool.oauthMcp && tool.backendId)
-            .map(async (tool) => {
-              try {
-                const status = await invokeTauri('get_marketplace_tool_auth_status', { toolId: tool.backendId });
-                return [tool.backendId, status];
-              } catch (err) {
-                console.error('get_marketplace_tool_auth_status failed:', tool.backendId, err);
-                return null;
-              }
-            }));
-          setToolAuthStates(prev => {
-            const next = { ...prev };
-            authEntries.filter(Boolean).forEach(([id, status]) => { next[id] = status; });
-            return next;
-          });
-        } catch (e) {
-          console.error('list_marketplace_tools failed:', e);
-        }
-        try {
-          const skills = await invokeTauri('list_marketplace_skills');
-          setSkillBackend(Array.isArray(skills) ? skills : []);
-        } catch (e) {
-          console.error('list_marketplace_skills failed:', e);
-        }
-      };
-
-      useEffect(() => { loadBackendState(); }, []);
 
       const beginOAuthRequest = (backendId) => {
         // OAuth 请求关联 ID 需不可预测，避免用 Math.random()（CodeQL js/insecure-randomness）。
@@ -1226,6 +1381,34 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
       };
 
+      // 预置技能更新:先弹二次确认(覆盖式更新会丢本地修改),确认后调
+      // update_marketplace_skill 复用原子覆盖管线;保留技能启用状态(后端不重置 scope)。
+      const [updateConfirm, setUpdateConfirm] = useState(null); // { backendId, skillId, name }
+      const handleSkillUpdate = (backendId) => {
+        if (!canMutateToolStore) return;
+        // ima 连接器卡的更新落在其认领的 ima-skills 上(该技能不单独成卡)
+        const skillId = backendId === 'ima' ? 'ima-skills' : backendId;
+        const card = skillCards.find(x => x.backendId === backendId) || tools.find(x => x.backendId === backendId);
+        setUpdateConfirm({ backendId, skillId, name: card ? card.title : skillId });
+      };
+      const doSkillUpdate = async () => {
+        if (!updateConfirm) return;
+        const { backendId, skillId, name } = updateConfirm;
+        setUpdateConfirm(null);
+        setBusyId(backendId);
+        try {
+          await invokeTauri('update_marketplace_skill', { skillId });
+          await loadBackendState();
+          setAlert({ visible: true, loading: false, title: storeCopy.updatedQuoted(name), isInstall: true, isError: false });
+          notifyComposerToolsChanged();
+        } catch (e) {
+          console.error('skill update failed:', e);
+          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
       // 上传 zip 技能包:按钮走 Rust 原生 dialog,拖放走 base64 字节通道,
       // 成功/取消/失败/loading 处理统一在这里。
       const doImportSkillZip = async (invokeFn) => {
@@ -1247,16 +1430,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setBusyId(null);
         }
       };
-      const handleUploadSkill = () => doImportSkillZip(() => invokeTauri('import_skill_package'));
+      const handleUploadSkill = () => doImportSkillZip(() => invokeTauri('import_plugin_package_cmd'));
       const handleZipDrop = (files) => {
-        const zip = pickSkillZip(files);
-        if (!zip) return Promise.resolve();
-        if (zip.size > MAX_SKILL_ZIP_BYTES) {
-          setAlert({ visible: true, loading: false, title: storeCopy.importFailedWith(storeCopy.invalidSkillZipDrop), isInstall: false, isError: true });
+        const picked = pickSkillDrop(files);
+        if (!picked) return Promise.resolve();
+        const { file, kind } = picked;
+        if (file.size > MAX_SKILL_ZIP_BYTES) {
+          setAlert({ visible: true, loading: false, title: storeCopy.importFailedWith(storeCopy.zipTooLarge(MAX_SKILL_ZIP_BYTES / 1024 / 1024)), isInstall: false, isError: true });
           return Promise.resolve();
         }
+        // 单 .md 技能文件走 import_skill_md_bytes；zip 插件包走统一导入字节通道。
+        const command = kind === 'md' ? 'import_skill_md_bytes' : 'import_plugin_package_bytes_cmd';
         return doImportSkillZip(async () =>
-          invokeTauri('import_skill_package_bytes', { filename: zip.name, dataBase64: await fileToBase64(zip) }));
+          invokeTauri(command, { filename: file.name, dataBase64: await fileToBase64(file) }));
       };
 
       const connectIma = async (values = {}) => {
@@ -1268,7 +1454,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         try {
           await invokeTauri('ima_connect', { clientId, apiKey });
           await loadBackendState();
-          setImaConnected(true);
           setAlert({ visible: true, loading: false, title: detailCopy.actions.connectedIma, subtitle: detailCopy.actions.imaEnabled, isInstall: true, isError: false, toolId: 'ima' });
           if (selectedTool && selectedTool.backendId === 'ima') {
             setSelectedTool(prev => ({ ...prev, installed: true }));
@@ -1276,7 +1461,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('ima connect failed:', e);
-          setImaConnected(false);
           setAlert({ visible: true, loading: false, title: detailCopy.actions.imaFailed, subtitle: detailCopy.actions.operationFailed, isInstall: false, isError: true });
         } finally {
           setBusyId(null);
@@ -1289,7 +1473,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         try {
           await invokeTauri('ima_logout');
           await loadBackendState();
-          setImaConnected(false);
           setAlert({ visible: true, loading: false, title: detailCopy.actions.disconnectedIma, isInstall: false, isError: false });
           if (selectedTool && selectedTool.backendId === 'ima') {
             setSelectedTool(prev => ({ ...prev, installed: false }));
@@ -1342,9 +1525,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         setBusyId('feishu');
         try {
           await invokeTauri('feishu_logout');
-          // 断开 → 撤掉技能(should_show 变 false)+ 广播刷新。
+          // 断开 → 撤掉技能(should_show 变 false)+ 广播刷新；连接态经 readiness 重取。
           await invokeTauri('feishu_apply_skills').catch(() => {});
-          setFeishuConnected(false);
+          await loadBackendState();
           setAlert({ visible: true, loading: false, title: storeCopy.disconnectedTool(storeCopy.toolNames.feishu), isInstall: false, isError: false });
           notifyComposerToolsChanged();
         } catch (e) {
@@ -1389,9 +1572,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         setBusyId('wecom');
         try {
           await invokeTauri('wecom_logout');
-          // 断开 → 撤掉技能(should_show 变 false)。
+          // 断开 → 撤掉技能(should_show 变 false)；连接态经 readiness 重取。
           await invokeTauri('wecom_apply_skills').catch(() => {});
-          setWecomConnected(false);
+          await loadBackendState();
           setAlert({ visible: true, loading: false, title: storeCopy.disconnectedTool(storeCopy.toolNames.wecom), isInstall: false, isError: false });
           notifyComposerToolsChanged();
         } catch (e) {
@@ -1434,7 +1617,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         try {
           await invokeTauri('dingtalk_logout');
           await invokeTauri('dingtalk_apply_skills').catch(() => {});
-          setDingtalkConnected(false);
+          await loadBackendState();
           setAlert({ visible: true, loading: false, title: storeCopy.disconnectedTool(storeCopy.toolNames.dingtalk), isInstall: false, isError: false });
           notifyComposerToolsChanged();
         } catch (e) {
@@ -1477,7 +1660,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         try {
           await invokeTauri('tmeet_logout');
           await invokeTauri('tmeet_apply_skills').catch(() => {});
-          setTmeetConnected(false);
+          await loadBackendState();
           setAlert({ visible: true, loading: false, title: detailCopy.actions.disconnectedTmeet, isInstall: false, isError: false });
           notifyComposerToolsChanged();
         } catch (e) {
@@ -1491,10 +1674,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
         if (!canMutateToolStore) return;
-        // 有配套 MCP 的技能(公文=gongwen)→ 改走该 MCP 装卸,skill 作为 companion 随 MCP 联动(两卡同步);
-        // 纯技能(无配套 MCP、无同名工具:预置技能与用户上传技能)才走 handleSkillAction。
-        // 用 skillCards(含 userUploaded 卡)而非静态 tsSkillsData 判定——上传技能不在静态表里,
-        // 漏判会落到下方通用工具分支报「未知工具」。
+        // 有配套 MCP 的技能(公文=gongwen、PPT=pptx,manifest companion_skills 声明)→ 改走该
+        // MCP 装卸,skill 作为 companion 随 MCP 联动(两卡同步);
+        // 纯技能(无配套 MCP:如 visualizer、上传技能)才走 handleSkillAction。
+        // 用 skillCards(含后端合成卡与 userUploaded 卡)而非静态 tsSkillsData 判定——
+        // 静态卡已删除且上传技能不在静态表里,漏判会落到通用工具分支报「未知工具」。
+
         if (skillToMcp[backendId]) backendId = skillToMcp[backendId];
         else if (skillCards.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
         const requestedTool = findLocalizedTool(backendId);
@@ -1546,7 +1731,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           return;
         }
         const tool = findLocalizedTool(backendId);
-        const name = tool ? tool.title : backendId;
+        // 组合包化的本地能力(pptx)只有 companion 技能卡、无连接器卡,名称回退到技能卡
+        const name = tool ? tool.title : ((skillCards.find(x => x.backendId === backendId) || {}).title || backendId);
 
         // 安装：有 configFields 的工具先弹配置弹窗
         if (!isInstalled) {
@@ -1642,6 +1828,26 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               else setObsidianGuide(g => g ? { ...g, ...(st || {}) } : g);
             }}
           />, document.body)}
+          {/* 预置技能更新二次确认:覆盖为商店最新版本,本地修改会丢失(WebView2 下
+              window.confirm 不弹,应用内自绘,风格对齐 TsAlert) */}
+          {updateConfirm && createPortal((
+            <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setUpdateConfirm(null)}>
+              <div className="w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]" onClick={e => e.stopPropagation()}>
+                <div className="px-6 pt-6 pb-5 text-center">
+                  <div className="text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white">{storeCopy.updateSkillTitle(updateConfirm.name)}</div>
+                  <div className="text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">{storeCopy.updateSkillOverwriteHint}</div>
+                </div>
+                <div className="border-t border-slate-200 dark:border-white/10 flex">
+                  <button onClick={() => setUpdateConfirm(null)} className="flex-1 py-3 text-[17px] text-center transition-colors text-slate-500 active:bg-slate-100 dark:text-slate-400 dark:active:bg-white/5 border-r border-slate-200 dark:border-white/10">
+                    {storeCopy.cancel}
+                  </button>
+                  <button onClick={doSkillUpdate} className="flex-1 py-3 text-[17px] font-semibold text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5">
+                    {(t.uiToolCommon || {}).update}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ), document.body)}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
           {wecomQr && (() => {
             const cancel = () => { invokeTauri('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
@@ -1671,13 +1877,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                   <div className="flex items-center justify-between sm:block sm:shrink-0">
                     <h1 className="shrink-0 text-[26px] font-normal tracking-tight">{storeCopy.title}</h1>
-                    <button onClick={() => { setInstalledOnly(true); setSearchQuery(''); }} title={storeCopy.myTools}
-                      className={`inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C] ${installedOnly ? 'hidden' : 'sm:hidden'}`}>
-                      <User size={14} className="mr-2 opacity-70" />
-                      <span>{storeCopy.myTools}</span>
-                    </button>
                   </div>
-                  <div className={`flex min-w-0 flex-wrap items-center justify-end gap-3 sm:ml-8 sm:flex-1 sm:flex-nowrap ${installedOnly ? 'hidden' : ''}`}>
+                  <div className="flex min-w-0 flex-wrap items-center justify-end gap-3 sm:ml-8 sm:flex-1 sm:flex-nowrap">
                     <div className="relative group min-w-0 basis-full flex-1 sm:basis-auto sm:max-w-[520px]">
                       <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#8E8E93] group-focus-within:text-blue-500 transition-colors" size={18} />
                       <input
@@ -1690,6 +1891,18 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       />
                     </div>
                     <div className="flex shrink-0 items-center justify-end gap-3">
+                      <button data-testid="tool-store-guide" onClick={() => setShowGuide(true)} title={storeCopy.guide.title}
+                        className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
+                        <BookOpen size={14} className="mr-2 opacity-70" />
+                        <span>{storeCopy.guide.title}</span>
+                      </button>
+                      {canMutateToolStore && (
+                        <button data-testid="tool-store-manage-visibility" onClick={() => setManagingVisibility(v => !v)} title={storeCopy.modeVisibilityHint}
+                          className={`inline-flex h-9 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors ${managingVisibility ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]'}`}>
+                          <Settings size={14} className="mr-2 opacity-70" />
+                          <span>{managingVisibility ? storeCopy.doneManagingVisibility : storeCopy.manageVisibility}</span>
+                        </button>
+                      )}
                       {canMutateToolStore && (
                         <button data-testid="tool-store-upload-btn" onClick={handleUploadSkill} title={storeCopy.uploadSkillPackage} disabled={busyId === '__upload__'}
                           className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 disabled:opacity-50 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
@@ -1697,11 +1910,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           <span>{storeCopy.uploadSkillPackage}</span>
                         </button>
                       )}
-                      <button onClick={() => { setInstalledOnly(true); setSearchQuery(''); }} title={storeCopy.myTools}
-                        className="max-sm:hidden inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
-                        <User size={14} className="mr-2 opacity-70" />
-                        <span>{storeCopy.myTools}</span>
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -1710,45 +1918,58 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
             {/* Main scrollable area */}
             <main className="flex-1">
-              <div className="max-w-[1400px] mx-auto pt-5 pb-8 space-y-6">
+              <div className="max-w-[1400px] mx-auto pt-5 pb-8 flex gap-6 items-start">
+
+                {/* 左侧二级分类快速导航（仅分区浏览态显示，点击跳转到对应分区） */}
+                {navSections.length > 0 && (
+                  <aside className="hidden lg:block w-40 shrink-0 sticky top-6">
+                    <nav className="flex flex-col gap-1">
+                      {navSections.map(s => (
+                        <button key={s.id} onClick={() => scrollToSection(s.id)}
+                          className="flex items-center justify-between gap-2 w-full px-3 py-2 rounded-xl text-left text-[13px] font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/5 dark:hover:text-white transition-colors">
+                          <span className="truncate">{s.label}</span>
+                          <span className="text-[11px] text-slate-400 dark:text-slate-500 tabular-nums shrink-0">{s.items.length}</span>
+                        </button>
+                      ))}
+                    </nav>
+                  </aside>
+                )}
 
                 {/* Category filter + tool list */}
-                <section>
-                  <div className={`flex flex-col gap-4 mb-6 pb-5 ${!installedOnly && !searching ? '' : 'sm:flex-row sm:items-end justify-between'}`}>
-                    {(installedOnly || searching) && (
+                <section className="flex-1 min-w-0">
+                  <div className={`flex flex-col gap-4 mb-6 pb-5 ${!searching ? '' : 'sm:flex-row sm:items-end justify-between'}`}>
+                    {searching && (
                       <div className="flex items-center gap-3">
-                        {installedOnly && (
-                          <button onClick={() => { setInstalledOnly(false); }} title={storeCopy.back}
-                            className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
-                            <ChevronLeft size={20} />
-                          </button>
-                        )}
+                        <button onClick={() => setSearchQuery('')} title={storeCopy.back}
+                          className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
+                          <ChevronLeft size={20} />
+                        </button>
                         <h2 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">
-                          {installedOnly ? storeCopy.myTools : storeCopy.results}
+                          {storeCopy.results}
                         </h2>
                       </div>
                     )}
-                    {!installedOnly && (
-                      <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-3">
                         {/* 主维度切换:按类型 / 按业务,决定二级筛选集合;下方列表始终按另一维度分区 */}
-                        <IosSegmentedControl
-                          value={groupBy}
-                          onChange={(key) => { setGroupBy(key); setActiveCategory('all'); setInstalledOnly(false); }}
-                          isDark={theme === 'dark'}
-                          compact
-                          className="self-start shadow-sm"
-                          segments={[
-                            { key: 'type', label: storeCopy.groupByType },
-                            { key: 'business', label: storeCopy.groupByBusiness },
-                          ]}
-                        />
+                        <div className="flex h-9 shrink-0 items-center self-start rounded-full bg-slate-100 p-1 shadow-sm dark:bg-[#2C2C2E]">
+                          {[{ key: 'type', label: storeCopy.groupByType }, { key: 'business', label: storeCopy.groupByBusiness }].map(seg => (
+                            <button key={seg.key} onClick={() => { setGroupBy(seg.key); setActiveCategory('all'); }}
+                              className={`inline-flex h-7 items-center rounded-full px-3 text-[13px] font-semibold transition-colors whitespace-nowrap ${
+                                groupBy === seg.key
+                                  ? 'bg-white text-slate-900 shadow-sm dark:bg-[#3A3A3C] dark:text-white'
+                                  : 'text-slate-700 hover:bg-slate-200 dark:text-white dark:hover:bg-[#3A3A3C]'
+                              }`}>
+                              {seg.label}
+                            </button>
+                          ))}
+                        </div>
                         <div className="flex gap-2 overflow-x-auto no-scrollbar scroll-smooth">
                           {groupChips.map((chip) => {
                             const isActive = activeCategory === chip.id;
                             return (
                               <button
                                 key={chip.id}
-                                onClick={() => { setActiveCategory(chip.id); setInstalledOnly(false); }}
+                                onClick={() => { setActiveCategory(chip.id); }}
                                 className={`h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors ${isActive
                                   ? 'bg-[#3A3A3C] text-[#fff] dark:bg-[#fff] dark:text-[#000]'
                                   : 'bg-[#F2F2F7] text-[#000] dark:bg-[#2C2C2E] dark:text-[#fff]'}`}
@@ -1757,15 +1978,26 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                               </button>
                             );
                           })}
+                          <button data-testid="tool-store-installed-only" onClick={() => setInstalledOnly(v => !v)} title={storeCopy.installedOnly}
+                            className={`ml-auto h-9 whitespace-nowrap shrink-0 inline-flex items-center rounded-full px-3.5 text-[13px] font-semibold transition-colors ${installedOnly
+                              ? 'bg-blue-600 text-[#fff] hover:bg-blue-700'
+                              : 'bg-[#F2F2F7] text-[#000] dark:bg-[#2C2C2E] dark:text-[#fff]'}`}>
+                            <Check size={14} className="mr-1.5 opacity-70" />
+                            <span>{storeCopy.installedOnly}</span>
+                          </button>
+                          <span className="shrink-0 hidden sm:flex items-center gap-1.5 text-[12px] text-slate-400 dark:text-slate-500 pl-1">
+                            {storeCopy.guide.dragHintShort}
+                            <button onClick={() => setShowGuide(true)} aria-label={storeCopy.guide.title} title={storeCopy.guide.title}
+                              className="w-[18px] h-[18px] rounded-full bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-white/20 flex items-center justify-center text-[11px] font-bold leading-none">?</button>
+                          </span>
                         </div>
                       </div>
-                    )}
                   </div>
 
                   {filteredTools.length > 0 ? (
                     <div key="tool-store-list-grid" className={sectioned ? 'pb-7 space-y-8' : 'grid grid-cols-1 lg:grid-cols-2 gap-4 pb-7'}>
                       {(sectioned ? listSections : [{ id: 'flat', label: null, items: filteredTools }]).map((section) => (
-                        <div key={`section-${section.id}`}>
+                        <div key={`section-${section.id}`} id={sectioned ? `store-section-${section.id}` : undefined} className="scroll-mt-24">
                           {section.label && (
                             <div className="flex items-baseline gap-2 mb-2 px-3">
                               <h3 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">{section.label}</h3>
@@ -1794,12 +2026,44 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                     )}
                                   </div>
                                 </div>
-                                <div className="flex flex-col items-center justify-center gap-1 pl-2">
+                                <div className="flex flex-col items-center justify-center gap-1.5 pl-2">
                                   {(() => {
                                     const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : tool.tmeetCli ? tmeetFlow : null;
-                                    return (externalAuthAvailable && cf && (cf.phase === 'running' || cf.phase === 'qr'))
-                                      ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} copy={storeCopy.mini} />
-                                      : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} copy={storeCopy} t={t} />;
+                                    if (externalAuthAvailable && cf && (cf.phase === 'running' || cf.phase === 'qr')) {
+                                      return <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} copy={storeCopy.mini} />;
+                                    }
+                                    // 管理可见性编辑态：卡片出现每个模式的勾选框，勾选 = 可见。
+                                    if (managingVisibility) {
+                                      return (
+                                        <div className="flex flex-col items-start gap-1" onClick={(e) => e.stopPropagation()}>
+                                          {[{ key: 'plain', label: storeCopy.modePlain }, { key: 'code', label: storeCopy.modeCode }].map((m) => {
+                                            // 无 backendId 的卡（占位卡/内置 s5）不参与可见性配置：禁用勾选；
+                                            // 可见性读取未成功（visibilityLoaded=false）时同样禁用——handler 虽有
+                                            // 早退，但可点而无反馈的勾选框会误导用户以为配置已生效（四轮评审）。
+                                            const checkDisabled = !tool.backendId || !visibilityLoaded;
+                                            // 读回比对与写入同口径：后端 hidden 集按包 id 返回，companion 卡先经
+                                            // skillToMcp 映射为所属包 id；同时回退比对原始技能 id，兼容历史版本
+                                            // 按独立技能 id 落库的条目（未装→装边界）（五轮评审）。
+                                            const visPkgId = skillToMcp[tool.backendId] || tool.backendId;
+                                            const hiddenSet = hiddenByMode[m.key] || new Set();
+                                            const visible = !hiddenSet.has(visPkgId) && !hiddenSet.has(tool.backendId);
+                                            return (
+                                              <label key={m.key} className={`flex items-center gap-2 ${checkDisabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
+                                                <input
+                                                  type="checkbox"
+                                                  checked={visible}
+                                                  disabled={checkDisabled}
+                                                  onChange={() => toggleModeVisibility(tool.backendId, m.key, !visible)}
+                                                  className="h-4 w-4 rounded border-slate-300 accent-blue-600"
+                                                />
+                                                <span className={`text-[12px] font-medium ${visible ? 'text-slate-700 dark:text-slate-200' : 'text-slate-400 dark:text-slate-500'}`}>{m.label}</span>
+                                              </label>
+                                            );
+                                          })}
+                                        </div>
+                                      );
+                                    }
+                                    return <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} copy={storeCopy} t={t} />;
                                   })()}
                                 </div>
                               </div>
@@ -1828,6 +2092,53 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               </div>
             </main>
           </div>
+
+          {/* 插件指南弹窗：拖入安装说明 + 插件包介绍 + 规范文档下载 */}
+          {showGuide && createPortal((
+            <div
+              className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
+              onClick={() => setShowGuide(false)}
+            >
+              <div
+                className="relative w-full max-w-2xl bg-white dark:bg-[#1C1C1E] rounded-[28px] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border border-slate-200/50 dark:border-white/10"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200/50 dark:border-white/10">
+                  <h2 className="text-[18px] font-semibold">{storeCopy.guide.title}</h2>
+                  <button onClick={() => setShowGuide(false)} aria-label={storeCopy.guide.close}
+                    className="w-8 h-8 rounded-full hover:bg-slate-100 dark:hover:bg-white/10 flex items-center justify-center text-slate-500 dark:text-slate-400">
+                    <XIcon size={16} />
+                  </button>
+                </div>
+                <div className="px-6 py-5 overflow-y-auto custom-scrollbar space-y-5">
+                  <section>
+                    <h3 className="text-[14px] font-semibold mb-1.5">{storeCopy.guide.dragTitle}</h3>
+                    <p className="text-[13px] text-slate-600 dark:text-slate-300 leading-relaxed">{storeCopy.guide.dragDesc}</p>
+                    <h4 className="text-[12px] font-semibold text-slate-400 dark:text-slate-500 mt-3 mb-1.5 uppercase tracking-wide">{storeCopy.guide.typesTitle}</h4>
+                    <ul className="flex flex-wrap gap-1.5">
+                      {storeCopy.guide.types.map(t => (
+                        <li key={t} className="text-[12px] px-2.5 py-1 rounded-full bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-200">{t}</li>
+                      ))}
+                    </ul>
+                    <p className="mt-2.5 text-[12px] text-blue-600 dark:text-blue-400 leading-relaxed">{storeCopy.guide.formatsNote}</p>
+                  </section>
+                  <section>
+                    <h3 className="text-[14px] font-semibold mb-1.5">{storeCopy.guide.introTitle}</h3>
+                    <p className="text-[13px] text-slate-600 dark:text-slate-300 leading-relaxed">{storeCopy.guide.introDesc}</p>
+                  </section>
+                  <section>
+                    <h3 className="text-[14px] font-semibold mb-1.5">{storeCopy.guide.specTitle}</h3>
+                    <p className="text-[13px] text-slate-600 dark:text-slate-300 leading-relaxed">{storeCopy.guide.specDesc}</p>
+                    <button onClick={downloadSpec} data-testid="tool-store-download-spec"
+                      className="mt-3 inline-flex h-9 items-center rounded-full bg-blue-600 px-4 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700">
+                      <Download size={14} className="mr-2" />{storeCopy.guide.downloadSpec}
+                    </button>
+                    <p className="mt-2 text-[11px] text-slate-400 dark:text-slate-500">{storeCopy.guide.downloadHint}</p>
+                  </section>
+                </div>
+              </div>
+            </div>
+          ), document.body)}
 
           {/* Detail modal — portal 到 body：否则被主内容区 backdrop-blur 祖先造的包含块困住，
               fixed inset-0 只盖住右侧内容区、盖不到左侧栏。portal 后蒙层铺满整个视口。 */}
@@ -1858,7 +2169,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <div className="flex flex-col items-end gap-1.5">
                         {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
                           ? <FeishuMini flow={sf} onClick={() => {}} copy={storeCopy.mini} />
-                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" copy={storeCopy} t={t} />; })()}
+                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} size="lg" copy={storeCopy} t={t} />; })()}
                         {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>

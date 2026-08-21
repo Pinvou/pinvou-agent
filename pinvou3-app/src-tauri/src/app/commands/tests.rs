@@ -139,8 +139,7 @@ fn write_test_oauth_marketplace_files(server_name: &str, mcp_server: serde_json:
         }]
     });
     write_json(
-        &crate::platform::paths::bundle_mcp_servers_dir()
-            .join("yuandian-mcp")
+        &crate::features::marketplace::mcp_catalog::package_mcp_dir("yuandian-mcp")
             .join("manifest.json"),
         manifest,
     );
@@ -534,6 +533,52 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
             .any(|(n, _)| n == "visualizer"),
         "卸载清除残留后重装默认启用（与连接器卸载语义一致）"
     );
+
+    match previous {
+        Some(value) => std::env::set_var("PINVOU3_HOME", value),
+        None => std::env::remove_var("PINVOU3_HOME"),
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// companion 联动契约：MCP manifest 的 companion_skills 声明真实存在（预置技能可装），
+/// 命令层「装 MCP → 遍历装 companion 技能」的联动路径在临时 home 下可闭环。
+/// 覆盖 gongwen→government-writing（异名配对）与 pptx→pptx（同名配对）。
+#[test]
+fn mcp_install_links_companion_skills() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let root = std::env::temp_dir().join(format!(
+        "pinvou3-companion-link-test-{}",
+        std::process::id()
+    ));
+    let previous = std::env::var("PINVOU3_HOME").ok();
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::env::set_var("PINVOU3_HOME", &root);
+
+    let mgr = crate::features::marketplace::MarketplaceManager::new();
+    let skill_mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+    for (mcp_id, skill_id) in [("gongwen", "government-writing"), ("pptx", "pptx")] {
+        let companions = mgr.companion_skills(mcp_id);
+        assert!(
+            companions.contains(&skill_id.to_string()),
+            "{mcp_id} 应声明 companion 技能 {skill_id}"
+        );
+        // 复刻命令层联动路径：装 MCP 后遍历装 companion 技能（技能增强，失败只记日志）
+        for sid in &companions {
+            skill_mgr.install(sid).unwrap();
+        }
+        assert!(
+            skill_mgr
+                .list_skills()
+                .iter()
+                .any(|s| s.id == skill_id && s.installed),
+            "{skill_id} 应随 {mcp_id} 安装落盘"
+        );
+        skill_mgr.uninstall(skill_id).unwrap();
+    }
 
     match previous {
         Some(value) => std::env::set_var("PINVOU3_HOME", value),

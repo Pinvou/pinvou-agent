@@ -9,7 +9,7 @@ import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../pe
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
-import { ArtifactCard, localizeTool, tsToolsData } from '../tools/tool-common.jsx';
+import { ArtifactCard, localizeTool, tsToolsData, tsToolWelcomeData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import {
   ConversationActivityIndicator,
@@ -142,7 +142,8 @@ const openChatExternalUrl = (url) => {
 
 const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const [hovered, setHovered] = useState(null);
-      const tool = localizeTool(tsToolsData.find(item => item.backendId === toolId), t);
+      // 组合包化的本地能力(pptx)已无商店连接器卡,欢迎卡数据回退 tsToolWelcomeData
+      const tool = localizeTool(tsToolsData.find(item => item.backendId === toolId) || tsToolWelcomeData.find(item => item.backendId === toolId), t);
       if (!tool || !tool.welcomeQueries) return null;
       const ToolIcon = tool.icon || Sparkles;
       return (

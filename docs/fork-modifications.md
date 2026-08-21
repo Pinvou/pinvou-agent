@@ -18,6 +18,12 @@
 | 守护 | 23 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
 
+### PR #302 父仓 gitlink 同步
+
+- PR #302 (`feat/plugin-protocol`) 起步时父仓 CodeWhale gitlink 停在 r6 (`3bbf8421`)，与上方 `发布状态` 不一致，触发 `scripts/verify-public-submodule.sh` 与 `scripts/ci-fork-link-check.sh` 在 PR 跑 fast-gate 时持续失败。
+- 本 PR 提交把父仓 gitlink 一次性 bump 到 `a36e6cd533024cfe5724bae21875aea42b2ed87a` (= `pinvou-v0.9.5-r7^{}`)，与 `Pinvou/CodeWhale:pinvou3-clean` HEAD 对齐；不动 `.gitmodules`、不动底座主题内容。
+- bump 后 `verify-public-submodule.sh` 通过；本文与 `scripts/fork-guard.sh` 的指纹与上方表格保持一致，不需要额外指纹改动。
+
 ### 本次会话修复（已验证并发布）
 
 - v0.9.5 的 `load_session` 会把无配对 `tool_use` 视为进程崩溃并立即补写失败结果；Pinvou 运行中持久化工具调用后再次读取同一会话时，这一假设并不成立。

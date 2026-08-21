@@ -17,7 +17,7 @@ pub use extraction::Pinvou3Bundle;
 /// 编译期内嵌整个 skills 目录树（各域 SKILL.md + references/*.md + NOTICE.md）。
 /// 启动解包到 `bundle_skills_dir`，供引擎 `SkillRegistry` 发现、`load_skill` 渐进披露。
 static LARK_SKILLS_DIR: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/skills");
+    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/lark-skills");
 
 /// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
 /// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
@@ -51,30 +51,13 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
-/// 14 个企微域技能目录名(门控写 / 删共用)。wecom-cli 1.1.0 起上游按服务模型
-/// 重排(`msg`→`message`、`schedule`→`calendar`,新增 disk/doc-manage/email/media/
-/// sheet/smartpage/shared),本地结构跟随上游,不再维持 0.1.9 时代的「sheet/smartpage
-/// 并入 doc」合并形态。
-const WECOM_SKILL_DIRS: [&str; 14] = [
-    "wecomcli-calendar",
-    "wecomcli-contact",
-    "wecomcli-disk",
-    "wecomcli-doc",
-    "wecomcli-doc-manage",
-    "wecomcli-email",
-    "wecomcli-media",
-    "wecomcli-meeting",
-    "wecomcli-message",
-    "wecomcli-shared",
-    "wecomcli-sheet",
-    "wecomcli-smartpage",
-    "wecomcli-smartsheet",
-    "wecomcli-todo",
-];
-
-/// 0.1.9 时代的旧技能目录名:1.1.0 重排后已不存在于包内,但存量用户解包目录里
-/// 可能残留,继续加载会教模型已死的命令(`msg`/`schedule` 服务),每次门控时清理。
-const WECOM_LEGACY_SKILL_DIRS: [&str; 2] = ["wecomcli-msg", "wecomcli-schedule"];
+// 企微技能目录表（14 新名 + 0.1.9 legacy 名）已下沉到
+// `crate::platform::connector_skills` 作为单一真相源：marketplace 注册表
+// （wecom 卡 skills 列表）、扁平布局迁移、`cli_bundle_of_skill` 反查与
+// `legacy_cli_records` 首启登记与本模块的门控写/删共用（五轮评审必修 3：
+// marketplace 侧曾按 0.1.9 旧表写死 7 技能，与本表分叉）。
+// 此处 re-export 保持本模块及 extraction 的既有引用不变。
+pub(crate) use crate::platform::connector_skills::{WECOM_LEGACY_SKILL_DIRS, WECOM_SKILL_DIRS};
 
 const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
 const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
@@ -180,7 +163,7 @@ pub fn instructions_code_md(workspace_hint: &str) -> String {
 /// 目录。目录名与 frontmatter 均使用 v0.9 要求的安全命令名 `visual-design`；中文触发词
 /// 继续由 description / 正文承载。
 const VISUAL_DESIGN_SKILL_MD: &str =
-    include_str!("../../../../resources/common/bundle/skills/visual-design/SKILL.md");
+    include_str!("../../../../resources/common/bundle/builtin-skills/visual-design/SKILL.md");
 
 /// pinvou3 版 base prompt，编译期内嵌。通过底座 `prompts::set_base_prompt_override`
 /// 注入，替换底座的上游 `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,
@@ -275,41 +258,10 @@ pub const PRESENT_ARTIFACT_SERVER_PY: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/present_artifact_server.py");
 
 // --- 工具市场：内置 MCP server 资源(编译期内嵌) ---
-const WEATHER_SERVER_PY: &str =
-    include_str!("../../../../../resources/mcp-servers/weather/server.py");
-const WEATHER_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/weather/manifest.json");
-const IWENCAI_SERVER_PY: &str =
-    include_str!("../../../../../resources/mcp-servers/iwencai/server.py");
-const IWENCAI_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/iwencai/manifest.json");
-const QCC_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/qcc/manifest.json");
-const YUANDIAN_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/yuandian-mcp/manifest.json");
-const CANVA_MCP_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/canva-mcp/manifest.json");
-const PATSNAP_SEARCH_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/patsnap-search/manifest.json");
-const TENCENT_DOCS_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/tencent-docs/manifest.json");
-const OBSIDIAN_SERVER_PY: &str =
-    include_str!("../../../../../resources/mcp-servers/obsidian/server.py");
-const OBSIDIAN_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/obsidian/manifest.json");
-const PPTX_SERVER_PY: &str = include_str!("../../../../../resources/mcp-servers/pptx/server.py");
-const PPTX_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/pptx/manifest.json");
-const GONGWEN_SERVER_PY: &str =
-    include_str!("../../../../../resources/mcp-servers/gongwen/server.py");
-const GONGWEN_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/gongwen/manifest.json");
-const GONGWEN_STYLES_PY: &str =
-    include_str!("../../../../../resources/mcp-servers/gongwen/gbt9704_styles.py");
-const WECOM_BOT_SERVER_PY: &str =
-    include_str!("../../../../../resources/mcp-servers/wecom-bot/server.py");
-const WECOM_BOT_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/wecom-bot/manifest.json");
+
+// --- 工具市场：内置 MCP server 资源 ---
+// 编译期内嵌资源已收编到 `marketplace::mcp_catalog`（单一真相源：清单、释放、
+// 校验同一份数据）；未安装包不再每启动全量释放到 bundle/mcp-servers/（§4）。
 
 /// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
@@ -481,19 +433,46 @@ mod tests {
             "present server key 应为 pinvou3、旧 pinvou 不残留,实际={:?}",
             server_keys.keys().collect::<Vec<_>>()
         );
-        let canva_dir = paths::bundle_mcp_servers_dir().join("canva-mcp");
-        let canva_manifest = canva_dir.join("manifest.json");
-        assert!(canva_manifest.is_file(), "Canva 可画 manifest 应被解包");
+        // 市场 MCP 包按「能力包」模型按需释放（§4）：启动不再全量释放，未安装的
+        // canva-mcp 在旧布局（bundle/mcp-servers/）与新布局（bundles/<id>/mcp/）
+        // 都不应占盘。
+        assert!(
+            !paths::bundle_mcp_servers_dir().join("canva-mcp").exists(),
+            "未安装包不应释放到旧布局"
+        );
+        let canva_pkg_mcp = crate::features::marketplace::mcp_catalog::package_mcp_dir("canva-mcp");
+        assert!(!canva_pkg_mcp.exists(), "未安装包不应释放到新布局");
+        // 安装后释放到新布局：bundles/<id>/mcp/manifest.json。
+        crate::features::marketplace::MarketplaceManager::new()
+            .install("canva-mcp", &std::collections::HashMap::new())
+            .unwrap();
+        let canva_manifest = canva_pkg_mcp.join("manifest.json");
+        assert!(
+            canva_manifest.is_file(),
+            "Canva 可画 manifest 应释放到包目录"
+        );
         let canva_json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&canva_manifest).unwrap()).unwrap();
         assert_eq!(canva_json["id"], "canva-mcp");
         assert_eq!(canva_json["servers"][0]["name"], "canva_mcp");
         assert!(
-            !canva_dir.join("server.py").exists(),
+            !canva_pkg_mcp.join("server.py").exists(),
             "Canva 远程 MCP 不应解包本地 server.py"
         );
         // 腾讯文档 manifest 应解包,且四个官方远程 server + 无 scheme Authorization 声明完整。
-        let tdoc_dir = paths::bundle_mcp_servers_dir().join("tencent-docs");
+        // 未安装包在新架构下只住 mcp_catalog 内嵌目录（不落盘）；先登记安装再校验释放。
+        let store = crate::features::marketplace::store::BundleStore::new();
+        store
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "tencent-docs",
+                    crate::features::marketplace::store::BundleSource::Preset,
+                ),
+            )
+            .unwrap();
+        crate::features::marketplace::mcp_catalog::ensure_package_released("tencent-docs")
+            .expect("腾讯文档包应释放");
+        let tdoc_dir = crate::features::marketplace::mcp_catalog::package_mcp_dir("tencent-docs");
         let tdoc_manifest = tdoc_dir.join("manifest.json");
         assert!(tdoc_manifest.is_file(), "腾讯文档 manifest 应被解包");
         let tdoc_json: serde_json::Value =
@@ -619,7 +598,9 @@ mod tests {
         let tmp = tempdir();
         std::env::set_var("PINVOU3_HOME", &tmp);
         let bundle = Pinvou3Bundle::paths();
-        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+        // 连接器技能现按包聚合落盘：bundles/<pkg>/skills/<dir>（§4 新布局）。
+        let pkg_skills = |id: &str| paths::bundles_root().join(id).join("skills");
+        std::fs::create_dir_all(pkg_skills("feishu")).unwrap();
 
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
@@ -627,22 +608,22 @@ mod tests {
         assert!(!bundle.cached_tmeet_skills_visible());
 
         for dir in LARK_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = pkg_skills("feishu").join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
         for dir in WECOM_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = pkg_skills("wecom").join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
         for dir in DINGTALK_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = pkg_skills("dingtalk").join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
         for dir in TMEET_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = pkg_skills("tmeet").join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
@@ -664,16 +645,30 @@ mod tests {
         std::fs::remove_file(paths::pinvou3_home().join("dingtalk_disabled")).unwrap();
         std::fs::remove_file(paths::pinvou3_home().join("tmeet_disabled")).unwrap();
 
-        std::fs::remove_file(bundle.skills_dir.join(LARK_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
-        std::fs::remove_file(bundle.skills_dir.join(WECOM_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
         std::fs::remove_file(
-            bundle
-                .skills_dir
+            pkg_skills("feishu")
+                .join(LARK_SKILL_DIRS[0])
+                .join("SKILL.md"),
+        )
+        .unwrap();
+        std::fs::remove_file(
+            pkg_skills("wecom")
+                .join(WECOM_SKILL_DIRS[0])
+                .join("SKILL.md"),
+        )
+        .unwrap();
+        std::fs::remove_file(
+            pkg_skills("dingtalk")
                 .join(DINGTALK_SKILL_DIRS[0])
                 .join("SKILL.md"),
         )
         .unwrap();
-        std::fs::remove_file(bundle.skills_dir.join(TMEET_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
+        std::fs::remove_file(
+            pkg_skills("tmeet")
+                .join(TMEET_SKILL_DIRS[0])
+                .join("SKILL.md"),
+        )
+        .unwrap();
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
@@ -1065,17 +1060,19 @@ mod tests {
         let bundle = Pinvou3Bundle::paths();
 
         bundle.apply_dingtalk_skills(true).unwrap();
-        let skill = bundle.skills_dir.join("dws");
+        // 新布局：钉钉 mono skill 解包到包目录 bundles/dingtalk/skills/。
+        let pkg_skills = paths::bundles_root().join("dingtalk").join("skills");
+        let skill = pkg_skills.join("dws");
         assert!(skill.join("SKILL.md").is_file());
         assert!(skill
             .join("references")
             .join("global-reference.md")
             .is_file());
-        assert!(bundle.skills_dir.join("NOTICE-dingtalk.md").is_file());
+        assert!(pkg_skills.join("NOTICE-dingtalk.md").is_file());
 
         bundle.apply_dingtalk_skills(false).unwrap();
         assert!(!skill.exists());
-        assert!(!bundle.skills_dir.join("NOTICE-dingtalk.md").exists());
+        assert!(!pkg_skills.join("NOTICE-dingtalk.md").exists());
 
         cleanup(&tmp);
     }
@@ -1135,9 +1132,13 @@ mod tests {
         for d in WECOM_LEGACY_SKILL_DIRS {
             assert!(!bundle.skills_dir.join(d).exists(), "{d} 应被清理");
         }
+        // 门控解包目标在按包聚合布局 bundles/wecom/skills/（旧扁平 skills_dir 已退役）
+        let wecom_pkg_skills = crate::platform::paths::bundles_root()
+            .join("wecom")
+            .join("skills");
         for d in WECOM_SKILL_DIRS {
             assert!(
-                bundle.skills_dir.join(d).join("SKILL.md").is_file(),
+                wecom_pkg_skills.join(d).join("SKILL.md").is_file(),
                 "{d} 应被解包"
             );
         }

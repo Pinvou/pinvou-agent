@@ -194,6 +194,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             Ok(Some(_status)) => {
                 conn.set_pid(ID, None);
                 if is_ready() {
+                    cc::bundle_store_on_connected(ID);
                     cc::emit(app, "wecom:connected", json!({ "ok": true }));
                     return Ok(());
                 }
@@ -231,6 +232,7 @@ pub async fn wecom_logout() -> Result<Value, String> {
         let dir = wecom_config_dir();
         let existed = dir.exists();
         let _ = std::fs::remove_dir_all(&dir);
+        cc::bundle_store_on_disconnected(ID);
         Ok::<Value, String>(json!({ "ok": true, "removed": existed }))
     })
     .await
@@ -284,6 +286,10 @@ pub async fn wecom_apply_skills() -> Result<Value, String> {
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))??;
+    // scope 门禁同步：见 feishu_apply_skills 同名注释（code 默认关语义对齐）。
+    if show {
+        crate::features::marketplace::sync_deny_all_scopes_after_install("wecom");
+    }
     Ok(json!({ "visible": show }))
 }
 
@@ -294,6 +300,8 @@ pub async fn wecom_apply_skills() -> Result<Value, String> {
 pub async fn set_wecom_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         set_wecom_disabled_flag(!enabled)?;
+        // 停用标志 ↔ 统一禁用集桥接（见 set_feishu_enabled 同名注释）。
+        crate::features::marketplace::sync_disabled_bundles_for_connector_switch("wecom", enabled);
         let show = wecom_skills_should_show();
         GATE.apply_skills(show)?;
         Ok(show)

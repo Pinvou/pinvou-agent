@@ -795,7 +795,7 @@ function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
         <div className={`mt-2 text-[13px] leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
           {t.modeYoloConfirmBody}
         </div>
-        <div className="mt-2 text-[11px] text-gray-400">{t.modeYoloConfirmHint}</div>
+        <div className="mt-2 text-[12px] text-[#C5221F] dark:text-red-400">{t.modeYoloConfirmHint}</div>
         <div className="mt-4 flex items-center justify-end gap-2">
           <button
             type="button"
@@ -807,7 +807,7 @@ function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
           <button
             type="button"
             data-testid="native-yolo-confirm-ok"
-            className={cardBtnCls('primary')}
+            className={cardBtnCls('danger')}
             disabled={busy}
             onClick={onConfirm}
           >{t.modeYoloConfirmOk}</button>
@@ -3368,6 +3368,7 @@ export function CodexAcpView({
                         triggerVariant="pill"
                         triggerTestId="native-tools"
                         scope="code"
+                        activeSessionId={activeId}
                       />
                       <ComposerKbSelector
                         t={t}
@@ -3582,20 +3583,22 @@ export function CodexAcpView({
                   </button>
                 )}
               </div>
-              {pendingYoloSwitch && (
-                // 首次切 yolo 的一次性确认卡（全局记忆）；确认后继续切换，取消留在 Plan。
-                <NativeYoloConfirmCard
-                  theme={theme}
-                  t={t}
-                  busy={yoloConfirmBusy}
-                  onConfirm={confirmPendingYoloSwitch}
-                  onCancel={() => setPendingYoloSwitch(null)}
-                />
-              )}
             </div>
           </div>
         </div>
         </div>
+        {pendingYoloSwitch && (
+          // 首次切 yolo 的一次性确认卡（全局记忆）；确认后继续切换，取消留在 Plan。
+          // 必须挂在输入框容器外：该容器带 backdrop-blur-xl，会按 Filter Effects L2
+          // 成为 fixed 后代的包含块，把全屏模态锁进输入框条内（fixed inset-0 相对它解析）。
+          <NativeYoloConfirmCard
+            theme={theme}
+            t={t}
+            busy={yoloConfirmBusy}
+            onConfirm={confirmPendingYoloSwitch}
+            onCancel={() => setPendingYoloSwitch(null)}
+          />
+        )}
         {!subagentPanel && (activeSession || draftWorkspacePath) && (
           <CodexWorkspacePanel
             session={activeSession}

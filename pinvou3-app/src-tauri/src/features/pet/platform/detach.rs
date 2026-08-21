@@ -222,7 +222,7 @@ pub fn view_title(kind: &str) -> &'static str {
         "codex-session" => "Coding 对话",
         "persona" => "专家",
         "monitor" => "系统监控",
-        "toolstore" => "工具商店",
+        "toolstore" => "插件中心",
         "cardpool" => "专家卡牌池",
         "localenv" => "本地环境",
         "outputs" => "产出物",
