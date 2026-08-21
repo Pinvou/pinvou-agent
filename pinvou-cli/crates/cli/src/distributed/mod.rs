@@ -536,10 +536,17 @@ fn execute_chat(initial_runtime: Option<&str>) -> Result<String, DistributedErro
             .and_then(Value::as_str)
             .unwrap_or(runtime);
         let detect = client.runtime_detect()?;
+        let detect_payload = detect.payload();
         write_terminal_to(
             &mut output,
-            &format_runtime_switch_human(selected, detect.payload()),
+            &format_runtime_switch_human(selected, detect_payload),
         )?;
+        if let Some(code) = blocking_code_for_runtime_detect(detect_payload) {
+            return Err(DistributedError::new(
+                code,
+                format!("runtime {} is not ready", selected),
+            ));
+        }
     }
     let stdin = io::stdin();
     let mut input = stdin.lock();
@@ -795,6 +802,23 @@ fn format_runtime_switch_human(selected: &str, detect_payload: &Value) -> String
         "runtime switched to {selected}\n{}",
         format_runtime_detect(detect_payload)
     )
+}
+
+fn blocking_code_for_runtime_detect(payload: &Value) -> Option<StableExitCode> {
+    match payload
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+    {
+        "available" => None,
+        status => Some(
+            payload
+                .get("error_kind")
+                .and_then(Value::as_str)
+                .map(stable_code_for_runtime_error)
+                .unwrap_or_else(|| stable_code_for_runtime_error(status)),
+        ),
+    }
 }
 
 fn format_runtime_list(payload: &Value) -> String {
@@ -1290,6 +1314,29 @@ mod tests {
         assert!(output.contains("runtime: codex"));
         assert!(output.contains("status: blocked_auth"));
         assert!(output.contains("hint: run /detect"));
+    }
+
+    #[test]
+    fn initial_runtime_detect_status_blocks_chat_before_user_prompt() {
+        assert_eq!(
+            blocking_code_for_runtime_detect(&json!({"status":"available"})),
+            None
+        );
+        assert_eq!(
+            blocking_code_for_runtime_detect(&json!({
+                "status":"blocked_auth",
+                "error_kind":"blocked_auth",
+                "exit_code": 4
+            })),
+            Some(StableExitCode::BlockedAuth)
+        );
+        assert_eq!(
+            blocking_code_for_runtime_detect(&json!({
+                "status":"quota_exceeded",
+                "error_kind":"quota_exceeded"
+            })),
+            Some(StableExitCode::RuntimeFailed)
+        );
     }
 
     #[test]
