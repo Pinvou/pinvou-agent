@@ -149,9 +149,7 @@ command_protocol!(
         "resolve_conversation_attachment",
         "open_conversation_attachment",
         "reveal_conversation_attachment",
-        "detect_system_tools",
         "save_paste_image",
-        "verify_upload"
     ]
 );
 command_protocol!(
@@ -253,17 +251,11 @@ command_protocol!(
     memory_protocol,
     "memory.rs",
     [
-        "get_memory_profile",
         "update_memory_profile",
-        "clear_memory_profile",
         "get_memory_overview",
-        "list_pending_memory",
-        "suggest_memory",
         "confirm_pending_memory",
         "ignore_pending_memory",
         "never_pending_memory",
-        "list_recent_work_memory",
-        "upsert_recent_work_memory",
         "archive_recent_work_memory",
         "delete_memory_preference",
         "update_memory_preference",
@@ -414,7 +406,6 @@ command_protocol!(
     sessions_protocol,
     "sessions.rs",
     [
-        "clear_session",
         "list_sessions",
         "list_archived_sessions",
         "create_session",
@@ -423,7 +414,6 @@ command_protocol!(
         "rename_session",
         "set_session_pinned",
         "set_session_archived",
-        "get_active_session",
         "save_session_messages",
         "save_session_artifacts",
         "save_session_pinvou_scene_events",
@@ -455,11 +445,7 @@ command_protocol!(
         "save_search_settings_and_restart"
     ]
 );
-command_protocol!(
-    timeline_protocol,
-    "timeline.rs",
-    ["get_session_timeline", "get_session_stats"]
-);
+command_protocol!(timeline_protocol, "timeline.rs", ["get_session_timeline"]);
 command_protocol!(
     startup_protocol,
     "startup.rs",

@@ -213,14 +213,6 @@ pub async fn reveal_conversation_attachment(
     crate::platform::os::reveal_target(&path)
 }
 
-/// 返回系统工具检测结果（pandoc / pdftotext 是否可用）。
-/// 前端启动时调一次，缺工具时给一次性 toast 引导 apt install。
-#[tauri::command]
-pub async fn detect_system_tools(
-) -> Result<crate::features::files::file_ingest::SystemTools, String> {
-    Ok(crate::features::files::file_ingest::system_tools())
-}
-
 /// 把剪贴板粘贴的图片 bytes 落盘到 `~/.pinvou3/pastes/<ts>-<name>` → 返回路径，
 /// 前端拿到 path 后再 invoke `ingest_file`。
 /// 只用于粘贴图片场景；文件选择器直接拿原 path，HTML5 拖拽走有界分块命令。
@@ -228,55 +220,4 @@ pub async fn detect_system_tools(
 pub async fn save_paste_image(filename: String, bytes: Vec<u8>) -> Result<String, String> {
     let path = crate::features::files::file_ingest::save_paste_image(&filename, &bytes)?;
     Ok(path.to_string_lossy().to_string())
-}
-
-/// Web-remote E2E-only command that verifies the persisted upload digest.
-#[tauri::command]
-pub async fn verify_upload(upload_id: String) -> Result<VerifyUploadOutput, String> {
-    if !matches!(std::env::var("PINVOU3_E2E").as_deref(), Ok("1")) {
-        return Err("verify_upload is disabled: e2e-only command (set PINVOU3_E2E=1)".to_string());
-    }
-    crate::features::sessions::validate_session_id(&upload_id)
-        .map_err(|_| "invalid upload_id".to_string())?;
-    let upload_dir = crate::platform::paths::pinvou3_home()
-        .join("uploads")
-        .join(&upload_id);
-    let file_path = match std::fs::read_dir(&upload_dir).ok().and_then(|entries| {
-        entries
-            .filter_map(|entry| entry.ok())
-            .find(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-            .map(|entry| entry.path())
-    }) {
-        Some(path) => path,
-        None => return Err("upload not available".to_string()),
-    };
-    const VERIFY_UPLOAD_MAX_BYTES: usize = 20 * 1024 * 1024;
-    let mut file = tokio::fs::File::open(&file_path)
-        .await
-        .map_err(|_| "upload not available".to_string())?;
-    let metadata_len = file
-        .metadata()
-        .await
-        .map(|metadata| metadata.len())
-        .unwrap_or(VERIFY_UPLOAD_MAX_BYTES as u64);
-    if metadata_len as usize > VERIFY_UPLOAD_MAX_BYTES {
-        return Err("upload not available".to_string());
-    }
-    let mut bytes = Vec::new();
-    tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
-        .await
-        .map_err(|_| "upload not available".to_string())?;
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Ok(VerifyUploadOutput {
-        sha256: crate::platform::encoding::hex_lower(&hasher.finalize()),
-        byte_size: bytes.len() as u64,
-    })
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct VerifyUploadOutput {
-    pub sha256: String,
-    pub byte_size: u64,
 }

@@ -4,8 +4,8 @@
 
 use super::prelude::*;
 use super::{
-    artifacts::*, attachments::*, files::*, interaction::*, knowledge::*, marketplace::*,
-    personas::*, sessions::*, voice::*,
+    artifacts::*, attachments::*, interaction::*, knowledge::*, marketplace::*, personas::*,
+    sessions::*, voice::*,
 };
 use crate::platform::filesystem::tests::{remove_dir_link, try_link_dir, try_link_file};
 use crate::platform::path_policy::validate_user_path;
@@ -397,87 +397,6 @@ fn test_pinvou_home(tag: &str) -> TestPinvouHome {
         previous,
         _guard: guard,
     }
-}
-
-struct TestE2EFlag {
-    previous: Option<String>,
-}
-
-impl TestE2EFlag {
-    fn enable() -> Self {
-        let previous = std::env::var("PINVOU3_E2E").ok();
-        std::env::set_var("PINVOU3_E2E", "1");
-        Self { previous }
-    }
-}
-
-impl Drop for TestE2EFlag {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(value) => std::env::set_var("PINVOU3_E2E", value),
-            None => std::env::remove_var("PINVOU3_E2E"),
-        }
-    }
-}
-
-struct RemoveE2EOnDrop {
-    previous: Option<String>,
-}
-
-impl RemoveE2EOnDrop {
-    fn clear() -> Self {
-        let previous = std::env::var("PINVOU3_E2E").ok();
-        std::env::remove_var("PINVOU3_E2E");
-        Self { previous }
-    }
-}
-
-impl Drop for RemoveE2EOnDrop {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(value) => std::env::set_var("PINVOU3_E2E", value),
-            None => std::env::remove_var("PINVOU3_E2E"),
-        }
-    }
-}
-
-#[tokio::test]
-async fn verify_upload_refuses_in_production_env() {
-    let _guard = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _restore = RemoveE2EOnDrop::clear();
-    let error = verify_upload("up_testprod".to_string()).await.unwrap_err();
-    assert!(!error.contains(".pinvou3") && !error.contains('/') && !error.contains('\\'));
-    assert!(error.contains("e2e") || error.contains("E2E") || error.contains("disabled"));
-}
-
-#[tokio::test]
-async fn verify_upload_returns_sha256_when_e2e_enabled_and_not_leak_path() {
-    let _home = test_pinvou_home("verify-upload-e2e");
-    let _e2e = TestE2EFlag::enable();
-    let upload_dir = crate::platform::paths::pinvou3_home()
-        .join("uploads")
-        .join("up_ok1");
-    std::fs::create_dir_all(&upload_dir).unwrap();
-    let data = b"hello verify_upload";
-    std::fs::write(upload_dir.join("data.bin"), data).unwrap();
-    let output = verify_upload("up_ok1".to_string()).await.unwrap();
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let expected = crate::platform::encoding::hex_lower(&hasher.finalize());
-    assert_eq!(output.sha256, expected);
-    assert_eq!(output.byte_size, data.len() as u64);
-}
-
-#[tokio::test]
-async fn verify_upload_missing_file_does_not_leak_path_or_distinguish_errors() {
-    let _home = test_pinvou_home("verify-upload-missing");
-    let _e2e = TestE2EFlag::enable();
-    let error = verify_upload("up_missing1".to_string()).await.unwrap_err();
-    assert!(!error.contains(".pinvou3") && !error.contains('/') && !error.contains('\\'));
-    assert!(!error.contains("No such file") && !error.to_lowercase().contains("not found"));
 }
 
 fn session_artifact_path(session_id: &str, name: &str) -> std::path::PathBuf {
