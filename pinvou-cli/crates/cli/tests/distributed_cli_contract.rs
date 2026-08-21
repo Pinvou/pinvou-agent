@@ -473,7 +473,7 @@ fn chat_binary_projects_scripted_controller_events_over_real_ipc() {
     assert!(output.stderr.is_empty());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "You: scripted answer\n"
+        "runtime: none\nswitch: /runtime <id>\ninspect: /detect <id>\nYou: scripted answer\n"
     );
 }
 

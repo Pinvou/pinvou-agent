@@ -559,6 +559,8 @@ fn execute_chat(initial_runtime: Option<&str>) -> Result<String, DistributedErro
                 format!("runtime {} is not ready", selected),
             ));
         }
+    } else {
+        write_chat_startup_banner(&mut output, &mut client)?;
     }
     let stdin = io::stdin();
     let mut input = stdin.lock();
@@ -769,6 +771,14 @@ fn handle_slash_command<S: Read + Write>(
             "unknown chat command",
         )),
     }
+}
+
+fn write_chat_startup_banner<S: Read + Write>(
+    output: &mut impl Write,
+    client: &mut ControllerWire<S>,
+) -> Result<(), DistributedError> {
+    let response = client.runtime_list()?;
+    write_terminal_to(output, &format_runtime_list(response.payload()))
 }
 
 fn chat_help_text() -> &'static str {
@@ -1167,6 +1177,34 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method(), Some("runtime.list"));
         assert!(requests[0].payload().get("text").is_none());
+    }
+
+    #[test]
+    fn chat_startup_banner_prints_active_runtime_without_starting_a_turn() {
+        let list_response = IpcMessage::response(
+            json!(1),
+            json!({
+                "current": "codex",
+                "runtimes": [
+                    {"id": "echo", "label": "Stage 1 Echo", "available": true},
+                    {"id": "codex", "label": "Codex App Server", "available": true}
+                ]
+            }),
+        )
+        .unwrap();
+        let stream = TestDuplex::with_responses([list_response]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let mut output = Vec::new();
+
+        write_chat_startup_banner(&mut output, &mut client).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("runtime: codex"));
+        assert!(output.contains("* codex - Codex App Server (available)"));
+        assert!(output.contains("switch: /runtime <id>"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method(), Some("runtime.list"));
     }
 
     #[test]
