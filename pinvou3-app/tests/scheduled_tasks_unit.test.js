@@ -791,8 +791,12 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     chat: {
       sendMessage: function (text, meta) { return rawBridge.sendMessage(text, meta); },
     },
+    scheduled: {
+      openScheduledRunChat: function (run, task) { return rawBridge.openScheduledRunChat(run, task); },
+    },
     state: {
       get: function () { return rawBridge.getState(); },
+      getMany: function () { return rawBridge.getState(); },
     },
   } : rawBridge;
 
@@ -2256,6 +2260,61 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
     "the queued follow-up should flush only after the scheduled terminal event"
   );
   assert.strictEqual(flushed.busy, true, "the flushed follow-up should own the next busy turn");
+}
+
+async function webFollowupQueuedUntilScheduledInitialTurnTerminal() {
+  // Web-bridge mirror of the case above: the scheduled session's terminal
+  // event must release the remote-authority gate (not arm it), so the queued
+  // follow-up drains instead of dead-locking inside reconcileRemoteTurn.
+  var harness = createBridgeHarness(Object.create(null), {
+    bridgeKind: "web",
+    webSupportedCommands: [
+      "web_access_chat", "web_access_load_session_chunk",
+      "web_access_cancel_session_download", "web_access_list_sessions",
+      "web_access_list_archived_sessions",
+      "web_access_create_session_and_chat", "web_access_create_session",
+      "web_access_status",
+    ],
+  });
+  var bridge = harness.bridge;
+  await bridge.sessions.switchToSession("chat-origin");
+  assert.strictEqual(await bridge.scheduled.openScheduledRunChat({
+    id: "run-followup-web",
+    automationId: "automation-followup-web",
+    sessionId: "sched-followup-web",
+    status: "running",
+    unread: false,
+  }, { id: "automation-followup-web", name: "Follow-up task" }), true);
+  harness.emit("chat:delta", { session_id: "sched-followup-web", text: "initial scheduled output" });
+  var initialAssistantCount = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.filter(function (item) {
+    return item.type === "assistant";
+  }).length;
+
+  await bridge.chat.sendMessage("follow up after the scheduled run");
+  var queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(queued.queued.length, 1, "web: follow-up input must queue while the initial scheduled turn is active");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "web_access_chat" || call.cmd === "chat"; }).length,
+    0,
+    "web: a queued follow-up must not overlap the scheduled engine turn"
+  );
+  assert.strictEqual(
+    queued.chatItems.filter(function (item) { return item.type === "assistant"; }).length,
+    initialAssistantCount,
+    "web: queueing a follow-up must not create an overlapping assistant placeholder"
+  );
+
+  harness.emit("chat:done", { session_id: "sched-followup-web" });
+  await tick();
+  await tick();
+  var flushed = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(flushed.queued.length, 0, "web: the queued follow-up must drain after the scheduled terminal event");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "web_access_chat" || call.cmd === "chat"; }).length,
+    1,
+    "web: exactly one follow-up chat call should be issued after the scheduled terminal"
+  );
+  assert.strictEqual(flushed.busy, true, "web: the flushed follow-up should own the next busy turn");
 }
 
 async function terminalEventWinsStaleRunningOpen() {
@@ -5379,6 +5438,7 @@ Promise.resolve()
   .then(scheduledRunUnreadBehavior)
   .then(openingRunningMarksBusyBeforeHydration)
   .then(followupQueuedUntilScheduledInitialTurnTerminal)
+  .then(webFollowupQueuedUntilScheduledInitialTurnTerminal)
   .then(terminalEventWinsStaleRunningOpen)
   .then(completedRunReopenPreservesStreamingFollowup)
   .then(scheduledDoneBeforeBufferCreatesTerminalTombstone)

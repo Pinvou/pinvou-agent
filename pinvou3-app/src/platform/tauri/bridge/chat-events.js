@@ -814,11 +814,16 @@
       doneBuffer.remoteTerminalSeen = true;
       doneBuffer.busy = false;
       if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
-    } else if (completedLocalTurn) {
+    } else if (completedLocalTurn || !requiresAuthorityReconcile) {
       // The desktop owns this turn and Rust has already persisted its terminal
       // transcript before emitting chat:done. Do not convert a completed local
       // turn into a remote authority gate: a best-effort readback failure must
-      // never block the user's next local message.
+      // never block the user's next local message. Scheduled-run sessions skip
+      // transcript reconciliation entirely (Rust owns the durable transcript),
+      // so the same full release applies: markRemoteTurn may have armed the
+      // remote-authority gate during the streamed turn, and a stale gate would
+      // send flushQueued into reconcileRemoteTurn, whose write-ownership
+      // busy check then deadlocks the queued follow-up forever.
       doneBuffer.deferredRemoteUserEvent = null;
       doneBuffer.localTurnOwned = false;
       doneBuffer.remoteTurnActive = false;
