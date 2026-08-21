@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 
 import { AlertTriangle, Mic, Sparkles, StopCircle, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
@@ -13,9 +13,6 @@ import {
   isVoiceCaptureActive,
 } from './pinvou-os-voice-control.js';
 import {
-  getNextTurnFeedbackDelay,
-  getTurnFeedback,
-  latestOpenTurnStart,
   queuedMessagePresentations,
   visibleUnqueuedUtterance,
 } from './pinvou-os-interjection.js';
@@ -94,7 +91,6 @@ export function PinvouOsVoiceShell({ theme, t, bs, onSubmitPrompt }) {
   const busy = Boolean(bs && bs.busy);
   const chatItems = (bs && bs.chatItems) || [];
   const queued = (bs && bs.queued) || [];
-  const turnTimeline = (bs && bs.turnTimeline) || [];
   const currentAssistant = useMemo(() => latestAssistantPresentation(chatItems), [chatItems]);
   const currentAssistantText = currentAssistant.text;
   const pendingUserInput = useMemo(
@@ -111,7 +107,6 @@ export function PinvouOsVoiceShell({ theme, t, bs, onSubmitPrompt }) {
   const [submitError, setSubmitError] = useState('');
   const [baselineArtifactId, setBaselineArtifactId] = useState('');
   const [artifactBrowser, setArtifactBrowser] = useState(null);
-  const [turnFeedbackNow, setTurnFeedbackNow] = useState(() => Date.now());
   const submissionRef = useRef('');
 
   const requesting = voiceInput.status === 'requesting_permission';
@@ -136,31 +131,11 @@ export function PinvouOsVoiceShell({ theme, t, bs, onSubmitPrompt }) {
     && (!interactionStarted || itemIdentity(latestArtifact) !== baselineArtifactId)
     ? latestArtifact
     : null;
-  const openTurnStart = useMemo(() => latestOpenTurnStart(turnTimeline), [turnTimeline]);
   const queuedMessages = useMemo(() => queuedMessagePresentations(queued), [queued]);
   const visibleLastUtterance = useMemo(
     () => visibleUnqueuedUtterance(lastUtterance, queued),
     [lastUtterance, queued],
   );
-  const turnFeedback = busy ? getTurnFeedback(turnTimeline, turnFeedbackNow) : null;
-
-  useEffect(() => {
-    if (!busy || !openTurnStart) return undefined;
-
-    let timerId;
-    const refreshAtNextBoundary = () => {
-      const now = Date.now();
-      setTurnFeedbackNow(now);
-      const delay = getNextTurnFeedbackDelay(turnTimeline, now);
-      if (delay != null) {
-        timerId = window.setTimeout(refreshAtNextBoundary, delay + 25);
-      }
-    };
-
-    refreshAtNextBoundary();
-    return () => window.clearTimeout(timerId);
-  }, [busy, openTurnStart && openTurnStart.turn_id, openTurnStart && openTurnStart.timestamp]);
-
   async function submitRecognizedText(text) {
     const prompt = String(text || '').trim();
     if (!prompt || submissionRef.current === prompt) return;
@@ -194,13 +169,6 @@ export function PinvouOsVoiceShell({ theme, t, bs, onSubmitPrompt }) {
   }
 
   const statusLabel = voiceStatusLabel(voiceInput, t);
-  const turnFeedbackLabel = turnFeedback
-    ? turnFeedback.phase === 'extended'
-      ? t.voiceTurnFeedbackExtended
-      : turnFeedback.phase === 'long'
-        ? t.voiceTurnFeedbackLong
-        : t.voiceTurnFeedbackReady
-    : '';
   const openArtifactBrowser = request => {
     setArtifactBrowser(current => current || request);
   };
@@ -268,28 +236,14 @@ export function PinvouOsVoiceShell({ theme, t, bs, onSubmitPrompt }) {
                   <ArtifactCard item={visibleArtifact} theme={theme} t={t} onOpen={openArtifactBrowser} />
                 </div>
               )}
-              {busy && turnFeedbackLabel && (
-                <p
-                  className="pinvou-os-turn-feedback is-inline"
-                  data-feedback-phase={turnFeedback.phase}
-                  data-testid="pinvou-os-turn-feedback"
-                >
-                  {turnFeedbackLabel}
-                </p>
-              )}
             </div>
           ) : (
-            <div className="pinvou-os-thinking" data-feedback-phase={turnFeedback ? turnFeedback.phase : 'initial'}>
+            <div className="pinvou-os-thinking">
               <div className="pinvou-os-thinking-dots" aria-hidden="true">
                 <span />
                 <span />
                 <span />
               </div>
-              {turnFeedbackLabel && (
-                <p className="pinvou-os-turn-feedback" data-testid="pinvou-os-turn-feedback">
-                  {turnFeedbackLabel}
-                </p>
-              )}
             </div>
           )}
         </main>

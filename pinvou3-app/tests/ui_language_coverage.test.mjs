@@ -54,9 +54,6 @@ for (const language of ['zh', 'en', 'ja']) {
   assert.ok(dict[language].voiceQueuedRegion, `${language}.voiceQueuedRegion must exist`);
   assert.ok(dict[language].voiceQueuedStatus, `${language}.voiceQueuedStatus must exist`);
   assert.equal(typeof dict[language].voiceQueuedCancel, 'function', `${language}.voiceQueuedCancel must be a function`);
-  assert.ok(dict[language].voiceTurnFeedbackReady, `${language}.voiceTurnFeedbackReady must exist`);
-  assert.ok(dict[language].voiceTurnFeedbackLong, `${language}.voiceTurnFeedbackLong must exist`);
-  assert.ok(dict[language].voiceTurnFeedbackExtended, `${language}.voiceTurnFeedbackExtended must exist`);
   assert.ok(dict[language].uiChat.memoryMeta.preference, `${language}.uiChat.memoryMeta.preference must exist`);
   assert.ok(dict[language].uiChat.sceneModes.personalWorkbench, `${language}.uiChat.sceneModes.personalWorkbench must exist`);
   assert.ok(dict[language].uiChat.sceneModes.documentWriting, `${language}.uiChat.sceneModes.documentWriting must exist`);

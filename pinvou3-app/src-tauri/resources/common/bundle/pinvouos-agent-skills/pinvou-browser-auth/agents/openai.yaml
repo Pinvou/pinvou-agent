@@ -1,0 +1,4 @@
+interface:
+  display_name: "PinvouOS Browser Authorization"
+  short_description: "Complete and verify QQ Music WeChat authorization"
+  default_prompt: "Use $pinvou-browser-auth to start and verify QQ Music WeChat browser authorization."

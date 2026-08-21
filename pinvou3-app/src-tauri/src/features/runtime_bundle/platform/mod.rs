@@ -25,9 +25,10 @@ static LARK_SKILLS_DIR: Dir<'_> =
 static PINVOUOS_AGENT_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/pinvouos-agent-skills");
 
-const PINVOUOS_AGENT_SKILL_DIRS: [&str; 10] = [
+const PINVOUOS_AGENT_SKILL_DIRS: [&str; 11] = [
     "pinvou-orchestrator",
     "pinvou-screen-observer",
+    "pinvou-browser-auth",
     "pinvou-resource",
     "pinvou-connectivity",
     "pinvou-inference",
@@ -107,7 +108,8 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.20: 多智能体深度上限调整为两层，正数覆盖仍拦截
 /// 0.21: 增加 PinvouOS 后台系统 Agent 的内置 skills
 /// 0.22: pinvou-surface 迁移为无 A2UI 歧义的 pinvou-screen-observer
-pub const BUNDLE_VERSION: &str = concat!("0.22-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.23: 增加 QQ 音乐微信登录的持久浏览器授权 broker skill
+pub const BUNDLE_VERSION: &str = concat!("0.23-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
@@ -131,7 +133,6 @@ fn work_layer_sections() -> (&'static str, &'static str) {
 }
 
 /// work 模式完整 instructions（共享骨架 + work 层占位替换）。
-/// 与拆分前 instructions.md 逐字节相等（golden 测试 `work_instructions_render_byte_identical_to_legacy` 锁定）。
 pub fn instructions_md() -> &'static str {
     static RENDERED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     RENDERED.get_or_init(|| {
@@ -365,6 +366,19 @@ mod tests {
         let tools_at = INSTRUCTIONS_SHARED_MD.find("## 工具与事实").unwrap();
         let how_at = INSTRUCTIONS_SHARED_MD.find("## 怎么干").unwrap();
         assert!(env_at < tools_at && tools_at < artifact_at && artifact_at < how_at);
+    }
+
+    #[test]
+    fn shared_qqmusic_wechat_auth_discipline_is_byte_stable_in_both_modes() {
+        const RULE: &str = "- **QQ 音乐微信扫码授权**:仅在 QQ 音乐需要微信扫码登录时加载 `pinvou-browser-auth`;授权完成前保持浏览器 / 回调上下文存活,扫码等待与恢复用 `request_user_input` 卡片(不要催用户扫码后再说一句),QQ 音乐真实校验通过前不得声称成功;其他 OAuth / 平台不得路由到该 skill。";
+
+        assert!(INSTRUCTIONS_SHARED_MD.contains(RULE));
+        assert!(!INSTRUCTIONS_SHARED_MD.contains("**浏览器扫码 / OAuth**"));
+        assert!(instructions_md().contains(RULE));
+        assert!(
+            instructions_code_md("你在本会话专属工作目录中工作,相对路径即相对该目录;")
+                .contains(RULE)
+        );
     }
 
     #[test]
@@ -808,6 +822,42 @@ mod tests {
                 "missing UI metadata for {skill}"
             );
         }
+        cleanup(&tmp);
+    }
+
+    #[test]
+    fn browser_auth_skill_materializes_bounded_safe_broker() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+
+        bundle.write_builtin_skills().unwrap();
+
+        let skill = bundle.skills_dir.join("pinvou-browser-auth");
+        let script = skill.join("scripts/qqmusic_wechat_auth.py");
+        let content = std::fs::read_to_string(&script).unwrap();
+        assert!(skill.join("SKILL.md").is_file());
+        assert!(skill.join("agents/openai.yaml").is_file());
+        assert!(script.is_file());
+        assert!(content.contains("systemd-run"));
+        assert!(content.contains("input.performActions"));
+        assert!(content.contains("storage.getCookies"));
+        assert!(content.contains("MAX_TTL_SECONDS = 300"));
+        assert!(content.contains(
+            "PROCESS_ACTIVE_LIFETIME_SECONDS = MAX_TTL_SECONDS - PROCESS_CLEANUP_GUARD_SECONDS"
+        ));
+        assert!(content.contains("os.killpg"));
+        assert!(content.contains("fcntl.flock"));
+        assert!(content.contains("prior_verified"));
+        assert!(content.contains("signal.setitimer(signal.ITIMER_REAL"));
+        assert!(content.contains("ProxyHandler({})"));
+        assert!(content.contains("class StdlibWebSocket"));
+        assert!(content.contains("\"cancelled\""));
+        assert!(!content.contains("import websocket"));
+        assert!(!content.contains("pkill"));
+        assert!(!content.contains("time.sleep(10"));
+        assert!(!content.contains("time.sleep(15"));
         cleanup(&tmp);
     }
 

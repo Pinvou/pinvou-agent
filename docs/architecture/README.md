@@ -24,7 +24,7 @@
 2. 产品领域没有 Session。旧 Session/thread/conversation 只能作为迁移期私有执行缓存，不能成为身份、任务、记忆、前端协议或账本主键。
 3. Front 的 Direct 路径最多三轮工具批次；这是 Engine 防止无界工具循环的安全上限，不是前台时间预算、三秒承诺或应当用满的配额。明显复杂、涉及慢工具或需要调查→实施→验证时，Prompt 契约要求尽早通过 `agent(profile="pinvou-orchestrator")` 委派。该 happy-path 已验证，但唯一 profile 与同批单实例尚未内核化。
 4. 普通 VoiceShell / chat turn 运行时，本机仍可提交语音，兼容/远端文字入口也可继续提交；Host 把新输入放入可见、可撤销的内存 FIFO，只在整个当前 turn 到达 terminal 后逐条发送。快速 Hold 先给排队项一个 Engine mailbox 线性化点；队首真正成为本地 turn 前还必须通过 `Acquire → Applied → Confirm → Confirmed(active)` 两阶段 barrier，Host 与 backend 都在 reserve、`localTurnOwned` 和乐观回答之前复核。若 detached completion 已先启动，它不会被回卷，而是先作为独立、非授权的 runtime turn 完整收口；排队项保持可见，barrier 随后才放行。VoiceShell 本身尚无文字输入框；不同 Host 各有自己的 FIFO，并不合并成全局队列。该机制不是模型请求或工具批次的实时 interrupt / steering，进程重启或页面重载也不能恢复队列；旧 plan-accept / edit 入口尚未纳入这条 turn lease 保证。
-5. `3 / 15 / 30` 秒只控制 VoiceShell 的等待反馈文案，不会取消请求、抢占工具、自动 handoff 或改变 Engine 状态；当前没有 `45s` 硬 lease。语音采集的开始、停止与取消不受 generation busy 控制，采集期间新 summary / artifact 延后显示。
+5. VoiceShell 不再按 `3 / 15 / 30` 秒显示催促用户继续说话的等待文案；顶部只根据 Runtime 的真实 `running` 状态显示持续工作动效。该展示不取消请求、不抢占工具、不自动 handoff，也不改变 Engine 状态；当前没有 `45s` 硬 lease。语音采集的开始、停止与取消不受 generation busy 控制，采集期间新 summary / artifact 延后显示。
 6. Runtime Ledger 是业务事实与可恢复意图的唯一耐久来源。AG-UI state、A2UI data model、客户端 store、插话 FIFO 和 Memory projection 都不是第二真相源。
 7. Policy Agent 负责评估 `Allow / Deny / RequireConfirmation`；Kernel/AuthorityStore 负责强制。Front 不能取消硬拒绝，也不能隐藏系统确认。
 8. A2UI Surface 写权分区：`projection/*` 只归 Runtime Projector，`front/*` 只归 Front，`system/*` 只归 Kernel/Host。界面感知 Agent（Screen Observer Agent）只观察窗口与可访问性场景，没有 A2UI 写权。

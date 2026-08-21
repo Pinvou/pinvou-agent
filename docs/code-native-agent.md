@@ -56,7 +56,8 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 原唯一 prompt 来源 `bundle/instructions.md` 拆为 `instructions-shared.md`（身份/底线/工具纪律/红线/输出，骨架含两个模式层占位行）与 `instructions-work.md`（产出物面板/tmp 语义、present_artifact 条）。
 - 代码会话 = 骨架 + `instructions-code.md`（代码身份头、工作区段含项目路径占位符、代码场景纪律：就地修改/不建 tmp//git 纪律/范围纪律/验证纪律/交付汇报）+ **底座 `CORE_EXECUTION_PROFILE_PROMPT` 原样引用**（Rust 渲染层拼接 `deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT`，零文本复制，上游更新自动跟随）。
 - 未引入底座 `BASE_PROMPT`（含 "You are Codewhale" 身份；其权威顺序/防编造干货在共享层 §底线已有等价物）。
-- 工作会话渲染结果与拆分前**逐字节相等**（golden 测试内嵌 33 行原文快照断言）。
+- 共享层只为 QQ 音乐微信扫码授权加载 `pinvou-browser-auth`：保持授权上下文，以 `request_user_input` 卡片承接等待与恢复，并以 QQ 音乐真实校验作为成功门槛；其他 OAuth / 平台不路由到该 skill，精确文案由 Rust prompt golden 同时锁定 work/code 渲染结果。
+- 工作/代码会话的共享纪律由精确行级 golden 约束，模式占位位置与分支渲染另有结构测试。
 - 工具整形：代码会话 `disallowed_tools` 追加 `mcp_pinvou3_present_artifact`（恒隐藏，code 无产物卡语义）；`load_skill` 按**该会话组合目录是否为空**动态决定（skill 双 scope 治理后，非空 → 放行；空 → 隐藏，避免"开关开着但没技能"的假状态）。spawn 初值与 `set_disallowed_all` 热刷统一经 `bridge.shape_disallowed_tools`（策略取值见 §3.6，目录判定见 §8.6）。
 
 ### 3.5 配置控件复用策略
