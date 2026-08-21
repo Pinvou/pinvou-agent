@@ -378,11 +378,12 @@ fn ensure_controller() -> Result<LiveController, DistributedError> {
         return Ok(client);
     }
     let executable = controller_executable()?;
+    let controller_args = controller_args_for_test();
     DetachedLaunch::for_platform(
         HostPlatform::current()
             .map_err(|_| DistributedError::controller("controller platform is unsupported"))?,
     )
-    .spawn(&executable, &[])
+    .spawn(&executable, &controller_args)
     .map_err(|_| DistributedError::controller("controller could not be started"))?;
     let deadline = Instant::now() + READY_TIMEOUT;
     while Instant::now() < deadline {
@@ -396,6 +397,16 @@ fn ensure_controller() -> Result<LiveController, DistributedError> {
     Err(DistributedError::controller(
         "controller did not become healthy before timeout",
     ))
+}
+
+fn controller_args_for_test() -> Vec<&'static str> {
+    #[cfg(debug_assertions)]
+    {
+        if std::env::var_os("PINVOU_CONTROLLER_ONCE_FOR_TEST").is_some() {
+            return vec!["--once-for-test"];
+        }
+    }
+    Vec::new()
 }
 
 fn controller_executable() -> Result<PathBuf, DistributedError> {

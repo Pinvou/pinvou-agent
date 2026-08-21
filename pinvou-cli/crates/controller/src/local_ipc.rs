@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use pinvou_protocol::{HelloClient, HelloServer, IpcMessage, encode_frame, read_frame};
+use pinvou_protocol::{FrameError, HelloClient, HelloServer, IpcMessage, encode_frame, read_frame};
 
 use crate::{ControllerError, ControllerSession, HostPlatform, LocalEndpoint, RollingLog};
 
@@ -65,6 +65,15 @@ impl LocalIpcListener {
         self.spawn_worker(session, None)
     }
 
+    #[cfg(debug_assertions)]
+    pub(crate) fn serve_one_blocking(
+        &mut self,
+        session: &ControllerSession,
+    ) -> Result<(), ControllerError> {
+        let mut connection = self.inner.accept()?;
+        serve_connection(&mut connection, session)
+    }
+
     pub(crate) fn serve_one_logged(
         &mut self,
         session: &ControllerSession,
@@ -118,9 +127,13 @@ fn serve_connection(
     stream.verify_peer()?;
     let answer: HelloServer = session.accept_hello(hello)?;
     stream.write_all(&encode_frame(&answer).map_err(|_| ControllerError::InvalidMessage)?)?;
+    let mut handled_requests = false;
     loop {
-        let request: IpcMessage =
-            read_frame(stream).map_err(|_| ControllerError::InvalidMessage)?;
+        let request: IpcMessage = match read_frame(stream) {
+            Ok(request) => request,
+            Err(FrameError::Io) if handled_requests => return Ok(()),
+            Err(_) => return Err(ControllerError::InvalidMessage),
+        };
         let responses = session.handle_bound_many(request)?;
         for response in responses {
             stream.write_all(
@@ -128,6 +141,7 @@ fn serve_connection(
             )?;
         }
         stream.flush()?;
+        handled_requests = true;
     }
 }
 

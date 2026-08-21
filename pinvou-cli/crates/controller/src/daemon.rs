@@ -57,6 +57,10 @@ pub fn run_from_env() -> Result<(), ControllerError> {
             println!("controller configuration ok");
             Ok(())
         }
+        #[cfg(debug_assertions)]
+        (Some(flag), None) if flag == "--once-for-test" => {
+            run_controller_once_with_local_node_for_test()
+        }
         (None, None) => run_controller(),
         _ => Err(ControllerError::Usage),
     }
@@ -142,8 +146,48 @@ pub fn run_controller_once_for_test(
     let mut listener = LocalIpcListener::bind(paths.endpoint())
         .map_err(controller_context("bind controller IPC"))?;
     let _ = ready.send(());
-    listener.serve_one(&session)?;
+    listener.serve_one_blocking(&session)?;
     Ok(())
+}
+
+#[cfg(debug_assertions)]
+fn run_controller_once_with_local_node_for_test() -> Result<(), ControllerError> {
+    let paths = ControllerPaths::discover()?;
+    paths
+        .prepare_data_root()
+        .map_err(controller_context("prepare controller data root"))?;
+    let _lock = InstanceLock::acquire(paths.lock_file())
+        .map_err(controller_context("acquire controller lock"))?;
+    let instance_id = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ControllerError::InvalidMessage)?
+            .as_nanos()
+    );
+    let node_instance_id = format!("node-{instance_id}");
+    let node_spec = LocalNodeSpec::for_controller(
+        &paths,
+        sibling_node_executable()?,
+        node_instance_id.clone(),
+    )?;
+    let node_endpoint = node_spec.endpoint().to_owned();
+    let mut node_supervisor = LocalNodeSupervisor::new(node_spec);
+    node_supervisor.start().map_err(|error| match error {
+        ControllerError::Io(source) => ControllerError::IoContext {
+            context: "start local node",
+            source,
+        },
+        other => other,
+    })?;
+    let session = ControllerSession::with_local_node(instance_id, node_endpoint, node_instance_id)?;
+    let mut listener = LocalIpcListener::bind(paths.endpoint())
+        .map_err(controller_context("bind controller IPC"))?;
+    let result = listener.serve_one_blocking(&session);
+    let stop = node_supervisor.stop();
+    result?;
+    stop
 }
 
 fn controller_context(context: &'static str) -> impl FnOnce(ControllerError) -> ControllerError {

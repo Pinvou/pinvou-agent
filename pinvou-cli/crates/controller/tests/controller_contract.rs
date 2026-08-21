@@ -1,8 +1,10 @@
 use std::io::Write;
 
+#[cfg(debug_assertions)]
+use pinvou_controller::run_controller_once_for_test;
 use pinvou_controller::{
     ControllerError, ControllerPaths, ControllerSession, DetachedLaunch, HostPlatform,
-    InstanceLock, LocalIpcListener, LocalIpcPolicy, RollingLog, run_controller_once_for_test,
+    InstanceLock, LocalIpcListener, LocalIpcPolicy, RollingLog,
 };
 use pinvou_protocol::{
     HelloClient, HelloServer, IpcMessage, StableExitCode, encode_frame, read_frame,
@@ -160,6 +162,7 @@ fn hello_challenge_and_health_request_have_stable_contracts() {
     assert_eq!(mismatch.exit_code(), StableExitCode::ControllerUnavailable);
 }
 
+#[cfg(debug_assertions)]
 #[test]
 fn debug_one_shot_controller_serves_one_client_and_releases_the_endpoint() {
     let root = temp_dir("one-shot");
@@ -429,10 +432,12 @@ fn uds_client(socket: &std::path::Path, client: usize) {
     }
 }
 
+#[cfg(debug_assertions)]
 trait ContractReadWrite: std::io::Read + std::io::Write {}
+#[cfg(debug_assertions)]
 impl<T: std::io::Read + std::io::Write> ContractReadWrite for T {}
 
-#[cfg(windows)]
+#[cfg(all(debug_assertions, windows))]
 fn connect_contract_endpoint(endpoint: &str) -> std::io::Result<Box<dyn ContractReadWrite>> {
     Ok(Box::new(
         std::fs::OpenOptions::new()
@@ -442,7 +447,7 @@ fn connect_contract_endpoint(endpoint: &str) -> std::io::Result<Box<dyn Contract
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(debug_assertions, target_os = "linux"))]
 fn connect_contract_endpoint(endpoint: &str) -> std::io::Result<Box<dyn ContractReadWrite>> {
     Ok(Box::new(std::os::unix::net::UnixStream::connect(endpoint)?))
 }

@@ -340,6 +340,7 @@ fn runtime_detect_binary_uses_the_real_controller_ipc_wire() {
     assert_eq!(value["protocol_version"], pinvou_protocol::IPC_VERSION);
 }
 
+#[cfg(debug_assertions)]
 #[test]
 fn chat_binary_projects_scripted_controller_events_over_real_ipc() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -431,9 +432,129 @@ fn chat_binary_projects_scripted_controller_events_over_real_ipc() {
     );
 }
 
+#[test]
+fn chat_binary_auto_starts_controller_and_real_node_for_one_turn() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let controller = build_daemon_binaries().join(binary_name("pinvou-controller"));
+    let node = sibling_node(&controller);
+    assert!(
+        node.is_file(),
+        "pinvou-node must be built beside controller"
+    );
+    let unique = format!(
+        "pinvou-cli-auto-chat-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(&unique);
+    std::fs::create_dir_all(root.join("runtime")).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .args(["chat"])
+        .env("LOCALAPPDATA", &root)
+        .env("HOME", &root)
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+        .env("PINVOU_CONTROLLER_SESSION_SCOPE_FOR_TEST", &unique)
+        .env("PINVOU_ASSUME_INTERACTIVE_TTY_FOR_TEST", "1")
+        .env("PINVOU_CONTROLLER_EXE", &controller)
+        .env("PINVOU_CONTROLLER_ONCE_FOR_TEST", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"real node echo\n")
+        .unwrap();
+    let output = wait_for_child_output(child, Duration::from_secs(15));
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "You: real node echo\n"
+    );
+}
+
 fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {
     match previous {
         Some(value) => unsafe { std::env::set_var(name, value) },
         None => unsafe { std::env::remove_var(name) },
     }
+}
+
+fn wait_for_child_output(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> std::process::Output {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            return child.wait_with_output().unwrap();
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "pinvou chat timed out after {:?}; stdout={} stderr={}",
+                timeout,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn sibling_node(controller: &std::path::Path) -> std::path::PathBuf {
+    controller
+        .parent()
+        .unwrap()
+        .join(binary_name("pinvou-node"))
+}
+
+fn binary_name(stem: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("{stem}.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        stem.to_owned()
+    }
+}
+
+fn build_daemon_binaries() -> std::path::PathBuf {
+    let workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .unwrap()
+        .to_path_buf();
+    let status = Command::new(env!("CARGO"))
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            "pinvou-controller",
+            "-p",
+            "pinvou-node",
+            "--no-default-features",
+        ])
+        .current_dir(&workspace)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    workspace.join("target/debug")
 }
