@@ -335,9 +335,11 @@ pub fn run() {
             let remote_control_manager = RemoteControlManager::new(app.handle().clone());
             let remote_event_transport = remote_control_manager.clone();
             let remote_event_subscriptions = remote_control_manager.clone();
+            let remote_event_endpoint = remote_control_manager.clone();
             app.handle().manage(platform::app_events::AppEventBus::new(
                 move |event, payload| remote_event_transport.forward_local_event(event, payload),
                 move |event| remote_event_subscriptions.has_active_subscription(event),
+                move || remote_event_endpoint.has_active_web_transport(),
             ));
             app.handle().manage(remote_control_manager.clone());
             app.handle()

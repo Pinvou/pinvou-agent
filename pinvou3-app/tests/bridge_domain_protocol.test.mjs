@@ -81,7 +81,7 @@ const protocolSources = {
 const expectedProtocolHashes = {
   multiAgent: '6896409bb406f1ba54ca496dd78c04549cc78ff5490ae771d9cf60586368a8a8',
   orchestration: 'c0c6a17672d1b8e6a99d69dd354589d765fe2d62a23dd6401c3c58122c7e3ddf',
-  artifacts: '8cb9d3ed6f72db0bc609b13e19e829b32d75401f824e2788532fb5f6f7002495',
+  artifacts: 'ac845fefca76872b99fefb51baae7e4722dcfc130d6eca12c971eeac7b4c678c',
   chat: '2f0e3a49e535b7d19238b3cb0f6c85f74b57a55b35a555de57fe43cab24c7a31',
   dependencies: '257468e4f9e2e9270de6ef75f685d5eafcd000226d44cfb81a1b04c0e7615707',
   interaction: '255474b88418fcaf371b77b27545fbfb529fbbceb1af9010ac49881082384270',

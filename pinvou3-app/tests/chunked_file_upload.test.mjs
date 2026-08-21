@@ -90,4 +90,55 @@ await assert.rejects(
   error => error.code === 'device_upload_too_large',
 );
 
+// SHA-256 integrity: when Web Crypto is available, the whole-file digest rides
+// the committing chunk; a transport without crypto (or integrity: false)
+// sends no digest instead of failing.
+{
+  const digestBytes = Uint8Array.from({ length: 32 }, (_, index) => index);
+  const digestHex = Array.from(digestBytes, byte => (byte + 0x100).toString(16).slice(1)).join('');
+  const cryptoWindow = {
+    btoa: windowObject.btoa,
+    crypto: { subtle: { digest: async () => digestBytes } },
+  };
+  vm.runInNewContext(source, { window: cryptoWindow }, { filename: 'chunked-file-upload.js' });
+  const cryptoUploader = cryptoWindow.PinvouChunkedFileUpload;
+  const file = fileOfSize(10, 'hashed.txt');
+  file.arrayBuffer = async () => bytesOf(10).buffer;
+  function bytesOf(size) {
+    return Uint8Array.from({ length: size }, (_, index) => index % 251);
+  }
+  const seen = [];
+  await cryptoUploader.uploadFile({
+    file,
+    uploadId: 'upload_hashed',
+    async sendChunk(chunk) { seen.push(chunk); return chunk.commit ? { handle: 'ok' } : null; },
+    validateResult: () => true,
+  });
+  assert.equal(seen.at(-1).sha256, digestHex, 'commit chunk must carry the whole-file digest');
+  assert.ok(seen.slice(0, -1).every(chunk => chunk.sha256 === undefined));
+
+  // integrity: false skips hashing entirely.
+  const plain = [];
+  const plainFile = fileOfSize(10, 'plain.txt');
+  plainFile.arrayBuffer = async () => { throw new Error('must not hash'); };
+  await cryptoUploader.uploadFile({
+    file: plainFile,
+    uploadId: 'upload_plain',
+    integrity: false,
+    async sendChunk(chunk) { plain.push(chunk); return chunk.commit ? { handle: 'ok' } : null; },
+    validateResult: () => true,
+  });
+  assert.ok(plain.every(chunk => chunk.sha256 === undefined));
+
+  // A File without arrayBuffer degrades to an unchecked transfer, not a crash.
+  const degraded = [];
+  await cryptoUploader.uploadFile({
+    file: fileOfSize(10, 'degraded.txt'),
+    uploadId: 'upload_degraded',
+    async sendChunk(chunk) { degraded.push(chunk); return chunk.commit ? { handle: 'ok' } : null; },
+    validateResult: () => true,
+  });
+  assert.ok(degraded.every(chunk => chunk.sha256 === undefined));
+}
+
 console.log('chunked file upload tests passed');

@@ -11,21 +11,25 @@ use tauri::{AppHandle, Manager};
 
 type EventForwarder = dyn Fn(&str, Value) + Send + Sync + 'static;
 type EventSubscriberProbe = dyn Fn(&str) -> bool + Send + Sync + 'static;
+type TransportProbe = dyn Fn() -> bool + Send + Sync + 'static;
 
 #[derive(Clone)]
 pub struct AppEventBus {
     forwarder: Arc<EventForwarder>,
     subscriber_probe: Arc<EventSubscriberProbe>,
+    transport_probe: Arc<TransportProbe>,
 }
 
 impl AppEventBus {
     pub fn new(
         forwarder: impl Fn(&str, Value) + Send + Sync + 'static,
         subscriber_probe: impl Fn(&str) -> bool + Send + Sync + 'static,
+        transport_probe: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Self {
         Self {
             forwarder: Arc::new(forwarder),
             subscriber_probe: Arc::new(subscriber_probe),
+            transport_probe: Arc::new(transport_probe),
         }
     }
 
@@ -35,6 +39,13 @@ impl AppEventBus {
 
     pub fn has_active_subscriber(&self, event: &str) -> bool {
         (self.subscriber_probe)(event)
+    }
+
+    /// Whether an optional transport is configured at all, independent of the
+    /// current subscription handshake. Producers use this to decide whether
+    /// journaling (replay coverage) is required while a consumer reconnects.
+    pub fn has_active_transport(&self) -> bool {
+        (self.transport_probe)()
     }
 }
 
@@ -54,6 +65,14 @@ pub fn has_active_app_event_subscriber(app: &AppHandle, event: &str) -> bool {
         .is_some_and(|events| events.has_active_subscriber(event))
 }
 
+/// Return whether an optional transport exists at all, even if its consumer is
+/// momentarily disconnected. Events emitted now still need journaling so the
+/// consumer's reconnect replay covers the disconnect window.
+pub fn has_active_app_event_transport(app: &AppHandle) -> bool {
+    app.try_state::<AppEventBus>()
+        .is_some_and(|events| events.has_active_transport())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,6 +87,7 @@ mod tests {
                 forwarded.fetch_add(1, Ordering::Relaxed);
             },
             |event| event == "acp:event",
+            || true,
         );
 
         assert!(bus.has_active_subscriber("acp:event"));
@@ -76,5 +96,12 @@ mod tests {
 
         bus.forward("acp:event", Value::Null);
         assert_eq!(forwards.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn transport_probe_reports_configured_transport_without_subscribers() {
+        let bus = AppEventBus::new(|_, _| (), |_event| false, || true);
+        assert!(!bus.has_active_subscriber("acp:event"));
+        assert!(bus.has_active_transport());
     }
 }

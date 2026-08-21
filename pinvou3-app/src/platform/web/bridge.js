@@ -235,7 +235,6 @@
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
     attachments: [],
-    attachmentDragActive: false,
     // token 预算（input_tokens / maxModelLen）
     tokens: { input: 0, max: 32768 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
@@ -5103,9 +5102,18 @@
     state.composerPrefill = { id: (state.composerPrefill.id || 0) + 1, text: String(text || "") };
     notify();
   }
-  // 撤销一条待发消息(点 chip 的 ✕)。
+  // 撤销一条待发消息(点 chip 的 ✕)。排队项携带的附件句柄同步释放,
+  // 与桌面端 removeQueued 的 discard 语义对齐。
   function removeQueued(id) {
-    state.queued = state.queued.filter(function (q) { return q.id !== id; });
+    var removed = null;
+    state.queued = state.queued.filter(function (q) {
+      if (q.id !== id) return true;
+      removed = q;
+      return false;
+    });
+    if (removed && Array.isArray(removed.attachments)) {
+      removed.attachments.forEach(releaseAttachmentOnDesktop);
+    }
     notify();
   }
 
@@ -7915,7 +7923,10 @@
     } catch (e) { addSystemItem(bt("pasteImageFailed") + e); }
   }
   function releaseAttachmentOnDesktop(attachment) {
-    var handle = attachment && attachment.result && attachment.result.handle;
+    // Accepts a composer attachment ({ result, uploadId }) or a bare
+    // WebAttachmentSummary ({ handle }) carried by a queued message.
+    var handle = attachment
+      && (attachment.result ? attachment.result.handle : attachment.handle);
     if (handle && canInvoke("web_access_discard_attachment")) {
       invoke("web_access_discard_attachment", { handle: handle }).catch(function () {});
       return;
@@ -7976,6 +7987,7 @@
             total: chunk.total,
             dataBase64: chunk.dataBase64,
             commit: chunk.commit,
+            ...(chunk.sha256 ? { sha256: chunk.sha256 } : {}),
           });
         },
         onProgress: function (progress) { att.progress = progress; notify(); },

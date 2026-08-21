@@ -1,3 +1,4 @@
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -248,10 +249,13 @@ pub async fn append_draft_chunk(
     total: usize,
     data: &[u8],
     commit: bool,
+    sha256: Option<&str>,
 ) -> Result<Option<IngestResult>, String> {
     let workspace = draft_attachment_workspace();
-    append_draft_chunk_in_workspace(&workspace, upload_id, filename, offset, total, data, commit)
-        .await
+    append_draft_chunk_in_workspace(
+        &workspace, upload_id, filename, offset, total, data, commit, sha256,
+    )
+    .await
 }
 
 async fn append_draft_chunk_in_workspace(
@@ -262,8 +266,44 @@ async fn append_draft_chunk_in_workspace(
     total: usize,
     data: &[u8],
     commit: bool,
+    sha256: Option<&str>,
 ) -> Result<Option<IngestResult>, String> {
-    append_chunk(workspace, upload_id, filename, offset, total, data, commit).await
+    append_chunk(
+        workspace, upload_id, filename, offset, total, data, commit, sha256,
+    )
+    .await
+}
+
+/// Re-hash the assembled staging file and compare it with the client-provided
+/// whole-file digest. A mismatch aborts the commit (staging stays for the
+/// client's cleanup path) instead of letting corrupted bytes reach ingest.
+async fn verify_staging_sha256(staging_path: &Path, expected: &str) -> Result<(), String> {
+    let expected = expected.trim().to_ascii_lowercase();
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("附件完整性校验值无效".into());
+    }
+    let staging_path = staging_path.to_path_buf();
+    let actual = tokio::task::spawn_blocking(move || -> std::io::Result<String> {
+        use sha2::{Digest, Sha256};
+        let mut file = std::fs::File::open(&staging_path)?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        Ok(crate::platform::encoding::hex_lower(&hasher.finalize()))
+    })
+    .await
+    .map_err(|error| format!("附件完整性校验任务失败：{error}"))?
+    .map_err(|error| format!("读取附件暂存文件失败：{error}"))?;
+    if actual != expected {
+        return Err("附件完整性校验失败，上传内容在传输中损坏".into());
+    }
+    Ok(())
 }
 
 pub async fn abort_draft_upload(upload_id: &str) -> Result<(), String> {
@@ -372,6 +412,9 @@ async fn adopt_upload(
 /// Incomplete bytes live below `.pinvou3/attachment-drop-staging/`. Commit is
 /// an atomic rename into `attachments/<upload_id>/`, so the application keeps
 /// exactly one managed copy and session deletion owns its final lifecycle.
+/// When the client provides a whole-file SHA-256 on the committing chunk the
+/// assembled staging file is re-hashed before the rename, so corrupted bytes
+/// from the transport never reach the ingest pipeline.
 pub async fn append_chunk(
     workspace: &Path,
     upload_id: &str,
@@ -380,6 +423,7 @@ pub async fn append_chunk(
     total: usize,
     data: &[u8],
     commit: bool,
+    sha256: Option<&str>,
 ) -> Result<Option<IngestResult>, String> {
     let upload_id = validate_upload_id(upload_id)?;
     let filename = validate_filename(filename)?;
@@ -436,6 +480,9 @@ pub async fn append_chunk(
     }
     if end != total {
         return Err(format!("附件提交大小不完整：应为 {total}，实际为 {end}"));
+    }
+    if let Some(expected) = sha256 {
+        verify_staging_sha256(&staging_path, expected).await?;
     }
 
     let completed_dir = upload_completed_dir(workspace, upload_id);
@@ -673,6 +720,7 @@ mod tests {
             new_bytes.len(),
             new_bytes,
             true,
+            None,
         )
         .await
         .unwrap();
@@ -697,6 +745,7 @@ mod tests {
             bytes.len(),
             bytes,
             true,
+            None,
         )
         .await
         .unwrap()
@@ -732,6 +781,7 @@ mod tests {
             bytes.len(),
             &bytes,
             true,
+            None,
         )
         .await
         .is_err());
@@ -750,6 +800,7 @@ mod tests {
             8,
             b"original",
             true,
+            None,
         )
         .await
         .unwrap()
@@ -763,6 +814,7 @@ mod tests {
             11,
             b"replacement",
             true,
+            None,
         )
         .await
         .is_err());
@@ -787,6 +839,7 @@ mod tests {
             bytes.len(),
             bytes,
             true,
+            None,
         )
         .await
         .unwrap()
@@ -808,6 +861,69 @@ mod tests {
             std::fs::remove_dir_all(source_workspace).unwrap();
         }
         std::fs::remove_dir_all(target_workspace).unwrap();
+    }
+
+    #[tokio::test]
+    async fn commit_verifies_client_provided_sha256() {
+        use sha2::{Digest, Sha256};
+
+        let workspace = test_workspace("sha256-commit");
+        let upload_id = "desktop_attach_sha256";
+        let bytes = b"integrity checked payload";
+
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let good = crate::platform::encoding::hex_lower(&hasher.finalize());
+
+        let committed = append_chunk(
+            &workspace,
+            upload_id,
+            "notes.txt",
+            0,
+            bytes.len(),
+            bytes,
+            true,
+            Some(&good),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(std::fs::read(&committed.path).unwrap(), bytes);
+
+        // A digest that does not match the assembled staging file must abort
+        // the commit and leave no completed upload behind.
+        assert!(append_chunk(
+            &workspace,
+            "desktop_attach_sha256_bad",
+            "notes.txt",
+            0,
+            bytes.len(),
+            bytes,
+            true,
+            Some(&"a".repeat(64)),
+        )
+        .await
+        .is_err());
+        assert!(!workspace
+            .join("attachments")
+            .join("desktop_attach_sha256_bad")
+            .exists());
+
+        // Malformed digests are rejected before hashing.
+        assert!(append_chunk(
+            &workspace,
+            "desktop_attach_sha256_invalid",
+            "notes.txt",
+            0,
+            bytes.len(),
+            bytes,
+            true,
+            Some("not-hex"),
+        )
+        .await
+        .is_err());
+
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]

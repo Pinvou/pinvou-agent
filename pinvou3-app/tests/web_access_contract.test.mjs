@@ -103,6 +103,7 @@ const codeViewerModal = fs.readFileSync(
 );
 const acpPlatformClient = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'acpClient.js'), 'utf8');
 const acpErrors = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'acpErrors.js'), 'utf8');
+const acpClient = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'acpClient.js'), 'utf8');
 const i18n = fs.readFileSync(path.join(root, 'src', 'shared', 'i18n.js'), 'utf8');
 const appMain = fs.readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
 const policy = JSON.parse(fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'access-policy.json'), 'utf8'));
@@ -348,31 +349,33 @@ assert.match(webBridge,
   /IS_WEB \? "web_access_list_sessions" : "list_sessions"[\s\S]*?IS_WEB \? "web_access_list_archived_sessions" : "list_archived_sessions"/,
   'Web history refreshes must use path-redacted session list commands');
 assert.match(remoteControlCommands,
-  /fn web_workspace_result[\s\S]*?web_workspace_\{operation\}_failed[\s\S]*?web_access_list_codex_workspace[\s\S]*?web_workspace_result\("listing", result\)[\s\S]*?web_access_search_codex_workspace[\s\S]*?web_workspace_result\("search", result\)[\s\S]*?web_access_preview_codex_workspace_file[\s\S]*?web_workspace_result\("preview", result\)[\s\S]*?web_access_get_codex_workspace_changes[\s\S]*?web_workspace_result\("changes", result\)[\s\S]*?web_access_get_codex_workspace_diff[\s\S]*?web_workspace_result\("diff", result\)/,
+  /fn web_workspace_result[\s\S]*?web_workspace_\{\}_failed", operation\.as_str\(\)[\s\S]*?web_access_list_codex_workspace[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Listing, result\)[\s\S]*?web_access_search_codex_workspace[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Search, result\)[\s\S]*?web_access_preview_codex_workspace_file[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Preview, result\)[\s\S]*?web_access_get_codex_workspace_changes[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Changes, result\)[\s\S]*?web_access_get_codex_workspace_diff[\s\S]*?web_workspace_result\(WebWorkspaceOperation::Diff, result\)/,
   'Web workspace RPC failures must not return host paths embedded in native errors');
 assert.match(remoteControlCommands,
-  /web_access_get_codex_acp_timeline[\s\S]*?web_acp_result\([\s\S]*?"timeline"/,
+  /web_access_get_codex_acp_timeline[\s\S]*?web_acp_result\(WebAcpOperation::Timeline/,
   'Web ACP timeline failures must cross Relay as a controlled error code');
-for (const [command, operation] of Object.entries({
-  web_access_create_codex_acp_session: 'session_create',
-  web_access_cancel_codex_acp: 'cancel',
-  web_access_codex_acp_prompt: 'prompt',
-  web_access_get_codex_acp_timeline: 'timeline',
-  web_access_get_codex_acp_session_info: 'session_info',
-  web_access_set_codex_acp_model: 'set_model',
-  web_access_set_codex_acp_mode: 'set_mode',
-  web_access_set_codex_acp_config_option: 'set_config_option',
-  web_access_get_codex_acp_pending_permissions: 'pending_permissions',
-  web_access_respond_codex_acp_permission: 'respond_permission',
-  web_access_get_codex_acp_pending_elicitations: 'pending_elicitations',
-  web_access_respond_codex_acp_elicitation: 'respond_elicitation',
-  web_access_list_codex_acp_sessions: 'list_sessions',
-  web_access_list_acp_agents: 'list_agents',
-  web_access_get_acp_agent_status: 'agent_status',
+// Every web_access_* ACP command maps failures through a WebAcpOperation enum
+// variant; the Rust test stable_web_error_codes_are_locked pins the wire codes.
+for (const [command, variant] of Object.entries({
+  web_access_create_codex_acp_session: 'SessionCreate',
+  web_access_cancel_codex_acp: 'Cancel',
+  web_access_codex_acp_prompt: 'Prompt',
+  web_access_get_codex_acp_timeline: 'Timeline',
+  web_access_get_codex_acp_session_info: 'SessionInfo',
+  web_access_set_codex_acp_model: 'SetModel',
+  web_access_set_codex_acp_mode: 'SetMode',
+  web_access_set_codex_acp_config_option: 'SetConfigOption',
+  web_access_get_codex_acp_pending_permissions: 'PendingPermissions',
+  web_access_respond_codex_acp_permission: 'RespondPermission',
+  web_access_get_codex_acp_pending_elicitations: 'PendingElicitations',
+  web_access_respond_codex_acp_elicitation: 'RespondElicitation',
+  web_access_list_codex_acp_sessions: 'ListSessions',
+  web_access_list_acp_agents: 'ListAgents',
+  web_access_get_acp_agent_status: 'AgentStatus',
 })) {
   assert.match(
     rustCommandBlock(remoteControlCommands, command),
-    new RegExp(`web_acp_result\\("${operation}"`),
+    new RegExp(`web_acp_result\\(WebAcpOperation::${variant}`),
     `${command} must map every failure to its stable Web ACP error code`,
   );
 }
@@ -397,12 +400,15 @@ assert.equal(allowed.has('respond_codex_acp_elicitation'), false,
   'Web must not call the native ACP elicitation response command');
 assert.equal(allowed.has('web_access_respond_codex_acp_permission'), true);
 assert.equal(allowed.has('web_access_respond_codex_acp_elicitation'), true);
-assert.match(codexView,
-  /isWeb \? 'web_access_respond_codex_acp_permission' : 'respond_codex_acp_permission'/,
+assert.match(acpClient,
+  /respond_codex_acp_permission',[\s\S]*?'web_access_respond_codex_acp_permission'/,
   'permission responses must preserve the native command and use a stable Web wrapper');
-assert.match(codexView,
-  /isWeb \? 'web_access_respond_codex_acp_elicitation' : 'respond_codex_acp_elicitation'/,
+assert.match(acpClient,
+  /respond_codex_acp_elicitation',[\s\S]*?'web_access_respond_codex_acp_elicitation'/,
   'elicitation responses must preserve the native command and use a stable Web wrapper');
+assert.doesNotMatch(codexView,
+  /isWeb \? 'web_access_respond_/,
+  'the view must route permission/elicitation responses through the acp client');
 assert.match(acpErrors, /CONTROLLED_WEB_ERROR[\s\S]*?copy\.operationFailed/,
   'controlled Web error codes must become localized UI copy instead of raw browser text');
 
@@ -429,12 +435,16 @@ assert.doesNotMatch(hostFilePicker, /Array\.isArray\(listing\.roots\) && !parent
   'filesystem roots must not be mixed into a drive directory listing');
 assert.match(hostFilePicker, /openWorkspace:/,
   'the host picker must expose a dedicated code-workspace selection flow');
-assert.match(hostFilePicker, /issueWorkspaceHandle:\s*options\.workspaceGrant === true/,
-  'only workspace selection should request a one-shot host capability');
-assert.match(hostFilePicker, /workspaceHandle:\s*currentWorkspaceHandle/,
-  'workspace selection must return the host-issued handle with its display path');
-assert.match(hostFilePicker, /message === "host_workspace_not_authorized"[\s\S]{0,120}workspaceNotAuthorized/,
-  'an unapproved legacy endpoint must receive a localized desktop-authorization prompt');
+assert.match(hostFilePicker, /issueWorkspaceHandle:\s*true/,
+  'the one-shot host capability must be minted on confirm');
+assert.match(hostFilePicker, /issueWorkspaceHandle:\s*false/,
+  'directory browsing must not mint one-shot workspace handles');
+assert.match(hostFilePicker, /var confirmedPath = currentPath;[\s\S]{0,400}finish\(\{ path: confirmedPath, workspaceHandle: handle \}\);/,
+  'workspace selection must finish with the click-time path and the handle minted for it');
+assert.doesNotMatch(hostFilePicker, /currentWorkspaceHandle/,
+  'browsing never carries a workspace handle, so no stale-handle fallback path may remain');
+assert.match(hostFilePicker, /localizedPickerError/,
+  'both the listing and confirm-mint failures must map stable authorization codes to localized copy');
 assert.match(remoteControlManager,
   /HOST_WORKSPACE_NOT_AUTHORIZED:\s*&str\s*=\s*"host_workspace_not_authorized"[\s\S]*?Err\(HOST_WORKSPACE_NOT_AUTHORIZED\.to_string\(\)\)/,
   'the desktop and browser must share the stable host-workspace authorization error code');

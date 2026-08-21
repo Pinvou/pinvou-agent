@@ -2575,6 +2575,15 @@ impl AcpPool {
             bail!("当前会话不是 ACP 会话");
         }
         let backend = self.backend(session_id);
+        // Provider 切换会重启该 Agent 的全部会话 runtime，不只是当前会话；
+        // 该 Agent 任一会话正在生成时必须先拒绝（与 set_model/set_mode 的
+        // busy 语义一致），而不是硬杀进行中的 turn。
+        if self.sessions.lock().await.iter().any(|(id, runtime)| {
+            self.agents.backend(id) == backend
+                && runtime.busy.load(std::sync::atomic::Ordering::Acquire)
+        }) {
+            bail!("该 Agent 的 ACP 会话仍在生成，本轮结束后才能切换 Provider");
+        }
         let agent = backend.agent_id().context("非 ACP 会话")?;
         match provider_id {
             Some(provider_id) => {
