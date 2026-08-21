@@ -5,6 +5,7 @@ import {
   reloadSessionAfterRewind,
   rewindEntriesByTurnId,
   rewindNoticeText,
+  rewindUndoAvailable,
   summarizeCheckpointChanges,
 } from '../src/features/codex/checkpoints.js';
 
@@ -225,10 +226,44 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
     rewindNoticeDegraded: 'degraded',
     rewindNoticeRestored: n => `restored:${n}`,
     rewindNoticeConversationOnly: 'conversationOnly',
+    rewindNoticeCompaction: 'compaction-note',
   };
   assert.equal(rewindNoticeText(copy, { degraded: true, restoredCheckpoint: null }, 2), 'degraded');
   assert.equal(rewindNoticeText(copy, { degraded: false, restoredCheckpoint: { id: 'p1' } }, 2), 'restored:2');
   assert.equal(rewindNoticeText(copy, { degraded: false, restoredCheckpoint: null }, 0), 'conversationOnly');
+  // hadCompaction：在基础提示后如实追加压缩摘要警示，不替换基础语义；
+  // false/缺省时不追加。
+  assert.equal(
+    rewindNoticeText(copy, { degraded: false, restoredCheckpoint: { id: 'p1' }, hadCompaction: true }, 2),
+    'restored:2 compaction-note',
+  );
+  assert.equal(
+    rewindNoticeText(copy, { degraded: true, restoredCheckpoint: null, hadCompaction: true }, 1),
+    'degraded compaction-note',
+  );
+  assert.equal(
+    rewindNoticeText(copy, { degraded: false, restoredCheckpoint: null, hadCompaction: true }, 0),
+    'conversationOnly compaction-note',
+  );
+  assert.equal(
+    rewindNoticeText(copy, { degraded: false, restoredCheckpoint: { id: 'p1' }, hadCompaction: false }, 2),
+    'restored:2',
+  );
+}
+
+// ── rewindUndoAvailable：「撤销回退」入口可见性 ─────────────────────
+// 后端 rewind_undo_state 非 null 即可反悔（sidecar 备份 + 未发新轮 + PreRestore），
+// 前端只做形状校验：无 checkpointId 的残缺状态不渲染。
+{
+  assert.equal(rewindUndoAvailable(null), false);
+  assert.equal(rewindUndoAvailable(undefined), false);
+  assert.equal(rewindUndoAvailable({}), false);
+  assert.equal(rewindUndoAvailable({ checkpointId: '', keptTurns: 2, rewoundTurns: 1 }), false);
+  assert.equal(rewindUndoAvailable('checkpoint-x'), false);
+  assert.equal(
+    rewindUndoAvailable({ checkpointId: 'pre-1', keptTurns: 2, rewoundTurns: 1, rewoundAt: '2026-08-21T10:00:00Z' }),
+    true,
+  );
 }
 
 console.log('codex_checkpoints_logic: all assertions passed');

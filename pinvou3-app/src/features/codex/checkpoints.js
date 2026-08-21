@@ -98,11 +98,26 @@ export function checkpointRefreshKey({ turnCount, busy }) {
  * 回退结果 → 时间线内联提示文案（纯函数，copy 取 uiCodex）。
  * restoredCheckpoint 非空 = 代码已恢复且自动打了 PreRestore 回滚点（可反悔）；
  * degraded = 快照不可用只截断了对话；兜底 = 仅对话回退（代码未动）。
+ * hadCompaction：截断不清 system_prompt，回退后模型上下文可能仍带着描述被截
+ * 轮次的压缩摘要——在基础提示后如实追加，不替换。
  */
 export function rewindNoticeText(copy, result, keepTurns) {
-  if (result?.degraded) return copy.rewindNoticeDegraded;
-  if (result?.restoredCheckpoint) return copy.rewindNoticeRestored(keepTurns);
-  return copy.rewindNoticeConversationOnly;
+  const base = result?.degraded
+    ? copy.rewindNoticeDegraded
+    : result?.restoredCheckpoint
+      ? copy.rewindNoticeRestored(keepTurns)
+      : copy.rewindNoticeConversationOnly;
+  return result?.hadCompaction ? `${base} ${copy.rewindNoticeCompaction}` : base;
+}
+
+/**
+ * 「撤销回退」入口可见性（纯函数）：后端 rewind_undo_state 的可反悔语义
+ * （sidecar 有备份 + 回退后未发新轮次 + 有 PreRestore 快照）已收敛为
+ * 「非 null 即渲染」，这里只做形状校验——无 PreRestore checkpointId 的
+ * 条目视为不可反悔（如仅对话回退后后端返回的残缺状态）。
+ */
+export function rewindUndoAvailable(undoState) {
+  return Boolean(undoState && typeof undoState === 'object' && undoState.checkpointId);
 }
 
 /**
@@ -111,6 +126,7 @@ export function rewindNoticeText(copy, result, keepTurns) {
  * 会话重载路径重注水（前端不自己维护截断）。无论 reload 成败都 bumpTick：
  * hydrate 可能已完成而重载尾部步骤失败/被并发守卫提前返回，lane 已是新内容
  * 时必须兜底触发重投影；reload 本身失败时错误返回给调用方如实上屏，不静默。
+ * 「撤销回退」成功后复用同一编排（undo_last_rewind 同样重建 engine + 还原对话）。
  */
 export async function reloadSessionAfterRewind({ reload, bumpTick }) {
   let error = null;
@@ -125,15 +141,17 @@ export async function reloadSessionAfterRewind({ reload, bumpTick }) {
 }
 
 /**
- * 会话级 checkpoint 状态：列表加载/刷新 + diff 预览缓存。
+ * 会话级 checkpoint 状态：列表加载/刷新 + diff 预览缓存 + 可反悔状态。
  * `enabled` 由调用方门控（仅原生代码会话且已有 sessionId）；`refreshKey` 变化
  * 时重新拉取（调用方应使用 checkpointRefreshKey：turns 数 + busy 边沿），让新
- * turn 的回退入口及时出现并收敛为正确变体。回退编排（rewind_to_turn）由视图层
- * 直接调用，成功后走既有 loadSession 重载，再调本 hook 的 refresh 刷新入口可用性。
+ * turn 的回退入口及时出现并收敛为正确变体；undoState 与列表同节奏刷新（回退
+ * 后/发新轮后可见性随之收敛）。回退编排（rewind_to_turn / undo_last_rewind）
+ * 由视图层直接调用，成功后走既有 loadSession 重载，再调本 hook 的 refresh。
  */
 export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
   const [checkpoints, setCheckpoints] = useState([]);
   const [previews, setPreviews] = useState({});
+  const [undoState, setUndoState] = useState(null);
   const sessionRef = useRef(sessionId);
   sessionRef.current = sessionId;
 
@@ -142,6 +160,7 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
     if (!id || !enabled) {
       setCheckpoints([]);
       setPreviews({});
+      setUndoState(null);
       return;
     }
     try {
@@ -152,6 +171,15 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
     } catch {
       // 列表失败（会话被删/索引损坏/非代码会话）不打扰主流程：该会话没有回退入口。
       if (sessionRef.current === id) setCheckpoints([]);
+    }
+    try {
+      const state = await invoke('rewind_undo_state', { sessionId: id });
+      if (sessionRef.current === id) {
+        setUndoState(rewindUndoAvailable(state) ? state : null);
+      }
+    } catch {
+      // 可反悔状态查询失败同样静默：不渲染「撤销回退」入口即诚实降级。
+      if (sessionRef.current === id) setUndoState(null);
     }
   }, [enabled]);
 
@@ -178,5 +206,8 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
     }
   }, []);
 
-  return useMemo(() => ({ checkpoints, previews, preview, refresh }), [checkpoints, previews, preview, refresh]);
+  return useMemo(
+    () => ({ checkpoints, previews, preview, refresh, undoState }),
+    [checkpoints, previews, preview, refresh, undoState],
+  );
 }

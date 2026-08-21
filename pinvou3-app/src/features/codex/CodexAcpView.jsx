@@ -73,9 +73,10 @@ import {
   reloadSessionAfterRewind,
   rewindEntriesByTurnId,
   rewindNoticeText,
+  rewindUndoAvailable,
   useSessionCheckpoints,
 } from './checkpoints.js';
-import { RewindChip, RewindConfirmDialog } from './RewindChip.jsx';
+import { RewindChip, RewindConfirmDialog, RewindUndoChip, RewindUndoConfirmDialog } from './RewindChip.jsx';
 import {
   ConversationActivityIndicator,
   ConversationMarkdown,
@@ -1308,6 +1309,12 @@ export function CodexAcpView({
   const [rewindTarget, setRewindTarget] = useState(null);
   const [rewindError, setRewindError] = useState('');
   const [rewinding, setRewinding] = useState(false);
+  // 「撤销回退」：可见性由 rewindCheckpoints.undoState（rewind_undo_state）驱动，
+  // null 不渲染；open 时渲染轻量确认弹窗。
+  const rewindUndoState = rewindCheckpoints.undoState;
+  const [rewindUndoOpen, setRewindUndoOpen] = useState(false);
+  const [rewindUndoError, setRewindUndoError] = useState('');
+  const [rewindUndoing, setRewindUndoing] = useState(false);
   // Equivalent to [...visibleTurns].reverse().find(status === 'running'): scan backwards for the last
   // running turn, memoized on the turns reference (both turns branches come from memoized projections,
   // and the draft empty state uses the module-level constant array), so no reversed copy is rebuilt per render.
@@ -1403,6 +1410,8 @@ export function CodexAcpView({
     setSubagentPanel(null);
     setRewindTarget(null);
     setRewindError('');
+    setRewindUndoOpen(false);
+    setRewindUndoError('');
   }, [activeId]);
   useEffect(() => {
     if (typeof window === 'undefined' || !isNativeAgent) return;
@@ -2011,6 +2020,35 @@ export function CodexAcpView({
       setRewindError(String(err && err.message ? err.message : err));
     } finally {
       setRewinding(false);
+    }
+  }
+
+  // 撤销回退：undo_last_rewind（恢复代码到最新 PreRestore + 对话从备份还原 +
+  // engine 重建）；成功后复用 reloadSessionAfterRewind 重载编排（与回退后同语义：
+  // 先重载、成败都 bumpTick、成功才关弹窗），失败错误留在弹窗上屏。
+  async function confirmRewindUndo() {
+    if (!rewindUndoState || !activeId || rewindUndoing) return;
+    setRewindUndoing(true);
+    setRewindUndoError('');
+    try {
+      await invoke('undo_last_rewind', { sessionId: activeId });
+      const { error: reloadError } = await reloadSessionAfterRewind({
+        reload: () => loadSession(activeId),
+        bumpTick: () => setNativeLaneTick(tick => tick + 1),
+      });
+      if (reloadError) {
+        setRewindUndoError(reloadError);
+        return;
+      }
+      setRewindUndoOpen(false);
+      appendNativeSystemItem(getNativeLane(activeId), codexCopy.rewindUndoDone);
+      setNativeLaneTick(tick => tick + 1);
+      // refresh 连带重查 rewind_undo_state：撤销后不可再反悔，入口随之消失。
+      rewindCheckpoints.refresh();
+    } catch (err) {
+      setRewindUndoError(String(err && err.message ? err.message : err));
+    } finally {
+      setRewindUndoing(false);
     }
   }
 
@@ -3553,6 +3591,16 @@ export function CodexAcpView({
                     onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
                     onOpenResource={isWeb ? undefined : openWorkspaceResource} />
                 ))}
+            {isNativeAgent && rewindUndoAvailable(rewindUndoState) && (
+              // 「撤销回退」入口：渲染在时间线末尾（回退成功的内联提示其后），
+              // 与 RewindChip 同门控（仅原生代码车道）；undoState 为 null 即消失。
+              <RewindUndoChip
+                state={rewindUndoState}
+                disabled={busy || rewinding || rewindUndoing}
+                copy={codexCopy}
+                onOpen={() => { setRewindUndoError(''); setRewindUndoOpen(true); }}
+              />
+            )}
           </div>
         </div>
 
@@ -4118,6 +4166,18 @@ export function CodexAcpView({
             copy={codexCopy}
             onCancel={() => { if (!rewinding) setRewindTarget(null); }}
             onConfirm={confirmRewind}
+          />
+        )}
+        {rewindUndoOpen && rewindUndoAvailable(rewindUndoState) && (
+          // 「撤销回退」轻量确认：说明将恢复代码与被截掉的 N 轮对话。
+          <RewindUndoConfirmDialog
+            state={rewindUndoState}
+            error={rewindUndoError}
+            busy={rewindUndoing}
+            theme={theme}
+            copy={codexCopy}
+            onCancel={() => { if (!rewindUndoing) setRewindUndoOpen(false); }}
+            onConfirm={confirmRewindUndo}
           />
         )}
         {(activeSession || (!isWeb && draftWorkspacePath)) && (

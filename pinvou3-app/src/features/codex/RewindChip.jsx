@@ -71,6 +71,26 @@ export function RewindChip({ entry, disabled, copy, onOpen }) {
   );
 }
 
+// 「撤销回退」入口：渲染在时间线末尾（回退成功的内联提示其后），可见性由
+// rewind_undo_state 驱动（null 不渲染，见 checkpoints.js rewindUndoAvailable）。
+export function RewindUndoChip({ state, disabled, copy, onOpen }) {
+  return (
+    <div className="my-1 flex justify-center">
+      <button
+        type="button"
+        data-testid="rewind-undo-chip"
+        disabled={disabled}
+        onClick={() => onOpen(state)}
+        title={copy.rewindUndoBody(state.rewoundTurns)}
+        className="inline-flex max-w-full items-center gap-1.5 rounded-xl border border-blue-500/25 bg-blue-500/[0.06] px-2.5 py-1 text-[11px] text-blue-600 transition-colors hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-40 dark:text-blue-300"
+      >
+        <RotateCcw size={11} className="shrink-0" />
+        <span className="truncate">{copy.rewindUndo}</span>
+      </button>
+    </div>
+  );
+}
+
 // 确认弹窗三要素（设计 §7）：将撤销的变更摘要、对话将截断到的位置、错误如实展示
 // （跨会话忙碌/恢复失败等后端文案原样上屏）。portal 到 <body> 与 NativeYoloConfirmCard
 // 同款：避免 composer 容器的 backdrop-blur 成为 fixed 包含块。
@@ -173,6 +193,73 @@ export function RewindConfirmDialog({ entry, previewState, error, busy, theme, c
             disabled={busy}
             onClick={onConfirm}
           >{busy ? copy.rewindBusy : copy.rewindConfirm}</button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// 「撤销回退」轻量确认：说明将恢复代码与被截掉的 N 轮对话；错误（忙碌/已不可
+// 反悔等后端文案）原样上屏。结构镜像 RewindConfirmDialog。
+export function RewindUndoConfirmDialog({ state, error, busy, theme, copy, onCancel, onConfirm }) {
+  const isDark = theme === 'dark';
+  const dialogRef = useRef(null);
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const onKey = (event) => {
+      if (event.key === 'Escape' && !busy) {
+        event.preventDefault();
+        onCancel();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy, onCancel]);
+
+  return createPortal(
+    <div data-testid="rewind-undo-confirm" className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label={copy.rewindCancel}
+        className="absolute inset-0 cursor-default bg-black/30 backdrop-blur-[2px]"
+        disabled={busy}
+        onClick={onCancel}
+      />
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rewind-undo-confirm-title"
+        tabIndex={-1}
+        className={`relative w-full max-w-[440px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
+          isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
+        }`}
+      >
+        <div id="rewind-undo-confirm-title" className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+          {copy.rewindUndoTitle}
+        </div>
+        <div className={`mt-3 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+          {copy.rewindUndoBody(state.rewoundTurns)}
+        </div>
+
+        {error && <div className="mt-3 text-[12px] leading-5 text-red-500">{error}</div>}
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            data-testid="rewind-undo-confirm-cancel"
+            className="rounded-xl px-3 py-1.5 text-[12px] font-medium transition-colors bg-black/[0.06] hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-white/10 dark:hover:bg-white/15"
+            disabled={busy}
+            onClick={onCancel}
+          >{copy.rewindCancel}</button>
+          <button
+            type="button"
+            data-testid="rewind-undo-confirm-ok"
+            className="rounded-xl px-3 py-1.5 text-[12px] font-medium text-white transition-colors bg-blue-600 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
+            disabled={busy}
+            onClick={onConfirm}
+          >{busy ? copy.rewindUndoBusy : copy.rewindUndoConfirm}</button>
         </div>
       </div>
     </div>,
