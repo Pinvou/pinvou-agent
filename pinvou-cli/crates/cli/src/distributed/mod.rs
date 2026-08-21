@@ -742,7 +742,7 @@ fn handle_slash_command<S: Read + Write>(
             write_terminal_to(output, chat_help_text())?;
             Ok(true)
         }
-        (Some("runtime"), None, None) => {
+        (Some("runtime") | Some("runtimes"), None, None) => {
             let response = client.runtime_list()?;
             write_terminal_to(output, &format_runtime_list(response.payload()))?;
             Ok(true)
@@ -772,7 +772,7 @@ fn handle_slash_command<S: Read + Write>(
 }
 
 fn chat_help_text() -> &'static str {
-    "/help - show chat commands\n/runtime - list selectable runtimes\n/runtime <id> - switch active runtime\n/detect [id] - show active or named runtime status\n/exit or /quit - leave chat\n"
+    "/help - show chat commands\n/runtime or /runtimes - list selectable runtimes\n/runtime <id> - switch active runtime\n/detect [id] - show active or named runtime status\n/exit or /quit - leave chat\n"
 }
 
 fn format_runtime_detect(payload: &Value) -> String {
@@ -855,9 +855,11 @@ fn format_runtime_list(payload: &Value) -> String {
             } else {
                 "unavailable"
             };
-            text.push_str(&format!("{id} - {label} ({status})\n"));
+            let marker = if id == current { "*" } else { " " };
+            text.push_str(&format!("{marker} {id} - {label} ({status})\n"));
         }
     }
+    text.push_str("switch: /runtime <id>\ninspect: /detect <id>\n");
     text
 }
 
@@ -1115,7 +1117,9 @@ mod tests {
 
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("runtime: echo"));
-        assert!(output.contains("echo - Stage 1 Echo (available)"));
+        assert!(output.contains("* echo - Stage 1 Echo (available)"));
+        assert!(output.contains("switch: /runtime <id>"));
+        assert!(output.contains("inspect: /detect <id>"));
         assert!(output.contains("runtime switched to echo"));
         assert!(output.contains("status: available"));
         let requests = client.into_inner().requests();
@@ -1124,6 +1128,45 @@ mod tests {
         assert_eq!(requests[1].method(), Some("runtime.switch"));
         assert_eq!(requests[1].payload()["runtime"], "echo");
         assert_eq!(requests[2].method(), Some("runtime.detect"));
+    }
+
+    #[test]
+    fn chat_loop_accepts_runtimes_alias_without_starting_a_turn() {
+        let list_response = IpcMessage::response(
+            json!(1),
+            json!({
+                "current": "codex",
+                "runtimes": [
+                    {"id": "echo", "label": "Stage 1 Echo", "available": true},
+                    {"id": "codex", "label": "Codex App Server", "available": false}
+                ]
+            }),
+        )
+        .unwrap();
+        let stream = TestDuplex::with_responses([list_response]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut input = std::io::Cursor::new(b"/runtimes\n/exit\n".to_vec());
+        let mut output = Vec::new();
+
+        execute_chat_with_io(
+            &mut input,
+            &mut output,
+            &mut client,
+            interrupted,
+            Arc::clone(&active_turn),
+            true,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("  echo - Stage 1 Echo (available)"));
+        assert!(output.contains("* codex - Codex App Server (unavailable)"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method(), Some("runtime.list"));
+        assert!(requests[0].payload().get("text").is_none());
     }
 
     #[test]
@@ -1189,7 +1232,7 @@ mod tests {
         .unwrap();
 
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("/runtime - list selectable runtimes"));
+        assert!(output.contains("/runtime or /runtimes - list selectable runtimes"));
         assert!(output.contains("/runtime <id> - switch active runtime"));
         assert!(output.contains("/detect [id] - show active or named runtime status"));
         assert!(client.into_inner().requests().is_empty());
