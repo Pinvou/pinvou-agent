@@ -164,6 +164,17 @@ async fn backend_runs_one_private_task_and_closes_its_session() {
 }
 
 #[tokio::test]
+async fn backend_accepts_the_registered_smoke_product_policy() {
+    let runtime = Arc::new(RecordingRuntime::default());
+    let backend = ProductHeadlessBackend::from_runtime(runtime);
+    let request = PrepareRequest::new("smoke-policy", vec![])
+        .with_tool_policy(AgentToolPolicyId::new("pinvou-product/v1").expect("valid smoke policy"));
+
+    let session = backend.prepare(request).await.unwrap();
+    backend.close(session).await.unwrap();
+}
+
+#[tokio::test]
 async fn output_is_not_resolvable_after_session_close() {
     let backend = ProductHeadlessBackend::from_runtime(Arc::new(RecordingRuntime::default()));
     let session = backend

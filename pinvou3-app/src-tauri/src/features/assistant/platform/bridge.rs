@@ -638,6 +638,7 @@ impl Pinvou3Bridge {
     }
 
     /// 克隆一份 bridge 并绑定 per-session 模型(EnginePool spawn 时按 session model_id 注入)。
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub fn with_session_model(&self, model: Option<SavedModel>) -> Self {
         let mut b = self.clone();
         b.session_model = model;
@@ -1896,6 +1897,7 @@ impl Pinvou3Bridge {
         )
     }
 
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn build_eval_send_message_op(
         &self,
         session_id: &str,

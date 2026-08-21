@@ -186,11 +186,12 @@ impl SessionStore {
         // load them normally, but remain owned by the Scheduled Tasks surface.
         // 多智能体是普通会话的持久开关，不是独立会话类型；这里只隔离定时
         // 会话，其余历史统一进入普通列表。
-        // 评测会话(eval_ 前缀,含 GAIA 私有题目)同样不进用户历史:正常路径
-        // 由评测运行器清理,崩溃残留的会话也不能把私密题目带进会话列表。
-        out.retain(|metadata| {
-            !metadata.id.starts_with("sched-") && !metadata.id.starts_with("eval_")
-        });
+        // benchmark 构建中,评测会话(eval_ 前缀,含 GAIA 私有题目)不进用户历史:
+        // 正常路径由评测运行器清理,崩溃残留也不能把私密题目带进会话列表。
+        // 默认桌面构建不保留这项前缀语义,避免 benchmark 未启用时改变普通会话列表。
+        out.retain(|metadata| !metadata.id.starts_with("sched-"));
+        #[cfg(feature = "benchmark-hooks")]
+        out.retain(|metadata| !metadata.id.starts_with("eval_"));
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
     }
@@ -534,6 +535,7 @@ impl SessionStore {
     /// 以调用方提供的 ID 创建空会话，供需要在启动前确定隔离 ID 的内部运行时使用。
     ///
     /// 普通 GUI 会话仍使用 [`Self::create_new`] 的随机 ID；这里不设置 active session。
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn create_empty_with_id(
         &self,
         id: String,
@@ -562,37 +564,6 @@ impl SessionStore {
                     anyhow::anyhow!("{error:#}; rollback Session {id}: {rollback_error:#}")
                 }
             });
-        }
-        Ok(session)
-    }
-
-    /// Persist an ordinary chat engine's absolute lifetime token total without
-    /// replacing the authoritative transcript or any other engine-owned state.
-    pub fn persist_chat_token_total(
-        &self,
-        id: &str,
-        base_total_tokens: u64,
-        engine_total_tokens: u64,
-    ) -> Result<SavedSession> {
-        let _mutation = self.scheduled_mutation.lock();
-        if self.scheduled_profiles.read().contains_key(id) {
-            bail!("Session '{id}' is a scheduled-run session");
-        }
-        validate_session_id(id)?;
-
-        let mut session = self
-            .manager
-            .load_session(id)
-            .with_context(|| format!("load chat session {id} for token persistence"))?;
-        session.metadata.updated_at = Utc::now();
-        session.metadata.total_tokens = base_total_tokens.saturating_add(engine_total_tokens);
-
-        self.save_session_atomic(&session)
-            .with_context(|| format!("persist chat token total for {id}"))?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!(
-                "[sessions] chat retention reconciliation failed after token save: {error:#}"
-            );
         }
         Ok(session)
     }

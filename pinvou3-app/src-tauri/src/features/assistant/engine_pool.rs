@@ -19,7 +19,9 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(any(feature = "benchmark-hooks", test))]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use anyhow::{bail, Context, Result};
@@ -39,6 +41,7 @@ use tokio_util::sync::CancellationToken;
 use crate::features::assistant::engine::{
     AppEngine, EngineTurnSignal, TranscriptOperation, TurnLifecycle, TurnReservation,
 };
+#[cfg(any(feature = "benchmark-hooks", test))]
 use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
@@ -92,6 +95,7 @@ impl SessionTurnLocks {
     }
 }
 
+#[cfg(any(feature = "benchmark-hooks", test))]
 #[derive(Clone, Default)]
 struct EvalModelSnapshots {
     next_token: Arc<AtomicU64>,
@@ -100,6 +104,7 @@ struct EvalModelSnapshots {
     session_models: Arc<SyncMutex<HashMap<String, SavedModel>>>,
 }
 
+#[cfg(any(feature = "benchmark-hooks", test))]
 impl EvalModelSnapshots {
     fn pin(&self, saved_model: SavedModel, identity: ModelIdentity) -> EvalModelSelection {
         let sequence = self.next_token.fetch_add(1, Ordering::Relaxed);
@@ -236,15 +241,21 @@ where
     let turn_lock = turn_locks.for_session(session_id).await;
     let _turn = turn_lock.lock().await;
     evict_locked().await;
-    delete_then_forget(|| store.delete(session_id), forget)
+    store.delete(session_id)?;
+    forget();
+    Ok(())
 }
 
+#[cfg(test)]
 fn delete_then_forget<D, G>(delete: D, forget: G) -> Result<()>
 where
     D: FnOnce() -> Result<()>,
     G: FnOnce(),
 {
     let delete_result = delete();
+    if delete_result.is_err() {
+        return delete_result;
+    }
     forget();
     delete_result
 }
@@ -569,6 +580,7 @@ pub struct EnginePool {
     entries: Arc<Mutex<HashMap<String, EngineEntry>>>,
     runtime_model_locks: SessionTurnLocks,
     model_update_revisions: ModelUpdateRevisions,
+    #[cfg(any(feature = "benchmark-hooks", test))]
     eval_model_snapshots: EvalModelSnapshots,
     turn_locks: SessionTurnLocks,
     turn_lifecycles: SessionTurnLifecycles,
@@ -623,6 +635,7 @@ impl EnginePool {
             entries: Arc::new(Mutex::new(HashMap::new())),
             runtime_model_locks: SessionTurnLocks::default(),
             model_update_revisions: ModelUpdateRevisions::default(),
+            #[cfg(any(feature = "benchmark-hooks", test))]
             eval_model_snapshots: EvalModelSnapshots::default(),
             turn_locks: SessionTurnLocks::default(),
             turn_lifecycles: SessionTurnLifecycles::default(),
@@ -801,7 +814,10 @@ impl EnginePool {
         session_id: &str,
         scheduled_unattended: bool,
     ) -> Result<Pinvou3Bridge> {
+        #[cfg(any(feature = "benchmark-hooks", test))]
         let eval_model = self.eval_model_snapshots.for_session(session_id);
+        #[cfg(not(any(feature = "benchmark-hooks", test)))]
+        let eval_model = None;
         let (bridge, prepared, pins_scheduled_model) = self
             .prepare_runtime_model(session_id, scheduled_unattended, eval_model)
             .await?;
@@ -814,7 +830,10 @@ impl EnginePool {
     /// 则一次性 `SyncSession` 把历史 messages 注水进新 engine(冷启动 / app 重启后
     /// 打开旧会话再发消息的场景)。
     pub async fn get_or_spawn(&self, session_id: &str) -> Result<AppEngine> {
+        #[cfg(any(feature = "benchmark-hooks", test))]
         let eval_model = self.eval_model_snapshots.for_session(session_id);
+        #[cfg(not(any(feature = "benchmark-hooks", test)))]
+        let eval_model = None;
         self.get_or_spawn_with_policy(session_id, false, eval_model)
             .await
     }
@@ -997,9 +1016,12 @@ impl EnginePool {
     /// late sweep when the immediate disk deletion fails. The error remains observable to the
     /// Judge adapter, while the sweep prevents a transient filesystem failure from silently
     /// retaining the temporary transcript forever.
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) async fn delete_eval_session(&self, session_id: &str) -> Result<()> {
         let result = self.delete_chat_session(session_id).await;
+        crate::features::assistant::timing::unregister_eval_observation(session_id);
         if result.is_err() {
+            self.forget_session(session_id);
             Self::schedule_late_sweep(
                 crate::platform::paths::sessions_root().join(session_id),
                 "late sweep of failed eval cleanup",
@@ -1008,7 +1030,9 @@ impl EnginePool {
         result
     }
 
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn schedule_eval_cleanup(&self, session_id: &str) {
+        crate::features::assistant::timing::unregister_eval_observation(session_id);
         Self::schedule_late_sweep(
             crate::platform::paths::sessions_root().join(session_id),
             "background takeover of eval cleanup",
@@ -1123,6 +1147,7 @@ impl EnginePool {
     }
 
     pub(crate) fn forget_session(&self, session_id: &str) {
+        #[cfg(any(feature = "benchmark-hooks", test))]
         self.eval_model_snapshots.forget_session(session_id);
         self.turn_lifecycles.remove(session_id);
         self.turn_shell_tasks.remove(session_id);
@@ -1168,11 +1193,13 @@ impl EnginePool {
         default_model_for_new_session_from(&prefs, &self.bridge)
     }
 
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn tested_eval_identity(&self) -> ModelIdentity {
         let prefs = UserPrefs::load();
         identity_for_active_model(&self.bridge, &prefs)
     }
 
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn pin_active_eval_suite_model(&self) -> Result<EvalSuiteModelSnapshot> {
         let prefs = UserPrefs::load();
         let saved_model = prefs
@@ -1183,6 +1210,7 @@ impl EnginePool {
         Ok(self.eval_model_snapshots.pin_suite(saved_model, identity))
     }
 
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn derive_eval_suite_case_selection(
         &self,
         suite: &EvalSuiteModelSnapshot,
@@ -1190,6 +1218,7 @@ impl EnginePool {
         self.eval_model_snapshots.derive_case_selection(suite)
     }
 
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn discard_eval_suite_model(&self, suite: &EvalSuiteModelSnapshot) {
         self.eval_model_snapshots.discard_suite(suite);
     }
@@ -1197,6 +1226,7 @@ impl EnginePool {
     /// Resolve and privately pin the complete SavedModel while returning only a
     /// non-sensitive opaque selection to the evaluation layer. Callers that do
     /// not pass the selection to `prepare_eval_session` must explicitly discard it.
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn pin_eval_model_selection(&self, model_id: &str) -> Result<EvalModelSelection> {
         let prefs = UserPrefs::load();
         let (saved, identity) = resolve_eval_model_selection_from(
@@ -1207,12 +1237,14 @@ impl EnginePool {
         Ok(self.eval_model_snapshots.pin(saved, identity))
     }
 
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn discard_eval_model_selection(&self, selection: &EvalModelSelection) {
         self.eval_model_snapshots.discard(selection);
     }
 
     /// 创建并加载一次性评测会话。评测 runner 预先决定 session ID，以便报告和
     /// 清理精确关联；普通 GUI 会话继续使用 SessionStore 自动生成的 ID。
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) async fn prepare_eval_session(
         &self,
         session_id: &str,
@@ -1248,9 +1280,11 @@ impl EnginePool {
                 }
             }
         }
+        crate::features::assistant::timing::register_eval_observation(session_id);
         Ok(())
     }
 
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn eval_session_execution_root(
         &self,
         session_id: &str,
@@ -1259,6 +1293,7 @@ impl EnginePool {
     }
 
     /// 读取评测临时会话的 transcript 快照，不暴露可变存储句柄。
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn load_eval_transcript(&self, session_id: &str) -> Result<Vec<Message>> {
         Ok(self.store.load(session_id)?.messages)
     }
@@ -1365,6 +1400,7 @@ impl EnginePool {
         .await
     }
 
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) async fn send_eval_user_message(
         &self,
         session_id: &str,
@@ -1383,6 +1419,7 @@ impl EnginePool {
         .await
     }
 
+    #[cfg(any(feature = "benchmark-hooks", test))]
     async fn send_reserved_eval_user_message(
         &self,
         session_id: &str,
@@ -1741,11 +1778,13 @@ impl EnginePool {
     }
 }
 
+#[cfg(any(feature = "benchmark-hooks", test))]
 fn identity_for_saved_model(bridge: &Pinvou3Bridge, saved: &SavedModel) -> ModelIdentity {
     let effective = bridge.with_session_model(Some(saved.clone()));
     ModelIdentity::new(effective.provider(), effective.model())
 }
 
+#[cfg(any(feature = "benchmark-hooks", test))]
 fn identity_for_active_model(bridge: &Pinvou3Bridge, prefs: &UserPrefs) -> ModelIdentity {
     match prefs.active_model() {
         Some(saved) => identity_for_saved_model(bridge, saved),
@@ -1763,6 +1802,7 @@ fn default_model_for_new_session_from(
     }
 }
 
+#[cfg(any(feature = "benchmark-hooks", test))]
 fn resolve_eval_model_selection_from(
     bridge: &Pinvou3Bridge,
     models: &[SavedModel],
@@ -2532,7 +2572,7 @@ mod scheduled_model_tests {
     }
 
     #[test]
-    fn chat_delete_failure_still_forgets_runtime_once_and_preserves_error() {
+    fn chat_delete_failure_preserves_runtime_and_error() {
         let forget_count = Arc::new(AtomicUsize::new(0));
         let observed_count = forget_count.clone();
 
@@ -2544,7 +2584,7 @@ mod scheduled_model_tests {
         )
         .expect_err("injected deletion must fail");
 
-        assert_eq!(observed_count.load(Ordering::SeqCst), 1);
+        assert_eq!(observed_count.load(Ordering::SeqCst), 0);
         assert_eq!(error.to_string(), "sentinel delete failure");
     }
 

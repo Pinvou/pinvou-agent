@@ -259,6 +259,11 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml", contract
         )
         self.assertIn("--features benchmark-hooks --test headless_bridge_contract", contract)
+        self.assertIn("--features benchmark-hooks --lib", contract)
+        self.assertIn(
+            "features::assistant::product_runtime::headless_bridge::", contract
+        )
+        self.assertIn("-- --test-threads=1", contract)
         self.assertIn("needs.changes.outputs.benchmark_codewhale == 'true'", contract)
 
         benchmark = self.pr_workflow.split("\n  benchmark-test:", maxsplit=1)[1].split(

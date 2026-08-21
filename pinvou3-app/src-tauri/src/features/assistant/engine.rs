@@ -424,7 +424,10 @@ fn emit_turn_started(app: &AppHandle, session_id: &str) {
     let started_payload = json!({ "session_id": session_id });
     let _ = app.emit("chat:turn_started", started_payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:turn_started", started_payload);
-    crate::features::assistant::timing::record_milestone(session_id, "turn_started");
+    #[cfg(feature = "benchmark-hooks")]
+    if crate::features::assistant::timing::eval_observation_enabled(session_id) {
+        crate::features::assistant::timing::record_milestone(session_id, "turn_started");
+    }
 }
 
 fn emit_turn_admission(app: &AppHandle, session_id: &str, admission: TurnAdmission) {
@@ -1195,11 +1198,6 @@ impl AppEngine {
         } else {
             None
         };
-        let chat_base_total_tokens = if scheduled_profile.is_none() {
-            Some(persisted_total_tokens)
-        } else {
-            None
-        };
         // 多智能体开关（ADR-0006）：会话开着开关时装配专家名册。
         let multi_agent_enabled = scheduled_profile.is_none()
             && bridge.multi_agent_mode_available(session_id)
@@ -1306,7 +1304,6 @@ impl AppEngine {
             turn_events.clone(),
             scheduled_profile,
             scheduled_base_total_tokens,
-            chat_base_total_tokens,
             scheduled_unattended.clone(),
             turn_lifecycle.clone(),
             shell_manager,
@@ -1403,6 +1400,7 @@ impl AppEngine {
         self.send_reserved_turn_op(op, reservation).await
     }
 
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) async fn send_reserved_eval_message(
         &self,
         content: String,

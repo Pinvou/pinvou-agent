@@ -60,9 +60,9 @@ if [[ "$tag_target" == "$gitlink" ]]; then
   :
 elif [[ "$allow_registered_candidate" == "1" ]] \
   && [[ "$gitlink" == "$LOCAL_SECURITY_HEAD" ]]; then
-  verification_label="registered PR candidate"
+  verification_label="registered r8 PR candidate"
 else
-  echo "错误：${PINVOU_CODEWHALE_TAG} 解引用为 ${tag_target:-<不存在>}，父仓 gitlink 为 $gitlink" >&2
+  echo "错误：${PINVOU_CODEWHALE_TAG} 解引用为 ${tag_target:-<不存在>}，父仓 gitlink 为 $gitlink；仅 pull_request 可放行登记的 r8 候选 $LOCAL_SECURITY_HEAD" >&2
   exit 1
 fi
 

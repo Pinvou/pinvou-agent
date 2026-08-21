@@ -270,37 +270,6 @@ fn create_empty_with_id_preserves_requested_identity() {
 }
 
 #[test]
-fn ordinary_terminal_usage_updates_total_without_replacing_engine_state() {
-    let (store, _g) = isolated_store();
-    let session = store
-        .create_new("/initial-model".into(), None, std::env::temp_dir())
-        .expect("create ordinary chat");
-    let messages = vec![user_text("question"), assistant_text("answer")];
-    store
-        .persist_chat_engine_state(&session.metadata.id, chat_engine_state(messages.clone()))
-        .expect("persist engine state");
-
-    let first = store
-        .persist_chat_token_total(&session.metadata.id, 40, 9)
-        .expect("persist first terminal usage");
-    assert_eq!(first.metadata.total_tokens, 49);
-    assert_eq!(first.messages, messages);
-
-    let later = store
-        .persist_chat_token_total(&session.metadata.id, 40, 15)
-        .expect("persist cumulative same-engine usage");
-    assert_eq!(later.metadata.total_tokens, 55);
-    assert_eq!(later.messages, first.messages);
-
-    let reopened = reopen_store(&store).expect("reopen after terminal usage");
-    let durable = reopened
-        .load(&session.metadata.id)
-        .expect("load durable token total");
-    assert_eq!(durable.metadata.total_tokens, 55);
-    assert_eq!(durable.messages, messages);
-}
-
-#[test]
 fn admitted_display_fallback_is_revision_guarded_for_append_and_edit() {
     let (store, _g) = isolated_store();
     let session = store
@@ -384,7 +353,10 @@ fn scheduled_session_is_isolated_but_directly_loadable() {
     let listed = store.list().expect("list chats");
     assert!(listed.iter().any(|item| item.id == chat.metadata.id));
     assert!(!listed.iter().any(|item| item.id == scheduled.metadata.id));
+    #[cfg(feature = "benchmark-hooks")]
     assert!(!listed.iter().any(|item| item.id == eval_id));
+    #[cfg(not(feature = "benchmark-hooks"))]
+    assert!(listed.iter().any(|item| item.id == eval_id));
     assert!(paths::sessions_root()
         .join(format!("{}.json", scheduled.metadata.id))
         .exists());

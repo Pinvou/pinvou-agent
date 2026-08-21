@@ -38,6 +38,12 @@ static GAIA_PUBLIC_WEB_V1: EvalTurnPolicy = EvalTurnPolicy {
     network: EvalNetworkClass::PublicWeb,
 };
 
+static PRODUCT_V1: EvalTurnPolicy = EvalTurnPolicy {
+    id: EvalToolPolicy::ProductV1,
+    allowed_tools: PRODUCT_V1_ALLOWED_TOOLS,
+    network: EvalNetworkClass::PublicWeb,
+};
+
 static GAIA_OFFLINE_V1: EvalTurnPolicy = EvalTurnPolicy {
     id: EvalToolPolicy::GaiaOfflineV1,
     allowed_tools: GAIA_OFFLINE_V1_ALLOWED_TOOLS,
@@ -115,6 +121,10 @@ mod tests {
             EvalToolPolicy::ProductV1
         );
         assert_eq!(
+            resolve_eval_policy("pinvou-product/v1").unwrap().id,
+            EvalToolPolicy::ProductV1
+        );
+        assert_eq!(
             resolve_eval_policy("pinvou-gaia-public-web/v1").unwrap().id,
             EvalToolPolicy::GaiaPublicWebV1
         );
@@ -138,6 +148,10 @@ mod tests {
         assert!(product.allows("Web"));
         assert_eq!(public.network, EvalNetworkClass::PublicWeb);
         assert_eq!(offline.network, EvalNetworkClass::Offline);
+        assert_eq!(product.network, EvalNetworkClass::PublicWeb);
+        assert!(product.allows("File"));
+        assert!(product.allows("Web"));
+        assert!(product.allows("image_analyze"));
         assert!(public.allows("Web"));
         assert!(!offline.allows("Web"));
         assert!(!offline.allows("image_analyze"));
@@ -180,5 +194,6 @@ mod tests {
         assert!(!PRODUCT_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
         assert!(!GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
         assert!(!GAIA_OFFLINE_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
+        assert!(!PRODUCT_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
     }
 }

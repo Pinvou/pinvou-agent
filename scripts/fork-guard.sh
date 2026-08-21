@@ -27,10 +27,10 @@ if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
 elif [[ "$actual_head" == "$LOCAL_SECURITY_HEAD" ]] \
   && git -C "$TUI" merge-base --is-ancestor "$PUBLISHED_HEAD" "$LOCAL_SECURITY_HEAD" 2>/dev/null; then
   expected_commits="$LOCAL_COMMITS"
-  green "  ✓ CodeWhale gitlink 指向登记的 r7 安全扩展候选 $LOCAL_SECURITY_HEAD"
+  green "  ✓ CodeWhale gitlink 指向登记的 r8 安全扩展候选 $LOCAL_SECURITY_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，既非 r7 公开 head，也非其登记的安全扩展候选"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，既非 r7 公开 head，也非登记的 r8 安全扩展候选"
   fail=1
 fi
 
@@ -103,6 +103,9 @@ fingerprints=(
   "T2|受限工具审计固定脱敏                 |CodeWhale/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_restricted_tool_audit_redacts_private_sentinel"
   "T2|受限轮次 File schema 只读           |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_agent_uses_read_only_file_schema"
   "T2|只读动作最终分发 fail-closed        |CodeWhale/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_read_only_turn_rejects_write_action_at_final_dispatch"
+  "T2|受限轮后子智能体完成等待新消息      |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message"
+  "T2|只读轮次启用 Shell 加固上下文       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_agent_uses_hardened_read_only_shell_context"
+  "T2|受限轮后 Shell 唤醒等待新消息       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_restricted_turn_defers_idle_shell_wake_until_new_message"
 
   "APP|产品白名单复用原生 allowed_tools   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
   "APP|会话工具开关走动态禁用整形          |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("

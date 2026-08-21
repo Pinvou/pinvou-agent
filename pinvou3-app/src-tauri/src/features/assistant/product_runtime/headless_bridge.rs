@@ -82,7 +82,7 @@ pub trait ProductRuntimePort: Send + Sync {
         _staged_workspace: &Path,
         _policy: ProductToolPolicy,
     ) -> Result<ProductTurnOutcome> {
-        anyhow::bail!("attachments_runtime_unsupported")
+        anyhow::bail!("unsupported_tool_policy")
     }
     async fn cancel(&self, session_id: &str) -> Result<()>;
     async fn close(&self, session_id: &str) -> Result<()>;
@@ -598,14 +598,41 @@ fn backend_error(code: &'static str) -> AgentBackendError {
 }
 
 fn extract_final_answer(output: &str) -> Option<String> {
-    const MARKER: &str = "FINAL ANSWER:";
-    output
-        .split(MARKER)
-        .skip(1)
-        .map(str::trim)
-        .filter(|answer| !answer.is_empty())
-        .last()
-        .map(ToOwned::to_owned)
+    const MARKER: &str = "FINAL ANSWER";
+    let mut recognized = None;
+    for line in output.lines() {
+        let mut candidate = line.trim();
+        let emphasis = ["**", "__"]
+            .into_iter()
+            .find(|token| candidate.starts_with(token));
+        if let Some(token) = emphasis {
+            candidate = candidate[token.len()..].trim_start();
+        }
+        let Some(prefix) = candidate.get(..MARKER.len()) else {
+            continue;
+        };
+        if !prefix.eq_ignore_ascii_case(MARKER) {
+            continue;
+        }
+        let mut remainder = candidate[MARKER.len()..].trim_start();
+        if let Some(token) = emphasis.filter(|token| remainder.starts_with(token)) {
+            remainder = remainder[token.len()..].trim_start();
+        }
+        let Some(answer) = remainder.strip_prefix(':') else {
+            continue;
+        };
+        let mut answer = answer.trim();
+        if let Some(token) = ["**", "__"]
+            .into_iter()
+            .find(|token| answer.starts_with(token) && answer.ends_with(token) && answer.len() >= 4)
+        {
+            answer = answer[token.len()..answer.len() - token.len()].trim();
+        } else if let Some(token) = emphasis.filter(|token| answer.ends_with(token)) {
+            answer = answer[..answer.len() - token.len()].trim_end();
+        }
+        recognized = Some((!answer.is_empty()).then(|| answer.to_owned()));
+    }
+    recognized.flatten()
 }
 
 fn project_private_output(
@@ -624,10 +651,29 @@ mod final_answer_contract_tests {
     use super::extract_final_answer;
 
     #[test]
-    fn gaia_contract_uses_the_last_non_empty_final_answer_marker() {
-        let output =
-            "analysis\nFINAL ANSWER: stale\nmore analysis\nFINAL ANSWER: 42\nFINAL ANSWER:   \n";
+    fn gaia_contract_uses_the_last_marker_line_only() {
+        let output = "FINAL ANSWER: stale\nFinal Answer: 42\nignored trailing explanation";
         assert_eq!(extract_final_answer(output), Some("42".to_owned()));
+        assert_eq!(
+            extract_final_answer("analysis FINAL ANSWER: wrong\nFINAL ANSWER: right"),
+            Some("right".to_owned())
+        );
+    }
+
+    #[test]
+    fn gaia_contract_accepts_case_and_markdown_emphasis() {
+        assert_eq!(
+            extract_final_answer("**Final Answer: 42**"),
+            Some("42".to_owned())
+        );
+        assert_eq!(
+            extract_final_answer("__FINAL ANSWER__: Paris"),
+            Some("Paris".to_owned())
+        );
+        assert_eq!(
+            extract_final_answer("FINAL ANSWER: **yes**"),
+            Some("yes".to_owned())
+        );
     }
 
     #[test]
@@ -635,7 +681,7 @@ mod final_answer_contract_tests {
         assert_eq!(extract_final_answer("analysis only"), None);
         assert_eq!(extract_final_answer("FINAL ANSWER:   \n"), None);
         assert_eq!(
-            extract_final_answer("analysis only\nFINAL ANSWER:   \n"),
+            extract_final_answer("FINAL ANSWER: stale\n**final answer:**   "),
             None
         );
     }

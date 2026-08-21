@@ -1,6 +1,14 @@
-# GAIA 官方评测
+# GAIA 本地评测
 
-Pinvou Agent 内置 GAIA 官方评测适配器，用于在受支持的平台本地运行 GAIA validation Level 1 任务集并生成官方兼容的提交文件。本文档描述访问要求、固定版本、CLI 工作流、报告解读和已知限制；Windows 当前受附件执行安全门禁限制，不能视为可完成 GAIA 端到端实跑的平台。
+GAIA 本地评测位于独立的 `pinvou-cli` workspace，只在显式构建 CLI 时启用评测后端；桌面应用的默认 feature、启动路径和发行安装包均不包含该入口。未运行 `pinvou benchmark ...` 时，评测不会创建会话、加载数据集、注册工具策略或改变普通聊天的运行时与持久化语义。
+
+该 CLI 用于在受支持的平台运行 GAIA validation Level 1 任务集并生成官方格式的提交文件。评分器是固定版本的 Rust 移植，尚未完成与官方 Python scorer 的逐题 parity 验证，因此本文不宣称评分结果与官方实现等价。Windows 当前受附件执行安全门禁限制，不能视为可完成 GAIA 端到端实跑的平台。
+
+从源码构建入口：
+
+```bash
+cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
+```
 
 ## Access and gating
 
@@ -78,9 +86,8 @@ pinvou benchmark run gaia --split validation --level 1
 - 每道题有 600 秒超时限制。
 - 代理使用 `pinvou-gaia-public-web/v1` 工具策略，可访问公开 web 资源。
 - 输出契约为 `gaia-final/v1`：题目 prompt 会注入最终答案格式指令
-  （`FINAL ANSWER: <answer>`），持久化前从末轮输出提取最后一个非空标记；
-  缺失或为空时该任务以 `missing_final_answer` 终态计为失败，不进入全文比对。
-  预测以 `utf8-text/v1` 持久化，直到显式 purge。
+  （`FINAL ANSWER: <answer>`）。解析按行、大小写不敏感，并容忍常见 Markdown 强调；只提取最后一个已识别标记所在行的内容。最后一个标记为空时任务以 `missing_final_answer` 终态计为失败，不回退到更早标记或正文。
+  预测以 `utf8-text/v1` 持久化在该 run 的私有目录中。当前 CLI 尚未提供 purge 子命令；需要清理时必须在确认 run 已停止后删除对应的 `~/.pinvou3/eval/runs/<run-id>/`，不要删除整个运行时根目录。
 - **验证集污染警告**：validation split 的参考答案用于评分。在运行期间不要向代理泄露参考答案、不要用 validation 题目做 prompt 调试，否则评分无效且不可复现。
 - 未启用 product-backend 时返回 `product_backend_not_enabled`。
 - Windows 当前无法安全挂载 headless 附件：含附件任务在执行前返回 `attachments_platform_security_unsupported`。在该门禁解除并完成真机验证前，不应把 Windows 描述为支持 GAIA 端到端实跑。
@@ -105,7 +112,7 @@ pinvou benchmark score gaia --run-id <run-id>
 ```
 
 - 评分器从持久化的私有预测中解析候选答案，与参考答案比对。
-- Rust 评分器实现固定到 revision `1349a179...` 的 Python `scorer.py` 语义，包括数字归一化、字符串/列表归一化、Unicode 十进制数字、Python 全串小写和控制空白符处理；golden contract 覆盖这些已知规则。
+- Rust 评分器是基于 revision `1349a179...` 的固定移植，包括数字归一化、字符串/列表归一化、Unicode 十进制数字、Python 全串小写和控制空白符处理；golden contract 只覆盖这些已知规则。
 - 评分运行时 profile 为 `hf-spaces-python-3.10-unicode-13.0`。
 - 真实 Python scorer 逐题交叉验证尚未完成；在完成该验证前，golden contract 通过不等同于已经证明整套 validation Level 1 的逐题结果等价。
 
@@ -115,13 +122,14 @@ pinvou benchmark score gaia --run-id <run-id>
 
 | 标签 | 含义 |
 |------|------|
-| **complete / official-compat** | 所有题目均达到持久化终态，分数可与官方 scorer 逐题比对 |
-| **partial / unofficial** | 部分题目未完成或未持久化，分数不具备可比性 |
+| **complete / pinned Rust port** | 每个题目都有且仅有一个持久化终态；失败、超时、取消和缺失答案均计为错误 |
+| **partial / structurally incomplete** | 存在缺题、重复、未知题目、损坏预测或仍在运行等结构问题 |
 
 报告字段包括 `evaluated`、`correct`、`complete`、`official_dataset_compatible`、`split`、`level`。
 
 - complete 报告的 `split` 为 `validation`、`level` 为 `1`。
-- partial 报告明确标注为非官方、不可比。
+- CLI 的完整状态为 `complete_pinned_rust_port`；它表示结构完整，不表示已经证明与官方 Python scorer 等价。
+- partial 报告明确标注为结构不完整、不可比。
 - 评分器只读取持久化的私有预测；公开预测句柄无法解码候选答案。
 
 ## Submission
@@ -132,9 +140,9 @@ pinvou benchmark submission gaia --run-id <run-id> --destination ./output.jsonl
 
 - 生成官方提交 JSONL 文件：每行一个 compact JSON 对象，恰好包含 `task_id` 和 `model_answer` 两个键。
 - 行序与数据集 Parquet 行序一致（确定性）。
-- 仅接受 complete 运行：每道题必须有且仅有一个 completed 终态结果。不完整的运行返回 `gaia_submission_incomplete`。
+- 接受结构完整的运行：每道题必须有且仅有一个终态结果。成功任务写入持久化答案；失败、超时、取消或 `missing_final_answer` 写入安全的空字符串 `"model_answer":""`，由评分器计为错误。缺题、重复、未知题目、损坏预测或 running/planned 状态仍拒绝导出。
 - 原子发布：先写同名临时文件（私有权限），sync 后 `hard_link` 到目标路径。目标已存在时返回 `gaia_submission_target_exists`，绝不覆盖。
-- 目标路径或其祖先存在符号链接/reparse point 时返回 `gaia_submission_target_unsafe`。
+- 目标文件或叶子父目录是符号链接/reparse point 时返回安全错误；系统路径中的 symlink 祖先（例如 macOS `/var`）允许通过。防覆写由私有临时文件、`create_new` 和最终 `hard_link` 保证。
 - 文件中**绝不包含**问题文本、参考答案、附件路径、token、会话 ID 或内部句柄。
 
 ## Privacy
@@ -151,7 +159,7 @@ pinvou benchmark submission gaia --run-id <run-id> --destination ./output.jsonl
 
 - 本地评分使用固定到官方 scorer revision 的 Rust 实现，并由 golden contract 锁定已知归一化规则；真实 Python scorer 的 validation Level 1 逐题交叉验证仍是待办，运行环境（OS、网络、工具版本）也可能与官方评测平台不同。
 - 报告标注 `validation` split，明确这是验证集结果，不是 test set 分数。
-- complete 结果可标注为 "validation Level 1, official-compat local accuracy"，但必须注明 "validation" 和 "local"。
+- complete 结果只能标注为 "validation Level 1, pinned Rust port local accuracy"，并注明 parity 未验证。
 - **禁止**将本地结果描述为 "leaderboard score"、"test score" 或省略 "validation"/"local" 限定词。
 - 适配器**不会自动上传**提交文件或分数到任何平台；提交文件生成在本地，由用户自行决定如何使用。
 
@@ -163,3 +171,5 @@ pinvou benchmark submission gaia --run-id <run-id> --destination ./output.jsonl
 - **HF gated 访问**：数据集访问权限由 Hugging Face 平台管理，可能因审批延迟或拒绝而无法下载。
 - **磁盘占用**：完整数据集快照约 40 KB Parquet + 附件（附件大小取决于题目）；下载阶段有流式大小限制，超限中止。
 - **评分等价性边界**：Rust 评分器固定实现和 golden contract 不是逐题等价证明；真实 Python scorer cross-check 未完成，Python/Unicode 运行时差异也可能导致结果不同。以固定 revision 的官方 Python scorer 为最终真相。
+- **清理入口**：当前 CLI 尚未提供 purge 子命令；私有预测和运行产物会持续保留，直到操作者显式删除对应 run 目录。
+- **安全诊断**：`benchmark status` 和 GAIA run 摘要提供按状态、失败类别、缺失答案原因及工具调用/失败数聚合的 `diagnostics`。这些字段不包含题目、答案、工具参数、原始工具名或本地路径。

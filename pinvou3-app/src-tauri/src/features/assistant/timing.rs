@@ -7,7 +7,9 @@
 //! 作为内部诊断数据源。老 session 的旧事件无 usage 字段,反序列化按缺失处理
 //! (`Option`),Timeline API 对老 session 也安全返回。
 
-use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(any(feature = "benchmark-hooks", test))]
+use std::collections::HashSet;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -15,16 +17,22 @@ use std::sync::{Mutex, OnceLock};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+#[cfg(any(feature = "benchmark-hooks", test))]
 use sha2::{Digest, Sha256};
 
 static TURN_SEQ: AtomicU64 = AtomicU64::new(1);
 static ACTIVE_TURNS: OnceLock<Mutex<HashMap<String, VecDeque<ActiveTurnTiming>>>> = OnceLock::new();
+#[cfg(any(feature = "benchmark-hooks", test))]
+static EVAL_OBSERVATION_SESSIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug)]
 struct ActiveTurnTiming {
     turn_id: String,
+    #[cfg(any(feature = "benchmark-hooks", test))]
     recorded_first_events: HashSet<&'static str>,
+    #[cfg(any(feature = "benchmark-hooks", test))]
     tool_calls: u64,
+    #[cfg(any(feature = "benchmark-hooks", test))]
     tool_failures: u64,
 }
 
@@ -32,8 +40,11 @@ impl ActiveTurnTiming {
     fn new(turn_id: String) -> Self {
         Self {
             turn_id,
+            #[cfg(any(feature = "benchmark-hooks", test))]
             recorded_first_events: HashSet::new(),
+            #[cfg(any(feature = "benchmark-hooks", test))]
             tool_calls: 0,
+            #[cfg(any(feature = "benchmark-hooks", test))]
             tool_failures: 0,
         }
     }
@@ -45,6 +56,32 @@ const MAX_TIMING_FILE_BYTES: u64 = 32 * 1024 * 1024;
 
 fn active_turns() -> &'static Mutex<HashMap<String, VecDeque<ActiveTurnTiming>>> {
     ACTIVE_TURNS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(any(feature = "benchmark-hooks", test))]
+fn eval_observation_sessions() -> &'static Mutex<HashSet<String>> {
+    EVAL_OBSERVATION_SESSIONS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[cfg(any(feature = "benchmark-hooks", test))]
+pub(crate) fn register_eval_observation(session_id: &str) {
+    if let Ok(mut sessions) = eval_observation_sessions().lock() {
+        sessions.insert(session_id.to_string());
+    }
+}
+
+#[cfg(any(feature = "benchmark-hooks", test))]
+pub(crate) fn unregister_eval_observation(session_id: &str) {
+    if let Ok(mut sessions) = eval_observation_sessions().lock() {
+        sessions.remove(session_id);
+    }
+}
+
+#[cfg(any(feature = "benchmark-hooks", test))]
+pub(crate) fn eval_observation_enabled(session_id: &str) -> bool {
+    eval_observation_sessions()
+        .lock()
+        .is_ok_and(|sessions| sessions.contains(session_id))
 }
 
 fn now_ms() -> i64 {
@@ -145,7 +182,16 @@ pub fn finish_turn_with_usage(
     error: Option<&str>,
     usage: Option<TurnUsage>,
 ) {
-    finish_turn_internal(session_id, status, error, usage, None, false);
+    finish_turn_internal(
+        session_id,
+        status,
+        error,
+        usage,
+        #[cfg(any(feature = "benchmark-hooks", test))]
+        None,
+        #[cfg(any(feature = "benchmark-hooks", test))]
+        false,
+    );
 }
 
 /// Engine 为本轮构建的授权工具目录摘要。
@@ -153,12 +199,14 @@ pub fn finish_turn_with_usage(
 /// 这是进入每一步动态激活前的目录，不等同于某次模型请求实际携带的工具集合。
 /// 只记录数量、序列化字节数和 SHA-256，不持久化完整工具 Schema。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg(any(feature = "benchmark-hooks", test))]
 pub struct ToolCatalogSummary {
     pub catalog_count: u64,
     pub catalog_bytes: u64,
     pub catalog_sha256: String,
 }
 
+#[cfg(any(feature = "benchmark-hooks", test))]
 impl ToolCatalogSummary {
     pub fn from_serialized_catalog(catalog_count: usize, catalog_json: &[u8]) -> Self {
         let mut hasher = Sha256::new();
@@ -172,6 +220,7 @@ impl ToolCatalogSummary {
 }
 
 /// 记录带授权工具目录摘要的 turn 终态。
+#[cfg(any(feature = "benchmark-hooks", test))]
 pub fn finish_turn_with_observation(
     session_id: &str,
     status: &str,
@@ -194,8 +243,10 @@ fn finish_turn_internal(
     status: &str,
     error: Option<&str>,
     usage: Option<TurnUsage>,
-    authorized_tool_catalog: Option<ToolCatalogSummary>,
-    include_observation: bool,
+    #[cfg(any(feature = "benchmark-hooks", test))] authorized_tool_catalog: Option<
+        ToolCatalogSummary,
+    >,
+    #[cfg(any(feature = "benchmark-hooks", test))] include_observation: bool,
 ) {
     let active_turn = active_turns().lock().ok().and_then(|mut map| {
         let queue = map.get_mut(session_id)?;
@@ -229,6 +280,7 @@ fn finish_turn_internal(
             "reasoning_tokens": u.reasoning_tokens,
         });
     }
+    #[cfg(any(feature = "benchmark-hooks", test))]
     if include_observation {
         entry["tool_calls"] = json!(active_turn.tool_calls);
         entry["tool_failures"] = json!(active_turn.tool_failures);
@@ -239,6 +291,7 @@ fn finish_turn_internal(
     append_event(session_id, entry);
 }
 
+#[cfg(any(feature = "benchmark-hooks", test))]
 fn record_first_event(session_id: &str, event: &'static str, tool_name: Option<&str>) {
     let turn_id = active_turns().lock().ok().and_then(|mut map| {
         let active = map.get_mut(session_id)?.front_mut()?;
@@ -263,14 +316,17 @@ fn record_first_event(session_id: &str, event: &'static str, tool_name: Option<&
     );
 }
 
+#[cfg(any(feature = "benchmark-hooks", test))]
 pub fn record_engine_turn_started(session_id: &str) {
     record_first_event(session_id, "engine_turn_started", None);
 }
 
+#[cfg(any(feature = "benchmark-hooks", test))]
 pub fn record_first_message_delta(session_id: &str) {
     record_first_event(session_id, "first_message_delta", None);
 }
 
+#[cfg(any(feature = "benchmark-hooks", test))]
 pub fn record_tool_started(session_id: &str, tool_name: &str) {
     if let Ok(mut map) = active_turns().lock() {
         if let Some(active) = map.get_mut(session_id).and_then(VecDeque::front_mut) {
@@ -280,6 +336,7 @@ pub fn record_tool_started(session_id: &str, tool_name: &str) {
     record_first_event(session_id, "first_tool_call_started", Some(tool_name));
 }
 
+#[cfg(any(feature = "benchmark-hooks", test))]
 pub fn record_tool_completed(session_id: &str, tool_name: &str, success: bool) {
     if !success {
         if let Ok(mut map) = active_turns().lock() {
@@ -292,11 +349,13 @@ pub fn record_tool_completed(session_id: &str, tool_name: &str, success: bool) {
 }
 
 /// Record an additional milestone without consuming the active turn id.
+#[cfg(any(feature = "benchmark-hooks", test))]
 pub fn record_milestone(session_id: &str, milestone: &str) {
     record_milestone_meta(session_id, milestone, serde_json::Value::Null);
 }
 
 /// Record an additional milestone with bounded structured metadata.
+#[cfg(any(feature = "benchmark-hooks", test))]
 pub fn record_milestone_meta(session_id: &str, milestone: &str, meta: serde_json::Value) {
     let turn_id = active_turns().lock().ok().and_then(|map| {
         map.get(session_id)
@@ -329,11 +388,16 @@ pub struct TimelineEvent {
     pub status: Option<String>,   // assistant_done only
     pub error: Option<String>,    // assistant_done only
     pub usage: Option<TurnUsage>, // assistant_done only(老事件为 None)
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub tool_name: Option<String>,
+    #[cfg(any(feature = "benchmark-hooks", test))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_id: Option<String>,
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub tool_calls: Option<u64>,
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub tool_failures: Option<u64>,
+    #[cfg(any(feature = "benchmark-hooks", test))]
     pub authorized_tool_catalog: Option<ToolCatalogSummary>,
 }
 
@@ -392,10 +456,11 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
         return None;
     }
     let event = v.get("event")?.as_str()?;
-    if !matches!(
+    let is_base_event = matches!(event, "user_start" | "assistant_done");
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    let is_observation_event = matches!(
         event,
-        "user_start"
-            | "engine_turn_started"
+        "engine_turn_started"
             | "first_message_delta"
             | "first_tool_call_started"
             | "first_tool_call_completed"
@@ -403,8 +468,10 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
             | "first_delta"
             | "tool_call_started"
             | "tool_call_completed"
-            | "assistant_done"
-    ) {
+    );
+    #[cfg(not(any(feature = "benchmark-hooks", test)))]
+    let is_observation_event = false;
+    if !is_base_event && !is_observation_event {
         return None;
     }
     let timestamp = v.get("timestamp")?.as_i64()?;
@@ -447,17 +514,22 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
             .filter(|s| !s.is_empty())
             .map(str::to_string),
         usage,
+        #[cfg(any(feature = "benchmark-hooks", test))]
         tool_name: v
             .get("tool_name")
             .and_then(|x| x.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        #[cfg(any(feature = "benchmark-hooks", test))]
         tool_id: v
             .get("tool_id")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        #[cfg(any(feature = "benchmark-hooks", test))]
         tool_calls: v.get("tool_calls").and_then(|x| x.as_u64()),
+        #[cfg(any(feature = "benchmark-hooks", test))]
         tool_failures: v.get("tool_failures").and_then(|x| x.as_u64()),
+        #[cfg(any(feature = "benchmark-hooks", test))]
         authorized_tool_catalog: v
             .get("authorized_tool_catalog")
             .cloned()
