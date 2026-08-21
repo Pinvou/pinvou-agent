@@ -9,6 +9,13 @@
  * memory_personas_race_web.test.mjs：vm 整体装载 web 桥 + domain-adapter，
  * invoke 注入 per-command deferred。ensureSession 不在公开 API 面，经
  * personas.equipPersona（草稿加卡 → lazy 物化链）驱动，与生产入口一致。
+ *
+ * window 必须提供真实配对的 add/removeEventListener：main #315 起
+ * loadSessionForClient 先过 waitForWebInvokeCapabilities 门（等待期间注册
+ * pinvou:web-capabilities / pinvou:web-connection 监听，落定时移除），空实现
+ * 会在 finish 处炸出 removeEventListener is not a function。能力就绪默认
+ * 开（对齐 scheduled_tasks_unit.test.js 的 webCapabilitiesReady 默认值），
+ * 分块下载路径确定性直行、不进 10s 等待。
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -35,13 +42,34 @@ function bootWebBridge() {
   };
   const handlers = {};
   const listeners = {};
+  const windowListeners = {};
   const deferreds = {};
+  // main #159 起 web 桥按平台分流命令名（IS_WEB ? "web_access_xxx" : "xxx"）。
+  // 测试用例以桌面命令名登记 deferred，这里归一两种名字，两侧语义等价。
+  const commandAliases = {
+    web_access_list_sessions: 'list_sessions',
+    web_access_create_session: 'create_session',
+    web_access_load_session_chunk: 'load_session_chunk',
+  };
+  const resolveCommand = name => commandAliases[name] || name;
   const windowObject = {
-    PinvouPlatform: { kind: 'web', isWeb: true, capabilities: {}, can: () => false, canInvoke: () => false },
+    PinvouPlatform: {
+      kind: 'web',
+      isWeb: true,
+      capabilities: {},
+      can: () => false,
+      canInvoke: () => false,
+      areInvokeCapabilitiesReady: () => true,
+    },
     __TAURI__: {
       core: { invoke: (name, args) => {
+        // 归一名与原始名都查：用例登记 deferred 时两种名字混用
+        //（create 用 web_access_* 全名，list_sessions 用桌面短名）。
+        const command = resolveCommand(name);
+        if (handlers[command]) return handlers[command](args);
         if (handlers[name]) return handlers[name](args);
-        if (deferreds[name] && deferreds[name].promise) return deferreds[name].promise;
+        const d = deferreds[command] || deferreds[name];
+        if (d && d.promise) return d.promise;
         return Promise.resolve(null);
       } },
       event: { listen: async (name, fn) => { (listeners[name] = listeners[name] || []).push(fn); return function () {}; } },
@@ -54,7 +82,19 @@ function bootWebBridge() {
     // 分块 transcript 下载用（loadSessionForClient → window.atob）。
     atob: value => Buffer.from(String(value), 'base64').toString('binary'),
     btoa: value => Buffer.from(String(value), 'binary').toString('base64'),
-    addEventListener() {},
+    // 配对的真实监听器行为（非空实现）：#315 的能力等待门依赖
+    // addEventListener 注册 / removeEventListener 成对移除。
+    addEventListener(name, listener) {
+      (windowListeners[name] = windowListeners[name] || []).push(listener);
+    },
+    removeEventListener(name, listener) {
+      windowListeners[name] = (windowListeners[name] || [])
+        .filter(candidate => candidate !== listener);
+    },
+    dispatchEvent(event) {
+      (windowListeners[event.type] || []).slice().forEach(listener => listener(event));
+      return true;
+    },
     setTimeout,
     clearTimeout,
   };
