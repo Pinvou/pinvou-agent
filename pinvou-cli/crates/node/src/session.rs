@@ -17,6 +17,26 @@ use crate::NodeError;
 pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
     fn echo(&self, node_id: &str, text: &str, seq: u64) -> Result<RuntimeEventEnvelope, NodeError>;
 
+    fn detect(&self) -> Result<serde_json::Value, NodeError> {
+        Ok(json!({
+            "status": "available",
+            "auth_status": "not_required",
+            "capabilities": {
+                "interactive_chat": true,
+                "native_resume": false,
+                "history_import": false,
+                "tool_approval": false,
+                "elicitation": false,
+                "steering": false,
+                "image_input": false,
+                "file_reference": false,
+                "session_modes": ["interactive"],
+                "config_options": [],
+                "auth_flows": []
+            }
+        }))
+    }
+
     fn resolve_approval(
         &self,
         approval_id: &str,
@@ -80,6 +100,24 @@ impl Drop for AdapterRuntimeHost {
 }
 
 impl NodeRuntimeHost for AdapterRuntimeHost {
+    fn detect(&self) -> Result<serde_json::Value, NodeError> {
+        let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
+        if let Err(error) = ensure_adapter_probe(&mut inner) {
+            return Ok(runtime_error_status(&error));
+        }
+        let capabilities = inner.adapter.capabilities()?;
+        let auth_status = inner.adapter.auth_status()?;
+        let status = match auth_status {
+            pinvou_runtime_api::AuthStatus::Blocked => "blocked_auth",
+            _ => "available",
+        };
+        Ok(json!({
+            "status": status,
+            "auth_status": auth_status,
+            "capabilities": capabilities
+        }))
+    }
+
     fn echo(&self, _: &str, text: &str, _: u64) -> Result<RuntimeEventEnvelope, NodeError> {
         let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
         let session = ensure_adapter_session(&mut inner)?;
@@ -134,10 +172,7 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
 }
 
 fn ensure_adapter_session(state: &mut AdapterRuntimeState) -> Result<RuntimeSession, NodeError> {
-    if !state.probed {
-        state.adapter.probe()?;
-        state.probed = true;
-    }
+    ensure_adapter_probe(state)?;
     if let Some(session) = &state.session {
         return Ok(session.clone());
     }
@@ -146,6 +181,54 @@ fn ensure_adapter_session(state: &mut AdapterRuntimeState) -> Result<RuntimeSess
         .create(RuntimeOperation::new("node-runtime", json!({}))?)?;
     state.session = Some(session.clone());
     Ok(session)
+}
+
+fn ensure_adapter_probe(state: &mut AdapterRuntimeState) -> Result<(), NodeError> {
+    if !state.probed {
+        state.adapter.probe()?;
+        state.probed = true;
+    }
+    Ok(())
+}
+
+fn runtime_error_status(error: &NodeError) -> serde_json::Value {
+    match error {
+        NodeError::Runtime(error) => json!({
+            "status": runtime_status_for_error(error),
+            "error_kind": runtime_error_kind(error),
+            "exit_code": error.exit_code().as_i32(),
+            "message": error.to_string()
+        }),
+        _ => json!({
+            "status": "unavailable",
+            "error_kind": "node_error",
+            "exit_code": pinvou_protocol::StableExitCode::RuntimeFailed.as_i32(),
+            "message": error.to_string()
+        }),
+    }
+}
+
+fn runtime_status_for_error(error: &pinvou_runtime_api::AdapterError) -> &'static str {
+    match error {
+        pinvou_runtime_api::AdapterError::BlockedAuth => "blocked_auth",
+        pinvou_runtime_api::AdapterError::QuotaExceeded => "quota_exceeded",
+        pinvou_runtime_api::AdapterError::HandshakeTimeout => "handshake_timeout",
+        _ => "unavailable",
+    }
+}
+
+fn runtime_error_kind(error: &pinvou_runtime_api::AdapterError) -> &'static str {
+    match error {
+        pinvou_runtime_api::AdapterError::Unsupported { .. } => "unsupported",
+        pinvou_runtime_api::AdapterError::NotProbed => "not_probed",
+        pinvou_runtime_api::AdapterError::HandshakeTimeout => "handshake_timeout",
+        pinvou_runtime_api::AdapterError::BlockedAuth => "blocked_auth",
+        pinvou_runtime_api::AdapterError::QuotaExceeded => "quota_exceeded",
+        pinvou_runtime_api::AdapterError::Protocol { .. } => "protocol",
+        pinvou_runtime_api::AdapterError::ProcessExit { .. } => "process_exit",
+        pinvou_runtime_api::AdapterError::InvalidRequest { .. } => "invalid_request",
+        pinvou_runtime_api::AdapterError::Cancelled => "cancelled",
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -230,11 +313,13 @@ impl NodeSession {
             }
             Some("runtime.detect") => {
                 let runtime = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
-                json!({
-                    "status": "available",
-                    "runtime": runtime.id,
-                    "protocol_version": pinvou_protocol::IPC_VERSION
-                })
+                let runtime_id = runtime.id.clone();
+                let host = runtime.host.clone();
+                drop(runtime);
+                let mut payload = host.detect()?;
+                payload["runtime"] = json!(runtime_id);
+                payload["protocol_version"] = json!(pinvou_protocol::IPC_VERSION);
+                payload
             }
             Some("runtime.switch") => {
                 let runtime = request

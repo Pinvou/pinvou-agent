@@ -352,6 +352,7 @@ fn node_control_surface_uses_the_injected_runtime_host_seam() {
 struct FakeAdapter {
     calls: Arc<Mutex<Vec<String>>>,
     events: Vec<RuntimeEventEnvelope>,
+    probe_error: Option<AdapterError>,
 }
 
 impl FakeAdapter {
@@ -363,6 +364,15 @@ impl FakeAdapter {
         Self {
             calls: Arc::new(Mutex::new(Vec::new())),
             events,
+            probe_error: None,
+        }
+    }
+
+    fn with_probe_error(probe_error: AdapterError) -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            events: Vec::new(),
+            probe_error: Some(probe_error),
         }
     }
 }
@@ -370,10 +380,14 @@ impl FakeAdapter {
 impl AgentRuntimeAdapter for FakeAdapter {
     fn probe(&mut self) -> Result<(), AdapterError> {
         self.calls.lock().unwrap().push("probe".into());
+        if let Some(error) = self.probe_error.clone() {
+            return Err(error);
+        }
         Ok(())
     }
 
     fn capabilities(&self) -> Result<RuntimeCapabilities, AdapterError> {
+        self.calls.lock().unwrap().push("capabilities".into());
         Ok(RuntimeCapabilities {
             interactive_chat: true,
             tool_approval: true,
@@ -383,6 +397,7 @@ impl AgentRuntimeAdapter for FakeAdapter {
     }
 
     fn auth_status(&mut self) -> Result<AuthStatus, AdapterError> {
+        self.calls.lock().unwrap().push("auth_status".into());
         Ok(AuthStatus::NotRequired)
     }
 
@@ -554,6 +569,60 @@ fn adapter_runtime_host_drives_probe_create_send_events_and_control_methods() {
             "close:adapter-session",
         ]
     );
+}
+
+#[test]
+fn runtime_detect_probes_adapter_without_creating_a_chat_session() {
+    let adapter = FakeAdapter::default();
+    let calls = adapter.calls();
+    let session = NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(AdapterRuntimeHost::new(Box::new(adapter))),
+    )
+    .unwrap();
+    let detect = IpcMessage::request(
+        serde_json::json!(15),
+        "runtime.detect",
+        serde_json::json!({"instance_id":"node-instance"}),
+    )
+    .unwrap();
+
+    let response = session.handle(detect).unwrap();
+    assert_eq!(response.payload()["status"], "available");
+    assert_eq!(response.payload()["runtime"], "custom");
+    assert_eq!(response.payload()["auth_status"], "not_required");
+    assert_eq!(response.payload()["capabilities"]["interactive_chat"], true);
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        ["probe", "capabilities", "auth_status"]
+    );
+}
+
+#[test]
+fn runtime_detect_reports_adapter_probe_failures_as_status_payloads() {
+    let adapter = FakeAdapter::with_probe_error(AdapterError::BlockedAuth);
+    let calls = adapter.calls();
+    let session = NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(AdapterRuntimeHost::new(Box::new(adapter))),
+    )
+    .unwrap();
+    let detect = IpcMessage::request(
+        serde_json::json!(16),
+        "runtime.detect",
+        serde_json::json!({"instance_id":"node-instance"}),
+    )
+    .unwrap();
+
+    let response = session.handle(detect).unwrap();
+    assert_eq!(response.payload()["status"], "blocked_auth");
+    assert_eq!(response.payload()["runtime"], "custom");
+    assert_eq!(response.payload()["error_kind"], "blocked_auth");
+    assert_eq!(
+        response.payload()["exit_code"],
+        StableExitCode::BlockedAuth.as_i32()
+    );
+    assert_eq!(calls.lock().unwrap().as_slice(), ["probe"]);
 }
 
 #[test]
