@@ -8,9 +8,10 @@
 //      ES2020/2021 (incl. logical assignment), while ES2022+ syntax it cannot
 //      parse (class fields, private fields, static blocks, top-level await)
 //      fails as a SyntaxError and blanks the whole chunk.
-//   2. RegExp literals: lookbehind assertions "(?<=" / "(?<!" need Safari
-//      16.4, and the "v"/"d" flags need 17/15.4 — regex literals are never
-//      downlevelled by bundlers, so they must not enter the bundle at all.
+//   2. RegExp literals and statically-known `RegExp(...)` constructions:
+//      lookbehind assertions "(?<=" / "(?<!" need Safari 16.4, and the "v"/"d"
+//      flags need 17/15.4 — regexes are never downlevelled by bundlers, so
+//      they must not enter the bundle at all.
 //   3. Runtime member/global APIs added after Safari 14.0 (.at(), findLast,
 //      copy-methods, Object.hasOwn, structuredClone, ...): parse-time clean
 //      but a TypeError the moment a code path runs.
@@ -90,67 +91,21 @@ function suppressedLines(code) {
   return lines;
 }
 
-// Minimal recursive walker over the acorn AST child keys we care about.
-const CHILD_KEYS = {
-  Program: ['body'],
-  ExpressionStatement: ['expression'],
-  ChainExpression: ['expression'],
-  ParenthesizedExpression: ['expression'],
-  CallExpression: ['callee', 'arguments'],
-  NewExpression: ['callee', 'arguments'],
-  MemberExpression: ['object', 'property'],
-  AssignmentExpression: ['left', 'right'],
-  BinaryExpression: ['left', 'right'],
-  LogicalExpression: ['left', 'right'],
-  UnaryExpression: ['argument'],
-  UpdateExpression: ['argument'],
-  ConditionalExpression: ['test', 'consequent', 'alternate'],
-  SpreadElement: ['argument'],
-  YieldExpression: ['argument'],
-  AwaitExpression: ['argument'],
-  TaggedTemplateExpression: ['tag', 'quasi'],
-  TemplateLiteral: ['expressions'],
-  ObjectExpression: ['properties'],
-  Property: ['key', 'value'],
-  ArrayExpression: ['elements'],
-  VariableDeclarator: ['init'],
-  VariableDeclaration: ['declarations'],
-  ReturnStatement: ['argument'],
-  IfStatement: ['test', 'consequent', 'alternate'],
-  ForStatement: ['init', 'test', 'update', 'body'],
-  ForInStatement: ['left', 'right', 'body'],
-  ForOfStatement: ['left', 'right', 'body'],
-  WhileStatement: ['test', 'body'],
-  DoWhileStatement: ['test', 'body'],
-  BlockStatement: ['body'],
-  FunctionDeclaration: ['params', 'body'],
-  FunctionExpression: ['params', 'body'],
-  ArrowFunctionExpression: ['params', 'body'],
-  ClassDeclaration: ['superClass', 'body'],
-  ClassExpression: ['superClass', 'body'],
-  ClassBody: ['body'],
-  MethodDefinition: ['key', 'value'],
-  PropertyDefinition: ['key', 'value'],
-  StaticBlock: ['body'],
-  SwitchStatement: ['discriminant', 'cases'],
-  SwitchCase: ['test', 'consequent'],
-  TryStatement: ['block', 'handler', 'finalizer'],
-  CatchClause: ['param', 'body'],
-  ThrowStatement: ['argument'],
-  LabeledStatement: ['body'],
-  ExportNamedDeclaration: ['declaration'],
-  ExportDefaultDeclaration: ['declaration'],
-  ExportAllDeclaration: ['source'],
-  ImportExpression: ['source'],
-  OptionalMemberExpression: ['object', 'property'],
-  OptionalCallExpression: ['callee', 'arguments'],
-};
+// Complete recursive walker: recurses into every child value that is itself
+// an AST node (object with a string `type`), array items included. A previous
+// hand-maintained child-key table skipped node types that minifiers emit
+// heavily (SequenceExpression, AssignmentPattern, object/array patterns), so
+// violations nested under them were never visited — the audit must stay
+// fail-closed by construction, not by enumerating node types. The key filter
+// only avoids stepping into location metadata; the `type` guard inside walk()
+// is what actually excludes non-node values (literal values, regex parts).
+const NON_NODE_KEYS = new Set(['type', 'start', 'end', 'loc', 'range', 'regex']);
 
 function walk(node, visit) {
   if (!node || typeof node.type !== 'string') return;
   visit(node);
-  const keys = CHILD_KEYS[node.type] || [];
-  for (const key of keys) {
+  for (const key of Object.keys(node)) {
+    if (NON_NODE_KEYS.has(key)) continue;
     const child = node[key];
     if (Array.isArray(child)) {
       for (const item of child) walk(item, visit);
@@ -158,6 +113,17 @@ function walk(node, visit) {
       walk(child, visit);
     }
   }
+}
+
+function regexViolations(pattern, flags, describe) {
+  const found = [];
+  if (pattern != null && /\(\?<[=!]/.test(pattern)) {
+    found.push(`lookbehind assertion in ${describe} — Safari 16.4`);
+  }
+  if (flags && /[vd]/.test(flags)) {
+    found.push(`regex flag "${flags}" — Safari ${flags.includes('v') ? '17' : '15.4'}`);
+  }
+  return found;
 }
 
 function propertyName(member) {
@@ -205,11 +171,8 @@ function auditSource(label, code, { sourceType = 'module', isPolyfillScript = fa
     if (suppressed.size > 0 && suppressed.has(lineOfOffset(code, node.start).line)) return;
     if (node.type === 'Literal' && node.regex) {
       const { pattern, flags } = node.regex;
-      if (/\(\?<[=!]/.test(pattern)) {
-        violations.push(`${label}:${lineOfOffset(code, node.start).line}: lookbehind assertion in /${pattern.slice(0, 60)}/ — Safari 16.4`);
-      }
-      if (/[vd]/.test(flags)) {
-        violations.push(`${label}:${lineOfOffset(code, node.start).line}: regex flag "${flags}" — Safari ${flags.includes('v') ? '17' : '15.4'}`);
+      for (const message of regexViolations(pattern, flags, `/${pattern.slice(0, 60)}/`)) {
+        violations.push(`${label}:${lineOfOffset(code, node.start).line}: ${message}`);
       }
       return;
     }
@@ -218,6 +181,22 @@ function auditSource(label, code, { sourceType = 'module', isPolyfillScript = fa
     if (callee.kind === 'global') {
       if (Object.hasOwn(GLOBAL_API_BASELINE, callee.name)) {
         violations.push(`${label}:${lineOfOffset(code, node.start).line}: ${callee.name} — ${GLOBAL_API_BASELINE[callee.name]}`);
+      }
+      // `new RegExp("(?<=a)b")` is as fatal as the literal form but never
+      // appears as a regex AST node, so the constructor call must be checked
+      // too. Pattern and flags are checked independently — each fires on the
+      // statically-knowable literal argument; computed values are beyond
+      // static reach.
+      if (callee.name === 'RegExp') {
+        const [patternArg, flagsArg] = node.arguments;
+        const patternText = patternArg?.type === 'Literal' && typeof patternArg.value === 'string'
+          ? patternArg.value : null;
+        const flagsText = flagsArg?.type === 'Literal' && typeof flagsArg.value === 'string'
+          ? flagsArg.value : '';
+        const describe = patternText != null ? `RegExp("${patternText.slice(0, 60)}")` : 'RegExp(dynamic, flags)';
+        for (const message of regexViolations(patternText, flagsText, describe)) {
+          violations.push(`${label}:${lineOfOffset(code, node.start).line}: ${message}`);
+        }
       }
       return;
     }
