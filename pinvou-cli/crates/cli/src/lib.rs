@@ -454,6 +454,8 @@ pub fn render_help() -> String {
     commands.extend([
         "  pinvou chat             Start an interactive local chat",
         "  pinvou runtime detect   Detect available runtimes",
+        "  pinvou runtime list     List selectable runtimes",
+        "  pinvou runtime switch   Switch the active runtime",
     ]);
     commands.join("\n")
 }

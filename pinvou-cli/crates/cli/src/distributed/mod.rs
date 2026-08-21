@@ -27,6 +27,8 @@ const READY_POLL: Duration = Duration::from_millis(25);
 pub enum DistributedCommand {
     Chat,
     RuntimeDetect,
+    RuntimeList,
+    RuntimeSwitch(String),
 }
 
 pub(crate) fn parse_command(values: &[String]) -> Result<Option<DistributedCommand>, CliError> {
@@ -38,8 +40,14 @@ pub(crate) fn parse_command(values: &[String]) -> Result<Option<DistributedComma
     {
         ["chat"] => Ok(Some(DistributedCommand::Chat)),
         ["runtime", "detect"] => Ok(Some(DistributedCommand::RuntimeDetect)),
+        ["runtime", "list"] => Ok(Some(DistributedCommand::RuntimeList)),
+        ["runtime", "switch", runtime] if !runtime.is_empty() => {
+            Ok(Some(DistributedCommand::RuntimeSwitch((*runtime).into())))
+        }
         ["chat", ..] => Err(CliError::usage("usage: pinvou chat")),
-        ["runtime", ..] => Err(CliError::usage("usage: pinvou runtime detect")),
+        ["runtime", ..] => Err(CliError::usage(
+            "usage: pinvou runtime detect|list|switch <runtime>",
+        )),
         _ => Ok(None),
     }
 }
@@ -455,6 +463,27 @@ pub(crate) fn execute(
                 OutputMode::Json => response.payload().to_string(),
                 OutputMode::Human => {
                     serde_json::to_string_pretty(response.payload()).unwrap_or_else(|_| "{}".into())
+                }
+            })
+        }
+        DistributedCommand::RuntimeList => {
+            let response = ensure_controller()?.runtime_list()?;
+            Ok(match output {
+                OutputMode::Json => response.payload().to_string(),
+                OutputMode::Human => format_runtime_list(response.payload()),
+            })
+        }
+        DistributedCommand::RuntimeSwitch(runtime) => {
+            let response = ensure_controller()?.runtime_switch(&runtime)?;
+            Ok(match output {
+                OutputMode::Json => response.payload().to_string(),
+                OutputMode::Human => {
+                    let selected = response
+                        .payload()
+                        .get("runtime")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&runtime);
+                    format!("runtime switched to {selected}")
                 }
             })
         }

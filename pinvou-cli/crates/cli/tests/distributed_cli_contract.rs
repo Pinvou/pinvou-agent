@@ -95,6 +95,8 @@ fn no_arguments_prints_stage_one_help_without_starting_a_daemon() {
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert!(outcome.stdout.contains("pinvou chat"));
     assert!(outcome.stdout.contains("pinvou runtime detect"));
+    assert!(outcome.stdout.contains("pinvou runtime list"));
+    assert!(outcome.stdout.contains("pinvou runtime switch"));
 }
 
 #[test]
@@ -109,9 +111,22 @@ fn distributed_commands_are_explicit_and_unknown_shapes_are_usage_errors() {
             .command(),
         &CliCommand::Distributed(DistributedCommand::RuntimeDetect)
     );
+    assert_eq!(
+        parse_args(["pinvou", "runtime", "list"]).unwrap().command(),
+        &CliCommand::Distributed(DistributedCommand::RuntimeList)
+    );
+    assert_eq!(
+        parse_args(["pinvou", "runtime", "switch", "codex"])
+            .unwrap()
+            .command(),
+        &CliCommand::Distributed(DistributedCommand::RuntimeSwitch("codex".into()))
+    );
     for args in [
         vec!["pinvou", "runtime"],
         vec!["pinvou", "runtime", "unknown"],
+        vec!["pinvou", "runtime", "switch"],
+        vec!["pinvou", "runtime", "switch", ""],
+        vec!["pinvou", "runtime", "switch", "codex", "extra"],
         vec!["pinvou", "chat", "unexpected"],
     ] {
         assert_eq!(parse_args(args).unwrap_err().exit_code(), ExitCode::Usage);
@@ -221,7 +236,7 @@ fn causal_first_error_mapping_covers_all_stable_exit_codes() {
 
 #[test]
 fn cli_uses_only_formal_controller_methods_and_binds_the_instance_challenge() {
-    let responses = (1..=5).map(|id| {
+    let responses = (1..=7).map(|id| {
         IpcMessage::response(serde_json::json!(id), serde_json::json!({"ok":true})).unwrap()
     });
     let mut client = ControllerWire::from_authenticated(
@@ -233,6 +248,8 @@ fn cli_uses_only_formal_controller_methods_and_binds_the_instance_challenge() {
     client.resolve_input("input-1", "answer").unwrap();
     client.interrupt_turn("turn-1").unwrap();
     client.runtime_detect().unwrap();
+    client.runtime_list().unwrap();
+    client.runtime_switch("codex").unwrap();
 
     let requests = client.into_inner().requests();
     assert_eq!(
@@ -245,7 +262,9 @@ fn cli_uses_only_formal_controller_methods_and_binds_the_instance_challenge() {
             "approval.resolve",
             "input.resolve",
             "turn.interrupt",
-            "runtime.detect"
+            "runtime.detect",
+            "runtime.list",
+            "runtime.switch"
         ]
     );
     assert!(requests.iter().all(|request| {
@@ -255,6 +274,7 @@ fn cli_uses_only_formal_controller_methods_and_binds_the_instance_challenge() {
     assert_eq!(requests[1].payload()["accepted"], true);
     assert_eq!(requests[2].payload()["value"], "answer");
     assert_eq!(requests[3].payload()["turn_id"], "turn-1");
+    assert_eq!(requests[6].payload()["runtime"], "codex");
 }
 
 #[test]
