@@ -10,7 +10,7 @@ pub use protocol::{WebAccessInfo, WebAccessStatus};
 pub(crate) const MAX_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
 
 use rand::distr::Alphanumeric;
-use rand::Rng;
+use rand::RngExt;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 

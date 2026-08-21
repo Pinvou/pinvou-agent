@@ -57,10 +57,9 @@ tokio-util = { version = "0.7.16", features = ["compat"] }
 
 # 外部 Agent ACP 客户端：只负责协议连接与 typed schema。Agent 本体由
 # Codex/Claude/Kimi 各自的 ACP 实现提供，pinvou3 不复制其会话/工具循环。
-agent-client-protocol = { version = "2", features = [
-    "unstable_elicitation",
-    "unstable_session_fork",
-] }
+# unstable_elicitation is load-bearing (codex_acp CreateElicitation flow);
+# unstable_session_fork only gates the ForkSession API (zero app references), so the phase-4 audit drops it.
+agent-client-protocol = { version = "2", features = ["unstable_elicitation"] }
 
 # 底层 Agent —— CodeWhale 提供 LLM 调用 + 工具循环 + 流式事件。
 # 上游 v0.8.45 起 rebrand：库 crate 改名 codewhale-tui。用 Cargo 的 `package`
@@ -110,7 +109,11 @@ tar = "0.4"
 
 # Session store 用：阻塞式 RwLock（sync 不需要 .await 拿读写锁）
 parking_lot = "0.12"
-fs2 = "0.4"
+# Process-ownership lock (remote_control web access single-process authority).
+# fd-lock is already in the graph (transitive via codewhale-config) and wraps the
+# same primitives as fs2 — flock(unix)/LockFileEx(windows). The phase-4 audit
+# replaces the direct fs2 dependency with it, dropping one app-only crate.
+fd-lock = "4"
 
 # 时间戳：SessionMetadata.updated_at 用 chrono::Utc::now()，对齐上游 schema
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
@@ -122,7 +125,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 # 项目仅用稳定高层 API（recommended_watcher / Watcher::watch / EventKind / RecursiveMode），
 # 6→8 公开签名零变化，watcher.rs / file_watcher.rs 源码无需改动。
 notify = "8"
-msg_parser = "0.3.0"
 
 # 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重（docs/本地知识底座-产品形态与架构.md）
 # rusqlite bundled —— 自带 SQLite + FTS5（名/路径秒搜），不依赖系统 libsqlite，
@@ -148,7 +150,8 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # 0.30:Message::Text 的 String→Utf8Bytes、Ping/Pong 的 Vec→Bytes,relay_client.rs 已适配。
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
-rand = "0.9"
+rand = "0.10"
+# Keep 0.22: age/codewhale-tui/hyper-util still require 0.22; a solo 0.23 bump would only add a second copy. Revisit once upstreams align.
 base64 = "0.22"
 age = { version = "=0.12.1", default-features = false }
 tempfile = "3"
@@ -192,6 +195,10 @@ objc2-speech = { version = "0.3", default-features = false, features = [
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 webview2-com = "0.38.2"
+# Native Outlook .msg parsing (ingest_email.rs; same gating the retired
+# os::msg_native_supported() predicate provided). Windows-only compile:
+# macOS/Linux take the msgconvert → .eml branch; previously dead-compiled everywhere.
+msg_parser = "0.3.0"
 # voice/platform/windows.rs 仅用 COM 基础类型(Interface/HSTRING/Result),它们源自
 # windows-core——不必拉入完整 windows crate。windows-core 已由 webview2-com 传递引入,
 # 此处显式声明只为把 app 直接依赖收敛到更轻的 windows-core(windows::core::* 即其 re-export)。

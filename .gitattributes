@@ -6,3 +6,8 @@ pinvou3-app/src-tauri/resources/platforms/linux/knowledge-host/pinvou-knowledge-
 # 编译期 include_str! 内嵌并按 "\n\n" 切分/golden 字节测试锁定:autocrlf=true 的
 # Windows checkout 转成 CRLF 后 split_once("\n\n") 直接 panic。
 pinvou3-app/src-tauri/resources/common/bundle/instructions-*.md text eol=lf
+# Vendored browser assets ship byte-exact and are locked to the SHA-256
+# registry in pinvou3-app/src/vendor/README.md (enforced by
+# pinvou3-app/tests/vendor_asset_integrity.test.js); a core.autocrlf=true
+# checkout would rewrite line endings and break that contract.
+pinvou3-app/src/vendor/*.js text eol=lf

@@ -223,7 +223,9 @@ struct Inner {
     /// Held for the remainder of this desktop process after Web access is
     /// first touched. This makes the persistent endpoint and RPC ledger a
     /// single-process authority even if two app instances are launched.
-    process_lock: Option<File>,
+    /// The guard keeps the fd-lock write lock held; see
+    /// `persistence::acquire_process_lock` for the `'static` lifetime story.
+    process_lock: Option<fd_lock::RwLockWriteGuard<'static, File>>,
     endpoint: Option<ActiveEndpoint>,
     idle_status: WebAccessStatusKind,
     idle_error: Option<String>,
