@@ -4,20 +4,10 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PINVOU_CODEWHALE_PATH="CodeWhale"
 PINVOU_CODEWHALE_URL="https://github.com/Pinvou/CodeWhale.git"
-PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r7"
-LOCAL_SECURITY_HEAD="a647ed866c9adaac687dc1b892935537adcdaaf5"
+PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r8"
 
-allow_registered_candidate=0
-case "${1:-}" in
-  "") ;;
-  --allow-registered-candidate) allow_registered_candidate=1 ;;
-  *)
-    echo "unknown argument: $1" >&2
-    exit 2
-    ;;
-esac
-if [[ $# -gt 1 ]]; then
-  echo "unknown argument: $2" >&2
+if [[ $# -ne 0 ]]; then
+  echo "unknown argument: $1" >&2
   exit 2
 fi
 
@@ -55,14 +45,8 @@ tag_target="$(
     awk -v ref="refs/tags/${PINVOU_CODEWHALE_TAG}^{}" '$2 == ref { print $1 }'
 )"
 
-verification_label="${PINVOU_CODEWHALE_TAG}"
-if [[ "$tag_target" == "$gitlink" ]]; then
-  :
-elif [[ "$allow_registered_candidate" == "1" ]] \
-  && [[ "$gitlink" == "$LOCAL_SECURITY_HEAD" ]]; then
-  verification_label="registered r8 PR candidate"
-else
-  echo "错误：${PINVOU_CODEWHALE_TAG} 解引用为 ${tag_target:-<不存在>}，父仓 gitlink 为 $gitlink；仅 pull_request 可放行登记的 r8 候选 $LOCAL_SECURITY_HEAD" >&2
+if [[ "$tag_target" != "$gitlink" ]]; then
+  echo "错误：${PINVOU_CODEWHALE_TAG} 解引用为 ${tag_target:-<不存在>}，父仓 gitlink 为 $gitlink" >&2
   exit 1
 fi
 
@@ -71,4 +55,4 @@ if ! printf '%s\n' "$remote_refs" | awk -v sha="$gitlink" '$1 == sha { found = 1
   exit 1
 fi
 
-echo "公开 CodeWhale 基线校验通过：${verification_label} -> $gitlink"
+echo "公开 CodeWhale 基线校验通过：${PINVOU_CODEWHALE_TAG} -> $gitlink"

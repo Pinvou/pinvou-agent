@@ -33,7 +33,8 @@ CodeWhale 路径保护还有两个旁路：用户持久化的 `trusted_external_
 - 不用提示词代替权限校验。
 - 不修改普通 GUI 的工具策略、审批设置或 mode 语义。
 - 优先在 app 的 hook/config/runtime seam 完成；确需进入底座生命周期的
-  （exact dispatch、read-only 投影）随 CodeWhale PR #15 落地，并遵循
+  （exact dispatch、read-only 投影）已随 CodeWhale PR #15 合并并发布为
+  `pinvou-v0.9.5-r8`，并遵循
   `docs/fork-policy.md`、更新 `docs/fork-modifications.md`、指纹和行为测试，
   运行 fork guard。
 - 不声称公网 profile 能保护输入机密性。
@@ -176,5 +177,5 @@ Schema allowlist、dispatch 和 hook 能阻止附件/网页诱导 shell、home �
 7. 恶意 prompt/附件不能获得 shell、写入、外部文件、子智能体或动态工具权限。
 8. 生命周期终止有界清理，且不泄漏 secret。
 9. 底座改动（exact dispatch、read-only File schema 投影与最终分发复检、
-   排队控制操作受限继承、Hook 默认关闭、受限日志/审计脱敏）落在 CodeWhale
-   PR #15，按 fork 流程登记指纹并计划回馈上游。
+   排队控制操作受限继承、Hook 默认关闭、受限日志/审计脱敏）已随 CodeWhale
+   PR #15 合并并发布为 `pinvou-v0.9.5-r8`，已按 fork 流程登记指纹并计划回馈上游。
