@@ -1,15 +1,22 @@
 #![cfg(feature = "distributed")]
 
-use std::time::{Duration, Instant};
+use std::{
+    process::Command,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 use pinvou_cli::distributed::{
     CHAT_TEXT_FRAME, ControllerWire, DistributedCommand, ProjectionAction, TerminalProjection,
     map_error_causes,
 };
 use pinvou_cli::{CliCommand, ExitCode, execute, parse_args};
+use pinvou_controller::{ControllerPaths, ControllerSession, LocalIpcListener};
 use pinvou_protocol::{
     ExitCause, IpcMessage, RuntimeEventEnvelope, StableExitCode, decode_frame, encode_frame,
 };
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Default)]
 struct FakeDuplex {
@@ -247,4 +254,94 @@ fn cli_uses_only_formal_controller_methods_and_binds_the_instance_challenge() {
     assert_eq!(requests[1].payload()["accepted"], true);
     assert_eq!(requests[2].payload()["value"], "answer");
     assert_eq!(requests[3].payload()["turn_id"], "turn-1");
+}
+
+#[test]
+fn runtime_detect_binary_uses_the_real_controller_ipc_wire() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let unique = format!(
+        "pinvou-cli-runtime-detect-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(&unique);
+    std::fs::create_dir_all(&root).unwrap();
+    let previous_local = std::env::var_os("LOCALAPPDATA");
+    let previous_home = std::env::var_os("HOME");
+    let previous_xdg_data = std::env::var_os("XDG_DATA_HOME");
+    let previous_xdg_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+    let previous_scope = std::env::var_os("PINVOU_CONTROLLER_SESSION_SCOPE_FOR_TEST");
+    unsafe {
+        std::env::set_var("LOCALAPPDATA", &root);
+        std::env::set_var("HOME", &root);
+        std::env::set_var("XDG_DATA_HOME", root.join("data"));
+        std::env::set_var("XDG_RUNTIME_DIR", root.join("runtime"));
+        std::env::set_var("PINVOU_CONTROLLER_SESSION_SCOPE_FOR_TEST", &unique);
+    }
+    std::fs::create_dir_all(root.join("runtime")).unwrap();
+    let paths = ControllerPaths::discover().unwrap();
+    #[cfg(windows)]
+    let expected_paths = ControllerPaths::from_roots(
+        pinvou_controller::HostPlatform::current().unwrap(),
+        root.join("pinvou"),
+        root.join("pinvou"),
+        &unique,
+    )
+    .unwrap();
+    #[cfg(target_os = "linux")]
+    let expected_paths = ControllerPaths::from_roots(
+        pinvou_controller::HostPlatform::current().unwrap(),
+        root.join("data").join("pinvou"),
+        root.join("runtime"),
+        "unused",
+    )
+    .unwrap();
+    assert_eq!(paths.endpoint(), expected_paths.endpoint());
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let mut listener = LocalIpcListener::bind(paths.endpoint()).unwrap();
+        ready_tx.send(()).unwrap();
+        listener
+            .serve_one(&ControllerSession::new("binary-controller").unwrap())
+            .unwrap();
+    });
+    ready_rx.recv().unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .args(["--output", "json", "runtime", "detect"])
+        .env("LOCALAPPDATA", &root)
+        .env("HOME", &root)
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+        .env("PINVOU_CONTROLLER_SESSION_SCOPE_FOR_TEST", &unique)
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    restore_env("LOCALAPPDATA", previous_local);
+    restore_env("HOME", previous_home);
+    restore_env("XDG_DATA_HOME", previous_xdg_data);
+    restore_env("XDG_RUNTIME_DIR", previous_xdg_runtime);
+    restore_env("PINVOU_CONTROLLER_SESSION_SCOPE_FOR_TEST", previous_scope);
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["status"], "unavailable");
+    assert_eq!(value["runtime"], "local-node");
+    assert_eq!(value["protocol_version"], pinvou_protocol::IPC_VERSION);
+}
+
+fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {
+    match previous {
+        Some(value) => unsafe { std::env::set_var(name, value) },
+        None => unsafe { std::env::remove_var(name) },
+    }
 }

@@ -171,6 +171,15 @@ fn stable_hash(bytes: &[u8]) -> u64 {
 
 #[cfg(windows)]
 fn session_scope() -> Result<String, ControllerError> {
+    #[cfg(debug_assertions)]
+    if let Some(scope) = std::env::var_os("PINVOU_CONTROLLER_SESSION_SCOPE_FOR_TEST") {
+        let scope = scope
+            .into_string()
+            .map_err(|_| ControllerError::PathUnavailable)?;
+        if !scope.is_empty() {
+            return Ok(scope);
+        }
+    }
     crate::windows_security::current_logon_sid_string()
 }
 
