@@ -202,7 +202,7 @@ pub(super) fn discard_web_attachment_upload(inner: &mut Inner, upload_id: &str) 
 }
 
 /// 浏览器本机上传的桌面暂存根目录。目录布局 `uploads/webup_<token>/<file>`
-/// 与旧版远控上传一致，`verify_upload` E2E 命令可直接校验。
+/// 与旧版远控上传一致。
 pub(crate) fn web_attachment_uploads_base() -> PathBuf {
     paths::pinvou3_home().join("uploads")
 }
