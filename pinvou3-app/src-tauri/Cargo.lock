@@ -6120,6 +6120,7 @@ dependencies = [
  "futures-util",
  "gtk",
  "include_dir",
+ "libc",
  "log",
  "msg_parser",
  "notify",

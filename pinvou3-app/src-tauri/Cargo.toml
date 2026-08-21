@@ -195,6 +195,11 @@ windows-core = "0.61"
 
 [target.'cfg(not(windows))'.dependencies]
 
+# 进程存活探测（kill(pid, 0) 语义，见 platform/os/posix.rs process_alive）：
+# browser watch 删除 stale 端口文件前的持有者护栏。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -86,6 +86,13 @@ assert.deepEqual(configSpecs(linuxArmArgs), [
 
 const explicitOverlay = "custom-signing.json";
 const windowsRuntimeOverlay = "target/windows-runtime/tauri.generated.conf.json";
+// Windows overlay 首建 resources 块（diff 中 windows tauri.conf.json 为新建键），
+// chrome-devtools-mcp 映射同样需要契约断言（布局测试只查 source 存在性）。
+const windowsBundle = composeEffectiveConfig([platformConfigPath("win32")]).effectiveConfig;
+assert.equal(
+  windowsBundle.bundle.resources["resources/platforms/windows/chrome-devtools-mcp/"],
+  "runtime/chrome-devtools-mcp",
+);
 const bundleArgs = prepareTauriArgs(
   ["bundle", "-c", explicitOverlay],
   { platform: "win32", stageRuntime: () => null },
@@ -202,6 +209,12 @@ assert.equal(
   linux.bundle.resources["resources/platforms/linux/codex-bridge/"],
   "runtime/codex-bridge",
 );
+// chrome-devtools-mcp 资源映射（运行时 browser MCP 前置条件）：误删任一平台的
+// 映射行会让该平台安装包缺 runtime/chrome-devtools-mcp，仅剩用户侧不可用兜底。
+assert.equal(
+  linux.bundle.resources["resources/platforms/linux/chrome-devtools-mcp/"],
+  "runtime/chrome-devtools-mcp",
+);
 const linuxManifest = buildResourceManifest(linux, { platform: "linux" });
 assert.ok(linuxManifest.resourceFileCount > 0);
 assert.ok(linuxManifest.files.some((file) => file.destination.startsWith("runtime/asr/")));
@@ -243,6 +256,10 @@ assert.deepEqual(macos.bundle.targets, ["app", "dmg"]);
 assert.equal(
   macos.bundle.resources["resources/platforms/macos/codex-bridge/"],
   "runtime/codex-bridge",
+);
+assert.equal(
+  macos.bundle.resources["resources/platforms/macos/chrome-devtools-mcp/"],
+  "runtime/chrome-devtools-mcp",
 );
 assert.equal(
   macos.bundle.resources["resources/platforms/macos/infoplist/"],

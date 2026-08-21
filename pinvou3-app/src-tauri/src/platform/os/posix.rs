@@ -30,6 +30,17 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
 pub fn filesystem_path_identity_key(path: &str) -> String {
     path.to_string()
 }
+
+/// 进程存活探测（`kill(pid, 0)` 语义：不发送信号，仅做存在性/权限检查）。
+/// 返回 0 或 errno == EPERM（进程存在但属于其他用户）均视为存活；ESRCH 为已退出。
+/// 消费方：browser watch 删除 stale 端口文件前的持有者护栏（经 interface/system.rs）。
+pub fn process_alive(pid: u32) -> bool {
+    // SAFETY: 信号 0 不产生实际信号，仅查询进程存在性，对任意 pid 调用安全。
+    if unsafe { libc::kill(pid as i32, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
 /// 探测 PATH 中第一个可用的 python 解释器名。
 /// 优先 `python3`，回退 `python`，最终默认 `python3`。
 pub fn python_command() -> String {

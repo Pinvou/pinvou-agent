@@ -213,7 +213,7 @@ fn windows_npm_prefix_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-fn bundled_node_dir() -> Option<PathBuf> {
+pub(crate) fn bundled_node_dir() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
         .map(|exe| bundled_runtime_dir_for_exe(&exe, "node"))

@@ -117,6 +117,14 @@ assertGuard(
   /event\.key === ['"]Enter['"] && !event\.shiftKey\s*&&\s*!isImeComposing\(event\)[\s\S]*submitPetReply/,
 );
 
+// --- features/browser:地址栏导航 ----------------------------------------------
+const browserView = src('features', 'browser', 'BrowserView.jsx');
+assertGuard(
+  '浏览器地址栏 Enter 导航',
+  browserView,
+  /e\.key === ['"]Enter['"] && isImeComposing\(e\)\) e\.preventDefault\(\)/,
+);
+
 // --- helper 行为单测:isImeComposing 四类场景 ----------------------------------
 // 构造轻量事件对象模拟 KeyboardEvent:React 合成事件带 nativeEvent,原生事件无。
 const synth = (isComposing, keyCode) => ({ nativeEvent: { isComposing, keyCode } });
@@ -140,4 +148,4 @@ assert.equal(isImeComposing(undefined), false, 'undefined 事件应安全返回 
 assert.equal(isImeComposing({}), false, '空事件应安全返回 false');
 assert.equal(isImeComposing({ nativeEvent: null }), false, 'nativeEvent 为 null 应安全返回 false');
 
-console.log('IME compose guard tests passed (11 guarded Enter paths + helper behavior)');
+console.log('IME compose guard tests passed (12 guarded Enter paths + helper behavior)');

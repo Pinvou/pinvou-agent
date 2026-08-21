@@ -16,6 +16,7 @@ import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
 import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
+import { BrowserView } from '../features/browser/BrowserView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
 import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
@@ -148,6 +149,47 @@ function workspaceDisplayName(path) {
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentView] = useState('chat');
       const [activeTheme, setActiveTheme] = useState('dark');
+      // 浏览器 Tab：仅"工作模式中模型实际调用浏览器能力"后出现（Rust 端 emit browser:activated），
+      // 未调用时不渲染、不加载。
+      const [browserActive, setBrowserActive] = useState(false);
+      useEffect(() => {
+        let disposed = false;
+        const unlisteners = [];
+        // 先注册监听、再查状态兜底：顺序反了会在「状态查询返回」与「监听生效」
+        // 之间的窗口错过 browser:activated（Rust 端 activated 标记阻止重发），
+        // 浏览器 Tab 会一直不出现，直到下次 webview 重载。
+        tauriEvents.listen('browser:activated', () => {
+          if (disposed) return;
+          setBrowserActive(true);
+        }).then(unlisten => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        }).catch(() => {});
+        tauriEvents.listen('browser:stopped', () => {
+          if (disposed) return;
+          setBrowserActive(false);
+        }).then(unlisten => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        }).catch(() => {});
+        // webview 重载（HMR/崩溃恢复/手动刷新）后 Rust 不会重发 browser:activated
+        // （activated 标记阻止重发）：挂载时查一次状态兜底，浏览器仍在运行则
+        // 恢复浏览器 Tab 入口。
+        invokeTauri('browser_status').then((st) => {
+          if (!disposed && st && st.running) setBrowserActive(true);
+        }).catch(() => {});
+        return () => {
+          disposed = true;
+          unlisteners.forEach(u => u && u());
+        };
+      }, []);
+      // 浏览器停止/崩溃后视图回退：browser:stopped 已把 browserActive 置 false，
+      // 若用户正停在 browser 视图则回到 chat（侧栏入口已消失，避免空白视图滞留）。
+      useEffect(() => {
+        if (!browserActive && currentView === 'browser') {
+          setCurrentView('chat');
+        }
+      }, [browserActive, currentView]);
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
       const codexAcpSupported = !!platformCapabilities.codexAcpSupported;
@@ -524,7 +566,7 @@ function workspaceDisplayName(path) {
         // monitor/settings 拽走。
         if (bs.activeSessionId !== activeChat) {
           setActiveChat(bs.activeSessionId);
-          if (bs.activeSessionId && currentView !== 'codex' && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled') {
+          if (bs.activeSessionId && currentView !== 'codex' && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled' && currentView !== 'browser') {
             setCurrentView('chat');
           }
         }
@@ -1608,12 +1650,12 @@ function workspaceDisplayName(path) {
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
           ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
-        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
+        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings, browser: t.browser }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
         navigateFromScheduledRun(view, beforeNavigate);
       };
-      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'toolStore', 'settings'];
+      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'toolStore', 'settings', 'browser'];
       const mobileMoreActive = mobileMoreViews.includes(currentView)
         || (currentView === 'scheduled' && !(bs && bs.scheduledRunContext));
 
@@ -1857,6 +1899,15 @@ function workspaceDisplayName(path) {
                 onClick={() => navigateFromScheduledRun('knowledge')}
                 dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
               />
+              {browserActive && (
+                <NavItem
+                  icon={<Globe size={18} />} label={t.browser}
+                  active={currentView === 'browser'}
+                  theme={activeTheme}
+                  isSidebarOpen={isSidebarOpen}
+                  onClick={() => navigateFromScheduledRun('browser')}
+                />
+              )}
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
                 <NavItem
@@ -2119,6 +2170,7 @@ function workspaceDisplayName(path) {
                 />
               </SettingsErrorBoundary>
             )}
+            {browserActive && currentView === 'browser' && <BrowserView theme={activeTheme} t={t} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
@@ -2339,6 +2391,8 @@ function workspaceDisplayName(path) {
             <MobileMoreSheet theme={activeTheme} title={t.mobileMore} onClose={() => setMobileMoreOpen(false)} items={[
               { key: 'search', label: t.searchChats, icon: <Search size={18} />,
                 active: currentView === 'search', onClick: () => mobileNavigate('search') },
+              ...(browserActive ? [{ key: 'browser', label: t.browser, icon: <Globe size={18} />,
+                active: currentView === 'browser', onClick: () => mobileNavigate('browser') }] : []),
               ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
                 active: currentView === 'scheduled', dot: scheduledUnread,
                 onClick: () => mobileNavigate('scheduled') }] : []),

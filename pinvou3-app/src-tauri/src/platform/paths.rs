@@ -129,6 +129,48 @@ pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
 }
 
+// --- 浏览器功能（features/browser）路径 ---
+
+/// `~/.pinvou3/browser/` —— 专用有头 Chrome 的状态目录（端口文件/profile/启动锁）。
+pub fn browser_home() -> PathBuf {
+    pinvou3_home().join("browser")
+}
+/// CDP 端口协调文件：{ port, pid, owner: "app"|"mcp", started_at }。
+/// Rust BrowserManager 与 MCP wrapper（browser-wrapper.mjs）通过它幂等协调同一实例。
+pub fn browser_cdp_port_json() -> PathBuf {
+    browser_home().join("cdp-port.json")
+}
+/// 专用 Chrome 的独立 user-data-dir（与用户日常浏览器隔离）。
+pub fn browser_profile_dir() -> PathBuf {
+    browser_home().join("profile")
+}
+/// 浏览器启动独占锁（node 的 `openSync(lock, 'wx')` 与 Rust `create_new` 同语义）。
+pub fn browser_start_lock() -> PathBuf {
+    browser_home().join("start.lock")
+}
+/// 浏览器最近一次动态启动失败记录：{ reason, at }，由 browser-wrapper.mjs 在
+/// Chrome 缺失/启动失败/CDP 未就绪退出前写入；Rust 侧（browser_unavailability_reason）
+/// 读取后注入模型可见的 instructions（24h 新鲜度）。
+pub fn browser_last_error_json() -> PathBuf {
+    browser_home().join("last-error.json")
+}
+/// 工作模式会话专用 mcp.json（全局 mcp.json + browser 条目）。
+/// 门控语义：browser MCP 工具只对工作模式（assistant 引擎）会话暴露，全局
+/// mcp.json 永不注册 browser 条目；codex ACP 等外部 Agent 不读本文件。
+pub fn browser_work_mcp_json() -> PathBuf {
+    browser_home().join("mcp.work.json")
+}
+/// 浏览器 MCP wrapper 脚本（编译期内嵌，释放到 `~/.pinvou3/bundle/mcp-servers/`）。
+pub fn bundle_browser_wrapper() -> PathBuf {
+    bundle_mcp_servers_dir().join("browser-wrapper.mjs")
+}
+/// vendor 的 chrome-devtools-mcp 入口（随安装包 resource_dir 分发）。
+pub fn bundled_chrome_devtools_mcp_bin() -> Option<PathBuf> {
+    let res = runtime_resource_dir()?;
+    let bin = res.join("runtime/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js");
+    bin.is_file().then_some(bin)
+}
+
 /// 拉起 python MCP server(present_artifact / pptx 等)用的解释器命令。
 ///
 /// - **Windows**:优先用安装器写入的 `PINVOU3_PYTHON`,其次用随安装包内置的

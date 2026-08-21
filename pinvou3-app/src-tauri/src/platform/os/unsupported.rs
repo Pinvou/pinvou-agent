@@ -243,6 +243,22 @@ pub fn super_permission_turn_reminder() -> &'static str {
     "当前系统不支持 Linux sudo 超级权限开关。需要管理员权限时,请使用系统提供的管理员方式执行,不要尝试 sudo/apt/systemctl/pkexec。"
 }
 
+/// 非三大桌面平台不支持专用有头 Chrome（移动端无独立浏览器进程语义）。
+pub fn chrome_candidates() -> Vec<String> {
+    Vec::new()
+}
+
+/// 非桌面平台无随包捆绑 node（浏览器 MCP 运行时不可用，回退系统 PATH 探测）。
+pub fn bundled_node() -> Option<std::path::PathBuf> {
+    None
+}
+
+/// 非桌面平台无进程存活探测能力：返回 false（浏览器功能本就不支持这些平台，
+/// chrome_candidates 为空，该桩实际不可达）。
+pub fn process_alive(_pid: u32) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -25,6 +25,7 @@
     "resources": {
       "resources/platforms/macos/PrivacyInfo.xcprivacy": "PrivacyInfo.xcprivacy",
       "resources/platforms/macos/codex-bridge/": "runtime/codex-bridge",
+      "resources/platforms/macos/chrome-devtools-mcp/": "runtime/chrome-devtools-mcp",
       "resources/platforms/macos/infoplist/": "./"
     },
     "macOS": {

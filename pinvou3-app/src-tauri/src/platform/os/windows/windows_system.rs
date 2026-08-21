@@ -45,6 +45,24 @@ pub fn current_system_locale() -> Option<String> {
     String::from_utf16(&locale_names[..first_len]).ok()
 }
 
+/// 进程存活探测：`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` 成功即存活；
+/// 权限不足（ERROR_ACCESS_DENIED）也视为存活（进程存在但属于其他用户/更高完整性
+/// 级别）。消费方：browser watch 删除 stale 端口文件前的持有者护栏。
+pub fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: 仅查询进程存在性；句柄非空时立即关闭，无泄漏。
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if !handle.is_null() {
+        unsafe {
+            CloseHandle(handle);
+        }
+        return true;
+    }
+    let err = unsafe { GetLastError() };
+    err == ERROR_ACCESS_DENIED
+}
+
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     HiddenCommand::new("cmd")
         .args(["/C", "start", ""])
@@ -468,6 +486,66 @@ fn is_libreoffice_command(command: &str) -> bool {
 
 pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     Vec::new()
+}
+
+/// 专用有头 Chrome 的可执行候选（Windows 常见安装路径 + 用户级安装 + PATH `chrome`）。
+/// 与 `browser-wrapper.mjs` 的 win32 候选保持一致：
+/// - 用 `PROGRAMFILES`/`PROGRAMFILES(X86)`/`LOCALAPPDATA` 环境变量而非硬编码 C 盘
+///   （系统盘非 C 或重定向安装时硬编码探测不到，会出现"Rust 报未检测到 Chrome
+///   但 wrapper 实际启动成功"的自相矛盾）；
+/// - 含 Edge 候选（提示文案宣称 Chrome/Chromium/Edge，仅装 Edge 的机器要能找到）。
+pub fn chrome_candidates() -> Vec<String> {
+    let mut candidates = Vec::new();
+    let mut push = |candidates: &mut Vec<String>, dir: Option<String>, rel: &str| {
+        if let Some(dir) = dir {
+            candidates.push(format!(r"{dir}\{rel}"));
+        }
+    };
+    let pf = std::env::var("PROGRAMFILES").ok();
+    let pf86 = std::env::var("PROGRAMFILES(X86)").ok();
+    let local = std::env::var("LOCALAPPDATA").ok();
+    push(
+        &mut candidates,
+        pf.clone(),
+        r"Google\Chrome\Application\chrome.exe",
+    );
+    push(
+        &mut candidates,
+        pf86.clone(),
+        r"Google\Chrome\Application\chrome.exe",
+    );
+    push(
+        &mut candidates,
+        local.clone(),
+        r"Google\Chrome\Application\chrome.exe",
+    );
+    push(
+        &mut candidates,
+        pf.clone(),
+        r"Microsoft\Edge\Application\msedge.exe",
+    );
+    push(
+        &mut candidates,
+        pf86,
+        r"Microsoft\Edge\Application\msedge.exe",
+    );
+    push(
+        &mut candidates,
+        local,
+        r"Microsoft\Edge\Application\msedge.exe",
+    );
+    candidates.push("chrome".to_string());
+    candidates.push("msedge".to_string());
+    candidates
+}
+
+/// 随安装包捆绑的 node：Windows 安装器释放 `runtime/node/node.exe`（连接器链路
+/// 同款解析，见 windows_path::bundled_node_dir）；无捆绑时 None，消费方回退
+/// 系统 PATH 探测。
+pub fn bundled_node() -> Option<PathBuf> {
+    windows_path::bundled_node_dir()
+        .map(|dir| dir.join("node.exe"))
+        .filter(|p| p.is_file())
 }
 
 #[cfg(test)]

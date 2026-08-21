@@ -516,6 +516,16 @@ pub fn run() {
             // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
             pet_window::spawn_if_enabled(app.handle());
 
+            // 浏览器功能：工作模式中 Agent 操作专用有头 Chrome（CDP 截图流 → 侧边栏 Tab）。
+            // manage 注入单例 + 启动监听任务：MCP wrapper 首次被模型调用时自启 Chrome，
+            // 监听任务检测到 cdp-port.json 有效即接入并通知前端显示浏览器 Tab。
+            {
+                let mgr = features::browser::BrowserManager::new();
+                mgr.bind_app(app.handle().clone());
+                app.manage(mgr);
+                features::browser::BrowserManager::spawn_watch(app.handle().clone());
+            }
+
             startup::mark("setup:done");
             Ok(())
         })
@@ -532,6 +542,18 @@ pub fn run() {
             commands::behavior_telemetry::track_behavior_event,
             commands::assistant_response::export_assistant_response,
             commands::assistant_response::open_assistant_share_target,
+            commands::browser::browser_stop,
+            commands::browser::browser_status,
+            commands::browser::browser_set_streaming,
+            commands::browser::browser_navigate,
+            commands::browser::browser_back,
+            commands::browser::browser_forward,
+            commands::browser::browser_reload,
+            commands::browser::browser_input,
+            commands::browser::browser_list_tabs,
+            commands::browser::browser_create_tab,
+            commands::browser::browser_close_tab,
+            commands::browser::browser_activate_tab,
             commands::startup::report_frontend_startup,
             commands::startup::reveal_startup_window,
             commands::connectors::refresh_connector_auth_gates,
@@ -932,6 +954,27 @@ pub fn run() {
     let mut resumed_reported = false;
     app.run(move |_app, event| match event {
         tauri::RunEvent::Ready => startup::mark("tauri:event_loop:ready"),
+        tauri::RunEvent::Exit => {
+            startup::mark("tauri:event_loop:exit");
+            // 浏览器：主进程退出时清理专用有头 Chrome。
+            // 先同步兜底：kill 本模块自启的 Chrome + 清协调文件（std-only，
+            // 不依赖 async runtime，teardown 竞态下必然执行——async spawn 的
+            // stop() 与退出竞态几乎跑不完两次 CDP 调用）。
+            if let Some(mgr) = _app.try_state::<features::browser::BrowserManager>() {
+                mgr.shutdown_on_exit();
+            }
+            // 再尽力而为走一遍 stop() 清理（状态复位/锁释放/端口文件清理；
+            // session 已被 shutdown_on_exit 同步取走，CDP 优雅关闭只可能在
+            // shutdown_on_exit 的 try_lock 失败路径发生。wrapper 启动的实例
+            // 由 wrapper 自身 chromeChild exit 兜底；事件循环即将结束，未及
+            // 完成的由下次启动的端口探测/复用自愈）。
+            let app = _app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(mgr) = app.try_state::<features::browser::BrowserManager>() {
+                    let _ = mgr.stop().await;
+                }
+            });
+        }
         tauri::RunEvent::Resumed if !resumed_reported => {
             resumed_reported = true;
             startup::mark("tauri:event_loop:first_resumed");
