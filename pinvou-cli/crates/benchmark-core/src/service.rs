@@ -129,6 +129,7 @@ where
         if manifest.run_id() != run_id {
             return Err(BenchmarkError::coded("resume_manifest_mismatch"));
         }
+        store.reconcile_planned_tasks(plan.tasks().iter().map(|task| task.task_id()))?;
         self.execute(
             &store,
             &manifest,

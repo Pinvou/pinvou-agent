@@ -631,6 +631,23 @@ async fn service_runs_native_tasks_serially_closes_sessions_and_resumes_without_
     fs::remove_dir_all(base).unwrap();
 }
 
+#[tokio::test]
+async fn generic_resume_completes_a_plan_interrupted_during_planning() {
+    let base = temp_base("resume-partial-plan");
+    let plan = BenchmarkPlan::new(vec![task("first"), task("second")]);
+    let store = RunStore::create(&base, &manifest("run-partial-plan")).unwrap();
+    store.plan_tasks(["first"]).unwrap();
+
+    let backend = Arc::new(MockBackend::default());
+    let service = BenchmarkService::native(&base, backend.clone()).unwrap();
+    let resumed = service.resume("run-partial-plan", &plan).await.unwrap();
+
+    assert_eq!(resumed.completed(), 2);
+    assert_eq!(backend.state.lock().unwrap().run, ["first", "second"]);
+    assert!(store.recover().unwrap().runnable_task_ids().is_empty());
+    fs::remove_dir_all(base).unwrap();
+}
+
 fn short_task(id: &str) -> BenchmarkTask {
     BenchmarkTask::new(
         id,

@@ -97,8 +97,8 @@ pinvou benchmark run gaia --split validation --level 1
 ```bash
 pinvou benchmark list                          # 列出注册的 benchmark
 pinvou benchmark status <run-id>               # 查看运行状态
-pinvou benchmark score gaia --run-id <run-id>  # 评分并落 report.md / score.json
-pinvou benchmark report <run-id>               # 查看 report.md（需先完成 score）
+pinvou benchmark score gaia --run-id <run-id>  # 评分；完整 run 才落 report.md / score.json
+pinvou benchmark report <run-id>               # 查看完整 run 的 report.md（需先完成 score）
 pinvou benchmark resume <run-id>               # 恢复未完成的运行（product-backend）
 ```
 
@@ -112,6 +112,9 @@ pinvou benchmark score gaia --run-id <run-id>
 ```
 
 - 评分器从持久化的私有预测中解析候选答案，与参考答案比对。
+- 未完成 run 的 score 只返回 `unofficial_partial` 诊断，不发布固定的
+  `score.json` / `report.md`；resume 完成后再次 score 才发布最终产物，避免 partial
+  结果占用固定文件并阻塞最终评分。
 - Rust 评分器是基于 revision `1349a179...` 的固定移植，包括数字归一化、字符串/列表归一化、Unicode 十进制数字、Python 全串小写和控制空白符处理；golden contract 只覆盖这些已知规则。
 - 评分运行时 profile 为 `hf-spaces-python-3.10-unicode-13.0`。
 - 真实 Python scorer 逐题交叉验证尚未完成；在完成该验证前，golden contract 通过不等同于已经证明整套 validation Level 1 的逐题结果等价。
