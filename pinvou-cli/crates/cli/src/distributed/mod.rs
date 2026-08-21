@@ -473,6 +473,7 @@ fn execute_chat() -> Result<String, DistributedError> {
         &mut client,
         interrupted,
         active_turn,
+        assume_interactive_for_test(),
     )?;
     Ok(String::new())
 }
@@ -494,81 +495,113 @@ fn execute_chat_with_io<R: BufRead, W: Write, S: Read + Write>(
     client: &mut ControllerWire<S>,
     interrupted: Arc<AtomicBool>,
     active_turn: Arc<Mutex<Option<String>>>,
+    peek_eof_before_prompt: bool,
 ) -> Result<(), DistributedError> {
-    write_terminal_to(output, "You: ")?;
     let mut prompt = String::new();
-    input
-        .read_line(&mut prompt)
-        .map_err(|_| DistributedError::new(StableExitCode::Internal, "terminal read failed"))?;
-    let prompt = prompt.trim();
-    if prompt.is_empty() {
-        return Err(DistributedError::new(
-            StableExitCode::Usage,
-            "chat prompt must not be empty",
-        ));
-    }
-
-    let first = client.chat_start(prompt)?;
     let mut projection = TerminalProjection::new(Instant::now());
-    let mut next = Some(first);
     loop {
-        if interrupted.load(Ordering::SeqCst) {
-            return Err(DistributedError::new(
-                StableExitCode::Cancelled,
-                "chat interrupted by user",
-            ));
+        if peek_eof_before_prompt
+            && input
+                .fill_buf()
+                .map_err(|_| {
+                    DistributedError::new(StableExitCode::Internal, "terminal read failed")
+                })?
+                .is_empty()
+        {
+            return Ok(());
         }
-        let message = match next.take() {
-            Some(value) => value,
-            None => client.read_next()?,
-        };
-        if message.kind() == IpcMessageKind::Err {
-            return Err(error_from_response(message.payload()));
+        write_terminal_to(output, "You: ")?;
+        prompt.clear();
+        let bytes = input
+            .read_line(&mut prompt)
+            .map_err(|_| DistributedError::new(StableExitCode::Internal, "terminal read failed"))?;
+        if bytes == 0 {
+            return Ok(());
         }
-        if message.topic() != Some("runtime.event") {
+        let prompt = prompt.trim();
+        if matches!(prompt, "/exit" | "/quit") {
+            return Ok(());
+        }
+        if prompt.is_empty() {
             continue;
         }
-        let event = RuntimeEventEnvelope::from_value(message.payload().clone()).map_err(|_| {
-            DistributedError::runtime("controller returned an invalid runtime event")
-        })?;
-        if let Some(turn_id) = event.turn_id()
-            && let Ok(mut active) = active_turn.lock()
-        {
-            *active = Some(turn_id.to_owned());
-        }
-        match projection.push(&event, Instant::now())? {
-            ProjectionAction::None => {}
-            ProjectionAction::WriteText(text) => write_terminal_to(output, &text)?,
-            ProjectionAction::AskApproval {
-                approval_id,
-                prompt,
-            } => {
-                write_terminal_to(output, &prompt)?;
-                let mut answer = String::new();
-                input.read_line(&mut answer).map_err(|_| {
-                    DistributedError::new(StableExitCode::Internal, "terminal read failed")
-                })?;
-                let accepted = projection.parse_approval(&answer).ok_or_else(|| {
-                    DistributedError::new(StableExitCode::Usage, "approval requires y or n")
-                })?;
-                client.resolve_approval(&approval_id, accepted)?;
+
+        let first = client.chat_start(prompt)?;
+        let mut next = Some(first);
+        loop {
+            if interrupted.load(Ordering::SeqCst) {
+                return Err(DistributedError::new(
+                    StableExitCode::Cancelled,
+                    "chat interrupted by user",
+                ));
             }
-            ProjectionAction::AskInput { input_id, prompt } => {
-                write_terminal_to(output, &format!("{prompt} "))?;
-                let mut answer = String::new();
-                input.read_line(&mut answer).map_err(|_| {
-                    DistributedError::new(StableExitCode::Internal, "terminal read failed")
-                })?;
-                client.resolve_input(&input_id, answer.trim_end())?;
+            let message = match next.take() {
+                Some(value) => value,
+                None => client.read_next()?,
+            };
+            if message.kind() == IpcMessageKind::Err {
+                return Err(error_from_response(message.payload()));
             }
-            ProjectionAction::TurnEnded(code) => {
-                if let Some(text) = projection.flush_pending() {
-                    write_terminal_to(output, &text)?;
+            if message.topic() != Some("runtime.event") {
+                continue;
+            }
+            let event =
+                RuntimeEventEnvelope::from_value(message.payload().clone()).map_err(|_| {
+                    DistributedError::runtime("controller returned an invalid runtime event")
+                })?;
+            if let Some(turn_id) = event.turn_id()
+                && let Ok(mut active) = active_turn.lock()
+            {
+                *active = Some(turn_id.to_owned());
+            }
+            match projection.push(&event, Instant::now())? {
+                ProjectionAction::None => {}
+                ProjectionAction::WriteText(text) => write_terminal_to(output, &text)?,
+                ProjectionAction::AskApproval {
+                    approval_id,
+                    prompt,
+                } => {
+                    write_terminal_to(output, &prompt)?;
+                    let mut answer = String::new();
+                    input.read_line(&mut answer).map_err(|_| {
+                        DistributedError::new(StableExitCode::Internal, "terminal read failed")
+                    })?;
+                    let accepted = projection.parse_approval(&answer).ok_or_else(|| {
+                        DistributedError::new(StableExitCode::Usage, "approval requires y or n")
+                    })?;
+                    client.resolve_approval(&approval_id, accepted)?;
                 }
-                if code == StableExitCode::Success {
-                    return Ok(());
+                ProjectionAction::AskInput { input_id, prompt } => {
+                    write_terminal_to(output, &format!("{prompt} "))?;
+                    let mut answer = String::new();
+                    input.read_line(&mut answer).map_err(|_| {
+                        DistributedError::new(StableExitCode::Internal, "terminal read failed")
+                    })?;
+                    client.resolve_input(&input_id, answer.trim_end())?;
                 }
-                return Err(DistributedError::new(code, "chat turn did not complete"));
+                ProjectionAction::TurnEnded(code) => {
+                    if let Some(text) = projection.flush_pending() {
+                        write_terminal_to(output, &text)?;
+                    }
+                    if code == StableExitCode::Success {
+                        if peek_eof_before_prompt
+                            && input
+                                .fill_buf()
+                                .map_err(|_| {
+                                    DistributedError::new(
+                                        StableExitCode::Internal,
+                                        "terminal read failed",
+                                    )
+                                })?
+                                .is_empty()
+                        {
+                            return Ok(());
+                        }
+                        write_terminal_to(output, "\n")?;
+                        break;
+                    }
+                    return Err(DistributedError::new(code, "chat turn did not complete"));
+                }
             }
         }
     }
@@ -655,6 +688,7 @@ mod tests {
             &mut client,
             interrupted,
             Arc::clone(&active_turn),
+            true,
         )
         .unwrap();
 
@@ -671,8 +705,106 @@ mod tests {
     }
 
     #[test]
+    fn chat_loop_accepts_multiple_prompts_until_exit() {
+        let first_text = runtime_event(
+            "turn-a",
+            1,
+            "main",
+            "R1",
+            "text.delta",
+            json!({"role":"assistant","content":"first reply","merged_count":1}),
+        );
+        let first_ended = runtime_event(
+            "turn-a",
+            1,
+            "control",
+            "R0",
+            "turn.ended",
+            json!({"end_reason":"completed","error":null}),
+        );
+        let second_text = runtime_event(
+            "turn-b",
+            1,
+            "main",
+            "R1",
+            "text.delta",
+            json!({"role":"assistant","content":"second reply","merged_count":1}),
+        );
+        let second_ended = runtime_event(
+            "turn-b",
+            1,
+            "control",
+            "R0",
+            "turn.ended",
+            json!({"end_reason":"completed","error":null}),
+        );
+        let stream = TestDuplex::with_responses([
+            IpcMessage::event("runtime.event", serde_json::to_value(first_text).unwrap()).unwrap(),
+            IpcMessage::event("runtime.event", serde_json::to_value(first_ended).unwrap()).unwrap(),
+            IpcMessage::event("runtime.event", serde_json::to_value(second_text).unwrap()).unwrap(),
+            IpcMessage::event("runtime.event", serde_json::to_value(second_ended).unwrap())
+                .unwrap(),
+        ]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut input = std::io::Cursor::new(b"first\nsecond\n/exit\n".to_vec());
+        let mut output = Vec::new();
+
+        execute_chat_with_io(
+            &mut input,
+            &mut output,
+            &mut client,
+            interrupted,
+            Arc::clone(&active_turn),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "You: first reply\nYou: second reply\nYou: "
+        );
+        assert_eq!(active_turn.lock().unwrap().as_deref(), Some("turn-b"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method(), Some("chat.start"));
+        assert_eq!(requests[0].payload()["prompt"], "first");
+        assert_eq!(requests[1].method(), Some("chat.start"));
+        assert_eq!(requests[1].payload()["prompt"], "second");
+    }
+
+    #[test]
     fn distributed_boundary_uses_the_protocol_crate() {
         assert_eq!(PROTOCOL_CRATE_NAME, "pinvou-protocol");
+    }
+
+    fn runtime_event(
+        turn_id: &str,
+        seq: u64,
+        stream_id: &str,
+        rate_class: &str,
+        kind: &str,
+        payload: serde_json::Value,
+    ) -> RuntimeEventEnvelope {
+        RuntimeEventEnvelope::from_value(json!({
+            "protocol_version": pinvou_protocol::IPC_VERSION,
+            "schema_version": 1,
+            "node_id": "node-a",
+            "logical_session_id": "session-a",
+            "attachment_id": "attachment-a",
+            "work_id": null,
+            "collaborative_run_id": null,
+            "stream_id": stream_id,
+            "turn_id": turn_id,
+            "seq": seq,
+            "source_span": null,
+            "timestamp": "2026-08-21T00:00:00Z",
+            "rate_class": rate_class,
+            "kind": kind,
+            "payload": payload
+        }))
+        .unwrap()
     }
 
     #[derive(Default)]
