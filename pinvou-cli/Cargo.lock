@@ -6424,6 +6424,7 @@ name = "pinvou-node"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "pinvou-agent-adapter-codex",
  "pinvou-protocol",
  "pinvou-runtime-api",
  "pinvou-seglog",

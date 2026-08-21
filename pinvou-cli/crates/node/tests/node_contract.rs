@@ -137,6 +137,39 @@ fn node_runtime_switch_replaces_the_active_runtime_host() {
 }
 
 #[test]
+fn node_runtime_registry_exposes_and_selects_the_codex_profile() {
+    let session = NodeSession::new("node-instance").unwrap();
+    let list = IpcMessage::request(
+        serde_json::json!(17),
+        "runtime.list",
+        serde_json::json!({"instance_id": "node-instance"}),
+    )
+    .unwrap();
+    let response = session.handle(list).unwrap();
+    let runtimes = response.payload()["runtimes"].as_array().unwrap();
+    assert!(runtimes.iter().any(|runtime| runtime["id"] == "codex"));
+
+    let switch = IpcMessage::request(
+        serde_json::json!(18),
+        "runtime.switch",
+        serde_json::json!({"instance_id":"node-instance", "runtime":"codex"}),
+    )
+    .unwrap();
+    let response = session.handle(switch).unwrap();
+    assert_eq!(response.payload()["status"], "ok");
+    assert_eq!(response.payload()["runtime"], "codex");
+
+    let detect = IpcMessage::request(
+        serde_json::json!(19),
+        "runtime.detect",
+        serde_json::json!({"instance_id":"node-instance"}),
+    )
+    .unwrap();
+    let response = session.handle(detect).unwrap();
+    assert_eq!(response.payload()["runtime"], "codex");
+}
+
+#[test]
 fn node_control_surface_is_instance_bound_and_stably_unsupported_until_runtime_attachment() {
     let session = NodeSession::new("node-instance").unwrap();
     for (id, method, payload, echoed_field) in [

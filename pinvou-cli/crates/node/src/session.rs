@@ -1,3 +1,4 @@
+use pinvou_agent_adapter_codex::{CodexAdapter, CodexAdapterConfig};
 use pinvou_protocol::{HelloClient, HelloServer, IpcMessage, IpcMessageKind, RuntimeEventEnvelope};
 use pinvou_runtime_api::{AgentRuntimeAdapter, RuntimeCommand, RuntimeOperation, RuntimeSession};
 use serde_json::json;
@@ -218,7 +219,8 @@ impl NodeSession {
                 json!({
                     "current": runtime.id,
                     "runtimes": [
-                        {"id":"echo", "label":"Stage 1 Echo", "available":true}
+                        {"id":"echo", "label":"Stage 1 Echo", "available":true},
+                        {"id":"codex", "label":"Codex App Server", "available":true}
                     ]
                 })
             }
@@ -237,13 +239,11 @@ impl NodeSession {
                     .and_then(|value| value.as_str())
                     .filter(|value| !value.is_empty())
                     .ok_or(NodeError::InvalidMessage)?;
-                if runtime != "echo" {
-                    return Err(NodeError::UnsupportedRequest);
-                }
                 let mut active = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
-                active.id = "echo".into();
-                active.host = Arc::new(StageOneEchoRuntime);
-                json!({"status":"ok", "runtime":"echo"})
+                let host = create_runtime_host(runtime)?;
+                active.id = runtime.into();
+                active.host = host;
+                json!({"status":"ok", "runtime":runtime})
             }
             Some("runtime.echo") => {
                 let text = request
@@ -327,6 +327,16 @@ impl NodeSession {
             .map_err(|_| NodeError::InvalidMessage)?
             .host
             .clone())
+    }
+}
+
+fn create_runtime_host(runtime: &str) -> Result<Arc<dyn NodeRuntimeHost>, NodeError> {
+    match runtime {
+        "echo" => Ok(Arc::new(StageOneEchoRuntime)),
+        "codex" => Ok(Arc::new(AdapterRuntimeHost::new(Box::new(
+            CodexAdapter::new(CodexAdapterConfig::default()),
+        )))),
+        _ => Err(NodeError::UnsupportedRequest),
     }
 }
 
