@@ -1540,6 +1540,15 @@ impl AppEngine {
         session_id: &str,
         shell_cleanup_failed: bool,
     ) -> bool {
+        // 回收/中断不经过 TurnComplete：清掉 self_metrics 打点与 memory turn capture，
+        // 避免中断轮在进程级 map 里永久驻留。
+        if let Some(m) = app
+            .try_state::<crate::features::monitor::MonitorState>()
+            .map(|s| s.self_metrics())
+        {
+            m.on_turn_aborted(session_id);
+        }
+        crate::features::memory::discard_turn_capture(session_id);
         match finish_reclaimed_lifecycle_turn(
             &self.turn_lifecycle,
             app,
