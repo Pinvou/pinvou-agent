@@ -53,6 +53,8 @@ pub const WECOM_SKILL_DIRS: &[&str] = &crate::platform::connector_skills::WECOM_
 pub const DINGTALK_SKILL_DIRS: &[&str] = &["dws"];
 /// 腾讯会议 mono skill 目录名。
 pub const TMEET_SKILL_DIRS: &[&str] = &["tmeet-skill"];
+/// 微博 Pinvou 适配 skill 目录名。
+pub const WEIBO_SKILL_DIRS: &[&str] = &["weibo-cli"];
 
 const BUILTIN_CLI_BUNDLES: &[(&str, &str, &str, &[&str], &str)] = &[
     (
@@ -82,6 +84,13 @@ const BUILTIN_CLI_BUNDLES: &[(&str, &str, &str, &[&str], &str)] = &[
         "tmeet",
         TMEET_SKILL_DIRS,
         "接入腾讯会议官方 CLI（@tencentcloud/tmeet）+ 官方技能：让 AI 以你本人身份创建、查询、修改和取消腾讯会议，查询受邀人、参会报告、录制、转写与智能纪要，并支持会中呼叫成员入会。点「连接」打开腾讯会议授权页扫码登录，全程不填 key。",
+    ),
+    (
+        "weibo",
+        "微博",
+        "weibo-cli",
+        WEIBO_SKILL_DIRS,
+        "接入微博官方 CLI（@weibo-ai/weibo-cli，MIT）+ Pinvou 适配技能：让 AI 以你本人身份检索微博、查看用户和关系、处理评论互动，并在确认后执行发布类操作。点「连接」打开微博授权页登录，全程不填 key。",
     ),
 ];
 

@@ -1422,6 +1422,7 @@ async fn open_external_url_rejects_off_allowlist_targets() {
         "https://www.canva.cn.evil.com/api/action",               // Canva 子域钓鱼
         "https://export-download.canva.cn.evil.com/x.png",        // Canva 资源域钓鱼
         "https://meeting.tencent.com.evil.com/qrcode-login.html", // 腾讯会议授权域钓鱼
+        "https://open.weibo.com.evil.com/cli/api/oauth/device",   // 微博授权域钓鱼
         "https://bce.baidu.com/",                                 // 非 console 子域,不放行
         "javascript:alert(1)",                                    // js scheme
         "file:///etc/passwd",                                     // file scheme
@@ -1504,6 +1505,12 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(url_in_external_allowlist(
         "https://docs.qq.com/scenario/open-claw.html?nlc=1"
     ));
+    assert!(url_in_external_allowlist(
+        "https://open.weibo.com/cli/api/oauth/device?user_code=ABCD-EFGH"
+    ));
+    assert!(url_in_external_allowlist(
+        "https://open-dev.weibo.com/cli/api/oauth/device?user_code=ABCD-EFGH"
+    ));
     assert!(url_in_external_allowlist("http://localhost:8080/"));
     assert!(url_in_external_allowlist("https://127.0.0.1:8443/preview"));
     assert!(url_in_external_allowlist("http://[::1]:3000/"));
@@ -1531,8 +1538,12 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
         "https://docs.qq.com.evil.com/openapi/mcp"
     ));
     assert!(!url_in_external_allowlist("http://docs.qq.com/"));
+    assert!(!url_in_external_allowlist(
+        "https://open.weibo.com.evil.com/cli/api/oauth/device"
+    ));
     assert!(!url_in_external_allowlist("http://obsidian.md/"));
     assert!(!url_in_external_allowlist("http://meeting.tencent.com/"));
+    assert!(!url_in_external_allowlist("http://open.weibo.com/"));
     assert!(!url_in_external_allowlist("http://open.zhihuiya.com/"));
     assert!(!url_in_external_allowlist(
         "http://www.canva.cn/api/action?token=abc"

@@ -8,3 +8,4 @@ mod platform;
 pub(crate) mod skill_gate;
 pub(crate) mod tmeet;
 pub(crate) mod wecom;
+pub(crate) mod weibo;

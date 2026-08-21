@@ -505,6 +505,7 @@ const AcFmtIcon = FileTypeIcon;
       { id: 8, backendId: 'wecom-bot', mcpServer: true, title: '企微群机器人', subtitle: '向企业微信群推送消息与通知', category: 'collab', type: 'MCP Server', version: 'v1.0.0', latency: '云端', desc: '接入企业微信官方群机器人 webhook（消息推送 API）：让 AI 向绑定的群推送文本（可@成员）、Markdown、图文、图片和文件。需要填写你自己的群机器人 Webhook Key，密钥只写入本机系统凭据。数据经企业微信服务器（可选联网功能，opt-in）。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: true, configTitle: '企微群机器人 Key', configDescription: 'Key 只保存在本机凭据，不写入 mcp.json。', configDocUrl: 'https://developer.work.weixin.qq.com/document/path/91770', configDocLabel: '查看官方群机器人文档', configFields: [{ key: 'WECOM_BOT_KEY', label: 'Webhook Key', required: true, target: 'env', secret: true, placeholder: '粘贴群机器人 key 或完整 webhook 地址', helpText: '企业微信群里右上角「…」→ 群机器人 → 添加机器人，复制 webhook 地址即可。' }], welcomeQueries: ['往群里发一条今日天气播报', '把这份周报整理成 Markdown 发到企微群', '@所有人：下午三点例会别忘了', '把这个文件发到企微群'] },
       { id: 9, backendId: 'feishu', feishuCli: true, title: '飞书（Lark）', subtitle: '以你本人身份操作飞书文档/日历/表格/消息', category: 'collab', type: 'CLI + 官方技能', version: 'v1.0.87', latency: '云端', desc: '接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）与电子表格、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。', icon: Send, color: 'bg-gradient-to-b from-teal-400 to-emerald-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读飞书文档帮我做一份 PPT', '把飞书文档整理成摘要', '查我今天的飞书日历', '看看我飞书里的待办任务'] },
       { id: 22, backendId: 'tmeet', tmeetCli: true, title: '腾讯会议', subtitle: '以你本人身份管理会议/录制/纪要/参会报告', category: 'collab', type: 'CLI + 官方技能', version: 'v1.0.15', latency: '云端', desc: '接入腾讯会议官方 CLI（@tencentcloud/tmeet）+ 官方技能：让 AI 以你本人身份创建、查询、修改和取消腾讯会议，查询受邀人、参会报告、录制、转写与智能纪要，并支持会中呼叫成员入会。点「连接」打开腾讯会议授权页扫码登录，全程不填 key。', icon: Video, color: 'bg-gradient-to-b from-sky-400 to-blue-600', installed: false, authRequired: true, configFields: [], welcomeQueries: ['帮我创建一个腾讯会议', '查一下我的腾讯会议录制', '看看最近会议的智能纪要', '查询这场腾讯会议的参会人'] },
+      { id: 23, backendId: 'weibo', weiboCli: true, title: '微博', subtitle: '以你本人身份操作微博发布、互动、检索和趋势', category: 'collab', type: 'CLI + Pinvou 适配技能', version: 'v0.9.1', latency: '云端', desc: '接入微博官方 CLI（@weibo-ai/weibo-cli，MIT）+ Pinvou 适配技能：让 AI 以你本人身份检索微博、查看用户和关系、处理评论互动，并在确认后执行发布类操作。点「连接」打开微博授权页登录，全程不填 key。', icon: MessageCircle, color: 'bg-gradient-to-b from-orange-400 to-red-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['查一下微博热搜趋势', '搜索某个关键词的微博', '查询这个微博用户的信息', '帮我草拟一条微博，确认后发布'] },
       { id: 99, backendId: 'wecom', wecomCli: true, title: '企业微信', subtitle: '以你本人身份操作企微消息/邮件/文档/会议/日程', category: 'collab', type: 'CLI + 官方技能', version: 'v1.1.0', latency: '云端', desc: '接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、收发邮件、读写文档/智能表格/在线表格/智能文档、管理微盘文件、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['把这段内容写成企微智能文档', '读一下我企微某篇文档的内容', '在企微智能表格里新建一张子表', '查一下企微智能表格里的数据'] },
       { id: 10, backendId: 'dingtalk', dingtalkCli: true, title: '钉钉', subtitle: '以你本人身份操作钉钉文档/日历/表格/消息', category: 'collab', type: 'CLI + 官方技能', version: 'v1.0.58', latency: '云端', desc: '接入钉钉官方 DingTalk Workspace CLI（dws，Apache-2.0）+ 官方技能：让 AI 以你本人身份读写钉钉文档、查改日历、操作 AI 表格/在线表格、收发群聊消息、处理待办/审批/日志/邮箱等。点「连接」用钉钉 App 扫码授权，全程不填 key。', icon: Navigation, color: 'bg-gradient-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读一下我的钉钉文档', '查我今天的钉钉日程', '在钉钉 AI 表格里查数据', '看看我的钉钉待办'] },
       { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
@@ -726,7 +727,7 @@ const AcFmtIcon = FileTypeIcon;
       if (tool.mcpServer || tool.oauthMcp) return 'mcp';
       if (tool.userUploaded || tool.builtin || tool.category === 'skill') return 'skill';
       if (!tool.backendId) return 'upcoming';
-      if (tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli) return 'cli';
+      if (tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.weiboCli) return 'cli';
       if (tool.imaOpenapi) return 'api';
       if (Array.isArray(bundleMcpIds) && bundleMcpIds.includes(tool.backendId)) return 'bundle';
       // mcpServer/oauthMcp 为显式标记位,分组不依赖可本地化的 type 文案;type 正则仅作兜底。
@@ -828,7 +829,7 @@ const AcFmtIcon = FileTypeIcon;
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
-            {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.imaOpenapi || tool.oauthMcp) ? T.disconnect : T.uninstall}
+            {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.weiboCli || tool.imaOpenapi || tool.oauthMcp) ? T.disconnect : T.uninstall}
           </button>
         );
         // 预置技能内容落后于商店版本(App 升级带入新版)时,并列给出"更新"入口;
@@ -868,7 +869,7 @@ const AcFmtIcon = FileTypeIcon;
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
           className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
         >
-          {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.imaOpenapi || tool.oauthMcp) ? (hasConfig ? T.configure : T.connect) : (hasConfig ? T.configure : T.install)}
+          {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.weiboCli || tool.imaOpenapi || tool.oauthMcp) ? (hasConfig ? T.configure : T.connect) : (hasConfig ? T.configure : T.install)}
         </button>
       );
     };
