@@ -7,7 +7,7 @@ React / ReactDOM 由 npm 依赖打包进 `dist/assets/`。
 |---|---|---|---|---|
 | `tailwind.js` | 3.4.17 | `176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15` | Tailwind CSS Play CDN runtime / MIT | 运行时扫描 DOM 生成 Tailwind 样式 |
 | `marked.min.js` | 13.0.3 | `5adea7d8ee41a700fccc14bb9d503104f0470cc17a84ad3e167d3f5251eae0da` | marked / MIT | Markdown 渲染 |
-| `purify.min.js` | 3.4.14 | `c2f26ea4fc0d88141c9aa430eb515ac86fce59418ceebd85fa475b87a8d6c3e6` | DOMPurify / Apache-2.0 OR MPL-2.0 | HTML 消毒 |
+| `purify.min.js` | 3.4.14 | `c2f26ea4fc0d88141c9aa430eb515ac86fce59418ceebd85fa475b87a8d6c3e6` | DOMPurify / Apache-2.0 OR MPL-2.0 | HTML sanitization |
 
 完整第三方归因见仓库根目录 `THIRD_PARTY_NOTICES.md`；Apache-2.0 全文随
 `src-tauri/resources/common/bundle/dingtalk-skills/dws/LICENSE` 一并分发。
@@ -19,11 +19,12 @@ cd pinvou3-app/src/vendor
 curl -fsSL -o tailwind.js              https://cdn.tailwindcss.com
 ```
 
-刷新任何文件后，必须同步更新上表中的版本与 SHA-256（版本变化时一并更新
-`THIRD_PARTY_NOTICES.md`）。`npm test` 中的完整性契约
-（`tests/vendor_asset_integrity.test.js`）会逐文件校验登记哈希，并拒绝未登记的
-`.js` 资产混入。这些文件在 `.gitattributes` 中钉住 LF，请勿在本机开启
-`core.autocrlf` 改写行尾后提交。
+After refreshing any file, update its version and SHA-256 in the table above in
+the same change (and `THIRD_PARTY_NOTICES.md` when the version changes). The
+integrity contract in `npm test` (`tests/vendor_asset_integrity.test.js`)
+verifies every registered hash and rejects unregistered `.js` assets. These
+files are pinned to LF in `.gitattributes`; do not commit bytes rewritten by a
+local `core.autocrlf` checkout.
 
 ## 上线前可做的优化（非必须）
 

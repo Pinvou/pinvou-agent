@@ -40,7 +40,7 @@ server = [
 
 [dependencies]
 anyhow = "1.0"
-# 保持 0.22:与 app 一致;上游仍要求 0.22,先升 0.23 会多一个版本,等上游齐平再动
+# Keep 0.22 to match the app: upstreams still require 0.22; a solo 0.23 bump would add a second copy. Revisit once upstreams align.
 base64 = "0.22"
 calamine = "0.36"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
@@ -63,7 +63,7 @@ flate2 = { version = "1", optional = true }
 futures-util = { version = "0.3", optional = true }
 mime_guess = { version = "2", optional = true }
 mdns-sd = { version = "=0.20.3", optional = true }
-# 0.15 与 mdns-sd 传递引入的 if-addrs 收敛为单版本(此前 =0.14.0 造成双版本)。
+# 0.15 collapses with mdns-sd's transitive if-addrs into a single version (the former =0.14.0 pin forced two).
 if-addrs = "0.15"
 rcgen = { version = "=0.14.9", features = ["x509-parser"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "multipart", "stream"], optional = true }

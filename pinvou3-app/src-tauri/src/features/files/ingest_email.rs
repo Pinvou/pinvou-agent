@@ -5,7 +5,7 @@
 //!
 //! .msg 的 HTML 正文与 hex 编码 body 在此做 UTF-16 / HTML-entity 解码。
 
-// architecture-guard: allow-target-cfg -- msg_parser 仅 Windows 编译（Cargo.toml cfg(windows) 依赖段），.msg 原生解析分支与解码辅助需同门控
+// architecture-guard: allow-target-cfg -- msg_parser compiles on Windows only (cfg(windows) dependency section in Cargo.toml); the native .msg parsing branch and its decode helpers share that gating
 
 use std::path::Path;
 use std::process::Command;
@@ -37,9 +37,10 @@ pub(super) fn ingest_email(
         }
     };
 
-    // msg_parser 仅 Windows 编译（Cargo.toml 的 cfg(windows) 依赖段），
-    // 与原 os::msg_native_supported() 谓词等价（该谓词 Windows 恒 true，
-    // 接口链已随之退役）。非 Windows 走下方 msgconvert → .eml 分支。
+    // msg_parser compiles on Windows only (cfg(windows) dependency section in
+    // Cargo.toml), equivalent to the old os::msg_native_supported() predicate
+    // (constant true on Windows; the interface chain was retired with it).
+    // Non-Windows takes the msgconvert → .eml branch below.
     #[cfg(target_os = "windows")]
     if kind == "msg" {
         return match parse_msg_via_msg_parser(path) {
@@ -108,7 +109,7 @@ struct MsgMarkdownParts {
     attachments: Vec<String>,
 }
 
-/// 以下 msg_parser 类型参与的解析函数仅在 Windows 编译（依赖段同门控）。
+/// The msg_parser-typed parsing helpers below compile on Windows only (same gating as the dependency section).
 #[cfg(target_os = "windows")]
 fn parse_msg_via_msg_parser(path: &Path) -> Result<String, String> {
     let outlook =
