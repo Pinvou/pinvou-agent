@@ -169,7 +169,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           {flow.phase === 'qr' && !browserAuth && flow.qr && (
             <div className="px-5 pb-5">
               <div className="flex items-center gap-5 p-4 rounded-xl bg-white dark:bg-black/30 border border-slate-200 dark:border-white/10">
-                <img src={flow.qr} alt={copy.qrAlt(name)} className="w-36 h-36 rounded-xl border border-slate-200 bg-white shrink-0" />
+                <img src={flow.qr} alt={copy.qrAlt(name)} loading="lazy" decoding="async" className="w-36 h-36 rounded-xl border border-slate-200 bg-white shrink-0" />
                 <div>
                   <div className="font-medium text-[14px] mb-1 text-slate-900 dark:text-slate-100">{twoStep ? (flow.qrPhase === 'authorize' ? copy.authorizeStep : copy.registerStep) : copy.scanLogin(name)}</div>
                   <div className="text-[12px] text-slate-500 dark:text-slate-400 mb-3">{copy.scanHint(name)}</div>

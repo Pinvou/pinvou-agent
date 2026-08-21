@@ -3,7 +3,7 @@
 //! 只负责「按安装来源计算卸载命令/路径」的纯逻辑；执行、会话前置检查与状态
 //! 刷新在 `AcpPool::uninstall_agent`（codex_acp/mod.rs）。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::features::codex_acp::store::AgentBackend;
 
@@ -133,8 +133,4 @@ pub fn config_paths(backend: AgentBackend) -> Vec<PathBuf> {
         AgentBackend::KimiAcp => vec![home.join(".kimi-code")],
         AgentBackend::Deepseek => Vec::new(),
     }
-}
-
-pub fn executable_path_matches(executable: Option<&Path>, paths: &[PathBuf]) -> bool {
-    executable.is_some_and(|executable| paths.iter().any(|path| path == executable))
 }

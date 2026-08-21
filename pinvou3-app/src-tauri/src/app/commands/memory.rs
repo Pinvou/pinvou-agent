@@ -192,34 +192,6 @@ fn load_topic_memory_source<T: Default>(
 }
 
 #[tauri::command]
-pub async fn get_memory_profile(
-    session_id: Option<String>,
-    store: State<'_, SessionStore>,
-) -> Result<MemoryProfileState, String> {
-    let profile =
-        crate::features::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
-    let (runtime, warnings) = match resolve_memory_session_id(session_id, &store) {
-        Some(sid) => match crate::features::memory::runtime_snapshot(&sid) {
-            Ok(snapshot) => (Some(snapshot), Vec::new()),
-            Err(error) => (
-                None,
-                vec![memory_warning(
-                    "runtime_refresh_failed",
-                    "runtime",
-                    format!("render runtime memory: {error}"),
-                )],
-            ),
-        },
-        None => (None, Vec::new()),
-    };
-    Ok(MemoryProfileState {
-        profile,
-        runtime,
-        warnings,
-    })
-}
-
-#[tauri::command]
 pub async fn update_memory_profile(
     patch: crate::features::memory::ProfilePatch,
     session_id: Option<String>,
@@ -228,22 +200,6 @@ pub async fn update_memory_profile(
 ) -> Result<MemoryProfileState, String> {
     let profile = crate::features::memory::update_profile(patch)
         .map_err(|e| format!("update profile: {e}"))?;
-    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
-    Ok(MemoryProfileState {
-        profile,
-        runtime,
-        warnings,
-    })
-}
-
-#[tauri::command]
-pub async fn clear_memory_profile(
-    session_id: Option<String>,
-    store: State<'_, SessionStore>,
-    app: AppHandle,
-) -> Result<MemoryProfileState, String> {
-    let profile =
-        crate::features::memory::clear_profile().map_err(|e| format!("clear profile: {e}"))?;
     let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
     Ok(MemoryProfileState {
         profile,
@@ -412,41 +368,6 @@ pub async fn get_memory_overview(
 }
 
 #[tauri::command]
-pub async fn list_pending_memory() -> Result<Vec<crate::features::memory::PendingMemoryItem>, String>
-{
-    crate::features::memory::load_pending_memory().map_err(|e| format!("load pending memory: {e}"))
-}
-
-#[tauri::command]
-pub async fn suggest_memory(
-    suggestion: crate::features::memory::MemorySuggestion,
-    session_id: Option<String>,
-    store: State<'_, SessionStore>,
-    app: AppHandle,
-) -> Result<MemoryWriteState<crate::features::memory::PendingMemoryItem>, String> {
-    let item = crate::features::memory::enqueue_memory_candidate(suggestion)
-        .map_err(|e| format!("suggest memory: {e}"))?;
-    if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
-        emit_memory_write_events(
-            &app,
-            &sid,
-            &[crate::features::memory::MemoryWriteEvent {
-                kind: item.kind.clone(),
-                action: "pending".to_string(),
-                id: item.id.clone(),
-                text: item.content.clone(),
-            }],
-        );
-    }
-    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
-    Ok(MemoryWriteState {
-        value: item,
-        runtime,
-        warnings,
-    })
-}
-
-#[tauri::command]
 pub async fn confirm_pending_memory(
     id: String,
     session_id: Option<String>,
@@ -511,41 +432,6 @@ pub async fn never_pending_memory(
     let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
     Ok(MemoryWriteState {
         value: event,
-        runtime,
-        warnings,
-    })
-}
-
-#[tauri::command]
-pub async fn list_recent_work_memory(
-) -> Result<Vec<crate::features::memory::RecentWorkItem>, String> {
-    crate::features::memory::load_recent_work().map_err(|e| format!("load recent work memory: {e}"))
-}
-
-#[tauri::command]
-pub async fn upsert_recent_work_memory(
-    patch: crate::features::memory::RecentWorkPatch,
-    session_id: Option<String>,
-    store: State<'_, SessionStore>,
-    app: AppHandle,
-) -> Result<MemoryWriteState<crate::features::memory::RecentWorkItem>, String> {
-    let item = crate::features::memory::upsert_recent_work(patch)
-        .map_err(|e| format!("upsert recent work: {e}"))?;
-    if let Some(sid) = resolve_memory_session_id(session_id.clone(), &store) {
-        emit_memory_write_events(
-            &app,
-            &sid,
-            &[crate::features::memory::MemoryWriteEvent {
-                kind: "recent_work".to_string(),
-                action: "remembered".to_string(),
-                id: item.id.clone(),
-                text: item.title.clone(),
-            }],
-        );
-    }
-    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
-    Ok(MemoryWriteState {
-        value: item,
         runtime,
         warnings,
     })

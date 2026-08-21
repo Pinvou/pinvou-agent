@@ -22,20 +22,3 @@ pub async fn get_session_timeline(
     .map_err(|error| format!("读取 session timeline 任务失败: {error}"))?
     .map_err(|error| format!("读取 session timeline 失败: {error}"))
 }
-
-/// 聚合 session 级 stats:轮数 / token 累计 / cache 命中 / 成功失败数 / 首末时间。
-/// 可供后续诊断入口消费。token 来自 timing_events 的 usage 字段(2026-07 起写入);
-/// 老于此的 session 这些字段为 0(只显示 turn_count + 时间)。
-#[tauri::command]
-pub async fn get_session_stats(
-    session_id: String,
-) -> Result<crate::features::assistant::timing::SessionTimelineStats, String> {
-    // 同 get_session_timeline:校验 session_id 字符集防路径穿越。
-    crate::features::sessions::validate_session_id(&session_id).map_err(|e| format!("{e:#}"))?;
-    tokio::task::spawn_blocking(move || {
-        crate::features::assistant::timing::compute_stats(&session_id)
-    })
-    .await
-    .map_err(|error| format!("统计 session timeline 任务失败: {error}"))?
-    .map_err(|error| format!("统计 session timeline 失败: {error}"))
-}

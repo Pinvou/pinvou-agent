@@ -4,7 +4,7 @@ import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon,
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
-const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t }) => {
+const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t, onPointerEnter, onFocus }) => {
       const drag = useLongPressDrag(dragKind, onPickUp);
       const dragProps = dragKind ? drag.handlers : {};
       const clickH = dragKind ? drag.guardClick(onClick) : onClick;
@@ -13,6 +13,8 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
         <Root
           {...(nativeButton ? { type: 'button', 'aria-label': label } : {})}
           onClick={clickH}
+          onPointerEnter={onPointerEnter}
+          onFocus={onFocus}
           {...dragProps}
           data-nav={dragKind || undefined}
           title={!isSidebarOpen ? label : ""}

@@ -289,7 +289,7 @@ try {
   const i18n = readFileSync(path.join(root, 'src', 'shared', 'i18n.js'), 'utf8');
   const navigationComponents = readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
   assert.ok(main.includes("currentView === 'codex'"));
-  assert.ok(main.includes('<CodexAcpView'));
+  assert.ok(main.includes('<LazyCodexAcpView'), 'Codex view renders via lazy chunk');
   assert.match(
     lazyCodexView,
     /lazy\(\(\) => import\('\.\/CodexAcpView\.jsx'\)/,
@@ -297,7 +297,7 @@ try {
   );
   assert.ok(
     detachedShell.includes("../features/codex/LazyCodexAcpView.jsx")
-      && !detachedShell.includes("../features/codex/CodexAcpView.jsx"),
+      && !detachedShell.includes("from '../features/codex/CodexAcpView.jsx'"),
     'detached windows must not restore a static import of the lazy ACP workspace',
   );
   assert.match(

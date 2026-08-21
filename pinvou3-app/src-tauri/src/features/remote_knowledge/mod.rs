@@ -246,6 +246,16 @@ impl RemoteKnowledgeService {
         !self.connections.read().is_empty()
     }
 
+    /// 不依赖 managed state 的连接存在性检查（knowledge 模型首帧门控用）：
+    /// 直接读默认路径的连接文件。knowledge 不能依赖本类型（feature 间会形成
+    /// 循环依赖），且首帧门控调用点只有磁盘可看；文件缺失/解析失败按「无
+    /// 连接」处理（保守跳过模型加载，用户连上远程库后热加载钩子会补上）。
+    pub fn remote_connections_present() -> bool {
+        load_connections(&Self::default_path())
+            .map(|connections| !connections.is_empty())
+            .unwrap_or(false)
+    }
+
     pub fn shared_backup_identity(&self) -> Result<Option<String>, String> {
         self.credentials
             .get(&CredentialReference::for_shared_knowledge_backup())

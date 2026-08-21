@@ -91,7 +91,7 @@ assert.ok(
   'App should render the scheduled view'
 );
 assert.ok(
-  /currentView === 'scheduled'\s*&&\s*\([\s\S]{0,1200}scheduledRunContext[\s\S]{0,800}<ChatView[\s\S]{0,1600}<ScheduledTasksView/.test(indexHtml),
+  /currentView === 'scheduled'\s*&&\s*\(\s*[\s\S]{0,1200}scheduledRunContext[\s\S]{0,800}<ChatView[\s\S]{0,1600}<LazyScheduledTasksView/.test(indexHtml),
   'a scheduled run should reuse the full ChatView inside the scheduled route'
 );
 assert.ok(

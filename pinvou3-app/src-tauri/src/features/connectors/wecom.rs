@@ -149,6 +149,9 @@ fn run_connect_flow(app: &AppHandle) {
 /// 单段:`auth init --noninteractive --no-browser` 长驻 → 抓 URL 出二维码 → 等进程退出 → 查 ready。
 fn phase_scan(app: &AppHandle) -> Result<(), String> {
     let mut cmd = wecom(&["auth", "init", "--noninteractive", "--no-browser"]);
+    // 独立进程组:npm shim(shell→node)派生的孙进程与 shim 同组,退出收割的
+    // kill_pid_tree 按负 pid 组杀整棵树,单杀 shim pid 会把 node 孤儿化。
+    crate::platform::process::std_process_group_leader(&mut cmd);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

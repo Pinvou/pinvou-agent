@@ -4,14 +4,20 @@ import { RefreshCw, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 
 export const UpdateNoticeButton = ({ theme, bs, t, onShowChangelog }) => {
+  // update-notice-logic.js 是 index.html 经典脚本;若未来改为延迟注入,这里
+  // 必须容忍未就绪(无更新 UI 缺席一轮渲染即可),不能白屏。
+  // 早退 return 必须放在全部 hooks 之后:logic 未就绪时直接 return 会跳过
+  // 下方 useState/useEffect,违反 Rules of Hooks(下一轮 logic 就绪重渲染时
+  // hooks 数量不一致,恰在本注释声称防御的场景崩溃)。
   const logic = window.UpdateNoticeLogic;
-  const isPreview = !bridge.available && logic.previewEnabled(window.location);
-  const updateInfo = logic.updateInfoFor(bs, { preview: isPreview });
+  const isPreview =
+    !!logic && !bridge.available && logic.previewEnabled(window.location);
+  const updateInfo = logic ? logic.updateInfoFor(bs, { preview: isPreview }) : null;
   const [closed, setClosed] = useState(false);
 
-  useEffect(() => { setClosed(false); }, [logic.versionKey(updateInfo)]);
+  useEffect(() => { setClosed(false); }, [logic && updateInfo ? logic.versionKey(updateInfo) : '']);
 
-  if (!updateInfo || closed) return null;
+  if (!logic || !updateInfo || closed) return null;
 
   const vm = logic.viewModel(bs, updateInfo, bs && bs.appVersion, {
     downloadInstall: t.downloadInstall,

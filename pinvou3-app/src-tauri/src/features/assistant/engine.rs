@@ -14,7 +14,7 @@
 //! 在同一个 EngineHandle 内自然累积。
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -346,6 +346,12 @@ impl Drop for TurnReservation {
 pub(crate) struct TurnLifecycle {
     state: Mutex<TurnLifecycleState>,
     emission: Mutex<()>,
+    /// 最近一次 turn 终态收口时刻（UNIX ms）：所有终态路径（forwarder 的
+    /// TurnComplete、cancel 的未提交认领、回收收口）都经
+    /// [`finish_terminal_emission`](Self::finish_terminal_emission) 重开闸门，
+    /// 在此统一刷新。EnginePool 空闲回收把它与 turn 提交时钟取较新者判定空闲
+    /// ——超过空闲阈值的长 turn 刚结束时不能立刻被判为可回收。
+    last_terminal_epoch_ms: AtomicU64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -847,6 +853,19 @@ impl TurnLifecycle {
 
     fn finish_terminal_emission(&self) {
         self.state.lock().terminal_closing = false;
+        self.last_terminal_epoch_ms.store(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            Ordering::Release,
+        );
+    }
+
+    /// 最近一次 turn 终态收口时刻（UNIX ms；从未收口为 0）。供 EnginePool
+    /// 空闲回收与 turn 提交时钟取较新者判定真实空闲时长。
+    pub(crate) fn last_terminal_epoch_ms(&self) -> u64 {
+        self.last_terminal_epoch_ms.load(Ordering::Acquire)
     }
 
     fn claim_reclaimed_with_admission(
@@ -1540,6 +1559,15 @@ impl AppEngine {
         session_id: &str,
         shell_cleanup_failed: bool,
     ) -> bool {
+        // 回收/中断不经过 TurnComplete：清掉 self_metrics 打点与 memory turn capture，
+        // 避免中断轮在进程级 map 里永久驻留。
+        if let Some(m) = app
+            .try_state::<crate::features::monitor::MonitorState>()
+            .map(|s| s.self_metrics())
+        {
+            m.on_turn_aborted(session_id);
+        }
+        crate::features::memory::discard_turn_capture(session_id);
         match finish_reclaimed_lifecycle_turn(
             &self.turn_lifecycle,
             app,

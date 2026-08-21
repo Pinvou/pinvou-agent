@@ -68,10 +68,7 @@ import {
 } from '../conversation/ConversationTimeline.jsx';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
-import {
-  ComposerModelSelector,
-  ComposerToolMenu,
-} from '../settings/SettingsView.jsx';
+import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
 import {
   COMPOSER_ICON_BUTTON_CLASS,
   ComposerKbSelector,

@@ -59,10 +59,6 @@ pub fn archive_tool_exists() -> bool {
     super::super::platform::archive_tool_exists()
 }
 
-pub fn msg_native_supported() -> bool {
-    super::super::platform::msg_native_supported()
-}
-
 pub fn msg_converter_required() -> bool {
     super::super::platform::msg_converter_required()
 }

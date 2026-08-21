@@ -465,7 +465,7 @@ fn event_id() -> String {
 
 fn token(prefix: &str, bytes: usize) -> String {
     let mut raw = vec![0_u8; bytes];
-    use rand::RngCore as _;
+    use rand::Rng as _;
     rand::rng().fill_bytes(&mut raw);
     format!(
         "{}{}",
