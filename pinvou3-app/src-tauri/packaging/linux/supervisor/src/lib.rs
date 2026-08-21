@@ -716,7 +716,7 @@ fn systemd_exec_field<'a>(exec_start: &'a str, key: &str) -> Option<&'a str> {
 fn validate_executable_metadata(path: &Path, expected_uid: Option<u32>) -> Result<(), String> {
     let link = fs::symlink_metadata(path)
         .map_err(|error| format!("inspect managed executable link: {error}"))?;
-    if expected_uid.is_some_and(|uid| link.uid() != uid) {
+    if expected_uid.is_some_and(|uid| !metadata_uid_is_trusted(link.uid(), uid)) {
         return Err("managed executable link owner is not trusted".to_string());
     }
     let resolved =
@@ -752,12 +752,109 @@ fn validate_fragment_metadata(path: &Path, expected_uid: Option<u32>) -> Result<
     if !link_metadata.file_type().is_file() || link_metadata.file_type().is_symlink() {
         return Err("systemd fragment must be a regular non-symlink file".to_string());
     }
-    if expected_uid.is_some_and(|uid| link_metadata.uid() != uid)
+    if expected_uid.is_some_and(|uid| !metadata_uid_is_trusted(link_metadata.uid(), uid))
         || link_metadata.mode() & 0o022 != 0
     {
         return Err("systemd fragment owner/mode is not trusted".to_string());
     }
     Ok(())
+}
+
+fn metadata_uid_is_trusted(observed_uid: u32, expected_uid: u32) -> bool {
+    if expected_uid != 0 {
+        return observed_uid == expected_uid;
+    }
+    let Some(overflow_uid) = read_small_file(Path::new("/proc/sys/kernel/overflowuid"), 64)
+        .and_then(|value| value.trim().parse::<u32>().ok())
+    else {
+        return false;
+    };
+    let Some(uid_map) = read_small_file(Path::new("/proc/self/uid_map"), 4096) else {
+        return false;
+    };
+    metadata_uid_is_trusted_in_namespace(
+        observed_uid,
+        expected_uid,
+        unsafe { libc::geteuid() },
+        overflow_uid,
+        &uid_map,
+    )
+}
+
+fn metadata_uid_is_trusted_in_namespace(
+    observed_uid: u32,
+    expected_uid: u32,
+    effective_uid: u32,
+    overflow_uid: u32,
+    uid_map: &str,
+) -> bool {
+    if expected_uid != 0 {
+        return observed_uid == expected_uid;
+    }
+
+    let effective_uid = u64::from(effective_uid);
+    let observed_uid = u64::from(observed_uid);
+    let mut effective_identity_mappings = 0_u8;
+    let mut observed_mappings = 0_u8;
+    let mut observed_root_mappings = 0_u8;
+    let mut host_root_is_mapped = false;
+    let mut saw_mapping = false;
+    for line in uid_map.lines() {
+        let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+        if fields.len() != 3 {
+            return false;
+        }
+        let Ok(inside_start) = fields[0].parse::<u64>() else {
+            return false;
+        };
+        let Ok(outside_start) = fields[1].parse::<u64>() else {
+            return false;
+        };
+        let Ok(length) = fields[2].parse::<u64>() else {
+            return false;
+        };
+        if length == 0 {
+            return false;
+        }
+        let Some(inside_end) = inside_start.checked_add(length) else {
+            return false;
+        };
+        let Some(outside_end) = outside_start.checked_add(length) else {
+            return false;
+        };
+        saw_mapping = true;
+        host_root_is_mapped |= outside_start == 0 && outside_end > 0;
+        if (inside_start..inside_end).contains(&observed_uid) {
+            observed_mappings = observed_mappings.saturating_add(1);
+            let Some(mapped_uid) = outside_start.checked_add(observed_uid - inside_start) else {
+                return false;
+            };
+            if mapped_uid == 0 {
+                observed_root_mappings = observed_root_mappings.saturating_add(1);
+            }
+        }
+        if (inside_start..inside_end).contains(&effective_uid) {
+            let Some(mapped_uid) = outside_start.checked_add(effective_uid - inside_start) else {
+                return false;
+            };
+            if mapped_uid == effective_uid {
+                effective_identity_mappings = effective_identity_mappings.saturating_add(1);
+            } else {
+                return false;
+            }
+        }
+    }
+
+    if !saw_mapping || observed_mappings > 1 || observed_root_mappings > 1 {
+        return false;
+    }
+    if observed_root_mappings == 1 {
+        return true;
+    }
+    observed_uid == u64::from(overflow_uid)
+        && observed_mappings == 0
+        && !host_root_is_mapped
+        && effective_identity_mappings == 1
 }
 
 fn cgroup_directory(control_group: &str) -> Option<PathBuf> {
@@ -3231,6 +3328,61 @@ mod tests {
         );
         assert_eq!(parse_mem_total_bytes("MemTotal: 32 GB\n"), None);
         assert_eq!(parse_mem_total_bytes("MemFree: 32 kB\n"), None);
+    }
+
+    #[test]
+    fn root_metadata_accepts_only_kernel_overflow_in_narrow_identity_user_namespace() {
+        assert!(metadata_uid_is_trusted_in_namespace(
+            0,
+            0,
+            1_000,
+            65_534,
+            "0 0 4294967295\n",
+        ));
+        assert!(metadata_uid_is_trusted_in_namespace(
+            65_534,
+            0,
+            1_000,
+            65_534,
+            "1000 1000 1\n",
+        ));
+        assert!(!metadata_uid_is_trusted_in_namespace(
+            0,
+            0,
+            0,
+            65_534,
+            "0 1000 1\n",
+        ));
+
+        for uid_map in [
+            "0 0 4294967295\n",
+            "0 0 1\n1000 1000 1\n",
+            "0 1000 1\n",
+            "1000 1001 1\n",
+            "1000 1000 0\n",
+            "1000 1000\n",
+            "not-a-map\n",
+            "",
+        ] {
+            assert!(
+                !metadata_uid_is_trusted_in_namespace(65_534, 0, 1_000, 65_534, uid_map,),
+                "mapping must fail closed: {uid_map:?}",
+            );
+        }
+        assert!(!metadata_uid_is_trusted_in_namespace(
+            65_533,
+            0,
+            1_000,
+            65_534,
+            "1000 1000 1\n",
+        ));
+        assert!(!metadata_uid_is_trusted_in_namespace(
+            65_534,
+            1_000,
+            1_000,
+            65_534,
+            "1000 1000 1\n",
+        ));
     }
 
     #[test]
