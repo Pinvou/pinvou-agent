@@ -1272,6 +1272,10 @@ impl Pinvou3Bridge {
             terminal_chrome_enabled,
             advisor_config,
             subagent_state_root,
+            // v0.9.5-r8（CodeWhale#15）上游新增字段,透传 default ——
+            //   turn_tool_security: 受限嵌入式轮次的进程级工具安全策略
+            //   （只读分发/目录投影）。pinvou3 会话不受限 → None 保全全部既有行为。
+            turn_tool_security: _,
         } = EngineConfig::default();
 
         // hook 有两条消费路径：turn_loop 从 EngineConfig.hook_executor 跑
@@ -1476,6 +1480,10 @@ impl Pinvou3Bridge {
             terminal_chrome_enabled,
             advisor_config,
             subagent_state_root,
+            // v0.9.5-r8（CodeWhale#15）上游新增字段,透传 default ——
+            //   turn_tool_security: 受限嵌入式轮次的进程级工具安全策略
+            //   （只读分发/目录投影）。pinvou3 会话不受限 → None 保全全部既有行为。
+            turn_tool_security: None,
         }
     }
 
@@ -2019,6 +2027,9 @@ impl Pinvou3Bridge {
             dynamic_tools: Vec::new(),
             // provenance: 消息来源。build_send_message_op 是用户内容 → ExternalUser。
             provenance: deepseek_tui::core::ops::UserInputProvenance::ExternalUser,
+            // v0.9.5-r8（CodeWhale#15）上游新增。turn_tool_security: 受限嵌入式
+            // 轮次的进程级安全策略；pinvou3 普通用户消息不受限 → None 保全既有行为。
+            turn_tool_security: None,
         })
     }
 }
