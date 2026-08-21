@@ -658,6 +658,10 @@ fn handle_slash_command<S: Read + Write>(
     };
     let mut parts = command.split_whitespace();
     match (parts.next(), parts.next(), parts.next()) {
+        (Some("help"), None, None) => {
+            write_terminal_to(output, chat_help_text())?;
+            Ok(true)
+        }
         (Some("runtime"), None, None) => {
             let response = client.runtime_list()?;
             write_terminal_to(output, &format_runtime_list(response.payload()))?;
@@ -693,6 +697,10 @@ fn handle_slash_command<S: Read + Write>(
             "unknown chat command",
         )),
     }
+}
+
+fn chat_help_text() -> &'static str {
+    "/help - show chat commands\n/runtime - list selectable runtimes\n/runtime <id> - switch active runtime\n/detect - show active runtime status\n/exit or /quit - leave chat\n"
 }
 
 fn format_runtime_list(payload: &Value) -> String {
@@ -972,6 +980,32 @@ mod tests {
         assert_eq!(requests[0].method(), Some("runtime.list"));
         assert_eq!(requests[1].method(), Some("runtime.switch"));
         assert_eq!(requests[1].payload()["runtime"], "echo");
+    }
+
+    #[test]
+    fn chat_loop_help_lists_runtime_switching_commands_without_starting_a_turn() {
+        let stream = TestDuplex::with_responses([]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut input = std::io::Cursor::new(b"/help\n/exit\n".to_vec());
+        let mut output = Vec::new();
+
+        execute_chat_with_io(
+            &mut input,
+            &mut output,
+            &mut client,
+            interrupted,
+            Arc::clone(&active_turn),
+            true,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("/runtime - list selectable runtimes"));
+        assert!(output.contains("/runtime <id> - switch active runtime"));
+        assert!(output.contains("/detect - show active runtime status"));
+        assert!(client.into_inner().requests().is_empty());
     }
 
     #[test]
