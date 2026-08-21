@@ -30,7 +30,9 @@ ProtectSystem=strict
 ProtectHome=read-only
 ProtectControlGroups=yes
 ProtectKernelTunables=yes
-ProtectKernelModules=yes
+# Do not set ProtectKernelModules= for this user unit. The service already lacks
+# CAP_SYS_MODULE and cannot gain it (NoNewPrivileges + RestrictSUIDSGID), while
+# systemd 259 can otherwise fail before exec with status 218/CAPABILITIES.
 RestrictAddressFamilies=AF_UNIX
 RestrictSUIDSGID=yes
 LockPersonality=yes

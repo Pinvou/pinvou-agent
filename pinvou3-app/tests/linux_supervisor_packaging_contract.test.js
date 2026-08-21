@@ -171,6 +171,11 @@ assert.match(socketUnit, /^Service=pinvou3-supervisor\.service$/m);
 assert.match(supervisorUnit, /^ExecStart=\/usr\/lib\/pinvou3\/supervisor\/pinvou-supervisor daemon$/m);
 assert.match(supervisorUnit, /^StateDirectory=pinvou-supervisor$/m);
 assert.match(supervisorUnit, /^Restart=on-failure$/m);
+assert.doesNotMatch(
+  supervisorUnit,
+  /^ProtectKernelModules=/m,
+  "an unprivileged user unit must not trigger systemd 259's 218/CAPABILITIES failure",
+);
 assert.doesNotMatch(supervisorUnit, /PartOf=pinvou3-app|ExecStart=.*(?:sh|bash|systemctl)/);
 for (const [key, value] of [
   ["OOMPolicy", "kill"],
