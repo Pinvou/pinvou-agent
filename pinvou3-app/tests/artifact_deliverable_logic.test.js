@@ -10,7 +10,7 @@ const vm = require("vm");
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(appRoot, "..");
 
-// 三侧同一组预期:tmp/ 段一律 false,成品扩展名普通路径 true
+// 两侧同一组预期:tmp/ 段一律 false,成品扩展名普通路径 true
 const CASES = [
   ["tmp/draft.md", false],
   ["./tmp/x.png", false],

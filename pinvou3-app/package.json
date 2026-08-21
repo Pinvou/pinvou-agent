@@ -1,7 +1,7 @@
 {
   "name": "pinvou3-app",
   "version": "0.8.5",
-  "description": "\u54c1\u609f\u667a\u80fd\u52a9\u624b\u684c\u9762\u5e94\u7528",
+  "description": "品悟智能助手桌面应用",
   "private": true,
   "scripts": {
     "tauri": "node scripts/tauri/build.js",
