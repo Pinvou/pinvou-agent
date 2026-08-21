@@ -31,6 +31,18 @@ const REWOUND_TURNS_FILE: &str = "_rewound_turns.json";
 /// 防止反复回退把 sidecar 写到无限大。
 const MAX_REWIND_BACKUPS_PER_SESSION: usize = 20;
 
+/// 底座 compaction 摘要标记（`CodeWhale/crates/tui/src/core/engine/context.rs` 的
+/// `COMPACTION_SUMMARY_MARKER`，`pub(super)` 不可直接引用，app 侧用同一字面量匹配）。
+/// 漂移后果：底座改文案后这里不再命中，回退后不再提示「对话含压缩摘要残留」——
+/// 只是不提示，不影响回退正确性，可接受。
+const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
+
+/// 持久化的 system_prompt 是否含 compaction 摘要（截断不会触碰 system_prompt，
+/// 压缩摘要残留因此随回退一起保留，前端据此提示）。
+fn system_prompt_has_compaction_summary(system_prompt: Option<&String>) -> bool {
+    system_prompt.is_some_and(|text| text.contains(COMPACTION_SUMMARY_MARKER))
+}
+
 /// 一次回退被截段落的备份记录（追加进 `_rewound_turns.json`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +66,9 @@ pub struct TruncateToTurnOutcome {
     pub removed_messages: usize,
     /// 截断后的新 transcript revision。
     pub new_revision: String,
+    /// 持久化的 system_prompt 是否含 compaction 摘要残留（截断不触碰
+    /// system_prompt；前端据此提示「回退到的位置之前发生过上下文压缩」）。
+    pub had_compaction: bool,
 }
 
 fn rewound_turns_path() -> PathBuf {
@@ -149,6 +164,7 @@ impl SessionStore {
         session.metadata.message_count = session.messages.len();
         session.metadata.updated_at = Utc::now();
         let new_revision = transcript_revision(&session.messages)?;
+        let had_compaction = system_prompt_has_compaction_summary(session.system_prompt.as_ref());
         // 显式放行路径：直接持久化截断结果，不走 update_messages /
         // compare_and_swap_messages，因此不触发 looks_like_truncating_overwrite；
         // 该守卫对其它调用方的保护保持不变。
@@ -157,7 +173,72 @@ impl SessionStore {
             rewound_turns: total_turns - keep_turns,
             removed_messages: removed_count,
             new_revision,
+            had_compaction,
         })
+    }
+
+    /// 最新一条回退备份记录（`undo_last_rewind` 的可反悔判定与恢复数据源）。
+    pub fn latest_rewound_turns_record(&self, id: &str) -> Result<Option<RewoundTurnsRecord>> {
+        validate_session_id(id)?;
+        Ok(load_rewound_turns_map()?
+            .get(id)
+            .and_then(|records| records.last().cloned()))
+    }
+
+    /// 回退反悔：把最新备份记录的被截消息追加回 transcript 尾部并持久化，随后从
+    /// sidecar 删除该条记录，返回恢复的消息条数。
+    ///
+    /// 与 `truncate_to_user_turn` 同级的显式专用路径：不经过 update_messages /
+    /// compare_and_swap_messages 的 `looks_like_truncating_overwrite` 守卫入口，
+    /// 守卫对其它调用方的保护不变。revision/CAS 语义与截断一致：恢复后
+    /// `transcript_revision` 自然变化，持旧 revision 的 CAS 自然失败（期望行为，
+    /// 远程控制编辑不得覆盖反悔结果），无需额外处理。
+    ///
+    /// 可反悔条件（当前 turn 数 == 记录的 kept_turns，即回退后未发过新轮次）在
+    /// mutation 锁内重新校验；不满足则如实报错、不动磁盘。调用方（编排命令）应
+    /// 在动代码（restore checkpoint）之前先用 `latest_rewound_turns_record` 完成
+    /// 同样的预检，把「代码已反悔、对话未反悔」的窗口压到最小。
+    pub fn restore_rewound_turns(&self, id: &str) -> Result<usize> {
+        let _mutation = self.scheduled_mutation.lock();
+        if self.is_scheduled_session(id)? {
+            bail!("Cannot undo rewind for scheduled-run session '{id}'");
+        }
+        validate_session_id(id)?;
+        let mut backups = load_rewound_turns_map()?;
+        let record = backups
+            .get(id)
+            .and_then(|records| records.last().cloned())
+            .with_context(|| format!("会话 '{id}' 没有可反悔的回退记录"))?;
+        let mut session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load_session({id}) for rewind undo"))?;
+        let current_turns = session
+            .messages
+            .iter()
+            .filter(|message| deepseek_tui::is_user_turn_prompt(message))
+            .count() as u32;
+        if current_turns != record.kept_turns {
+            bail!(
+                "回退后已产生新轮次（当前 {current_turns} 轮，回退时为 {} 轮），不可反悔",
+                record.kept_turns
+            );
+        }
+        let restored = record.removed_messages.len();
+        session.messages.extend(record.removed_messages);
+        session.metadata.message_count = session.messages.len();
+        session.metadata.updated_at = Utc::now();
+        // 先持久化 transcript 再删备份记录：本步失败时记录仍在，可重试。
+        self.persist_then_reconcile(&session, "rewind undo restore")?;
+        // 记录删除失败只留孤儿数据；反悔条件②（turn 数已不等于 kept_turns）会
+        // 自然挡住重复恢复，不算失败，如实记日志。
+        if let Some(records) = backups.get_mut(id) {
+            records.pop();
+        }
+        if let Err(error) = persist_rewound_turns_map(&backups) {
+            eprintln!("[sessions] remove consumed rewind backup for {id} failed: {error:#}");
+        }
+        Ok(restored)
     }
 
     /// 删除/保留策略清理会话时同步清掉其回退备份（best-effort：失败只留孤儿数据，

@@ -1081,6 +1081,8 @@ pub fn run() {
             commands::checkpoints::checkpoint_diff,
             commands::checkpoints::restore_checkpoint,
             commands::checkpoints::rewind_to_turn,
+            commands::checkpoints::rewind_undo_state,
+            commands::checkpoints::undo_last_rewind,
             commands::behavior_telemetry::track_behavior_event,
             commands::assistant_response::export_assistant_response,
             commands::assistant_response::open_assistant_share_target,

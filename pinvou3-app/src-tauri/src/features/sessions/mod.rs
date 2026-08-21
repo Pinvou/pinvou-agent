@@ -74,7 +74,7 @@ pub use self::scheduled::{
 /// Re-export transcript helpers (consumed across engine / remote-control).
 pub use self::transcript::transcript_revision;
 /// Re-export the turn-rewind outcome (consumed by the rewind command surface).
-pub use self::rewind::TruncateToTurnOutcome;
+pub use self::rewind::{RewoundTurnsRecord, TruncateToTurnOutcome};
 /// Re-export the crate-visible session-id validator (used by commands). It is
 /// `pub(crate)` so it stays out of the crate's public API surface.
 pub(crate) use self::validators::validate_session_id;

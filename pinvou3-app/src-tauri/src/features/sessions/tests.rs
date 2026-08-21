@@ -3439,3 +3439,123 @@ fn delete_session_purges_rewound_turns_backup() {
         .join("_rewound_turns.json")
         .exists());
 }
+
+// ===================== 回退反悔（restore_rewound_turns）+ compaction 标记 =====================
+
+/// 反悔往返：截断后恢复，messages 回到截断前，sidecar 记录被消费删除。
+#[test]
+fn restore_rewound_turns_round_trips_messages_and_consumes_record() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let messages = vec![
+        user_text("第一轮"),
+        assistant_text("答一"),
+        tool_result_message("call_1"),
+        user_text("第二轮"),
+        assistant_text("答二"),
+    ];
+    store
+        .update_messages(&id, messages.clone())
+        .expect("seed transcript");
+    store.truncate_to_user_turn(&id, 1).expect("rewind");
+    assert_eq!(store.load(&id).expect("load").messages.len(), 3);
+
+    let restored = store.restore_rewound_turns(&id).expect("undo rewind");
+
+    assert_eq!(restored, 2);
+    assert_eq!(
+        store.load(&id).expect("load").messages,
+        messages,
+        "反悔后 transcript 必须逐条回到截断前"
+    );
+    // 记录已被消费：再次反悔如实报错。
+    assert!(store.latest_rewound_turns_record(&id).expect("read").is_none());
+    assert!(store.restore_rewound_turns(&id).is_err());
+}
+
+/// 回退后发过新轮次 → 不可反悔，如实报错且 transcript 不动。
+#[test]
+fn restore_rewound_turns_rejects_after_new_turn() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    store
+        .update_messages(
+            &id,
+            vec![
+                user_text("第一轮"),
+                assistant_text("答一"),
+                user_text("第二轮"),
+                assistant_text("答二"),
+            ],
+        )
+        .expect("seed transcript");
+    store.truncate_to_user_turn(&id, 1).expect("rewind");
+    // 回退后重新创作：追加新轮次（turn 数变为 2 ≠ kept_turns 1）。
+    store
+        .update_messages(
+            &id,
+            vec![
+                user_text("第一轮"),
+                assistant_text("答一"),
+                user_text("新分支"),
+                assistant_text("新答"),
+            ],
+        )
+        .expect("append new branch turn");
+
+    let error = store
+        .restore_rewound_turns(&id)
+        .expect_err("new turn after rewind must block undo");
+    assert!(error.to_string().contains("不可反悔"), "{error:#}");
+    assert_eq!(store.load(&id).expect("load").messages.len(), 4);
+    // 记录保留（未消费），数据不丢。
+    assert!(store.latest_rewound_turns_record(&id).expect("read").is_some());
+}
+
+/// had_compaction：system_prompt 含/不含底座压缩摘要标记两例。
+#[test]
+fn truncate_reports_compaction_summary_residue_in_system_prompt() {
+    let (store, _g) = isolated_store();
+    let with_marker = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create with_marker");
+    let without_marker = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create without_marker");
+
+    let messages = || {
+        vec![
+            user_text("第一轮"),
+            assistant_text("答一"),
+            user_text("第二轮"),
+            assistant_text("答二"),
+        ]
+    };
+    // 含标记：模拟底座 compaction 后持久化的 system_prompt。
+    let mut state = chat_engine_state(messages());
+    state.system_prompt = Some(SystemPrompt::Text(
+        "前文摘要：Conversation Summary (Auto-Generated)\n……".to_string(),
+    ));
+    store
+        .persist_chat_engine_state(&with_marker.metadata.id, state)
+        .expect("persist with marker");
+    store
+        .update_messages(&without_marker.metadata.id, messages())
+        .expect("seed plain");
+
+    let outcome = store
+        .truncate_to_user_turn(&with_marker.metadata.id, 1)
+        .expect("rewind with marker");
+    assert!(outcome.had_compaction, "含标记必须上报 had_compaction");
+
+    let outcome = store
+        .truncate_to_user_turn(&without_marker.metadata.id, 1)
+        .expect("rewind without marker");
+    assert!(!outcome.had_compaction, "普通 system_prompt 不得误报");
+}
