@@ -863,6 +863,18 @@ assert.match(fs.readFileSync(path.join(fixtureRoot, "90-memory-max.conf"), "utf8
   /^ExecStartPost=\/usr\/bin\/python3 %t\/pinvou-megabook-e2e\/memory-loader\.py max$/m);
 assert.doesNotMatch(e2eHarness, /systemctl[^\n]*\battach\b|SIGSTOP|SIGCONT|\/bin\/kill|\/usr\/bin\/kill/);
 assert.doesNotMatch(e2eHarness, /^\s*sudo\b/m);
+const cleanupRunStart = e2eHarness.indexOf("cleanup_run() {");
+const cleanupRunEnd = e2eHarness.indexOf("\n}\n\ntrap cleanup_run EXIT", cleanupRunStart) + 2;
+assert.ok(cleanupRunStart >= 0 && cleanupRunEnd > cleanupRunStart,
+  "cleanup_run must remain a bounded shell function");
+const cleanupRun = e2eHarness.slice(cleanupRunStart, cleanupRunEnd);
+assert.equal((cleanupRun.match(/reset-failed/g) || []).length, 1,
+  "cleanup_run must have one fail-closed app failed-state reset");
+assert.match(cleanupRun,
+  /--property=ActiveState --value 2>\/dev\/null\)" = failed \]; then[\s\S]*reset-failed "\$APP_UNIT"/,
+  "cleanup must reset the app failed state only when systemd actually reports failed");
+assert.match(cleanupRun, /reset-failed "\$APP_UNIT"[^\n]*\n\s*\|\| cleanup_failed=1/,
+  "cleanup must treat a required failed-state reset failure as incomplete rollback");
 assert.match(e2eHarness, /publish_private_staged_file[\s\S]*\/usr\/bin\/ln -T --/);
 assert.match(e2eHarness, /validate_user_file_links[\s\S]*fsync_directory/);
 assert.match(e2eHarness, /transaction_residue_absent/);

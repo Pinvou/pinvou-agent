@@ -156,7 +156,11 @@ cleanup_run() {
     fixed_stop_app || cleanup_failed=1
   fi
   remove_e2e_assets || cleanup_failed=1
-  /usr/bin/systemctl --user reset-failed "$APP_UNIT" >/dev/null 2>&1 || cleanup_failed=1
+  if [ "$(/usr/bin/systemctl --user show "$APP_UNIT" \
+      --property=ActiveState --value 2>/dev/null)" = failed ]; then
+    /usr/bin/systemctl --user reset-failed "$APP_UNIT" >/dev/null 2>&1 \
+      || cleanup_failed=1
+  fi
   if [ "$profile_owned" -eq 1 ]; then
     "$PROFILE_HELPER" deactivate >/dev/null 2>&1 || cleanup_failed=1
   fi
