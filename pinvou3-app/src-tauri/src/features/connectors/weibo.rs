@@ -740,4 +740,15 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn status_probe_timeout_is_treated_as_not_connected() {
+        // 状态探测契约:命令超时 → Err,调用方(is_logged_in/weibo_status)按未连接处理,
+        // 不把超时错误抛给工具商店或首屏门控刷新。裸 ping 不带次数限制在三个平台
+        // 都必然超过 1s 超时(macOS/Linux 无限,Windows 默认 4 次 ≈3s),无需平台分支。
+        let mut cmd = std::process::Command::new("ping");
+        cmd.arg("127.0.0.1");
+        let result = run_capture_timeout(cmd, 1);
+        assert!(result.is_err(), "hung probe must time out, got {result:?}");
+    }
 }
