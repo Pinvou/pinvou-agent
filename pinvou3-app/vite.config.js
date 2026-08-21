@@ -1,7 +1,12 @@
-import { cpSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+
+import {
+  localClassicScriptPaths,
+  resolveContainedRuntimePath,
+} from './scripts/vite-runtime-assets.mjs';
 
 const sourceRoot = resolve(import.meta.dirname, 'src');
 const staticExtensions = new Set([
@@ -16,12 +21,27 @@ const staticScripts = new Set([
   'platform/web/bridge.js',
   'platform/web/host-file-picker.js',
   'platform/web/access-policy.json',
+  'shared/authority-sync-diagnostics.js',
   'shared/bridge-messages.js',
   'vendor/marked.min.js',
   'vendor/purify.min.js',
   'vendor/tailwind.js',
 ]);
 const staticScriptPrefixes = ['platform/tauri/bridge/', 'platform/web/bridge/'];
+
+function assertClassicRuntimeScriptsCopied(outputRoot) {
+  const indexHtml = readFileSync(join(sourceRoot, 'index.html'), 'utf8');
+  for (const relative of localClassicScriptPaths(indexHtml)) {
+    const source = resolveContainedRuntimePath(sourceRoot, relative);
+    const target = resolveContainedRuntimePath(outputRoot, relative);
+    if (!existsSync(source)) {
+      throw new Error(`Vite build references a missing local classic runtime script: ${relative}`);
+    }
+    if (!existsSync(target)) {
+      throw new Error(`Vite build is missing local classic runtime script: ${relative}`);
+    }
+  }
+}
 
 function normalizeWebBasePath(value) {
   let raw = String(value || '/pinvou3/remote').trim();
@@ -51,12 +71,14 @@ function copyRuntimeAssets() {
           const relative = source.slice(sourceRoot.length + 1).replaceAll('\\', '/');
           const isRuntimeScript = staticScripts.has(relative) || staticScriptPrefixes.some(prefix => relative.startsWith(prefix));
           if (!staticExtensions.has(extname(entry.name).toLowerCase()) && !isRuntimeScript) continue;
-          const target = join(outputRoot, relative);
+          const containedSource = resolveContainedRuntimePath(sourceRoot, relative);
+          const target = resolveContainedRuntimePath(outputRoot, relative);
           mkdirSync(resolve(target, '..'), { recursive: true });
-          cpSync(source, target);
+          cpSync(containedSource, target);
         }
       };
       if (existsSync(sourceRoot)) visit(sourceRoot);
+      assertClassicRuntimeScriptsCopied(outputRoot);
     },
   };
 }

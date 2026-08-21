@@ -142,6 +142,7 @@ for (const command of [
   'web_access_upload_attachment_chunk',
   'web_access_abort_attachment_upload',
   'web_access_discard_attachment',
+  'web_access_cancel_session_download',
   'web_access_load_session_chunk',
   'web_access_transcribe_voice_audio',
 ]) {
@@ -304,6 +305,35 @@ assert.match(toolRenderers, /discardPlan\(item\.id, item\.planId\)/);
 assert.match(bridge, /restoreUiTurnState\(preparation\.snapshot\)/);
 assert.match(bridge, /attachmentHandles:/);
 assert.match(bridge, /web_access_load_session_chunk/);
+assert.match(bridge, /web_access_cancel_session_download/);
+assert.match(bootstrap, /areInvokeCapabilitiesReady\(\) \{ return client\.desktopCapabilitiesReady === true; \}/,
+  'the shared bridge must reuse bootstrap capability-handshake state');
+assert.ok(
+  bridge.indexOf('await waitForWebInvokeCapabilities();') <
+    bridge.indexOf('supportsSessionDownloadCancellation = canInvoke("web_access_cancel_session_download")'),
+  'session downloads must not choose new or legacy protocol before the desktop snapshot',
+);
+assert.match(bridge, /pinvou:web-capabilities/);
+assert.match(bridge, /desktop_capabilities_timeout/);
+assert.match(bridge, /desktop_capabilities_unavailable/);
+assert.match(bridge, /scheduleAbandonedSessionDownloadCleanup\(\)/,
+  'connection recovery must retry persisted lease cleanup without another session switch');
+assert.match(bridge, /retryCapabilityBlockedSessionSwitch\(\)/,
+  'a late capability snapshot must retry the switch that timed out');
+assert.match(bridge, /supportsSessionDownloadCancellation = canInvoke\("web_access_cancel_session_download"\)/,
+  'new lease behavior must be gated by the installed desktop command capability');
+assert.match(bridge, /if \(supportsSessionDownloadCancellation\) \{[\s\S]{0,120}await cleanupAbandonedSessionDownloads/,
+  'legacy desktops must skip persisted lease cleanup they cannot implement');
+assert.match(bridge, /downloadId = supportsSessionDownloadCancellation \? newSessionDownloadId\(\) : ""/,
+  'legacy desktops must begin without a client-selected download id');
+assert.match(bridge, /if \(supportsSessionDownloadCancellation && !offset\) \{[\s\S]{0,100}chunkArgs\.requestedDownloadId = downloadId/,
+  'requestedDownloadId must only be sent to desktops that support cancellable leases');
+assert.match(bridge, /if \(!downloadId\) downloadId = chunkDownloadId/,
+  'the legacy path must adopt the server-generated first-chunk download id');
+assert.match(bridge, /if \(supportsSessionDownloadCancellation && downloadId\) \{/,
+  'legacy failures must not enter cancellable lease cleanup');
+assert.match(bridge, /cancellationIds[\s\S]{0,500}cancelSessionDownloadLease\(cancellationId, sid\)/,
+  'cancellable failures must release every known lease id');
 assert.doesNotMatch(
   webBridge,
   /web_access_load_session_chunk[\s\S]{0,220}\blimit\s*:/,

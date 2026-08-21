@@ -35,6 +35,69 @@
   function canInvoke(command) {
     return !IS_WEB || (typeof PLATFORM.canInvoke === "function" && PLATFORM.canInvoke(command) === true);
   }
+  var WEB_CAPABILITIES_WAIT_TIMEOUT_MS = 10_000;
+  function webInvokeCapabilitiesReady() {
+    if (!IS_WEB) return true;
+    if (typeof PLATFORM.areInvokeCapabilitiesReady === "function") {
+      return PLATFORM.areInvokeCapabilitiesReady() === true;
+    }
+    return !!(window.PinvouWebClient && window.PinvouWebClient.desktopCapabilitiesReady === true);
+  }
+  function webConnectionState() {
+    if (typeof PLATFORM.getConnectionState !== "function") return null;
+    try {
+      return PLATFORM.getConnectionState();
+    } catch (_) {
+      return null;
+    }
+  }
+  function webInvokeCapabilitiesUnavailable(connection) {
+    return !!(connection && connection.desktop_online === false && connection.status !== "connecting");
+  }
+  function unavailableWebCapabilitiesError() {
+    var error = new Error("desktop disconnected before command capabilities were ready");
+    error.code = "desktop_capabilities_unavailable";
+    return error;
+  }
+  function waitForWebInvokeCapabilities() {
+    if (webInvokeCapabilitiesReady()) return Promise.resolve();
+    if (webInvokeCapabilitiesUnavailable(webConnectionState())) {
+      return Promise.reject(unavailableWebCapabilitiesError());
+    }
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timeout = null;
+      function finish(error) {
+        if (settled) return;
+        settled = true;
+        if (timeout != null) clearTimeout(timeout);
+        window.removeEventListener("pinvou:web-capabilities", onCapabilities);
+        window.removeEventListener("pinvou:web-connection", onConnection);
+        if (error) reject(error); else resolve();
+      }
+      function onCapabilities() {
+        if (webInvokeCapabilitiesReady()) finish();
+      }
+      function onConnection(event) {
+        var connection = event && event.detail;
+        if (webInvokeCapabilitiesUnavailable(connection)) finish(unavailableWebCapabilitiesError());
+      }
+      window.addEventListener("pinvou:web-capabilities", onCapabilities);
+      window.addEventListener("pinvou:web-connection", onConnection);
+      timeout = setTimeout(function () {
+        var error = new Error("desktop command capability snapshot timed out");
+        error.code = "desktop_capabilities_timeout";
+        finish(error);
+      }, WEB_CAPABILITIES_WAIT_TIMEOUT_MS);
+      // Close the race where the snapshot arrives between the initial check
+      // and listener registration, and the equivalent race where a disconnect
+      // happens before its event listener is attached.
+      if (webInvokeCapabilitiesReady()) finish();
+      else if (webInvokeCapabilitiesUnavailable(webConnectionState())) {
+        finish(unavailableWebCapabilitiesError());
+      }
+    });
+  }
   function webRequestId(prefix) {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
       return prefix + "_" + window.crypto.randomUUID();
@@ -309,6 +372,10 @@
   var scheduledTaskPendingLoads = Object.create(null);
   var scheduledTaskAutoCreateInFlight = Object.create(null);
   var sessionSwitchRequestToken = 0;
+  var pendingCapabilitySessionSwitch = null;
+  // 能力快照迟到时的切换宽限：等待期间不向用户报错，快照到达即自动重试；
+  // 宽限期内快照仍未到达才报错并按失败收口（见 switchToSessionInternal 的 catch）。
+  var WEB_CAPABILITY_SWITCH_RETRY_GRACE_MS = 5000;
   // modeState 读取请求序号（评审 P1，定义前置供 syncSessionPresentationState
   // 与权威写回收敛点共用）：任何权威 modeState 写回（invoke 返回 / 事件负载 /
   // 会话切换状态恢复）都必须 bump 它，作废在途 syncModeState 的旧读取——
@@ -664,6 +731,38 @@
   // 支撑断线重发与人工重试；切走草稿后不会把待发内容泄漏到其他会话。
   var firstTurnSubmissions = Object.create(null);
   var authoritativeTranscriptSyncs = Object.create(null);
+  var authoritySyncTraceSequence = 0;
+  function recordAuthoritySyncDiagnostic(event, details) {
+    try {
+      var diagnostics = window.PinvouAuthoritySyncDiagnostics;
+      if (diagnostics && typeof diagnostics.record === "function") {
+        diagnostics.record(event, details || {});
+      }
+    } catch (_) {}
+  }
+  function authoritySyncBufferSnapshot(sid, buf) {
+    return {
+      session_id: sid || "",
+      active_session_id: state.activeSessionId || "",
+      buffer_present: !!buf,
+      local_turn_owned: !!(buf && buf.localTurnOwned),
+      remote_turn_active: !!(buf && buf.remoteTurnActive),
+      remote_terminal_seen: !!(buf && buf.remoteTerminalSeen),
+      loaded_from_disk: !!(buf && buf.loadedFromDisk),
+      buffer_busy: !!(buf && buf.busy),
+      ui_busy: !!state.busy,
+      message_count: buf && Array.isArray(buf.messages) ? buf.messages.length : null,
+      chat_item_count: buf && Array.isArray(buf.chatItems) ? buf.chatItems.length : null,
+      queued_count: buf && Array.isArray(buf.queued) ? buf.queued.length : null,
+      session_revision: String(buf && buf.sessionRevision || ""),
+      committed_revision: String(buf && buf.remoteCommittedRevision || ""),
+      expected_assistant_key_length: String(buf && buf.remoteExpectedAssistantKey || "").length,
+      baseline_message_count: buf && buf.remoteBaselineMessageCount != null
+        ? Number(buf.remoteBaselineMessageCount)
+        : null,
+      baseline_trusted: !!(buf && buf.remoteBaselineTrusted),
+    };
+  }
   var scheduledRunSessionOwners = Object.create(null);
   var scheduledRunOpenInFlight = Object.create(null);
   var MAX_SCHEDULED_SESSION_BUFFERS = 64;
@@ -1081,46 +1180,228 @@
     }
     return window.btoa(binary);
   }
-  async function loadSessionForClient(sid, setActive) {
-    if (!IS_WEB) return invoke("load_session", { id: sid, setActive: !!setActive });
+  var SESSION_DOWNLOAD_LEASES_KEY = "pinvou.web_session_download_leases.v1";
+  var activeSessionDownloads = Object.create(null);
+  var sessionDownloadLeases = null;
+  var sessionDownloadCleanupPromise = null;
+  function readSessionDownloadLeases() {
+    if (sessionDownloadLeases !== null) return sessionDownloadLeases.slice();
+    try {
+      var raw = window.sessionStorage && window.sessionStorage.getItem(SESSION_DOWNLOAD_LEASES_KEY);
+      var parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed)) parsed = [];
+      sessionDownloadLeases = parsed.filter(function (entry) {
+        return entry && typeof entry.download_id === "string" && entry.download_id &&
+          typeof entry.session_id === "string" && entry.session_id;
+      }).slice(-16);
+      return sessionDownloadLeases.slice();
+    } catch (_) {
+      sessionDownloadLeases = [];
+      return sessionDownloadLeases.slice();
+    }
+  }
+  function writeSessionDownloadLeases(entries) {
+    sessionDownloadLeases = entries.slice(-16);
+    try {
+      if (!window.sessionStorage) return;
+      if (sessionDownloadLeases.length) {
+        window.sessionStorage.setItem(SESSION_DOWNLOAD_LEASES_KEY, JSON.stringify(sessionDownloadLeases));
+      } else {
+        window.sessionStorage.removeItem(SESSION_DOWNLOAD_LEASES_KEY);
+      }
+    } catch (_) {}
+  }
+  function rememberSessionDownloadLease(downloadId, sid) {
+    var entries = readSessionDownloadLeases().filter(function (entry) {
+      return entry.download_id !== downloadId;
+    });
+    entries.push({ download_id: downloadId, session_id: sid });
+    writeSessionDownloadLeases(entries);
+  }
+  function forgetSessionDownloadLease(downloadId) {
+    writeSessionDownloadLeases(readSessionDownloadLeases().filter(function (entry) {
+      return entry.download_id !== downloadId;
+    }));
+  }
+  async function cancelSessionDownloadLease(downloadId, sid) {
+    return invoke("web_access_cancel_session_download", {
+      id: sid,
+      downloadId: downloadId,
+    });
+  }
+  async function cleanupAbandonedSessionDownloads(diagnostics) {
+    var entries = readSessionDownloadLeases().filter(function (entry) {
+      return !activeSessionDownloads[entry.download_id];
+    });
+    if (!entries.length) return;
+    diagnostics.cleanup_requested_count = entries.length;
+    var failed = [];
+    for (var index = 0; index < entries.length; index++) {
+      var entry = entries[index];
+      try {
+        await cancelSessionDownloadLease(entry.download_id, entry.session_id);
+        forgetSessionDownloadLease(entry.download_id);
+      } catch (error) {
+        failed.push(entry.download_id);
+      }
+    }
+    diagnostics.cleanup_failed_count = failed.length;
+    diagnostics.cleanup_succeeded_count = entries.length - failed.length;
+  }
+  function validSessionDownloadId(downloadId) {
+    return typeof downloadId === "string" && downloadId.length >= 8 && downloadId.length <= 128 &&
+      /^download_[A-Za-z0-9_-]+$/.test(downloadId);
+  }
+  function scheduleAbandonedSessionDownloadCleanup() {
+    if (!IS_WEB || sessionDownloadCleanupPromise) return sessionDownloadCleanupPromise;
+    var diagnostics = {
+      transport_kind: "web_chunked_rpc",
+      cleanup_requested_count: 0,
+      cleanup_failed_count: 0,
+      cleanup_succeeded_count: 0,
+    };
+    sessionDownloadCleanupPromise = waitForWebInvokeCapabilities().then(async function () {
+      if (!canInvoke("web_access_cancel_session_download")) return false;
+      await cleanupAbandonedSessionDownloads(diagnostics);
+      recordAuthoritySyncDiagnostic("session_download_cleanup", diagnostics);
+      return true;
+    }).catch(function () {
+      return false;
+    }).finally(function () {
+      sessionDownloadCleanupPromise = null;
+    });
+    return sessionDownloadCleanupPromise;
+  }
+  function newSessionDownloadId() {
+    var token = "";
+    try {
+      if (window.crypto && typeof window.crypto.randomUUID === "function") {
+        token = window.crypto.randomUUID().replace(/-/g, "");
+      }
+    } catch (_) {}
+    if (!token) token = Date.now().toString(36) + Math.random().toString(36).slice(2);
+    return "download_web_" + token;
+  }
+  async function loadSessionForClient(sid, setActive, diagnostics) {
+    diagnostics = diagnostics || {};
+    diagnostics.transport_kind = IS_WEB ? "web_chunked_rpc" : "desktop_invoke";
+    diagnostics.started_at_ms = Date.now();
+    diagnostics.chunk_count = 0;
+    diagnostics.bytes_received = 0;
+    if (!IS_WEB) {
+      var localSaved = await invoke("load_session", { id: sid, setActive: !!setActive });
+      diagnostics.elapsed_ms = Date.now() - diagnostics.started_at_ms;
+      return localSaved;
+    }
+    // New WebUI can run against an older desktop. The cancel command is the
+    // capability boundary for client-selected/persisted leases: older
+    // desktops keep their server-generated download id protocol and must not
+    // be blocked by cleanup RPCs they do not implement.
+    try {
+      await waitForWebInvokeCapabilities();
+    } catch (capabilityError) {
+      diagnostics.elapsed_ms = Date.now() - diagnostics.started_at_ms;
+      diagnostics.error_present = true;
+      diagnostics.error_category = capabilityError && capabilityError.code === "desktop_capabilities_timeout"
+        ? "capability_snapshot_timeout"
+        : "capability_snapshot_unavailable";
+      recordAuthoritySyncDiagnostic("session_download_capability_wait_failed", {
+        session_id: sid,
+        transport: diagnostics,
+      });
+      throw capabilityError;
+    }
+    var supportsSessionDownloadCancellation = canInvoke("web_access_cancel_session_download");
+    if (supportsSessionDownloadCancellation) {
+      await cleanupAbandonedSessionDownloads(diagnostics);
+    }
     var offset = 0;
     var total = null;
     var payload = null;
-    var downloadId = null;
+    var downloadId = supportsSessionDownloadCancellation ? newSessionDownloadId() : "";
+    var unexpectedDownloadId = "";
     var maxSessionBytes = 256 * 1024 * 1024;
-    while (true) {
-      var chunk = await invoke("web_access_load_session_chunk", {
-        id: sid,
-        downloadId: downloadId,
-        offset: offset,
-        // 不传 limit，由桌面端按自身版本上限决定块大小；新 WebUI
-        // 先于桌面部署时也不会因为块大小超过旧桌面上限而被拒绝。
-      });
-      var chunkOffset = Number(chunk && chunk.offset);
-      var chunkTotal = Number(chunk && chunk.total);
-      var chunkDownloadId = String((chunk && (chunk.download_id || chunk.downloadId)) || "");
-      if (!Number.isSafeInteger(chunkOffset) || chunkOffset !== offset ||
-          !Number.isSafeInteger(chunkTotal) || chunkTotal < 0 || chunkTotal > maxSessionBytes ||
-          !chunkDownloadId || (downloadId && chunkDownloadId !== downloadId)) {
-        throw new Error(bt("sessionChunkInvalid"));
-      }
-      downloadId = chunkDownloadId;
-      if (total === null) {
-        total = chunkTotal;
-        payload = new Uint8Array(total);
-      } else if (chunkTotal !== total) {
-        throw new Error(bt("sessionChunkChanged"));
-      }
-      var data = decodeBase64Bytes(chunk.data_base64 || chunk.dataBase64);
-      if (offset + data.length > total) throw new Error(bt("sessionChunkOverflow"));
-      payload.set(data, offset);
-      offset += data.length;
-      if (chunk.eof) {
-        if (offset !== total) throw new Error(bt("sessionChunkEarlyEnd"));
-        break;
-      }
-      if (!data.length) throw new Error(bt("sessionChunkNoProgress"));
+    diagnostics.cancellable_lease = supportsSessionDownloadCancellation;
+    if (supportsSessionDownloadCancellation) {
+      activeSessionDownloads[downloadId] = true;
+      rememberSessionDownloadLease(downloadId, sid);
+      diagnostics.download_id = downloadId;
     }
+    try {
+      while (true) {
+        var chunkArgs = {
+          id: sid,
+          downloadId: offset ? downloadId : null,
+          offset: offset,
+          // 不传 limit，由桌面端按自身版本上限决定块大小；新 WebUI
+          // 先于桌面部署时也不会因为块大小超过旧桌面上限而被拒绝。
+        };
+        if (supportsSessionDownloadCancellation && !offset) {
+          chunkArgs.requestedDownloadId = downloadId;
+        }
+        var chunk = await invoke("web_access_load_session_chunk", chunkArgs);
+        diagnostics.chunk_count += 1;
+        var chunkOffset = Number(chunk && chunk.offset);
+        var chunkTotal = Number(chunk && chunk.total);
+        var chunkDownloadId = String((chunk && (chunk.download_id || chunk.downloadId)) || "");
+        if (supportsSessionDownloadCancellation && downloadId &&
+            chunkDownloadId !== downloadId && validSessionDownloadId(chunkDownloadId)) {
+          unexpectedDownloadId = chunkDownloadId;
+          rememberSessionDownloadLease(unexpectedDownloadId, sid);
+          diagnostics.error_category = "download_id_mismatch";
+        }
+        if (!Number.isSafeInteger(chunkOffset) || chunkOffset !== offset ||
+            !Number.isSafeInteger(chunkTotal) || chunkTotal < 0 || chunkTotal > maxSessionBytes ||
+            !chunkDownloadId || (downloadId && chunkDownloadId !== downloadId)) {
+          throw new Error(bt("sessionChunkInvalid"));
+        }
+        if (!downloadId) downloadId = chunkDownloadId;
+        diagnostics.download_id = downloadId;
+        if (total === null) {
+          total = chunkTotal;
+          payload = new Uint8Array(total);
+        } else if (chunkTotal !== total) {
+          throw new Error(bt("sessionChunkChanged"));
+        }
+        var data = decodeBase64Bytes(chunk.data_base64 || chunk.dataBase64);
+        diagnostics.bytes_received += data.length;
+        diagnostics.declared_total_bytes = total;
+        if (offset + data.length > total) throw new Error(bt("sessionChunkOverflow"));
+        payload.set(data, offset);
+        offset += data.length;
+        if (chunk.eof) {
+          if (offset !== total) throw new Error(bt("sessionChunkEarlyEnd"));
+          if (supportsSessionDownloadCancellation) {
+            delete activeSessionDownloads[downloadId];
+            forgetSessionDownloadLease(downloadId);
+          }
+          break;
+        }
+        if (!data.length) throw new Error(bt("sessionChunkNoProgress"));
+      }
+    } catch (error) {
+      if (supportsSessionDownloadCancellation && downloadId) {
+        var cancellationIds = [downloadId];
+        if (unexpectedDownloadId && unexpectedDownloadId !== downloadId) {
+          cancellationIds.push(unexpectedDownloadId);
+        }
+        cancellationIds.forEach(function (id) { delete activeSessionDownloads[id]; });
+        diagnostics.cancel_requested = true;
+        diagnostics.cancel_succeeded = true;
+        for (var cancelIndex = 0; cancelIndex < cancellationIds.length; cancelIndex++) {
+          var cancellationId = cancellationIds[cancelIndex];
+          try {
+            await cancelSessionDownloadLease(cancellationId, sid);
+            forgetSessionDownloadLease(cancellationId);
+          } catch (cancelError) {
+            diagnostics.cancel_succeeded = false;
+            diagnostics.error_category = "cancel_rpc_failed";
+          }
+        }
+      }
+      throw error;
+    }
+    diagnostics.elapsed_ms = Date.now() - diagnostics.started_at_ms;
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
   }
   async function ensureSessionBufferLoaded(sid) {
@@ -1200,8 +1481,9 @@
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
-  function markRemoteTurn(sid, buf, preserveCommittedRevision) {
+  function markRemoteTurn(sid, buf, preserveCommittedRevision, cause) {
     if (!sid || !buf || buf.localTurnOwned) return;
+    var wasActive = !!buf.remoteTurnActive;
     if (!buf.remoteTurnActive) {
       var meta = state.sessions.find(function (session) { return session.id === sid; });
       buf.remoteBaselineTrusted = !!buf.loadedFromDisk;
@@ -1219,6 +1501,12 @@
       state.busy = true;
       if (!state.thinking.active) startThinking();
     }
+    if (!wasActive) {
+      recordAuthoritySyncDiagnostic("remote_turn_marked", Object.assign({
+        cause: String(cause || "unspecified"),
+        preserve_committed_revision: !!preserveCommittedRevision,
+      }, authoritySyncBufferSnapshot(sid, buf)));
+    }
   }
   function onSessionEvent(e, fn) {
     var sid = (e && e.payload && e.payload.session_id) || state.activeSessionId;
@@ -1227,7 +1515,7 @@
       var eventName = String((e && e.event) || "");
       var isTurnEvent = /chat:(user_message|turn_started|delta|reasoning_start|reasoning_delta|reasoning_done|tool_start|tool_end|user_input_required|transient_error)$/.test(eventName);
       if (eventBuffer && !eventBuffer.localTurnOwned && (eventBuffer.busy || isTurnEvent)) {
-        markRemoteTurn(sid, eventBuffer);
+        markRemoteTurn(sid, eventBuffer, false, "event:" + eventName);
       }
     }
     var isBg = sid && sid !== state.activeSessionId;
@@ -1282,8 +1570,15 @@
     if (!sid) return true;
     var buf = sessionStates[sid];
     if (!buf || (!buf.remoteTurnActive && !buf.remoteTerminalSeen)) return true;
-    if (!buf.remoteTerminalSeen && isBusyFor(sid)) return false;
-    if (authoritativeTranscriptSyncs[sid]) return authoritativeTranscriptSyncs[sid];
+    if (!buf.remoteTerminalSeen && isBusyFor(sid)) {
+      recordAuthoritySyncDiagnostic("reconcile_deferred_busy", authoritySyncBufferSnapshot(sid, buf));
+      return false;
+    }
+    if (authoritativeTranscriptSyncs[sid]) {
+      recordAuthoritySyncDiagnostic("reconcile_joined_inflight", authoritySyncBufferSnapshot(sid, buf));
+      return authoritativeTranscriptSyncs[sid];
+    }
+    var traceId = "authority_reconcile_" + Date.now().toString(36) + "_" + (++authoritySyncTraceSequence);
     // chat:done 与远端 load_session 分属两条异步通道。尤其是 WebUI 刚创建的
     // Session，第一份可读快照可能仍停在本轮 user，若立即拿它重建展示层，会把
     // 已完整显示的流式 assistant 气泡一闪覆盖掉。优先用后端已提交 revision
@@ -1301,6 +1596,11 @@
     var minimumTerminalMessageCount = expectedAssistantKey && Array.isArray(buf.messages)
       ? buf.messages.length
       : 0;
+    recordAuthoritySyncDiagnostic("reconcile_started", Object.assign({
+      trace_id: traceId,
+      expected_committed_revision: expectedCommittedRevision,
+      minimum_terminal_message_count: minimumTerminalMessageCount,
+    }, authoritySyncBufferSnapshot(sid, buf)));
     var sync = (async function () {
       for (var attempt = 0; attempt < 6; attempt++) {
         if (attempt) await new Promise(function (resolve) { setTimeout(resolve, 250); });
@@ -1312,24 +1612,64 @@
         if (buf.remoteTerminalSeen) {
           expectedCommittedRevision = String(buf.remoteCommittedRevision || "");
         }
+        var attemptStartedAt = Date.now();
+        var transfer = {};
         try {
-          var saved = await loadSessionForClient(sid, false);
-          if (!saved || !Array.isArray(saved.messages)) continue;
+          var saved = await loadSessionForClient(sid, false, transfer);
+          if (!saved || !Array.isArray(saved.messages)) {
+            recordAuthoritySyncDiagnostic("reconcile_attempt_rejected", {
+              trace_id: traceId, session_id: sid, attempt: attempt + 1,
+              reason: "invalid_snapshot", elapsed_ms: Date.now() - attemptStartedAt,
+              snapshot_present: !!saved, transport: transfer,
+            });
+            continue;
+          }
           var savedRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
           // 仅当快照确实携带 revision 时才用严格相等作为权威屏障;旧后端/旧契约
           // 不含该字段时降级到消息数与 assistant 身份校验,避免「期望非空但快照
           // 无字段」导致对账必然失败(每轮误报)。
           if (expectedCommittedRevision && savedRevision) {
-            if (savedRevision !== expectedCommittedRevision) continue;
+            if (savedRevision !== expectedCommittedRevision) {
+              recordAuthoritySyncDiagnostic("reconcile_attempt_rejected", {
+                trace_id: traceId, session_id: sid, attempt: attempt + 1,
+                reason: "revision_mismatch", elapsed_ms: Date.now() - attemptStartedAt,
+                expected_committed_revision: expectedCommittedRevision,
+                saved_revision: savedRevision, saved_message_count: saved.messages.length,
+                transport: transfer,
+              });
+              continue;
+            }
           } else {
-            if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
+            if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) {
+              recordAuthoritySyncDiagnostic("reconcile_attempt_rejected", {
+                trace_id: traceId, session_id: sid, attempt: attempt + 1,
+                reason: "message_count_short", elapsed_ms: Date.now() - attemptStartedAt,
+                expected_committed_revision: expectedCommittedRevision,
+                saved_revision: savedRevision,
+                minimum_terminal_message_count: minimumTerminalMessageCount,
+                saved_message_count: saved.messages.length, transport: transfer,
+              });
+              continue;
+            }
           }
           if ((!expectedCommittedRevision || !savedRevision) && expectedAssistantKey) {
             var hasExpectedAssistant = saved.messages.some(function (message) {
               return message && message.role === "assistant" &&
                 hydratedMessageKey(message, isScheduledRunSession(sid)) === expectedAssistantKey;
             });
-            if (!hasExpectedAssistant) continue;
+            if (!hasExpectedAssistant) {
+              recordAuthoritySyncDiagnostic("reconcile_attempt_rejected", {
+                trace_id: traceId, session_id: sid, attempt: attempt + 1,
+                reason: "assistant_identity_missing", elapsed_ms: Date.now() - attemptStartedAt,
+                expected_committed_revision: expectedCommittedRevision,
+                saved_revision: savedRevision,
+                expected_assistant_key_length: expectedAssistantKey.length,
+                saved_message_count: saved.messages.length,
+                saved_roles: saved.messages.map(function (message) { return message && message.role || "invalid"; }).slice(-12),
+                transport: transfer,
+              });
+              continue;
+            }
           }
           runSyncOnSession(sid, function () {
             // The durable transcript already reconstructs user/assistant/tool
@@ -1416,9 +1756,35 @@
           buf.busy = false;
           if (sid === state.activeSessionId) saveWorkingSetTo(buf);
           notify();
+          recordAuthoritySyncDiagnostic("reconcile_succeeded", Object.assign({
+            trace_id: traceId,
+            attempt: attempt + 1,
+            elapsed_ms: Date.now() - attemptStartedAt,
+            saved_revision: savedRevision,
+            saved_message_count: saved.messages.length,
+            transport: transfer,
+          }, authoritySyncBufferSnapshot(sid, buf)));
           return true;
-        } catch (_) {}
+        } catch (error) {
+          recordAuthoritySyncDiagnostic("reconcile_attempt_failed", {
+            trace_id: traceId,
+            session_id: sid,
+            attempt: attempt + 1,
+            reason: "load_session_error",
+            error_category: "snapshot_load_failed",
+            error_present: true,
+            elapsed_ms: Date.now() - attemptStartedAt,
+            expected_committed_revision: expectedCommittedRevision,
+            transport: transfer,
+          });
+        }
       }
+      recordAuthoritySyncDiagnostic("reconcile_exhausted", Object.assign({
+        trace_id: traceId,
+        attempts: 6,
+        expected_committed_revision: expectedCommittedRevision,
+        minimum_terminal_message_count: minimumTerminalMessageCount,
+      }, authoritySyncBufferSnapshot(sid, buf)));
       return false;
     })();
     authoritativeTranscriptSyncs[sid] = sync;
@@ -2865,6 +3231,7 @@
 
   async function switchToSessionInternal(id, preserveScheduledRunContext, errorScope, options) {
     var requestToken = ++sessionSwitchRequestToken;
+    settlePendingCapabilitySessionSwitch(false);
     var forceDurableLoad = !!(options && options.forceDurableLoad);
     var hydrateLiveSession = !!(options && options.hydrateLiveSession);
     if (!id) {
@@ -2919,6 +3286,40 @@
       pinvouReviews = primary[2] || [];
       turnTimeline = primary[3] || [];
     } catch (e) {
+      if (IS_WEB && e && e.code === "desktop_capabilities_timeout" &&
+          requestToken === sessionSwitchRequestToken) {
+        // 能力快照迟到的切换进入宽限等待：快照到达就自动重试，并让原调用方
+        // await 到重试的最终结果——scheduled 收尾（terminal 标记/已查看回执/
+        // 返回上下文）与 UI 错误状态始终与最终结果一致；宽限期内快照仍未到
+        // 达才报错并按失败收口，避免“先报错、后台静默重试成功”的状态分裂。
+        var capabilityRetry = {
+          spec: {
+            id: id,
+            preserveScheduledRunContext: preserveScheduledRunContext,
+            errorScope: errorScope,
+            options: options,
+            requestToken: requestToken,
+          },
+          resolve: null,
+          timer: null,
+        };
+        return await new Promise(function (resolve) {
+          capabilityRetry.resolve = resolve;
+          capabilityRetry.timer = setTimeout(function () {
+            if (pendingCapabilitySessionSwitch !== capabilityRetry) return;
+            if (capabilityRetry.spec.requestToken !== sessionSwitchRequestToken) {
+              // 等待期间用户已进入草稿（enterDraft 作废旧切换但未收口 pending）：
+              // 按失败静默收口，不在草稿页误报加载失败，与快照到达路径的
+              // “被取代的等待不报错”语义保持一致。
+              settlePendingCapabilitySessionSwitch(false);
+              return;
+            }
+            reportSessionSwitchFailure(e, errorScope);
+            settlePendingCapabilitySessionSwitch(false);
+          }, WEB_CAPABILITY_SWITCH_RETRY_GRACE_MS);
+          pendingCapabilitySessionSwitch = capabilityRetry;
+        });
+      }
       if (requestToken === sessionSwitchRequestToken) reportSessionSwitchFailure(e, errorScope);
       return false;
     }
@@ -2989,6 +3390,32 @@
     if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== saved.metadata.id) return false;
     reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)
     return true;
+  }
+  function settlePendingCapabilitySessionSwitch(outcome) {
+    var pending = pendingCapabilitySessionSwitch;
+    if (!pending) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    pendingCapabilitySessionSwitch = null;
+    pending.resolve(outcome);
+  }
+  function retryCapabilityBlockedSessionSwitch() {
+    var pending = pendingCapabilitySessionSwitch;
+    if (!pending || !webInvokeCapabilitiesReady()) return;
+    if (pending.spec.requestToken !== sessionSwitchRequestToken) {
+      // 已有更新的切换请求：按失败收口旧调用方，不让其悬停等待。
+      settlePendingCapabilitySessionSwitch(false);
+      return;
+    }
+    if (pending.timer) clearTimeout(pending.timer);
+    pendingCapabilitySessionSwitch = null;
+    switchToSessionInternal(
+      pending.spec.id,
+      pending.spec.preserveScheduledRunContext,
+      pending.spec.errorScope,
+      pending.spec.options
+    ).catch(function () { return false; }).then(function (switched) {
+      pending.resolve(switched);
+    });
   }
 
   async function switchToSession(id) {
@@ -4114,6 +4541,7 @@
     var submittedUserItemId = 0;
     var submittedStreamId = 0;
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
+      recordAuthoritySyncDiagnostic("local_send_blocked_by_remote_sync", authoritySyncBufferSnapshot(sid, turnOwnerBuffer));
       return Promise.reject(new Error(bt("turnSyncRejected")));
     }
     if (turnOwnerBuffer) {
@@ -4121,6 +4549,9 @@
       turnOwnerBuffer.remoteTurnActive = false;
       turnOwnerBuffer.remoteTerminalSeen = false;
       turnOwnerBuffer.remoteCommittedRevision = "";
+      recordAuthoritySyncDiagnostic("local_turn_claimed", Object.assign({
+        operation: "send",
+      }, authoritySyncBufferSnapshot(sid, turnOwnerBuffer)));
     }
     runSyncOnSession(sid, function () {
       state.chatItems = state.chatItems.filter(function (item) {
@@ -4161,6 +4592,9 @@
       : { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools };
     return invoke(chatCommand, chatArgs)
       .then(function () {
+        recordAuthoritySyncDiagnostic("local_turn_admitted", Object.assign({
+          operation: "send",
+        }, authoritySyncBufferSnapshot(sid, turnOwnerBuffer)));
         if (turnOwnerBuffer) turnOwnerBuffer.deferredRemoteUserEvent = null;
         if (meta && meta.pinvouScene) {
           runSyncOnSession(sid, function () {
@@ -4172,6 +4606,12 @@
       .catch(function (err) {
         var errorText = String(err && err.message ? err.message : err || "");
         var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
+        recordAuthoritySyncDiagnostic("local_turn_admission_failed", Object.assign({
+          operation: "send",
+          concurrent_turn: concurrentTurn,
+          error_category: concurrentTurn ? "session_turn_in_progress" : "command_rejected",
+          error_present: true,
+        }, authoritySyncBufferSnapshot(sid, turnOwnerBuffer)));
         if (turnOwnerBuffer) turnOwnerBuffer.localTurnOwned = false;
         emitPetEvent("pet:turn_end", sid);
         runSyncOnSession(sid, function () {
@@ -4187,7 +4627,9 @@
           stopThinking();
         });
         var deferredApplied = applyDeferredRemoteUserMessage(sid, turnOwnerBuffer);
-        if (concurrentTurn && turnOwnerBuffer && !deferredApplied) markRemoteTurn(sid, turnOwnerBuffer);
+        if (concurrentTurn && turnOwnerBuffer && !deferredApplied) {
+          markRemoteTurn(sid, turnOwnerBuffer, false, "local_send_concurrent_turn");
+        }
         runSyncOnSession(sid, function () {
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")
@@ -4258,6 +4700,9 @@
       return { accepted: true, queued: true };
     }
     if (targetBuffer && targetBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
+        operation: "send_to_session",
+      }, authoritySyncBufferSnapshot(sid, targetBuffer)));
       throw new Error(bt("targetSessionSyncing"));
     }
     targetBuffer = getBuffer(sid);
@@ -4603,6 +5048,9 @@
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) return;
+      recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
+        operation: "send",
+      }, authoritySyncBufferSnapshot(sid, activeTurnBuffer)));
       addAuthoritySyncNotice(bt("turnSyncRetry"));
       return;
     }
@@ -4849,7 +5297,7 @@
       userBuffer.loadedFromDisk && baseRevision && userBuffer.sessionRevision &&
       userBuffer.sessionRevision !== baseRevision && lastUserText === content
     );
-    markRemoteTurn(sid, userBuffer);
+    markRemoteTurn(sid, userBuffer, false, "remote_user_message_event");
     runSyncOnSession(sid, function () {
       if (action === "accept_plan") {
         state.chatItems.forEach(function (item) {
@@ -4919,6 +5367,10 @@
       committedBuffer.sessionRevision = revision;
       committedBuffer.remoteCommittedRevision = revision;
     }
+    recordAuthoritySyncDiagnostic("transcript_committed_event_received", Object.assign({
+      event_revision: revision,
+      terminal_seen_before_event: !!committedBuffer.remoteTerminalSeen,
+    }, authoritySyncBufferSnapshot(sid, committedBuffer)));
     if (committedBuffer.remoteTerminalSeen && !isBusyFor(sid)) {
       reconcileRemoteTurn(sid).then(function (ready) {
         if (ready) flushQueued(sid);
@@ -5395,10 +5847,16 @@
     var completedLocalTurn = !!(
       doneBuffer && doneBuffer.localTurnOwned && !isScheduledRunSession(sid)
     );
+    recordAuthoritySyncDiagnostic("chat_done_classified", Object.assign({
+      completed_local_turn: completedLocalTurn,
+      requires_authority_reconcile: !isScheduledRunSession(sid),
+      terminal_status: String(e.payload && e.payload.status || ""),
+      terminal_error_present: !!(e.payload && e.payload.error),
+    }, authoritySyncBufferSnapshot(sid, doneBuffer)));
     if (doneBuffer && !doneBuffer.localTurnOwned) {
       // transcript_committed precedes chat:done. Preserve its revision when a
       // reconnecting client first materializes the turn at the terminal tail.
-      markRemoteTurn(sid, doneBuffer, true);
+      markRemoteTurn(sid, doneBuffer, true, "chat_done_without_local_owner");
     }
     if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
@@ -5505,6 +5963,9 @@
       if (reconciled) await persistMessagesFor(sid);
       await refreshHistoryList();
       if (!reconciled) {
+        recordAuthoritySyncDiagnostic("authority_sync_notice_shown", Object.assign({
+          notice: "remote_done_unsynced",
+        }, authoritySyncBufferSnapshot(sid, doneBuffer)));
         runSyncOnSession(sid, function () {
           addAuthoritySyncNotice(bt("remoteDoneUnsynced"));
         });
@@ -6830,6 +7291,9 @@
     }
     var planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
+        operation: "accept_plan",
+      }, authoritySyncBufferSnapshot(sid, planBuffer)));
       runOnSession(sid, function () { addAuthoritySyncNotice(bt("turnSyncRetry")); });
       notify();
       return;
@@ -6879,7 +7343,9 @@
         stopThinking();
       });
       var deferredApplied = applyDeferredRemoteUserMessage(sid, planBuffer);
-      if (concurrentTurn && planBuffer && !deferredApplied) markRemoteTurn(sid, planBuffer);
+      if (concurrentTurn && planBuffer && !deferredApplied) {
+        markRemoteTurn(sid, planBuffer, false, "accept_plan_concurrent_turn");
+      }
       try {
         var currentMode = await invoke("get_mode_state", { sessionId: sid });
         applyAuthoritativeModeState(sid, currentMode);
@@ -7027,6 +7493,9 @@
     var sid = state.activeSessionId;
     var editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
+        operation: "edit_last_turn",
+      }, authoritySyncBufferSnapshot(sid, editBuffer)));
       // 对账失败通知定向触发会话：await 期间切走后不得落进当前显示（与 acceptPlan 同）。
       runOnSession(sid, function () { addAuthoritySyncNotice(bt("turnSyncRetry")); });
       notify();
@@ -7090,7 +7559,9 @@
       });
       if (state.activeSessionId === sid && editBuffer) saveWorkingSetTo(editBuffer);
       var deferredApplied = applyDeferredRemoteUserMessage(sid, editBuffer);
-      if (concurrentTurn && editBuffer && !deferredApplied) markRemoteTurn(sid, editBuffer);
+      if (concurrentTurn && editBuffer && !deferredApplied) {
+        markRemoteTurn(sid, editBuffer, false, "edit_last_turn_concurrent_turn");
+      }
       runSyncOnSession(sid, function () { addSystemItem("⚠️ " + e); });
       notify();
       flushQueued(sid);
@@ -8771,20 +9242,30 @@
     installDependencies: installDependencies,
   };
 
+  function retryWebAuthoritySynchronization() {
+    Object.keys(sessionStates).forEach(function (sid) {
+      var buf = sessionStates[sid];
+      if (!buf) return;
+      if (buf.remoteTerminalSeen || (buf.remoteTurnActive && !buf.busy)) {
+        reconcileRemoteTurn(sid).then(function (ready) {
+          if (ready) flushQueued(sid);
+        }).catch(function () {});
+      } else if (!buf.busy && buf.queued && buf.queued.length) {
+        flushQueued(sid);
+      }
+    });
+  }
   if (IS_WEB) {
     window.addEventListener("pinvou:web-connection", function (event) {
       if (!event || !event.detail || event.detail.status !== "connected") return;
-      Object.keys(sessionStates).forEach(function (sid) {
-        var buf = sessionStates[sid];
-        if (!buf) return;
-        if (buf.remoteTerminalSeen || (buf.remoteTurnActive && !buf.busy)) {
-          reconcileRemoteTurn(sid).then(function (ready) {
-            if (ready) flushQueued(sid);
-          }).catch(function () {});
-        } else if (!buf.busy && buf.queued && buf.queued.length) {
-          flushQueued(sid);
-        }
-      });
+      scheduleAbandonedSessionDownloadCleanup();
+      retryWebAuthoritySynchronization();
+    });
+    window.addEventListener("pinvou:web-capabilities", function () {
+      if (!webInvokeCapabilitiesReady()) return;
+      scheduleAbandonedSessionDownloadCleanup();
+      retryCapabilityBlockedSessionSwitch();
+      retryWebAuthoritySynchronization();
     });
   }
 

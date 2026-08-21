@@ -577,6 +577,7 @@
     capabilities: Object.freeze(WEB_CAPABILITIES),
     can(capability) { return client.supportsCapability(capability); },
     canInvoke(command) { return client.supportsCommand(command); },
+    areInvokeCapabilitiesReady() { return client.desktopCapabilitiesReady === true; },
     getConnectionState() { return client.connectionState; },
     onConnectionChange(listener) {
       client.connectionListeners.add(listener);
