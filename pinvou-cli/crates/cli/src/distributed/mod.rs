@@ -513,21 +513,35 @@ pub(crate) fn execute(
         }
         DistributedCommand::RuntimeSwitch(runtime) => {
             let mut controller = ensure_controller()?;
-            let response = controller.runtime_switch(&runtime)?;
-            Ok(match output {
-                OutputMode::Json => response.payload().to_string(),
-                OutputMode::Human => {
-                    let selected = response
-                        .payload()
-                        .get("runtime")
-                        .and_then(Value::as_str)
-                        .unwrap_or(&runtime);
-                    let detect = controller.runtime_detect(None)?;
-                    format_runtime_switch_human(selected, detect.payload())
-                }
-            })
+            execute_runtime_switch_with_controller(&mut controller, &runtime, output)
         }
     }
+}
+
+fn execute_runtime_switch_with_controller<S: Read + Write>(
+    controller: &mut ControllerWire<S>,
+    runtime: &str,
+    output: OutputMode,
+) -> Result<String, DistributedError> {
+    let detect = controller.runtime_detect(Some(runtime))?;
+    if let Some(code) = blocking_code_for_runtime_detect(detect.payload()) {
+        return Err(DistributedError::new(
+            code,
+            format!("runtime {runtime} is not ready"),
+        ));
+    }
+    let response = controller.runtime_switch(runtime)?;
+    Ok(match output {
+        OutputMode::Json => response.payload().to_string(),
+        OutputMode::Human => {
+            let selected = response
+                .payload()
+                .get("runtime")
+                .and_then(Value::as_str)
+                .unwrap_or(runtime);
+            format_runtime_switch_human(selected, detect.payload())
+        }
+    })
 }
 
 fn execute_chat(initial_runtime: Option<&str>) -> Result<String, DistributedError> {
@@ -541,24 +555,7 @@ fn execute_chat(initial_runtime: Option<&str>) -> Result<String, DistributedErro
     let stdout = io::stdout();
     let mut output = stdout.lock();
     if let Some(runtime) = initial_runtime {
-        let response = client.runtime_switch(runtime)?;
-        let selected = response
-            .payload()
-            .get("runtime")
-            .and_then(Value::as_str)
-            .unwrap_or(runtime);
-        let detect = client.runtime_detect(None)?;
-        let detect_payload = detect.payload();
-        write_terminal_to(
-            &mut output,
-            &format_runtime_switch_human(selected, detect_payload),
-        )?;
-        if let Some(code) = blocking_code_for_runtime_detect(detect_payload) {
-            return Err(DistributedError::new(
-                code,
-                format!("runtime {} is not ready", selected),
-            ));
-        }
+        write_initial_runtime_switch(&mut output, &mut client, runtime)?;
     } else {
         write_chat_startup_banner(&mut output, &mut client)?;
     }
@@ -784,6 +781,32 @@ fn write_chat_startup_banner<S: Read + Write>(
 ) -> Result<(), DistributedError> {
     let response = client.runtime_list()?;
     write_terminal_to(output, &format_runtime_list(response.payload()))
+}
+
+fn write_initial_runtime_switch<S: Read + Write>(
+    output: &mut impl Write,
+    client: &mut ControllerWire<S>,
+    runtime: &str,
+) -> Result<(), DistributedError> {
+    let detect = client.runtime_detect(Some(runtime))?;
+    if let Some(code) = blocking_code_for_runtime_detect(detect.payload()) {
+        write_terminal_to(output, &format_runtime_detect(detect.payload()))?;
+        write_terminal_to(output, "runtime not switched\n")?;
+        return Err(DistributedError::new(
+            code,
+            format!("runtime {runtime} is not ready"),
+        ));
+    }
+    let response = client.runtime_switch(runtime)?;
+    let selected = response
+        .payload()
+        .get("runtime")
+        .and_then(Value::as_str)
+        .unwrap_or(runtime);
+    write_terminal_to(
+        output,
+        &format_runtime_switch_human(selected, detect.payload()),
+    )
 }
 
 fn chat_help_text() -> &'static str {
@@ -1288,6 +1311,130 @@ mod tests {
         )
         .unwrap();
 
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("runtime: codex"));
+        assert!(output.contains("status: blocked_auth"));
+        assert!(output.contains("runtime not switched"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method(), Some("runtime.detect"));
+        assert_eq!(requests[0].payload()["runtime"], "codex");
+    }
+
+    #[test]
+    fn runtime_switch_command_detects_target_before_persisting_the_selection() {
+        let detect_response = IpcMessage::response(
+            json!(1),
+            json!({
+                "runtime": "codex",
+                "status": "available",
+                "auth_status": "signed_in",
+                "capabilities": {
+                    "interactive_chat": true
+                }
+            }),
+        )
+        .unwrap();
+        let switch_response =
+            IpcMessage::response(json!(2), json!({"status": "ok", "runtime": "codex"})).unwrap();
+        let stream = TestDuplex::with_responses([detect_response, switch_response]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+
+        let output =
+            execute_runtime_switch_with_controller(&mut client, "codex", OutputMode::Human)
+                .unwrap();
+
+        assert!(output.contains("runtime switched to codex"));
+        assert!(output.contains("status: available"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method(), Some("runtime.detect"));
+        assert_eq!(requests[0].payload()["runtime"], "codex");
+        assert_eq!(requests[1].method(), Some("runtime.switch"));
+        assert_eq!(requests[1].payload()["runtime"], "codex");
+    }
+
+    #[test]
+    fn runtime_switch_command_refuses_unavailable_target_without_persisting_it() {
+        let detect_response = IpcMessage::response(
+            json!(1),
+            json!({
+                "runtime": "codex",
+                "status": "blocked_auth",
+                "error_kind": "blocked_auth",
+                "exit_code": 4,
+                "message": "runtime authentication is blocked"
+            }),
+        )
+        .unwrap();
+        let stream = TestDuplex::with_responses([detect_response]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+
+        let error = execute_runtime_switch_with_controller(&mut client, "codex", OutputMode::Human)
+            .unwrap_err();
+
+        assert_eq!(error.exit_code(), StableExitCode::BlockedAuth);
+        assert!(error.to_string().contains("runtime codex is not ready"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method(), Some("runtime.detect"));
+        assert_eq!(requests[0].payload()["runtime"], "codex");
+    }
+
+    #[test]
+    fn chat_startup_runtime_switch_detects_before_persisting_target() {
+        let detect_response = IpcMessage::response(
+            json!(1),
+            json!({
+                "runtime": "codex",
+                "status": "available",
+                "auth_status": "signed_in",
+                "capabilities": {
+                    "interactive_chat": true
+                }
+            }),
+        )
+        .unwrap();
+        let switch_response =
+            IpcMessage::response(json!(2), json!({"status": "ok", "runtime": "codex"})).unwrap();
+        let stream = TestDuplex::with_responses([detect_response, switch_response]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let mut output = Vec::new();
+
+        write_initial_runtime_switch(&mut output, &mut client, "codex").unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("runtime switched to codex"));
+        assert!(output.contains("status: available"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method(), Some("runtime.detect"));
+        assert_eq!(requests[0].payload()["runtime"], "codex");
+        assert_eq!(requests[1].method(), Some("runtime.switch"));
+        assert_eq!(requests[1].payload()["runtime"], "codex");
+    }
+
+    #[test]
+    fn chat_startup_runtime_switch_prints_status_and_refuses_unavailable_target() {
+        let detect_response = IpcMessage::response(
+            json!(1),
+            json!({
+                "runtime": "codex",
+                "status": "blocked_auth",
+                "error_kind": "blocked_auth",
+                "exit_code": 4,
+                "message": "runtime authentication is blocked"
+            }),
+        )
+        .unwrap();
+        let stream = TestDuplex::with_responses([detect_response]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let mut output = Vec::new();
+
+        let error = write_initial_runtime_switch(&mut output, &mut client, "codex").unwrap_err();
+
+        assert_eq!(error.exit_code(), StableExitCode::BlockedAuth);
+        assert!(error.to_string().contains("runtime codex is not ready"));
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("runtime: codex"));
         assert!(output.contains("status: blocked_auth"));
