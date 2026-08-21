@@ -431,6 +431,143 @@ quarantine_and_delete \
   assert.ok(controlArchiveAttestation,
     "E2E must carry complete control-member and generated-list attestation");
 
+  const archiveConsumerBoundary = controlArchiveAttestation.indexOf(
+    "\ncontrol_records, field_records = stream_tar(",
+  );
+  assert.ok(archiveConsumerBoundary > 0,
+    "E2E control archive consumers must remain independently testable");
+  const archiveConsumerLibrary = controlArchiveAttestation.slice(0, archiveConsumerBoundary);
+  const tarMemberCompatibilityGate = `${archiveConsumerLibrary}
+import io
+
+
+def archive_bytes(entries):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as output:
+        for name, kind, member_mode, raw in entries:
+            member = tarfile.TarInfo(name)
+            member.uid = 0
+            member.gid = 0
+            member.mode = member_mode
+            if kind == "dir":
+                member.type = tarfile.DIRTYPE
+                member.size = 0
+                output.addfile(member)
+            else:
+                member.size = len(raw)
+                output.addfile(member, io.BytesIO(raw))
+    return buffer.getvalue()
+
+
+def consume(entries, consumer):
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes(entries)), mode="r:") as archive:
+        return consumer(archive)
+
+
+control_raw = b"Package: pinvou3\\nVersion: 0.0.0\\nArchitecture: amd64\\n\\n"
+md5_raw = b"d41d8cd98f00b204e9800998ecf8427e  usr/bin/pinvou3-tauri\\n"
+plain_control = [
+    ("control", "file", 0o644, control_raw),
+    ("md5sums", "file", 0o644, md5_raw),
+    ("prerm", "file", 0o755, b"#!/bin/sh\\nexit 0\\n"),
+]
+dot_control = [
+    ("./", "dir", 0o755, b""),
+    ("./control", "file", 0o644, control_raw),
+    ("./md5sums", "file", 0o644, md5_raw),
+    ("./prerm", "file", 0o755, b"#!/bin/sh\\nexit 0\\n"),
+]
+plain_records, plain_fields = consume(plain_control, consume_control_archive)
+dot_records, dot_fields = consume(dot_control, consume_control_archive)
+if digest_control_members(plain_records) != digest_control_members(dot_records) \
+        or digest_control_fields(plain_fields) != digest_control_fields(dot_fields):
+    raise SystemExit("equivalent control tar relative forms produced different attestations")
+
+plain_data = [
+    ("usr", "dir", 0o755, b""),
+    ("usr/bin", "dir", 0o755, b""),
+    ("usr/bin/pinvou3-tauri", "file", 0o755, b"pinvou"),
+]
+dot_data = [
+    ("./usr", "dir", 0o755, b""),
+    ("./usr/bin", "dir", 0o755, b""),
+    ("./usr/bin/pinvou3-tauri", "file", 0o755, b"pinvou"),
+]
+explicit_root_data = [
+    (".", "dir", 0o755, b""),
+    ("./usr", "dir", 0o755, b""),
+    ("./usr/bin", "dir", 0o755, b""),
+    ("./usr/bin/pinvou3-tauri", "file", 0o755, b"pinvou"),
+]
+late_root_data = [
+    ("usr", "dir", 0o755, b""),
+    ("usr/bin", "dir", 0o755, b""),
+    ("./", "dir", 0o755, b""),
+    ("usr/bin/pinvou3-tauri", "file", 0o755, b"pinvou"),
+]
+rootless_list = b"/usr\\n/usr/bin\\n/usr/bin/pinvou3-tauri\\n"
+explicit_root_list = b"/.\\n/usr\\n/usr/bin\\n/usr/bin/pinvou3-tauri\\n"
+late_root_list = b"/usr\\n/usr/bin\\n/.\\n/usr/bin/pinvou3-tauri\\n"
+if consume(plain_data, consume_data_archive) != rootless_list \
+        or consume(dot_data, consume_data_archive) != rootless_list \
+        or consume(explicit_root_data, consume_data_archive) != explicit_root_list \
+        or consume(late_root_data, consume_data_archive) != late_root_list:
+    raise SystemExit("safe data tar relative/root forms produced an incorrect dpkg list")
+
+
+def must_reject(entries, consumer, label):
+    try:
+        consume(entries, consumer)
+    except SystemExit:
+        return
+    raise SystemExit(f"unsafe tar member was accepted: {label}")
+
+
+for unsafe_name in (
+    "/usr/bin/pinvou3-tauri",
+    "../usr/bin/pinvou3-tauri",
+    "usr/../bin/pinvou3-tauri",
+    "usr//bin/pinvou3-tauri",
+    "././usr/bin/pinvou3-tauri",
+    "usr/./bin/pinvou3-tauri",
+):
+    must_reject([(unsafe_name, "file", 0o755, b"pinvou")], consume_data_archive, unsafe_name)
+must_reject(
+    [("usr/bin/pinvou3-tauri", "file", 0o755, b"one"),
+     ("./usr/bin/pinvou3-tauri", "file", 0o755, b"two")],
+    consume_data_archive,
+    "normalized duplicate data path",
+)
+for unsafe_name in ("dir/prerm", "/prerm", "../prerm", "././prerm"):
+    must_reject(
+        plain_control + [(unsafe_name, "file", 0o755, b"#!/bin/sh\\nexit 0\\n")],
+        consume_control_archive,
+        unsafe_name,
+    )
+must_reject(
+    [("control", "file", 0o644, control_raw),
+     ("./control", "file", 0o644, control_raw),
+     ("md5sums", "file", 0o644, md5_raw)],
+    consume_control_archive,
+    "normalized duplicate control member",
+)
+print("tar-member-compatibility-pass")
+`;
+  const tarMemberCompatibility = childProcess.spawnSync(
+    "/usr/bin/python3",
+    ["-I", "-c", tarMemberCompatibilityGate, "baseline", "/unused", "", "", ""],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PYTHONHOME: "/tmp/pinvou-hostile-pythonhome",
+        PYTHONPATH: "/tmp/pinvou-hostile-pythonpath",
+      },
+    },
+  );
+  assert.equal(tarMemberCompatibility.status, 0, tarMemberCompatibility.stderr);
+  assert.equal(tarMemberCompatibility.stdout.trim(), "tar-member-compatibility-pass");
+
   if (fs.existsSync("/usr/bin/dpkg-deb")) {
     const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou-deb-attestation-"));
     try {

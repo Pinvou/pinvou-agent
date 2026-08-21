@@ -1270,6 +1270,14 @@ def digest_control_fields(records):
     return digest.hexdigest()
 
 
+def relative_tar_member_name(raw_name):
+    # Debian tooling accepts both "name" and "./name" relative spellings. Normalize exactly one
+    # optional prefix, then let each consumer reject absolute, nested or non-canonical results.
+    if raw_name.startswith("./"):
+        return raw_name[2:]
+    return raw_name
+
+
 def consume_control_archive(archive):
     root_seen = False
     control_raw = None
@@ -1280,15 +1288,13 @@ def consume_control_archive(archive):
         count += 1
         if count > MAX_CONTROL_MEMBERS:
             raise SystemExit("control archive member count exceeded its fixed bound")
-        if member.name == ".":
+        if member.name in {".", "./"}:
             if root_seen or not member.isdir() or member.uid != 0 or member.gid != 0 \
                     or (member.mode & 0o7777) != 0o755:
                 raise SystemExit("control archive root directory metadata is invalid")
             root_seen = True
             continue
-        if not member.name.startswith("./"):
-            raise SystemExit(f"control archive member is not canonical: {member.name}")
-        name = member.name[2:]
+        name = relative_tar_member_name(member.name)
         if CONTROL_BASENAME.fullmatch(name) is None or "/" in name:
             raise SystemExit(f"control archive member is not a fixed basename: {member.name}")
         if name == "control" and control_raw is not None or name in records:
@@ -1310,8 +1316,8 @@ def consume_control_archive(archive):
             control_raw = raw
         else:
             records[name] = (member_mode, len(raw), member_hash, raw)
-    if not root_seen or control_raw is None:
-        raise SystemExit("control archive root or main control member is absent")
+    if control_raw is None:
+        raise SystemExit("control archive main control member is absent")
     if "md5sums" not in records:
         raise SystemExit("control archive does not contain md5sums")
     return records, tracked_field_records(parse_control_fields(control_raw))
@@ -1320,6 +1326,7 @@ def consume_control_archive(archive):
 def consume_data_archive(archive):
     lines = []
     seen = set()
+    root_seen = False
     count = 0
     total = 0
     for member in archive:
@@ -1330,14 +1337,13 @@ def consume_data_archive(archive):
             raise SystemExit(f"data archive member is not root-owned: {member.name}")
         if not (member.isdir() or member.isreg() or member.issym() or member.islnk()):
             raise SystemExit(f"data archive member type is unsupported: {member.name}")
-        if member.name == ".":
-            if not member.isdir():
-                raise SystemExit("data archive root member is not a directory")
+        if member.name in {".", "./"}:
+            if root_seen or not member.isdir():
+                raise SystemExit("data archive root member metadata is invalid")
+            root_seen = True
             canonical = "."
         else:
-            if not member.name.startswith("./"):
-                raise SystemExit(f"data archive member is not canonical: {member.name}")
-            canonical = member.name[2:]
+            canonical = relative_tar_member_name(member.name)
             if not canonical or canonical.startswith("/") or "\n" in canonical \
                     or posixpath.normpath(canonical) != canonical \
                     or any(part in {"", ".", ".."} for part in canonical.split("/")):
@@ -1350,8 +1356,6 @@ def consume_data_archive(archive):
         if total > MAX_GENERATED_LIST_BYTES:
             raise SystemExit("generated dpkg list bytes exceeded their fixed bound")
         lines.append(line)
-    if "." not in seen:
-        raise SystemExit("data archive root member is absent")
     return b"".join(lines)
 
 
