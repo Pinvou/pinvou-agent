@@ -653,7 +653,9 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
         active_model_id: "model-active",
       };
     }
-    if (cmd === "list_sessions" || cmd === "list_archived_sessions" || cmd === "list_personas" ||
+    if (cmd === "list_sessions" || cmd === "web_access_list_sessions" ||
+        cmd === "list_archived_sessions" || cmd === "web_access_list_archived_sessions" ||
+        cmd === "list_personas" ||
         cmd === "get_session_persona_events" || cmd === "get_session_pinvou_reviews" ||
         cmd === "get_session_timeline" ||
         cmd === "list_workspace_files" || cmd === "list_scheduled_task_runs" ||
@@ -680,7 +682,12 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   function invoke(cmd, args) {
     calls.push({ cmd: cmd, args: args || null });
     try {
-      if (handlers[cmd]) return Promise.resolve(handlers[cmd](args || {}));
+      var handler = handlers[cmd];
+      if (!handler && cmd === "web_access_list_sessions") handler = handlers.list_sessions;
+      if (!handler && cmd === "web_access_list_archived_sessions") {
+        handler = handlers.list_archived_sessions;
+      }
+      if (handler) return Promise.resolve(handler(args || {}));
       if (cmd === "web_access_load_session_chunk") {
         var saved = handlers.load_session
           ? handlers.load_session({ id: args.id })

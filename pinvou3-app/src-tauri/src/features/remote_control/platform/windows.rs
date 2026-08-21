@@ -1,9 +1,19 @@
 use std::fs::{File, OpenOptions};
 use std::os::windows::ffi::OsStrExt as _;
+use std::os::windows::fs::OpenOptionsExt as _;
+use std::os::windows::io::AsRawHandle as _;
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::Storage::FileSystem::{
-    GetLogicalDrives, MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    GetFileInformationByHandle, GetLogicalDrives, MoveFileExW, BY_HANDLE_FILE_INFORMATION,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkspaceIdentity {
+    volume_serial: u32,
+    file_index: u64,
+}
 
 pub(super) fn configure_private_open_options(_options: &mut OpenOptions) {}
 
@@ -56,6 +66,30 @@ pub(super) fn host_file_roots() -> Vec<(String, PathBuf)> {
     // SAFETY: GetLogicalDrives has no pointer arguments and only reads the process-visible
     // logical-drive bitmask maintained by Windows.
     logical_drive_roots(unsafe { GetLogicalDrives() })
+}
+
+pub(super) fn workspace_identity(path: &Path) -> std::io::Result<WorkspaceIdentity> {
+    let directory = OpenOptions::new()
+        .access_mode(FILE_GENERIC_READ)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(directory.as_raw_handle(), &mut information) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(WorkspaceIdentity {
+        volume_serial: information.dwVolumeSerialNumber,
+        file_index: ((information.nFileIndexHigh as u64) << 32) | information.nFileIndexLow as u64,
+    })
+}
+
+#[cfg(test)]
+pub(super) fn test_workspace_identity(seed: u64) -> WorkspaceIdentity {
+    WorkspaceIdentity {
+        volume_serial: seed as u32,
+        file_index: seed,
+    }
 }
 
 fn logical_drive_roots(mask: u32) -> Vec<(String, PathBuf)> {

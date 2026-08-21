@@ -16,6 +16,9 @@ mod fallback;
 #[cfg(not(any(unix, windows)))]
 use fallback as imp;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkspaceIdentity(imp::WorkspaceIdentity);
+
 pub(super) fn configure_private_open_options(options: &mut OpenOptions) {
     imp::configure_private_open_options(options);
 }
@@ -38,6 +41,15 @@ pub(super) fn display_path(path: &Path) -> String {
 
 pub(super) fn host_file_roots() -> Vec<(String, PathBuf)> {
     imp::host_file_roots()
+}
+
+pub(super) fn workspace_identity(path: &Path) -> std::io::Result<WorkspaceIdentity> {
+    imp::workspace_identity(path).map(WorkspaceIdentity)
+}
+
+#[cfg(test)]
+pub(super) fn test_workspace_identity(seed: u64) -> WorkspaceIdentity {
+    WorkspaceIdentity(imp::test_workspace_identity(seed))
 }
 
 #[cfg(test)]

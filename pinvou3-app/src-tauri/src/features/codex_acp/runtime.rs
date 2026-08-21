@@ -31,38 +31,174 @@ impl CodexRuntimeSource {
 #[derive(Debug, Clone)]
 pub struct ResolvedCodex {
     pub path: PathBuf,
+    /// 用于轻量自检与登录状态检查的原生可执行文件。npm shim 仍保留在 `path`
+    /// 供 ACP adapter 启动，以维持包管理器环境；状态探测则绕过 `.cmd -> Node`
+    /// 冷启动链路，避免把已安装 CLI 误判成缺失。
+    pub probe_path: PathBuf,
     pub source: CodexRuntimeSource,
     pub version: String,
+}
+
+#[derive(Debug)]
+struct NpmCodexInstall {
+    version: String,
+    native_path: PathBuf,
+}
+
+/// 一次候选探测同时返回可用运行时和系统 CLI 是否过旧，避免为了两个状态字段
+/// 连续执行两次 `codex --version`。
+#[derive(Debug, Clone)]
+pub struct CodexRuntimeCandidates {
+    pub resolved: Option<ResolvedCodex>,
+    pub system_codex_incompatible: bool,
+}
+
+pub fn probe_codex_runtime(
+    system_codex: Option<PathBuf>,
+    legacy_bundled: Option<PathBuf>,
+) -> CodexRuntimeCandidates {
+    let override_candidate = std::env::var_os("PINVOU3_CODEX_PATH")
+        .map(PathBuf::from)
+        .and_then(|path| probe_codex(path, CodexRuntimeSource::Override));
+    let system_candidate =
+        system_codex.and_then(|path| probe_codex(path, CodexRuntimeSource::System));
+    let system_codex_incompatible = system_candidate
+        .as_ref()
+        .is_some_and(|resolved| !runtime_version_is_compatible(&resolved.version));
+
+    let resolved_override =
+        override_candidate.filter(|candidate| runtime_version_is_compatible(&candidate.version));
+    let resolved = match resolved_override {
+        Some(resolved) => Some(resolved),
+        None => {
+            let legacy_candidate = legacy_bundled
+                .and_then(|path| probe_codex(path, CodexRuntimeSource::LegacyBundled));
+            select_newest_eligible([legacy_candidate, system_candidate])
+        }
+    };
+
+    CodexRuntimeCandidates {
+        resolved,
+        system_codex_incompatible,
+    }
 }
 
 pub fn resolve_codex_path(
     system_codex: Option<PathBuf>,
     legacy_bundled: Option<PathBuf>,
 ) -> Option<ResolvedCodex> {
-    if let Some(path) = std::env::var_os("PINVOU3_CODEX_PATH").map(PathBuf::from) {
-        if let Some(resolved) = probe_codex(path, CodexRuntimeSource::Override) {
-            if runtime_version_is_compatible(&resolved.version) {
-                return Some(resolved);
-            }
-        }
-    }
-
-    select_newest_eligible([
-        legacy_bundled.and_then(|path| probe_codex(path, CodexRuntimeSource::LegacyBundled)),
-        system_codex.and_then(|path| probe_codex(path, CodexRuntimeSource::System)),
-    ])
+    probe_codex_runtime(system_codex, legacy_bundled).resolved
 }
 
 fn probe_codex(path: PathBuf, source: CodexRuntimeSource) -> Option<ResolvedCodex> {
     if !path.is_file() {
         return None;
     }
-    let version = codex_version(&path)?;
+    let npm_install = resolve_npm_codex_install(&path);
+    let (probe_path, version) = match npm_install {
+        Some(install) => (install.native_path, install.version),
+        None => (path.clone(), codex_version(&path)?),
+    };
     Some(ResolvedCodex {
         path,
+        probe_path,
         source,
         version,
     })
+}
+
+/// npm 的全局 shim 会先启动 Node，再由 JS wrapper 启动数百 MB 的原生 Codex。
+/// Windows 首次经过安全软件扫描时可能超过自检超时。这里仅在包清单与当前平台
+/// 原生二进制同时完整存在时采用本地元数据；任一文件缺失都会回退真实 CLI 自检，
+/// 因而不会把残缺安装误报为可用。
+fn resolve_npm_codex_install(entrypoint: &Path) -> Option<NpmCodexInstall> {
+    let (platform_package, target_triple, binary) = codex_native_target()?;
+    npm_codex_package_roots(entrypoint)
+        .into_iter()
+        .find_map(|package_root| {
+            let manifest_path = package_root.join("package.json");
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(manifest_path).ok()?).ok()?;
+            if manifest.get("name").and_then(serde_json::Value::as_str) != Some("@openai/codex") {
+                return None;
+            }
+            let version = manifest
+                .get("version")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())?
+                .to_string();
+            let packaged = package_root
+                .join("node_modules")
+                .join("@openai")
+                .join(platform_package)
+                .join("vendor")
+                .join(target_triple)
+                .join("bin")
+                .join(binary);
+            let fallback = package_root
+                .join("vendor")
+                .join(target_triple)
+                .join("bin")
+                .join(binary);
+            let native_path = [packaged, fallback].into_iter().find(|candidate| {
+                candidate
+                    .metadata()
+                    .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+            })?;
+            Some(NpmCodexInstall {
+                version,
+                native_path,
+            })
+        })
+}
+
+fn npm_codex_package_roots(entrypoint: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(parent) = entrypoint.parent() {
+        // Windows npm global prefix: <prefix>/codex.cmd + <prefix>/node_modules/...
+        roots.push(parent.join("node_modules").join("@openai").join("codex"));
+        // npm package-local .bin shim: node_modules/.bin/codex -> node_modules/@openai/codex
+        if parent.file_name().and_then(|value| value.to_str()) == Some(".bin") {
+            if let Some(node_modules) = parent.parent() {
+                roots.push(node_modules.join("@openai").join("codex"));
+            }
+        }
+        // Unix npm global prefix: <prefix>/bin/codex + <prefix>/lib/node_modules/...
+        if let Some(prefix) = parent.parent() {
+            roots.push(
+                prefix
+                    .join("lib")
+                    .join("node_modules")
+                    .join("@openai")
+                    .join("codex"),
+            );
+        }
+    }
+    // Unix shims are commonly symlinks to @openai/codex/bin/codex.js.
+    if let Ok(canonical) = entrypoint.canonicalize() {
+        if canonical.file_name().and_then(|value| value.to_str()) == Some("codex.js") {
+            if let Some(package_root) = canonical.parent().and_then(Path::parent) {
+                roots.push(package_root.to_path_buf());
+            }
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn codex_native_target() -> Option<(&'static str, &'static str, &'static str)> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => Some(("codex-win32-x64", "x86_64-pc-windows-msvc", "codex.exe")),
+        ("windows", "aarch64") => {
+            Some(("codex-win32-arm64", "aarch64-pc-windows-msvc", "codex.exe"))
+        }
+        ("macos", "x86_64") => Some(("codex-darwin-x64", "x86_64-apple-darwin", "codex")),
+        ("macos", "aarch64") => Some(("codex-darwin-arm64", "aarch64-apple-darwin", "codex")),
+        ("linux", "x86_64") => Some(("codex-linux-x64", "x86_64-unknown-linux-musl", "codex")),
+        ("linux", "aarch64") => Some(("codex-linux-arm64", "aarch64-unknown-linux-musl", "codex")),
+        _ => None,
+    }
 }
 
 /// 在满足最低兼容版本的候选中选版本最新者。
@@ -143,7 +279,8 @@ fn codex_version_result(path: &Path) -> Result<String> {
         .spawn()
         .with_context(|| format!("启动 Codex 自检失败: {}", path.display()))?;
     let status = match child
-        // 15s：Node 版 CLI 冷启动实测 ~9s，3s 会把装好的 codex 误判为不可用
+        // Node 版 CLI 冷启动实测约 9 秒；给安全软件首次扫描留足时间，
+        // 避免把已经安装的 Codex 误判为不可用。
         .wait_timeout(Duration::from_secs(15))
         .context("等待 Codex 自检进程失败")?
     {
@@ -263,6 +400,7 @@ mod tests {
         ] {
             let selected = select_newest_eligible([Some(ResolvedCodex {
                 path: PathBuf::from(source.as_str()),
+                probe_path: PathBuf::from(source.as_str()),
                 source,
                 version: "0.143.9".to_string(),
             })]);
@@ -321,11 +459,13 @@ mod tests {
         let selected = select_newest_eligible([
             Some(ResolvedCodex {
                 path: PathBuf::from("legacy"),
+                probe_path: PathBuf::from("legacy"),
                 source: CodexRuntimeSource::LegacyBundled,
                 version: MIN_CODEX_VERSION.to_string(),
             }),
             Some(ResolvedCodex {
                 path: PathBuf::from("system"),
+                probe_path: PathBuf::from("system"),
                 source: CodexRuntimeSource::System,
                 version: "0.145.0".to_string(),
             }),
@@ -333,5 +473,62 @@ mod tests {
         .unwrap();
         assert_eq!(selected.source, CodexRuntimeSource::System);
         assert_eq!(selected.version, "0.145.0");
+    }
+
+    #[test]
+    fn npm_codex_install_uses_manifest_and_native_probe_binary() {
+        let Some((platform_package, target_triple, binary)) = codex_native_target() else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-npm-layout-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let entrypoint = root.join("codex-shim");
+        let package_root = root.join("node_modules").join("@openai").join("codex");
+        let native = package_root
+            .join("node_modules")
+            .join("@openai")
+            .join(platform_package)
+            .join("vendor")
+            .join(target_triple)
+            .join("bin")
+            .join(binary);
+        std::fs::create_dir_all(native.parent().expect("native parent"))
+            .expect("create fake npm layout");
+        std::fs::write(&entrypoint, "shim").expect("write fake shim");
+        std::fs::write(
+            package_root.join("package.json"),
+            r#"{"name":"@openai/codex","version":"0.146.0"}"#,
+        )
+        .expect("write fake package manifest");
+        std::fs::write(&native, "native").expect("write fake native binary");
+
+        let install = resolve_npm_codex_install(&entrypoint).expect("resolve npm Codex install");
+        assert_eq!(install.version, "0.146.0");
+        assert_eq!(install.native_path, native);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn npm_codex_install_rejects_missing_native_binary() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-incomplete-npm-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let entrypoint = root.join("codex-shim");
+        let package_root = root.join("node_modules").join("@openai").join("codex");
+        std::fs::create_dir_all(&package_root).expect("create fake package root");
+        std::fs::write(&entrypoint, "shim").expect("write fake shim");
+        std::fs::write(
+            package_root.join("package.json"),
+            r#"{"name":"@openai/codex","version":"0.146.0"}"#,
+        )
+        .expect("write fake package manifest");
+
+        assert!(resolve_npm_codex_install(&entrypoint).is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

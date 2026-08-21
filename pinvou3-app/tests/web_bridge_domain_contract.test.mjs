@@ -286,6 +286,10 @@ assert.ok(
   'shared bridge messages must load before the web bridge',
 );
 assert.ok(
+  indexSource.indexOf('shared/chunked-file-upload.js') < indexSource.indexOf('platform/web/bridge.js'),
+  'the shared chunk uploader must load before platform bridges',
+);
+assert.ok(
   indexSource.indexOf('platform/web/bridge/turn-terminal.js') < indexSource.indexOf('platform/web/bridge.js'),
   'web turn terminal support must load before the web bridge',
 );

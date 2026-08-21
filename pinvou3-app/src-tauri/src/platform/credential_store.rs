@@ -491,38 +491,35 @@ impl CredentialStore for MemoryCredentialStore {
 }
 
 pub fn redact_secret(input: &str) -> String {
-    let bearer_redacted = redact_bearer_tokens(input);
-    bearer_redacted
-        .split_whitespace()
-        .map(|part| {
-            if is_secret_like(part) {
-                "[REDACTED]"
-            } else {
-                part
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn redact_bearer_tokens(input: &str) -> String {
-    let mut output = Vec::new();
+    let mut output = String::with_capacity(input.len());
+    let mut offset = 0;
     let mut redact_next = false;
-    for part in input.split_whitespace() {
-        if redact_next {
-            output.push("[REDACTED]");
+    while offset < input.len() {
+        let whitespace = input[offset..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace);
+        let end = input[offset..]
+            .char_indices()
+            .find_map(|(index, character)| {
+                (index > 0 && character.is_whitespace() != whitespace).then_some(offset + index)
+            })
+            .unwrap_or(input.len());
+        let part = &input[offset..end];
+        if whitespace {
+            output.push_str(part);
+        } else if redact_next || is_secret_like(part) {
+            output.push_str("[REDACTED]");
             redact_next = false;
-            continue;
+        } else {
+            output.push_str(part);
+            redact_next = part
+                .trim_matches(|character: char| matches!(character, '"' | '\'' | ',' | ';' | ':'))
+                .eq_ignore_ascii_case("bearer");
         }
-        output.push(part);
-        if part
-            .trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';')
-            .eq_ignore_ascii_case("bearer")
-        {
-            redact_next = true;
-        }
+        offset = end;
     }
-    output.join(" ")
+    output
 }
 
 pub fn is_secret_like(value: &str) -> bool {
@@ -923,6 +920,14 @@ mod tests {
         let message = err.user_message();
         assert!(!message.contains("qcc-secret-token"));
         assert!(message.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redaction_preserves_user_visible_whitespace() {
+        assert_eq!(
+            redact_secret("visible\n  Bearer short-token\nnext"),
+            "visible\n  Bearer [REDACTED]\nnext"
+        );
     }
 
     #[test]

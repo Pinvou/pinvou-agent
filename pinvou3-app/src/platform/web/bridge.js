@@ -395,6 +395,7 @@
       imageUnknown: "Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.",
       attachStillUploading: "⚠️ Attachment still uploading, try again shortly",
       deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 20 MB attachment limit`,
+      deviceUploadEmpty: name => `⚠️ ${name} is empty and cannot be attached`,
       deviceUploadFailed: "⚠️ Upload failed: ",
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
@@ -502,6 +503,7 @@
       imageUnknown: "現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。",
       attachStillUploading: "⚠️ 添付ファイルをアップロード中です。少し待ってから送信してください",
       deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 20 MB を超えています`,
+      deviceUploadEmpty: name => `⚠️ ${name} は空のため添付できません`,
       deviceUploadFailed: "⚠️ アップロードに失敗: ",
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
@@ -609,6 +611,7 @@
       imageUnknown: "当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”后重试；也可以配置视觉模型。",
       attachStillUploading: "⚠️ 附件还在上传,请稍后再发",
       deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 20 MB 上限`,
+      deviceUploadEmpty: name => `⚠️ ${name} 是空文件，无法添加`,
       deviceUploadFailed: "⚠️ 上传失败: ",
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
@@ -2883,13 +2886,15 @@
         do {
           refreshHistoryQueued = false;
           try {
-            state.sessions = await invoke("list_sessions");
+            state.sessions = await invoke(IS_WEB ? "web_access_list_sessions" : "list_sessions");
           } catch (e) {
             console.warn("list_sessions failed", e);
             state.sessions = [];
           }
           try {
-            state.archivedSessions = await invoke("list_archived_sessions");
+            state.archivedSessions = await invoke(
+              IS_WEB ? "web_access_list_archived_sessions" : "list_archived_sessions",
+            );
           } catch (e) {
             state.archivedSessions = state.archivedSessions || [];
           }
@@ -7903,28 +7908,6 @@
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
-  function updateAttachmentDragState(active) {
-    active = !!active;
-    if (!!state.attachmentDragActive === active) return;
-    state.attachmentDragActive = active;
-    notify();
-  }
-  // HTML5 拖放与「从此设备上传」共用 deviceFileUpload 分块通道:能力同开同关,
-  // 上传/取消/丢弃语义完全一致,拖放只是多一个入口。
-  function initAttachmentDrop() {
-    if (initAttachmentDrop.done) return;
-    initAttachmentDrop.done = true;
-    if (!window.PinvouAttachmentDropController) {
-      console.warn("[attachment] drop controller is unavailable");
-      return;
-    }
-    window.PinvouAttachmentDropController.install({
-      document: document,
-      canAccept: function () { return hasCapability("deviceFileUpload"); },
-      onActiveChange: updateAttachmentDragState,
-      onFiles: function (files) { return uploadDeviceFiles(files); }
-    });
-  }
   async function addPasteImage(filename, bytes) {
     try {
       var path = await invoke("save_paste_image", { filename: filename, bytes: bytes });
@@ -7966,62 +7949,55 @@
   // ── 浏览器本机文件上传 ──────────────────────────────────────────
   // 「从此设备上传」入口:文件按 256KB 分块经 Relay 转发(Relay 只转发不保存),
   // 桌面端最后一块落盘 + ingest 后返回与桌面文件附件相同的 WebAttachmentSummary。
-  var DEVICE_UPLOAD_CHUNK_BYTES = 256 * 1024;      // 对齐桌面 MAX_TRANSFER_CHUNK_BYTES
-  var DEVICE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;  // 对齐 file_ingest::MAX_FILE_BYTES
-  var DEVICE_UPLOAD_CANCELLED = new Error("device-upload-cancelled");
-
-  function bytesToBase64(bytes) {
-    var out = "";
-    for (var i = 0; i < bytes.length; i += 0x8000) {
-      out += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-    }
-    return btoa(out);
-  }
-
   async function uploadDeviceFile(file) {
-    if (file.size > DEVICE_UPLOAD_MAX_BYTES) {
-      addSystemItem(bt("deviceUploadTooLarge")(file.name));
-      return;
-    }
+    var uploader = window.PinvouChunkedFileUpload;
     var id = ++attachIdSeq;
-    var uploadId = "webatt_" + id + "_" + Math.random().toString(36).slice(2, 12);
+    var uploadId = uploader && typeof uploader.uploadId === "function"
+      ? uploader.uploadId("webatt")
+      : "webatt_" + id + "_" + Math.random().toString(36).slice(2, 12);
     var att = {
       id: id, uploadId: uploadId, basename: file.name,
       status: "uploading", progress: 0, result: null, error: null,
     };
     state.attachments.push(att); notify();
-    // 用户点掉 chip(removeAttachment)即取消:下一块边界停止并通知桌面释放缓冲。
-    function assertActive() {
-      if (state.attachments.indexOf(att) < 0) throw DEVICE_UPLOAD_CANCELLED;
-    }
     try {
-      var offset = 0;
-      var summary = null;
-      do {
-        var slice = file.slice(offset, Math.min(offset + DEVICE_UPLOAD_CHUNK_BYTES, file.size));
-        var bytes = new Uint8Array(await slice.arrayBuffer());
-        assertActive();
-        summary = await invoke("web_access_upload_attachment_chunk", {
-          uploadId: uploadId, fileName: file.name, offset: offset,
-          total: file.size, dataBase64: bytesToBase64(bytes),
-          commit: offset + bytes.length >= file.size,
-        });
-        offset += bytes.length;
-        att.progress = file.size ? Math.min(99, Math.round((offset / file.size) * 100)) : 99;
-        notify();
-      } while (offset < file.size);
-      assertActive();
-      if (!summary || !summary.handle) throw new Error("upload did not return an attachment handle");
+      if (!uploader || typeof uploader.uploadFile !== "function") {
+        throw new Error("chunked attachment uploader is unavailable");
+      }
+      var completed = await uploader.uploadFile({
+        file: file,
+        uploadId: uploadId,
+        isCancelled: function () { return state.attachments.indexOf(att) < 0; },
+        sendChunk: function (chunk) {
+          return invoke("web_access_upload_attachment_chunk", {
+            uploadId: chunk.uploadId,
+            fileName: chunk.fileName,
+            offset: chunk.offset,
+            total: chunk.total,
+            dataBase64: chunk.dataBase64,
+            commit: chunk.commit,
+          });
+        },
+        onProgress: function (progress) { att.progress = progress; notify(); },
+        validateResult: function (result) { return Boolean(result && result.handle); },
+        cleanup: function (upload) {
+          if (upload.result && upload.result.handle && canInvoke("web_access_discard_attachment")) {
+            return invoke("web_access_discard_attachment", { handle: upload.result.handle });
+          }
+          return invoke("web_access_abort_attachment_upload", { uploadId: upload.uploadId });
+        },
+      });
+      var summary = completed.result;
       att.status = "ready"; att.progress = 100; att.result = summary;
       att.basename = summary.basename || att.basename;
     } catch (e) {
-      if (summary && summary.handle && canInvoke("web_access_discard_attachment")) {
-        invoke("web_access_discard_attachment", { handle: summary.handle }).catch(function () {});
-      } else {
-        invoke("web_access_abort_attachment_upload", { uploadId: uploadId }).catch(function () {});
-      }
-      if (e !== DEVICE_UPLOAD_CANCELLED) {
-        att.status = "error"; att.error = String(e && e.message ? e.message : e);
+      if (!e || e.code !== "device_upload_cancelled") {
+        att.status = "error";
+        att.error = e && e.code === "device_upload_empty"
+          ? bt("deviceUploadEmpty")(file.name)
+          : e && e.code === "device_upload_too_large"
+            ? bt("deviceUploadTooLarge")(file.name)
+            : String(e && e.message ? e.message : e);
         addSystemItem(bt("deviceUploadFailed") + att.error);
       }
     }
@@ -8033,7 +8009,6 @@
     var list = Array.prototype.slice.call(files || []).filter(Boolean);
     for (var i = 0; i < list.length; i++) await uploadDeviceFile(list[i]);
   }
-  initAttachmentDrop();
 
 
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────

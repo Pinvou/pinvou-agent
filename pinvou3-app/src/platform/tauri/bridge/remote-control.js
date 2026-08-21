@@ -164,33 +164,43 @@
     // 意图的完成写入收敛：web_access:status 事件 payload 不含 starting，
     // 事件无法清理该标志，须由每个意图完成路径（含失败）显式兜底。
     var webAccessIntentSeq = 0;
+    var webAccessStatusSeq = 0;
 
-    async function refreshRemoteControlStatus() {
+    async function refreshRemoteControlStatus(expectedIntentSeq) {
+      var intentSeq = expectedIntentSeq === undefined ? webAccessIntentSeq : expectedIntentSeq;
+      var statusSeq = ++webAccessStatusSeq;
       try {
         var status = await invoke("web_access_status");
+        if (intentSeq !== webAccessIntentSeq || statusSeq !== webAccessStatusSeq) return status;
         state.webAccess = Object.assign({}, state.webAccess, status || {});
       } catch (error) {
+        if (intentSeq !== webAccessIntentSeq || statusSeq !== webAccessStatusSeq) return;
         state.webAccess = Object.assign({}, state.webAccess, { last_error: String(error) });
       }
       notify();
     }
 
-    async function startRemoteControl() {
+    async function startRemoteControl(options) {
       var seq = ++webAccessIntentSeq;
+      var wasActive = !!state.webAccess.active;
       state.webAccess = Object.assign({}, state.webAccess, { starting: true, last_error: null });
       notify();
       try {
-        var info = await invoke("web_access_enable");
-        if (seq !== webAccessIntentSeq) return info; // 已有更新的用户操作，不写反状态
+        var info = await invoke("web_access_enable", {
+          allowHostWorkspace: !!(options && options.allowHostWorkspace),
+        });
+        // A newer user action owns the state now; discard this stale result.
+        if (seq !== webAccessIntentSeq) return info;
         state.webAccess = Object.assign({}, state.webAccess, info || {}, {
           active: true, starting: false, last_error: null,
         });
-        await refreshRemoteControlStatus();
+        notify();
+        await refreshRemoteControlStatus(seq);
         return info;
       } catch (error) {
         if (seq !== webAccessIntentSeq) throw error;
         state.webAccess = Object.assign({}, state.webAccess, {
-          active: false, web_client_connected: false, starting: false,
+          active: wasActive, web_client_connected: wasActive && !!state.webAccess.web_client_connected, starting: false,
           status: "error", last_error: String(error),
         });
         notify();
@@ -211,7 +221,7 @@
       if (seq !== webAccessIntentSeq) return; // 已有更新的用户操作，不写反状态
       state.webAccess = Object.assign({}, state.webAccess, {
         active: false, endpoint_id: null, url: null, qr_data_url: null,
-        web_client_connected: false, status: "stopped", starting: false,
+        web_client_connected: false, host_workspace_authorized: false, status: "stopped", starting: false,
       });
       notify();
     }
@@ -225,7 +235,7 @@
           active: true, web_client_connected: false, last_error: null, starting: false,
         });
         notify();
-        await refreshRemoteControlStatus();
+        await refreshRemoteControlStatus(seq);
         return info;
       } catch (error) {
         if (seq !== webAccessIntentSeq) throw error;
@@ -240,14 +250,18 @@
     }
 
     async function setWebRelayAddress(address) {
+      var seq = ++webAccessIntentSeq;
       var info = await invoke("web_access_set_relay", { address: address });
-      await refreshRemoteControlStatus();
+      if (seq !== webAccessIntentSeq) return info;
+      await refreshRemoteControlStatus(seq);
       return info;
     }
 
     async function resetWebRelayAddress() {
+      var seq = ++webAccessIntentSeq;
       var info = await invoke("web_access_reset_relay");
-      await refreshRemoteControlStatus();
+      if (seq !== webAccessIntentSeq) return info;
+      await refreshRemoteControlStatus(seq);
       return info;
     }
 

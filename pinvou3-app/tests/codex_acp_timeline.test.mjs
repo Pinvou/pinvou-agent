@@ -35,15 +35,25 @@ try {
     appendAcpEvent,
     buildElicitationContent,
     commandExecutionDetails,
+    mergeAcpTimelineSnapshot,
     projectAcpTimeline,
     resolveAcpSessionControls,
     stripTerminalControlSequences,
+    updateAcpAttachmentDraft,
   } = await import(`${pathToFileURL(modulePath).href}?t=${Date.now()}`);
   const {
     collectToolWorkspaceResources,
     toolWorkspaceResources,
     workspaceMarkdownResource,
   } = await import(`${pathToFileURL(path.join(conversationDir, 'conversation-model.js')).href}?t=${Date.now()}`);
+  const movedAttachment = { id: 'attachment-1', status: 'uploading' };
+  const movedDrafts = updateAcpAttachmentDraft(
+    { draft: [movedAttachment] },
+    movedAttachment.id,
+    attachment => ({ ...attachment, status: 'ready' }),
+  );
+  assert.equal(movedDrafts.draft[0].status, 'ready');
+  assert.equal(updateAcpAttachmentDraft(movedDrafts, 'missing', () => null), movedDrafts);
   const events = [
     event(1, 'user_message', {
       content: [{ type: 'text', text: '修改 README' }],
@@ -229,6 +239,16 @@ try {
 
   assert.equal(appendAcpEvent(events, events[0]).length, events.length, 'duplicate seq must be ignored');
   assert.equal(appendAcpEvent(events.slice(0, 2), events[2]).length, 3);
+  const liveAfterSnapshot = event(14, 'agent_message_chunk', {
+    update: { content: { type: 'text', text: '重连期间到达' } },
+  });
+  const otherSessionEvent = { ...event(99, 'turn_started', {}, 'other'), sessionId: 'session-2' };
+  assert.deepEqual(
+    mergeAcpTimelineSnapshot(events.slice(0, 2), [otherSessionEvent, liveAfterSnapshot], 'session-1')
+      .map(item => item.seq),
+    [1, 2, 14],
+    'a paged snapshot must merge live events without retaining another Session',
+  );
 
   const controls = resolveAcpSessionControls({
     models: [{ id: 'legacy-model' }],
@@ -261,10 +281,30 @@ try {
   assert.ok(!chatView.includes('sessionAgentBackend'), 'DeepSeek ChatView must not branch on Codex state');
 
   const main = readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
+  const detachedShell = readFileSync(path.join(root, 'src', 'app', 'DetachedShell.jsx'), 'utf8');
+  const lazyCodexView = readFileSync(
+    path.join(root, 'src', 'features', 'codex', 'LazyCodexAcpView.jsx'),
+    'utf8',
+  );
   const i18n = readFileSync(path.join(root, 'src', 'shared', 'i18n.js'), 'utf8');
   const navigationComponents = readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
   assert.ok(main.includes("currentView === 'codex'"));
   assert.ok(main.includes('<CodexAcpView'));
+  assert.match(
+    lazyCodexView,
+    /lazy\(\(\) => import\('\.\/CodexAcpView\.jsx'\)/,
+    'the ACP workspace must stay out of the initial WebUI bundle',
+  );
+  assert.ok(
+    detachedShell.includes("../features/codex/LazyCodexAcpView.jsx")
+      && !detachedShell.includes("../features/codex/CodexAcpView.jsx"),
+    'detached windows must not restore a static import of the lazy ACP workspace',
+  );
+  assert.match(
+    lazyCodexView,
+    /<Suspense fallback=\{\([\s\S]*?<CodexAcpWorkspace/,
+    'the lazy ACP workspace must render a stable loading state',
+  );
   assert.ok(main.includes('codexAcpSupported &&'), 'Codex entry must stay platform capability-gated');
   assert.ok(main.includes(".concat(codexHistory)"),
     'Codex sessions must share the global recent-session list');
@@ -308,7 +348,7 @@ try {
   assert.ok(codexCommands.includes('list_codex_acp_sessions'));
   assert.ok(codexCommands.includes('workspace_path: Option<String>'), 'Codex creation must accept an explicit project directory');
   assert.ok(codexCommands.includes('agent_id: Option<String>')
-    && codexCommands.includes('set_acp_workspace(&session.metadata.id, backend'),
+    && /set_acp_workspace\(\s*&session\.metadata\.id,\s*backend,/.test(codexCommands),
   'code-session creation must bind the selected ACP Agent for the lifetime of the session');
   assert.ok(codexCommands.includes('or(Some("pinvou"))'),
     'code-session creation without an explicit agent must default to the built-in Pinwu backend');
@@ -352,6 +392,8 @@ try {
   assert.ok(!runtime.includes('runtime.prompt(content, mode_id)'), 'prompt must not overwrite acknowledged config with local UI mode');
 
   const codexView = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+  const runtimeNotices = readFileSync(path.join(root, 'src', 'features', 'codex', 'AcpRuntimeNotices.jsx'), 'utf8');
+  const acpClient = readFileSync(path.join(root, 'src', 'features', 'codex', 'acpClient.js'), 'utf8');
   const runtimeNoticeState = readFileSync(
     path.join(root, 'src', 'features', 'codex', 'runtimeNoticeState.js'),
     'utf8',
@@ -367,6 +409,7 @@ try {
     && codexView.includes('copy.expired'),
   'the legacy ACP permission card must use the shared zh/en/ja conversation copy');
   const codexWorkspace = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'), 'utf8');
+  const runtimeStatus = readFileSync(path.join(root, 'src', 'features', 'codex', 'runtimeStatus.js'), 'utf8');
   const homeModeSwitcher = readFileSync(path.join(root, 'src', 'features', 'conversation', 'HomeModeSwitcher.jsx'), 'utf8');
   const iosControls = readFileSync(path.join(root, 'src', 'components', 'IosControls.jsx'), 'utf8');
   const codexLogo = readFileSync(path.join(root, 'src', 'components', 'CodexLogo.jsx'), 'utf8');
@@ -389,7 +432,6 @@ try {
     && codexView.includes('max-h-80 max-w-full overflow-auto whitespace-pre')
     && conversationView.includes('max-h-80 max-w-full overflow-auto whitespace-pre'),
   'reasoning, plan, permission, and terminal content must stay within both timeline implementations');
-  assert.ok(codexView.includes("directory: true"), 'new Codex sessions must expose a native directory picker');
   assert.ok(codexView.includes("open_codex_workspace_resource")
     && conversationView.includes('onOpenResource={onOpenResource}')
     && codexWorkspace.includes("const loadedDirectories = ['', ...expanded]")
@@ -397,26 +439,39 @@ try {
     && codexWorkspace.includes("sessionId && tab === 'changes'"),
   'ACP workspace resources must open in the preview and event refreshes must reload expanded directories');
   assert.ok(codexView.includes('workspacePath'), 'selected project directory must reach the Tauri command');
+  assert.ok(acpClient.includes("directory: true")
+    && codexView.includes('pickAcpWorkspace'),
+  'new code sessions must expose the platform-specific directory picker');
+  assert.ok(codexView.includes('const requestedWorkspaceHandle = draftWorkspaceHandle')
+    && codexView.includes('workspaceHandle: requestedWorkspaceHandle')
+    && acpClient.includes("invokeTauri('create_codex_acp_session', { workspacePath, agentId })")
+    && acpClient.includes("invokeRequiredWebCommand('web_access_create_codex_acp_session'"),
+  'selected project directories must use native paths on desktop and opaque grants on Web');
   assert.ok(!codexView.includes('data-testid="acp-agent-selector"')
     && codexView.includes('onCodeAgentChange={selectDraftAgent}')
-    && codexView.includes('agentId: draftAgentId')
-    && codexView.includes("invoke('list_acp_agents')"),
+    && codexView.includes('const requestedAgentId = draftAgentId')
+    && codexView.includes('agentId: requestedAgentId')
+    && runtimeStatus.includes('listAcpAgents()'),
   'the top code tabs must be the only Agent selector and bind the selected Agent on first send');
   assert.ok(codexView.includes("const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection'")
-    && codexView.includes("useState(loadAgentSelection() || 'pinvou')")
+    && codexView.includes("if (isWeb) return saved && saved !== 'pinvou' ? saved : 'codex'")
+    && codexView.includes('useState(initialDraftAgentSelection)')
     && codexView.includes('saveAgentSelection(agentId)'),
-  'code draft agent must default to Pinwu and persist the user-selected agent across reopens');
+  'desktop drafts must keep the native default while Web clamps the default to an ACP agent');
   assert.ok(codexView.includes("invoke('login_acp_agent'")
     && codexView.includes("invoke('open_acp_agent_login_url'")
     && codexView.includes("invoke('submit_acp_agent_login_code'")
-    && codexView.includes('status.login_code')
-    && codexView.includes('status.login_input_required')
+    && runtimeNotices.includes('status.login_code')
+    && runtimeNotices.includes('status.login_input_required')
+    && !runtimeNotices.includes("status.agent_id === 'claude'")
     && codexView.includes('if (!isNativeAgent && !activeStatus?.authenticated)')
     && codexView.includes('isAcpAuthenticationFailure(latest)'),
   'the code page must host browser/device-code login, block unauthenticated prompts, and refresh after token expiry');
   assert.ok(codexView.includes('codexCopy.temporarySession'), 'temporary sessions must remain an explicit choice');
   assert.ok(codexView.includes('DRAFT_ATTACHMENT_KEY')
-    && codexView.includes('const created = await createSession(draftWorkspacePath)'),
+    && codexView.includes('const created = await createSession({')
+    && codexView.includes('workspacePath: requestedWorkspacePath')
+    && codexView.includes('workspaceHandle: requestedWorkspaceHandle'),
   'the code home must keep a temporary draft and create its Codex session only on first send');
   assert.ok(!codexView.includes('createSession(null)'),
   'the native (pinvou) first-send path must also forward the selected draft workspace');
@@ -455,7 +510,7 @@ try {
     && codexView.includes('acp-draft-controls.js')
     && codexView.includes('resolveAcpSessionControls(sessionControlsInfo || draftControlsInfo)')
     && codexView.includes('stageDraftConfigSelection')
-    && codexView.includes('applyDraftConfigSelections(targetId, created.info)'),
+    && /applyDraftConfigSelections\(\s*targetId,\s*created\.info,\s*draftConfigAtSend,/.test(codexView),
   'the draft composer must prefill model, mode and config controls from the agent cache and apply staged choices on first send');
   assert.ok(codexView.includes('function CodexComposerConfigSelect')
     && codexView.includes('data-testid={testId || `codex-config-${id}`}')
@@ -465,18 +520,18 @@ try {
   assert.ok(!codexView.includes('<aside'),
     'Codex must use the app-wide session sidebar instead of rendering a second sidebar');
   assert.ok(homeModeSwitcher.includes("labelKey: 'work'") && homeModeSwitcher.includes("labelKey: 'code'")
-    && homeModeSwitcher.includes('Codex'),
+    && homeModeSwitcher.includes("selectedAgentId || 'codex'"),
   'the home composer must expose Work/Code modes and the current Codex code agent');
   assert.ok(homeModeSwitcher.includes("key: 'design'")
     && homeModeSwitcher.includes('HOME_DESIGN_MODE_ENABLED = true'),
   'Design must share the real home mode entry with Work and Code');
-  assert.ok(homeModeSwitcher.includes("key: 'claude'")
-    && homeModeSwitcher.includes("key: 'kimi'")
-    && homeModeSwitcher.includes("key: 'codex', label: 'Codex', Logo: CodexLogo, enabled: true")
-    && homeModeSwitcher.includes("label: 'Claude Code', enabled: true")
-    && homeModeSwitcher.includes("label: 'Kimi', enabled: true")
-    && homeModeSwitcher.includes('onCodeAgentChange'),
-  'the code home must expose Codex, Claude, and Kimi through one ACP Agent selector');
+  assert.ok(homeModeSwitcher.includes('function normalizeCodeAgents(codeAgents, selectedAgentId)')
+    && homeModeSwitcher.includes("agent?.agent_id || agent?.id")
+    && homeModeSwitcher.includes("agent?.agent_name || agent?.display_name || agent?.name")
+    && homeModeSwitcher.includes('onCodeAgentChange ? codeAgents : undefined')
+    && codexView.includes('codeAgents={agents}')
+    && !homeModeSwitcher.includes('CODE_AGENT_OPTIONS'),
+  'the code home must derive its ACP Agent selector from the target desktop inventory without a frontend whitelist');
   assert.ok(homeModeSwitcher.includes('prominent')
     && iosControls.includes('if (compact)')
     && iosControls.includes("const heightClass = prominent ? 'h-10' : 'h-9'")
@@ -526,7 +581,7 @@ try {
     'running operation groups must remain compact by default');
   assert.ok(runtimeNoticeState.includes("HTTP\\s*402")
     && runtimeNoticeState.includes("kind = 'entitlement'")
-    && codexView.includes('data-testid="acp-service-failure"'),
+    && runtimeNotices.includes('data-testid="acp-service-failure"'),
   'membership HTTP 402 failures must become a recoverable service card instead of a bare error');
   assert.ok(codexView.includes("invoke('switch_acp_agent_account'")
     && codexView.includes('data-testid="acp-account-menu-trigger"')
@@ -542,9 +597,10 @@ try {
     && !codexView.includes('bottom-[106px]'),
   'Codex streaming must pause auto-follow and place the return action above, not over, the composer');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
-  assert.ok(codexView.includes("invoke('codex_acp_prompt', {")
+  assert.ok(codexView.includes('await submitAcpPrompt({')
     && codexView.includes('attachments: readyAttachments.map(attachment => attachment.result)')
-    && codexView.includes('workspaceReferences'),
+    && codexView.includes('workspaceReferences')
+    && acpClient.includes("invokeTauri('web_access_codex_acp_prompt'"),
   'Codex prompts must keep external attachments and workspace references as separate inputs');
   assert.ok(!codexView.includes('if (activeId && !sessionInfo)')
     && !codexView.includes('throw new Error(codexCopy.sessionSyncing)')
@@ -561,10 +617,10 @@ try {
     && codexWorkspace.includes('onDoubleClick={resetPanelWidth}')
     && codexWorkspace.includes("document.body.style.cursor = 'col-resize'"),
   'the Codex workspace panel must support persisted drag resizing and double-click reset');
-  assert.ok(codexWorkspace.includes("invoke('list_codex_workspace'")
-    && codexWorkspace.includes("invoke('preview_codex_workspace_file'")
-    && codexWorkspace.includes("invoke('get_codex_workspace_changes'")
-    && codexWorkspace.includes("invoke('get_codex_workspace_diff'"),
+  assert.ok(codexWorkspace.includes('listAcpWorkspace({')
+    && codexWorkspace.includes('previewAcpWorkspaceFile({')
+    && codexWorkspace.includes('loadAcpWorkspaceChanges({')
+    && codexWorkspace.includes('loadAcpWorkspaceDiff({'),
   'the workspace panel must use scoped file, preview, and read-only change commands');
   assert.ok(!codexWorkspace.includes('discard') && !codexWorkspace.includes('stage_codex'),
     'the first workspace panel must not expose destructive discard or staging actions');
@@ -572,9 +628,9 @@ try {
     'Codex request_user_input must have a first-class conversation item');
   assert.ok(codexView.includes('<QuestionChoiceCard'),
     'Codex and DeepSeek must share the same choice-card presentation');
-  assert.ok(codexView.includes("invoke('get_codex_acp_pending_elicitations'"),
+  assert.ok(codexView.includes('loadAcpPendingElicitations(id)'),
     'pending Codex input requests must recover when a session is reopened');
-  assert.ok(codexView.includes("invoke('respond_codex_acp_elicitation'"),
+  assert.ok(codexView.includes("isWeb ? 'web_access_respond_codex_acp_elicitation' : 'respond_codex_acp_elicitation'"),
     'Codex input answers must be returned through the ACP request');
   assert.ok(conversationView.includes('className={`codex-markdown'), 'conversation Markdown must keep the isolated Codex style scope');
   assert.ok(codexView.includes('<ConversationTurn'), 'Codex must render through the shared Turn renderer by default');
@@ -591,11 +647,12 @@ try {
   'ACP session restoration must show a loading state and suppress sending without reporting a red error');
   assert.ok(codexView.includes('const activeStatus = status?.agent_id === activeAgentId ? status : null')
     && codexView.includes('status={activeStatus}')
-    && codexView.includes('next?.agent_id === activeAgentIdRef.current')
+    && runtimeStatus.includes('requestSeqRef.current[agentId] !== sequence')
+    && runtimeStatus.includes('agentId !== activeAgentIdRef.current')
     && codexView.includes('[activeAgentId, activeStatus?.login_in_progress]'),
   'switching ACP sessions must never render or keep polling the previous Agent status');
   assert.ok(codexView.includes('<ConversationMarkdown')
-    && codexView.includes("invoke('open_user_external_url', { url })"),
+    && codexView.includes('openAcpExternalUrl(url)'),
   'both unified and fallback Codex messages must route links through the host opener');
   assert.ok(baseStyles.includes('.codex-markdown ul { list-style:disc outside; }'),
     'Codex unordered lists must retain bullets after Tailwind preflight');
@@ -673,12 +730,22 @@ try {
     && !codexView.includes('bridge.interaction.')
     && !codexView.includes('bridge.chat.'),
   'the code lane must never call bridge chat-active-bound methods for composer controls');
+  const nativeDraftApplyStart = codexView.indexOf('async function applyNativeDraftControls(sessionId, staged)');
+  const nativeDraftMultiAgent = codexView.indexOf("invoke('set_multi_agent_mode'", nativeDraftApplyStart);
+  const nativeDraftClear = codexView.indexOf('setNativeDraftControls(current => current === staged ? {} : current)', nativeDraftMultiAgent);
+  const nativeSendCreate = codexView.indexOf('const created = await createSession({', codexView.indexOf('async function sendNative'));
+  const nativeSendApply = codexView.indexOf('await applyNativeDraftControls(targetId, nativeDraftControlsAtSend)', nativeSendCreate);
   assert.ok(codexView.includes('nativeDraftControls')
-    && /applyNativeDraftControls\(sessionId\)[\s\S]{0,1400}set_multi_agent_mode[\s\S]{0,250}setNativeDraftControls\(\{\}\)/.test(codexView)
-    && /const created = await createSession\(draftWorkspacePath\)[\s\S]{0,180}await applyNativeDraftControls\(targetId\)/.test(codexView),
+    && nativeDraftApplyStart >= 0
+    && nativeDraftMultiAgent > nativeDraftApplyStart
+    && nativeDraftClear > nativeDraftMultiAgent
+    && nativeSendCreate >= 0
+    && nativeSendApply > nativeSendCreate,
   'draft-state control selections, including multi-agent mode, must be applied after session creation and before first send');
   assert.ok(
-    /await applyNativeDraftControls\(targetId\);[\s\S]{0,520}await refreshNativeControls\(targetId\);[\s\S]{0,1800}await invoke\('chat'/.test(codexView),
+    nativeSendApply < codexView.indexOf('await refreshNativeControls(targetId)', nativeSendApply)
+      && codexView.indexOf('await refreshNativeControls(targetId)', nativeSendApply)
+        < codexView.indexOf("await invoke('chat'", nativeSendApply),
     'a newly created native session must refresh authoritative multi-agent state after applying draft controls and before its first turn',
   );
   assert.ok(codexView.includes('nativeControlsSessionRef.current === activeId'),

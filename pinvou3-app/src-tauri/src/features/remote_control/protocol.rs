@@ -14,6 +14,11 @@ pub struct WebAccessConfig {
     pub endpoint_id: String,
     pub access_token: String,
     pub desktop_secret: String,
+    /// Desktop-owned consent for binding arbitrary host directories to Web
+    /// code Sessions. Legacy configs fail closed until the desktop user
+    /// explicitly enables access again.
+    #[serde(default)]
+    pub allow_host_workspace: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +38,7 @@ pub struct WebAccessStatus {
     pub status: WebAccessStatusKind,
     pub relay_url: String,
     pub web_client_connected: bool,
+    pub host_workspace_authorized: bool,
     pub last_error: Option<String>,
 }
 
@@ -60,11 +66,27 @@ mod tests {
             endpoint_id: "ep_123".into(),
             access_token: "browser-token".into(),
             desktop_secret: "desktop-secret".into(),
+            allow_host_workspace: true,
         };
         let json = serde_json::to_string(&config).expect("serialize config");
         let decoded: WebAccessConfig = serde_json::from_str(&json).expect("parse config");
         assert_eq!(decoded, config);
         assert!(json.contains("endpoint_id"));
+        assert!(decoded.allow_host_workspace);
+    }
+
+    #[test]
+    fn legacy_config_does_not_implicitly_authorize_host_workspaces() {
+        let decoded: WebAccessConfig = serde_json::from_str(
+            r#"{
+                "relay_url":"wss://example.test/ws",
+                "endpoint_id":"ep_123",
+                "access_token":"browser-token",
+                "desktop_secret":"desktop-secret"
+            }"#,
+        )
+        .expect("parse legacy config");
+        assert!(!decoded.allow_host_workspace);
     }
 
     #[test]
