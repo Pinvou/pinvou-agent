@@ -19,6 +19,12 @@ cd pinvou3-app/src/vendor
 curl -fsSL -o tailwind.js              https://cdn.tailwindcss.com
 ```
 
+刷新任何文件后，必须同步更新上表中的版本与 SHA-256（版本变化时一并更新
+`THIRD_PARTY_NOTICES.md`）。`npm test` 中的完整性契约
+（`tests/vendor_asset_integrity.test.js`）会逐文件校验登记哈希，并拒绝未登记的
+`.js` 资产混入。这些文件在 `.gitattributes` 中钉住 LF，请勿在本机开启
+`core.autocrlf` 改写行尾后提交。
+
 ## 上线前可做的优化（非必须）
 
 - **预编译 Tailwind**：当前仍使用离线 runtime 扫描动态 class。后续可单独迁移到静态 CSS，
