@@ -755,6 +755,11 @@ mod tests {
 
     // —— 本地服务类型探测（本地 HTTP mock，无外部依赖）——
 
+    /// 探测用例共享进程级全局状态（PROBE_KIND_CACHE / PROBE_KIND_INFLIGHT），
+    /// 且各自 clear_probe_kind_cache() 重置：并行时会拆掉对方在途注册
+    /// （合并测试出现双探、abort 测试注册限期轮空）。这些用例必须串行。
+    static PROBE_STATE_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// 极简本地 HTTP server：按请求路径前缀返回固定 JSON，未注册路径返回 404。
     /// 给 probe_local_server_kind / fetch_v1_models 提供真实 HTTP 往返，
     /// 覆盖探测命中与失败回落路径。
@@ -815,6 +820,7 @@ mod tests {
     /// → 判定 Ollama。
     #[tokio::test]
     async fn probe_local_kind_detects_ollama_via_api_tags() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
         let server = spawn_probe_server(vec![(
             "/api/tags",
             r#"{"models":[{"name":"qwen3:8b"},{"name":"deepseek-r1:14b"}]}"#,
@@ -830,6 +836,7 @@ mod tests {
     /// → 判定 LM Studio。
     #[tokio::test]
     async fn probe_local_kind_detects_lmstudio_via_v0_models() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
         let server = spawn_probe_server(vec![(
             "/api/v0/models",
             r#"{"data":[{"id":"local-model","state":"loaded"}]}"#,
@@ -845,6 +852,7 @@ mod tests {
     /// vLLM。同时覆盖 fetch_v1_models 对带 /v1 后缀 base_url 的 URL 拼接。
     #[tokio::test]
     async fn probe_local_kind_detects_vllm_via_owned_by() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
         let server = spawn_probe_server(vec![(
             "/v1/models",
             r#"{"object":"list","data":[{"id":"qwen3.6-35b","owned_by":"vllm"}]}"#,
@@ -859,6 +867,7 @@ mod tests {
     /// 全失败回落：所有特征端点 404 → Generic（探测失败不改变 wire route）。
     #[tokio::test]
     async fn probe_local_kind_falls_back_to_generic_when_all_endpoints_404() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
         let server = spawn_probe_server(vec![]).await;
         assert_eq!(
             probe_local_server_kind(&server.url).await,
@@ -891,6 +900,7 @@ mod tests {
     /// 落到 Generic——缓存命中则保持第一次的 Ollama 判定。
     #[tokio::test]
     async fn probe_local_kind_caches_result_per_base_url() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
         clear_probe_kind_cache();
         let server =
             spawn_probe_server(vec![("/api/tags", r#"{"models":[{"name":"qwen3:8b"}]}"#)]).await;
@@ -906,6 +916,7 @@ mod tests {
     /// 下一次调用应立即重探并拿到新结果，不被 60s TTL 钉死在 Generic。
     #[tokio::test]
     async fn probe_local_kind_does_not_cache_generic_result() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
         clear_probe_kind_cache();
         // 空 mock：所有特征端点 404 → Generic。
         let server = spawn_probe_server(vec![]).await;
@@ -934,6 +945,7 @@ mod tests {
     /// 特征端点只被打一次（Ollama 判定在第一个端点即短路返回）。
     #[tokio::test]
     async fn probe_local_kind_merges_concurrent_calls_into_one_probe() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
         clear_probe_kind_cache();
         use std::sync::atomic::{AtomicUsize, Ordering};
         let hits = Arc::new(AtomicUsize::new(0));
@@ -1003,6 +1015,7 @@ mod tests {
     /// await 上以便 abort），放行后对所有端点回 404（直探/重探落 Generic）。
     #[tokio::test]
     async fn probe_kind_inflight_abort_first_caller_unblocks_waiter_and_next_caller() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
         clear_probe_kind_cache();
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
