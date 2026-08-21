@@ -12,8 +12,14 @@ use pinvou3_lib::features::marketplace::scope::{
 };
 use pinvou3_lib::features::marketplace::ConnectorScope;
 
+/// 用例间共享 PINVOU3_HOME 环境变量：同 target 默认并行跑，env 互相覆盖会竞态
+/// （六轮评审 R3）——进程内 std Mutex 串行化（与 plugin_import_e2e.rs 同范式，
+/// 不新增依赖）。
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 把 PINVOU3_HOME 指到干净临时目录跑闭包，跑完恢复并清理。
 fn with_temp_home<F: FnOnce()>(f: F) {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let dir = std::env::temp_dir().join(format!(
         "pinvou-scope-vis-{}-{}",
         std::process::id(),

@@ -57,6 +57,20 @@ pub struct RemoteServer {
     pub oauth_resource: Option<String>,
 }
 
+impl RemoteServer {
+    /// 是否需要 OAuth 授权：scopes / oauth 配置 / oauth_resource 任一声明即算。
+    /// `oauth_remote_server_name` 与包清单 `oauth` 标记共用本判据，口径单点维护——
+    /// 仅带 url 的远程 MCP（如智慧芽，Bearer key 走 secret_headers）不算 OAuth。
+    pub fn requires_oauth(&self) -> bool {
+        !self.scopes.is_empty()
+            || self.oauth.is_some()
+            || self
+                .oauth_resource
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteOAuthConfig {
     #[serde(default)]

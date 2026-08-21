@@ -1533,9 +1533,9 @@ impl Pinvou3Bridge {
     ///
     /// 覆盖面边界（四轮评审登记，仅注释、不改行为）：规则按 CLI **二进制名**做
     /// word-boundary 前缀匹配（同 `skill_script_deny_rules` 的 DSL 现状），只拦
-    /// 「首 token 即该二进制名」的直接调用。已知残余绕过面：
-    /// - 绝对/相对路径调用（如 `C:\...\lark-cli.exe`、`./bin/lark-cli`）——首 token
-    ///   是路径不是二进制名，不匹配；
+    /// 「首 token 即该二进制名」的直接调用；每个二进制同时发 `{bin}.exe` /
+    /// `{bin}.cmd` 变体（六轮评审 R4：Windows 带扩展名拼写绕过），配合底座的
+    /// basename 折叠，`C:\...\lark-cli.exe` 这类路径拼写也可命中。已知残余绕过面：
     /// - shell 包装前缀（`cmd /c lark-cli …`、`powershell -Command …`、`sh -c …`、
     ///   `env lark-cli …`、`env python …` 等）——首 token 是包装器；
     /// - 重命名/拷贝后的同功能二进制。
@@ -1551,12 +1551,20 @@ impl Pinvou3Bridge {
         // 不可用集 = 开关关 + 不可见，两套门控都硬拒 CLI 二进制。
         crate::features::marketplace::unavailable_bundles_for(scope)
             .into_iter()
-            .filter_map(|id| {
-                crate::features::marketplace::bundle::cli_bundle_bin(&id).map(|bin| {
-                    let mut rule = codewhale_execpolicy::ToolAskRule::exec_shell(bin);
-                    rule.action = codewhale_execpolicy::PermissionAction::Deny;
-                    rule
-                })
+            .filter_map(|id| crate::features::marketplace::bundle::cli_bundle_bin(&id))
+            .flat_map(|bin| {
+                // Windows 下首 token 常带扩展名（`lark-cli.exe im send`），只发裸
+                // 二进制名会被绕过（六轮评审 R4）：每个规则同时发 `{bin}.exe` /
+                // `{bin}.cmd` 变体。无条件发、不加 cfg —— 非 Windows 平台上这些
+                // 规则惰性无害，避免引入平台条件编译。
+                [bin.to_string(), format!("{bin}.exe"), format!("{bin}.cmd")]
+                    .into_iter()
+                    .map(|cmd| {
+                        let mut rule = codewhale_execpolicy::ToolAskRule::exec_shell(cmd);
+                        rule.action = codewhale_execpolicy::PermissionAction::Deny;
+                        rule
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>()
     }
@@ -2806,20 +2814,26 @@ mod tests {
         let rs = bridge.cli_deny_ruleset("sess-plain");
         assert!(rs.ask_rules.is_empty(), "plain 默认无 CLI deny 规则");
 
-        // plain 禁 feishu → 仅 lark-cli deny。
+        // plain 禁 feishu → 仅 lark-cli deny（裸名 + .exe/.cmd 变体各一条，R4）。
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
         );
         let rs = bridge.cli_deny_ruleset("sess-plain");
-        assert_eq!(rs.ask_rules.len(), 1);
-        assert_eq!(rs.ask_rules[0].command.as_deref(), Some("lark-cli"));
-        assert_eq!(
-            rs.ask_rules[0].action,
-            codewhale_execpolicy::PermissionAction::Deny
-        );
+        let mut cmds: Vec<&str> = rs
+            .ask_rules
+            .iter()
+            .filter_map(|r| r.command.as_deref())
+            .collect();
+        cmds.sort_unstable();
+        assert_eq!(cmds, ["lark-cli", "lark-cli.cmd", "lark-cli.exe"]);
+        assert!(rs
+            .ask_rules
+            .iter()
+            .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny));
 
-        // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义）。
+        // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义），
+        // 每个二进制发裸名 + .exe/.cmd 变体共 3 条。
         let rs = bridge.cli_deny_ruleset("sess-code");
         let mut bins: Vec<&str> = rs
             .ask_rules
@@ -2827,20 +2841,41 @@ mod tests {
             .filter_map(|r| r.command.as_deref())
             .collect();
         bins.sort_unstable();
-        assert_eq!(bins, ["dws", "lark-cli", "tmeet", "wecom-cli"]);
+        assert_eq!(
+            bins,
+            [
+                "dws",
+                "dws.cmd",
+                "dws.exe",
+                "lark-cli",
+                "lark-cli.cmd",
+                "lark-cli.exe",
+                "tmeet",
+                "tmeet.cmd",
+                "tmeet.exe",
+                "wecom-cli",
+                "wecom-cli.cmd",
+                "wecom-cli.exe"
+            ]
+        );
         assert!(rs
             .ask_rules
             .iter()
             .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny));
 
-        // code 显式只禁 dingtalk → 仅剩 dws 被硬拒。
+        // code 显式只禁 dingtalk → 仅剩 dws 被硬拒（含 .exe/.cmd 变体）。
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Code,
             &["dingtalk".to_string()],
         );
         let rs = bridge.cli_deny_ruleset("sess-code");
-        assert_eq!(rs.ask_rules.len(), 1);
-        assert_eq!(rs.ask_rules[0].command.as_deref(), Some("dws"));
+        let mut cmds: Vec<&str> = rs
+            .ask_rules
+            .iter()
+            .filter_map(|r| r.command.as_deref())
+            .collect();
+        cmds.sort_unstable();
+        assert_eq!(cmds, ["dws", "dws.cmd", "dws.exe"]);
 
         // 底座执行语义：deny 在直跑 / 链式 / wrapper 形态下都硬拒。
         let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![rs]);
@@ -2865,6 +2900,59 @@ mod tests {
         }
         // 非禁用命令不受影响（lark-cli 已被显式开启）。
         assert!(check("lark-cli im send").allow, "未禁用的 CLI 不应被拦");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Windows 绕过面钉死（六轮评审 R4）：被禁 CLI 以 `{bin}.exe` / `{bin}.cmd`
+    /// 形式首 token 调用（Windows 常见拼写）同样被硬拒——裸二进制名规则不匹配
+    /// 带扩展名的首 token，此前 `lark-cli.exe im send` 可绕过。
+    #[test]
+    fn cli_deny_rules_cover_exe_and_cmd_variants() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-bridge-clidny-ext-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|_| false));
+
+        use crate::features::marketplace::ConnectorScope;
+        crate::features::marketplace::save_disabled_connectors_for(
+            ConnectorScope::Plain,
+            &["feishu".to_string()],
+        );
+        let rs = bridge.cli_deny_ruleset("sess-plain");
+
+        let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![rs]);
+        let check = |command: &str| {
+            engine
+                .check(codewhale_execpolicy::ExecPolicyContext {
+                    command,
+                    cwd: ".",
+                    tool: Some("exec_shell"),
+                    path: None,
+                    ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
+                    sandbox_mode: None,
+                })
+                .unwrap()
+        };
+        for cmd in [
+            "lark-cli im send",
+            "lark-cli.exe im send",
+            "lark-cli.cmd im send",
+        ] {
+            assert!(!check(cmd).allow, "{cmd} 应被 deny 规则硬拒");
+        }
+        // 前缀相似的其它二进制不受影响（word-boundary 匹配）。
+        assert!(
+            check("lark-cli-extra im send").allow,
+            "非同名的相似前缀命令不应被拦"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -461,15 +461,16 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 镜像删除（与 install 对称：失败只记日志。命令层 OAuth token 前置删除的
         // 中止语义在 uninstall_marketplace_tool_sync，先于本函数，不受影响）。
         // 来源查询必须先于 remove —— 先删登记再查恒为 false（三轮评审：上传包目录
-        // 被误删的数据丢失 bug）。
-        let source_is_upload = store::BundleStore::new()
+        // 被误删的数据丢失 bug）。fail-closed：bundles.json 读不出就当可能是
+        // Upload（不可删），不把读失败按非 Upload 照删（六轮评审 R1）。
+        let source_may_be_upload = store::BundleStore::new()
             .records()
             .map(|records| {
                 records
                     .iter()
                     .any(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)))
             })
-            .unwrap_or(false);
+            .unwrap_or(true);
         if let Err(e) = store::BundleStore::new().remove(tool_id) {
             log::warn!("[marketplace] bundles.json 镜像删除失败（uninstall {tool_id}）: {e}");
         }
@@ -477,11 +478,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 包目录资源清理（§4：卸载 = 删登记 + 删目录）。companion 技能由命令层
         // 联动删除（其 uninstall 会清理腾空的 skills/ 与包目录）；manifest 卸载后
         // 仍可读——load_manifest 回退内嵌 catalog。
-        // 上传包例外（二轮评审：卸载不可逆删除用户唯一副本）：Upload 来源的包文件
-        // 是用户自己的内容，卸载只清登记/凭据/mcp.json，保留 `bundles/<id>/` 目录
-        // 供重新安装（install 走原子落盘会再覆盖）；内嵌预置才删目录（启动可按
-        // 快照重释放）。
-        if !source_is_upload {
+        // 只有「可重释放」的包才删目录（六轮评审 R1，数据丢失）：内嵌目录有对应
+        // spec（启动/重装可按快照重释放）且登记非 Upload 才删。其余一律保留
+        // `bundles/<id>/`（用户唯一副本）：Upload 来源（二轮评审）、手写自定义
+        // MCP（migrate_custom_mcp_layout 从旧布局强迁、无 plugin.json、登记为
+        // Preset）、无记录。
+        let can_redeliver = mcp_catalog::spec_for(tool_id).is_some();
+        if can_redeliver && !source_may_be_upload {
             let pkg_dir = paths::bundles_root().join(tool_id);
             if pkg_dir.exists() {
                 let _ = std::fs::remove_dir_all(pkg_dir.join("mcp"));
@@ -505,14 +508,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         self.load_manifest(tool_id)?
             .servers
             .into_iter()
-            .find(|server| {
-                !server.scopes.is_empty()
-                    || server.oauth.is_some()
-                    || server
-                        .oauth_resource
-                        .as_deref()
-                        .is_some_and(|s| !s.trim().is_empty())
-            })
+            .find(|server| server.requires_oauth())
             .map(|server| server.name)
     }
 
@@ -2117,6 +2113,128 @@ mod tests {
                 "跳过 pip 后供给应照常写入 mcp.json"
             );
             assert!(mgr.installed_ids().contains(&"up-pip".to_string()));
+        });
+    }
+
+    /// 回归（六轮评审 R1）：手写自定义 MCP（migrate_custom_mcp_layout 从旧布局
+    /// 强迁、无 plugin.json、install 镜像登记为 Preset）卸载必须保留
+    /// `bundles/<id>/` 目录 —— 内嵌目录无对应 spec，删除即丢失用户唯一副本。
+    #[test]
+    fn uninstall_custom_migrated_mcp_keeps_package_dir() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "custom-migrated",
+                r#"{
+                    "id":"custom-migrated","name":"Custom","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"]
+                }"#,
+            );
+            let mgr = MarketplaceManager::new();
+            mgr.install("custom-migrated", &std::collections::HashMap::new())
+                .unwrap();
+            assert_eq!(
+                store::BundleStore::new()
+                    .get("custom-migrated")
+                    .unwrap()
+                    .unwrap()
+                    .source,
+                store::BundleSource::Preset,
+                "无 plugin.json 的自定义包镜像来源应为 Preset"
+            );
+
+            mgr.uninstall("custom-migrated").unwrap();
+
+            assert!(
+                !mgr.installed_ids().contains(&"custom-migrated".to_string()),
+                "卸载应移除 installed.json 登记"
+            );
+            assert!(
+                crate::platform::paths::bundles_root()
+                    .join("custom-migrated")
+                    .join("mcp")
+                    .join("manifest.json")
+                    .is_file(),
+                "自定义迁移 MCP 卸载后包目录应保留"
+            );
+        });
+    }
+
+    /// 回归（六轮评审 R1）：bundles.json 里无记录（旧版本安装/登记丢失）的自定
+    /// 义包同样不可删目录 —— 无记录不等于可重释放。
+    #[test]
+    fn uninstall_custom_mcp_without_record_keeps_package_dir() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "custom-norec",
+                r#"{
+                    "id":"custom-norec","name":"Custom","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"]
+                }"#,
+            );
+            let mgr = MarketplaceManager::new();
+            mgr.install("custom-norec", &std::collections::HashMap::new())
+                .unwrap();
+            // 模拟登记丢失：卸载前删掉 bundles.json 记录。
+            store::BundleStore::new().remove("custom-norec").unwrap();
+
+            mgr.uninstall("custom-norec").unwrap();
+
+            assert!(
+                crate::platform::paths::bundles_root()
+                    .join("custom-norec")
+                    .join("mcp")
+                    .join("manifest.json")
+                    .is_file(),
+                "无记录的自定义包卸载后目录应保留"
+            );
+        });
+    }
+
+    /// 回归（六轮评审 R1）：内嵌预置包（内嵌目录有 spec，启动/重装可重释放）
+    /// 卸载仍删目录 —— 新判定只收窄删除面，不放松预置包清理。
+    #[test]
+    fn uninstall_embedded_preset_removes_package_dir() {
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::new();
+            mgr.install("obsidian", &std::collections::HashMap::new())
+                .unwrap();
+            let pkg_dir = crate::platform::paths::bundles_root().join("obsidian");
+            assert!(
+                pkg_dir.join("mcp").join("manifest.json").is_file(),
+                "内嵌预置安装后应释放 mcp/ 目录"
+            );
+
+            mgr.uninstall("obsidian").unwrap();
+
+            assert!(!pkg_dir.exists(), "内嵌预置卸载后包目录应删除");
+        });
+    }
+
+    /// 回归（六轮评审 R1 fail-closed）：bundles.json 损坏读不出时，卸载不得按
+    /// 「非 Upload」照删目录 —— 读失败视为可能 Upload，保留目录。
+    #[test]
+    fn uninstall_with_corrupted_bundles_json_keeps_package_dir() {
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::new();
+            mgr.install("obsidian", &std::collections::HashMap::new())
+                .unwrap();
+            let pkg_dir = crate::platform::paths::bundles_root().join("obsidian");
+            assert!(pkg_dir.join("mcp").join("manifest.json").is_file());
+            // 损坏 bundles.json（load_locked 解析失败 fail loud）。
+            std::fs::write(
+                crate::platform::paths::pinvou3_home()
+                    .join("marketplace")
+                    .join("bundles.json"),
+                b"{ not json",
+            )
+            .unwrap();
+
+            mgr.uninstall("obsidian").unwrap();
+
+            assert!(
+                pkg_dir.join("mcp").join("manifest.json").is_file(),
+                "bundles.json 读失败时卸载应保留目录（fail-closed）"
+            );
         });
     }
 }

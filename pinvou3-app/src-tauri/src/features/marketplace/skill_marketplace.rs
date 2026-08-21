@@ -22,7 +22,6 @@
 //! 5MiB 的仓库一律拒装,且选路逻辑私有硬编码。此处只做"已知来源的精确落盘",
 //! 自带等价的路径穿越/symlink/大小安全防护(参照底座 install.rs 的判断)。
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use include_dir::{include_dir, Dir};
@@ -531,10 +530,13 @@ impl SkillMarketplaceManager {
             let mut md = archive
                 .by_name(&md_rel)
                 .map_err(|e| format!("读 SKILL.md: {e}"))?;
-            let mut buf = String::new();
-            md.read_to_string(&mut buf)
-                .map_err(|e| format!("读 SKILL.md: {e}"))?;
-            read_skill_name_from_str(&buf).ok_or("SKILL.md 缺 name 字段")?
+            // 有界预读（六轮评审 R2）：伪造 size=0 头部的 SKILL.md 在不受限
+            // read_to_string 下会整流读入内存；take(声明+1) 超即拒，与 pass2 /
+            // plugin_import 同一收口。
+            let declared = md.size();
+            let buf = super::plugin_import::read_zip_entry_bounded(&mut md, declared, "SKILL.md")?;
+            let text = String::from_utf8(buf).map_err(|e| format!("读 SKILL.md: {e}"))?;
+            read_skill_name_from_str(&text).ok_or("SKILL.md 缺 name 字段")?
         };
         if !is_safe_skill_name(&name) {
             return Err(format!("非法技能名 '{name}'"));
@@ -1594,9 +1596,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// 更新检测（指纹口径）：刚安装（记录=嵌入=磁盘）→ false；本地篡改/删除/新增
-    /// 文件（磁盘 ≠ 记录）→ true；模拟上游更新（记录指纹滞后于嵌入资源）→ true；
-    /// 重装后恢复 false。未安装恒 false。
+    /// 伪造 SKILL.md 自身的头部（中央目录声明 size=0、压缩流真实解压非空）：
+    /// frontmatter 预读也必须走有界读取（read_zip_entry_bounded）响亮拒收，
+    /// 不能整流读入内存（六轮评审 R2：pass2 已收口，预读取名同一防护）。
+    #[test]
+    fn import_package_named_rejects_forged_skill_md_header() {
+        use std::io::Write;
+        let tmp = fresh_dir("forged_skill_md");
+        let zip_path = tmp.join("pkg.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("bomb-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: bomb-skill\ndescription: d\n---\n# hi")
+                .unwrap();
+            zw.finish().unwrap();
+        }
+        // 篡改中央目录：把 SKILL.md 条目的「未压缩大小」字段（条目内偏移 24）
+        // 改为 0（伪造头部）；压缩流保持原样，真实解压仍非空。
+        let mut bytes = std::fs::read(&zip_path).unwrap();
+        let name = b"bomb-skill/SKILL.md";
+        let sig = 0x02014b50u32.to_le_bytes();
+        let pos = (0..bytes.len().saturating_sub(50 + name.len()))
+            .find(|&p| bytes[p..p + 4] == sig && &bytes[p + 46..p + 46 + name.len()] == name)
+            .expect("中央目录应含 SKILL.md 条目");
+        bytes[pos + 24..pos + 28].copy_from_slice(&0u32.to_le_bytes());
+        std::fs::write(&zip_path, &bytes).unwrap();
+
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        let err = mgr
+            .import_package_named(zip_path.to_str().unwrap(), "pkg.zip")
+            .unwrap_err();
+        assert!(
+            err.contains("超过 zip 头声明"),
+            "伪造 SKILL.md 头部应被有界预读拒收，实际: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn update_available_detects_disk_drift() {
         let tmp = fresh_dir("update");
