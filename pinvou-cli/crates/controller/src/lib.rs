@@ -13,6 +13,8 @@ mod wal;
 #[cfg(windows)]
 mod windows_security;
 
+#[cfg(debug_assertions)]
+pub use daemon::run_controller_once_for_test;
 pub use daemon::{DetachedLaunch, run_from_env};
 pub use error::ControllerError;
 pub use instance_lock::InstanceLock;

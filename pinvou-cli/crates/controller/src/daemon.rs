@@ -130,6 +130,22 @@ fn run_controller() -> Result<(), ControllerError> {
     }
 }
 
+#[cfg(debug_assertions)]
+pub fn run_controller_once_for_test(
+    paths: ControllerPaths,
+    session: ControllerSession,
+    ready: std::sync::mpsc::Sender<()>,
+) -> Result<(), ControllerError> {
+    paths
+        .prepare_data_root()
+        .map_err(controller_context("prepare controller data root"))?;
+    let mut listener = LocalIpcListener::bind(paths.endpoint())
+        .map_err(controller_context("bind controller IPC"))?;
+    let _ = ready.send(());
+    listener.serve_one(&session)?;
+    Ok(())
+}
+
 fn controller_context(context: &'static str) -> impl FnOnce(ControllerError) -> ControllerError {
     move |error| match error {
         ControllerError::Io(source) => ControllerError::IoContext { context, source },

@@ -2,7 +2,7 @@ use std::io::Write;
 
 use pinvou_controller::{
     ControllerError, ControllerPaths, ControllerSession, DetachedLaunch, HostPlatform,
-    InstanceLock, LocalIpcListener, LocalIpcPolicy, RollingLog,
+    InstanceLock, LocalIpcListener, LocalIpcPolicy, RollingLog, run_controller_once_for_test,
 };
 use pinvou_protocol::{
     HelloClient, HelloServer, IpcMessage, StableExitCode, encode_frame, read_frame,
@@ -158,6 +158,45 @@ fn hello_challenge_and_health_request_have_stable_contracts() {
 
     let mismatch = ControllerError::ProtocolMismatch;
     assert_eq!(mismatch.exit_code(), StableExitCode::ControllerUnavailable);
+}
+
+#[test]
+fn debug_one_shot_controller_serves_one_client_and_releases_the_endpoint() {
+    let root = temp_dir("one-shot");
+    let paths = ControllerPaths::from_roots(
+        HostPlatform::current().unwrap(),
+        root.join("data"),
+        root.join("runtime"),
+        "one-shot-scope",
+    )
+    .unwrap();
+    let endpoint = paths.endpoint().display();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        run_controller_once_for_test(paths, ControllerSession::new("one-shot").unwrap(), ready_tx)
+            .unwrap();
+    });
+    ready_rx.recv().unwrap();
+
+    let mut stream = connect_contract_endpoint(&endpoint).unwrap();
+    let hello = HelloClient::new(serde_json::json!({"client":"one-shot"})).unwrap();
+    stream.write_all(&encode_frame(&hello).unwrap()).unwrap();
+    let answer: HelloServer = read_frame(&mut stream).unwrap();
+    let request = IpcMessage::request(
+        serde_json::json!(1),
+        "health",
+        serde_json::json!({"instance_id": answer.instance_id()}),
+    )
+    .unwrap();
+    stream.write_all(&encode_frame(&request).unwrap()).unwrap();
+    stream.flush().unwrap();
+    let response: IpcMessage = read_frame(&mut stream).unwrap();
+    assert_eq!(response.payload()["status"], "ok");
+    drop(stream);
+    server.join().unwrap();
+
+    assert!(connect_contract_endpoint(&endpoint).is_err());
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -388,4 +427,22 @@ fn uds_client(socket: &std::path::Path, client: usize) {
         let response: IpcMessage = read_frame(&mut stream).unwrap();
         assert_eq!(response.payload()["status"], "ok");
     }
+}
+
+trait ContractReadWrite: std::io::Read + std::io::Write {}
+impl<T: std::io::Read + std::io::Write> ContractReadWrite for T {}
+
+#[cfg(windows)]
+fn connect_contract_endpoint(endpoint: &str) -> std::io::Result<Box<dyn ContractReadWrite>> {
+    Ok(Box::new(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(endpoint)?,
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn connect_contract_endpoint(endpoint: &str) -> std::io::Result<Box<dyn ContractReadWrite>> {
+    Ok(Box::new(std::os::unix::net::UnixStream::connect(endpoint)?))
 }
