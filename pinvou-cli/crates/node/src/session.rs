@@ -238,6 +238,7 @@ pub struct NodeSession {
     next_seq: Arc<AtomicU64>,
     runtime: Arc<Mutex<RuntimeSlot>>,
     active_turn: Arc<Mutex<Option<u64>>>,
+    pending_switch: Arc<Mutex<Option<PreparedRuntimeSwitch>>>,
 }
 
 #[derive(Debug)]
@@ -245,6 +246,12 @@ struct RuntimeSlot {
     id: String,
     host: Arc<dyn NodeRuntimeHost>,
     state_file: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct PreparedRuntimeSwitch {
+    runtime: String,
+    token: String,
 }
 
 impl NodeSession {
@@ -292,6 +299,7 @@ impl NodeSession {
                 instance_id,
                 next_seq: Arc::new(AtomicU64::new(1)),
                 active_turn: Arc::new(Mutex::new(None)),
+                pending_switch: Arc::new(Mutex::new(None)),
                 runtime: Arc::new(Mutex::new(RuntimeSlot {
                     id: runtime_id,
                     host: runtime,
@@ -367,14 +375,96 @@ impl NodeSession {
                     .and_then(|value| value.as_str())
                     .filter(|value| !value.is_empty())
                     .ok_or(NodeError::InvalidMessage)?;
-                let mut active = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
-                let host = create_runtime_host(runtime)?;
-                if let Some(state_file) = &active.state_file {
-                    persist_runtime_selection(state_file, runtime)?;
-                }
-                active.id = runtime.into();
-                active.host = host;
+                self.commit_runtime_switch(runtime)?;
                 json!({"status":"ok", "runtime":runtime})
+            }
+            Some("runtime.switch.prepare") => {
+                if self
+                    .active_turn
+                    .lock()
+                    .map_err(|_| NodeError::InvalidMessage)?
+                    .is_some()
+                {
+                    return Err(NodeError::RuntimeBusy);
+                }
+                let runtime = request
+                    .payload()
+                    .get("runtime")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(NodeError::InvalidMessage)?;
+                let _host = create_runtime_host(runtime)?;
+                let current_runtime = self
+                    .runtime
+                    .lock()
+                    .map_err(|_| NodeError::InvalidMessage)?
+                    .id
+                    .clone();
+                let switch_token = format!(
+                    "runtime-switch-{}",
+                    self.next_seq.fetch_add(1, Ordering::Relaxed)
+                );
+                *self
+                    .pending_switch
+                    .lock()
+                    .map_err(|_| NodeError::InvalidMessage)? = Some(PreparedRuntimeSwitch {
+                    runtime: runtime.to_owned(),
+                    token: switch_token.clone(),
+                });
+                json!({
+                    "status": "ready",
+                    "runtime": runtime,
+                    "current_runtime": current_runtime,
+                    "switch_token": switch_token,
+                    "requires_compression": false,
+                    "context": {
+                        "strategy": "none",
+                        "reason": "turn_boundary_clean",
+                        "portable_checkpoint": false
+                    },
+                    "tools": {
+                        "policy": "portable_or_replay_only",
+                        "active_tool_calls": 0,
+                        "blocking_missing_tools": []
+                    }
+                })
+            }
+            Some("runtime.switch.commit") => {
+                if self
+                    .active_turn
+                    .lock()
+                    .map_err(|_| NodeError::InvalidMessage)?
+                    .is_some()
+                {
+                    return Err(NodeError::RuntimeBusy);
+                }
+                let runtime = request
+                    .payload()
+                    .get("runtime")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(NodeError::InvalidMessage)?;
+                let switch_token = request
+                    .payload()
+                    .get("switch_token")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(NodeError::InvalidMessage)?;
+                {
+                    let mut pending = self
+                        .pending_switch
+                        .lock()
+                        .map_err(|_| NodeError::InvalidMessage)?;
+                    let Some(prepared) = pending.as_ref() else {
+                        return Err(NodeError::InvalidMessage);
+                    };
+                    if prepared.runtime != runtime || prepared.token != switch_token {
+                        return Err(NodeError::InvalidMessage);
+                    }
+                    *pending = None;
+                }
+                self.commit_runtime_switch(runtime)?;
+                json!({"status":"ok", "runtime":runtime, "switch_token":switch_token})
             }
             Some("runtime.echo") => {
                 let text = request
@@ -459,6 +549,17 @@ impl NodeSession {
             .map_err(|_| NodeError::InvalidMessage)?
             .host
             .clone())
+    }
+
+    fn commit_runtime_switch(&self, runtime: &str) -> Result<(), NodeError> {
+        let mut active = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
+        let host = create_runtime_host(runtime)?;
+        if let Some(state_file) = &active.state_file {
+            persist_runtime_selection(state_file, runtime)?;
+        }
+        active.id = runtime.into();
+        active.host = host;
+        Ok(())
     }
 }
 

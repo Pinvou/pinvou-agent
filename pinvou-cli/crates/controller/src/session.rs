@@ -210,6 +210,48 @@ impl ControllerSession {
                         .map_err(|_| ControllerError::InvalidMessage)?,
                 ])
             }
+            Some("runtime.switch.prepare") => {
+                let route = self
+                    .local_node
+                    .as_ref()
+                    .ok_or(ControllerError::UnsupportedRequest)?;
+                let runtime = request
+                    .payload()
+                    .get("runtime")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(ControllerError::InvalidMessage)?;
+                let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
+                let response = client.runtime_switch_prepare(runtime)?;
+                Ok(vec![
+                    IpcMessage::response(id, response.payload().clone())
+                        .map_err(|_| ControllerError::InvalidMessage)?,
+                ])
+            }
+            Some("runtime.switch.commit") => {
+                let route = self
+                    .local_node
+                    .as_ref()
+                    .ok_or(ControllerError::UnsupportedRequest)?;
+                let runtime = request
+                    .payload()
+                    .get("runtime")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(ControllerError::InvalidMessage)?;
+                let switch_token = request
+                    .payload()
+                    .get("switch_token")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or(ControllerError::InvalidMessage)?;
+                let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
+                let response = client.runtime_switch_commit(runtime, switch_token)?;
+                Ok(vec![
+                    IpcMessage::response(id, response.payload().clone())
+                        .map_err(|_| ControllerError::InvalidMessage)?,
+                ])
+            }
             Some("approval.resolve") => {
                 let route = self
                     .local_node

@@ -295,6 +295,22 @@ impl<S: Read + Write> ControllerWire<S> {
     pub fn runtime_switch(&mut self, runtime: &str) -> Result<IpcMessage, DistributedError> {
         self.request("runtime.switch", json!({"runtime": runtime}))
     }
+    pub fn runtime_switch_prepare(
+        &mut self,
+        runtime: &str,
+    ) -> Result<IpcMessage, DistributedError> {
+        self.request("runtime.switch.prepare", json!({"runtime": runtime}))
+    }
+    pub fn runtime_switch_commit(
+        &mut self,
+        runtime: &str,
+        switch_token: &str,
+    ) -> Result<IpcMessage, DistributedError> {
+        self.request(
+            "runtime.switch.commit",
+            json!({"runtime": runtime, "switch_token": switch_token}),
+        )
+    }
     pub fn health(&mut self) -> Result<IpcMessage, DistributedError> {
         self.request("health", json!({}))
     }
@@ -530,7 +546,7 @@ fn execute_runtime_switch_with_controller<S: Read + Write>(
             format!("runtime {runtime} is not ready"),
         ));
     }
-    let response = controller.runtime_switch(runtime)?;
+    let response = prepare_and_commit_runtime_switch(controller, runtime)?;
     Ok(match output {
         OutputMode::Json => response.payload().to_string(),
         OutputMode::Human => {
@@ -542,6 +558,25 @@ fn execute_runtime_switch_with_controller<S: Read + Write>(
             format_runtime_switch_human(selected, detect.payload())
         }
     })
+}
+
+fn prepare_and_commit_runtime_switch<S: Read + Write>(
+    client: &mut ControllerWire<S>,
+    runtime: &str,
+) -> Result<IpcMessage, DistributedError> {
+    let prepared = client.runtime_switch_prepare(runtime)?;
+    let switch_token = prepared
+        .payload()
+        .get("switch_token")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            DistributedError::new(
+                StableExitCode::RuntimeFailed,
+                "runtime switch prepare response is invalid",
+            )
+        })?;
+    client.runtime_switch_commit(runtime, switch_token)
 }
 
 fn execute_chat(initial_runtime: Option<&str>) -> Result<String, DistributedError> {
@@ -753,7 +788,7 @@ fn handle_slash_command<S: Read + Write>(
                 write_terminal_to(output, "runtime not switched\n")?;
                 return Ok(true);
             }
-            let response = client.runtime_switch(runtime)?;
+            let response = prepare_and_commit_runtime_switch(client, runtime)?;
             let selected = response
                 .payload()
                 .get("runtime")
@@ -797,7 +832,7 @@ fn write_initial_runtime_switch<S: Read + Write>(
             format!("runtime {runtime} is not ready"),
         ));
     }
-    let response = client.runtime_switch(runtime)?;
+    let response = prepare_and_commit_runtime_switch(client, runtime)?;
     let selected = response
         .payload()
         .get("runtime")
@@ -927,6 +962,30 @@ fn write_terminal_to(output: &mut impl Write, text: &str) -> Result<(), Distribu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn runtime_switch_prepare_response(id: u64, runtime: &str, token: &str) -> IpcMessage {
+        IpcMessage::response(
+            json!(id),
+            json!({
+                "status": "ready",
+                "runtime": runtime,
+                "current_runtime": "echo",
+                "switch_token": token,
+                "requires_compression": false,
+                "context": {"strategy":"none", "reason":"turn_boundary_clean"},
+                "tools": {"policy":"portable_or_replay_only"}
+            }),
+        )
+        .unwrap()
+    }
+
+    fn runtime_switch_commit_response(id: u64, runtime: &str, token: &str) -> IpcMessage {
+        IpcMessage::response(
+            json!(id),
+            json!({"status": "ok", "runtime": runtime, "switch_token": token}),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn chat_loop_sends_prompt_and_projects_runtime_events() {
@@ -1122,8 +1181,8 @@ mod tests {
             }),
         )
         .unwrap();
-        let switch_response =
-            IpcMessage::response(json!(3), json!({"status": "ok", "runtime": "echo"})).unwrap();
+        let prepare_response = runtime_switch_prepare_response(3, "echo", "switch-token-1");
+        let commit_response = runtime_switch_commit_response(4, "echo", "switch-token-1");
         let detect_response = IpcMessage::response(
             json!(2),
             json!({
@@ -1136,7 +1195,12 @@ mod tests {
             }),
         )
         .unwrap();
-        let stream = TestDuplex::with_responses([list_response, detect_response, switch_response]);
+        let stream = TestDuplex::with_responses([
+            list_response,
+            detect_response,
+            prepare_response,
+            commit_response,
+        ]);
         let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
         let interrupted = Arc::new(AtomicBool::new(false));
         let active_turn = Arc::new(Mutex::new(None));
@@ -1161,12 +1225,15 @@ mod tests {
         assert!(output.contains("runtime switched to echo"));
         assert!(output.contains("status: available"));
         let requests = client.into_inner().requests();
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 4);
         assert_eq!(requests[0].method(), Some("runtime.list"));
         assert_eq!(requests[1].method(), Some("runtime.detect"));
         assert_eq!(requests[1].payload()["runtime"], "echo");
-        assert_eq!(requests[2].method(), Some("runtime.switch"));
+        assert_eq!(requests[2].method(), Some("runtime.switch.prepare"));
         assert_eq!(requests[2].payload()["runtime"], "echo");
+        assert_eq!(requests[3].method(), Some("runtime.switch.commit"));
+        assert_eq!(requests[3].payload()["runtime"], "echo");
+        assert_eq!(requests[3].payload()["switch_token"], "switch-token-1");
     }
 
     #[test]
@@ -1250,9 +1317,10 @@ mod tests {
             }),
         )
         .unwrap();
-        let switch_response =
-            IpcMessage::response(json!(2), json!({"status": "ok", "runtime": "codex"})).unwrap();
-        let stream = TestDuplex::with_responses([detect_response, switch_response]);
+        let prepare_response = runtime_switch_prepare_response(2, "codex", "switch-token-2");
+        let commit_response = runtime_switch_commit_response(3, "codex", "switch-token-2");
+        let stream =
+            TestDuplex::with_responses([detect_response, prepare_response, commit_response]);
         let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
         let interrupted = Arc::new(AtomicBool::new(false));
         let active_turn = Arc::new(Mutex::new(None));
@@ -1274,11 +1342,14 @@ mod tests {
         assert!(output.contains("runtime: codex"));
         assert!(output.contains("status: available"));
         let requests = client.into_inner().requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].method(), Some("runtime.detect"));
         assert_eq!(requests[0].payload()["runtime"], "codex");
-        assert_eq!(requests[1].method(), Some("runtime.switch"));
+        assert_eq!(requests[1].method(), Some("runtime.switch.prepare"));
         assert_eq!(requests[1].payload()["runtime"], "codex");
+        assert_eq!(requests[2].method(), Some("runtime.switch.commit"));
+        assert_eq!(requests[2].payload()["runtime"], "codex");
+        assert_eq!(requests[2].payload()["switch_token"], "switch-token-2");
     }
 
     #[test]
@@ -1335,9 +1406,10 @@ mod tests {
             }),
         )
         .unwrap();
-        let switch_response =
-            IpcMessage::response(json!(2), json!({"status": "ok", "runtime": "codex"})).unwrap();
-        let stream = TestDuplex::with_responses([detect_response, switch_response]);
+        let prepare_response = runtime_switch_prepare_response(2, "codex", "switch-token-3");
+        let commit_response = runtime_switch_commit_response(3, "codex", "switch-token-3");
+        let stream =
+            TestDuplex::with_responses([detect_response, prepare_response, commit_response]);
         let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
 
         let output =
@@ -1347,11 +1419,14 @@ mod tests {
         assert!(output.contains("runtime switched to codex"));
         assert!(output.contains("status: available"));
         let requests = client.into_inner().requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].method(), Some("runtime.detect"));
         assert_eq!(requests[0].payload()["runtime"], "codex");
-        assert_eq!(requests[1].method(), Some("runtime.switch"));
+        assert_eq!(requests[1].method(), Some("runtime.switch.prepare"));
         assert_eq!(requests[1].payload()["runtime"], "codex");
+        assert_eq!(requests[2].method(), Some("runtime.switch.commit"));
+        assert_eq!(requests[2].payload()["runtime"], "codex");
+        assert_eq!(requests[2].payload()["switch_token"], "switch-token-3");
     }
 
     #[test]
@@ -1395,9 +1470,10 @@ mod tests {
             }),
         )
         .unwrap();
-        let switch_response =
-            IpcMessage::response(json!(2), json!({"status": "ok", "runtime": "codex"})).unwrap();
-        let stream = TestDuplex::with_responses([detect_response, switch_response]);
+        let prepare_response = runtime_switch_prepare_response(2, "codex", "switch-token-4");
+        let commit_response = runtime_switch_commit_response(3, "codex", "switch-token-4");
+        let stream =
+            TestDuplex::with_responses([detect_response, prepare_response, commit_response]);
         let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
         let mut output = Vec::new();
 
@@ -1407,11 +1483,14 @@ mod tests {
         assert!(output.contains("runtime switched to codex"));
         assert!(output.contains("status: available"));
         let requests = client.into_inner().requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].method(), Some("runtime.detect"));
         assert_eq!(requests[0].payload()["runtime"], "codex");
-        assert_eq!(requests[1].method(), Some("runtime.switch"));
+        assert_eq!(requests[1].method(), Some("runtime.switch.prepare"));
         assert_eq!(requests[1].payload()["runtime"], "codex");
+        assert_eq!(requests[2].method(), Some("runtime.switch.commit"));
+        assert_eq!(requests[2].payload()["runtime"], "codex");
+        assert_eq!(requests[2].payload()["switch_token"], "switch-token-4");
     }
 
     #[test]

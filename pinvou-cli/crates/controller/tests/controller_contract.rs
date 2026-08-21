@@ -196,6 +196,28 @@ fn controller_runtime_control_is_formal_and_instance_bound() {
         session.handle(switch),
         Err(ControllerError::UnsupportedRequest)
     ));
+
+    let prepare = IpcMessage::request(
+        serde_json::json!(23),
+        "runtime.switch.prepare",
+        serde_json::json!({"runtime": "echo"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        session.handle(prepare),
+        Err(ControllerError::UnsupportedRequest)
+    ));
+
+    let commit = IpcMessage::request(
+        serde_json::json!(24),
+        "runtime.switch.commit",
+        serde_json::json!({"runtime": "echo", "switch_token": "token"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        session.handle(commit),
+        Err(ControllerError::UnsupportedRequest)
+    ));
 }
 
 #[cfg(debug_assertions)]

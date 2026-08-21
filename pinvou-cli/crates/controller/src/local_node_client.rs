@@ -73,6 +73,30 @@ impl LocalNodeClient {
         self.request("runtime.switch", serde_json::json!({"runtime":runtime}))
     }
 
+    pub fn runtime_switch_prepare(&mut self, runtime: &str) -> Result<IpcMessage, ControllerError> {
+        if runtime.is_empty() {
+            return Err(ControllerError::InvalidMessage);
+        }
+        self.request(
+            "runtime.switch.prepare",
+            serde_json::json!({"runtime":runtime}),
+        )
+    }
+
+    pub fn runtime_switch_commit(
+        &mut self,
+        runtime: &str,
+        switch_token: &str,
+    ) -> Result<IpcMessage, ControllerError> {
+        if runtime.is_empty() || switch_token.is_empty() {
+            return Err(ControllerError::InvalidMessage);
+        }
+        self.request(
+            "runtime.switch.commit",
+            serde_json::json!({"runtime":runtime, "switch_token":switch_token}),
+        )
+    }
+
     pub fn resolve_approval(
         &mut self,
         approval_id: &str,

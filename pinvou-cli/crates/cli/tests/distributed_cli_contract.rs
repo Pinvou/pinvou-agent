@@ -257,7 +257,7 @@ fn causal_first_error_mapping_covers_all_stable_exit_codes() {
 
 #[test]
 fn cli_uses_only_formal_controller_methods_and_binds_the_instance_challenge() {
-    let responses = (1..=8).map(|id| {
+    let responses = (1..=10).map(|id| {
         IpcMessage::response(serde_json::json!(id), serde_json::json!({"ok":true})).unwrap()
     });
     let mut client = ControllerWire::from_authenticated(
@@ -272,6 +272,10 @@ fn cli_uses_only_formal_controller_methods_and_binds_the_instance_challenge() {
     client.runtime_detect(Some("codex")).unwrap();
     client.runtime_list().unwrap();
     client.runtime_switch("codex").unwrap();
+    client.runtime_switch_prepare("codex").unwrap();
+    client
+        .runtime_switch_commit("codex", "switch-token")
+        .unwrap();
 
     let requests = client.into_inner().requests();
     assert_eq!(
@@ -287,7 +291,9 @@ fn cli_uses_only_formal_controller_methods_and_binds_the_instance_challenge() {
             "runtime.detect",
             "runtime.detect",
             "runtime.list",
-            "runtime.switch"
+            "runtime.switch",
+            "runtime.switch.prepare",
+            "runtime.switch.commit"
         ]
     );
     assert!(requests.iter().all(|request| {
@@ -300,6 +306,9 @@ fn cli_uses_only_formal_controller_methods_and_binds_the_instance_challenge() {
     assert!(requests[4].payload().get("runtime").is_none());
     assert_eq!(requests[5].payload()["runtime"], "codex");
     assert_eq!(requests[7].payload()["runtime"], "codex");
+    assert_eq!(requests[8].payload()["runtime"], "codex");
+    assert_eq!(requests[9].payload()["runtime"], "codex");
+    assert_eq!(requests[9].payload()["switch_token"], "switch-token");
 }
 
 #[test]

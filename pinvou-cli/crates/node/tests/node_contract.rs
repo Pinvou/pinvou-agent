@@ -221,6 +221,75 @@ fn node_rejects_runtime_switch_while_a_turn_is_active() {
     );
 }
 
+#[test]
+fn node_runtime_switch_prepare_and_commit_are_token_bound() {
+    let session = NodeSession::new("node-instance").unwrap();
+    let prepare = IpcMessage::request(
+        serde_json::json!(44),
+        "runtime.switch.prepare",
+        serde_json::json!({"instance_id":"node-instance", "runtime":"echo"}),
+    )
+    .unwrap();
+
+    let prepared = session.handle(prepare).unwrap();
+    assert_eq!(prepared.payload()["status"], "ready");
+    assert_eq!(prepared.payload()["runtime"], "echo");
+    assert_eq!(prepared.payload()["current_runtime"], "echo");
+    assert_eq!(prepared.payload()["requires_compression"], false);
+    assert_eq!(prepared.payload()["context"]["strategy"], "none");
+    assert_eq!(
+        prepared.payload()["tools"]["policy"],
+        "portable_or_replay_only"
+    );
+    let token = prepared.payload()["switch_token"].as_str().unwrap();
+    assert!(!token.is_empty());
+
+    let stale_commit = IpcMessage::request(
+        serde_json::json!(45),
+        "runtime.switch.commit",
+        serde_json::json!({
+            "instance_id":"node-instance",
+            "runtime":"codex",
+            "switch_token": token
+        }),
+    )
+    .unwrap();
+    assert!(matches!(
+        session.handle(stale_commit),
+        Err(NodeError::InvalidMessage)
+    ));
+
+    let commit = IpcMessage::request(
+        serde_json::json!(46),
+        "runtime.switch.commit",
+        serde_json::json!({
+            "instance_id":"node-instance",
+            "runtime":"echo",
+            "switch_token": token
+        }),
+    )
+    .unwrap();
+    let committed = session.handle(commit).unwrap();
+    assert_eq!(committed.payload()["status"], "ok");
+    assert_eq!(committed.payload()["runtime"], "echo");
+    assert_eq!(committed.payload()["switch_token"], token);
+
+    let duplicate_commit = IpcMessage::request(
+        serde_json::json!(47),
+        "runtime.switch.commit",
+        serde_json::json!({
+            "instance_id":"node-instance",
+            "runtime":"echo",
+            "switch_token": token
+        }),
+    )
+    .unwrap();
+    assert!(matches!(
+        session.handle(duplicate_commit),
+        Err(NodeError::InvalidMessage)
+    ));
+}
+
 fn temp_state_file(name: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
