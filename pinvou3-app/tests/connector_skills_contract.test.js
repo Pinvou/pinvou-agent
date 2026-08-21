@@ -7,7 +7,7 @@ const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
 const bundle = (...p) => path.join(root, "src-tauri", "resources", "common", "bundle", ...p);
-const packs = ["lark-skills", "wecom-skills", "dingtalk-skills", "tmeet-skills"]; // PR#302: skills/ 已重定位 lark-skills/
+const packs = ["lark-skills", "wecom-skills", "dingtalk-skills", "tmeet-skills", "weibo-skills"]; // PR#302: skills/ 已重定位 lark-skills/
 
 function walk(dir, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -137,6 +137,7 @@ const binsByPack = {
   "wecom-skills/wecomcli-": "wecom-cli",
   "dingtalk-skills/dws": "dws",
   "tmeet-skills/tmeet-skill": "tmeet",
+  "weibo-skills/weibo-cli": "weibo-cli",
 };
 for (const f of files.filter((f) => path.basename(f) === "SKILL.md")) {
   const relPath = path.relative(bundle(), f);
@@ -151,6 +152,10 @@ for (const f of files.filter((f) => path.basename(f) === "SKILL.md")) {
   assert.ok(
     text.includes(`bins: ["${binsByPack[match]}"]`),
     `${rel(f)}: requires.bins 应为 ["${binsByPack[match]}"]`,
+  );
+  assert.ok(
+    !/WEIBO(?:_CLI)?_(?:REFRESH_)?TOKEN/.test(text),
+    `${rel(f)}: 不得指导用户配置微博 env-token 授权`,
   );
   const name = text.match(/name:\s*(\S+)/)?.[1];
   assert.equal(name, path.basename(path.dirname(f)), `${rel(f)}: name 与目录名不一致`);

@@ -46,10 +46,14 @@ function injectSource() {
     const OAUTH_SERVERS={'yuandian-mcp':'yuandian_mcp','canva-mcp':'canva_mcp',qcc:'qcc-company'};
     const BLOCKING_INSTALL_OAUTH_TOOLS=new Set(['yuandian-mcp','canva-mcp']);
     const state=window.__TOOL_STORE_TEST__={
-      installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false,ima:false},
+      installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false,weibo:false,ima:false},
       oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0,failVisibility:false,
-      hidden:{plain:[],code:[]}
+      hidden:{plain:[],code:[]},copiedText:null
     };
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText(text){ state.copiedText = text; return Promise.resolve(); } }
+    });
     window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
     window.__TAURI_EVENT_HANDLERS__={};
     const tools=()=>Object.entries(TOOL_META).map(([id,[name,companions]])=>({id,name,description:'test',version:'1.0.0',icon:'',category:'test',installed:!!state.installed[id],companion_skills:companions}));
@@ -123,6 +127,7 @@ function injectSource() {
         case 'wecom_status': return Promise.resolve({connected:state.connected.wecom});
         case 'dingtalk_status': return Promise.resolve({connected:state.connected.dingtalk});
         case 'tmeet_status': return Promise.resolve({connected:state.connected.tmeet});
+        case 'weibo_status': return Promise.resolve({connected:state.connected.weibo});
         case 'ima_status': return Promise.resolve({connected:state.connected.ima,credentials_present:state.connected.ima,skill_installed:state.connected.ima});
         case 'ima_connect': state.connected.ima=true;state.skills['ima-skills']=true;state.lastImaConnect=args; return Promise.resolve({ok:true,connected:true});
         case 'ima_logout': state.connected.ima=false;state.skills['ima-skills']=false; return Promise.resolve({ok:true,connected:false});
@@ -135,7 +140,7 @@ function injectSource() {
           const bnd=(over)=>({id,name:id,kind:'skill',mcp_servers:[],skills:[],cli:[],credentials:[],description:'后端简介',version:'',category:'collab',auth_required:true,config_fields:[],installed:false,user_uploaded:false,...over});
           const mk=(installed,ready,reason,actions,bundle)=>({bundle_id:id,installed,ready,reason,detail:null,actions,bundle:bundle||null});
           const act=(actionId,flow)=>({id:actionId,enabled:true,...(flow?{flow}:{})});
-          if(['feishu','wecom','dingtalk','tmeet'].includes(id)){
+          if(['feishu','wecom','dingtalk','tmeet','weibo'].includes(id)){
             const c=!!state.connected[id];
             return Promise.resolve(mk(c,c,c?null:'not_connected',c?[act('disconnect')]:[act('connect',{kind:'cli_connect'})],
               bnd({kind:'cli',version:'9.9.9-lock'})));
@@ -170,7 +175,8 @@ function injectSource() {
         // mock 不再 no-op，勾选往返才可测）。
         case 'get_bundle_visibility': return state.failVisibility ? Promise.reject(new Error('mock visibility read failure')) : Promise.resolve(state.hidden[args.scope]||[]);
         case 'set_bundle_visibility': state.hidden[args.scope]=(args.bundleIds||[]).map(toPackageId); return Promise.resolve(null);
-        case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': case 'open_external_url': return Promise.resolve(null);
+        case 'feishu_ensure_cli': case 'wecom_ensure_cli': case 'dingtalk_ensure_cli': case 'tmeet_ensure_cli': case 'weibo_ensure_cli': case 'feishu_connect_begin': case 'wecom_connect_begin': case 'dingtalk_connect_begin': case 'tmeet_connect_begin': case 'weibo_connect_begin': return Promise.resolve(null);
+        case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': case 'weibo_apply_skills': case 'open_external_url': return Promise.resolve(null);
         default: return Promise.resolve(null);
       }
     }
@@ -302,6 +308,10 @@ async function visibilityBox(page, cardText, modeLabel, click) {
     text: document.body.innerText.slice(0, 240),
   })).then(detail => JSON.stringify({ detail: JSON.parse(detail), errors: errors.slice(0, 5) }));
   rec('工具商店真实页面加载', toolStoreLoaded, navDebug);
+  await search(page, '微博');
+  rec('微博工具使用品牌图标', await page.evaluate(() => (
+    !!document.querySelector('img[src*="assets/tool-icons/weibo.png"]')
+  )));
 
   await action(page,'高德天气','配置','weather');
   rec('高德天气安装前展示必填 Key 配置',await page.evaluate(()=>{
@@ -447,6 +457,7 @@ async function visibilityBox(page, cardText, modeLabel, click) {
     ['企业微信','wecom','wecom:connected',['wecom_ensure_cli','wecom_connect_begin']],
     ['钉钉','dingtalk','dingtalk:connected',['dingtalk_ensure_cli','dingtalk_connect_begin','dingtalk_apply_skills']],
     ['腾讯会议','tmeet','tmeet:connected',['tmeet_ensure_cli','tmeet_connect_begin','tmeet_apply_skills']],
+    ['微博','weibo','weibo:connected',['weibo_ensure_cli','weibo_connect_begin','weibo_apply_skills']],
   ];
   for(const [query,id,event,commands] of connectors){
     await action(page,query,'连接',id);
@@ -478,6 +489,43 @@ async function visibilityBox(page, cardText, modeLabel, click) {
         return afterApply === beforeApply
           && !document.body.innerText.includes('已连接腾讯会议')
           && document.body.innerText.includes('腾讯会议授权未完成');
+      }, beforeApply));
+    }
+    if(id==='weibo'){
+      await page.evaluate(() => window.__emitTauri('weibo:qr', {
+        phase: 'authorize',
+        url: 'https://open.weibo.com/cli/device?user_code=WB12',
+        user_code: 'WB12',
+        qr_data_url: 'data:image/svg+xml;base64,PHN2Zy8+',
+      }));
+      await sleep(120);
+      rec('微博收到授权 URL 后自动打开浏览器并显示验证码', await page.evaluate(() => {
+        const call = [...window.__TOOL_STORE_TEST__.calls].reverse()
+          .find(x => x.cmd === 'open_external_url');
+        return call?.args?.url === 'https://open.weibo.com/cli/device?user_code=WB12'
+          && document.body.innerText.includes('WB12')
+          && document.body.innerText.includes('请在浏览器中输入验证码并确认授权');
+      }));
+      await page.evaluate(() => {
+        const button = [...document.querySelectorAll('button')]
+          .find(b => b.getAttribute('title') === '复制验证码');
+        button?.click();
+      });
+      await sleep(80);
+      rec('微博验证码可一键复制', await page.evaluate(() => (
+        window.__TOOL_STORE_TEST__.copiedText === 'WB12'
+          && [...document.querySelectorAll('button')].some(b => b.getAttribute('title') === '已复制')
+      )));
+      const beforeApply = await page.evaluate(() => window.__TOOL_STORE_TEST__.calls
+        .filter(x => x.cmd === 'weibo_apply_skills').length);
+      await page.evaluate(() => window.__emitTauri('weibo:connected', {}));
+      await sleep(180);
+      rec('微博成功事件必须二次确认真实登录态', await page.evaluate((beforeApply) => {
+        const afterApply = window.__TOOL_STORE_TEST__.calls
+          .filter(x => x.cmd === 'weibo_apply_skills').length;
+        return afterApply === beforeApply
+          && !document.body.innerText.includes('已连接微博')
+          && document.body.innerText.includes('微博授权未完成');
       }, beforeApply));
     }
     await page.evaluate((id,event)=>{window.__TOOL_STORE_TEST__.connected[id]=true;return window.__emitTauri(event,{});},id,event);

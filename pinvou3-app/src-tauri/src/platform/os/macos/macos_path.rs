@@ -36,7 +36,7 @@ pub fn connector_cli_command(cli_bin: &str, program: &str) -> Command {
         }
     }
     let resolved = connector_cli_program(cli_bin, program);
-    if program == cli_bin && cli_bin == "tmeet" {
+    if program == cli_bin && matches!(cli_bin, "tmeet" | "weibo-cli") {
         let script = PathBuf::from(&resolved);
         if script.is_file() {
             if let Some(node) = crate::platform::paths::bundled_connector_node() {
