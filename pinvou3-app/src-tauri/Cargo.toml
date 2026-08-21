@@ -150,7 +150,7 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 rand = "0.10"
-# 保持 0.22:0.23 尚有持有者(age/codewhale-tui/hyper-util 链),先升只会多一个版本,等上游齐平再动
+# 保持 0.22:age/codewhale-tui/hyper-util 等上游仍要求 0.22,先升 0.23 只会多一个版本,等上游齐平再动
 base64 = "0.22"
 age = { version = "=0.12.1", default-features = false }
 tempfile = "3"

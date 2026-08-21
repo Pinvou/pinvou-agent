@@ -78,9 +78,12 @@ pub(super) fn pending_revocations_path() -> PathBuf {
 ///
 /// Uses `fd_lock` (already in the dependency graph via codewhale-config)
 /// instead of fs2; both wrap the same OS primitive (flock on Unix,
-/// LockFileEx on Windows). The `RwLock` box is deliberately leaked to give
-/// the write guard a `'static` lifetime: the ownership lock lives until
-/// process exit anyway, and dropping the guard (or the process) releases it.
+/// LockFileEx on Windows). On success the backing allocation is kept alive
+/// for the guard's `'static` lifetime: the ownership lock lives until process
+/// exit anyway, and dropping the guard (or the process) releases it. On the
+/// contended path the allocation is reclaimed so a failed attempt does not
+/// strand an unlocked fd for the rest of the process (fs2 closed its file
+/// there as well).
 pub(super) fn acquire_process_lock(
     path: &Path,
 ) -> Result<fd_lock::RwLockWriteGuard<'static, File>, String> {
@@ -97,13 +100,27 @@ pub(super) fn acquire_process_lock(
         .map_err(|error| format!("open {}: {error}", path.display()))?;
     platform::enforce_private_permissions(&file, path)
         .map_err(|error| format!("set private permissions on {}: {error}", path.display()))?;
-    let lock: &'static mut fd_lock::RwLock<File> = Box::leak(Box::new(fd_lock::RwLock::new(file)));
-    lock.try_write().map_err(|error| {
-        format!(
-            "Web access is already owned by another desktop process ({}): {error}",
-            path.display()
-        )
-    })
+    // SAFETY: `lock` is an owned `Box::into_raw` allocation with no other
+    // references. The `&mut` below lives only for the `try_write` call unless
+    // a guard is returned; a returned guard carries it for `'static`, which
+    // is intended — the process-ownership lock is held until process exit and
+    // the allocation is deliberately never freed on that path.
+    let lock = Box::into_raw(Box::new(fd_lock::RwLock::new(file)));
+    let guard = match unsafe { &mut *lock }.try_write() {
+        Ok(guard) => guard,
+        Err(error) => {
+            // SAFETY: `try_write` failed, so no guard borrows the lock and the
+            // `&mut` above has expired. Re-taking the Box is sound; dropping
+            // it closes the fd instead of stranding it for the process
+            // lifetime.
+            unsafe { drop(Box::from_raw(lock)) };
+            return Err(format!(
+                "Web access is already owned by another desktop process ({}): {error}",
+                path.display()
+            ));
+        }
+    };
+    Ok(guard)
 }
 
 pub(super) fn rpc_ledger_path() -> PathBuf {
