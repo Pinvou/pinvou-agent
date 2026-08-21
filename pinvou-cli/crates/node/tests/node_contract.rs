@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use pinvou_node::{
     AdapterRuntimeHost, NodeError, NodeInstanceLock, NodeRuntimeHost, NodeSession,
@@ -11,6 +12,8 @@ use pinvou_runtime_api::{
     AdapterError, AgentRuntimeAdapter, AuthStatus, RuntimeCapabilities, RuntimeCommand,
     RuntimeEventSubscription, RuntimeOperation, RuntimeSession,
 };
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn node_has_local_only_transport_and_no_tcp_surface() {
@@ -596,6 +599,110 @@ fn adapter_runtime_host_skips_lifecycle_events_until_text_delta() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn switching_to_codex_uses_the_adapter_runtime_and_projects_text_delta() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let previous = capture_codex_test_env();
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let workspace = std::env::temp_dir().join(format!(
+        "pinvou-node-fake-codex-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&workspace).unwrap();
+    let version_script = "Write-Output 'codex-cli 0.139.0'";
+    let app_server_script = r#"
+while (($line = [Console]::In.ReadLine()) -ne $null) {
+  $frame = $line | ConvertFrom-Json
+  if ($frame.method -eq 'initialize') {
+    [Console]::Out.WriteLine(('{"id":' + $frame.id + ',"result":{"userAgent":"fake-codex/0.139"}}'))
+  } elseif ($frame.method -eq 'initialized') {
+  } elseif ($frame.method -eq 'account/read') {
+    [Console]::Out.WriteLine(('{"id":' + $frame.id + ',"result":{"requiresOpenaiAuth":false,"account":null}}'))
+  } elseif ($frame.method -eq 'model/list') {
+    [Console]::Out.WriteLine(('{"id":' + $frame.id + ',"result":{"models":["fake-model"]}}'))
+  } elseif ($frame.method -eq 'thread/start') {
+    [Console]::Out.WriteLine(('{"id":' + $frame.id + ',"result":{"thread":{"id":"thread-fake"}}}'))
+    [Console]::Out.WriteLine('{"method":"thread/started","params":{"thread":{"id":"thread-fake"}}}')
+  } elseif ($frame.method -eq 'turn/start') {
+    [Console]::Out.WriteLine(('{"id":' + $frame.id + ',"result":{"turn":{"id":"turn-fake"}}}'))
+    [Console]::Out.WriteLine('{"method":"turn/started","params":{"threadId":"thread-fake","turn":{"id":"turn-fake","status":"inProgress"}}}')
+    [Console]::Out.WriteLine('{"method":"item/agentMessage/delta","params":{"threadId":"thread-fake","turnId":"turn-fake","itemId":"message-fake","delta":"fake codex says hi"}}')
+  }
+  [Console]::Out.Flush()
+}
+"#;
+    unsafe {
+        std::env::set_var("PINVOU_CODEX_EXECUTABLE_FOR_TEST", "powershell.exe");
+        std::env::set_var(
+            "PINVOU_CODEX_VERSION_ARGS_JSON_FOR_TEST",
+            serde_json::to_string(&[
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                version_script,
+            ])
+            .unwrap(),
+        );
+        std::env::set_var(
+            "PINVOU_CODEX_DOCTOR_ARGS_JSON_FOR_TEST",
+            serde_json::to_string(&[
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                version_script,
+            ])
+            .unwrap(),
+        );
+        std::env::set_var(
+            "PINVOU_CODEX_APP_SERVER_ARGS_JSON_FOR_TEST",
+            serde_json::to_string(&[
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                app_server_script,
+            ])
+            .unwrap(),
+        );
+        std::env::set_var("PINVOU_CODEX_WORKING_DIRECTORY_FOR_TEST", &workspace);
+    }
+
+    let session = NodeSession::new("node-instance").unwrap();
+    let switch = IpcMessage::request(
+        serde_json::json!(20),
+        "runtime.switch",
+        serde_json::json!({"instance_id":"node-instance", "runtime":"codex"}),
+    )
+    .unwrap();
+    assert_eq!(
+        session.handle(switch).unwrap().payload()["runtime"],
+        "codex"
+    );
+
+    let echo = IpcMessage::request(
+        serde_json::json!(21),
+        "runtime.echo",
+        serde_json::json!({"instance_id":"node-instance", "text":"hello fake codex"}),
+    )
+    .unwrap();
+    let event = session.handle(echo).unwrap();
+    let envelope = RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap();
+    assert_eq!(envelope.kind(), "text.delta");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(envelope.payload().get()).unwrap()["content"],
+        "fake codex says hi"
+    );
+
+    restore_codex_test_env(previous);
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
 #[test]
 fn node_home_uses_an_os_lock_handle_and_pid_is_diagnostic_only() {
     let path = std::env::temp_dir().join(format!("pinvou-node-lock-{}", std::process::id()));
@@ -608,6 +715,30 @@ fn node_home_uses_an_os_lock_handle_and_pid_is_diagnostic_only() {
     drop(first);
     assert!(NodeInstanceLock::acquire(&path).is_ok());
     let _ = std::fs::remove_file(path);
+}
+
+#[cfg(windows)]
+fn capture_codex_test_env() -> Vec<(&'static str, Option<std::ffi::OsString>)> {
+    [
+        "PINVOU_CODEX_EXECUTABLE_FOR_TEST",
+        "PINVOU_CODEX_VERSION_ARGS_JSON_FOR_TEST",
+        "PINVOU_CODEX_DOCTOR_ARGS_JSON_FOR_TEST",
+        "PINVOU_CODEX_APP_SERVER_ARGS_JSON_FOR_TEST",
+        "PINVOU_CODEX_WORKING_DIRECTORY_FOR_TEST",
+    ]
+    .into_iter()
+    .map(|name| (name, std::env::var_os(name)))
+    .collect()
+}
+
+#[cfg(windows)]
+fn restore_codex_test_env(previous: Vec<(&'static str, Option<std::ffi::OsString>)>) {
+    for (name, value) in previous {
+        match value {
+            Some(value) => unsafe { std::env::set_var(name, value) },
+            None => unsafe { std::env::remove_var(name) },
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

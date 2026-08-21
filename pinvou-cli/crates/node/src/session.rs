@@ -338,10 +338,56 @@ fn create_runtime_host(runtime: &str) -> Result<Arc<dyn NodeRuntimeHost>, NodeEr
     match runtime {
         "echo" => Ok(Arc::new(StageOneEchoRuntime)),
         "codex" => Ok(Arc::new(AdapterRuntimeHost::new(Box::new(
-            CodexAdapter::new(CodexAdapterConfig::default()),
+            CodexAdapter::new(codex_adapter_config()?),
         )))),
         _ => Err(NodeError::UnsupportedRequest),
     }
+}
+
+fn codex_adapter_config() -> Result<CodexAdapterConfig, NodeError> {
+    let mut config = CodexAdapterConfig::default();
+    apply_debug_codex_adapter_overrides(&mut config)?;
+    Ok(config)
+}
+
+#[cfg(debug_assertions)]
+fn apply_debug_codex_adapter_overrides(config: &mut CodexAdapterConfig) -> Result<(), NodeError> {
+    if let Some(executable) = std::env::var_os("PINVOU_CODEX_EXECUTABLE_FOR_TEST") {
+        config.executable = std::path::PathBuf::from(executable);
+    }
+    if let Some(args) = debug_json_args("PINVOU_CODEX_VERSION_ARGS_JSON_FOR_TEST")? {
+        config.version_args = args;
+    }
+    if let Some(args) = debug_json_args("PINVOU_CODEX_DOCTOR_ARGS_JSON_FOR_TEST")? {
+        config.doctor_args = args;
+    }
+    if let Some(args) = debug_json_args("PINVOU_CODEX_APP_SERVER_ARGS_JSON_FOR_TEST")? {
+        config.app_server_args = args;
+    }
+    if let Some(cwd) = std::env::var_os("PINVOU_CODEX_WORKING_DIRECTORY_FOR_TEST") {
+        config.working_directory = Some(std::path::PathBuf::from(cwd));
+    }
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn apply_debug_codex_adapter_overrides(_: &mut CodexAdapterConfig) -> Result<(), NodeError> {
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+fn debug_json_args(name: &str) -> Result<Option<Vec<std::ffi::OsString>>, NodeError> {
+    let Some(value) = std::env::var_os(name) else {
+        return Ok(None);
+    };
+    let value = value.into_string().map_err(|_| NodeError::InvalidMessage)?;
+    let args: Vec<String> = serde_json::from_str(&value).map_err(|_| NodeError::InvalidMessage)?;
+    if args.iter().any(|arg| arg.is_empty()) {
+        return Err(NodeError::InvalidMessage);
+    }
+    Ok(Some(
+        args.into_iter().map(std::ffi::OsString::from).collect(),
+    ))
 }
 
 #[derive(Debug)]
