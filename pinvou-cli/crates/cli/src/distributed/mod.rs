@@ -445,7 +445,9 @@ pub(crate) fn execute(
 }
 
 fn execute_chat() -> Result<String, DistributedError> {
-    require_interactive_terminal(io::stdin().is_terminal(), io::stdout().is_terminal())?;
+    if !assume_interactive_for_test() {
+        require_interactive_terminal(io::stdin().is_terminal(), io::stdout().is_terminal())?;
+    }
     let interrupted = Arc::new(AtomicBool::new(false));
     let active_turn = Arc::new(Mutex::new(None::<String>));
     install_interrupt_handler(Arc::clone(&interrupted), Arc::clone(&active_turn))?;
@@ -462,6 +464,17 @@ fn execute_chat() -> Result<String, DistributedError> {
         active_turn,
     )?;
     Ok(String::new())
+}
+
+fn assume_interactive_for_test() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        std::env::var_os("PINVOU_ASSUME_INTERACTIVE_TTY_FOR_TEST").is_some()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
 }
 
 fn execute_chat_with_io<R: BufRead, W: Write, S: Read + Write>(

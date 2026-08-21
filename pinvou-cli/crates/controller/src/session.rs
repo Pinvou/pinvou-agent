@@ -7,6 +7,8 @@ use crate::{ControllerError, LocalNodeClient};
 pub struct ControllerSession {
     instance_id: String,
     local_node: Option<LocalNodeRoute>,
+    #[cfg(debug_assertions)]
+    scripted_chat: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Clone, Debug)]
@@ -24,6 +26,8 @@ impl ControllerSession {
         Ok(Self {
             instance_id,
             local_node: None,
+            #[cfg(debug_assertions)]
+            scripted_chat: None,
         })
     }
 
@@ -42,6 +46,26 @@ impl ControllerSession {
             endpoint,
             instance_id: node_instance_id,
         });
+        Ok(session)
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn with_scripted_chat(
+        instance_id: impl Into<String>,
+        events: Vec<RuntimeEventEnvelope>,
+    ) -> Result<Self, ControllerError> {
+        if events.is_empty() {
+            return Err(ControllerError::InvalidMessage);
+        }
+        let mut session = Self::new(instance_id)?;
+        session.scripted_chat = Some(
+            events
+                .into_iter()
+                .map(|event| {
+                    serde_json::to_value(event).map_err(|_| ControllerError::InvalidMessage)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        );
         Ok(session)
     }
 
@@ -82,6 +106,23 @@ impl ControllerSession {
             ]),
             Some("runtime.echo") | Some("chat.start") => {
                 let is_chat_start = request.method() == Some("chat.start");
+                #[cfg(debug_assertions)]
+                if is_chat_start && let Some(events) = &self.scripted_chat {
+                    let prompt = request
+                        .payload()
+                        .get("prompt")
+                        .and_then(|v| v.as_str())
+                        .filter(|value| !value.is_empty())
+                        .ok_or(ControllerError::InvalidMessage)?;
+                    let _ = prompt;
+                    return events
+                        .iter()
+                        .map(|event| {
+                            IpcMessage::event("runtime.event", event.clone())
+                                .map_err(|_| ControllerError::InvalidMessage)
+                        })
+                        .collect();
+                }
                 let route = self
                     .local_node
                     .as_ref()
