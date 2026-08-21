@@ -79,9 +79,18 @@ feat 分支没有的部分，本方案新增：
 2. 定位 checkpoint：turn N+1 的 Turn 快照；不存在（LRU 淘汰/快照失败）→ 降级为「仅回退对话」，文案明示
 3. restore_checkpoint（内部强制 PreRestore）
 4. SessionStore 截断到第 N 轮 + sidecar 备份
-5. 回收 engine 实例
-6. 返回 { restoredCheckpoint, rewoundTurns } 供前端刷新与提示
+5. 作废旧分支快照：index 中 turn > N 的 Turn 条目移除并删 ref（清理性质，失败只 warn；
+   被截分支的代码状态已由步骤 3 的 PreRestore 兜底）。conversation_only 降级同样作废——
+   对话已截断，turn 复用冲突与是否恢复代码无关。restore_checkpoint 命令不做此作废
+   （它不动对话，turn 编号继续有效）
+6. 回收 engine 实例
+7. 返回 { restoredCheckpoint, rewoundTurns } 供前端刷新与提示
 ```
+
+> **turn 序号是消息序列的相对位置，不是稳定锚**。回退后重新创作会复用 turn 编号，
+> 若不作废旧分支快照，「同 turn 取先创建者」的对齐规则（Rust `entries.find` / 前端
+> first-wins）会把后续回退锚到被遗弃分支的旧快照（2026-08-21 设计审阅发现的 P0，
+> 已由步骤 5 修复并有回归测试）。截断之外的序号漂移来源见 §12。
 
 ## 5. 边界与降级（诚实语义）
 
@@ -93,6 +102,8 @@ feat 分支没有的部分，本方案新增：
 | 会话运行中 | 忙碌门拒绝回退 |
 | 临时会话（两根相同） | exclude 自递归规则已覆盖（移植自带测试） |
 | 空目录创建 | git 只跟踪文件内容，空目录不进快照、不出现在 diff 预览（固有语义，非 bug）；目录内一旦有文件即正常覆盖，回退时 `clean -fd` 连空目录一并清除，恢复语义完整。不做占位文件 hack（污染用户项目） |
+| shell 后台任务跨 turn 写入 | turn 边界快照只覆盖快照时刻的工作区；exec_shell 后台任务在 turn 结束后的迟到写入不归属任何 turn，回退可能带上它们（best-effort，不承诺） |
+| LRU 预算共享 | PreRestore 条目与 Turn 快照共享 index 上限 20：频繁回退会加速淘汰可用 Turn 快照，老节点更早退化为「仅回退对话」。v1 接受，不分开计价 |
 
 ## 6. 共享执行根：三道防线
 
@@ -145,3 +156,11 @@ feat 分支没有的部分，本方案新增：
 - 对话 redo（sidecar 仅留数据）。
 - 按会话归因回退、worktree 会话隔离（v2 独立评估）。
 - 启用底座 journal 分支（物理截断 + sidecar 已满足 v1 语义）。
+- **编辑重发与回退的整合**（2026-08-21 审阅补充）：语义上「编辑第 N 轮重发」= 回退到第 N-1 轮 + 发送，但代码会话里既有的 `Op::EditLastTurn` 只截对话、不动代码，会制造本功能要消灭的「对话没了代码还在」。在 turn 锚定的漂移问题（§12）有解之前不做整合；v1 期间代码会话的编辑重发入口如需暴露，必须同样走 checkpoint 恢复，否则禁用并引导到「回退后重发」。
+
+## 12. 已知限制（2026-08-21 设计审阅留痕）
+
+- **compaction 摘要残留**：`merge_compaction_summary` 把压缩摘要合进 system_prompt 并持久化；回退只截 messages，system_prompt 不动——经历过压缩的会话回退后，模型上下文可能带着描述「被截掉的未来」的摘要。v1 不做 system_prompt 同步修正，后续迭代评估（最低限度：回退后提示「该会话经历过压缩，上下文可能含摘要残留」）。
+- **compaction 导致 turn 计数漂移**：`count_user_turns` 按当前消息序列计数，compaction 替换序列后 user prompt 数量变化，checkpoint 的 turn 号（压缩前计数）与新序列错位，chip 对齐可能失准。turn 序号漂移有三个来源（截断/压缩/编辑），本设计只处理了截断（§4 步骤 5）。彻底解法是持久化稳定 turn 锚（动存储格式），v2 评估。
+- **代码反悔缺 UI 入口**：PreRestore 机制在（恢复前强制快照），但其条目 `turn=None` 不进 chip 对齐，`restore_checkpoint` 命令在 UI 上无触达路径——回退错了实际无法反悔。补「撤销上次回退」入口成本低，待排期。
+- **他会话基线漂移**：共享执行根的其他会话在回退后继续创作时，其下一次快照会以被回退后的工作区为基线，其 checkpoint 序列语义已悄悄改变。无解，与 §6 的「恢复单位是执行根」声明一致。
