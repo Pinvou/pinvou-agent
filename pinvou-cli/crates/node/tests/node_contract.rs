@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use pinvou_node::{NodeError, NodeInstanceLock, NodeRuntimeHost, NodeSession, NodeTransportPolicy};
 use pinvou_protocol::{
@@ -130,6 +130,94 @@ fn node_echo_uses_the_injected_runtime_host_seam() {
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(envelope.payload().get()).unwrap()["content"],
         "runtime:M2"
+    );
+}
+
+#[derive(Debug, Default)]
+struct RecordingRuntime {
+    calls: Mutex<Vec<String>>,
+}
+
+impl RecordingRuntime {
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl NodeRuntimeHost for RecordingRuntime {
+    fn echo(&self, node_id: &str, text: &str, seq: u64) -> Result<RuntimeEventEnvelope, NodeError> {
+        PrefixRuntime.echo(node_id, text, seq)
+    }
+
+    fn resolve_approval(
+        &self,
+        approval_id: &str,
+        accepted: bool,
+    ) -> Result<serde_json::Value, NodeError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("approval:{approval_id}:{accepted}"));
+        Ok(serde_json::json!({"status":"ok", "method":"approval.resolve"}))
+    }
+
+    fn resolve_input(
+        &self,
+        input_id: &str,
+        value: &serde_json::Value,
+    ) -> Result<serde_json::Value, NodeError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("input:{input_id}:{value}"));
+        Ok(serde_json::json!({"status":"ok", "method":"input.resolve"}))
+    }
+
+    fn interrupt_turn(&self, turn_id: &str) -> Result<serde_json::Value, NodeError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("interrupt:{turn_id}"));
+        Ok(serde_json::json!({"status":"ok", "method":"turn.interrupt"}))
+    }
+}
+
+#[test]
+fn node_control_surface_uses_the_injected_runtime_host_seam() {
+    let runtime = Arc::new(RecordingRuntime::default());
+    let session = NodeSession::with_runtime("node-instance", runtime.clone()).unwrap();
+
+    for (id, method, payload) in [
+        (
+            8,
+            "approval.resolve",
+            serde_json::json!({"instance_id":"node-instance", "approval_id":"approval-2", "accepted":false}),
+        ),
+        (
+            9,
+            "input.resolve",
+            serde_json::json!({"instance_id":"node-instance", "input_id":"input-2", "value":"answer"}),
+        ),
+        (
+            10,
+            "turn.interrupt",
+            serde_json::json!({"instance_id":"node-instance", "turn_id":"turn-2"}),
+        ),
+    ] {
+        let request = IpcMessage::request(serde_json::json!(id), method, payload).unwrap();
+        let response = session.handle(request).unwrap();
+        assert_eq!(response.id(), Some(&serde_json::json!(id)));
+        assert_eq!(response.payload()["status"], "ok");
+        assert_eq!(response.payload()["method"], method);
+    }
+
+    assert_eq!(
+        runtime.calls(),
+        [
+            "approval:approval-2:false",
+            "input:input-2:\"answer\"",
+            "interrupt:turn-2",
+        ]
     );
 }
 

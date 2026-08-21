@@ -9,6 +9,26 @@ use crate::NodeError;
 
 pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
     fn echo(&self, node_id: &str, text: &str, seq: u64) -> Result<RuntimeEventEnvelope, NodeError>;
+
+    fn resolve_approval(
+        &self,
+        approval_id: &str,
+        _accepted: bool,
+    ) -> Result<serde_json::Value, NodeError> {
+        Ok(json!({"status":"unsupported", "method":"approval.resolve", "approval_id":approval_id}))
+    }
+
+    fn resolve_input(
+        &self,
+        input_id: &str,
+        _value: &serde_json::Value,
+    ) -> Result<serde_json::Value, NodeError> {
+        Ok(json!({"status":"unsupported", "method":"input.resolve", "input_id":input_id}))
+    }
+
+    fn interrupt_turn(&self, turn_id: &str) -> Result<serde_json::Value, NodeError> {
+        Ok(json!({"status":"unsupported", "method":"turn.interrupt", "turn_id":turn_id}))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -92,7 +112,14 @@ impl NodeSession {
                 {
                     return Err(NodeError::InvalidMessage);
                 }
-                json!({"status":"unsupported", "method":"approval.resolve", "approval_id":approval_id})
+                self.runtime.resolve_approval(
+                    approval_id,
+                    request
+                        .payload()
+                        .get("accepted")
+                        .and_then(|value| value.as_bool())
+                        .ok_or(NodeError::InvalidMessage)?,
+                )?
             }
             Some("input.resolve") => {
                 let input_id = request
@@ -108,7 +135,13 @@ impl NodeSession {
                 {
                     return Err(NodeError::InvalidMessage);
                 }
-                json!({"status":"unsupported", "method":"input.resolve", "input_id":input_id})
+                self.runtime.resolve_input(
+                    input_id,
+                    request
+                        .payload()
+                        .get("value")
+                        .ok_or(NodeError::InvalidMessage)?,
+                )?
             }
             Some("turn.interrupt") => {
                 let turn_id = request
@@ -117,7 +150,7 @@ impl NodeSession {
                     .and_then(|value| value.as_str())
                     .filter(|value| !value.is_empty())
                     .ok_or(NodeError::InvalidMessage)?;
-                json!({"status":"unsupported", "method":"turn.interrupt", "turn_id":turn_id})
+                self.runtime.interrupt_turn(turn_id)?
             }
             _ => return Err(NodeError::UnsupportedRequest),
         };
