@@ -22,6 +22,12 @@
 
 > CodeWhale PR #15 候选提交 `1eca6103a` + 安全修复 `169c24cc5` + 只读分发与受限面收口 `21e5f661a` + 续轮/Shell 边界修复 `a647ed866`：为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖、最终执行前精确白名单门禁、只读 `File` action 投影与最终分发复检，并封闭排队控制操作、排队续轮/MCP reload、Hook 与日志旁路。最新修复还会把受限轮结束后的子智能体完成、后台 Shell 唤醒和编辑重放锁存到显式新消息安装替代权限，并让只读 `Bash` 使用 `ShellPolicy::ReadOnly` 的直接 argv 加固路径；受限审计保留非私有身份字段。快速 guard 仅额外接受这条登记的 PR 候选链（当前 head `a647ed866`，v0.9.5 之上 14 个提交，34 条 `forkguard_*` 测试）。`r8` 仍明确是候选：PR #15 尚未合并，`pinvou-v0.9.5-r8` 标签也不存在。父仓 CI 的 gitlink 校验在 pull_request 阶段允许该登记候选，merge queue 一律严格对齐不可变标签：入队合并前须将本候选链合并、打不可变标签 `pinvou-v0.9.5-r8` 并把 gitlink 与 `PINVOU_CODEWHALE_TAG` 一并对齐 r8。
 
+### PR #302 父仓 gitlink 同步
+
+- PR #302 (`feat/plugin-protocol`) 起步时父仓 CodeWhale gitlink 停在 r6 (`3bbf8421`)，与上方 `发布状态` 不一致，触发 `scripts/verify-public-submodule.sh` 与 `scripts/ci-fork-link-check.sh` 在 PR 跑 fast-gate 时持续失败。
+- PR #302 将父仓 gitlink 对齐到 `a36e6cd533024cfe5724bae21875aea42b2ed87a`（`pinvou-v0.9.5-r7^{}`）；本 PR 在该公开基线上继续登记 r8 评测安全候选。
+- r7 同步不改 `.gitmodules` 或底座主题内容；对应验证脚本与指纹保持一致。
+
 ### 本次会话修复（已验证并发布）
 
 - v0.9.5 的 `load_session` 会把无配对 `tool_use` 视为进程崩溃并立即补写失败结果；Pinvou 运行中持久化工具调用后再次读取同一会话时，这一假设并不成立。

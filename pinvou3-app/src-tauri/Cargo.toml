@@ -154,7 +154,6 @@ rand = "0.9"
 tempfile = "3"
 base64 = "0.22"
 age = { version = "=0.12.1", default-features = false }
-tempfile = "3"
 
 # keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
 # macOS 桌伴窗口策略补丁(pet_window.rs):

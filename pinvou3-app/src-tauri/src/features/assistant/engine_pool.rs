@@ -597,17 +597,6 @@ pub struct EnginePool {
 }
 
 impl EnginePool {
-    /// boot bridge(一次)并建空池。不预热任何 engine(lazy)。
-    #[allow(dead_code)]
-    pub fn new(app: AppHandle, store: SessionStore) -> Result<Self> {
-        Self::new_with_dependencies(
-            app,
-            store,
-            Arc::new(|_, _| Vec::new()),
-            Arc::new(|_| Vec::new()),
-        )
-    }
-
     pub fn new_with_dependencies(
         app: AppHandle,
         store: SessionStore,
@@ -712,8 +701,9 @@ impl EnginePool {
         }
     }
 
-    /// 同步版在线会话组合目录重写（给保持同步签名的 tauri 命令用，如
-    /// `uninstall_marketplace_tool`）。组合目录体量小、diff 重写极快，阻塞可接受。
+    /// 同步版在线会话组合目录重写（**仅供不在 tokio runtime 上的同步调用方**：
+    /// `blocking_lock` 在 runtime 线程上会 panic，async 命令必须改用
+    /// [`Self::refresh_live_sessions_skills`]）。组合目录体量小、diff 重写极快。
     pub fn refresh_live_sessions_skills_blocking(&self) {
         let sids: Vec<String> = {
             let entries = self.entries.blocking_lock();
@@ -1485,7 +1475,7 @@ impl EnginePool {
         }
         reservation.ensure_active()?;
         // Side B 卡片池: 该 session 加持了专家面具时,每 turn 注入轻锚点(短)维持身份。
-        // 完整 body 已在加持首条消息一次性注入(commands::chat take_pending_persona_body)。
+        // 完整 body 已在加持首条消息一次性注入(commands::chat take_pending_turn_injections)。
         // 在 pool 层解析,所有上层调用(chat / accept_plan)自动带上锚点。
         // 同一张卡派生两样每-turn 状态: ① 轻锚点(粘性身份) ② 是否清空工具表
         // (纯对话元卡如卡牌制造专家 → 本轮零工具,防它误写文件)。每 turn 实时读 active
@@ -1681,6 +1671,31 @@ impl EnginePool {
                 .await
             {
                 eprintln!("[engine_pool] set_disallowed_all {sid} failed: {e:#}");
+            }
+        }
+    }
+
+    /// execpolicy 硬拦截热刷（scope 门禁通道③）：连接器/技能开关落盘后按各会话
+    /// 自己的 scope 重算 deny 规则集（CLI 二进制名 + 禁用技能脚本路径）并广播给
+    /// 所有在跑 engine，下一轮即硬拒。新 spawn / 重建的引擎由
+    /// build_engine_config_for_session_roots 注入初值——两处共用 `bridge.scope_deny_ruleset`。
+    pub async fn refresh_permission_rulesets(&self) {
+        let targets = self
+            .entries
+            .lock()
+            .await
+            .iter()
+            .map(|(sid, entry)| (sid.clone(), entry.engine.clone()))
+            .collect::<Vec<_>>();
+        for (sid, engine) in targets {
+            if let Err(e) = engine
+                .handle
+                .send(Op::SetPermissionRuleset {
+                    ruleset: self.bridge.scope_deny_ruleset(&sid),
+                })
+                .await
+            {
+                eprintln!("[engine_pool] refresh_permission_rulesets {sid} failed: {e:?}");
             }
         }
     }
