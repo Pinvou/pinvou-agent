@@ -716,6 +716,8 @@ fn handle_slash_command<S: Read + Write>(
                 .and_then(Value::as_str)
                 .unwrap_or(runtime);
             write_terminal_to(output, &format!("runtime switched to {selected}\n"))?;
+            let response = client.runtime_detect()?;
+            write_terminal_to(output, &format_runtime_detect(response.payload()))?;
             Ok(true)
         }
         (Some("detect"), None, None) => {
@@ -759,6 +761,11 @@ fn format_runtime_detect(payload: &Value) -> String {
     }
     if let Some(exit_code) = payload.get("exit_code").and_then(Value::as_i64) {
         text.push_str(&format!("exit_code: {exit_code}\n"));
+    }
+    if status != "available" {
+        text.push_str(
+            "hint: run /detect again after fixing the runtime, or /runtime <id> to switch.\n",
+        );
     }
     text
 }
@@ -1014,7 +1021,19 @@ mod tests {
         .unwrap();
         let switch_response =
             IpcMessage::response(json!(2), json!({"status": "ok", "runtime": "echo"})).unwrap();
-        let stream = TestDuplex::with_responses([list_response, switch_response]);
+        let detect_response = IpcMessage::response(
+            json!(3),
+            json!({
+                "runtime": "echo",
+                "status": "available",
+                "auth_status": "not_required",
+                "capabilities": {
+                    "interactive_chat": true
+                }
+            }),
+        )
+        .unwrap();
+        let stream = TestDuplex::with_responses([list_response, switch_response, detect_response]);
         let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
         let interrupted = Arc::new(AtomicBool::new(false));
         let active_turn = Arc::new(Mutex::new(None));
@@ -1035,11 +1054,56 @@ mod tests {
         assert!(output.contains("runtime: echo"));
         assert!(output.contains("echo - Stage 1 Echo (available)"));
         assert!(output.contains("runtime switched to echo"));
+        assert!(output.contains("status: available"));
         let requests = client.into_inner().requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].method(), Some("runtime.list"));
         assert_eq!(requests[1].method(), Some("runtime.switch"));
         assert_eq!(requests[1].payload()["runtime"], "echo");
+        assert_eq!(requests[2].method(), Some("runtime.detect"));
+    }
+
+    #[test]
+    fn chat_runtime_switch_prints_the_new_runtime_status() {
+        let switch_response =
+            IpcMessage::response(json!(1), json!({"status": "ok", "runtime": "codex"})).unwrap();
+        let detect_response = IpcMessage::response(
+            json!(2),
+            json!({
+                "runtime": "codex",
+                "status": "blocked_auth",
+                "error_kind": "blocked_auth",
+                "exit_code": 4,
+                "message": "runtime authentication is blocked"
+            }),
+        )
+        .unwrap();
+        let stream = TestDuplex::with_responses([switch_response, detect_response]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut input = std::io::Cursor::new(b"/runtime codex\n/exit\n".to_vec());
+        let mut output = Vec::new();
+
+        execute_chat_with_io(
+            &mut input,
+            &mut output,
+            &mut client,
+            interrupted,
+            active_turn,
+            true,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("runtime switched to codex"));
+        assert!(output.contains("runtime: codex"));
+        assert!(output.contains("status: blocked_auth"));
+        assert!(output.contains("hint: run /detect"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method(), Some("runtime.switch"));
+        assert_eq!(requests[1].method(), Some("runtime.detect"));
     }
 
     #[test]
