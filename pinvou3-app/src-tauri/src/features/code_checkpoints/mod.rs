@@ -477,6 +477,55 @@ pub fn restore_checkpoint(
     Ok(undo)
 }
 
+/// 只操作 refs 的 git 调用（update-ref/gc 不需要 work-tree）。
+fn git_ref(repo: &Path, arguments: &[&str]) -> Result<std::process::Output> {
+    let output = crate::platform::process::HiddenCommand::new("git")
+        .arg(format!("--git-dir={}", repo.display()))
+        .args(arguments)
+        .output()
+        .with_context(|| format!("执行 git {} 失败（Git 不可用？）", arguments.join(" ")))?;
+    Ok(output)
+}
+
+/// 回退后作废被截对话分支的 Turn checkpoint（设计审阅 P0 修复）。
+///
+/// turn 序号是消息序列里的相对位置：`rewind_to_turn` 恢复 + 截断后，用户重新
+/// 创作的新一轮会复用 turn 编号；若 index 里仍留着被截分支 `turn > keep_turns`
+/// 的旧 Turn 快照，对齐规则（`resolve_rewind_plan` 与前端 first-wins）会把新
+/// 分支的对齐锚到旧快照上，再次回退恢复出被遗弃分支的代码状态，历史错乱。
+///
+/// 本函数从 index 移除 `kind == Turn && turn > keep_turns` 的条目并删其
+/// `refs/checkpoints/<id>` ref（照抄 LRU 淘汰段的 `update-ref -d` + 末尾
+/// `gc --auto` 模式），保留原有条目顺序；PreRestore 条目（turn=None）不动——
+/// 被截分支的代码状态已由本次 rewind 强制的 PreRestore 快照兜底，不丢反悔能力。
+/// 返回作废条数；无符合条件条目时幂等返回 0（不触碰磁盘）。
+pub fn invalidate_turn_checkpoints_after(ledger_root: &Path, keep_turns: u32) -> Result<usize> {
+    let mut index = load_index(ledger_root)?;
+    // partition 稳定保序：kept 即「原顺序去掉被作废条目」。
+    let (kept, invalidated): (Vec<CheckpointMeta>, Vec<CheckpointMeta>) =
+        index.entries.into_iter().partition(|entry| {
+            !(entry.kind == CheckpointKind::Turn
+                && entry.turn.is_some_and(|turn| turn > keep_turns))
+        });
+    if invalidated.is_empty() {
+        return Ok(0);
+    }
+    // 影子仓库不存在（如从未成功快照却有残留索引）时 refs 无从删起，索引照裁。
+    let repo = repo_dir(ledger_root);
+    if repo.join("HEAD").is_file() {
+        for entry in &invalidated {
+            let _ = git_ref(
+                &repo,
+                &["update-ref", "-d", &format!("refs/checkpoints/{}", entry.id)],
+            );
+        }
+        let _ = git_ref(&repo, &["gc", "--auto", "--quiet"]);
+    }
+    index.entries = kept;
+    save_index(ledger_root, &index)?;
+    Ok(invalidated.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,5 +770,67 @@ mod tests {
         exec.write("node_modules/pkg/new.js", "new dep\n");
         restore_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
         assert!(exec.read("node_modules/pkg/new.js").is_some());
+    }
+
+    /// P0 修复：回退后作废旧分支 Turn 快照——只移除 turn > keep_turns 的 Turn
+    /// 条目并删其 ref；PreRestore 保留、原顺序保留、幂等。
+    #[test]
+    fn invalidate_turn_checkpoints_after_removes_only_abandoned_branch() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("inval-ledger");
+        let exec = TestDir::new("inval-exec");
+        exec.write("a.txt", "0\n");
+        let t1 = create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn, "t1")
+            .unwrap();
+        exec.write("a.txt", "1\n");
+        let t2 = create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn, "t2")
+            .unwrap();
+        exec.write("a.txt", "2\n");
+        let t3 = create_checkpoint(ledger.path(), exec.path(), Some(3), CheckpointKind::Turn, "t3")
+            .unwrap();
+        let pre = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            None,
+            CheckpointKind::PreRestore,
+            "回滚点",
+        )
+        .unwrap();
+
+        // 回退到第 1 轮：turn 2/3 的 Turn 快照作废，turn 1 与 PreRestore 保留。
+        let removed = invalidate_turn_checkpoints_after(ledger.path(), 1).unwrap();
+        assert_eq!(removed, 2);
+        let listed = list_checkpoints(ledger.path()).unwrap();
+        let ids: Vec<&str> = listed.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, vec![t1.id.as_str(), pre.id.as_str()], "保序且 PreRestore 不动");
+
+        // 被作废条目的 ref 已删，保留条目的 ref 仍在。
+        let repo = repo_dir(ledger.path());
+        let ref_exists = |id: &str| {
+            git(
+                &repo,
+                exec.path(),
+                &["show-ref", "--verify", &format!("refs/checkpoints/{id}")],
+            )
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+        };
+        assert!(!ref_exists(&t2.id));
+        assert!(!ref_exists(&t3.id));
+        assert!(ref_exists(&t1.id));
+        assert!(ref_exists(&pre.id));
+
+        // 幂等：再调一次返回 0，索引不变。
+        assert_eq!(invalidate_turn_checkpoints_after(ledger.path(), 1).unwrap(), 0);
+        assert_eq!(list_checkpoints(ledger.path()).unwrap().len(), 2);
+
+        // keep_turns=0：Turn 全部作废，PreRestore 仍保留。
+        let removed = invalidate_turn_checkpoints_after(ledger.path(), 0).unwrap();
+        assert_eq!(removed, 1);
+        let listed = list_checkpoints(ledger.path()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].kind, CheckpointKind::PreRestore);
     }
 }

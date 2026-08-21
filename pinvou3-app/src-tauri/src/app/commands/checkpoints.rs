@@ -180,6 +180,21 @@ fn busy_peer_on_same_execution_root(
     Ok(None)
 }
 
+/// 回退成功后作废被截对话分支的 Turn checkpoint（设计审阅 P0 修复，机制见
+/// [`checkpoints::invalidate_turn_checkpoints_after`]）。
+///
+/// 时机：restore + 对话截断都成功之后。清理性质——失败只如实记日志，不让整个
+/// 回退失败（恢复与截断已生效，作废只是防止旧分支快照遮蔽新分支）。
+/// `restore_checkpoint` 命令不调本函数：它不动对话，turn 编号继续有效。
+fn invalidate_abandoned_turn_checkpoints(ledger: &std::path::Path, keep_turns: u32) {
+    match checkpoints::invalidate_turn_checkpoints_after(ledger, keep_turns) {
+        Ok(_) => {}
+        Err(error) => eprintln!(
+            "[checkpoints] 作废被截分支 checkpoint 失败（回退已生效，仅清理未做）: {error:#}"
+        ),
+    }
+}
+
 /// 回退到第 `keep_turns` 轮末尾：恢复第 N+1 轮 checkpoint + 对话截断到第 N 轮
 /// + 回收 engine（下次发送走既有 lazy respawn + `Op::SyncSession` 用截断后的
 /// messages 重新注水）。编排顺序按设计 §4。
@@ -248,6 +263,10 @@ pub async fn rewind_to_turn(
     let outcome = store
         .truncate_to_user_turn(&session_id, keep_turns)
         .map_err(|error| format!("截断对话失败: {error:#}"))?;
+    // 2.5) 作废被截对话分支的 Turn checkpoint（P0 修复：turn 序号会被重新创作
+    //    复用，留着旧分支快照会让 first-wins 对齐锚到被遗弃分支）。降级模式同样
+    //    要作废——对话已截断，turn 复用问题与是否恢复代码无关。
+    invalidate_abandoned_turn_checkpoints(&ledger, keep_turns);
     // 3) 回收 engine 实例（复用删除会话的回收路径：cancel + Shutdown + abort
     //    forwarder）；下次发送时 get_or_spawn 未命中 → lazy respawn → 用截断后
     //    的磁盘历史 SyncSession 注水（engine_pool.rs 既有链路，设计 §4.2）。
@@ -455,5 +474,74 @@ mod tests {
         })
         .expect("gate");
         assert_eq!(none, None, "不同执行根的忙碌会话不得拦截");
+    }
+
+    fn git_available() -> bool {
+        crate::platform::process::HiddenCommand::new("git")
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    /// 编排层 P0 场景：旧分支 turn 1..3 的快照在回退到第 1 轮后被作废，
+    /// index 不再含 turn > keep_turns 的 Turn 条目；重新创作打同号新快照后，
+    /// first-wins 对齐命中的必须是新分支快照而不是被遗弃分支的旧快照。
+    #[test]
+    fn rewind_invalidate_unshadows_recreated_turn_branch() {
+        if !git_available() {
+            return;
+        }
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        );
+        let ledger = std::env::temp_dir().join(format!("pinvou3-rewind-inval-ledger-{suffix}"));
+        let exec = std::env::temp_dir().join(format!("pinvou3-rewind-inval-exec-{suffix}"));
+        std::fs::create_dir_all(&ledger).expect("ledger dir");
+        std::fs::create_dir_all(&exec).expect("exec dir");
+
+        // 旧分支：turn 1/2/3 各打一个 Turn 快照（模拟会话进行到第 3 轮）。
+        std::fs::write(exec.join("a.txt"), "0\n").expect("write");
+        checkpoints::create_checkpoint(&ledger, &exec, Some(1), CheckpointKind::Turn, "t1")
+            .expect("c1");
+        std::fs::write(exec.join("a.txt"), "1\n").expect("write");
+        let old_t2 = checkpoints::create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn, "t2")
+            .expect("c2");
+        std::fs::write(exec.join("a.txt"), "2\n").expect("write");
+        checkpoints::create_checkpoint(&ledger, &exec, Some(3), CheckpointKind::Turn, "t3")
+            .expect("c3");
+
+        // 回退到第 1 轮（编排层在 restore + 截断成功后调用的正是本函数）。
+        invalidate_abandoned_turn_checkpoints(&ledger, 1);
+        let listed = checkpoints::list_checkpoints(&ledger).expect("list");
+        assert!(
+            listed
+                .iter()
+                .all(|entry| !(entry.kind == CheckpointKind::Turn
+                    && entry.turn.is_some_and(|turn| turn > 1))),
+            "回退后 index 不得残留 turn > keep_turns 的 Turn 条目: {listed:?}"
+        );
+
+        // 重新创作：新分支的 turn 2 打新快照。若旧 t2 未作废，find 会先命中它。
+        std::fs::write(exec.join("a.txt"), "new-branch\n").expect("write");
+        let new_t2 = checkpoints::create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn, "t2-new")
+            .expect("c2 new");
+        assert_ne!(old_t2.id, new_t2.id);
+        let plan = resolve_rewind_plan(
+            checkpoints::list_checkpoints(&ledger).expect("list"),
+            1,
+            false,
+        )
+        .expect("plan");
+        assert_eq!(
+            plan.checkpoint.expect("checkpoint").id,
+            new_t2.id,
+            "再次回退到第 1 轮必须命中新分支的 turn 2 快照"
+        );
+
+        let _ = std::fs::remove_dir_all(&ledger);
+        let _ = std::fs::remove_dir_all(&exec);
     }
 }
