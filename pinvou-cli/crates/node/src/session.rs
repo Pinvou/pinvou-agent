@@ -6,6 +6,7 @@ use pinvou_runtime_api::{AgentRuntimeAdapter, RuntimeCommand, RuntimeOperation, 
 use serde_json::json;
 use std::{
     fmt,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -242,11 +243,22 @@ pub struct NodeSession {
 struct RuntimeSlot {
     id: String,
     host: Arc<dyn NodeRuntimeHost>,
+    state_file: Option<PathBuf>,
 }
 
 impl NodeSession {
     pub fn new(instance_id: impl Into<String>) -> Result<Self, NodeError> {
         Self::with_runtime_id(instance_id, "echo", Arc::new(StageOneEchoRuntime))
+    }
+
+    pub fn with_state_file(
+        instance_id: impl Into<String>,
+        state_file: impl Into<PathBuf>,
+    ) -> Result<Self, NodeError> {
+        let state_file = state_file.into();
+        let runtime_id = load_runtime_selection(&state_file)?;
+        let runtime = create_runtime_host(&runtime_id)?;
+        Self::with_runtime_id_and_state(instance_id, runtime_id, runtime, Some(state_file))
     }
 
     pub fn with_runtime(
@@ -261,6 +273,15 @@ impl NodeSession {
         runtime_id: impl Into<String>,
         runtime: Arc<dyn NodeRuntimeHost>,
     ) -> Result<Self, NodeError> {
+        Self::with_runtime_id_and_state(instance_id, runtime_id, runtime, None)
+    }
+
+    fn with_runtime_id_and_state(
+        instance_id: impl Into<String>,
+        runtime_id: impl Into<String>,
+        runtime: Arc<dyn NodeRuntimeHost>,
+        state_file: Option<PathBuf>,
+    ) -> Result<Self, NodeError> {
         let instance_id = instance_id.into();
         let runtime_id = runtime_id.into();
         if instance_id.is_empty() {
@@ -272,6 +293,7 @@ impl NodeSession {
                 runtime: Arc::new(Mutex::new(RuntimeSlot {
                     id: runtime_id,
                     host: runtime,
+                    state_file,
                 })),
             })
         }
@@ -330,6 +352,9 @@ impl NodeSession {
                     .ok_or(NodeError::InvalidMessage)?;
                 let mut active = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
                 let host = create_runtime_host(runtime)?;
+                if let Some(state_file) = &active.state_file {
+                    persist_runtime_selection(state_file, runtime)?;
+                }
                 active.id = runtime.into();
                 active.host = host;
                 json!({"status":"ok", "runtime":runtime})
@@ -417,6 +442,35 @@ impl NodeSession {
             .host
             .clone())
     }
+}
+
+fn load_runtime_selection(state_file: &Path) -> Result<String, NodeError> {
+    match std::fs::read_to_string(state_file) {
+        Ok(content) => {
+            let value: serde_json::Value =
+                serde_json::from_str(&content).map_err(|_| NodeError::InvalidMessage)?;
+            let runtime = value
+                .get("runtime")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .ok_or(NodeError::InvalidMessage)?;
+            Ok(runtime.to_owned())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("echo".to_owned()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn persist_runtime_selection(state_file: &Path, runtime: &str) -> Result<(), NodeError> {
+    if let Some(parent) = state_file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = state_file.with_extension("json.tmp");
+    let bytes = serde_json::to_vec(&json!({ "runtime": runtime }))
+        .map_err(|_| NodeError::InvalidMessage)?;
+    std::fs::write(&temp, bytes)?;
+    std::fs::rename(temp, state_file)?;
+    Ok(())
 }
 
 fn create_runtime_host(runtime: &str) -> Result<Arc<dyn NodeRuntimeHost>, NodeError> {

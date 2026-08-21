@@ -16,6 +16,7 @@ pub struct LocalNodeSpec {
     instance_id: String,
     cleanup_path: Option<PathBuf>,
     lock_file: PathBuf,
+    state_file: PathBuf,
 }
 
 impl LocalNodeSpec {
@@ -41,6 +42,7 @@ impl LocalNodeSpec {
             instance_id,
             cleanup_path,
             lock_file: paths.data_root().join("node.lock"),
+            state_file: paths.data_root().join("runtime-selection.json"),
         })
     }
     pub fn endpoint(&self) -> &str {
@@ -48,6 +50,9 @@ impl LocalNodeSpec {
     }
     pub fn instance_id(&self) -> &str {
         &self.instance_id
+    }
+    pub fn state_file(&self) -> &std::path::Path {
+        &self.state_file
     }
 }
 
@@ -300,6 +305,8 @@ impl LocalNodeLauncher for ProcessNodeLauncher {
             .arg(&spec.instance_id)
             .arg("--lock-file")
             .arg(&spec.lock_file)
+            .arg("--state-file")
+            .arg(&spec.state_file)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());

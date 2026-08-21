@@ -11,11 +11,12 @@ use pinvou_protocol::{
 struct ProcessGuard {
     child: Child,
     lock: PathBuf,
+    state_file: PathBuf,
     endpoint_dir: Option<PathBuf>,
 }
 
 impl ProcessGuard {
-    fn new(child: Child, lock: PathBuf, _endpoint: &str) -> Self {
+    fn new(child: Child, lock: PathBuf, state_file: PathBuf, _endpoint: &str) -> Self {
         #[cfg(target_os = "linux")]
         let endpoint_dir = PathBuf::from(_endpoint).parent().map(PathBuf::from);
         #[cfg(not(target_os = "linux"))]
@@ -23,6 +24,7 @@ impl ProcessGuard {
         Self {
             child,
             lock,
+            state_file,
             endpoint_dir,
         }
     }
@@ -33,6 +35,7 @@ impl Drop for ProcessGuard {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_file(&self.lock);
+        let _ = std::fs::remove_file(&self.state_file);
         if let Some(endpoint_dir) = &self.endpoint_dir {
             let _ = std::fs::remove_dir_all(endpoint_dir);
         }
@@ -57,6 +60,7 @@ fn controller_client_reaches_real_node_process_and_receives_schema_event() {
         .display()
         .to_string();
     let lock = std::env::temp_dir().join(format!("pinvou-node-{unique}.lock"));
+    let state_file = std::env::temp_dir().join(format!("pinvou-node-{unique}-state.json"));
     let child = Command::new(env!("CARGO_BIN_EXE_pinvou-node"))
         .arg("--endpoint")
         .arg(&endpoint)
@@ -64,12 +68,14 @@ fn controller_client_reaches_real_node_process_and_receives_schema_event() {
         .arg("m1-instance")
         .arg("--lock-file")
         .arg(&lock)
+        .arg("--state-file")
+        .arg(&state_file)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let _guard = ProcessGuard::new(child, lock, &endpoint);
+    let _guard = ProcessGuard::new(child, lock, state_file, &endpoint);
     let mut client = (0..80)
         .find_map(|_| {
             let result = connect_node(&endpoint, "m1-instance").ok();
@@ -98,6 +104,18 @@ fn controller_client_reaches_real_node_process_and_receives_schema_event() {
         serde_json::from_str::<serde_json::Value>(event.payload().get()).unwrap()["content"],
         "three-process-echo"
     );
+    let switch = node_request(
+        &mut client,
+        3,
+        "runtime.switch",
+        serde_json::json!({"instance_id":"m1-instance","runtime":"echo"}),
+    );
+    assert_eq!(switch.payload()["runtime"], "echo");
+    assert!(
+        std::fs::read_to_string(&_guard.state_file)
+            .unwrap()
+            .contains("\"runtime\":\"echo\"")
+    );
 }
 
 #[test]
@@ -119,6 +137,7 @@ fn node_wire_version_mismatch_returns_code_three_and_disconnects() {
         .display()
         .to_string();
     let lock = std::env::temp_dir().join(format!("pinvou-node-{unique}.lock"));
+    let state_file = std::env::temp_dir().join(format!("pinvou-node-{unique}-state.json"));
     let child = Command::new(env!("CARGO_BIN_EXE_pinvou-node"))
         .arg("--endpoint")
         .arg(&endpoint)
@@ -126,12 +145,14 @@ fn node_wire_version_mismatch_returns_code_three_and_disconnects() {
         .arg("v2-instance")
         .arg("--lock-file")
         .arg(&lock)
+        .arg("--state-file")
+        .arg(&state_file)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let _guard = ProcessGuard::new(child, lock, &endpoint);
+    let _guard = ProcessGuard::new(child, lock, state_file, &endpoint);
     let mut stream = (0..80)
         .find_map(|_| {
             let stream = open_endpoint(&endpoint).ok();

@@ -13,8 +13,9 @@ pub fn run_from_env() -> Result<(), NodeError> {
         .to_string_lossy()
         .into_owned();
     let lock_file = std::path::PathBuf::from(argument(&args, "--lock-file")?);
+    let state_file = std::path::PathBuf::from(argument(&args, "--state-file")?);
     let _lock = NodeInstanceLock::acquire(&lock_file)?;
-    let session = NodeSession::new(instance_id)?;
+    let session = NodeSession::with_state_file(instance_id, state_file)?;
     let mut listener = NodeLocalListener::bind(&endpoint)?;
     loop {
         listener.serve_one(&session)?;

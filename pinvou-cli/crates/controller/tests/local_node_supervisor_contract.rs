@@ -124,6 +124,29 @@ fn spec() -> LocalNodeSpec {
 }
 
 #[test]
+fn local_node_spec_places_runtime_state_in_the_private_data_root() {
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-node-state-spec-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let paths = ControllerPaths::from_roots(
+        HostPlatform::Linux,
+        root.join("data"),
+        root.join("runtime"),
+        "unused",
+    )
+    .unwrap();
+    let spec =
+        LocalNodeSpec::for_controller(&paths, PathBuf::from("pinvou-node"), "instance-1").unwrap();
+
+    assert_eq!(
+        spec.state_file(),
+        &root.join("data").join("runtime-selection.json")
+    );
+}
+
+#[test]
 fn crashes_restart_with_bounded_exponential_backoff() {
     let launches = Arc::new(Mutex::new(0));
     let launcher = FakeLauncher {

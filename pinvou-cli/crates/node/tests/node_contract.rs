@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -102,6 +103,36 @@ fn node_runtime_control_lists_detects_and_switches_runtime_profiles() {
 }
 
 #[test]
+fn node_runtime_switch_persists_the_selected_runtime_for_restart() {
+    let state_file = temp_state_file("runtime-selection");
+    let session = NodeSession::with_state_file("node-instance", state_file.clone()).unwrap();
+    let switch = IpcMessage::request(
+        serde_json::json!(31),
+        "runtime.switch",
+        serde_json::json!({"instance_id":"node-instance", "runtime":"echo"}),
+    )
+    .unwrap();
+
+    assert_eq!(session.handle(switch).unwrap().payload()["runtime"], "echo");
+    assert!(
+        std::fs::read_to_string(&state_file)
+            .unwrap()
+            .contains("\"runtime\":\"echo\"")
+    );
+
+    let restarted = NodeSession::with_state_file("node-instance", state_file.clone()).unwrap();
+    let list = IpcMessage::request(
+        serde_json::json!(32),
+        "runtime.list",
+        serde_json::json!({"instance_id":"node-instance"}),
+    )
+    .unwrap();
+    assert_eq!(restarted.handle(list).unwrap().payload()["current"], "echo");
+
+    std::fs::remove_file(state_file).unwrap();
+}
+
+#[test]
 fn node_runtime_switch_replaces_the_active_runtime_host() {
     let session = NodeSession::with_runtime("node-instance", Arc::new(PrefixRuntime)).unwrap();
     let before = IpcMessage::request(
@@ -137,6 +168,19 @@ fn node_runtime_switch_replaces_the_active_runtime_host() {
         serde_json::from_str::<serde_json::Value>(envelope.payload().get()).unwrap()["content"],
         "after"
     );
+}
+
+fn temp_state_file(name: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "pinvou-node-{name}-{}-{unique}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    path
 }
 
 #[test]
