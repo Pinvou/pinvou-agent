@@ -216,21 +216,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // ToolStoreView 随左栏切换会卸载；连接是长流程（装 CLI ~40s + 扫码），进度/监听/秒表
     // 若放组件 useState，一离开工具商店就全丢 → 回来按钮又变“连接”。故挂在模块级单例，
     // 活在组件生命周期之外；组件只订阅它做镜像渲染。
-    // 统一注册 Tauri 事件监听并收集 unlisten 句柄，供 conn.disposeListeners() 清理。
-    // ev.listen 返回 Promise<unlisten>，若 dispose 在 resolve 前发生，迟到的句柄不能
-    // 再 push 进已清空的数组（否则监听永远漏注销）→ 直接注销。
-    function track(ev, conn, event, handler) {
-      ev.listen(event, handler)
-        .then(u => { if (conn.disposed) { try { u(); } catch (_) {} } else { conn.unlisteners.push(u); } })
-        .catch(() => {});
-    }
-
     const feishuConn = {
       flow: null,
       tick: null,
       listenersReady: false,
-      unlisteners: [],
-      disposed: false,
       subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
       setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
@@ -244,13 +233,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }), 1000);
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
-      disposeListeners() {
-        this.disposed = true;
-        this.unlisteners.forEach(u => { try { u(); } catch (_) {} });
-        this.unlisteners = [];
-        this.listenersReady = false;
-        this.stopTick();
-      },
     };
     // 后端连接事件只注册一次（幂等，跨 ToolStoreView 多次挂载不重复注册）。
     function ensureFeishuListeners(copy = {}) {
@@ -259,7 +241,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       feishuConn.listenersReady = true;
-      track(ev, feishuConn, 'feishu:progress', (e) => {
+      ev.listen('feishu:progress', (e) => {
         const p = e.payload || {};
         feishuConn.setFlow(f => {
           const nf = f ? { ...f, steps: { ...(f.steps || {}) } } : { phase: 'running', steps: {}, active: null, pct: 0, sec: 0, log: '' };
@@ -270,7 +252,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           return nf;
         });
       });
-      track(ev, feishuConn, 'feishu:qr', (e) => {
+      ev.listen('feishu:qr', (e) => {
         const p = e.payload || {};
         feishuConn.stopTick();
         feishuConn.setFlow(f => {
@@ -282,7 +264,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           };
         });
       });
-      track(ev, feishuConn, 'feishu:connected', () => {
+      ev.listen('feishu:connected', () => {
         feishuConn.stopTick();
         feishuConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
         // 连上 → 按规则写技能（默认启用）+ 广播刷新；跟视图无关，放全局做。
@@ -290,7 +272,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         // 稍后自动收起流程卡（详情里的“已连接”态改由 feishuConnected 驱动）
         setTimeout(() => feishuConn.setFlow(null), 1800);
       });
-      track(ev, feishuConn, 'feishu:error', (e) => {
+      ev.listen('feishu:error', (e) => {
         const p = e.payload || {};
         feishuConn.stopTick();
         feishuConn.setFlow(f => {
@@ -302,7 +284,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     // ── 企业微信连接流程 · 跨视图持久 store(镜像 feishuConn;企微纯扫码单段）──
     const wecomConn = {
-      flow: null, tick: null, listenersReady: false, unlisteners: [], disposed: false, subs: new Set(),
+      flow: null, tick: null, listenersReady: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
       setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
       startTick() {
@@ -315,13 +297,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }), 1000);
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
-      disposeListeners() {
-        this.disposed = true;
-        this.unlisteners.forEach(u => { try { u(); } catch (_) {} });
-        this.unlisteners = [];
-        this.listenersReady = false;
-        this.stopTick();
-      },
     };
     function ensureWecomListeners(copy = {}) {
       if (wecomConn.listenersReady) return;
@@ -329,7 +304,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       wecomConn.listenersReady = true;
-      track(ev, wecomConn, 'wecom:qr', (e) => {
+      ev.listen('wecom:qr', (e) => {
         const p = e.payload || {};
         wecomConn.stopTick();
         wecomConn.setFlow(f => {
@@ -339,13 +314,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase };
         });
       });
-      track(ev, wecomConn, 'wecom:connected', () => {
+      ev.listen('wecom:connected', () => {
         wecomConn.stopTick();
         wecomConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
         invokeTauri('wecom_apply_skills').catch(() => {});
         setTimeout(() => wecomConn.setFlow(null), 1800);
       });
-      track(ev, wecomConn, 'wecom:error', (e) => {
+      ev.listen('wecom:error', (e) => {
         const p = e.payload || {};
         wecomConn.stopTick();
         wecomConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
@@ -354,7 +329,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     // ── 钉钉连接流程 · 跨视图持久 store(镜像企微;纯扫码单段）──
     const dingtalkConn = {
-      flow: null, tick: null, listenersReady: false, unlisteners: [], disposed: false, subs: new Set(),
+      flow: null, tick: null, listenersReady: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
       setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
       startTick() {
@@ -367,13 +342,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }), 1000);
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
-      disposeListeners() {
-        this.disposed = true;
-        this.unlisteners.forEach(u => { try { u(); } catch (_) {} });
-        this.unlisteners = [];
-        this.listenersReady = false;
-        this.stopTick();
-      },
     };
     function ensureDingtalkListeners(copy = {}) {
       if (dingtalkConn.listenersReady) return;
@@ -382,7 +350,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       dingtalkConn.listenersReady = true;
-      track(ev, dingtalkConn, 'dingtalk:qr', (e) => {
+      ev.listen('dingtalk:qr', (e) => {
         const p = e.payload || {};
         dingtalkConn.stopTick();
         dingtalkConn.setFlow(f => {
@@ -392,7 +360,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, userCode: p.user_code };
         });
       });
-      track(ev, dingtalkConn, 'dingtalk:connected', async () => {
+      ev.listen('dingtalk:connected', async () => {
         dingtalkConn.stopTick();
         try {
           await invokeTauri('dingtalk_apply_skills');
@@ -402,7 +370,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'error', err: skillsFailed(String(e).slice(0, 220)), errStep: 'qr', steps: { ...((f && f.steps) || {}), qr: 'error' } }));
         }
       });
-      track(ev, dingtalkConn, 'dingtalk:error', (e) => {
+      ev.listen('dingtalk:error', (e) => {
         const p = e.payload || {};
         dingtalkConn.stopTick();
         dingtalkConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
@@ -411,7 +379,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     // ── 腾讯会议连接流程 · 跨视图持久 store(镜像钉钉;纯 OAuth 扫码单段）──
     const tmeetConn = {
-      flow: null, tick: null, listenersReady: false, unlisteners: [], disposed: false, subs: new Set(),
+      flow: null, tick: null, listenersReady: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
       setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
       startTick() {
@@ -424,13 +392,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }), 1000);
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
-      disposeListeners() {
-        this.disposed = true;
-        this.unlisteners.forEach(u => { try { u(); } catch (_) {} });
-        this.unlisteners = [];
-        this.listenersReady = false;
-        this.stopTick();
-      },
     };
     function ensureTmeetListeners(copy = {}) {
       if (tmeetConn.listenersReady) return;
@@ -439,7 +400,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const ev = isTauriAvailable() ? tauriEvents : null;
       if (!ev) return;
       tmeetConn.listenersReady = true;
-      track(ev, tmeetConn, 'tmeet:qr', (e) => {
+      ev.listen('tmeet:qr', (e) => {
         const p = e.payload || {};
         tmeetConn.stopTick();
         if (p.url) {
@@ -454,7 +415,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, browserAuth: true };
         });
       });
-      track(ev, tmeetConn, 'tmeet:connected', async () => {
+      ev.listen('tmeet:connected', async () => {
         tmeetConn.stopTick();
         try {
           // 二次确认真实登录态（统一 readiness；原 tmeet_status 调用已退役）
@@ -469,7 +430,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           tmeetConn.setFlow(f => ({ ...(f || {}), phase: 'error', err: String(e && e.message ? e.message : e).slice(0, 220), errStep: 'qr', steps: { ...((f && f.steps) || {}), qr: 'error' } }));
         }
       });
-      track(ev, tmeetConn, 'tmeet:error', (e) => {
+      ev.listen('tmeet:error', (e) => {
         const p = e.payload || {};
         tmeetConn.stopTick();
         tmeetConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
