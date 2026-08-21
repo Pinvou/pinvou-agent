@@ -77,7 +77,6 @@ let rejectChat = true;
 const context = {
   state,
   invoke(command) {
-    if (command === 'remote_control_publish_user_message') return Promise.resolve();
     return rejectChat ? Promise.reject(new Error('当前模型不可用')) : Promise.resolve();
   },
   notify() {},

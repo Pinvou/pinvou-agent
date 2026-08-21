@@ -852,7 +852,6 @@
   var isBusyFor = chatFeature.isBusyFor;
   var emitPetEvent = chatFeature.emitPetEvent;
   var doSendFor = chatFeature.doSendFor;
-  var publishRemoteUserMessage = chatFeature.publishRemoteUserMessage;
   var flushQueued = chatFeature.flushQueued;
   var sendMessageToSession = chatFeature.sendMessageToSession;
   var sendMessage = chatFeature.sendMessage;
@@ -1463,79 +1462,11 @@
     }
     return Object.freeze(result);
   }
-  function cloneJson(value, fallback) {
-    try { return JSON.parse(JSON.stringify(value == null ? fallback : value)); }
-    catch (_) { return fallback; }
-  }
-  function remoteWorkingSetFor(sid) {
-    if (!sid) return null;
-    if (sid === state.activeSessionId) {
-      saveWorkingSetTo(getBuffer(sid));
-      return {
-        messages: state.messages, chatItems: state.chatItems, artifacts: state.artifacts,
-        turnTimeline: state.turnTimeline,
-        busy: state.busy, thinking: state.thinking, planSnapshot: state.planSnapshot,
-      };
-    }
-    return sessionStates[sid] || null;
-  }
-  function remoteArtifactSnapshot(artifacts) {
-    return (Array.isArray(artifacts) ? artifacts : []).map(function (a) {
-      var p = a && (a.path || a.path_tail || a.storage_path || "");
-      return {
-        id: (a && a.id) || "",
-        basename: (a && a.basename) || basename(p),
-        path: p,
-        path_tail: p,
-        kind: (a && a.kind) || "",
-        byte_size: (a && a.byte_size) || 0,
-        created_at: (a && a.created_at) || "",
-      };
-    }).filter(function (a) { return !!(a.path || a.basename); });
-  }
-  function buildRemoteLiveSnapshot(sid) {
-    var ws = remoteWorkingSetFor(sid);
-    if (!ws) return null;
-    var meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
-    var msgs = cloneJson(ws.messages, []);
-    var chatItems = cloneJson(ws.chatItems, []);
-    return {
-      snapshot_source: "live",
-      session: {
-        id: sid,
-        title: meta.title || bt("newChatFallbackTitle"),
-        status: ws.busy ? "running" : "idle",
-        updated_at: meta.updated_at || "",
-        message_count: meta.message_count || msgs.length || chatItems.length || 0,
-      },
-      messages: msgs.map(function (m, idx) {
-        var blocks = Array.isArray(m.content) ? m.content : [];
-        return {
-          index: idx,
-          role: m.role,
-          content: blocks.filter(function (b) { return b && b.type === "text"; }).map(function (b) { return b.text || ""; }).join(""),
-          blocks: blocks,
-        };
-      }),
-      chat_items: chatItems,
-      artifacts: remoteArtifactSnapshot(filterSessionArtifacts(ws.artifacts, sid)),
-      busy: !!ws.busy,
-      thinking: cloneJson(ws.thinking, null),
-      plan_snapshot: cloneJson(ws.planSnapshot, null),
-    };
-  }
-  async function publishRemoteLiveSnapshot(sid) {
-    try { await ensureSessionBufferLoaded(sid); }
-    catch (err) { console.warn("remote snapshot hydrate failed", err); }
-    var snapshot = buildRemoteLiveSnapshot(sid);
-    if (!snapshot) return false;
-    await invoke("remote_control_publish_event", {
-      sessionId: sid,
-      kind: "session_snapshot",
-      payload: snapshot,
-    });
-    return true;
-  }
+  // 远端实时快照已由 transcript 事件流(chat:transcript_committed 等)承载:
+  // 旧 publishRemoteLiveSnapshot 调用的 remote_control_publish_event 命令名
+  // 在 Rust 侧从未注册("session_snapshot" 也不在任何事件白名单),属 v1
+  // 遗留死调用,已删除。
+
   var notificationQueue = [];
   var notificationDispatching = false;
   function notify() {
@@ -2097,7 +2028,6 @@
     trackArtifact: trackArtifact, untrackArtifact: untrackArtifact,
     findPresentedArtifact: findPresentedArtifact, isDeliverable: isDeliverable,
     noteArtifactChange: noteArtifactChange,
-    publishRemoteLiveSnapshot: publishRemoteLiveSnapshot,
     persistMessagesFor: persistMessagesFor,
     composePlanMarkdown: composePlanMarkdown,
     refreshHistoryList: refreshHistoryList,
@@ -2275,7 +2205,7 @@
   var setRemoteCollectionEnabled = personasFeature.setRemoteCollectionEnabled;
   var removeRemoteCollection = personasFeature.removeRemoteCollection;
   var syncMountedCollection = personasFeature.syncMountedCollection;
-  var updaterFeature = installBridgeFeature("updater", { state: state, notify: notify, invoke: invoke, refreshHistoryList: refreshHistoryList, listen: listen, publishRemoteLiveSnapshot: publishRemoteLiveSnapshot, getBuffer: getBuffer, bt: bt });
+  var updaterFeature = installBridgeFeature("updater", { state: state, notify: notify, invoke: invoke, refreshHistoryList: refreshHistoryList, listen: listen, getBuffer: getBuffer, bt: bt });
   var loadAppVersion = updaterFeature.loadAppVersion;
   var checkForUpdateSilently = updaterFeature.checkForUpdateSilently;
   var checkForUpdate = updaterFeature.checkForUpdate;
