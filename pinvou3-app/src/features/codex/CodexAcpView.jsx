@@ -71,6 +71,7 @@ import {
 } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { PlanLayer, ToolCard, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
+import { notifyChatRoundCommitted } from '../tools/tool-events.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import { bridge } from '../../hooks/useBridge.js';
@@ -2596,6 +2597,8 @@ export function CodexAcpView({
           // 按 SessionPolicy 逐轮驱动（docs/code-mode-解耦与权限持久化-改动说明.md）。
           restrictTools: false,
         });
+        // 发送成功 = 新一轮已受理：code scope 未提交的「打开」转正锁死。
+        notifyChatRoundCommitted('code');
       } catch (sendError) {
         removeLocalUserMessage(lane, optimisticId);
         setNativeLaneTick(tick => tick + 1);

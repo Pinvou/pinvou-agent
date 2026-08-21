@@ -4592,6 +4592,10 @@
       : { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools };
     return invoke(chatCommand, chatArgs)
       .then(function () {
+        // 新一轮已被后端受理：会话中未提交的「打开」（pending enable）自此进入
+        // 上下文并锁死（ComposerToolMenu 监听）。bridge 层不反向依赖 features，
+        // 与 pinvou:tools-changed 一样内联派发。
+        try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch (_) {}
         recordAuthoritySyncDiagnostic("local_turn_admitted", Object.assign({
           operation: "send",
         }, authoritySyncBufferSnapshot(sid, turnOwnerBuffer)));
@@ -4889,6 +4893,8 @@
         submission.args,
         submission.requestId,
       );
+      // 首轮提交成功 = 新一轮已受理：未提交的「打开」转正锁死（同 doSendFor）。
+      try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch (_) {}
       acceptFirstTurnSubmission(submission, metadata);
     } catch (error) {
       submission.inFlight = false;

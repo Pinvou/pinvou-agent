@@ -54,6 +54,8 @@ const knowledgeView = fs.readFileSync(path.join(root, 'src', 'features', 'knowle
 const toolCommon = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-common.jsx'), 'utf8');
 const connectionStatus = fs.readFileSync(path.join(root, 'src', 'features', 'web', 'WebConnectionStatus.jsx'), 'utf8');
 const chatView = fs.readFileSync(path.join(root, 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
+const codexAcpView = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+const toolEvents = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-events.js'), 'utf8');
 const policy = JSON.parse(fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'access-policy.json'), 'utf8'));
 const allowed = new Set(policy.allowed_commands);
 const allowedEvents = new Set(policy.allowed_events);
@@ -359,7 +361,22 @@ assert.match(settingsView, /const canManageModels = can\('modelManagement'\);/);
 assert.match(settingsView, /const canSwitchModels = can\('sessionModelSwitch'\);/);
 assert.match(settingsView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
 assert.match(settingsView, /const toolSwitchDisabled = !canMutateToolStore;/);
-assert.match(settingsView, /if \(toolSwitchDisabled \|\| \(hasActiveSession && (enabled|projectSkillsEnabled)\)\) return;/);
+// 只增不减 + 未提交可撤销：会话中阻隔「关闭」，但本会话内刚打开（pending）、
+// 尚未随新一轮对话进入上下文的允许改回；发送新一轮后才锁死。
+assert.match(settingsView, /if \(toolSwitchDisabled \|\| \(hasActiveSession && enabled && !pending\.ids\.has\(id\)\)\) return;/);
+assert.match(settingsView, /if \(toolSwitchDisabled \|\| \(hasActiveSession && projectSkillsEnabled && !pending\.projectSkills\)\) return;/);
+assert.match(settingsView, /if \(enabled\) pending\.ids\.delete\(id\); else pending\.ids\.add\(id\);/);
+assert.match(settingsView, /window\.addEventListener\('pinvou:chat-round-committed', onCommitted\)/);
+assert.match(settingsView, /pending\.ids\.clear\(\);\s*\n\s*pending\.projectSkills = false;/);
+// 提交信号由发送链路在后端受理新一轮后派发（桌面 bridge、Web bridge 首轮
+// 与常规发送、原生代码车道三处），缺任一处 pending 都不会转正。
+assert.match(bridge, /window\.dispatchEvent\(new CustomEvent\("pinvou:chat-round-committed", \{ detail: \{ scope: "plain" \} \}\)\)/);
+assert.ok(
+  (bridge.match(/pinvou:chat-round-committed/g) || []).length >= 3,
+  'desktop doSendFor, web doSendFor, and web first-turn submission must each dispatch the round-committed event',
+);
+assert.match(codexAcpView, /notifyChatRoundCommitted\('code'\);/);
+assert.match(toolEvents, /export \{ notifyComposerToolsChanged, notifyChatRoundCommitted \};/);
 assert.match(settingsView, /bridge\.models\.switchModel\(activeSessionId, id\)/);
 assert.match(settingsView, /\{canManageModels && editingModel && \(/);
 assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
