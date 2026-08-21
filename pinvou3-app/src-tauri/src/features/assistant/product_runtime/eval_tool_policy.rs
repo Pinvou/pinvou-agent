@@ -50,12 +50,6 @@ static GAIA_OFFLINE_V1: EvalTurnPolicy = EvalTurnPolicy {
     network: EvalNetworkClass::Offline,
 };
 
-static PRODUCT_V1: EvalTurnPolicy = EvalTurnPolicy {
-    id: EvalToolPolicy::ProductV1,
-    allowed_tools: PRODUCT_V1_ALLOWED_TOOLS,
-    network: EvalNetworkClass::PublicWeb,
-};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EvalToolPolicyError;
 
@@ -121,10 +115,6 @@ mod tests {
             EvalToolPolicy::ProductV1
         );
         assert_eq!(
-            resolve_eval_policy("pinvou-product/v1").unwrap().id,
-            EvalToolPolicy::ProductV1
-        );
-        assert_eq!(
             resolve_eval_policy("pinvou-gaia-public-web/v1").unwrap().id,
             EvalToolPolicy::GaiaPublicWebV1
         );
@@ -144,8 +134,6 @@ mod tests {
         let public = resolve_eval_policy("pinvou-gaia-public-web/v1").unwrap();
         let offline = resolve_eval_policy("pinvou-gaia-offline/v1").unwrap();
 
-        assert_eq!(product.network, EvalNetworkClass::PublicWeb);
-        assert!(product.allows("Web"));
         assert_eq!(public.network, EvalNetworkClass::PublicWeb);
         assert_eq!(offline.network, EvalNetworkClass::Offline);
         assert_eq!(product.network, EvalNetworkClass::PublicWeb);
@@ -194,6 +182,5 @@ mod tests {
         assert!(!PRODUCT_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
         assert!(!GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
         assert!(!GAIA_OFFLINE_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
-        assert!(!PRODUCT_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
     }
 }
