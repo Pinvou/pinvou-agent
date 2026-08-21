@@ -750,6 +750,12 @@ fn handle_slash_command<S: Read + Write>(
             Ok(true)
         }
         (Some("runtime"), Some(runtime), None) => {
+            let detect = client.runtime_detect(Some(runtime))?;
+            if blocking_code_for_runtime_detect(detect.payload()).is_some() {
+                write_terminal_to(output, &format_runtime_detect(detect.payload()))?;
+                write_terminal_to(output, "runtime not switched\n")?;
+                return Ok(true);
+            }
             let response = client.runtime_switch(runtime)?;
             let selected = response
                 .payload()
@@ -757,8 +763,7 @@ fn handle_slash_command<S: Read + Write>(
                 .and_then(Value::as_str)
                 .unwrap_or(runtime);
             write_terminal_to(output, &format!("runtime switched to {selected}\n"))?;
-            let response = client.runtime_detect(None)?;
-            write_terminal_to(output, &format_runtime_detect(response.payload()))?;
+            write_terminal_to(output, &format_runtime_detect(detect.payload()))?;
             Ok(true)
         }
         (Some("detect"), maybe_runtime, None) => {
@@ -1095,9 +1100,9 @@ mod tests {
         )
         .unwrap();
         let switch_response =
-            IpcMessage::response(json!(2), json!({"status": "ok", "runtime": "echo"})).unwrap();
+            IpcMessage::response(json!(3), json!({"status": "ok", "runtime": "echo"})).unwrap();
         let detect_response = IpcMessage::response(
-            json!(3),
+            json!(2),
             json!({
                 "runtime": "echo",
                 "status": "available",
@@ -1108,7 +1113,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let stream = TestDuplex::with_responses([list_response, switch_response, detect_response]);
+        let stream = TestDuplex::with_responses([list_response, detect_response, switch_response]);
         let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
         let interrupted = Arc::new(AtomicBool::new(false));
         let active_turn = Arc::new(Mutex::new(None));
@@ -1135,9 +1140,10 @@ mod tests {
         let requests = client.into_inner().requests();
         assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].method(), Some("runtime.list"));
-        assert_eq!(requests[1].method(), Some("runtime.switch"));
+        assert_eq!(requests[1].method(), Some("runtime.detect"));
         assert_eq!(requests[1].payload()["runtime"], "echo");
-        assert_eq!(requests[2].method(), Some("runtime.detect"));
+        assert_eq!(requests[2].method(), Some("runtime.switch"));
+        assert_eq!(requests[2].payload()["runtime"], "echo");
     }
 
     #[test]
@@ -1209,20 +1215,21 @@ mod tests {
 
     #[test]
     fn chat_runtime_switch_prints_the_new_runtime_status() {
-        let switch_response =
-            IpcMessage::response(json!(1), json!({"status": "ok", "runtime": "codex"})).unwrap();
         let detect_response = IpcMessage::response(
-            json!(2),
+            json!(1),
             json!({
                 "runtime": "codex",
-                "status": "blocked_auth",
-                "error_kind": "blocked_auth",
-                "exit_code": 4,
-                "message": "runtime authentication is blocked"
+                "status": "available",
+                "auth_status": "signed_in",
+                "capabilities": {
+                    "interactive_chat": true
+                }
             }),
         )
         .unwrap();
-        let stream = TestDuplex::with_responses([switch_response, detect_response]);
+        let switch_response =
+            IpcMessage::response(json!(2), json!({"status": "ok", "runtime": "codex"})).unwrap();
+        let stream = TestDuplex::with_responses([detect_response, switch_response]);
         let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
         let interrupted = Arc::new(AtomicBool::new(false));
         let active_turn = Arc::new(Mutex::new(None));
@@ -1242,12 +1249,53 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("runtime switched to codex"));
         assert!(output.contains("runtime: codex"));
-        assert!(output.contains("status: blocked_auth"));
-        assert!(output.contains("hint: run /detect"));
+        assert!(output.contains("status: available"));
         let requests = client.into_inner().requests();
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].method(), Some("runtime.switch"));
-        assert_eq!(requests[1].method(), Some("runtime.detect"));
+        assert_eq!(requests[0].method(), Some("runtime.detect"));
+        assert_eq!(requests[0].payload()["runtime"], "codex");
+        assert_eq!(requests[1].method(), Some("runtime.switch"));
+        assert_eq!(requests[1].payload()["runtime"], "codex");
+    }
+
+    #[test]
+    fn chat_runtime_switch_refuses_unavailable_target_without_changing_active_runtime() {
+        let detect_response = IpcMessage::response(
+            json!(1),
+            json!({
+                "runtime": "codex",
+                "status": "blocked_auth",
+                "error_kind": "blocked_auth",
+                "exit_code": 4,
+                "message": "runtime authentication is blocked"
+            }),
+        )
+        .unwrap();
+        let stream = TestDuplex::with_responses([detect_response]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut input = std::io::Cursor::new(b"/runtime codex\n/exit\n".to_vec());
+        let mut output = Vec::new();
+
+        execute_chat_with_io(
+            &mut input,
+            &mut output,
+            &mut client,
+            interrupted,
+            active_turn,
+            true,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("runtime: codex"));
+        assert!(output.contains("status: blocked_auth"));
+        assert!(output.contains("runtime not switched"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method(), Some("runtime.detect"));
+        assert_eq!(requests[0].payload()["runtime"], "codex");
     }
 
     #[test]
