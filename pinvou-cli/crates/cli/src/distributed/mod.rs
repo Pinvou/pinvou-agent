@@ -461,9 +461,7 @@ pub(crate) fn execute(
             let response = ensure_controller()?.runtime_detect()?;
             Ok(match output {
                 OutputMode::Json => response.payload().to_string(),
-                OutputMode::Human => {
-                    serde_json::to_string_pretty(response.payload()).unwrap_or_else(|_| "{}".into())
-                }
+                OutputMode::Human => format_runtime_detect(response.payload()),
             })
         }
         DistributedCommand::RuntimeList => {
@@ -679,17 +677,7 @@ fn handle_slash_command<S: Read + Write>(
         }
         (Some("detect"), None, None) => {
             let response = client.runtime_detect()?;
-            let runtime = response
-                .payload()
-                .get("runtime")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let status = response
-                .payload()
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            write_terminal_to(output, &format!("runtime: {runtime} ({status})\n"))?;
+            write_terminal_to(output, &format_runtime_detect(response.payload()))?;
             Ok(true)
         }
         _ => Err(DistributedError::new(
@@ -701,6 +689,35 @@ fn handle_slash_command<S: Read + Write>(
 
 fn chat_help_text() -> &'static str {
     "/help - show chat commands\n/runtime - list selectable runtimes\n/runtime <id> - switch active runtime\n/detect - show active runtime status\n/exit or /quit - leave chat\n"
+}
+
+fn format_runtime_detect(payload: &Value) -> String {
+    let runtime = payload
+        .get("runtime")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let status = payload
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let mut text = format!("runtime: {runtime}\nstatus: {status}\n");
+    if let Some(auth) = payload.get("auth_status").and_then(Value::as_str) {
+        text.push_str(&format!("auth: {auth}\n"));
+    }
+    if let Some(capabilities) = payload.get("capabilities").and_then(Value::as_object) {
+        for key in ["interactive_chat", "tool_approval", "elicitation"] {
+            if let Some(value) = capabilities.get(key).and_then(Value::as_bool) {
+                text.push_str(&format!("{key}: {}\n", if value { "yes" } else { "no" }));
+            }
+        }
+    }
+    if let Some(error) = payload.get("error_kind").and_then(Value::as_str) {
+        text.push_str(&format!("error: {error}\n"));
+    }
+    if let Some(exit_code) = payload.get("exit_code").and_then(Value::as_i64) {
+        text.push_str(&format!("exit_code: {exit_code}\n"));
+    }
+    text
 }
 
 fn format_runtime_list(payload: &Value) -> String {
@@ -1006,6 +1023,76 @@ mod tests {
         assert!(output.contains("/runtime <id> - switch active runtime"));
         assert!(output.contains("/detect - show active runtime status"));
         assert!(client.into_inner().requests().is_empty());
+    }
+
+    #[test]
+    fn chat_loop_detect_prints_the_runtime_status_card_without_starting_a_turn() {
+        let detect_response = IpcMessage::response(
+            json!(1),
+            json!({
+                "runtime": "codex",
+                "status": "blocked_auth",
+                "error_kind": "blocked_auth",
+                "exit_code": 4
+            }),
+        )
+        .unwrap();
+        let stream = TestDuplex::with_responses([detect_response]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut input = std::io::Cursor::new(b"/detect\n/exit\n".to_vec());
+        let mut output = Vec::new();
+
+        execute_chat_with_io(
+            &mut input,
+            &mut output,
+            &mut client,
+            interrupted,
+            Arc::clone(&active_turn),
+            true,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("runtime: codex"));
+        assert!(output.contains("status: blocked_auth"));
+        assert!(output.contains("error: blocked_auth"));
+        assert!(output.contains("exit_code: 4"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method(), Some("runtime.detect"));
+    }
+
+    #[test]
+    fn runtime_detect_status_card_shows_auth_capabilities_and_errors() {
+        let available = format_runtime_detect(&json!({
+            "runtime": "codex",
+            "status": "available",
+            "auth_status": "authenticated",
+            "capabilities": {
+                "interactive_chat": true,
+                "tool_approval": true,
+                "elicitation": false
+            }
+        }));
+        assert!(available.contains("runtime: codex"));
+        assert!(available.contains("status: available"));
+        assert!(available.contains("auth: authenticated"));
+        assert!(available.contains("interactive_chat: yes"));
+        assert!(available.contains("tool_approval: yes"));
+        assert!(available.contains("elicitation: no"));
+
+        let blocked = format_runtime_detect(&json!({
+            "runtime": "codex",
+            "status": "blocked_auth",
+            "error_kind": "blocked_auth",
+            "exit_code": 4,
+            "message": "runtime authentication is blocked"
+        }));
+        assert!(blocked.contains("status: blocked_auth"));
+        assert!(blocked.contains("error: blocked_auth"));
+        assert!(blocked.contains("exit_code: 4"));
     }
 
     #[test]
