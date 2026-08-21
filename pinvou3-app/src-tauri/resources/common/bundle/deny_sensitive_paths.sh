@@ -32,6 +32,7 @@ SENSITIVE_DIRS=(
     "/.password-store/"
     "/.dws/"
     "/.tmeet/"
+    "/.weibo-cli/"
 )
 
 for pat in "${SENSITIVE_DIRS[@]}"; do
@@ -51,6 +52,7 @@ SENSITIVE_NAMES=(
     ".pgp"
     ".gpg"
     "credentials"
+    "credential-ref"
     "secrets"
     "/.netrc"
     "/.git-credentials"
