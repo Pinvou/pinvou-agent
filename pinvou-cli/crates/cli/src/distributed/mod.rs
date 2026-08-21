@@ -495,7 +495,8 @@ pub(crate) fn execute(
             })
         }
         DistributedCommand::RuntimeSwitch(runtime) => {
-            let response = ensure_controller()?.runtime_switch(&runtime)?;
+            let mut controller = ensure_controller()?;
+            let response = controller.runtime_switch(&runtime)?;
             Ok(match output {
                 OutputMode::Json => response.payload().to_string(),
                 OutputMode::Human => {
@@ -504,7 +505,8 @@ pub(crate) fn execute(
                         .get("runtime")
                         .and_then(Value::as_str)
                         .unwrap_or(&runtime);
-                    format!("runtime switched to {selected}")
+                    let detect = controller.runtime_detect()?;
+                    format_runtime_switch_human(selected, detect.payload())
                 }
             })
         }
@@ -768,6 +770,13 @@ fn format_runtime_detect(payload: &Value) -> String {
         );
     }
     text
+}
+
+fn format_runtime_switch_human(selected: &str, detect_payload: &Value) -> String {
+    format!(
+        "runtime switched to {selected}\n{}",
+        format_runtime_detect(detect_payload)
+    )
 }
 
 fn format_runtime_list(payload: &Value) -> String {
@@ -1245,6 +1254,24 @@ mod tests {
         assert!(blocked.contains("status: blocked_auth"));
         assert!(blocked.contains("error: blocked_auth"));
         assert!(blocked.contains("exit_code: 4"));
+    }
+
+    #[test]
+    fn runtime_switch_human_output_includes_the_follow_up_detect_card() {
+        let output = format_runtime_switch_human(
+            "codex",
+            &json!({
+                "runtime": "codex",
+                "status": "blocked_auth",
+                "error_kind": "blocked_auth",
+                "exit_code": 4
+            }),
+        );
+
+        assert!(output.contains("runtime switched to codex"));
+        assert!(output.contains("runtime: codex"));
+        assert!(output.contains("status: blocked_auth"));
+        assert!(output.contains("hint: run /detect"));
     }
 
     #[test]
