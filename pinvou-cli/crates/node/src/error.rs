@@ -18,6 +18,8 @@ pub enum NodeError {
     Io(#[from] std::io::Error),
     #[error("node runtime adapter failed: {0}")]
     Runtime(#[from] AdapterError),
+    #[error("node runtime is busy")]
+    RuntimeBusy,
     #[error("node command usage is invalid")]
     Usage,
 }
@@ -26,7 +28,9 @@ impl NodeError {
     pub const fn exit_code(&self) -> StableExitCode {
         match self {
             Self::ProtocolMismatch | Self::AlreadyRunning => StableExitCode::ControllerUnavailable,
-            Self::UnsupportedRequest | Self::InvalidMessage => StableExitCode::RuntimeFailed,
+            Self::UnsupportedRequest | Self::InvalidMessage | Self::RuntimeBusy => {
+                StableExitCode::RuntimeFailed
+            }
             Self::Usage => StableExitCode::Usage,
             Self::Runtime(error) => error.exit_code(),
             Self::UnsupportedPlatform | Self::Io(_) => StableExitCode::Internal,

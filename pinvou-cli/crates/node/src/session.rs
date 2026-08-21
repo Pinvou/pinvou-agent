@@ -237,6 +237,7 @@ pub struct NodeSession {
     instance_id: String,
     next_seq: Arc<AtomicU64>,
     runtime: Arc<Mutex<RuntimeSlot>>,
+    active_turn: Arc<Mutex<Option<u64>>>,
 }
 
 #[derive(Debug)]
@@ -290,6 +291,7 @@ impl NodeSession {
             Ok(Self {
                 instance_id,
                 next_seq: Arc::new(AtomicU64::new(1)),
+                active_turn: Arc::new(Mutex::new(None)),
                 runtime: Arc::new(Mutex::new(RuntimeSlot {
                     id: runtime_id,
                     host: runtime,
@@ -351,6 +353,14 @@ impl NodeSession {
                 payload
             }
             Some("runtime.switch") => {
+                if self
+                    .active_turn
+                    .lock()
+                    .map_err(|_| NodeError::InvalidMessage)?
+                    .is_some()
+                {
+                    return Err(NodeError::RuntimeBusy);
+                }
                 let runtime = request
                     .payload()
                     .get("runtime")
@@ -374,6 +384,7 @@ impl NodeSession {
                     .ok_or(NodeError::InvalidMessage)?;
                 let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
                 let runtime = self.current_runtime_host()?;
+                let _active = ActiveTurnGuard::enter(Arc::clone(&self.active_turn), seq)?;
                 let envelope = runtime.echo(&self.instance_id, text, seq)?;
                 return IpcMessage::event(
                     "runtime.event",
@@ -448,6 +459,33 @@ impl NodeSession {
             .map_err(|_| NodeError::InvalidMessage)?
             .host
             .clone())
+    }
+}
+
+struct ActiveTurnGuard {
+    active_turn: Arc<Mutex<Option<u64>>>,
+    seq: u64,
+}
+
+impl ActiveTurnGuard {
+    fn enter(active_turn: Arc<Mutex<Option<u64>>>, seq: u64) -> Result<Self, NodeError> {
+        let mut active = active_turn.lock().map_err(|_| NodeError::InvalidMessage)?;
+        if active.is_some() {
+            return Err(NodeError::RuntimeBusy);
+        }
+        *active = Some(seq);
+        drop(active);
+        Ok(Self { active_turn, seq })
+    }
+}
+
+impl Drop for ActiveTurnGuard {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active_turn.lock()
+            && *active == Some(self.seq)
+        {
+            *active = None;
+        }
     }
 }
 

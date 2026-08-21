@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pinvou_node::{
@@ -170,6 +170,57 @@ fn node_runtime_switch_replaces_the_active_runtime_host() {
     );
 }
 
+#[test]
+fn node_rejects_runtime_switch_while_a_turn_is_active() {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let session = NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(BlockingRuntime {
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(release_rx),
+        }),
+    )
+    .unwrap();
+    let running = session.clone();
+    let worker = std::thread::spawn(move || {
+        let echo = IpcMessage::request(
+            serde_json::json!(41),
+            "runtime.echo",
+            serde_json::json!({"instance_id":"node-instance", "text":"busy"}),
+        )
+        .unwrap();
+        running.handle(echo).unwrap()
+    });
+    entered_rx.recv().unwrap();
+
+    let switch_while_busy = IpcMessage::request(
+        serde_json::json!(42),
+        "runtime.switch",
+        serde_json::json!({"instance_id":"node-instance", "runtime":"echo"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        session.handle(switch_while_busy),
+        Err(NodeError::RuntimeBusy)
+    ));
+
+    release_tx.send(()).unwrap();
+    let event = worker.join().unwrap();
+    assert_eq!(event.kind(), IpcMessageKind::Evt);
+
+    let switch_after_turn = IpcMessage::request(
+        serde_json::json!(43),
+        "runtime.switch",
+        serde_json::json!({"instance_id":"node-instance", "runtime":"echo"}),
+    )
+    .unwrap();
+    assert_eq!(
+        session.handle(switch_after_turn).unwrap().payload()["runtime"],
+        "echo"
+    );
+}
+
 fn temp_state_file(name: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -282,6 +333,22 @@ impl NodeRuntimeHost for PrefixRuntime {
             "payload":{"role":"assistant","content":format!("runtime:{text}"),"merged_count":1}
         }))
         .map_err(|_| NodeError::InvalidMessage)
+    }
+}
+
+#[derive(Debug)]
+struct BlockingRuntime {
+    entered: Mutex<Option<mpsc::Sender<()>>>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl NodeRuntimeHost for BlockingRuntime {
+    fn echo(&self, node_id: &str, text: &str, seq: u64) -> Result<RuntimeEventEnvelope, NodeError> {
+        if let Some(sender) = self.entered.lock().unwrap().take() {
+            sender.send(()).unwrap();
+        }
+        self.release.lock().unwrap().recv().unwrap();
+        PrefixRuntime.echo(node_id, text, seq)
     }
 }
 
