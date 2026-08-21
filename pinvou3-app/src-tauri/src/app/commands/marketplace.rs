@@ -562,6 +562,53 @@ pub async fn update_marketplace_skill(
     Ok(())
 }
 
+/// 编辑上传包的 UI 展示名/说明（写 bundles.json 记录 extra 的
+/// `display_name`/`display_description`，机读 id/目录/frontmatter name 不动）。
+/// 仅 `source=Upload` 的记录可写；单技能包（`bundles/<id>/skills/` 下恰一个技能
+/// 目录）且展示说明为非空 Some 时，先把说明回写进该技能 SKILL.md 的 frontmatter
+/// description（模型侧可见描述同步）并重算内容指纹——回写失败（如说明含无法
+/// 单行互洽表达的字符）整体 Err，extra 不落盘。
+#[tauri::command]
+pub async fn update_bundle_display_meta(
+    id: String,
+    display_name: Option<String>,
+    display_description: Option<String>,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        use crate::features::marketplace::store::{BundleSource, BundleStore};
+        let store = BundleStore::new();
+        // 前置校验（存在性 + Upload 来源）：回写 SKILL.md 发生在 extra 落盘之前，
+        // 必须先挡住预置/内置包，避免改写非上传包的技能内容。
+        let record = store
+            .get(&id)?
+            .ok_or_else(|| format!("包 '{id}' 未登记，无法设置展示名/说明"))?;
+        if !matches!(record.source, BundleSource::Upload(_)) {
+            return Err(format!(
+                "包 '{id}' 非用户上传来源，预置/内置包不允许覆盖展示名/说明"
+            ));
+        }
+        // 单技能包回写（多技能/纯 MCP 包内部跳过不报错）；trim 空串 = 清覆盖，
+        // 展示回退 SKILL.md 现状，无需回写。
+        if let Some(desc) = display_description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                .writeback_single_skill_description(&id, desc)?;
+        }
+        store.set_display_meta(&id, display_name.as_deref(), display_description.as_deref())
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+    // SKILL.md 回写改了包内容：热刷在线会话组合目录与 deny 规则集
+    // （与 update_marketplace_skill 同一收尾）。
+    pool.refresh_live_sessions_skills().await;
+    pool.refresh_permission_rulesets().await;
+    Ok(())
+}
+
 /// 弹文件选择框选 zip 技能包并导入。前端无法用 plugin-dialog 的 JS API
 /// (单 HTML 无 bundler 引不进),所以选文件走 Rust 端 dialog。
 /// 返回 true=已导入,false=用户取消。

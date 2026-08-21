@@ -613,6 +613,76 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       );
     };
 
+    // 上传包展示名/说明编辑弹窗（extra 覆盖，只改 UI 展示；预填当前覆盖值，
+    // 留空即清除覆盖回退默认）。调用方按 updateConfirm 同款模式条件挂载，
+    // useState 初值即当前覆盖值。
+    const TsEditDisplayDialog = ({ dialog, onConfirm, onCancel, copy }) => {
+      const [name, setName] = useState(dialog.name || '');
+      const [desc, setDesc] = useState(dialog.description || '');
+      const inputCls = "w-full px-3 py-2 rounded-lg text-[14px] outline-none transition-colors border bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:border-[#3A3A3C] dark:text-white dark:placeholder-slate-500 dark:focus:border-[#0A84FF]";
+      return (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div
+            data-testid="edit-display-dialog"
+            className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
+            style={{ animation: 'tsAlertIn .2s ease-out' }}
+          >
+            <div className="px-6 pt-6 pb-4 text-center max-h-[70vh] overflow-y-auto">
+              <div className={`text-[17px] font-semibold mb-3 text-slate-900 dark:text-white`}>
+                {copy.editDisplayTitle(dialog.cardTitle || dialog.backendId)}
+              </div>
+              <div className="text-left mb-3">
+                <label className={`text-[13px] font-medium mb-1.5 block text-slate-600 dark:text-slate-300`}>
+                  {copy.displayNameLabel}
+                </label>
+                <input
+                  data-testid="edit-display-name"
+                  type="text"
+                  placeholder={copy.displayNamePlaceholder}
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  className={inputCls}
+                />
+              </div>
+              <div className="text-left mb-3">
+                <label className={`text-[13px] font-medium mb-1.5 block text-slate-600 dark:text-slate-300`}>
+                  {copy.displayDescriptionLabel}
+                </label>
+                <textarea
+                  data-testid="edit-display-description"
+                  rows={3}
+                  placeholder={copy.displayDescriptionPlaceholder}
+                  value={desc}
+                  onChange={e => setDesc(e.target.value)}
+                  className={`${inputCls} resize-none`}
+                />
+              </div>
+              <div className={`text-[11px] text-left leading-snug text-slate-400 dark:text-slate-500`}>
+                {copy.editDisplayHint}
+              </div>
+            </div>
+            <div className={`border-t border-slate-200 dark:border-white/10`}>
+              <button
+                onClick={onCancel}
+                className={`w-full py-3 text-[17px] font-normal text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
+              >
+                {copy.cancel}
+              </button>
+            </div>
+            <div className={`border-t border-slate-200 dark:border-white/10`}>
+              <button
+                data-testid="edit-display-save"
+                onClick={() => onConfirm({ name, description: desc })}
+                className={`w-full py-3 text-[17px] font-semibold text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
+              >
+                {copy.editDisplaySave}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     // Obsidian 连接前探测引导卡：未安装 → 引导下载；没库 / 库丢失 → 引导建库/重开
     const TsObsidianGuide = ({ guide, _theme, onCancel, onDownload, onRetry, allowDownload = true, copy }) => { // eslint-disable-line no-unused-vars -- theme is kept for the existing props contract
       if (!guide) return null;
@@ -1464,6 +1534,43 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
       };
 
+      // 上传包展示名/说明编辑：后端动作下发 edit_display（actions.rs，source=Upload
+      // 的已装包），点击弹编辑对话框；预填当前覆盖值（bundle 事实的 display_name/
+      // display_description 原值），留空 = 清覆盖回退默认。保存调
+      // update_bundle_display_meta 后按现有模式 loadBackendState 刷新。
+      const [editDisplay, setEditDisplay] = useState(null); // { backendId, cardTitle, name, description }
+      const handleEditDisplay = (backendId) => {
+        if (!canMutateToolStore) return;
+        const bf = (bundleStates[backendId] || {}).bundle || null;
+        const card = skillCards.find(x => x.backendId === backendId) || tools.find(x => x.backendId === backendId);
+        setEditDisplay({
+          backendId,
+          cardTitle: card ? card.title : backendId,
+          name: (bf && bf.display_name) || '',
+          description: (bf && bf.display_description) || '',
+        });
+      };
+      const doEditDisplaySave = async (values) => {
+        const dlg = editDisplay;
+        setEditDisplay(null);
+        if (!dlg) return;
+        setBusyId(dlg.backendId);
+        try {
+          await invokeTauri('update_bundle_display_meta', {
+            id: dlg.backendId,
+            displayName: values.name,
+            displayDescription: values.description,
+          });
+          await loadBackendState();
+          setAlert({ visible: true, loading: false, title: storeCopy.editDisplaySaved, isInstall: true, isError: false });
+        } catch (e) {
+          console.error('update bundle display meta failed:', e);
+          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
       // 上传 zip 技能包:按钮走 Rust 原生 dialog,拖放走 base64 字节通道,
       // 成功/取消/失败/loading 处理统一在这里。
       const doImportSkillZip = async (invokeFn) => {
@@ -1914,6 +2021,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               </div>
             </div>
           ), document.body)}
+          {/* 上传包展示名/说明编辑弹窗（edit_display 动作触发；条件挂载，state 初值即当前覆盖值） */}
+          {editDisplay && createPortal(<TsEditDisplayDialog
+            dialog={editDisplay}
+            copy={storeCopy}
+            onCancel={() => setEditDisplay(null)}
+            onConfirm={doEditDisplaySave}
+          />, document.body)}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
           {wecomQr && (() => {
             const cancel = () => { invokeTauri('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
@@ -2137,7 +2251,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                         </div>
                                       );
                                     }
-                                    return <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} copy={storeCopy} t={t} />;
+                                    return <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} copy={storeCopy} t={t} />;
                                   })()}
                                 </div>
                               </div>
@@ -2251,7 +2365,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <div className="flex flex-col items-end gap-1.5">
                         {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
                           ? <FeishuMini flow={sf} onClick={() => {}} copy={storeCopy.mini} />
-                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} size="lg" copy={storeCopy} t={t} />; })()}
+                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} size="lg" copy={storeCopy} t={t} />; })()}
                         {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>
@@ -2338,5 +2452,5 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // Shared Components
     // ==========================================
 
-export { FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, tmeetConn, ensureTmeetListeners, TsAlert, TsConfigDialog, TsObsidianGuide, ToolStoreView };
+export { FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, tmeetConn, ensureTmeetListeners, TsAlert, TsConfigDialog, TsEditDisplayDialog, TsObsidianGuide, ToolStoreView };
 /* eslint-enable sonarjs/cognitive-complexity -- tool store main view;legacy view */

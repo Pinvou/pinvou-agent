@@ -281,9 +281,28 @@ metadata:                       # 可选
 
 ---
 
-## 12. 示例
+## 12. 上传包的 UI 展示名/说明覆盖（应用侧登记，不改包清单）
 
-### 12.1 纯 MCP 包
+用户可在插件中心给自己上传的包（登记来源为 Upload）设置可读的**显示名**与
+**显示说明**，只影响 UI 展示：
+
+- 覆盖值写在应用登记 `~/.pinvou3/marketplace/bundles.json` 对应记录的 `extra`
+  map（key：`display_name` / `display_description`），**不改 `plugin.json`、不改包
+  目录、不改 frontmatter `name`**；机读 id 与目录名保持不变。
+- 展示优先级：extra 覆盖 > 包内现状（技能卡回退为包 id 与 `SKILL.md` 的
+  `description`）。清空覆盖（留空保存）即删除 key、回退默认展示。
+- 校验：显示名 ≤ 64 字符，显示说明 ≤ 240 字符；仅 Upload 来源可写（预置/内置
+  包拒绝）。
+- **SKILL.md 回写**：仅当包内有且仅有一个技能（`bundles/<id>/skills/` 下恰一个
+  技能目录）且用户设置了非空显示说明时，应用会把该说明回写进该技能
+  `SKILL.md` 的 frontmatter `description`（统一写成单行；已有块状写法会被替换），
+  让模型侧看到的描述与界面一致，并重算包内容指纹。多技能包与纯 MCP 包跳过回写。
+
+---
+
+## 13. 示例
+
+### 13.1 纯 MCP 包
 
 ```
 calc.zip
@@ -297,7 +316,7 @@ calc.zip
 `plugin.json`：`components.mcp_servers: [{ "id": "calc", "dir": "mcp" }]`；
 `mcp/manifest.json`：`id=calc, command=python, args=["server.py"]`。
 
-### 12.2 纯技能包
+### 13.2 纯技能包
 
 ```
 greet.zip
@@ -309,7 +328,7 @@ greet.zip
 `plugin.json`：`components.skills: [{ "id": "greet", "dir": "skills/greet" }]`。
 （也可省略 `plugin.json`，走裸技能回退。）
 
-### 12.3 组合包（MCP + 技能）
+### 13.3 组合包（MCP + 技能）
 
 ```
 combo-demo.zip
@@ -326,7 +345,7 @@ combo-demo.zip
 
 ---
 
-## 13. 与其它文档的关系
+## 14. 与其它文档的关系
 
 - `plugin-protocol.md`：协议**设计草案**，含 v2 预留（workflows / cli_connectors /
   commands / hooks / 远程下载等）。本文只落地其 v1 已实施子集。

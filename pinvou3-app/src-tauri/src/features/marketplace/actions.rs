@@ -9,6 +9,8 @@
 //! - `disconnect` 断开授权（CLI logout / ima 删凭据；≠ 卸载，§5.3）
 //! - `update`     预置技能内容落后于嵌入资源时的覆盖重装
 //! - `uninstall`  卸载（删登记 + 删资源）
+//! - `edit_display` 上传包（source=Upload）的 UI 展示名/说明编辑（写 bundles.json
+//!   extra 覆盖，不动包清单；仅已装上传包下发）
 //! - `repair`     Degraded 修复（登记在、资源缺；按来源重新获取，§3.2），置前
 //! - `enable_in(scope)` 已装包按模式 scope 的启用开关（scope 收敛后单一禁用集为
 //!   包 id × SessionMode；`scope` 字段携带模式 kebab-case 名，当前开/关态由
@@ -29,6 +31,7 @@ pub const ACTION_CONNECT: &str = "connect";
 pub const ACTION_DISCONNECT: &str = "disconnect";
 pub const ACTION_UPDATE: &str = "update";
 pub const ACTION_UNINSTALL: &str = "uninstall";
+pub const ACTION_EDIT_DISPLAY: &str = "edit_display";
 pub const ACTION_REPAIR: &str = "repair";
 pub const ACTION_ENABLE_IN: &str = "enable_in";
 
@@ -131,6 +134,11 @@ pub fn actions_for(bundle: &BundleInfo, readiness: Readiness) -> Vec<BundleActio
                 if bundle.update_available {
                     out.push(action(ACTION_UPDATE, None));
                 }
+                // 上传包（source=Upload 的已装包）：UI 展示名/说明可用户自定义
+                // （extra 覆盖，不动包清单），下发编辑动作。
+                if bundle.user_uploaded {
+                    out.push(action(ACTION_EDIT_DISPLAY, None));
+                }
                 out.push(action(ACTION_UNINSTALL, None));
             }
         }
@@ -172,6 +180,8 @@ mod tests {
             oauth: false,
             category: String::new(),
             icon: None,
+            display_name: None,
+            display_description: None,
         }
     }
 
@@ -250,11 +260,11 @@ mod tests {
     }
 
     #[test]
-    fn uploaded_skill_gets_uninstall_only() {
+    fn uploaded_skill_gets_edit_display_then_uninstall() {
         let mut b = bundle(BundleKind::Skill);
         b.installed = true;
         b.user_uploaded = true;
-        assert_eq!(ids(&actions_for(&b, Readiness::Ready)), ["uninstall"]);
+        assert_eq!(ids(&actions_for(&b, Readiness::Ready)), ["edit_display", "uninstall"]);
     }
 
     #[test]
@@ -291,7 +301,7 @@ mod tests {
         b.user_uploaded = true;
         b.degraded = Some("包内容缺失".into());
         let actions = actions_for(&b, Readiness::Ready);
-        assert_eq!(ids(&actions), ["repair", "uninstall"]);
+        assert_eq!(ids(&actions), ["repair", "edit_display", "uninstall"]);
         assert_eq!(actions[0].reason.as_deref(), Some("包内容缺失"));
         assert_eq!(actions[0].flow, None);
     }

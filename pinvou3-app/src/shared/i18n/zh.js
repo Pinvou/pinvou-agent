@@ -590,7 +590,7 @@ dictZh.uiToolCommon = {
   builtinEnabled: '内置 · 受模式控制', comingSoon: '即将上线',
   disconnect: '断开', uninstall: '卸载', reauthorize: '重新授权',
   connect: '连接', configure: '配置', install: '安装', update: '更新',
-  repair: '修复',
+  repair: '修复', editDisplay: '编辑',
 };
 
 
@@ -820,6 +820,10 @@ desktopHint:'请先在桌面端安装 Obsidian 并创建笔记库，然后在这
   waitingBrowserAuth:'正在等待浏览器授权完成。', browserOpenedWaiting:'已打开浏览器，正在等待授权…',
   operationFailedWith:e=>`操作失败：${e}`,
   importingSkill:'正在导入插件包…', validatingSkillPackage:'校验并解压中', skillImported:'插件包已导入', importFailedWith:e=>`导入失败：${e}`,
+  editDisplayTitle:name=>`编辑「${name}」的显示信息`, displayNameLabel:'显示名', displayNamePlaceholder:'留空则回退为包 id',
+  displayDescriptionLabel:'显示说明', displayDescriptionPlaceholder:'留空则回退为包内描述',
+  editDisplayHint:'只改界面显示，不改包 id 与包内容；单技能包会同步改写 SKILL.md 的 description。',
+  editDisplaySave:'保存', editDisplaySaved:'显示设置已保存',
   uploadSkillPackage:'上传插件包', dropSkillZipHere:'松开以导入插件包 (zip) 或技能文件 (.md)', zipTooLarge:mb=>`文件超过 ${mb}MiB 限制，无法导入`, visibilityLoadFailed:'读取可见性配置失败，请重试（未修改已保存的配置）',
   updatedQuoted:name=>`已更新「${name}」`, updateSkillTitle:name=>`更新「${name}」`,
   updateSkillOverwriteHint:'将覆盖为商店最新版本，你对该技能做的本地修改会丢失。',

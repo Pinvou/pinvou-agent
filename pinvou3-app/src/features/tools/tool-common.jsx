@@ -745,7 +745,7 @@ const AcFmtIcon = FileTypeIcon;
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- tool-card action buttons render many branches; legacy view; tracked separately
-    const TsActionBtn = ({ tool, busy, onAction, onUpdate, size = 'sm', t }) => {
+    const TsActionBtn = ({ tool, busy, onAction, onUpdate, onEditDisplay, size = 'sm', t }) => {
       const T = tc(t);
       const isLg = size === 'lg';
       const actionAttrs = {
@@ -790,6 +790,8 @@ const AcFmtIcon = FileTypeIcon;
           disconnect: { label: T.disconnect, cls: btnCls.danger, run: () => onAction(tool.backendId, true) },
           uninstall: { label: T.uninstall, cls: btnCls.danger, run: () => onAction(tool.backendId, true) },
           update: { label: T.update, cls: btnCls.outline, testid: 'tool-store-update', run: () => onUpdate && onUpdate(tool.backendId) },
+          // edit_display：上传包展示名/说明编辑（extra 覆盖），点击由 onEditDisplay 弹编辑对话框
+          edit_display: { label: T.editDisplay, cls: btnCls.outline, testid: 'tool-store-edit-display', run: () => onEditDisplay && onEditDisplay(tool.backendId) },
           // repair：CLI 包重连（flow=cli_connect）走 onAction；技能包覆盖重装即修复，走 onUpdate
           repair: { label: T.repair, cls: btnCls.outline, run: (a) => (a.flow && a.flow.kind === 'cli_connect' ? onAction(tool.backendId, false) : onUpdate && onUpdate(tool.backendId)) },
         };
