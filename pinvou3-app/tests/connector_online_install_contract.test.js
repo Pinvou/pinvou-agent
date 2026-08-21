@@ -8,9 +8,11 @@ const installer = read("src-tauri", "src", "features", "connectors", "native_ins
 const paths = read("src-tauri", "src", "platform", "paths.rs");
 const build = read("scripts", "tauri", "build.js");
 const tmeet = read("src-tauri", "src", "features", "connectors", "tmeet.rs");
+const weibo = read("src-tauri", "src", "features", "connectors", "weibo.rs");
 const toolCommon = read("src", "features", "tools", "tool-common.jsx");
 const linux = read("src-tauri", "src", "platform", "os", "linux", "linux_path.rs");
 const macos = read("src-tauri", "src", "platform", "os", "macos", "macos_path.rs");
+const windows = read("src-tauri", "src", "platform", "os", "windows", "windows_path.rs");
 
 assert.doesNotMatch(build, /prepareConnectorClis|fetch-connectors/);
 assert.match(paths, /pinvou3_home\(\)\.join\("connectors"\)/);
@@ -35,11 +37,14 @@ assert.match(installer, /normalized_path_eq/);
 assert.match(installer, /\.installing-/);
 
 assert.match(tmeet, /@tencentcloud\/tmeet@1\.0\.15/);
+assert.match(weibo, /@weibo-ai\/weibo-cli@0\.9\.1/);
 for (const platformSource of [linux, macos]) {
   assert.match(platformSource, /bundled_connector_npm_cli/);
-  assert.match(platformSource, /cli_bin == "tmeet"/);
+  assert.match(platformSource, /matches!\(cli_bin,\s*"tmeet"\s*\|\s*"weibo-cli"\)/);
   assert.match(platformSource, /bundled_connector_node/);
 }
+assert.match(windows, /windows_npm_shim\(program\)/);
+assert.doesNotMatch(windows, /cli_bin == "tmeet"/);
 
 // 版本联动：工具卡展示版本必须与 lock 钉扎（及 tmeet.rs npm 钉扎）一致，
 // 防止再次出现卡片版本与实际安装版本脱节（如历史上的 v1.0.56 vs lock 1.0.65）。
@@ -73,5 +78,7 @@ assert.equal(cardVersion("backendId: 'dingtalk', dingtalkCli: true"), lockVersio
 assert.equal(cardVersion("backendId: 'wecom', wecomCli: true"), lockVersions["wecom-cli"]);
 const tmeetPin = tmeet.match(/@tencentcloud\/tmeet@([\d.]+)/)[1];
 assert.equal(cardVersion("backendId: 'tmeet', tmeetCli: true"), tmeetPin);
+const weiboPin = weibo.match(/@weibo-ai\/weibo-cli@([\d.]+)/)[1];
+assert.equal(cardVersion("backendId: 'weibo', weiboCli: true"), weiboPin);
 
 console.log("✓ connector first-use online install contract passed");
