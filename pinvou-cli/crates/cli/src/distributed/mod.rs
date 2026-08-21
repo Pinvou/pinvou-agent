@@ -1,7 +1,7 @@
 //! Feature-gated terminal client for the stage-one Controller IPC contract.
 
 use std::fmt;
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
@@ -446,9 +446,34 @@ pub(crate) fn execute(
 
 fn execute_chat() -> Result<String, DistributedError> {
     require_interactive_terminal(io::stdin().is_terminal(), io::stdout().is_terminal())?;
-    write_terminal("You: ")?;
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let active_turn = Arc::new(Mutex::new(None::<String>));
+    install_interrupt_handler(Arc::clone(&interrupted), Arc::clone(&active_turn))?;
+    let mut client = ensure_controller()?;
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    execute_chat_with_io(
+        &mut input,
+        &mut output,
+        &mut client,
+        interrupted,
+        active_turn,
+    )?;
+    Ok(String::new())
+}
+
+fn execute_chat_with_io<R: BufRead, W: Write, S: Read + Write>(
+    input: &mut R,
+    output: &mut W,
+    client: &mut ControllerWire<S>,
+    interrupted: Arc<AtomicBool>,
+    active_turn: Arc<Mutex<Option<String>>>,
+) -> Result<(), DistributedError> {
+    write_terminal_to(output, "You: ")?;
     let mut prompt = String::new();
-    io::stdin()
+    input
         .read_line(&mut prompt)
         .map_err(|_| DistributedError::new(StableExitCode::Internal, "terminal read failed"))?;
     let prompt = prompt.trim();
@@ -459,10 +484,6 @@ fn execute_chat() -> Result<String, DistributedError> {
         ));
     }
 
-    let interrupted = Arc::new(AtomicBool::new(false));
-    let active_turn = Arc::new(Mutex::new(None::<String>));
-    install_interrupt_handler(Arc::clone(&interrupted), Arc::clone(&active_turn))?;
-    let mut client = ensure_controller()?;
     let first = client.chat_start(prompt)?;
     let mut projection = TerminalProjection::new(Instant::now());
     let mut next = Some(first);
@@ -493,14 +514,14 @@ fn execute_chat() -> Result<String, DistributedError> {
         }
         match projection.push(&event, Instant::now())? {
             ProjectionAction::None => {}
-            ProjectionAction::WriteText(text) => write_terminal(&text)?,
+            ProjectionAction::WriteText(text) => write_terminal_to(output, &text)?,
             ProjectionAction::AskApproval {
                 approval_id,
                 prompt,
             } => {
-                write_terminal(&prompt)?;
+                write_terminal_to(output, &prompt)?;
                 let mut answer = String::new();
-                io::stdin().read_line(&mut answer).map_err(|_| {
+                input.read_line(&mut answer).map_err(|_| {
                     DistributedError::new(StableExitCode::Internal, "terminal read failed")
                 })?;
                 let accepted = projection.parse_approval(&answer).ok_or_else(|| {
@@ -509,19 +530,19 @@ fn execute_chat() -> Result<String, DistributedError> {
                 client.resolve_approval(&approval_id, accepted)?;
             }
             ProjectionAction::AskInput { input_id, prompt } => {
-                write_terminal(&format!("{prompt} "))?;
+                write_terminal_to(output, &format!("{prompt} "))?;
                 let mut answer = String::new();
-                io::stdin().read_line(&mut answer).map_err(|_| {
+                input.read_line(&mut answer).map_err(|_| {
                     DistributedError::new(StableExitCode::Internal, "terminal read failed")
                 })?;
                 client.resolve_input(&input_id, answer.trim_end())?;
             }
             ProjectionAction::TurnEnded(code) => {
                 if let Some(text) = projection.flush_pending() {
-                    write_terminal(&text)?;
+                    write_terminal_to(output, &text)?;
                 }
                 if code == StableExitCode::Success {
-                    return Ok(String::new());
+                    return Ok(());
                 }
                 return Err(DistributedError::new(code, "chat turn did not complete"));
             }
@@ -545,18 +566,136 @@ fn install_interrupt_handler(
     .map_err(|_| DistributedError::new(StableExitCode::Internal, "Ctrl+C handler failed"))
 }
 
-fn write_terminal(text: &str) -> Result<(), DistributedError> {
-    print!("{text}");
-    io::stdout()
-        .flush()
+fn write_terminal_to(output: &mut impl Write, text: &str) -> Result<(), DistributedError> {
+    output
+        .write_all(text.as_bytes())
+        .and_then(|_| output.flush())
         .map_err(|_| DistributedError::new(StableExitCode::Internal, "terminal write failed"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_loop_sends_prompt_and_projects_runtime_events() {
+        let text = RuntimeEventEnvelope::from_value(json!({
+            "protocol_version": pinvou_protocol::IPC_VERSION,
+            "schema_version": 1,
+            "node_id": "node-a",
+            "logical_session_id": "session-a",
+            "attachment_id": "attachment-a",
+            "work_id": null,
+            "collaborative_run_id": null,
+            "stream_id": "main",
+            "turn_id": "turn-a",
+            "seq": 1,
+            "source_span": null,
+            "timestamp": "2026-08-21T00:00:00Z",
+            "rate_class": "R1",
+            "kind": "text.delta",
+            "payload": {"role":"assistant","content":"hello from node","merged_count":1}
+        }))
+        .unwrap();
+        let ended = RuntimeEventEnvelope::from_value(json!({
+            "protocol_version": pinvou_protocol::IPC_VERSION,
+            "schema_version": 1,
+            "node_id": "node-a",
+            "logical_session_id": "session-a",
+            "attachment_id": "attachment-a",
+            "work_id": null,
+            "collaborative_run_id": null,
+            "stream_id": "control",
+            "turn_id": "turn-a",
+            "seq": 1,
+            "source_span": null,
+            "timestamp": "2026-08-21T00:00:00Z",
+            "rate_class": "R0",
+            "kind": "turn.ended",
+            "payload": {"end_reason":"completed","error":null}
+        }))
+        .unwrap();
+        let stream = TestDuplex::with_responses([
+            IpcMessage::event("runtime.event", serde_json::to_value(text).unwrap()).unwrap(),
+            IpcMessage::event("runtime.event", serde_json::to_value(ended).unwrap()).unwrap(),
+        ]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut input = std::io::Cursor::new(b"hello controller\n".to_vec());
+        let mut output = Vec::new();
+
+        execute_chat_with_io(
+            &mut input,
+            &mut output,
+            &mut client,
+            interrupted,
+            Arc::clone(&active_turn),
+        )
+        .unwrap();
+
+        assert_eq!(String::from_utf8(output).unwrap(), "You: hello from node");
+        assert_eq!(active_turn.lock().unwrap().as_deref(), Some("turn-a"));
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method(), Some("chat.start"));
+        assert_eq!(requests[0].payload()["prompt"], "hello controller");
+        assert_eq!(
+            requests[0].payload()["instance_id"],
+            json!("controller-instance")
+        );
+    }
+
     #[test]
     fn distributed_boundary_uses_the_protocol_crate() {
         assert_eq!(PROTOCOL_CRATE_NAME, "pinvou-protocol");
+    }
+
+    #[derive(Default)]
+    struct TestDuplex {
+        inbound: std::io::Cursor<Vec<u8>>,
+        outbound: Vec<u8>,
+    }
+
+    impl TestDuplex {
+        fn with_responses(responses: impl IntoIterator<Item = IpcMessage>) -> Self {
+            Self {
+                inbound: std::io::Cursor::new(
+                    responses
+                        .into_iter()
+                        .flat_map(|message| encode_frame(&message).unwrap())
+                        .collect(),
+                ),
+                outbound: Vec::new(),
+            }
+        }
+
+        fn requests(&self) -> Vec<IpcMessage> {
+            let mut bytes = self.outbound.as_slice();
+            let mut requests = Vec::new();
+            while !bytes.is_empty() {
+                let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+                requests.push(pinvou_protocol::decode_frame(&bytes[..4 + len]).unwrap());
+                bytes = &bytes[4 + len..];
+            }
+            requests
+        }
+    }
+
+    impl Read for TestDuplex {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.inbound.read(buffer)
+        }
+    }
+
+    impl Write for TestDuplex {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.outbound.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 }
