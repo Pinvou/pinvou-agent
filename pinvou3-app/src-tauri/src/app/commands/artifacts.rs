@@ -489,11 +489,75 @@ impl VisualResult {
 }
 
 /// 可视化预览结果缓存（按 路径|mtime 键）。soffice/pdftoppm 一次 1-3s，缓存后二次秒开。
-fn visual_cache() -> &'static parking_lot::Mutex<std::collections::HashMap<String, VisualResult>> {
+struct VisualCacheEntry {
+    result: VisualResult,
+    touched: u64,
+}
+
+/// 缓存预算：单条结果可达数 MB（30 页 PDF data URI / 内联图片 HTML），
+/// 且键含 mtime——同一产物每次重写都会产生新键。无上限会让长会话累积数百 MB。
+const MAX_VISUAL_CACHE_ENTRIES: usize = 16;
+const MAX_VISUAL_CACHE_BYTES: usize = 96 * 1024 * 1024;
+
+fn visual_result_bytes(result: &VisualResult) -> usize {
+    result.html.as_ref().map_or(0, |s| s.len())
+        + result.images.iter().map(|s| s.len()).sum::<usize>()
+}
+
+fn visual_cache() -> &'static parking_lot::Mutex<std::collections::HashMap<String, VisualCacheEntry>>
+{
     static CACHE: std::sync::OnceLock<
-        parking_lot::Mutex<std::collections::HashMap<String, VisualResult>>,
+        parking_lot::Mutex<std::collections::HashMap<String, VisualCacheEntry>>,
     > = std::sync::OnceLock::new();
     CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+}
+
+static VISUAL_CACHE_CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn visual_cache_next_tick() -> u64 {
+    VISUAL_CACHE_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 键格式为 `路径|毫秒mtime`。路径在 macOS/Linux 上可含 `|`(合法文件名字节),
+/// mtime 数字段不会——同路径让位判定必须从右侧切分,左侧切分会把 `/tmp/a|b.pdf`
+/// 误解析成 `/tmp/a` 而误伤无关条目。
+fn visual_cache_path(key: &str) -> &str {
+    key.rsplit_once('|').map_or(key, |(path, _)| path)
+}
+
+/// 命中刷新 LRU 时钟；插入时同路径旧 mtime 键直接让位，再按字节+条目双预算
+/// 从最久未用侧淘汰。
+fn visual_cache_insert(
+    state: &mut std::collections::HashMap<String, VisualCacheEntry>,
+    key: String,
+    result: VisualResult,
+) {
+    let path = visual_cache_path(&key).to_string();
+    state.retain(|k, _| visual_cache_path(k) != path);
+    let touched = visual_cache_next_tick();
+    state.insert(key, VisualCacheEntry { result, touched });
+    while state.len() > MAX_VISUAL_CACHE_ENTRIES {
+        evict_oldest_visual_entry(state);
+    }
+    while state
+        .values()
+        .map(|e| visual_result_bytes(&e.result))
+        .sum::<usize>()
+        > MAX_VISUAL_CACHE_BYTES
+        && !state.is_empty()
+    {
+        evict_oldest_visual_entry(state);
+    }
+}
+
+fn evict_oldest_visual_entry(state: &mut std::collections::HashMap<String, VisualCacheEntry>) {
+    if let Some(oldest) = state
+        .iter()
+        .min_by_key(|(_, entry)| entry.touched)
+        .map(|(k, _)| k.clone())
+    {
+        state.remove(&oldest);
+    }
 }
 
 /// 把 office/pdf/图片产物转成可视化预览：office→自包含 HTML，pdf→逐页 PNG，图片→data URI。
@@ -505,15 +569,18 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
+    // 毫秒精度：agent 的原子重写可以在同一秒内连发多版，秒级 mtime 会让
+    // 第二版拿到第一版的陈旧预览。
     let mtime = std::fs::metadata(&p)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis())
         .unwrap_or(0);
     let cache_key = format!("{}|{}", p.display(), mtime);
-    if let Some(hit) = visual_cache().lock().get(&cache_key).cloned() {
-        return Ok(hit);
+    if let Some(hit) = visual_cache().lock().get_mut(&cache_key) {
+        hit.touched = visual_cache_next_tick();
+        return Ok(hit.result.clone());
     }
 
     let ext = p
@@ -574,7 +641,7 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
 
     // unsupported 不缓存：可能是工具暂缺，装上后下次重试。
     if result.mode != "unsupported" {
-        visual_cache().lock().insert(cache_key, result.clone());
+        visual_cache_insert(&mut visual_cache().lock(), cache_key, result.clone());
     }
     Ok(result)
 }
@@ -938,4 +1005,60 @@ pub async fn open_artifact_window(
         .build()
         .map_err(|e| format!("build artifact window: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod visual_cache_tests {
+    use super::*;
+
+    fn result_with(bytes: usize) -> VisualResult {
+        VisualResult {
+            mode: "html".into(),
+            html: Some("x".repeat(bytes)),
+            images: vec![],
+            warning: None,
+        }
+    }
+
+    fn fresh_state() -> std::collections::HashMap<String, VisualCacheEntry> {
+        std::collections::HashMap::new()
+    }
+
+    #[test]
+    fn same_path_stale_mtime_yields_on_insert() {
+        let mut state = fresh_state();
+        visual_cache_insert(&mut state, "/a/doc.docx|1001".into(), result_with(8));
+        visual_cache_insert(&mut state, "/a/doc.docx|2002".into(), result_with(8));
+        assert_eq!(state.len(), 1, "同路径旧 mtime 键应让位");
+        assert!(state.contains_key("/a/doc.docx|2002"));
+    }
+
+    #[test]
+    fn entry_cap_evicts_oldest_touched() {
+        let mut state = fresh_state();
+        for i in 0..=MAX_VISUAL_CACHE_ENTRIES as u64 {
+            visual_cache_insert(&mut state, format!("/p/{i}.pdf|1"), result_with(8));
+        }
+        assert_eq!(state.len(), MAX_VISUAL_CACHE_ENTRIES);
+        assert!(!state.contains_key("/p/0.pdf|1"), "最旧条目应被淘汰");
+        assert!(state.contains_key(&format!("/p/{}.pdf|1", MAX_VISUAL_CACHE_ENTRIES)));
+    }
+
+    #[test]
+    fn byte_budget_evicts_until_under_cap() {
+        let mut state = fresh_state();
+        let per = MAX_VISUAL_CACHE_BYTES / 4 + 1024;
+        for i in 0..4 {
+            visual_cache_insert(&mut state, format!("/big/{i}.pdf|1"), result_with(per));
+        }
+        assert!(
+            state
+                .values()
+                .map(|e| visual_result_bytes(&e.result))
+                .sum::<usize>()
+                <= MAX_VISUAL_CACHE_BYTES,
+            "累计字节应回落到预算内"
+        );
+        assert!(state.len() >= 1, "至少保留最新一条");
+    }
 }

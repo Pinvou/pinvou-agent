@@ -141,6 +141,34 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       const [outSortDir, setOutSortDir] = useState('desc');
       const [outputPreview, setOutputPreview] = useState(null);
       const outPreviewCache = useRef({});
+      // 预览结果可达数 MB（office 全文 HTML / 图片 base64），key 含 mtime——文件
+      // 每次重写都产生新 key。条数上限会漏掉"少量超大条目"的轴：48 × 数 MB
+      // 仍可达数百 MB。双轴封顶：条数 + 累计字节预算，插入序淘汰最旧。
+      const MAX_OUT_PREVIEW_CACHE = 48;
+      const MAX_OUT_PREVIEW_CACHE_BYTES = 32 * 1024 * 1024;
+      const outPreviewValueBytes = (v) => {
+        if (!v) return 0;
+        if (typeof v.url === 'string') return v.url.length;
+        if (typeof v.html === 'string') return v.html.length;
+        if (typeof v.text === 'string') return v.text.length;
+        return 256;
+      };
+      const rememberOutPreview = useCallback((key, value) => {
+        const cache = outPreviewCache.current;
+        if (cache[key]) { cache[key] = value; return; }
+        cache[key] = value;
+        let keys = Object.keys(cache);
+        let totalBytes = keys.reduce((sum, k) => sum + outPreviewValueBytes(cache[k]), 0);
+        // 超任一预算都从最旧(插入序在前)的条目开始淘汰；同产物旧 mtime 的
+        // 陈旧条目也在其中。单条超过字节预算的极端值最多留 1 条。
+        while (keys.length > 1
+          && (keys.length > MAX_OUT_PREVIEW_CACHE || totalBytes > MAX_OUT_PREVIEW_CACHE_BYTES)) {
+          const oldest = keys[0];
+          totalBytes -= outPreviewValueBytes(cache[oldest]);
+          delete cache[oldest];
+          keys = keys.slice(1);
+        }
+      }, []);
       const outPreviewQueue = useRef({ active: 0, jobs: [] });
       const runQueuedPreview = useCallback((job) => new Promise((resolve, reject) => {
         const q = outPreviewQueue.current;
@@ -347,17 +375,17 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                 next = { kind: 'text', text: text.slice(0, 1600) };
               }
               if (!next) next = { kind: 'fallback' };
-              outPreviewCache.current[cacheKey] = next;
+              rememberOutPreview(cacheKey, next);
               return next;
             } catch (e) {
               const next = { kind: 'fallback', error: String(e) };
-              outPreviewCache.current[cacheKey] = next;
+              rememberOutPreview(cacheKey, next);
               return next;
             }
           }).then((next) => { if (alive) setPv(next); });
           }, 80);
           return () => { alive = false; clearTimeout(timer); };
-        }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview]);
+        }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview, rememberOutPreview]);
 
         const htmlPreviewDoc = (html) => '<style>html,body{overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
         const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
@@ -471,17 +499,17 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                   next = { kind: 'text', text: text.slice(0, 1200) };
                 }
                 if (!next) next = { kind: 'fallback' };
-                outPreviewCache.current[cacheKey] = next;
+                rememberOutPreview(cacheKey, next);
                 return next;
               } catch (e) {
                 const next = { kind: 'fallback', error: String(e) };
-                outPreviewCache.current[cacheKey] = next;
+                rememberOutPreview(cacheKey, next);
                 return next;
               }
             }).then((next) => { if (alive) setPv(next); });
           }, 80);
           return () => { alive = false; clearTimeout(timer); };
-        }, [cacheKey, visible, f.path, ext, runQueuedPreview]);
+        }, [cacheKey, visible, f.path, ext, runQueuedPreview, rememberOutPreview]);
 
         const col = extColor(ext);
         const htmlPreviewDoc = (html) => '<style>*{animation-duration:.001s!important;}</style>' + (html || '');

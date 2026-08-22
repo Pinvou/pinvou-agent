@@ -45,6 +45,25 @@
     return result;
   }
 
+  // 订阅回调每次通知都会 pick 出全新外层对象：任何一处状态变化（如流式
+  // token）都让所有域订阅者拿到新引用、全量重渲染。逐订阅者缓存上次的
+  // (full, slice)：full 未换引用时复用上次 slice，保持身份稳定。注意这是
+  // 整快照粒度（web 传输层只在全部状态无变更时复用同一 full 引用），弱于
+  // 桌面端 bridge 的按域 revision 缓存：任一域变化仍会让未变域的 slice 换
+  // 新外层对象（内层字段引用仍与 flat 订阅者共享，身份共享契约见
+  // web_bridge_domain_contract 测试，不受影响）。full 由通知方按变更重建，
+  // 同一 full 引用意味着本域字段集合不可能变化。
+  function stablePick() {
+    var lastFull = null;
+    var lastSlice = null;
+    return function (full, domainName) {
+      if (full === lastFull) return lastSlice;
+      lastFull = full;
+      lastSlice = Object.freeze(pick(full, domainName));
+      return lastSlice;
+    };
+  }
+
   function get(domainName) {
     return clone(pick(flat.getState(), domainName));
   }
@@ -59,16 +78,21 @@
 
   function subscribe(domainName, callback) {
     get(domainName);
+    var stable = stablePick();
     return flat.subscribe(function (full) {
-      callback(Object.freeze(pick(full, domainName)));
+      callback(stable(full, domainName));
     });
   }
 
   function subscribeMany(domains, callback) {
     getMany(domains);
+    // 每个域独立 stable 缓存：stablePick 闭包按 (lastFull,lastSlice) 单槽记忆，
+    // 共用一个实例会在多域间互相覆盖。
+    var stables = {};
+    domains.forEach(function (domainName) { stables[domainName] = stablePick(); });
     return flat.subscribe(function (full) {
       var result = {};
-      domains.forEach(function (domainName) { Object.assign(result, pick(full, domainName)); });
+      domains.forEach(function (domainName) { Object.assign(result, stables[domainName](full, domainName)); });
       callback(Object.freeze(result));
     });
   }

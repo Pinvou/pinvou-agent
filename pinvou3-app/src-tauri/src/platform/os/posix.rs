@@ -14,6 +14,37 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
+/// spawn 一个"点火即忘"的短命外部进程并负责收割，避免 Unix 僵尸。
+///
+/// std 的 `Command::spawn()` 返回的 Child 被 drop 时**不会**回收子进程
+/// （不像 tokio 的 kill_on_drop），父进程也不自动 reap；每次 open/xdg-open
+/// 都会留一个 zombie 直到父进程退出。这里起一个 detached 收割线程 `wait()`，
+/// 打开文件/发通知类命令通常毫秒级退出，线程随即结束，常驻成本可忽略。
+/// 收割线程创建失败（线程数/内存受限的极端场景）时在调用线程同步 `wait()`：
+/// 命令已成功启动，此时慢命令的极端卡顿优于僵尸累积 + 误报打开失败。
+pub fn spawn_detached_and_reap(command: &mut std::process::Command) -> std::io::Result<()> {
+    use std::sync::{Arc, Mutex};
+    // `Builder::spawn` 失败时闭包被 drop（不归还），Child 的所有权无法要回；
+    // 经共享的 Option 中转：收割线程与失败回退路径先到先得，只有一方能 take。
+    let child = Arc::new(Mutex::new(Some(command.spawn()?)));
+    let thread_child = Arc::clone(&child);
+    match std::thread::Builder::new()
+        .name("unix-child-reaper".to_string())
+        .spawn(move || {
+            if let Some(mut owned) = thread_child.lock().ok().and_then(|mut slot| slot.take()) {
+                let _ = owned.wait();
+            }
+        }) {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            if let Some(mut owned) = child.lock().ok().and_then(|mut slot| slot.take()) {
+                let _ = owned.wait();
+            }
+            Ok(())
+        }
+    }
+}
+
 /// 把外部传入的路径字符串原样转为 `PathBuf`。
 /// linux 与 macOS 实现相同（皆 `PathBuf::from(value)`），收口于此。
 pub fn platform_compat_path(value: &str) -> PathBuf {
@@ -74,5 +105,21 @@ mod tests {
         // 无论 PATH 状态如何，至少返回 python3
         let cmd = python_command();
         assert!(cmd == "python3" || cmd == "python");
+    }
+
+    #[test]
+    fn spawn_detached_and_reap_reaps_true_command() {
+        // `/usr/bin/true` 毫秒级退出：验证 spawn 成功且收割线程不 panic。
+        // 僵尸是否复排除非查 proc 表不可见，这里至少锁定接口契约（Ok + 不死锁）。
+        let mut command = std::process::Command::new("true");
+        spawn_detached_and_reap(&mut command).expect("spawn /usr/bin/true");
+        // 给收割线程一点时间完成 wait，测试本身无阻塞断言。
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    #[test]
+    fn spawn_detached_and_reap_reports_missing_binary() {
+        let mut command = std::process::Command::new("/nonexistent/pinvou3-reaper-test");
+        assert!(spawn_detached_and_reap(&mut command).is_err());
     }
 }

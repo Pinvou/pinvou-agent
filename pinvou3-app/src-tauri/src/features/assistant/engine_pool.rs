@@ -991,6 +991,7 @@ impl EnginePool {
             .map_err(|e| anyhow::anyhow!("materialize session skills join: {e}"))?
             .map_err(|e| anyhow::anyhow!("materialize session skills: {e}"))?;
         }
+        let turn_lifecycle = self.turn_lifecycles.for_session(session_id);
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
@@ -999,7 +1000,7 @@ impl EnginePool {
             extra_tools,
             self.bridge
                 .shape_disallowed_tools(session_id, self.compute_disallowed_tools()),
-            self.turn_lifecycles.for_session(session_id),
+            turn_lifecycle.clone(),
             shell_manager,
             turn_shell_tasks,
         )
@@ -1022,6 +1023,12 @@ impl EnginePool {
                         });
                     }
                     eprintln!("[engine_pool] sync history for {session_id} failed: {error:?}");
+                } else {
+                    // 注水的是 forwarder 净化后的历史：旧 transcript 规则不可能再
+                    // 匹配新引擎的快照，清理以阻止规则随轮数累积驻留。交互路径
+                    // 的规则安装在 spawn 前后（reserve 已置 active），retain 谓词
+                    // 保证在飞预留的规则仍被保留。
+                    turn_lifecycle.prune_stale_transcript_rules();
                 }
             }
             Ok(_) => {}
@@ -1222,6 +1229,12 @@ impl EnginePool {
                 "[engine_pool] emitted interrupted terminal before reclaim sid={}",
                 session_id
             );
+        }
+        // 引擎回收后其 transcript 随之销毁，旧 raw prompt 的唯一存活载体消失
+        // （磁盘历史是净化后的）。清掉不再可能匹配的规则，阻止跨引擎世代驻留
+        // 到会话删除；在飞预留的规则兜底保留（正常回收已先终态化在飞轮）。
+        if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
+            lifecycle.prune_stale_transcript_rules();
         }
         // 先级联取消全部后台子智能体，再关闭引擎（ADR-0006）。两个 op 走同一条
         // 通道，FIFO 保证取消先于关闭被处理；否则删除/换模型回收后，会话派生的

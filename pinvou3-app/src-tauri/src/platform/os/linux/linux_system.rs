@@ -5,11 +5,8 @@ use std::process::Command;
 use super::linux_path;
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
-    Command::new("xdg-open")
-        .arg(target.as_ref())
-        .spawn()
-        .map_err(|e| format!("系统打开失败({label}): {e}"))?;
-    Ok(())
+    super::super::posix::spawn_detached_and_reap(Command::new("xdg-open").arg(target.as_ref()))
+        .map_err(|e| format!("系统打开失败({label}): {e}"))
 }
 
 pub fn reveal_target(target: &Path) -> Result<(), String> {

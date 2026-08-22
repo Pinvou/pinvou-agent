@@ -109,6 +109,14 @@ pub fn start_turn(session_id: &str) -> String {
     turn_id
 }
 
+/// 会话删除时清空其残留的未配对 turn 队列（map 键随会话 id 累积，不清理会
+/// 随 app 生命周期无界增长）。
+pub fn clear_session(session_id: &str) {
+    if let Ok(mut map) = active_turns().lock() {
+        map.remove(session_id);
+    }
+}
+
 /// 旧调用点(无 usage):落盘不带 usage 字段,reader API 反序列化为 None。
 /// 保留是为了不强迫所有调用点同步升级(commands.rs:200 的 send_error 兜底等)。
 pub fn finish_turn(session_id: &str, status: &str, error: Option<&str>) {
@@ -125,12 +133,14 @@ pub fn finish_turn_with_usage(
     error: Option<&str>,
     usage: Option<TurnUsage>,
 ) {
+    // 每会话同一时刻只有一轮在飞（turn lock 串行），收尾的必是最后入队的 turn；
+    // 从队尾取。队列里更早的条目只能是"未提交即取消"路径（start_turn 后走
+    // emit_unsubmitted_interrupted_terminal，不落 assistant_done）残留的陈旧
+    // id——若按 FIFO 弹出，assistant_done 会记到陈旧 turn 上，且真 id 永远
+    // 留在队列里。这里整段清掉，陈旧轮不产生终态事件。
     let turn_id = active_turns().lock().ok().and_then(|mut map| {
-        let queue = map.get_mut(session_id)?;
-        let id = queue.pop_front();
-        if queue.is_empty() {
-            map.remove(session_id);
-        }
+        let id = map.get_mut(session_id)?.pop_back();
+        map.remove(session_id);
         id
     });
 

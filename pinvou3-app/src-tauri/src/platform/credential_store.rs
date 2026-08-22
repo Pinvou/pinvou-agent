@@ -30,6 +30,8 @@ const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
 /// `KEY_LOCKS` 为每个 `(service, account)` 维护一把 `Arc<Mutex<()>>`,`get`/`set`/`delete`
 /// 在"访问 Keychain + 读写值缓存"整段持有对应 key 的锁,串行化同一凭据的所有操作;不同 key
 /// 互不阻塞。锁内部从不嵌套 `value_cache`/`KEY_LOCKS` 之外的锁,无死锁风险。
+/// 唯一例外:`delete` 成功后注销锁登记仅在没有在飞线程仍持旧锁句柄时执行
+/// (`Arc::strong_count` 门控);否则保留登记,由下一次 `delete` 收敛,互斥不失效。
 ///
 /// **安全权衡**:缓存值为明文 secret,仅在进程内存(不落盘),与本 crate 内其他明文 secret
 /// 在内存中的驻留(如 bridge 注入给引擎的 api_key、marketplace 重灌进进程 env 的 mcp
@@ -420,10 +422,21 @@ impl CredentialStore for SystemCredentialStore {
             result.is_ok(),
             started_at.elapsed().as_millis()
         );
-        // 删除成功后缓存为 None(仍在同一临界区内),避免下次 get 再次访问 Keychain(命中"已知不存在")。
+        // 删除成功后直接移除缓存与 per-key 锁登记（仍在同一临界区内）：
+        // get 缓存 None 占位与 KEY_LOCKS 条目会随动态 key（如 remote-knowledge
+        // 逐 join 请求的 request_id）永久累积，删后无查询价值——"已知不存在"
+        // 可由缺失条目表达。锁登记仅在无在飞句柄时注销（map 持有 1 份 + 本函数
+        // 局部变量 1 份 = 2）：若仍有 get/set 持旧句柄，注销会让后续操作创建
+        // 第二把锁并与在飞操作失去互斥（缓存与后端效果可倒置）；残留登记由
+        // 下一次 delete 收敛。
         if result.is_ok() {
             if let Ok(mut cache) = value_cache().lock() {
-                cache.insert((reference.service.clone(), reference.account.clone()), None);
+                cache.remove(&(reference.service.clone(), reference.account.clone()));
+            }
+            if let Ok(mut locks) = key_locks().lock() {
+                if Arc::strong_count(&lock) == 2 {
+                    locks.remove(&(reference.service.clone(), reference.account.clone()));
+                }
             }
         }
         result
@@ -665,10 +678,11 @@ mod tests {
         assert_eq!(backend.get_count(), 0, "set 后 get 应命中缓存,不访问后端");
     }
 
-    /// `delete` 成功后缓存为"已知不存在"(None),后续 `get` 命中缓存返回 None,
-    /// 不再访问后端(命中"已知不存在"分支)。
+    /// `delete` 成功后缓存条目与 per-key 锁登记一并移除（动态 key 如
+    /// remote-knowledge 的 request_id 不留残余）；后续 `get` 走缓存未命中
+    /// → 后端确认"不存在"，仍返回 None。
     #[test]
-    fn system_store_delete_marks_cache_known_absent() {
+    fn system_store_delete_removes_cache_and_lock_entries() {
         let backend = Arc::new(FakeKeyringStore::new());
         backend.seed("model:delete-probe", "sk-will-be-deleted-12345");
         let store = SystemCredentialStore::new();
@@ -685,15 +699,31 @@ mod tests {
             Some("sk-will-be-deleted-12345")
         );
         let count_before_delete = backend.get_count();
-        // delete 后缓存更新为 None。
+        // delete 后缓存条目移除而非留 None 占位。
         store.delete(&reference).unwrap();
-        // 后续 get 命中"已知不存在",返回 None 且不触后端。
+        assert!(
+            !value_cache()
+                .lock()
+                .unwrap()
+                .contains_key(&(reference.service.clone(), reference.account.clone())),
+            "delete 后缓存条目应被移除,不再保留 None 占位"
+        );
+        assert!(
+            !key_locks()
+                .lock()
+                .unwrap()
+                .contains_key(&(reference.service.clone(), reference.account.clone())),
+            "delete 后 per-key 锁登记应被移除"
+        );
+        // 后续 get 重新触达后端(条目已删)并确认不存在。
         assert_eq!(store.get(&reference).unwrap(), None);
         assert_eq!(
             backend.get_count(),
-            count_before_delete,
-            "delete 后 get 应命中缓存,不访问后端"
+            count_before_delete + 1,
+            "delete 后缓存条目已移除,get 重新触达后端确认不存在"
         );
+        // 再次 delete 仍成功(幂等,后端已无该条目)。
+        store.delete(&reference).unwrap();
     }
 
     /// 缓存按 `(service, account)` 隔离:一个凭据的缓存不影响另一凭据的后端访问。

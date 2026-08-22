@@ -527,6 +527,21 @@ impl TurnLifecycle {
         Ok(())
     }
 
+    /// 修剪不再可能匹配引擎快照的 transcript 规则，仅保留当前在飞预留的规则
+    /// （兜底防御，正常调用点不存在并发在飞轮）。两个调用点：`SyncSession`
+    /// 重建成功后——注水的是 forwarder 净化后的历史，落盘 transcript 里的
+    /// raw prompt 已被 display 消息替换，旧规则不可能再匹配新引擎的快照；
+    /// 引擎回收后——引擎 transcript 随之销毁，raw prompt 的唯一存活载体消失。
+    /// 每条规则持有完整 raw prompt + display 双份内容，驻留只会随轮数线性
+    /// 累积（长会话可达数十 MB）。
+    pub(crate) fn prune_stale_transcript_rules(&self) {
+        let mut state = self.state.lock();
+        let keep = state.active_reservation_id;
+        state
+            .transcript_rules
+            .retain(|rule| Some(rule.reservation_id) == keep);
+    }
+
     fn ensure_reservation_active(&self, reservation_id: u64) -> Result<()> {
         let state = self.state.lock();
         if state.active
@@ -2598,6 +2613,48 @@ mod turn_lifecycle_tests {
         assert!(!matched);
         assert_eq!(messages, vec![engine_user("private actual")]);
         drop(next);
+    }
+
+    #[test]
+    fn prune_stale_transcript_rules_keeps_only_active_reservation() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        for round in 0..3 {
+            let mut reservation = lifecycle.reserve().expect("reserve");
+            let display_text = format!("display {round}");
+            let raw_text = format!("private raw {round}");
+            reservation
+                .set_transcript(TranscriptOperation::Append, message("user", &display_text))
+                .unwrap();
+            reservation.prepare_actual_user_content(raw_text).unwrap();
+            reservation.mark_submitted();
+            assert!(lifecycle.finish_once(|| {}).is_some());
+        }
+
+        // 生产形态：交互路径 reserve（lifecycle active）→ 安装本轮规则 →
+        // spawn/resync 触发修剪。陈旧规则（已完成轮）必须清掉，而在飞预留的
+        // 规则必须保留。
+        let mut active = lifecycle.reserve().expect("reserve");
+        active
+            .set_transcript(TranscriptOperation::Append, message("user", "live display"))
+            .unwrap();
+        active
+            .prepare_actual_user_content("live raw".to_string())
+            .unwrap();
+        lifecycle.prune_stale_transcript_rules();
+        let (messages, matched) = lifecycle.sanitize_messages(vec![engine_user("private raw 1")]);
+        assert!(!matched);
+        assert_eq!(messages, vec![engine_user("private raw 1")]);
+        let (sanitized, matched) = lifecycle.sanitize_messages(vec![engine_user("live raw")]);
+        assert!(matched);
+        assert_eq!(sanitized, vec![message("user", "live display")]);
+
+        // 引擎回收（idle，无在飞预留）：全部规则都不再可能匹配，整段清理。
+        active.mark_submitted();
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        lifecycle.prune_stale_transcript_rules();
+        let (messages, matched) = lifecycle.sanitize_messages(vec![engine_user("live raw")]);
+        assert!(!matched);
+        assert_eq!(messages, vec![engine_user("live raw")]);
     }
 }
 

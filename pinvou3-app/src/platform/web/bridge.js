@@ -768,6 +768,11 @@
   var scheduledRunOpenInFlight = Object.create(null);
   var MAX_SCHEDULED_SESSION_BUFFERS = 64;
   var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
+  // 全会话缓冲上限：sessionStates 每条持有完整 messages+chatItems（重会话
+  // 1-4MB/条），曾只对 scheduled 会话做 64 条 LRU——普通会话切过即永久驻留。
+  // 上限取 32：典型用户活跃切换集中在个位数，96×1-4MB 最坏数百 MB 且高水位
+  // 命中率趋近于零；被淘汰会话重访问走 load_session 磁盘重水化，代价仅一次重载。
+  var MAX_SESSION_BUFFERS = 32;
   var sessionBufferTouchClock = 0;
   var scheduledRunOwnerTouchClock = 0;
   var suppressNotify = false;
@@ -909,6 +914,7 @@
   function isProtectedScheduledBuffer(id, buf) {
     return id === state.activeSessionId ||
       !!buf.busy ||
+      !!buf.remoteTurnActive ||
       buf.scheduledInitialTurnPhase === "active" ||
       !!(buf.queued && buf.queued.length) ||
       !!(state.scheduledRunContext && state.scheduledRunContext.sessionId === id) ||
@@ -930,6 +936,10 @@
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete personaPlaceholderTitles[id];
+      if (window.localStorage) {
+        try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
+      }
       // The owner tombstone has its own bounded LRU and must outlive a
       // presentation-buffer eviction. Otherwise a stale `running` list row can
       // resurrect a run that already emitted chat:done.
@@ -941,7 +951,32 @@
     if (scheduled) buf.scheduledRunSession = true;
     buf.lastTouched = ++sessionBufferTouchClock;
     if (buf.scheduledRunSession) pruneScheduledSessionBuffers(id);
+    pruneSessionBuffers(id);
     return buf;
+  }
+  // 全会话 LRU：与 scheduled 淘汰共用保护谓词（busy/queued/remote turn 不回收），
+  // 仅淘汰空闲 buffer（messages/chatItems 可从磁盘重水化；composerDraft 等
+  // buffer 内草稿会随之丢弃——切走未发送的草稿本就不保证跨淘汰存活）。
+  function pruneSessionBuffers(keepId) {
+    var ids = Object.keys(sessionStates);
+    var overflow = ids.length - MAX_SESSION_BUFFERS;
+    if (overflow <= 0) return;
+    ids.sort(function (left, right) {
+      var delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
+      return delta || left.localeCompare(right);
+    });
+    for (var i = 0; i < ids.length && overflow > 0; i++) {
+      var id = ids[i];
+      var buf = sessionStates[id];
+      if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
+      delete sessionStates[id];
+      delete turnUsageDirty[id];
+      delete personaPlaceholderTitles[id];
+      if (window.localStorage) {
+        try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
+      }
+      overflow -= 1;
+    }
   }
   function purgeSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;
@@ -949,6 +984,10 @@
     delete turnUsageDirty[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];
+    // scene 事件 localStorage 键随会话删除一并清理,避免随历史会话数无界累积。
+    if (window.localStorage) {
+      try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
+    }
     if (state.scheduledRunContext && state.scheduledRunContext.sessionId === id) {
       state.scheduledRunContext = null;
     }
@@ -1441,8 +1480,14 @@
   }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
   function switchActiveTo(id, opts) {
-    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    // Set the new active id before touching the old buffer: the LRU prune
+    // triggered by that touch protects the target via activeSessionId. Touching
+    // the old buffer first (active id still old) could evict an idle target as
+    // the oldest entry, and the freshBuffer() fallback below would silently
+    // show an empty session.
+    var previousActiveId = state.activeSessionId;
     state.activeSessionId = id;
+    if (previousActiveId) saveWorkingSetTo(getBuffer(previousActiveId));
     var buf = sessionStates[id];
     if (!buf || (opts && opts.fresh)) {
       buf = sessionStates[id] = freshBuffer();
@@ -3404,7 +3449,9 @@
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
         state.activeSessionId
       );
-      rerenderFromMessages();
+      // live 注水:toolMeta 可能含在飞工具条目(tool_use 未进 messages),
+      // 保留给后续 chat:tool_end 用。
+      rerenderFromMessages({ keepLiveToolMeta: true });
       if (hasLivePresentation) {
         currentStreamId = mergeHydratedChatItems(liveChatItems, liveCurrentStreamId);
       } else {
@@ -3916,9 +3963,17 @@
   }
 
   // ── Rerender from messages (session restore) ─────────────────────
-  function rerenderFromMessages() {
+  // opts.keepLiveToolMeta: live 会话注水(hydrateLiveSession)时传入 —— 此刻
+  // toolMeta 可能持有在飞工具的条目(tool_use 尚未进 messages),清空会让
+  // 后续 chat:tool_end 拿不到 meta(选择卡卡死/成品卡退化)。
+  function rerenderFromMessages(opts) {
     state.chatItems = [];
     itemIdSeq = 0;
+    // 历史 tool_use 的元数据(含 write/patch 的大 args)只服务本次重放期间的
+    // tool_result 回填;实时事件路径插删均衡,但历史写入从不清理,残留会随
+    // 工作集存进 buffer 长期驻留。durable 重放开始即清空(非 live 注水时
+    // 实时条目不存在);重放会为 messages 内的历史 tool_use 重建所需条目。
+    if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     var pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
     function emitPersonaAt(atOrAfter, isTail) {

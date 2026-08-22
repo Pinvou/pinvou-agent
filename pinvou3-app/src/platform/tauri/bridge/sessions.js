@@ -4,6 +4,9 @@
   var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.sessions = function (context) {
     var state = context.state;
+    // 可选 hook：会话 buffer 被回收/删除时清理宿主侧 per-session 副表
+    // （bridge.js 的 modeStateEpochs、scene 事件 localStorage 键）。无返回值。
+    var onSessionBufferPurged = context.onSessionBufferPurged || null;
     var invoke = context.invoke;
     var listen = context.listen;
     var notify = context.notify;
@@ -42,8 +45,15 @@
     var loadPinvouSceneEventsForSession = context.loadPinvouSceneEventsForSession || function () { return []; };
     var syncPinvouSceneEventsForSession = context.syncPinvouSceneEventsForSession ||
       function (sid) { return Promise.resolve(loadPinvouSceneEventsForSession(sid)); };
-    var MAX_SCHEDULED_SESSION_BUFFERS = 64;
-    var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
+  var MAX_SCHEDULED_SESSION_BUFFERS = 64;
+  var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
+  // 全会话缓冲上限：sessionStates 每条持有完整 messages+chatItems(含渲染
+  // html)+artifacts（重会话 1-4MB/条），曾只对 scheduled 会话做 64 条 LRU——
+  // 普通会话切过即永久驻留。上限取 32：典型用户活跃切换集中在个位数会话，
+  // 96×1-4MB 最坏数百 MB 且 >20 的命中率趋近于零；被淘汰会话重访问走
+  // load_session 磁盘重水化（ensureSessionBufferLoaded/switchTo 已支持），
+  // 代价仅一次重载。
+  var MAX_SESSION_BUFFERS = 32;
     var sessionBufferTouchClock = 0;
     var scheduledRunOwnerTouchClock = 0;
     var scheduledRunOpenInFlight = Object.create(null);
@@ -89,6 +99,7 @@
   function isProtectedScheduledBuffer(id, buf) {
     return id === state.activeSessionId ||
       !!buf.busy ||
+      !!buf.remoteTurnActive ||
       buf.scheduledInitialTurnPhase === "active" ||
       !!(buf.queued && buf.queued.length) ||
       !!(state.scheduledRunContext && state.scheduledRunContext.sessionId === id) ||
@@ -110,7 +121,9 @@
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete personaPlaceholderTitles[id];
       pruneScheduledRunSessionOwner(id);
+      if (onSessionBufferPurged) onSessionBufferPurged(id);
       overflow -= 1;
     }
   }
@@ -119,11 +132,36 @@
     if (scheduled) buf.scheduledRunSession = true;
     buf.lastTouched = ++sessionBufferTouchClock;
     if (buf.scheduledRunSession) pruneScheduledSessionBuffers(id);
+    pruneSessionBuffers(id);
     return buf;
+  }
+  // 全会话 LRU：scheduled 语义保护仍适用（busy/queued/remote turn 不回收），
+  // 仅淘汰空闲 buffer（messages/chatItems 可从磁盘重水化；composerDraft 等
+  // buffer 内草稿会随之丢弃——切走未发送的草稿本就不保证跨淘汰存活）。
+  // active 会话由 isProtected 兜底。
+  function pruneSessionBuffers(keepId) {
+    var ids = Object.keys(sessionStates);
+    var overflow = ids.length - MAX_SESSION_BUFFERS;
+    if (overflow <= 0) return;
+    ids.sort(function (left, right) {
+      var delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
+      return delta || left.localeCompare(right);
+    });
+    for (var i = 0; i < ids.length && overflow > 0; i++) {
+      var id = ids[i];
+      var buf = sessionStates[id];
+      if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
+      delete sessionStates[id];
+      delete turnUsageDirty[id];
+      delete personaPlaceholderTitles[id];
+      if (onSessionBufferPurged) onSessionBufferPurged(id);
+      overflow -= 1;
+    }
   }
   function purgeSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;
     delete sessionStates[id];
+    if (onSessionBufferPurged) onSessionBufferPurged(id);
     delete turnUsageDirty[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];
@@ -390,8 +428,12 @@
   function switchActiveTo(id, opts) {
     // 离开草稿（无论物化还是切去既有会话），未消费的开关寄存意图作废。
     state.pendingDraftMultiAgent = false;
-    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    // 先立新 active 再 touch 旧 buffer:touch 触发的 LRU 淘汰靠 activeSessionId
+    // 兜底保护目标会话;若先 touch 旧(active 仍指旧值),空闲的目标会话恰为最旧
+    // 时会被淘汰,随后的 freshBuffer() 顶替会静默显示空会话。
+    var previousActiveId = state.activeSessionId;
     state.activeSessionId = id;
+    if (previousActiveId) saveWorkingSetTo(getBuffer(previousActiveId));
     var buf = sessionStates[id];
     if (!buf || (opts && opts.fresh)) buf = sessionStates[id] = freshBuffer();
     touchSessionBuffer(id, buf, id.indexOf("sched-") === 0);
@@ -756,7 +798,18 @@
     // 多 session 并发:切换【不再 cancel】旧 session —— 它在自己的 engine 上继续跑,
     // 工作集存进 sessionStates 后台累积。切回来能看到完整(含切走期间产生的)内容。
     // 已有 buffer(切过/在跑)→ 直接换工作集;没有 → load_session 建 buffer + 重渲染。
-    if (sessionStates[id] && !forceDurableLoad && !hydrateLiveSession) {
+    // 事件监听会为任意被点名的 session 经 getBuffer 重建未落盘的空 buffer(如
+    // 淘汰后迟到的 chat:usage/artifact:disk);这种 buffer 走快路径会显示空会话,
+    // 必须落到下方磁盘重载自愈(web 桥同款 loadedFromDisk 门控)。busy/remote/
+    // 已有 messages 的 buffer 仍走快路径,展示实时部分视图并由 chat:done 对账
+    // 补全。不能用 chatItems 判可用:非回合事件(如 chat:compaction)经 getBuffer
+    // 重建的空 buffer 只带一条系统 chatItem(不置 busy、无 messages),凭 chatItems
+    // 放行会永久显示无历史视图且无自愈。
+    var existingBuffer = sessionStates[id];
+    var cachedBufferUsable = existingBuffer && (existingBuffer.loadedFromDisk ||
+      existingBuffer.busy || existingBuffer.remoteTurnActive ||
+      (existingBuffer.messages && existingBuffer.messages.length));
+    if (cachedBufferUsable && !forceDurableLoad && !hydrateLiveSession) {
       if (!preserveScheduledRunContext) state.scheduledRunContext = null;
       state.scheduledTaskPendingGuide = null; // 仅在目标会话已确认可用后提交导航状态
       switchActiveTo(id, null);
@@ -818,7 +871,9 @@
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
         state.activeSessionId
       );
-      rerenderFromMessages();
+      // live 注水:buffer 的 toolMeta 可能含在飞工具条目(tool_use 未进
+      // messages),保留给后续 chat:tool_end 用。
+      rerenderFromMessages({ keepLiveToolMeta: true });
       if (hasLivePresentation) {
         context.currentStreamId = mergeHydratedChatItems(liveChatItems, liveCurrentStreamId);
       } else {

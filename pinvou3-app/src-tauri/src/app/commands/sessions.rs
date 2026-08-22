@@ -461,6 +461,8 @@ pub async fn delete_session(
             m.drop_session(&id);
         }
         crate::features::memory::discard_turn_capture(&id);
+        crate::features::assistant::timing::clear_session(&id);
+        crate::features::assistant::pending_user_input::clear_session(&id);
         let payload = serde_json::json!({ "id": &id });
         let _ = app.emit("session:deleted", payload.clone());
         crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
