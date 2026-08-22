@@ -198,10 +198,12 @@ fn model_api_key(model: &SavedModel) -> Option<String> {
 ///
 /// 客户端进程级共享：监控页 1 Hz 轮询 + 聊天页顶栏状态点都会走这里，
 /// 每次新建 Client 意味着每秒重建 TLS/连接池、零复用。3s 探测超时移到
-/// per-request 保持原语义。
-fn shared_probe_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| reqwest::Client::builder().build().unwrap_or_default())
+/// per-request 保持原语义。构建失败（TLS/系统配置不可用）返回 None 保持
+/// 调用方「探测失败 → fallback 配置值」的原降级路径——Client::default()
+/// 在同类失败上同样 panic，不是可用的回退。
+fn shared_probe_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| reqwest::Client::builder().build().ok()).as_ref()
 }
 
 async fn snapshot_for_model_config(
@@ -212,7 +214,7 @@ async fn snapshot_for_model_config(
     provider: String,
     api_key: Option<&str>,
 ) -> Option<VllmSnapshot> {
-    let client = shared_probe_client();
+    let client = shared_probe_client()?;
     let target_kind = if preset == ModelPreset::LocalVllm {
         "local"
     } else {
@@ -581,7 +583,9 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
 /// 窗口推导(见 docs/context-compaction-设计.md)。探测失败(vLLM 没起/超时)返回
 /// `(None, None)`,调用方 fallback 配置值 + 名字 hint 老路。
 pub async fn probe_vllm_model_info(base_url: &str) -> (Option<String>, Option<u32>) {
-    let client = shared_probe_client();
+    let Some(client) = shared_probe_client() else {
+        return (None, None);
+    };
     let url = if base_url.trim_end_matches('/').ends_with("/v1") {
         format!("{}/models", base_url.trim_end_matches('/'))
     } else {

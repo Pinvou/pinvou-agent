@@ -30,6 +30,9 @@ const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
 /// `KEY_LOCKS` 为每个 `(service, account)` 维护一把 `Arc<Mutex<()>>`,`get`/`set`/`delete`
 /// 在"访问 Keychain + 读写值缓存"整段持有对应 key 的锁,串行化同一凭据的所有操作;不同 key
 /// 互不阻塞。锁内部从不嵌套 `value_cache`/`KEY_LOCKS` 之外的锁,无死锁风险。
+/// 唯一例外:`delete` 成功后注销锁登记,与一个尚持有旧锁实例的在飞 `get`/`set` 短暂失去
+/// 互斥(窗口为单次后端访问;仅动态 key 的 delete 竞态可及,后果退化为一次陈旧缓存,
+/// 由下次 `set`/`delete`/重启自愈)。
 ///
 /// **安全权衡**:缓存值为明文 secret,仅在进程内存(不落盘),与本 crate 内其他明文 secret
 /// 在内存中的驻留(如 bridge 注入给引擎的 api_key、marketplace 重灌进进程 env 的 mcp
@@ -675,7 +678,7 @@ mod tests {
     /// remote-knowledge 的 request_id 不留残余）；后续 `get` 走缓存未命中
     /// → 后端确认"不存在"，仍返回 None。
     #[test]
-    fn system_store_delete_marks_cache_known_absent() {
+    fn system_store_delete_removes_cache_and_lock_entries() {
         let backend = Arc::new(FakeKeyringStore::new());
         backend.seed("model:delete-probe", "sk-will-be-deleted-12345");
         let store = SystemCredentialStore::new();
