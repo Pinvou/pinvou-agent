@@ -76,8 +76,10 @@
   }
   async function equipPersona(personaId) {
     if (!state.activeSessionId) {
-      await ensureSession(); // 草稿态加卡 → 先物化 session(lazy session)
-      if (!state.activeSessionId) return; // 物化失败,放弃
+      // 草稿态加卡 → 先物化 session(lazy session)。用返回值判空：切走场景
+      // ensureSession 返回 null 但 activeSessionId 非空，会把卡加进新会话。
+      var materialized = await ensureSession();
+      if (!materialized) return; // 物化失败/切走,放弃
     }
     // 入口捕获触发会话：await 期间用户可能切走，UI 写入不得落进别的会话
     // （错误会话被重命名/插卡是持久化污染，不可自愈）。后端已按发起会话

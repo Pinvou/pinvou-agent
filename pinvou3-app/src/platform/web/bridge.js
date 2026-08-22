@@ -1422,6 +1422,9 @@
       buf.loadedFromDisk = true;
       return;
     }
+    // 下载挂起期间后台回合可能已开始（busy 置位、直播流写入中）：此时用磁盘
+    // 快照 hydrate 会截断正在流式生成的内容，必须复检后放弃（审计）。
+    if (buf.busy || buf.remoteTurnActive) return;
     hydrateWorkingSetFromSaved(buf, saved);
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
@@ -1674,6 +1677,13 @@
               continue;
             }
           }
+          // 写入前回合归属校验（审计）：重试窗口内新回合可能已开始
+          // （markRemoteTurn 置 busy/remoteTurnActive、重置 revision），此时用
+          // 旧终稿重建工作集会截断新回合直播流——放弃本轮对账，由新回合自己的
+          // done 事件重新对账。放弃条件只用 busy：不能用 remoteTurnActive（正常
+          // 远端回合 done 后它恒为 true，会拦死所有对账），也不能用
+          // !remoteTerminalSeen（tauri 版 scheduled run 不置 terminalSeen）。
+          if (buf.busy) return false;
           runSyncOnSession(sid, function () {
             // The durable transcript already reconstructs user/assistant/tool
             // items. Preserve only presentation-side cards; otherwise a client
@@ -2941,44 +2951,79 @@
 
   // 草稿态首次有实质内容时真正向后端创建 session 并切为 active;已有 active 直接返回。
   // 返回新 session id,创建失败返回 null。调用方:sendMessage(首条消息) / equipPersona(加卡)。
+  // 并发防护（审计）：草稿态双击发送会并发 create_session，导致两条消息分家到两个新
+  // 会话——in-flight 复用同一 promise；create_session await 期间用户切走会物化在错误
+  // 会话（导航被劫持）——物化前校验 activeSessionId 仍为空，已切走则只登记后台 buffer。
+  var ensureSessionInFlight = null;
   async function ensureSession() {
     if (state.activeSessionId) return state.activeSessionId;
-    // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
-    try {
-      var meta = await invoke(IS_WEB ? "web_access_create_session" : "create_session");
-      // create_session 等待期间用户可能已发送/清空输入，迁移当下的最新值。
-      var composerDraft = state.composerDraft || "";
-      switchActiveTo(meta.id, { fresh: true });
-      state.composerDraft = composerDraft;
-      sessionStates[meta.id].composerDraft = composerDraft;
-      getBuffer(meta.id).sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
-      await refreshHistoryList();
-      await syncModeState();
-      // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
-      // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
-      // 该会话自己的 per-session 记录，全局默认不受影响）。
-      var laneDefault = state.modeDefaults
-        && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
-      // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
-      // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
-      if (laneDefault === "plan") {
-        try {
-          var laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
-          applyAuthoritativeModeState(meta.id, laneModeState);
-        } catch (laneModeError) {
-          runSyncOnSession(meta.id, function () {
-            addSystemItem(bt("switchModeFailed") + laneModeError);
-          });
+    if (ensureSessionInFlight) return ensureSessionInFlight;
+    // 捕获导航 token：仅判 activeSessionId 覆盖不了「再进草稿」——enterDraft
+    // 只推进 token 不改 activeSessionId（仍为 null），在途 create_session 返回
+    // 后必须连同 token 一起校验，否则会劫持用户新进的草稿（三审 P1）。
+    var navToken = sessionSwitchRequestToken;
+    var p = (async function () {
+      // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
+      try {
+        var meta = await invoke(IS_WEB ? "web_access_create_session" : "create_session");
+        // create_session 等待期间用户可能已发送/清空输入，迁移当下的最新值。
+        var composerDraft = state.composerDraft || "";
+        // create_session 等待期间用户可能已退出草稿（切到既有会话或再进草稿）：
+        // 物化不得劫持 active（审计），新会话登记为后台 buffer 等下次切换，
+        // 调用方按 null 处理不发送本条消息。「切到既有会话」→ activeSessionId
+        // 非空；「再进草稿」→ activeSessionId 仍为 null 但导航 token 已前移——
+        // 两种导航都中止物化（三审 P1）。
+        if (state.activeSessionId || navToken !== sessionSwitchRequestToken) {
+          var bg = sessionStates[meta.id] = freshBuffer();
+          bg.loadedFromDisk = true;
+          bg.sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
+          return null;
         }
+        switchActiveTo(meta.id, { fresh: true });
+        state.composerDraft = composerDraft;
+        sessionStates[meta.id].composerDraft = composerDraft;
+        getBuffer(meta.id).sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
+        await refreshHistoryList();
+        await syncModeState();
+        // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
+        // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
+        // 该会话自己的 per-session 记录，全局默认不受影响）。
+        var laneDefault = state.modeDefaults
+          && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
+        // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
+        // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
+        if (laneDefault === "plan") {
+          try {
+            var laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
+            applyAuthoritativeModeState(meta.id, laneModeState);
+          } catch (laneModeError) {
+            runSyncOnSession(meta.id, function () {
+              addSystemItem(bt("switchModeFailed") + laneModeError);
+            });
+          }
+        }
+        await syncActivePersona();
+        await syncMountedCollection();
+        notify();
+        // 尾部这些 await 期间用户仍可能切走（activeSessionId 已是别的会话）或
+        // 再进草稿（activeSessionId 仍为 null 但 token 已前移）：与 create_session
+        // 窗口同一契约——导航即物化中止，返回 null 让调用方放弃，不得返回切走后
+        // 的 active 让操作漂进新会话（二审 F1、三审 P1）。返回非 null 时 active
+        // 必等于 meta.id 且无任何新导航，调用方重读 state.activeSessionId
+        // 即为目标会话。
+        return navToken === sessionSwitchRequestToken
+          && state.activeSessionId === meta.id ? meta.id : null;
+      } catch (e) {
+        addSystemItem(bt("newChatFailed") + e);
+        return null;
       }
-      await syncActivePersona();
-      await syncMountedCollection();
-      notify();
-      return state.activeSessionId;
-    } catch (e) {
-      addSystemItem(bt("newChatFailed") + e);
-      return null;
-    }
+    })();
+    ensureSessionInFlight = p;
+    p.then(
+      function () { if (ensureSessionInFlight === p) ensureSessionInFlight = null; },
+      function () { if (ensureSessionInFlight === p) ensureSessionInFlight = null; }
+    );
+    return p;
   }
 
   function reportSessionSwitchFailure(error, errorScope) {
@@ -3656,6 +3701,10 @@
       var previousRuns = state.scheduledTaskRecentRuns || [];
       var wasViewingRun = state.activeSessionId === id;
       var previousContext = state.scheduledRunContext;
+      // 归档等待期间的导航 token：失败回滚时「activeSessionId === null」不足以
+      // 证明无新导航——用户再进草稿也保持 null（enterDraft 只推进 token），
+      // 仅 token 未前移才允许把 active 拽回归档会话（三审 P1）。
+      var navToken = sessionSwitchRequestToken;
       // 与普通会话收纳同语义:保留 buffer(还能从设置页还原后重开),但要离开当前视图。
       if (wasViewingRun) saveWorkingSetTo(getBuffer(id));
       state.scheduledTaskRecentRuns = previousRuns.filter(function (run) {
@@ -3669,7 +3718,10 @@
         return true;
       } catch (e) {
         state.scheduledTaskRecentRuns = previousRuns;
-        if (wasViewingRun) {
+        // 回滚 active 仅当用户没有新导航（leaveSessionView 已置 null）：
+        // await 期间切到别的会话/再进草稿都不得劫持 active（审计、三审 P1）。
+        if (wasViewingRun && state.activeSessionId === null
+            && navToken === sessionSwitchRequestToken) {
           // active 与 scheduledRunContext 必须成对回滚,否则会落到
           // 「active 有值但 context 空」的错位态(界面回任务列表却仍持有会话)。
           state.activeSessionId = id;
@@ -3684,6 +3736,9 @@
     var s = state.sessions[idx];
     var archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
     var wasActive = state.activeSessionId === id;
+    // 与 scheduled 分支同源：失败回滚须以导航 token 证明「无新导航」——
+    // 归档等待期间再进草稿 activeSessionId 仍为 null（三审 P1）。
+    var navToken = sessionSwitchRequestToken;
     if (wasActive) saveWorkingSetTo(getBuffer(id));
     state.sessions.splice(idx, 1);
     state.archivedSessions = [archived].concat((state.archivedSessions || []).filter(function (x) { return x.id !== id; }));
@@ -3696,7 +3751,10 @@
     } catch (e) {
       state.sessions.splice(idx, 0, s);
       state.archivedSessions = (state.archivedSessions || []).filter(function (x) { return x.id !== id; });
-      if (wasActive) {
+      // 回滚 active 仅当用户没有新导航（leaveSessionView 已置 null）：
+      // await 期间切到别的会话/再进草稿都不得劫持 active（审计、三审 P1）。
+      if (wasActive && state.activeSessionId === null
+          && navToken === sessionSwitchRequestToken) {
         state.activeSessionId = id;
         loadWorkingSetFrom(getBuffer(id));
       }
@@ -4990,8 +5048,17 @@
     }
 
     if (!state.activeSessionId) {
-      await ensureSession(); // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)
-      if (!state.activeSessionId) return;
+      // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)。
+      // 必须用返回值判空：切走场景 ensureSession 返回 null 但 activeSessionId
+      // 非空（用户已切到别的会话），按 activeSessionId 继续会把本条消息发进
+      // 错误会话（审计 #257）。
+      var materialized = await ensureSession();
+      // 物化中止（await 期间切走）→ 把输入放回输入框，不静默丢字
+      // （与 tauri 版对齐，二审 F3；错误提示由 ensureSession 内如实给出）。
+      if (!materialized) {
+        prefillComposer(text);
+        return;
+      }
     }
     var sid = state.activeSessionId;
     var activeTurnBuffer = getBuffer(sid);
@@ -5155,6 +5222,9 @@
   // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
   // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。
   async function resolvePinvouReview(resolutions, actions) {
+    // 检阅发生的会话归属捕获：persist 挂起期间用户可能切走，修订指令必须发回
+    // 检阅会话，不得漂进当前 active 会话（与 tauri 版对齐，二审 F2）。
+    var reviewSid = state.activeSessionId;
     // 弹窗只一个 review(state.pinvouModal.review),直接在它上面写 resolution——不靠 pos 定位
     // (根治连续召唤 pos 重复串卡)。它和 sidecar entry.review 同引用,写它=写 sidecar。
     var isWu = !!(state.pinvouModal && state.pinvouModal.coverage); // 关窗前取,供转交标品/悟
@@ -5201,7 +5271,10 @@
       fill.forEach(function (a) { parts.push("- " + a.dimension + (a.suggestion ? "：" + a.suggestion : "")); });
       parts.push("（涉及外部事实的，先查证再写、标依据，别凭记忆编。）");
     }
-    if (parts.length) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
+    // 已切走则放弃发指令（修订指令属于检阅会话，漂进别的会话会误导其上下文）；
+    // reviewSid 为 null 的防御：草稿态本不该有检阅，双 null 通过会把指令发给
+    // ensureSession 新建的空会话。
+    if (parts.length && reviewSid && state.activeSessionId === reviewSid) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
   }
 
   // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。
@@ -5858,7 +5931,7 @@
       terminal_status: String(e.payload && e.payload.status || ""),
       terminal_error_present: !!(e.payload && e.payload.error),
     }, authoritySyncBufferSnapshot(sid, doneBuffer)));
-    if (doneBuffer && !doneBuffer.localTurnOwned) {
+    if (doneBuffer && !doneBuffer.localTurnOwned && !isScheduledRunSession(sid)) {
       // transcript_committed precedes chat:done. Preserve its revision when a
       // reconnecting client first materializes the turn at the terminal tail.
       markRemoteTurn(sid, doneBuffer, true, "chat_done_without_local_owner");
@@ -5926,7 +5999,7 @@
       currentStreamText = "";
       currentStreamId = 0;
     });
-    if (doneBuffer && !completedLocalTurn) {
+    if (doneBuffer && !completedLocalTurn && !isScheduledRunSession(sid)) {
       // Rust has already committed the final transcript before chat:done. Keep
       // both UIs behind a short authority barrier until that snapshot is loaded.
       var finalAssistantMessage = null;
@@ -5945,10 +6018,15 @@
       doneBuffer.remoteTerminalSeen = true;
       doneBuffer.busy = false;
       if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
-    } else if (completedLocalTurn) {
+    } else if (completedLocalTurn || isScheduledRunSession(sid)) {
       // A local turn is already authoritative in this desktop process. Saved
       // transcript verification remains best-effort and must not lock the next
-      // local message behind a cross-client synchronization state.
+      // local message behind a cross-client synchronization state. Scheduled
+      // runs skip transcript reconciliation entirely (Rust owns the durable
+      // transcript), so the same full release applies: markRemoteTurn may have
+      // armed the remote-authority gate during the streamed turn, and a stale
+      // gate would send flushQueued into reconcileRemoteTurn, whose
+      // write-ownership busy check then deadlocks the queued follow-up forever.
       doneBuffer.deferredRemoteUserEvent = null;
       doneBuffer.localTurnOwned = false;
       doneBuffer.remoteTurnActive = false;
@@ -5964,7 +6042,12 @@
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       await persistMessagesFor(sid);
-      var reconciled = completedLocalTurn ? true : await reconcileRemoteTurn(sid);
+      // Scheduled runs skip transcript reconciliation entirely, mirroring the
+      // Tauri bridge: Rust owns the durable transcript for a scheduled session,
+      // and the gate was already fully released in the synchronous tail above.
+      var reconciled = (completedLocalTurn || isScheduledRunSession(sid))
+        ? true
+        : await reconcileRemoteTurn(sid);
       if (reconciled) await persistMessagesFor(sid);
       await refreshHistoryList();
       if (!reconciled) {
@@ -8069,8 +8152,10 @@
   }
   async function equipPersona(personaId) {
     if (!state.activeSessionId) {
-      await ensureSession(); // 草稿态加卡 → 先物化 session(lazy session)
-      if (!state.activeSessionId) return; // 物化失败,放弃
+      // 草稿态加卡 → 先物化 session(lazy session)。用返回值判空：切走场景
+      // ensureSession 返回 null 但 activeSessionId 非空，会把卡加进新会话。
+      var materialized = await ensureSession();
+      if (!materialized) return; // 物化失败/切走,放弃
     }
     // 入口捕获触发会话：await 期间用户可能切走，UI 写入不得落进别的会话
     // （错误会话被重命名/插卡是持久化污染，不可自愈）。后端已按发起会话

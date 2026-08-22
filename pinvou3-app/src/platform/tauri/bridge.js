@@ -1203,6 +1203,14 @@
               continue;
             }
           }
+          // 写入前回合归属校验（与 web 版对齐，审计 #257）：重试窗口内新回合
+          // 可能已开始（markRemoteTurn 置 busy/remoteTurnActive、重置 revision），
+          // 此时用旧终稿重建工作集会截断新回合直播流——放弃本轮对账，由新回合
+          // 自己的 done 事件重新对账。放弃条件只用 busy：不能用 remoteTurnActive
+          // （正常远端回合 done 后它恒为 true），也不能用 !remoteTerminalSeen
+          // （scheduled run 因 requiresAuthorityReconcile=false 不置 terminalSeen，
+          // 但 flushQueued 仍会走 reconcile，会误伤）。
+          if (buf.busy) return false;
           runSyncOnSession(sid, function () {
             var rawLiveChatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
             var resolvedPlanTickets = Object.create(null);
