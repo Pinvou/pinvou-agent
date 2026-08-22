@@ -45,14 +45,17 @@ impl SessionStore {
         let payload = serde_json::to_vec_pretty(session).context("serialize saved session")?;
         deepseek_tui::utils::write_atomic(&path, &payload)
             .with_context(|| format!("write session {}", path.display()))?;
+        // 会话 JSON 落盘后列表快照即过期(标题/更新时间/新会话都可能变)
+        self.invalidate_list_cache();
         Ok(path)
     }
 
     pub(crate) fn enforce_session_retention_locked(&self) -> Result<()> {
         let sessions = self
-            .manager
-            .list_sessions()
-            .context("list sessions for retention")?;
+            .list_sessions_cached()
+            .context("list sessions for retention")?
+            .as_ref()
+            .clone();
         let mut chat_count = 0usize;
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;
@@ -78,6 +81,10 @@ impl SessionStore {
                     }
                 }
             }
+        }
+        if !deleted_ids.is_empty() {
+            // 保留策略删掉的会话使列表快照过期
+            self.invalidate_list_cache();
         }
         self.purge_session_side_maps(&deleted_ids);
         let reconcile_error = self.reconcile_scheduled_profiles_locked().err();
@@ -368,9 +375,10 @@ impl SessionStore {
 
     pub fn list_scheduled(&self) -> Result<Vec<SessionMetadata>> {
         let mut out = self
-            .manager
-            .list_sessions()
-            .context("list_sessions failed")?;
+            .list_sessions_cached()
+            .context("list_sessions failed")?
+            .as_ref()
+            .clone();
         out.retain(|metadata| metadata.id.starts_with("sched-"));
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
@@ -533,6 +541,7 @@ impl SessionStore {
             Err(err) if err.kind() == ErrorKind::NotFound => {}
             Err(err) => return Err(err).with_context(|| format!("delete scheduled session {id}")),
         }
+        self.invalidate_list_cache();
         self.remove_scheduled_runtime_dir(id)?;
 
         self.scheduled_profiles.write().remove(id);

@@ -11,7 +11,7 @@ const vm = require('vm');
 
 const indexHtml = [
   'app/main.jsx',
-  'shared/i18n.js',
+  'shared/i18n/zh.js', // 定时任务断言的中文文案在 zh 词典(拆分后)
   'shared/model-options.js',
   'components/layout/NavigationComponents.jsx',
   'features/chat/ChatView.jsx',

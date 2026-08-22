@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { dict } from '../src/shared/i18n.js';
+import { dict } from '../src/shared/i18n-all.js'; // 三语全量断言:浏览器入口用 i18n.js 惰性装载,测试用聚合 shim
 
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
 

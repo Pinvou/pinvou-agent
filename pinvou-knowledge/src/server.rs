@@ -710,8 +710,15 @@ async fn search(
     Json(request): Json<SearchRequest>,
 ) -> ApiResult<Json<Vec<SearchHit>>> {
     require_access(&service, &headers, false)?;
+    // 首个检索请求触发模型装载(boot 不再同步加载 568MB ONNX)。装载必须
+    // 在获取并发 slot 之前:568MB 冷读可能超过 slot 的 10s 超时,若先占 slot,
+    // 排队第 5 个起的请求会在装载完成前拿到 503。先 ensure 则所有并发请求
+    // 都在装载门上排队,装载完成后才竞争检索 slot。
     if !service.ready() {
-        return Err(ApiError::unavailable("embedding 模型未就绪"));
+        service
+            .ensure_model_loaded()
+            .await
+            .map_err(ApiError::unavailable)?;
     }
     let permit = service
         .acquire_search_slot()
