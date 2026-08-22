@@ -15,7 +15,7 @@ const DetachedViewFallback = () => <div className="p-6 text-sm opacity-60">…</
 import { useBridgeState } from '../hooks/useBridge.js';
 import { emitTauri, invokeTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
 import { listAcpSessions } from '../features/codex/acpClient.js';
-import { dict, initialSystemLanguage, TAG_TO_LANG } from '../shared/i18n.js';
+import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../shared/i18n.js';
 import { ensurePersonaI18nOverlay } from './personas-overlay.js';
 
 function useDetachedBase() {
@@ -31,7 +31,8 @@ function useDetachedBase() {
   useEffect(() => {
     if (initRef.current || !bs || !bs.settings) return;
     const lang = TAG_TO_LANG[bs.settings.language];
-    if (lang) setLanguage(lang);
+    // en/ja 惰性词典:入口只引导系统语言,落盘语言可能未装载
+    if (lang) ensureLanguage(lang).then(() => setLanguage(lang)).catch(() => {});
     setActiveTheme(bs.settings.theme === 'liquid-light' ? 'light' : 'dark');
     initRef.current = true;
   }, [bs]);
@@ -47,7 +48,8 @@ function useDetachedBase() {
     }
   }, [language]);
 
-  return { bs, activeTheme, t: dict[language] };
+  // 兜底 zh:词典 chunk 装载失败时按 zh 渲染而非白屏(与 PetWindow/ReaderApp 同口径)。
+  return { bs, activeTheme, t: dict[language] || dict.zh };
 }
 
 class DetachedErrorBoundary extends React.Component {

@@ -1,7 +1,7 @@
 // 「添加模型」云端/本地模型目录与预设模板（自 SettingsView.jsx 抽离）。
 // 纯数据 + 纯函数：不含组件、不依赖 React；品牌图标映射随目录一并归位。
-// 目录条目的 en/ja 文案 overlay 由 ./settings-i18n.js 在模块初始化时挂到 shared/i18n.js 的 dict。
-import './settings-i18n.js';
+// 目录条目的三语文案已按语言并入 shared/i18n/{zh,en,ja}.js(原 settings-i18n.js 拆分),
+// 随 i18n.js 聚合/惰性装载一体维护,此处不再需要副作用 import。
 import deepseekIcon from '../../brand-icons/deepseek.svg';
 import doubaoIcon from '../../brand-icons/doubao.svg';
 import claudeIcon from '../../brand-icons/claude.png';

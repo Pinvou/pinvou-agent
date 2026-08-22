@@ -1,0 +1,958 @@
+// 中文 UI 词典。zh 全量内嵌:启动即用,不经 ensureLanguage。与 en/ja 的 key 集合
+// 由 tests/ui_language_coverage.test.mjs 强制一致。
+// 维护约定:三语 key 集合保持一致;新增 key 三处同步;ja 以 en 兜底(i18n/ja.js 内 spread)。
+// i18n.js 聚合 shim 与 Node 契约测试(ui_language_coverage)静态 import 全部三语,拆分仅影响浏览器 chunk。
+
+const conversationZh = {
+  completed:'已完成', failed:'失败', interrupted:'已中断', limitReached:'达到限制', processing:'处理中', processingActive:'正在处理',
+  waitingPermission:'等待授权', waitingInput:'等待你的输入', waitingInputShort:'等待输入',
+  goLatest:label=>`${label}，前往最新消息`,
+  elapsed:milliseconds=>{ const seconds=Math.max(0,Math.floor(milliseconds/1000)); if(seconds<60)return `${seconds}秒`; const minutes=Math.floor(seconds/60); const remaining=seconds%60; return remaining?`${minutes}分${remaining}秒`:`${minutes}分`; },
+  segments:count=>`${count} 段`, running:'执行中', executionFailed:'执行失败', executionFinished:'执行结束',
+  command:'命令', workingDirectory:'工作目录', output:'输出', webContent:'网页内容', iwencaiNews:'同花顺新闻', webSearch:'网页搜索', search:'搜索', textContent:'文本', webPage:'网页', shellCommand:'执行 Shell 命令',
+  results:count=>`${count} 条结果`, recognizedResults:count=>`识别到 ${count} 条结果`, returnedResults:'已返回结果', inProgress:'进行中',
+  searchCompacted:'搜索结果已交给 Agent 处理；当前压缩结果中没有可稳定提取的条目。',
+  resultSummaryOnly:'为控制上下文长度，这里只展示可识别的结果摘要。', collapseRaw:'收起原始数据', viewRaw:'查看原始数据', rawData:'原始数据',
+  requestFailed:'请求失败', returned:'已返回', contentTruncated:'内容已截断', contentPreview:'内容预览',
+  responseTruncated:'响应内容超过本次抓取上限，Agent 使用的是截断后的内容。',
+  fileChange:'文件变更', tool:'工具', arguments:'参数', result:'结果', executing:'正在执行', executionSteps:'执行步骤',
+  items:count=>`${count} 项`, failedItems:count=>`${count} 项失败`, thinking:'思考中', thoughtCompleted:'思考完成', plan:'执行计划',
+  permissionRequest:agent=>`${agent} 请求权限`, protectedOperation:'执行受保护操作', operationArguments:'操作参数',
+  allowOnce:'允许一次', allowSession:'本会话允许', reject:'拒绝', handled:'已处理', expired:'该请求已过期',
+  usage:(input,output)=>`输入 ${input} · 输出 ${output}`, contextUsage:(used,size)=>`上下文 ${used} / ${size}`,
+  attachment:'附件', operations:(count,failedCount)=>`执行 ${count} 项${failedCount?` · ${failedCount} 项失败`:''}`, copyReply:'复制回复', copyReplySuccess:'已复制', copyReplyFailed:'复制失败',
+  exportReply:'导出', exportReplyTitle:'导出回复', exportMarkdown:'Markdown 文档', exportMarkdownHint:'默认，保留原始排版', exportHtml:'HTML 文档', exportHtmlHint:'适合在浏览器中查看', exportSuccess:'导出成功', exportFailed:'导出失败', exportTooLarge:'回复内容超出导出大小限制',
+  shareReply:'分享', shareReplyTitle:'分享回复', shareSystem:'系统分享', shareSystemHint:'选择系统中已安装的通信应用', shareApps:'复制内容并打开应用', shareSuccess:'已分享', shareCopiedOpen:app=>`内容已复制，已尝试打开${app}，请粘贴发送`, shareCopiedWeb:app=>`内容已复制，请打开${app}粘贴发送`, shareFailed:'分享失败', shareUnavailable:'系统分享不可用，内容已复制', shareTargets:{wechat:'微信',wecom:'企业微信',feishu:'飞书',dingtalk:'钉钉',qq:'QQ'},
+};
+
+const codexZh = {
+  unknownDirectory:'未知目录', temporaryWorkspace:'临时工作区', projectMissing:'原项目目录已不存在',
+  applyingConfig:'配置应用中…', workspace:'工作区', workspaceTitle:'查看 Agent 工作区文件和更改',
+  recreatePrefix:'原项目目录已不存在，', recreate:'重新创建会话',
+  welcomeTitle:'使用代码 Agent 处理代码任务',
+  activeHint:'工具调用、思考、计划和权限请求会按 ACP 原始语义展示，不进入品悟原有工作会话消息框架。',
+  nativeActiveHint:'工具调用、思考和选择确认按品悟 Engine 语义展示，与工作会话共用同一引擎链路。',
+  draftHint:'直接输入即可创建临时会话，也可以从输入框左下角选择项目目录。',
+  nativeDraftHint:'直接输入即可创建临时会话，也可以从输入框左下角选择项目目录让品悟直接在其中工作。',
+  attentionLatest:'有请求需要处理，回到最新', latest:'回到最新', removeReference:path=>`移除工作区引用 ${path}`,
+  model:'模型', permissionMode:'权限模式', sessionModeTitle:'ACP Agent 上报的会话模式',
+  relayNoModelHint:'当前中转 Provider 未配置模型：官方模型无法走中转，请先在设置中为该 Provider 填写模型',
+  configLabels:{ mode:'权限模式', collaboration_mode:'协作方式', model:'模型', reasoning_effort:'推理强度', 'fast-mode':'快速模式' },
+  agentCommands:'Agent 命令',
+  placeholder:'让代码 Agent 处理代码、运行命令或解释仓库…', temporarySession:'临时会话',
+  chooseProject:'选择项目目录', chooseProjectDesc:'让 Agent 直接在真实项目中工作',
+  temporarySessionDesc:'使用 Pinvou 管理的隔离目录', recentProjects:'最近项目',
+  nativeBlockedNotice:'已拦截一条危险命令，未执行',
+  compactStart:'正在压缩上下文', compactDone:'上下文压缩完成', compactFail:'上下文压缩失败',
+  nativeCompactTitle:'点击立即压缩上下文，为会话腾出记忆空间',
+  nativeMemory:'记忆', nativeMemoryTitle:'本会话生效的记忆',
+  // 原生车道 Plan 审批卡：状态/失败文案与 bridge BT 表（acceptPlanFailed 等）同文。
+  nativePlanApproved:'✅ 已批准', nativePlanDiscarded:'🚪 已放弃此方案',
+  nativePlanSuperseded:'📜 已被新方案覆盖', nativePlanHistorical:'📜 历史方案',
+  nativePlanAcceptFailed:'⚠️ accept_plan 失败: ', nativePlanDiscardFailed:'⚠️ discard_plan 失败: ',
+  addAttachment:'添加附件', commandsAvailable:'Agent 上报的命令', commandsAfterSession:'创建会话后同步 Agent 命令',
+  connectedSuffix:'已连接', notReadySuffix:'未就绪',
+  notSet:'未设置', choiceTitle:'Agent 需要你的选择', submit:'提交', cancel:'取消', submitted:'已提交', canceled:'已取消', inputExpired:'该输入请求已过期',
+  checking:'正在检查 ACP Agent…', bridgeUnavailable:'Codex ACP Bridge 不可用',
+  bridgeRepair:'请修复或重新安装 Pinvou。开发环境可运行 npm run prepare:codex-bridge。',
+  cliMissing:agent=>`未检测到 ${agent} CLI`, cliOutdated:(version,minVersion)=>`检测到旧版本 ${version}（需要 ≥ ${minVersion}）`,
+  cliUpdateAvailable:(agent,version,latest)=>`${agent} 当前版本 ${version || '未知'}，官方最新版 ${latest || '未知'}，建议升级`,
+  cliUpdateRequired:(agent,version,latest)=>latest?`${agent} 当前版本 ${version || '未知'}，需要升级到 ${latest}`:`${agent}${version ? ` ${version}` : ''} 必须升级后才能继续使用`,
+  packageManagerUpgradeHint:source=>source==='brew'?'该版本通过 Homebrew 安装，将使用对应包管理器升级，不会引入第二份安装':source==='npm'?'该版本通过 npm 安装，将使用对应包管理器升级，不会引入第二份安装':'将使用对应包管理器升级，不会引入第二份安装',
+  upgrade:'升级', declineUpgrade:'暂不升级',
+  officialScriptHint:agent=>`将运行 ${agent} 官方安装脚本（免管理员）`, confirmInstall:'确认安装', installing:'正在安装…',
+  manualInstallHint:agent=>`请手动安装 ${agent} CLI，完成后点击「重新检测」`, manageAgentOnDesktop:agent=>`请在目标桌面端完成 ${agent} 的安装、升级或账号授权，然后在这里重新检测`,
+  waitingLogin:'等待 Codex 授权', notLoggedIn:'Codex 尚未登录',
+  waitingAgentLogin:agent=>`等待 ${agent} 授权`, agentNotLoggedIn:agent=>`${agent} 尚未登录`,
+  finishAgentAuth:agent=>`请在浏览器中完成 ${agent} 授权；完成后 Pinvou 会自动连接`,
+  agentLoginHint:agent=>`使用 ${agent} 账号完成授权`,
+  deviceCode:code=>`授权码：${code}`, authorizationCodePlaceholder:'粘贴浏览器返回的 Claude 授权码',
+  submitAuthorizationCode:'提交授权码', loginRequiredBeforeSend:'请先完成 Agent 登录再发送消息',
+  finishBrowserAuth:'请在浏览器中完成 ChatGPT 授权；完成后 Pinvou 会自动连接',
+  openingAuth:'正在启动 Agent 授权页面，请稍候…', loginHint:'使用 Codex CLI / ChatGPT 账号完成授权',
+  reopenAuth:'重新打开授权页', waitAuth:'等待授权…', authorize:'授权登录',
+  chooseProjectDialog:'选择项目目录', addAttachmentDialog:'添加附件',
+  attachmentsParsing:'附件仍在解析，请稍候', sessionSyncing:'ACP 会话配置仍在同步，请稍候',
+  operationFailed:'ACP Agent 操作失败，请重试', showRawErrors:true,
+  recheck:'重新检测', setupRequired:'Agent 尚未就绪',
+  setupHints:{ kimi_cli_missing:'请先安装 Kimi Code CLI', kimi_auth_required:'使用 Kimi 账号完成设备码授权', claude_cli_missing:'请先安装 Claude Code CLI 并确保 claude 在 PATH 中（macOS 可运行 brew install --cask claude-code）', claude_auth_required:'使用 Claude 账号完成浏览器授权，或设置 ANTHROPIC_API_KEY' },
+  accountAndService:'账号与服务状态',
+  accountAuthorized:'账号已授权', accountNotAuthorized:'账号未授权', serviceAbnormal:'服务异常',
+  switchAccount:'切换账号', switchAccountAffectsSessions:'新账号会应用到该 Agent 的所有会话',
+  entitlementUnavailable:agent=>`${agent} 会员权益不可用`,
+  quotaUnavailable:agent=>`${agent} 额度已用尽`,
+  authorizationExpired:agent=>`${agent} 授权已失效`,
+  serviceUnavailable:agent=>`${agent} 暂时不可用`,
+  accountRecoveryHint:'当前账号可能已到期或额度不足。切换账号后即可继续，已有会话和消息不会丢失。',
+  serviceRecoveryHint:'请重新检测服务状态；如果问题持续，可以稍后重试或切换账号。',
+  errorDetails:'查看错误详情', dismissNotice:'关闭提示',
+  runtimeSources:{ system:'系统 CLI', override:'自定义 CLI', bundled:'内置 Bridge', legacy_bundled:'内置 Codex' },
+};
+
+const acpProvidersZh = {
+  sectionDesc:'配置第三方中转服务（API 地址、模型与密钥），一键切换或恢复官方登录。切换对本机所有使用该 CLI 的入口生效（终端、IDE 插件）。',
+  agentCodex:'Codex', agentClaude:'Claude Code', agentKimi:'Kimi',
+  official:'官方登录', current:'当前', external:'检测到外部中转配置', externalDesc:'配置文件存在无法归因到当前 Provider 的中转配置，可能由外部工具或手动写入。当前 App 切换不会覆盖它。', keyOk:'已保存密钥', keyNone:'未配置密钥', notEnabled:'未启用',
+  switch:'切换', switchOk:'切换成功', restoredOfficial:'已恢复官方登录', restoreOfficial:'切回官方', deleted:'已删除', uninstallDone:'卸载完成', currentOverriddenByEnv:'已切换 · 被环境变量覆盖', effectiveTitle:'生效中配置（来自 CLI 配置文件）', noAnthropicEndpointWarning:'该厂商未提供 Anthropic 兼容端点。Claude Code 仅支持 Anthropic 协议，请确认地址可用或改用其他中转。', wireResponses:'Responses',
+  edit:'编辑', delete:'删除', addProvider:'新增 Provider',
+  providerName:'名称', providerNamePlaceholder:'例如：我的中转', providerOther:'其它',
+  presetAnthropic:'Anthropic 官方', presetOpenai:'OpenAI 官方', presetMoonshot:'Moonshot Kimi', presetKimiCode:'Kimi Code', presetDeepseek:'DeepSeek', presetZhipu:'智谱 GLM', presetQwen:'通义千问 Qwen', presetDoubao:'豆包 Doubao', presetMinimax:'MiniMax', presetXai:'xAI Grok', presetOpenrouter:'OpenRouter', presetSiliconflow:'硅基流动 SiliconFlow', presetGroq:'Groq',
+  baseUrl:'Base URL', baseUrlPlaceholder:'https://api.example.com/v1',
+  wireApi:'接口协议', wireAnthropic:'Anthropic 兼容', wireOpenai:'OpenAI 兼容', wireKimi:'Kimi 原生',
+  model:'模型', modelPlaceholder:'例如 claude-sonnet-4-5 / gpt-5.2', modelOptional:'可选',
+  modelSlotsTitle:'细化模型（opus / sonnet / haiku / fable / 子 Agent）', modelSlotsHint:'已自动填入上方模型，可单独修改；均为必填，留空会让子 Agent 走官方流量。', modelSlotsRequired:'五个细化模型槽位均为必填',
+  slot_opus:'Opus 槽位', slot_sonnet:'Sonnet 槽位', slot_haiku:'Haiku 槽位', slot_fable:'Fable 槽位', slot_subagent:'子 Agent',
+  secretSet:'已设置（值已隐藏）',
+  contextWindow:'上下文窗口', contextWindowPlaceholder:'例如 200000 / 1048576', contextWindowHint:'留空使用 CLI 默认值（200000）。写错会导致对话被过早截断，不确定就留空。', contextWindowInvalid:'上下文窗口必须是正整数',
+  apiKey:'API Key', apiKeyPlaceholder:'输入 API Key', apiKeyHint:'切换时需要已保存的密钥',
+  showKey:'显示', hideKey:'隐藏',
+  thirdPartyWarning:'Pinvou 不会将您的 API Key 上传。',
+  cancel:'取消', save:'保存', saving:'保存中…',
+  deleteTitle:'删除 Provider？', deleteDesc:name=>`将移除 ${name} 及已保存的密钥。若它正在使用，将自动恢复官方登录。`, deleteConfirm:'删除',
+  deleteKeyConfirm:'清空 API Key 输入框将删除已保存的密钥，确定？', apiKeyEmptyConfirm:'未填写 API Key：该中转保存后切换时需要已保存的密钥，确定保存？',
+  empty:'还没有 Provider', emptyHint:'添加一个第三方中转，然后一键切换使用',
+  export:'导出', import:'导入',
+  exportWarningTitle:'导出文件包含明文密钥', exportWarningDesc:'导出文件包含 API Key 明文，请妥善保管，不要分享给他人。点击文本框全选后手动复制。', exportDone:'已导出', selectAll:'全选',
+  importWarningTitle:'导入文件可能包含明文密钥', importWarningDesc:'请确认 JSON 来源可信：文件可能包含 API Key 明文，导入后不要将其转发给他人。',
+  importDone:p=>`导入完成：新增 ${p.imported} 条${p.idConflicts?`，${p.idConflicts} 条 id 冲突已重建`:''}${p.skipped?`，${p.skipped} 条无效已跳过`:''}`,
+  envConflictTitle:'检测到环境变量覆盖', envConflictDesc:'以下环境变量已设置，它们优先于配置文件：切换 Provider 或恢复官方登录可能不会生效。',
+  envConflictVars:'已设置的变量',
+  cliSection:'CLI 状态', version:'版本', authenticated:'已认证', notAuthenticated:'未认证', notInstalled:'未安装',
+  install:'安装', installing:'正在安装…', cancelInstall:'取消安装', installCancelled:'已取消安装', update:'更新', uninstall:'卸载', recheck:'重新检测',
+  installCmd:'执行命令', installLatest:'最新输出', phaseChecking:'自检中…', phaseInstalling:'下载安装中…', phaseDone:'完成', phaseFailed:'失败', phaseCancelled:'已取消',
+  rechecking:'重新检测中…',
+  login:'登录', logout:'登出', loggedOut:'已登出', logoutRelayDisabled:'中转生效中，请先切回官方登录再登出', loginWaiting:'等待在浏览器中完成登录…', openLoginUrl:'打开登录链接', loginCodePlaceholder:'粘贴授权码', submitCode:'提交',
+  uninstallTitle:'卸载 {agent}？', uninstallDesc:'将按安装来源卸载该 CLI（brew / npm / 官方脚本）。有运行中的会话时会被阻止。',
+  uninstallCleanup:'同时删除配置文件、已保存的 Provider 与密钥', uninstallCleanupHint:'默认不勾选；删除后无法恢复',
+  uninstallBusy:'正在卸载…', loading:'加载中…', loadFailed:'加载失败', retry:'重试', configUnreadable:'配置文件不可解析', configUnreadableDesc:'该 Agent 的 CLI 配置文件无法解析。为避免覆盖你的配置，当前禁止切换；请手动修复或删除该文件后重试。',
+  sessionProvider:'会话 Provider', sessionProviderDesc:'本会话固定使用的 Provider；默认跟随全局设置', sessionOfficial:'跟随全局',
+  faultManage:'管理 Provider',
+};
+
+export const dictZh = {
+        langTag: 'zh',
+        acpAgent: 'ACP Agent',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', workflow: '工作流', multiAgent: '多智能体', multiAgentDesktopOnly: '此多智能体对话当前仅在桌面端可用。', toolStore: '插件中心', cardPool: '专家池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterCode: '代码', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', sidebarViewAll: '查看全部', sidebarSection: '任务列表', sidebarDateGrouping: '按日期折叠', sidebarDateGroupingDesc: '任务列表按日期分组，今天默认展开', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口', mobileMore: '更多',
+        previewTaskDailyBrief: '每日早报', previewTaskFollowUp: '事项督办', previewTaskSalesWeekly: '销售线索周报',
+        archiveSession: '收纳', archiveConfirmTitle: '确认收纳任务', archiveConfirmMessage: '将该任务移出任务列表，存入【对话管理-已收纳】，需要时可找回。', archiveConfirmDetail: '', archiveConfirmAction: '确认收纳',
+        archiveSuccess: '已收纳到【对话管理-已收纳】', archiveSuccessView: '前往查看',
+        sessionBatchFailed: n => `${n} 个任务操作失败，请重试`,
+        archivedTasks: '任务收纳', archivedTasksDesc: '', archivedEmpty: '暂无收纳任务', restoreArchived: '恢复到任务列表',
+        archivedDeleteTitle: '删除收纳任务？', archivedDeleteMessage: '此操作会永久删除该任务及其内容，无法撤销。', archivedDeleteAction: '删除',
+        knowledge: '知识库', remoteKnowledge: '共享知识库',
+        remoteKbHeroTitle: '共享知识库', remoteKbHeroStep1: '连接知识服务器', remoteKbHeroStep2: '集中管理文档', remoteKbHeroStep3: '多设备共享使用', remoteKbHeroClient: 'PINVOU 客户端', remoteKbHeroNetwork: '安全网络', remoteKbHeroServer: '知识服务器', remoteKbHeroDevices: '授权设备',
+        remoteKbDesc: '在自己的设备上创建，或加入团队已有的共享知识库。', remoteKbRefresh: '刷新', remoteKbConnectTitle: '加入共享知识库', remoteKbInvitePlaceholder: '粘贴 pinvou-knowledge:// 邀请链接', remoteKbDeviceName: '输入姓名', remoteKbConnect: '连接', remoteKbConnected: '已加入共享知识库', remoteKbServers: '共享知识库', remoteKbNoServers: '还没有共享知识库', remoteKbReady: '可用', remoteKbNotReady: '检索不可用', remoteKbOffline: '离线', remoteKbManage: '可管理', remoteKbReadOnly: '只读', remoteKbSelectServer: '请先加入或选择一个共享知识库', remoteKbShowTrash: '显示回收站', remoteKbDisconnect: '断开', remoteKbRemoveConfirm: '断开后将移除本机连接和所有对话挂载，确定继续吗？', remoteKbCollections: '共享知识集', remoteKbCollectionName: '新知识集名称', remoteKbCreate: '创建', remoteKbCollectionCreated: '知识集已创建', remoteKbNoCollections: '暂无知识集', remoteKbDocuments: '份文档', remoteKbChunks: '片段', remoteKbRestore: '恢复', remoteKbTrash: '移入回收站', remoteKbTrashConfirm: '将该知识集移入回收站？文档会保留，可恢复。', remoteKbFiles: '文档', remoteKbUpload: '上传文件', remoteKbUploaded: '文档已上传', remoteKbNoDocuments: '该知识集暂无文档', remoteKbStatusPending: '处理中', remoteKbStatusReady: '可用', remoteKbStatusFailed: '处理失败', remoteKbStatusUnknown: '状态未知', remoteKbDownload: '下载原文件', remoteKbDownloaded: '文件已下载', remoteKbTestSearch: '测试检索', remoteKbSearchPlaceholder: '输入问题或关键词', remoteKbSearch: '检索', remoteKbDesktopOnly: '共享知识库需要 PINVOU 桌面端。',
+        remoteKbAddServer: '加入共享知识库', remoteKbHideConnect: '收起连接', remoteKbNewCollection: '新建知识集', remoteKbCancel: '取消', remoteKbClose: '关闭', remoteKbCollapse: '收起', remoteKbDone: '完成', remoteKbUploading: '处理中…', remoteKbUploadTitle: '上传文档', remoteKbStartUpload: '上传', remoteKbRetryFailed: '重试失败项', remoteKbUploadingFile: '上传中', remoteKbUploadDone: '已完成', remoteKbUploadPendingIndex: '处理中', remoteKbUploadStillIndexing: '仍在处理', remoteKbUploadIndexFailed: '处理失败', remoteKbUploadFailed: '上传失败', remoteKbUploadSuccess: '{count} 个文档已上传', remoteKbUploadSummary: '已完成 {done} · 处理中 {processing} · 失败 {failed}', remoteKbUploadRefreshFailed: '列表刷新失败：{error}', remoteKbFileName: '名称', remoteKbStatus: '状态', remoteKbSize: '大小',
+        remoteKbReplace: '更新文档', remoteKbReplaced: '文档已更新', remoteKbLoadMoreDocuments: '加载更多', remoteKbLoadingMoreDocuments: '正在加载…',
+        remoteKbNearby: '附近的共享知识库', remoteKbDiscovering: '正在安全检测附近的共享知识库…', remoteKbNearbyEmpty: '暂未发现可连接的局域网知识库', remoteKbManualConnect: '手动连接', remoteKbVerify: '检测身份', remoteKbVerifyIdentityDesc: '请在共享知识库主机的“服务与维护”中核对身份码。只有完全一致时才申请加入。', remoteKbIdentityCode: '服务身份码', remoteKbConfirmIdentity: '身份码一致，申请加入', remoteKbBack: '返回', remoteKbLan: '局域网', remoteKbTailnet: 'Tailscale', remoteKbHostIdentity: '服务身份', remoteKbHostIdentityDesc: '新设备首次连接时，请在两台设备上核对这个身份码。', remoteKbPublishLocal: '发布本地知识集', remoteKbPublishDesc: '复制所选知识集及其源文档。发布后，本地与共享副本互不影响。', remoteKbPublishChoose: '选择本地知识集', remoteKbPublishContinue: '准备发布', remoteKbPublishEmpty: '这个本地知识集还没有文档', remoteKbNoLocalCollections: '还没有可发布的本地知识集',
+        remoteKbJoinSource: '共享链接或私网地址', remoteKbJoinSourcePlaceholder: '粘贴共享链接，或输入 192.168.1.20:3210', remoteKbJoinHint: '支持局域网地址、Tailscale 100.x 地址或 *.ts.net:端口；私网直连需先核对服务身份。', remoteKbShareLinkOnly: '请粘贴由所有者生成的 pinvou-knowledge://share… 共享链接。', remoteKbJoinRequested: '加入申请已发送', remoteKbPendingTitle: '等待加入确认', remoteKbPendingDesc: '所有者批准后会自动加入。', remoteKbCancelRequest: '取消申请', remoteKbOwner: '所有者', remoteKbGovern: '管理', remoteKbGovernTitle: '共享与成员', remoteKbPeopleTab: '成员与邀请', remoteKbServiceTab: '服务与维护',
+        remoteKbShareTitle: '邀请团队加入', remoteKbShareDesc: '共享链接默认 24 小时有效，可供多人提交申请。', remoteKbCreateShare: '生成链接', remoteKbAutoApproveRead: '链接有效期内自动批准只读加入', remoteKbCopy: '复制链接', remoteKbLinkCopied: '共享链接已复制', remoteKbRecoveryCopied: '恢复码已复制', remoteKbCopyFailed: '复制失败，请手动选择并复制', remoteKbActiveShares: '{count} 个分享链接有效', remoteKbRequestsTitle: '加入申请', remoteKbNoRequests: '暂无待处理申请', remoteKbApproveRead: '只读加入', remoteKbApproveManage: '管理加入', remoteKbReject: '拒绝', remoteKbStopShare: '停止', remoteKbAutoReadShort: '自动只读', remoteKbMembersTitle: '成员', remoteKbThisDevice: '本设备', remoteKbRevoked: '已撤销', remoteKbRestoreAccess: '恢复', remoteKbRevokeAccess: '撤销', remoteKbMemberAccess: '成员权限', remoteKbRemoveMember: '移除成员“{name}”', remoteKbRemoveMemberAction: '移除成员', remoteKbRemoveMemberConfirm: '永久移除成员“{name}”？',
+        remoteKbPromoteOwner: '设为所有者', remoteKbDemoteOwner: '取消所有者', remoteKbPromoteOwnerConfirm: '将“{name}”设为所有者？该成员将可以管理共享与成员。', remoteKbDemoteOwnerConfirm: '取消“{name}”的所有者权限？', remoteKbModelTitle: '语义检索模型', remoteKbModelReady: '已可用', remoteKbModelMissing: '尚未下载', remoteKbModelDownloading: '正在下载，关闭 PINVOU 后仍会继续', remoteKbDownloadModel: '下载', remoteKbModelDownloadingAction: '下载中', remoteKbPermanentDelete: '永久删除', remoteKbPermanentDeleteConfirm: '永久删除“{name}”？此操作无法撤销。',
+        remoteKbOtherNetwork: '其他网络地址（可选）', remoteKbOtherNetworkPlaceholder: '例如 100.64.12.34:3210 或 cube.ts.net:3210',
+        remoteKbCreateHost: '创建共享知识库', remoteKbHostCreated: '共享知识库已创建', remoteKbReconnectHost: '重新连接本机服务', remoteKbHostReconnected: '已恢复本机管理连接', remoteKbUpgradeHost: '升级服务', remoteKbHostUpgraded: '共享知识库服务已升级', remoteKbClientOutdatedTitle: '请先升级 PINVOU', remoteKbClientOutdatedDesc: '当前 PINVOU {appVersion} 低于本机服务 {serviceVersion}。为保护数据，不会降级服务。', remoteKbHostProgressCreateTitle: '正在创建共享知识库', remoteKbHostProgressReconnectTitle: '正在恢复本机连接', remoteKbHostProgressUpgradeTitle: '正在升级共享知识库', remoteKbHostProgressPrepare: '正在准备安装资源', remoteKbHostProgressInstall: '等待系统授权并安装服务', remoteKbHostProgressConnect: '正在连接本机服务', remoteKbHostProgressComplete: '已完成', remoteKbHostProgressFailed: '操作未完成', remoteKbHostProgressHint: '如系统弹出授权窗口，请完成授权。此过程通常需要几十秒。', remoteKbHostProgressRetry: '重试', remoteKbNoLanEndpoint: '未找到可供团队访问的局域网地址，请连接局域网后重试', remoteKbHostSettings: '主机设置', remoteKbHostSettingsDesc: '备份、恢复或管理本机托管服务。', remoteKbDangerZone: '停用与删除', remoteKbDangerZoneDesc: '停止托管会保留现有数据；删除服务和数据后无法恢复。', remoteKbBackup: '创建备份', remoteKbRestoreBackup: '恢复备份', remoteKbRecoveryTitle: '保存恢复码', remoteKbRecoveryDesc: '备份已加密。本机恢复无需恢复码；换一台主机时需要此恢复码。请与备份文件分开保存。', remoteKbCopyRecovery: '复制恢复码', remoteKbRestoreTitle: '恢复共享知识库', remoteKbRestoreDesc: '留空恢复码表示恢复到当前主机；输入恢复码表示迁移到这台主机。', remoteKbRecoveryPlaceholder: '换机迁移时粘贴恢复码（本机恢复请留空）', remoteKbSameHostMode: '本机恢复会保留当前服务身份和成员，仅恢复知识内容。', remoteKbMigrationMode: '换机迁移只导入知识内容，并创建新的服务身份；原成员需要重新加入。', remoteKbRestoreAction: '开始恢复', remoteKbRestoreConfirm: '恢复当前主机的知识内容？当前内容会被备份中的内容替换，服务身份和成员保持不变。', remoteKbMigrateConfirm: '将备份迁移到这台主机？当前内容会被替换，并创建新的服务身份和所有者。', remoteKbRestored: '共享知识库已恢复', remoteKbMigrated: '共享知识库内容已迁移到当前主机', remoteKbRemoveHost: '停止托管', remoteKbDeleteHost: '删除服务和数据', remoteKbRemoveHostConfirm: '停止本机的共享知识库服务？已有数据会保留，之后可以重新启用。', remoteKbDeleteHostConfirm: '永久删除本机的共享知识库服务和全部数据？此操作无法撤销。', remoteKbHostRemoved: '共享知识库服务已停止，数据已保留', remoteKbHostDeleted: '共享知识库服务和数据已删除',
+        outputs: '产出物',
+        kbMount: '知识库', kbMountTitle: '管理本对话挂载的知识集', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，前往「知识库」创建或连接', kbMountRemove: '移除全部', kbMountRemoveOne: '移除此知识集', kbMountEnable: '启用', kbMountDisable: '停用', kbMountEnabled: '已启用', kbMountDisabled: '已停用', kbMountCount: n => `${n} 个知识库`, kbMountedTag: '已挂载', kbMountNoModel: '需先安装 Embedding 模型：前往「知识库 → 本地知识库」下载后即可挂载', kbMountNotReady: 'Embedding 模型正在加载或加载失败，暂时无法挂载知识集',
+        modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: '切换工作模式', modeYoloDesc: '直接动手执行', modePlanDesc: '先出方案，确认后执行',
+        modeYoloConfirmTitle: '切换到 YOLO 模式？', modeYoloConfirmBody: '该模式下模型将对你的项目目录全自动读写、可执行 shell 命令，无逐步审批。', modeYoloConfirmHint: '确认后全局记住，以后切换不再提示。', modeYoloConfirmOk: '确认切换', modeYoloConfirmCancel: '取消',
+        kbTitle: '知识库', kbDesc: '统一管理本地知识库与共享知识库',
+        kbRescan: '重新扫描', kbScanning: '扫描中', kbDeduping: '去重中', kbScanNow: '扫描本机',
+        kbTotalFiles: '已索引文件', kbDupFiles: '重复文件', kbWasted: '可回收',
+        kbTabSearch: '搜索', kbTabDups: '重复文件',
+        kbSearchPlaceholder: '试试：上周的 pdf、大于10mb的视频', kbSearchBtn: '搜索',
+        kbResults: '结果', kbNoResults: '没有匹配的文件', kbScanningHint: '正在建立索引，已扫描',
+        kbEmptyHint: '还没建立索引。扫描本机后即可秒搜全盘文件、找出重复。',
+        kbBuildDups: '扫描重复', kbDupHint: '尚未建立去重数据，点「扫描重复」按需读取文件算指纹。',
+        kbDupNote: '内容完全相同的文件（删除动作将在后续版本支持）', kbNoDups: '没有发现重复文件', kbDupCopies: '份',
+        kbOpen: '打开', kbOpenFolder: '所在文件夹',
+        kbPageTitle: '知识库', kbFilesSub: '检索、分类本地文件，并把它们沉淀为 AI 可引用的专属知识库。', kbKbSub: '把本地文件沉淀为 AI 可引用的专属知识库，问答时自动标注出处。',
+        kbSubFiles: '本地文件管理', kbSubKb: '本地知识库', kbSubRemote: '共享知识库', kbSubOutput: '产出物',
+        kbOutSub: '你和 PINVOU 一起做出来的东西，都在这里。',
+        kbOutSearch: '搜索产出物', kbOutSearchList: '按名称 / 来源会话搜索',
+        kbOutCatAll: '全部', kbOutCatWeb: '网页', kbOutCatDoc: '文档', kbOutCatImg: '海报', kbOutCatPpt: 'PPT',
+        kbOutCount: (n) => `共 ${n} 项`, kbOutSort: '最近修改',
+        kbOutGroupToday: '今天', kbOutGroupWeek: '本周', kbOutGroupEarlier: '更早', kbOutGroupCount: (n) => `${n} 个产出`,
+        kbOutMonthLabel: (y, m) => `${y}年${String(m).padStart(2, '0')}月`, kbOutGroupUnknown: '时间未知',
+        kbOutColName: '名称', kbOutColType: '类型', kbOutColSource: '来源会话', kbOutColTime: '修改时间', kbOutColActions: '操作',
+        kbOutTodayPrefix: '今天', kbOutWeekdays: ['周日','周一','周二','周三','周四','周五','周六'],
+        kbOutPreview: '预览', kbOutOpenChat: '在对话打开', kbOutContinue: '续写', kbOutNewProject: '新项目', kbOutGallery: '平铺式', kbOutList: '列表式', kbOutOpenExt: '在系统中打开', kbOutOpenFolder: '打开所在文件夹',
+        kbOutEmpty: '还没有产出物', kbOutEmptyHint: '和 PINVOU 聊聊，一起做出来的东西会出现在这里。',
+        kbOutContinuePrefill: (name) => `继续完善「${name}」`, kbOutRequirementLabel: '我的要求：', kbOutFileCount: (n) => `${n} 个文件`,
+        kbCatAll: '全部', kbCatDoc: '文档', kbCatSheet: '表格', kbCatPpt: '演示', kbCatPdf: 'PDF', kbCatImg: '图片', kbCatZip: '压缩包',
+        kbRecent: '最近修改', kbAddToKb: '加入知识库', kbAdd: '添加', kbAddFiles: '添加文件', kbAddFolder: '添加文件夹', kbIndexing: '解析中',
+        kbBrowseByType: '按类型浏览', kbMonitored: '点击类型可筛选下方文件', kbItemUnit: ' 个', kbMonitoredDirs: '已监控 {n} 个文件夹', kbManageFavLink: '管理常用 →', kbRecentFiles: '最近文件', kbAllFiles: '全部文件', kbSortByModified: '按最近修改排序', kbColName: '文件名', kbColLoc: '位置', kbColSize: '大小', kbColTime: '修改时间', kbManageFav: '管理常用 →', kbEnter: '进入', kbCollUnit: '个知识库', kbColColl: '所属知识库', kbStatus: '索引状态',
+        kbBannerTitle: 'AI 知识库 · 一键构建专属知识库', kbNewColl: '新建知识集', kbEditColl: '编辑知识集', kbSave: '保存',
+        kbStep1: '选择本地文件', kbStep2: 'AI 解析与索引', kbStep3: '对话中智能引用',
+        kbMyColls: '我的知识库', kbNoColls: '还没有知识集，点「新建知识集」开始。', kbNoCollsShort: '还没有知识集，先新建一个。',
+        kbDocs: '文档', kbUncat: '未分类', kbCollFiles: '知识库内文件', kbBlocks: '块', kbSkipped: '跳过',
+        kbStReady: '已就绪', kbStIndexing: '解析中', kbStPending: '待索引',
+        kbImportInterrupted: '发现未完成的导入任务', kbImportInterruptedHint: '应用上次退出前的进度已保存，可从未完成的文件或分块继续。', kbResumeImport: '继续导入', kbCancelImport: '取消任务',
+        kbImportProgress: '文件进度', kbCurrentFile: '当前文件：', kbChunkProgress: '分块进度', kbFailedFiles: '失败文件', kbRetryFile: '重试', kbImportErrors: '失败', kbImportDoneWithErrors: '导入完成，部分文件失败',
+        kbResumeImportFailed: '继续导入失败', kbCancelImportFailed: '取消导入失败', kbRetryImportFailed: '重试文件失败',
+        kbLoadMoreFailedFiles: '加载更多失败文件', kbLoadingFailedFiles: '加载中…', kbLoadFailedFilesFailed: '加载失败文件失败',
+        kbDeleteColl: '删除知识集', kbRemove: '移除', kbCollEmpty: '还没有文档，点「添加文件」加入。', kbNoCollFiles: '知识库里还没有文件', kbAllColls: '全部', kbDelCollConfirm: '确定删除知识集「{n}」？', kbDelCollWarn: '仅移除该知识集的索引（{c} 个文档的解析数据）；你磁盘上的原文件不会被删除。', kbDelete: '删除', kbRemoveDocConfirm: '从知识库移除「{n}」？', kbRemoveDocWarn: '仅删除该文件在知识库中的索引；磁盘上的原文件不受影响。', kbRemoveFailed: '移除失败', kbRemoveQ: '删除?',
+        kbRetrPlaceholder: '在这个知识集里检索内容…', kbModeSearch: '检索', kbModeAsk: '问答', kbAskPlaceholder: '问这个知识集…（AI 基于内容回答并标注来源）', kbAskBtn: '提问', kbAsking: '思考中…', kbAnswer: '回答', kbSources: '来源', kbNoContext: '这个知识集还没有可检索的内容，先加文件并等索引完成。', kbAskError: '回答失败，请确认本地模型服务可用。', kbCollNamePh: '知识集名称', kbCollCatPh: '分类（可选）', kbCancel: '取消', kbCreate: '创建',
+        kbEmbedOn: '语义检索已启用', kbEmbedOff: '语义检索未配置 · 全文模式',
+        kbModelTitle: '还未安装 Embedding 模型', kbModelDesc: '知识库的向量化与语义检索依赖本地 Embedding 模型。下载部署后即可创建知识库，让 AI 基于你的本地文件作答。',
+        kbModelLoadingTitle: 'Embedding 模型正在加载', kbModelLoadingDesc: '正在初始化本地语义检索，请稍候。完成后知识库会自动恢复可用。', kbModelFailedTitle: 'Embedding 模型加载失败', kbModelFailedDesc: '可以先重试加载；若本地文件损坏或不完整，请重新下载并修复模型。',
+        kbModelPkgName: 'PINVOU Embedding 模型', kbModelPkgSub: '多语言语义向量模型 · int8 量化 · 纯 CPU 本地运行',
+        kbModelChipDownload: '约 {n} MB', kbModelChipInstalled: '安装 ~{n} MB', kbModelChipOffline: '完全离线运行', kbModelChipLang: '中英文 / 多语言',
+        kbModelItem1: 'bge-m3 多语言向量模型（int8 量化 ONNX）', kbModelItem2: '分词器与模型配置文件', kbModelItem3: 'CPU 推理，无需联网与显卡',
+        kbModelDownloadBtn: '下载并部署资源包', kbModelFoot: '一次安装，后续离线可用 · 下载期间可继续使用其他功能',
+        kbModelRetryBtn: '重试加载', kbModelRepairBtn: '重新下载并修复', kbModelLoading: '正在加载模型…',
+        kbModelStageDownload: '正在下载模型文件…', kbModelStageVerify: '正在校验完整性…', kbModelStagePrepare: '正在准备模型…', kbModelStageDone: '部署完成',
+        sysStatus: '系统状态', sysDesc: '实时性能与资源指标', gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', noSmi: '未检测到 nvidia-smi',
+        cpu: '处理器 (CPU)', cpuUnavail: 'CPU 信息不可用', cpuTotal: '总体使用率', cpuProcess: '应用占用', cpuLogical: '逻辑处理器',
+        vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
+        ram: '系统内存 (RAM)', used: '已用', physical: '物理内存', total: '总计', swap: '交换空间',
+        vllm: '推理引擎', ctx: '上下文长度', ctxWarn: '⚠️ 窗口偏小(当前 %s,低于 128k),长对话会频繁压缩、保留历史更少;建议换 ≥128k 窗口的模型或调大 --max-model-len', queue: '任务排队', kv: 'KV 命中率', ttft: 'TTFT（首字延迟）', tps: 'TPS（生成速度）', tokTotal: '累计 tokens·生成/输入', clearHold: '按住清除', clearHolding: '继续按住…', clearDone: '已清除', clearHint: '按住「清除」直到填满即归零 · 松手取消', statsSince: '统计自 %t 起', statsAge: ' · 已运行 %m 分钟', statsJustReset: ' · 刚刚归零', statsLifetime: '自引擎启动累计', app: '应用服务', appRunning: '核心守护进程运行中',
+        curVer: '当前版本', uiVer: 'UI 版本', uptime: '运行时长', runningMemory: '运行内存', temporaryMemory: '临时内存', memoryPressure: '内存压力', normal: '正常', localProcessor: '本机算力', processorLoad: '处理器负载', graphicsLoad: '图形负载', sharedMemory: '共享内存', deviceTemp: '设备温度', currentModel: '当前模型', localRunning: '本地运行', remoteService: '远程服务', available: '可用', unavailable: '不可用', historyReuse: '历史复用率', modelTextVolume: '模型处理文本量', modelReadAmount: '模型阅读量', modelOutputAmount: '模型输出量', modelReadHint: '参考内容越多，响应越慢、消耗越高', modelOutputHint: '生成内容越多，回复越长、消耗越高', resetCount: '重新计数', contextHint: '可保留的对话范围', queueHint: '处理中 / 等待中', ttftHint: '开始回复前的等待', tpsHint: '回复输出速度', reuseHint: '越高越快，也更省 Token', totalMemory: '总内存',
+        appearance: '外观与语言', lang: '界面语言', langDesc: '切换应用的显示语言', theme: '主题模式', themeDesc: '选择适合你的色彩风格',
+        light: '浅色', dark: '深色',
+        notifications: '通知',
+        taskCompletedNotif: '任务完成提醒',
+        taskCompletedNotifDesc: '任务完成后发送系统通知',
+        searchBackend: '联网搜索', searchSource: '搜索源', searchBackendDesc: 'LLM 调用 Web 搜索动作时使用的源',
+        searchKey: 'API Key',
+        searchKeyHintBing: 'Bing 不需要 API key，但中文搜索结果不理想',
+        searchKeyHintMetaso: '留空使用社区共享 key（~100 次/天，多用户竞争）',
+        searchKeyHintBocha: '必填，否则搜索会直接报错',
+        searchKeyHintBaidu: '必填（百度智能云千帆 API Key），否则搜索会直接报错',
+        searchKeyHintTavily: '必填（tvly- 开头），海外服务，需稳定外网',
+        searchKeyPlaceholder: '粘贴 API key',
+        searchRestartHint: '配置已修改，保存后应用将重启',
+        searchGetKey: '获取你自己的 key',
+        searchGetKeyMetasoSteps: '免费 · 微信/手机扫码 1 分钟注册 · 个人独立配额',
+        searchGetKeyBochaSteps: '免费 · 注册后在控制台领 sk- 开头的 key',
+        searchGetKeyBaiduSteps: '千帆控制台创建 API Key · AI 搜索按量计费，有免费额度',
+        searchGetKeyTavilySteps: '海外 · 注册领 tvly- 开头的 key · 每月有免费额度，需外网访问',
+        modelBackend: '模型与后端',
+        modelBackendDesc: '选择本地模型服务或第三方 API 作为推理后端',
+        modelPreset: '模型来源',
+        modelPresetLocalVllm: '本地模型（默认）',
+        modelPresetDeepseek: 'DeepSeek',
+        modelPresetKimi: 'Kimi',
+        modelPresetOpenaiCompatible: 'OpenAI 兼容',
+        modelPresetQwen: '通义千问',
+        modelPresetDoubao: '豆包',
+        modelPresetMinimax: 'MiniMax',
+        modelPresetGlm: '智谱 GLM',
+        modelPresetMimo: '小米 MiMo',
+        modelPresetOpenai: 'OpenAI',
+        modelPresetAnthropic: 'Anthropic Claude',
+        modelPresetGemini: 'Google Gemini',
+        modelPresetXai: 'xAI Grok',
+        customModelName: '模型名称',
+        customBaseUrl: 'API 地址',
+        modelContextWindow: '上下文窗口（tokens）',
+        modelMaxOutput: '最大输出（tokens）',
+        customApiKey: 'API Key',
+        credEnvOverride: '环境变量覆盖', credUnavailable: '凭证不可用', credConfigured: '已配置', credNotConfigured: '未配置', credEnterNewKey: '输入新 Key 替换', credKeep: '保留', credReplace: '替换', credDeleteKey: '删除 Key', clearSearch: '清除搜索', clearInput: '清除输入', sendMsg: '发送', apiKeyGateTitle: '需要配置 API Key', apiKeyGateDesc: '当前模型为云端模型，需要先配置 API Key 才能开始对话。', apiKeyGateBtn: '去配置',
+        detectLocalVllm: '检测本机模型服务',
+        detectingLocalVllm: '检测中…',
+        useVllmConfig: '使用此配置',
+        vllmDetectFound: n => `检测到 ${n} 个可用实例`,
+        vllmDetectNone: '未检测到可用的本地模型服务',
+        vllmDetectError: e => `检测失败: ${e}`,
+        vllmDetectOffline: '离线',
+        vllmDetectReady: '可用',
+        vllmDetectBusy: '忙碌',
+        vllmDetectMismatch: '配置不匹配',
+        vllmDetectedModel: '模型',
+        vllmDetectedContext: '上下文',
+        vllmDetectHint: '仅检测本机 127.0.0.1 / localhost 的 vLLM、Ollama、LM Studio 常见端口；选用候选后记得保存。',
+        confirmAndRestart: '保存并重启',
+        addModel: '＋ 添加模型', editModel: '编辑', deleteModelBtn: '删除', setActiveModel: '设为默认', modelActiveTag: '默认',
+        modelFormAddTitle: '添加模型', modelFormEditTitle: '编辑模型', modelDisplayName: '显示名',
+        testConnection: '测试连接', testingConn: '测试中…', modelSaveBtn: '保存', manageModels: '管理模型…',
+        switchModelTitle: '切换模型', modelSwitchBusy: '生成中，无法切换', modelNonePick: '选择模型', modelDeleteMin: '至少保留一个模型',
+        modelGroupPreset: '预设', modelGroupCustom: '自定义',
+        thinkingDepth: '思考深度', thinkingDepthTiers: { off: '关闭', low: '低', medium: '中', high: '高', max: '最深' },
+        saveModelFailed: '思考深度保存失败，请重试',
+        modelEnvLocked: f => `环境变量已锁定：${f}，设置页改动不生效`, deleteModelConfirm: n => `删除模型「${n}」？`,
+        modelDirtyHint: '配置已修改，保存后应用将重启',
+        langRestartHint: '界面语言已切换；助手回复语言需重启应用后生效',
+        sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令',
+        versionUpdate: '版本与更新',
+        uiRemote: {
+          title:'手机远程控制', desc:'开启后，远程链接可浏览本机文件并在所选目录运行代码 Agent，请仅分享给可信的人。', browser:'浏览器连接', stop:'停止', qrAlt:'远程控制二维码', qrHint:'手机扫码，或在电脑浏览器中复制下方链接', link:'远程控制链接', linkHint:'二维码与链接完全相同，并会在桌面端重启后继续有效；刷新二维码或停止访问会立即撤销旧二维码和链接。', generating:'正在生成远程控制链接…', notStarted:'远程控制尚未开启。', copy:'复制链接', refresh:'刷新二维码', enable:'开启访问', allowWorkspace:'允许本机目录', refreshTitle:'刷新二维码？', refreshDesc:'刷新后，旧二维码和链接立即失效；当前浏览器连接也会断开，需要扫描新二维码或复制新链接重新打开。', refreshing:'正在刷新…', updated:'远程控制状态已更新。', unavailable:'远程控制暂时不可用，请重试。',
+          status:{ idle:['未开启','开启后会生成一个长期有效的远程控制链接。'], starting:['正在开启','正在创建远程控制连接。'], connecting_relay:['正在连接','正在连接云端中继，请稍候。'], waiting_web_client:['等待浏览器','在电脑或手机浏览器中粘贴下方链接即可。'], web_client_connected:['浏览器已连接','远程控制已连接这台桌面端。'], web_client_disconnected:['浏览器已断开','链接仍然有效，浏览器可随时重新连接。'], revoked:['链接已撤销','请重新开启远程控制。'], stopped:['已停止','再次打开此面板即可重新开启。'], error:['连接异常','远程控制暂时不可用，请重试。'] },
+        },
+        uiMonitor: { bridgeNotReady:'桥接未就绪', readFailed:'读取失败', reading:'正在读取', configError:'配置异常', unverified:'未验证', authFailed:'鉴权失败', bridgeError:'监控桥接未就绪：请确认打开的是 Tauri 应用窗口', readError:e=>`监控读取失败：${e}`, activity:'运行活动' },
+
+        uiSettings: { common:'常用', system:'系统', general:'通用', model:'模型', search:'搜索', memory:'记忆', permissions:'权限与环境', data:'数据管理', update:'更新', help:'帮助反馈', appearance:'外观', language:'界面语言', languageDesc:'切换应用显示语言', theme:'主题模式', themeDesc:'选择浅色或深色外观', notifications:'通知', taskNotice:'任务完成提醒', taskNoticeDesc:'任务完成后展示系统通知', desktopAssistant:'桌面助手', pet:'桌伴公仔', petDesc:'在桌面显示常驻小公仔', version:'版本', currentVersion:'当前版本', beta:'内测版', releaseNotes:'更新内容', noReleaseNotes:'暂无更新说明', downloading:p=>`正在下载更新 ${p}%`, installingUpdate:'正在安装更新…', installerStarted:'安装器已启动', cancelDownload:'取消下载', providers:'ACP 管理' },
+        uiSettingsDetail: { modelSection:'模型', settingsLoadFailed:'设置页加载失败', addModel:'添加模型', envManaged:'如果模型配置被环境变量管理，设置页会保留当前值，但修改可能需要到环境变量中完成。', localModel:'本地模型', defaultTag:'默认', edit:'编辑', delete:'删除', noModels:'暂无模型', localDefaultName:'本地 Qwen3.6', searchList:'搜索源列表', setDefault:'设为默认', addSearch:'添加搜索源', searchDescriptions:{ bing:'内置搜索', metaso:'中文搜索服务', bocha:'搜索服务', baidu:'千帆 AI 搜索', tavily:'海外搜索服务' }, memoryTypes:{ preference:'长期偏好', work_context:'工作背景', current_focus:'当前关注', recent_activity:'近期动态' }, memoryDetail:'记忆详情', content:'内容', editTitle:label=>`编辑${label}`, userCallName:'用户称呼', assistantNickname:'助手昵称', callNameDesc:'助手称呼你的方式', assistantNameDesc:'你称呼助手的方式', unnamedMemory:'未命名记忆', view:'查看', enableMemory:'启用记忆', enableMemoryDesc:'PINVOU 会记住称呼、偏好、工作背景和近期事项', profile:'个人资料', notSet:'未设置', longMemory:'长期记忆', shortMemory:'短期记忆', noLongMemory:'暂无长期记忆', noShortMemory:'暂无短期记忆', hiddenTasks:'隐藏任务', archivedAt:date=>`收纳于 ${date}`, restore:'恢复', noHiddenTasks:'暂无隐藏任务', noHiddenTasksDesc:'收纳后的任务会显示在这里', system:'系统', advancedPermission:'高级执行权限', advancedPermissionDesc:'允许助手执行环境配置等高级指令', missing:'缺失', installMissing:'安装缺失依赖', feedbackTitle:'提交问题或建议', feedbackDesc:'支持图片和视频附件，提交前会显示隐私提示', submitFeedback:'提交反馈', editSearch:'编辑搜索源', apiKeyPlaceholder:'输入 API Key', hide:'隐藏', show:'显示', cancel:'取消', save:'保存', saving:'保存中', restartSearchTitle:'重启以应用搜索配置？', restartLanguageTitle:'重启以应用语言设置？', restartSearchDesc:'搜索源或凭据保存后，需要重启应用才能用于助手的联网搜索。', restartLanguageDesc:'界面语言已切换，重启后助手回复语言也会同步生效。', later:'稍后', restartNow:'现在重启', deleteModelTitle:'删除模型？', deleteModelDesc:'将移除该模型配置和已保存的凭据。', deleteModel:'删除模型', deleteSearchTitle:'删除搜索源？', deleteSearchDesc:name=>`将移除 ${name} 和已保存的凭据。`, deleteSearch:'删除搜索源', addSearchDesc:'选择搜索源后再填写必要凭据', closeSettings:'关闭设置', chooseModelDesc:'选择模型后再填写必要凭据', collapse:'收起', change:'更换', customModel:'自定义模型', localModelName:name=>name ? `本地 ${name}` : '本地模型', apiKeyReadFailed:'读取 API Key 失败', localModelId:'本地模型 ID', modelId:'模型 ID', modelIdPlaceholder:'输入模型 ID', customModelTitle:provider=>`自定义 ${provider} 模型`, customModelDesc:'手动填写模型 ID', customLocalDesc:'填写本地服务暴露的模型 ID', customCompatibleDesc:'手动填写模型 ID 和服务地址', localDetectionTargets:'检测 vLLM、Ollama、LM Studio', redetect:'重新检测', detect:'检测', noRunningLocalModel:'未检测到运行中的本地模型', modelNotLoadedTag:'未加载', modelNotLoadedHint:'尚未载入内存，首次使用时会自动加载', add:'添加', manualLocalModel:'手动添加本地模型', manualLocalModelDesc:'填写 API 地址和模型 ID', cloudModels:'云端模型', localModels:'本地模型', toolCalling:'工具调用', apiKeyRequired:'需要 API Key', testBeforeSave:'保存前可测试服务是否可用', modelDescriptions:{ '本地服务默认模型':'本地服务默认模型', '高能力模型':'高能力模型', '快速响应':'快速响应', '最新通用模型':'最新通用模型', '代码场景':'代码场景', '高速代码场景':'高速代码场景', '稳定可用':'稳定可用', '最新推荐':'最新推荐', '高性价比':'高性价比', '通用能力':'通用能力', '兼容保留':'兼容保留', '高速响应':'高速响应', '兼容高速':'兼容高速', '稳定通用':'稳定通用', '轻量模型':'轻量模型', '兼容端点示例':'兼容端点示例' } },
+
+        uiPetSettings: { choose:'选择公仔', placeholder:'开发占位', preparing:'正在准备动画', animationFailed:'动画加载失败', coverFailed:'封面加载失败', retry:'重试', pets:{ lingling:{name:'灵灵',description:'星纹卷尾，灵动相伴'}, langlang:{name:'浪浪',description:'黑衫眼镜，从容同行'}, 'ace-taffy':{name:'Ace Taffy',description:'粉发皇冠，元气应援'} } },
+        uiScheduled: { title:'定时任务', subtitle:'让 PINVOU 按计划自动完成重复工作', newTask:'新建任务', templates:'推荐模板', myTasks:'我的任务', loading:'正在读取定时任务…', empty:'没有匹配的定时任务', view:n=>`查看定时任务：${n}`, useTemplate:n=>`使用${n}模板`, running:'任务正在运行', unread:'有未查看的运行对话', navUnreadAria:'定时任务有未查看的运行对话', closeError:'关闭错误提示', deleteTitle:'删除定时任务？', deleteDescription:n=>`“${n}”将被删除，此操作无法撤销。`, cancel:'取消', delete:'删除', save:'保存', filterAll:'全部', filterActive:'已开启', filterPaused:'已暂停', active:'活跃', paused:'已暂停', enabled:'已开启', unknown:'未知', notScheduled:'未安排', noSchedule:'暂无计划', waitingDispatch:'等待调度', soon:'即将执行', nextRun:(time,remaining)=>`下次 ${time}（${remaining}）`, date:(month,day)=>`${month}月${day}日 `, daysAfter:(days,hours)=>`${days}天${hours ? `${hours}小时` : ''}后`, hoursAfter:(hours,minutes)=>`${hours}小时${minutes ? `${minutes}分` : ''}后`, minutesAfter:(minutes,seconds)=>`${minutes}分${seconds}秒后`, secondsAfter:seconds=>`${seconds}秒后`, runStatus:{ queued:'等待中', running:'运行中', completed:'已完成', failed:'失败', canceled:'已取消' }, weekdays:[['星期一','周一'],['星期二','周二'],['星期三','周三'],['星期四','周四'],['星期五','周五'],['星期六','周六'],['星期日','周日']], hourCount:n=>`${n} 小时`, choose:'请选择', autoModel:'自动选择', currentModel:'当前模型', reselectModel:n=>`重新选择模型 · ${n}`, repeatOptions:{ workdays:'工作日', daily:'每天', weekly:'每周', hourly:'每小时', custom:'自定义' }, everyHours:n=>`每 ${n} 小时`, startsAt:time=>`${time} 起`, repeat:'重复', interval:'间隔', dateLabel:'日期', startTime:'起始时间', time:'时间', chooseRepeat:'选择重复频率', chooseInterval:'选择小时间隔', chooseDate:'选择运行日期', chooseStartTime:'选择起始时间', chooseRunTime:'选择运行时间', setStart:'设置起点', createFromTemplate:'基于模板创建任务', closeCreate:'关闭新建任务', taskName:'任务名称', taskNamePlaceholder:'例如：每日数据备份', taskPrompt:'执行内容', taskPromptPlaceholder:'描述每次运行时需要完成的工作…', saveTask:'保存任务', editTask:'编辑任务', closeDetail:'关闭任务详情', taskNameAria:'定时任务名称', taskPromptAria:'定时任务说明', aiModel:'AI 模型', chooseModel:'选择定时任务模型', runningStatus:'运行状态', nextExecution:'下次执行', enableTask:'启用任务', runNow:'立即运行', openFolder:'打开文件夹', runHistory:'执行历史', records:n=>`${n} 条记录`, noRecords:'暂无记录', openRun:'打开运行会话', noOpenRun:'此运行记录还没有可打开的会话', openRunLabel:s=>`打开运行记录：${s}`, runInProgress:'运行正在进行', viewRunResult:'打开对应会话查看结果', noRunSession:'暂无可打开的会话', noRunHistory:'还没有运行记录', saveState:{ saving:'正在保存…', saved:'已保存', invalid:'名称和说明不能为空', error:'保存失败' }, pause:n=>`暂停${n}`, resume:n=>`恢复${n}`, templateMap:{ 'daily-brief':{name:'每日早报',schedule:'每天 8:00',description:'汇总重要新闻、行业动态和已连接办公系统中的公司公告',prompt:'整理过去 24 小时的重要新闻和行业动态，注明来源和链接；已连接飞书或企微时，补充公司公告。不要扫描用户目录，结果保存到任务工作间。'}, 'follow-up-monitor':{name:'事项督办',schedule:'工作日 9:00',description:'整理逾期与临期事项，突出风险和建议下一步',prompt:'汇总已连接飞书或企微中的逾期、今日到期和未来 3 个工作日临期事项，按优先级给出风险与下一步。仅查询整理，不发送、审批或修改；不要扫描用户目录。'}, 'weekly-review':{name:'工作周报',schedule:'星期五 16:00',description:'根据本周办公记录生成结构清晰的工作周报',prompt:'根据已连接飞书或企微中的本周日程、待办和办公消息生成工作周报，包含进展、遗留、风险和下周计划。不要扫描用户目录或自动发送。'} } },
+        uiChat: { ready:'系统已就绪', sceneModes:{ personalWorkbench:'个人工作台', documentWriting:'公文写作', poster:'海报', dataVisualization:'数据可视化', pptDesign:'PPT设计', pptUnavailable:'PPT 生成能力修复中', clear:label=>`取消${label}`, designGeneralPlaceholder:'描述你想生成或调整的内容' }, askMe:'试试问我', naturalQuestion:'自然语言提问即可。', backRuns:'返回定时任务运行历史', scheduledRun:'定时任务运行', runRecords:'运行记录', asrUnavailable:'语音识别组件尚未安装，请先在桌面端完成安装后再试。', gotIt:'知道了', asrDownloadTitle:'下载语音识别模型', asrEnableTitle:'启用本地语音识别', asrRuntimeMissing:'本地语音识别运行时缺失，请修复或重新安装应用；仅缺模型时可在这里下载。', asrFirstUse:(size,ffmpeg)=>`首次使用需要下载语音识别模型（${size}${ffmpeg ? ' + ffmpeg' : ''}），完全本地运行、语音不上传云端。`, sizeModelOnly:'约 254MB', sizeFull:'约 174-254MB', asrStages:{ ffmpeg:'正在安装 ffmpeg（可能弹系统授权框）…', verify:'正在校验模型完整性…', cancelling:'正在取消下载…', done:'完成', cancelled:'已取消', failed:'下载失败，可重试', preparing:'准备中…' }, downloadingModel:p=>`正在下载模型 ${p}`, cancelling:'正在取消…', cancelDownload:'取消下载', cancel:'取消', repairInstall:'需要修复安装', downloadModel:'下载模型', install:'安装', designingCard:'🃏 正在设计卡牌…', recordedRecent:'已记录近期动态', viewMemory:'可在记忆中心查看', memoryUpdated:'记忆已更新', processed:'已处理', candidate:'记忆候选', remember:'记住', ignoreOnce:'这次忽略', neverAsk:'不再提示', memoryMeta:{ current_focus:{label:'当前关注',prompt:'我可以记住这个当前关注',hint:'以后我会用它理解你最近正在推进的工作。',notice:'后续对话会参考这个近期事项。'}, recent_activity:{label:'近期动态',prompt:'我可以记住这个近期动态',hint:'以后我会用它理解你刚完成的工作。',notice:'后续对话会参考这次完成的事情。'}, work_context:{label:'工作背景',prompt:'我可以记住这条工作背景',hint:'以后我会用它理解你的长期工作上下文。',notice:'后续对话会参考这条长期背景。'}, profile:{label:'称呼',prompt:'我可以记住这个称呼',hint:'以后我会按这个称呼和你交流。',notice:'后续对话会按这个称呼交流。'}, preference:{label:'偏好',prompt:'我可以记住这条偏好',hint:'以后我会按这个偏好调整回复方式。',notice:'后续对话会参考这条偏好。'} } },
+        uiChatExtra: { transferRevision:type=>`Pinvou · ${type} · 转交修订`, draftingScheduled:'⏰ 正在整理定时任务草稿…' },
+        expertPoolIndividualTab:'个人专家', expertPoolTeamTab:'专家团队',
+        uiWorkflow: { pick:'选择一个工作流模板开始', empty:'没有可用的工作流（请检查工作流资源）', workflow:'工作流', stopFailed:e=>`停止工作流失败：${e}`, completed:'🎉 工作流完成' },
+        uiToolStore: { title:'插件中心', search:'搜索连接器、技能、插件等', myTools:'我的插件', installedOnly:'仅显示已安装', results:'检索结果', back:'返回插件中心', internal:'集团内部 · 员工专属', internalTitle:'H3C 办公生态\n一键接入', internalDesc:'以你本人 SSO 身份直连集团内部系统，全程不填 key', internalTools:'H3C 集团内部插件', internalCount:n=>`${n} 个插件 · 需内网`, view:'查看', modePlain:'普通会话', modeCode:'代码会话', modeVisibilityHint:'按会话模式配置插件可见性', manageVisibility:'管理可见性', doneManagingVisibility:'完成', guide:{ title:'插件指南', close:'关闭', dragTitle:'拖入即装', dragDesc:'把标准 Skill、单个 .md、MCP 服务或 Pinvou 插件包 .zip 直接拖进本窗口即可导入；也可点右上角「上传」选择文件。', typesTitle:'支持的形式', types:['标准 Skill（SKILL.md 目录）','单个 .md 技能文件','MCP 服务','Pinvou 插件包（推荐）'], formatsNote:'标准 Skill、.md、MCP 和 Pinvou 插件包都可导入；Pinvou 插件包只是推荐的一种标准形态，其余形式会被自动规范化。', dragHintShort:'拖入插件包可上传自定义插件', introTitle:'什么是 Pinvou 插件包', introDesc:'一个插件包 = 一张卡 = 一个开关。把技能、MCP 服务（或它们的组合）打成一个 zip，导入后按内容自动识别类型、安全校验、落盘注册，并在商店与运行时统一开关、卸载。', specTitle:'插件包规范', specDesc:'完整规范见《插件包设计规范》：zip 布局、plugin.json（schema v1）、mcp manifest.json、SKILL.md、图标与命名安全。', downloadSpec:'下载规范文档（Markdown）', downloadHint:'下载后可直接分发给第三方包作者；桌面端会打开保存对话框。' } },
+        artifactPreview: { download:'↓ 下载', openExternal:'↗ 外部打开', loading:'加载中…', fileMissing:'文件不存在或已被删除', readFailed:e=>`读取失败: ${e}`, imageReadFailed:e=>`图片读取失败: ${e}`, previewUnsupported:'此类型暂不支持预览', downloadArtifact:'↓ 下载产物', openExternalArtifact:'↗ 外部打开' },
+        uiToolDetails: { tools:{
+          ima:{ title:'腾讯 ima', subtitle:'用 OpenAPI 操作 ima 笔记与知识库', latency:'云端', desc:'接入腾讯 ima OpenAPI Skill，可搜索、读取、创建和追加笔记，也可搜索、浏览知识库并导入网页或内容。凭据只保存在本机。', configTitle:'连接腾讯 ima', configDescription:'凭据只保存在本机，用于启用 IMA OpenAPI Skill。', configDocLabel:'获取 Client ID / API Key', welcomeQueries:['搜索我的 ima 知识库','列出我有哪些 ima 笔记','把这段内容新建为 ima 笔记','在 ima 知识库里查产品方案'] },
+          tmeet:{ title:'腾讯会议', subtitle:'以本人身份管理会议、录制、纪要和参会报告', type:'CLI + 官方技能', latency:'云端', desc:'接入腾讯会议官方 CLI 和技能，可创建、查询、修改和取消会议，查询参会报告、录制、转写与智能纪要。连接时会打开授权页扫码登录。', welcomeQueries:['帮我创建一个腾讯会议','查一下我的腾讯会议录制','看看最近会议的智能纪要','查询这场腾讯会议的参会人'] },
+        } },
+        uiPet: { waiting:'需要输入', failed:'遇到问题', review:'可以查看', running:'处理中', sendFailed:'发送失败', noMain:'无法连接主窗口', scheduledDone:'定时任务已完成', done:'已完成', reply:'回复', collapseReply:'收起回复', expandReply:'展开回复', collapse:'收起', expand:'展开', replyPlaceholder:'输入回复…', sendReply:'发送回复', back:'回到品悟', ready:n=>`${n}已就绪`, backHint:'点击回到品悟', drag:n=>`点击回到品悟，拖动${n}`, openScheduled:n=>`打开定时任务${n}的本次运行`, closeScheduled:'关闭定时任务完成提醒', openChat:n=>`打开${n}对话`, closeNotice:n=>`关闭${n}提醒`, replyTo:n=>`回复${n}`, expandActivities:n=>`展开 ${n} 条活动`, collapseActivities:'收起活动卡片', expandActivity:'展开活动', collapseActivity:'收起活动', loadFailed:'公仔加载失败', retry:'点击重试', resize:'拖动调整公仔大小', resizeTitle:'拖动调整大小', hide:'隐藏公仔' },
+        uiWebConnection: { idle:['正在准备远程控制','正在初始化浏览器连接…'], connecting:['正在连接桌面端','连接中断时会自动重试，尚未确认的操作不会重复执行。'], desktop_offline:['桌面端当前离线','保持此页面打开；桌面端恢复运行后会自动续接。'], credentials_missing:['链接不完整','请在桌面端启用远程控制，然后粘贴生成的完整链接。'], denied:['无法访问','链接无效或已被刷新，请从桌面端复制新链接。'], revoked:['访问已停止','桌面端已停止此远程控制链接。'], replaced:['已在另一浏览器接管','同一远程控制链接只保留一个活动浏览器；刷新本页可重新接管。'], incompatible_desktop:['桌面端版本不兼容','当前远程控制功能需要更新的桌面端，请先升级桌面端后再重新打开链接。'], error:['连接异常','远程控制会继续尝试恢复连接。'] },
+        uiConversation: conversationZh,
+        uiMultiAgent: {
+          toggleLabel:'多智能体模式',
+          toggleHint:'开启后本会话可主动委派子智能体（专家协作）；关闭会回收引擎，并取消仍在运行的子智能体',
+          drawerTitle:role=>`子智能体 · ${role}`, close:'关闭', loadingTranscript:'正在读取对话记录…',
+          emptyTranscript:'还没有落盘的对话记录（子智能体可能刚启动）。',
+          panelResize:'调整面板宽度', panelResizeHint:'拖拽调整宽度，双击恢复默认',
+          agentCard:{ spawning:'派出中', working:'工作中', completed:'已完成', failed:'失败', spawnFailed:'派出失败', interrupted:'已中断' },
+          agentsListTitle:'子智能体', agentsEmpty:'本会话还没有派出过子智能体。', backToAgents:'返回子智能体列表',
+          agentsListSummary:(roots,total)=>roots === total ? `${total} 个` : `${roots} 个直属 · 共 ${total} 个`,
+          childAgentCount:count=>`${count} 个下级`, expandChildren:name=>`展开 ${name} 的下级`, collapseChildren:name=>`收起 ${name} 的下级`,
+          coordinationRow:action=>`协调 · ${action}`,
+          roleCards:{ scout:'调研专家', manager:'规划专家', builder:'执行专家', reviewer:'审查专家', general:'通用执行者' },
+          blockedTag:'受阻', pendingTag:'排队中',
+          agentPending:'子智能体在排队/启动中，还没有对话记录。',
+          agentNoTranscript:error=>error ? `子智能体在创建对话记录前已结束：${error}` : '子智能体已结束，但没有生成对话记录。',
+          showEarlierTranscript:count=>`显示更早的 ${count} 条执行记录`,
+          listReadFailed:'⚠️ 子智能体清单读取失败，正在自动重试…',
+          webActionHint:'多智能体会话在 Web 端只读：此操作请在桌面端完成。',
+          transcriptReadFailed:'⚠️ 对话记录读取失败，正在自动重试…',
+        },
+        uiHomeMode: { work:'工作', design:'设计', code:'代码', providerSettings:'Provider 配置' },
+        uiAttachments: { parsing:'解析中', failed:'失败', remove:name=>`移除附件 ${name}`, dropRelease:'松开即可添加', dropWebTitle:'添加任意内容', dropWebHint:'将任意文件拖放到此处，以将其添加到对话中' },
+        uiCodex: codexZh,
+        uiAcpProviders: acpProvidersZh,
+
+        uiCodexWorkspace: { changes:{added:'新增',modified:'修改',deleted:'删除',renamed:'重命名',copied:'复制',conflict:'冲突',untracked:'未跟踪',unknown:'文件'}, origins:{session:'本会话',preexisting:'会话前已有',preexisting_modified:'会话前已有 · 本会话继续修改',unknown:'来源未记录'}, addedPath:path=>`已添加 ${path}`, addPath:path=>`添加 ${path} 到对话`, added:'已添加到对话', add:'添加到对话', back:'返回工作区列表', copyPath:'复制相对路径', reveal:'在文件管理器中显示', open:'用系统应用打开', reading:'正在读取…', noDiff:'没有可显示的文本差异', tooLarge:'文件过大，未生成内置预览。', unsupported:'该文件不支持内置预览。', openHint:'可以用系统应用打开。', truncated:'内容过大，当前只显示前一部分。', resize:'调整工作区宽度', resizeHint:'拖拽调整宽度，双击恢复默认', title:'工作区', temporary:'临时工作区', refresh:'刷新工作区', close:'关闭工作区', files:'文件', changed:'更改', search:'搜索文件', noFiles:'没有匹配文件', noBaseline:'该旧会话没有创建时基线，因此无法判断更改是否由本会话产生。', branch:'分支', staged:'已暂存', noChanges:'工作区没有更改', copyContent:'复制内容', copied:'已复制', closeViewer:'关闭预览', loadFailed:'文件读取失败', resizeWidth:'调整弹窗宽度', resizeHeight:'调整弹窗高度', resizeCorner:'调整弹窗大小，双击恢复默认', fontDecrease:'减小字号', fontIncrease:'增大字号', openInNewWindow:'使用代码阅读器打开', diffSuffix:'(差异)', readerTitle:'代码阅读器', readerEmpty:'从工作区文件弹窗选择「使用代码阅读器打开」，文件会在此以标签页累积。', closeTab:'关闭标签页', noSessionChanges:'创建会话后，这里会列出本会话对项目的更改。' },
+
+        checkUpdate: '检查更新', checking: '检查中…', upToDate: '已是最新版本',
+        newVersionFound: '发现新版本', updateNotes: '更新说明',
+        downloadInstall: '下载并安装', downloading: '下载中…', installing: '安装中…',
+        downloadInstallRestart: '升级并重启',
+        cancel: '取消', cancelling: '取消中…',
+        updateComplete: '升级完成，重启后生效', restartNow: '立即重启',
+        updateInstallerStarted: '安装器已启动，应用将自动退出',
+        updateCheckFailed: '检查失败',
+        depCheckTitle: '依赖体检', depChecking: '检测中…', depRecheck: '重新检测',
+        depAllOk: '所有依赖项已就绪', depMissingSuffix: ' 项依赖缺失（对应能力将不可用）',
+        depInstalling: '安装中…', depInstallBtn: '一键安装', depGoInstall: '去安装', depInstallNote: '将提权安装缺失依赖（需联网或可用 apt 源）', depInstallNoteWindows: '将下载缺失模型；LibreOffice 通过 winget 提权安装（需联网）', depInstallNoteMac: '将通过 Homebrew 安装缺失依赖（需联网；若未安装 Homebrew，请先到 brew.sh 安装）',
+        dep_pdf: 'PDF 文本提取', dep_office_modern: 'Office 文档（docx）', dep_office_legacy: '旧版 Office / 演示与表格',
+        dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）', dep_voice_asr: '本地语音识别',
+        dep_voice_asr_model: '语音识别模型（SenseVoice q8）', dep_knowledge_embedding_model: '知识库向量模型（bge-m3）',
+        depHint_email_manual: '需手动安装：在终端执行 `sudo cpan -i Email::Outlook::Message`（Homebrew 无此 formula）。详见 https://metacpan.org/pod/Email::Outlook::Message',
+        vllmSetupTitle: '启用本地大模型', vllmSetupDesc: '检测到本机已预装本地大模型环境，是否现在启用？点击「启用」后将弹出系统授权框，授权成功后拉起推理引擎并配置为开机自启。',
+        vllmSetupEnable: '启用', vllmSetupSkip: '暂不',
+        vllmSetupRunning: '正在拉起推理引擎，首次加载模型较慢（最长约 10 分钟），请保持应用打开…',
+        vllmSetupDone: '本地大模型已就绪，重启应用即可使用。', vllmSetupFailed: '启用失败', vllmSetupRetry: '重试',
+        vllmStepAuth: '等待系统授权（请在弹窗中确认）', vllmStepWait: '等待模型加载就绪', vllmStepReady: '完成',
+        vllmDetectStarting: '本地大模型正在启动，请稍候再检测。',
+        vllmElapsed: '已等待', vllmProbing: (n) => '第 ' + n + ' 次探测',
+        vllmSetupNever: '不再提醒',
+        vllmDeclineTitle: '确认不启用本地大模型？', vllmDeclineDesc: '确认后本提示不再自动弹出。届时需自行配置云端大模型，或日后在「设置 → 模型管理 → 检测本机模型服务」中启用本地预装大模型。',
+        vllmDeclineConfirm: '确认不启用', vllmDeclineReconsider: '再想想',
+        vllmReentryOffer: '检测到本机预装了本地大模型环境，是否现在启用？',
+        feedbackTitle: '帮助与反馈', feedbackDesc: '反馈使用中的问题和建议，可附带截图或短视频。',
+        feedbackOpen: '我要反馈', feedbackDialogTitle: '我要反馈', feedbackType: '反馈类型',
+        feedbackIssue: '问题', feedbackSuggestion: '建议',
+        feedbackSubject: '标题', feedbackSubjectPh: '一句话概括（选填）',
+        feedbackBody: '说明', feedbackBodyPh: '请描述你遇到的情况、期望结果或建议',
+        feedbackAttachments: '附件', feedbackAddAttachment: '添加图片或视频', feedbackNoAttachments: '未添加附件',
+        feedbackAttachmentHint: '支持 png、jpg、jpeg、gif、webp、mp4、mov、webm；最多 5 个。',
+        feedbackPrivacy: '提交会发送你填写的内容、所选附件和非敏感环境摘要，不会自动附带聊天记录或密钥。',
+        feedbackSubmit: '提交反馈', feedbackSubmitting: '提交中…', feedbackSubmitted: '反馈已提交，感谢你的帮助。',
+        feedbackRetry: '重试提交', feedbackCloseConfirm: '反馈内容尚未提交，确定关闭吗？',
+        feedbackBodyRequired: '请填写反馈说明。', feedbackUnsupportedFile: '附件格式不支持。',
+        feedbackTooManyFiles: '最多只能上传 5 个附件。', feedbackPickUnavailable: '当前环境无法打开文件选择器。',
+        chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。', ctxUsage: '上下文',
+        chatInputLimitReached: n => `已达到 ${n} 字符上限，无法继续输入。`,
+        searchPlaceholder: 'Search chats', searchNoResults: '没有匹配的对话', searchDateAll: '全部',
+        searchBatchManage: '批量管理', searchBatchDone: '完成', searchSelectAll: '全选', searchSelectedCount: n => `已选 ${n} 项`,
+        searchArchivedEntry: '已收纳', searchArchivedEmpty: '暂无收纳的对话', searchRestore: '恢复', searchArchivedAt: d => `收纳于 ${d}`, searchPanelChats: '对话',
+        // —— 卡牌池(cp*)。注:卡牌内容(名称/简介/正文)是数据,不在 UI 词典内 ——
+        cpSubtitle: '专家能力卡组',
+        cpTagline: '加持专家卡牌,让 AI 以该领域专家的标准承接当前对话。',
+        cpTaglineTitle: '加持一张专家卡牌,将该领域的方法论、工作流与交付规范注入当前对话,使 AI 以专家级标准承接后续任务。',
+        cpTarget: '加持目标', cpBannerEquipped: '已加持', cpBannerNone: '未加持',
+        cpNoSession: '无当前对话，请先新建 / 打开一个',
+        cpNewCard: '新建卡牌', cpNewCardTitle: '手动新建一张自制卡牌',
+        cpLoading: '正在加载卡牌池…', cpLoadError: '卡牌池加载失败',
+        cpMyCards: '我的卡牌', cpDept: '部门', cpResetFilter: '重置筛选',
+        cpSearchPh: '搜专家:名称 / 描述 / 部门 (如 前端 / 增长 / 测试)',
+        cpNoMatch: '没有匹配的专家，试试放宽筛选',
+        cpBadgeEquipped: '已加持', cpBadgeUser: '自制', cpNoDesc: '(无简介)',
+        cpEdit: '✎ 编辑', cpDelQ: '删?', cpDelCardTitle: '删除这张自制卡',
+        cpUnequip: '取消', cpEquip: '加持给 AI',
+        cpShowMore: n => `显示更多 (${n})`,
+        cpCurrentChat: '当前对话',
+        cpToastDeleted: n => `已删除: ${n}`, cpToastDelFailed: '删除失败',
+        cpToastUnequipped: n => `已摘下: ${n}`,
+        cpToastEquipped: (target, n) => `已加持给「${target}」: ${n}`,
+        cpToastSaved: n => `已保存: ${n}`, cpToastCreated: n => `已创建: ${n}`,
+        cpSavedTitle: '已存入卡牌池', cpSavedDesc: n => `「${n}」已加入你的卡牌`, cpSavedLater: '暂不', cpSavedView: '去查看',
+        cpFullBody: '完整人设 (加持时一次性注入)',
+        cpBodyLoading: '加载人设正文…', cpBodyLoadFailed: '（正文加载失败）',
+        cpEquippedTap: '已加持 · 点击摘下',
+        cpAll: '全部', cpEquipShort: '加持', cpDetailUnequip: '取消加持', cpReqPh: '必填', cpMarkdownHint: '支持 Markdown', cpDelThisConfirm: '确认删除此卡',
+        cpEmptyHint: '尝试其他搜索词，或点右上角新建一张卡牌。', cpMenuEdit: '编辑',
+        cpAICreate: 'AI 造卡', bnrTitleHi: '一键生成专家卡', bnrStart: '开始造卡 →', bnrStep1: '描述需求', bnrStep2: 'AI 生成', bnrStep3: '投入卡池',
+        chooserRecommend: '推荐', chooserAIDesc: '描述需求，AI 自动生成专家卡', chooserManualTitle: '手动造卡', chooserManualDesc: '自己填写名称、人设',
+        bnrFaces: [['产品专家','产品设计'],['算法工程师','AI 模型'],['运营专家','增长运营'],['UI设计师','界面设计'],['数据分析师','数据洞察']],
+        cpEditCard: '编辑卡牌',
+        cpFieldName: '名称', cpFieldDesc: '一句话简介', cpFieldDescPh: '15 字内,卡片上显示',
+        cpFieldBody: '人设正文', cpFieldBodyHint: '(加持时注入给 AI 的完整能力档案:职责/工作流/规则/交付物)',
+        cpNamePh: '如:抖音短视频脚本专家',
+        cpBodyPh: '# 角色名\n\n你是一位...\n\n## 核心职责\n- ...\n\n## 工作流程\n1. ...\n\n## 关键规则\n- ...',
+        cpErrName: '请填写卡牌名称', cpErrBody: '请填写人设正文',
+        cpErrSave: e => `保存失败: ${e}`,
+        cpConfirmDelete: '确定删除?', cpDelete: '删除', cpCancel: '取消', cpDeleteThis: '删除此卡',
+        cpSaving: '保存中…', cpSaveEdit: '保存修改', cpCreate: '创建卡牌',
+        cpLanyardEquip: '加持卡牌', cpLanyardEquipTitle: '加持一张卡牌',
+        cpLanyardSwap: '点击换专家', cpLanyardRemove: '摘下面具',
+        cpDraftLabel: '卡牌草稿', cpDraftSaved: '已存入', cpDraftSavedTitle: '已有同名自制卡',
+        cpDraftView: '查看 / 存入', cpDraftViewTitle: '查看完整内容并存入卡牌池',
+        cpDesigning: '🃏 正在设计卡牌…',
+        cpIntroTitle: '想要一张什么专家卡？直接把需求告诉我。',
+        cpEquipBubbleSys: '系统',
+        cpEquipBubbleTitle: n => `Boss 为你带上专家卡牌加持: ${n}`,
+        cpDescLabel: '简介',
+        cpEquipBubbleNote: '完整能力档案已注入,AI 将以该专家的方法论承接后续任务。',
+        cpTargetMarkTitle: '加持目标 · 在卡牌池选的专家会注入到这个对话',
+        riGenerating: '正在生成中', riDelQ: '删除?', riDelConfirm: '确认删除', riRename: '重命名', riPin: '置顶', riUnpin: '取消置顶', riOpenFolder: '打开文件夹', riAwaitingInput: '等待你的选择',
+        // —— 聊天链路/全局 chrome ——
+        appTitle: 'PINVOU 智能助手（内测版）', winMin: '最小化', winMax: '最大化', winClose: '关闭',
+        sidebarCollapse: '收起侧边栏', sidebarExpand: '展开侧边栏',
+        skillPrefill: name => `我要用 ${name} 完成: `,
+        queuedTag: '排队中', queuedCancel: '撤销',
+        attachParsing: '解析中…', attachFailed: '失败', attachProtectedLocation: '文件位置受保护', attachAdd: '添加附件',
+        attachFromDevice: '从此设备上传', attachFromHost: '从桌面实例选择', attachUploading: pct => `上传中 ${pct}%`,
+        attachmentOpen: '使用默认应用打开', attachmentDownload: '下载附件', attachmentCopyAddress: '复制地址',
+        attachmentCopyName: '复制文件名', attachmentReveal: '在文件管理器中显示',
+        voiceStart: '语音输入', voiceStop: '结束录音', voiceCancel: '取消语音输入', voiceRetry: '重试',
+        voiceRequesting: '正在请求麦克风权限…', voiceRecording: '正在录音，再点一次结束', voiceTranscribing: '正在识别语音…',
+        voiceCompleted: '语音已写入输入框', voiceClose: '关闭语音提示', voiceGotoDeps: '去依赖体检',
+        composerTools: '工具', composerModelLabel: name => `模型：${name}`, composerConnectedServices: '已连接服务', composerConnected: '已连接', composerInstalledTools: '已接入工具', composerInstalledSkills: '技能', composerNoTools: '暂无已装工具', composerToolOn: '已启用', composerManageTools: '管理工具',
+        composerMode: '技能', composerModeTitle: '技能', composerModeNone: '暂无可用技能',
+        composerSkillAuto: '内置·自动', composerBuiltinAuto: '内置·自动', composerSkillInUse: '使用中', composerSkillSoon: '待上线', composerSkillAllDisabled: '该会话类型的所有技能已关闭，可在上方打开', composerModeControlled: '受模式控制', composerReadonlySwitch: '受模式控制，不可手动切换',
+        composerProjectSkills: '项目技能', composerProjectSkillsDesc: '扫描项目内置skills', composerProjectSkillsWarning: '项目内技能文本可能包含恶意指令（提示注入），仅对可信项目开启', composerProjectSkillsHelpTitle: '项目技能说明', composerProjectSkillsHelpBody: '开启后，绑定项目的代码会话会扫描项目内约定目录中的技能文件，模型即可加载并使用这些技能。', composerProjectSkillsHelpDirsLabel: '扫描目录（优先级从高到低）', composerProjectSkillsHelpDirs: '.agents/skills\n.pinvou/skills\nskills\n.opencode/skills\n.claude/skills\n.cursor/skills\n.codewhale/skills',
+        resend: '重新发送', editResend: '编辑并重发', messageSending: '发送中…', messageAccepted: '已发送', messageFailed: '发送失败', messageOutcomeUnknown: '发送状态待确认，请检查会话列表', selectAllMsg: '全选', copyMsg: '复制', pasteMsg: '粘贴', copied: '已复制', backToBottom: '回到底部',
+        thinkingLabel: '思考中', thinkingCall: (tool, s) => `调用 ${tool}... ${s}s`,
+        hintSlow30: isLocal => isLocal ? '本地模型生成中' : '生成中…', hintSlow120: isLocal => isLocal ? '本地模型在生成长内容,请耐心等' : '正在生成长内容,请耐心等',
+        artifactLabel: '成品', clickToOpen: '点击打开 →',
+        toolRunning: '运行中...', toolDone: '完成', toolFailed: '失败', shellCancelFailed: '取消失败',
+        tsDone: '已完成', tsInProgress: '进行中', tsPending: '待办', tsLine: '行',
+        receiptNote: '⋯ 输出较长，仅显示开头', receiptEmpty: '（输出较长，未展开）',
+        listDirCount: n => `${n} 个条目`,
+        grepHits: n => `命中 ${n} 处`, grepFiles: n => ` · 搜索 ${n} 文件`, grepTruncated: ' · 已截断',
+        shellStdoutTrunc: ' · stdout 截断',
+        todoProgress: pct => `进度 ${pct}%`,
+        planReady: '✨ 方案准备好', planEmpty: '（plan 为空）', planLabel: '📋 方案', planTodos: '✅ 细分待办',
+        planNext: '下一步：', planGo: '✅ 就这么干', planEdit: '✏️ 改改', planDrop: '🚪 算了', planRevisePrefill: '修订方案:',
+        stuckExec: tries => `🛑 AI 执行卡住了 (已自动尝试 ${tries} 次仍未真正产出文件)。你可以:`,
+        stuckPlanPre: '⚠️ AI 在 Plan 模式调用了', stuckPlanPost: '但被白名单挡掉。Plan 模式只能讨论方案,不能动手。给你两个出路:',
+        handled: '已处理',
+        stuckReplan: '📋 让 AI 重出方案', stuckSelf: '我自己来', stuckGo: '直接动手(跳过方案)',
+        // 品悟检阅卡(PinvouSummonCard/Rows/Loading)。品/悟 字形是品牌、保留;周边文案随语言。
+        pvLoadingPin: 'Pinvou 品·查错检阅', pvLoadingWu: 'Pinvou 悟·发散补全',
+        pvLoadingPinSub: '正在逐条核对、揪问题', pvLoadingWuSub: '正在比对完整性维度、发散补点',
+        pvLoadingHint: isLocal => isLocal ? '本地模型推理中，通常 5–30 秒，稍候～' : '模型推理中，通常几秒到十几秒，稍候～',
+        pvFail: '失败：', pvSkipped: '已跳过', pvPerspective: '视角', pvAlsoInvolves: '也涉及',
+        pvVerdictPass: '✓ 通过，可交付', pvFramework: '完整性框架', pvDims: '维', pvSuggest: '建议 ', pvNeedsVerify: '需核实',
+        pvActAdopt: '采纳建议', pvActAsk: '让 AI 问我', pvActVerify: '让 AI 核实', pvActConfirmed: '我确认没问题',
+        pvActModify: '让 AI 改', pvActAccept: '接受现状', pvActFill: '补上', pvActSkip: '暂不补',
+        pvHandToAi: n => `交给 AI 处理（${n} 条）`, pvSkip: '跳过', pvSkipTitle: '这次不处理，整张卡跳过',
+        pvBtnPinTitle: '品 · 查错：揪出产物的风险、遗漏、与你需求的偏差，逐条让 AI 改或你拍板接受',
+        pvBtnWuTitle: '悟 · 发散：以领域专家视角给出产物还能补的维度和新思路，挑中的一键加进去',
+        pvBtnPinLabel: '品 · 智能找错', pvBtnWuLabel: '悟 · 深度查漏',
+        cbTitle: '🛑 拦下了一条危险操作', cbWant: 'AI 想执行：', cbWhy: '为什么拦它',
+        cbNote: '这是系统自带的安全保护，一直开着。AI 不会被允许做这种危险事；要真是你想要的，得你自己手动来。',
+        cbTechShow: '技术详情', cbTechHide: '收起技术详情', cbCmdUnknown: '(命令未知)',
+        rsRoot: '想删除系统根目录——会毁掉整个系统',
+        rsHome: '想删掉你的主目录——个人文件几乎都在里面，删了找不回',
+        rsRecursive: '会递归删掉整个文件夹，连里面的东西一起没，找不回',
+        rsForce: '强制删除，不进回收站，找不回',
+        rsForkbomb: '会瞬间耗尽系统资源，导致死机',
+        rsOverwrite: '会直接覆写磁盘数据',
+        rsFormat: '会格式化磁盘，数据全没',
+        rsDefault: '这条命令可能破坏你的文件或系统',
+        uiqTitle: '品悟需要你的选择',
+        uiOtherTitle: '💬 其他(自己写)', uiOtherDesc: '如果上面选项不合适,自己说一下', uiOtherPh: '写下你想说的...', uiSubmit: '提交',
+        uiSubmitted: '✓ 已提交', uiCancelled: '✕ 已取消', uiSubmitting: '提交中…', uiSubmitFailed: e => `⚠️ 提交失败: ${e}`,
+        apEmpty: '暂无产物', apOpenDir: '打开所在目录', apOpenExt: '外部打开', apSelect: '选择左侧产物预览',
+        apLoading: '加载中...', apMissing: '文件不存在或已被删除', apReadFail: e => `读取失败: ${e}`,
+        apNoImg: '图片预览暂不支持嵌入', apNoPreview: '此类型暂不支持预览', apOpenExtBtn: '↗ 外部打开',
+        apTabList: '产出物', apTabPreview: '预览', apPreviewHint: '在「产出物」标签里选择文件查看预览',
+        apBtnOpen: '打开', apBtnLocate: '所在位置', apLocLabel: '文件位置', apMtimeLabel: '修改时间', apLastMod: '最后修改',
+        apConverting: '正在生成预览…', apConvertFail: '预览生成失败', apUnsupported: '此类型暂不支持内嵌预览，可用下方「打开」查看',
+        apKinds: { md:'Markdown', html:'HTML 文档', image:'图片', pdf:'PDF 文档', docx:'Office 文档', xlsx:'电子表格', legacy_office:'Office 文档', text:'文本文件', binary:'文件' },
+        apMdSaved: '已保存', apMdSaving: '正在保存...', apMdDirty: '未保存', apMdSaveFailed: '保存失败',
+        apMdExternalUpdateBlocked: '文件已在外部更新。当前有未保存编辑，已暂不自动覆盖。',
+        apMdExternalRemovalBlocked: '文件已在外部删除。未保存编辑已保留在当前编辑器中，请先复制内容或恢复原文件。',
+        apMdAiEdit: 'AI 编辑', apMdAiInstructionPlaceholder: '说说你想怎么修改',
+        apMdComposerReplaceConfirm: '将把 AI 编辑指令填入聊天输入框；如果当前已有草稿会被替换。继续吗？',
+        apMdAiPrompt: ({ path, selectedText, instruction, fence = '```' }) => `请根据要求修改下面这段 Markdown 产物内容。\n\n文件路径：${path}\n\n选中文本：\n${fence}markdown\n${selectedText}\n${fence}\n\n修改要求：\n${instruction}`,
+        depts: { academic:'学术', design:'设计', engineering:'工程', finance:'金融', 'game-development':'游戏', gis:'地理信息', hr:'人力', legal:'法务', marketing:'营销', 'paid-media':'投放', product:'产品', 'project-management':'项管', sales:'销售', security:'安全', 'spatial-computing':'空间计算', specialized:'专项', 'supply-chain':'供应链', support:'客服', testing:'测试', tool:'工具' }
+};
+
+// 设置详情(uiSettingsDetail)的补丁块已归位 features/settings/settings-i18n.js,随模型目录一同维护。
+dictZh.uiToolDetails.flow = {
+  incomplete:name=>`${name}接入未完成`, connected:name=>`已连接${name}`, connecting:name=>`正在接入${name}`,
+  cancel:'取消', extracting:pct=>`解压中 ${pct}%`, elapsed:seconds=>`已 ${seconds}s`, installStarting:'在线安装：正在开始…', browserOpened:'已打开浏览器登录页',
+  browserHint:'请在浏览器中扫码确认。未弹出时可重新打开。', reopen:'重新打开', qrAlt:name=>`${name}二维码`,
+  authorizeStep:'第 2 步 / 共 2 步：扫码授权', registerStep:'第 1 步 / 共 2 步：扫码注册应用',
+  scanLogin:name=>`扫码登录${name}`, scanHint:name=>`用${name} App 扫一扫 → 确认`, userCode:'页面验证码',
+  openBrowser:'在浏览器打开 ↗', connectionIncomplete:'连接未完成', close:'关闭', retry:'重试',
+};
+
+dictZh.uiToolDetails.actions = { connectedTmeet:'已连接腾讯会议', enabled:'官方技能已启用，可新建对话直接用', disconnectedTmeet:'已断开腾讯会议', connectingIma:'正在连接「腾讯 ima」', validatingIma:'正在校验 OpenAPI 凭证并启用 Skill…', connectedIma:'已连接「腾讯 ima」', imaEnabled:'IMA OpenAPI Skill 已启用，可新建对话直接使用。', imaFailed:'IMA 连接失败', disconnectedIma:'已断开「腾讯 ima」', operationFailed:'操作失败，请重试' };
+
+dictZh.uiToolDetails.tmeetSteps = [{key:'runtime',label:'准备运行时',sub:'使用应用自带 Node'},{key:'cli',label:'安装连接组件',sub:'tmeet · 首次约 40 秒'},{key:'qr',label:'扫码登录',sub:'腾讯会议授权页'}];
+
+dictZh.uiToolDetails.showRawErrors = true;
+
+// 工具商店 MCP 连接器卡片三语 overlay(tool-common.jsx tsToolsData;localizeTool 按 backendId 或占位卡 'card'+id 命中)。
+// zh 与源数据逐字一致(zh 界面零变化);configFields 只覆盖 label/helpText/placeholder,由 localizeTool 按 key 深合并。
+Object.assign(dictZh.uiToolDetails.tools, {
+  weather:{ title:'高德天气', subtitle:'高德地图实时天气与多日预报', desc:'通过高德地图 Web 服务 API 查询全国城市实时天气与未来多日预报。需要填写你自己的高德 Web 服务 API Key，密钥只写入本机系统凭据。', configTitle:'高德天气 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'去创建 Web 服务 Key', configFields:[{key:'AMAP_KEY', label:'API Key', helpText:'请选择「Web 服务」类型。', placeholder:'粘贴高德 Web 服务 Key'}], welcomeQueries:['杭州今天天气','北京这周会下雨吗','上海明天穿什么'] },
+  iwencai:{ title:'同花顺问财', subtitle:'A股行情、财务、选股、宏观、新闻', desc:'基于同花顺问财官方 API，提供 12 个金融查询工具。需要填写你自己的问财 API Key，密钥只写入本机系统凭据。', configTitle:'问财 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'打开问财 SkillHub', configFields:[{key:'IWENCAI_API_KEY', label:'API Key', helpText:'进入任一官方 Skill，在「安装方式」中复制。', placeholder:'粘贴 IWENCAI_API_KEY'}], welcomeQueries:['茅台最新股价','今天大盘怎么样','市盈率低于10的银行股','最近降息新闻'] },
+  card3:{ title:'QQ邮箱 API', subtitle:'智能邮件收发与线程提炼', desc:'提供标准的邮件收发、搜索和整理接口。结合大模型可实现自然语言读取邮件内容、汇总长线程对话、自动归档管理文件夹。' },
+  card5:{ title:'乐享文档连接器', subtitle:'企业知识文档全量检索', desc:'支持通过 API 搜索、创建和管理乐享知识库中的文档。支持批量导入 Markdown、按标签整理内容、实时订阅团队文档的更新动态。' },
+  'tencent-docs':{ title:'腾讯文档 MCP', subtitle:'官方远程 MCP：在线文档/表格/幻灯片读写与协作', latency:'云端', desc:'接入腾讯文档官方远程 MCP（通用文档 + PPT/Word/Excel 精细编辑四个服务）：以你的账号创建、读取、编辑在线文档、表格、幻灯片、思维导图、智能表格，管理知识库空间与文件，支持网页剪藏与本地文件上云；安装时自动配官方技能（场景路由 + 工具 API 参考）。需要腾讯文档个人 Token（官方页面 QQ/微信扫码获取），密钥只写入本机系统凭据。', configTitle:'连接腾讯文档', configDescription:'Token 只保存在本机系统凭据，不写入 mcp.json，也不会进入对话。', configDocLabel:'去获取腾讯文档 Token', configFields:[{key:'TENCENT_DOCS_TOKEN', label:'个人 Token', helpText:'打开授权页用 QQ 或微信扫码登录后复制 Token；请勿添加 Bearer 前缀。', placeholder:'粘贴腾讯文档个人 Token'}], welcomeQueries:['列出我最近的腾讯文档','把这份周报写成腾讯智能文档','新建一个在线表格记录收支','读取这个腾讯文档表格并分析'] },
+  'wecom-bot':{ title:'企微群机器人', subtitle:'向企业微信群推送消息与通知', latency:'云端', desc:'接入企业微信官方群机器人 webhook（消息推送 API）：让 AI 向绑定的群推送文本（可@成员）、Markdown、图文、图片和文件。需要填写你自己的群机器人 Webhook Key，密钥只写入本机系统凭据。数据经企业微信服务器（可选联网功能，opt-in）。', configTitle:'企微群机器人 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocUrl:'https://developer.work.weixin.qq.com/document/path/91770', configDocLabel:'查看官方群机器人文档', configFields:[{key:'WECOM_BOT_KEY', label:'Webhook Key', helpText:'企业微信群里右上角「…」→ 群机器人 → 添加机器人，复制 webhook 地址即可。', placeholder:'粘贴群机器人 key 或完整 webhook 地址'}], welcomeQueries:['往群里发一条今日天气播报','把这份周报整理成 Markdown 发到企微群','@所有人：下午三点例会别忘了','把这个文件发到企微群'] },
+  feishu:{ title:'飞书（Lark）', subtitle:'以你本人身份操作飞书文档/日历/表格/消息', type:'CLI + 官方技能', latency:'云端', desc:'接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）与电子表格、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。', welcomeQueries:['读飞书文档帮我做一份 PPT','把飞书文档整理成摘要','查我今天的飞书日历','看看我飞书里的待办任务'] },
+  wecom:{ title:'企业微信', subtitle:'以你本人身份操作企微消息/邮件/文档/会议/日程', type:'CLI + 官方技能', latency:'云端', desc:'接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、收发邮件、读写文档/智能表格/在线表格/智能文档、管理微盘文件、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。', welcomeQueries:['把这段内容写成企微智能文档','读一下我企微某篇文档的内容','在企微智能表格里新建一张子表','查一下企微智能表格里的数据'] },
+  dingtalk:{ title:'钉钉', subtitle:'以你本人身份操作钉钉文档/日历/表格/消息', type:'CLI + 官方技能', latency:'云端', desc:'接入钉钉官方 DingTalk Workspace CLI（dws，Apache-2.0）+ 官方技能：让 AI 以你本人身份读写钉钉文档、查改日历、操作 AI 表格/在线表格、收发群聊消息、处理待办/审批/日志/邮箱等。点「连接」用钉钉 App 扫码授权，全程不填 key。', welcomeQueries:['读一下我的钉钉文档','查我今天的钉钉日程','在钉钉 AI 表格里查数据','看看我的钉钉待办'] },
+  card11:{ title:'TAPD 敏捷研发', subtitle:'缺陷与迭代的自动化追踪', desc:'研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。' },
+  card12:{ title:'CNB 云原生管线', subtitle:'代码仓库与 CI/CD 调度', desc:'将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。' },
+  qcc:{ title:'企查查', subtitle:'企业工商数据授权查询', latency:'云端', desc:'接入企查查智能体数据平台 qcc-company 远程 MCP。点「连接」后会打开浏览器进行企查查账号 OAuth 授权，全程不填写 API Key。', welcomeQueries:['查一下华为的工商信息','腾讯的工商登记信息','比亚迪有哪些对外投资','阿里巴巴的股东结构'] },
+  'patsnap-search':{ title:'智慧芽专利&文献', subtitle:'全球专利与论文融合检索，支持公开号详情获取', latency:'云端', desc:'接入智慧芽远程 MCP，在全球专利数据库和文献库中进行融合检索，支持自然语言、语义搜索、关键词检索和多维过滤，并可按专利公开号或结果 URL 拉取 Markdown 详情。需要填写智慧芽 API Key，密钥只写入本机系统凭据，mcp.json 仅保存环境变量占位符。', configTitle:'填写智慧芽 API Key', configDescription:'API Key 仅存储在本机系统凭据中，不会明文写入 mcp.json；连接智慧芽服务时通过 Authorization 请求头发送。', configDocLabel:'查看 API Key 获取说明', configFields:[{key:'PATSNAP_API_KEY', label:'智慧芽 API Key', helpText:'请从智慧芽开放平台或企业管理员提供的 MCP/API 凭证中获取。', placeholder:'粘贴你的智慧芽 API Key'}], welcomeQueries:['检索固态电池电解质相关专利和论文','查找近五年 CRISPR 递送系统核心专利和文献','获取公开号 CN109123456A 的专利详情','分析宁德时代钠离子电池方向专利布局'] },
+  'canva-mcp':{ title:'Canva 可画', subtitle:'海报、演示文稿、封面与品牌模板设计', latency:'云端', desc:'接入 Canva 可画远程 MCP。支持通过自然语言生成和编辑海报、演示文稿、小红书封面、品牌模板等设计内容；点「连接」后会打开浏览器进行 Canva 可画账号授权，全程不填写 API Key。设计指令、素材、文件夹和品牌模板相关内容会发送到 Canva 可画远程 MCP 服务。', welcomeQueries:['帮我生成一张新品发布海报','做一份三页产品介绍演示文稿','设计一张小红书封面','用品牌模板生成活动宣传图'] },
+  obsidian:{ title:'Obsidian 知识库', subtitle:'检索并管理本机 Obsidian 笔记，读写你的个人知识', desc:'把你本机的 Obsidian 笔记库（vault）接入大模型。支持全文检索、读取、新建、编辑、改名（自动修双链）与删除——让 AI 基于并维护你自己沉淀的知识。自动识别当前打开的库，无需手动配置；笔记不出本机、模型也在本机，知识与算力全链路不出域。', welcomeQueries:['帮我搜一下我的笔记','帮我新建一篇笔记记录今天的想法','我的知识库有哪些文档？','总结一下我的笔记'] },
+  'yuandian-mcp':{ title:'华宇元典法律数据', subtitle:'法律法规、案例文书与企业司法风险查询', latency:'云端', desc:'接入华宇元典开放平台远程 MCP。支持法律法规、裁判案例、企业司法风险等法律数据检索；点「连接」后会打开浏览器进行元典账号授权，全程不填写 API Key。', welcomeQueries:['检索一下劳动合同解除相关案例','查一下公司股权责任相关法规','帮我分析企业司法风险','找一下最近的裁判观点'] },
+  pptx:{ title:'PPT 生成', subtitle:'本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', latency:'本地', desc:'说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', welcomeQueries:['做个 Q2 季度汇报 PPT','帮我做一份产品介绍 PPT','做个项目方案演示','做个公司介绍 PPT'] },
+  gongwen:{ title:'公文写作', subtitle:'党政机关公文直出 GB/T 9704 合规 .docx', latency:'本地', desc:'说“写个通知 / 起草意见”，AI 按文种结构与固定话术写好内容，渲染器套党政机关公文国标格式（方正小标宋标题、仿宋_GB2312 正文、国标页边距、红头与红色分隔线）直出 .docx，全程本地、数据不出机。配合「党政机关公文写作」技能效果最佳。首次安装自动下载 python-docx 依赖（需联网）。', welcomeQueries:['起草一份关于印发管理办法的通知','写一份加强某项工作的实施意见','拟一份会议通知','写一份情况报告'] },
+});
+
+Object.assign(dictZh.uiCodexWorkspace, { showRawErrors:true, operationFailed:'工作区操作失败，请重试' });
+
+
+// UI 语言 ↔ 后端 UserPrefs language(BCP 47 tag)映射。加语言时三处同步:
+// 这里 / dict / Rust prefs.rs Language 枚举
+const LANG_TO_TAG = { zh: 'zh-Hans', en: 'en', ja: 'ja' };
+const TAG_TO_LANG = { 'zh-Hans': 'zh', 'en': 'en', 'ja': 'ja' };
+function languageFromLocaleTags(localeTags, fallback = 'en') {
+  const locales = Array.isArray(localeTags) ? localeTags : [localeTags];
+  const locale = locales.find((value) => typeof value === 'string' && value.trim());
+  if (!locale) return fallback;
+  const primary = locale.trim().split(/[-_.@:]/, 1)[0].toLowerCase();
+  if (primary === 'zh') return 'zh';
+  if (primary === 'ja') return 'ja';
+  if (primary === 'en') return 'en';
+  // 当前只提供中、英、日；系统首选语言不受支持时使用英文。
+  return 'en';
+}
+// 首帧系统语言探测:主窗口与各辅助窗口(桌宠/阅读器/分离窗口)在落盘
+// settings 到达前共用;之后仍以 get_settings/bs.settings 的显式配置为准。
+function initialSystemLanguage() {
+  if (typeof navigator === 'undefined') return 'en';
+  return languageFromLocaleTags(
+    navigator.languages?.length ? navigator.languages : navigator.language,
+  );
+}
+const SEARCH_KEY_PROVIDERS = ['metaso', 'bocha', 'baidu', 'tavily'];
+
+/* ==========================================
+   TauriBridge hook
+   ========================================== */
+
+dictZh.uiComponents = { openNavigation:'打开导航' };
+
+
+// tool-renderers.jsx(时间线工具卡状态、UserInputCard「其他」、PlanStuckCard 未知工具名兜底)。
+dictZh.uiToolRender = {
+  running: '进行中', done: '完成', failed: '失败',
+  other: '其他', toolUnknown: '(未知)',
+};
+
+
+dictZh.uiChatView = {
+  comingSoon:'即将上线',
+  placeholderDesignAdjust:'描述你想怎么调整选中的元素',
+  placeholderDesignDataViz:'粘贴数据或描述指标，生成可视化看板',
+  placeholderDesignPoster:'描述你想生成或调整的视觉海报',
+  placeholderPersonalWorkbench:'选择模板后可编辑完整提示词',
+  placeholderWorkDocument:'描述公文主题、文种、收发单位和关键要求',
+  agentName:'品悟',
+  designEditGroup:'编辑',
+  designElementFallback:'元素',
+  designAdjustSelected:(label, raw)=>`请针对当前选中的 ${label} 调整：${raw}`,
+};
+
+
+dictZh.uiMainApp = { petSummon:'召唤公仔', closeNavigation:'关闭导航', superPermFailed:'无法开启高级执行权限', searchTestUnavailable:'当前环境不可测试搜索源', searchSaveFailed:'搜索配置保存失败，请重试', petSessionMissing:'目标会话不存在', petTaskStartFailed:'任务未能启动', detachedSessionMissing:'目标 Coding 会话不存在或已被删除', detachedSessionLoadFailed:'Coding 会话加载失败，请关闭窗口后重试', panelLoadFailed:err=>`面板加载失败:${err}`, viewLoadFailed:'页面加载失败，请检查网络后重试', viewReload:'重新加载' };
+
+
+// tool-common.jsx(产物卡 aria/alt、diff 展开收起、天气卡、股票卡、工具商店动作按钮)。
+dictZh.uiToolCommon = {
+  open: '打开', coverAlt: '封面',
+  pinAriaLabel: '智能找错', wuAriaLabel: '深度查漏',
+  diffCollapse: '收起', diffExpand: '展开完整 diff', diffCollapseAria: '收起 diff',
+  today: '今天', tomorrow: '明天', dayAfterTomorrow: '后天', dayN: n => `第${n}天`,
+  weatherFallback: '天气', currentCity: '当前城市',
+  forecastToday: '今日预测', forecastTomorrow: '明日预测',
+  humidity: '湿度', wind: '风向', windLevel: w => `${w}级`,
+  tempHigh: '最高', tempLow: '最低',
+  stockOpen: '今开', stockHigh: '最高', stockLow: '最低',
+  builtinEnabled: '内置 · 受模式控制', comingSoon: '即将上线',
+  disconnect: '断开', uninstall: '卸载', reauthorize: '重新授权',
+  connect: '连接', configure: '配置', install: '安装', update: '更新',
+  repair: '修复',
+};
+
+
+dictZh.uiChatScenes = {
+  documentWriting: {
+label: '公文写作',
+preparing: '正在准备公文写作能力...',
+ready: '已启用公文写作，开始生成',
+failure: '公文写作能力准备失败，请稍后重试。',
+  },
+  dataVisualization: {
+label: '数据可视化',
+preparing: '正在准备数据可视化能力...',
+ready: '已启用数据可视化，开始生成',
+failure: '数据可视化能力准备失败，请稍后重试。',
+  },
+  missingCapabilities: (ids) => `缺少能力：${ids}`,
+};
+
+
+// features/scheduled 追加词条（uiScheduled 已存在，合并而非覆盖）
+Object.assign(dictZh.uiScheduled, {
+  createFromChat: 'AI 聊天创建',
+  chooseHour: '选择小时',
+  chooseMinute: '选择分钟',
+  daySeparator: '、',
+  previewTasks: {
+'preview-daily-brief': { name: '每日早报', scheduleLabel: '每天 08:00', prompt: '整理过去 24 小时的重要新闻和行业动态，注明来源和链接；补充公司公告和重点风险。' },
+'preview-follow-up': { name: '事项督办', scheduleLabel: '工作日 09:00', prompt: '整理逾期与临期事项，突出风险、负责人和建议下一步。' },
+'preview-weekly-report': { name: '销售线索周报', scheduleLabel: '星期五 16:00', prompt: '汇总本周线索新增、跟进状态、转化风险和下周重点客户。' },
+  },
+  previewRunError: '外部新闻源请求超时',
+});
+
+
+// features/knowledge 新增命名空间
+dictZh.uiKnowledge = {
+  downloadOutput: '下载产物',
+  filePathLabel: '文件路径：',
+};
+
+
+// features/conversation 追加词条（uiConversation 已存在，合并而非覆盖）
+Object.assign(dictZh.uiConversation, {
+  callingTool: name => `正在调用 ${name}`,
+  inputPlaceholder: '请输入',
+  otherAnswer: '其他',
+  otherPlaceholder: '其他',
+});
+
+
+// pet-state.js 活动卡正文与标题兜底(PetWindow 经 petCopy 注入,键名与 copy 一一对应)。
+Object.assign(dictZh.uiPet, {
+  activityThinking: '正在思考…',
+  activityProcessing: '正在处理…',
+  activityUsingTool: n => `正在使用 ${n}`,
+  activityCallingTool: '正在调用工具…',
+  activityContinuing: '继续处理…',
+  activityInputNeeded: '需要你的输入',
+  activityTaskFailed: '任务遇到问题',
+  activityTaskDone: '任务已完成',
+  activityStartFailed: '任务未能启动',
+  activityTitleFallback: '当前任务',
+  loadFailedRetry: (a, b) => `${a}，${b}`,
+});
+
+
+dictZh.uiPlatformMisc = {
+  htmlLang: 'zh-CN',
+  appTitle: 'PINVOU 智能助手（内测版）',
+  petTitle: 'PINVOU 桌伴公仔',
+  hostFilePicker: {
+pickFolderTitle: '选择桌面端文件夹', pickFileTitle: '选择桌面端文件',
+close: '关闭', goUp: '上一级', loadingPath: '正在读取桌面端目录…', loading: '正在读取…',
+cancel: '取消', chooseThisFolder: '选择此文件夹', choose: '选择',
+currentFolder: path => `当前文件夹：${path}`, selectedCount: n => `已选择 ${n} 项`,
+thisComputer: '此电脑', home: '用户目录', emptyFolder: '此目录中没有可选内容',
+loadFailed: err => `读取失败：${err}`, workspaceNotAuthorized: '请先在桌面端允许远程访问本机目录', alreadyOpen: '已有文件选择器正在打开',
+  },
+  // platform/web/bootstrap.js 的 invoke 拒绝错误文案,由 React 入口挂到
+  // window.PinvouWebClientStrings(纯脚本无法 import ES module,bootstrap 内置中文兜底)。
+  webClientErrors: {
+stateNotReady: '远程控制状态尚未就绪，无法处理桌面端事件',
+unnegotiatedEvent: event => `桌面端发送了未协商的远程控制事件：${event}`,
+rpcFailed: '远程调用失败',
+incompatibleDesktop: '桌面端版本不支持当前远程控制功能，请先更新桌面端',
+unsupportedCommand: command => `当前桌面端尚不支持远程控制功能：${command}`,
+commandNotAllowed: command => `远程控制不允许调用 ${command}`,
+invalidRequestId: '远程调用请求 ID 无效',
+requestInFlight: '远程调用请求正在进行中',
+invokeTimeout: command => `远程调用超时：${command}`,
+  },
+};
+
+
+// features/settings SettingsView 漏网文案（记忆中心卡片、Composer 技能/服务菜单、模型表单零散兜底）
+dictZh.uiSettingsView = {
+  profileCallName: name => `称呼：${name}`,
+  profileAssistantAlias: alias => `助手昵称：${alias}`,
+  memoryTabRecent: '近期记忆',
+  memoryDeleteConfirm: '删除后这条记忆不会再被使用，确定删除吗？',
+  memoryTimeSaved: '已记住',
+  memoryTimeToday: '今天更新',
+  memoryTimeDaysAgo: n => `${n} 天前更新`,
+  memoryTimeDate: (month, day) => `${month}月${day}日更新`,
+  memoryConfidenceAuto: '自动整理',
+  memoryConfidenceHigh: '置信度高',
+  memoryConfidenceMid: '置信度中',
+  memoryConfidenceLow: '置信度低',
+  memorySource: '来源：对话识别',
+  memoryMoreActions: '更多操作',
+  memoryArchive: '归档',
+  memoryCardTitle: '记忆',
+  memoryEnabled: '已启用',
+  memoryDisabled: '已关闭',
+  memoryLoading: '正在读取记忆',
+  memorySummaryWithProfile: (profile, total) => `${profile} · ${total} 条有效记忆。`,
+  memorySummary: total => `PINVOU 会记住你的偏好、工作背景和近期事项，让后续对话更容易接上上下文。已记录 ${total} 条有效记忆。`,
+  memoryOffDesc: '开启后，PINVOU 可以记住你的称呼、稳定偏好、工作背景和近期事项，减少重复说明。',
+  memoryTurnOff: '关闭记忆',
+  memoryTurnOn: '开启记忆',
+  memoryViewManage: '查看和管理',
+  memoryCenterTitle: '记忆中心',
+  memoryCenterDesc: '记忆由 AI 自动整理，非必要无需手动管理。',
+  memorySyncing: '同步中',
+  memorySync: '同步记忆',
+  memoryOffNotice: '开启记忆后，PINVOU 会在对话中使用这些信息，并自动整理新的长期记忆与近期记忆。',
+  memoryLongTermTabDesc: '称呼、长期偏好与工作背景',
+  memoryRecentTabDesc: '当前关注与近期动态',
+  memoryItemCount: n => `${n} 条`,
+  memorySearchPlaceholder: '搜索记忆',
+  memoryCallNameLabel: '助手称呼我',
+  memoryCallNamePlaceholder: '例如：欣哥',
+  memoryAssistantAliasLabel: '我称呼助手',
+  memoryAssistantAliasPlaceholder: '例如：小猪',
+  memoryNoMatchLongTerm: '没有匹配的长期记忆。',
+  memoryEmptyLongTerm: '暂无长期偏好或工作背景。',
+  memoryLongTermHint: '长期记忆会长期保留，用来理解你的稳定偏好、工作背景和称呼习惯。它不会自动过期，你可以随时编辑或删除。',
+  memoryNoMatchRecent: '没有匹配的近期记忆。',
+  memoryEmptyRecent: '暂无当前关注或近期动态。',
+  memoryRecentHint: '近期记忆会记录最近正在推进和刚完成的事情，用来帮助 PINVOU 接上上下文。它会随时间自动淡出，你也可以手动归档或删除。',
+  memoryEditDesc: '修改后会立即影响后续记忆注入。',
+  visualDesignSkillName: '视觉设计',
+  visualDesignSkillDesc: '设计系统直出网页/banner/海报/简历…',
+  serviceFeishu: '飞书（Lark）',
+  serviceWecom: '企业微信',
+  serviceDingtalk: '钉钉',
+  serviceTmeet: '腾讯会议',
+  detectFailed: '检测失败',
+  modelLabel: '模型',
+  codingPlanModelIdPlaceholder: '例如 glm-5',
+  searchProviderMetaso: '秘塔',
+  searchProviderBocha: '博查',
+  searchProviderBaidu: '百度',
+};
+
+
+dictZh.uiArtifacts = {
+  zoomFit:'适应窗口', zoomActual:'原始大小', zoomCustom:'自定义', zoomOut:'缩小画布', zoomIn:'放大画布',
+  switchArtifact:'切换产物', currentMtime:time=>`当前修改时间 ${time}`,
+  closePreviewAria:'关闭产物预览', closePreviewTitle:'关闭预览',
+  fsExitEdit:'退出编辑模式并回到右侧预览', fsEnterEdit:'进入编辑模式：放大预览并编辑选中元素',
+  fsExitFullBack:'退出全屏并回到右侧预览', fsEnterPreview:'全屏显示产物预览', fsExit:'退出全屏', fsEnter:'全屏显示',
+  fsExitEditShort:'退出编辑', fsEditMode:'编辑模式',
+  aiRefreshed:'当前产物已刷新', aiCanContinue:'可以继续补充描述', aiCallingTool:name=>`正在调用工具 ${name}`,
+  aiThinking:'正在思考', aiWaitingModel:'正在等待模型返回', aiSent:'已发送，等待处理',
+  aiUpdated:'已更新', aiNoUpdate:'未更新', aiStopped:'已停止', aiAdjusting:suffix=>`调整中${suffix}`,
+  aiPhElement:'描述你想怎么调整已选中的元素', aiPhDesign:'描述你想怎么调整这张设计',
+  send:'发送', previewRefreshed:'预览已刷新', canContinue:'可继续描述', stop:'停止',
+  diTypes:{ element:'元素', graphic:'图形', button:'按钮', link:'链接', input:'输入控件', text:'文字', card:'卡片', container:'容器' },
+  diNoSelection:'未选择', diSelected:type=>`已选中${type}`,
+  diFontSystem:'系统默认', diFontCustom:'自定义字体', diFont:'字体',
+  diPickColor:color=>`选择颜色 ${color}`, diClear:'清除', diDone:'完成',
+  diChangeFallback:'设计变更', diSelectHint:'请选择预览中的元素', diCollapseDetails:'收起详情', diViewDetails:'查看详情',
+  diClearChanges:'清空修改', diNoLocation:'无定位信息',
+  diSecCommon:'常用编辑', diText:'文案', diFontSize:'字号', diFontWeight:'字重', diAlign:'对齐',
+  diOptDefault:'默认', diAlignLeft:'左对齐', diOptCenter:'居中', diAlignRight:'右对齐', diAlignJustify:'两端对齐', diTextColor:'文字颜色',
+  diSecAppearance:'外观', diBgColor:'背景颜色', diBorderColor:'边框色', diRadius:'圆角', diOpacity:'透明度', diBgImage:'背景图',
+  diSecSize:'尺寸', diWidth:'宽', diHeight:'高',
+  diSecAdvanced:'高级样式', diCollapse:'收起', diExpand:'展开',
+  diLineHeight:'行高', diLetterSpacing:'字距', diBgSize:'背景尺寸', diBgPosition:'背景位置',
+  diRepeat:'重复', diRepeatNone:'不重复', diRepeatX:'横向重复', diRepeatY:'纵向重复',
+  diMinWidth:'最小宽', diMaxWidth:'最大宽', diMinHeight:'最小高', diMaxHeight:'最大高',
+  diMarginTop:'外边距上', diMarginRight:'外边距右', diMarginBottom:'外边距下', diMarginLeft:'外边距左',
+  diPaddingTop:'内边距上', diPaddingRight:'内边距右', diPaddingBottom:'内边距下', diPaddingLeft:'内边距左',
+  diGap:'间距', diRowGap:'行间距', diColumnGap:'列间距',
+  diDisplay:'显示', diDisplayBlock:'块级', diDisplayFlex:'弹性', diDisplayGrid:'网格', diDisplayInline:'行内', diDisplayInlineBlock:'行内块', diOptHidden:'隐藏',
+  diDirection:'方向', diDirRow:'横向', diDirRowReverse:'横向反转', diDirColumn:'纵向', diDirColumnReverse:'纵向反转',
+  diJustify:'主轴', diOptStart:'起点', diOptEnd:'终点', diJustifyBetween:'两端分布', diJustifyAround:'环绕分布',
+  diAlignItems:'交叉轴', diStretch:'拉伸',
+  diOverflow:'溢出', diOptVisible:'可见', diOverflowClip:'裁剪', diOverflowScroll:'滚动', diOptAuto:'自动',
+  diPosition:'定位', diPosRelative:'相对', diPosAbsolute:'绝对', diPosFixed:'固定', diPosSticky:'吸附',
+  diTop:'上', diRight:'右', diBottom:'下', diLeft:'左', diZIndex:'层级',
+  diVisibility:'可见性', diVisCollapse:'折叠', diCursor:'光标',
+  diChangesLog:n=>`设计变更 ${n}`, diEmpty:'空',
+};
+
+dictZh.uiCodexView = { ended:'已结束', stepsFailed:'执行步骤包含失败', processing:'正在处理', codexTool:'Codex 工具' };
+
+Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`, deviceUploadTooLarge:name=>`${name} 超过 20 MB 附件上限`, deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试` });
+
+
+// uiToolStore 词条补充（ToolStoreView / oauth-marketplace-logic）：命名空间已在 dict 主体定义，这里增量合并。
+Object.assign(dictZh.uiToolStore, {
+  toolNames:{ feishu:'飞书', wecom:'企业微信', dingtalk:'钉钉', tmeet:'腾讯会议', ima:'腾讯 ima' },
+  connected:'已连接', installed:'已安装', builtin:'内置', internalDirect:'内网直连', keyRequired:'需密钥', localLatency:'本地',
+  cancel:'取消', ok:'知道了', newChat:'新建会话',
+  installHint:'新工具需要在新会话中生效', removeHint:'已移除，新会话将不再加载该工具', firstUseOnlineInstall:'首次连接会联网下载并校验官方 CLI',
+  configTitle:name=>`配置「${name}」`, configConnect:'连接', configInstall:'安装', configDocDefault:'查看配置说明', configHelpFeishu:'不会建应用？去飞书开放平台建一个 →',
+  obsidianGuide:{
+not_installed:{ title:'需要先安装 Obsidian', body:'「Obsidian 知识库」需配合 Obsidian 使用。检测到你尚未安装，安装并创建一个库后即可连接。', primary:'下载 Obsidian', retry:'我已安装，重新检测' },
+no_vault:{ title:'还没有笔记库', body:'已检测到 Obsidian，但你还没创建过笔记库。请在 Obsidian 里新建一个库后再连接。', primary:null, retry:'我已新建，重新检测' },
+vault_missing:{ title:'库文件夹不存在', body:'上次的笔记库文件夹找不到了。请在 Obsidian 重新打开，或新建一个库后再连接。', primary:null, retry:'重新检测' },
+desktopHint:'请先在桌面端安装 Obsidian 并创建笔记库，然后在这里重新检测。',
+  },
+  connectedTool:name=>`已连接${name}`, disconnectedTool:name=>`已断开${name}`,
+  connectedQuoted:name=>`已连接「${name}」`, installedQuoted:name=>`已安装「${name}」`, uninstalledQuoted:name=>`已卸载「${name}」`,
+  connectFailed:name=>`${name}连接失败`, connectTitle:name=>`连接${name}`,
+  connectedBanner:name=>`已连接${name} · 官方技能已启用，可直接对它下指令`,
+  connectedBannerIma:'已连接腾讯 ima · OpenAPI Skill 已启用，可直接对它下指令',
+  uploadedSkill:'用户上传的技能',
+  oauthBrowserTimeout:'未收到浏览器授权回调，请确认是否已完成授权，或稍后重新授权。',
+  stoppingAuth:'正在停止浏览器授权等待…', authWaitCancelled:'已取消等待浏览器授权，可稍后重新授权。', cancelFailed:'取消失败，可重试；授权等待仍在继续。',
+  oauthConfigError:'OAuth 配置错误', oauthNoServerName:name=>`「${name}」未声明 MCP server name，无法发起授权。`,
+  connectingTool:name=>`正在连接「${name}」`, installingTool:name=>`正在安装「${name}」`,
+  writingMcpConfig:'正在写入 MCP 配置…', validatingApiKey:'正在校验 API Key 与远程工具…', downloadingDeps:'首次安装需下载依赖，请耐心等待…',
+  waitingBrowserAuth:'正在等待浏览器授权完成。', browserOpenedWaiting:'已打开浏览器，正在等待授权…',
+  operationFailedWith:e=>`操作失败：${e}`,
+  importingSkill:'正在导入插件包…', validatingSkillPackage:'校验并解压中', skillImported:'插件包已导入', importFailedWith:e=>`导入失败：${e}`,
+  uploadSkillPackage:'上传插件包', dropSkillZipHere:'松开以导入插件包 (zip) 或技能文件 (.md)', zipTooLarge:mb=>`文件超过 ${mb}MiB 限制，无法导入`, visibilityLoadFailed:'读取可见性配置失败，请重试（未修改已保存的配置）',
+  updatedQuoted:name=>`已更新「${name}」`, updateSkillTitle:name=>`更新「${name}」`,
+  updateSkillOverwriteHint:'将覆盖为商店最新版本，你对该技能做的本地修改会丢失。',
+  notConnectedYet:name=>`尚未连接「${name}」。`,
+  loginFrameTitle:name=>`${name}登录`, loginPageLoadFailed:'登录页加载失败，请用下方浏览器授权', waitingAuth:'等待授权中…', openInBrowser:'在浏览器打开',
+  mini:{ scan:'待扫码', install:pct=>`装 ${pct}%`, extract:pct=>`解压 ${pct}%`, connecting:'接入中', title:'点开查看进度' },
+  feishuSteps:[
+{ key:'runtime', label:'准备运行时', sub:'使用应用自带 Node' },
+{ key:'cli', label:'安装连接组件', sub:'lark-cli · 首次约 40 秒' },
+{ key:'connect', label:'连接并授权', sub:'创建应用身份' },
+{ key:'qr', label:'扫码登录', sub:'飞书 App 扫一扫' },
+  ],
+  wecomSteps:[
+{ key:'runtime', label:'准备运行时', sub:'使用应用自带 Node' },
+{ key:'cli', label:'安装连接组件', sub:'wecom-cli · 首次约 40 秒' },
+{ key:'qr', label:'扫码登录', sub:'企业微信 App 扫一扫' },
+  ],
+  dingtalkSteps:[
+{ key:'runtime', label:'准备运行时', sub:'使用应用自带 Node' },
+{ key:'cli', label:'安装连接组件', sub:'dws · 首次约 40 秒' },
+{ key:'qr', label:'扫码登录', sub:'钉钉 App 扫一扫' },
+  ],
+  connFailed:'连接失败', dingtalkSkillsFailed:err=>`钉钉已授权，但技能启用失败：${err}`, tmeetAuthIncomplete:'腾讯会议授权未完成，请完成浏览器登录后重试',
+  emptyNoMatch:'未找到匹配的工具', emptyNoInstalled:'还没有已安装的工具', emptyNoTools:'未检索到工具',
+  emptyNoMatchHint:'换个关键词试试，或检查一下拼写。', emptyNoInstalledHint:'去商店安装连接器或技能后，会出现在这里。', emptyNoInstalledHintReadonly:'桌面端尚未安装工具或技能。',
+  emptyNoToolsHint:'请尝试修改搜索词或查阅 API 开发文档。',
+  detailInterfaceType:'接口类型', detailOfficialSupport:'官方支持', detailVersion:'当前版本', detailStableRelease:'稳定版发布', detailLatency:'平均延迟', detailGlobalAccel:'全球加速',
+  aboutTitle:'关于此能力',
+  oauthOutcome:{
+connectedTitle:name=>`已连接「${name}」`, timeoutTitle:name=>`${name}授权超时`, cancelledTitle:name=>`${name}授权已取消`,
+serviceErrorTitle:name=>`${name}授权服务错误`, failedTitle:name=>`${name}授权失败`,
+tokenMissing:'授权流程返回成功，但本地未检测到 OAuth token，当前不会启用该工具。请重新授权。', incomplete:'授权未完成，请重新连接。',
+  },
+});
+
+
+// ChatView.jsx(后端持久化的记忆状态值在 UI 边界的三语映射)。
+Object.assign(dictZh.uiChatView, { memStatusRemembered:'已记住', memStatusArchived:'已归档', memStatusDeleted:'已删除', memStatusArchivedNotice:'记忆已归档', memStatusDeletedNotice:'记忆已删除' });
+
+
+// tool-common.jsx 内容数据（tsSkillsData / tsCategories）的三语 overlay：
+// ToolStoreView 渲染处按 localizeTool() 同款模式消费（localizeSkill / localizeCategory），数据文件本身不改。
+Object.assign(dictZh.uiToolStore, { storeData: {
+  skills: {
+'government-writing': { title:'党政机关公文写作', subtitle:'通知/意见等法定文种，套话术、层级序号、自检', desc:'撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合插件中心的「公文写作」插件即可直出 GB/T 9704 合规 .docx。', latency:'本地' },
+pptx: { title:'PPT 生成', subtitle:'本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', desc:'本地直出可编辑 PowerPoint:套主题模板、真图表、带封面,输入主题即可快速生成结构化演示文稿。', latency:'本地' },
+visualizer: { title:'数据分析可视化', subtitle:'Chart.js 仪表盘 / 图表分析 / HTML 可视化', desc:'将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。', latency:'本地' },
+'package-author': { title:'插件包标准化', subtitle:'把技能/MCP/函数整理成可上传的标准插件包', desc:'把散乱的技能（SKILL.md）、MCP 服务或它们的组合整理成 Pinvou 商店可导入的标准插件包：补 plugin.json、补 mcp/manifest.json、补 SKILL.md frontmatter、生成图标、校验命名与布局，最后产出目录或 zip。', latency:'本地' },
+'skill-author': { title:'技能创建', subtitle:'用户描述一句话，生成规范的 SKILL.md 技能', desc:'把用户的一句话描述变成一个可用的技能（SKILL.md 目录）：生成 name/description/正文指令，校验命名与结构；需要交付成可上传插件包时，可继续按「插件包标准化」规则补 plugin.json、图标并导出标准包，最后询问用户是否安装。', latency:'本地' },
+s5: { title:'视觉设计', subtitle:'设计系统直出网页 / banner / 海报 / 简历', desc:'内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', version:'内置', latency:'本地' },
+  },
+  categories: { all:'全部', collab:'沟通协作', docs:'文档知识', dev:'研发', finance:'金融数据', life:'生活实用', skill:'技能' },
+} });
+
+
+// 工具商店列表视图双维度分组(按类型/按业务 + 分组筛选)词条,三语齐全。
+Object.assign(dictZh.uiToolStore, {
+  groupByType:'按类型', groupByBusiness:'按业务',
+  typeGroups:{ bundle:'插件包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook', upcoming:'即将上线' },
+});
+
+
+Object.assign(dictZh, {
+  remoteKbAddContent:'添加', remoteKbUploadFolder:'添加文件夹',
+  remoteKbDocumentTrashConfirm:'将“{name}”移入回收站？', remoteKbDocumentTrashHint:'可在“显示回收站”中恢复。', remoteKbDocumentTrashed:'已移入回收站', remoteKbDocumentRestored:'文档已恢复',
+  remoteKbUploadExisting:'已存在', remoteKbUploadExistingIndexing:'已存在，处理中', remoteKbUploadExistingStillIndexing:'已存在，仍在处理', remoteKbUploadExistingFailed:'已存在，处理失败',
+  remoteKbUploadSuccess:'已上传 {count}', remoteKbUploadExistingSummary:'已存在 {count}', remoteKbUploadProcessingSummary:'处理中 {count}', remoteKbUploadFailedSummary:'失败 {count}',
+  remoteKbFolderSummary:'找到 {count} 份文档', remoteKbFolderSkipped:'已跳过 {count} 个', remoteKbFolderEmpty:'文件夹中没有可导入的文档', remoteKbFolderLimitExceeded:'单次最多从文件夹导入 10000 份文档',
+});
+
+// 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，
+// personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。
+dictZh.uiSettingsDetail.memoryLoadFailed = '记忆资料加载失败，请重试';
+
+dictZh.uiSettingsDetail.memorySaveFailed = '记忆资料保存失败，请重试';
+
+dictZh.uiSettingsDetail.memorySourceUnavailable = '部分记忆资料暂时不可用，已保留上次成功加载的内容';
+
+dictZh.uiSettingsDetail.memoryRuntimeRefreshFailed = '记忆已保存，但当前会话的记忆上下文暂未刷新';
+
+dictZh.uiSettingsDetail.memorySnapshotRefreshFailed = '记忆资料已加载，但概览快照暂未刷新';
+
+dictZh.uiSettingsDetail.memoryTopicCleanupRequired = '记忆已更新，旧主题资料将在解除占用后自动清理';
+
+// 设置页（模型目录/供应商节点等）的 zh 文案，自原 shared/settings-i18n.js 抽离。
+Object.assign(dictZh.uiSettingsDetail, {
+  reasoningEffort:'思考深度', reasoningEffortTiers:{ off:'关闭', low:'低', medium:'中', high:'高', max:'最深' },
+  addProvider:provider=>`添加 ${provider}`, editProvider:provider=>`编辑 ${provider}`,
+  autoDetectLocalModel:'自动检测本地模型',
+  codingPlanTestUnavailable:'当前厂商接口暂时无法完成测试，但不影响保存配置',
+  connectionMessages:{ ok:'连接成功，服务可用', auth_invalid:'API Key 无效，请检查后重新填写', auth_forbidden:'当前 API Key 没有访问权限', rate_limited:'请求过于频繁或额度不足，请稍后再试', endpoint_not_found:'接口地址不可用', method_not_allowed:'接口不支持测试请求', http_error:'连接失败，请检查配置后重试', unknown:'连接失败，请稍后重试' },
+  catalogSections:{ coding_plan:'Coding Plan', official_api:'官方 API', custom:'自定义兼容接口' },
+  providerCatalog:{},
+  imageCapability:'图片输入能力', imageCapabilityEnabled:'支持图片', imageCapabilityDisabled:'不支持图片', imageCapabilityPinvou:'自动处理',
+  visionModel:'视觉模型', visionModelNone:'无', visionModelDesc:'当前模型不能看图时，用该模型分析图片',
+  imagePrivacyDesc:'使用云端模型时，图片会发送给你选择的模型服务商；本地模型图片不离开本机。',
+  imageCapabilityTest:'测试图片能力', imageCapabilityTestHint:'发送一张纯色测试图，验证当前模型能否识图；会实际调用模型，可能产生费用',
+  imageCapabilityTestSupported:'支持图片', imageCapabilityTestUnsupported:'不支持图像识别',
+  imageCapabilityTestUnverified:'未能正确识别图像，原因未知',
+  imageCapabilityTestError:'测试失败，请先确认连接与 API Key 可用',
+  imageCapabilityTestReply:summary=>`模型回复：${summary}`,
+  imageCapabilityTestEnableHint:'可在上方将图片输入能力设为“支持图片”',
+  imageCapabilitySaveFailed:error=>`保存失败：${error}`,
+  visionModelProbing:'正在测试图片能力…',
+  visionModelProbeError:summary=>`该模型未能通过图片识别探测，无法作为视觉模型，请检查模型配置后重试${summary ? `：${summary}` : ''}`,
+});
+
+Object.assign(dictZh.uiAttachments, {
+  imageUnsupported:'当前模型不支持图片。请切换到支持图片的模型，或在模型设置中配置视觉模型。',
+  imageUnknown:'当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”；也可以配置视觉模型。',
+  imageCloudUpload:'图片将随消息发送给你选择的模型服务商',
+  imageCloudUploadVision:'图片将发送给你配置的视觉模型服务商进行分析',
+});
+
+// 自定义项标题/描述的逐供应商口径（与 i18n 化前硬编码目录一致）；未列出的供应商回退 customModelTitle。
+dictZh.uiSettingsDetail.customCodingPlanDesc = '手动填写 Coding Plan 模型 ID';
+
+dictZh.uiSettingsDetail.customModelTitles = {
+  glm:'自定义 GLM 模型', qwen:'自定义通义模型',
+  openai_compatible:'自定义兼容模型', glm_coding_plan:'自定义 GLM Coding Plan 模型',
+  tencent_coding_plan:'自定义腾讯云 Coding Plan 模型', kimi_coding_plan:'自定义 Kimi Coding Plan 模型',
+};

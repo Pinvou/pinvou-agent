@@ -240,7 +240,7 @@ const PROVIDER_FORM = fs.readFileSync(
   path.join(ROOT, 'src', 'features', 'settings', 'ProviderFormModal.jsx'),
   'utf8'
 );
-const I18N = fs.readFileSync(path.join(ROOT, 'src', 'shared', 'i18n.js'), 'utf8');
+const I18N = ['zh', 'en', 'ja'].map((l) => fs.readFileSync(path.join(ROOT, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // 拆分后三语在 i18n/ 目录,拼起来等价旧单文件扫描
 const HOME_SWITCHER = fs.readFileSync(
   path.join(ROOT, 'src', 'features', 'conversation', 'HomeModeSwitcher.jsx'),
   'utf8'
