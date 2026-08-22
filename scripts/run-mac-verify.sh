@@ -48,7 +48,7 @@ else
 fi
 
 echo "=== 3. brew 依赖探测(文件 ingestion) ==="
-# 外部依赖:poppler(pdftotext)/pandoc/tesseract/LibreOffice(按需检查,详见 README 前置要求)。
+# 外部依赖:poppler(pdftotext)/pandoc/tesseract/p7zip/LibreOffice(按需检查,详见 README 前置要求)。
 # macOS 二期语音改走系统 Speech,已移除 ffmpeg(不再探测)。
 # python3 接受任意 python@X.Y(brew list --formula | grep -q '^python@')
 for pkg in poppler pandoc tesseract p7zip libreoffice; do

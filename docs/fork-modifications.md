@@ -36,6 +36,7 @@
 - PR #302 (`feat/plugin-protocol`) 起步于 #285 合并前的旧 main（起步时父仓 gitlink 停在 r6，与当时 `发布状态` 不一致，曾触发 `scripts/verify-public-submodule.sh` 与 `scripts/ci-fork-link-check.sh` 在 PR fast-gate 持续失败），合并时 gitlink 已在 main 上对齐 r7，因此 **#302 未改动 gitlink**（`git diff c75f2fb2^..c75f2fb2 -- CodeWhale` 为空）。
 - 后续推进：PR #305 把公开基线推进到已发布的 r8；r7→r8 同步不改 `.gitmodules` 或底座主题组织方式。
 - 现状：父仓 gitlink、`Pinvou/CodeWhale:pinvou3-clean` HEAD 与 `pinvou-v0.9.5-r8` 标签均指向 `d127aed113529dc93754d044b9f352e9746f6b83`。
+- 另勘误 #302 的父仓侧改动范围：能力包统一模型（父仓 commit `c75f2fb2`）把开关存储收敛为单一 `disabled_bundles.json`（包 id × 模式禁用集 + `hidden_scopes`），取代原先分开的 `disabled_connectors.json` / `disabled_skills.json` 双文件（读到旧双文件即迁移不删）。
 
 ### 本次会话修复（已验证并发布）
 

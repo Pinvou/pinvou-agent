@@ -28,6 +28,10 @@ merge queue validates its combined tree against the latest `main`; manually reba
 again only to resolve a real conflict or when the queue reports an integration
 failure that requires a branch change.
 
+When resolving conflicts, preserve compatible functionality and user changes from
+both sides. Do not choose between behaviorally different alternatives without
+explaining the options and their impact to the user.
+
 ## DCO
 
 Every human-authored commit must include a valid `Signed-off-by`:
