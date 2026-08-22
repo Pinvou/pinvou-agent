@@ -6,11 +6,11 @@ import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
-import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
 import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
+import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
 import { ArtifactCard, localizeTool, tsToolsData, tsToolWelcomeData } from '../tools/tool-common.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import {
@@ -33,9 +33,36 @@ import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
-import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
+// 重面板惰性化:ArtifactsPanel(design/产物场景才出现)与 SubagentTranscriptPanel
+// (专家卡点开才出现)各带一串专属依赖(design-runtime/EditableMarkdownPreview/
+// subagent-conversation 等,合计 ~130KB 源码),条件渲染本就存在。预取挂在打开
+// 动作同 tick,首次打开仍可能挂起一个微任务级窗口——因此各挂载点必须配局部
+// Suspense(面板形状 fallback)与局部 ErrorBoundary,把挂起/失败限制在面板槽位,
+// 不冒泡到应用级边界闪断整视图(口径同 LazyCodexAcpView/WebAccessModal)。
+// 动态 import 收口在本表(口径同 app/view-loaders.js 的 VIEW_LOADERS)。
+const CHAT_PANEL_LOADERS = Object.freeze({
+  artifacts: () => import('../artifacts/ArtifactsPanel.jsx'),
+  subagent: () => import('../multiagent/SubagentTranscriptPanel.jsx'),
+});
+const LazyArtifactsPanel = React.lazy(() => CHAT_PANEL_LOADERS.artifacts().then((m) => ({ default: m.ArtifactsPanel })));
+const LazySubagentTranscriptPanel = React.lazy(() => CHAT_PANEL_LOADERS.subagent().then((m) => ({ default: m.SubagentTranscriptPanel })));
+const prefetchChatPanel = (key) => { CHAT_PANEL_LOADERS[key]().catch(() => {}); };
+// 面板槽位级挂起 fallback:与 LazyCodexAcpView 同款容器,懒 chunk 解析的
+// 微任务窗口内占住面板位置,避免挂起冒泡到应用级边界把整视图闪断成 fallback。
+function PanelSuspense({ children }) {
+  return (
+    <React.Suspense fallback={(
+      <div className="flex-1 flex items-center justify-center min-h-0 text-sm text-gray-500 dark:text-gray-300">
+        …
+      </div>
+    )}>
+      {children}
+    </React.Suspense>
+  );
+}
+
 import {
   assistantItemCopyText,
   copyClipboardText,
@@ -691,6 +718,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (mode !== 'work') clearPersonalWorkbenchTemplateDraft();
         if (mode !== 'design') setSelectedDesignElement(null);
         if (mode === 'design' && artifactCount > 0) {
+          prefetchChatPanel('artifacts');
           if (latestArtifact && latestArtifact.path) setActiveArtifactPath(latestArtifact.path);
           setArtifactsOpen(true);
           setArtifactsFullscreen(true);
@@ -1043,6 +1071,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const onOpen = (event) => {
           const detail = event && event.detail;
           if (detail?.sessionId && detail.sessionId !== activeSessionId) return;
+          prefetchChatPanel('subagent');
           rememberScrollBeforeSubagentPanelChange();
           setSubagentPanel((current) => ({
             agentId: (detail && detail.agentId) || null,
@@ -1060,6 +1089,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setActiveArtifactPath(artifact && artifact.path ? artifact.path : null);
       }, []);
       const openArtifactsPreview = useCallback(() => {
+        prefetchChatPanel('artifacts');
         if (latestArtifact && latestArtifact.path) setActiveArtifactPath(latestArtifact.path);
         setArtifactsOpen(true);
       }, [latestArtifact]);
@@ -1068,6 +1098,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         previousArtifactCountRef.current = artifactCount;
         if (pinvouMode !== 'design') return;
         if (artifactCount <= previousCount || !latestArtifact || !latestArtifact.path) return;
+        prefetchChatPanel('artifacts');
         setActiveArtifactPath(latestArtifact.path);
         setArtifactsOpen(true);
       }, [artifactCount, latestArtifact, pinvouMode]);
@@ -1557,6 +1588,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               {activeSessionId && (
                 <button
                   data-testid="chat-artifacts-entry"
+                  onMouseEnter={() => prefetchChatPanel('artifacts')}
+                  onFocus={() => prefetchChatPanel('artifacts')}
                   onClick={openArtifactsPreview}
                   className={`pointer-events-auto px-4 max-sm:px-3 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 whitespace-nowrap shrink-0 ${'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm dark:bg-[#1E1F20] dark:text-[#E3E3E3] dark:hover:bg-[#333537]'}`}>
                   <Package size={16} /> <span className="max-sm:hidden">{t.artifacts}</span>
@@ -2060,7 +2093,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               className="fixed left-0 right-0 bottom-0 z-[1000] pointer-events-auto"
               style={{ top: can('desktopChrome') ? '36px' : 0 }}
               data-testid="artifact-fullscreen-panel">
-              <ArtifactsPanel
+              <ViewErrorBoundary t={t}>
+              <PanelSuspense>
+              <LazyArtifactsPanel
                 bs={bs}
                 t={t}
                 onClose={closeArtifactsPanel}
@@ -2084,6 +2119,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 designAiState={designAiState}
                 onDesignAiStateChange={updateDesignAiState}
               />
+              </PanelSuspense>
+              </ViewErrorBoundary>
             </div>,
             document.body
           )}
@@ -2096,7 +2133,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 ref={artColRef}
                 className="shrink-0 h-full relative"
                 style={{ width: artifactW + 'px' }}>
-                <ArtifactsPanel
+                <ViewErrorBoundary t={t}>
+                <PanelSuspense>
+                <LazyArtifactsPanel
                   bs={bs}
                   t={t}
                   onClose={closeArtifactsPanel}
@@ -2120,11 +2159,15 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   designAiState={designAiState}
                   onDesignAiStateChange={updateDesignAiState}
                 />
+                </PanelSuspense>
+                </ViewErrorBoundary>
               </div>
             </>
           )}
           {artifactsVisible && !isWide && !artifactsFullscreen && (
-            <ArtifactsPanel
+            <ViewErrorBoundary t={t}>
+            <PanelSuspense>
+            <LazyArtifactsPanel
               bs={bs}
               t={t}
               onClose={closeArtifactsPanel}
@@ -2148,9 +2191,13 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               designAiState={designAiState}
               onDesignAiStateChange={updateDesignAiState}
             />
+            </PanelSuspense>
+            </ViewErrorBoundary>
           )}
           {subagentPanel && (
-            <SubagentTranscriptPanel
+            <ViewErrorBoundary t={t}>
+            <PanelSuspense>
+            <LazySubagentTranscriptPanel
               sessionId={activeSessionId}
               initialAgentId={subagentPanel.agentId}
               selectionRequestId={subagentPanel.selectionRequestId}
@@ -2158,6 +2205,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               theme={theme}
               onClose={closeSubagentPanel}
             />
+            </PanelSuspense>
+            </ViewErrorBoundary>
           )}
         </div>
       );
