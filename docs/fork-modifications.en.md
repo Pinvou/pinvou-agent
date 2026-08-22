@@ -1,18 +1,18 @@
 # CodeWhale Fork Modification Register
 
-> Updated: 2026-08-17. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md).
+> Updated: 2026-08-23. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md).
 
 ## Current baseline
 
 | Item | Value |
 |---|---|
 | Upstream | `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `a36e6cd53` (`pinvou-v0.9.5-r7`) |
-| Merged fixes | `Pinvou/CodeWhale#9`, `#11`, `#12`, and `#13` are merged |
-| Published status | `pinvou3-clean`, `pinvou-v0.9.5-r7`, and the parent gitlink resolve to `a36e6cd533024cfe5724bae21875aea42b2ed87a`; `r1` through `r7` remain immutable historical tags |
-| Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| Drift | Published r7 baseline: 46 files, `+1852/-269` |
-| Organization | Four current long-lived topics; PR #13 removes the product-specific orchestration topic |
+| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `d127aed11` (`pinvou-v0.9.5-r8`) |
+| Merged fixes | `Pinvou/CodeWhale#9`, `#11`, `#12`, `#13`, and `#15` are merged; the public maintenance branch is pinned at `pinvou-v0.9.5-r8`. The upstream #5461 backport (CodeWhale PR #21, carrying parent PR #216) awaits maintainer merge and the `pinvou-v0.9.5-r9` tag |
+| Published status | `pinvou3-clean` and `pinvou-v0.9.5-r8` resolve to `d127aed113529dc93754d044b9f352e9746f6b83`; the parent gitlink resolves to `2645c6c63` (= r8 + the #5461 backport). `verify-public-submodule.sh` validates against `pinvou-v0.9.5-r9` — before that tag is published the script fails by design (the gitlink must not ride a floating branch/PR ref); once r9 ships, tag, branch, and gitlink align on the same commit |
+| Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624`; `r1`–`r8` remain immutable |
+| Drift | r8 baseline plus the backport: 49 files, `+3303/-476` (net +2827; r8's `#15` itself contributes +1449 and is maintainer-published baseline) |
+| Organization | Four current long-lived topics (PR #13 removes the product-specific orchestration topic) plus one upstream-#5461 backport commit |
 
 ### Published session fix
 
@@ -22,6 +22,32 @@
 - Revision reconciliation remains fail-closed only for genuine cross-client turns. A local `chat:done` immediately releases the next send, readback failures cannot block ordinary local chat, and cross-client pending notices are deduplicated per session.
 - Two CodeWhale tests, two parent `forkguard_*` tests, and Tauri/Web frontend behavior coverage protect side-effect-free runtime reads, observable and idempotent explicit recovery, safe secondary Store opening, durable startup recovery, and consecutive sends after local completion.
 - The fix is included in the published head, drift figures, and immutable tag `pinvou-v0.9.5-r5`; CodeWhale required checks and parent automation pass.
+
+### Output-cap fix: upstream #5461 backport (parent PR #216)
+
+> **2026-08-23 (rewritten approach)**: CodeWhale PR #8 (the
+> `ApiProvider::Openai` allowlist) was closed by the CodeWhale maintainer, who
+> upstreamed the fix with narrower semantics — issue
+> [Hmbown/CodeWhale#5460](https://github.com/Hmbown/CodeWhale/issues/5460),
+> PR [Hmbown/CodeWhale#5461](https://github.com/Hmbown/CodeWhale/pull/5461)
+> (merged 2026-08-17 as `d03260ec`). Upstream semantics: **a route that
+> explicitly declares `output_tokens` replaces the conservative 8192 guess for
+> an uncatalogued model with that concrete fact**; routes publishing no limit
+> stay fail-closed, documented ceilings and the caller's requested cap remain
+> authoritative, and a route fact can never raise any cap.
+>
+> The fork no longer carries the allowlist drift. Instead, the upstream
+> `d03260ec` net change to `route_budget.rs` is backported on top of r8
+> (CodeWhale PR #21, commit `2645c6c63`; the diff matches upstream line for
+> line modulo line offsets; CHANGELOG entries are omitted per fork convention).
+> The operator-owned decision stays in the app's `route_limits_for_model`:
+> user-custom OpenAI-compatible endpoints (the `OpenAI compatible` preset or
+> `provider_kind=custom`) declare an `output_tokens` route fact via the base
+> window heuristic (≥500K→65536 / else min(window/2, 65536) / no window
+> fact→64000); official endpoints and unregistered cloud models declare
+> nothing and stay fail-closed in the base. The guard test
+> `forkguard_cloud_models_defer_output_cap_to_base` pins this semantics with
+> four assertions.
 
 ## Topics
 

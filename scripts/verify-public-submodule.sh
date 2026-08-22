@@ -4,7 +4,10 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PINVOU_CODEWHALE_PATH="CodeWhale"
 PINVOU_CODEWHALE_URL="https://github.com/Pinvou/CodeWhale.git"
-PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r7"
+# r9 = r8(d127aed11, #15) + 上游 #5461 后向移植(CodeWhale PR #21)。
+# 标签由 CodeWhale 维护者在 #21 合并后发布;发布前本脚本按设计失败
+# (gitlink 必须钉在不可变标签上,不接受浮动分支/PR ref)。
+PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r9"
 
 actual_path="$(git -C "$REPO" config -f .gitmodules --get submodule.CodeWhale.path)"
 actual_url="$(git -C "$REPO" config -f .gitmodules --get submodule.CodeWhale.url)"

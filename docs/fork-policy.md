@@ -1,15 +1,15 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-08-17（公开维护基线：上游 `v0.9.5` r7；PR #13 已将 fork 收敛为 4 个 Pinvou 主题）
+> 最后更新：2026-08-23（公开维护基线：上游 `v0.9.5` r8 + 1 个上游 #5461 后向移植 commit；PR #13 已将 fork 收敛为 4 个 Pinvou 主题）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
 ## 0. 当前基线
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c`。
-- 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`，head `a36e6cd53`（`pinvou-v0.9.5-r7`）。
+- 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`，公开基线 head `d127aed11`（`pinvou-v0.9.5-r8`）；当前父仓 gitlink 为 `2645c6c63`，即 r8 之上再叠 1 个上游 #5461 后向移植 commit（CodeWhale PR #21，见 `docs/fork-modifications.md`）。
 - 升级前基线 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` 同时保留在 tag `pinvou-v0.9.0-r4` 和 branch `backup/pinvou3-clean-v0.9.0-r4`。
-- `Pinvou/CodeWhale#13` 已合并为 `a36e6cd533024cfe5724bae21875aea42b2ed87a`；`pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r7` 均公开可达并指向该提交，`r1` 至 `r7` 保持不可变。
+- `Pinvou/CodeWhale#15` 已合并为 `d127aed113529dc93754d044b9f352e9746f6b83` 并发布 `pinvou-v0.9.5-r8`；`r1` 至 `r8` 保持不可变。#5461 后向移植待 CodeWhale PR #21 合并后发布 `pinvou-v0.9.5-r9`，`verify-public-submodule.sh` 即按 r9 校验对齐。
 - `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
 - 当前只维护 4 个长期主题：
 
@@ -39,7 +39,7 @@ Pinvou 的产品工具白名单、UI、工作区选择和业务策略留在 app�
 - 总 drift 软上限：1500 行。
 - 单文件 fork-distinct 改动软上限：200 行。
 - 超过不是自动拒绝，但必须记录保留原因和减量顺序。
-- 移除专用编排协议后的 r7 公开基线相对 `v0.9.5` 为 `+1852/-269，46 文件`，净增 1583 行。主要保留量来自 Automation 持久化、会话恢复生命周期、工具兼容和嵌入上下文密封；后续优先上游化通用宿主接口、会话快照/恢复 API 和 Automation 生命周期修复。
+- r8 公开基线（含 `#15`）叠加 #5461 后向移植后相对 `v0.9.5` 为 `+3303/-476，49 文件`，净增 2827 行（`#15` 系维护者已发布基线本身 +1449 行）。主要保留量来自 Automation 持久化、会话恢复生命周期、工具兼容和嵌入上下文密封；后续优先上游化通用宿主接口、会话快照/恢复 API 和 Automation 生命周期修复。
 
 ### 1.3 主题提交
 
