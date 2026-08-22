@@ -1482,8 +1482,14 @@
   }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
   function switchActiveTo(id, opts) {
-    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    // Set the new active id before touching the old buffer: the LRU prune
+    // triggered by that touch protects the target via activeSessionId. Touching
+    // the old buffer first (active id still old) could evict an idle target as
+    // the oldest entry, and the freshBuffer() fallback below would silently
+    // show an empty session.
+    var previousActiveId = state.activeSessionId;
     state.activeSessionId = id;
+    if (previousActiveId) saveWorkingSetTo(getBuffer(previousActiveId));
     var buf = sessionStates[id];
     if (!buf || (opts && opts.fresh)) {
       buf = sessionStates[id] = freshBuffer();

@@ -137,8 +137,10 @@ function PetSprite({ pet, animation }) {
   );
 }
 
-// 600ms tick 的按值稳定比较：列表长度与逐卡 (sessionId,status,updatedAt,title)
+// 600ms tick 的按值稳定比较：列表长度与逐卡 (sessionId,status,updatedAt,title,body)
 // 均一致时视为未变化，让 setState 保住旧引用、跳过整棵活动卡树的重渲染。
+// body 必须参与比较：文案派生自 i18n 词典，语言切换会不改事件字段只改 body，
+// 缺了它卡片会一直显示切换前的语言。
 function sameActivities(prev, next) {
   if (prev === next) return true;
   if (!Array.isArray(prev) || !Array.isArray(next) || prev.length !== next.length) return false;
@@ -147,7 +149,7 @@ function sameActivities(prev, next) {
     const b = next[i];
     if (!a || !b) return false;
     if (a.sessionId !== b.sessionId || a.status !== b.status
-      || a.updatedAt !== b.updatedAt || a.title !== b.title) return false;
+      || a.updatedAt !== b.updatedAt || a.title !== b.title || a.body !== b.body) return false;
   }
   return true;
 }
