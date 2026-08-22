@@ -43,10 +43,17 @@ assert.equal(
 // 2a. 上传 MCP/组合包必须进 readiness 批量取数：edit_display 动作与展示名覆盖都
 // 来自 bundle_readiness，这类 id 不在 tsToolsData/skillList 里，漏并入则编辑按钮
 // 永不渲染、卡面也不消费覆盖值（后端 bundle_readiness 已下发，前端断路）。
+// 批次来源必须是本次刚拉回的 list（stale-closure 陷阱：闭包里的 toolBackend
+// state 是渲染快照，首挂载/刚上传后为空 → 上传 MCP 卡漏批直到下次无关刷新）。
 assert.match(
   toolStoreSource,
   /customToolIds/,
   'uploaded MCP/combo ids must join the readiness batch (customToolIds)',
+);
+assert.match(
+  toolStoreSource,
+  /const customToolIds = \(Array\.isArray\(list\) \? list : \[\]\)/,
+  'customToolIds must derive from the fresh list fetch, not the stale toolBackend state',
 );
 assert.match(
   toolStoreSource,
@@ -77,6 +84,29 @@ assert.match(
   toolStoreSource,
   /TsEditDisplayDialog/,
   'the edit dialog must be rendered',
+);
+// 3a. 保存失败保留弹窗与输入：doEditDisplaySave 返回错误文案（而非先卸载弹窗），
+// 对话框内联展示；成功路径通知 composer 菜单刷新（覆盖名进了它的数据源）。
+assert.match(
+  toolStoreSource,
+  /const err = await onConfirm\(\{ name, description: desc \}\);/,
+  'dialog confirm must surface the save error inline (keep dialog open, inputs retained)',
+);
+assert.match(
+  toolStoreSource,
+  /notifyComposerToolsChanged\(\);/,
+  'successful save must notify the composer tool menu (name override feeds its data source)',
+);
+// 3b. 输入框长度上限与后端校验一致（64/240 字符）。
+assert.match(
+  toolStoreSource,
+  /maxLength=\{MAX_DISPLAY_NAME_CHARS\}/,
+  'name input must cap at MAX_DISPLAY_NAME_CHARS',
+);
+assert.match(
+  toolStoreSource,
+  /maxLength=\{MAX_DISPLAY_DESCRIPTION_CHARS\}/,
+  'description input must cap at MAX_DISPLAY_DESCRIPTION_CHARS',
 );
 
 // 4. 预填当前覆盖值：读 bundle 事实的 display_name / display_description 原值。

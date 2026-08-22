@@ -618,20 +618,42 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         }
     }
 
-    /// 前端列表：所有可用工具 + 安装状态
+    /// 前端列表：所有可用工具 + 安装状态。上传包若有用户自定义展示名/说明覆盖
+    /// （bundles.json extra，仅 Upload 来源生效），name/description 用覆盖值——
+    /// 与 `BundleRegistry::list`（bundle_readiness）同一口径，避免卡片与
+    /// composer 菜单两处标题不一致。
     pub fn list_tools(&self) -> Vec<MarketplaceToolInfo> {
         let installed = self.installed_ids();
+        let store = store::BundleStore::new();
         self.available_tools()
             .into_iter()
-            .map(|m| MarketplaceToolInfo {
-                installed: installed.contains(&m.id),
-                id: m.id,
-                name: m.name,
-                description: m.description,
-                version: m.version,
-                icon: m.icon,
-                category: m.category,
-                companion_skills: m.companion_skills,
+            .map(|m| {
+                let (name, description) = match store
+                    .get(&m.id)
+                    .ok()
+                    .flatten()
+                    .filter(|r| matches!(r.source, store::BundleSource::Upload(_)))
+                {
+                    Some(record) => {
+                        let name = store::display_override(&record, store::EXTRA_DISPLAY_NAME)
+                            .unwrap_or(m.name.clone());
+                        let description =
+                            store::display_override(&record, store::EXTRA_DISPLAY_DESCRIPTION)
+                                .unwrap_or(m.description.clone());
+                        (name, description)
+                    }
+                    None => (m.name, m.description),
+                };
+                MarketplaceToolInfo {
+                    installed: installed.contains(&m.id),
+                    id: m.id,
+                    name,
+                    description,
+                    version: m.version,
+                    icon: m.icon,
+                    category: m.category,
+                    companion_skills: m.companion_skills,
+                }
             })
             .collect()
     }

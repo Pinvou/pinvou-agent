@@ -565,9 +565,9 @@ pub async fn update_marketplace_skill(
 /// 编辑上传包的 UI 展示名/说明（写 bundles.json 记录 extra 的
 /// `display_name`/`display_description`，机读 id/目录/frontmatter name 不动）。
 /// 仅 `source=Upload` 的记录可写；单技能包（`bundles/<id>/skills/` 下恰一个技能
-/// 目录）且展示说明为非空 Some 时，先把说明回写进该技能 SKILL.md 的 frontmatter
-/// description（模型侧可见描述同步）并重算内容指纹——回写失败（如说明含无法
-/// 单行互洽表达的字符）整体 Err，extra 不落盘。
+/// 目录）的展示说明与 SKILL.md frontmatter description 双向同步（设覆盖回写
+/// 新值并备份原值、清覆盖恢复原值）并重算内容指纹。门禁/校验/顺序契约都在
+/// 特性层 `update_display_meta` 编排，命令层只做搬运与热刷收尾。
 #[tauri::command]
 pub async fn update_bundle_display_meta(
     id: String,
@@ -575,44 +575,21 @@ pub async fn update_bundle_display_meta(
     display_description: Option<String>,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        use crate::features::marketplace::store::{BundleSource, BundleStore};
-        let store = BundleStore::new();
-        // 前置校验（存在性 + Upload 来源）：回写 SKILL.md 发生在 extra 落盘之前，
-        // 必须先挡住预置/内置包，避免改写非上传包的技能内容。
-        let record = store
-            .get(&id)?
-            .ok_or_else(|| format!("包 '{id}' 未登记，无法设置展示名/说明"))?;
-        if !matches!(record.source, BundleSource::Upload(_)) {
-            return Err(format!(
-                "包 '{id}' 非用户上传来源，预置/内置包不允许覆盖展示名/说明"
-            ));
-        }
-        // 长度校验前置（与 set_display_meta 同口径）：回写会先改 SKILL.md 并重算
-        // 指纹，校验若只留在 set_display_meta，超长值会先落盘再报错，留下
-        // 「报错但包内容已变」的中间态。
-        crate::features::marketplace::store::validate_display_meta(
-            display_name.as_deref(),
-            display_description.as_deref(),
-        )?;
-        // 单技能包回写（多技能/纯 MCP 包内部跳过不报错）；trim 空串 = 清覆盖，
-        // 展示回退 SKILL.md 现状，无需回写。
-        if let Some(desc) = display_description
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-                .writeback_single_skill_description(&id, desc)?;
-        }
-        store.set_display_meta(&id, display_name.as_deref(), display_description.as_deref())
+    let dirty = tokio::task::spawn_blocking(move || {
+        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        let touched_skill_md = display_description.is_some(); // 单技能包可能动 SKILL.md
+        mgr.update_display_meta(&id, display_name.as_deref(), display_description.as_deref())?;
+        Ok::<bool, String>(touched_skill_md)
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
-    // SKILL.md 回写改了包内容：热刷在线会话组合目录与 deny 规则集
-    // （与 update_marketplace_skill 同一收尾）。
-    pool.refresh_live_sessions_skills().await;
-    pool.refresh_permission_rulesets().await;
+    // SKILL.md 回写/恢复改了包内容：热刷在线会话组合目录与 deny 规则集
+    // （与 update_marketplace_skill 同一收尾）。失败路径也刷：sync 可能在
+    // set_display_meta 报错前已动过 SKILL.md（窄窗口），让模型侧尽早一致。
+    if dirty {
+        pool.refresh_live_sessions_skills().await;
+        pool.refresh_permission_rulesets().await;
+    }
     Ok(())
 }
 
