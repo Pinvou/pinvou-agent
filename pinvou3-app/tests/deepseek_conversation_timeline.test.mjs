@@ -376,7 +376,10 @@ try {
   assert.ok(chatView.includes('isNearConversationBottom(el)')
     && chatView.includes('const movingUp = el.scrollTop < lastScrollTopRef.current - 1')
     && chatView.includes('if (movingUp) autoScrollRef.current = false'),
-  'DeepSeek streaming must pause auto-follow while the user reads history');
+    'DeepSeek streaming must pause auto-follow while the user reads history');
+  assert.ok(chatView.includes('startConversationBottomFollower({')
+    && chatView.includes('isFollowing: () => autoScrollRef.current'),
+    'bottom-following conversations must recover after delayed layout and window visibility changes');
   assert.ok(chatView.includes('<ThinkingBubble'), 'the original rendering path must remain available as a fallback');
   assert.ok(chatView.includes("pinvou_conversation_ui_v2"), 'the local rollback switch must be explicit');
 

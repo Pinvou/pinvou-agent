@@ -22,6 +22,7 @@ import {
   conversationItemsForMode,
   projectDeepSeekConversation,
 } from '../conversation/deepseek-conversation.js';
+import { startConversationBottomFollower } from '../conversation/conversation-scroll.js';
 import {
   captureConversationScrollPosition,
   isFetchTool,
@@ -548,6 +549,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setArtifactW(w); localStorage.setItem('pinvou_artifactW', String(w));
       };
       const scrollRef = useRef(null);
+      const conversationContentRef = useRef(null);
       const autoScrollRef = useRef(true);
       const lastScrollTopRef = useRef(0);
       const subagentPanelScrollRef = useRef(null);
@@ -970,6 +972,25 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           lastScrollTopRef.current = el.scrollTop;
         }
       }, [bs && bs.activeSessionId]);
+
+      // Session content can finish measuring after the active-session effect runs, especially
+      // when an inactive WebView resumes or content-visibility replaces intrinsic estimates.
+      // Keep following the bottom across those layout changes, but never override a user who
+      // deliberately scrolled up.
+      useEffect(() => {
+        const scrollElement = scrollRef.current;
+        const contentElement = conversationContentRef.current;
+        if (!scrollElement || !contentElement) return undefined;
+        return startConversationBottomFollower({
+          scrollElement,
+          contentElement,
+          isFollowing: () => autoScrollRef.current,
+          onRestored: (scrollTop) => {
+            lastScrollTopRef.current = scrollTop;
+            setShowScrollBottom(false);
+          },
+        });
+      }, [activeSessionId, hasMessages]);
 
       // 安装工具后新建会话 → 本地显示欢迎卡片（不发 LLM query，不浪费 token）。
       // welcomeToolId 是一次性引导态,必须跟随会话身份:只有"装完工具"(justInstalledTool 非
@@ -1599,7 +1620,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             )}
 
             {hasMessages && (
-              <div className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
+              <div ref={conversationContentRef} className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
                 {useUnifiedConversationUi ? (
                   <ConversationTimeline
                     turns={conversationProjection.turns}
