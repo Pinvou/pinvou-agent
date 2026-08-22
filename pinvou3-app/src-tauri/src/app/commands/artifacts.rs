@@ -489,11 +489,68 @@ impl VisualResult {
 }
 
 /// 可视化预览结果缓存（按 路径|mtime 键）。soffice/pdftoppm 一次 1-3s，缓存后二次秒开。
-fn visual_cache() -> &'static parking_lot::Mutex<std::collections::HashMap<String, VisualResult>> {
+struct VisualCacheEntry {
+    result: VisualResult,
+    touched: u64,
+}
+
+/// 缓存预算：单条结果可达数 MB（30 页 PDF data URI / 内联图片 HTML），
+/// 且键含 mtime——同一产物每次重写都会产生新键。无上限会让长会话累积数百 MB。
+const MAX_VISUAL_CACHE_ENTRIES: usize = 16;
+const MAX_VISUAL_CACHE_BYTES: usize = 96 * 1024 * 1024;
+
+fn visual_result_bytes(result: &VisualResult) -> usize {
+    result.html.as_ref().map_or(0, |s| s.len())
+        + result.images.iter().map(|s| s.len()).sum::<usize>()
+}
+
+fn visual_cache() -> &'static parking_lot::Mutex<std::collections::HashMap<String, VisualCacheEntry>>
+{
     static CACHE: std::sync::OnceLock<
-        parking_lot::Mutex<std::collections::HashMap<String, VisualResult>>,
+        parking_lot::Mutex<std::collections::HashMap<String, VisualCacheEntry>>,
     > = std::sync::OnceLock::new();
     CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+}
+
+static VISUAL_CACHE_CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn visual_cache_next_tick() -> u64 {
+    VISUAL_CACHE_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 命中刷新 LRU 时钟；插入时同路径旧 mtime 键直接让位，再按字节+条目双预算
+/// 从最久未用侧淘汰。
+fn visual_cache_insert(
+    state: &mut std::collections::HashMap<String, VisualCacheEntry>,
+    key: String,
+    result: VisualResult,
+) {
+    let path = key.split('|').next().unwrap_or(&key).to_string();
+    state.retain(|k, _| k.split('|').next() != Some(path.as_str()));
+    let touched = visual_cache_next_tick();
+    state.insert(key, VisualCacheEntry { result, touched });
+    while state.len() > MAX_VISUAL_CACHE_ENTRIES {
+        evict_oldest_visual_entry(state);
+    }
+    while state
+        .values()
+        .map(|e| visual_result_bytes(&e.result))
+        .sum::<usize>()
+        > MAX_VISUAL_CACHE_BYTES
+        && !state.is_empty()
+    {
+        evict_oldest_visual_entry(state);
+    }
+}
+
+fn evict_oldest_visual_entry(state: &mut std::collections::HashMap<String, VisualCacheEntry>) {
+    if let Some(oldest) = state
+        .iter()
+        .min_by_key(|(_, entry)| entry.touched)
+        .map(|(k, _)| k.clone())
+    {
+        state.remove(&oldest);
+    }
 }
 
 /// 把 office/pdf/图片产物转成可视化预览：office→自包含 HTML，pdf→逐页 PNG，图片→data URI。
@@ -512,8 +569,9 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let cache_key = format!("{}|{}", p.display(), mtime);
-    if let Some(hit) = visual_cache().lock().get(&cache_key).cloned() {
-        return Ok(hit);
+    if let Some(hit) = visual_cache().lock().get_mut(&cache_key) {
+        hit.touched = visual_cache_next_tick();
+        return Ok(hit.result.clone());
     }
 
     let ext = p
@@ -574,7 +632,7 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
 
     // unsupported 不缓存：可能是工具暂缺，装上后下次重试。
     if result.mode != "unsupported" {
-        visual_cache().lock().insert(cache_key, result.clone());
+        visual_cache_insert(&mut visual_cache().lock(), cache_key, result.clone());
     }
     Ok(result)
 }

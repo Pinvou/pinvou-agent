@@ -170,6 +170,14 @@ pub fn start_turn(session_id: &str) -> String {
     turn_id
 }
 
+/// 会话删除时清空其残留的未配对 turn 队列（map 键随会话 id 累积，不清理会
+/// 随 app 生命周期无界增长）。
+pub fn clear_session(session_id: &str) {
+    if let Ok(mut map) = active_turns().lock() {
+        map.remove(session_id);
+    }
+}
+
 /// 旧调用点(无 usage):落盘不带 usage 字段,reader API 反序列化为 None。
 /// 保留是为了不强迫所有调用点同步升级(commands.rs:200 的 send_error 兜底等)。
 pub fn finish_turn(session_id: &str, status: &str, error: Option<&str>) {
@@ -277,13 +285,15 @@ fn finish_turn_internal(
     >,
     #[cfg(any(feature = "benchmark-hooks", test))] include_observation: bool,
 ) {
+    // 每会话同一时刻只有一轮在飞（turn lock 串行），收尾的必是最后入队的 turn；
+    // 从队尾取。队列里更早的条目只能是"未提交即取消"路径（start_turn 后走
+    // emit_unsubmitted_interrupted_terminal，不落 assistant_done）残留的陈旧
+    // id——若按 FIFO 弹出，assistant_done 会记到陈旧 turn 上，且真 id 永远
+    // 留在队列里。这里整段清掉，陈旧轮不产生终态事件。
     let active_turn = active_turns().lock().ok().and_then(|mut map| {
-        let queue = map.get_mut(session_id)?;
-        let active = queue.pop_front();
-        if queue.is_empty() {
-            map.remove(session_id);
-        }
-        active
+        let id = map.get_mut(session_id)?.pop_back();
+        map.remove(session_id);
+        id
     });
 
     let Some(active_turn) = active_turn else {
@@ -323,8 +333,10 @@ fn finish_turn_internal(
 
 #[cfg(any(feature = "benchmark-hooks", test))]
 fn record_first_event(session_id: &str, event: &'static str, tool_name: Option<&str>) {
+    // 取队尾:与 finish_turn_internal 的尾弹语义一致——队列更早的条目是
+    // "未提交即取消"残留的陈旧 turn,观测事件必须落在真正在飞的一轮上。
     let turn_id = active_turns().lock().ok().and_then(|mut map| {
-        let active = map.get_mut(session_id)?.front_mut()?;
+        let active = map.get_mut(session_id)?.back_mut()?;
         active
             .recorded_first_events
             .insert(event)
@@ -359,7 +371,7 @@ pub fn record_first_message_delta(session_id: &str) {
 #[cfg(any(feature = "benchmark-hooks", test))]
 pub fn record_tool_started(session_id: &str, tool_name: &str) {
     if let Ok(mut map) = active_turns().lock() {
-        if let Some(active) = map.get_mut(session_id).and_then(VecDeque::front_mut) {
+        if let Some(active) = map.get_mut(session_id).and_then(VecDeque::back_mut) {
             active.tool_calls = active.tool_calls.saturating_add(1);
         }
     }
@@ -370,7 +382,7 @@ pub fn record_tool_started(session_id: &str, tool_name: &str) {
 pub fn record_tool_completed(session_id: &str, tool_name: &str, success: bool) {
     if !success {
         if let Ok(mut map) = active_turns().lock() {
-            if let Some(active) = map.get_mut(session_id).and_then(VecDeque::front_mut) {
+            if let Some(active) = map.get_mut(session_id).and_then(VecDeque::back_mut) {
                 active.tool_failures = active.tool_failures.saturating_add(1);
             }
         }
@@ -389,7 +401,7 @@ pub fn record_milestone(session_id: &str, milestone: &str) {
 pub fn record_milestone_meta(session_id: &str, milestone: &str, meta: serde_json::Value) {
     let turn_id = active_turns().lock().ok().and_then(|map| {
         map.get(session_id)
-            .and_then(|queue| queue.front())
+            .and_then(|queue| queue.back())
             .map(|active| active.turn_id.clone())
     });
     let Some(turn_id) = turn_id else { return };
@@ -1105,6 +1117,85 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp);
     }
 
+    /// 队列里更早的条目只能是"未提交即取消"路径残留的陈旧 id(不落终态)。
+    /// 连续两轮 start 模拟陈旧残留后收尾:终态必须归属最后入队的 turn,且
+    /// 清队后再次收尾不再落事件——按 FIFO 弹出会把 assistant_done 记到陈旧
+    /// turn 上,且真 id 永远滞留在队列里轮转误记后续轮次。
+    #[test]
+    fn finish_turn_attributes_terminal_to_newest_queued_turn() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-tail-pop-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let sid = "session-tail-pop";
+        let stale = start_turn(sid);
+        let live = start_turn(sid);
+        finish_turn(sid, "Completed", None);
+
+        let timeline = read_timeline(sid).unwrap();
+        let done: Vec<_> = timeline
+            .iter()
+            .filter(|e| e.event == "assistant_done")
+            .collect();
+        assert_eq!(done.len(), 1);
+        assert_eq!(
+            done[0].turn_id, live,
+            "terminal must be attributed to the newest queued turn"
+        );
+        assert_ne!(done[0].turn_id, stale);
+
+        // 队列已整段清空:再次收尾不得再落终态事件。
+        finish_turn(sid, "Completed", None);
+        assert_eq!(
+            read_timeline(sid)
+                .unwrap()
+                .iter()
+                .filter(|e| e.event == "assistant_done")
+                .count(),
+            1,
+            "finish on an emptied queue must be a no-op"
+        );
+
+        clear_session(sid);
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// clear_session 清掉会话残留的未配对队列后,迟到的 finish 不得再向该
+    /// 会话的 sidecar 落事件;重复 clear 幂等。
+    #[test]
+    fn clear_session_empties_queue_and_silences_late_finish() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-clear-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let sid = "session-clear";
+        start_turn(sid);
+        clear_session(sid);
+        finish_turn(sid, "Completed", None);
+
+        let timeline = read_timeline(sid).unwrap();
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].event, "user_start");
+
+        clear_session(sid);
+        finish_turn(sid, "Completed", None);
+        assert_eq!(read_timeline(sid).unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
     /// Full chain for TurnUsage: persisting all fields, reading them back, and
     /// compute_stats accumulation. [F3] verifies the forward-compat field set
     /// (cache_write_tokens / reasoning_tokens) keeps every field, while also
@@ -1161,9 +1252,12 @@ mod tests {
     }
 
     /// 排队双轮:同 session 连续两个 start_turn 入队后,一次 observation 收尾
-    /// 只允许 pop 队首轮。此前 forwarder 双重 finish(usage 版 + observation 版)
+    /// 只消费一个轮次。此前 forwarder 双重 finish(usage 版 + observation 版)
     /// 会连 pop 两次,把第二轮的 assistant_done 提前写坏;该调用点已收敛为
     /// 单次 observation 收尾,本测试钉住"一次收尾只消费一个活跃轮"的语义。
+    /// 归属按尾弹语义(finish_turn_internal):单飞保证下在飞的必是最后入队
+    /// 的 turn,更早条目是"未提交即取消"残留的陈旧轮——终态落在 second 上,
+    /// 整队清除后陈旧的 first 不产生终态事件,后续收尾为 no-op。
     #[test]
     fn queued_second_turn_survives_single_observation_finish() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1196,20 +1290,27 @@ mod tests {
             .filter(|event| event.event == "assistant_done")
             .collect();
         assert_eq!(done_events.len(), 1, "exactly one turn must be finished");
-        assert_eq!(done_events[0].turn_id, first);
+        // 尾弹归属:终态落在最后入队的 second(单飞下的在飞轮),陈旧的
+        // first 不产生终态事件。
+        assert_eq!(done_events[0].turn_id, second);
         // observation 字段随该次收尾落盘,不因重复收尾丢失。
         assert_eq!(done_events[0].tool_calls, Some(0));
         assert!(done_events[0].authorized_tool_catalog.is_some());
 
-        // 第二轮仍在队首,后续收尾应归属它。
+        // 队列已整段清除:后续收尾为 no-op,不得再落终态事件。
         finish_turn_with_observation(sid, "Completed", None, None, None);
         let timeline = read_timeline(sid).unwrap();
         let done_events: Vec<_> = timeline
             .iter()
             .filter(|event| event.event == "assistant_done")
             .collect();
-        assert_eq!(done_events.len(), 2);
-        assert_eq!(done_events[1].turn_id, second);
+        assert_eq!(done_events.len(), 1, "finish on an emptied queue is a no-op");
+        assert!(
+            !timeline
+                .iter()
+                .any(|event| event.turn_id == first && event.event == "assistant_done"),
+            "stale unsubmitted-cancel residue must not receive a terminal"
+        );
 
         let _ = std::fs::remove_dir_all(tmp);
     }

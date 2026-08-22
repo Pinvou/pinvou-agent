@@ -14,7 +14,23 @@ pub struct NotificationState {
 
 impl NotificationState {
     pub fn should_notify(&self, key: String) -> bool {
-        self.notified_turns.lock().insert(key)
+        let mut turns = self.notified_turns.lock();
+        // 同 key 重复（终态事件重放）先短路：否则下方前缀清理会把这条本身
+        // 也清掉、再插回时误报"首次"。
+        if turns.contains(&key) {
+            return false;
+        }
+        // key 形如 `{session_id}:{turn_id}`：同一 session 只需保留最新一条去重
+        // 记录（重复终态事件总是紧跟同一 turn）。不清前缀会让集合随完成轮数
+        // 无界增长。
+        let session_prefix = match key.split_once(':') {
+            Some((session, _)) => format!("{session}:"),
+            None => String::new(),
+        };
+        if !session_prefix.is_empty() {
+            turns.retain(|existing| !existing.starts_with(&session_prefix));
+        }
+        turns.insert(key)
     }
 }
 
@@ -66,12 +82,12 @@ fn send_native_notification(app: &AppHandle) -> Result<(), String> {
 fn send_notify_send() -> Result<(), String> {
     use std::process::Command;
 
-    Command::new("notify-send")
-        .arg(TASK_COMPLETED_TITLE)
-        .arg(TASK_COMPLETED_BODY)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    crate::platform::os::posix::spawn_detached_and_reap(
+        Command::new("notify-send")
+            .arg(TASK_COMPLETED_TITLE)
+            .arg(TASK_COMPLETED_BODY),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -137,5 +153,12 @@ mod tests {
         assert!(state.should_notify("session:turn".to_string()));
         assert!(!state.should_notify("session:turn".to_string()));
         assert!(state.should_notify("session:next-turn".to_string()));
+        assert!(!state.should_notify("session:next-turn".to_string()));
+        // next-turn 落位后同 session 只保留最新一条：旧 turn key 已按前缀淘汰
+        // （集合有界），其重现按新事件处理——重复终态事件总是紧跟同一 turn，
+        // 跨 turn 重现的旧 key 不存在真实的去重需求。
+        assert!(state.should_notify("session:turn".to_string()));
+        // 其他 session 不受影响。
+        assert!(state.should_notify("other:turn".to_string()));
     }
 }

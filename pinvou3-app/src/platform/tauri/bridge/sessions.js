@@ -4,6 +4,10 @@
   var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.sessions = function (context) {
     var state = context.state;
+    // 可选 hook：会话 buffer 被回收/删除时清理宿主侧 per-session 副表
+    // （bridge.js 的 modeStateEpochs 等）。返回 true 表示已处理，返回 false
+    // 或缺省时无操作。
+    var onSessionBufferPurged = context.onSessionBufferPurged || null;
     var invoke = context.invoke;
     var listen = context.listen;
     var notify = context.notify;
@@ -42,8 +46,13 @@
     var loadPinvouSceneEventsForSession = context.loadPinvouSceneEventsForSession || function () { return []; };
     var syncPinvouSceneEventsForSession = context.syncPinvouSceneEventsForSession ||
       function (sid) { return Promise.resolve(loadPinvouSceneEventsForSession(sid)); };
-    var MAX_SCHEDULED_SESSION_BUFFERS = 64;
-    var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
+  var MAX_SCHEDULED_SESSION_BUFFERS = 64;
+  var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
+  // 全会话缓冲上限：sessionStates 每条持有完整 messages+chatItems(含渲染
+  // html)+artifacts，曾只对 scheduled 会话做 64 条 LRU——普通会话切过即永久
+  // 驻留，长时使用的内存随历史会话数无界增长。普通会话淘汰后重访问走
+  // load_session 磁盘重水化（ensureSessionBufferLoaded/switchTo 已支持）。
+  var MAX_SESSION_BUFFERS = 96;
     var sessionBufferTouchClock = 0;
     var scheduledRunOwnerTouchClock = 0;
     var scheduledRunOpenInFlight = Object.create(null);
@@ -89,6 +98,7 @@
   function isProtectedScheduledBuffer(id, buf) {
     return id === state.activeSessionId ||
       !!buf.busy ||
+      !!buf.remoteTurnActive ||
       buf.scheduledInitialTurnPhase === "active" ||
       !!(buf.queued && buf.queued.length) ||
       !!(state.scheduledRunContext && state.scheduledRunContext.sessionId === id) ||
@@ -119,11 +129,33 @@
     if (scheduled) buf.scheduledRunSession = true;
     buf.lastTouched = ++sessionBufferTouchClock;
     if (buf.scheduledRunSession) pruneScheduledSessionBuffers(id);
+    pruneSessionBuffers(id);
     return buf;
+  }
+  // 全会话 LRU：scheduled 语义保护仍适用（busy/queued/remote turn 不回收），
+  // 仅淘汰"纯展示缓存"性质的空闲 buffer。active 会话由 isProtected 兜底。
+  function pruneSessionBuffers(keepId) {
+    var ids = Object.keys(sessionStates);
+    var overflow = ids.length - MAX_SESSION_BUFFERS;
+    if (overflow <= 0) return;
+    ids.sort(function (left, right) {
+      var delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
+      return delta || left.localeCompare(right);
+    });
+    for (var i = 0; i < ids.length && overflow > 0; i++) {
+      var id = ids[i];
+      var buf = sessionStates[id];
+      if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
+      delete sessionStates[id];
+      delete turnUsageDirty[id];
+      if (onSessionBufferPurged) onSessionBufferPurged(id);
+      overflow -= 1;
+    }
   }
   function purgeSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;
     delete sessionStates[id];
+    if (onSessionBufferPurged) onSessionBufferPurged(id);
     delete turnUsageDirty[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];

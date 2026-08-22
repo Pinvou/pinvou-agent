@@ -53,7 +53,6 @@ import {
   applyEvent,
   createPetState,
   deriveActivities,
-  deriveAnimation,
   markSessionViewed,
   removeSessionActivity,
 } from './pet-state.js';
@@ -138,7 +137,22 @@ function PetSprite({ pet, animation }) {
   );
 }
 
-function PetActivityBody({ text, expanded = false }) {
+// 600ms tick 的按值稳定比较：列表长度与逐卡 (sessionId,status,updatedAt,title)
+// 均一致时视为未变化，让 setState 保住旧引用、跳过整棵活动卡树的重渲染。
+function sameActivities(prev, next) {
+  if (prev === next) return true;
+  if (!Array.isArray(prev) || !Array.isArray(next) || prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    const a = prev[i];
+    const b = next[i];
+    if (!a || !b) return false;
+    if (a.sessionId !== b.sessionId || a.status !== b.status
+      || a.updatedAt !== b.updatedAt || a.title !== b.title) return false;
+  }
+  return true;
+}
+
+const PetActivityBody = React.memo(function PetActivityBody({ text, expanded = false }) {
   const source = String(text || '');
   const className = expanded
     ? 'pet-activity-body pet-activity-body-expanded'
@@ -150,7 +164,7 @@ function PetActivityBody({ text, expanded = false }) {
       dangerouslySetInnerHTML={{ __html: renderPetMarkdown(source) }}
     />
   );
-}
+});
 
 export default function PetWindow({
   allowResize = true,
@@ -307,8 +321,14 @@ export default function PetWindow({
 
   const refresh = () => {
     const now = Date.now();
-    setActivities(deriveActivities(stateRef.current, now, petCopy));
-    setBaseAnimation(deriveAnimation(stateRef.current, now) || 'idle');
+    const next = deriveActivities(stateRef.current, now, petCopy);
+    // 600ms 恒频 tick：deriveActivities 每次返回全新数组/对象身份，直接
+    // setState 会让空闲期也全量重渲染（每张卡重跑 markdown 渲染）。按值
+    // 稳定比较跳过未变化的提交。
+    setActivities((prev) => (sameActivities(prev, next) ? prev : next));
+    // deriveAnimation 只取首条状态：复用上面的推导，避免每 tick 双份排序。
+    const nextAnimation = next.length ? next[0].status : null;
+    setBaseAnimation((prev) => (prev === nextAnimation ? prev : (nextAnimation || 'idle')));
   };
 
   useEffect(() => {
@@ -1201,7 +1221,7 @@ export default function PetWindow({
     event.preventDefault();
     event.stopPropagation();
     removeSessionActivity(stateRef.current, sessionId);
-    setActivities(deriveActivities(stateRef.current, Date.now(), petCopy));
+    refresh();
     dispatchCardUi({ type: 'dismiss', sessionId });
   };
 

@@ -843,10 +843,13 @@ impl EventBridge {
             &input,
         );
         let terminal = is_terminal(call.status);
-        self.tools.lock().insert(id, call.clone());
+        self.tools.lock().insert(id.clone(), call.clone());
         self.emit_protocol("tool_call", call.clone(), notification_meta);
         if terminal {
             self.record_tool_complete(&call);
+            // 首个通知即终态（无后续 update）时没有 tool_update 的删除路径兜底，
+            // 不在此移除会让含 raw_input/raw_output 的条目驻留到 bridge 销毁。
+            self.tools.lock().remove(&id);
         }
     }
 

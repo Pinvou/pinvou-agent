@@ -534,6 +534,19 @@ impl TurnLifecycle {
         Ok(())
     }
 
+    /// 引擎以净化后的历史完成 `SyncSession` 重建后调用。落盘 transcript 里的
+    /// raw prompt 已在 forwarder 持久化前被 display 消息替换，旧规则不可能再
+    /// 匹配后续 `SessionUpdated` 快照；而每条规则持有完整 raw prompt +
+    /// display 双份内容，驻留只会随轮数线性累积（长会话可达数十 MB）。
+    /// 活动 turn 期间不清理（防御性约束：spawn/resync 时不应有在飞轮）。
+    pub(crate) fn prune_rules_after_resync(&self) {
+        let mut state = self.state.lock();
+        if state.active {
+            return;
+        }
+        state.transcript_rules.clear();
+    }
+
     fn ensure_reservation_active(&self, reservation_id: u64) -> Result<()> {
         let state = self.state.lock();
         if state.active
@@ -2635,6 +2648,41 @@ mod turn_lifecycle_tests {
         assert!(!matched);
         assert_eq!(messages, vec![engine_user("private actual")]);
         drop(next);
+    }
+
+    #[test]
+    fn prune_rules_after_resync_clears_stale_rules_but_respects_active_turn() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        for round in 0..3 {
+            let mut reservation = lifecycle.reserve().expect("reserve");
+            let display_text = format!("display {round}");
+            let raw_text = format!("private raw {round}");
+            reservation
+                .set_transcript(TranscriptOperation::Append, message("user", &display_text))
+                .unwrap();
+            reservation.prepare_actual_user_content(raw_text).unwrap();
+            reservation.mark_submitted();
+            assert!(lifecycle.finish_once(|| {}).is_some());
+        }
+
+        // Resync 重建后，落盘历史已是 display 消息：旧规则应整段清理。
+        lifecycle.prune_rules_after_resync();
+        let (messages, matched) = lifecycle.sanitize_messages(vec![engine_user("private raw 1")]);
+        assert!(!matched);
+        assert_eq!(messages, vec![engine_user("private raw 1")]);
+
+        // 活动 turn（reservation 持有）期间是防御性禁区：规则必须保留。
+        let mut active = lifecycle.reserve().expect("reserve");
+        active
+            .set_transcript(TranscriptOperation::Append, message("user", "live display"))
+            .unwrap();
+        active
+            .prepare_actual_user_content("live raw".to_string())
+            .unwrap();
+        lifecycle.prune_rules_after_resync();
+        let (sanitized, matched) = lifecycle.sanitize_messages(vec![engine_user("live raw")]);
+        assert!(matched);
+        assert_eq!(sanitized, vec![message("user", "live display")]);
     }
 }
 

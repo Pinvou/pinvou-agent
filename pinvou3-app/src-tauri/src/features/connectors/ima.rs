@@ -127,12 +127,14 @@ async fn request_ima(
         return Err("IMA 请求 body 必须是 JSON object。".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("创建 IMA 客户端失败: {e}"))?;
+    // 进程级共享客户端：每次调用新建 Client 会重建 TLS 配置/连接池，
+    // 对同一 host（ima.qq.com）完全浪费 keep-alive/h2 复用。超时语义移到
+    // per-request（reqwest::RequestBuilder::timeout）保持 30s 不变。
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = CLIENT.get_or_init(|| reqwest::Client::builder().build().unwrap_or_default());
     let response = client
         .post(format!("{IMA_BASE_URL}/{api_path}"))
+        .timeout(std::time::Duration::from_secs(30))
         .header("ima-openapi-clientid", client_id)
         .header("ima-openapi-apikey", api_key)
         .header(

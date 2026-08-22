@@ -873,6 +873,9 @@
     state: state, invoke: invoke, listen: listen, notify: notify,
     sessionStates: sessionStates, scheduledRunSessionOwners: scheduledRunSessionOwners,
     personaPlaceholderTitles: personaPlaceholderTitles, turnUsageDirty: turnUsageDirty,
+    // 会话 buffer 删除/淘汰时清理宿主侧 per-session 副表（modeStateEpochs
+    // 定义在本文件后段，无法直接传入引用，用延迟取值 hook）。
+    onSessionBufferPurged: function (id) { delete modeStateEpochs[id]; },
     runSyncOnSession: runSyncOnSession, persistMessagesFor: persistMessagesFor,
     resetPendingAssistant: function () { return resetPendingAssistant.apply(null, arguments); },
     stopThinking: function () { return stopThinking.apply(null, arguments); },
