@@ -19,6 +19,9 @@ for (const file of ['conversation-model.js', 'conversation-scroll.js']) {
 const { startConversationBottomFollower } = await import(
   `${pathToFileURL(path.join(conversationDir, 'conversation-scroll.js')).href}?t=${Date.now()}`
 );
+const { isShrinkClampedToBottom } = await import(
+  `${pathToFileURL(path.join(conversationDir, 'conversation-model.js')).href}?t=${Date.now()}`
+);
 
 function eventTarget() {
   const listeners = new Map();
@@ -165,6 +168,20 @@ try {
   stopShared();
   flushFrame();
   assert.equal(sharedObserver.disconnected, true, 'cleanup must disconnect the shared-element observer');
+
+  // A content shrink clamps scrollTop down to the new maximum; that scroll event must be
+  // recognizable as programmatic so it neither disables nor re-enables auto-follow.
+  const shrinkClamped = { scrollHeight: 900, scrollTop: 700, clientHeight: 200 };
+  assert.equal(isShrinkClampedToBottom(shrinkClamped, 1000), true,
+    'a shrink-induced clamp to the new bottom must be detected');
+  assert.equal(isShrinkClampedToBottom({ ...shrinkClamped, scrollTop: 300 }, 1000), false,
+    'a shrink with the viewport far above the bottom is user scrolling, not a clamp');
+  assert.equal(isShrinkClampedToBottom({ scrollHeight: 1000, scrollTop: 800, clientHeight: 200 }, 1000), false,
+    'no shrink means any upward move is user scrolling');
+  assert.equal(isShrinkClampedToBottom({ scrollHeight: 1200, scrollTop: 1000, clientHeight: 200 }, 1000), false,
+    'content growth must never be treated as a shrink clamp');
+  assert.equal(isShrinkClampedToBottom(null, 1000), false,
+    'a missing element must not be reported as clamped');
 
   console.log('conversation_scroll_follow: ok');
 } finally {

@@ -28,6 +28,7 @@ import {
   isFetchTool,
   isNearConversationBottom,
   isSearchTool,
+  isShrinkClampedToBottom,
   restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
@@ -552,6 +553,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const conversationContentRef = useRef(null);
       const autoScrollRef = useRef(true);
       const lastScrollTopRef = useRef(0);
+      const lastScrollHeightRef = useRef(0);
       const subagentPanelScrollRef = useRef(null);
       const [showScrollBottom, setShowScrollBottom] = useState(false);
       const chatRootRef = useRef(null);
@@ -915,10 +917,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (!el) return;
         const onScroll = () => {
           const near = isNearConversationBottom(el);
-          const movingUp = el.scrollTop < lastScrollTopRef.current - 1;
+          // A content shrink (e.g. content-visibility replacing its 600px estimate with a
+          // smaller real height) makes the browser clamp scrollTop down to the new maximum.
+          // That programmatic jump carries no user intent, so it must neither disable
+          // auto-follow (the bottom follower and streaming effect depend on it) nor
+          // re-enable it for a user who was browsing history.
+          const shrinkClamped = isShrinkClampedToBottom(el, lastScrollHeightRef.current);
+          const movingUp = el.scrollTop < lastScrollTopRef.current - 1 && !shrinkClamped;
           lastScrollTopRef.current = el.scrollTop;
+          lastScrollHeightRef.current = el.scrollHeight;
           if (movingUp) autoScrollRef.current = false;
-          else if (near) autoScrollRef.current = true;
+          else if (!shrinkClamped && near) autoScrollRef.current = true;
           const shouldShow = !autoScrollRef.current && el.scrollHeight > el.clientHeight + 4;
           setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         };
@@ -970,6 +979,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (el) {
           el.scrollTop = el.scrollHeight;
           lastScrollTopRef.current = el.scrollTop;
+          lastScrollHeightRef.current = el.scrollHeight;
         }
       }, [bs && bs.activeSessionId]);
 
@@ -987,6 +997,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           isFollowing: () => autoScrollRef.current,
           onRestored: (scrollTop) => {
             lastScrollTopRef.current = scrollTop;
+            lastScrollHeightRef.current = scrollElement.scrollHeight;
             setShowScrollBottom(false);
           },
         });
