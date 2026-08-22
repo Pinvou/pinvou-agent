@@ -20,6 +20,14 @@ pub(crate) fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
+/// 校验并归一化客户端提供的整文件 sha256 摘要(64 个十六进制字符,容忍首尾
+/// 空白与大小写),桌面暂存文件校验与 Web 上传缓冲校验共用同一格式规则,
+/// 改规则只改一处。非法格式返回 None,由调用方给出各自的错误文案。
+pub(crate) fn normalize_sha256_hex(expected: &str) -> Option<String> {
+    let expected = expected.trim().to_ascii_lowercase();
+    (expected.len() == 64 && expected.bytes().all(|b| b.is_ascii_hexdigit())).then_some(expected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,5 +68,20 @@ mod tests {
         assert!(s
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn sha256_digest_normalization() {
+        // 合法:64 个十六进制字符,首尾空白被裁剪,大写被归一为小写。
+        let digest = "a".repeat(63) + "B";
+        assert_eq!(
+            normalize_sha256_hex(&format!(" {digest} ")),
+            Some("a".repeat(63) + "b")
+        );
+        // 长度不是 64 / 非 hex 字符 → None。
+        assert_eq!(normalize_sha256_hex(&"a".repeat(63)), None);
+        assert_eq!(normalize_sha256_hex(&"g".repeat(64)), None);
+        assert_eq!(normalize_sha256_hex("not-hex"), None);
+        assert_eq!(normalize_sha256_hex(""), None);
     }
 }

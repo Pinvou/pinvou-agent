@@ -25,12 +25,6 @@
     return typeof size === "number" && Number.isSafeInteger(size) && size >= 0;
   }
 
-  function integrityError(reason) {
-    const error = new Error("device attachment integrity check failed" + (reason ? ": " + reason : ""));
-    error.code = "device_upload_integrity_failed";
-    return error;
-  }
-
   function toHex(bytes) {
     let hex = "";
     for (let i = 0; i < bytes.length; i += 1) {
@@ -151,7 +145,6 @@
     MAX_FILE_BYTES,
     bytesToBase64,
     cancelledError,
-    integrityError,
     uploadFile,
     uploadId,
   });

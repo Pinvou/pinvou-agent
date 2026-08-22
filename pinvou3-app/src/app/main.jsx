@@ -5,6 +5,7 @@ import '../styles/base.css';
 import { Edit2, BarChart2, Settings, Smartphone, Clock, Package, Search, ChevronDown, Menu, MoreHorizontal, Check, Filter, Layers, MessageSquare, X, BookOpen, Puzzle, PetPawIcon, FolderOpen, IconList } from '../components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
 import { AcpAgentLogo } from '../features/codex/AcpAgentLogo.jsx';
+import { CodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
@@ -57,11 +58,12 @@ import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
 import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
 import { Lanyard } from '../features/personas/persona-shared.jsx';
 import { VIEW_LOADERS, prefetchView } from './view-loaders.js';
-// 低频视图懒加载:VIEW_LOADERS(见 view-loaders.js)是唯一的动态 import 出口,
+// 低频视图懒加载:VIEW_LOADERS(见 view-loaders.js)是统一的动态 import 出口,
 // React.lazy 与 NavItem 悬停/聚焦预取共用同一工厂,保证命中同一模块缓存。
+// codex 例外:经 LazyCodexAcpView 包装渲染,内部 import 同一 CodexAcpView
+// 模块(与预取共享缓存),并为 chunk 拉取失败提供就地重试边界。
 // ChatView 与 Lanyard 启动即渲染,保持静态 import。
 const LazySettingsView = lazy(() => VIEW_LOADERS.settings().then(m => ({ default: m.SettingsView })));
-const LazyCodexAcpView = lazy(() => VIEW_LOADERS.codex().then(m => ({ default: m.CodexAcpView })));
 const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ default: m.ToolStoreView })));
 const LazyCardPoolView = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.CardPoolView })));
 const LazyScheduledTasksView = lazy(() => VIEW_LOADERS.scheduled().then(m => ({ default: m.ScheduledTasksView })));
@@ -2463,7 +2465,7 @@ function workspaceDisplayName(path) {
             {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => { setCodeModeOn(false); setCurrentView('chat'); }} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
             {codexAcpSupported && currentView === 'codex' && (
-              <LazyCodexAcpView
+              <CodexAcpView
                 theme={activeTheme}
                 t={t}
                 sessions={codexSessions}
