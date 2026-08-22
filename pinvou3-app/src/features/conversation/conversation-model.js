@@ -124,6 +124,19 @@ export function isNearConversationBottom(element, threshold = 96) {
 }
 
 /**
+ * Detect a scroll jump caused by the browser clamping scrollTop after the content
+ * shrank (e.g. content-visibility replacing its intrinsic-size estimate with a
+ * smaller real height), as opposed to the user scrolling up. Scroll events fired
+ * by such a clamp must not be treated as history browsing.
+ */
+export function isShrinkClampedToBottom(element, lastScrollHeight, epsilon = 1) {
+  if (!element) return false;
+  const shrink = (lastScrollHeight || 0) - element.scrollHeight;
+  if (shrink <= epsilon) return false;
+  return (element.scrollHeight - element.scrollTop - element.clientHeight) <= epsilon;
+}
+
+/**
  * 侧栏开合会改变聊天列宽并触发全文重排。保存距底部距离，布局完成后恢复，
  * 这样贴底的流式会话仍贴底，浏览历史时也不会因换行增多而跳到更早内容。
  */

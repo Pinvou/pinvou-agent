@@ -22,11 +22,13 @@ import {
   conversationItemsForMode,
   projectDeepSeekConversation,
 } from '../conversation/deepseek-conversation.js';
+import { startConversationBottomFollower } from '../conversation/conversation-scroll.js';
 import {
   captureConversationScrollPosition,
   isFetchTool,
   isNearConversationBottom,
   isSearchTool,
+  isShrinkClampedToBottom,
   restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
@@ -548,8 +550,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setArtifactW(w); localStorage.setItem('pinvou_artifactW', String(w));
       };
       const scrollRef = useRef(null);
+      const conversationContentRef = useRef(null);
       const autoScrollRef = useRef(true);
       const lastScrollTopRef = useRef(0);
+      const lastScrollHeightRef = useRef(0);
       const subagentPanelScrollRef = useRef(null);
       const [showScrollBottom, setShowScrollBottom] = useState(false);
       const chatRootRef = useRef(null);
@@ -913,10 +917,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (!el) return;
         const onScroll = () => {
           const near = isNearConversationBottom(el);
-          const movingUp = el.scrollTop < lastScrollTopRef.current - 1;
+          // A content shrink (e.g. content-visibility replacing its 600px estimate with a
+          // smaller real height) makes the browser clamp scrollTop down to the new maximum.
+          // That programmatic jump carries no user intent, so it must neither disable
+          // auto-follow (the bottom follower and streaming effect depend on it) nor
+          // re-enable it for a user who was browsing history.
+          const shrinkClamped = isShrinkClampedToBottom(el, lastScrollHeightRef.current);
+          const movingUp = el.scrollTop < lastScrollTopRef.current - 1 && !shrinkClamped;
           lastScrollTopRef.current = el.scrollTop;
+          lastScrollHeightRef.current = el.scrollHeight;
           if (movingUp) autoScrollRef.current = false;
-          else if (near) autoScrollRef.current = true;
+          else if (!shrinkClamped && near) autoScrollRef.current = true;
           const shouldShow = !autoScrollRef.current && el.scrollHeight > el.clientHeight + 4;
           setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         };
@@ -968,8 +979,29 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (el) {
           el.scrollTop = el.scrollHeight;
           lastScrollTopRef.current = el.scrollTop;
+          lastScrollHeightRef.current = el.scrollHeight;
         }
       }, [bs && bs.activeSessionId]);
+
+      // Session content can finish measuring after the active-session effect runs, especially
+      // when an inactive WebView resumes or content-visibility replaces intrinsic estimates.
+      // Keep following the bottom across those layout changes, but never override a user who
+      // deliberately scrolled up.
+      useEffect(() => {
+        const scrollElement = scrollRef.current;
+        const contentElement = conversationContentRef.current;
+        if (!scrollElement || !contentElement) return undefined;
+        return startConversationBottomFollower({
+          scrollElement,
+          contentElement,
+          isFollowing: () => autoScrollRef.current,
+          onRestored: (scrollTop) => {
+            lastScrollTopRef.current = scrollTop;
+            lastScrollHeightRef.current = scrollElement.scrollHeight;
+            setShowScrollBottom(false);
+          },
+        });
+      }, [activeSessionId, hasMessages]);
 
       // 安装工具后新建会话 → 本地显示欢迎卡片（不发 LLM query，不浪费 token）。
       // welcomeToolId 是一次性引导态,必须跟随会话身份:只有"装完工具"(justInstalledTool 非
@@ -1599,7 +1631,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             )}
 
             {hasMessages && (
-              <div className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
+              <div ref={conversationContentRef} className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
                 {useUnifiedConversationUi ? (
                   <ConversationTimeline
                     turns={conversationProjection.turns}
