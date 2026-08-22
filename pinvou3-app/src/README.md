@@ -1,6 +1,6 @@
 # 前端目录约定
 
-前端由 Vite 构建，`index.html` 只负责加载离线运行时脚本和 `app/main.jsx`；业务界面按功能放在 `features/`。
+前端由 Vite 构建，`index.html` 只负责加载离线运行时脚本和 `app/main.jsx`；另有 `pet.html`、`reader.html` 两个入口，分别加载 `app/pet-main.jsx`、`app/reader-main.jsx`；业务界面按功能放在 `features/`。
 
 ## 目录职责
 

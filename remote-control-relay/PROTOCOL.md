@@ -32,6 +32,11 @@ credential hashes. A newer authenticated desktop socket replaces the old socket
 without changing the endpoint or Web lease. A tombstoned ID is rejected with
 `endpoint_revoked`, even when the caller still holds the old credentials.
 
+When a newer registration replaces a still-connected desktop socket, the Relay
+sends the old socket a `desktop_endpoint_replaced` notification and closes it
+with WebSocket close code 4001. The endpoint identity, its credential hashes,
+and any active Web lease are unchanged.
+
 ```json
 {
   "v": 2,
@@ -103,9 +108,11 @@ It accepts only these desktop-to-Web types:
 - `desktop_snapshot`
 
 The original top-level fields are forwarded unchanged except that the Relay
-sets authoritative `v`, `endpoint_id`, and `lease_id` fields. A desktop message
-that explicitly targets a stale lease is dropped so a late response cannot leak
-into the replacement client.
+sets authoritative `v`, `endpoint_id`, and `lease_id` fields. Credential fields
+(`access_token`, `token`, `pairing_token`, `desktop_secret`) are additionally
+stripped from forwarded frames. A desktop message that explicitly targets a
+stale lease is dropped so a late response cannot leak into the replacement
+client.
 
 The desktop is responsible for command/event policy validation, idempotency via
 `client_request_id`, `stream_epoch`, monotonic `seq`, and its bounded replay
@@ -169,6 +176,40 @@ does not contain access tokens, desktop secrets, or their hashes. Tombstones are
 bounded by `MAX_REVOKED_ENDPOINTS` and `MAX_RELAY_STATE_BYTES`. Back up the state
 file with the deployment's durable data. Deleting it deliberately re-enables old
 endpoint IDs.
+
+## Error codes
+
+The Relay reports rejects with a `type: "error"` message carrying a `code`.
+Codes enforced by the reject helper also close the socket with WebSocket close
+code 1008; the remaining codes are informational errors that leave the
+connection open.
+
+| Code | Trigger |
+| --- | --- |
+| `bad_json` | A text frame is not valid JSON. |
+| `bad_message` | The parsed frame is not a JSON object. |
+| `binary_unsupported` | A binary WebSocket frame arrived. |
+| `unsupported_protocol_version` | `v` is missing or is not `2`. |
+| `legacy_token_alias_unsupported` | The message carries a legacy top-level `token` or `pairing_token` field. |
+| `authentication_required` | A non-handshake message arrived before authentication completed. |
+| `authentication_timeout` | The socket did not authenticate within the deadline. |
+| `bad_desktop_endpoint_register` | Malformed `desktop_endpoint_register`: invalid `endpoint_id`, missing or oversized credentials, or the socket already authenticated. |
+| `endpoint_capacity_reached` | Creating a new endpoint would exceed total endpoint capacity. |
+| `endpoint_creation_rate_limited` | The per-IP endpoint creation rate was exceeded. |
+| `invalid_access_token` | Desktop re-registration whose access token hash does not match the endpoint. |
+| `invalid_desktop_secret` | Desktop re-registration or revoke whose desktop secret hash does not match the endpoint. |
+| `invalid_token` | `web_client_join` whose access token hash does not match the endpoint. |
+| `bad_web_client_join` | Malformed `web_client_join`: invalid `endpoint_id` or missing access token. |
+| `endpoint_not_found` | Join, revoke, or forwarded message referenced an endpoint that does not exist. |
+| `stale_lease` | A Web message arrived from a socket that no longer holds the active lease. |
+| `desktop_endpoint_replaced` | A desktop message arrived from a socket already replaced by a newer registration. |
+| `unsupported_message_type` | The authenticated message type is not in that direction's allowlist. |
+| `desktop_offline` | A Web-to-desktop message arrived while the desktop socket is not connected. |
+| `ingress_rate_limited` | The per-connection ingress message or byte rate was exceeded. |
+| `endpoint_revoked` | Desktop registration for a tombstoned endpoint ID. The same name is also the message type delivered to the Web client on revoke or TTL expiry, with `reason` such as `desktop_offline_ttl_expired`. |
+| `revocation_in_progress` | A second revoke arrived while one is already in progress for the endpoint. |
+| `revoke_persistence_failed` | Persisting the revoke tombstone failed; the requester is closed and the endpoint remains usable. |
+| `revoke_failed` | An unexpected error occurred while processing a revoke. |
 
 ## HTTP and operational behavior
 

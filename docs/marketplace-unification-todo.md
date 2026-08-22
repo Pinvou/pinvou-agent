@@ -93,7 +93,9 @@ fmt、architecture-guard 全绿。**任何新刀不得新增失败。**
 | 1cf0b78f | 分支同步后对齐 #287 重命名（sync_deny_all_scopes / SessionPolicy::mode） |
 | a02d58b7 | A 节 scope 收敛：包 id 单一禁用集 + enable_in(scope) 动作 + 前端切单一开关 |
 
-**当前架构状态**：BundleStore 是安装态唯一真相源；存储按包聚合；CLI 无特殊地位；
+**当前架构状态**（本文档写作时点的记录）：安装态权威仍是 `installed.json` / `mcp.json`
+（Phase 2 过渡期，`marketplace/mod.rs` 注释明示 bundles.json 只镜像安装态；终态
+"BundleStore 为唯一真相源"见 `marketplace-unification.md` §4）；存储按包聚合；CLI 无特殊地位；
 前端动作驱动；治理三通道齐备（物化排除/disallowed_tools/execpolicy）；
 开关已收敛为**包 id × SessionMode 单一禁用集**（`disabled_bundles.json`）。
 **.installed-from 标记、cache/connectors 暂存、逐连接器 status 前端调用、

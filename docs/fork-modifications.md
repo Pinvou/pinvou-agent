@@ -4,7 +4,7 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-17 · v0.9.5 r7 四主题公开基线）
+## 0. 当前状态（2026-08-22 · v0.9.5 r7 四主题公开基线）
 
 | 项 | 当前值 |
 |---|---|
@@ -18,11 +18,12 @@
 | 守护 | 23 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
 
-### PR #302 父仓 gitlink 同步
+### 父仓 gitlink 同步勘误（2026-08-22 更正）
 
-- PR #302 (`feat/plugin-protocol`) 起步时父仓 CodeWhale gitlink 停在 r6 (`3bbf8421`)，与上方 `发布状态` 不一致，触发 `scripts/verify-public-submodule.sh` 与 `scripts/ci-fork-link-check.sh` 在 PR 跑 fast-gate 时持续失败。
-- 本 PR 提交把父仓 gitlink 一次性 bump 到 `a36e6cd533024cfe5724bae21875aea42b2ed87a` (= `pinvou-v0.9.5-r7^{}`)，与 `Pinvou/CodeWhale:pinvou3-clean` HEAD 对齐；不动 `.gitmodules`、不动底座主题内容。
-- bump 后 `verify-public-submodule.sh` 通过；本文与 `scripts/fork-guard.sh` 的指纹与上方表格保持一致，不需要额外指纹改动。
+- 早期版本此处曾记载"PR #302 把父仓 gitlink 从 r6 (`3bbf8421`) 一次性 bump 到 r7"。
+  事后按 git 历史勘误：该 bump 实际发生在 **PR #285**（commit `95502ac8`，`git ls-tree` 可证：`95502ac8^` 为 `3bbf8421`，`95502ac8` 起即为 `a36e6cd533…`）。
+- PR #302 (`feat/plugin-protocol`) 起步于 #285 合并前的旧 main，合并时 gitlink 已在 main 上对齐 r7，因此 **#302 未改动 gitlink**（`git diff c75f2fb2^..c75f2fb2 -- CodeWhale` 为空）。
+- 现状不变：父仓 gitlink、`Pinvou/CodeWhale:pinvou3-clean` HEAD 与 `pinvou-v0.9.5-r7` 标签均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a`。
 
 ### 本次会话修复（已验证并发布）
 

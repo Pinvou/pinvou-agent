@@ -1,6 +1,6 @@
 # 工具市场统一治理方案（marketplace unification）
 
-> 状态：实施中（Phase 2 app 侧已完成，进度与待办见 `docs/marketplace-unification-todo.md`）。
+> 状态：实施中（Phase 2 app 侧已完成；`docs/marketplace-unification-todo.md` 为已过期的历史交接快照，不再是进度真相源——现行状态以 `docs/plugin-package-spec.md`、`docs/plugin-protocol.md` 与本文为准）。
 > 关联文档：`docs/工具市场.md`（现状设计）、`docs/fork-policy.md`（底座改动边界）；
 > #287 已合入：`docs/capability-governance.md` 为能力治理单一真相源（scope 已按模式泛化、
 > PackDefaultPolicy / declare_all_modes! 编译期哨兵已就位），本文聚焦市场侧的统一改造。
@@ -99,7 +99,7 @@ disconnect / uninstall / enable_in(scope)…），每个动作带可用性与原
 │   └── <id>/
 │       ├── mcp/                    ← server 脚本（安装时释放，非启动全量释放）
 │       ├── skills/<name>/          ← 包内技能（含脚本；预置/上传/companion 同构）
-│       └── archive.zip             ← 上传包原件存档（支持重装）
+│       └── archive.zip             ← 上传包原件存档（支持重装）⏳ 终态设计，未实施
 ├── assets/                         ← 版本化外部资产（包只引用不拥有）
 │   ├── cli/<name>/<version>/
 │   └── .staging/                   ← 下载/解包暂存（收编 cache/connectors）

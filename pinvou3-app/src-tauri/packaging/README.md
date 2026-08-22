@@ -18,6 +18,10 @@ packaging/
 - `build.js`：组合平台配置并启动 Tauri CLI。
 - `windows-runtime.js`：读取 runtime descriptor，不感知安装器细节。
 - `windows-installer.js`：按 bundle 目标准备 NSIS 专属资源。
+- `codex-bridge.js`：准备应用隔离的 Codex ACP Bridge 运行时。
+- `knowledge-host.js`：准备 pinvou-knowledge-host-helper 运行时资源。
+
+以上清单以 `scripts/tauri/` 目录为准。
 
 工具市场不在构建期注入共享 API Key。社区构建从公开、锁定的独立仓库取得 Windows 运行时，
 不包含私有凭据或官方签名工具。

@@ -1,6 +1,8 @@
 # CodeWhale Fork Modification Register
 
-> Updated: 2026-08-17. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md).
+> Updated: 2026-08-22. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md). This English page is a condensed summary; the Chinese version is the complete, authoritative register.
+>
+> 2026-08-22 corrections: (1) the parent gitlink bump from r6 (`3bbf8421`) to r7 happened in parent PR #285 (`95502ac8`), not in PR #302 — PR #302 started from a pre-#285 main and merged without touching the gitlink; (2) PR #302 (capability-bundle unification, parent commit `c75f2fb2`) updated the parent-side scope model — the single `disabled_bundles.json` (package id × mode, plus `hidden_scopes`) replaced the separate `disabled_connectors.json` / `disabled_skills.json` files.
 
 ## Current baseline
 
