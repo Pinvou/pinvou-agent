@@ -449,26 +449,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn revert_noop_without_managed_blocks_skips_write() {
-        let dir = tmp_dir();
-        let writer = KimiConfigWriter::new(&dir);
-        fs::write(dir.join("config.toml"), "default_model = \"kimi-k2.5\"\n").unwrap();
-        writer.revert_to_official(None).unwrap();
-        assert!(!dir.join("config.toml.pinvou3-bak").exists());
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn refuses_to_overwrite_unparseable_file() {
-        let dir = tmp_dir();
-        let writer = KimiConfigWriter::new(&dir);
-        let broken = "default_model = \"x\"\n[unclosed";
-        fs::write(dir.join("config.toml"), broken).unwrap();
-        assert!(writer.apply(&target("pv-aaaaaaaaaaaa")).is_err());
-        assert_eq!(fs::read_to_string(dir.join("config.toml")).unwrap(), broken);
-        let _ = fs::remove_dir_all(&dir);
-    }
+    // The shared contracts (revert writes no backup / unparseable files refuse
+    // overwrite) were hoisted into the parameterized
+    // providers::tests::shared_writer_contract_matrix; only Kimi-specific
+    // behavior stays here.
 
     #[test]
     fn official_default_model_roundtrip() {

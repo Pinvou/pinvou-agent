@@ -1086,6 +1086,111 @@ mod tests {
         }
     }
 
+    /// Shared behavior contracts of the three CLI ConfigWriters, locked in one
+    /// parameterized matrix (per-writer format tests stay in their own files):
+    /// revert with no managed keys writes no backup, apply on a broken file
+    /// errors and leaves bytes unchanged, and the first apply creates a backup
+    /// that a second apply reuses. Each writer gets its own subdirectory —
+    /// codex/kimi share the config.toml name, and a shared directory would let
+    /// one case's backup pollute the next case's "backup does not exist"
+    /// assertion.
+    #[test]
+    fn shared_writer_contract_matrix() {
+        fn target(provider_id: &str) -> ProviderTarget {
+            ProviderTarget {
+                provider_id: provider_id.into(),
+                name: "中转".into(),
+                base_url: "https://api.example.com/relay/".into(),
+                model: Some("demo-model".into()),
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                api_key: Some("test-api-key-1234567890".into()),
+            }
+        }
+        fn run_case(
+            name: &str,
+            writer: &dyn AgentConfigWriter,
+            dir: &Path,
+            config_name: &str,
+            initial: &str,
+            broken: &str,
+        ) {
+            let config = dir.join(config_name);
+            let backup = dir.join(format!("{config_name}.pinvou3-bak"));
+
+            // Contract 1: revert with no managed keys writes no backup.
+            std::fs::write(&config, initial).unwrap();
+            writer.revert_to_official(None).unwrap();
+            assert!(
+                !backup.exists(),
+                "{name}: revert with no managed keys must not write a backup"
+            );
+
+            // Contract 2: apply on a broken file errors and leaves bytes
+            // unchanged (never silently overwrite an unparseable config).
+            std::fs::write(&config, broken).unwrap();
+            assert!(
+                writer.apply(&target("pv-aaaaaaaaaaaa")).is_err(),
+                "{name}: apply on a broken config must return Err"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&config).unwrap(),
+                broken,
+                "{name}: bytes of a broken config must not change"
+            );
+
+            // Contract 3: the first apply creates a backup (preserving the
+            // initial content) and a second apply reuses the same backup.
+            std::fs::write(&config, initial).unwrap();
+            writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
+            writer.apply(&target("pv-bbbbbbbbbbbb")).unwrap();
+            assert!(
+                backup.exists(),
+                "{name}: a backup must exist after the first apply"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&backup).unwrap(),
+                initial,
+                "{name}: the backup must preserve the initial state"
+            );
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-acp-writer-contract-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cases: [(&str, &str, &str, &str); 3] = [
+            ("claude", "settings.json", r#"{"model":"x"}"#, "{not json"),
+            (
+                "codex",
+                "config.toml",
+                "model = \"gpt-5.2\"\n",
+                "model_provider = \"pv-x\"\n[unclosed",
+            ),
+            (
+                "kimi",
+                "config.toml",
+                "default_model = \"kimi-k2.5\"\n",
+                "default_model = \"x\"\n[unclosed",
+            ),
+        ];
+        for (name, config_name, initial, broken) in cases {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let writer: Box<dyn AgentConfigWriter> = match name {
+                "claude" => Box::new(claude::ClaudeConfigWriter::new(&dir)),
+                "codex" => Box::new(codex::CodexConfigWriter::new(&dir)),
+                _ => Box::new(kimi::KimiConfigWriter::new(&dir)),
+            };
+            run_case(name, writer.as_ref(), &dir, config_name, initial, broken);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn store_roundtrip_and_atomic() {
         let current = std::thread::current();

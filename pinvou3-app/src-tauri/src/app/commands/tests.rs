@@ -12,45 +12,67 @@ use crate::platform::path_policy::validate_user_path;
 use std::path::{Path, PathBuf};
 
 #[test]
-fn marketplace_auth_status_only_oauth_is_connected_for_oauth_tools() {
+fn marketplace_auth_status_matrix() {
     use deepseek_tui::mcp::oauth::McpAuthStatus;
 
-    let (status, _, token_present) =
-        marketplace_auth_status_fields(true, true, true, Some(McpAuthStatus::OAuth));
-    assert_eq!(status, "connected");
-    assert!(token_present);
-
-    for auth_status in [
-        McpAuthStatus::NotLoggedIn,
-        McpAuthStatus::Unsupported,
-        McpAuthStatus::BearerToken,
-    ] {
+    // (installed, oauth_required, mcp_configured, auth_status) → (status, token_present)
+    let cases: [(bool, bool, bool, Option<McpAuthStatus>, &str, bool); 7] = [
+        // OAuth tools: a completed OAuth login means connected with a token;
+        // any other login state stays auth-pending
+        (
+            true,
+            true,
+            true,
+            Some(McpAuthStatus::OAuth),
+            "connected",
+            true,
+        ),
+        (
+            true,
+            true,
+            true,
+            Some(McpAuthStatus::NotLoggedIn),
+            "config_installed_auth_pending",
+            false,
+        ),
+        (
+            true,
+            true,
+            true,
+            Some(McpAuthStatus::Unsupported),
+            "config_installed_auth_pending",
+            false,
+        ),
+        (
+            true,
+            true,
+            true,
+            Some(McpAuthStatus::BearerToken),
+            "config_installed_auth_pending",
+            false,
+        ),
+        // OAuth tool without MCP configuration: auth still pending
+        (
+            true,
+            true,
+            false,
+            Some(McpAuthStatus::OAuth),
+            "auth_pending",
+            false,
+        ),
+        // Non-OAuth tools: installed means connected; not installed means not_installed
+        (true, false, false, None, "connected", false),
+        (false, false, false, None, "not_installed", false),
+    ];
+    for (installed, oauth_required, mcp_configured, auth_status, want_status, want_token) in cases {
         let (status, _, token_present) =
-            marketplace_auth_status_fields(true, true, true, Some(auth_status));
-        assert_eq!(status, "config_installed_auth_pending");
-        assert!(!token_present);
+            marketplace_auth_status_fields(installed, oauth_required, mcp_configured, auth_status);
+        assert_eq!(
+            status, want_status,
+            "inputs: installed={installed} oauth={oauth_required} mcp={mcp_configured} auth={auth_status:?}"
+        );
+        assert_eq!(token_present, want_token, "token_present for {want_status}");
     }
-}
-
-#[test]
-fn marketplace_auth_status_preserves_non_oauth_installed_semantics() {
-    let (status, _, token_present) = marketplace_auth_status_fields(true, false, false, None);
-    assert_eq!(status, "connected");
-    assert!(!token_present);
-
-    let (status, _, token_present) = marketplace_auth_status_fields(false, false, false, None);
-    assert_eq!(status, "not_installed");
-    assert!(!token_present);
-}
-
-#[test]
-fn marketplace_auth_status_requires_mcp_config_for_oauth_connected() {
-    use deepseek_tui::mcp::oauth::McpAuthStatus;
-
-    let (status, _, token_present) =
-        marketplace_auth_status_fields(true, true, false, Some(McpAuthStatus::OAuth));
-    assert_eq!(status, "auth_pending");
-    assert!(!token_present);
 }
 
 #[test]
@@ -536,25 +558,21 @@ fn file_url_from_path_encodes_local_artifact_paths() {
 }
 
 #[test]
-fn write_artifact_text_allows_markdown() {
-    let _home = test_pinvou_home("pinvou3-md-write-test");
-    let md = session_artifact_path("s1", "note.md");
-    std::fs::write(&md, "# Old\n").unwrap();
+fn write_artifact_text_allows_markdown_extensions() {
+    // `.markdown` is a parameterized companion to the `.md` allowed path; both
+    // extensions go through the same loop.
+    for (tag, ext) in [
+        ("pinvou3-md-write-test", "md"),
+        ("pinvou3-markdown-write-test", "markdown"),
+    ] {
+        let _home = test_pinvou_home(tag);
+        let md = session_artifact_path("s1", &format!("note.{ext}"));
+        std::fs::write(&md, "# Old\n").unwrap();
 
-    write_artifact_text_impl(md.to_str().unwrap(), "# New\n\nBody").unwrap();
+        write_artifact_text_impl(md.to_str().unwrap(), "# New\n\nBody").unwrap();
 
-    assert_eq!(std::fs::read_to_string(&md).unwrap(), "# New\n\nBody");
-}
-
-#[test]
-fn write_artifact_text_allows_markdown_extension() {
-    let _home = test_pinvou_home("pinvou3-markdown-write-test");
-    let md = session_artifact_path("s1", "note.markdown");
-    std::fs::write(&md, "old").unwrap();
-
-    write_artifact_text_impl(md.to_str().unwrap(), "new").unwrap();
-
-    assert_eq!(std::fs::read_to_string(&md).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "# New\n\nBody");
+    }
 }
 
 #[test]

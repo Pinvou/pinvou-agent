@@ -60,7 +60,9 @@ assert.match(
 
 assert.match(windows, /SYSTEM_CODEX_NAME: &str = "codex\.cmd"/);
 assert.match(windows, /external_application_path\(adapter\)/);
-assert.match(windows, /HiddenTokioCommand::new\("cmd"\)/);
+// The full HiddenTokioCommand::new("cmd") contract (must carry the
+// ["/D","/S","/C"] arguments) is anchored by codex_acp_windows_contract.test.js;
+// the bare existence assertion is strictly implied by it and not repeated.
 assert.match(install, /fn command_version[\s\S]*?external_command/);
 assert.match(login, /fn cli_status_success[\s\S]*?external_command/);
 assert.match(processRuntime, /fn external_command_for[\s\S]*?HiddenCommand::new\("cmd"\)/);
@@ -149,11 +151,12 @@ assert.match(feature, /"npm_upgrade" => self\.upgrade_via_npm\(backend\)/);
 // 三 Agent 未安装均走官方脚本；Codex 官方脚本默认 latest，且安装后从 ~/.local/bin
 // 直接解析绝对路径，不依赖桌面进程启动时继承的 PATH。
 // 脚本 URL 常量定义留在 mod.rs；install.rs 只引用并按 backend 选择。
+// The CODEX_INSTALL_SCRIPT_WINDOWS constant and resolve_codex_cli official
+// path resolution are anchored by codex_acp_windows_contract.test.js (same
+// mod.rs/install.rs); not repeated here.
 assert.match(feature, /CODEX_INSTALL_SCRIPT_UNIX: &str = "https:\/\/chatgpt\.com\/codex\/install\.sh"/);
-assert.match(feature, /CODEX_INSTALL_SCRIPT_WINDOWS: &str = "https:\/\/chatgpt\.com\/codex\/install\.ps1"/);
 assert.match(install, /AgentBackend::CodexAcp => \(CODEX_INSTALL_SCRIPT_UNIX, CODEX_INSTALL_SCRIPT_WINDOWS\)/);
 assert.match(install, /command\.env\("CODEX_NON_INTERACTIVE", "1"\)/);
-assert.match(install, /fn resolve_codex_cli\([\s\S]*?platform::codex_official_install_path\(\)/);
 assert.doesNotMatch(install, /managed_download|MANAGED_CODEX_VERSION|install_managed_codex/);
 assert.doesNotMatch(
   `${windows}\n${linux}\n${macos}`,

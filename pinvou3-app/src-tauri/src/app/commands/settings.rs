@@ -1598,16 +1598,6 @@ mod tests {
     }
 
     #[test]
-    fn image_capability_400_is_unsupported_with_provider_summary() {
-        let body = r#"{"error":{"message":"this model does not support image input","type":"invalid_request_error"}}"#;
-        let result = classify_image_capability_http(reqwest::StatusCode::BAD_REQUEST, body);
-        assert_eq!(result.status, "unsupported");
-        assert!(!result.verified);
-        assert_eq!(result.summary, "this model does not support image input");
-        assert_eq!(result.http_status, Some(400));
-    }
-
-    #[test]
     fn image_capability_400_422_unverified_when_not_image_rejection() {
         // 400/422 未点名图片的拒绝(模型名不存在、参数错误、网关格式):
         // 统一"未能正确识别图像,原因未知",不归"不支持图像识别"。
@@ -1650,6 +1640,7 @@ mod tests {
             r#"{"error":{"message":"this model does not support image input"}}"#,
         );
         assert_eq!(result.status, "unsupported");
+        assert!(!result.verified);
         assert_eq!(result.summary, "this model does not support image input");
         assert_eq!(result.http_status, Some(400));
 
