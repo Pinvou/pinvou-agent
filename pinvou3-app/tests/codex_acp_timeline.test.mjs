@@ -286,7 +286,7 @@ try {
     path.join(root, 'src', 'features', 'codex', 'LazyCodexAcpView.jsx'),
     'utf8',
   );
-  const i18n = readFileSync(path.join(root, 'src', 'shared', 'i18n.js'), 'utf8');
+  const i18n = ['zh', 'en', 'ja'].map((l) => readFileSync(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // 拆分后三语在 i18n/ 目录
   const navigationComponents = readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
   assert.ok(main.includes("currentView === 'codex'"));
   assert.ok(main.includes('<LazyCodexAcpView'), 'Codex view renders via lazy chunk');

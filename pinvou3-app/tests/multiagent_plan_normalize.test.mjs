@@ -49,7 +49,7 @@ const memoryCommandSource = read('src-tauri', 'src', 'app', 'commands', 'memory.
 const interactionCommandSource = read('src-tauri', 'src', 'app', 'commands', 'interaction.rs');
 const interactionBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'interaction.js');
 const settingsSource = read('src', 'features', 'settings', 'composer-shared.jsx');
-const i18nSource = read('src', 'shared', 'i18n.js');
+const i18nSource = ['zh', 'en', 'ja'].map((l) => read('src', 'shared', 'i18n', `${l}.js`)).join('\n'); // 拆分后三语在 i18n/ 目录
 const poolSource = read('src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs');
 // wave3 起多智能体状态注释随 SessionModeState 迁至 sessions 特性域
 // （core/mode_state.rs 只剩跨层协议类型），契约断言跟随定义位置。

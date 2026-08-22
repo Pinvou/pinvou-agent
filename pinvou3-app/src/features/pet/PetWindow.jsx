@@ -71,7 +71,7 @@ import {
   resolvePet,
 } from './pet-registry.js';
 import { useReducedMotion } from '../../hooks/useReducedMotion.js';
-import { dict, initialSystemLanguage, TAG_TO_LANG } from '../../shared/i18n.js';
+import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../../shared/i18n.js';
 import './pet.css';
 
 const TICK_MS = 600;
@@ -287,11 +287,14 @@ export default function PetWindow({
     let disposed = false;
     let unlisten = null;
     invokeTauri('get_settings').then((settings) => {
-      if (!disposed) setLanguage(TAG_TO_LANG[settings?.language] || initialSystemLanguage());
+      const lang = TAG_TO_LANG[settings?.language] || initialSystemLanguage();
+      // en/ja 惰性词典:本窗口入口首帧只引导系统语言,落盘语言可能未装载
+      if (!disposed) ensureLanguage(lang).then(() => setLanguage(lang)).catch(() => {});
     }).catch(() => {});
     tauriEvents.listen('ui:language_changed', (event) => {
       const next = event.payload?.language;
-      if (!disposed && dict[next]) setLanguage(next);
+      // 主窗切换前已 ensure;本窗仍需各自装载(窗口间不共享 dict 装载状态)
+      if (!disposed) ensureLanguage(next).then((ok) => { if (ok) setLanguage(next); }).catch(() => {});
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;

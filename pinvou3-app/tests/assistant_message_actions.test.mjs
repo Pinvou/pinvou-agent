@@ -12,7 +12,7 @@ import {
   assistantExportFilename,
   buildAssistantResponseExport,
 } from '../src/features/conversation/assistant-response-export.js';
-import { dict } from '../src/shared/i18n.js';
+import { dict } from '../src/shared/i18n-all.js'; // 三语全量断言:浏览器入口用 i18n.js 惰性装载,测试用聚合 shim
 import { renderMarkdownMarkup } from '../src/shared/markdown-renderer.js';
 
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');

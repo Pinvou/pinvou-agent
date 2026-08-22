@@ -103,7 +103,7 @@ const codeViewerModal = fs.readFileSync(
 );
 const acpPlatformClient = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'acpClient.js'), 'utf8');
 const acpErrors = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'acpErrors.js'), 'utf8');
-const i18n = fs.readFileSync(path.join(root, 'src', 'shared', 'i18n.js'), 'utf8');
+const i18n = ['zh', 'en', 'ja'].map((l) => fs.readFileSync(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // 拆分后三语在 i18n/ 目录
 const appMain = fs.readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
 const policy = JSON.parse(fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'access-policy.json'), 'utf8'));
 const allowed = new Set(policy.allowed_commands);
