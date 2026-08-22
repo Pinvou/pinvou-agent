@@ -562,11 +562,13 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
+    // 毫秒精度：agent 的原子重写可以在同一秒内连发多版，秒级 mtime 会让
+    // 第二版拿到第一版的陈旧预览。
     let mtime = std::fs::metadata(&p)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis())
         .unwrap_or(0);
     let cache_key = format!("{}|{}", p.display(), mtime);
     if let Some(hit) = visual_cache().lock().get_mut(&cache_key) {
@@ -996,4 +998,60 @@ pub async fn open_artifact_window(
         .build()
         .map_err(|e| format!("build artifact window: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod visual_cache_tests {
+    use super::*;
+
+    fn result_with(bytes: usize) -> VisualResult {
+        VisualResult {
+            mode: "html".into(),
+            html: Some("x".repeat(bytes)),
+            images: vec![],
+            warning: None,
+        }
+    }
+
+    fn fresh_state() -> std::collections::HashMap<String, VisualCacheEntry> {
+        std::collections::HashMap::new()
+    }
+
+    #[test]
+    fn same_path_stale_mtime_yields_on_insert() {
+        let mut state = fresh_state();
+        visual_cache_insert(&mut state, "/a/doc.docx|1001".into(), result_with(8));
+        visual_cache_insert(&mut state, "/a/doc.docx|2002".into(), result_with(8));
+        assert_eq!(state.len(), 1, "同路径旧 mtime 键应让位");
+        assert!(state.contains_key("/a/doc.docx|2002"));
+    }
+
+    #[test]
+    fn entry_cap_evicts_oldest_touched() {
+        let mut state = fresh_state();
+        for i in 0..=MAX_VISUAL_CACHE_ENTRIES as u64 {
+            visual_cache_insert(&mut state, format!("/p/{i}.pdf|1"), result_with(8));
+        }
+        assert_eq!(state.len(), MAX_VISUAL_CACHE_ENTRIES);
+        assert!(!state.contains_key("/p/0.pdf|1"), "最旧条目应被淘汰");
+        assert!(state.contains_key(&format!("/p/{}.pdf|1", MAX_VISUAL_CACHE_ENTRIES)));
+    }
+
+    #[test]
+    fn byte_budget_evicts_until_under_cap() {
+        let mut state = fresh_state();
+        let per = MAX_VISUAL_CACHE_BYTES / 4 + 1024;
+        for i in 0..4 {
+            visual_cache_insert(&mut state, format!("/big/{i}.pdf|1"), result_with(per));
+        }
+        assert!(
+            state
+                .values()
+                .map(|e| visual_result_bytes(&e.result))
+                .sum::<usize>()
+                <= MAX_VISUAL_CACHE_BYTES,
+            "累计字节应回落到预算内"
+        );
+        assert!(state.len() >= 1, "至少保留最新一条");
+    }
 }

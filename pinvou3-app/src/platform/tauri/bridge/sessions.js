@@ -49,10 +49,12 @@
   var MAX_SCHEDULED_SESSION_BUFFERS = 64;
   var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
   // 全会话缓冲上限：sessionStates 每条持有完整 messages+chatItems(含渲染
-  // html)+artifacts，曾只对 scheduled 会话做 64 条 LRU——普通会话切过即永久
-  // 驻留，长时使用的内存随历史会话数无界增长。普通会话淘汰后重访问走
-  // load_session 磁盘重水化（ensureSessionBufferLoaded/switchTo 已支持）。
-  var MAX_SESSION_BUFFERS = 96;
+  // html)+artifacts（重会话 1-4MB/条），曾只对 scheduled 会话做 64 条 LRU——
+  // 普通会话切过即永久驻留。上限取 32：典型用户活跃切换集中在个位数会话，
+  // 96×1-4MB 最坏数百 MB 且 >20 的命中率趋近于零；被淘汰会话重访问走
+  // load_session 磁盘重水化（ensureSessionBufferLoaded/switchTo 已支持），
+  // 代价仅一次重载。
+  var MAX_SESSION_BUFFERS = 32;
     var sessionBufferTouchClock = 0;
     var scheduledRunOwnerTouchClock = 0;
     var scheduledRunOpenInFlight = Object.create(null);
@@ -120,7 +122,9 @@
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete personaPlaceholderTitles[id];
       pruneScheduledRunSessionOwner(id);
+      if (onSessionBufferPurged) onSessionBufferPurged(id);
       overflow -= 1;
     }
   }
@@ -148,6 +152,7 @@
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete personaPlaceholderTitles[id];
       if (onSessionBufferPurged) onSessionBufferPurged(id);
       overflow -= 1;
     }

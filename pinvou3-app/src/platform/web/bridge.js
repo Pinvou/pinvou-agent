@@ -770,10 +770,11 @@
   var scheduledRunOpenInFlight = Object.create(null);
   var MAX_SCHEDULED_SESSION_BUFFERS = 64;
   var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
-  // 全会话缓冲上限：sessionStates 曾只对 scheduled 会话做 64 条 LRU——普通会话
-  // 切过即永久驻留，内存随历史会话数无界增长。普通会话淘汰后重访问走磁盘
-  // 重水化路径（load_session）。
-  var MAX_SESSION_BUFFERS = 96;
+  // 全会话缓冲上限：sessionStates 每条持有完整 messages+chatItems（重会话
+  // 1-4MB/条），曾只对 scheduled 会话做 64 条 LRU——普通会话切过即永久驻留。
+  // 上限取 32：典型用户活跃切换集中在个位数，96×1-4MB 最坏数百 MB 且高水位
+  // 命中率趋近于零；被淘汰会话重访问走 load_session 磁盘重水化，代价仅一次重载。
+  var MAX_SESSION_BUFFERS = 32;
   var sessionBufferTouchClock = 0;
   var scheduledRunOwnerTouchClock = 0;
   var suppressNotify = false;
@@ -937,6 +938,10 @@
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete personaPlaceholderTitles[id];
+      if (window.localStorage) {
+        try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
+      }
       // The owner tombstone has its own bounded LRU and must outlive a
       // presentation-buffer eviction. Otherwise a stale `running` list row can
       // resurrect a run that already emitted chat:done.
@@ -967,6 +972,10 @@
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete personaPlaceholderTitles[id];
+      if (window.localStorage) {
+        try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
+      }
       overflow -= 1;
     }
   }
@@ -976,6 +985,10 @@
     delete turnUsageDirty[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];
+    // scene 事件 localStorage 键随会话删除一并清理,避免随历史会话数无界累积。
+    if (window.localStorage) {
+      try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
+    }
     if (state.scheduledRunContext && state.scheduledRunContext.sessionId === id) {
       state.scheduledRunContext = null;
     }
