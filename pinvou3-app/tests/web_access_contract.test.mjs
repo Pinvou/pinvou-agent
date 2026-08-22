@@ -162,6 +162,8 @@ for (const command of [
   'open_acp_agent_login_url',
   'submit_acp_agent_login_code',
   'web_access_enable',
+  // 上传包展示名/说明编辑写 bundles.json 并可能回写 SKILL.md：写操作桌面专用。
+  'update_bundle_display_meta',
 ]) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }

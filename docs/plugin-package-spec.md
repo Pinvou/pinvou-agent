@@ -271,9 +271,38 @@ metadata:                       # 可选
 
 ---
 
-## 12. 示例
+## 12. 上传包的 UI 展示名/说明覆盖（应用侧登记，不改包清单）
 
-### 12.1 纯 MCP 包
+用户可在插件中心给自己上传的包（登记来源为 Upload）设置可读的**显示名**与
+**显示说明**，只影响 UI 展示：
+
+- 覆盖值写在应用登记 `~/.pinvou3/marketplace/bundles.json` 对应记录的 `extra`
+  map（key：`display_name` / `display_description`），**不改 `plugin.json`、不改包
+  目录、不改 frontmatter `name`**；机读 id 与目录名保持不变。
+- 展示优先级：extra 覆盖 > 包内现状（上传技能卡回退为包 id 与 `SKILL.md` 的
+  `description`；上传 MCP/组合包回退为 `mcp/manifest.json` 的 `name` /
+  `description`；composer 工具菜单同样应用覆盖）。清空覆盖（留空保存）即删除
+  key、回退默认展示。
+- 校验：显示名 ≤ 64 字符、显示说明 ≤ 240 字符，含控制字符/换行一律拒绝；仅
+  Upload 来源可写（预置/内置包拒绝，手工塞进非 Upload 记录 extra 的覆盖在展示
+  时也会被忽略）。
+- **SKILL.md 说明同步（双向）**：仅当包内有且仅有一个技能（`bundles/<id>/skills/`
+  下恰一个技能目录）时：
+  - 设置非空显示说明 → 首次回写前把 frontmatter 原说明备份进 `extra`
+    （`skill_description_backup`，空串 = 原本没有 description），再把说明回写进
+    该技能 `SKILL.md` 的 frontmatter `description`（统一写成单行；已有块状写法
+    会被替换），让模型侧看到的描述与界面一致，并重算包内容指纹；
+  - 清空显示说明 → 从备份恢复 frontmatter 原值（原缺失则删掉 description 行），
+    然后清除备份 key。恢复后回到「从未编辑过」的状态。
+  值无法单行互洽表达（含双引号、反斜杠）、或 frontmatter 存在结构性多重
+  description 定义时整体报错、不落盘。多技能包与纯 MCP 包跳过同步（说明覆盖
+  仅写入 extra，不备份）。
+
+---
+
+## 13. 示例
+
+### 13.1 纯 MCP 包
 
 ```
 calc.zip
@@ -287,7 +316,7 @@ calc.zip
 `plugin.json`：`components.mcp_servers: [{ "id": "calc", "dir": "mcp" }]`；
 `mcp/manifest.json`：`id=calc, command=python, args=["server.py"]`。
 
-### 12.2 纯技能包
+### 13.2 纯技能包
 
 ```
 greet.zip
@@ -299,7 +328,7 @@ greet.zip
 `plugin.json`：`components.skills: [{ "id": "greet", "dir": "skills/greet" }]`。
 （也可省略 `plugin.json`，走裸技能回退。）
 
-### 12.3 组合包（MCP + 技能）
+### 13.3 组合包（MCP + 技能）
 
 ```
 combo-demo.zip
@@ -316,7 +345,7 @@ combo-demo.zip
 
 ---
 
-## 13. 与其它文档的关系
+## 14. 与其它文档的关系
 
 - `plugin-protocol.md`：协议**设计草案**，含 v2 预留（workflows / cli_connectors /
   commands / hooks / 远程下载等）。本文只落地其 v1 已实施子集。

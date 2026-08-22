@@ -600,6 +600,102 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       );
     };
 
+    // 上传包展示名/说明编辑弹窗（extra 覆盖，只改 UI 展示；预填当前覆盖值，
+    // 留空即清除覆盖回退默认）。调用方按 updateConfirm 同款模式条件挂载，
+    // useState 初值即当前覆盖值。错误留在弹窗内联展示（输入保留不丢），
+    // maxLength 与后端 64/240 字符上限一致，Escape 关闭与 backdrop 一致。
+    const MAX_DISPLAY_NAME_CHARS = 64;
+    const MAX_DISPLAY_DESCRIPTION_CHARS = 240;
+    const TsEditDisplayDialog = ({ dialog, onConfirm, onCancel, copy }) => {
+      const [name, setName] = useState(dialog.name || '');
+      const [desc, setDesc] = useState(dialog.description || '');
+      const [error, setError] = useState(null);
+      const inputCls = "w-full px-3 py-2 rounded-lg text-[14px] outline-none transition-colors border bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:border-[#3A3A3C] dark:text-white dark:placeholder-slate-500 dark:focus:border-[#0A84FF]";
+      const handleConfirm = async () => {
+        // 关闭/提交由调用方决定：确认失败时返回错误文案，弹窗保留输入。
+        try {
+          const err = await onConfirm({ name, description: desc });
+          if (err) setError(err);
+        } catch (e) {
+          setError(String(e));
+        }
+      };
+      return (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          onClick={onCancel}
+          onKeyDown={e => { if (e.key === 'Escape') onCancel(); }}
+        >
+          <div
+            data-testid="edit-display-dialog"
+            className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
+            style={{ animation: 'tsAlertIn .2s ease-out' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="px-6 pt-6 pb-4 text-center max-h-[70vh] overflow-y-auto">
+              <div className={`text-[17px] font-semibold mb-3 text-slate-900 dark:text-white`}>
+                {copy.editDisplayTitle(dialog.cardTitle || dialog.backendId)}
+              </div>
+              <div className="text-left mb-3">
+                <label className={`text-[13px] font-medium mb-1.5 block text-slate-600 dark:text-slate-300`}>
+                  {copy.displayNameLabel}
+                </label>
+                <input
+                  data-testid="edit-display-name"
+                  type="text"
+                  autoFocus
+                  maxLength={MAX_DISPLAY_NAME_CHARS}
+                  placeholder={copy.displayNamePlaceholder}
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  className={inputCls}
+                />
+              </div>
+              <div className="text-left mb-3">
+                <label className={`text-[13px] font-medium mb-1.5 block text-slate-600 dark:text-slate-300`}>
+                  {copy.displayDescriptionLabel}
+                </label>
+                <textarea
+                  data-testid="edit-display-description"
+                  rows={3}
+                  maxLength={MAX_DISPLAY_DESCRIPTION_CHARS}
+                  placeholder={copy.displayDescriptionPlaceholder}
+                  value={desc}
+                  onChange={e => setDesc(e.target.value)}
+                  className={`${inputCls} resize-none`}
+                />
+              </div>
+              <div className={`text-[11px] text-left leading-snug text-slate-400 dark:text-slate-500`}>
+                {copy.editDisplayHint}
+              </div>
+              {error && (
+                <div data-testid="edit-display-error" className="mt-2 text-left text-[12px] leading-snug text-red-500 dark:text-red-400">
+                  {copy.operationFailedWith(error)}
+                </div>
+              )}
+            </div>
+            <div className={`border-t border-slate-200 dark:border-white/10`}>
+              <button
+                onClick={onCancel}
+                className={`w-full py-3 text-[17px] font-normal text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
+              >
+                {copy.cancel}
+              </button>
+            </div>
+            <div className={`border-t border-slate-200 dark:border-white/10`}>
+              <button
+                data-testid="edit-display-save"
+                onClick={handleConfirm}
+                className={`w-full py-3 text-[17px] font-semibold text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
+              >
+                {copy.editDisplaySave}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     // Obsidian 连接前探测引导卡：未安装 → 引导下载；没库 / 库丢失 → 引导建库/重开
     const TsObsidianGuide = ({ guide, theme, onCancel, onDownload, onRetry, allowDownload = true, copy }) => {
       if (!guide) return null;
@@ -801,10 +897,20 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         // 统一 readiness 批量取数：未知包（companion 被认领后不再独立成包等）
         // 单条失败只记日志、该包回退旧来源（list_marketplace_* 的状态位）。
         try {
-          const ids = [
+          // 上传 MCP/组合包不在 tsToolsData（内置）也不在 skillList（技能），
+          // 但 edit_display 动作下发与卡面展示名覆盖都来自 bundle_readiness，
+          // 必须并入批量取数（否则上传 MCP 卡永远拿不到 actions/覆盖值）。
+          // 用本次刚拉回的 list（而非 toolBackend state）：闭包里的 state 是
+          // 渲染时快照，首挂载/刚上传后为空 → 上传 MCP 卡漏批直到下次无关刷新。
+          const customToolIds = (Array.isArray(list) ? list : [])
+            .map(x => x.id)
+            .filter(id => id && !tsToolsData.some(t => t.backendId === id));
+          // 三源并集去重（组合包 mcpId 可能同时进 tool/skill 列表）
+          const ids = [...new Set([
             ...tsToolsData.map(x => x.backendId).filter(Boolean),
+            ...customToolIds,
             ...skillList.map(x => x.id),
-          ];
+          ])];
           const entries = await Promise.all(ids.map(async (id) => {
             try {
               return [id, await invokeTauri('bundle_readiness', { bundleId: id })];
@@ -997,11 +1103,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         .filter(x => !tsToolsData.some(t => t.backendId === x.id))
         .map(x => {
           const bs = bundleStates[x.id] || null;
+          // 卡面标题/说明优先取 readiness bundle 的生效值（后端已应用 extra
+          // 展示名/说明覆盖）；无 readiness 回退 list_marketplace_tools 现状。
+          const bf = (bs && bs.bundle) || null;
           const base = {
-            id: 'mcp-' + x.id, backendId: x.id, title: x.name || x.id, subtitle: '',
+            id: 'mcp-' + x.id, backendId: x.id, title: (bf && bf.name) || x.name || x.id, subtitle: '',
             category: 'life', type: 'MCP Server', mcpServer: true,
             version: x.version ? `v${String(x.version).replace(/^v/i, '')}` : '—',
-            latency: storeCopy.localLatency, desc: x.description || '',
+            latency: storeCopy.localLatency, desc: (bf && bf.description) || x.description || '',
             icon: Server, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: bs ? bs.installed : !!x.installed,
             authRequired: false, userUploaded: true,
@@ -1404,6 +1513,60 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         } catch (e) {
           console.error('skill update failed:', e);
           setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      // 上传包展示名/说明编辑：后端动作下发 edit_display（actions.rs，source=Upload
+      // 的已装包），点击弹编辑对话框；预填当前覆盖值（bundle 事实的 display_name/
+      // display_description 原值），留空 = 清覆盖回退默认。保存调
+      // update_bundle_display_meta 后按现有模式 loadBackendState 刷新。
+      const [editDisplay, setEditDisplay] = useState(null); // { backendId, cardTitle, name, description }
+      const handleEditDisplay = (backendId) => {
+        if (!canMutateToolStore) return;
+        const bf = (bundleStates[backendId] || {}).bundle || null;
+        const card = skillCards.find(x => x.backendId === backendId) || tools.find(x => x.backendId === backendId);
+        setEditDisplay({
+          backendId,
+          cardTitle: card ? card.title : backendId,
+          name: (bf && bf.display_name) || '',
+          description: (bf && bf.display_description) || '',
+        });
+      };
+      // 返回值约定：成功 → null（调用方关弹窗）；失败 → 错误文案（弹窗保留
+      // 输入内联展示，用户改完可直接重存，不必重新输入）。
+      const doEditDisplaySave = async (values) => {
+        const dlg = editDisplay;
+        if (!dlg) return null;
+        setBusyId(dlg.backendId);
+        try {
+          await invokeTauri('update_bundle_display_meta', {
+            id: dlg.backendId,
+            displayName: values.name,
+            displayDescription: values.description,
+          });
+          setEditDisplay(null);
+          await loadBackendState();
+          // 展示名进了 list_marketplace_tools（composer 菜单数据源），
+          // 与其它安装/卸载动作同款通知 composer 刷新，否则菜单滞留旧名。
+          notifyComposerToolsChanged();
+          // 详情弹窗持的是卡对象快照，loadBackendState 只刷新列表数据源；
+          // 打开中的详情须单独补拉生效值（覆盖后的 name/description）。
+          if (selectedTool && selectedTool.backendId === dlg.backendId) {
+            try {
+              const bs = await invokeTauri('bundle_readiness', { bundleId: dlg.backendId });
+              const b = (bs && bs.bundle) || null;
+              if (b) setSelectedTool(prev => ({ ...prev, title: b.name || prev.title, desc: b.description != null ? b.description : prev.desc }));
+            } catch (err) {
+              console.error('bundle_readiness refresh failed:', dlg.backendId, err);
+            }
+          }
+          setAlert({ visible: true, loading: false, title: storeCopy.editDisplaySaved, isInstall: true, isError: false });
+          return null;
+        } catch (e) {
+          console.error('update bundle display meta failed:', e);
+          return String(e);
         } finally {
           setBusyId(null);
         }
@@ -1848,6 +2011,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               </div>
             </div>
           ), document.body)}
+          {/* 上传包展示名/说明编辑弹窗（edit_display 动作触发；条件挂载，state 初值即当前覆盖值） */}
+          {editDisplay && createPortal(<TsEditDisplayDialog
+            dialog={editDisplay}
+            copy={storeCopy}
+            onCancel={() => setEditDisplay(null)}
+            onConfirm={doEditDisplaySave}
+          />, document.body)}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
           {wecomQr && (() => {
             const cancel = () => { invokeTauri('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
@@ -2063,7 +2233,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                         </div>
                                       );
                                     }
-                                    return <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} copy={storeCopy} t={t} />;
+                                    return <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} copy={storeCopy} t={t} />;
                                   })()}
                                 </div>
                               </div>
@@ -2169,7 +2339,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <div className="flex flex-col items-end gap-1.5">
                         {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
                           ? <FeishuMini flow={sf} onClick={() => {}} copy={storeCopy.mini} />
-                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} size="lg" copy={storeCopy} t={t} />; })()}
+                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} size="lg" copy={storeCopy} t={t} />; })()}
                         {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>
@@ -2256,4 +2426,4 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // Shared Components
     // ==========================================
 
-export { FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, tmeetConn, ensureTmeetListeners, TsAlert, TsConfigDialog, TsObsidianGuide, ToolStoreView };
+export { FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, tmeetConn, ensureTmeetListeners, TsAlert, TsConfigDialog, TsEditDisplayDialog, TsObsidianGuide, ToolStoreView };

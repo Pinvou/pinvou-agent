@@ -548,6 +548,37 @@ pub async fn update_marketplace_skill(
     Ok(())
 }
 
+/// 编辑上传包的 UI 展示名/说明（写 bundles.json 记录 extra 的
+/// `display_name`/`display_description`，机读 id/目录/frontmatter name 不动）。
+/// 仅 `source=Upload` 的记录可写；单技能包（`bundles/<id>/skills/` 下恰一个技能
+/// 目录）的展示说明与 SKILL.md frontmatter description 双向同步（设覆盖回写
+/// 新值并备份原值、清覆盖恢复原值）并重算内容指纹。门禁/校验/顺序契约都在
+/// 特性层 `update_display_meta` 编排，命令层只做搬运与热刷收尾。
+#[tauri::command]
+pub async fn update_bundle_display_meta(
+    id: String,
+    display_name: Option<String>,
+    display_description: Option<String>,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<(), String> {
+    let dirty = tokio::task::spawn_blocking(move || {
+        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        let touched_skill_md = display_description.is_some(); // 单技能包可能动 SKILL.md
+        mgr.update_display_meta(&id, display_name.as_deref(), display_description.as_deref())?;
+        Ok::<bool, String>(touched_skill_md)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+    // SKILL.md 回写/恢复改了包内容：热刷在线会话组合目录与 deny 规则集
+    // （与 update_marketplace_skill 同一收尾）。失败路径也刷：sync 可能在
+    // set_display_meta 报错前已动过 SKILL.md（窄窗口），让模型侧尽早一致。
+    if dirty {
+        pool.refresh_live_sessions_skills().await;
+        pool.refresh_permission_rulesets().await;
+    }
+    Ok(())
+}
+
 /// 弹文件选择框选 zip 技能包并导入。前端无法用 plugin-dialog 的 JS API
 /// (单 HTML 无 bundler 引不进),所以选文件走 Rust 端 dialog。
 /// 返回 true=已导入,false=用户取消。
