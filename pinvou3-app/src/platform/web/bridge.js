@@ -9054,12 +9054,19 @@
   async function init() {
     if (initPromise) return initPromise;
     var attempt = (async function () {
-    await loadSettings();
-    if (hasCapability("pet")) await loadSelectedPet();
-    await loadEffectiveModelConfig();
-    await loadAppVersion();
-    await loadModels();
-    await refreshHistoryList();
+    // 启动加载各自写互不重叠的状态片、彼此无数据依赖(每个 loader 自吞 invoke
+    // 错误并落兜底值),串行 await 会把多个 RPC 往返叠进首屏延迟——并行后往返
+    // 宽度收敛为 1。enterDraft/markStateReady 必须等本组完成后才走(durable
+    // state 未就绪前不得放行桌面事件重放,这是 web 重试契约的前提)。
+    var parallelLoads = [
+      loadSettings(),
+      hasCapability("pet") ? loadSelectedPet() : Promise.resolve(),
+      loadEffectiveModelConfig(),
+      loadAppVersion(),
+      loadModels(),
+      refreshHistoryList()
+    ];
+    await Promise.all(parallelLoads);
     // Populate the global Scheduled unread summary without requiring the user
     // to visit the Scheduled page first.
     loadScheduledTasks().catch(function () {}).then(function () {
