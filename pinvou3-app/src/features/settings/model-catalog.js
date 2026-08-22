@@ -12,7 +12,6 @@ import mimoIcon from '../../brand-icons/mimo.svg';
 import minimaxIcon from '../../brand-icons/minimax.svg';
 import openaiIcon from '../../brand-icons/openai.svg';
 import qwenIcon from '../../brand-icons/qwen.svg';
-import tencentCloudIcon from '../../brand-icons/tencentcloud.svg';
 import xaiIcon from '../../brand-icons/xai.svg';
 
 // ── 「添加模型」方案:模型快切 chip + 添加/编辑弹窗 ─────────────────
@@ -102,7 +101,6 @@ const BRAND_ICON_BY_VENDOR = {
   anthropic: claudeIcon,
   gemini: geminiIcon,
   xai: xaiIcon,
-  tencent: tencentCloudIcon,
 };
 
 const MODEL_CATALOG = {
@@ -156,22 +154,6 @@ const MODEL_CATALOG = {
         { model: 'GLM-5-Turbo', legacyAliases: ['glm-5-turbo'], title: 'GLM-5-Turbo', desc: '高性能编码模型' },
         { model: 'glm-4.7', title: 'GLM-4.7', desc: '日常编码模型' },
         { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
-      ],
-    },
-    {
-      key: 'tencent_coding_plan',
-      section: 'coding_plan',
-      title: '腾讯云 Coding Plan / Tencent Cloud Coding Plan',
-      configTitle: '腾讯云 Coding Plan',
-      desc: '腾讯云编码计划接口',
-      preset: 'openai_compatible',
-      providerKind: PROVIDER_KIND_CODING_PLAN,
-      vendor: 'tencent',
-      baseUrl: 'https://api.lkeap.cloud.tencent.com/coding/v3',
-      endpointAliases: ['https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions'],
-      items: [
-        { model: 'tc-code-latest', title: 'tc-code-latest', desc: 'Coding Plan 自动模型' },
-        { model: '', title: '自定义腾讯云 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
     },
     {
