@@ -58,10 +58,21 @@ pub struct KnowledgeService {
     embedder: RwLock<Option<Arc<Embedder>>>,
     model_error: RwLock<Option<String>>,
     model_downloading: AtomicBool,
+    /// 首次用到(检索/索引/宿主触发)时的模型装载门:Pending 等待单次装载,
+    /// Loaded 已就绪,Failed 可重试(下一次调用重置回 Pending)。
+    /// boot 不再同步加载 568MB ONNX,服务秒级起监听,模型按需进内存。
+    model_load_state: tokio::sync::Mutex<ModelLoadState>,
     join_request_rate: Mutex<AttemptRate>,
     join_claim_rate: Mutex<AttemptRate>,
     indexing: tokio::sync::Mutex<()>,
     search_slots: Arc<tokio::sync::Semaphore>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModelLoadState {
+    Pending,
+    Loaded,
+    Failed,
 }
 
 #[derive(Default)]
@@ -169,12 +180,16 @@ impl KnowledgeService {
             embedder: RwLock::new(None),
             model_error: RwLock::new(None),
             model_downloading: AtomicBool::new(false),
+            model_load_state: tokio::sync::Mutex::new(ModelLoadState::Pending),
             join_request_rate: Mutex::new(AttemptRate::default()),
             join_claim_rate: Mutex::new(AttemptRate::default()),
             indexing: tokio::sync::Mutex::new(()),
             search_slots: Arc::new(tokio::sync::Semaphore::new(search_parallelism())),
         });
         service.purge_expired_trash_at(chrono::Utc::now().timestamp())?;
+        // 模型懒装载(服务秒级起监听,568MB ONNX 首次用到才进内存):
+        // boot 只做跨进程锁内的目录恢复探测,把结果记进 model_error 供状态接口
+        // 反馈;真正装载走 ensure_model_loaded(检索/索引/宿主触发)。
         // 桌面端可能正在向同一 bind-mounted 目录部署模型。服务启动不能在
         // 目录替换空窗中先判定完整、随后读取到另一代或已被移动的文件。
         match crate::try_lock_knowledge_model_install(&service.model_dir) {
@@ -184,10 +199,12 @@ impl KnowledgeService {
                         if let Some(warning) = warning {
                             eprintln!("[knowledge] {warning}");
                         }
-                        if service.model_directory_complete() {
-                            if let Err(error) = service.load_model_unlocked() {
-                                *service.model_error.write() = Some(error);
-                            }
+                        if !service.model_directory_complete() {
+                            // 目录不完整不是错误:下载完成前全文检索/共享照常工作,
+                            // info.model_present=false 会如实告知挂载方。
+                            eprintln!(
+                                "[knowledge] model directory incomplete; embedding loads after download"
+                            );
                         }
                     }
                     Err(error) => *service.model_error.write() = Some(error),
@@ -262,6 +279,7 @@ impl KnowledgeService {
             tls_ca: self.tls.ca_encoded.clone(),
             initialized: self.initialized(),
             ready: self.ready(),
+            model_present: self.model_directory_complete(),
             model: MODEL_NAME.to_string(),
         })
     }
@@ -866,14 +884,18 @@ impl KnowledgeService {
             document.already_exists = true;
             return Ok(document);
         }
-        if self.ready() {
-            // A successful upload means the managed source is durable. Index in the
-            // background so a slow parser/model cannot make the client time out and
-            // retry an upload that the server already committed.
+        // A successful upload means the managed source is durable. Index in the
+        // background so a slow parser/model cannot make the client time out and
+        // retry an upload that the server already committed. With lazy model load
+        // the upload is a first-use trigger: ensure the model, then index (failure
+        // leaves the document pending, same as the old not-ready path).
+        {
             let background = Arc::clone(self);
             let document_id = document.id;
             tokio::spawn(async move {
-                let _ = background.index_document(document_id).await;
+                if background.ensure_model_loaded().await.is_ok() {
+                    let _ = background.index_document(document_id).await;
+                }
             });
         }
         self.store
@@ -889,9 +911,9 @@ impl KnowledgeService {
         filename: &str,
         bytes: Vec<u8>,
     ) -> Result<Document, String> {
-        if !self.ready() {
-            return Err("embedding 模型未就绪，不能更新文档".to_string());
-        }
+        // 与上传同口径:替换文档重建索引也依赖嵌入向量,懒装载语义下它是
+        // 首用触发点,先 ensure 再进索引重建。
+        self.ensure_model_loaded().await?;
         if bytes.is_empty() || bytes.len() > MAX_UPLOAD_BYTES {
             return Err(format!(
                 "文件必须小于 {} MiB",
@@ -1102,13 +1124,14 @@ impl KnowledgeService {
     }
 
     fn requeue_pending_indexing(self: &Arc<Self>) {
-        if self.ready() {
-            let service = Arc::clone(self);
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                runtime.spawn(async move {
-                    let _ = service.index_pending_documents().await;
-                });
-            }
+        // 恢复的文档需要重索引。懒装载语义下 pending 索引本身就是首用触发点,
+        // 与上传同口径直接消化积压(index_pending_documents 空积压先短路,
+        // 不会因恢复操作平白触发模型装载)。
+        let service = Arc::clone(self);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = service.index_pending_documents().await;
+            });
         }
     }
 
@@ -1214,6 +1237,48 @@ impl KnowledgeService {
         Ok(())
     }
 
+    /// 首次用到时装载模型(boot 已不再同步加载)。并发调用在状态锁上排队,
+    /// 单次装载成功/失败对所有人可见;失败记录错误并允许下一次调用重试。
+    /// 568MB ONNX 读盘+会话构造在内部 spawn_blocking 执行,任意执行器上下文
+    /// (async handler / tokio task)都可以直接 await 本方法。
+    pub async fn ensure_model_loaded(self: &Arc<Self>) -> Result<(), String> {
+        if self.ready() {
+            return Ok(());
+        }
+        let mut state = self.model_load_state.lock().await;
+        match *state {
+            ModelLoadState::Loaded => return Ok(()),
+            ModelLoadState::Pending | ModelLoadState::Failed => {
+                if self.ready() {
+                    *state = ModelLoadState::Loaded;
+                    return Ok(());
+                }
+            }
+        }
+        // Failed -> 重试;Pending -> 首次装载。装载期间持锁,其余调用者排队,
+        // 排到时若已就绪直接短路(上面 ready() 检查),不会重复读盘。
+        *state = ModelLoadState::Pending;
+        let service = Arc::clone(self);
+        let result = tokio::task::spawn_blocking(move || service.load_model()).await;
+        match result {
+            Ok(Ok(())) => {
+                *state = ModelLoadState::Loaded;
+                Ok(())
+            }
+            Ok(Err(error)) => {
+                *state = ModelLoadState::Failed;
+                *self.model_error.write() = Some(error.clone());
+                Err(error)
+            }
+            Err(join_error) => {
+                let error = format!("模型装载任务异常结束：{join_error}");
+                *state = ModelLoadState::Failed;
+                *self.model_error.write() = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
     pub async fn load_model_and_index_pending(self: &Arc<Self>) -> Result<(), String> {
         self.load_model()?;
         self.index_pending_documents().await
@@ -1224,6 +1289,12 @@ impl KnowledgeService {
             .store
             .pending_document_ids()
             .map_err(|error| error.to_string())?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        // 有待索引文档时模型必然被需要:首请求触发装载,避免「下载完成但
+        // 一直没人检索」导致 pending 永不消化。
+        self.ensure_model_loaded().await?;
         for id in pending {
             let _ = self.index_document(id).await;
         }
@@ -1475,6 +1546,62 @@ mod tests {
         ] {
             assert!(!is_private_share_endpoint(endpoint), "{endpoint}");
         }
+    }
+
+    #[test]
+    fn boot_does_not_load_model_and_first_use_reports_failure() {
+        // 懒装载契约:boot 只探测目录,不加载模型;首次 ensure 在无模型目录时
+        // 返回错误(可重试),且不阻止服务结构本身可用。
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        assert!(!service.ready(), "boot must not load the embedding model");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let error = rt
+            .block_on(async { service.ensure_model_loaded().await })
+            .unwrap_err();
+        assert!(!error.is_empty());
+        assert!(!service.ready());
+        // 失败后状态允许重试(Failed -> Pending),不永久卡死。
+        let retry = rt.block_on(async { service.ensure_model_loaded().await });
+        assert!(retry.is_err(), "retry runs again (still no model on disk)");
+    }
+
+    #[test]
+    fn server_info_reports_model_present_from_disk_not_memory() {
+        // 挂载门契约:model_present 反映模型目录是否在盘,与 ready(已进内存)
+        // 解耦——host 重启后、首次检索前,present=true 且 ready=false,
+        // 挂载校验据此放行,首次检索按需装载。
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let info = service.server_info().unwrap();
+        assert!(!info.ready);
+        assert!(
+            !info.model_present,
+            "empty model dir must report model_present=false"
+        );
+
+        // 放一个假的完整模型目录:present 应翻转,ready 仍为 false(未装载)。
+        let model_dir = root.path().join("models").join(MODEL_NAME);
+        std::fs::create_dir_all(&model_dir).unwrap();
+        for file in [
+            "model.onnx",
+            "tokenizer.json",
+            "config.json",
+            "special_tokens_map.json",
+            "tokenizer_config.json",
+        ] {
+            std::fs::write(model_dir.join(file), b"stub").unwrap();
+        }
+        let info = service.server_info().unwrap();
+        assert!(!info.ready, "disk presence alone must not load the model");
+        assert!(info.model_present);
     }
 
     #[test]
