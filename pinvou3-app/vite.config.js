@@ -26,7 +26,9 @@ export const staticRuntimeScripts = new Set([
   'shared/authority-sync-diagnostics.js',
   'shared/bridge-messages.js',
   'shared/chunked-file-upload.js',
+  'shared/format-utils.js',
   'shared/legacy-polyfills.js',
+  'shared/markdown-bridge-fallback.js',
   'vendor/tailwind.js',
 ]);
 export const staticRuntimeScriptPrefixes = ['platform/tauri/bridge/', 'platform/web/bridge/'];

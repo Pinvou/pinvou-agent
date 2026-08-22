@@ -7,6 +7,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Cpu, Plus, Store, Users, Wrench, X, Zap } from '../../components/icons.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
+import { Toggle } from '../../components/Toggle.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { can } from '../../shared/platform.js';
@@ -557,10 +558,7 @@ import {
             <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
             {row.kind === 'service' && statusBadge(t.composerConnected, 'green')}
           </span>
-          <button onClick={() => toggleTool(row.id, row.enabled)} aria-label={row.id} disabled={rowDisabled}
-            className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors disabled:cursor-default ${rowDisabled ? 'opacity-70' : ''} ${row.enabled ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
-            <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${row.enabled ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
-          </button>
+          <Toggle checked={row.enabled} onChange={() => toggleTool(row.id, row.enabled)} aria-label={row.id} disabled={rowDisabled} size="sm" />
         </div>
         );
       };
@@ -660,10 +658,7 @@ import {
                           </span>
                           <span className="block text-[10px] text-gray-400 dark:text-gray-500">{t.composerProjectSkillsDesc}</span>
                         </span>
-                        <button onClick={toggleProjectSkills} aria-label="project-skills" disabled={toolSwitchDisabled || (hasActiveSession && projectSkillsEnabled)}
-                          className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors disabled:cursor-default ${(toolSwitchDisabled || (hasActiveSession && projectSkillsEnabled)) ? 'opacity-70' : ''} ${projectSkillsEnabled ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
-                          <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${projectSkillsEnabled ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
-                        </button>
+                        <Toggle checked={projectSkillsEnabled} onChange={toggleProjectSkills} aria-label="project-skills" disabled={toolSwitchDisabled || (hasActiveSession && projectSkillsEnabled)} size="sm" />
                       </div>
                       {projectSkillsEnabled && (
                         <div className="mt-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400">{t.composerProjectSkillsWarning}</div>
