@@ -17,12 +17,6 @@
     return error;
   }
 
-  function integrityError(reason) {
-    var error = new Error("device attachment integrity check failed" + (reason ? ": " + reason : ""));
-    error.code = "device_upload_integrity_failed";
-    return error;
-  }
-
   function toHex(bytes) {
     var hex = "";
     for (var i = 0; i < bytes.length; i += 1) {
@@ -142,7 +136,6 @@
     MAX_FILE_BYTES: MAX_FILE_BYTES,
     bytesToBase64: bytesToBase64,
     cancelledError: cancelledError,
-    integrityError: integrityError,
     uploadFile: uploadFile,
     uploadId: uploadId,
   });

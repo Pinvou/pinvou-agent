@@ -186,10 +186,12 @@ pub(super) fn append_web_attachment_upload_chunk(
         ));
     }
     if let Some(expected) = sha256 {
-        let expected = expected.trim().to_ascii_lowercase();
-        if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        // In-memory assembled bytes (bounded by MAX_FILE_BYTES), hashed under
+        // the manager lock at commit only; the desktop staging stack reuses
+        // the same digest-format rule via platform::encoding.
+        let Some(expected) = crate::platform::encoding::normalize_sha256_hex(expected) else {
             return Err("远程控制附件完整性校验值无效".into());
-        }
+        };
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(&upload.data);

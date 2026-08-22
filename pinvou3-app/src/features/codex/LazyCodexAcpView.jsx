@@ -15,9 +15,17 @@ class CodexAcpLoadErrorBoundary extends React.Component {
     return { error };
   }
 
+  componentDidCatch(error, info) {
+    console.error(
+      '[codex] ACP workspace render failed',
+      error && error.stack ? error.stack : error,
+      info && info.componentStack ? info.componentStack : info,
+    );
+  }
+
   render() {
     if (this.state.error) {
-      const copy = this.props.t.uiCodex;
+      const copy = (this.props.t && this.props.t.uiCodex) || {};
       return (
         <div className="relative z-10 flex flex-1 items-center justify-center px-6">
           <div className="max-w-[440px] rounded-2xl border p-5 bg-white border-[#DDE3EA] text-[#1F1F1F] dark:bg-[#1F2023] dark:border-[#333537] dark:text-[#E8EAED]">

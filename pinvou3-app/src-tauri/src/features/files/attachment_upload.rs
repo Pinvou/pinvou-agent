@@ -1,4 +1,3 @@
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -278,28 +277,15 @@ async fn append_draft_chunk_in_workspace(
 /// whole-file digest. A mismatch aborts the commit (staging stays for the
 /// client's cleanup path) instead of letting corrupted bytes reach ingest.
 async fn verify_staging_sha256(staging_path: &Path, expected: &str) -> Result<(), String> {
-    let expected = expected.trim().to_ascii_lowercase();
-    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+    let Some(expected) = crate::platform::encoding::normalize_sha256_hex(expected) else {
         return Err("附件完整性校验值无效".into());
-    }
+    };
     let staging_path = staging_path.to_path_buf();
-    let actual = tokio::task::spawn_blocking(move || -> std::io::Result<String> {
-        use sha2::{Digest, Sha256};
-        let mut file = std::fs::File::open(&staging_path)?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-        }
-        Ok(crate::platform::encoding::hex_lower(&hasher.finalize()))
-    })
-    .await
-    .map_err(|error| format!("附件完整性校验任务失败：{error}"))?
-    .map_err(|error| format!("读取附件暂存文件失败：{error}"))?;
+    let actual =
+        tokio::task::spawn_blocking(move || crate::platform::hashing::sha256_file(&staging_path))
+            .await
+            .map_err(|error| format!("附件完整性校验任务失败：{error}"))?
+            .map_err(|error| format!("读取附件暂存文件失败：{error}"))?;
     if actual != expected {
         return Err("附件完整性校验失败，上传内容在传输中损坏".into());
     }

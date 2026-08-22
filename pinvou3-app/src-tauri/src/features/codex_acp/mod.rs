@@ -2564,7 +2564,8 @@ impl AcpPool {
     }
 
     /// 会话级 Provider 覆盖（F11）：写入 per-session 配置的 "provider" 键并重启该
-    /// 会话 runtime；`provider_id=None` 恢复该会话官方登录。解析优先级：
+    /// Agent 的全部会话 runtime（配置按 Agent 生效，无法只重启一个）；
+    /// `provider_id=None` 恢复该 Agent 官方登录。解析优先级：
     /// 会话 option > 全局 current_provider。
     pub async fn set_acp_session_provider(
         &self,

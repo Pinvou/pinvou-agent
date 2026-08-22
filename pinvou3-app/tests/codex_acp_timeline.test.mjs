@@ -289,7 +289,15 @@ try {
   const i18n = readFileSync(path.join(root, 'src', 'shared', 'i18n.js'), 'utf8');
   const navigationComponents = readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
   assert.ok(main.includes("currentView === 'codex'"));
-  assert.ok(main.includes('<LazyCodexAcpView'), 'Codex view renders via lazy chunk');
+  assert.ok(
+    main.includes("from '../features/codex/LazyCodexAcpView.jsx'") && main.includes('<CodexAcpView'),
+    'the main window must render the codex view through the LazyCodexAcpView wrapper (retryable error boundary)',
+  );
+  assert.doesNotMatch(
+    main,
+    /VIEW_LOADERS\.codex\(\)\.then/,
+    'the main window must not bypass the wrapper with a direct lazy import of CodexAcpView',
+  );
   assert.match(
     lazyCodexView,
     /import\('\.\/CodexAcpView\.jsx'\)/,
@@ -297,8 +305,8 @@ try {
   );
   assert.match(
     lazyCodexView,
-    /extends React\.Component[\s\S]*?getDerivedStateFromError/,
-    'the lazy ACP workspace must sit behind an error boundary',
+    /extends React\.Component[\s\S]*?getDerivedStateFromError[\s\S]*?componentDidCatch/,
+    'the lazy ACP workspace must sit behind an error boundary that logs failures',
   );
   assert.ok(
     detachedShell.includes("../features/codex/LazyCodexAcpView.jsx")

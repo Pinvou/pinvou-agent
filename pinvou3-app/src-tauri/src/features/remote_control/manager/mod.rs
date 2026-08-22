@@ -1674,17 +1674,6 @@ impl RemoteControlManager {
         }
     }
 
-    /// Cheap, read-only projection gate for optional event transports.
-    /// Delivery revalidates the same state in `publish_event_inner`.
-    pub(crate) fn has_active_subscription(&self, event: &str) -> bool {
-        let inner = self.inner.lock();
-        let web_client_connected = inner
-            .endpoint
-            .as_ref()
-            .is_some_and(|endpoint| endpoint.web_client_connected);
-        has_active_event_subscription(web_client_connected, &inner.subscriptions, event)
-    }
-
     /// Whether the remote-control endpoint is active at all. Producers use
     /// this as the journal gate: while the endpoint is active, events are
     /// journaled even if the browser is momentarily disconnected, so replay
@@ -2899,14 +2888,6 @@ impl RemoteControlManager {
     }
 }
 
-fn has_active_event_subscription(
-    web_client_connected: bool,
-    subscriptions: &HashSet<String>,
-    event: &str,
-) -> bool {
-    web_client_connected && is_event_subscribed(subscriptions, event)
-}
-
 #[cfg(test)]
 mod tests {
     use super::persistence::{
@@ -2926,16 +2907,6 @@ mod tests {
 
         assert!(is_event_subscribed(&subscriptions, "session:deleted"));
         assert!(!is_event_subscribed(&subscriptions, "session:list_changed"));
-        assert!(!has_active_event_subscription(
-            false,
-            &subscriptions,
-            "session:deleted"
-        ));
-        assert!(has_active_event_subscription(
-            true,
-            &subscriptions,
-            "session:deleted"
-        ));
     }
 
     #[test]
@@ -3089,6 +3060,32 @@ mod tests {
         )
         .expect_err("digest mismatch must abort the commit");
         assert!(error.contains("完整性校验失败"));
+
+        // Malformed digests are rejected before hashing and keep the upload
+        // resumable (the entry is not consumed).
+        append_web_attachment_upload_chunk(
+            &mut inner,
+            "upload_device_hash_invalid",
+            "notes.txt",
+            0,
+            6,
+            b"abc",
+            false,
+            None,
+        )
+        .expect("first chunk");
+        let error = append_web_attachment_upload_chunk(
+            &mut inner,
+            "upload_device_hash_invalid",
+            "notes.txt",
+            3,
+            6,
+            b"def",
+            true,
+            Some("not-hex"),
+        )
+        .expect_err("malformed digest must be rejected");
+        assert!(error.contains("校验值无效"));
     }
 
     #[test]
