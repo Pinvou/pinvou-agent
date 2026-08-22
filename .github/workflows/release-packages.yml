@@ -8,8 +8,9 @@ name: release-packages
 # 普通 PR 不进入本工作流；版本/打包脚本的轻量契约由 pr-check.yml 验证。
 #
 # 版本号单一事实来源 = 根目录 VERSION 文件。gate job 先跑
-# scripts/sync-version.mjs --check 校验各处版本文件(tauri.conf.json / Cargo.toml /
-# package.json / package-lock.json)与 VERSION 一致;构建 job 构建前再跑 sync-version.mjs 同步,
+# scripts/sync-version.mjs --check 校验 VERSION 引用的版本文件(tauri.conf.json /
+# pinvou3-app/src-tauri 的 Cargo.toml / pinvou-knowledge 的 Cargo.toml+Cargo.lock /
+# package.json / package-lock.json,存在才纳入)与 VERSION 一致;构建 job 构建前再跑 sync-version.mjs 同步,
 # 保证打进包里的任何版本号都来自 VERSION。
 #
 # 与其他 workflow 的分工:

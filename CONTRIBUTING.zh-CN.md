@@ -4,6 +4,7 @@
 
 感谢你帮助改进 Pinvou Agent。我们欢迎问题修复、文档、连接器、Skills、工作流、平台支持和边界清晰的产品改进。
 
+本文是 [CONTRIBUTING.md](CONTRIBUTING.md) 的中文参考版；两者内容冲突时以英文版为准。
 本文只说明贡献流程；项目级实现与质量边界以 [AGENTS.md](AGENTS.md) 为准。
 
 ## 开始之前
@@ -26,6 +27,9 @@ git submodule update --init --recursive
 日常更新而反复 rebase。PR Ready 后由 Merge Queue 在最新 `main` 组合
 提交上验证；仅真实冲突，或队列集成失败需要修改分支时手工 rebase。
 
+解决冲突时保留双方兼容的功能与用户改动；不得在没有向用户说明各选项
+及其影响的情况下，在行为不同的方案之间擅自二选一。
+
 ## DCO
 
 每个人工提交都必须包含有效的 `Signed-off-by`：
@@ -38,17 +42,7 @@ git commit -s
 
 ## 改动应放在哪里
 
-Pinvou Agent 使用 [CodeWhale](https://github.com/Pinvou/CodeWhale) 作为 Agent 底座，不在桌面层重复实现底座能力。
-
-| 目标 | 位置 |
-|---|---|
-| 增加领域 Agent 或工具组合 | `SKILL.md` 包 |
-| 连接外部 API | 独立 MCP server 或 connector |
-| 调整模型行为引导 | bundle `instructions.md` |
-| 修改桌面 UI、Tauri 集成或运行时配置 | `pinvou3-app/` |
-| 修复可复用的底座问题 | CodeWhale，上游优先 |
-
-CodeWhale 改动必须遵循 [AGENTS.md](AGENTS.md) 和 [`docs/fork-policy.md`](docs/fork-policy.md) 的 fork 边界，包括同 PR 配套的文档、指纹和测试要求。
+Pinvou Agent 使用 [CodeWhale](https://github.com/Pinvou/CodeWhale) 作为 Agent 底座，不在桌面层重复实现底座能力。扩展落位边界表单点维护在 [AGENTS.md](AGENTS.md) 第 2 节；CodeWhale 改动必须遵循该边界和 [`docs/fork-policy.md`](docs/fork-policy.md)，包括同 PR 配套的文档、指纹和测试要求。
 
 ## Commit 信息
 
@@ -66,6 +60,12 @@ CodeWhale 改动必须遵循 [AGENTS.md](AGENTS.md) 和 [`docs/fork-policy.md`](
 完整提交规则见 [`docs/commit-message-convention.md`](docs/commit-message-convention.md)。
 
 ## 本地检查
+
+可选：启用本地 commit-msg 钩子，在推送前提前拦截提交信息格式问题：
+
+```bash
+git config core.hooksPath .githooks
+```
 
 按实际影响范围执行检查，常用基线为：
 

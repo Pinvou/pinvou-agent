@@ -8,11 +8,9 @@
 
 ### 1. Development and pull request conventions
 
+The contribution workflow — syncing `origin/main`, conflict-resolution expectations, commit-message format and DCO, PR language, and local/CI checks — is defined once in [`CONTRIBUTING.md`](CONTRIBUTING.md). The rules below restate only what an agent working in this repository must apply to every task:
+
 - Before the first development work for a new task and before creating its pull request, safely sync the latest `origin/main` and align every submodule with the parent repository gitlink. Do not repeatedly sync only because `main` advances during continued development or review of the same task. Before merge, the Merge Queue runs applicable gates against the combined tree on the latest `main`; manually rebase only when a real conflict or queue integration failure requires changing the branch.
-- When resolving conflicts, preserve compatible functionality and user changes from both sides. Do not choose between behaviorally different alternatives without explaining the options and their impact to the user.
-- Use `<type>(<scope>): <English description>` for commit messages (`scope` is optional), and include a valid `Signed-off-by` trailer. Follow `CONTRIBUTING.md` and the commit message convention for the exact format and DCO requirements.
-- Pull request titles and descriptions must use English and reflect the actual target-branch diff, including the background, changes, verification, and known risks.
-- Repository collaboration uses English, including branches, issues, pull requests, commits, code comments, developer documentation, and diagnostics. Existing history and localized resources are exempt; UI copy follows the i18n rule below.
 - Before the final commit and pull request creation, self-review requirement completeness, root cause and related cases, implementation boundaries, impact on existing functionality, exceptional states, and verification sufficiency. Passing tests does not replace this review.
 - Fix and verify any in-scope gap found during self-review. Disclose and await a decision for out-of-scope changes, mutually exclusive approaches, unverified scenarios, or regression risks.
 

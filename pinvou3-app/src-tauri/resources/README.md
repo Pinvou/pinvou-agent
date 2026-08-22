@@ -8,7 +8,20 @@ resources/
 │  ├─ bundle/             # 编译进应用并释放到 ~/.pinvou3/bundle
 │  └─ skill-marketplace/  # 编译期内嵌的技能市场索引
 └─ platforms/
-   └─ linux/asr/          # 仅由 Linux overlay 打包的 ASR 启动资源
+   ├─ linux/
+   │  ├─ asr/                        # 仅由 Linux overlay 打包的 ASR 启动资源
+   │  ├─ codex-bridge/               # Codex ACP Bridge 运行时生成目录
+   │  ├─ knowledge-host/             # pinvou-knowledge-host-helper
+   │  ├─ aarch64/bundle/connectors/  # arm64 连接器二进制与 connectors.lock.json
+   │  └─ x86_64/bundle/connectors/   # x64 连接器二进制与 connectors.lock.json
+   ├─ macos/
+   │  ├─ PrivacyInfo.xcprivacy       # 隐私清单
+   │  ├─ infoplist/                  # en/ja/zh-Hans .lproj 的 InfoPlist.strings
+   │  ├─ codex-bridge/               # Codex ACP Bridge 运行时生成目录
+   │  ├─ aarch64/bundle/connectors/  # arm64 连接器二进制与 connectors.lock.json
+   │  └─ x86_64/bundle/connectors/   # x64 连接器二进制与 connectors.lock.json
+   └─ windows/
+      └─ x86_64/bundle/connectors/   # x64 连接器二进制与 connectors.lock.json
 ```
 
 - `common/` 中不得放入仅在单一操作系统可用的二进制或安装脚本。

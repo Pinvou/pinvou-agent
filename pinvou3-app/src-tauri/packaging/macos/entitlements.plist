@@ -9,7 +9,7 @@
     故目前只声明了音频输入这一项,供后续直接复用。
 
   接入 Developer ID 公证时的路线(后续 PR):
-    1. tauri.conf.json: mac.hardenedRuntime = true(公证要求 Hardened Runtime)。
+    1. tauri.conf.json: macOS.hardenedRuntime = true(公证要求 Hardened Runtime)。
     2. 评估是否需要补充以下条目(按实际运行情况决定,不要无脑全开):
        - com.apple.security.cs.allow-jit         (JIT 执行;仅当 app 进程内跑 JIT 才需要)
        - com.apple.security.cs.disable-library-validation (禁用库签名校验;通常不需要)

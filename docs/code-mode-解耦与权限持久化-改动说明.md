@@ -100,7 +100,7 @@ code 模式（真实项目目录绑定）与 plain 模式（沙箱会话目录�
 
 ## 第二篇：code 会话权限默认值与 mode 持久化（PR #190）
 
-> 关联：`docs/code-native-agent.md` §8.6（行为真相源）、第一篇（前序解耦）、`.luzeyang/code-plain-decoupling/code-plain-decoupling-剩余待改动项评估.md`（S-1 背景，已归档）。
+> 关联：`docs/code-native-agent.md` §8.7（历史语义；现行三分 lane 语义以本篇第六节为准）、第一篇（前序解耦）、`.luzeyang/code-plain-decoupling/code-plain-decoupling-剩余待改动项评估.md`（S-1 背景，已归档）。
 > 分支：`feat/code-mode-permission`（基于最新 main，含 #182 解耦成果）。
 > 本篇登记 S-1 权限决策的实施结果，作为 PR 的验收依据。
 
