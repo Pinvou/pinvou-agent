@@ -991,6 +991,7 @@ impl EnginePool {
             .map_err(|e| anyhow::anyhow!("materialize session skills join: {e}"))?
             .map_err(|e| anyhow::anyhow!("materialize session skills: {e}"))?;
         }
+        let turn_lifecycle = self.turn_lifecycles.for_session(session_id);
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
@@ -999,7 +1000,7 @@ impl EnginePool {
             extra_tools,
             self.bridge
                 .shape_disallowed_tools(session_id, self.compute_disallowed_tools()),
-            self.turn_lifecycles.for_session(session_id),
+            turn_lifecycle.clone(),
             shell_manager,
             turn_shell_tasks,
         )
@@ -1022,6 +1023,10 @@ impl EnginePool {
                         });
                     }
                     eprintln!("[engine_pool] sync history for {session_id} failed: {error:?}");
+                } else {
+                    // 注水的是 forwarder 净化后的历史：旧 transcript 规则不可能再
+                    // 匹配新引擎的快照，清理以阻止规则随轮数累积驻留。
+                    turn_lifecycle.prune_rules_after_resync();
                 }
             }
             Ok(_) => {}

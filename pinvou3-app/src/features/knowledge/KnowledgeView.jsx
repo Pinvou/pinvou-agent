@@ -141,6 +141,20 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       const [outSortDir, setOutSortDir] = useState('desc');
       const [outputPreview, setOutputPreview] = useState(null);
       const outPreviewCache = useRef({});
+      // 预览结果可达数 MB（office 全文 HTML / 图片 base64），key 含 mtime——文件
+      // 每次重写都产生新 key。无上限的 ref 缓存会随浏览过的产物无界增长。
+      const MAX_OUT_PREVIEW_CACHE = 48;
+      const rememberOutPreview = useCallback((key, value) => {
+        const cache = outPreviewCache.current;
+        if (cache[key]) { cache[key] = value; return; }
+        cache[key] = value;
+        const keys = Object.keys(cache);
+        if (keys.length <= MAX_OUT_PREVIEW_CACHE) return;
+        // Map 迭代序即插入序：删最早的 key（含同产物旧 mtime 的陈旧条目）。
+        const ordered = Object.keys(cache).sort((a, b) => keys.indexOf(b) - keys.indexOf(a));
+        const excess = ordered.length - MAX_OUT_PREVIEW_CACHE;
+        for (let i = 0; i < excess; i++) delete cache[ordered[ordered.length - 1 - i]];
+      }, []);
       const outPreviewQueue = useRef({ active: 0, jobs: [] });
       const runQueuedPreview = useCallback((job) => new Promise((resolve, reject) => {
         const q = outPreviewQueue.current;
@@ -347,17 +361,17 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                 next = { kind: 'text', text: text.slice(0, 1600) };
               }
               if (!next) next = { kind: 'fallback' };
-              outPreviewCache.current[cacheKey] = next;
+              rememberOutPreview(cacheKey, next);
               return next;
             } catch (e) {
               const next = { kind: 'fallback', error: String(e) };
-              outPreviewCache.current[cacheKey] = next;
+              rememberOutPreview(cacheKey, next);
               return next;
             }
           }).then((next) => { if (alive) setPv(next); });
           }, 80);
           return () => { alive = false; clearTimeout(timer); };
-        }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview]);
+        }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview, rememberOutPreview]);
 
         const htmlPreviewDoc = (html) => '<style>html,body{overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
         const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
@@ -471,17 +485,17 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                   next = { kind: 'text', text: text.slice(0, 1200) };
                 }
                 if (!next) next = { kind: 'fallback' };
-                outPreviewCache.current[cacheKey] = next;
+                rememberOutPreview(cacheKey, next);
                 return next;
               } catch (e) {
                 const next = { kind: 'fallback', error: String(e) };
-                outPreviewCache.current[cacheKey] = next;
+                rememberOutPreview(cacheKey, next);
                 return next;
               }
             }).then((next) => { if (alive) setPv(next); });
           }, 80);
           return () => { alive = false; clearTimeout(timer); };
-        }, [cacheKey, visible, f.path, ext, runQueuedPreview]);
+        }, [cacheKey, visible, f.path, ext, runQueuedPreview, rememberOutPreview]);
 
         const col = extColor(ext);
         const htmlPreviewDoc = (html) => '<style>*{animation-duration:.001s!important;}</style>' + (html || '');

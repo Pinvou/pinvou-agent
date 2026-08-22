@@ -423,7 +423,7 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                 </div>
               ) : searching ? (
                 matchedGroups.length > 0 ? matchedGroups.map(g => (
-                  <div key={g.key} ref={el => { if (el) groupRefs.current[g.key] = el; }}>
+                  <div key={g.key} ref={el => { if (el) groupRefs.current[g.key] = el; else delete groupRefs.current[g.key]; }}>
                     {renderDateHeader(g.key)}
                     {g.rows.map(renderChatRow)}
                   </div>

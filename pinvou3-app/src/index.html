@@ -25,6 +25,15 @@
           since_navigation_ms: Math.max(0, Number(sinceNavigationMs) || 0),
         };
         entries.push(entry);
+        // visibility/error 等监听器在启动后仍会持续打点，而 web 端 invoke 不可用、
+        // 桌面端启动批次早已上报。保留最近 64 条防止数组随交互无界增长（启动
+        // 关键阶段通常在 40 条以内，截断只影响极端后期的重复 visibilitychange）。
+        // sent 游标同步前移：被丢弃的恰是已上报的最旧条目。
+        if (entries.length > 64) {
+          var dropped = entries.length - 64;
+          entries.splice(0, dropped);
+          sent = Math.max(0, sent - dropped);
+        }
         console.info("[startup] +" + entry.since_navigation_ms.toFixed(3) + "ms " + entry.stage, entry.detail);
         scheduleFlush(0);
       }
