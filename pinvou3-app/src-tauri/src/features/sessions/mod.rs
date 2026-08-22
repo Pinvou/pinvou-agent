@@ -46,6 +46,7 @@ mod tests;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
@@ -146,6 +147,22 @@ pub struct SessionStore {
     /// 区内完成。少了它，两个并发保存会各自读到不同时刻的快照，**后完成写盘的
     /// 旧快照**会覆盖新快照——重启后部分会话的开关状态消失。
     multi_agent_flags_io: Arc<Mutex<()>>,
+    /// `manager.list_sessions()` 的进程内快照缓存。上游每次调用都会全目录
+    /// read_dir + 逐文件前缀解析，而启动路径(boot 恢复/保留策略/AcpPool 元数据)
+    /// 与每个 list 命令都会调它——同代元数据重复扫描 3+ 次。缓存以
+    /// `save_session_atomic`/`delete` 等 App 侧唯一写路径失效；绕过 App 写盘的
+    /// 外部进程改动不在守护范围(与上游每次现读的口径差异见 store.rs 注释)。
+    pub(crate) list_cache: Arc<
+        RwLock<
+            Option<(
+                u64,
+                Arc<Vec<deepseek_tui::session_manager::SessionMetadata>>,
+            )>,
+        >,
+    >,
+    /// `list_cache` 的代数计数:每次失效自增,回填前比对——miss 期间发生过写
+    /// 的扫描结果不得回填(陈旧快照复活会驻留到下一次写)。见 store.rs。
+    pub(crate) list_cache_generation: Arc<AtomicU64>,
 }
 
 /// 原生代码会话(品悟 Engine)的执行根解析器:绑定了项目目录的原生代码会话
