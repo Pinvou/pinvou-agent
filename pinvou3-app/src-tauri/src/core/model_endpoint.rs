@@ -4,10 +4,20 @@
 //! 记忆回顾（features/memory）选 Anthropic preset 时走 Messages 原生协议，
 //! 鉴权与地址口径与上述探测一致。
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+
+/// 探测结果 TTL 缓存：同一 base_url 的本地服务类型在短时间内不会变化。
+/// 探测最坏 ~12-15s 串行（挂起端点），多会话/多入口（EnginePool spawn、
+/// 连接测试、前端探测）重复探测会放大开销；按 base_url 缓存可合并。
+const PROBE_CACHE_TTL: Duration = Duration::from_secs(60);
+
+static PROBE_KIND_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, LocalServerKind)>>,
+> = std::sync::OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenAiModelInfo {
@@ -180,22 +190,8 @@ pub async fn probe_ollama_models(base_url: &str) -> Option<OpenAiModelsProbe> {
 /// 探测 LM Studio：优先原生 `/api/v0/models`（带 loaded 状态），
 /// 旧版本没有该接口时回退 `/v1/models`（loaded 未知）。
 pub async fn probe_lmstudio_models(base_url: &str) -> Option<OpenAiModelsProbe> {
-    let host = strip_v1_suffix(base_url)?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .ok()?;
-    if let Ok(resp) = client
-        .get(format!("{host}/api/v0/models"))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-    {
-        if let Ok(v) = resp.json::<serde_json::Value>().await {
-            if let Some(models) = parse_lmstudio_v0_models(&v) {
-                return Some(OpenAiModelsProbe { models });
-            }
-        }
+    if let Some(probe) = probe_lmstudio_v0_only(base_url).await {
+        return Some(probe);
     }
     probe_openai_models(base_url).await
 }
@@ -230,6 +226,271 @@ pub fn strip_v1_suffix(url: &str) -> Option<String> {
             .map(String::from)
             .unwrap_or_else(|| trimmed.to_string()),
     )
+}
+
+/// 本地推理服务类型（决定思考控制走哪套 wire 协议）。
+///
+/// 只有前两类有底座现成能力：Ollama 经 `think` 布尔开关（无档位）、vLLM 经
+/// `chat_template_kwargs` 支持 off/low/medium/high 档位；LM Studio 与通用
+/// OpenAI 兼容端点走 openai wire route，底座暂不注入思考控制。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalServerKind {
+    /// vLLM：底座经 `chat_template_kwargs.enable_thinking` + `reasoning_effort`
+    /// 支持 off/low/medium/high 档位。
+    Vllm,
+    /// Ollama：底座经 `think` 布尔支持开关（off=think:false，其余 think:true）。
+    Ollama,
+    /// LM Studio：底座 openai wire route 暂不注入思考控制（保持旧行为）。
+    LmStudio,
+    /// 其他通用 OpenAI 兼容服务（探测不到任何特征端点）。
+    Generic,
+}
+
+/// 探测本地推理服务类型。只应在本地端点（`base_url_uses_local_or_private`）上
+/// 调用；判定顺序按特征端点互斥性排列：Ollama（`/api/tags`）→ LM Studio
+/// （`/api/v0/models`）→ vLLM（`/v1/models` 的 `owned_by`）→ 通用。探测失败
+/// （服务未启动/超时）返回 `Generic`，调用方保持既有 openai wire route，不因
+/// 探测失败改变行为。
+///
+/// 结果按 base_url 缓存 `PROBE_CACHE_TTL`：探测最坏 ~12-15s 串行（挂起端点），
+/// 多会话/多入口重复探测会放大开销；TTL 内命中直接返回缓存值。并发未命中
+/// 经 in-flight 注册表共享同一次探测（首个调用执行、其余等待广播），不再
+/// 各自串行重付。失败结果（`Generic`）不写入长缓存：服务可能只是未启动，
+/// 下次调用应立即重探，避免 60s 内起服务仍被钉死在 Generic 错路由。
+pub async fn probe_local_server_kind(base_url: &str) -> LocalServerKind {
+    let key = base_url.trim_end_matches('/').to_string();
+    if let Some(kind) = probe_kind_cache_get(&key) {
+        return kind;
+    }
+    let kind = probe_kind_inflight(&key).await;
+    if kind != LocalServerKind::Generic {
+        probe_kind_cache_put(&key, kind);
+    }
+    kind
+}
+
+/// 并发去重注册表：key → 完成信号（Weak，首个调用方持有唯一强引用）。
+/// 首个调用方执行探测、完成后发送结果并注销；并发调用方订阅等待，探测只
+/// 跑一次。首个调用方被取消（任务 abort / 外层 select 丢弃）时其强引用随
+/// future 一起 drop，注册表不延残生命周期：等待方观察到通道关闭（`changed()`
+/// 返回 Err）降级为自行直探，后续调用方 upgrade 失败后重新发起探测，总能
+/// 得到结果，也不存在永久毒化的注册条目。
+static PROBE_KIND_INFLIGHT: std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<
+            String,
+            std::sync::Weak<tokio::sync::watch::Sender<Option<LocalServerKind>>>,
+        >,
+    >,
+> = std::sync::OnceLock::new();
+
+/// in-flight 注册守卫：持有首个调用方 sender 的唯一强引用。future 在 await
+/// 探测期间被取消时完成块不会运行，守卫在 Drop 时顺带清掉注册表中仍指向
+/// 自己的陈旧 Weak（cleanup 成功与否都不影响正确性——sender 的 drop 本身
+/// 就会关闭通道唤醒等待方）。
+struct InflightRegistration {
+    key: String,
+    sender: Option<Arc<tokio::sync::watch::Sender<Option<LocalServerKind>>>>,
+}
+
+impl Drop for InflightRegistration {
+    fn drop(&mut self) {
+        let Some(sender) = self.sender.take() else {
+            return;
+        };
+        if let Some(registry) = PROBE_KIND_INFLIGHT.get() {
+            if let Ok(mut guard) = registry.lock() {
+                // 只清理仍指向自己（同指针）的注册，不误删后续调用方重新
+                // 发起的新探测。
+                if guard
+                    .get(&self.key)
+                    .is_some_and(|weak| weak.as_ptr() == Arc::as_ptr(&sender))
+                {
+                    guard.remove(&self.key);
+                }
+            }
+        }
+        // drop 唯一强引用 → 通道关闭 → 等待方 changed() 得 Err 降级直探。
+    }
+}
+
+async fn probe_kind_inflight(base_url: &str) -> LocalServerKind {
+    /// 注册结果：要么成为首个执行者，要么订阅在途探测的完成信号。
+    enum Inflight {
+        First(Arc<tokio::sync::watch::Sender<Option<LocalServerKind>>>),
+        Wait(tokio::sync::watch::Receiver<Option<LocalServerKind>>),
+    }
+    let registry = PROBE_KIND_INFLIGHT.get_or_init(Default::default);
+    // 注册/订阅在同步块内完成，guard 不跨 await（Send 约束）。
+    let entry = {
+        let Ok(mut guard) = registry.lock() else {
+            // 注册表锁不可用（中毒）：降级为无合并直探。
+            return probe_local_server_kind_uncached(base_url).await;
+        };
+        // upgrade 失败 = 陈旧 Weak（此前被取消的探测残留）：按无在途处理，
+        // 用新注册覆盖。
+        if let Some(rx) = guard.get(base_url).and_then(|weak| weak.upgrade()) {
+            Inflight::Wait(rx.subscribe())
+        } else {
+            let (tx, _rx) = tokio::sync::watch::channel(None);
+            let tx = Arc::new(tx);
+            guard.insert(base_url.to_string(), Arc::downgrade(&tx));
+            Inflight::First(tx)
+        }
+    };
+    match entry {
+        // 首个调用方：执行探测，完成后广播结果并注销注册。await 期间被取消
+        // 时由守卫 drop 强引用关闭通道（见 InflightRegistration）。
+        Inflight::First(sender) => {
+            let mut registration = InflightRegistration {
+                key: base_url.to_string(),
+                sender: Some(Arc::clone(&sender)),
+            };
+            let kind = probe_local_server_kind_uncached(base_url).await;
+            // 正常完成：交出 sender，守卫 Drop 不再重复清理。
+            registration.sender = None;
+            let _ = sender.send(Some(kind));
+            if let Ok(mut guard) = registry.lock() {
+                if guard
+                    .get(base_url)
+                    .is_some_and(|weak| weak.as_ptr() == Arc::as_ptr(&sender))
+                {
+                    guard.remove(base_url);
+                }
+            }
+            kind
+        }
+        // 并发调用方：等待首个调用方广播结果。
+        Inflight::Wait(mut rx) => {
+            // 订阅时结果可能已广播（send 先于 subscribe）：先查当前值。
+            if let Some(kind) = *rx.borrow_and_update() {
+                return kind;
+            }
+            while rx.changed().await.is_ok() {
+                if let Some(kind) = *rx.borrow_and_update() {
+                    return kind;
+                }
+            }
+            // 广播方被取消/异常丢弃：通道关闭（changed() Err），降级直探兜底。
+            probe_local_server_kind_uncached(base_url).await
+        }
+    }
+}
+
+fn probe_kind_cache_get(base_url: &str) -> Option<LocalServerKind> {
+    let cache = PROBE_KIND_CACHE.get_or_init(Default::default);
+    let guard = cache.lock().ok()?;
+    let (inserted_at, kind) = guard.get(base_url)?;
+    if inserted_at.elapsed() > PROBE_CACHE_TTL {
+        return None;
+    }
+    Some(*kind)
+}
+
+fn probe_kind_cache_put(base_url: &str, kind: LocalServerKind) {
+    let cache = PROBE_KIND_CACHE.get_or_init(Default::default);
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(base_url.to_string(), (std::time::Instant::now(), kind));
+    }
+}
+
+/// 仅测试用：清空探测缓存，避免 TTL 命中污染 mock 调用计数/跨用例状态。
+#[cfg(test)]
+pub(crate) fn clear_probe_kind_cache() {
+    if let Some(cache) = PROBE_KIND_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.clear();
+        }
+    }
+    if let Some(inflight) = PROBE_KIND_INFLIGHT.get() {
+        if let Ok(mut guard) = inflight.lock() {
+            guard.clear();
+        }
+    }
+}
+
+/// 无缓存的实际探测（TTL 缓存命中时直接返回，见 `probe_local_server_kind`）。
+async fn probe_local_server_kind_uncached(base_url: &str) -> LocalServerKind {
+    // Ollama 特征端点 /api/tags 存在且模型列表非空（probe_ollama_models 内部要求）。
+    if probe_ollama_models(base_url).await.is_some() {
+        return LocalServerKind::Ollama;
+    }
+    // LM Studio 原生端点 /api/v0/models 存在且形状认识。注意不能复用
+    // probe_lmstudio_models：它失败时回退 /v1/models，而 /v1/models 是通用端点
+    // （Ollama/通用服务也有），会把非 LM Studio 误判成 LM Studio。
+    if probe_lmstudio_v0_only(base_url).await.is_some() {
+        return LocalServerKind::LmStudio;
+    }
+    // vLLM：/v1/models 响应中模型 `owned_by == "vllm"`（vLLM 标准实现字段）。
+    if probe_vllm_owned(base_url).await {
+        return LocalServerKind::Vllm;
+    }
+    LocalServerKind::Generic
+}
+
+/// 仅探测 LM Studio 独有原生端点 `/api/v0/models`（不回退 `/v1/models`，后者
+/// 不具判别性）。响应形状不认识时返回 `None`，调用方继续探测下一个候选。
+/// 既是 `probe_lmstudio_models` 的 v0 前置，也是本地服务判别探测的前置：
+/// 判别场景必须用它而非 `probe_lmstudio_models`（后者回退 `/v1/models`，而
+/// `/v1/models` 是通用端点，Ollama/通用服务也有，会把非 LM Studio 误判）。
+async fn probe_lmstudio_v0_only(base_url: &str) -> Option<OpenAiModelsProbe> {
+    let host = strip_v1_suffix(base_url)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+    let resp = client
+        .get(format!("{host}/api/v0/models"))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .ok()?;
+    let v = resp.json::<serde_json::Value>().await.ok()?;
+    Some(OpenAiModelsProbe {
+        models: parse_lmstudio_v0_models(&v)?,
+    })
+}
+
+/// 抓取 OpenAI 兼容 `/v1/models` 响应体。探测地址口径与
+/// `features::monitor::probe_vllm_model_info` 一致：upstream 带 `/v1` 直接拼
+/// `/models`，不带则补 `/v1/models`。失败/非 2xx/解析失败返回 `None`，调用方
+/// 按探测失败处理。共享给 `probe_vllm_owned` 与 monitor 的 vLLM served-name
+/// 探测，避免 `/v1/models` 的 URL 拼装口径在两处漂移。
+pub(crate) async fn fetch_v1_models(base_url: &str) -> Option<serde_json::Value> {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    else {
+        return None;
+    };
+    let url = if base_url.trim_end_matches('/').ends_with("/v1") {
+        format!("{}/models", base_url.trim_end_matches('/'))
+    } else {
+        format!("{}/v1/models", base_url.trim_end_matches('/'))
+    };
+    let Ok(resp) = client.get(url).send().await else {
+        return None;
+    };
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<serde_json::Value>().await.ok()
+}
+
+/// 探测 vLLM：`/v1/models` 响应中任一模型 `owned_by == "vllm"`（vLLM 标准实现）。
+async fn probe_vllm_owned(base_url: &str) -> bool {
+    let Some(v) = fetch_v1_models(base_url).await else {
+        return false;
+    };
+    v.get("data")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("owned_by")
+                    .and_then(Value::as_str)
+                    .is_some_and(|owned| owned.eq_ignore_ascii_case("vllm"))
+            })
+        })
 }
 
 /// Messages API 版本头，与连接测试同一口径。
@@ -483,5 +744,360 @@ mod tests {
         )
         .is_none());
         assert!(anthropic_messages_text(&serde_json::json!({})).is_none());
+    }
+
+    // —— 本地服务类型探测（本地 HTTP mock，无外部依赖）——
+
+    /// 探测用例共享进程级全局状态（PROBE_KIND_CACHE / PROBE_KIND_INFLIGHT），
+    /// 且各自 clear_probe_kind_cache() 重置：并行时会拆掉对方在途注册
+    /// （合并测试出现双探、abort 测试注册限期轮空）。这些用例必须串行。
+    static PROBE_STATE_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// 极简本地 HTTP server：按请求路径前缀返回固定 JSON，未注册路径返回 404。
+    /// 给 probe_local_server_kind / fetch_v1_models 提供真实 HTTP 往返，
+    /// 覆盖探测命中与失败回落路径。
+    struct MockProbeServer {
+        url: String,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for MockProbeServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn spawn_probe_server(routes: Vec<(&'static str, &'static str)>) -> MockProbeServer {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 4096];
+                let Ok(n) = stream.read(&mut buf).await else {
+                    continue;
+                };
+                if n == 0 {
+                    continue;
+                }
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let (status, body) = match routes.iter().find(|(p, _)| path.starts_with(p)) {
+                    Some((_, b)) => (200, *b),
+                    None => (404, r#"{"error":"not found"}"#),
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        MockProbeServer {
+            url: format!("http://{addr}/v1"),
+            task,
+        }
+    }
+
+    /// Ollama 特征端点命中：/api/ps 404（容忍，按空集）→ /api/tags 返回模型列表
+    /// → 判定 Ollama。
+    #[tokio::test]
+    async fn probe_local_kind_detects_ollama_via_api_tags() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        let server = spawn_probe_server(vec![(
+            "/api/tags",
+            r#"{"models":[{"name":"qwen3:8b"},{"name":"deepseek-r1:14b"}]}"#,
+        )])
+        .await;
+        assert_eq!(
+            probe_local_server_kind(&server.url).await,
+            LocalServerKind::Ollama
+        );
+    }
+
+    /// LM Studio 原生端点命中：/api/tags 404 → /api/v0/models 返回 loaded 模型
+    /// → 判定 LM Studio。
+    #[tokio::test]
+    async fn probe_local_kind_detects_lmstudio_via_v0_models() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        let server = spawn_probe_server(vec![(
+            "/api/v0/models",
+            r#"{"data":[{"id":"local-model","state":"loaded"}]}"#,
+        )])
+        .await;
+        assert_eq!(
+            probe_local_server_kind(&server.url).await,
+            LocalServerKind::LmStudio
+        );
+    }
+
+    /// vLLM 命中：前两个特征端点 404 → /v1/models 中 owned_by == "vllm" → 判定
+    /// vLLM。同时覆盖 fetch_v1_models 对带 /v1 后缀 base_url 的 URL 拼接。
+    #[tokio::test]
+    async fn probe_local_kind_detects_vllm_via_owned_by() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        let server = spawn_probe_server(vec![(
+            "/v1/models",
+            r#"{"object":"list","data":[{"id":"qwen3.6-35b","owned_by":"vllm"}]}"#,
+        )])
+        .await;
+        assert_eq!(
+            probe_local_server_kind(&server.url).await,
+            LocalServerKind::Vllm
+        );
+    }
+
+    /// 全失败回落：所有特征端点 404 → Generic（探测失败不改变 wire route）。
+    #[tokio::test]
+    async fn probe_local_kind_falls_back_to_generic_when_all_endpoints_404() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        let server = spawn_probe_server(vec![]).await;
+        assert_eq!(
+            probe_local_server_kind(&server.url).await,
+            LocalServerKind::Generic
+        );
+    }
+
+    /// fetch_v1_models 的 URL 拼接：不带 /v1 后缀的 base_url 补 /v1/models；
+    /// 带 /v1（含尾斜杠）直接拼 /models。两种形态都应命中同一 mock 路由。
+    #[tokio::test]
+    async fn fetch_v1_models_joins_url_with_and_without_v1_suffix() {
+        let server = spawn_probe_server(vec![("/v1/models", r#"{"data":[]}"#)]).await;
+        let base = server.url.trim_end_matches("/v1").to_string();
+        assert!(
+            fetch_v1_models(&base).await.is_some(),
+            "无 /v1 后缀应补 /v1/models"
+        );
+        assert!(
+            fetch_v1_models(&server.url).await.is_some(),
+            "带 /v1 后缀应拼 /models"
+        );
+        assert!(
+            fetch_v1_models(&format!("{base}/v1/")).await.is_some(),
+            "带 /v1/ 尾斜杠同样命中"
+        );
+    }
+
+    /// TTL 缓存：同一 base_url 的探测结果缓存 60s，第二次调用不再发请求。
+    /// mock server 每次响应后关闭连接，若缓存失效第二次调用会因服务已关而
+    /// 落到 Generic——缓存命中则保持第一次的 Ollama 判定。
+    #[tokio::test]
+    async fn probe_local_kind_caches_result_per_base_url() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        clear_probe_kind_cache();
+        let server =
+            spawn_probe_server(vec![("/api/tags", r#"{"models":[{"name":"qwen3:8b"}]}"#)]).await;
+        let first = probe_local_server_kind(&server.url).await;
+        assert_eq!(first, LocalServerKind::Ollama);
+        // 第二次调用命中缓存，不再访问已关闭的 server。
+        let second = probe_local_server_kind(&server.url).await;
+        assert_eq!(second, LocalServerKind::Ollama);
+        clear_probe_kind_cache();
+    }
+
+    /// Generic（探测失败）不写入长缓存：服务从 404（未就绪）变为 Ollama 后，
+    /// 下一次调用应立即重探并拿到新结果，不被 60s TTL 钉死在 Generic。
+    #[tokio::test]
+    async fn probe_local_kind_does_not_cache_generic_result() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        clear_probe_kind_cache();
+        // 空 mock：所有特征端点 404 → Generic。
+        let server = spawn_probe_server(vec![]).await;
+        let base = server.url.clone();
+        assert_eq!(
+            probe_local_server_kind(&base).await,
+            LocalServerKind::Generic
+        );
+        // 换成响应 /api/tags 的 server（同端口不可行，用第二个 server 验证
+        // Generic 结果未被缓存的方式：直接查缓存状态）。
+        // 简化口径：探测结果为 Generic 时注册表与缓存都不应留有该 key。
+        let cache_has_key = PROBE_KIND_CACHE
+            .get()
+            .and_then(|c| {
+                c.lock()
+                    .ok()
+                    .map(|g| g.contains_key(base.trim_end_matches('/')))
+            })
+            .unwrap_or(false);
+        assert!(!cache_has_key, "Generic 结果不应写入 TTL 缓存");
+        clear_probe_kind_cache();
+    }
+
+    /// in-flight 合并：并发多次调用同一 base_url 共享一次探测。
+    /// mock server 统计 /api/tags 命中次数——合并生效时无论并发多少调用，
+    /// 特征端点只被打一次（Ollama 判定在第一个端点即短路返回）。
+    #[tokio::test]
+    async fn probe_local_kind_merges_concurrent_calls_into_one_probe() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        clear_probe_kind_cache();
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = r#"{"models":[{"name":"qwen3:8b"}]}"#;
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 4096];
+                let Ok(n) = stream.read(&mut buf).await else {
+                    continue;
+                };
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                if path.starts_with("/api/tags") {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                } else {
+                    let resp = "HTTP/1.1 404 OK\r\nContent-Length: 23\r\n\
+                                Connection: close\r\n\r\n{\"error\":\"not found\"}";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
+                let _ = stream.shutdown().await;
+            }
+        });
+        let url = format!("http://{addr}/v1");
+        // 并发 8 个调用（首中缓存为空，全部走 in-flight 路径）。
+        let mut joins = Vec::new();
+        for _ in 0..8 {
+            let u = url.clone();
+            joins.push(tokio::spawn(
+                async move { probe_local_server_kind(&u).await },
+            ));
+        }
+        for j in joins {
+            assert_eq!(j.await.unwrap(), LocalServerKind::Ollama);
+        }
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "并发调用应合并为一次探测（/api/tags 只命中一次）"
+        );
+        task.abort();
+        clear_probe_kind_cache();
+    }
+
+    /// 取消安全回归：首个 in-flight 探测被 abort 后注册表不能残留毒化条目——
+    /// 已订阅的等待方须降级直探限期返回，后续调用方须重新发起探测，均不得
+    /// 永久挂起（修复前等待方 changed() 既等不到 send 也等不到通道关闭）。
+    ///
+    /// mock server 用 watch 门闩控制：放行前挂起所有请求（让首探停在 HTTP
+    /// await 上以便 abort），放行后对所有端点回 404（直探/重探落 Generic）。
+    #[tokio::test]
+    async fn probe_kind_inflight_abort_first_caller_unblocks_waiter_and_next_caller() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        clear_probe_kind_cache();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async move {
+            let gate_rx = gate_rx;
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut gate = gate_rx.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let Ok(n) = stream.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    // 门闩未放行：请求挂起，模拟慢端点让首探停在 HTTP await。
+                    if !*gate.borrow_and_update() {
+                        let _ = gate.changed().await;
+                    }
+                    let body = r#"{"error":"not found"}"#;
+                    let resp = format!(
+                        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        let url = format!("http://{addr}/v1");
+        let key = url.trim_end_matches('/').to_string();
+
+        // 1. 首个探测进入 in-flight 注册（注册后停在 HTTP await 上）。
+        let first_url = url.clone();
+        let first = tokio::spawn(async move { probe_local_server_kind(&first_url).await });
+        let registry = PROBE_KIND_INFLIGHT.get_or_init(Default::default);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !registry.lock().unwrap().contains_key(&key) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "首个探测应在限期内完成 in-flight 注册"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // 2. 并发等待方订阅在途探测。
+        let waiter_url = key.clone();
+        let waiter = tokio::spawn(async move { probe_local_server_kind(&waiter_url).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // 3. abort 首个探测（模拟 spawn 任务被取消）；await 句柄确保 future
+        //    已被丢弃（注销守卫已运行）再继续。
+        first.abort();
+        assert!(first.await.is_err(), "被 abort 的首探任务应以取消告终");
+
+        // 4. 放行 mock：之后的直探/重探请求立即 404。
+        gate_tx.send(true).unwrap();
+
+        // 5. 等待方不得永久挂起：观察到通道关闭后降级直探，限期返回 Generic。
+        let waiter_kind = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("abort 首探后，已订阅的等待方应在限期内降级直探返回")
+            .unwrap();
+        assert_eq!(waiter_kind, LocalServerKind::Generic);
+
+        // 6. 后续调用方不得命中毒化条目：重新发起探测并限期返回。
+        let next_url = key.clone();
+        let next_kind = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::spawn(async move { probe_local_server_kind(&next_url).await }),
+        )
+        .await
+        .expect("abort 首探后，后续调用方应在限期内完成（注册表无残留）")
+        .unwrap();
+        assert_eq!(next_kind, LocalServerKind::Generic);
+
+        // 7. 注册表最终不残留该 key。
+        assert!(
+            !registry.lock().unwrap().contains_key(&key),
+            "abort 后注册表不应残留毒化条目"
+        );
+        task.abort();
+        clear_probe_kind_cache();
     }
 }

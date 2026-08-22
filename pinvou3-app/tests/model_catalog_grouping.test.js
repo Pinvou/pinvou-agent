@@ -15,7 +15,7 @@ code = code.replace(/import\s+['"]\.\/settings-i18n\.js['"];?/g, '');
 // 引用这些标识符,会在 vm 求值时抛 "deepseekIcon is not defined"。被测函数不依赖图标映射。
 code = code.replace(/const\s+BRAND_ICON_BY_(?:PRESET|VENDOR)\s*=\s*\{[\s\S]*?\};?/g, '');
 
-const ctx = { console };
+const ctx = { console, URL };
 vm.createContext(ctx);
 vm.runInContext(
   `${code}\n` +
@@ -32,12 +32,15 @@ vm.runInContext(
   `this.defaultReasoningEffortForModel = defaultReasoningEffortForModel;\n` +
   `this.reasoningEffortForModelSwitch = reasoningEffortForModelSwitch;\n` +
   `this.normalizeStoredReasoningEffort = normalizeStoredReasoningEffort;\n` +
+  `this.baseUrlUsesLoopback = baseUrlUsesLoopback;\n` +
+  `this.baseUrlUsesLocalOrPrivate = baseUrlUsesLocalOrPrivate;\n` +
+  `this.localProbeTiersForKind = localProbeTiersForKind;\n` +
   `this.catalogImageCapableForModel = catalogImageCapableForModel;\n`,
   ctx,
   { filename: srcPath },
 );
 
-const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, catalogImageCapableForModel } = ctx;
+const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, catalogImageCapableForModel } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -295,6 +298,14 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   // xiaomi-mimo：只有 thinking 开关（off/enabled），off/high 两档
   const mimo = { preset: 'mimo', vendor: 'mimo', model: 'mimo-v2.5-pro' };
   assert.deepStrictEqual(tiers(mimo), ['off', 'high']);
+  // 本地 loopback OpenAI 兼容端点：探测后走 Ollama think 开关 / vLLM 档位，提供四档
+  const localOllama = { preset: 'openai_compatible', model: 'qwen3:8b', base_url: 'http://127.0.0.1:11434/v1' };
+  assert.deepStrictEqual(tiers(localOllama), ['off', 'low', 'medium', 'high']);
+  const localLocalhost = { preset: 'openai_compatible', model: 'local-model', base_url: 'http://localhost:8000/v1' };
+  assert.deepStrictEqual(tiers(localLocalhost), ['off', 'low', 'medium', 'high']);
+  // 远端自定义 OpenAI 兼容端点不提供切换（无本地思考控制 wire）
+  const remoteCustom = { preset: 'openai_compatible', model: 'my-model', base_url: 'https://api.example.com/v1' };
+  assert.strictEqual(reasoningEffortTiersForModel(remoteCustom), null);
 });
 
 test('OpenAI reasoning 家族判定对齐底座 model_is_openai_reasoning_family（含手输自定义模型）', () => {
@@ -352,6 +363,62 @@ test('reasoningEffortForModelSwitch：K2.6(off) → K3 重置为 high', () => {
   assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://open.bigmodel.cn/api/paas/v4' }), null);
 });
 
+test('baseUrlUsesLoopback 与 Rust bridge.rs 判定对齐', () => {
+  // 回环：localhost / 127.0.0.0/8 / ::1（含展开形式）
+  assert.strictEqual(baseUrlUsesLoopback('http://127.0.0.1:11434/v1'), true);
+  assert.strictEqual(baseUrlUsesLoopback('http://127.255.0.1:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLoopback('http://localhost:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLoopback('http://LOCALHOST:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLoopback('http://[::1]:11434/v1'), true);
+  assert.strictEqual(baseUrlUsesLoopback('http://[0:0:0:0:0:0:0:1]:11434/v1'), true);
+  // 去尾点：127.0.0.1. 与 localhost. 仍按回环（对齐 Rust 的 trim_end_matches('.')）
+  assert.strictEqual(baseUrlUsesLoopback('http://127.0.0.1.:11434/v1'), true);
+  // 非回环：0.0.0.0 不是 loopback（Rust IpAddr::is_loopback() 语义）、
+  // IPv4-mapped ::ffff:127.x 不是 ::1/128、公网/局域网/域名均非本地
+  assert.strictEqual(baseUrlUsesLoopback('http://0.0.0.0:11434/v1'), false);
+  assert.strictEqual(baseUrlUsesLoopback('http://[::ffff:127.0.0.1]:11434/v1'), false);
+  assert.strictEqual(baseUrlUsesLoopback('http://[2001:db8::1]:11434/v1'), false);
+  assert.strictEqual(baseUrlUsesLoopback('http://192.168.1.10:11434/v1'), false);
+  assert.strictEqual(baseUrlUsesLoopback('https://api.example.com/v1'), false);
+  assert.strictEqual(baseUrlUsesLoopback(''), false);
+  assert.strictEqual(baseUrlUsesLoopback('not-a-url'), false);
+});
+
+test('baseUrlUsesLocalOrPrivate 覆盖 loopback/RFC1918/Docker 宿主别名', () => {
+  // loopback（与 baseUrlUsesLoopback 一致）
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://127.0.0.1:11434/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://localhost:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://[::1]:11434/v1'), true);
+  // RFC1918 私网段
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://10.0.0.5:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://172.16.3.4:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://172.31.255.254:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://192.168.1.10:11434/v1'), true);
+  // 172.32 不在 172.16/12 段内
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://172.32.1.1:8000/v1'), false);
+  // Docker 宿主别名
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://host.docker.internal:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://host.lima.internal:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://myapp.docker.internal:9000/v1'), true);
+  // 公网/域名非本地
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('https://api.deepseek.com/v1'), false);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('https://gateway.example.com/v1'), false);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('https://192.168.1.10.example.com/v1'), false);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate(''), false);
+});
+
+test('localProbeTiersForKind 按探测结果映射真实档位', () => {
+  // vllm → 四档；ollama → think 开关两档（避免 low/medium/high 归一误导）
+  assert.deepStrictEqual(Array.from(localProbeTiersForKind('vllm')), ['off', 'low', 'medium', 'high']);
+  assert.deepStrictEqual(Array.from(localProbeTiersForKind('ollama')), ['off', 'high']);
+  // lmstudio/generic 底座空操作 → null（前端显示不支持提示）
+  assert.strictEqual(localProbeTiersForKind('lmstudio'), null);
+  assert.strictEqual(localProbeTiersForKind('generic'), null);
+  // 未探测/未知 → 默认四档（前端探测完成前不误报不支持）
+  assert.deepStrictEqual(Array.from(localProbeTiersForKind(null)), ['off', 'low', 'medium', 'high']);
+  assert.deepStrictEqual(Array.from(localProbeTiersForKind('unknown')), ['off', 'low', 'medium', 'high']);
+});
+
 test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型→high，不支持→null', () => {
   const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
   assert.strictEqual(defaultReasoningEffortForModel(deepseek), 'high');
@@ -359,6 +426,9 @@ test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型�
   assert.strictEqual(defaultReasoningEffortForModel(vllm), 'off');
   const xai = { preset: 'xai', vendor: 'xai', model: 'grok-4.3' };
   assert.strictEqual(defaultReasoningEffortForModel(xai), null);
+  // 本地 loopback OpenAI 兼容端点默认关闭思考（与 vllm 一致）
+  const localOllama = { preset: 'openai_compatible', model: 'qwen3:8b', base_url: 'http://127.0.0.1:11434/v1' };
+  assert.strictEqual(defaultReasoningEffortForModel(localOllama), 'off');
 });
 
 test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 null', () => {

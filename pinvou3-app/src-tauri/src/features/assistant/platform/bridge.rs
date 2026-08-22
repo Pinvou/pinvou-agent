@@ -32,6 +32,7 @@ use deepseek_tui::tui::app::AppMode;
 
 use self::bundle::{instructions_code_md, instructions_md, Pinvou3Bundle};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::core::model_endpoint::LocalServerKind;
 use crate::core::session_mode::SessionMode;
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::image_capability::{
@@ -81,7 +82,7 @@ fn is_official_deepseek_base_url(base_url: &str) -> bool {
     )
 }
 
-fn base_url_uses_loopback(base_url: &str) -> bool {
+pub(crate) fn base_url_uses_loopback(base_url: &str) -> bool {
     reqwest::Url::parse(base_url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_string))
@@ -94,6 +95,47 @@ fn base_url_uses_loopback(base_url: &str) -> bool {
                 || host
                     .parse::<std::net::IpAddr>()
                     .is_ok_and(|address| address.is_loopback())
+        })
+}
+
+/// 是否把该 base_url 视为「本地推理服务」：loopback（localhost / 127.0.0.0/8 /
+/// ::1）、RFC1918 私网段（10/8、172.16/12、192.168/16）或 Docker 特主机名
+/// （host.docker.internal 等）。这些端点通常跑在用户自己的机器/内网，探测
+/// 成本低且值得默认关思考；公网 OpenAI 兼容端点不在此列（保持默认 high）。
+/// 与 `base_url_uses_loopback` 的区别：后者仅用于「允许无鉴权」判定（api_key
+/// required），本判定覆盖探测与思考控制范围（局域网 vLLM/Ollama 也默认关思考）。
+pub(crate) fn base_url_uses_local_or_private(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .is_some_and(|host| {
+            let host = host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_end_matches('.');
+            if host.eq_ignore_ascii_case("localhost") {
+                return true;
+            }
+            // Docker Desktop 宿主别名：容器内访问宿主机的常见写法。
+            if host.eq_ignore_ascii_case("host.docker.internal")
+                || host.eq_ignore_ascii_case("host.lima.internal")
+                || host.eq_ignore_ascii_case("host.orbstack.internal")
+                || host.ends_with(".docker.internal")
+            {
+                return true;
+            }
+            let Ok(address) = host.parse::<std::net::IpAddr>() else {
+                return false;
+            };
+            if address.is_loopback() {
+                return true;
+            }
+            // RFC1918 私网段（10/8、172.16/12、192.168/16）：std 的
+            // `Ipv4Addr::is_private` 语义完全等价，直接复用。
+            match address {
+                std::net::IpAddr::V4(v4) => v4.is_private(),
+                std::net::IpAddr::V6(_) => false,
+            }
         })
 }
 
@@ -126,6 +168,11 @@ pub struct Pinvou3Bridge {
     /// 时由 `probe_vllm_model_info` 注入。Some → 与 SavedModel 声明取较小值后填入
     /// active_route_limits，并与 output profile 一起推导压缩阈值。
     pub probed_context_tokens: Option<u32>,
+    /// 本地 loopback 端点（OpenAI 兼容 preset）探测出的服务类型（Ollama / vLLM /
+    /// LM Studio / 通用）。EnginePool spawn 时由 `probe_local_server_kind` 注入；
+    /// None = 非本地端点或尚未探测。决定思考控制走哪套底座 wire 协议：
+    /// Ollama → think 开关、vLLM → 档位；LM Studio / 通用保持 openai wire（无思考控制）。
+    pub probed_local_kind: Option<LocalServerKind>,
     /// 原生代码会话的执行根（engine cwd / shell 目录）解析器；None = 无代码会话
     /// 项目绑定，所有会话都用会话私有目录。账本根（附件/审计/产物）不受其影响，
     /// 仍由 `SessionStore::session_roots` 的 `ledger` 字段统一决定。
@@ -156,6 +203,7 @@ impl std::fmt::Debug for Pinvou3Bridge {
             .field("session_model", &self.session_model)
             .field("runtime_model_credential", &self.runtime_model_credential)
             .field("probed_context_tokens", &self.probed_context_tokens)
+            .field("probed_local_kind", &self.probed_local_kind)
             .field(
                 "execution_root_resolver",
                 &self.execution_root_resolver.as_ref().map(|_| "Some(..)"),
@@ -268,6 +316,7 @@ impl Pinvou3Bridge {
             session_model: None,
             runtime_model_credential: None,
             probed_context_tokens: None,
+            probed_local_kind: None,
             execution_root_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
@@ -697,11 +746,23 @@ impl Pinvou3Bridge {
             ModelPreset::Mimo => "xiaomi-mimo".to_string(),
             ModelPreset::Anthropic => "anthropic".to_string(),
             ModelPreset::Xai => "xai".to_string(),
+            // 本地端点（用户自定义 OpenAI 兼容地址指向本机/内网服务）：按
+            // EnginePool spawn 时探测出的服务类型走对应底座 provider，让思考
+            // 控制真正生效（Ollama → think 开关、vLLM → off/low/medium/high 档位）。
+            // LM Studio / 通用 / 尚未探测（None）保持 openai wire route
+            // （底座对 openai 的 reasoning_effort 是空操作，不注入思考控制）。
+            ModelPreset::OpenaiCompatible => {
+                if base_url_uses_local_or_private(&self.base_url()) {
+                    match self.probed_local_kind {
+                        Some(LocalServerKind::Ollama) => return "ollama".to_string(),
+                        Some(LocalServerKind::Vllm) => return "vllm".to_string(),
+                        _ => {}
+                    }
+                }
+                "openai".to_string()
+            }
             // Gemini 走官方 OpenAI 兼容端点，复用 openai wire route。
-            ModelPreset::OpenaiCompatible
-            | ModelPreset::Qwen
-            | ModelPreset::Openai
-            | ModelPreset::Gemini => "openai".to_string(),
+            ModelPreset::Qwen | ModelPreset::Openai | ModelPreset::Gemini => "openai".to_string(),
         }
     }
 
@@ -743,11 +804,15 @@ impl Pinvou3Bridge {
     /// 当前 route 发给模型的思考深度档位（透传底座 `reasoning_effort`）。
     ///
     /// 优先级：用户显式设置的 `SavedModel.reasoning_effort` > provider 默认
-    /// （本地 vLLM 保持 off 防 SSE timeout；其余默认 high——底座自身默认是 Max，
-    /// 品悟统一收口到 high，符合产品默认思考强度）。
+    /// （本地模型——vLLM 与探测出的 Ollama——默认 off 防 SSE timeout；其余默认
+    /// high——底座自身默认是 Max，品悟统一收口到 high，符合产品默认思考强度）。
     ///
-    /// 本地 OpenAI 兼容端点（loopback 的 LM Studio/Ollama 等）保持旧行为不注入
-    /// 档位（None），避免改造前不存在的 `reasoning_effort` 请求参数引起漂移。
+    /// 本地 OpenAI 兼容端点（loopback 的 LM Studio 等，探测不出服务类型或判定为
+    /// LM Studio/通用）保持旧行为不注入档位（None），避免底座 openai wire route
+    /// 对 `reasoning_effort` 的空操作与不认识的请求参数引起漂移。注意底座对
+    /// openai 的 `reasoning_effort` 空操作仅对普通模型成立：gpt-5.5/5.6/codex
+    /// 家族会经 `apply_openai_reasoning_effort` 注入档位（本地端点模型名不匹配
+    /// 该家族，此处不注入不受影响）。
     ///
     /// 注意：Kimi Code 的 `kimi-for-coding` 等是 always-thinking 模型，官方
     /// 接入要求 Thinking 保持开启；默认 high 由底座翻译成
@@ -761,9 +826,11 @@ impl Pinvou3Bridge {
             return Some(effort.to_string());
         }
         match self.provider().as_str() {
-            "vllm" => Some("off".to_string()),
-            // 本地 OpenAI 兼容端点（loopback 服务）不注入，保持旧行为。
-            "openai" if base_url_uses_loopback(&self.base_url()) => None,
+            // 本地模型默认关思考：vLLM 防 SSE timeout；Ollama 防思考 trace 抢占首包。
+            "vllm" | "ollama" => Some("off".to_string()),
+            // 本地 OpenAI 兼容端点（loopback/私网的 LM Studio/通用服务）不注入，
+            // 保持旧行为。
+            "openai" if base_url_uses_local_or_private(&self.base_url()) => None,
             _ => Some("high".to_string()),
         }
     }
@@ -815,7 +882,10 @@ impl Pinvou3Bridge {
     /// 是否要求用户配置 API Key。local_vllm 和明确指向本机 loopback 的
     /// OpenAI-compatible 服务允许无鉴权；云端/局域网地址默认仍要求 Key。
     pub fn api_key_required(&self) -> bool {
-        self.provider() != "vllm" && !base_url_uses_loopback(&self.base_url())
+        // vLLM 与 Ollama（含探测出的 LAN Ollama）默认无鉴权，底座也允许空 key
+        //（Ollama 官方即开即用）；loopback 端点同样豁免。
+        !matches!(self.provider().as_str(), "vllm" | "ollama")
+            && !base_url_uses_loopback(&self.base_url())
     }
 
     /// 各厂商默认 API base URL（表在 prefs `ModelPreset::default_base_url`）。
@@ -1697,6 +1767,13 @@ impl Pinvou3Bridge {
                 &model,
                 reasoning_stream_style,
             ),
+            "ollama" => configure_provider(
+                &mut providers.ollama,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
             "openai" => configure_provider(
                 &mut providers.openai,
                 &base_url,
@@ -1771,7 +1848,7 @@ impl Pinvou3Bridge {
             }
         }
         cfg.default_text_model = Some(model);
-        // 本地 vLLM 必须关 thinking（防 SSE timeout）；其余默认 high。
+        // 本地模型（vLLM / 探测出的 Ollama）默认关 thinking（防 SSE timeout）；其余默认 high。
         cfg.reasoning_effort = self.request_reasoning_effort();
         cfg
     }
@@ -2311,6 +2388,7 @@ mod tests {
             session_model: None,
             runtime_model_credential: None,
             probed_context_tokens: None,
+            probed_local_kind: None,
             execution_root_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
@@ -3592,6 +3670,15 @@ mod tests {
 
     #[test]
     fn unknown_cloud_model_does_not_gain_a_speculative_route_limit() {
+        // 锁 DEEPSEEK_* env：本用例读 `model()`（env 优先），若与其他写 env 的
+        // 测试并发会读到临时 DEEPSEEK_MODEL（如 deepseek-ai/DeepSeek-V4-Pro →
+        // 底座推导 1M 窗口），导致 route limits 误判为已知。锁保证串行 + 恢复。
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -3694,6 +3781,46 @@ mod tests {
             "",
         );
         assert!(!lan.is_local_endpoint());
+    }
+
+    #[test]
+    fn local_or_private_detection_covers_loopback_lan_and_docker_hosts() {
+        // loopback（与 base_url_uses_loopback 一致）
+        assert!(base_url_uses_local_or_private("http://localhost:8000/v1"));
+        assert!(base_url_uses_local_or_private("http://127.0.0.42:8000/v1"));
+        assert!(base_url_uses_local_or_private("http://[::1]:8000/v1"));
+        // RFC1918 私网段
+        assert!(base_url_uses_local_or_private("http://10.0.0.5:8000/v1"));
+        assert!(base_url_uses_local_or_private("http://172.16.3.4:8000/v1"));
+        assert!(base_url_uses_local_or_private(
+            "http://172.31.255.254:8000/v1"
+        ));
+        assert!(base_url_uses_local_or_private(
+            "http://192.168.1.10:8000/v1"
+        ));
+        // 172.32 不在 172.16/12 段内
+        assert!(!base_url_uses_local_or_private("http://172.32.1.1:8000/v1"));
+        // Docker 宿主别名
+        assert!(base_url_uses_local_or_private(
+            "http://host.docker.internal:8000/v1"
+        ));
+        assert!(base_url_uses_local_or_private(
+            "http://host.lima.internal:8000/v1"
+        ));
+        assert!(base_url_uses_local_or_private(
+            "http://myapp.docker.internal:9000/v1"
+        ));
+        // 公网端点不是本地
+        assert!(!base_url_uses_local_or_private(
+            "https://api.deepseek.com/v1"
+        ));
+        assert!(!base_url_uses_local_or_private(
+            "https://gateway.example.com/v1"
+        ));
+        assert!(!base_url_uses_local_or_private(
+            "https://192.168.1.10.example.com/v1"
+        ));
+        assert!(!base_url_uses_local_or_private("not a url"));
     }
 
     /// 128K 上下文的两种情况(客户翻车场景的正反面),端到端走 build_engine_config:
@@ -5385,6 +5512,197 @@ mod tests {
         assert_eq!(bridge.provider(), "openai");
         assert_eq!(bridge.request_reasoning_effort(), None);
         assert_eq!(bridge.build_dt_config().reasoning_effort, None);
+    }
+
+    /// 本地 loopback 端点探测出 Ollama：走底座 ollama provider（think 开关），
+    /// 默认关思考（off → think=false），无需鉴权。
+    #[test]
+    fn local_ollama_probe_maps_to_ollama_wire_and_defaults_off() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "qwen3:8b",
+            "http://127.0.0.1:11434/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        assert_eq!(bridge.provider(), "ollama");
+        assert!(!bridge.api_key_required(), "本地 Ollama 无需鉴权");
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));
+        let cfg = bridge.build_dt_config();
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
+        let providers = cfg.providers.as_ref().expect("providers");
+        assert_eq!(
+            providers.ollama.base_url.as_deref(),
+            Some("http://127.0.0.1:11434/v1"),
+            "ollama provider 必须写入 loopback base_url"
+        );
+        assert_eq!(providers.ollama.model.as_deref(), Some("qwen3:8b"));
+    }
+
+    /// 本地 loopback 端点探测出 vLLM（OpenAI 兼容 preset 指向 vLLM）：走 vllm
+    /// provider（档位 wire），默认关思考。
+    #[test]
+    fn local_vllm_probe_maps_to_vllm_wire_and_defaults_off() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "qwen3.6-35b",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        assert_eq!(bridge.provider(), "vllm");
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));
+        let cfg = bridge.build_dt_config();
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
+        assert_eq!(
+            cfg.providers
+                .as_ref()
+                .and_then(|providers| providers.vllm.base_url.as_deref()),
+            Some("http://127.0.0.1:8000/v1"),
+            "vllm provider 必须写入 loopback base_url"
+        );
+    }
+
+    /// 本地 loopback 端点探测出 LM Studio / 通用服务：保持 openai wire route
+    /// （底座对 openai 的 reasoning_effort 是空操作），不注入档位。
+    #[test]
+    fn local_lmstudio_or_generic_probe_keeps_openai_wire_without_effort() {
+        for kind in [LocalServerKind::LmStudio, LocalServerKind::Generic] {
+            let (_lock, _env) = locked_env(&[
+                "DEEPSEEK_MODEL",
+                "DEEPSEEK_PROVIDER",
+                "DEEPSEEK_BASE_URL",
+                "DEEPSEEK_API_KEY",
+            ]);
+            let mut bridge = fixture_bridge();
+            set_active_model(
+                &mut bridge,
+                ModelPreset::OpenaiCompatible,
+                "local-model",
+                "http://127.0.0.1:1234/v1",
+                "",
+            );
+            bridge.probed_local_kind = Some(kind);
+            assert_eq!(bridge.provider(), "openai", "{kind:?}");
+            assert_eq!(bridge.request_reasoning_effort(), None, "{kind:?}");
+            assert_eq!(bridge.build_dt_config().reasoning_effort, None, "{kind:?}");
+        }
+    }
+
+    /// 显式保存的档位优先于「本地 generic 端点不注入」默认：用户在 LM Studio/
+    /// 通用端点存过档位（如 web 预览静态四档时代的 off）时，stored 值直接透传
+    /// ——「显式选择优先」是既定设计；openai wire route 对非 gpt-5.x reasoning
+    /// 家族模型的注入是空操作，实际 wire 无感。本测试锁定该优先级，防止后续
+    /// 误改为「本地端点一律丢弃 stored 档位」。
+    #[test]
+    fn local_openai_compatible_stored_effort_wins_over_none_default() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "local-model",
+            "http://127.0.0.1:1234/v1",
+            "",
+        );
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("off".to_string()));
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("off"),
+            "stored 档位优先于本地 openai 端点的 None 默认"
+        );
+    }
+
+    /// LAN（RFC1918 私网）端点探测出 Ollama：同样豁免 API key——Ollama 默认
+    /// 无鉴权、底座允许空 key，强制要求 key 是纯 UI 摩擦（vLLM 已豁免）。
+    #[test]
+    fn lan_ollama_probe_does_not_require_api_key() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "qwen3:8b",
+            "http://192.168.1.10:11434/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        assert_eq!(bridge.provider(), "ollama");
+        assert!(
+            !bridge.api_key_required(),
+            "LAN Ollama 同样默认无鉴权，不应强制 key"
+        );
+        // 对照：LAN 上的通用 OpenAI 兼容端点（未探测出免鉴权服务）仍要求 key。
+        let mut generic = fixture_bridge();
+        set_active_model(
+            &mut generic,
+            ModelPreset::OpenaiCompatible,
+            "custom-lan-model",
+            "http://192.168.1.10:8000/v1",
+            "",
+        );
+        assert!(generic.api_key_required());
+    }
+
+    /// 本地 Ollama 上用户显式设置的思考档位优先于默认 off。
+    #[test]
+    fn local_ollama_explicit_effort_overrides_default_off() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "qwen3:8b",
+            "http://127.0.0.1:11434/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        if let Some(model) = bridge.effective_model_owned() {
+            let mut model = model;
+            model.reasoning_effort = Some("high".to_string());
+            bridge.session_model = Some(model);
+        }
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("high"),
+            "显式档位必须覆盖本地默认 off"
+        );
     }
 
     /// Deepseek preset 应返回正确的默认 URL 和模型。

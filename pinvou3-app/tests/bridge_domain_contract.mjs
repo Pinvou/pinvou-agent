@@ -12,7 +12,7 @@ export const desktopBridgeApi = {
   feedback: ['submitFeedback'],
   vllm: ['bootstrapLocalVllm', 'declineVllmSetup', 'detectLocalVllmSetup', 'dismissVllmSetup', 'discoverLocalVllm'],
   multiAgent: ['listSubagentTranscripts', 'readSubagentTranscript'],
-  models: ['deleteModel', 'getEffectiveModelConfig', 'getImageInputCapability', 'loadModels', 'loadSessionModel', 'revealModelApiKey', 'saveModel', 'setActiveModel', 'switchModel', 'testImageInputCapability', 'testModelConnection'],
+  models: ['deleteModel', 'getEffectiveModelConfig', 'getImageInputCapability', 'loadModels', 'loadSessionModel', 'probeLocalServerKind', 'revealModelApiKey', 'saveModel', 'setActiveModel', 'switchModel', 'testImageInputCapability', 'testModelConnection'],
   interaction: ['acceptPlan', 'cancelUserInput', 'compactNow', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'inspectPinvou', 'planStuckGo', 'planStuckReplan', 'refreshModeDefaults', 'resolvePinvouReview', 'setDraftMode', 'setModeLane', 'setMultiAgentMode', 'setPlanModeNext', 'submitUserInput', 'summonPinvou', 'syncModeState', 'toggleSuperPerm'],
   rendering: ['renderMarkdown'],
   remoteControl: ['getWebRelaySettings', 'refreshRemoteControlQr', 'refreshRemoteControlStatus', 'resetWebRelayAddress', 'setWebRelayAddress', 'startRemoteControl', 'stopRemoteControl'],

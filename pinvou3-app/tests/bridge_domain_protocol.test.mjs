@@ -92,8 +92,8 @@ const expectedProtocolHashes = {
   remoteControl: 'b48906332b45fecfb5a9b222264edb694ff39a47c6ae2105f8d1c32a47653830',
   scheduled: '239292d75c308973053cc0091e0ac9437191bf2375fd5fd8181ea26f4f749900',
   sessions: '43be5b929743f00818492d51d7a725860c71b9a52e7fdcbe72606426472409c0',
-  settings: '84ec262e084fd5940c7f8f2d8818b43cd1b3cd535e4ff4b6217505666c80527a',
-  updater: '7b1eea2076e6257bc799349099795d42fd71b1db6d6c0655da0fe512918e8ed0',
+  settings: '9a25ba3312743f42cfe69053dc60c4d43c42ff7c8d9fa974aea1a462405b37c5',
+updater: '7b1eea2076e6257bc799349099795d42fd71b1db6d6c0655da0fe512918e8ed0',
   voice: '281399c4de7cdc3adf2f50a422ea5725cb98cbf175e1de8beb0d610655d0028a',
 };
 
@@ -216,4 +216,37 @@ try {
   if (previousTauri === undefined) delete globalThis.__TAURI__;
   else globalThis.__TAURI__ = previousTauri;
 }
+// probeLocalServerKind 降级契约（PR #218 五审 P2）：桥层不得吞错伪造成 generic——
+// 命令失败（老版本桌面无此命令/命令被拒）必须 reject，由消费方（SettingsView）
+// catch 后置 null 走 localProbeTiersForKind 默认四档；否则本地 vLLM/Ollama 会被
+// 误报成「该端点不支持思考档位调节」（localProbeTiersForKind('generic') === null）。
+const settingsFeatureWindow = {};
+const settingsFeatureContext = vm.createContext({
+  window: settingsFeatureWindow,
+  console,
+  setTimeout,
+  clearTimeout,
+});
+vm.runInContext(read('bridge/settings.js'), settingsFeatureContext, { filename: 'bridge/settings.js' });
+const settingsFeature = settingsFeatureWindow.__PINVOU_TAURI_BRIDGE_FEATURES__.settings({
+  state: {},
+  notify() {},
+  listen: async () => () => {},
+  invoke: async (command, args) => {
+    if (command !== 'probe_local_server_kind') return null;
+    if (args && args.baseUrl === 'http://denied.local:1/v1') throw new Error('command not allowed');
+    return 'vllm';
+  },
+});
+assert.equal(
+  await settingsFeature.probeLocalServerKind('http://127.0.0.1:8000/v1'),
+  'vllm',
+  'probeLocalServerKind must pass the probed kind through unchanged',
+);
+await assert.rejects(
+  () => settingsFeature.probeLocalServerKind('http://denied.local:1/v1'),
+  /not allowed/,
+  'probeLocalServerKind must reject (not swallow) command failures',
+);
+
 console.log('bridge domain API and protocol contracts passed');

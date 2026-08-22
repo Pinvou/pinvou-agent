@@ -16,6 +16,7 @@ import {
   catalogImageCapableForModel,
   groupModelsForSelector,
   reasoningEffortTiersForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort,
+  localProbeTiersForKind, baseUrlUsesLocalOrPrivate,
 } from './model-catalog.js';
 import { ProvidersSection } from './ProvidersSection.jsx';
 
@@ -681,7 +682,43 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         : null;
       const isCodingPlan = providerKind === PROVIDER_KIND_CODING_PLAN || (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN);
       // 当前表单模型可切换的思考深度档位（底座不支持的模型为空 = 不提供切换）。
-      const reasoningEffortTiers = reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || [];
+      // 本地/私网 openai_compatible 端点：按 Rust 探测结果下发真实档位
+      // （vllm→四档、ollama→off/high、lmstudio/generic→不支持），避免 UI
+      // 显示档位但 wire 层空操作的「调了个寂寞」。
+      const [probedKind, setProbedKind] = useState(null);
+      const [probePending, setProbePending] = useState(false);
+      const isLocalCompatible = preset === 'openai_compatible' && baseUrlUsesLocalOrPrivate(baseUrl.trim());
+      useEffect(() => {
+        if (!isLocalCompatible) {
+          setProbedKind(null);
+          setProbePending(false);
+          return;
+        }
+        let cancelled = false;
+        // debounce：base_url 是原始输入 state，不 debounce 时逐键触发探测
+        // （Rust 侧缓存 key 含端口/路径，每个中间态都是新 key、各自串行
+        // 探测最坏 ~12s）。停键 400ms 后才发起一次。
+        const timer = setTimeout(() => {
+          setProbePending(true);
+          setProbedKind(null);
+          if (bridge.available && bridge.models && bridge.models.probeLocalServerKind) {
+            bridge.models.probeLocalServerKind(baseUrl.trim())
+              .then((kind) => { if (!cancelled) setProbedKind(kind); })
+              // 探测调用本身失败（命令被拒/版本不支持）≠ 探测出 generic：
+              // 置回 null 走 localProbeTiersForKind 的默认四档，不误报「不支持」。
+              .catch(() => { if (!cancelled) setProbedKind(null); })
+              .finally(() => { if (!cancelled) setProbePending(false); });
+          } else {
+            // web 预览无探测能力：保持默认四档（与旧行为一致），不误报不支持。
+            if (!cancelled) setProbedKind(null);
+            if (!cancelled) setProbePending(false);
+          }
+        }, 400);
+        return () => { cancelled = true; clearTimeout(timer); };
+      }, [isLocalCompatible, baseUrl]);
+      const reasoningEffortTiers = isLocalCompatible
+        ? (probePending ? [] : (localProbeTiersForKind(probedKind) || []))
+        : (reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || []);
       function normalizeConnectionTestResult(value, isCodingPlanProvider) {
         if (value && typeof value === 'object' && !Array.isArray(value)) {
           const code = String(value.code || (value.ok ? 'ok' : 'unknown'));
@@ -1532,25 +1569,33 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                 </section>
               )}
               {renderImageInputSection()}
-              {showConfigFields && reasoningEffortTiers.length > 0 && (
+              {(showConfigFields && (reasoningEffortTiers.length > 0 || isLocalCompatible)) && (
                 <section>
                   <div className={formGroup}>
                     <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
                       <span className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.reasoningEffort}</span>
-                      <div className="ml-auto flex flex-wrap justify-end gap-1">
-                        {reasoningEffortTiers.map(tier => (
-                          <button
-                            key={tier}
-                            type="button"
-                            onClick={() => setReasoningEffort(tier)}
-                            className={`h-7 min-w-[52px] px-3 rounded-full text-[13px] font-medium transition-colors ${
-                              reasoningEffort === tier
-                                ? 'bg-[#007AFF] text-white dark:bg-[#0A84FF]'
-                                : 'bg-[#E5E5EA] text-[#636366] hover:bg-[#D9D9DE] dark:bg-white/[0.07] dark:text-[#C7C7CC] dark:hover:bg-white/[0.12]'
-                            }`}
-                          >{settingsCopy.reasoningEffortTiers[tier] || tier}</button>
-                        ))}
-                      </div>
+                      {reasoningEffortTiers.length > 0 ? (
+                        <div className="ml-auto flex flex-wrap justify-end gap-1">
+                          {reasoningEffortTiers.map(tier => (
+                            <button
+                              key={tier}
+                              type="button"
+                              onClick={() => setReasoningEffort(tier)}
+                              className={`h-7 min-w-[52px] px-3 rounded-full text-[13px] font-medium transition-colors ${
+                                reasoningEffort === tier
+                                  ? 'bg-[#007AFF] text-white dark:bg-[#0A84FF]'
+                                  : 'bg-[#E5E5EA] text-[#636366] hover:bg-[#D9D9DE] dark:bg-white/[0.07] dark:text-[#C7C7CC] dark:hover:bg-white/[0.12]'
+                              }`}
+                            >{settingsCopy.reasoningEffortTiers[tier] || tier}</button>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className={`ml-auto text-right text-[12px] leading-4 ${probePending ? 'text-[#8A8A8E] dark:text-[#98989D]' : 'text-[#FF9500] dark:text-[#FFB340]'}`}>
+                          {probePending
+                            ? (settingsCopy.reasoningProbePending || '正在探测服务类型…')
+                            : (settingsCopy.reasoningProbeUnsupported || '该端点不支持思考档位调节')}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </section>

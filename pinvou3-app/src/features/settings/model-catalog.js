@@ -640,6 +640,9 @@ function selectorSubLabel(m, t) {
 const REASONING_EFFORT_TIERS = {
   // vllm：off/low/medium/high 四档；max 被底座降级为 high，不重复暴露。
   vllm: ['off', 'low', 'medium', 'high'],
+  // 本地 loopback OpenAI 兼容端点：Rust 探测后走 Ollama think 开关或 vLLM 档位。
+  // 四档覆盖 vLLM 语义；Ollama 由底座把 low/medium/high 归一为 think=true（只有开关）。
+  local: ['off', 'low', 'medium', 'high'],
   // deepseek：wire 文档只认 low/high/max（无 medium），底座 apply_reasoning_effort
   // 把 low 保留为更便宜档位、medium 归一为 high，故暴露 off/low/high/max。
   deepseek: ['off', 'low', 'high', 'max'],
@@ -775,6 +778,102 @@ function isExactMinimaxChatBaseUrl(baseUrl) {
     || isExactHttpsRoute(baseUrl, 'api.minimaxi.com', 'v1');
 }
 
+// vendor 在已知列表 → 返回其 provider（可能为 null = 底座无档位）；
+// vendor 未知（如用户给本地服务填了自定义 vendor）→ 返回 undefined，落到 preset 兜底
+// （与 Rust provider() 的 vendor→preset 回退一致）。
+function vendorReasoningProvider(vendor, model) {
+  if (vendor === 'deepseek') return 'deepseek';
+  if (vendor === 'kimi' || vendor === 'moonshot') return 'moonshot';
+  if (vendor === 'glm' || vendor === 'zai' || vendor === 'zhipu') return 'zai';
+  if (vendor === 'minimax') return 'minimax';
+  if (vendor === 'mimo' || vendor === 'xiaomi' || vendor === 'xiaomi-mimo') return 'xiaomi-mimo';
+  if (vendor === 'doubao' || vendor === 'volcengine') return 'volcengine';
+  if (vendor === 'anthropic' || vendor === 'claude') return 'anthropic';
+  if (vendor === 'xai' || vendor === 'grok') return null; // 底座空操作，不提供切换
+  if (vendor === 'openai') return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
+  if (vendor === 'qwen' || vendor === 'tencent' || vendor === 'gemini' || vendor === 'google') {
+    return null; // 底座无档位
+  }
+  return undefined; // 未知 vendor → preset 兜底
+}
+
+// 对齐 Rust bridge.rs `base_url_uses_loopback`：localhost / 127.0.0.0/8 /
+// ::1（含 `::` 展开形式）。注意 `0.0.0.0` 不是回环地址（Rust
+// `IpAddr::is_loopback()` 对 0.0.0.0 为 false），此处与 Rust 保持一致不视为
+// 本地；IPv6 仅 `::1/128` 是回环，`::ffff:127.x`（IPv4-mapped）同样不是。
+// 空地址或解析失败按非本地处理。
+function baseUrlUsesLoopback(baseUrl) {
+  if (!baseUrl) return false;
+  try {
+    const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
+    if (host.toLowerCase() === 'localhost') return true;
+    if (host.includes(':')) return isIpv6Loopback(host);
+    const octets = host.split('.').map(Number);
+    return octets.length === 4
+      && octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)
+      && octets[0] === 127;
+  } catch {
+    return false;
+  }
+}
+
+// 对齐 Rust bridge.rs `base_url_uses_local_or_private`：loopback / RFC1918 私网
+// （10/8、172.16/12、192.168/16）/ Docker 宿主别名（host.docker.internal 等）。
+// 这些端点通常跑在用户自己的机器/内网，探测成本低且值得默认关思考；公网
+// OpenAI 兼容端点不在此列（保持默认 high）。与 `baseUrlUsesLoopback` 的区别：
+// 后者仅用于「允许无鉴权」判定，本判定覆盖探测与思考控制范围。
+// 回环部分复用 `baseUrlUsesLoopback`，本函数只补 Docker 别名与 RFC1918，
+// 避免两份回环规则漂移。
+function baseUrlUsesLocalOrPrivate(baseUrl) {
+  if (baseUrlUsesLoopback(baseUrl)) return true;
+  if (!baseUrl) return false;
+  try {
+    const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
+    const lower = host.toLowerCase();
+    if (lower === 'host.docker.internal'
+      || lower === 'host.lima.internal'
+      || lower === 'host.orbstack.internal'
+      || lower.endsWith('.docker.internal')) return true;
+    const octets = host.split('.').map(Number);
+    if (octets.length !== 4 || !octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) {
+      return false;
+    }
+    return octets[0] === 10
+      || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+      || (octets[0] === 192 && octets[1] === 168);
+  } catch {
+    return false;
+  }
+}
+
+// IPv6 回环判定：把 `::` 展开为完整 8 组十六进制后与 `::1` 的完整形式
+// （0000:0000:0000:0000:0000:0000:0000:0001）比较——与 Rust
+// `IpAddr::is_loopback()`（仅 ::1/128）对齐。展开采用 pad 形式，`::0001`
+// 等带前导零的合法写法同样命中。
+function isIpv6Loopback(host) {
+  const expanded = expandIpv6(host);
+  return expanded === '0000:0000:0000:0000:0000:0000:0000:0001';
+}
+
+// 把 IPv6 地址展开为完整 8 组小写十六进制；`::` 按 RFC 4291 用零组补齐。
+// 解析失败（组数非法/非 IPv6）返回 null。
+function expandIpv6(host) {
+  if (host.includes('::')) {
+    const [left, right] = host.split('::');
+    const l = left ? left.split(':') : [];
+    const r = right ? right.split(':') : [];
+    if (l.length + r.length >= 8) return null;
+    const zeros = new Array(8 - l.length - r.length).fill('0');
+    return [...l, ...zeros, ...r]
+      .map((g) => g.padStart(4, '0').toLowerCase())
+      .join(':');
+  }
+  const groups = host.split(':');
+  if (groups.length !== 8) return null;
+  return groups.map((g) => g.padStart(4, '0').toLowerCase()).join(':');
+}
+
+// 品悟 provider 判定（对齐 bridge.rs `provider()`：vendor 优先 + preset 兜底）。
 function reasoningProviderForModel(model) {
   if (!model) return null;
   // 对齐 Rust provider() 优先级：官方 deepseek base_url 优先（即使 preset 是
@@ -784,16 +883,9 @@ function reasoningProviderForModel(model) {
   const preset = model.preset || '';
   if (preset === 'local_vllm') return 'vllm';
   if (vendor) {
-    if (vendor === 'deepseek') return 'deepseek';
-    if (vendor === 'kimi' || vendor === 'moonshot') return 'moonshot';
-    if (vendor === 'glm' || vendor === 'zai' || vendor === 'zhipu') return 'zai';
-    if (vendor === 'minimax') return 'minimax';
-    if (vendor === 'mimo' || vendor === 'xiaomi' || vendor === 'xiaomi-mimo') return 'xiaomi-mimo';
-    if (vendor === 'doubao' || vendor === 'volcengine') return 'volcengine';
-    if (vendor === 'anthropic' || vendor === 'claude') return 'anthropic';
-    if (vendor === 'xai' || vendor === 'grok') return null; // 底座空操作，不提供切换
-    if (vendor === 'openai') return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
-    return null; // qwen / tencent / gemini / google 无档位
+    const provider = vendorReasoningProvider(vendor, model);
+    if (provider !== undefined) return provider;
+    // 未知 vendor：继续走 preset 兜底（与 Rust provider() 的 vendor→preset 回退一致）。
   }
   switch (preset) {
     case 'deepseek': return 'deepseek';
@@ -804,6 +896,12 @@ function reasoningProviderForModel(model) {
     case 'doubao': return 'volcengine';
     case 'anthropic': return 'anthropic';
     case 'openai': return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
+    case 'openai_compatible':
+      // 本地/私网端点（loopback、RFC1918、host.docker.internal 等）：Rust
+      // 探测后 Ollama/vLLM 思考控制真正生效（Ollama→think 开关、vLLM→档位）；
+      // LM Studio/通用端点 wire 层空操作（前端按探测结果另行提示）。
+      // 远端自定义 OpenAI 兼容端点不提供切换。
+      return baseUrlUsesLocalOrPrivate(model.base_url || model.baseUrl) ? 'local' : null;
     default: return null;
   }
 }
@@ -860,9 +958,11 @@ function isAlwaysThinkingK3Route(model) {
   return isExactMoonshotK3Route(model, modelName);
 }
 
-// 该模型的默认思考深度档位：本地 vLLM 保持 off（防 SSE timeout），其余 high。
+// 该模型的默认思考深度档位：本地模型（vLLM / 本地 loopback 端点）默认 off
+// （防 SSE timeout / 思考 trace 抢占首包），其余 high。
 function defaultReasoningEffortForModel(model) {
-  if (reasoningProviderForModel(model) === 'vllm') return 'off';
+  const provider = reasoningProviderForModel(model);
+  if (provider === 'vllm' || provider === 'local') return 'off';
   return reasoningEffortTiersForModel(model) ? 'high' : null;
 }
 
@@ -904,6 +1004,26 @@ function normalizeStoredReasoningEffort(model, stored) {
   return defaultReasoningEffortForModel(model) || tiers[0] || null;
 }
 
+// 本地 OpenAI 兼容端点按探测服务类型可切换的档位。与 Rust
+// `probe_local_server_kind` 结果对齐：
+// - vllm → 底座 `chat_template_kwargs` 支持四档
+// - ollama → 底座 `think` 布尔开关：off=think:false，其余档位一律归一 think=true，
+//   只暴露 off/high 避免「看起来不同、实际相同」的误导
+// - lmstudio / generic → 底座 openai wire route 对 reasoning_effort 是空操作，
+//   返回 null（前端显示「该端点不支持思考档位调节」提示，不提供切换）
+// - null（尚未探测/探测失败）→ 返回默认四档，前端在探测完成前不提供误导档位
+function localProbeTiersForKind(kind) {
+  switch (kind) {
+    case 'vllm': return ['off', 'low', 'medium', 'high'];
+    case 'ollama': return ['off', 'high'];
+    case 'lmstudio':
+    case 'generic':
+      return null;
+    default:
+      return ['off', 'low', 'medium', 'high'];
+  }
+}
+
 export {
   MODEL_PRESET_DEFS,
   PROVIDER_KIND_CODING_PLAN,
@@ -931,4 +1051,6 @@ export {
   defaultReasoningEffortForModel,
   reasoningEffortForModelSwitch,
   normalizeStoredReasoningEffort,
+  localProbeTiersForKind,
+  baseUrlUsesLocalOrPrivate,
 };

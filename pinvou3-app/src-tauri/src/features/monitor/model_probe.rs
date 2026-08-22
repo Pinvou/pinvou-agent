@@ -570,27 +570,11 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
 /// 窗口推导(见 docs/context-compaction-设计.md)。探测失败(vLLM 没起/超时)返回
 /// `(None, None)`,调用方 fallback 配置值 + 名字 hint 老路。
 pub async fn probe_vllm_model_info(base_url: &str) -> (Option<String>, Option<u32>) {
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-    else {
-        return (None, None);
-    };
-    let url = if base_url.trim_end_matches('/').ends_with("/v1") {
-        format!("{}/models", base_url.trim_end_matches('/'))
-    } else {
-        format!("{}/v1/models", base_url.trim_end_matches('/'))
-    };
-    let Ok(resp) = client.get(url).send().await else {
-        return (None, None);
-    };
-    if !resp.status().is_success() {
-        return (None, None);
+    // HTTP 层与 URL 拼装复用 core 的共享探测（避免 /v1/models 口径漂移）。
+    match crate::core::model_endpoint::fetch_v1_models(base_url).await {
+        Some(v) => parse_models_response(v).unwrap_or((None, None)),
+        None => (None, None),
     }
-    let Ok(v) = resp.json::<serde_json::Value>().await else {
-        return (None, None);
-    };
-    parse_models_response(v).unwrap_or((None, None))
 }
 
 /// 当前 monitor/探测应使用的 vLLM base_url。
