@@ -47,10 +47,12 @@
 
   // 订阅回调每次通知都会 pick 出全新外层对象：任何一处状态变化（如流式
   // token）都让所有域订阅者拿到新引用、全量重渲染。逐订阅者缓存上次的
-  // (full, slice)：full 未换引用时复用上次 slice，保持身份稳定（桌面端
-  // bridge 的 revision-cache 同款契约）。full 由通知方按变更重建，同一 full
-  // 引用意味着本域字段集合不可能变化；字段值仍是 full 上的原引用，与 flat
-  // 订阅者共享子树的身份共享契约（见 web_bridge_domain_contract 测试）不受影响。
+  // (full, slice)：full 未换引用时复用上次 slice，保持身份稳定。注意这是
+  // 整快照粒度（web 传输层只在全部状态无变更时复用同一 full 引用），弱于
+  // 桌面端 bridge 的按域 revision 缓存：任一域变化仍会让未变域的 slice 换
+  // 新外层对象（内层字段引用仍与 flat 订阅者共享，身份共享契约见
+  // web_bridge_domain_contract 测试，不受影响）。full 由通知方按变更重建，
+  // 同一 full 引用意味着本域字段集合不可能变化。
   function stablePick() {
     var lastFull = null;
     var lastSlice = null;

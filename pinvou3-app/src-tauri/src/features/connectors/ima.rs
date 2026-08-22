@@ -132,9 +132,14 @@ async fn request_ima(
     // per-request（reqwest::RequestBuilder::timeout）保持 30s 不变。
     // 构建失败（TLS/系统配置不可用）保持逐调用错误传播——Client::default()
     // 在同类失败上同样 panic，不是可用的回退。
-    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> = std::sync::OnceLock::new();
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+        std::sync::OnceLock::new();
     let client = CLIENT
-        .get_or_init(|| reqwest::Client::builder().build().map_err(|e| format!("创建 IMA 客户端失败: {e}")))
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .build()
+                .map_err(|e| format!("创建 IMA 客户端失败: {e}"))
+        })
         .as_ref()
         .map_err(Clone::clone)?;
     let response = client

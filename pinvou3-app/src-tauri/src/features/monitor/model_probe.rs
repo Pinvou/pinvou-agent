@@ -203,7 +203,9 @@ fn model_api_key(model: &SavedModel) -> Option<String> {
 /// 在同类失败上同样 panic，不是可用的回退。
 fn shared_probe_client() -> Option<&'static reqwest::Client> {
     static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| reqwest::Client::builder().build().ok()).as_ref()
+    CLIENT
+        .get_or_init(|| reqwest::Client::builder().build().ok())
+        .as_ref()
 }
 
 async fn snapshot_for_model_config(

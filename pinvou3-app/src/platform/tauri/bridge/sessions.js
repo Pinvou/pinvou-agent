@@ -428,8 +428,12 @@
   function switchActiveTo(id, opts) {
     // 离开草稿（无论物化还是切去既有会话），未消费的开关寄存意图作废。
     state.pendingDraftMultiAgent = false;
-    if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
+    // 先立新 active 再 touch 旧 buffer:touch 触发的 LRU 淘汰靠 activeSessionId
+    // 兜底保护目标会话;若先 touch 旧(active 仍指旧值),空闲的目标会话恰为最旧
+    // 时会被淘汰,随后的 freshBuffer() 顶替会静默显示空会话。
+    var previousActiveId = state.activeSessionId;
     state.activeSessionId = id;
+    if (previousActiveId) saveWorkingSetTo(getBuffer(previousActiveId));
     var buf = sessionStates[id];
     if (!buf || (opts && opts.fresh)) buf = sessionStates[id] = freshBuffer();
     touchSessionBuffer(id, buf, id.indexOf("sched-") === 0);
@@ -797,12 +801,14 @@
     // 事件监听会为任意被点名的 session 经 getBuffer 重建未落盘的空 buffer(如
     // 淘汰后迟到的 chat:usage/artifact:disk);这种 buffer 走快路径会显示空会话,
     // 必须落到下方磁盘重载自愈(web 桥同款 loadedFromDisk 门控)。busy/remote/
-    // 已有内容的 buffer 仍走快路径,展示实时部分视图并由 chat:done 对账补全。
+    // 已有 messages 的 buffer 仍走快路径,展示实时部分视图并由 chat:done 对账
+    // 补全。不能用 chatItems 判可用:非回合事件(如 chat:compaction)经 getBuffer
+    // 重建的空 buffer 只带一条系统 chatItem(不置 busy、无 messages),凭 chatItems
+    // 放行会永久显示无历史视图且无自愈。
     var existingBuffer = sessionStates[id];
     var cachedBufferUsable = existingBuffer && (existingBuffer.loadedFromDisk ||
       existingBuffer.busy || existingBuffer.remoteTurnActive ||
-      (existingBuffer.messages && existingBuffer.messages.length) ||
-      (existingBuffer.chatItems && existingBuffer.chatItems.length));
+      (existingBuffer.messages && existingBuffer.messages.length));
     if (cachedBufferUsable && !forceDurableLoad && !hydrateLiveSession) {
       if (!preserveScheduledRunContext) state.scheduledRunContext = null;
       state.scheduledTaskPendingGuide = null; // 仅在目标会话已确认可用后提交导航状态

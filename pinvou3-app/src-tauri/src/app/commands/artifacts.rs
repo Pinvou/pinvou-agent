@@ -518,6 +518,13 @@ fn visual_cache_next_tick() -> u64 {
     VISUAL_CACHE_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// 键格式为 `路径|毫秒mtime`。路径在 macOS/Linux 上可含 `|`(合法文件名字节),
+/// mtime 数字段不会——同路径让位判定必须从右侧切分,左侧切分会把 `/tmp/a|b.pdf`
+/// 误解析成 `/tmp/a` 而误伤无关条目。
+fn visual_cache_path(key: &str) -> &str {
+    key.rsplit_once('|').map_or(key, |(path, _)| path)
+}
+
 /// 命中刷新 LRU 时钟；插入时同路径旧 mtime 键直接让位，再按字节+条目双预算
 /// 从最久未用侧淘汰。
 fn visual_cache_insert(
@@ -525,8 +532,8 @@ fn visual_cache_insert(
     key: String,
     result: VisualResult,
 ) {
-    let path = key.split('|').next().unwrap_or(&key).to_string();
-    state.retain(|k, _| k.split('|').next() != Some(path.as_str()));
+    let path = visual_cache_path(&key).to_string();
+    state.retain(|k, _| visual_cache_path(k) != path);
     let touched = visual_cache_next_tick();
     state.insert(key, VisualCacheEntry { result, touched });
     while state.len() > MAX_VISUAL_CACHE_ENTRIES {
