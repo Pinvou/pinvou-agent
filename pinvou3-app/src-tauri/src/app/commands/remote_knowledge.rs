@@ -625,8 +625,11 @@ async fn ensure_remote_collection_mountable(
         return Err("远程知识集 ID 无效".to_string());
     }
     let info = remote.client_for(server_id)?.health().await?;
-    if !info.ready {
-        return Err("远程知识库模型尚未就绪，请联系服务器管理员".to_string());
+    // 懒装载语义下 ready 只反映「模型已进内存」:host 重启后首次检索前它
+    // 恒为 false,但模型在盘即可用(首次检索/挂载后的搜索会按需装载)。
+    // 挂载校验只要求模型存在;旧版 host 无 model_present 字段时退回 ready。
+    if !info.ready && !info.model_present {
+        return Err("远程知识库未就绪（模型未安装或未加载）".to_string());
     }
     let exists = remote
         .collections(server_id, false)

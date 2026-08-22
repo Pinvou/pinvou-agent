@@ -32,6 +32,10 @@ pub struct ServerInfo {
     pub tls_ca: String,
     pub initialized: bool,
     pub ready: bool,
+    /// 模型文件是否已在磁盘上。懒装载语义下 `ready` 只反映「已进内存」,
+    /// 挂载方据此字段判断可用性(首次检索会按需装载)。旧服务器无此字段。
+    #[serde(default)]
+    pub model_present: bool,
     pub model: String,
 }
 

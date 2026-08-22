@@ -1236,6 +1236,7 @@ mod tests {
             tls_ca: "ca".to_string(),
             initialized: true,
             ready: false,
+            model_present: false,
             model: "bge-m3".to_string(),
         };
         let mut pinned = first.clone();
