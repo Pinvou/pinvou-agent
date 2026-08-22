@@ -236,12 +236,14 @@ mod tests {
         assert!(arg.ends_with("profile%20dir"));
     }
 
-    /// 四类外部工具命令的程序路径必须来自 OS 层(带 .exe 后缀等平台差异),
-    /// 这里一次性锁定:任一工具改用硬编码程序名都会被矩阵捕获。
+    /// Program paths for the four external tool commands must come from the
+    /// OS layer (.exe suffix and other platform variance); locked in one
+    /// matrix, so any tool switching to a hardcoded program name gets caught.
     #[test]
     fn tool_commands_use_os_layer_programs() {
-        // pdf:pdf_tool_command 按 OS 层 pdf_tool_path 解析同一工具名。
-        // 选样对齐生产实际调用(visual_preview 用 pdftoppm,pdfinfo 无生产调用)。
+        // pdf: pdf_tool_command resolves the same tool name via the OS-layer
+        // pdf_tool_path. Sampling follows the production callers
+        // (visual_preview uses pdftoppm; pdfinfo has no production caller).
         for tool in ["pdftotext", "pdftoppm"] {
             let command = pdf_tool_command(tool);
             assert_eq!(

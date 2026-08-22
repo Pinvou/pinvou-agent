@@ -404,8 +404,10 @@ mod tests {
         auth_domains: &["work.weixin.qq.com", "weixin.qq.com"],
     };
 
-    /// extract_url 三分支矩阵:命中白名单域(在空白处截断,扫码 URL 常带 `&`
-    /// 查询串不能被切断)、非白名单域不算本连接器的 URL、无 URL 返回 None。
+    /// extract_url three-branch matrix: whitelisted domain hits truncate at
+    /// whitespace (QR-scan URLs often carry `&` query strings that must not be
+    /// cut), non-whitelisted domains do not count as this connector's URL,
+    /// and no URL yields None.
     #[test]
     fn extract_url_matrix() {
         let cases = [

@@ -1086,11 +1086,14 @@ mod tests {
         }
     }
 
-    /// 三个 CLI ConfigWriter 的共享行为契约,参数化统一锁定(各 writer 的
-    /// 格式细节测试仍留在各自文件):无受管键 revert 不写备份、损坏文件
-    /// apply 报错且字节不变、首次 apply 建备份且二次 apply 复用同一备份。
-    /// 每个 writer 用独立子目录——codex/kimi 同名 config.toml,共享目录会
-    /// 让前一用例的备份污染后一用例的「备份不存在」断言。
+    /// Shared behavior contracts of the three CLI ConfigWriters, locked in one
+    /// parameterized matrix (per-writer format tests stay in their own files):
+    /// revert with no managed keys writes no backup, apply on a broken file
+    /// errors and leaves bytes unchanged, and the first apply creates a backup
+    /// that a second apply reuses. Each writer gets its own subdirectory —
+    /// codex/kimi share the config.toml name, and a shared directory would let
+    /// one case's backup pollute the next case's "backup does not exist"
+    /// assertion.
     #[test]
     fn shared_writer_contract_matrix() {
         fn target(provider_id: &str) -> ProviderTarget {
@@ -1116,32 +1119,40 @@ mod tests {
             let config = dir.join(config_name);
             let backup = dir.join(format!("{config_name}.pinvou3-bak"));
 
-            // 契约 1:无受管键时 revert 不写备份。
+            // Contract 1: revert with no managed keys writes no backup.
             std::fs::write(&config, initial).unwrap();
             writer.revert_to_official(None).unwrap();
-            assert!(!backup.exists(), "{name}: revert 无受管键不得写备份");
+            assert!(
+                !backup.exists(),
+                "{name}: revert with no managed keys must not write a backup"
+            );
 
-            // 契约 2:损坏文件 apply 报错且字节不变(不得静默覆盖不可解析配置)。
+            // Contract 2: apply on a broken file errors and leaves bytes
+            // unchanged (never silently overwrite an unparseable config).
             std::fs::write(&config, broken).unwrap();
             assert!(
                 writer.apply(&target("pv-aaaaaaaaaaaa")).is_err(),
-                "{name}: 损坏配置 apply 必须 Err"
+                "{name}: apply on a broken config must return Err"
             );
             assert_eq!(
                 std::fs::read_to_string(&config).unwrap(),
                 broken,
-                "{name}: 损坏配置字节不得变化"
+                "{name}: bytes of a broken config must not change"
             );
 
-            // 契约 3:首次 apply 建备份(保留初始内容),二次 apply 复用同一备份。
+            // Contract 3: the first apply creates a backup (preserving the
+            // initial content) and a second apply reuses the same backup.
             std::fs::write(&config, initial).unwrap();
             writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
             writer.apply(&target("pv-bbbbbbbbbbbb")).unwrap();
-            assert!(backup.exists(), "{name}: 首次 apply 后应存在备份");
+            assert!(
+                backup.exists(),
+                "{name}: a backup must exist after the first apply"
+            );
             assert_eq!(
                 std::fs::read_to_string(&backup).unwrap(),
                 initial,
-                "{name}: 备份保留初始状态"
+                "{name}: the backup must preserve the initial state"
             );
         }
 

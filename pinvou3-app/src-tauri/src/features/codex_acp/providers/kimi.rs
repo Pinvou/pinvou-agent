@@ -449,8 +449,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // 共享契约(revert 不写备份/损坏文件拒绝覆盖)已参数化上移到
-    // providers::tests::shared_writer_contract_matrix,此处只留 Kimi 特有行为。
+    // The shared contracts (revert writes no backup / unparseable files refuse
+    // overwrite) were hoisted into the parameterized
+    // providers::tests::shared_writer_contract_matrix; only Kimi-specific
+    // behavior stays here.
 
     #[test]
     fn official_default_model_roundtrip() {

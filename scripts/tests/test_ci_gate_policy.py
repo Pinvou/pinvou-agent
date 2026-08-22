@@ -382,10 +382,12 @@ class CiGatePolicyTests(unittest.TestCase):
             )
 
     def test_pure_frontend_changes_do_not_trigger_macos_rust_build(self):
-        # 纯前端路径不得进入 mac-build 触发集(避免无谓的原生编译);
-        # 但 package.json/package-lock.json 变更需触发(锁文件影响构建)。
-        # 原 scripts/tests/test_ci_trigger_routing_policy.py 并入,消除
-        # 两文件重复解析同一 mac-build.yml 触发块的样板。
+        # Pure-frontend paths must not enter the mac-build trigger set (avoids
+        # needless native builds); but package.json/package-lock.json changes
+        # must trigger (the lockfile affects the build).
+        # Folded in from scripts/tests/test_ci_trigger_routing_policy.py to
+        # remove the duplicated parsing of the same mac-build.yml trigger
+        # block across two files.
         trigger = MAC_WORKFLOW.read_text(encoding="utf-8").split("\non:", maxsplit=1)[
             1
         ].split("\npermissions:", maxsplit=1)[0]
@@ -396,9 +398,10 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("'pinvou3-app/package-lock.json'", trigger)
 
     def test_wrapper_smoke_routes_merge_groups_before_platform_matrix(self):
-        # rustc-wrapper-smoke 必须先经 paths-filter 判定,再进三平台矩阵,
-        # 避免 wrapper 无关 PR 全量跑三平台冒烟。
-        # 原 scripts/tests/test_ci_trigger_routing_policy.py 并入。
+        # rustc-wrapper-smoke must first pass the paths-filter gate before
+        # entering the three-platform matrix, so wrapper-unrelated PRs do not
+        # run the full three-platform smoke.
+        # Folded in from scripts/tests/test_ci_trigger_routing_policy.py.
         workflow = (
             ROOT / ".github/workflows/rustc-wrapper-smoke.yml"
         ).read_text(encoding="utf-8")

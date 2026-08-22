@@ -288,10 +288,12 @@ mod tests {
 
     #[test]
     fn builtin_table_misses_stay_unknown() {
-        // 「未命中内置已验证表 → Unknown」统一矩阵。v0.9.5 起底座 model_catalog
-        // 不再公开,目录级 modalities 判定已移除,不再有「目录级升级」路径。
-        // - 各 preset 默认文本模型不得误判 Supported;
-        // - mimo-v2.5-pro / muse-spark-1.1 不在内置表内,同样落 Unknown。
+        // Unified matrix for "miss the builtin vetted table → Unknown". Since
+        // v0.9.5 the foundation model_catalog is no longer exposed, catalog-level
+        // modalities detection is gone, and there is no catalog-based upgrade path.
+        // - No preset's default text model may be misreported as Supported;
+        // - mimo-v2.5-pro / muse-spark-1.1 are outside the builtin table and
+        //   must also resolve to Unknown.
         for (preset, name) in [
             (ModelPreset::Deepseek, "deepseek-v4-pro"),
             (ModelPreset::Kimi, "kimi-k3"),
@@ -306,7 +308,7 @@ mod tests {
             assert_eq!(
                 effective_image_capability(&model),
                 EffectiveImageCapability::Unknown,
-                "{name} 不在内置已验证表,应判 Unknown"
+                "{name} is not in the builtin vetted table; must resolve to Unknown"
             );
         }
     }

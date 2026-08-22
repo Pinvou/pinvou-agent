@@ -717,9 +717,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp);
     }
 
-    /// TurnUsage 全字段落盘 + 读取 + compute_stats 累加全链路。[F3] 验证
-    /// forward-compat 字段集(cache_write_tokens / reasoning_tokens)不丢字段,
-    /// 同时覆盖基本字段(input/output/cache_hit/cache_miss)的记录。
+    /// Full chain for TurnUsage: persisting all fields, reading them back, and
+    /// compute_stats accumulation. [F3] verifies the forward-compat field set
+    /// (cache_write_tokens / reasoning_tokens) keeps every field, while also
+    /// covering the basic fields (input/output/cache_hit/cache_miss).
     #[test]
     fn finish_turn_with_usage_records_all_usage_fields() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());

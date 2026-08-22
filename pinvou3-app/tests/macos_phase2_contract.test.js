@@ -8,8 +8,9 @@ const repoRoot = path.join(appRoot, "..");
 const read = (relativePath) =>
   fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
 
-// asr/ 目录排除与 runtime/asr 目标禁令由 tauri_effective_config.test.js 在
-// effective config + resource manifest 双层断言(更强),此处不重复。
+// The asr/ directory exclusion and the runtime/asr target ban are asserted by
+// tauri_effective_config.test.js at both the effective-config and
+// resource-manifest layers (stronger); not repeated here.
 
 const legacyAsrDir = path.join(
   appRoot,

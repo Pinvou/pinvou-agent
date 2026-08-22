@@ -6075,7 +6075,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinvou-knowledge"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

@@ -11,8 +11,9 @@ assert.equal(
   "pet-animation.js should define the Codex animation contract",
 );
 
-// manifest 的 spriteVersionNumber 映射(lingling:1/langlang:2/ace-taffy:1)由
-// pet_registry_logic.test.mjs 作为 SSOT 属主断言,此处不重复。
+// The manifest spriteVersionNumber mapping (lingling:1/langlang:2/ace-taffy:1)
+// is asserted by pet_registry_logic.test.mjs as the SSOT owner; not repeated
+// here.
 
 const dir = mkdtempSync(join(tmpdir(), "pinvou3-pet-animation-"));
 const modulePath = join(dir, "pet-animation.mjs");

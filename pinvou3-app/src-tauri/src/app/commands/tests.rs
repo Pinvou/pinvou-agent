@@ -17,7 +17,8 @@ fn marketplace_auth_status_matrix() {
 
     // (installed, oauth_required, mcp_configured, auth_status) → (status, token_present)
     let cases: [(bool, bool, bool, Option<McpAuthStatus>, &str, bool); 7] = [
-        // OAuth 工具:OAuth 登录完成即 connected 且有 token;其余登录态为待授权
+        // OAuth tools: a completed OAuth login means connected with a token;
+        // any other login state stays auth-pending
         (
             true,
             true,
@@ -50,7 +51,7 @@ fn marketplace_auth_status_matrix() {
             "config_installed_auth_pending",
             false,
         ),
-        // OAuth 工具缺 MCP 配置:认证待完成
+        // OAuth tool without MCP configuration: auth still pending
         (
             true,
             true,
@@ -59,7 +60,7 @@ fn marketplace_auth_status_matrix() {
             "auth_pending",
             false,
         ),
-        // 非 OAuth 工具:安装即 connected;未安装即 not_installed
+        // Non-OAuth tools: installed means connected; not installed means not_installed
         (true, false, false, None, "connected", false),
         (false, false, false, None, "not_installed", false),
     ];
@@ -639,7 +640,8 @@ fn file_url_from_path_encodes_local_artifact_paths() {
 
 #[test]
 fn write_artifact_text_allows_markdown_extensions() {
-    // `.markdown` 是 `.md` 允许通路的参数化补充,两扩展名共用同一循环。
+    // `.markdown` is a parameterized companion to the `.md` allowed path; both
+    // extensions go through the same loop.
     for (tag, ext) in [
         ("pinvou3-md-write-test", "md"),
         ("pinvou3-markdown-write-test", "markdown"),

@@ -178,17 +178,22 @@ impl SessionPolicy {
 mod tests {
     use super::*;
 
-    /// Code/Plain 两模式对偶断言表驱动化(原两个独立测试合并):逐模式锁全部
-    /// 能力位,任一表项回归都会精确报出是哪个字段翻转。注释语义见各行上方。
+    /// Table-driven dual-mode assertion (merging the two former standalone
+    /// tests): locks every capability bit per mode, so a regression in any
+    /// row pinpoints exactly which field flipped. See the per-field comments.
     #[test]
     fn mode_policy_capability_matrix() {
         struct Row {
             mode: SessionMode,
-            // load_skill 不在缺席列表:其隐藏与否由组合目录空否动态决定
-            // (bridge::shape_disallowed_tools,表字段 skills_empty_hides_load_skill 驱动)。
+            // load_skill is not in the unavailable list: whether it is hidden
+            // is decided dynamically by whether the composed skills dir is empty
+            // (bridge::shape_disallowed_tools, driven by the
+            // skills_empty_hides_load_skill field below).
             unavailable_tools: &'static [&'static str],
-            // 设计期差量:code 不提供内置自动技能「视觉设计」(产物能力),
-            // plain 无(组合目录物化按 scope 排除,composer 内置技能行也不显示)。
+            // Design-time delta: code does not ship the builtin auto skill
+            // "visual-design" (an artifact capability), plain has none (composed
+            // dir materialization excludes it by scope, and the composer builtin
+            // skill row is not shown either).
             unavailable_builtin_skills: &'static [&'static str],
             hides_load_skill_when_empty: bool,
             project_skills_opt_in: bool,
@@ -205,7 +210,8 @@ mod tests {
                 binds_project: true,
                 uses_code_instructions: true,
             },
-            // plain 无模式缺席工具(Git 家族已决策放开,底座能力不做用户级开关)。
+            // plain has no mode-unavailable tools (the Git family was decided
+            // to be open; foundation capabilities carry no user-level switch).
             Row {
                 mode: SessionMode::Plain,
                 unavailable_tools: &[],

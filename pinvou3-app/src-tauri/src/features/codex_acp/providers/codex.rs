@@ -451,8 +451,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // 共享契约(revert 不写备份/损坏文件拒绝覆盖/备份只建一次)已参数化上移到
-    // providers::tests::shared_writer_contract_matrix,此处只留 Codex 特有行为。
+    // The shared contracts (revert writes no backup / unparseable files refuse
+    // overwrite / backup created once) were hoisted into the parameterized
+    // providers::tests::shared_writer_contract_matrix; only Codex-specific
+    // behavior stays here.
 
     #[test]
     fn effective_errors_on_unparseable_file() {
