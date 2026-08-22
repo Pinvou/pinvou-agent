@@ -27,6 +27,9 @@ git submodule update --init --recursive
 日常更新而反复 rebase。PR Ready 后由 Merge Queue 在最新 `main` 组合
 提交上验证；仅真实冲突，或队列集成失败需要修改分支时手工 rebase。
 
+解决冲突时保留双方兼容的功能与用户改动；不得在没有向用户说明各选项
+及其影响的情况下，在行为不同的方案之间擅自二选一。
+
 ## DCO
 
 每个人工提交都必须包含有效的 `Signed-off-by`：

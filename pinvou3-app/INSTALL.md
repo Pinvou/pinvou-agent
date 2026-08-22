@@ -93,7 +93,7 @@ pinvou3
 - `mimo` — 小米 MiMo
 - `openai` — OpenAI 官方 API
 - `anthropic` — Anthropic Claude（非 OpenAI-compatible 通道）
-- `gemini` — Google Gemini（非 OpenAI-compatible 通道）
+- `gemini` — Google Gemini（经官方 OpenAI 兼容端点接入）
 - `xai` — xAI Grok
 
 需要用环境变量持久覆盖时，也可将方式 A 的变量写入启动脚本；桌面菜单启动通常不会读取 `~/.bashrc`。

@@ -102,7 +102,7 @@ Pinvou Agent 不只是一个聊天界面。它把通用工作、视觉设计和�
 
 ## 🤖 模型接入
 
-Pinvou Agent 支持**本地 vLLM** 和任意 **OpenAI-compatible API**。应用内可保存多个模型配置，并在不同会话间快速切换；当前提供本地 vLLM、DeepSeek、Kimi、通义千问、豆包、MiniMax、智谱、MiMo、OpenAI、xAI 等配置模板，也可以填写自定义兼容端点。
+Pinvou Agent 支持**本地 vLLM** 和任意 **OpenAI-compatible API**。应用内可保存多个模型配置，并在不同会话间快速切换；当前提供本地 vLLM、DeepSeek、Kimi、通义千问、豆包、MiniMax、智谱、MiMo、OpenAI、Anthropic、Gemini、xAI 等配置模板，也可以填写自定义兼容端点。
 
 本地 vLLM 示例：
 

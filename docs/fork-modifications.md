@@ -23,7 +23,8 @@
 - 早期版本此处曾记载"PR #302 把父仓 gitlink 从 r6 (`3bbf8421`) 一次性 bump 到 r7"。
   事后按 git 历史勘误：该 bump 实际发生在 **PR #285**（commit `95502ac8`，`git ls-tree` 可证：`95502ac8^` 为 `3bbf8421`，`95502ac8` 起即为 `a36e6cd533…`）。
 - PR #302 (`feat/plugin-protocol`) 起步于 #285 合并前的旧 main，合并时 gitlink 已在 main 上对齐 r7，因此 **#302 未改动 gitlink**（`git diff c75f2fb2^..c75f2fb2 -- CodeWhale` 为空）。
-- 现状不变：父仓 gitlink、`Pinvou/CodeWhale:pinvou3-clean` HEAD 与 `pinvou-v0.9.5-r7` 标签均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a`。
+- 现状：父仓 gitlink 与 `pinvou-v0.9.5-r7` 标签仍均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a`；维护分支 `pinvou3-clean` HEAD 已随 CodeWhale PR #15 前进至 `d127aed113529dc93754d044b9f352e9746f6b83`（r8 在途，其登记属 r8 同步 PR）。
+- 另勘误 #302 的父仓侧改动范围：能力包统一模型（父仓 commit `c75f2fb2`）把开关存储收敛为单一 `disabled_bundles.json`（包 id × 模式禁用集 + `hidden_scopes`），取代原先分开的 `disabled_connectors.json` / `disabled_skills.json` 双文件（读到旧双文件即迁移不删）。
 
 ### 本次会话修复（已验证并发布）
 
