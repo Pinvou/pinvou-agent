@@ -957,7 +957,8 @@
     return buf;
   }
   // 全会话 LRU：与 scheduled 淘汰共用保护谓词（busy/queued/remote turn 不回收），
-  // 仅淘汰"纯展示缓存"性质的空闲 buffer。
+  // 仅淘汰空闲 buffer（messages/chatItems 可从磁盘重水化；composerDraft 等
+  // buffer 内草稿会随之丢弃——切走未发送的草稿本就不保证跨淘汰存活）。
   function pruneSessionBuffers(keepId) {
     var ids = Object.keys(sessionStates);
     var overflow = ids.length - MAX_SESSION_BUFFERS;
@@ -3444,7 +3445,9 @@
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
         state.activeSessionId
       );
-      rerenderFromMessages();
+      // live 注水:toolMeta 可能含在飞工具条目(tool_use 未进 messages),
+      // 保留给后续 chat:tool_end 用。
+      rerenderFromMessages({ keepLiveToolMeta: true });
       if (hasLivePresentation) {
         currentStreamId = mergeHydratedChatItems(liveChatItems, liveCurrentStreamId);
       } else {
@@ -3956,9 +3959,17 @@
   }
 
   // ── Rerender from messages (session restore) ─────────────────────
-  function rerenderFromMessages() {
+  // opts.keepLiveToolMeta: live 会话注水(hydrateLiveSession)时传入 —— 此刻
+  // toolMeta 可能持有在飞工具的条目(tool_use 尚未进 messages),清空会让
+  // 后续 chat:tool_end 拿不到 meta(选择卡卡死/成品卡退化)。
+  function rerenderFromMessages(opts) {
     state.chatItems = [];
     itemIdSeq = 0;
+    // 历史 tool_use 的元数据(含 write/patch 的大 args)只服务本次重放期间的
+    // tool_result 回填;实时事件路径插删均衡,但历史写入从不清理,残留会随
+    // 工作集存进 buffer 长期驻留。durable 重放开始即清空(非 live 注水时
+    // 实时条目不存在);重放会为 messages 内的历史 tool_use 重建所需条目。
+    if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     var pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
     function emitPersonaAt(atOrAfter, isTail) {

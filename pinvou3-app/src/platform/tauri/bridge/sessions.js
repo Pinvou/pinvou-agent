@@ -5,8 +5,7 @@
   registry.sessions = function (context) {
     var state = context.state;
     // 可选 hook：会话 buffer 被回收/删除时清理宿主侧 per-session 副表
-    // （bridge.js 的 modeStateEpochs 等）。返回 true 表示已处理，返回 false
-    // 或缺省时无操作。
+    // （bridge.js 的 modeStateEpochs、scene 事件 localStorage 键）。无返回值。
     var onSessionBufferPurged = context.onSessionBufferPurged || null;
     var invoke = context.invoke;
     var listen = context.listen;
@@ -137,7 +136,9 @@
     return buf;
   }
   // 全会话 LRU：scheduled 语义保护仍适用（busy/queued/remote turn 不回收），
-  // 仅淘汰"纯展示缓存"性质的空闲 buffer。active 会话由 isProtected 兜底。
+  // 仅淘汰空闲 buffer（messages/chatItems 可从磁盘重水化；composerDraft 等
+  // buffer 内草稿会随之丢弃——切走未发送的草稿本就不保证跨淘汰存活）。
+  // active 会话由 isProtected 兜底。
   function pruneSessionBuffers(keepId) {
     var ids = Object.keys(sessionStates);
     var overflow = ids.length - MAX_SESSION_BUFFERS;
@@ -793,7 +794,16 @@
     // 多 session 并发:切换【不再 cancel】旧 session —— 它在自己的 engine 上继续跑,
     // 工作集存进 sessionStates 后台累积。切回来能看到完整(含切走期间产生的)内容。
     // 已有 buffer(切过/在跑)→ 直接换工作集;没有 → load_session 建 buffer + 重渲染。
-    if (sessionStates[id] && !forceDurableLoad && !hydrateLiveSession) {
+    // 事件监听会为任意被点名的 session 经 getBuffer 重建未落盘的空 buffer(如
+    // 淘汰后迟到的 chat:usage/artifact:disk);这种 buffer 走快路径会显示空会话,
+    // 必须落到下方磁盘重载自愈(web 桥同款 loadedFromDisk 门控)。busy/remote/
+    // 已有内容的 buffer 仍走快路径,展示实时部分视图并由 chat:done 对账补全。
+    var existingBuffer = sessionStates[id];
+    var cachedBufferUsable = existingBuffer && (existingBuffer.loadedFromDisk ||
+      existingBuffer.busy || existingBuffer.remoteTurnActive ||
+      (existingBuffer.messages && existingBuffer.messages.length) ||
+      (existingBuffer.chatItems && existingBuffer.chatItems.length));
+    if (cachedBufferUsable && !forceDurableLoad && !hydrateLiveSession) {
       if (!preserveScheduledRunContext) state.scheduledRunContext = null;
       state.scheduledTaskPendingGuide = null; // 仅在目标会话已确认可用后提交导航状态
       switchActiveTo(id, null);
@@ -855,7 +865,9 @@
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
         state.activeSessionId
       );
-      rerenderFromMessages();
+      // live 注水:buffer 的 toolMeta 可能含在飞工具条目(tool_use 未进
+      // messages),保留给后续 chat:tool_end 用。
+      rerenderFromMessages({ keepLiveToolMeta: true });
       if (hasLivePresentation) {
         context.currentStreamId = mergeHydratedChatItems(liveChatItems, liveCurrentStreamId);
       } else {

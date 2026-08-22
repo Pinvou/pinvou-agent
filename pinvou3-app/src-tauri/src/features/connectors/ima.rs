@@ -130,8 +130,13 @@ async fn request_ima(
     // 进程级共享客户端：每次调用新建 Client 会重建 TLS 配置/连接池，
     // 对同一 host（ima.qq.com）完全浪费 keep-alive/h2 复用。超时语义移到
     // per-request（reqwest::RequestBuilder::timeout）保持 30s 不变。
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    let client = CLIENT.get_or_init(|| reqwest::Client::builder().build().unwrap_or_default());
+    // 构建失败（TLS/系统配置不可用）保持逐调用错误传播——Client::default()
+    // 在同类失败上同样 panic，不是可用的回退。
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> = std::sync::OnceLock::new();
+    let client = CLIENT
+        .get_or_init(|| reqwest::Client::builder().build().map_err(|e| format!("创建 IMA 客户端失败: {e}")))
+        .as_ref()
+        .map_err(Clone::clone)?;
     let response = client
         .post(format!("{IMA_BASE_URL}/{api_path}"))
         .timeout(std::time::Duration::from_secs(30))

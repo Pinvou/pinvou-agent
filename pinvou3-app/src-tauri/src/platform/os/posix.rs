@@ -20,19 +20,28 @@ use std::path::PathBuf;
 /// （不像 tokio 的 kill_on_drop），父进程也不自动 reap；每次 open/xdg-open
 /// 都会留一个 zombie 直到父进程退出。这里起一个 detached 收割线程 `wait()`，
 /// 打开文件/发通知类命令通常毫秒级退出，线程随即结束，常驻成本可忽略。
-/// 收割线程创建失败时退化为同步 wait：慢命令的极端卡顿优于僵尸累积。
+/// 收割线程创建失败（线程数/内存受限的极端场景）时在调用线程同步 `wait()`：
+/// 命令已成功启动，此时慢命令的极端卡顿优于僵尸累积 + 误报打开失败。
 pub fn spawn_detached_and_reap(command: &mut std::process::Command) -> std::io::Result<()> {
-    let mut child = command.spawn()?;
-    // 收割线程创建失败时退化为同步 wait：慢命令的极端卡顿优于僵尸累积。
-    // Child 不 Clone：先 spawn 收割线程占位，成功后用 Child::wait 的所有权
-    // 转移语义（std::process::Child 按 &mut wait）在线程内持有。
+    use std::sync::{Arc, Mutex};
+    // `Builder::spawn` 失败时闭包被 drop（不归还），Child 的所有权无法要回；
+    // 经共享的 Option 中转：收割线程与失败回退路径先到先得，只有一方能 take。
+    let child = Arc::new(Mutex::new(Some(command.spawn()?)));
+    let thread_child = Arc::clone(&child);
     match std::thread::Builder::new()
         .name("unix-child-reaper".to_string())
         .spawn(move || {
-            let _ = child.wait();
+            if let Some(mut owned) = thread_child.lock().ok().and_then(|mut slot| slot.take()) {
+                let _ = owned.wait();
+            }
         }) {
         Ok(_) => Ok(()),
-        Err(error) => Err(error),
+        Err(_) => {
+            if let Some(mut owned) = child.lock().ok().and_then(|mut slot| slot.take()) {
+                let _ = owned.wait();
+            }
+            Ok(())
+        }
     }
 }
 
