@@ -56,7 +56,7 @@ impl CliProbeCache {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ResolvedCli {
     pub(super) path: PathBuf,
     /// `--version` 原始输出；版本门禁单独校验，解析失败一律不合规。
@@ -121,5 +121,43 @@ impl AcpPool {
         let slot = probe.slot_mut(backend);
         slot.generation = slot.generation.wrapping_add(1);
         slot.value = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_probe_slots_are_independent_and_invalidation_resets_only_one() {
+        let mut cache = CliProbeCache::default();
+
+        cache.slot_mut(AgentBackend::ClaudeAcp).value = Some(Some(ResolvedCli {
+            path: PathBuf::from("/opt/claude"),
+            version: Some("1.0.0".into()),
+            install_source: Some("script"),
+        }));
+        cache.slot_mut(AgentBackend::KimiAcp).value = Some(None);
+
+        // Slots start at generation 0 with their cached values visible.
+        assert_eq!(
+            cache.slot(AgentBackend::ClaudeAcp).value,
+            Some(Some(ResolvedCli {
+                path: PathBuf::from("/opt/claude"),
+                version: Some("1.0.0".into()),
+                install_source: Some("script"),
+            }))
+        );
+        assert_eq!(cache.slot(AgentBackend::KimiAcp).value, Some(None));
+        assert_eq!(cache.slot(AgentBackend::ClaudeAcp).generation, 0);
+
+        // Bumping the Claude slot's generation is what `invalidate_cli_probe`
+        // does; the Kimi slot must keep its cached value and generation.
+        let claude_slot = cache.slot_mut(AgentBackend::ClaudeAcp);
+        claude_slot.generation = claude_slot.generation.wrapping_add(1);
+        claude_slot.value = None;
+        assert_eq!(cache.slot(AgentBackend::ClaudeAcp).value, None);
+        assert_eq!(cache.slot(AgentBackend::KimiAcp).value, Some(None));
+        assert_eq!(cache.slot(AgentBackend::KimiAcp).generation, 0);
     }
 }

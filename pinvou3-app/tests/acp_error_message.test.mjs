@@ -14,6 +14,8 @@ for (const code of [
   'web_acp_timeline_response_invalid',
   'web_workspace_authorization_required',
   'web_workspace_session_required',
+  'web_session_list_sessions_failed',
+  'web_session_load_session_chunk_failed',
   'acp_external_url_invalid',
   'invalid_web_session_id',
   'web_session_unavailable',

@@ -289,11 +289,24 @@ try {
   const i18n = readFileSync(path.join(root, 'src', 'shared', 'i18n.js'), 'utf8');
   const navigationComponents = readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
   assert.ok(main.includes("currentView === 'codex'"));
-  assert.ok(main.includes('<LazyCodexAcpView'), 'Codex view renders via lazy chunk');
+  assert.ok(
+    main.includes("from '../features/codex/LazyCodexAcpView.jsx'") && main.includes('<CodexAcpView'),
+    'the main window must render the codex view through the LazyCodexAcpView wrapper (retryable error boundary)',
+  );
+  assert.doesNotMatch(
+    main,
+    /VIEW_LOADERS\.codex\(\)\.then/,
+    'the main window must not bypass the wrapper with a direct lazy import of CodexAcpView',
+  );
   assert.match(
     lazyCodexView,
-    /lazy\(\(\) => import\('\.\/CodexAcpView\.jsx'\)/,
+    /import\('\.\/CodexAcpView\.jsx'\)/,
     'the ACP workspace must stay out of the initial WebUI bundle',
+  );
+  assert.match(
+    lazyCodexView,
+    /extends React\.Component[\s\S]*?getDerivedStateFromError[\s\S]*?componentDidCatch/,
+    'the lazy ACP workspace must sit behind an error boundary that logs failures',
   );
   assert.ok(
     detachedShell.includes("../features/codex/LazyCodexAcpView.jsx")
@@ -302,8 +315,8 @@ try {
   );
   assert.match(
     lazyCodexView,
-    /<Suspense fallback=\{\([\s\S]*?<CodexAcpWorkspace/,
-    'the lazy ACP workspace must render a stable loading state',
+    /<Suspense fallback=\{\([\s\S]*?t\.uiCodex\.viewLoading[\s\S]*?<Workspace/,
+    'the lazy ACP workspace must render a dedicated loading state',
   );
   assert.ok(main.includes('codexAcpSupported &&'), 'Codex entry must stay platform capability-gated');
   assert.ok(main.includes(".concat(codexHistory)"),
@@ -630,7 +643,7 @@ try {
     'Codex and DeepSeek must share the same choice-card presentation');
   assert.ok(codexView.includes('loadAcpPendingElicitations(id)'),
     'pending Codex input requests must recover when a session is reopened');
-  assert.ok(codexView.includes("isWeb ? 'web_access_respond_codex_acp_elicitation' : 'respond_codex_acp_elicitation'"),
+  assert.ok(codexView.includes('respondAcpElicitation({ sessionId: targetId, elicitationId, action, content })'),
     'Codex input answers must be returned through the ACP request');
   assert.ok(conversationView.includes('className={`codex-markdown'), 'conversation Markdown must keep the isolated Codex style scope');
   assert.ok(codexView.includes('<ConversationTurn'), 'Codex must render through the shared Turn renderer by default');
