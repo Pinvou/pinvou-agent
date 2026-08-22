@@ -49,9 +49,13 @@ macOS Keychain 的「始终允许」不是全局开关,而是把"哪个应用可
 - `pinvou3-search-api-key` — 搜索 API Key
 - `pinvou3-mcp-secret` — 工具市场 / MCP 连接器密钥
 - `pinvou3-ima-secret` — IMA 密钥
+- `pinvou3-acp-provider-key` — ACP 供应商密钥
+- `pinvou3-remote-knowledge-token` — 远程知识库设备令牌
+- `pinvou3-shared-knowledge-backup` — 共享知识库备份密钥
 
 每个 item 首次访问各自弹一次;而设置页每次打开(`get_settings`)都会回读所有已配置
 item 的状态。**单 item 反复弹 + 多 item 各自弹 = "无限弹窗" 体感。**
+连接远程 / 共享知识库时读取设备令牌与备份密钥,同样会触发对应 item 的首次弹窗。
 
 > 注:全部 Keychain 访问都在单一 Tauri 主进程内完成,不涉及子进程或 Node sidecar
 > 另开 Keychain(已排查 `codex-bridge-runtime`、`remote-control-relay`,均不读 Keychain)。
@@ -86,7 +90,10 @@ echo 'export DEEPSEEK_API_KEY="sk-你的key"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-完整环境变量名见 `CodeWhale/crates/secrets/src/lib.rs` 的 `env_for` 函数。
+完整环境变量名:模型 provider 见 `CodeWhale/crates/secrets/src/lib.rs` 的 `env_for`
+函数;搜索 provider(`METASO_API_KEY`、`BAIDU_SEARCH_API_KEY`)见
+`pinvou3-app/src-tauri/src/platform/prefs/search.rs` 的 `env_key_names`;Bocha/Tavily
+不提供环境变量通道。
 
 ### 方案 B:手动给 Keychain item 加宽松 ACL
 
@@ -99,7 +106,7 @@ source ~/.zshrc
 持久命中,「始终允许」即真正生效、不再反复弹。落地点与前置条件见
 `pinvou3-app/src-tauri/packaging/macos/entitlements.plist` 的注释路线图:
 
-1. `tauri.conf.json`:`mac.hardenedRuntime = true`(公证要求 Hardened Runtime)。
+1. `tauri.conf.json`:`macOS.hardenedRuntime = true`(公证要求 Hardened Runtime)。
 2. 配置 `signingIdentity` 为 Developer ID Application 证书 + `notarytool` 公证。
 3. 评估是否补充 `com.apple.security.cs.allow-jit` / `disable-library-validation`
    等 entitlement(按实际运行决定,不全开)。

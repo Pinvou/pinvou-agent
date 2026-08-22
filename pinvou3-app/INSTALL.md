@@ -1,20 +1,22 @@
 # pinvou3 安装说明（本地 LLM 版）
 
-> 本包为 **arm64 (aarch64)** 架构，仅限 ARM64 Linux（如 NVIDIA Jetson、Raspberry Pi 5、Apple Silicon Linux VM 等）。
+> 本包为 **arm64 (aarch64)** 架构，仅限 ARM64 Linux（如 NVIDIA Jetson、Raspberry Pi 5、Apple Silicon Linux VM 等），
+> 系统基线为 **Ubuntu 22.04 及以上（glibc 2.35+，WebKitGTK 2.40+）**；更老的发行版（如基于 Ubuntu 20.04 的 Jetson L4T）缺少所需 glibc 符号，安装后无法运行。
 > 默认连接 **本机 127.0.0.1:8000** 的 vLLM 服务，**不依赖外网**。
 
 ---
 
 ## 1. 安装
 
+安装包发布名为 `pinvou-agent_<版本>-linux-arm64.deb`（以下示例以 `<版本>` 占位，请替换为实际下载的版本号）：
+
 ```bash
-sudo dpkg -i pinvou3_0.6.2_arm64.deb
+sudo dpkg -i pinvou-agent_<版本>-linux-arm64.deb
 # 若报依赖缺失，自动补装：
 sudo apt-get install -f
 ```
 
-安装包会声明 Tauri UI 运行时依赖，并推荐以下文档处理工具：
-- `libwebkit2gtk-4.1-0`、`libgtk-3-0`（Tauri UI 运行时）
+安装包会声明 Tauri UI 运行时依赖（`libwebkit2gtk-4.1-0` ≥ 2.40 等），并推荐以下文档处理工具：
 - 推荐（非强制）：`poppler-utils`、`tesseract-ocr`、`tesseract-ocr-chi-sim`、`pandoc`、`p7zip-full`、`python3`（文档/图片处理工具）、`libreoffice`、`libemail-outlook-message-perl`
 
 ---
@@ -89,6 +91,10 @@ pinvou3
 - `minimax` — MiniMax
 - `glm` — 智谱 GLM
 - `mimo` — 小米 MiMo
+- `openai` — OpenAI 官方 API
+- `anthropic` — Anthropic Claude（非 OpenAI-compatible 通道）
+- `gemini` — Google Gemini（非 OpenAI-compatible 通道）
+- `xai` — xAI Grok
 
 需要用环境变量持久覆盖时，也可将方式 A 的变量写入启动脚本；桌面菜单启动通常不会读取 `~/.bashrc`。
 
@@ -119,5 +125,5 @@ rm -rf ~/.pinvou3
 
 | 文件 | 说明 |
 |------|------|
-| `pinvou3_<版本>_arm64.deb` | 主安装包 |
+| `pinvou-agent_<版本>-linux-arm64.deb` | 主安装包（发布流水线统一命名） |
 | `INSTALL.md` | 本安装说明 |

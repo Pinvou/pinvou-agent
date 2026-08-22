@@ -4,7 +4,10 @@ Windows 大型运行时存放在独立的公开仓库，不直接提交到主仓
 
 - `../../../config/platforms/windows/runtime/x86_64.lock.json`：锁定 runtime submodule commit 和 manifest SHA-256；
 - `scripts/resolve-runtime.ps1`：校验 submodule、manifest、ZIP 内部清单，原子 staging 并生成 runtime descriptor；
-- `scripts/stage-runtime.ps1`：供构建入口调用的轻量包装。
+- `scripts/stage-runtime.ps1`：供构建入口调用的轻量包装；
+- `scripts/init-submodule.ps1`：初始化 runtime submodule checkout；
+- `scripts/stage-onnx-runtime.ps1`：为开发启动展开 ONNX Runtime 组件；
+- `scripts/test-onnx-runtime.ps1`：验证 ONNX Runtime staging 产物。
 
 发布机构建前执行：
 
