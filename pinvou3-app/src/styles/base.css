@@ -30,7 +30,11 @@
     }
     html.compact-web-viewport body {
       position: fixed;
-      inset: 0;
+      /* No inset shorthand: Safari 14.0 (first macOS 11 release) cannot parse it; expanded to physical properties */
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
     }
     /* 与 Tailwind max-sm 同断点:触屏横滑容器(如设置页 Tab 条)不显示滚动条 */
     @media (max-width: 639.98px) {

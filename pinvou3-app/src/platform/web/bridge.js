@@ -100,7 +100,7 @@
   }
   function webRequestId(prefix) {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
-      return prefix + "_" + window.crypto.randomUUID();
+      return prefix + "_" + window.crypto.randomUUID(); // safari14-ok: guarded above
     }
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
   }
@@ -1279,7 +1279,7 @@
     var token = "";
     try {
       if (window.crypto && typeof window.crypto.randomUUID === "function") {
-        token = window.crypto.randomUUID().replace(/-/g, "");
+        token = window.crypto.randomUUID().replace(/-/g, ""); // safari14-ok: guarded above
       }
     } catch (_) {}
     if (!token) token = Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -1799,7 +1799,7 @@
   var subscribers = [];
   function snapshotState() {
     if (typeof structuredClone === "function") {
-      try { return structuredClone(state); } catch (_) {}
+      try { return structuredClone(state); } catch (_) {} // safari14-ok: typeof-guarded with JSON fallback
     }
     return JSON.parse(JSON.stringify(state));
   }
@@ -8770,7 +8770,7 @@
 
     // iOS/WebKit 只允许在用户点击的同步调用栈里启动 AudioContext。Web 端先在任何
     // await 之前创建并 resume，后续依赖检测和麦克风授权完成后复用这个 context。
-    var AudioCtor = window.AudioContext || window.webkitAudioContext;
+    var AudioCtor = window.AudioContext || window.webkitAudioContext; // eslint-disable-line compat/compat -- Safari 14.0 ships webkitAudioContext; the || fallback above selects it
     var primedAudioContext = null;
     var primedAudioResume = null;
     if (IS_WEB && AudioCtor) {

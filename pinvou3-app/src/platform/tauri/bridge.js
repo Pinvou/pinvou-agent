@@ -1341,7 +1341,7 @@
     var slice = {};
     for (var i = 0; i < fields.length; i++) slice[fields[i]] = state[fields[i]];
     if (typeof structuredClone === "function") {
-      try { return structuredClone(slice); } catch (_) {}
+      try { return structuredClone(slice); } catch (_) {} // safari14-ok: typeof-guarded with JSON fallback
     }
     return JSON.parse(JSON.stringify(slice));
   }

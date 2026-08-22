@@ -144,10 +144,9 @@
   </script>
   <!-- Tailwind 仍使用本地离线 runtime；后续单独迁移预编译样式。 -->
   <script>__PINVOU_STARTUP__.mark('html:startup_observers_ready');</script>
+  <script src="%BASE_URL%shared/legacy-polyfills.js"></script>
   <script src="%BASE_URL%vendor/tailwind.js" onload="__PINVOU_STARTUP__.mark('vendor:tailwind_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:tailwind_error')"></script>
   <script>tailwind.config = { darkMode: 'class' };</script>
-  <script src="%BASE_URL%vendor/marked.min.js" onload="__PINVOU_STARTUP__.mark('vendor:marked_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:marked_error')"></script>
-  <script src="%BASE_URL%vendor/purify.min.js" onload="__PINVOU_STARTUP__.mark('vendor:purify_loaded')" onerror="__PINVOU_STARTUP__.mark('vendor:purify_error')"></script>
   <script>__PINVOU_STARTUP__.mark('html:head_end');</script>
 </head>
 <body class="m-0 p-0">

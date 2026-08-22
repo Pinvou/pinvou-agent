@@ -1709,7 +1709,8 @@ function workspaceDisplayName(path) {
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
           className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
           style={isWeb ? {
-            ...(isCompactShell ? { position: 'fixed', inset: 0, width: '100%' } : {}),
+            // inset shorthand expanded to physical properties: Safari 14.0 (iOS 14.0 web) cannot parse the shorthand.
+            ...(isCompactShell ? { position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, width: '100%' } : {}),
             height: visualViewportHeight ? `${visualViewportHeight}px` : '100dvh',
             paddingTop: 'env(safe-area-inset-top)',
             paddingRight: 'env(safe-area-inset-right)',

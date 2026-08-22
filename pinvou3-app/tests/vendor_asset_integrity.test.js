@@ -21,9 +21,14 @@ for (const line of readme.split('\n')) {
   }
 }
 
+// The vendor set is intentionally a single file: only the Tailwind runtime
+// still ships as a classic script loaded before `tauri-bridge.js`. marked and
+// DOMPurify moved to npm dependencies bundled by Vite (Safari 14 baseline),
+// so this contract pins the one remaining asset explicitly instead of
+// assuming a minimum registry size.
 assert.ok(
-  registered.length >= 3,
-  `expected the README registry to list the vendored assets, found ${registered.length} rows`
+  registered.some((entry) => entry.file === 'tailwind.js'),
+  'expected the README registry to list the Tailwind runtime (tailwind.js)'
 );
 
 for (const entry of registered) {

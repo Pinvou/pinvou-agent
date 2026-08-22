@@ -685,6 +685,8 @@ html.pet-window #root {
   font: 12px/1 system-ui, "Microsoft YaHei UI", sans-serif;
   white-space: nowrap;
   cursor: default;
+  /* Hand-written prefix: the build downlevels syntax but adds no -webkit-; Safari 14-17 needs the prefix for the blur */
+  -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
 }
 

@@ -16,7 +16,7 @@
     var bridgeGeneration = (function () {
       try {
         if (root.crypto && typeof root.crypto.randomUUID === "function") {
-          return "webview_" + root.crypto.randomUUID().replace(/-/g, "_");
+          return "webview_" + root.crypto.randomUUID().replace(/-/g, "_"); // safari14-ok: guarded above
         }
       } catch (_) {}
       return "webview_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);

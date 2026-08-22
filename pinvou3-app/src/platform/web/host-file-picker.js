@@ -301,7 +301,10 @@
 
   var style = document.createElement("style");
   style.textContent = [
-    ".pinvou-host-picker-overlay{position:fixed;inset:0;z-index:300;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.55);backdrop-filter:blur(6px);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}",
+    // This file is copied verbatim into dist (never transpiled by the build):
+    // the inset shorthand must stay expanded and backdrop-filter must stay
+    // prefixed, or Safari 14.0 loses the full-screen overlay and the blur.
+    ".pinvou-host-picker-overlay{position:fixed;top:0;right:0;bottom:0;left:0;z-index:300;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.55);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}",
     ".pinvou-host-picker-panel{display:flex;flex-direction:column;width:min(720px,100%);height:min(680px,88vh);overflow:hidden;border:1px solid #3c4043;border-radius:20px;background:#202124;color:#e8eaed;box-shadow:0 24px 80px rgba(0,0,0,.5)}",
     ".pinvou-host-picker-header,.pinvou-host-picker-toolbar,.pinvou-host-picker-footer{display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #3c4043}",
     ".pinvou-host-picker-header{justify-content:space-between}.pinvou-host-picker-heading{font-size:17px;font-weight:650}",

@@ -6,7 +6,7 @@
 
   function uploadId(prefix) {
     if (root.crypto && typeof root.crypto.randomUUID === "function") {
-      return prefix + "_" + root.crypto.randomUUID();
+      return prefix + "_" + root.crypto.randomUUID(); // safari14-ok: guarded above
     }
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 12);
   }
