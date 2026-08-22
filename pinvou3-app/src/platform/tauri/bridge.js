@@ -875,7 +875,14 @@
     personaPlaceholderTitles: personaPlaceholderTitles, turnUsageDirty: turnUsageDirty,
     // 会话 buffer 删除/淘汰时清理宿主侧 per-session 副表（modeStateEpochs
     // 定义在本文件后段，无法直接传入引用，用延迟取值 hook）。
-    onSessionBufferPurged: function (id) { delete modeStateEpochs[id]; },
+    onSessionBufferPurged: function (id) {
+      delete modeStateEpochs[id];
+      // scene 事件的 localStorage 缓存键也不随会话消亡而清理,会随历史会话数
+      // 无界累积（约 5MB 配额共享）。
+      if (id && window.localStorage) {
+        try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
+      }
+    },
     runSyncOnSession: runSyncOnSession, persistMessagesFor: persistMessagesFor,
     resetPendingAssistant: function () { return resetPendingAssistant.apply(null, arguments); },
     stopThinking: function () { return stopThinking.apply(null, arguments); },
@@ -1715,6 +1722,10 @@
   function rerenderFromMessages() {
     state.chatItems = [];
     itemIdSeq = 0;
+    // 历史 tool_use 的元数据(含 write/patch 的大 args)只服务本次重放期间的
+    // tool_result 回填;实时事件路径插删均衡,但历史写入从不清理,残留会随
+    // 工作集存进 buffer 长期驻留。重放开始即清空(实时条目此刻不存在)。
+    toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     var pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
     function emitPersonaAt(atOrAfter, isTail) {
