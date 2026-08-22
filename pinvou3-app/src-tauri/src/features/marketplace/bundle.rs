@@ -1094,6 +1094,75 @@ mod tests {
         });
     }
 
+    /// 上传 MCP/组合包的展示覆盖：extra display_name/description 覆盖
+    /// manifest name/description，display_* 原样透出（对话框回填用），
+    /// user_uploaded 翻转（edit_display 动作门禁），清 key 后回退 manifest 值；
+    /// 预置 MCP 包不受 extra 影响。
+    #[test]
+    fn registry_applies_display_overrides_for_uploaded_mcp_bundles() {
+        with_temp_home(|| {
+            let home = std::env::var("PINVOU3_HOME").unwrap();
+            seed_fixture(std::path::Path::new(&home), true);
+            // weather 改为 Upload 记录并写覆盖（seed 里是磁盘 manifest 无记录；
+            // gongwen 保持无记录 = 预置对照）
+            let store = store::BundleStore::new();
+            store
+                .upsert(store::BundleRecord::installed_now(
+                    "weather",
+                    store::BundleSource::Upload("weather-pkg.zip".to_string()),
+                ))
+                .unwrap();
+            store
+                .set_display_meta("weather", Some("我的天气"), Some("我的天气说明"))
+                .unwrap();
+            // 预置包塞入手工 extra 覆盖（越权数据）：展示层必须忽略
+            store
+                .upsert(store::BundleRecord::installed_now(
+                    "gongwen",
+                    store::BundleSource::Preset,
+                ))
+                .unwrap();
+            {
+                let mut rec = store.get("gongwen").unwrap().unwrap();
+                rec.extra.insert(
+                    store::EXTRA_DISPLAY_NAME.to_string(),
+                    serde_json::Value::String("越权名".to_string()),
+                );
+                store.upsert_preserving(rec).unwrap();
+            }
+
+            let reg = BundleRegistry::new();
+            let bundles = reg.list_bundles();
+            let weather = bundles
+                .iter()
+                .find(|b| b.id == "weather")
+                .expect("weather 应存在");
+            assert_eq!(weather.kind, BundleKind::Mcp);
+            assert!(weather.user_uploaded, "上传 MCP 包应 user_uploaded");
+            assert_eq!(weather.name, "我的天气");
+            assert_eq!(weather.description, "我的天气说明");
+            assert_eq!(weather.display_name.as_deref(), Some("我的天气"));
+            assert_eq!(weather.display_description.as_deref(), Some("我的天气说明"));
+            // 预置包：越权 extra 不生效
+            let gongwen = bundles
+                .iter()
+                .find(|b| b.id == "gongwen")
+                .expect("gongwen 应存在");
+            assert!(!gongwen.user_uploaded);
+            assert_eq!(gongwen.name, "公文写作", "预置包不得应用 extra 覆盖");
+
+            // 清 key → 回退 manifest 值
+            store
+                .set_display_meta("weather", Some(""), Some(""))
+                .unwrap();
+            let bundles = reg.list_bundles();
+            let weather = bundles.iter().find(|b| b.id == "weather").unwrap();
+            assert_eq!(weather.name, "高德天气", "清覆盖应回退 manifest 名");
+            assert_eq!(weather.description, "d");
+            assert_eq!(weather.display_name, None);
+        });
+    }
+
     /// V5：包本体未装时 companion 技能保留独立纯技能包形态（存量单装兼容）。
     #[test]
     fn uninstalled_bundle_keeps_companion_skill_independent() {

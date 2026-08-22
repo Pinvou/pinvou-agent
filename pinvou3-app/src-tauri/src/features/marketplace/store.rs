@@ -36,6 +36,11 @@ pub const ASSET_KIND_CLI: &str = "cli";
 pub const EXTRA_DISPLAY_NAME: &str = "display_name";
 pub const EXTRA_DISPLAY_DESCRIPTION: &str = "display_description";
 
+/// 单技能包**首次回写 SKILL.md 前**留存的 frontmatter 原 description 备份 key
+/// （清空展示说明时恢复原值用）。空串哨兵 = 原本没有 description；缺 key =
+/// 从未回写过（多技能/纯 MCP 包不回写，也不存备份）。
+pub const EXTRA_SKILL_DESC_BACKUP: &str = "skill_description_backup";
+
 /// 展示名校验上限（字符数）。
 pub const MAX_DISPLAY_NAME_CHARS: usize = 64;
 /// 展示说明校验上限（字符数；对齐 skill_marketplace 的 description 展示截断口径）。
@@ -343,8 +348,8 @@ impl BundleStore {
     /// `display_name` / `display_description` key，不动包目录与包清单）。
     ///
     /// - 记录不存在 → Err；`source` 非 Upload → Err（预置/内置包不可覆盖）；
-    /// - `Some(v)`：trim 后为空 = 删除该 key（清空回退默认展示）；非空 = 长度
-    ///   校验后写入 trim 值，超限 → Err；
+    /// - `Some(v)`：trim 后为空 = 删除该 key（清空回退默认展示）；非空 = 长度/
+    ///   控制字符校验后写入 trim 值，违规 → Err；
     /// - `None` = 该字段不动；两个都 None = no-op 成功（仍要求记录存在且为 Upload）。
     pub fn set_display_meta(
         &self,
@@ -368,15 +373,57 @@ impl BundleStore {
         apply_display_meta(
             &mut record.extra,
             EXTRA_DISPLAY_NAME,
+            "展示名",
             display_name,
             MAX_DISPLAY_NAME_CHARS,
         )?;
         apply_display_meta(
             &mut record.extra,
             EXTRA_DISPLAY_DESCRIPTION,
+            "展示说明",
             display_description,
             MAX_DISPLAY_DESCRIPTION_CHARS,
         )?;
+        save_locked(&self.file, &file)
+    }
+
+    /// 读取记录的 SKILL.md 原说明备份（[`EXTRA_SKILL_DESC_BACKUP`]；缺 key /
+    /// 非字符串 → None；`Some("")` = 原缺失哨兵）。清空展示说明的恢复路径用。
+    pub fn skill_desc_backup(&self, id: &str) -> Result<Option<String>, String> {
+        let _guard = file_lock();
+        let file = load_locked(&self.file)?;
+        Ok(file
+            .records
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.extra.get(EXTRA_SKILL_DESC_BACKUP))
+            .and_then(|v| v.as_str())
+            .map(str::to_string))
+    }
+
+    /// 设置/删除 [`EXTRA_SKILL_DESC_BACKUP`]（与 `set_display_meta` 同锁同门禁：
+    /// 仅 Upload 记录可写）。值由内部读取/校验管线产生（引擎口径原值或空串哨兵），
+    /// 不做展示字段校验；`None` = 删除 key。
+    pub fn set_skill_desc_backup(&self, id: &str, backup: Option<&str>) -> Result<(), String> {
+        let _guard = file_lock();
+        let mut file = load_locked(&self.file)?;
+        let Some(record) = file.records.iter_mut().find(|r| r.id == id) else {
+            return Err(format!("包 '{id}' 未登记，无法备份技能说明原值"));
+        };
+        if !matches!(record.source, BundleSource::Upload(_)) {
+            return Err(format!("包 '{id}' 非用户上传来源，不允许写说明备份"));
+        }
+        match backup {
+            Some(v) => {
+                record.extra.insert(
+                    EXTRA_SKILL_DESC_BACKUP.to_string(),
+                    serde_json::Value::String(v.to_string()),
+                );
+            }
+            None => {
+                record.extra.remove(EXTRA_SKILL_DESC_BACKUP);
+            }
+        }
         save_locked(&self.file, &file)
     }
 
@@ -418,10 +465,11 @@ impl BundleStore {
 // ---------------------------------------------------------------------------
 
 /// 单个展示字段的写入语义（`set_display_meta` 用）：None 不动；trim 后空 = 删 key
-/// （回退默认展示）；非空校验字符上限后写 trim 值。
+/// （回退默认展示）；非空走 [`check_display_value`] 校验后写 trim 值。
 fn apply_display_meta(
     extra: &mut serde_json::Map<String, serde_json::Value>,
     key: &str,
+    field_label: &str,
     value: Option<&str>,
     max_chars: usize,
 ) -> Result<(), String> {
@@ -433,9 +481,7 @@ fn apply_display_meta(
         extra.remove(key);
         return Ok(());
     }
-    if trimmed.chars().count() > max_chars {
-        return Err(format!("{key} 超过 {max_chars} 字符上限"));
-    }
+    check_display_value(field_label, trimmed, max_chars)?;
     extra.insert(
         key.to_string(),
         serde_json::Value::String(trimmed.to_string()),
@@ -443,27 +489,38 @@ fn apply_display_meta(
     Ok(())
 }
 
-/// 展示名/说明的长度预检（`update_bundle_display_meta` 在回写 SKILL.md **之前**
+/// 展示字段值的统一校验（写入与预检共用同一口径）：控制字符/换行一律拒绝
+/// （单行 UI 展示与 SKILL.md 单行回写都无法表达，且各包形态行为一致），
+/// 超过字符上限 → Err。`field_label` 用人类可读字段名，不外泄内部 key。
+fn check_display_value(field_label: &str, v: &str, max_chars: usize) -> Result<(), String> {
+    if v.chars().any(|c| c.is_control()) {
+        return Err(format!("{field_label}含控制字符/换行，不支持"));
+    }
+    if v.chars().count() > max_chars {
+        return Err(format!("{field_label}超过 {max_chars} 字符上限"));
+    }
+    Ok(())
+}
+
+/// 展示名/说明的长度/字符预检（`sync_display_meta` 在回写 SKILL.md **之前**
 /// 调用；`apply_display_meta` 内仍有同口径校验兜底）。回写会先改包内容并重算
 /// 指纹，校验若只留在 `set_display_meta`，超长值会先落盘再报错，留下
-/// 「报错但包内容已变」的中间态——所以命令侧必须前置预检。None / trim 后空
-/// （= 清覆盖）不检；非空超上限 → Err。
-pub fn validate_display_meta(
+/// 「报错但包内容已变」的中间态——所以必须前置预检。None / trim 后空
+/// （= 清覆盖）不检；非空走 [`check_display_value`]。
+pub(crate) fn validate_display_meta(
     display_name: Option<&str>,
     display_description: Option<&str>,
 ) -> Result<(), String> {
-    for (field, value, max_chars) in [
-        (EXTRA_DISPLAY_NAME, display_name, MAX_DISPLAY_NAME_CHARS),
+    for (field_label, value, max_chars) in [
+        ("展示名", display_name, MAX_DISPLAY_NAME_CHARS),
         (
-            EXTRA_DISPLAY_DESCRIPTION,
+            "展示说明",
             display_description,
             MAX_DISPLAY_DESCRIPTION_CHARS,
         ),
     ] {
         if let Some(v) = value.map(str::trim).filter(|s| !s.is_empty()) {
-            if v.chars().count() > max_chars {
-                return Err(format!("{field} 超过 {max_chars} 字符上限"));
-            }
+            check_display_value(field_label, v, max_chars)?;
         }
     }
     Ok(())
@@ -1245,6 +1302,18 @@ mod tests {
             assert!(store
                 .set_display_meta("up", None, Some(&long_desc))
                 .is_err());
+            // 控制字符/换行：展示名与展示说明一律拒绝（单行 UI 展示与单行
+            // SKILL.md 回写都无法表达；也消除各包形态校验口径不一致）
+            for bad in ["含\n换行", "含\t制表", "含\u{7}控制符"] {
+                assert!(
+                    store.set_display_meta("up", Some(bad), None).is_err(),
+                    "展示名含控制字符应拒绝: {bad:?}"
+                );
+                assert!(
+                    store.set_display_meta("up", None, Some(bad)).is_err(),
+                    "展示说明含控制字符应拒绝: {bad:?}"
+                );
+            }
             // 边界：恰好上限可写
             let ok_name = "名".repeat(MAX_DISPLAY_NAME_CHARS);
             let ok_desc = "述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS);
@@ -1263,9 +1332,9 @@ mod tests {
         });
     }
 
-    /// 长度预检（update_bundle_display_meta 在回写 SKILL.md 之前调用）：
-    /// 超限 Err、None/清空（trim 后空）放行、恰好上限放行——与 apply_display_meta
-    /// 同口径，保证命令前置校验不会先改包内容再报错。
+    /// 长度预检（update_display_meta 编排在回写 SKILL.md 之前调用）：
+    /// 超限/控制字符 Err、None/清空（trim 后空）放行、恰好上限放行——与
+    /// apply_display_meta 同口径，保证前置校验不会先改包内容再报错。
     #[test]
     fn validate_display_meta_matches_apply_limits() {
         assert!(
@@ -1275,6 +1344,8 @@ mod tests {
             validate_display_meta(None, Some(&"述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS + 1)))
                 .is_err()
         );
+        assert!(validate_display_meta(Some("含\n换行"), None).is_err());
+        assert!(validate_display_meta(None, Some("含\t制表")).is_err());
         // None / trim 后空（= 清覆盖，不触发回写）不检
         assert!(validate_display_meta(None, None).is_ok());
         assert!(validate_display_meta(Some("   "), Some("")).is_ok());
@@ -1284,5 +1355,46 @@ mod tests {
             Some(&"述".repeat(MAX_DISPLAY_DESCRIPTION_CHARS))
         )
         .is_ok());
+    }
+
+    /// SKILL.md 原说明备份：首写留存（含空串哨兵）、清 key、仅 Upload 可写、
+    /// upsert_preserving 保留。
+    #[test]
+    fn skill_desc_backup_roundtrip_and_gates() {
+        with_temp_home(|| {
+            let store = BundleStore::new();
+            store
+                .upsert(record("up", BundleSource::Upload("pkg.zip".to_string())))
+                .unwrap();
+            store
+                .upsert(record("preset", BundleSource::Preset))
+                .unwrap();
+
+            assert!(store.skill_desc_backup("up").unwrap().is_none());
+            store.set_skill_desc_backup("up", Some("原描述")).unwrap();
+            assert_eq!(
+                store.skill_desc_backup("up").unwrap().as_deref(),
+                Some("原描述")
+            );
+            // 空串哨兵 ≠ None
+            store.set_skill_desc_backup("up", Some("")).unwrap();
+            assert_eq!(store.skill_desc_backup("up").unwrap().as_deref(), Some(""));
+            // 清 key
+            store.set_skill_desc_backup("up", None).unwrap();
+            assert!(store.skill_desc_backup("up").unwrap().is_none());
+            // 门禁：ghost / 预置拒绝
+            assert!(store.set_skill_desc_backup("ghost", Some("x")).is_err());
+            assert!(store.set_skill_desc_backup("preset", Some("x")).is_err());
+            // upsert_preserving 不丢备份
+            store.set_skill_desc_backup("up", Some("原描述")).unwrap();
+            let mut rec = store.get("up").unwrap().unwrap();
+            rec.content_fingerprint = Some("fp".to_string());
+            store.upsert_preserving(rec).unwrap();
+            assert_eq!(
+                store.skill_desc_backup("up").unwrap().as_deref(),
+                Some("原描述"),
+                "upsert_preserving 不得丢备份 key"
+            );
+        });
     }
 }

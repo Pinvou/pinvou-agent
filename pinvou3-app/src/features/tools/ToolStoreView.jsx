@@ -602,13 +602,30 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     // 上传包展示名/说明编辑弹窗（extra 覆盖，只改 UI 展示；预填当前覆盖值，
     // 留空即清除覆盖回退默认）。调用方按 updateConfirm 同款模式条件挂载，
-    // useState 初值即当前覆盖值。
+    // useState 初值即当前覆盖值。错误留在弹窗内联展示（输入保留不丢），
+    // maxLength 与后端 64/240 字符上限一致，Escape 关闭与 backdrop 一致。
+    const MAX_DISPLAY_NAME_CHARS = 64;
+    const MAX_DISPLAY_DESCRIPTION_CHARS = 240;
     const TsEditDisplayDialog = ({ dialog, onConfirm, onCancel, copy }) => {
       const [name, setName] = useState(dialog.name || '');
       const [desc, setDesc] = useState(dialog.description || '');
+      const [error, setError] = useState(null);
       const inputCls = "w-full px-3 py-2 rounded-lg text-[14px] outline-none transition-colors border bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:border-[#3A3A3C] dark:text-white dark:placeholder-slate-500 dark:focus:border-[#0A84FF]";
+      const handleConfirm = async () => {
+        // 关闭/提交由调用方决定：确认失败时返回错误文案，弹窗保留输入。
+        try {
+          const err = await onConfirm({ name, description: desc });
+          if (err) setError(err);
+        } catch (e) {
+          setError(String(e));
+        }
+      };
       return (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onCancel}>
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          onClick={onCancel}
+          onKeyDown={e => { if (e.key === 'Escape') onCancel(); }}
+        >
           <div
             data-testid="edit-display-dialog"
             className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
@@ -626,6 +643,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 <input
                   data-testid="edit-display-name"
                   type="text"
+                  autoFocus
+                  maxLength={MAX_DISPLAY_NAME_CHARS}
                   placeholder={copy.displayNamePlaceholder}
                   value={name}
                   onChange={e => setName(e.target.value)}
@@ -639,6 +658,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 <textarea
                   data-testid="edit-display-description"
                   rows={3}
+                  maxLength={MAX_DISPLAY_DESCRIPTION_CHARS}
                   placeholder={copy.displayDescriptionPlaceholder}
                   value={desc}
                   onChange={e => setDesc(e.target.value)}
@@ -648,6 +668,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               <div className={`text-[11px] text-left leading-snug text-slate-400 dark:text-slate-500`}>
                 {copy.editDisplayHint}
               </div>
+              {error && (
+                <div data-testid="edit-display-error" className="mt-2 text-left text-[12px] leading-snug text-red-500 dark:text-red-400">
+                  {copy.operationFailedWith(error)}
+                </div>
+              )}
             </div>
             <div className={`border-t border-slate-200 dark:border-white/10`}>
               <button
@@ -660,7 +685,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             <div className={`border-t border-slate-200 dark:border-white/10`}>
               <button
                 data-testid="edit-display-save"
-                onClick={() => onConfirm({ name, description: desc })}
+                onClick={handleConfirm}
                 className={`w-full py-3 text-[17px] font-semibold text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
               >
                 {copy.editDisplaySave}
@@ -875,14 +900,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // 上传 MCP/组合包不在 tsToolsData（内置）也不在 skillList（技能），
           // 但 edit_display 动作下发与卡面展示名覆盖都来自 bundle_readiness，
           // 必须并入批量取数（否则上传 MCP 卡永远拿不到 actions/覆盖值）。
-          const customToolIds = toolBackend
+          // 用本次刚拉回的 list（而非 toolBackend state）：闭包里的 state 是
+          // 渲染时快照，首挂载/刚上传后为空 → 上传 MCP 卡漏批直到下次无关刷新。
+          const customToolIds = (Array.isArray(list) ? list : [])
             .map(x => x.id)
             .filter(id => id && !tsToolsData.some(t => t.backendId === id));
-          const ids = [
+          // 三源并集去重（组合包 mcpId 可能同时进 tool/skill 列表）
+          const ids = [...new Set([
             ...tsToolsData.map(x => x.backendId).filter(Boolean),
             ...customToolIds,
             ...skillList.map(x => x.id),
-          ];
+          ])];
           const entries = await Promise.all(ids.map(async (id) => {
             try {
               return [id, await invokeTauri('bundle_readiness', { bundleId: id })];
@@ -1506,10 +1534,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           description: (bf && bf.display_description) || '',
         });
       };
+      // 返回值约定：成功 → null（调用方关弹窗）；失败 → 错误文案（弹窗保留
+      // 输入内联展示，用户改完可直接重存，不必重新输入）。
       const doEditDisplaySave = async (values) => {
         const dlg = editDisplay;
-        setEditDisplay(null);
-        if (!dlg) return;
+        if (!dlg) return null;
         setBusyId(dlg.backendId);
         try {
           await invokeTauri('update_bundle_display_meta', {
@@ -1517,7 +1546,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             displayName: values.name,
             displayDescription: values.description,
           });
+          setEditDisplay(null);
           await loadBackendState();
+          // 展示名进了 list_marketplace_tools（composer 菜单数据源），
+          // 与其它安装/卸载动作同款通知 composer 刷新，否则菜单滞留旧名。
+          notifyComposerToolsChanged();
           // 详情弹窗持的是卡对象快照，loadBackendState 只刷新列表数据源；
           // 打开中的详情须单独补拉生效值（覆盖后的 name/description）。
           if (selectedTool && selectedTool.backendId === dlg.backendId) {
@@ -1530,9 +1563,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             }
           }
           setAlert({ visible: true, loading: false, title: storeCopy.editDisplaySaved, isInstall: true, isError: false });
+          return null;
         } catch (e) {
           console.error('update bundle display meta failed:', e);
-          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+          return String(e);
         } finally {
           setBusyId(null);
         }
