@@ -22,7 +22,7 @@
 | Agent 进程 | 独立子进程（ACP stdio JSON-RPC） | 进程内 CodeWhale Engine（Rust 库） |
 | 会话池 | `AcpPool` | `EnginePool` |
 | 发消息命令 | `codex_acp_prompt` | `chat`（显式 sessionId） |
-| 事件流 | `acp:event` | `chat:*`（18 个事件，R-1/R-3 增补后） |
+| 事件流 | `acp:event` | `chat:*`（前端订阅清单 `NATIVE_CHAT_EVENTS` 共 18 项，R-1/R-3 增补后） |
 | 前端投影 | `projectAcpTimeline` | `code-native-lane.js` → `projectDeepSeekConversation` |
 | 展示层 | `ConversationTimeline`（共用） | 同左 |
 | 会话存储 | `SessionStore` + `SessionAgentStore` | 同左（`SessionMode` 模式标记，见 §3.1） |
@@ -139,7 +139,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 前端
 
-- `features/codex/code-native-lane.js`（新增）：每会话 lane（items/busy/thinking/tokens），18 个 `chat:*` 事件消费（R-1/R-3 增补后）、hydration、乐观气泡、回声去重、shell 后台任务收口、compaction 系统项。
+- `features/codex/code-native-lane.js`（新增）：每会话 lane（items/busy/thinking/tokens），19 个 `chat:*` 事件消费（R-1/R-3 增补后）、hydration、乐观气泡、回声去重、shell 后台任务收口、compaction 系统项。
 - `features/codex/CodexAcpView.jsx`：按 `agent_id === 'pinvou'` 分流（发送/事件/确认卡/取消/busy），ACP 专属 UI 隐藏，工作区选择器与项目目录流程，四配置控件接入与草稿暂存，pending/busy 恢复。
 - `features/chat/composer-controls.jsx`（新增，自 ChatView 提取）：`ComposerKbSelector`/`ComposerModeChip`/`COMPOSER_ICON_BUTTON_CLASS`，可选显式会话态 props。
 - `features/settings/SettingsView.jsx`：`ComposerModelSelector` 增加显式会话态 props（sessionId/sessionModelId/onSwitchModel）；`ComposerToolMenu` 增加 `triggerVariant='pill'`。

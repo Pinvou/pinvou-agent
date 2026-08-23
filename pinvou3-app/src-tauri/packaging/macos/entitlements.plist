@@ -4,7 +4,7 @@
   entitlements.plist —— macOS 代码签名 entitlements。
 
   当前状态(ad-hoc 签名):
-    tauri.conf.json 的 mac.signingIdentity = "-"(ad-hoc),未启用 Hardened Runtime,
+    tauri.conf.json 的 macOS.signingIdentity = "-"(ad-hoc),未启用 Hardened Runtime,
     此时本文件中的 entitlements 不强制生效(ad-hoc 签名不要求 hardenedRuntime)。
     故目前只声明了音频输入这一项,供后续直接复用。
 

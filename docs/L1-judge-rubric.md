@@ -141,7 +141,7 @@ ls target/l1-runs/<ts>/
 
 ### Step 4: 写报告到 `target/l1-judge/<ts>-r<N>-report.md`
 
-`<N>` 是当前 rubric 版本号(本文档顶部"当前版本"),比如 `1779074272-r1-report.md`。
+`<N>` 是当前 rubric 版本号(本文档顶部"当前版本"),比如 `1779074272-r2-report.md`。
 `mkdir -p target/l1-judge/` 若不存在。按 §4 模板。
 
 ### Step 5: append 离群点到 `process.md` (闭环防丢失)
@@ -204,7 +204,7 @@ ls target/l1-runs/<ts>/
 - **工具使用 N/A**: 任务本身不需要工具
 
 ### batch_create_7_files — 4.75
-...(每 scenario 4 项 + 一句话理由)
+...(每 scenario 各评分维度一行 + 一句话理由;subagent scenario 含全部 6 维)
 
 ## 离群点
 
@@ -274,7 +274,7 @@ ls target/l1-runs/<ts>/
 
 ### 何时 bump 版本
 
-- 加新维度(从 4 维 → 5 维)
+- 加新维度(如 r2 在 r1 的 4 维上加了 2 维)
 - 改 1-5 分的判别标准(扣分门槛/示例变化)
 - 加新扣分条款(像 r1 的 blocklist 工具 ≤2 分)
 - **不需要 bump**:错别字、补充说明、报告模板调整
