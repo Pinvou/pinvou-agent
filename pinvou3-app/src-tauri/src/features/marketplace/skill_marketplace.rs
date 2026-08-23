@@ -289,7 +289,8 @@ impl SkillMarketplaceManager {
                         continue;
                     }
                     // 用户自定义展示覆盖（bundles.json extra）优先；空/缺 key 回退
-                    // 现状（title=记录 id、description=SKILL.md frontmatter）。
+                    // 现状（title=上传文件名去扩展名 → 记录 id、description=SKILL.md
+                    // frontmatter）。
                     let display_name =
                         super::store::display_override(&record, super::store::EXTRA_DISPLAY_NAME);
                     let display_description = super::store::display_override(
@@ -298,7 +299,10 @@ impl SkillMarketplaceManager {
                     );
                     out.push(MarketplaceSkillInfo {
                         id: record.id.clone(),
-                        title: display_name.clone().unwrap_or_else(|| record.id.clone()),
+                        title: display_name
+                            .clone()
+                            .or_else(|| super::store::upload_display_fallback(&record))
+                            .unwrap_or_else(|| record.id.clone()),
                         // 空 subtitle 让前端回退三语 localized 文案(上传技能无自有副标题)
                         subtitle: String::new(),
                         // 解析 SKILL.md frontmatter description 展示;缺失则空
@@ -3019,6 +3023,7 @@ mod tests {
 
     /// `import_package_named` 用调用方给的 display_name 登记 Upload 来源
     /// (拖放字节通道的 zip 名经命令层净化后传入；标记文件已退役)。
+    /// 未设展示覆盖时卡片标题回退到上传文件名（去扩展名），不直接露出机读 id。
     #[test]
     fn import_package_named_records_upload_source() {
         use std::io::Write;
@@ -3042,6 +3047,35 @@ mod tests {
             store.get("named-skill").unwrap().unwrap().source,
             crate::features::marketplace::store::BundleSource::Upload("my skill.zip".to_string())
         );
+        let listed = mgr
+            .list_skills()
+            .into_iter()
+            .find(|s| s.id == "named-skill")
+            .expect("list 应含上传技能");
+        assert_eq!(
+            listed.title, "my skill",
+            "未设覆盖时标题应回退上传文件名（去扩展名），而非机读 id"
+        );
+
+        // 用户覆盖优先于文件名回退；清空覆盖回到文件名回退（而非机读 id）。
+        store
+            .set_display_meta("named-skill", Some("我的技能"), None)
+            .unwrap();
+        let listed = mgr
+            .list_skills()
+            .into_iter()
+            .find(|s| s.id == "named-skill")
+            .unwrap();
+        assert_eq!(listed.title, "我的技能", "extra 覆盖应最优先");
+        store
+            .set_display_meta("named-skill", Some("  "), None)
+            .unwrap();
+        let listed = mgr
+            .list_skills()
+            .into_iter()
+            .find(|s| s.id == "named-skill")
+            .unwrap();
+        assert_eq!(listed.title, "my skill", "清空覆盖应回到上传文件名回退");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -3917,7 +3951,8 @@ mod tests {
         );
     }
 
-    /// 展示优先级：extra 覆盖优先于 record.id / SKILL.md frontmatter；清空后回退。
+    /// 展示优先级：extra 覆盖 > 上传文件名回退 > record.id / SKILL.md frontmatter；
+    /// 清空后回退。
     #[test]
     fn list_skills_prefers_display_overrides_for_uploads() {
         let tmp = fresh_dir("display_override");
@@ -3942,13 +3977,13 @@ mod tests {
             )
             .unwrap();
 
-        // 无覆盖：回退现状（title=id，description=frontmatter）
+        // 无覆盖：回退现状（title=上传文件名去扩展名，description=frontmatter）
         let listed = mgr
             .list_skills()
             .into_iter()
             .find(|s| s.id == "ov-skill")
             .expect("上传技能应列出");
-        assert_eq!(listed.title, "ov-skill");
+        assert_eq!(listed.title, "pkg");
         assert_eq!(listed.description, "frontmatter 描述");
         assert_eq!(listed.display_name, None);
         assert_eq!(listed.display_description, None);
@@ -3967,7 +4002,7 @@ mod tests {
         assert_eq!(listed.display_name.as_deref(), Some("我的天气"));
         assert_eq!(listed.display_description.as_deref(), Some("覆盖后的说明"));
 
-        // 清空（trim 空串删 key）→ 回退
+        // 清空（trim 空串删 key）→ 回退上传文件名
         store
             .set_display_meta("ov-skill", Some(" "), Some(" "))
             .unwrap();
@@ -3976,7 +4011,7 @@ mod tests {
             .into_iter()
             .find(|s| s.id == "ov-skill")
             .unwrap();
-        assert_eq!(listed.title, "ov-skill");
+        assert_eq!(listed.title, "pkg");
         assert_eq!(listed.description, "frontmatter 描述");
     }
 }

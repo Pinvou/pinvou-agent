@@ -289,10 +289,10 @@ metadata:                       # 可选
 - 覆盖值写在应用登记 `~/.pinvou3/marketplace/bundles.json` 对应记录的 `extra`
   map（key：`display_name` / `display_description`），**不改 `plugin.json`、不改包
   目录、不改 frontmatter `name`**；机读 id 与目录名保持不变。
-- 展示优先级：extra 覆盖 > 包内现状（上传技能卡回退为包 id 与 `SKILL.md` 的
-  `description`；上传 MCP/组合包回退为 `mcp/manifest.json` 的 `name` /
-  `description`；composer 工具菜单同样应用覆盖）。清空覆盖（留空保存）即删除
-  key、回退默认展示。
+- 展示优先级：extra 覆盖 > 包内现状（上传技能卡标题回退为上传文件名去扩展名、
+  再退化为包 id，说明回退为 `SKILL.md` 的 `description`；上传 MCP/组合包回退为
+  `mcp/manifest.json` 的 `name` / `description`；composer 工具菜单同样应用
+  覆盖）。清空覆盖（留空保存）即删除 key、回退默认展示。
 - 校验：显示名 ≤ 64 字符、显示说明 ≤ 240 字符，含控制字符/换行一律拒绝；仅
   Upload 来源可写（预置/内置包拒绝，手工塞进非 Upload 记录 extra 的覆盖在展示
   时也会被忽略）。

@@ -526,6 +526,28 @@ pub(crate) fn validate_display_meta(
     Ok(())
 }
 
+/// 上传来源的人类可读展示名回退：`Upload` 记录携带的原始文件名去扩展名
+/// （导入时已净化捕获，见命令层 safe_name/display）。上传包未设展示覆盖时
+/// 卡片标题回退到它，避免直接露出机读 id；扩展名剥空（如 ".zip"）或非
+/// Upload 来源 = None，调用方继续回退记录 id / manifest name。
+pub(crate) fn upload_display_fallback(record: &BundleRecord) -> Option<String> {
+    match &record.source {
+        BundleSource::Upload(filename) => {
+            let stem = filename
+                .rsplit_once('.')
+                .map(|(stem, _)| stem)
+                .unwrap_or(filename)
+                .trim();
+            if stem.is_empty() {
+                None
+            } else {
+                Some(stem.to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
 /// 读记录的用户自定义展示字段（trim 后非空才生效；缺 key/空串/非字符串 = None，
 /// 调用方回退默认展示）。list 组装与 BundleInfo 组装共用此口径。
 pub(crate) fn display_override(record: &BundleRecord, key: &str) -> Option<String> {
@@ -1265,6 +1287,32 @@ mod tests {
                 "upsert_preserving 不得丢展示覆盖"
             );
         });
+    }
+
+    /// 上传文件名展示名回退：去扩展名 + trim；非 Upload 来源 / 扩展名剥空 = None。
+    #[test]
+    fn upload_display_fallback_strips_extension() {
+        let cases = [
+            ("my skill.zip", Some("my skill")),
+            ("notes.md", Some("notes")),
+            ("archive.tar.gz", Some("archive.tar")),
+            ("no-ext", Some("no-ext")),
+            ("  spaced .zip ", Some("spaced")),
+            (".zip", None),
+        ];
+        for (filename, expected) in cases {
+            let rec = record("up", BundleSource::Upload(filename.to_string()));
+            assert_eq!(
+                upload_display_fallback(&rec).as_deref(),
+                expected,
+                "filename={filename}"
+            );
+        }
+        assert_eq!(
+            upload_display_fallback(&record("p", BundleSource::Preset)),
+            None,
+            "非 Upload 来源无文件名回退"
+        );
     }
 
     /// 展示覆盖的写入门禁：记录不存在 / 非 Upload 来源 / 超长一律 Err 且不写盘。
