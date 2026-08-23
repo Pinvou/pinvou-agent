@@ -274,8 +274,9 @@ async fn append_draft_chunk_in_workspace(
 }
 
 /// Re-hash the assembled staging file and compare it with the client-provided
-/// whole-file digest. A mismatch aborts the commit (staging stays for the
-/// client's cleanup path) instead of letting corrupted bytes reach ingest.
+/// whole-file digest. A mismatch aborts the commit; the command layer's abort
+/// path then removes the staging upload, so corrupted bytes never reach
+/// ingest.
 async fn verify_staging_sha256(staging_path: &Path, expected: &str) -> Result<(), String> {
     let Some(expected) = crate::platform::encoding::normalize_sha256_hex(expected) else {
         return Err("附件完整性校验值无效".into());

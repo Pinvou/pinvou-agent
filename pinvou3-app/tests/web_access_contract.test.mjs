@@ -438,12 +438,15 @@ assert.match(hostFilePicker, /issueWorkspaceHandle:\s*true/,
   'the one-shot host capability must be minted on confirm');
 assert.match(hostFilePicker, /issueWorkspaceHandle:\s*false/,
   'directory browsing must not mint one-shot workspace handles');
-assert.match(hostFilePicker, /(?:var|const|let) confirmedPath = currentPath;[\s\S]{0,400}finish\(\{ path: confirmedPath, workspaceHandle: handle \}\);/,
+assert.match(hostFilePicker, /(?:var|const|let) confirmedPath = currentPath;[\s\S]{0,600}finish\(\{ path: confirmedPath, workspaceHandle: handle \}\);/,
   'workspace selection must finish with the click-time path and the handle minted for it');
 assert.doesNotMatch(hostFilePicker, /currentWorkspaceHandle/,
   'browsing never carries a workspace handle, so no stale-handle fallback path may remain');
 assert.match(hostFilePicker, /localizedPickerError/,
   'both the listing and confirm-mint failures must map stable authorization codes to localized copy');
+assert.match(hostFilePicker,
+  /(?:var|const|let) confirmedGeneration = loadGeneration;[\s\S]{0,900}if \(disposed \|\| confirmedGeneration !== loadGeneration\) return;/,
+  'a late confirm-mint failure must not touch the UI after the picker closed or a newer listing rendered');
 assert.match(remoteControlManager,
   /HOST_WORKSPACE_NOT_AUTHORIZED:\s*&str\s*=\s*"host_workspace_not_authorized"[\s\S]*?Err\(HOST_WORKSPACE_NOT_AUTHORIZED\.to_string\(\)\)/,
   'the desktop and browser must share the stable host-workspace authorization error code');

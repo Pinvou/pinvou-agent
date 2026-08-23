@@ -298,6 +298,7 @@
           // the mint RPC is in flight cannot pair the new display path with
           // the handle minted for the confirmed directory.
           const confirmedPath = currentPath;
+          const confirmedGeneration = loadGeneration;
           confirm.disabled = true;
           client.invoke("web_access_list_host_files", {
             path: confirmedPath,
@@ -308,6 +309,10 @@
             if (!handle) throw new Error("workspace handle missing");
             finish({ path: confirmedPath, workspaceHandle: handle });
           }).catch(function (error) {
+            // A failure that lands after the picker closed or after a newer
+            // listing rendered must not touch the current UI (finish() keeps
+            // its own disposed guard on the success path).
+            if (disposed || confirmedGeneration !== loadGeneration) return;
             confirm.disabled = false;
             body.replaceChildren(element("div", "pinvou-host-picker-error",
               labels.loadFailed(localizedPickerError(error))));
