@@ -289,7 +289,7 @@ export default function PetWindow({
     invokeTauri('get_settings').then((settings) => {
       const lang = TAG_TO_LANG[settings?.language] || initialSystemLanguage();
       // en/ja 惰性词典:本窗口入口首帧只引导系统语言,落盘语言可能未装载
-      if (!disposed) ensureLanguage(lang).then(() => setLanguage(lang)).catch(() => {});
+      if (!disposed) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
     }).catch(() => {});
     tauriEvents.listen('ui:language_changed', (event) => {
       const next = event.payload?.language;

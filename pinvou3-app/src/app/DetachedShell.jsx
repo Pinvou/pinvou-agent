@@ -32,7 +32,7 @@ function useDetachedBase() {
     if (initRef.current || !bs || !bs.settings) return;
     const lang = TAG_TO_LANG[bs.settings.language];
     // en/ja 惰性词典:入口只引导系统语言,落盘语言可能未装载
-    if (lang) ensureLanguage(lang).then(() => setLanguage(lang)).catch(() => {});
+    if (lang) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
     setActiveTheme(bs.settings.theme === 'liquid-light' ? 'light' : 'dark');
     initRef.current = true;
   }, [bs]);

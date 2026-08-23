@@ -60,7 +60,7 @@ export function ReaderApp() {
     invokeTauri('get_settings').then((settings) => {
       if (disposed) return;
       const lang = TAG_TO_LANG[settings?.language] || initialSystemLanguage();
-      ensureLanguage(lang).then(() => setLanguage(lang)).catch(() => {});
+      ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
       // 后端 Theme 枚举只认 genesis/liquid-light/liquid-dark；深色=genesis，浅色=liquid-light。
       document.documentElement.classList.toggle('dark', settings?.theme !== 'liquid-light');
     }).catch(() => {});

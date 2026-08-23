@@ -513,7 +513,12 @@ impl SessionStore {
             .insert(id.clone(), profile.clone());
         if let Err(err) = self.save_scheduled_profiles() {
             self.scheduled_profiles.write().remove(&id);
-            if let Err(rollback_error) = self.manager.delete_session(&id) {
+            let rollback = self.manager.delete_session(&id);
+            // 回滚删除本身也是一次落盘变更:失效列表缓存,防止并发读者恰在
+            // save 失效与回滚删除之间重扫到 sched-*.json 并以当时的代数回填,
+            // 让已被回滚的幽灵会话滞留在缓存里。
+            self.invalidate_list_cache();
+            if let Err(rollback_error) = rollback {
                 return Err(anyhow::anyhow!(
                     "save scheduled session profile: {err:#}; rollback scheduled session {id} also failed: {rollback_error}"
                 ));

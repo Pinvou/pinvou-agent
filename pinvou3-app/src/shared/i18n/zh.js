@@ -492,7 +492,7 @@ export const dictZh = {
         depts: { academic:'学术', design:'设计', engineering:'工程', finance:'金融', 'game-development':'游戏', gis:'地理信息', hr:'人力', legal:'法务', marketing:'营销', 'paid-media':'投放', product:'产品', 'project-management':'项管', sales:'销售', security:'安全', 'spatial-computing':'空间计算', specialized:'专项', 'supply-chain':'供应链', support:'客服', testing:'测试', tool:'工具' }
 };
 
-// 设置详情(uiSettingsDetail)的补丁块已归位 features/settings/settings-i18n.js,随模型目录一同维护。
+// 工具详情(uiToolDetails)的补丁块(接入/安装状态等),与模型目录一同维护。
 dictZh.uiToolDetails.flow = {
   incomplete:name=>`${name}接入未完成`, connected:name=>`已连接${name}`, connecting:name=>`正在接入${name}`,
   cancel:'取消', extracting:pct=>`解压中 ${pct}%`, elapsed:seconds=>`已 ${seconds}s`, installStarting:'在线安装：正在开始…', browserOpened:'已打开浏览器登录页',
@@ -918,7 +918,7 @@ dictZh.uiSettingsDetail.memorySnapshotRefreshFailed = '记忆资料已加载，�
 
 dictZh.uiSettingsDetail.memoryTopicCleanupRequired = '记忆已更新，旧主题资料将在解除占用后自动清理';
 
-// 设置页（模型目录/供应商节点等）的 zh 文案，自原 shared/settings-i18n.js 抽离。
+// 设置页（模型目录/供应商节点等）的 zh 文案，自原 features/settings/settings-i18n.js 抽离并入本文件。
 Object.assign(dictZh.uiSettingsDetail, {
   reasoningEffort:'思考深度', reasoningEffortTiers:{ off:'关闭', low:'低', medium:'中', high:'高', max:'最深' },
   addProvider:provider=>`添加 ${provider}`, editProvider:provider=>`编辑 ${provider}`,

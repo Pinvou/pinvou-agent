@@ -32,6 +32,12 @@ function initialSystemLanguage() {
 }
 const SEARCH_KEY_PROVIDERS = ['metaso', 'bocha', 'baidu', 'tavily'];
 
+// 后端三语「新会话」兜底标题(platform/{tauri,web}/bridge.js BT_TABLE 的
+// newChatFallbackTitle 同款字面量,后端按创建时的 UI 语言落盘其一)。显示层
+// 把任意一种哨兵映射成当前语言的「新对话」文案;集合与语言词典装载进度无关,
+// 不能从 dict 惰性派生(zh 主用户不会装载 en/ja chunk)。
+export const DEFAULT_CHAT_TITLES = new Set(['新对话', 'New chat', '新しいチャット']);
+
 // 惰性语言词典装载。模式对齐 shared/syntax-highlighter.js 的 LAZY_LANGUAGE_LOADERS:
 // 载入表冻结、在途去重、失败清挂起(下次触发可重试)。ja chunk 静态依赖 en chunk
 // (兜底 spread 在模块内完成),由打包器拆成共享 chunk,无需在此处理顺序。
@@ -40,19 +46,27 @@ const LAZY_DICT_LOADERS = Object.freeze({
   ja: () => import('./i18n/ja.js'),
 });
 const lazyDictPending = new Map();
-// 返回 Promise<boolean>:true=词典就绪(dict[lang] 可用);false=不支持的语言。
+// 返回 Promise<boolean> 且永不 reject:true=词典就绪(dict[lang] 可用);
+// false=不支持的语言或本次装载失败(失败不落词典、清挂起,下次触发可重试)。
 // 已加载语言同步路径仍返回 Promise,调用方(main.jsx 首帧引导)统一 .then 链。
 export function ensureLanguage(lang) {
-  if (dict[lang]) return Promise.resolve(true);
-  const loader = LAZY_DICT_LOADERS[lang];
+  // hasOwnProperty.call 防止 'constructor'/'toString' 等原型链同名键命中
+  // (Safari 14 无 Object.hasOwn,与 syntax-highlighter 同款写法)。
+  if (Object.prototype.hasOwnProperty.call(dict, lang)) return Promise.resolve(true);
+  const loader = Object.prototype.hasOwnProperty.call(LAZY_DICT_LOADERS, lang)
+    ? LAZY_DICT_LOADERS[lang]
+    : null;
   if (!loader) return Promise.resolve(false);
   let pending = lazyDictPending.get(lang);
   if (!pending) {
-    pending = loader().then((m) => {
-      dict[lang] = lang === 'ja' ? m.dictJa : m.dictEn;
-      return true;
-    });
-    pending.catch(() => {}).finally(() => { lazyDictPending.delete(lang); });
+    pending = loader()
+      .then((m) => {
+        dict[lang] = lang === 'ja' ? m.dictJa : m.dictEn;
+        return true;
+      })
+      .catch(() => false)
+      .finally(() => { lazyDictPending.delete(lang); });
+    lazyDictPending.set(lang, pending);
   }
   return pending;
 }

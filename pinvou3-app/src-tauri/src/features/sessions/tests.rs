@@ -1005,6 +1005,15 @@ fn scheduled_creation_rolls_back_when_profile_write_fails() {
     .expect("store");
     std::fs::create_dir_all(&profile_path).expect("make profile path a directory");
 
+    // 种子会话用于构造完整字段的幽灵元数据(改 id/title),其落盘本身 bump 一次
+    // 代数;随后记录调用前代数。
+    let seed = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("seed session");
+    let generation_before = store
+        .list_cache_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+
     let err = store
         .create_scheduled_run(scheduled_profile("task-rollback"))
         .expect_err("profile write must fail");
@@ -1015,8 +1024,28 @@ fn scheduled_creation_rolls_back_when_profile_write_fails() {
             .manager
             .list_sessions()
             .expect("session list")
-            .is_empty(),
+            .iter()
+            .all(|m| !m.id.starts_with("sched-")),
         "the SavedSession must be removed when profile persistence fails"
+    );
+    // 回滚删除也必须失效列表缓存:并发读者恰在 save 失效与回滚删除之间重扫,
+    // 会以「save 失效后的代数」(= 调用前代数 + 1,save_session_atomic 恰好
+    // bump 一次)回填含 sched-*.json 的快照。注入该幽灵条目:若回滚路径不
+    // 失效(修复前),该代数仍是当前代,幽灵会被永久供应;回滚失效后该代数
+    // 已过期,读取触发重扫,幽灵不可见。
+    let mut phantom = seed.metadata.clone();
+    phantom.id = "sched-phantom".into();
+    phantom.title = "Scheduled run".into();
+    *store.list_cache.write() = Some((
+        generation_before.wrapping_add(1),
+        std::sync::Arc::new(vec![phantom]),
+    ));
+    let cached = store
+        .list_sessions_cached()
+        .expect("cached list after rollback");
+    assert!(
+        !cached.iter().any(|m| m.id.starts_with("sched-")),
+        "rollback invalidation must prevent a phantom scheduled session from surviving in the cache"
     );
     assert!(store.scheduled_profiles.read().is_empty());
     let _ = std::fs::remove_dir_all(root);

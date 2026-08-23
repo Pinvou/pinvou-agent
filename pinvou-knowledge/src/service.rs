@@ -19,6 +19,12 @@ use crate::tls::TlsIdentity;
 use crate::{chunk_text, Embedder, MAX_UPLOAD_BYTES, MAX_VECTOR_DIMENSIONS};
 
 pub const MODEL_NAME: &str = "bge-m3";
+
+/// 模型装载失败后的负缓存窗口:窗口内的后续调用直接复用缓存错误,防止损坏/
+/// 缺失的模型被并发调用逐个重读 568MB ONNX;窗口过后恢复按需重试。管理员
+/// download_model 成功会立即使 ready() 为真,经由闸门顶部的 ready() 短路,
+/// 不受本窗口拖延。
+const MODEL_LOAD_FAILURE_TTL: Duration = Duration::from_secs(30);
 const CHUNK_CHARS: usize = 600;
 const CHUNK_OVERLAP: usize = 90;
 const EMBED_BATCH: usize = 32;
@@ -59,7 +65,7 @@ pub struct KnowledgeService {
     model_error: RwLock<Option<String>>,
     model_downloading: AtomicBool,
     /// 首次用到(检索/索引/宿主触发)时的模型装载门:Pending 等待单次装载,
-    /// Loaded 已就绪,Failed 可重试(下一次调用重置回 Pending)。
+    /// Loaded 已就绪,Failed(时刻) 在负缓存窗口内复用错误、窗口过后重试。
     /// boot 不再同步加载 568MB ONNX,服务秒级起监听,模型按需进内存。
     model_load_state: tokio::sync::Mutex<ModelLoadState>,
     join_request_rate: Mutex<AttemptRate>,
@@ -72,7 +78,8 @@ pub struct KnowledgeService {
 enum ModelLoadState {
     Pending,
     Loaded,
-    Failed,
+    /// 装载失败 + 失败时刻(负缓存窗口见 MODEL_LOAD_FAILURE_TTL)。
+    Failed(Instant),
 }
 
 #[derive(Default)]
@@ -1238,7 +1245,8 @@ impl KnowledgeService {
     }
 
     /// 首次用到时装载模型(boot 已不再同步加载)。并发调用在状态锁上排队,
-    /// 单次装载成功/失败对所有人可见;失败记录错误并允许下一次调用重试。
+    /// 单次装载成功/失败对所有人可见;失败进入负缓存窗口(见
+    /// MODEL_LOAD_FAILURE_TTL),窗口内复用缓存错误,窗口过后重试。
     /// 568MB ONNX 读盘+会话构造在内部 spawn_blocking 执行,任意执行器上下文
     /// (async handler / tokio task)都可以直接 await 本方法。
     pub async fn ensure_model_loaded(self: &Arc<Self>) -> Result<(), String> {
@@ -1248,15 +1256,31 @@ impl KnowledgeService {
         let mut state = self.model_load_state.lock().await;
         match *state {
             ModelLoadState::Loaded => return Ok(()),
-            ModelLoadState::Pending | ModelLoadState::Failed => {
+            ModelLoadState::Pending => {
                 if self.ready() {
                     *state = ModelLoadState::Loaded;
                     return Ok(());
                 }
             }
+            ModelLoadState::Failed(failed_at) => {
+                if self.ready() {
+                    *state = ModelLoadState::Loaded;
+                    return Ok(());
+                }
+                if failed_at.elapsed() < MODEL_LOAD_FAILURE_TTL {
+                    // 负缓存窗口:直接复用缓存错误,不重读盘。排在一次失败装载
+                    // 后面的并发调用在这里短路,避免逐个重读 568MB。
+                    let cached = self
+                        .model_error
+                        .read()
+                        .clone()
+                        .unwrap_or_else(|| "embedding 模型装载失败".to_string());
+                    return Err(cached);
+                }
+            }
         }
-        // Failed -> 重试;Pending -> 首次装载。装载期间持锁,其余调用者排队,
-        // 排到时若已就绪直接短路(上面 ready() 检查),不会重复读盘。
+        // 窗口过后的 Failed -> 重试;Pending -> 首次装载。装载期间持锁,其余
+        // 调用者排队,排到时经上面的分支短路,不会重复读盘。
         *state = ModelLoadState::Pending;
         let service = Arc::clone(self);
         let result = tokio::task::spawn_blocking(move || service.load_model()).await;
@@ -1266,13 +1290,13 @@ impl KnowledgeService {
                 Ok(())
             }
             Ok(Err(error)) => {
-                *state = ModelLoadState::Failed;
+                *state = ModelLoadState::Failed(Instant::now());
                 *self.model_error.write() = Some(error.clone());
                 Err(error)
             }
             Err(join_error) => {
                 let error = format!("模型装载任务异常结束：{join_error}");
-                *state = ModelLoadState::Failed;
+                *state = ModelLoadState::Failed(Instant::now());
                 *self.model_error.write() = Some(error.clone());
                 Err(error)
             }
@@ -1566,9 +1590,60 @@ mod tests {
             .unwrap_err();
         assert!(!error.is_empty());
         assert!(!service.ready());
-        // 失败后状态允许重试(Failed -> Pending),不永久卡死。
-        let retry = rt.block_on(async { service.ensure_model_loaded().await });
-        assert!(retry.is_err(), "retry runs again (still no model on disk)");
+        // 失败进入负缓存窗口:窗口内的后续调用复用缓存错误(不重跑装载);
+        // 窗口过期的真实重试契约由下方
+        // model_load_failure_uses_negative_cache_then_retries_after_window 覆盖。
+        let cached = rt.block_on(async { service.ensure_model_loaded().await });
+        assert!(cached.is_err(), "negative cache still reports the failure");
+    }
+
+    #[tokio::test]
+    async fn model_load_failure_uses_negative_cache_then_retries_after_window() {
+        // 负缓存+重试契约:失败后的窗口内,并发/后续调用复用缓存错误,不重读
+        // 568MB;窗口过期后真正重跑装载。用跨进程安装锁制造可区分的失败:
+        // 第一次失败=锁被占(BUSY);窗口内重试仍返回同一缓存错误;把失败
+        // 时刻回拨到窗口过期并释放锁之后重试,真实重跑会越过安装锁、在
+        // 垃圾 stub 的 ONNX 解析处失败——错误不再是 BUSY。若实现为 Failed
+        // 永久锁死(或缓存永不放行),最后一条断言会把它判死。
+        let root = tempfile::tempdir().unwrap();
+        let model_dir = root.path().join("models").join(MODEL_NAME);
+        let service = KnowledgeService::boot(root.path().join("data"), Some(model_dir.clone()))
+            .unwrap()
+            .service;
+        std::fs::create_dir_all(&model_dir).unwrap();
+        for (name, contents) in [
+            ("model.onnx", b"not-a-real-onnx".as_slice()),
+            ("tokenizer.json", b"{}".as_slice()),
+            ("config.json", b"{}".as_slice()),
+            ("special_tokens_map.json", b"{}".as_slice()),
+            ("tokenizer_config.json", b"{}".as_slice()),
+        ] {
+            std::fs::write(model_dir.join(name), contents).unwrap();
+        }
+
+        {
+            let _install_lock = crate::try_lock_knowledge_model_install(&model_dir).unwrap();
+            let first = service.ensure_model_loaded().await.unwrap_err();
+            assert_eq!(first, crate::KNOWLEDGE_MODEL_INSTALL_BUSY);
+            let cached = service.ensure_model_loaded().await.unwrap_err();
+            assert_eq!(cached, crate::KNOWLEDGE_MODEL_INSTALL_BUSY);
+            assert_eq!(
+                service.model_error().as_deref(),
+                Some(crate::KNOWLEDGE_MODEL_INSTALL_BUSY)
+            );
+        } // 安装锁释放
+
+        // 回拨失败时刻到负缓存窗口之外,模拟窗口过期。
+        *service.model_load_state.lock().await = ModelLoadState::Failed(
+            Instant::now() - MODEL_LOAD_FAILURE_TTL - Duration::from_secs(1),
+        );
+        let retried = service.ensure_model_loaded().await.unwrap_err();
+        assert_ne!(
+            retried,
+            crate::KNOWLEDGE_MODEL_INSTALL_BUSY,
+            "expired window must re-run the load; a latched or never-expiring cached failure would keep returning BUSY"
+        );
+        assert_eq!(service.model_error().as_deref(), Some(retried.as_str()));
     }
 
     #[test]

@@ -11,7 +11,7 @@ import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layou
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, usePlatformCapability, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
-import { dict, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
+import { DEFAULT_CHAT_TITLES, dict, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
@@ -40,18 +40,11 @@ import { revealStartupWindow } from '../platform/tauri/startup-window.js';
 const SCHEDULED_TASKS_ENTRY_ENABLED = true;
 
 // 后端默认会话标题哨兵集合(bridge 按当前语言生成三语兜底标题,并据此判断是否自动改名)——
-// 显示层把任意一种哨兵标题映射成当前语言的「新对话」文案。en/ja 词典是懒装载
-// chunk,哨兵集合不能在模块求值时一次定型:按已装载语言数惰性重建,新词典落位
-// 后自动扩容(语言只会增量装载,不会替换)。
-let defaultChatTitlesCache = null;
-let defaultChatTitlesLangs = -1;
+// 显示层把任意一种哨兵标题映射成当前语言的「新对话」文案。哨兵是跨语言的后端
+// 契约而非当前 UI 文案,直接使用 shared/i18n.js 的静态集合,与词典装载进度无关
+// (zh 主用户不会装载 en/ja chunk,不能从 dict 派生)。
 function isDefaultChatTitle(title) {
-  const langs = Object.keys(dict).length;
-  if (!defaultChatTitlesCache || defaultChatTitlesLangs !== langs) {
-    defaultChatTitlesCache = new Set(Object.values(dict).map(d => d && d.newChat).filter(Boolean));
-    defaultChatTitlesLangs = langs;
-  }
-  return defaultChatTitlesCache.has(title);
+  return DEFAULT_CHAT_TITLES.has(title);
 }
 // Static regression anchor: SCHEDULED_TASKS_ENTRY_ENABLED && (<NavItem icon={<Clock size={18} />} label={t.scheduledPlans} unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))} />)
 const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
