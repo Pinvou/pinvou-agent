@@ -4,7 +4,8 @@ version = "0.8.8"
 description = "Pinvou 可复用知识库核心与自包含服务器"
 authors = ["pinvou"]
 license = "MIT"
-edition = "2021"
+# edition 2024:与底座 CodeWhale / pinvou3-app 对齐;rustc >= 1.85 支持,1.89 维持不变。
+edition = "2024"
 rust-version = "1.89"
 default-run = "pinvou-knowledge-server"
 
@@ -82,13 +83,24 @@ fastembed = { version = "4", optional = true }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 
+# lint 门禁与 pinvou3-app/src-tauri 同策略:零欠账 deny 硬门禁;有欠账 allow
+# 并注明规模(rust 1.97.1 / edition 2024 实测)。clippy::all 组欠账 10 条
+# (collapsible_if 5 / let_and_return 5),pedantic ~256 条,由后续清理消化。
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 unused_imports = "deny"
 unused_variables = "deny"
+rust_2024_compatibility = "deny"
+future_incompatible = "deny"
 
 [lints.clippy]
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
 wildcard_dependencies = "deny"
+negative_feature_names = "deny"
+redundant_feature_names = "deny"
+# 本 crate 的 all 组小欠账(10 条)先 warn,清理 PR 清零后升 deny:
+all = { level = "warn", priority = -1 }
+# pedantic 大欠账,长期 allow:
+pedantic = { level = "allow", priority = -1 }

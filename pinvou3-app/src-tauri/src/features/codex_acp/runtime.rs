@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use wait_timeout::ChildExt;
 
 /// codex-acp 1.1.5 官方依赖的最低 Codex CLI 版本。

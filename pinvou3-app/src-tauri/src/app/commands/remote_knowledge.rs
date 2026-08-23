@@ -9,10 +9,10 @@ use pinvou_knowledge::model::{
 use tauri::{AppHandle, Emitter, State};
 
 use crate::features::assistant::engine_pool::EnginePool;
-use crate::features::knowledge::{model_download as local_model, KnowledgeService};
+use crate::features::knowledge::{KnowledgeService, model_download as local_model};
 use crate::features::remote_knowledge::{
-    discover_folder_files, JoinOutcome, PendingJoin, RemoteConnectionStatus, RemoteFolderDiscovery,
-    RemoteKnowledgeIdentity, RemoteKnowledgeService,
+    JoinOutcome, PendingJoin, RemoteConnectionStatus, RemoteFolderDiscovery,
+    RemoteKnowledgeIdentity, RemoteKnowledgeService, discover_folder_files,
 };
 use crate::features::sessions::{MountedRemoteCollection, SessionStore};
 

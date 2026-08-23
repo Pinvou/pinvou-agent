@@ -7,13 +7,13 @@
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use deepseek_tui::tools::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec};
 
 use crate::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use crate::platform::credential_store::{
-    redact_secret, CredentialReference, CredentialStore, SystemCredentialStore,
+    CredentialReference, CredentialStore, SystemCredentialStore, redact_secret,
 };
 
 const CLIENT_ID_SECRET: &str = "client_id";

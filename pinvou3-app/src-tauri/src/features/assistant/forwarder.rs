@@ -750,9 +750,9 @@ pub(crate) fn spawn_event_forwarder(
                                 Some(engine_error) => format!(
                                     "{engine_error}; chat conversation persistence failed: {save_error}"
                                 ),
-                                None => format!(
-                                    "Chat conversation persistence failed: {save_error}"
-                                ),
+                                None => {
+                                    format!("Chat conversation persistence failed: {save_error}")
+                                }
                             });
                         }
                     }
@@ -972,27 +972,29 @@ pub(crate) fn spawn_event_forwarder(
                                                     "events": events,
                                                 }),
                                             );
-                                            match crate::features::memory::runtime_snapshot(&sid_clone) {
-                                            Ok(snapshot) => {
-                                                let _ = app_clone.emit(
-                                                    "chat:memory",
-                                                    json!({
-                                                        "session_id": sid_clone,
-                                                        "items": snapshot.items,
-                                                        "runtime_path": snapshot.runtime_path,
-                                                    }),
-                                                );
+                                            match crate::features::memory::runtime_snapshot(
+                                                &sid_clone,
+                                            ) {
+                                                Ok(snapshot) => {
+                                                    let _ = app_clone.emit(
+                                                        "chat:memory",
+                                                        json!({
+                                                            "session_id": sid_clone,
+                                                            "items": snapshot.items,
+                                                            "runtime_path": snapshot.runtime_path,
+                                                        }),
+                                                    );
+                                                }
+                                                Err(err) => eprintln!(
+                                                    "[pinvou3-app] refresh memory runtime after review failed for session {sid_clone}: {err}"
+                                                ),
                                             }
-                                            Err(err) => eprintln!(
-                                                "[pinvou3-app] refresh memory runtime after review failed for session {sid_clone}: {err}"
-                                            ),
-                                        }
                                         }
                                     }
                                     Err(err) => {
                                         eprintln!(
-                                        "[pinvou3-app] memory llm review failed for session {sid_clone}: {err:#}"
-                                    );
+                                            "[pinvou3-app] memory llm review failed for session {sid_clone}: {err:#}"
+                                        );
                                     }
                                 }
                             });

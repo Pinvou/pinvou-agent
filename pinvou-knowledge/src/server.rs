@@ -7,17 +7,17 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
-use axum::{middleware, Json, Router};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use axum::{Json, Router, middleware};
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::MAX_UPLOAD_BYTES;
 use crate::model::*;
 use crate::service::KnowledgeService;
 use crate::store::DeviceMutationError;
-use crate::MAX_UPLOAD_BYTES;
 
 const SMALL_JSON_LIMIT: usize = 16 * 1024;
 const UPLOAD_REQUEST_LIMIT: usize = MAX_UPLOAD_BYTES + 1024 * 1024;
@@ -937,9 +937,9 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::header::{AUTHORIZATION, HOST};
     use axum::http::Method;
     use axum::http::Request;
+    use axum::http::header::{AUTHORIZATION, HOST};
     use http_body_util::BodyExt;
     use serde::Serialize;
     use tower::ServiceExt;
@@ -1090,11 +1090,13 @@ mod tests {
             "different-server-id",
         )
         .unwrap();
-        assert!(wrong_identity
-            .health()
-            .await
-            .unwrap_err()
-            .contains("服务身份与连接记录不一致"));
+        assert!(
+            wrong_identity
+                .health()
+                .await
+                .unwrap_err()
+                .contains("服务身份与连接记录不一致")
+        );
         server.abort();
     }
 

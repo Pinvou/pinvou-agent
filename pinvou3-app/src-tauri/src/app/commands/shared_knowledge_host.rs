@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::features::knowledge;
 use crate::features::remote_knowledge::{RemoteConnection, RemoteKnowledgeService};
 use crate::features::sessions::SessionStore;
-use crate::features::shared_knowledge_host::{self, packaged_resources, SharedKnowledgeHostStatus};
+use crate::features::shared_knowledge_host::{self, SharedKnowledgeHostStatus, packaged_resources};
 
 const HOST_PROGRESS_EVENT: &str = "shared-knowledge-host-progress";
 static HOST_LIFECYCLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

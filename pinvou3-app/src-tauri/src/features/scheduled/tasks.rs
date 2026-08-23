@@ -3,13 +3,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Weekday;
 use deepseek_tui::automation_manager::{
-    reconcile_run_statuses_shared, run_now_shared, spawn_scheduler, AutomationManager,
-    AutomationRecord, AutomationRunRecord, AutomationRunStatus, AutomationSchedule,
-    AutomationSchedulerConfig, AutomationStatus, CreateAutomationRequest, SharedAutomationManager,
-    UpdateAutomationRequest,
+    AutomationManager, AutomationRecord, AutomationRunRecord, AutomationRunStatus,
+    AutomationSchedule, AutomationSchedulerConfig, AutomationStatus, CreateAutomationRequest,
+    SharedAutomationManager, UpdateAutomationRequest, reconcile_run_statuses_shared,
+    run_now_shared, spawn_scheduler,
 };
 use deepseek_tui::task_manager::{SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus};
 use parking_lot::Mutex as ParkingMutex;
@@ -1756,11 +1756,14 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         assert_eq!(scheduled_automation_root(), dir.join("automations"));
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2013,7 +2016,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let fixture = cascade_fixture(None).await;
         let doomed = run_once(&fixture).await;
@@ -2083,8 +2087,10 @@ mod tests {
         fixture.task_manager.shutdown();
         drop(fixture);
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2097,7 +2103,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         // executor 挂住 → 这条 run 真的停在 Running，reconcile 也不会把它改成终态。
         let hold = Arc::new(tokio::sync::Notify::new());
@@ -2135,8 +2142,10 @@ mod tests {
         fixture.task_manager.shutdown();
         drop(fixture);
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2164,8 +2173,11 @@ mod tests {
         assert!(prompt.contains("systemd timer"));
         assert!(prompt.contains("不支持分钟级"));
         assert!(prompt.contains("```scheduled-task-draft"));
-        assert!(prompt
-            .contains("前端会通过 create_scheduled_task 创建并打开任务详情，不再要求用户二次确认"));
+        assert!(
+            prompt.contains(
+                "前端会通过 create_scheduled_task 创建并打开任务详情，不再要求用户二次确认"
+            )
+        );
         assert!(prompt.contains("前端会负责创建任务"));
         assert!(!prompt.contains("由用户点击确认后系统创建"));
     }
@@ -2177,7 +2189,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
             .reconcile_scheduled_profiles()
@@ -2245,8 +2258,10 @@ mod tests {
             Some(0)
         );
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2258,7 +2273,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
             .reconcile_scheduled_profiles()
@@ -2336,8 +2352,10 @@ mod tests {
         assert_eq!(resumed.status, "active");
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2349,7 +2367,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
             .reconcile_scheduled_profiles()
@@ -2425,10 +2444,12 @@ mod tests {
             .expect("update model binding");
         assert_eq!(updated.model.as_deref(), Some("qwen-max"));
         assert_eq!(updated.model_id.as_deref(), Some("qwen-prod"));
-        assert!(state
-            .model_bindings
-            .model_id_for(&created.id, "deepseek-v4-flash")
-            .is_none());
+        assert!(
+            state
+                .model_bindings
+                .model_id_for(&created.id, "deepseek-v4-flash")
+                .is_none()
+        );
         assert_eq!(
             state
                 .model_bindings
@@ -2441,14 +2462,18 @@ mod tests {
             .delete_for_test(created.id.clone())
             .await
             .expect("delete model-bound task");
-        assert!(state
-            .model_bindings
-            .model_id_for(&created.id, "qwen-max")
-            .is_none());
+        assert!(
+            state
+                .model_bindings
+                .model_id_for(&created.id, "qwen-max")
+                .is_none()
+        );
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2460,7 +2485,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
             .reconcile_scheduled_profiles()
@@ -2545,8 +2571,10 @@ mod tests {
         assert_eq!(state.ui_metadata.metadata_for(&created.id), (false, None));
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2558,7 +2586,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("sessions");
         let create_session = |task_id: &str| {
             sessions
@@ -2592,8 +2621,10 @@ mod tests {
         assert!(sessions.scheduled_session_exists(&retained_id));
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2605,7 +2636,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
             .reconcile_scheduled_profiles()
@@ -2692,8 +2724,10 @@ mod tests {
         assert_eq!(resumed.status, "active");
         assert!(resumed.next_run_at.is_some());
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2806,7 +2840,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
             .reconcile_scheduled_profiles()
@@ -2852,17 +2887,21 @@ mod tests {
             .await
             .expect_err("planner is not a canonical scheduled mode");
         assert!(error.contains("agent|plan|yolo"), "{error}");
-        assert!(state
-            .automations
-            .lock()
-            .await
-            .list_automations()
-            .expect("list")
-            .is_empty());
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .expect("list")
+                .is_empty()
+        );
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2874,7 +2913,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
             .reconcile_scheduled_profiles()
@@ -2952,8 +2992,10 @@ mod tests {
         );
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2965,7 +3007,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let store = SessionStore::boot().expect("open test sessions");
         let saved = store
@@ -3025,9 +3068,11 @@ mod tests {
             &session_titles,
         ))
         .expect("serialize mismatched run");
-        assert!(mismatched
-            .get("sessionId")
-            .is_some_and(serde_json::Value::is_null));
+        assert!(
+            mismatched
+                .get("sessionId")
+                .is_some_and(serde_json::Value::is_null)
+        );
 
         let unlinked_run = AutomationRunRecord {
             thread_id: None,
@@ -3052,13 +3097,17 @@ mod tests {
             &session_titles,
         ))
         .expect("serialize run with missing session payload");
-        assert!(missing_payload
-            .get("sessionId")
-            .is_some_and(serde_json::Value::is_null));
+        assert!(
+            missing_payload
+                .get("sessionId")
+                .is_some_and(serde_json::Value::is_null)
+        );
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3070,7 +3119,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let sessions = SessionStore::boot().expect("open test sessions");
         let make_session = || {
@@ -3183,8 +3233,10 @@ mod tests {
         assert!(ensure_scheduled_run_is_viewable(&missing_session_run, &sessions).is_err());
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3271,7 +3323,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
             .reconcile_scheduled_profiles()
@@ -3338,8 +3391,10 @@ mod tests {
         assert!(resume_error.contains("Failed to resume scheduled task"));
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3351,7 +3406,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
             .reconcile_scheduled_profiles()
@@ -3413,16 +3469,20 @@ mod tests {
             .await
             .expect("automation deletion must remain successful");
         assert_eq!(deleted.task.id, created.id);
-        assert!(state
-            .automations
-            .lock()
-            .await
-            .get_automation(&created.id)
-            .is_err());
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .get_automation(&created.id)
+                .is_err()
+        );
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }

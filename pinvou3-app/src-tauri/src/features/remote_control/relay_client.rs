@@ -6,15 +6,15 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use rand::RngExt;
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use serde_json::{Value, json};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_tungstenite::{
     connect_async_with_config,
-    tungstenite::{protocol::WebSocketConfig, Message},
+    tungstenite::{Message, protocol::WebSocketConfig},
 };
 use tokio_util::sync::CancellationToken;
 
-use super::protocol::{WebAccessConfig, PROTOCOL_VERSION};
+use super::protocol::{PROTOCOL_VERSION, WebAccessConfig};
 
 const RECONNECT_BASE_DELAY_MS: u64 = 500;
 const RECONNECT_MAX_DELAY_MS: u64 = 10_000;

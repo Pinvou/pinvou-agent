@@ -766,6 +766,18 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .load_manifest(tool_id)
             .map(|manifest| secrets::manifest_secret_targets(&manifest))
             .unwrap_or_default();
+        // 删该工具在 keyring 的 secret(防孤儿;此时 manifest 未删、仍可读声明)。
+        // 删不掉不阻断卸载；若用户重新安装并重新填 key，会写入新的系统凭据。
+        if let Some(manifest) = self.load_manifest(tool_id) {
+            // 持锁遍历:卸载的 remove_var 与安装侧写者串行化(同一把 env_write 锁)。
+            let _env_guard = crate::platform::env_write::lock();
+            for (target, key) in secrets::manifest_secret_targets(&manifest) {
+                let reference = secrets::mcp_secret_reference(tool_id, &target, &key);
+                let _ = self.credential_store.delete(&reference);
+                // SAFETY: 上方已持 env_write 锁,env 写已串行化。
+                unsafe { std::env::remove_var(secrets::mcp_secret_env_var(&key)) };
+            }
+        }
         let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
         let result = (|| {
             self.remove_from_mcp_json(tool_id)?;
@@ -1325,6 +1337,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         if FAIL_NEXT_INSTALLED_WRITE.swap(false, std::sync::atomic::Ordering::SeqCst) {
             return Err("test injection: installed.json write failed".to_string());
         }
+        // installed_file 由数据根 join 而来，必有父级；仍以错误返回兜底。
+        let dir = self.installed_file.parent().ok_or_else(|| {
+            format!(
+                "installed.json 缺少父目录: {}",
+                self.installed_file.display()
+            )
+        })?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
         let json = serde_json::to_string_pretty(ids).map_err(|e| e.to_string())?;
         write_atomic_file(&self.installed_file, json.as_bytes())
     }
@@ -1403,11 +1423,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pinvou3-mkt-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         f();
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         for (key, value) in [
             ("PINVOU3_MCP_SECRET_AMAP_KEY", prev_amap),
@@ -1416,8 +1439,10 @@ mod tests {
             ("PINVOU3_MCP_SECRET_PATSNAP_API_KEY", prev_patsnap),
         ] {
             match value {
-                Some(v) => std::env::set_var(key, v),
-                None => std::env::remove_var(key),
+                // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                None => unsafe { std::env::remove_var(key) },
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -1477,11 +1502,14 @@ mod tests {
             std::env::temp_dir().join(format!("pinvou3-mkt-test-async-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         f().await;
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         for (key, value) in [
             ("PINVOU3_MCP_SECRET_AMAP_KEY", prev_amap),
@@ -1490,8 +1518,10 @@ mod tests {
             ("PINVOU3_MCP_SECRET_PATSNAP_API_KEY", prev_patsnap),
         ] {
             match value {
-                Some(v) => std::env::set_var(key, v),
-                None => std::env::remove_var(key),
+                // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                None => unsafe { std::env::remove_var(key) },
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -2758,14 +2788,18 @@ mod tests {
             let server = &mcp["servers"]["canva_mcp"];
             assert_eq!(server["url"], "https://mcp.canva.cn/mcp");
             assert_eq!(server["oauth_resource"], "https://mcp.canva.cn/mcp");
-            assert!(server["scopes"]
-                .as_array()
-                .unwrap()
-                .contains(&serde_json::json!("profile:read")));
-            assert!(server["scopes"]
-                .as_array()
-                .unwrap()
-                .contains(&serde_json::json!("design:content:write")));
+            assert!(
+                server["scopes"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!("profile:read"))
+            );
+            assert!(
+                server["scopes"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!("design:content:write"))
+            );
             assert!(server.get("headers").is_none());
             assert!(server.get("env_headers").is_none());
             assert!(server.get("bearer_token_env_var").is_none());
@@ -3324,7 +3358,8 @@ mod tests {
                 .unwrap();
             let mgr = MarketplaceManager::with_store(store);
             mgr.save_installed(&["patsnap-search".to_string()]).unwrap();
-            std::env::remove_var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY");
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            unsafe { std::env::remove_var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY") };
 
             mgr.sync_secret_env_vars().unwrap();
 

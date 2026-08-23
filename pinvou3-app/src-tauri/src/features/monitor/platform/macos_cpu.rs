@@ -49,7 +49,7 @@ mod ffi {
         pub ru_nivcsw: i64,
     }
 
-    extern "C" {
+    unsafe extern "C" {
         pub fn mach_host_self() -> MachPort;
         pub fn host_statistics64(
             host: MachPort,
@@ -84,6 +84,8 @@ static CPU_IDENTITY: OnceLock<(String, u32)> = OnceLock::new();
 static HOST_PORT: OnceLock<ffi::MachPort> = OnceLock::new();
 
 fn host_port() -> ffi::MachPort {
+    // SAFETY: mach_host_self 是纯查询函数,无前置条件;返回的 send right 是
+    // 裸 u32 端口名(非指针),由进程级 OnceLock 持有不释放,不存在别名/悬垂。
     *HOST_PORT.get_or_init(|| unsafe { ffi::mach_host_self() })
 }
 
@@ -157,6 +159,9 @@ fn read_brand_string() -> Option<String> {
     let name = b"machdep.cpu.brand_string\0";
     let mut buf = [0u8; 128];
     let mut len = buf.len();
+    // SAFETY: name 是带 NUL 终止符的字面量;sysctlbyname 只读查询(newp=NULL、
+    // newlen=0,不写内核状态),oldp 指向栈上 128 字节缓冲、oldlenp 声明的长度
+    // 与缓冲一致;内核按实际写入量更新 len,不越界。
     let status = unsafe {
         ffi::sysctlbyname(
             name.as_ptr().cast(),
@@ -175,21 +180,21 @@ fn read_brand_string() -> Option<String> {
         .ok()?
         .trim()
         .to_string();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 fn read_system_ticks() -> Option<SystemTicks> {
     let mut info = ffi::HostCpuLoadInfo::default();
     let mut count: u32 = info.cpu_ticks.len() as u32;
+    // SAFETY: host_statistics64 按 HOST_CPU_LOAD_INFO 语义最多写 count 个 int
+    // (这里 4 个,与 cpu_ticks 容量一致),输出指向栈上足容结构;host_port 来自
+    // mach_host_self 的本进程 send right,对该 flavor 有效;内核按实际写入量
+    // 更新 count,不越界,失败仅返回非零 kern_return_t。
     let status = unsafe {
         ffi::host_statistics64(
             host_port(),
             HOST_CPU_LOAD_INFO,
-            &mut info as *mut ffi::HostCpuLoadInfo as *mut i32,
+            (&mut info as *mut ffi::HostCpuLoadInfo).cast::<i32>(),
             &mut count,
         )
     };
@@ -208,6 +213,9 @@ fn read_system_ticks() -> Option<SystemTicks> {
 
 fn read_process_ticks() -> Option<ProcessTicks> {
     let mut usage = ffi::Rusage::default();
+    // SAFETY: getrusage 只按 RUSAGE_SELF 语义把本进程统计写入 usage;Rusage
+    // 布局与 darwin 64 位 struct rusage 一致(rusage_layout_matches_kernel_struct
+    // 测试钉死 144 字节布局),指针指向栈上足容结构,失败仅返回 -1。
     let status = unsafe { ffi::getrusage(RUSAGE_SELF, &mut usage) };
     if status != 0 {
         return None;

@@ -15,12 +15,12 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::LazyLock;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use deepseek_tui::artifacts::{ArtifactKind, ArtifactRecord};
 use deepseek_tui::models::Message;
 use deepseek_tui::session_manager::{
-    create_saved_session_with_id_and_mode, SavedSession, SessionManager, SessionMetadata,
+    SavedSession, SessionManager, SessionMetadata, create_saved_session_with_id_and_mode,
 };
 use parking_lot::{Mutex, RwLock};
 

@@ -562,12 +562,12 @@ pub async fn discard_attachment(workspace: &Path, path: &str) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        abort_staging_upload, adopt_upload, append_chunk, append_draft_chunk_in_workspace,
-        conversation_attachment_names_for_display_prefix, conversation_attachment_refs_path,
-        discard_attachment, record_conversation_attachments, resolve_conversation_attachment,
-        sweep_stale_draft_attachment_workspace, upload_staging_dir, validate_filename,
-        validate_upload_id, ConversationAttachmentRecord, ConversationAttachmentReference,
-        MAX_ATTACHMENT_CHUNK_BYTES, STALE_ATTACHMENT_AGE,
+        ConversationAttachmentRecord, ConversationAttachmentReference, MAX_ATTACHMENT_CHUNK_BYTES,
+        STALE_ATTACHMENT_AGE, abort_staging_upload, adopt_upload, append_chunk,
+        append_draft_chunk_in_workspace, conversation_attachment_names_for_display_prefix,
+        conversation_attachment_refs_path, discard_attachment, record_conversation_attachments,
+        resolve_conversation_attachment, sweep_stale_draft_attachment_workspace,
+        upload_staging_dir, validate_filename, validate_upload_id,
     };
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
@@ -754,11 +754,13 @@ mod tests {
             .join("hello.txt");
         assert_eq!(PathBuf::from(&result.path), expected);
         assert_eq!(std::fs::read(&expected).unwrap(), bytes);
-        assert!(!workspace
-            .join(".pinvou3")
-            .join("attachment-drop-staging")
-            .join(upload_id)
-            .exists());
+        assert!(
+            !workspace
+                .join(".pinvou3")
+                .join("attachment-drop-staging")
+                .join(upload_id)
+                .exists()
+        );
 
         discard_attachment(&workspace, &result.path).await.unwrap();
         assert!(!expected.exists());
@@ -770,18 +772,20 @@ mod tests {
     async fn rejects_oversized_chunks_without_writing() {
         let workspace = test_workspace("chunk-cap");
         let bytes = vec![0_u8; MAX_ATTACHMENT_CHUNK_BYTES + 1];
-        assert!(append_chunk(
-            &workspace,
-            "desktop_attach_chunk_cap",
-            "large.bin",
-            0,
-            bytes.len(),
-            &bytes,
-            true,
-            None,
-        )
-        .await
-        .is_err());
+        assert!(
+            append_chunk(
+                &workspace,
+                "desktop_attach_chunk_cap",
+                "large.bin",
+                0,
+                bytes.len(),
+                &bytes,
+                true,
+                None,
+            )
+            .await
+            .is_err()
+        );
         assert!(!workspace.exists());
     }
 
@@ -803,18 +807,20 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert!(append_chunk(
-            &workspace,
-            upload_id,
-            "replacement.txt",
-            0,
-            11,
-            b"replacement",
-            true,
-            None,
-        )
-        .await
-        .is_err());
+        assert!(
+            append_chunk(
+                &workspace,
+                upload_id,
+                "replacement.txt",
+                0,
+                11,
+                b"replacement",
+                true,
+                None,
+            )
+            .await
+            .is_err()
+        );
         abort_staging_upload(&workspace, upload_id).await.unwrap();
 
         assert_eq!(std::fs::read(&original.path).unwrap(), b"original");
@@ -1017,16 +1023,18 @@ mod tests {
             .unwrap(),
             replacement
         );
-        assert!(resolve_conversation_attachment(
-            &workspace,
-            "session-a",
-            false,
-            3,
-            0,
-            "one.txt",
-            "first",
-        )
-        .is_err());
+        assert!(
+            resolve_conversation_attachment(
+                &workspace,
+                "session-a",
+                false,
+                3,
+                0,
+                "one.txt",
+                "first",
+            )
+            .is_err()
+        );
         assert_eq!(
             resolve_conversation_attachment(
                 &workspace,
@@ -1040,26 +1048,30 @@ mod tests {
             .unwrap(),
             second
         );
-        assert!(resolve_conversation_attachment(
-            &workspace,
-            "session-a",
-            false,
-            3,
-            0,
-            "two.txt",
-            "first",
-        )
-        .is_err());
-        assert!(resolve_conversation_attachment(
-            &workspace,
-            "session-b",
-            false,
-            4,
-            0,
-            "two.txt",
-            "second",
-        )
-        .is_err());
+        assert!(
+            resolve_conversation_attachment(
+                &workspace,
+                "session-a",
+                false,
+                3,
+                0,
+                "two.txt",
+                "first",
+            )
+            .is_err()
+        );
+        assert!(
+            resolve_conversation_attachment(
+                &workspace,
+                "session-b",
+                false,
+                4,
+                0,
+                "two.txt",
+                "second",
+            )
+            .is_err()
+        );
         std::fs::remove_dir_all(workspace).unwrap();
     }
 
@@ -1109,16 +1121,18 @@ mod tests {
             .unwrap(),
             file
         );
-        assert!(resolve_conversation_attachment(
-            &workspace,
-            "scheduled-session",
-            false,
-            0,
-            0,
-            "legacy.txt",
-            "legacy display",
-        )
-        .is_err());
+        assert!(
+            resolve_conversation_attachment(
+                &workspace,
+                "scheduled-session",
+                false,
+                0,
+                0,
+                "legacy.txt",
+                "legacy display",
+            )
+            .is_err()
+        );
         std::fs::remove_dir_all(workspace).unwrap();
     }
 
@@ -1155,16 +1169,18 @@ mod tests {
         }
 
         for session_id in ["session-a", "session-b"] {
-            assert!(resolve_conversation_attachment(
-                &workspace,
-                session_id,
-                false,
-                0,
-                0,
-                &format!("{session_id}.txt"),
-                "display text is not an identity",
-            )
-            .is_ok());
+            assert!(
+                resolve_conversation_attachment(
+                    &workspace,
+                    session_id,
+                    false,
+                    0,
+                    0,
+                    &format!("{session_id}.txt"),
+                    "display text is not an identity",
+                )
+                .is_ok()
+            );
         }
         std::fs::remove_dir_all(workspace).unwrap();
     }

@@ -134,7 +134,10 @@ fn load_user_cards() -> Vec<PersonaCard> {
 
 /// 重新从磁盘加载用户卡（create/update/delete 后调，让 list/get 立即看到）。
 pub fn reload_user() {
-    *user_lock().write().expect("user persona lock poisoned") = load_user_cards();
+    // 卡池整体替换无部分写入，持锁 panic 不应拖垮会话：沿用全仓锁中毒恢复惯例。
+    *user_lock()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = load_user_cards();
     // 卡池内容先发布，再推进版本；Acquire 读取到新版本时必然能看到新卡。
     USER_REVISION.fetch_add(1, Ordering::Release);
 }
@@ -154,7 +157,7 @@ pub fn all_summaries() -> Vec<PersonaSummary> {
     out.extend(
         user_lock()
             .read()
-            .expect("user lock")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .map(|c| c.summary()),
     );
@@ -176,7 +179,7 @@ pub fn executable_cards() -> Vec<PersonaCard> {
     out.extend(
         user_lock()
             .read()
-            .expect("user lock")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .filter(|card| !card.conversational_only)
             .cloned(),
@@ -191,7 +194,7 @@ pub fn get(id: &str) -> Option<PersonaCard> {
     }
     user_lock()
         .read()
-        .expect("user lock")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .iter()
         .find(|c| c.id == id)
         .cloned()
@@ -217,11 +220,7 @@ fn slugify(name: &str) -> String {
         }
     }
     let s = s.trim_matches('-').to_string();
-    if s.is_empty() {
-        "card".to_string()
-    } else {
-        s
-    }
+    if s.is_empty() { "card".to_string() } else { s }
 }
 
 fn gen_user_id(name: &str) -> String {
@@ -475,7 +474,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let mk = |id: &str, name: &str| PersonaCard {
             id: id.to_string(),
@@ -516,8 +516,10 @@ mod tests {
 
         // cleanup
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         reload_user();
         let _ = std::fs::remove_dir_all(&tmp);

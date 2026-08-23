@@ -32,7 +32,9 @@ pub(crate) fn configure_runtime_environment() {
     #[cfg(target_os = "windows")]
     if std::env::var_os("HOME").is_none() {
         if let Some(profile) = std::env::var_os("USERPROFILE") {
-            std::env::set_var("HOME", profile);
+            // SAFETY: 仅在 run() 启动序列(单线程阶段,Tauri/tokio 运行时未启动)调用,
+            // 与本文件其余 env 写同属启动收口,无并发读者。
+            unsafe { std::env::set_var("HOME", profile) };
         }
     }
 
@@ -40,7 +42,8 @@ pub(crate) fn configure_runtime_environment() {
     {
         for (key, value) in LINUX_UI_ENV_DEFAULTS {
             if std::env::var_os(key).is_none() {
-                std::env::set_var(key, value);
+                // SAFETY: 仅在 run() 启动序列(单线程阶段,任何子进程/线程尚未启动)调用。
+                unsafe { std::env::set_var(key, value) };
             }
         }
         let has_override = WEBKIT_RENDERING_OVERRIDE_KEYS
@@ -49,7 +52,8 @@ pub(crate) fn configure_runtime_environment() {
         let is_arm64_nvidia =
             cfg!(target_arch = "aarch64") && Path::new("/proc/driver/nvidia/version").is_file();
         if should_force_webkit_dmabuf_shm(is_arm64_nvidia, has_override) {
-            std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+            // SAFETY: 同上,run() 启动序列单线程阶段。
+            unsafe { std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1") };
         }
     }
 }
@@ -194,9 +198,11 @@ mod tests {
         assert!(should_force_webkit_dmabuf_shm(true, false));
         assert!(!should_force_webkit_dmabuf_shm(true, true));
         assert!(!should_force_webkit_dmabuf_shm(false, false));
-        assert!(!LINUX_UI_ENV_DEFAULTS
-            .iter()
-            .any(|(key, _)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE"));
+        assert!(
+            !LINUX_UI_ENV_DEFAULTS
+                .iter()
+                .any(|(key, _)| *key == "WEBKIT_DISABLE_COMPOSITING_MODE")
+        );
     }
 }
 

@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use deepseek_tui::tools::shell::{
-    new_shared_shell_manager, SharedShellManager, ShellResult, ShellStatus,
+    SharedShellManager, ShellResult, ShellStatus, new_shared_shell_manager,
 };
 use parking_lot::Mutex;
 use tokio::sync::Notify;
@@ -493,10 +493,11 @@ impl TurnShellTaskRegistry {
                     }
                 }
             }
-            let scope = state
-                .scopes
-                .get_mut(&scope_id)
-                .expect("agent scope checked above");
+            // 同一把锁内上方 contains_key 已校验；此处按邻居分支习惯优雅返回，
+            // 保持“作用域缺失即拒绝注册”的语义。
+            let Some(scope) = state.scopes.get_mut(&scope_id) else {
+                return false;
+            };
             scope.live_agent_ids.insert(child_id.to_string());
             if scope.cancel_requested {
                 scope.cleanup_settled = false;
@@ -996,7 +997,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use deepseek_tui::tools::shell::{new_shared_shell_manager, ShellJobOwner, ShellJobSnapshot};
+    use deepseek_tui::tools::shell::{ShellJobOwner, ShellJobSnapshot, new_shared_shell_manager};
 
     fn sleep_command() -> &'static str {
         if std::env::consts::OS == "windows" {
@@ -1163,10 +1164,12 @@ mod tests {
 
         let state = registry.inner.state.lock();
         assert_eq!(state.agent_scopes.get("agent-child"), Some(&older_scope));
-        assert!(state
-            .scopes
-            .get(&older_scope)
-            .is_some_and(|scope| scope.live_agent_ids.contains("agent-child")));
+        assert!(
+            state
+                .scopes
+                .get(&older_scope)
+                .is_some_and(|scope| scope.live_agent_ids.contains("agent-child"))
+        );
         assert_eq!(state.active_scope_id, Some(current_scope));
     }
 
@@ -1214,9 +1217,11 @@ mod tests {
         assert!(!state.scopes.contains_key(&1));
         assert!(!state.turn_scopes.contains_key("turn-1"));
         assert!(!state.task_scopes.contains_key("task-1"));
-        assert!(state
-            .scopes
-            .contains_key(&(MAX_FAILED_SCOPE_TOMBSTONES as u64 + 1)));
+        assert!(
+            state
+                .scopes
+                .contains_key(&(MAX_FAILED_SCOPE_TOMBSTONES as u64 + 1))
+        );
     }
 
     #[tokio::test]

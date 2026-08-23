@@ -902,11 +902,7 @@ fn image_capability_response_summary(body: &str, status_code: u16) -> String {
     extract_provider_error_summary(body)
         .or_else(|| {
             let raw = summarize_image_probe_text(body, 200);
-            if raw.is_empty() {
-                None
-            } else {
-                Some(raw)
-            }
+            if raw.is_empty() { None } else { Some(raw) }
         })
         .unwrap_or_else(|| format!("HTTP {status_code}"))
 }
@@ -1809,6 +1805,7 @@ mod tests {
             std::process::id(),
             crate::platform::paths::tests::unique_suffix()
         ));
+        // SAFETY: 持 crate 级 ENV_LOCK(本测试首行已取锁),env 写已串行化。
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let mut initial = UserPrefs::default();
@@ -1848,7 +1845,9 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
         match old_home {
+            // SAFETY: 持 crate 级 ENV_LOCK(本测试首行已取锁),env 写已串行化。
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 同上,ENV_LOCK 串行化下的恢复删除。
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }

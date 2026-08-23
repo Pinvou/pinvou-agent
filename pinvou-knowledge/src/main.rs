@@ -3,10 +3,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::Parser;
+use pinvou_knowledge::KnowledgeService;
 use pinvou_knowledge::backup::{self, RestoreMode};
 use pinvou_knowledge::client::KnowledgeClient;
 use pinvou_knowledge::server;
-use pinvou_knowledge::KnowledgeService;
 
 #[derive(Debug, Parser)]
 #[command(

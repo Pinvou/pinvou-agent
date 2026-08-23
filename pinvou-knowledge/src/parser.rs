@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use calamine::{open_workbook_auto, Data, Reader};
+use calamine::{Data, Reader, open_workbook_auto};
 use encoding_rs::{GB18030, UTF_16BE, UTF_16LE};
 use wait_timeout::ChildExt;
 

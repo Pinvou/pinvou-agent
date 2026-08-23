@@ -12,8 +12,8 @@ use anyhow::{Context, Result};
 use toml::Value;
 
 use super::{
-    atomic_write, AgentConfigWriter, EffectiveConfig, EffectiveEntry, ProviderTarget,
-    PROVIDER_ID_PREFIX,
+    AgentConfigWriter, EffectiveConfig, EffectiveEntry, PROVIDER_ID_PREFIX, ProviderTarget,
+    atomic_write,
 };
 
 const ENV_KEY_NAME: &str = "OPENAI_API_KEY";
@@ -23,8 +23,7 @@ const ENV_KEY_NAME: &str = "OPENAI_API_KEY";
 /// catalog 后警告消除且上下文窗口等参数正确（格式按 codex 0.146 实测）。
 const CATALOG_FILE_NAME: &str = "pinvou3-model-catalog.json";
 /// catalog 里 base_instructions 必须与原值一致（codex 内置，勿自创文案）。
-const CATALOG_BASE_INSTRUCTIONS: &str =
-    "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
+const CATALOG_BASE_INSTRUCTIONS: &str = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
 /// 无法获知中转模型真实窗口时的保守默认（与 kimi 侧默认一致量级）。
 const CATALOG_DEFAULT_CONTEXT_WINDOW: i64 = 200_000;
 
@@ -232,10 +231,14 @@ impl AgentConfigWriter for CodexConfigWriter {
             })
             .unwrap_or_default();
         if !managed_ids.is_empty() {
-            let providers = table
+            // managed_ids 刚从同一内存 config 的 model_providers 表收集而来，
+            // 理论上必能再次取到；无法取到说明数据形态异常，应报错而非 panic。
+            let Some(providers) = table
                 .get_mut("model_providers")
                 .and_then(Value::as_table_mut)
-                .expect("managed ids 来自存在的表");
+            else {
+                anyhow::bail!("codex config.toml 的 model_providers 表在回退时丢失");
+            };
             for id in managed_ids {
                 providers.remove(&id);
             }
@@ -368,11 +371,13 @@ mod tests {
         let config: Value = toml::from_str(&raw).unwrap();
         assert!(config.get("model_provider").is_none());
         assert!(config.get("model").is_none());
-        assert!(config
-            .get("model_providers")
-            .unwrap()
-            .get("pv-aaaaaaaaaaaa")
-            .is_none());
+        assert!(
+            config
+                .get("model_providers")
+                .unwrap()
+                .get("pv-aaaaaaaaaaaa")
+                .is_none()
+        );
         // 用户自建 provider 与无关表保留
         assert_eq!(
             config["model_providers"]["user-own"]["env_key"],
@@ -417,10 +422,12 @@ mod tests {
         let model = &catalog["models"][0];
         assert_eq!(model["slug"].as_str().unwrap(), "gpt-5.2");
         assert!(model["context_window"].is_i64());
-        assert!(model["base_instructions"]
-            .as_str()
-            .unwrap()
-            .starts_with("You are Codex"));
+        assert!(
+            model["base_instructions"]
+                .as_str()
+                .unwrap()
+                .starts_with("You are Codex")
+        );
         // 恢复官方：键删除 + 文件删除
         writer
             .revert_to_official(Some(&target("pv-aaaaaaaaaaaa")))

@@ -20,10 +20,10 @@ use super::io::{
     write_pending_memory_unlocked, write_recent_work_unlocked, write_timed_memory_file,
 };
 use super::llm_review::{
-    append_memory_review_diagnostic_to, apply_llm_memory_review,
+    LLM_REVIEW_PROMPT, append_memory_review_diagnostic_to, apply_llm_memory_review,
     apply_memory_review_reasoning_controls, assistant_suggests_delivery_complete,
     discover_turn_suggestions, has_memory_review_signal, memory_review_error_stage,
-    parse_llm_memory_review, sanitize_llm_memory_item, LLM_REVIEW_PROMPT,
+    parse_llm_memory_review, sanitize_llm_memory_item,
 };
 use super::render::render_from_parts;
 // 引入全部常量（MAX_STORED / PENDING_STATUS_* / PROFILE_VERSION / Llm* 实体）。
@@ -347,10 +347,12 @@ fn topic_migration_cleanup_failure_returns_warning_and_retries() {
     .unwrap();
 
     assert_eq!(mutation.value.text, "new value");
-    assert!(mutation
-        .cleanup_warning
-        .as_deref()
-        .is_some_and(|warning| warning.contains("occupied")));
+    assert!(
+        mutation
+            .cleanup_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("occupied"))
+    );
     assert!(old_path.exists());
     assert!(new_path.exists());
     assert!(journal.exists());
@@ -461,9 +463,11 @@ fn topic_migration_lifecycle_hides_intermediate_duplicate_from_overview() {
     ready.wait();
     let (sent, received) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || sent.send(list_preferences()).unwrap());
-    assert!(received
-        .recv_timeout(std::time::Duration::from_millis(30))
-        .is_err());
+    assert!(
+        received
+            .recv_timeout(std::time::Duration::from_millis(30))
+            .is_err()
+    );
     release.wait();
     writer.join().unwrap();
     let visible = received
@@ -750,7 +754,8 @@ impl IsolatedPinvouHome {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
-        std::env::set_var("PINVOU3_HOME", &root);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
         Self {
             root,
             prev,
@@ -808,8 +813,10 @@ fn memory_review_diagnostic_classifies_request_parse_and_apply_failures() {
 impl Drop for IsolatedPinvouHome {
     fn drop(&mut self) {
         match &self.prev {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = fs::remove_dir_all(&self.root);
     }
@@ -962,12 +969,16 @@ fn writes_memory_snapshot_document_for_debugging() {
 fn auto_review_discovers_preference_and_recent_work_candidates() {
     let suggestions =
         discover_turn_suggestions("以后回答默认先给结论，再给步骤。这周在做营商环境推进会材料。");
-    assert!(suggestions
-        .iter()
-        .any(|item| item.kind == "preference" && item.content.contains("先给结论")));
-    assert!(suggestions
-        .iter()
-        .any(|item| item.kind == "recent_work" && item.content.contains("营商环境")));
+    assert!(
+        suggestions
+            .iter()
+            .any(|item| item.kind == "preference" && item.content.contains("先给结论"))
+    );
+    assert!(
+        suggestions
+            .iter()
+            .any(|item| item.kind == "recent_work" && item.content.contains("营商环境"))
+    );
 }
 
 #[test]
@@ -1074,8 +1085,10 @@ fn llm_review_sanitizer_does_not_override_recent_kind_by_status_words() {
 
 #[test]
 fn llm_review_prompt_matches_supported_actions() {
-    assert!(LLM_REVIEW_PROMPT
-        .contains("\"action\": \"skip | pending_confirm | auto_write | auto_update\""));
+    assert!(
+        LLM_REVIEW_PROMPT
+            .contains("\"action\": \"skip | pending_confirm | auto_write | auto_update\"")
+    );
     assert!(!LLM_REVIEW_PROMPT.contains("archive"));
     assert!(!LLM_REVIEW_PROMPT.contains("must_create_recent_activity"));
 }
@@ -1176,22 +1189,30 @@ fn scenario_review_writes_long_and_recent_memories() {
 
     let outcome = apply_llm_memory_review(review).unwrap();
     assert_eq!(outcome.pending.len(), 1);
-    assert!(outcome
-        .events
-        .iter()
-        .any(|event| event.kind == "profile" && event.text.contains("欣哥")));
-    assert!(outcome
-        .events
-        .iter()
-        .any(|event| event.kind == "work_context"));
-    assert!(outcome
-        .events
-        .iter()
-        .any(|event| event.kind == "current_focus"));
-    assert!(outcome
-        .events
-        .iter()
-        .any(|event| event.kind == "recent_activity"));
+    assert!(
+        outcome
+            .events
+            .iter()
+            .any(|event| event.kind == "profile" && event.text.contains("欣哥"))
+    );
+    assert!(
+        outcome
+            .events
+            .iter()
+            .any(|event| event.kind == "work_context")
+    );
+    assert!(
+        outcome
+            .events
+            .iter()
+            .any(|event| event.kind == "current_focus")
+    );
+    assert!(
+        outcome
+            .events
+            .iter()
+            .any(|event| event.kind == "recent_activity")
+    );
 
     let profile = load_profile().unwrap();
     assert_eq!(profile.identity.call_name, "欣哥");

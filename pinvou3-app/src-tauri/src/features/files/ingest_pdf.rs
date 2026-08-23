@@ -8,9 +8,9 @@
 
 use std::path::Path;
 
+use super::IngestResult;
 use super::ingest_deps::{pdf_tool_command, system_tools};
 use super::visual_preview::ocr_pdf;
-use super::IngestResult;
 
 /// PDF 摄入主路径：pdftotext 抽正文；空白（扫描件）走 OCR 兜底。
 pub(super) fn ingest_pdf(

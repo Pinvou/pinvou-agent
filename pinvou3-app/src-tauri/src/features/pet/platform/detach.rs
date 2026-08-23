@@ -30,11 +30,7 @@ impl X11Pointer {
         // 存裸指针(Display 是 Xlib 不透明类型,不可按值持有);XCloseDisplay 在 Drop 里释放。
         unsafe {
             let d = x11::xlib::XOpenDisplay(std::ptr::null());
-            if d.is_null() {
-                None
-            } else {
-                Some(Self(d))
-            }
+            if d.is_null() { None } else { Some(Self(d)) }
         }
     }
 }
@@ -155,7 +151,7 @@ mod macos_mouse {
     const MOUSE_BUTTON_LEFT: u32 = 0;
 
     #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CGEventCreate(source: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
         fn CGEventGetLocation(event: *mut std::ffi::c_void) -> CGPoint;
         // CGEventSourceButtonState 第一参数是 CGEventSourceStateID(int32 枚举值,如
@@ -167,13 +163,17 @@ mod macos_mouse {
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CFRelease(cf: *mut std::ffi::c_void);
     }
 
     /// 同步读全局鼠标位置 + 左键按下态。任意线程可调,免授权。任一 CG 调用失败(罕见,
     /// 如 window server 异常)返回零值快照,轮询循环下一轮重试,不会崩溃。
     pub(super) fn poll() -> GlobalMouse {
+        // SAFETY: CGEventCreate 允许 source 传 NULL（默认事件源）；返回的 event
+        // 已判空，CGEventGetLocation 只读其内部坐标；CFRelease 对成功创建的对象
+        // 恰好释放一次；CGEventSourceButtonState 第一参数是 int32 枚举值
+        // （HID_SYSTEM_STATE），不涉及指针。三者均可在任意线程调用且免授权。
         unsafe {
             let event = CGEventCreate(core::ptr::null_mut());
             if event.is_null() {

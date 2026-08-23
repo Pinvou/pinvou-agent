@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 use super::super::voice_asr::{self, AsrModelSpec};
 use super::voice_asr_speech;
 
-const ASR_MODEL_URL: &str =
-    "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/sense-voice-small-q4_k.gguf";
+const ASR_MODEL_URL: &str = "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/sense-voice-small-q4_k.gguf";
 const ASR_MODEL_MIRROR_URL: &str =
     "https://huggingface.co/lovemefan/sense-voice-gguf/resolve/main/sense-voice-small-q4_k.gguf";
 const ASR_MODEL_SIZE: u64 = 182_278_688;

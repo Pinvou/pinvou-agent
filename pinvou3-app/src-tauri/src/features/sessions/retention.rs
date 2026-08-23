@@ -20,8 +20,9 @@ use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Context, Result};
 
+use super::SessionStore;
+use super::scheduled::{SCHEDULED_PROFILE_SCHEMA_VERSION, ScheduledProfileRegistry};
 use super::scheduled::{ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting};
-use super::scheduled::{ScheduledProfileRegistry, SCHEDULED_PROFILE_SCHEMA_VERSION};
 use super::store::MAX_SESSIONS_PER_KIND;
 use super::validators::validate_session_id;
 use super::validators::{
@@ -29,7 +30,6 @@ use super::validators::{
     validate_scheduled_task_id, validate_scheduled_workspace_path,
 };
 use super::validators::{generate_session_id, persisted_system_prompt};
-use super::SessionStore;
 use anyhow::bail;
 use chrono::Utc;
 use deepseek_tui::artifacts::{ArtifactKind, ArtifactRecord};

@@ -787,9 +787,11 @@ async fn staged_attachment_is_passed_to_attachment_runtime_and_then_deleted() {
         .unwrap();
 
     assert_eq!(outcome.status(), SafeRunStatus::Completed);
-    assert!(runtime
-        .saw_private_bytes
-        .load(std::sync::atomic::Ordering::Relaxed));
+    assert!(
+        runtime
+            .saw_private_bytes
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
     assert!(!workspace.exists());
 }
 

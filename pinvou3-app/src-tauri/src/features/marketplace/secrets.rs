@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use crate::platform::credential_store::{
-    redact_secret, CredentialError, CredentialReference, CredentialStore,
+    CredentialError, CredentialReference, CredentialStore, redact_secret,
 };
 
 use super::bundle;
@@ -133,6 +133,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// 重启后把**所有已安装工具**的 secret 从 keyring 重灌进进程 env(MCP 子进程 expand
     /// `${...}` 占位符用)。不再硬编码内置 3 个 —— 自定义/上传的带 secret 工具重启后同样生效。
     pub(super) fn sync_secret_env_vars(&self) -> Result<(), String> {
+        // 持锁遍历:整个同步过程一次性持有 env 写锁(锁内只有 env 写与已就绪
+        // 数据的读取,credential_store.get 是 keyring/文件短读,不含长 IO/await)。
+        let _env_guard = crate::platform::env_write::lock();
         for tool_id in self.installed_ids() {
             let Some(manifest) = self.load_manifest(&tool_id) else {
                 continue;
@@ -141,7 +144,8 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 let reference = mcp_secret_reference(&tool_id, &target, &key);
                 match self.credential_store.get(&reference) {
                     Ok(Some(value)) if !value.trim().is_empty() => {
-                        std::env::set_var(mcp_secret_env_var(&key), value);
+                        // SAFETY: 函数首行已持 env_write 锁,env 写已串行化。
+                        unsafe { std::env::set_var(mcp_secret_env_var(&key), value) };
                     }
                     Ok(_) => {}
                     Err(e) => return Err(mcp_secret_store_error(&tool_id, &key, e)),
@@ -166,13 +170,17 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             self.credential_store
                 .set(&reference, value)
                 .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
-            std::env::set_var(mcp_secret_env_var(key), value);
+            let _env_guard = crate::platform::env_write::lock();
+            // SAFETY: 持上方 let 绑定的 env_write 锁,env 写已串行化。
+            unsafe { std::env::set_var(mcp_secret_env_var(key), value) };
             return Ok(mcp_secret_placeholder(key));
         }
 
         match self.credential_store.get(&reference) {
             Ok(Some(value)) if !value.trim().is_empty() => {
-                std::env::set_var(mcp_secret_env_var(key), value);
+                let _env_guard = crate::platform::env_write::lock();
+                // SAFETY: 持上方 let 绑定的 env_write 锁,env 写已串行化。
+                unsafe { std::env::set_var(mcp_secret_env_var(key), value) };
                 Ok(mcp_secret_placeholder(key))
             }
             Ok(_) => {
@@ -180,7 +188,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     self.credential_store
                         .set(&reference, value)
                         .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
-                    std::env::set_var(mcp_secret_env_var(key), value);
+                    let _env_guard = crate::platform::env_write::lock();
+                    // SAFETY: 持上方 let 绑定的 env_write 锁,env 写已串行化。
+                    unsafe { std::env::set_var(mcp_secret_env_var(key), value) };
                     Ok(mcp_secret_placeholder(key))
                 } else {
                     Err(mcp_secret_missing_error(tool_id, key))

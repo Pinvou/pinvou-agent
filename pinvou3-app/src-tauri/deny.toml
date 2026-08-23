@@ -26,7 +26,9 @@ ignore = [
     # quick-xml 是 ^0.39.2,< 0.40,本仓不可单独抬;等 tauri 升级带 plist 升级后自然消失。
     # 暂按已知风险接受(本 ignore 仍命中 plist 那一路;calamine 一路已不再命中)。
     "RUSTSEC-2026-0194", # quick-xml 二次复杂度(plist/tauri 传递,等上游 plist)
-    "RUSTSEC-2026-0195", # quick-xml NsReader 内存耗尽(plist/tauri 传递,等上游 plist)
+    # RUSTSEC-2026-0195(quick-xml NsReader 内存耗尽)已不再命中:quick-xml 0.41+
+    # 修复后 calamine 一路消失,plist 一路也在依赖图中不再匹配;若未来依赖回退会
+    # 重新报警(不带 ignore 时 fail),届时再评估。
 ]
 # unmaintained 保留 "workspace":父 crate 依赖图比子模块深
 # (子模块 + Tauri GTK3/glib + fastembed),实测 unmaintained="all" 会命中 gtk-rs GTK3、
@@ -34,6 +36,9 @@ ignore = [
 # 的条目并 fail CI。这些非本仓可修(等 tauri/gtk-rs 升级),"workspace" 仅报 workspace crate,
 # 把噪声挡在 CI 之外;真漏洞仍由上面的 ignore 显式管理 + cargo update 修复。
 unmaintained = "workspace"
+# yanked 版本直接 fail:默认仅 warn 不足以挡住——lockfile 命中 yanked 会在未来
+# 依赖图变化时破坏可复现构建,早失败早替换。
+yanked = "deny"
 
 [licenses]
 version = 2

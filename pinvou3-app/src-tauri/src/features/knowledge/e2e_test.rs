@@ -11,8 +11,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::time::{Duration, Instant};
 
-use super::store::SearchQuery;
 use super::KnowledgeService;
+use super::store::SearchQuery;
 
 struct EnvVarRestore {
     name: &'static str,
@@ -31,8 +31,10 @@ impl EnvVarRestore {
 impl Drop for EnvVarRestore {
     fn drop(&mut self) {
         match &self.previous {
-            Some(value) => std::env::set_var(self.name, value),
-            None => std::env::remove_var(self.name),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var(self.name, value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var(self.name) },
         }
     }
 }
@@ -76,11 +78,13 @@ fn env_var_restore_runs_during_unwind() {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     let _restore_original = EnvVarRestore::snapshot("PINVOU3_KB_EMBED_MODEL_DIR");
-    std::env::set_var("PINVOU3_KB_EMBED_MODEL_DIR", "before-panic");
+    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    unsafe { std::env::set_var("PINVOU3_KB_EMBED_MODEL_DIR", "before-panic") };
 
     let result = std::panic::catch_unwind(|| {
         let _restore = EnvVarRestore::snapshot("PINVOU3_KB_EMBED_MODEL_DIR");
-        std::env::set_var("PINVOU3_KB_EMBED_MODEL_DIR", "temporary");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_KB_EMBED_MODEL_DIR", "temporary") };
         panic!("触发 unwind 以验证环境变量恢复");
     });
 
@@ -104,10 +108,13 @@ fn full_l0_l1_e2e() {
 
     // L1 语义检索真实跑：指向本地 bge-m3。
     let home = std::env::var("HOME").unwrap();
-    std::env::set_var(
-        "PINVOU3_KB_EMBED_MODEL_DIR",
-        format!("{home}/models/bge-m3"),
-    );
+    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    unsafe {
+        std::env::set_var(
+            "PINVOU3_KB_EMBED_MODEL_DIR",
+            format!("{home}/models/bge-m3"),
+        )
+    };
 
     let root = std::env::temp_dir().join(format!("pinvou3_e2e_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

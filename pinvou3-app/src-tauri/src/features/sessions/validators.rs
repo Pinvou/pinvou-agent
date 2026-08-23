@@ -7,7 +7,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use deepseek_tui::models::SystemPrompt;
 use deepseek_tui::session_manager::SessionManager;
 

@@ -34,7 +34,8 @@ fn isolated_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    std::env::set_var("PINVOU3_HOME", &tmp);
+    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
     let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
     // 注意：不 remove_var——锁还没 drop，下面的断言需要 PINVOU3_HOME 仍是这个值。
     (store, guard)
@@ -573,9 +574,11 @@ fn scheduled_session_is_isolated_but_directly_loadable() {
     assert!(!listed.iter().any(|item| item.id == eval_id));
     #[cfg(not(feature = "benchmark-hooks"))]
     assert!(listed.iter().any(|item| item.id == eval_id));
-    assert!(paths::sessions_root()
-        .join(format!("{}.json", scheduled.metadata.id))
-        .exists());
+    assert!(
+        paths::sessions_root()
+            .join(format!("{}.json", scheduled.metadata.id))
+            .exists()
+    );
     assert_eq!(
         store
             .load(&scheduled.metadata.id)
@@ -605,11 +608,13 @@ fn scheduled_profile_survives_restart_and_routes_message_updates() {
     reloaded
         .update_messages(&id, Vec::new())
         .expect("route scheduled update");
-    assert!(reloaded
-        .manager
-        .sessions_dir()
-        .join(format!("{id}.json"))
-        .exists());
+    assert!(
+        reloaded
+            .manager
+            .sessions_dir()
+            .join(format!("{id}.json"))
+            .exists()
+    );
 }
 
 #[test]
@@ -891,9 +896,11 @@ fn scheduled_engine_state_entry_rejects_normal_chat_without_mutation() {
     let token_error = store
         .persist_scheduled_token_total(&chat.metadata.id, 0, 99)
         .expect_err("normal chat must not use scheduled token persistence");
-    assert!(token_error
-        .to_string()
-        .contains("not a scheduled-run session"));
+    assert!(
+        token_error
+            .to_string()
+            .contains("not a scheduled-run session")
+    );
     let unchanged = store.load(&chat.metadata.id).expect("load unchanged chat");
     assert_eq!(unchanged.metadata.title, chat.metadata.title);
     assert_eq!(unchanged.metadata.model, chat.metadata.model);
@@ -919,10 +926,12 @@ fn public_artifact_replace_rejects_scheduled_without_mutation() {
     let error = store
         .update_artifacts(
             &id,
-            vec![std::env::temp_dir()
-                .join("ui-replacement.md")
-                .to_string_lossy()
-                .into_owned()],
+            vec![
+                std::env::temp_dir()
+                    .join("ui-replacement.md")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
         )
         .expect_err("public replacement must reject scheduled sessions");
 
@@ -1477,9 +1486,11 @@ fn orphan_transcript_does_not_consume_live_scheduled_retention_budget() {
         .expect("enforce retention");
 
     assert_eq!(store.scheduled_profiles.read().len(), MAX_SESSIONS_PER_KIND);
-    assert!(live_ids
-        .iter()
-        .all(|id| store.scheduled_profile(id).is_some() && store.load(id).is_ok()));
+    assert!(
+        live_ids
+            .iter()
+            .all(|id| store.scheduled_profile(id).is_some() && store.load(id).is_ok())
+    );
     assert!(store.load(orphan_id).is_ok(), "orphan must be preserved");
     assert!(store.scheduled_profile(orphan_id).is_none());
 }
@@ -1657,11 +1668,13 @@ fn boot_retains_orphan_transcript_left_before_profile_commit() {
     assert!(!reloaded.scheduled_session_exists(id));
     assert!(paths::sessions_root().join(format!("{id}.json")).exists());
     assert!(runtime_dir.exists());
-    assert!(!reloaded
-        .list()
-        .expect("ordinary chat list")
-        .iter()
-        .any(|metadata| metadata.id == id));
+    assert!(
+        !reloaded
+            .list()
+            .expect("ordinary chat list")
+            .iter()
+            .any(|metadata| metadata.id == id)
+    );
 }
 
 #[test]
@@ -1686,9 +1699,10 @@ fn concurrent_scheduled_creates_do_not_lose_registry_entries() {
 
     let reloaded = reopen_store(&store).expect("reboot");
     assert_eq!(ids.len(), 12);
-    assert!(ids
-        .iter()
-        .all(|id| reloaded.scheduled_profile(id).is_some()));
+    assert!(
+        ids.iter()
+            .all(|id| reloaded.scheduled_profile(id).is_some())
+    );
 }
 
 #[test]
@@ -1951,10 +1965,12 @@ fn metadata_and_artifacts_do_not_change_transcript_revision() {
     store
         .update_artifacts(
             &session.metadata.id,
-            vec![std::env::temp_dir()
-                .join("transcript-revision-artifact.txt")
-                .to_string_lossy()
-                .into_owned()],
+            vec![
+                std::env::temp_dir()
+                    .join("transcript-revision-artifact.txt")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
         )
         .expect("update artifacts");
 
@@ -2001,10 +2017,12 @@ fn concurrent_stale_transcript_write_cannot_overwrite_winner() {
 
     let durable = store.load(&session.metadata.id).expect("load winner");
     let durable_revision = transcript_revision(&durable.messages).expect("durable revision");
-    assert!(outcomes
-        .iter()
-        .filter_map(|result| result.as_ref().ok())
-        .any(|revision| revision == &durable_revision));
+    assert!(
+        outcomes
+            .iter()
+            .filter_map(|result| result.as_ref().ok())
+            .any(|revision| revision == &durable_revision)
+    );
 }
 
 #[test]
@@ -2331,9 +2349,10 @@ fn hiding_session_clears_pinned_state() {
 #[test]
 fn generate_session_id_url_safe() {
     let id = generate_session_id();
-    assert!(id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    assert!(
+        id.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    );
 }
 
 #[test]
@@ -3161,9 +3180,11 @@ fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
         .set_session_model_id("wf-model-test", Some("new-model".to_string()))
         .expect_err("an unwritable sidecar must fail the model transaction");
 
-    assert!(error
-        .to_string()
-        .contains("persist per-session model bindings"));
+    assert!(
+        error
+            .to_string()
+            .contains("persist per-session model bindings")
+    );
     assert_eq!(
         store.session_model_override("wf-model-test").as_deref(),
         Some("old-model"),

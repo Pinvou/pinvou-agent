@@ -2,18 +2,18 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::time::Duration;
 
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use futures_util::StreamExt;
 use rand::Rng;
-use reqwest::{multipart, Method, StatusCode};
+use reqwest::{Method, StatusCode, multipart};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
-use crate::model::*;
 use crate::MAX_UPLOAD_BYTES;
+use crate::model::*;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_IDENTITY_RESPONSE_BYTES: usize = 64 * 1024;

@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde_json::json;
 
-use super::{events::patch_acp_state, AcpPool, AcpSession, CodexAcpSessionInfo};
+use super::{AcpPool, AcpSession, CodexAcpSessionInfo, events::patch_acp_state};
 
 /// Owns the session's configuration slot until the operation finishes. Drop
 /// based release keeps cancellation and early-return paths from leaving the

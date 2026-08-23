@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 
 use crate::platform::paths;
 
@@ -142,6 +142,9 @@ pub const INSTRUCTIONS_WORK_MD: &str =
 /// Returns the three Work-layer sections: the complete `## 工作环境` section and complete
 /// `## Browser capabilities` section without trailing newlines, plus the artifact rule with
 /// its trailing newline.
+// 输入是编译期内嵌资源文件，段结构由构建产物固定，测试逐字节锁定渲染结果；
+// 若资源被误改，panic 在首次启动即暴露，运行期不存在动态输入使分支可达。
+#[allow(clippy::expect_used)]
 fn work_layer_sections() -> (&'static str, &'static str, &'static str) {
     let (env_section, rest) = INSTRUCTIONS_WORK_MD
         .split_once("\n\n")
@@ -185,6 +188,9 @@ pub const INSTRUCTIONS_CODE_MD: &str =
 /// 骨架的 §工作环境 位填代码版环境段（workspace_hint 已按绑定情况渲染），
 /// 成品条位整行删除（代码会话无产出物/成品卡语义）；尾部依次拼接底座
 /// core_execution 执行循环与 ## 代码场景纪律。
+// 同 work_layer_sections：输入为编译期内嵌资源，段结构由构建产物固定，
+// 资源被误改时首次启动即 panic 暴露，不存在运行期可达路径。
+#[allow(clippy::expect_used)]
 pub fn instructions_code_md(workspace_hint: &str) -> String {
     let (env_section, discipline) = INSTRUCTIONS_CODE_MD
         .split_once("\n\n")
@@ -772,7 +778,8 @@ mod tests {
     fn ensure_extracted_behavior() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         // 1) 首次解包：文件被写入 + VERSION 记录
         let bundle = Pinvou3Bundle::paths();
@@ -1038,7 +1045,8 @@ mod tests {
     fn multiagent_depth_guard_enforces_two_level_inputs() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
         bundle.ensure_extracted().unwrap();
 
@@ -1104,7 +1112,8 @@ mod tests {
     fn connector_skill_cache_requires_complete_domain_sets() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
         // 连接器技能现按包聚合落盘：bundles/<pkg>/skills/<dir>（§4 新布局）。
         let pkg_skills = |id: &str| paths::bundles_root().join(id).join("skills");
@@ -1277,7 +1286,8 @@ mod tests {
     fn cleanup_removed_marketplace_skills_respects_upload_marker() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
         std::fs::create_dir_all(&bundle.skills_dir).unwrap();
 
@@ -1306,7 +1316,8 @@ mod tests {
     fn forkguard_builtin_visual_skill_uses_bundle_root_and_safe_name() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
 
         bundle.write_builtin_skills().unwrap();
@@ -1386,7 +1397,8 @@ mod tests {
     fn extract_dir_skips_python_compilation_caches() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
 
         bundle.apply_feishu_skills(true).unwrap();
@@ -1419,7 +1431,8 @@ mod tests {
     fn cleanup_removed_marketplace_tools_removes_data_analysis() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
         let data_dir = paths::bundle_mcp_servers_dir().join("data_analysis");
         std::fs::create_dir_all(&data_dir).unwrap();
@@ -1484,7 +1497,8 @@ mod tests {
     fn migrates_legacy_pinvou_server_key_to_pinvou3() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         paths::ensure_dirs().unwrap();
         let bundle = Pinvou3Bundle::paths();
         std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
@@ -1517,7 +1531,8 @@ mod tests {
     fn ensure_builtin_mcp_servers_repairs_broken_mcp_json() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         paths::ensure_dirs().unwrap();
         let bundle = Pinvou3Bundle::paths();
         std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
@@ -1544,7 +1559,8 @@ mod tests {
     fn write_if_changed_skips_rewrite_when_content_identical() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
         let target = std::path::Path::new(&tmp).join("nested").join("out.txt");
 
@@ -1570,7 +1586,8 @@ mod tests {
     fn cleanup_removed_marketplace_tools_fast_path_skips_uninstall() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         paths::ensure_dirs().unwrap();
         let bundle = Pinvou3Bundle::paths();
 
@@ -1729,7 +1746,8 @@ mod tests {
     fn dingtalk_skill_gate_extracts_and_removes_official_mono_skill() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
 
         bundle.apply_dingtalk_skills(true).unwrap();
@@ -1737,10 +1755,12 @@ mod tests {
         let pkg_skills = paths::bundles_root().join("dingtalk").join("skills");
         let skill = pkg_skills.join("dws");
         assert!(skill.join("SKILL.md").is_file());
-        assert!(skill
-            .join("references")
-            .join("global-reference.md")
-            .is_file());
+        assert!(
+            skill
+                .join("references")
+                .join("global-reference.md")
+                .is_file()
+        );
         assert!(pkg_skills.join("NOTICE-dingtalk.md").is_file());
 
         bundle.apply_dingtalk_skills(false).unwrap();
@@ -1781,7 +1801,8 @@ mod tests {
     fn wecom_skill_gate_cleans_legacy_dirs() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
         std::fs::create_dir_all(&bundle.skills_dir).unwrap();
 
@@ -1839,7 +1860,8 @@ mod tests {
     }
 
     fn cleanup(dir: &str) {
-        std::env::remove_var("PINVOU3_HOME");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
         let _ = std::fs::remove_dir_all(dir);
     }
 

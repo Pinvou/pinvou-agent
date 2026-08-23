@@ -15,17 +15,17 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use parking_lot::Mutex;
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::platform::paths;
 use crate::platform::prefs::ModelPreset;
 
 use super::io;
 use super::types::{
+    LlmMemoryItem, LlmMemoryReview, MemoryReviewModel, MemoryReviewOutcome, MemorySuggestion,
+    MemoryWriteEvent, ProfilePatch, SanitizedMemoryDecision, TurnMemoryCapture,
     clean_profile_memory_content, normalize_preference_topic, normalize_timed_memory_topic,
-    normalize_work_context_topic, LlmMemoryItem, LlmMemoryReview, MemoryReviewModel,
-    MemoryReviewOutcome, MemorySuggestion, MemoryWriteEvent, ProfilePatch, SanitizedMemoryDecision,
-    TurnMemoryCapture,
+    normalize_work_context_topic,
 };
 use super::util::{
     clean_id, clean_text, looks_completed_work_status, looks_recent_work_status, looks_sensitive,

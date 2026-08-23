@@ -34,10 +34,11 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelNotification, ClientCapabilities, ContentBlock, CreateElicitationRequest,
     CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities,
@@ -48,30 +49,29 @@ use agent_client_protocol::schema::v1::{
     SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest,
     StopReason,
 };
-use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use agent_probe::{CliProbeCache, CliProbeGates, ResolvedCli};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use auth_probe::{AgentAuthProbeState, CachedAuthStatus};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use wait_timeout::ChildExt;
 
 use crate::features::sessions::SessionStore;
-use attachments::{prepare_codex_prompt, CodexDisplayAttachment};
+use attachments::{CodexDisplayAttachment, prepare_codex_prompt};
 use deepseek_tui::session_manager::SessionMetadata;
 pub(crate) use events::project_acp_value_for_web;
-use events::{
-    load_timeline, load_web_timeline_page, persist_acp_state, EventBridge, WebAcpTimelineSlice,
-};
 pub use events::{
-    project_acp_elicitation_request_for_web, project_acp_permission_request_for_web,
-    AcpEventEnvelope,
+    AcpEventEnvelope, project_acp_elicitation_request_for_web,
+    project_acp_permission_request_for_web,
+};
+use events::{
+    EventBridge, WebAcpTimelineSlice, load_timeline, load_web_timeline_page, persist_acp_state,
 };
 use latest::LatestVersionProbe;
 use operation_gate::admit_prompt_turn;
@@ -79,12 +79,12 @@ pub use providers::{
     AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
 };
 use runtime::{
-    codex_version, probe_codex_runtime, version_at_least, ResolvedCodex, MIN_CODEX_VERSION,
-};
-pub use store::{
-    validate_codex_project_workspace, AgentBackend, CodexWorkspaceKind, SessionAgentStore,
+    MIN_CODEX_VERSION, ResolvedCodex, codex_version, probe_codex_runtime, version_at_least,
 };
 use store::{AcpConfigDefaultsStore, SessionAgentRecord, SessionMode};
+pub use store::{
+    AgentBackend, CodexWorkspaceKind, SessionAgentStore, validate_codex_project_workspace,
+};
 
 pub const CODEX_ACP_VERSION: &str = "1.1.5";
 pub const CODEX_ACP_SESSION_MODEL: &str = "Codex (ACP)";
@@ -3061,24 +3061,27 @@ impl AcpPool {
     pub async fn cancel(&self, session_id: &str) {
         self.cancel_pending_permissions(session_id).await;
         self.cancel_pending_elicitations(session_id).await;
-        if let Some(runtime) = self.sessions.lock().await.get(session_id).cloned() {
-            if runtime.busy.load(Ordering::Acquire) {
-                runtime.cancel();
-                runtime
-                    .bridge
-                    .emit("cancel_requested", json!({ "status": "cancelling" }));
-            } else {
-                // session 已恢复但当前进程没有活跃 prompt 时，session/cancel 无法
-                // 命中旧进程的 turn。直接收口持久化孤儿回合，让停止操作可恢复且幂等。
-                runtime
-                    .bridge
-                    .interrupt_orphaned_turns("cancel_without_active_prompt");
+        match self.sessions.lock().await.get(session_id).cloned() {
+            Some(runtime) => {
+                if runtime.busy.load(Ordering::Acquire) {
+                    runtime.cancel();
+                    runtime
+                        .bridge
+                        .emit("cancel_requested", json!({ "status": "cancelling" }));
+                } else {
+                    // session 已恢复但当前进程没有活跃 prompt 时，session/cancel 无法
+                    // 命中旧进程的 turn。直接收口持久化孤儿回合，让停止操作可恢复且幂等。
+                    runtime
+                        .bridge
+                        .interrupt_orphaned_turns("cancel_without_active_prompt");
+                }
             }
-        } else {
-            // 正常 UI 加载会先 lazy spawn runtime；这里仍为启动失败或竞态保留兜底，
-            // 避免“停止”在没有内存 runtime 时静默无效。
-            EventBridge::new(self.app.clone(), session_id.to_string())
-                .interrupt_orphaned_turns("cancel_without_runtime");
+            _ => {
+                // 正常 UI 加载会先 lazy spawn runtime；这里仍为启动失败或竞态保留兜底，
+                // 避免“停止”在没有内存 runtime 时静默无效。
+                EventBridge::new(self.app.clone(), session_id.to_string())
+                    .interrupt_orphaned_turns("cancel_without_runtime");
+            }
         }
     }
 
@@ -4617,14 +4620,16 @@ mod tests {
             },
             "session": {},
         });
-        assert!(acp_recovery_record(
-            "pinvou-session",
-            AgentBackend::ClaudeAcp,
-            &state,
-            PathBuf::from("/tmp/pinvou-project"),
-            Path::new("/tmp/pinvou-session-workspace"),
-        )
-        .is_err());
+        assert!(
+            acp_recovery_record(
+                "pinvou-session",
+                AgentBackend::ClaudeAcp,
+                &state,
+                PathBuf::from("/tmp/pinvou-project"),
+                Path::new("/tmp/pinvou-session-workspace"),
+            )
+            .is_err()
+        );
         let mismatched = json!({
             "pinvouSessionId": "pinvou-session",
             "adapter": {
@@ -4633,14 +4638,16 @@ mod tests {
             },
             "session": { "session_id": "claude-session" },
         });
-        assert!(acp_recovery_record(
-            "pinvou-session",
-            AgentBackend::KimiAcp,
-            &mismatched,
-            PathBuf::from("/tmp/pinvou-project"),
-            Path::new("/tmp/pinvou-session-workspace"),
-        )
-        .is_err());
+        assert!(
+            acp_recovery_record(
+                "pinvou-session",
+                AgentBackend::KimiAcp,
+                &mismatched,
+                PathBuf::from("/tmp/pinvou-project"),
+                Path::new("/tmp/pinvou-session-workspace"),
+            )
+            .is_err()
+        );
     }
 
     #[test]

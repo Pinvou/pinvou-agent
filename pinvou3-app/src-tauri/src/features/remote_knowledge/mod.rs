@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use futures_util::future::join_all;
 use parking_lot::RwLock;
 use pinvou_knowledge::client::{
-    ca_fingerprint, identity_code, new_join_credentials, normalize_private_user_endpoint,
-    normalize_stored_endpoint, normalize_user_endpoint, parse_share, KnowledgeClient,
-    NewJoinCredentials, RemoteKnowledgeProbe,
+    KnowledgeClient, NewJoinCredentials, RemoteKnowledgeProbe, ca_fingerprint, identity_code,
+    new_join_credentials, normalize_private_user_endpoint, normalize_stored_endpoint,
+    normalize_user_endpoint, parse_share,
 };
 use pinvou_knowledge::model::{
     AccessScope, Collection, CreateCollectionRequest, DeviceGrant, Document, JoinRequestRecord,
@@ -308,7 +308,7 @@ impl RemoteKnowledgeService {
                         error: Some(redact_error(&error)),
                     },
                     None,
-                )
+                );
             }
         };
         let info = match client.health().await {
@@ -322,7 +322,7 @@ impl RemoteKnowledgeService {
                         error: Some(redact_error(&error)),
                     },
                     None,
-                )
+                );
             }
         };
         match client.access().await {
@@ -1539,10 +1539,12 @@ mod tests {
             ready: false,
         };
 
-        assert!(service
-            .request_join_confirmed(probe, "device", "different", "different")
-            .await
-            .is_err());
+        assert!(
+            service
+                .request_join_confirmed(probe, "device", "different", "different")
+                .await
+                .is_err()
+        );
         assert!(service.configured_connections().is_empty());
         assert!(service.pending_joins().is_empty());
         assert!(!path.exists());

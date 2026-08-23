@@ -11,8 +11,8 @@ use pinvou_knowledge::model::DeviceGrant;
 use crate::platform::process::{output_with_timeout, output_with_timeout_and_kill_tree};
 
 use super::super::{
-    compare_host_versions, HostOwnerClaim, HostRestoreResult, HostVersionState,
-    PackagedHostResources, SharedKnowledgeHostStatus, LOCAL_ENDPOINT,
+    HostOwnerClaim, HostRestoreResult, HostVersionState, LOCAL_ENDPOINT, PackagedHostResources,
+    SharedKnowledgeHostStatus, compare_host_versions,
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -430,10 +430,12 @@ mod tests {
             privileged_helper_failure("恢复共享知识库", Some(1), b"restore failed"),
             "restore failed"
         );
-        assert!(privileged_helper_execution_error(
-            "恢复共享知识库",
-            "pkexec timed out after 3600s: no subprocess output"
-        )
-        .contains("等待超时"));
+        assert!(
+            privileged_helper_execution_error(
+                "恢复共享知识库",
+                "pkexec timed out after 3600s: no subprocess output"
+            )
+            .contains("等待超时")
+        );
     }
 }

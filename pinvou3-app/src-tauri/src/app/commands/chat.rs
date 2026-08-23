@@ -398,7 +398,8 @@ fn display_chat_message(
         .collect::<Vec<_>>();
     // Persist a JSON array after the human-readable marker. Unlike the legacy
     // `name · name` format, this preserves every legal filename exactly.
-    let names = serde_json::to_string(&names).expect("attachment filenames serialize");
+    // Vec<&str> 序列化为 JSON 字符串数组不会失败(无 map key/非字符串类型)。
+    let names = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
     if message.trim().is_empty() {
         format!("📎 {names}")
     } else {

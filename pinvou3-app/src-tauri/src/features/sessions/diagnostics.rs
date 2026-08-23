@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use chrono::{SecondsFormat, Utc};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 const SCHEMA_VERSION: u8 = 1;
@@ -417,6 +417,10 @@ fn append_entries(entries: &[Value]) -> Result<(), String> {
     append_entries_to_path(&path, entries)
 }
 
+// 上方主路径序列化失败已走 map_err 传播；此处 expect 的对象是全静态字面量
+// （无自定义 Serialize/map key），序列化不可能失败，panic 分支不可达。
+// unwrap_in_result 豁免同因：Result 返回函数内的这处 expect 有上述全量不变量。
+#[allow(clippy::expect_used, clippy::unwrap_in_result)]
 fn append_entries_to_path(path: &Path, entries: &[Value]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -598,8 +602,8 @@ fn now() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_entries_to_path, identifier_fingerprint, normalize_backend_details,
-        normalize_frontend_entry, MAX_LOG_BYTES,
+        MAX_LOG_BYTES, append_entries_to_path, identifier_fingerprint, normalize_backend_details,
+        normalize_frontend_entry,
     };
     use serde_json::json;
     use std::io::Write as _;
@@ -704,18 +708,22 @@ mod tests {
                 "{key} must be dropped"
             );
         }
-        assert!(normalized["details"]["transport"]
-            .get("response_body")
-            .is_none());
+        assert!(
+            normalized["details"]["transport"]
+                .get("response_body")
+                .is_none()
+        );
     }
 
     #[test]
     fn frontend_batch_rejects_unknown_events_and_forged_categories() {
-        assert!(normalize_frontend_entry(
-            json!({ "event": "rust_backend_event", "details": {} }),
-            "2026-08-18T12:00:00.000Z"
-        )
-        .is_none());
+        assert!(
+            normalize_frontend_entry(
+                json!({ "event": "rust_backend_event", "details": {} }),
+                "2026-08-18T12:00:00.000Z"
+            )
+            .is_none()
+        );
         let normalized = normalize_frontend_entry(
             json!({
                 "event": "local_turn_admission_failed",

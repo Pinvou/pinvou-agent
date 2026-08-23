@@ -13,13 +13,13 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 
 // 纯几何函数、常量与 PetVerticalAlignment/ScaleAnchor 类型抽离到 geometry 子模块;
 // 这里复用其计算并保持本文件的 pub 面不变。
+pub use super::geometry::{PET_LABEL, PetVerticalAlignment, clamp_scale, point_on_any_monitor};
+pub(crate) use super::geometry::{ScaleAnchor, edge_anchor, resized_position};
 use super::geometry::{
     character_anchor_position, character_local_top_left, clamp_scale_to_character_work_area,
     default_scale, legacy_frame_position_to_client, pet_window_effective_size,
     scale_resize_required,
 };
-pub use super::geometry::{clamp_scale, point_on_any_monitor, PetVerticalAlignment, PET_LABEL};
-pub(crate) use super::geometry::{edge_anchor, resized_position, ScaleAnchor};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PetNavigationRequest {
@@ -771,15 +771,17 @@ mod tests {
         .unwrap();
         assert_eq!(request.automation_id, "task-1");
         assert_eq!(request.session_id, "sched-1");
-        assert!(PetScheduledRunNavigation {
-            automation_id: String::new(),
-            run_id: "run-1".into(),
-            session_id: "sched-1".into(),
-            task_name: "新闻速览".into(),
-            ended_at: "2026-07-15T10:42:00+08:00".into(),
-        }
-        .validated()
-        .is_err());
+        assert!(
+            PetScheduledRunNavigation {
+                automation_id: String::new(),
+                run_id: "run-1".into(),
+                session_id: "sched-1".into(),
+                task_name: "新闻速览".into(),
+                ended_at: "2026-07-15T10:42:00+08:00".into(),
+            }
+            .validated()
+            .is_err()
+        );
     }
 
     #[test]
@@ -820,14 +822,17 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-pet-path-test");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-pet-path-test") };
         assert_eq!(
             state_path(),
             crate::platform::paths::pinvou3_home().join("pet_window.json")
         );
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
 

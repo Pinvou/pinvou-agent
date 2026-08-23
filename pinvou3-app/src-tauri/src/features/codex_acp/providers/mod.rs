@@ -13,8 +13,8 @@ pub(crate) mod lifecycle;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
@@ -480,8 +480,8 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
 }
 
 pub(crate) use claude::ClaudeConfigWriter;
-pub(crate) use codex::codex_config_relay_env_key_present;
 pub(crate) use codex::CodexConfigWriter;
+pub(crate) use codex::codex_config_relay_env_key_present;
 pub(crate) use kimi::KimiConfigWriter;
 
 /// 统一编排：store + 凭据 + 三写入器。命令层与 AcpPool 只与它交互。
@@ -756,14 +756,18 @@ impl ProviderManager {
                 // store 持久化失败：回滚配置写入（含 kimi 的 default_model），
                 // 保持「失败 = 什么都没发生」语义。回滚失败如实附加（复审 F3）。
                 let mut context = "保存失败：配置已写入但无法保存 Provider 状态，已尝试回滚配置；请检查磁盘后重试".to_string();
-                if let Err(rollback) =
-                    writer.revert_to_official(Some(&ProviderTarget::from_record(&record, None)))
-                {
-                    context = format!("{context}；回滚配置也失败: {rollback:#}");
-                } else if let Err(rollback) = writer
-                    .restore_default_model(self.store.official_default_model(agent).as_deref())
-                {
-                    context = format!("{context}；写回官方 default_model 也失败: {rollback:#}");
+                match writer.revert_to_official(Some(&ProviderTarget::from_record(&record, None))) {
+                    Err(rollback) => {
+                        context = format!("{context}；回滚配置也失败: {rollback:#}");
+                    }
+                    _ => {
+                        if let Err(rollback) = writer.restore_default_model(
+                            self.store.official_default_model(agent).as_deref(),
+                        ) {
+                            context =
+                                format!("{context}；写回官方 default_model 也失败: {rollback:#}");
+                        }
+                    }
                 }
                 return Err(error.context(context));
             }
@@ -836,14 +840,17 @@ impl ProviderManager {
             // 覆盖 default_model，必须一并写回官方值，否则官方登录态断裂。
             // 回滚本身失败时如实附加，不无条件声称已回滚（复审 F3）。
             let mut context = "切换 Provider 失败：配置已写入但无法保存切换状态，已尝试回滚配置；请检查磁盘后重试".to_string();
-            if let Err(rollback) =
-                writer.revert_to_official(Some(&ProviderTarget::from_record(&record, None)))
-            {
-                context = format!("{context}；回滚配置也失败: {rollback:#}");
-            } else if let Err(rollback) =
-                writer.restore_default_model(official_default_model.as_deref())
-            {
-                context = format!("{context}；写回官方 default_model 也失败: {rollback:#}");
+            match writer.revert_to_official(Some(&ProviderTarget::from_record(&record, None))) {
+                Err(rollback) => {
+                    context = format!("{context}；回滚配置也失败: {rollback:#}");
+                }
+                _ => {
+                    if let Err(rollback) =
+                        writer.restore_default_model(official_default_model.as_deref())
+                    {
+                        context = format!("{context}；写回官方 default_model 也失败: {rollback:#}");
+                    }
+                }
             }
             return Err(error.context(context));
         }

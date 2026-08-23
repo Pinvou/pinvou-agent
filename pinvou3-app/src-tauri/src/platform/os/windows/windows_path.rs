@@ -1,5 +1,5 @@
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf, MAIN_SEPARATOR};
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::process::Command;
 
 const PDF_TOOLS: &[&str] = &["pdftotext", "pdftoppm"];
@@ -698,12 +698,14 @@ mod tests {
         std::fs::write(&python, b"").unwrap();
         let prev = std::env::var("PINVOU3_PYTHON").ok();
 
-        std::env::set_var("PINVOU3_PYTHON", &python);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK(见上方 _g),env 写串行化。
+        unsafe { std::env::set_var("PINVOU3_PYTHON", &python) };
         assert_eq!(python_command(), python.to_string_lossy());
 
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_PYTHON", v),
-            None => std::env::remove_var("PINVOU3_PYTHON"),
+            // SAFETY: 同上,ENV_LOCK 串行化下的恢复写。
+            Some(v) => unsafe { std::env::set_var("PINVOU3_PYTHON", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_PYTHON") },
         }
         let _ = std::fs::remove_dir_all(dir);
     }

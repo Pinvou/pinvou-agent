@@ -33,9 +33,10 @@ impl ExpertRosterSnapshot {
     pub fn capture() -> Arc<Self> {
         loop {
             let before = crate::features::personas::executable_revision();
+            // 快照缓存只做加速，持锁 panic 不应拖垮会话：沿用全仓锁中毒恢复惯例。
             if let Some(snapshot) = snapshot_cache()
                 .read()
-                .expect("expert roster cache lock poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .as_ref()
                 .filter(|(revision, _)| *revision == before)
                 .map(|(_, snapshot)| Arc::clone(snapshot))
@@ -49,9 +50,10 @@ impl ExpertRosterSnapshot {
                 continue;
             }
             let candidate = Arc::new(Self::from_cards(cards));
+            // 同上：写锁中毒时取回守卫继续，缓存内容整体替换无部分写入风险。
             let mut cache = snapshot_cache()
                 .write()
-                .expect("expert roster cache lock poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some((revision, snapshot)) = cache.as_ref() {
                 if *revision == after {
                     return Arc::clone(snapshot);
@@ -418,7 +420,8 @@ pub fn cleanup_legacy_expert_projection(
     for component in [
         session_dir,
         ledger,
-        dir.parent().expect("profile dir parent"),
+        dir.parent()
+            .ok_or_else(|| format!("旧专家投影目录没有父目录: {}", dir.display()))?,
         &dir,
     ] {
         let metadata = std::fs::symlink_metadata(component).map_err(|error| {
@@ -545,7 +548,8 @@ mod tests {
             std::thread::current().id()
         ));
         let _ = std::fs::remove_dir_all(&isolated_home);
-        std::env::set_var("PINVOU3_HOME", &isolated_home);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &isolated_home) };
         crate::features::personas::reload_user();
 
         let first = ExpertRosterSnapshot::capture();
@@ -597,8 +601,10 @@ mod tests {
         assert!(!after_delete.fleet_config().profiles.contains_key(&role_id));
 
         match previous_home {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         crate::features::personas::reload_user();
         let _ = std::fs::remove_dir_all(isolated_home);

@@ -69,7 +69,10 @@ fn ensure_release_env() {
     crate::platform::ui_cache::configure_runtime_environment();
     for (k, v) in RELEASE_ENV_DEFAULTS {
         if env::var_os(k).is_none() {
-            env::set_var(k, v);
+            // SAFETY: ensure_release_env 仅由 run() 首行调用(linux 下在 tauri
+            // Builder 之前),此时进程只有主线程——无并发 env 读者(审计结论:
+            // 首个线程 spawn 在 lib.rs setup 阶段,晚于本函数)。
+            unsafe { env::set_var(k, v) };
         }
     }
 
@@ -102,7 +105,8 @@ fn ensure_release_env() {
             }
             dirs.extend(env::split_paths(&old));
             if let Ok(joined) = env::join_paths(dirs) {
-                env::set_var("PATH", joined);
+                // SAFETY: 同上,run() 单线程启动阶段,无并发 env 读者。
+                unsafe { env::set_var("PATH", joined) };
             }
         }
     }
@@ -518,6 +522,9 @@ pub(crate) async fn prepare_app_restart(app: &tauri::AppHandle) {
 /// macOS 的 embed_plist 用 `#[no_mangle] static _EMBED_INFO_PLIST` 让重复
 /// 展开成为链接错误;GUI(`run`)与 headless 评测宿主(benchmark-hooks)必须
 /// 共用这里的单一 Context 构造,不得在别处再展开该宏。
+// generate_context! 宏展开内部含 process::exit(上下文缺失即无法启动);
+// 这是 Tauri 宏自身行为,非本仓代码路径,予以豁免。
+#[allow(clippy::exit)]
 pub fn build_tauri_context() -> tauri::Context {
     tauri::generate_context!()
 }
@@ -748,7 +755,14 @@ pub fn run() {
             let store_for_engine = session_store.unwrap_or_else(|| {
                 // store boot 失败时退化用一份临时 store（让 engine 至少能起来）；
                 // 实际使用 session 相关命令会失败,但聊天能跑
-                SessionStore::boot_for_process_startup().expect("session store boot fallback")
+                //
+                // 二次 boot 仍失败(如磁盘只读)时无法构造任何可用 store,engine
+                // 面上没有可用的失败路径,app 已不可用——panic 快速失败优于带病
+                // 运行,故此处保留 expect。
+                #[allow(clippy::expect_used)]
+                || -> SessionStore {
+                    SessionStore::boot_for_process_startup().expect("session store boot fallback")
+                }()
             });
             // Install the browser transient-protocol startup barrier before any Engine,
             // scheduler, or remote producer. spawn_watch synchronously isolates the
@@ -1449,6 +1463,9 @@ pub fn run() {
     // Keep the historical marker so old and new startup runs remain comparable.
     startup::mark("tauri:run_enter");
     startup::mark("tauri:build:start");
+    // Tauri 模板惯用法:builder.build 失败意味着窗口/事件循环无法建立,进程
+    // 尚未进入用户会话,无降级路径可言——保留 expect 快速失败。
+    #[allow(clippy::expect_used)]
     let app = builder
         .build(context)
         .expect("error while building tauri application");
@@ -1486,7 +1503,7 @@ pub fn run() {
 #[cfg(test)]
 mod tool_allowlist_contract {
     use crate::features::assistant::tool_policy::{
-        is_pinvou3_allowed, PINVOU3_ALLOWED_TOOLS, PINVOU3_ALWAYS_LOADED_TOOLS,
+        PINVOU3_ALLOWED_TOOLS, PINVOU3_ALWAYS_LOADED_TOOLS, is_pinvou3_allowed,
     };
 
     /// Pinvou 只允许产品需要的 canonical 工具家族；动态 MCP 工具限制在标准命名空间。
@@ -1783,8 +1800,11 @@ mod release_env_defaults_guard {
         fn drop(&mut self) {
             for (k, v) in &self.0 {
                 match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
+                    // SAFETY: 持 platform::paths::tests::ENV_LOCK(见各使用点),
+                    // 测试进程内 env 写已串行化。
+                    Some(v) => unsafe { std::env::set_var(k, v) },
+                    // SAFETY: 同上,ENV_LOCK 串行化下的恢复删除。
+                    None => unsafe { std::env::remove_var(k) },
                 }
             }
             // ensure_release_env 可能 set 了快照中原本不存在的 key（PATH 分支、Linux
@@ -1795,7 +1815,8 @@ mod release_env_defaults_guard {
                 .filter(|k| !keep.contains(k))
                 .collect();
             for k in stale {
-                std::env::remove_var(&k);
+                // SAFETY: 同上,ENV_LOCK 串行化下的清理删除。
+                unsafe { std::env::remove_var(&k) };
             }
         }
     }
@@ -1825,8 +1846,10 @@ mod release_env_defaults_guard {
 
         // 第二层：实际注入路径（ensure_release_env 是 run() 启动路径的 release env
         // 注入函数）。先清掉外部可能残留的 env，确保断言的是注入函数自身的行为。
-        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
-        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK(本测试首行),env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
+        // SAFETY: 同上,ENV_LOCK 串行化。
+        unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
         super::ensure_release_env();
         assert!(
             std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none(),

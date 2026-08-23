@@ -23,8 +23,8 @@ use std::path::Path;
 use std::ptr::NonNull;
 use std::sync::mpsc;
 
-use objc2::rc::Retained;
 use objc2::AnyThread;
+use objc2::rc::Retained;
 use objc2_foundation::{NSError, NSLocale, NSString, NSURL};
 use objc2_speech::{
     SFSpeechRecognitionResult, SFSpeechRecognitionTask, SFSpeechRecognitionTaskHint,
@@ -72,10 +72,13 @@ pub fn transcribe_with_speech(wav_path: &Path, locale_tag: &str) -> Result<Strin
     // 2. recognizer（按 locale_tag 锁定识别语言，而非系统默认 locale）。
     //    用 initWithLocale 创建：系统语言为英文时默认 locale=en-US，会把中文音频当
     //    英文解析 → 无意义英文字母。显式 zh-CN/en-US/ja-JP 与 UI 语言一致。
-    // SAFETY: localeWithLocaleIdentifier 是 safe 类方法（返回 Retained，自动释放）；
-    // initWithLocale 的 alloc 配对由 Retained::Drop 释放。locale_tag 来自可信常量映射。
+    // localeWithLocaleIdentifier 是 safe 类方法（返回 Retained，自动释放）；
+    // locale_tag 来自可信常量映射。
     let locale = NSLocale::localeWithLocaleIdentifier(&NSString::from_str(locale_tag));
     let recognizer: Retained<SFSpeechRecognizer> =
+        // SAFETY: alloc/initWithLocale 配对——alloc 返回未初始化实例，init 成功
+        // 后交由 Retained 管理（Drop 释放）；locale 是上方刚构造的有效 NSLocale；
+        // init 失败返回 nil，由 ok_or_else 转为错误而非解引用。
         unsafe { SFSpeechRecognizer::initWithLocale(SFSpeechRecognizer::alloc(), &locale) }
             .ok_or_else(|| {
                 format!("系统不支持该语音识别 locale（{locale_tag}），请检查语言设置")
@@ -127,6 +130,8 @@ pub fn transcribe_with_speech(wav_path: &Path, locale_tag: &str) -> Result<Strin
                 let res = unsafe { res.as_ref() };
                 // SAFETY: isFinal / bestTranscription / formattedString 都是只读访问。
                 if unsafe { res.isFinal() } {
+                    // SAFETY: bestTranscription / formattedString 是只读属性，res 指向
+                    // 框架保证在本次回调内有效的结果对象；返回的 Retained 同样只读。
                     let text = unsafe { res.bestTranscription().formattedString() }.to_string();
                     let _ = tx.send(Ok(text));
                 }
@@ -231,10 +236,10 @@ mod tests {
 
     #[test]
     fn auth_decision_ok_when_authorized() {
-        assert!(auth_status_decision(
-            objc2_speech::SFSpeechRecognizerAuthorizationStatus::Authorized
-        )
-        .is_ok());
+        assert!(
+            auth_status_decision(objc2_speech::SFSpeechRecognizerAuthorizationStatus::Authorized)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -257,9 +262,9 @@ mod tests {
 
     #[test]
     fn auth_decision_err_when_restricted() {
-        assert!(auth_status_decision(
-            objc2_speech::SFSpeechRecognizerAuthorizationStatus::Restricted
-        )
-        .is_err());
+        assert!(
+            auth_status_decision(objc2_speech::SFSpeechRecognizerAuthorizationStatus::Restricted)
+                .is_err()
+        );
     }
 }

@@ -4,10 +4,18 @@ version = "0.8.8"
 description = "品悟智能助手桌面应用后端"
 authors = ["pinvou"]
 license = "MIT"
-edition = "2021"
+# edition 2024:与底座 CodeWhale(workspace edition = "2024")对齐;rustc >= 1.85 支持。
+edition = "2024"
 # MSRV:rust-version 是「能编译本 crate 的最低版本」下限;
 # 实际构建工具链由 rust-toolchain.toml 锁定到具体版本(可复现),二者语义互补。
+# 1.89 > edition 2024 的 1.85 下限,维持不变。
 rust-version = "1.89"
+# cargo-shear(未用依赖/未链接文件检查)豁免:rustc-stack-wrapper.rs 不是本 crate
+# 的编译目标,而是 scripts/rustc-stack-wrapper-select.sh 在 Windows 上按需编译成
+# rustc-stack-wrapper.exe 的源码(CreateProcess 直启规避 cmd 8191 字符上限),
+# 见 .cargo/config.toml 的 RUSTC_WRAPPER 说明。勿按 shear 建议删除。
+[package.metadata.cargo-shear]
+ignored-paths = ["scripts/rustc-stack-wrapper.rs"]
 # 主 binary 是 Tauri app(src/main.rs);src/bin/dump_system_prompt.rs 是 dev 工具,
 # 加这个键让 `cargo run`(不带 --bin)默认跑主 app,不再因为多 bin 报错。
 default-run = "pinvou3-tauri"
@@ -253,12 +261,13 @@ javascriptcore = { package = "javascriptcore-rs", version = "1.1" }
 tauri-runtime-wry = "=2.11.4"
 
 # =============================================================================
-# Lint 门禁 —— 硬门禁设计:只启用「当前实测零欠账」的 lint(deny);
-# 有欠账的 lint/group 显式 allow 并注明欠账规模,由清理 PR(#35 及后续)消化后逐个启用。
-# CI(pr-check.yml rust-lint job)直接跑 `cargo clippy --lib --no-deps`(无 continue-on-error),
-# deny 命中即 fail;allow 的欠账 lint 被静默,不产生告警噪声。
-# 实测基线(rust 1.97.1,2026-07-28):应用 crate 的 clippy::all 组 20 处欠账
-# (不含 CodeWhale),rustc 默认 lint 既有基线为 113 处。
+# Lint 门禁 —— 硬门禁设计:只 deny「当前实测零欠账」的 lint;有欠账的
+# lint/group 显式 allow 并注明欠账规模,由后续清理 PR 消化后逐个升级。
+# CI(pr-check.yml rust-lint job)跑 `cargo clippy --lib --no-deps`(无
+# continue-on-error),deny 命中即 fail;allow 的欠账 lint 被静默,不产生噪声。
+# 实测基线(rust 1.97.1,2026-08-24,edition 2024 迁移后):
+# 本仓 clippy::all 零欠账(#35 清理后已收敛;残余 19 条 private_interfaces
+# 均产自 CodeWhale 子模块,--no-deps 下不受本表约束,属上游欠账)。
 # =============================================================================
 [lints.rust]
 # —— 零欠账,deny 硬门禁(实测 0 违规)——
@@ -268,12 +277,20 @@ unsafe_op_in_unsafe_fn = "deny"
 unused_import_braces = "deny"
 # 能省略的显式 lifetime 标注:
 unused_lifetimes = "deny"
-# 未使用的 import / 变量 / mut(本 PR 已清零 3 处,deny 防回流):
+# 未使用的 import / 变量 / mut:
 unused_imports = "deny"
 unused_variables = "deny"
 unused_mut = "deny"
+# edition 2024 已切换;该组在未来 rustc 演进下保持代码可继续升级(实测零欠账):
+rust_2024_compatibility = "deny"
+# 已知的未来不兼容用法(废弃语法等,实测零欠账):
+future_incompatible = "deny"
+# 隐式 pub 可达性收口前的过渡(rust_2018_idioms 实测 25 处欠账,deny 前先 warn):
+rust_2018_idioms = "warn"
+# 隐藏 lifetime 参数(elided_lifetimes_in_paths 属该组;实测 4 处欠账)。
+# rust_2018_idioms 的 warn 已涵盖;升 deny 由后续清理 PR 处理。
 
-# —— 有欠账,显式 allow;注释给出欠账规模,清理 PR(#35 及后续)消化后升 deny ——
+# —— 有欠账,显式 allow;注释给出欠账规模,后续清理 PR 消化后升级 ——
 # unreachable_pub:1795 处欠账(全 crate pub 未收口,工程量大,单独清理)。
 unreachable_pub = "allow"
 # let_underscore_drop:306 处欠账(`let _ =` 吞 Drop 副作用,需逐个确认语义)。
@@ -282,12 +299,15 @@ let_underscore_drop = "allow"
 dead_code = "allow"
 # private_interfaces:14 处欠账(pub 接口暴露私有类型,随 unreachable_pub 一起收口)。
 private_interfaces = "allow"
+# missing_docs:699 处欠账 —— 本 crate 是 private bin(不发布 crates.io、
+# 无外部消费者),文档完整性价值有限,长期 allow。
+missing_docs = "allow"
 
 [lints.clippy]
 # —— all / pedantic 组有历史欠账,整组 allow(priority=-1 保证下方具体 lint 的 deny 生效)——
-# all 组(correctness+suspicious+style+complexity+perf)应用 crate 实测 20 处欠账;
-# pedantic 组欠账更多(原方案全量 warn 实测近 2000 条告警,等于无门禁)。
-# 欠账由清理 PR(#35 及后续)消化后,再整组或逐 lint 升 deny。
+# all 组本仓已零欠账,但组内 lint 会随 clippy 版本演进新增,整组 allow 是保守姿态;
+# 下方具体 deny 的 lint 不受影响。pedantic 组欠账 ~2360 条(doc_markdown 871 条
+# 居多,中英混排注释为主因),长期 allow;其中高价值子集已单独摘出。
 all = { level = "allow", priority = -1 }
 pedantic = { level = "allow", priority = -1 }
 
@@ -300,10 +320,38 @@ unimplemented = "deny"
 unnecessary_unwrap = "deny"
 # 禁 `dep = "*"` 通配版本(防未来新增不锁版本的危险依赖)。
 wildcard_dependencies = "deny"
+# 指针 `as` 转换(FFI 场景 provenance 陷阱;已全部改用 ptr.cast(),防回流):
+ptr_as_ptr = "deny"
+# Rc<Mutex<_>> 死锁脚枪 / Rc<String>/Rc<Vec> 无谓堆分配(实测 0):
+rc_mutex = "deny"
+empty_drop = "deny"
+# match 单分支解构建议用 if let(style 类,机械统一):
+single_match = "deny"
+# cargo 组:feature 命名卫生(实测 0,防未来新增反直觉 feature 名):
+negative_feature_names = "deny"
+redundant_feature_names = "deny"
+
+# —— 有欠账,本 PR 清零后即为 deny;暂以 warn 观察一个周期 ——
+# 每个unsafe块必须有 SAFETY 注释(edition 2024 迁移后新增大量 unsafe 块,
+# 基线 53 处已在迁移 PR 中全部补注;warn 防新增,确认 CI 稳定后升 deny):
+undocumented_unsafe_blocks = "warn"
+# unwrap/expect 桌面长驻进程 panic 即杀会话(基线 unwrap 6/expect 38,
+# 测试代码豁免;本 PR 清零生产代码后维持 warn 防回流):
+unwrap_used = "warn"
+expect_used = "warn"
+# Result 构造函数内 unwrap/expect(API 坏味道,基线 3):
+unwrap_in_result = "warn"
+# process::exit 跳过清理钩子(Tauri lib 内,基线 1):
+exit = "warn"
+# .get(i).unwrap() 模式(基线 0,直接 deny):
+get_unwrap = "deny"
+
 # 注:print_stdout/print_stderr 未启用——本 app 启动诊断大量用 eprintln!(早于日志
 #     后端就绪),启用会刷出大量噪声;待日志链路统一后再评估。
 # 注:cargo_common_metadata 未启用——本 crate 是 private bin(不发布 crates.io),
 #     repository/readme/keywords/categories 无意义。
+# 注:doc_markdown(871 条)未启用——注释以中文为主,反引号收口价值低噪声高;
+#     如需 prose 检查应引入 cargo-spellcheck 类工具而非 clippy。
 
 # =============================================================================
 # 构建优化 Profile —— release 开启「安全范围内最大优化」

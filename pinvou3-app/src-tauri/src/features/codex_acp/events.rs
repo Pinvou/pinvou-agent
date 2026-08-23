@@ -2,18 +2,18 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use agent_client_protocol::schema::v1::{
     SessionNotification, SessionUpdate, ToolCall, ToolCallStatus, ToolCallUpdate,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use parking_lot::{Condvar, Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter};
 
 use super::attachments::CodexDisplayAttachment;
@@ -1397,18 +1397,26 @@ mod tests {
             projected["event"]["data"]["update"]["locations"][0]["path"],
             "lib.rs"
         );
-        assert!(projected["event"]["data"]["update"]["rawInput"]
-            .get("environment")
-            .is_none());
-        assert!(projected["event"]["data"]["update"]["rawInput"]
-            .get("apiKey")
-            .is_none());
-        assert!(projected["event"]["data"]["update"]["rawInput"]
-            .get("access_token")
-            .is_none());
-        assert!(projected["event"]["data"]["update"]["rawInput"]
-            .get("request-headers")
-            .is_none());
+        assert!(
+            projected["event"]["data"]["update"]["rawInput"]
+                .get("environment")
+                .is_none()
+        );
+        assert!(
+            projected["event"]["data"]["update"]["rawInput"]
+                .get("apiKey")
+                .is_none()
+        );
+        assert!(
+            projected["event"]["data"]["update"]["rawInput"]
+                .get("access_token")
+                .is_none()
+        );
+        assert!(
+            projected["event"]["data"]["update"]["rawInput"]
+                .get("request-headers")
+                .is_none()
+        );
         for key in [
             "OPENAI_API_KEY",
             "x-api-key",
@@ -1416,9 +1424,11 @@ mod tests {
             "custom_token_value",
             "aws_secret_access_key",
         ] {
-            assert!(projected["event"]["data"]["update"]["rawInput"]
-                .get(key)
-                .is_none());
+            assert!(
+                projected["event"]["data"]["update"]["rawInput"]
+                    .get(key)
+                    .is_none()
+            );
         }
         assert_eq!(
             projected["event"]["data"]["update"]["rawOutput"]["text"],
@@ -1745,16 +1755,18 @@ mod tests {
         assert!(second.has_more);
         assert!(second.next_cursor.expect("second page cursor") > first_cursor);
 
-        assert!(load_web_timeline_page_from_path(
-            timeline.path(),
-            "test",
-            0,
-            Some(1),
-            2,
-            1024 * 1024,
-            1024 * 1024,
-        )
-        .is_err());
+        assert!(
+            load_web_timeline_page_from_path(
+                timeline.path(),
+                "test",
+                0,
+                Some(1),
+                2,
+                1024 * 1024,
+                1024 * 1024,
+            )
+            .is_err()
+        );
     }
 
     #[test]

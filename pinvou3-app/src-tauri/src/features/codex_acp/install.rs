@@ -628,6 +628,9 @@ impl InstallOutputReaders {
         }
     }
 
+    // finish 按值消费 self，stdout/stderr 仅在构造函数置为 Some、无其他写点，
+    // take 必得 Some；因 Drop 限制无法改成移出字段的写法，panic 分支不可达。
+    #[allow(clippy::expect_used)]
     async fn finish(mut self) -> (String, String) {
         self.child_finished.store(true, Ordering::Release);
         let stdout = self.stdout.take().expect("stdout reader missing");

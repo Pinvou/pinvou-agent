@@ -22,7 +22,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use deepseek_tui::config::{
-    wire_model_for_provider, ApiProvider, Config as DtConfig, ProviderConfig, ProvidersConfig,
+    ApiProvider, Config as DtConfig, ProviderConfig, ProvidersConfig, wire_model_for_provider,
 };
 use deepseek_tui::core::engine::EngineConfig;
 use deepseek_tui::core::ops::Op;
@@ -30,12 +30,12 @@ use deepseek_tui::hooks::{Hook, HookCondition, HookEvent, HookExecutor, HooksCon
 use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tui::app::AppMode;
 
-use self::bundle::{instructions_code_md, instructions_md, Pinvou3Bundle};
+use self::bundle::{Pinvou3Bundle, instructions_code_md, instructions_md};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::core::session_mode::SessionMode;
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::image_capability::{
-    effective_image_capability, EffectiveImageCapability,
+    EffectiveImageCapability, effective_image_capability,
 };
 use crate::features::assistant::runtime_model::RuntimeModelCredential;
 use crate::features::assistant::session_policy::SessionPolicy;
@@ -236,7 +236,12 @@ impl Pinvou3Bridge {
     /// 移除的根因。lib.rs `release_env_defaults_guard` 守 run() 的 release env 注入，
     /// 本函数 + `forkguard_boot_env_must_not_pin_global_output_cap` 守 boot 注入源头。
     fn wire_boot_env(artifacts_dir: &std::path::Path) {
-        std::env::set_var("PINVOU3_SESSION_ARTIFACTS", artifacts_dir);
+        let _env_guard = crate::platform::env_write::lock();
+        // SAFETY: 持上方 let 绑定的 platform::env_write 锁串行化进程 env 写。boot
+        // 发生在 Tauri setup 阶段(多线程运行时已启动),与安装流程/底座子进程 env
+        // 快照可能并发,不能主张单线程;锁内仅此一次写。外部运行时(WebKit 等)的
+        // libc getenv 并发是已文档化的接受残余风险(见 platform/env_write.rs)。
+        unsafe { std::env::set_var("PINVOU3_SESSION_ARTIFACTS", artifacts_dir) };
     }
 
     pub fn boot() -> Result<Self> {
@@ -1557,11 +1562,7 @@ impl Pinvou3Bridge {
             // agent 集群、不教 workflow；已知底座限制记录在 ADR-0006。
             disallowed_tools: {
                 let n = crate::features::marketplace::disabled_tool_names();
-                if n.is_empty() {
-                    None
-                } else {
-                    Some(n)
-                }
+                if n.is_empty() { None } else { Some(n) }
             },
             max_tool_calls,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
@@ -1625,7 +1626,7 @@ impl Pinvou3Bridge {
         // 后的热刷走 EnginePool::refresh_permission_rulesets，两处同一份计算。
         // 规则集 = CLI 二进制名 deny + 禁用技能脚本路径 deny（§5.1 通道③）。
         cfg.exec_policy_engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
-            self.scope_deny_ruleset(session_id)
+            self.scope_deny_ruleset(session_id),
         ]);
         // Native Code-mode and external ACP sessions do not expose Browser MCP tools. They
         // fall back to global mcp.json, which has no browser entry. System instructions and
@@ -2449,9 +2450,11 @@ mod tests {
         fn drop(&mut self) {
             for (name, value) in &self.vars {
                 if let Some(value) = value {
-                    std::env::set_var(name, value);
+                    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                    unsafe { std::env::set_var(name, value) };
                 } else {
-                    std::env::remove_var(name);
+                    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                    unsafe { std::env::remove_var(name) };
                 }
             }
         }
@@ -2599,9 +2602,11 @@ mod tests {
         );
 
         // 临时代码会话 / 普通会话：resolver 未命中 → 不注入。
-        assert!(bridge
-            .code_session_project_rules("sess-code-temp")
-            .is_empty());
+        assert!(
+            bridge
+                .code_session_project_rules("sess-code-temp")
+                .is_empty()
+        );
         assert!(bridge.code_session_project_rules("sess-plain").is_empty());
 
         // 没有 AGENTS.md 的目录链不注入（project2 无规则文件）。
@@ -2893,7 +2898,8 @@ mod tests {
             std::env::temp_dir().join(format!("pinvou3-bridge-shape-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         // 模拟已装 weather/pptx 两个连接器(code 未初始化 → 默认全禁)。
         let installed = dir.join("marketplace").join("installed.json");
         std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
@@ -2971,7 +2977,8 @@ mod tests {
             std::env::temp_dir().join(format!("pinvou3-bridge-clidny-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let mut bridge = fixture_bridge();
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
@@ -2996,10 +3003,11 @@ mod tests {
             .collect();
         cmds.sort_unstable();
         assert_eq!(cmds, ["lark-cli", "lark-cli.cmd", "lark-cli.exe"]);
-        assert!(rs
-            .ask_rules
-            .iter()
-            .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny));
+        assert!(
+            rs.ask_rules
+                .iter()
+                .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny)
+        );
 
         // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义），
         // 每个二进制发裸名 + .exe/.cmd 变体共 3 条。
@@ -3027,10 +3035,11 @@ mod tests {
                 "wecom-cli.exe"
             ]
         );
-        assert!(rs
-            .ask_rules
-            .iter()
-            .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny));
+        assert!(
+            rs.ask_rules
+                .iter()
+                .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny)
+        );
 
         // code 显式只禁 dingtalk → 仅剩 dws 被硬拒（含 .exe/.cmd 变体）。
         crate::features::marketplace::save_disabled_connectors_for(
@@ -3085,7 +3094,8 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let mut bridge = fixture_bridge();
         bridge.set_code_session_predicate(std::sync::Arc::new(|_| false));
@@ -3146,9 +3156,11 @@ mod tests {
         let rules = skill_script_deny_rules_for(&dir);
         // x.py: 4 解释器 + 1 直跑 = 5；y.sh: 2 + 1 = 3；notes.md / .git 无规则
         assert_eq!(rules.len(), 8, "规则数: {rules:?}");
-        assert!(rules
-            .iter()
-            .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny));
+        assert!(
+            rules
+                .iter()
+                .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny)
+        );
 
         // 引擎级行为：直跑 / 带参数 / 链式都硬拒（Never 模式也不放水）；
         // 其它路径的同名解释器调用不受影响。
@@ -3198,7 +3210,8 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PINVOU3_HOME", &dir);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         // 盘上放一个带脚本的市场技能目录（SKILL.md + upload 标记 → 对已装技能
         // 集合可见，code 未初始化「默认全禁」才能覆盖它）。市场技能已迁到按包聚合
         // 的新布局 `bundles/<pkg>/skills/<name>/`（旧扁平 `bundle/skills/` 仅存内置技能）。
@@ -3403,9 +3416,11 @@ mod tests {
 
         let engine = bridge.build_engine_config();
         assert!(engine.vision_config.is_some());
-        assert!(engine
-            .features
-            .enabled(deepseek_tui::features::Feature::VisionModel));
+        assert!(
+            engine
+                .features
+                .enabled(deepseek_tui::features::Feature::VisionModel)
+        );
     }
 
     #[test]
@@ -3435,9 +3450,12 @@ mod tests {
     fn vision_config_reuses_main_model_only_when_supported() {
         let (_lock, _env) =
             locked_env(&["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL"]);
-        std::env::remove_var("DEEPSEEK_API_KEY");
-        std::env::remove_var("DEEPSEEK_MODEL");
-        std::env::remove_var("DEEPSEEK_BASE_URL");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_MODEL") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -3456,10 +3474,12 @@ mod tests {
             config.base_url.as_deref(),
             Some("https://api.openai.com/v1")
         );
-        assert!(bridge
-            .build_engine_config()
-            .features
-            .enabled(deepseek_tui::features::Feature::VisionModel));
+        assert!(
+            bridge
+                .build_engine_config()
+                .features
+                .enabled(deepseek_tui::features::Feature::VisionModel)
+        );
     }
 
     /// §9.3 规则 3:主模型 Unknown/Unsupported 且未设置视觉模型 →
@@ -3478,9 +3498,11 @@ mod tests {
         assert!(unknown.resolve_vision_model_config().is_none());
         let engine = unknown.build_engine_config();
         assert!(engine.vision_config.is_none());
-        assert!(!engine
-            .features
-            .enabled(deepseek_tui::features::Feature::VisionModel));
+        assert!(
+            !engine
+                .features
+                .enabled(deepseek_tui::features::Feature::VisionModel)
+        );
 
         // override Disabled:即便主模型命中内置表也不得复用。
         let mut disabled = fixture_bridge();
@@ -3514,9 +3536,11 @@ mod tests {
         assert!(scheduled.resolve_vision_model_config().is_some());
         let engine = scheduled.build_engine_config();
         assert!(engine.vision_config.is_some());
-        assert!(engine
-            .features
-            .enabled(deepseek_tui::features::Feature::VisionModel));
+        assert!(
+            engine
+                .features
+                .enabled(deepseek_tui::features::Feature::VisionModel)
+        );
 
         // Unsupported(手动 Disabled)即使 always 也不注册:确认不支持的模型
         // 注册了 image_analyze 只会持续调用报错,与交互会话口径一致。
@@ -4003,10 +4027,14 @@ mod tests {
             "DEEPSEEK_PROVIDER",
             "PINVOU3_MAX_OUTPUT_TOKENS",
         ]);
-        std::env::remove_var("CODEWHALE_MAX_OUTPUT_TOKENS");
-        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
-        std::env::remove_var("DEEPSEEK_PROVIDER");
-        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("CODEWHALE_MAX_OUTPUT_TOKENS") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
 
         // A. 云端（Deepseek preset）：SavedModel.max_output_tokens=None（保存云端模型
         //    时前端存 null）→ route_limits.output_tokens=None → 底座 64K/厂商能力兜底。
@@ -4044,7 +4072,8 @@ mod tests {
         // C. env 残留（旧生产双保险未清干净 / 未来有人重新注入）：品悟中间层不读
         //    该 env（route 仍不声明）——但这只是中间层事实，底座最终预算链会读
         //    （见 D 段）。此处只锁"中间层不被 env 污染"，不能据此声称残留无害。
-        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576") };
         let cloud_limits_env = cloud.route_limits_for_model("deepseek-v4-pro");
         assert_eq!(
             cloud_limits_env.as_ref().and_then(|l| l.output_tokens),
@@ -4064,7 +4093,8 @@ mod tests {
             output_tokens: None,
         };
         // 先回到 clean env 基准（C 段末尾已 set 24576）。
-        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
         let budget_clean = deepseek_tui::core::engine::context_input_budget_for_route(
             deepseek_tui::config::ApiProvider::Deepseek,
             "deepseek-v4-pro",
@@ -4072,7 +4102,8 @@ mod tests {
             0,
         )
         .expect("显式 256K route 必须能算出输入预算");
-        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576") };
         let budget_env = deepseek_tui::core::engine::context_input_budget_for_route(
             deepseek_tui::config::ApiProvider::Deepseek,
             "deepseek-v4-pro",
@@ -4090,7 +4121,8 @@ mod tests {
             65_536 - 24_576,
             "reservation 差应恰为底座 64K 兜底 − 本地 24K（clamp/headroom 两侧相同）"
         );
-        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
     }
 
     /// PR #210 守卫（第四轮评审修正 2026-08-12）：bridge boot 的 env 注入结果
@@ -4126,8 +4158,10 @@ mod tests {
             "HOMEDRIVE",
             "HOMEPATH",
         ]);
-        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
-        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
 
         // RAII 清理：boot 会全量解包 bundle 到隔离 home，断言/panic 时也须回收
         // （此前仅在正常结尾 remove_dir_all，中途失败会残留整份 bundle）。
@@ -4147,14 +4181,19 @@ mod tests {
         let _temp = TempDirGuard(root.clone());
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("创建隔离 home");
-        std::env::set_var("PINVOU3_HOME", &root);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
         // 三平台 user_home_dir() 来源全部隔离到 root：macOS/Linux 读 HOME；Windows
         // 优先 USERPROFILE，其次 HOMEDRIVE+HOMEPATH，最后 HOME。若不隔离 Windows 的
         // 前两项，boot 的 workspace 仍指向真实用户目录，legacy 清扫会触碰真实文件。
-        std::env::set_var("HOME", &root);
-        std::env::set_var("USERPROFILE", &root);
-        std::env::remove_var("HOMEDRIVE");
-        std::env::remove_var("HOMEPATH");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("HOME", &root) };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("USERPROFILE", &root) };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("HOMEDRIVE") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("HOMEPATH") };
 
         let bridge = super::Pinvou3Bridge::boot().expect("隔离 home 下 boot 必须成功");
 
@@ -4421,7 +4460,9 @@ mod tests {
             let t = b.build_engine_config().compaction.token_threshold;
             let e = win - output - 1_024;
             let conservative = (t + R) * K_NUM / K_DEN + S + FRAMING;
-            eprintln!("[云端 {model}] window={win} output={output} → T={t}  E={e}  conservative={conservative}");
+            eprintln!(
+                "[云端 {model}] window={win} output={output} → T={t}  E={e}  conservative={conservative}"
+            );
             assert!(
                 conservative <= e,
                 "{model}: T={t} 换算 conservative={conservative} 必须 ≤ E={e}(不倒置)"
@@ -4732,8 +4773,10 @@ mod tests {
     fn forkguard_compaction_threshold_below_emergency_all_windows() {
         let (_lock, _env) =
             locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
-        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
-        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
         // 把 T 从 should_compact 的 raw 子集尺 → emergency 的 conservative 全量尺
         const K_NUM: usize = 3; // ÷ K_DEN == ×1.5
         const K_DEN: usize = 2;
@@ -4992,14 +5035,16 @@ mod tests {
     #[test]
     fn allow_shell_defaults_to_true() {
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
-        std::env::remove_var("PINVOU3_ALLOW_SHELL");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
         assert!(fixture_bridge().allow_shell());
     }
 
     #[test]
     fn allow_shell_uses_advanced_preference_without_env_override() {
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
-        std::env::remove_var("PINVOU3_ALLOW_SHELL");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.allow_shell = Some(false);
         assert!(!bridge.allow_shell());
@@ -5011,7 +5056,8 @@ mod tests {
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.allow_shell = Some(true);
-        std::env::set_var("PINVOU3_ALLOW_SHELL", "false");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_ALLOW_SHELL", "false") };
         assert!(!bridge.allow_shell());
     }
 
@@ -5093,15 +5139,18 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn exec_shell_receives_filtered_shell_env_from_runtime_services() {
+        use deepseek_tui::tools::ToolContext;
         use deepseek_tui::tools::shell::BashTool;
         use deepseek_tui::tools::spec::ToolSpec;
-        use deepseek_tui::tools::ToolContext;
         use serde_json::json;
 
         let (_lock, _env) = locked_env(&["SHELL", "XDG_RUNTIME_DIR", "OPENAI_API_KEY"]);
-        std::env::set_var("SHELL", "/bin/bash");
-        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/4242");
-        std::env::set_var("OPENAI_API_KEY", "must-not-leak");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("SHELL", "/bin/bash") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", "/run/user/4242") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("OPENAI_API_KEY", "must-not-leak") };
 
         let workspace =
             std::env::temp_dir().join(format!("pinvou3-shell-env-runtime-{}", std::process::id()));
@@ -5182,7 +5231,8 @@ mod tests {
         // remove_var 是无保护的 env 写,须持 crate 级 ENV_LOCK 与 allow_shell_* 组串行,
         // 否则去掉 --test-threads=1 后会与同组测试并发污染 PINVOU3_ALLOW_SHELL。
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
-        std::env::remove_var("PINVOU3_ALLOW_SHELL");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
         let bridge = fixture_bridge();
         let op = bridge
             .build_send_message_op("sess-plain", "hi".into(), AppMode::Yolo, None, false)
@@ -5215,7 +5265,8 @@ mod tests {
         // 本测试既 remove_var 又经 allow_shell_for_prefs() 读 PINVOU3_ALLOW_SHELL 断言 true;
         // 不持锁时会与 allow_shell_env_overrides_prefs(临界区内 set "false")竞态 → 断言偶发失败。
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
-        std::env::remove_var("PINVOU3_ALLOW_SHELL");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
         let bridge = fixture_bridge();
         let op = bridge
             .build_send_message_op("sess-plain", "exec ls".into(), AppMode::Plan, None, false)
@@ -5400,10 +5451,12 @@ mod tests {
             crate::bridge::paths::tests::unique_suffix()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        std::env::set_var("PINVOU3_HOME", &root);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
 
         let public_artifacts = paths::default_session_artifacts_dir();
-        std::env::set_var("PINVOU3_SESSION_ARTIFACTS", &public_artifacts);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_SESSION_ARTIFACTS", &public_artifacts) };
 
         let bridge = fixture_bridge();
         let a = "sess-artifacts-a";
@@ -5846,10 +5899,14 @@ mod tests {
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
         bridge.prefs.advanced.custom_model_name = Some("custom-openai-model".to_string());
-        std::env::set_var("DEEPSEEK_MODEL", "env-model");
-        std::env::set_var("DEEPSEEK_PROVIDER", "env-provider");
-        std::env::set_var("DEEPSEEK_BASE_URL", "http://env:8000/v1");
-        std::env::set_var("DEEPSEEK_API_KEY", "env-key");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_MODEL", "env-model") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_PROVIDER", "env-provider") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_BASE_URL", "http://env:8000/v1") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
         assert_eq!(bridge.model(), "env-model");
         assert_eq!(bridge.provider(), "env-provider");
         assert_eq!(bridge.base_url(), "http://env:8000/v1");
@@ -5872,7 +5929,8 @@ mod tests {
             "https://api.openai.com/v1",
             "saved-key",
         );
-        std::env::set_var("DEEPSEEK_API_KEY", "env-key");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
         bridge.runtime_model_credential =
             Some(RuntimeModelCredential::api_key("runtime-key").expect("runtime credential"));
 
@@ -5899,7 +5957,8 @@ mod tests {
             "https://api.openai.com/v1",
             "saved-key",
         );
-        std::env::set_var("DEEPSEEK_API_KEY", "  ");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "  ") };
         assert_eq!(bridge.api_key(), "saved-key");
     }
 
@@ -6017,9 +6076,12 @@ mod tests {
             "http://127.0.0.1:8000/v1",
             "",
         );
-        std::env::set_var("DEEPSEEK_PROVIDER", "vllm");
-        std::env::set_var("DEEPSEEK_BASE_URL", "https://api.deepseek.com/");
-        std::env::set_var("DEEPSEEK_MODEL", "deepseek-ai/DeepSeek-V4-Pro");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_PROVIDER", "vllm") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_BASE_URL", "https://api.deepseek.com/") };
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_MODEL", "deepseek-ai/DeepSeek-V4-Pro") };
 
         assert_eq!(bridge.provider(), "deepseek");
         assert_eq!(bridge.model(), "deepseek-v4-pro");

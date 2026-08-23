@@ -639,17 +639,46 @@ jobs:
             build-essential pkg-config cmake
 
       # clippy 硬门禁(无 continue-on-error):lint 配置走 Cargo.toml [lints] 表,
-      # 不用命令行 -W/-D(避免与本地行为分叉)。[lints] 只启用实测零欠账的 lint(deny),
-      # deny 命中即非零退出;欠账 lint/group 显式 allow(见表内注释,清理 PR 消化后启用)。
-      # --lib:只检查主库,不编译 tests/examples。--no-deps:不 lint 依赖;
-      # CodeWhale 子模块(path 依赖)的告警不受本仓 [lints] 约束,属上游欠账,仅显示不挡。
-      - name: cargo clippy --lib (硬门禁,[lints] deny 命中即 fail)
+      # 不用命令行 -W/-D(避免与本地行为分叉)。分两步:
+      # 1) --lib --bins -D warnings:生产代码全硬门禁(deny + warn 全部零容忍,含
+      #    undocumented_unsafe_blocks/expect_used/unwrap_used 等本 PR 清零项)。
+      # 2) --lib --bins --tests:测试代码纳入 deny 硬门禁(todo!/dbg!/get_unwrap
+      #    等在测试同样禁止);warn 类(expect/unwrap 是测试惯例,~3400 条存量)
+      #    不在测试目标强制,避免噪声海淹没真问题。
+      # --no-deps:不 lint 依赖;CodeWhale 子模块(path 依赖)的告警不受本仓
+      # [lints] 约束,属上游欠账,仅显示不挡。
+      - name: cargo clippy (硬门禁,[lints] deny 命中即 fail)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         working-directory: pinvou3-app/src-tauri
-        run: cargo clippy --lib --no-deps
+        run: |
+          cargo clippy --lib --bins --no-deps --features dev-tools -- -D warnings
+          cargo clippy --lib --bins --tests --no-deps --features dev-tools
+
+      # pinvou-knowledge 是独立 workspace(不在 src-tauri workspace 内),单独 lint;
+      # 其 [lints] 表与 app 同策略(测试惯例同上,--tests 不强制 warn)。
+      - name: cargo clippy pinvou-knowledge (硬门禁)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
+        working-directory: pinvou-knowledge
+        run: |
+          cargo clippy --lib --bins --no-deps --features server -- -D warnings
+          cargo clippy --lib --bins --tests --no-deps --features server
+
+      # cargo-shear(未用依赖/未链接文件):静态解析零编译开销,rust-analyzer 语法级
+      # 精度(uv/oxc 同款);豁免登记走 Cargo.toml [package.metadata.cargo-shear]。
+      - name: cargo-shear (未用依赖硬门禁)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-shear
+      - name: cargo shear (两 workspace)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
+        run: |
+          cargo shear --deny-warnings --manifest-path pinvou3-app/src-tauri/Cargo.toml
+          cargo shear --deny-warnings --manifest-path pinvou-knowledge/Cargo.toml
 
       # dump_system_prompt 由 dev-tools feature 隔离，默认的 lib/clippy/test 均不会
       # 编译它；显式检查，防止 CodeWhale Prompt API 升级再次漏适配。
+      # (clippy --all-targets + dev-tools 已含本 bin,此处保留双保险,零额外成本。)
       - name: cargo check --bin dump_system_prompt (dev-tools)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         working-directory: pinvou3-app/src-tauri

@@ -10,9 +10,9 @@
 use std::path::Path;
 use std::process::Command;
 
+use super::IngestResult;
 use super::estimate_tokens;
 use super::ingest_deps::system_tools;
-use super::IngestResult;
 
 /// 邮件（.eml / .msg）：.eml 直接用 python 标准库 email 模块解出收发件人/主题/
 /// 日期/正文/附件名；.msg 在 Windows 走 Rust 原生解析，非 Windows 保留 msgconvert 转 .eml。
@@ -229,11 +229,7 @@ fn decode_msg_body(outlook: &msg_parser::Outlook) -> String {
     };
     let decoded = decode_msg_html_payload(&html);
     let text = html_to_text(&decoded);
-    if text.is_empty() {
-        decoded
-    } else {
-        text
-    }
+    if text.is_empty() { decoded } else { text }
 }
 
 fn clean_msg_text(value: &str) -> String {

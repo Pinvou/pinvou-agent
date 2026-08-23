@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    platform, ActiveEndpoint, PendingRevocation, PendingRevocationLedger, RpcLedger,
-    WebAccessConfig, WebAccessInfo,
+    ActiveEndpoint, PendingRevocation, PendingRevocationLedger, RpcLedger, WebAccessConfig,
+    WebAccessInfo, platform,
 };
 use crate::platform::paths;
 
@@ -106,6 +106,9 @@ pub(super) fn acquire_process_lock(
     // is intended — the process-ownership lock is held until process exit and
     // the allocation is deliberately never freed on that path.
     let lock = Box::into_raw(Box::new(fd_lock::RwLock::new(file)));
+    // SAFETY: lock 是 Box::into_raw 交出的唯一属主指针，无其它引用；&mut 仅在
+    // try_write 调用期间存活，成功返回的 guard 承载该借用（有意持有到进程退出，
+    // 分配永不释放），失败路径在下方 Box::from_raw 收回。
     let guard = match unsafe { &mut *lock }.try_write() {
         Ok(guard) => guard,
         Err(error) => {

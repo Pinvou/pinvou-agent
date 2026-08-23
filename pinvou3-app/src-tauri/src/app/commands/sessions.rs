@@ -221,7 +221,8 @@ mod default_session_title_tests {
             std::env::temp_dir().join(format!("pinvou3-default-title-test-{}", std::process::id()));
         let previous = std::env::var("PINVOU3_HOME").ok();
         let _ = std::fs::remove_dir_all(&root);
-        std::env::set_var("PINVOU3_HOME", &root);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
         let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
             root.join("scheduled"),
         )
@@ -272,8 +273,10 @@ mod default_session_title_tests {
         );
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -635,14 +638,18 @@ mod pinvou_scene_event_tests {
 
     #[test]
     fn scene_events_reject_unknown_scenes_and_invalid_positions() {
-        assert!(normalize_pinvou_scene_events(serde_json::json!([
-            { "pos": 0, "scene": "design:ppt" }
-        ]))
-        .is_err());
-        assert!(normalize_pinvou_scene_events(serde_json::json!([
-            { "pos": -1, "scene": "design:poster" }
-        ]))
-        .is_err());
+        assert!(
+            normalize_pinvou_scene_events(serde_json::json!([
+                { "pos": 0, "scene": "design:ppt" }
+            ]))
+            .is_err()
+        );
+        assert!(
+            normalize_pinvou_scene_events(serde_json::json!([
+                { "pos": -1, "scene": "design:poster" }
+            ]))
+            .is_err()
+        );
     }
 
     #[test]
@@ -737,7 +744,8 @@ mod desktop_saved_session_contract_tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &root);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
         let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
             root.join("scheduled"),
         )
@@ -769,8 +777,10 @@ mod desktop_saved_session_contract_tests {
             "flatten 后 metadata 必须仍在顶层"
         );
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&root);
     }

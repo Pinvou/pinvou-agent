@@ -67,9 +67,10 @@ mod tests {
         // 输出只含小写 hex 字符(原 lowercase_only)。
         let s = hex_lower(&[0xfa, 0xbc]);
         assert_eq!(s, "fabc");
-        assert!(s
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+        assert!(
+            s.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        );
     }
 
     #[test]

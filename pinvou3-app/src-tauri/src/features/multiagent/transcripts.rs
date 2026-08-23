@@ -828,9 +828,11 @@ mod tests {
     #[test]
     fn missing_agent_and_missing_dir_are_reported_not_panicked() {
         let ws = fixture_workspace(&[("aaaa.jsonl", GOOD)]);
-        assert!(read_chunk(&ws, "agent_zzz", None, None)
-            .map(|c| c.messages)
-            .is_err());
+        assert!(
+            read_chunk(&ws, "agent_zzz", None, None)
+                .map(|c| c.messages)
+                .is_err()
+        );
 
         let empty = std::env::temp_dir().join(format!(
             "pinvou3-transcripts-empty-{}-{:?}",
@@ -844,9 +846,11 @@ mod tests {
                 .is_empty(),
             "目录缺失=还没派发过子任务，不是错误"
         );
-        assert!(read_chunk(&empty, "agent_a", None, None)
-            .map(|c| c.messages)
-            .is_err());
+        assert!(
+            read_chunk(&empty, "agent_a", None, None)
+                .map(|c| c.messages)
+                .is_err()
+        );
     }
 
     /// 底座先在 ledger 登记（Starting/Queued）、后建 transcript：清单必须
@@ -950,10 +954,12 @@ mod tests {
             list(&root, None).is_err(),
             "非 NotFound 的 I/O 错误必须上抛"
         );
-        assert!(read_chunk(&root, "agent_a", None, None)
-            .map(|c| c.messages)
-            .unwrap_err()
-            .contains("读取 transcript 目录失败"));
+        assert!(
+            read_chunk(&root, "agent_a", None, None)
+                .map(|c| c.messages)
+                .unwrap_err()
+                .contains("读取 transcript 目录失败")
+        );
     }
 
     /// ledger 损坏必须如实报错——吞成空表会把故障伪装成"没有子智能体"，

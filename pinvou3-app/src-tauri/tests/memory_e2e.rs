@@ -13,7 +13,7 @@ use chrono::{Duration as ChronoDuration, Utc};
 use deepseek_tui::core::engine::spawn_engine;
 use deepseek_tui::core::events::Event;
 use deepseek_tui::tui::app::AppMode;
-use pinvou3_lib::features::assistant::platform::bridge::{paths, Pinvou3Bridge};
+use pinvou3_lib::features::assistant::platform::bridge::{Pinvou3Bridge, paths};
 use pinvou3_lib::features::memory::{
     self, MemoryProfile, MemorySuggestion, PendingSensitiveIdentity, ProfileConventions,
     ProfileIdentity, ProfilePatch, RecentWorkItem, RecentWorkPatch, TimedMemoryItem,
@@ -21,6 +21,11 @@ use pinvou3_lib::features::memory::{
 };
 
 const DEFAULT_VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
+
+/// 用例间共享 PINVOU3_HOME / DEEPSEEK_* 环境变量：同 target 默认并行跑，env 互相
+/// 覆盖会竞态——进程内 std Mutex 串行化（与 lib 单测的 ENV_LOCK 同范式,不新增依赖;
+/// 集成测试进程访问不到 lib 的 cfg(test) 锁,故本文件自建一把）。
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct EnvGuard {
     saved: Vec<(&'static str, Option<OsString>)>,
@@ -35,7 +40,8 @@ impl EnvGuard {
         if !self.saved.iter().any(|(k, _)| *k == key) {
             self.saved.push((key, std::env::var_os(key)));
         }
-        std::env::set_var(key, value.into());
+        // SAFETY: 持本文件 ENV_LOCK,测试进程内 env 写已串行化。
+        unsafe { std::env::set_var(key, value.into()) };
     }
 }
 
@@ -43,8 +49,10 @@ impl Drop for EnvGuard {
     fn drop(&mut self) {
         for (key, value) in self.saved.iter().rev() {
             match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
+                // SAFETY: 持本文件 ENV_LOCK,测试进程内 env 写已串行化。
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                // SAFETY: 持本文件 ENV_LOCK,测试进程内 env 写已串行化。
+                None => unsafe { std::env::remove_var(key) },
             }
         }
     }
@@ -158,6 +166,7 @@ fn write_timed_memory_fixture(path: PathBuf, items: &[TimedMemoryItem]) {
 #[test]
 #[ignore = "memory E2E mutates process env; run explicitly with --test-threads=1"]
 fn pending_memory_deduplicates_same_content_candidates() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (_env, _root) = setup_isolated_home("pending-dedupe");
 
     let first = memory::enqueue_memory_candidate(MemorySuggestion {
@@ -184,6 +193,7 @@ fn pending_memory_deduplicates_same_content_candidates() {
 #[test]
 #[ignore = "memory E2E mutates process env; run explicitly with --test-threads=1"]
 fn confirmed_preferences_upsert_by_standard_topic() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (_env, _root) = setup_isolated_home("preference-upsert");
 
     let first = memory::enqueue_memory_candidate(MemorySuggestion {
@@ -213,6 +223,7 @@ fn confirmed_preferences_upsert_by_standard_topic() {
 #[test]
 #[ignore = "memory E2E mutates process env; run explicitly with --test-threads=1"]
 fn memory_overview_filters_legacy_profile_preferences_and_cleans_profile_labels() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (_env, _root) = setup_isolated_home("legacy-profile-pref-cleanup");
 
     memory::update_profile(ProfilePatch {
@@ -249,6 +260,7 @@ fn memory_overview_filters_legacy_profile_preferences_and_cleans_profile_labels(
 #[test]
 #[ignore = "memory E2E mutates process env; run explicitly with --test-threads=1"]
 fn memory_prompt_injection_and_quality() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (_env, root) = setup_memory_fixture("prompt");
     let ws = root.join("workspace");
     std::fs::create_dir_all(&ws).expect("create workspace");
@@ -283,6 +295,7 @@ fn memory_prompt_injection_and_quality() {
 #[test]
 #[ignore = "memory E2E mutates process env; run explicitly with --test-threads=1"]
 fn memory_profile_correction_and_clear_updates_files() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (_env, _root) = setup_isolated_home("profile-correction");
 
     memory::update_profile(ProfilePatch {
@@ -296,9 +309,11 @@ fn memory_profile_correction_and_clear_updates_files() {
     .expect("initial profile update");
     let first = memory::runtime_snapshot("correction-a").expect("first runtime");
     assert!(first.block.contains("王主任"));
-    assert!(std::fs::read_to_string(memory::profile_path())
-        .expect("read profile")
-        .contains("王主任"));
+    assert!(
+        std::fs::read_to_string(memory::profile_path())
+            .expect("read profile")
+            .contains("王主任")
+    );
 
     memory::update_profile(ProfilePatch {
         call_name: Some("林主任".to_string()),
@@ -322,6 +337,7 @@ fn memory_profile_correction_and_clear_updates_files() {
 #[test]
 #[ignore = "memory E2E mutates process env; run explicitly with --test-threads=1"]
 fn memory_preference_scope_and_recent_work_ttl_quality() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (_env, _root) = setup_isolated_home("recent-work");
     write_preference(
         "pref.always",
@@ -383,6 +399,7 @@ fn memory_preference_scope_and_recent_work_ttl_quality() {
 #[test]
 #[ignore = "memory E2E mutates process env; run explicitly with --test-threads=1"]
 fn memory_manual_recent_work_update_is_compact_and_actionable() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (_env, _root) = setup_isolated_home("recent-upsert");
     let item = memory::upsert_recent_work(RecentWorkPatch {
         id: Some("current-summary".to_string()),
@@ -411,6 +428,7 @@ fn memory_manual_recent_work_update_is_compact_and_actionable() {
 #[test]
 #[ignore = "memory E2E mutates process env; run explicitly with --test-threads=1"]
 fn memory_runtime_injects_effective_five_layer_memory_only() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (_env, _root) = setup_isolated_home("five-layer-runtime");
     let now = Utc::now();
     let work_context = WorkContextFile {
@@ -477,23 +495,30 @@ fn memory_runtime_injects_effective_five_layer_memory_only() {
     assert!(snapshot.block.contains("自动写入机制"));
     assert!(snapshot.block.contains("重复弹出的问题"));
     assert!(!snapshot.block.contains("pending 不应注入"));
-    assert!(snapshot
-        .items
-        .iter()
-        .any(|item| item.kind == "work_context"));
-    assert!(snapshot
-        .items
-        .iter()
-        .any(|item| item.kind == "current_focus"));
-    assert!(snapshot
-        .items
-        .iter()
-        .any(|item| item.kind == "recent_activity"));
+    assert!(
+        snapshot
+            .items
+            .iter()
+            .any(|item| item.kind == "work_context")
+    );
+    assert!(
+        snapshot
+            .items
+            .iter()
+            .any(|item| item.kind == "current_focus")
+    );
+    assert!(
+        snapshot
+            .items
+            .iter()
+            .any(|item| item.kind == "recent_activity")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires live local vLLM endpoint; run explicitly with --test-threads=1"]
 async fn memory_llm_uses_profile_in_fresh_session() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (mut env, root) = setup_memory_fixture("llm");
     setup_vllm_env(&mut env);
     if !vllm_alive().await {
@@ -551,6 +576,7 @@ async fn memory_llm_uses_profile_in_fresh_session() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires live local vLLM endpoint; run explicitly with --test-threads=1"]
 async fn memory_llm_current_instruction_overrides_memory() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (mut env, root) = setup_memory_fixture("llm-override");
     setup_vllm_env(&mut env);
     if !vllm_alive().await {
@@ -597,6 +623,7 @@ async fn memory_llm_current_instruction_overrides_memory() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires live local vLLM endpoint; run explicitly with --test-threads=1"]
 async fn memory_llm_one_off_task_does_not_create_long_term_memory() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (mut env, root) = setup_isolated_home("llm-one-off");
     setup_vllm_env(&mut env);
     if !vllm_alive().await {
@@ -644,6 +671,7 @@ async fn memory_llm_one_off_task_does_not_create_long_term_memory() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires live local vLLM endpoint; run explicitly with --test-threads=1"]
 async fn memory_llm_review_cleans_profile_and_rejects_question() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (mut env, root) = setup_isolated_home("llm-review");
     setup_vllm_env(&mut env);
     if !vllm_alive().await {
@@ -671,11 +699,13 @@ async fn memory_llm_review_cleans_profile_and_rejects_question() {
     .expect("review question");
     assert!(question.events.is_empty());
     assert!(question.pending.is_empty());
-    assert!(memory::load_profile()
-        .expect("load profile after question")
-        .identity
-        .call_name
-        .is_empty());
+    assert!(
+        memory::load_profile()
+            .expect("load profile after question")
+            .identity
+            .call_name
+            .is_empty()
+    );
 
     let remembered = memory::review_turn_candidates_with_llm(
         &bridge,
@@ -688,14 +718,18 @@ async fn memory_llm_review_cleans_profile_and_rejects_question() {
     )
     .await
     .expect("review explicit profile");
-    assert!(remembered
-        .events
-        .iter()
-        .any(|event| event.id == "profile.call_name" && event.text.contains("欣哥")));
-    assert!(remembered
-        .events
-        .iter()
-        .any(|event| event.id == "profile.assistant_alias" && event.text.contains("小猪")));
+    assert!(
+        remembered
+            .events
+            .iter()
+            .any(|event| event.id == "profile.call_name" && event.text.contains("欣哥"))
+    );
+    assert!(
+        remembered
+            .events
+            .iter()
+            .any(|event| event.id == "profile.assistant_alias" && event.text.contains("小猪"))
+    );
 
     let profile = memory::load_profile().expect("load profile after explicit profile");
     assert_eq!(profile.identity.call_name, "欣哥");
@@ -705,6 +739,7 @@ async fn memory_llm_review_cleans_profile_and_rejects_question() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires live local vLLM endpoint; run explicitly with --test-threads=1"]
 async fn memory_llm_realistic_effect_snapshot() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (mut env, root) = setup_isolated_home("llm-realistic-effect");
     setup_vllm_env(&mut env);
     if !vllm_alive().await {
@@ -888,6 +923,7 @@ async fn memory_llm_realistic_effect_snapshot() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires live local vLLM endpoint; run explicitly with --test-threads=1"]
 async fn memory_llm_background_project_midterm_snapshot() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (mut env, root) = setup_isolated_home("llm-background-project-midterm");
     setup_vllm_env(&mut env);
     if !vllm_alive().await {

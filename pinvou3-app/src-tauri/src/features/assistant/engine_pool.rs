@@ -26,7 +26,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use deepseek_tui::core::events::TurnOutcomeStatus;
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::{ContentBlock, Message};
@@ -35,8 +35,8 @@ use deepseek_tui::tools::spec::ToolSpec;
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
 use parking_lot::Mutex as SyncMutex;
-use tauri::async_runtime::JoinHandle;
 use tauri::AppHandle;
+use tauri::async_runtime::JoinHandle;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -52,7 +52,7 @@ use crate::features::assistant::runtime_model::{
     RuntimeModelProvider, RuntimeModelRequest,
 };
 use crate::features::assistant::turn_shell_tasks::{SessionShellManagers, SessionTurnShellTasks};
-use crate::features::sessions::{transcript_revision, ScheduledRunProfile, SessionStore};
+use crate::features::sessions::{ScheduledRunProfile, SessionStore, transcript_revision};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
 /// Engine 空闲回收阈值：engine 是进程内 task（非子进程），但每个都占一份通道、
@@ -1398,13 +1398,18 @@ impl EnginePool {
     async fn evict_locked(&self, session_id: &str) {
         let runtime_lock = self.runtime_model_locks.for_session(session_id).await;
         let _runtime = runtime_lock.lock().await;
-        if let Some(entry) = self.entries.lock().await.remove(session_id) {
-            self.reclaim_engine_entry(session_id, entry).await;
-        } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
-            // A caller can reserve before lazy spawn. Reclaim that Reserved
-            // phase without fabricating chat:done; the guard's eventual send
-            // will observe that its reservation was invalidated.
-            lifecycle.invalidate_unsubmitted_reservation();
+        match self.entries.lock().await.remove(session_id) {
+            Some(entry) => {
+                self.reclaim_engine_entry(session_id, entry).await;
+            }
+            _ => {
+                if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
+                    // A caller can reserve before lazy spawn. Reclaim that Reserved
+                    // phase without fabricating chat:done; the guard's eventual send
+                    // will observe that its reservation was invalidated.
+                    lifecycle.invalidate_unsubmitted_reservation();
+                }
+            }
         }
     }
 
@@ -2320,15 +2325,15 @@ where
 #[allow(clippy::await_holding_lock)]
 mod scheduled_model_tests {
     use super::{
-        cancel_turn_with_gates, default_model_for_new_session_from, delete_chat_session_with_gate,
+        EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Pinvou3Bridge,
+        PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
+        SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks, cancel_turn_with_gates,
+        default_model_for_new_session_from, delete_chat_session_with_gate,
         delete_scheduled_run_with_gate, delete_then_forget, evict_if_idle_with_gates,
         generation_matches, identity_for_active_model, identity_for_saved_model,
         quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
         resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
         scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, should_sync_session,
-        EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Pinvou3Bridge,
-        PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
-        SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks,
     };
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -2355,8 +2360,10 @@ mod scheduled_model_tests {
         fn drop(&mut self) {
             for (name, value) in self.0.drain(..) {
                 match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
+                    // SAFETY: 调用方测试全程持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                    Some(value) => unsafe { std::env::set_var(name, value) },
+                    // SAFETY: 调用方测试全程持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                    None => unsafe { std::env::remove_var(name) },
                 }
             }
         }
@@ -2376,10 +2383,14 @@ mod scheduled_model_tests {
             std::process::id(),
             crate::platform::paths::tests::unique_suffix()
         ));
-        std::env::set_var("PINVOU3_HOME", &home);
-        std::env::remove_var("DEEPSEEK_MODEL");
-        std::env::remove_var("DEEPSEEK_PROVIDER");
-        std::env::remove_var("DEEPSEEK_BASE_URL");
+        // SAFETY: 调用方测试全程持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        // SAFETY: 调用方测试全程持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_MODEL") };
+        // SAFETY: 调用方测试全程持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
+        // SAFETY: 调用方测试全程持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
         let bridge = Pinvou3Bridge::boot().expect("boot isolated test bridge");
         (bridge, home, restore)
     }
@@ -2651,8 +2662,10 @@ mod scheduled_model_tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (bridge, home, _env) = isolated_eval_bridge();
-        std::env::set_var("DEEPSEEK_MODEL", "actual-model");
-        std::env::set_var("DEEPSEEK_PROVIDER", "actual-provider");
+        // SAFETY: 本测试持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_MODEL", "actual-model") };
+        // SAFETY: 本测试持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_PROVIDER", "actual-provider") };
 
         let first = identity_for_saved_model(&bridge, &model("first", "raw-one"));
         let second = identity_for_saved_model(&bridge, &model("second", "raw-two"));
@@ -2662,7 +2675,8 @@ mod scheduled_model_tests {
             crate::features::assistant::eval::validate_judge_identity(&first, &second).is_err()
         );
 
-        std::env::remove_var("DEEPSEEK_MODEL");
+        // SAFETY: 本测试持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::remove_var("DEEPSEEK_MODEL") };
         let mut models = vec![model("judge", "snapshot-model")];
         let (saved, identity) = resolve_eval_model_selection_from(&bridge, &models, "judge")
             .expect("resolve saved model");
@@ -2686,9 +2700,11 @@ mod scheduled_model_tests {
         snapshots
             .bind_to_session("judge-session", &selection)
             .expect("first bind");
-        assert!(snapshots
-            .bind_to_session("other-session", &selection)
-            .is_err());
+        assert!(
+            snapshots
+                .bind_to_session("other-session", &selection)
+                .is_err()
+        );
         assert!(snapshots.saved_models.lock().is_empty());
         let mut latest_models = vec![model("judge", "changed-wire")];
         latest_models.clear();
@@ -2816,7 +2832,8 @@ mod scheduled_model_tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (bridge, home, _env) = isolated_eval_bridge();
-        std::env::set_var("DEEPSEEK_MODEL", "env-wire-override");
+        // SAFETY: 本测试持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("DEEPSEEK_MODEL", "env-wire-override") };
         let mut prefs = crate::platform::prefs::UserPrefs::default();
         prefs.advanced.saved_models = vec![model("active", "raw-saved-wire")];
         prefs.advanced.active_model_id = Some("active".to_string());
@@ -2995,7 +3012,8 @@ mod scheduled_model_tests {
         ));
         let previous_home = std::env::var("PINVOU3_HOME").ok();
         let _ = std::fs::remove_dir_all(&home);
-        std::env::set_var("PINVOU3_HOME", &home);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
 
         let store = SessionStore::boot().expect("session store");
         let session_id = store
@@ -3063,8 +3081,10 @@ mod scheduled_model_tests {
         drop(probe);
 
         match previous_home {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(home);
     }
@@ -3125,7 +3145,8 @@ mod scheduled_model_tests {
         ));
         let previous_home = std::env::var("PINVOU3_HOME").ok();
         let _ = std::fs::remove_dir_all(&home);
-        std::env::set_var("PINVOU3_HOME", &home);
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
 
         let store = SessionStore::boot().expect("session store");
         let session_id = store
@@ -3183,8 +3204,10 @@ mod scheduled_model_tests {
         assert!(store.load(&session_id).is_err());
 
         match previous_home {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(home);
     }

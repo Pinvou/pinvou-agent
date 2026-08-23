@@ -691,7 +691,7 @@ mod tests {
         assert_eq!(vllm_target_kind("https://api.deepseek.com/v1"), "remote");
         assert_eq!(vllm_target_kind("http://8.8.8.8:8000/v1"), "remote");
         assert_eq!(vllm_target_kind("http://172.32.0.1:8000/v1"), "remote"); // 172.32 不在私有段
-                                                                             // 配置异常:空 / 非 URL
+        // 配置异常:空 / 非 URL
         assert_eq!(vllm_target_kind(""), "invalid");
         assert_eq!(vllm_target_kind("not-a-url"), "invalid");
     }

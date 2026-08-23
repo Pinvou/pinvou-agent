@@ -1,0 +1,8 @@
+# Pin the toolchain to an exact version so local and CI builds use the
+# same compiler (no floating "stable"); CI reads this file via
+# dtolnay/rust-toolchain. Must stay >= the rust-version (MSRV) in
+# Cargo.toml; bump this one number to upgrade. clippy / rustfmt
+# components back the lint gates.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

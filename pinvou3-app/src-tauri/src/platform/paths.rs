@@ -551,7 +551,8 @@ pub(crate) mod tests {
     fn pinvou3_home_respects_env_override() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-test-override");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-test-override") };
         assert_eq!(
             pinvou3_home(),
             crate::platform::os::platform_compat_path("/tmp/pinvou3-test-override")
@@ -562,8 +563,10 @@ pub(crate) mod tests {
                 .join("settings.json")
         );
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
 
@@ -596,13 +599,16 @@ pub(crate) mod tests {
     fn eval_reports_are_scoped_under_pinvou_home() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let previous = std::env::var_os("PINVOU3_HOME");
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-eval-paths");
+        // SAFETY: 本测试持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-eval-paths") };
 
         assert_eq!(eval_reports_dir(), pinvou3_home().join("eval"));
 
         match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 本测试持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: 本测试持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
 
@@ -610,7 +616,8 @@ pub(crate) mod tests {
     fn scheduled_paths_are_derived_from_pinvou_home() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let previous = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-scheduled-paths");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-scheduled-paths") };
 
         assert_eq!(scheduled_runs_root(), pinvou3_home().join("scheduled-runs"));
         assert_eq!(scheduled_tasks_root(), pinvou3_home().join("scheduled"));
@@ -634,9 +641,11 @@ pub(crate) mod tests {
                 .join("read-state.json")
         );
         if let Some(value) = previous {
-            std::env::set_var("PINVOU3_HOME", value);
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            unsafe { std::env::set_var("PINVOU3_HOME", value) };
         } else {
-            std::env::remove_var("PINVOU3_HOME");
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            unsafe { std::env::remove_var("PINVOU3_HOME") };
         }
     }
 
@@ -650,7 +659,8 @@ pub(crate) mod tests {
     fn connector_bin_dir_covers_all_on_demand_platforms() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-connector-path-test");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-connector-path-test") };
         let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-connector-path-test");
         let expected = |platform: &str| Some(root.join("connectors").join(platform).join("bin"));
         assert_eq!(
@@ -676,8 +686,10 @@ pub(crate) mod tests {
         assert_eq!(managed_connector_bin_dir_for("windows", "aarch64"), None);
         assert_eq!(managed_connector_bin_dir_for("freebsd", "x86_64"), None);
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
 
@@ -717,7 +729,8 @@ pub(crate) mod tests {
     fn session_artifacts_layout() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-artifacts-layout-test");
+        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-artifacts-layout-test") };
         let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-artifacts-layout-test");
         assert_eq!(
             session_artifacts_dir("abc123"),
@@ -728,8 +741,10 @@ pub(crate) mod tests {
             root.join("sessions").join("default").join("artifacts")
         );
         match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
 }

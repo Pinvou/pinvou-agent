@@ -590,6 +590,8 @@ fn open_private_file_directory_impl(
 
     let path = std::ffi::CString::new(expected.canonical_path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "directory path contains NUL"))?;
+    // SAFETY: path 是 CString,NUL 结尾且生命周期覆盖调用;O_NOFOLLOW|O_DIRECTORY
+    // 保证不跟随符号链接、只接受目录,失败返回 -1 由下方转 io::Error。
     let fd: RawFd = unsafe {
         libc::open(
             path.as_ptr(),
@@ -599,6 +601,8 @@ fn open_private_file_directory_impl(
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: fd 已检查非负,是刚 open 返回、未被接管的属主 fd;from_raw_fd 把
+    // 唯一所有权移交给 File,close 由其 Drop 负责。
     let directory_handle = unsafe { File::from_raw_fd(fd) };
     let metadata = directory_handle.metadata()?;
     if !metadata.is_dir() || metadata.dev() != expected.device || metadata.ino() != expected.inode {
@@ -1375,6 +1379,9 @@ struct UnixDirectoryStream(*mut libc::DIR);
 ))]
 impl Drop for UnixDirectoryStream {
     fn drop(&mut self) {
+        // SAFETY: self.0 只能来自成功的 fdopendir(见 entry_names_impl),构造后
+        // 全程由 UnixDirectoryStream 独占;closedir 恰好释放一次(连同其内部
+        // 接管的 fd),drop 后不再访问。
         unsafe { libc::closedir(self.0) };
     }
 }
@@ -1413,17 +1420,26 @@ fn next_unix_directory_entry(
     use std::os::unix::ffi::OsStringExt as _;
 
     next_unix_directory_entry_with(
+        // SAFETY: errno_location() 返回本线程 TLS 中 errno 的有效可写地址;
+        // 清零以便区分 readdir 返回 NULL 是 EOF 还是出错。
         || unsafe { *libc::errno_location() = 0 },
         || {
+            // SAFETY: stream.0 来自成功的 fdopendir 且由 UnixDirectoryStream
+            // 独占,本闭包内无并发 readdir;返回的 dirent 指针仅在下次
+            // readdir/closedir 前有效,下方立即读取 d_name,不跨调用持有。
             let entry = unsafe { libc::readdir(stream.0) };
             if entry.is_null() {
                 None
             } else {
+                // SAFETY: entry 非 NULL 且未再调用 readdir;内核保证 d_name 以
+                // NUL 结尾且落在数组界内,CStr::from_ptr 只读到该终止符。
                 let bytes =
                     unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
                 Some(std::ffi::OsString::from_vec(bytes.to_vec()))
             }
         },
+        // SAFETY: errno_location() 指向本线程 errno,此前闭包已清零,非零即
+        // readdir 的真实错误码。
         || unsafe { *libc::errno_location() },
     )
 }
@@ -1435,7 +1451,11 @@ fn next_unix_directory_entry(
 fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi::OsString>> {
     use std::os::fd::AsRawFd as _;
 
-    let current = std::ffi::CString::new(".").expect("literal contains no NUL");
+    // 字面量 "." 不含 NUL，CString 构造不可能失败；按错误传播兜底，不 panic。
+    let current = std::ffi::CString::new(".")
+        .map_err(|e| std::io::Error::other(format!("构造目录句柄字面量失败: {e}")))?;
+    // SAFETY: directory_handle 持有存活目录 fd;current 是字面量 "." 的 CString,
+    // NUL 结尾且生命周期覆盖调用;失败返回 -1 由下方转 io::Error。
     let duplicate = unsafe {
         libc::openat(
             directory.directory_handle.as_raw_fd(),
@@ -1446,9 +1466,13 @@ fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi
     if duplicate < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: duplicate 已检查非负,是刚复制用途、尚未被接管的 fd;POSIX 约定
+    // fdopendir 成功即独占接管该 fd(closedir 负责释放),失败时 fd 仍归调用方。
     let stream = unsafe { libc::fdopendir(duplicate) };
     if stream.is_null() {
         let error = io::Error::last_os_error();
+        // SAFETY: fdopendir 失败未接管 duplicate,fd 仍属本函数;立即 close 恰好
+        // 一次以避免泄漏,返回值无进一步可恢复动作,可忽略。
         unsafe { libc::close(duplicate) };
         return Err(error);
     }
@@ -1495,6 +1519,9 @@ fn unix_named_file_matches(
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
     use std::os::unix::fs::MetadataExt as _;
 
+    // SAFETY: directory_handle 持有存活目录 fd;name 是 CString,NUL 结尾且
+    // 生命周期覆盖调用;O_NOFOLLOW|O_NONBLOCK 保证不跟随链接、打开 FIFO 不阻塞,
+    // 失败返回 -1。
     let named_fd = unsafe {
         libc::openat(
             directory.directory_handle.as_raw_fd(),
@@ -1505,6 +1532,7 @@ fn unix_named_file_matches(
     if named_fd < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: named_fd 已检查非负且未被接管;from_raw_fd 唯一属主移交给 File。
     let named = unsafe { File::from_raw_fd(named_fd) }.metadata()?;
     let opened = file.metadata()?;
     Ok(opened.file_type().is_file()
@@ -1524,6 +1552,9 @@ fn create_delete_on_close_file_impl(
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
 
     let name = unix_name(std::ffi::OsStr::new(name))?;
+    // SAFETY: directory_handle 持有存活目录 fd;name 是 CString,NUL 结尾;
+    // O_CREAT|O_EXCL 保证仅在不存在时以 0600 原子创建、不覆盖已有项,O_NOFOLLOW
+    // 拒绝符号链接;失败返回 -1。
     let fd = unsafe {
         libc::openat(
             directory.directory_handle.as_raw_fd(),
@@ -1535,6 +1566,7 @@ fn create_delete_on_close_file_impl(
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: fd 已检查非负且未被接管;from_raw_fd 唯一属主移交给 File。
     let file = unsafe { File::from_raw_fd(fd) };
     if !unix_named_file_matches(directory, &name, &file)? {
         return Err(io::Error::new(
@@ -1542,6 +1574,8 @@ fn create_delete_on_close_file_impl(
             "created private file changed before unlink",
         ));
     }
+    // SAFETY: directory_handle 持有存活目录 fd;name NUL 结尾;flags=0 为 unlink
+    // 此目录项且不跟随链接;上一行已复核 dev/ino/nlink 与刚创建的句柄一致。
     if unsafe { libc::unlinkat(directory.directory_handle.as_raw_fd(), name.as_ptr(), 0) } != 0 {
         return Err(io::Error::last_os_error());
     }
@@ -1589,6 +1623,8 @@ fn remove_plain_file_impl(
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
 
     let name = unix_name(name)?;
+    // SAFETY: directory_handle 持有存活目录 fd;name 是 CString,NUL 结尾;
+    // O_NOFOLLOW|O_NONBLOCK 拒绝符号链接且打开 FIFO 不阻塞,失败返回 -1。
     let fd = unsafe {
         libc::openat(
             directory.directory_handle.as_raw_fd(),
@@ -1604,6 +1640,7 @@ fn remove_plain_file_impl(
             Err(error)
         };
     }
+    // SAFETY: fd 已检查非负且未被接管;from_raw_fd 唯一属主移交给 File。
     let file = unsafe { File::from_raw_fd(fd) };
     if !unix_named_file_matches(directory, &name, &file)? {
         return Err(io::Error::new(
@@ -1611,6 +1648,8 @@ fn remove_plain_file_impl(
             "private entry is non-regular, multiply linked, or changed during removal",
         ));
     }
+    // SAFETY: directory_handle 持有存活目录 fd;name NUL 结尾;flags=0 为 unlink
+    // 此目录项且不跟随链接;上一行已复核目标与打开句柄是同一普通文件。
     if unsafe { libc::unlinkat(directory.directory_handle.as_raw_fd(), name.as_ptr(), 0) } != 0 {
         let error = io::Error::last_os_error();
         return if error.kind() == io::ErrorKind::NotFound {
@@ -1657,7 +1696,7 @@ fn remove_plain_file_impl(
 fn mark_windows_file_handle_for_deletion(file: &File) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Storage::FileSystem::{
-        FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
+        FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle,
     };
 
     let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
@@ -1797,7 +1836,7 @@ fn windows_directory_identity(path: &Path) -> io::Result<(u32, u64)> {
 fn windows_file_identity(file: &File) -> io::Result<(u32, u64)> {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
     };
 
     let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
@@ -1851,7 +1890,7 @@ fn replace_file_atomically_impl(tmp: &Path, target: &Path, backup: &Path) -> Rep
 #[cfg(windows)]
 fn system_replace_file(target: &Path, replacement: &Path, backup: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+    use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
 
     let wide = |path: &Path| {
         path.as_os_str()
@@ -2673,8 +2712,8 @@ pub(crate) mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_atomic_replace_never_exposes_a_partial_target_to_readers() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         let (root, target, replacement, backup) = windows_replace_fixture("concurrent-reader");
         let old = "a".repeat(32 * 1024);

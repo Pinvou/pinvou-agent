@@ -2,7 +2,7 @@
 // 文本、不触碰任何 Windows API,因此以 `#[cfg(any(target_os = "windows", test))]`
 // 接线(见 mod.rs),让单元测试可在全平台 cargo test 下编译执行。
 
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
 const LIBREOFFICE_WINGET_ID: &str = "TheDocumentFoundation.LibreOffice";
 const INSTALL_CANCELLED_MARKER: &str = "__PINVOU_INSTALL_CANCELLED__";

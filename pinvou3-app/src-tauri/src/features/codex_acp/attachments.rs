@@ -5,7 +5,7 @@ use agent_client_protocol::schema::v1::{
     ContentBlock, EmbeddedResource, EmbeddedResourceResource, ImageContent, PromptCapabilities,
     ResourceLink, TextContent, TextResourceContents,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use serde::Serialize;
 

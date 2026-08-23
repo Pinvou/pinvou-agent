@@ -979,22 +979,26 @@ mod tests {
         store
             .set_acp_session("session-1", "acp-1".to_string(), None, HashMap::new())
             .unwrap();
-        assert!(store
-            .set_acp_workspace(
-                "session-1",
-                AgentBackend::CodexAcp,
-                CodexWorkspaceKind::Temporary,
-                None,
-            )
-            .is_err());
-        assert!(store
-            .set_acp_workspace(
-                "session-1",
-                AgentBackend::ClaudeAcp,
-                CodexWorkspaceKind::Project,
-                Some(root.clone()),
-            )
-            .is_err());
+        assert!(
+            store
+                .set_acp_workspace(
+                    "session-1",
+                    AgentBackend::CodexAcp,
+                    CodexWorkspaceKind::Temporary,
+                    None,
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .set_acp_workspace(
+                    "session-1",
+                    AgentBackend::ClaudeAcp,
+                    CodexWorkspaceKind::Project,
+                    Some(root.clone()),
+                )
+                .is_err()
+        );
         assert_eq!(store.get("session-1").backend, AgentBackend::CodexAcp);
         assert_eq!(
             store.get("session-1").workspace_path.as_deref(),
@@ -1034,7 +1038,7 @@ mod tests {
         assert!(store.is_code_session("session-1"));
 
         let persisted: AgentStoreFile = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        let record = persisted.sessions.get("session-1").unwrap();
+        let record = &persisted.sessions["session-1"];
         assert!(record.mode.is_code());
         assert_eq!(record.backend, AgentBackend::Deepseek);
         fs::remove_dir_all(&root).unwrap();
@@ -1063,9 +1067,11 @@ mod tests {
         store
             .set_acp_session("session-1", "acp-1".to_string(), None, HashMap::new())
             .unwrap();
-        assert!(store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
-            .is_err());
+        assert!(
+            store
+                .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+                .is_err()
+        );
         let record = store.get("session-1");
         assert_eq!(record.backend, AgentBackend::CodexAcp);
         assert!(!record.mode.is_code());
@@ -1085,16 +1091,20 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         // kind 与 path 必须配套。
-        assert!(store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, None)
-            .is_err());
-        assert!(store
-            .bind_code_native_session(
-                "session-1",
-                CodexWorkspaceKind::Temporary,
-                Some(root.clone()),
-            )
-            .is_err());
+        assert!(
+            store
+                .bind_code_native_session("session-1", CodexWorkspaceKind::Project, None)
+                .is_err()
+        );
+        assert!(
+            store
+                .bind_code_native_session(
+                    "session-1",
+                    CodexWorkspaceKind::Temporary,
+                    Some(root.clone()),
+                )
+                .is_err()
+        );
         assert!(!store.is_code_session("session-1"));
 
         store
@@ -1106,16 +1116,20 @@ mod tests {
         assert!(record.mode.is_code());
 
         // 已绑定的代码会话不可改绑工作区；同值重复绑定幂等。
-        assert!(store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
-            .is_err());
-        assert!(store
-            .bind_code_native_session(
-                "session-1",
-                CodexWorkspaceKind::Project,
-                Some(root.join("other")),
-            )
-            .is_err());
+        assert!(
+            store
+                .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+                .is_err()
+        );
+        assert!(
+            store
+                .bind_code_native_session(
+                    "session-1",
+                    CodexWorkspaceKind::Project,
+                    Some(root.join("other")),
+                )
+                .is_err()
+        );
         store
             .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
@@ -1158,7 +1172,7 @@ mod tests {
             .unwrap();
 
         let persisted: AgentStoreFile = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        let recovered = persisted.sessions.get("session-1").unwrap();
+        let recovered = &persisted.sessions["session-1"];
         assert_eq!(recovered.backend, AgentBackend::ClaudeAcp);
         assert_eq!(recovered.acp_session_id.as_deref(), Some("acp-session-1"));
         assert_eq!(recovered.workspace_kind, CodexWorkspaceKind::Project);
@@ -1237,12 +1251,14 @@ mod tests {
         store
             .set(AgentBackend::ClaudeAcp, "mode", "default")
             .unwrap();
-        assert!(!store
-            .set_all_if_absent(
-                AgentBackend::CodexAcp,
-                HashMap::from([("mode".to_string(), "agent".to_string())]),
-            )
-            .unwrap());
+        assert!(
+            !store
+                .set_all_if_absent(
+                    AgentBackend::CodexAcp,
+                    HashMap::from([("mode".to_string(), "agent".to_string())]),
+                )
+                .unwrap()
+        );
 
         let persisted: AcpConfigDefaultsFile =
             serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
@@ -1341,9 +1357,11 @@ mod tests {
                 Some(root.clone()),
             )
             .unwrap();
-        assert!(store
-            .restore_missing_code_session_record("session-1", sidecar)
-            .is_err());
+        assert!(
+            store
+                .restore_missing_code_session_record("session-1", sidecar)
+                .is_err()
+        );
         assert!(store.get("session-1").backend.is_acp());
         fs::remove_dir_all(&root).unwrap();
     }
@@ -1389,9 +1407,11 @@ mod tests {
             workspace_path: None,
             bound_at: None,
         };
-        assert!(store
-            .restore_missing_code_session_record("session-1", missing_path)
-            .is_err());
+        assert!(
+            store
+                .restore_missing_code_session_record("session-1", missing_path)
+                .is_err()
+        );
         // 临时 kind 但带路径：恢复必须拒绝。
         let with_path = CodeSessionSidecar {
             version: CODE_SESSION_SIDECAR_VERSION,
@@ -1399,9 +1419,11 @@ mod tests {
             workspace_path: Some(root.clone()),
             bound_at: None,
         };
-        assert!(store
-            .restore_missing_code_session_record("session-2", with_path)
-            .is_err());
+        assert!(
+            store
+                .restore_missing_code_session_record("session-2", with_path)
+                .is_err()
+        );
         assert!(!store.is_code_session("session-1"));
         assert!(!store.is_code_session("session-2"));
         fs::remove_dir_all(&root).unwrap();
@@ -1428,13 +1450,17 @@ mod tests {
             path: store.path().to_path_buf(),
             records: Arc::new(RwLock::new(HashMap::new())),
         };
-        assert!(recovered_store
-            .restore_missing_code_session_record("session-1", sidecar.clone())
-            .unwrap());
+        assert!(
+            recovered_store
+                .restore_missing_code_session_record("session-1", sidecar.clone())
+                .unwrap()
+        );
         // 索引已完好：再次调用是早退，不得被误计为恢复信号。
-        assert!(!recovered_store
-            .restore_missing_code_session_record("session-1", sidecar)
-            .unwrap());
+        assert!(
+            !recovered_store
+                .restore_missing_code_session_record("session-1", sidecar)
+                .unwrap()
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1531,14 +1557,16 @@ mod tests {
         // 让索引 persist 必失败：索引路径被同名目录占用，rename 无法覆盖。
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
-        assert!(store
-            .set_acp_workspace(
-                "session-1",
-                AgentBackend::CodexAcp,
-                CodexWorkspaceKind::Temporary,
-                None,
-            )
-            .is_err());
+        assert!(
+            store
+                .set_acp_workspace(
+                    "session-1",
+                    AgentBackend::CodexAcp,
+                    CodexWorkspaceKind::Temporary,
+                    None,
+                )
+                .is_err()
+        );
         // persist 先失败则 sidecar 不得先删，与磁盘索引（仍是绑定时的内容）保持一致。
         let sidecar = read_code_session_sidecar(&path, "session-1")
             .expect("sidecar must survive failed index persist");

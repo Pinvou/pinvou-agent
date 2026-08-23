@@ -7,8 +7,8 @@ use super::windows_path;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
 use windows_sys::Win32::System::Registry::{
-    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER,
-    KEY_READ, REG_EXPAND_SZ, REG_SZ,
+    HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, KEY_READ, REG_EXPAND_SZ, REG_SZ, RegCloseKey,
+    RegOpenKeyExW, RegQueryValueExW,
 };
 
 pub fn current_system_locale() -> Option<String> {
@@ -363,11 +363,7 @@ fn read_registry_string(root: HKEY, key_path: &str, value_name: Option<&str>) ->
 
     let len = data.iter().position(|&ch| ch == 0).unwrap_or(data.len());
     let value = String::from_utf16_lossy(&data[..len]).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn read_bios_serial_from_powershell() -> Option<String> {
@@ -405,11 +401,7 @@ fn read_bios_serial_from_wmic() -> Option<String> {
 
 fn non_empty_stdout(stdout: Vec<u8>) -> Option<String> {
     let value = String::from_utf8_lossy(&stdout).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn normalize_bios_serial_for_binding(input: &str) -> Option<String> {

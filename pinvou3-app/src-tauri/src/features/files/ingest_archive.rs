@@ -8,10 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
+use super::IngestResult;
 use super::classify;
 use super::ingest;
 use super::ingest_deps::{archive_tool_command, system_tools};
-use super::IngestResult;
 
 /// 压缩包（.zip/.rar/.7z）：先用 7z 列出内容做炸弹预检（条目数 + 解压后总大小，
 /// 解压前就拦），通过后解压到临时目录，递归调主 `ingest` 处理每个文件并汇总。

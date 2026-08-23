@@ -50,16 +50,18 @@ pub fn official_script_paths(backend: AgentBackend) -> Vec<PathBuf> {
             vec![super::super::platform::codex_official_install_path()]
         }
         AgentBackend::ClaudeAcp => {
-            vec![home
-                .join(".local")
-                .join("bin")
-                .join(format!("claude{executable}"))]
+            vec![
+                home.join(".local")
+                    .join("bin")
+                    .join(format!("claude{executable}")),
+            ]
         }
         AgentBackend::KimiAcp => {
-            vec![home
-                .join(".kimi-code")
-                .join("bin")
-                .join(format!("kimi{executable}"))]
+            vec![
+                home.join(".kimi-code")
+                    .join("bin")
+                    .join(format!("kimi{executable}")),
+            ]
         }
         AgentBackend::Deepseek => Vec::new(),
     }

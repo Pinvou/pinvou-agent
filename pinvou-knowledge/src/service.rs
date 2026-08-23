@@ -2,12 +2,12 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use parking_lot::{Mutex, RwLock};
 use sha2::{Digest, Sha256};
 
@@ -16,7 +16,7 @@ use crate::model::*;
 use crate::parser::parse_document;
 use crate::store::{DeviceMutationError, DocumentIndexUpdate, RestoreDocumentOutcome, Store};
 use crate::tls::TlsIdentity;
-use crate::{chunk_text, Embedder, MAX_UPLOAD_BYTES, MAX_VECTOR_DIMENSIONS};
+use crate::{Embedder, MAX_UPLOAD_BYTES, MAX_VECTOR_DIMENSIONS, chunk_text};
 
 pub const MODEL_NAME: &str = "bge-m3";
 
@@ -1122,10 +1122,10 @@ impl KnowledgeService {
             }
             let absolute = self.documents_dir.join(relative);
             let _ = std::fs::remove_file(&absolute);
-            if let Some(parent) = absolute.parent() {
-                if parent != self.documents_dir {
-                    let _ = std::fs::remove_dir(parent);
-                }
+            if let Some(parent) = absolute.parent()
+                && parent != self.documents_dir
+            {
+                let _ = std::fs::remove_dir(parent);
             }
         }
     }
@@ -2008,11 +2008,13 @@ mod tests {
         assert!(recent_source.exists());
         assert!(outside.path().is_file());
         assert!(service.store.document(expired.id, true).unwrap().is_none());
-        assert!(service
-            .store
-            .document(untrusted.id, true)
-            .unwrap()
-            .is_none());
+        assert!(
+            service
+                .store
+                .document(untrusted.id, true)
+                .unwrap()
+                .is_none()
+        );
         assert!(service.store.document(recent.id, true).unwrap().is_some());
     }
 
@@ -2065,10 +2067,12 @@ mod tests {
         for _ in 0..JOIN_CLAIM_PER_SOURCE_LIMIT {
             service.check_join_claim_rate(source).unwrap();
         }
-        assert!(service
-            .check_join_claim_rate(source)
-            .unwrap_err()
-            .contains("过于频繁"));
+        assert!(
+            service
+                .check_join_claim_rate(source)
+                .unwrap_err()
+                .contains("过于频繁")
+        );
     }
 
     #[test]
@@ -2131,11 +2135,13 @@ mod tests {
             !resolved.load(Ordering::Acquire),
             "a complete shared directory must bypass the network download path"
         );
-        assert!(std::fs::read_dir(model_parent).unwrap().all(|entry| !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(&format!(".{MODEL_NAME}.candidate-"))));
+        assert!(std::fs::read_dir(model_parent).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&format!(".{MODEL_NAME}.candidate-"))
+        }));
     }
 
     #[tokio::test]
@@ -2178,10 +2184,12 @@ mod tests {
                 crate::model_download::KNOWLEDGE_MODEL_HF_BASE_URL_ENV
             )
         );
-        assert!(std::fs::read_dir(model_parent).unwrap().all(|entry| !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(&format!(".{MODEL_NAME}.candidate-"))));
+        assert!(std::fs::read_dir(model_parent).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&format!(".{MODEL_NAME}.candidate-"))
+        }));
     }
 }

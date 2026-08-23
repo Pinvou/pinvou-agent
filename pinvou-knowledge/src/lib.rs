@@ -288,9 +288,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        chunk_text, is_supported_document_path, knowledge_model_lock_parent,
-        try_lock_knowledge_data_dir, try_lock_knowledge_model_install, KNOWLEDGE_DATA_DIR_BUSY,
-        KNOWLEDGE_MODEL_INSTALL_BUSY,
+        KNOWLEDGE_DATA_DIR_BUSY, KNOWLEDGE_MODEL_INSTALL_BUSY, chunk_text,
+        is_supported_document_path, knowledge_model_lock_parent, try_lock_knowledge_data_dir,
+        try_lock_knowledge_model_install,
     };
 
     #[test]

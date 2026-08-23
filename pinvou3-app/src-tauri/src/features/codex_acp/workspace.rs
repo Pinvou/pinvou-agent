@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::UNIX_EPOCH;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -896,7 +896,7 @@ fn load_baseline(session_id: &str, root: &Path) -> Result<Option<WorkspaceBaseli
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(error).with_context(|| format!("读取工作区基线失败: {}", path.display()))
+            return Err(error).with_context(|| format!("读取工作区基线失败: {}", path.display()));
         }
     };
     let baseline: WorkspaceBaseline =
@@ -933,7 +933,7 @@ fn fingerprint(path: &Path, include_hash: bool) -> Result<Option<FileFingerprint
         Ok(_) => return Ok(None),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(error).with_context(|| format!("读取文件信息失败: {}", path.display()))
+            return Err(error).with_context(|| format!("读取文件信息失败: {}", path.display()));
         }
     };
     let sha256 = if include_hash {
@@ -1256,10 +1256,12 @@ mod tests {
 
         let listing = list_workspace(root.path(), None).unwrap();
         assert!(listing.entries.iter().any(|entry| entry.name == "src"));
-        assert!(!listing
-            .entries
-            .iter()
-            .any(|entry| entry.name == "node_modules"));
+        assert!(
+            !listing
+                .entries
+                .iter()
+                .any(|entry| entry.name == "node_modules")
+        );
         let preview = preview_workspace_file(root.path(), "src/main.rs").unwrap();
         assert_eq!(preview.kind, "text");
         assert_eq!(preview.text.as_deref(), Some("fn main() {}"));
@@ -1348,14 +1350,18 @@ mod tests {
         fs::write(root.path().join("added.txt"), "added").unwrap();
 
         let changes = workspace_changes(&session_id, root.path()).unwrap();
-        assert!(changes
-            .changes
-            .iter()
-            .any(|change| change.relative_path == "before.txt" && change.status == "modified"));
-        assert!(changes
-            .changes
-            .iter()
-            .any(|change| change.relative_path == "delete.txt" && change.status == "deleted"));
+        assert!(
+            changes
+                .changes
+                .iter()
+                .any(|change| change.relative_path == "before.txt" && change.status == "modified")
+        );
+        assert!(
+            changes
+                .changes
+                .iter()
+                .any(|change| change.relative_path == "delete.txt" && change.status == "deleted")
+        );
         assert!(changes.changes.iter().any(|change| {
             change.relative_path == "added.txt"
                 && change.status == "added"

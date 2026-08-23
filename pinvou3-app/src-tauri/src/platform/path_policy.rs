@@ -107,9 +107,11 @@ mod tests {
 
     #[test]
     fn rejects_relative_user_path() {
-        assert!(validate_user_path("relative/file.txt")
-            .unwrap_err()
-            .contains("must be absolute"));
+        assert!(
+            validate_user_path("relative/file.txt")
+                .unwrap_err()
+                .contains("must be absolute")
+        );
     }
 
     #[test]
@@ -119,9 +121,11 @@ mod tests {
         } else {
             "/home/tester/.ssh/id_rsa"
         };
-        assert!(validate_user_path(path)
-            .unwrap_err()
-            .contains("sensitive component"));
+        assert!(
+            validate_user_path(path)
+                .unwrap_err()
+                .contains("sensitive component")
+        );
     }
 
     /// 全黑名单逐项命中：组件比较须经平台感知 `path_component_eq`（Wave 3

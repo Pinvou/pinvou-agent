@@ -7,10 +7,10 @@ use std::str::FromStr;
 use age::secrecy::ExposeSecret;
 use age::x25519::{Identity, Recipient};
 use age::{Decryptor, Encryptor};
+use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -743,10 +743,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(manifest.document_count, 1);
-        assert!(!fs::read(&backup)
-            .unwrap()
-            .windows(5)
-            .any(|chunk| chunk == b"hello"));
+        assert!(
+            !fs::read(&backup)
+                .unwrap()
+                .windows(5)
+                .any(|chunk| chunk == b"hello")
+        );
 
         fs::write(
             source.path().join(DOCUMENTS_NAME).join("sample.txt"),
@@ -891,13 +893,11 @@ mod tests {
         let existing = backup_root.path().join("existing.pinbak");
         fs::write(&existing, b"keep me").unwrap();
 
-        assert!(create_encrypted_backup(
-            source.path(),
-            &existing,
-            std::slice::from_ref(&recipient)
-        )
-        .unwrap_err()
-        .contains("已存在"));
+        assert!(
+            create_encrypted_backup(source.path(), &existing, std::slice::from_ref(&recipient))
+                .unwrap_err()
+                .contains("已存在")
+        );
         assert_eq!(fs::read(&existing).unwrap(), b"keep me");
 
         let nested = source.path().join(DOCUMENTS_NAME).join("nested.pinbak");
