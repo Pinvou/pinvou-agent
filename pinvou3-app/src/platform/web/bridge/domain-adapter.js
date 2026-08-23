@@ -90,10 +90,19 @@
     // 共用一个实例会在多域间互相覆盖。
     var stables = {};
     domains.forEach(function (domainName) { stables[domainName] = stablePick(); });
+    // 合并外层对象同样按 full 引用单槽记忆：订阅方是 React setState 时只能按
+    // 整体身份 bail out，每轮新建合并对象会让无变更通知也触发全量重渲染，
+    // 抵消内层 slice 的身份稳定（消费方见 useBridge.js 的 subscribeMany）。
+    var lastFull = null;
+    var lastResult = null;
     return flat.subscribe(function (full) {
-      var result = {};
-      domains.forEach(function (domainName) { Object.assign(result, stables[domainName](full, domainName)); });
-      callback(Object.freeze(result));
+      if (full !== lastFull) {
+        var result = {};
+        domains.forEach(function (domainName) { Object.assign(result, stables[domainName](full, domainName)); });
+        lastFull = full;
+        lastResult = Object.freeze(result);
+      }
+      callback(lastResult);
     });
   }
 
