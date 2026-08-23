@@ -698,8 +698,8 @@ fn import_skill_md_content(
 }
 
 /// 弹文件选择框选插件包并导入（plugin-protocol 统一上传：mcp/skill/组合包），
-/// 或选单个 `.md`/`.markdown` 技能文件（包装成裸 skill 包）。返回 true=已导入，
-/// false=用户取消。
+/// 或选单个 `.md`/`.markdown` 技能文件（包装成裸 skill 包）。返回 `Some(新包 id)`=
+/// 已导入（前端据此打开展示信息编辑弹窗），`None`=用户取消。
 ///
 /// 注：旧名 `import_spanner_package` 已重命名——脚本可执行能力并入 skill 包
 /// 通过 SKILL.md frontmatter `tools[]` 段声明，不再有独立 spanner 组件。
@@ -707,7 +707,7 @@ fn import_skill_md_content(
 pub async fn import_plugin_package_cmd(
     app: tauri::AppHandle,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
-) -> Result<bool, String> {
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let Some(picked) = app
         .dialog()
@@ -715,7 +715,7 @@ pub async fn import_plugin_package_cmd(
         .add_filter("技能/插件包 (zip, md)", &["zip", "md", "markdown"])
         .blocking_pick_file()
     else {
-        return Ok(false); // 用户取消
+        return Ok(None); // 用户取消
     };
     let path = picked
         .into_path()
@@ -758,11 +758,13 @@ pub async fn import_plugin_package_cmd(
         report.kind,
         report.icon
     );
-    Ok(true)
+    // 返回新包 id：前端据此打开展示信息编辑弹窗（预填默认名，可直接保存）。
+    Ok(Some(report.id))
 }
 
 /// 拖放导入插件包（统一上传，与 `import_plugin_package_cmd` 同语义）：前端把 zip 读成
-/// base64 传这里，临时落盘后走 `import_plugin_package`。返回 true=已导入。
+/// base64 传这里，临时落盘后走 `import_plugin_package`。返回新包 id=已导入（前端
+/// 据此打开展示信息编辑弹窗）。
 ///
 /// 注：旧名 `import_spanner_package_bytes` 已重命名——见上面注释。
 #[tauri::command]
@@ -770,7 +772,7 @@ pub async fn import_plugin_package_bytes_cmd(
     filename: String,
     data_base64: String,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
-) -> Result<bool, String> {
+) -> Result<String, String> {
     use base64::Engine as _;
     if !filename.to_ascii_lowercase().ends_with(".zip") {
         return Err("仅支持 .zip 插件包".to_string());
@@ -815,18 +817,19 @@ pub async fn import_plugin_package_bytes_cmd(
     pool.refresh_live_sessions_skills().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
     pool.refresh_permission_rulesets().await;
-    Ok(true)
+    Ok(report.id)
 }
 
 /// 拖放导入单个 `.md`/`.markdown` 技能文件：把裸 markdown 包装成「根放 SKILL.md 的
 /// 裸 skill 包」走统一导入（复用裸技能回退识别 + 落盘 + 登记）。frontmatter 有
-/// `name` 用之；没有则用文件名 stem 兜底并注入一个最小 frontmatter。返回 true=已导入。
+/// `name` 用之；没有则用文件名 stem 兜底并注入一个最小 frontmatter。返回新包 id=
+/// 已导入（前端据此打开展示信息编辑弹窗）。
 #[tauri::command]
 pub async fn import_skill_md_bytes(
     filename: String,
     data_base64: String,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
-) -> Result<bool, String> {
+) -> Result<String, String> {
     use base64::Engine as _;
     let lower = filename.to_ascii_lowercase();
     if !lower.ends_with(".md") && !lower.ends_with(".markdown") {
@@ -854,7 +857,7 @@ pub async fn import_skill_md_bytes(
     pool.refresh_live_sessions_skills().await;
     // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
     pool.refresh_permission_rulesets().await;
-    Ok(true)
+    Ok(report.id)
 }
 
 /// 拖放导入:Windows WebView2 的 HTML5 文件拖放拿不到源文件路径

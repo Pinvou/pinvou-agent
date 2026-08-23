@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * 工具商店技能包上传冒烟:加载 Vite dist + mock Tauri(desktop,可写权限),
- * 验证 header「上传技能包」按钮触发导入、成功弹窗、列表展示上传技能 description、
- * 拖放 zip 走字节通道 import_plugin_package_bytes_cmd。
+ * 验证 header「上传技能包」按钮触发导入、成功后打开预填默认名的展示信息编辑弹窗、
+ * 列表展示上传技能 description、拖放 zip 走字节通道 import_plugin_package_bytes_cmd。
  * 前置:先 npm run build:ui。
  */
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -47,12 +47,19 @@ function injectSource() {
         {id:'government-writing',title:'党政机关公文写作',installed:false,user_uploaded:false},
         {id:'my-test-skill',title:'my-test-skill',description:'用大模型整理会议纪要',installed:true,user_uploaded:true,subtitle:''},
       ];},
-      import_plugin_package_cmd:function(){return true;},
-      import_plugin_package_bytes_cmd:function(){return true;},
+      import_plugin_package_cmd:function(){return 'my-test-skill';},
+      import_plugin_package_bytes_cmd:function(){return 'my-test-skill';},
+      update_bundle_display_meta:function(){return null;},
       uninstall_marketplace_skill:function(){return null;},
       open_external_url:function(){return null;},
       // 启动期只读命令:null 即走既有回退分支(与旧 default resolve(null) 行为一致)。
-      bundle_readiness:function(){return null;},
+      // 导入成功后前端会用新包 id 拉 bundle_readiness 预填编辑弹窗。
+      bundle_readiness:function(a){
+        if (a && a.bundleId === 'my-test-skill') {
+          return {bundle:{name:'my-test-skill',description:'用大模型整理会议纪要'}};
+        }
+        return null;
+      },
       dingtalk_skills_state:function(){return null;},
       feishu_skills_state:function(){return null;},
       get_bundle_visibility:function(){return null;},
@@ -118,14 +125,24 @@ async function clickExact(page, text) {
     const hasBtn = await page.evaluate(() => !!document.querySelector('[data-testid="tool-store-upload-btn"]'));
     rec('header「上传技能包」按钮渲染', hasBtn);
 
-    // 2. 点击按钮 → import_plugin_package_cmd 被调用 → 成功弹窗
+    // 2. 点击按钮 → import_plugin_package_cmd 被调用 → 打开展示信息编辑弹窗，
+    //    名称预填后端生效默认名，可直接保存
     const clicked = await page.evaluate(() => { document.querySelector('[data-testid="tool-store-upload-btn"]').click(); return true; });
     rec('点击上传按钮', !!clicked);
     await sleep(500);
     const btnCall = await page.evaluate(() => window.__PINVOU_MOCK_CALLS__.filter(c => c.cmd === 'import_plugin_package_cmd').length);
     rec('按钮触发 import_plugin_package_cmd', btnCall >= 1);
-    const importedToast = await page.evaluate(() => document.body.innerText.includes('插件包已导入'));
-    rec('导入成功弹窗「技能包已导入」', importedToast);
+    const dialogShown = await page.evaluate(() => !!document.querySelector('[data-testid="edit-display-dialog"]'));
+    rec('导入成功打开展示信息编辑弹窗', dialogShown);
+    const prefilled = await page.evaluate(() => (document.querySelector('[data-testid="edit-display-name"]') || {}).value);
+    rec('名称输入框预填默认名', prefilled === 'my-test-skill', JSON.stringify(prefilled));
+    // 直接保存（不改预填值）→ update_bundle_display_meta 以预填值提交 → 保存成功弹窗
+    await page.evaluate(() => { document.querySelector('[data-testid="edit-display-save"]').click(); });
+    await sleep(500);
+    const saveCall = await page.evaluate(() => window.__PINVOU_MOCK_CALLS__.find(c => c.cmd === 'update_bundle_display_meta'));
+    rec('直接保存提交预填默认名', !!saveCall && saveCall.args.id === 'my-test-skill' && saveCall.args.displayName === 'my-test-skill', JSON.stringify(saveCall && saveCall.args));
+    const savedToast = await page.evaluate(() => document.body.innerText.includes('显示设置已保存'));
+    rec('保存成功弹窗「显示设置已保存」', savedToast);
 
     // 3. 列表视图(唯一视图)展示上传技能;点击列表项 → 详情弹窗显示 description
     await sleep(400);
@@ -171,8 +188,16 @@ async function clickExact(page, text) {
       return { ok: correctName && correctBytes, why: JSON.stringify({ name: call.args.filename, bytesOk: correctBytes }) };
     });
     rec('拖放 zip 触发 import_plugin_package_bytes_cmd', dropSent.ok, dropSent.why);
-    const dropToast = await page.evaluate(() => document.body.innerText.includes('插件包已导入'));
-    rec('拖放导入成功弹窗', dropToast);
+    // 拖放导入同样打开预填编辑弹窗；取消关闭（不设覆盖），继续后续步骤
+    const dropDialog = await page.evaluate(() => !!document.querySelector('[data-testid="edit-display-dialog"]'));
+    rec('拖放导入打开展示信息编辑弹窗', dropDialog);
+    await page.evaluate(() => {
+      const dlg = document.querySelector('[data-testid="edit-display-dialog"]');
+      const btns = dlg ? [...dlg.querySelectorAll('button')] : [];
+      const cancel = btns.find(b => !b.dataset.testid);
+      if (cancel) cancel.click();
+    });
+    await sleep(300);
 
     // 5. 上传技能可从 UI 卸载(路由必须命中 skill 分支而非通用工具分支)
     const uninstalled = await page.evaluate(async () => {

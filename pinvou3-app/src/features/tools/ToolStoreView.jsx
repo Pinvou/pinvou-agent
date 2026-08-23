@@ -877,8 +877,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 命令退役，installed/ready/actions 统一经 bundle_readiness 取数）。
       // 前置声明在所有订阅副作用之前（它们在事件回调里调用本函数）。
       const loadBackendState = async () => {
+        // 提升为函数级声明：下方 readiness 批量取数（独立的内层 try）也要用
+        // 本次刚拉回的 list——try 块内 const 出了块就是 ReferenceError，整个
+        // readiness 批次会被内层 catch 静默吞掉（eslint no-undef 能钉住）。
+        let list = [];
         try {
-          const list = await invokeTauri('list_marketplace_tools');
+          const fetched = await invokeTauri('list_marketplace_tools');
+          list = Array.isArray(fetched) ? fetched : [];
           const states = {};
           const s2m = {}; // 配套技能 → 所属 MCP(manifest companion_skills 反建,单一真源)。
           // 映射与安装态无关：组合包语义要求 companion 卡的「安装」始终路由到
@@ -891,7 +896,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           });
           setToolStates(states);
           setSkillToMcp(s2m);
-          setToolBackend(Array.isArray(list) ? list : []);
+          setToolBackend(list);
           const authEntries = await Promise.all(tsToolsData
             .filter(tool => tool.oauthMcp && tool.backendId)
             .map(async (tool) => {
@@ -1628,16 +1633,34 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       };
 
       // 上传 zip 技能包:按钮走 Rust 原生 dialog,拖放走 base64 字节通道,
-      // 成功/取消/失败/loading 处理统一在这里。
+      // 成功/取消/失败/loading 处理统一在这里。导入命令返回新包 id（None/null=
+      // 用户取消）；成功后立即打开展示信息编辑弹窗，名称预填当前生效默认名
+      // （extra 覆盖 > 上传文件名/manifest 回退），用户可直接保存或改名，
+      // 取消则不设覆盖、保留默认展示。
       const doImportSkillZip = async (invokeFn) => {
         if (!canMutateToolStore) return;
         setBusyId('__upload__');
         setAlert({ loading: true, visible: false, title: storeCopy.importingSkill, subtitle: storeCopy.validatingSkillPackage, isInstall: true, isError: false });
         try {
-          const ok = await invokeFn();
-          if (ok) {
+          const newId = await invokeFn();
+          if (newId) {
             await loadBackendState();
-            setAlert({ visible: true, loading: false, title: storeCopy.skillImported, isInstall: true, isError: false });
+            setAlert({ visible: false, loading: false, title: '', isInstall: false, isError: false });
+            // 预填默认名取后端生效值（bundle_readiness 已应用覆盖/回退口径）；
+            // 拉取失败退化为 id 预填，弹窗照开。
+            let bf = null;
+            try {
+              const bs = await invokeTauri('bundle_readiness', { bundleId: newId });
+              bf = (bs && bs.bundle) || null;
+            } catch (err) {
+              console.error('bundle_readiness after import failed:', newId, err);
+            }
+            setEditDisplay({
+              backendId: newId,
+              cardTitle: (bf && bf.name) || newId,
+              name: (bf && (bf.display_name || bf.name)) || newId,
+              description: (bf && bf.display_description) || '',
+            });
           } else {
             setAlert({ visible: false, loading: false, title: '', isInstall: false, isError: false }); // 用户取消
           }

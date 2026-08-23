@@ -142,4 +142,23 @@ for (const key of [
   assert.equal(occurrences.length, 3, `${key} must exist in all three uiToolStore dicts`);
 }
 
+// 6. 导入成功后即打开展示信息编辑弹窗：导入命令返回新包 id（None/null=用户取消），
+// 前端据 id 拉 bundle_readiness 取后端生效默认名预填（extra 覆盖 > 上传文件名/
+// manifest 回退），用户可直接保存或改名。
+assert.match(
+  toolStoreSource,
+  /const newId = await invokeFn\(\);/,
+  'import flow must read the new package id returned by the import command',
+);
+assert.match(
+  toolStoreSource,
+  /invokeTauri\('bundle_readiness', \{ bundleId: newId \}\)/,
+  'import success must fetch bundle facts for the new package to prefill the dialog',
+);
+assert.match(
+  toolStoreSource,
+  /name: \(bf && \(bf\.display_name \|\| bf\.name\)\) \|\| newId/,
+  'import dialog prefill must default to the effective display name (override > fallback)',
+);
+
 console.log('tool store edit-display contract tests passed');
