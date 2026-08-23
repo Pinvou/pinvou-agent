@@ -590,31 +590,36 @@ pub fn bundle_icon_path(id: &str) -> Option<String> {
 /// `pub(crate)`：存储层 `store::legacy_mcp_records` 复用同一推导取凭据 key。
 pub(crate) fn tool_credentials(tool: &super::ToolManifest) -> Vec<CredentialSpec> {
     let mut out: Vec<CredentialSpec> = Vec::new();
+    // 同一 key 允许在 config_fields 与 secret_env/secret_headers 重复声明（UI 字段 +
+    // 占位符解析双用途），此处按 (key,target) 去重一次，与 secrets 层口径对齐。
+    let push =
+        |out: &mut Vec<CredentialSpec>, key: String, target: CredentialTarget, required: bool| {
+            if !out.iter().any(|c| c.key == key && c.target == target) {
+                out.push(CredentialSpec {
+                    key,
+                    target,
+                    required,
+                });
+            }
+        };
     for f in &tool.config_fields {
         let target = match f.target.as_str() {
             "bearer" => CredentialTarget::Bearer,
             "credential" => CredentialTarget::Credential,
             _ => CredentialTarget::Env,
         };
-        out.push(CredentialSpec {
-            key: f.key.clone(),
-            target,
-            required: f.required,
-        });
+        push(&mut out, f.key.clone(), target, f.required);
     }
     for s in &tool.secret_env {
-        out.push(CredentialSpec {
-            key: s.key.clone(),
-            target: CredentialTarget::Env,
-            required: s.required,
-        });
+        push(&mut out, s.key.clone(), CredentialTarget::Env, s.required);
     }
     for s in &tool.secret_headers {
-        out.push(CredentialSpec {
-            key: s.source_key.clone(),
-            target: CredentialTarget::Bearer,
-            required: s.required,
-        });
+        push(
+            &mut out,
+            s.source_key.clone(),
+            CredentialTarget::Bearer,
+            s.required,
+        );
     }
     out
 }
@@ -622,33 +627,52 @@ pub(crate) fn tool_credentials(tool: &super::ToolManifest) -> Vec<CredentialSpec
 /// 配置弹窗字段功能事实（V4 下沉；label/placeholder/helpText 属 i18n 展示资产留前端）。
 fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
     let mut out: Vec<ConfigFieldSpec> = Vec::new();
+    // 与 tool_credentials 同口径按 (key,target) 去重：同一 key 在 config_fields 与
+    // secret_env/secret_headers 重复声明时只出一个弹窗字段，否则前端会渲染重复输入框。
+    let push = |out: &mut Vec<ConfigFieldSpec>,
+                key: String,
+                required: bool,
+                target: CredentialTarget,
+                secret: bool| {
+        if !out.iter().any(|f| f.key == key && f.target == target) {
+            out.push(ConfigFieldSpec {
+                key,
+                required,
+                target,
+                secret,
+            });
+        }
+    };
     for f in &tool.config_fields {
-        out.push(ConfigFieldSpec {
-            key: f.key.clone(),
-            required: f.required,
-            target: match f.target.as_str() {
+        push(
+            &mut out,
+            f.key.clone(),
+            f.required,
+            match f.target.as_str() {
                 "bearer" => CredentialTarget::Bearer,
                 "credential" => CredentialTarget::Credential,
                 _ => CredentialTarget::Env,
             },
-            secret: f.secret,
-        });
+            f.secret,
+        );
     }
     for s in &tool.secret_env {
-        out.push(ConfigFieldSpec {
-            key: s.key.clone(),
-            required: s.required,
-            target: CredentialTarget::Env,
-            secret: true,
-        });
+        push(
+            &mut out,
+            s.key.clone(),
+            s.required,
+            CredentialTarget::Env,
+            true,
+        );
     }
     for s in &tool.secret_headers {
-        out.push(ConfigFieldSpec {
-            key: s.source_key.clone(),
-            required: s.required,
-            target: CredentialTarget::Bearer,
-            secret: true,
-        });
+        push(
+            &mut out,
+            s.source_key.clone(),
+            s.required,
+            CredentialTarget::Bearer,
+            true,
+        );
     }
     out
 }
@@ -952,6 +976,82 @@ mod tests {
         assert_eq!(creds[0].target, CredentialTarget::Env);
         assert!(creds[0].required);
         assert_eq!(creds[1].key, "SEC");
+    }
+
+    /// 回归：同一 key 在 config_fields 与 secret_env/secret_headers 重复声明时
+    /// （如 weather/iwencai 的 AMAP_KEY/IWENCAI_API_KEY），弹窗字段与凭据声明
+    /// 按 (key,target) 去重一次——否则前端配置弹窗渲染两个一模一样的输入框。
+    #[test]
+    fn dedupes_duplicate_key_declarations() {
+        let tool = super::super::ToolManifest {
+            id: "t".into(),
+            name: "t".into(),
+            description: String::new(),
+            version: String::new(),
+            icon: String::new(),
+            category: String::new(),
+            mcp_tools: vec![],
+            command: String::new(),
+            args: vec![],
+            env: Default::default(),
+            secret_env: vec![
+                super::super::SecretEnv {
+                    key: "KEY".into(), // 与 config_fields 同 key 同 target → 去重
+                    provider: String::new(),
+                    required: true,
+                },
+                super::super::SecretEnv {
+                    key: "EXTRA".into(), // 仅 secret_env 声明 → 保留
+                    provider: String::new(),
+                    required: false,
+                },
+            ],
+            secret_headers: vec![super::super::SecretHeader {
+                source_key: "TOKEN".into(), // 与 config_fields(bearer) 同 key 同 target → 去重
+                header: "Authorization".into(),
+                scheme: "Bearer".into(),
+                provider: String::new(),
+                required: true,
+            }],
+            validate_on_install: false,
+            config_fields: vec![
+                super::super::ConfigField {
+                    key: "KEY".into(),
+                    label: String::new(),
+                    required: true,
+                    target: "env".into(),
+                    secret: false,
+                },
+                super::super::ConfigField {
+                    key: "TOKEN".into(),
+                    label: String::new(),
+                    required: true,
+                    target: "bearer".into(),
+                    secret: true,
+                },
+            ],
+            routing_rules: vec![],
+            tool_table_entries: vec![],
+            pip_dependencies: vec![],
+            servers: vec![],
+            companion_skills: vec![],
+        };
+        let fields = tool_config_fields(&tool);
+        let creds = tool_credentials(&tool);
+        let field_keys: Vec<&str> = fields.iter().map(|f| f.key.as_str()).collect();
+        let cred_keys: Vec<&str> = creds.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            field_keys,
+            ["KEY", "TOKEN", "EXTRA"],
+            "弹窗字段应按 (key,target) 去重"
+        );
+        assert_eq!(field_keys, cred_keys, "配置字段与凭据声明应同口径");
+        // config_fields 声明优先：secret 标志取 config_fields 的值（不被 secret_env 的 true 覆盖）
+        assert!(
+            !fields[0].secret,
+            "KEY 的 secret 应以 config_fields 声明为准"
+        );
+        assert_eq!(fields[1].target, CredentialTarget::Bearer);
     }
 
     #[test]
