@@ -15,8 +15,16 @@ use std::{
 
 use crate::NodeError;
 
+pub type NodeRuntimeEventStream =
+    Box<dyn Iterator<Item = Result<RuntimeEventEnvelope, NodeError>> + Send>;
+
 pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
-    fn echo(&self, node_id: &str, text: &str, seq: u64) -> Result<RuntimeEventEnvelope, NodeError>;
+    fn start_turn(
+        &self,
+        node_id: &str,
+        prompt: &str,
+        seq: u64,
+    ) -> Result<NodeRuntimeEventStream, NodeError>;
 
     fn detect(&self) -> Result<serde_json::Value, NodeError> {
         Ok(json!({
@@ -119,18 +127,20 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
         }))
     }
 
-    fn echo(&self, _: &str, text: &str, _: u64) -> Result<RuntimeEventEnvelope, NodeError> {
+    fn start_turn(
+        &self,
+        _: &str,
+        prompt: &str,
+        _: u64,
+    ) -> Result<NodeRuntimeEventStream, NodeError> {
         let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
         let session = ensure_adapter_session(&mut inner)?;
-        inner.adapter.send(&session, RuntimeCommand::text(text)?)?;
-        let mut events = inner.adapter.subscribe_events(&session)?;
-        for event in events.by_ref() {
-            let event = event?;
-            if event.event_kind() == RuntimeEventKind::TextDelta {
-                return Ok(event);
-            }
-        }
-        Err(NodeError::InvalidMessage)
+        inner
+            .adapter
+            .send(&session, RuntimeCommand::text(prompt)?)?;
+        let events = inner.adapter.subscribe_events(&session)?;
+        drop(inner);
+        Ok(Box::new(events.map(|event| event.map_err(NodeError::from))))
     }
 
     fn resolve_approval(
@@ -475,7 +485,16 @@ impl NodeSession {
                 let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
                 let runtime = self.current_runtime_host()?;
                 let _active = ActiveTurnGuard::enter(Arc::clone(&self.active_turn), seq)?;
-                let envelope = runtime.echo(&self.instance_id, text, seq)?;
+                let envelope = runtime
+                    .start_turn(&self.instance_id, text, seq)?
+                    .find_map(|event| match event {
+                        Ok(event) if event.event_kind() == RuntimeEventKind::TextDelta => {
+                            Some(Ok(event))
+                        }
+                        Ok(_) => None,
+                        Err(error) => Some(Err(error)),
+                    })
+                    .ok_or(NodeError::InvalidMessage)??;
                 return IpcMessage::event(
                     "runtime.event",
                     serde_json::to_value(envelope).map_err(|_| NodeError::InvalidMessage)?,
@@ -540,6 +559,44 @@ impl NodeSession {
             _ => return Err(NodeError::UnsupportedRequest),
         };
         IpcMessage::response(id, payload).map_err(|_| NodeError::InvalidMessage)
+    }
+
+    pub fn stream_bound<F>(&self, request: IpcMessage, mut emit: F) -> Result<(), NodeError>
+    where
+        F: FnMut(IpcMessage) -> Result<(), NodeError>,
+    {
+        if request.kind() != IpcMessageKind::Req {
+            return Err(NodeError::InvalidMessage);
+        }
+        if request
+            .payload()
+            .get("instance_id")
+            .and_then(|value| value.as_str())
+            != Some(&self.instance_id)
+        {
+            return Err(NodeError::ProtocolMismatch);
+        }
+        if request.method() != Some("chat.start") {
+            return Err(NodeError::UnsupportedRequest);
+        }
+        let prompt = request
+            .payload()
+            .get("prompt")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or(NodeError::InvalidMessage)?;
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        let runtime = self.current_runtime_host()?;
+        let _active = ActiveTurnGuard::enter(Arc::clone(&self.active_turn), seq)?;
+        for envelope in runtime.start_turn(&self.instance_id, prompt, seq)? {
+            let event = IpcMessage::event(
+                "runtime.event",
+                serde_json::to_value(envelope?).map_err(|_| NodeError::InvalidMessage)?,
+            )
+            .map_err(|_| NodeError::InvalidMessage)?;
+            emit(event)?;
+        }
+        Ok(())
     }
 
     fn current_runtime_host(&self) -> Result<Arc<dyn NodeRuntimeHost>, NodeError> {
@@ -679,16 +736,22 @@ fn debug_json_args(name: &str) -> Result<Option<Vec<std::ffi::OsString>>, NodeEr
 struct StageOneEchoRuntime;
 
 impl NodeRuntimeHost for StageOneEchoRuntime {
-    fn echo(&self, node_id: &str, text: &str, seq: u64) -> Result<RuntimeEventEnvelope, NodeError> {
-        pinvou_protocol::RuntimeEventEnvelope::from_value(json!({
+    fn start_turn(
+        &self,
+        node_id: &str,
+        prompt: &str,
+        seq: u64,
+    ) -> Result<NodeRuntimeEventStream, NodeError> {
+        let event = pinvou_protocol::RuntimeEventEnvelope::from_value(json!({
             "protocol_version":pinvou_protocol::IPC_VERSION,"schema_version":1,"node_id":node_id,
             "logical_session_id":"m1-session","attachment_id":"m1-attachment",
             "work_id":null,"collaborative_run_id":null,"stream_id":"main",
             "turn_id":"m1-turn","seq":seq,"source_span":{"start":seq,"end":seq},
             "timestamp":utc_timestamp_now(),"rate_class":"R1","kind":"text.delta",
-            "payload":{"role":"assistant","content":text,"merged_count":1}
+            "payload":{"role":"assistant","content":prompt,"merged_count":1}
         }))
-        .map_err(|_| NodeError::InvalidMessage)
+        .map_err(|_| NodeError::InvalidMessage)?;
+        Ok(Box::new(std::iter::once(Ok(event))))
     }
 }
 

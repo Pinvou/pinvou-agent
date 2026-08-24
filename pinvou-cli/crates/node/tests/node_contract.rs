@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pinvou_node::{
-    AdapterRuntimeHost, NodeError, NodeInstanceLock, NodeRuntimeHost, NodeSession,
-    NodeTransportPolicy,
+    AdapterRuntimeHost, NodeError, NodeInstanceLock, NodeRuntimeEventStream, NodeRuntimeHost,
+    NodeSession, NodeTransportPolicy,
 };
 use pinvou_protocol::{
     HelloClient, IpcMessage, IpcMessageKind, RuntimeEventEnvelope, StableExitCode,
@@ -15,6 +15,216 @@ use pinvou_runtime_api::{
 };
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Debug)]
+struct ScriptedRuntime {
+    events: Mutex<Option<Vec<RuntimeEventEnvelope>>>,
+}
+
+impl NodeRuntimeHost for ScriptedRuntime {
+    fn start_turn(&self, _: &str, _: &str, _: u64) -> Result<NodeRuntimeEventStream, NodeError> {
+        Ok(Box::new(
+            self.events
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap()
+                .into_iter()
+                .map(Ok),
+        ))
+    }
+}
+
+#[test]
+fn node_stream_bound_emits_the_complete_runtime_event_stream_in_order() {
+    let events = [
+        (
+            "turn.started",
+            serde_json::json!({"user_input_ref":"prompt"}),
+        ),
+        (
+            "text.delta",
+            serde_json::json!({"role":"assistant","content":"one","merged_count":1}),
+        ),
+        (
+            "text.delta",
+            serde_json::json!({"role":"assistant","content":"two","merged_count":1}),
+        ),
+        (
+            "tool.call.started",
+            serde_json::json!({"tool_id":"call-1","name":"read","args_json":{}}),
+        ),
+        (
+            "tool.call.completed",
+            serde_json::json!({"tool_id":"call-1","result":{},"is_error":false,"exit_code":0}),
+        ),
+        (
+            "turn.ended",
+            serde_json::json!({"end_reason":"completed","error":null}),
+        ),
+    ]
+    .into_iter()
+    .map(|(kind, payload)| match kind {
+        "turn.started" | "turn.ended" => runtime_event(kind, "R0", "control", payload),
+        _ => runtime_event(kind, "R1", "main", payload),
+    })
+    .collect();
+    let session = NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(ScriptedRuntime {
+            events: Mutex::new(Some(events)),
+        }),
+    )
+    .unwrap();
+    let request = IpcMessage::request(
+        serde_json::json!(101),
+        "chat.start",
+        serde_json::json!({"instance_id":"node-instance", "prompt":"hello"}),
+    )
+    .unwrap();
+    let mut emitted = Vec::new();
+
+    session
+        .stream_bound(request, |event| {
+            emitted.push(RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap());
+            Ok(())
+        })
+        .unwrap();
+
+    assert_eq!(
+        emitted
+            .iter()
+            .map(RuntimeEventEnvelope::kind)
+            .collect::<Vec<_>>(),
+        [
+            "turn.started",
+            "text.delta",
+            "text.delta",
+            "tool.call.started",
+            "tool.call.completed",
+            "turn.ended",
+        ]
+    );
+}
+
+struct ChatProcessGuard {
+    child: std::process::Child,
+    lock: PathBuf,
+    state_file: PathBuf,
+    endpoint_dir: Option<PathBuf>,
+}
+
+impl Drop for ChatProcessGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.lock);
+        let _ = std::fs::remove_file(&self.state_file);
+        if let Some(endpoint_dir) = &self.endpoint_dir {
+            let _ = std::fs::remove_dir(endpoint_dir);
+        }
+    }
+}
+
+trait ChatTestStream: std::io::Read + std::io::Write {}
+impl<T: std::io::Read + std::io::Write> ChatTestStream for T {}
+
+#[cfg(windows)]
+fn open_chat_endpoint(endpoint: &str) -> std::io::Result<Box<dyn ChatTestStream>> {
+    Ok(Box::new(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(endpoint)?,
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn open_chat_endpoint(endpoint: &str) -> std::io::Result<Box<dyn ChatTestStream>> {
+    Ok(Box::new(std::os::unix::net::UnixStream::connect(endpoint)?))
+}
+
+#[test]
+fn node_local_ipc_streams_chat_start_as_runtime_events() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+
+    let unique = format!(
+        "chat-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    #[cfg(windows)]
+    let endpoint = format!(r"\\.\pipe\pinvou-node-contract-{unique}");
+    #[cfg(target_os = "linux")]
+    let endpoint = std::env::temp_dir()
+        .join(format!("pinvou-node-{unique}/node.sock"))
+        .display()
+        .to_string();
+    let lock = std::env::temp_dir().join(format!("pinvou-node-{unique}.lock"));
+    let state_file = std::env::temp_dir().join(format!("pinvou-node-{unique}-state.json"));
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou-node"))
+        .arg("--endpoint")
+        .arg(&endpoint)
+        .arg("--instance-id")
+        .arg("chat-instance")
+        .arg("--lock-file")
+        .arg(&lock)
+        .arg("--state-file")
+        .arg(&state_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    #[cfg(target_os = "linux")]
+    let endpoint_dir = PathBuf::from(&endpoint).parent().map(PathBuf::from);
+    #[cfg(not(target_os = "linux"))]
+    let endpoint_dir = None;
+    let _guard = ChatProcessGuard {
+        child,
+        lock,
+        state_file,
+        endpoint_dir,
+    };
+    let mut stream = (0..80)
+        .find_map(|_| {
+            let stream = open_chat_endpoint(&endpoint).ok();
+            if stream.is_none() {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            stream
+        })
+        .expect("node endpoint must become ready");
+    let hello = HelloClient::new(serde_json::json!({"client":"chat-contract"})).unwrap();
+    stream
+        .write_all(&pinvou_protocol::encode_frame(&hello).unwrap())
+        .unwrap();
+    let answer: pinvou_protocol::HelloServer = pinvou_protocol::read_frame(&mut stream).unwrap();
+    assert_eq!(answer.instance_id(), "chat-instance");
+    let request = IpcMessage::request(
+        serde_json::json!(104),
+        "chat.start",
+        serde_json::json!({"instance_id":"chat-instance", "prompt":"stream me"}),
+    )
+    .unwrap();
+    stream
+        .write_all(&pinvou_protocol::encode_frame(&request).unwrap())
+        .unwrap();
+
+    let event: IpcMessage = pinvou_protocol::read_frame(&mut stream).unwrap();
+    assert_eq!(event.kind(), IpcMessageKind::Evt);
+    assert_eq!(event.topic(), Some("runtime.event"));
+    let envelope = RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap();
+    assert_eq!(envelope.kind(), "text.delta");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(envelope.payload().get()).unwrap()["content"],
+        "stream me"
+    );
+}
 
 #[test]
 fn node_has_local_only_transport_and_no_tcp_surface() {
@@ -383,8 +593,13 @@ fn node_control_surface_is_instance_bound_and_stably_unsupported_until_runtime_a
 struct PrefixRuntime;
 
 impl NodeRuntimeHost for PrefixRuntime {
-    fn echo(&self, node_id: &str, text: &str, seq: u64) -> Result<RuntimeEventEnvelope, NodeError> {
-        RuntimeEventEnvelope::from_value(serde_json::json!({
+    fn start_turn(
+        &self,
+        node_id: &str,
+        prompt: &str,
+        seq: u64,
+    ) -> Result<NodeRuntimeEventStream, NodeError> {
+        let event = RuntimeEventEnvelope::from_value(serde_json::json!({
             "protocol_version":pinvou_protocol::IPC_VERSION,
             "schema_version":1,
             "node_id":node_id,
@@ -399,9 +614,10 @@ impl NodeRuntimeHost for PrefixRuntime {
             "timestamp":"2026-08-21T00:00:00.000Z",
             "rate_class":"R1",
             "kind":"text.delta",
-            "payload":{"role":"assistant","content":format!("runtime:{text}"),"merged_count":1}
+            "payload":{"role":"assistant","content":format!("runtime:{prompt}"),"merged_count":1}
         }))
-        .map_err(|_| NodeError::InvalidMessage)
+        .map_err(|_| NodeError::InvalidMessage)?;
+        Ok(Box::new(std::iter::once(Ok(event))))
     }
 }
 
@@ -412,12 +628,17 @@ struct BlockingRuntime {
 }
 
 impl NodeRuntimeHost for BlockingRuntime {
-    fn echo(&self, node_id: &str, text: &str, seq: u64) -> Result<RuntimeEventEnvelope, NodeError> {
+    fn start_turn(
+        &self,
+        node_id: &str,
+        prompt: &str,
+        seq: u64,
+    ) -> Result<NodeRuntimeEventStream, NodeError> {
         if let Some(sender) = self.entered.lock().unwrap().take() {
             sender.send(()).unwrap();
         }
         self.release.lock().unwrap().recv().unwrap();
-        PrefixRuntime.echo(node_id, text, seq)
+        PrefixRuntime.start_turn(node_id, prompt, seq)
     }
 }
 
@@ -452,8 +673,13 @@ impl RecordingRuntime {
 }
 
 impl NodeRuntimeHost for RecordingRuntime {
-    fn echo(&self, node_id: &str, text: &str, seq: u64) -> Result<RuntimeEventEnvelope, NodeError> {
-        PrefixRuntime.echo(node_id, text, seq)
+    fn start_turn(
+        &self,
+        node_id: &str,
+        prompt: &str,
+        seq: u64,
+    ) -> Result<NodeRuntimeEventStream, NodeError> {
+        PrefixRuntime.start_turn(node_id, prompt, seq)
     }
 
     fn resolve_approval(
@@ -663,6 +889,134 @@ impl AgentRuntimeAdapter for FakeAdapter {
             .push(format!("close:{}", session.as_str()));
         Ok(())
     }
+}
+
+#[derive(Debug)]
+struct ApprovalBlockingAdapter {
+    approval_seen: Mutex<Option<mpsc::Sender<()>>>,
+    release_stream: Mutex<Option<mpsc::Receiver<()>>>,
+}
+
+impl AgentRuntimeAdapter for ApprovalBlockingAdapter {
+    fn probe(&mut self) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
+    fn capabilities(&self) -> Result<RuntimeCapabilities, AdapterError> {
+        Ok(RuntimeCapabilities::default())
+    }
+
+    fn auth_status(&mut self) -> Result<AuthStatus, AdapterError> {
+        Ok(AuthStatus::NotRequired)
+    }
+
+    fn create(&mut self, _: RuntimeOperation) -> Result<RuntimeSession, AdapterError> {
+        RuntimeSession::new("approval-session")
+    }
+
+    fn send(&mut self, _: &RuntimeSession, _: RuntimeCommand) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
+    fn approve(&mut self, _: &RuntimeSession, _: RuntimeOperation) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
+    fn subscribe_events(
+        &mut self,
+        _: &RuntimeSession,
+    ) -> Result<RuntimeEventSubscription, AdapterError> {
+        let approval_seen = self.approval_seen.lock().unwrap().take().unwrap();
+        let release_stream = self.release_stream.lock().unwrap().take().unwrap();
+        let mut step = 0;
+        Ok(Box::new(std::iter::from_fn(move || {
+            let event = match step {
+                0 => {
+                    approval_seen.send(()).unwrap();
+                    runtime_event(
+                        "approval.requested",
+                        "R0",
+                        "control",
+                        serde_json::json!({
+                            "approval_id":"approval-1",
+                            "tool":"shell",
+                            "summary":"run command",
+                            "options":["approved","denied"],
+                            "timeout_ms":30_000
+                        }),
+                    )
+                }
+                1 => {
+                    release_stream.recv().unwrap();
+                    runtime_event(
+                        "turn.ended",
+                        "R0",
+                        "control",
+                        serde_json::json!({"end_reason":"completed","error":null}),
+                    )
+                }
+                _ => return None,
+            };
+            step += 1;
+            Some(Ok(event))
+        })))
+    }
+
+    fn close(&mut self, _: &RuntimeSession) -> Result<(), AdapterError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn adapter_stream_releases_mutex_while_waiting_for_approval_resolution() {
+    let (approval_seen_tx, approval_seen_rx) = mpsc::channel();
+    let (release_stream_tx, release_stream_rx) = mpsc::channel();
+    let adapter = ApprovalBlockingAdapter {
+        approval_seen: Mutex::new(Some(approval_seen_tx)),
+        release_stream: Mutex::new(Some(release_stream_rx)),
+    };
+    let session = NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(AdapterRuntimeHost::new(Box::new(adapter))),
+    )
+    .unwrap();
+    let streaming = session.clone();
+    let stream_worker = std::thread::spawn(move || {
+        let request = IpcMessage::request(
+            serde_json::json!(102),
+            "chat.start",
+            serde_json::json!({"instance_id":"node-instance", "prompt":"approve"}),
+        )
+        .unwrap();
+        streaming.stream_bound(request, |_| Ok(())).unwrap();
+    });
+    approval_seen_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("runtime stream did not reach approval.requested");
+
+    let resolving = session.clone();
+    let (resolved_tx, resolved_rx) = mpsc::channel();
+    let resolve_worker = std::thread::spawn(move || {
+        let request = IpcMessage::request(
+            serde_json::json!(103),
+            "approval.resolve",
+            serde_json::json!({
+                "instance_id":"node-instance",
+                "approval_id":"approval-1",
+                "accepted":true
+            }),
+        )
+        .unwrap();
+        resolved_tx.send(resolving.handle(request)).unwrap();
+    });
+    let resolved_while_streaming = resolved_rx.recv_timeout(Duration::from_secs(2));
+
+    release_stream_tx.send(()).unwrap();
+    stream_worker.join().unwrap();
+    resolve_worker.join().unwrap();
+    resolved_while_streaming
+        .expect("approval.resolve was blocked by the adapter stream mutex")
+        .unwrap();
 }
 
 fn runtime_event(

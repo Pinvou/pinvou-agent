@@ -63,7 +63,15 @@ fn serve(stream: &mut platform::Connection, session: &NodeSession) -> Result<(),
     let answer = session.accept_hello(hello)?;
     stream.write_all(&encode_frame(&answer).map_err(|_| NodeError::InvalidMessage)?)?;
     loop {
-        let request = read_frame(stream).map_err(|_| NodeError::InvalidMessage)?;
+        let request: IpcMessage = read_frame(stream).map_err(|_| NodeError::InvalidMessage)?;
+        if request.method() == Some("chat.start") {
+            session.stream_bound(request, |event| {
+                stream.write_all(&encode_frame(&event).map_err(|_| NodeError::InvalidMessage)?)?;
+                stream.flush()?;
+                Ok(())
+            })?;
+            continue;
+        }
         let response = session.handle(request)?;
         stream.write_all(&encode_frame(&response).map_err(|_| NodeError::InvalidMessage)?)?;
         stream.flush()?;
