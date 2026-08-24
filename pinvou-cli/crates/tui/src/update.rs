@@ -55,17 +55,25 @@ fn submit(model: &mut Model, input: String) -> Vec<Effect> {
 
     match parse(trimmed) {
         Ok(Some(SlashCommand::Help)) => {
-            model.overlay = Overlay::Help {
-                commands: AVAILABLE_COMMANDS.to_vec(),
-            };
+            open_overlay(
+                model,
+                Overlay::Help {
+                    commands: AVAILABLE_COMMANDS.to_vec(),
+                },
+            );
             Vec::new()
         }
         Ok(Some(SlashCommand::Runtime)) => {
-            model.overlay = Overlay::RuntimeList;
+            open_overlay(model, Overlay::RuntimeList);
             Vec::new()
         }
         Ok(Some(SlashCommand::Exit)) => {
             model.should_quit = true;
+            Vec::new()
+        }
+        Ok(None) if model.overlay == Overlay::RuntimeList => {
+            model.status_message =
+                Some("choose a runtime or close the runtime selector before submitting".into());
             Vec::new()
         }
         Ok(None) => submit_prompt(model, trimmed),
@@ -74,6 +82,20 @@ fn submit(model: &mut Model, input: String) -> Vec<Effect> {
             Vec::new()
         }
     }
+}
+
+fn open_overlay(model: &mut Model, overlay: Overlay) {
+    if model.turn != TurnState::Idle
+        || model.interaction != Interaction::None
+        || model.pending_runtime_switch.is_some()
+    {
+        model.status_message =
+            Some("overlay cannot open during an active turn or interaction".into());
+        return;
+    }
+    model.overlay = overlay;
+    model.status_message = None;
+    model.diagnostic_message = None;
 }
 
 fn submit_prompt(model: &mut Model, prompt: &str) -> Vec<Effect> {
@@ -437,6 +459,7 @@ fn bind_turn(model: &mut Model, event: &RuntimeEventEnvelope) {
         operation_token,
         turn_id: turn_id.to_owned(),
     };
+    model.overlay = Overlay::None;
     model.status_message = None;
     model.diagnostic_message = None;
 }
@@ -477,6 +500,7 @@ fn is_projected_turn_event(kind: RuntimeEventKind) -> bool {
 }
 
 fn request_approval(model: &mut Model, payload: &Value) {
+    model.overlay = Overlay::None;
     if model.interaction != Interaction::None {
         record_ignored(
             model,
@@ -508,6 +532,7 @@ fn request_approval(model: &mut Model, payload: &Value) {
 }
 
 fn request_input(model: &mut Model, payload: &Value) {
+    model.overlay = Overlay::None;
     if model.interaction != Interaction::None {
         record_ignored(
             model,

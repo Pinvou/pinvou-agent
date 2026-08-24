@@ -1312,6 +1312,99 @@ mod tests {
         );
     }
 
+    #[test]
+    fn overlays_are_idle_only_and_never_cover_actionable_interactions() {
+        let mut starting = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        update(&mut starting, Action::Submit("hello".into()));
+        assert!(update(&mut starting, Action::Submit("/runtime".into())).is_empty());
+        assert_eq!(starting.overlay, Overlay::None);
+        assert!(
+            starting
+                .status_message
+                .as_deref()
+                .unwrap()
+                .contains("active")
+        );
+        assert!(update(&mut starting, Action::Submit("/help".into())).is_empty());
+        assert_eq!(starting.overlay, Overlay::None);
+
+        let mut approval = active_model();
+        request_approval(&mut approval);
+        assert!(matches!(
+            approval.interaction,
+            Interaction::ApprovalPending(_)
+        ));
+        assert!(update(&mut approval, Action::Submit("/runtime".into())).is_empty());
+        assert_eq!(approval.overlay, Overlay::None);
+
+        let mut stale_approval_overlay = active_model();
+        stale_approval_overlay.overlay = Overlay::RuntimeList;
+        request_approval(&mut stale_approval_overlay);
+        assert_eq!(stale_approval_overlay.overlay, Overlay::None);
+
+        let mut stale_input_overlay = active_model();
+        stale_input_overlay.overlay = Overlay::Help {
+            commands: vec!["/help"],
+        };
+        dispatch_current_runtime(
+            &mut stale_input_overlay,
+            event(
+                RuntimeEventKind::InputRequested,
+                json!({"input_id": "input-1", "prompt": "Continue?"}),
+                2,
+            ),
+        );
+        assert_eq!(stale_input_overlay.overlay, Overlay::None);
+        assert!(matches!(
+            stale_input_overlay.interaction,
+            Interaction::InputPending(_)
+        ));
+    }
+
+    #[test]
+    fn runtime_selector_consumes_submit_while_help_yields_to_a_prompt() {
+        let mut selector = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        update(&mut selector, Action::Submit("/runtime".into()));
+        let effects = update(&mut selector, Action::Submit("do not send".into()));
+        assert!(effects.is_empty());
+        assert!(selector.transcript.entries().is_empty());
+        assert_eq!(selector.overlay, Overlay::RuntimeList);
+        assert!(
+            selector
+                .status_message
+                .as_deref()
+                .unwrap()
+                .contains("runtime")
+        );
+
+        let mut help = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        update(&mut help, Action::Submit("/help".into()));
+        let effects = update(&mut help, Action::Submit("send me".into()));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::StartTurn { prompt, .. }] if prompt == "send me"
+        ));
+        assert_eq!(help.overlay, Overlay::None);
+    }
+
+    #[test]
+    fn turn_start_dismisses_a_stale_non_actionable_overlay() {
+        let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        update(&mut model, Action::Submit("hello".into()));
+        model.overlay = Overlay::Help {
+            commands: vec!["/help"],
+        };
+        dispatch_current_runtime(
+            &mut model,
+            event(
+                RuntimeEventKind::TurnStarted,
+                json!({"user_input_ref": "prompt-1"}),
+                1,
+            ),
+        );
+        assert_eq!(model.overlay, Overlay::None);
+    }
+
     fn active_model() -> Model {
         let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
         update(&mut model, Action::Submit("hello".into()));
