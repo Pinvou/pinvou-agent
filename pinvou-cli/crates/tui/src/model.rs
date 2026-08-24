@@ -1,20 +1,20 @@
 use std::path::PathBuf;
 
-use crate::backend::RuntimeStatus;
+use crate::backend::{BackendError, RuntimeStatus};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConnectionState {
     Disconnected,
     Connecting,
     Connected,
-    Failed(String),
+    Failed(BackendError),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TurnState {
     Idle,
     Starting,
-    Streaming { turn_id: Option<String> },
+    Streaming { turn_id: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -105,17 +105,31 @@ pub struct Composer {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApprovalRequest {
+    pub approval_id: String,
+    pub tool: String,
+    pub summary: String,
+    pub options: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputRequest {
+    pub input_id: String,
+    pub prompt: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Interaction {
     None,
-    Approval {
-        approval_id: String,
-        tool: String,
-        summary: String,
-        options: Vec<String>,
+    ApprovalPending(ApprovalRequest),
+    ApprovalResolving {
+        request: ApprovalRequest,
+        decision: crate::action::ApprovalDecision,
     },
-    Input {
-        input_id: String,
-        prompt: String,
+    InputPending(InputRequest),
+    InputResolving {
+        request: InputRequest,
+        value: String,
     },
 }
 
@@ -137,6 +151,7 @@ pub struct Model {
     pub interaction: Interaction,
     pub overlay: Overlay,
     pub status_message: Option<String>,
+    pub last_backend_error: Option<BackendError>,
     pub should_quit: bool,
 }
 
@@ -152,6 +167,7 @@ impl Model {
             interaction: Interaction::None,
             overlay: Overlay::None,
             status_message: None,
+            last_backend_error: None,
             should_quit: false,
         }
     }

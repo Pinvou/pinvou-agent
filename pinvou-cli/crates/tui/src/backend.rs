@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use pinvou_protocol::RuntimeEventEnvelope;
+use pinvou_protocol::{RuntimeEventEnvelope, StableExitCode};
 use thiserror::Error;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,14 +35,48 @@ impl RuntimeList {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendErrorKind {
+    ControllerUnavailable,
+    AuthBlocked,
+    Cancelled,
+    Protocol,
+    Operation,
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
-pub enum BackendError {
-    #[error("backend is unavailable: {0}")]
-    Unavailable(String),
-    #[error("backend operation failed: {0}")]
-    Operation(String),
-    #[error("runtime protocol error: {0}")]
-    Protocol(String),
+#[error("{safe_message}")]
+pub struct BackendError {
+    kind: BackendErrorKind,
+    exit_code: Option<StableExitCode>,
+    safe_message: String,
+}
+
+impl BackendError {
+    pub fn new(kind: BackendErrorKind, safe_message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            exit_code: None,
+            safe_message: safe_message.into(),
+        }
+    }
+
+    pub fn with_exit_code(mut self, exit_code: StableExitCode) -> Self {
+        self.exit_code = Some(exit_code);
+        self
+    }
+
+    pub const fn kind(&self) -> BackendErrorKind {
+        self.kind
+    }
+
+    pub const fn exit_code(&self) -> Option<StableExitCode> {
+        self.exit_code
+    }
+
+    pub fn safe_message(&self) -> &str {
+        &self.safe_message
+    }
 }
 
 pub type EventEmitter = Box<dyn FnMut(RuntimeEventEnvelope) -> Result<(), BackendError> + Send>;

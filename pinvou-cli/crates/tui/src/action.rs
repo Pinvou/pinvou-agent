@@ -1,6 +1,6 @@
 use pinvou_protocol::RuntimeEventEnvelope;
 
-use crate::backend::RuntimeStatus;
+use crate::backend::{BackendError, RuntimeStatus};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApprovalDecision {
@@ -13,10 +13,18 @@ pub enum Action {
     Submit(String),
     Runtime(RuntimeEventEnvelope),
     ApprovalChosen(ApprovalDecision),
+    ApprovalResolutionCompleted {
+        approval_id: String,
+        result: Result<(), BackendError>,
+    },
     InputSubmitted(String),
+    InputResolutionCompleted {
+        input_id: String,
+        result: Result<(), BackendError>,
+    },
     Interrupt,
     RuntimeSwitch(String),
-    RuntimeSwitched(Result<RuntimeStatus, String>),
+    RuntimeSwitched(Result<RuntimeStatus, BackendError>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
