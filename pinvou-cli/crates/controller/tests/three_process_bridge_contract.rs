@@ -72,11 +72,26 @@ fn raw_client_reaches_node_chat_start_through_controller_daemon() {
     .unwrap();
     stream.write_all(&encode_frame(&request).unwrap()).unwrap();
     stream.flush().unwrap();
+    let started: IpcMessage = read_frame(&mut stream).unwrap_or_else(|error| {
+        panic!(
+            "controller closed before first runtime event: {error:?}; stderr={}; log={}",
+            std::fs::read_to_string(&stderr).unwrap_or_default(),
+            std::fs::read_to_string(paths.log_file()).unwrap_or_default()
+        )
+    });
+    assert_eq!(started.topic(), Some("runtime.event"));
+    let started = RuntimeEventEnvelope::from_value(started.payload().clone()).unwrap();
+    assert_eq!(started.kind(), "turn.started");
+    assert_eq!(started.seq(), 1);
+    let turn_id = started.turn_id().unwrap().to_owned();
+
     let event: IpcMessage = read_frame(&mut stream).unwrap();
     assert_eq!(event.topic(), Some("runtime.event"));
     let envelope = RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap();
     let value = serde_json::to_value(envelope).unwrap();
     assert_eq!(value["kind"], "text.delta");
+    assert_eq!(value["turn_id"], turn_id);
+    assert_eq!(value["seq"], 2);
     assert_eq!(value["payload"]["content"], "three-process-echo");
 
     let terminal: IpcMessage = read_frame(&mut stream).unwrap();
@@ -84,9 +99,10 @@ fn raw_client_reaches_node_chat_start_through_controller_daemon() {
     let terminal_envelope = RuntimeEventEnvelope::from_value(terminal.payload().clone()).unwrap();
     let terminal_value = serde_json::to_value(terminal_envelope).unwrap();
     assert_eq!(terminal_value["kind"], "turn.ended");
+    assert_eq!(terminal_value["turn_id"], turn_id);
     assert_eq!(terminal_value["stream_id"], "control");
     assert_eq!(terminal_value["rate_class"], "R0");
-    assert_eq!(terminal_value["seq"], 1);
+    assert_eq!(terminal_value["seq"], 3);
     assert_eq!(terminal_value["payload"]["end_reason"], "completed");
 
     for (id, method, payload) in [
@@ -134,7 +150,10 @@ fn sibling_node(controller: &Path) -> PathBuf {
 
 fn configure_private_roots(command: &mut Command, root: &Path) {
     #[cfg(windows)]
-    command.env("LOCALAPPDATA", root.join("local"));
+    command.env("LOCALAPPDATA", root.join("local")).env(
+        "PINVOU_CONTROLLER_SESSION_SCOPE_FOR_TEST",
+        root.file_name().unwrap(),
+    );
     #[cfg(target_os = "linux")]
     command
         .env("HOME", root.join("home"))
@@ -144,7 +163,13 @@ fn configure_private_roots(command: &mut Command, root: &Path) {
 
 fn discover_with_private_roots(root: &Path) -> ControllerPaths {
     #[cfg(windows)]
-    let vars = [("LOCALAPPDATA", root.join("local"))];
+    let vars = [
+        ("LOCALAPPDATA", root.join("local")),
+        (
+            "PINVOU_CONTROLLER_SESSION_SCOPE_FOR_TEST",
+            PathBuf::from(root.file_name().unwrap()),
+        ),
+    ];
     #[cfg(target_os = "linux")]
     let vars = [
         ("HOME", root.join("home")),

@@ -104,58 +104,27 @@ impl ControllerSession {
                 )
                 .map_err(|_| ControllerError::InvalidMessage)?,
             ]),
-            Some("runtime.echo") | Some("chat.start") => {
-                let is_chat_start = request.method() == Some("chat.start");
-                #[cfg(debug_assertions)]
-                if is_chat_start && let Some(events) = &self.scripted_chat {
-                    let prompt = request
-                        .payload()
-                        .get("prompt")
-                        .and_then(|v| v.as_str())
-                        .filter(|value| !value.is_empty())
-                        .ok_or(ControllerError::InvalidMessage)?;
-                    let _ = prompt;
-                    return events
-                        .iter()
-                        .map(|event| {
-                            IpcMessage::event("runtime.event", event.clone())
-                                .map_err(|_| ControllerError::InvalidMessage)
-                        })
-                        .collect();
-                }
+            Some("runtime.echo") => {
                 let route = self
                     .local_node
                     .as_ref()
                     .ok_or(ControllerError::UnsupportedRequest)?;
-                let text_field = if is_chat_start { "prompt" } else { "text" };
                 let text = request
                     .payload()
-                    .get(text_field)
+                    .get("text")
                     .and_then(|v| v.as_str())
                     .filter(|value| !value.is_empty())
                     .ok_or(ControllerError::InvalidMessage)?;
                 let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
                 let envelope = client.echo(text)?;
-                let mut responses = vec![
+                Ok(vec![
                     IpcMessage::event(
                         "runtime.event",
                         serde_json::to_value(&envelope)
                             .map_err(|_| ControllerError::InvalidMessage)?,
                     )
                     .map_err(|_| ControllerError::InvalidMessage)?,
-                ];
-                if is_chat_start {
-                    let terminal = turn_ended_after(&envelope)?;
-                    responses.push(
-                        IpcMessage::event(
-                            "runtime.event",
-                            serde_json::to_value(terminal)
-                                .map_err(|_| ControllerError::InvalidMessage)?,
-                        )
-                        .map_err(|_| ControllerError::InvalidMessage)?,
-                    );
-                }
-                Ok(responses)
+                ])
             }
             Some("runtime.detect") => Ok(vec![
                 IpcMessage::response(
@@ -342,27 +311,55 @@ impl ControllerSession {
         }
         self.handle_many(request)
     }
-}
 
-fn turn_ended_after(
-    envelope: &RuntimeEventEnvelope,
-) -> Result<RuntimeEventEnvelope, ControllerError> {
-    let value = json!({
-        "protocol_version": envelope.protocol_version(),
-        "schema_version": envelope.schema_version(),
-        "node_id": envelope.node_id(),
-        "logical_session_id": envelope.logical_session_id(),
-        "attachment_id": envelope.attachment_id(),
-        "work_id": null,
-        "collaborative_run_id": null,
-        "stream_id": "control",
-        "turn_id": envelope.turn_id(),
-        "seq": 1,
-        "source_span": null,
-        "timestamp": envelope.timestamp(),
-        "rate_class": "R0",
-        "kind": "turn.ended",
-        "payload": {"end_reason": "completed", "error": null}
-    });
-    RuntimeEventEnvelope::from_value(value).map_err(|_| ControllerError::InvalidMessage)
+    pub fn stream_bound<F>(&self, request: IpcMessage, mut emit: F) -> Result<(), ControllerError>
+    where
+        F: FnMut(IpcMessage) -> Result<(), ControllerError>,
+    {
+        if request.kind() != IpcMessageKind::Req || request.method() != Some("chat.start") {
+            return Err(ControllerError::UnsupportedRequest);
+        }
+        if request
+            .payload()
+            .get("instance_id")
+            .and_then(|value| value.as_str())
+            != Some(&self.instance_id)
+        {
+            return Err(ControllerError::ProtocolMismatch);
+        }
+        let prompt = request
+            .payload()
+            .get("prompt")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or(ControllerError::InvalidMessage)?;
+
+        #[cfg(debug_assertions)]
+        if let Some(events) = &self.scripted_chat {
+            let terminal = events
+                .last()
+                .cloned()
+                .ok_or(ControllerError::InvalidMessage)
+                .and_then(|value| {
+                    RuntimeEventEnvelope::from_value(value)
+                        .map_err(|_| ControllerError::InvalidMessage)
+                })?;
+            if terminal.kind() != "turn.ended" {
+                return Err(ControllerError::InvalidMessage);
+            }
+            for event in events {
+                let message = IpcMessage::event("runtime.event", event.clone())
+                    .map_err(|_| ControllerError::InvalidMessage)?;
+                emit(message)?;
+            }
+            return Ok(());
+        }
+
+        let route = self
+            .local_node
+            .as_ref()
+            .ok_or(ControllerError::UnsupportedRequest)?;
+        let mut client = LocalNodeClient::connect(&route.endpoint, &route.instance_id)?;
+        client.stream_chat(prompt, emit)
+    }
 }

@@ -134,6 +134,17 @@ fn serve_connection(
             Err(FrameError::Io) if handled_requests => return Ok(()),
             Err(_) => return Err(ControllerError::InvalidMessage),
         };
+        if request.method() == Some("chat.start") {
+            session.stream_bound(request, |response| {
+                stream.write_all(
+                    &encode_frame(&response).map_err(|_| ControllerError::InvalidMessage)?,
+                )?;
+                stream.flush()?;
+                Ok(())
+            })?;
+            handled_requests = true;
+            continue;
+        }
         let responses = session.handle_bound_many(request)?;
         for response in responses {
             stream.write_all(
