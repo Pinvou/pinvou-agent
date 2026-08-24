@@ -13,10 +13,14 @@ use crate::model::{
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 16;
 const KEYMAP_IDLE: &str = "Enter send  ·  Ctrl+R runtime  ·  Ctrl+C detach/exit";
+const KEYMAP_STARTING: &str = "Starting/Waiting  ·  Ctrl+C detach";
 const KEYMAP_ACTIVE: &str = "Esc interrupt  ·  Ctrl+C detach";
 const KEYMAP_APPROVAL: &str = "1 Allow once  ·  3 Deny  ·  Ctrl+C detach";
+const KEYMAP_APPROVAL_RESOLVING: &str = "Approving/Waiting  ·  Ctrl+C detach";
 const KEYMAP_INPUT: &str = "Enter submit  ·  Ctrl+C detach";
+const KEYMAP_INPUT_RESOLVING: &str = "Submitting/Waiting  ·  Ctrl+C detach";
 const KEYMAP_RUNTIME: &str = "↑/↓ select  ·  Enter switch  ·  Esc close";
+const KEYMAP_RUNTIME_PENDING: &str = "Switching/Waiting  ·  Ctrl+C detach";
 
 pub fn render(frame: &mut Frame<'_>, model: &Model) {
     let area = frame.area();
@@ -248,13 +252,23 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, model: &Model) {
 }
 
 fn keymap(model: &Model) -> &'static str {
-    match model.interaction {
-        Interaction::ApprovalPending(_) | Interaction::ApprovalResolving { .. } => KEYMAP_APPROVAL,
-        Interaction::InputPending(_) | Interaction::InputResolving { .. } => KEYMAP_INPUT,
-        Interaction::None => match model.turn {
-            TurnState::Idle => KEYMAP_IDLE,
-            TurnState::Starting { .. } | TurnState::Streaming { .. } => KEYMAP_ACTIVE,
-        },
+    match &model.interaction {
+        Interaction::ApprovalPending(_) => return KEYMAP_APPROVAL,
+        Interaction::ApprovalResolving { .. } => return KEYMAP_APPROVAL_RESOLVING,
+        Interaction::InputPending(_) => return KEYMAP_INPUT,
+        Interaction::InputResolving { .. } => return KEYMAP_INPUT_RESOLVING,
+        Interaction::None => {}
+    }
+    if model.pending_runtime_switch.is_some() {
+        return KEYMAP_RUNTIME_PENDING;
+    }
+    if matches!(model.overlay, Overlay::RuntimeList) {
+        return KEYMAP_RUNTIME;
+    }
+    match model.turn {
+        TurnState::Idle => KEYMAP_IDLE,
+        TurnState::Starting { .. } => KEYMAP_STARTING,
+        TurnState::Streaming { .. } => KEYMAP_ACTIVE,
     }
 }
 
@@ -303,7 +317,7 @@ fn render_runtime_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model) {
     if let Some(pending) = pending {
         lines.push(Line::from(pending));
     }
-    lines.push(Line::from(KEYMAP_RUNTIME));
+    lines.push(Line::from(keymap(model)));
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::default()
@@ -414,7 +428,11 @@ mod tests {
             },
             decision: ApprovalDecision::AllowOnce,
         };
-        assert!(screen(&approval, 100, 30).contains("Resolving approval"));
+        let resolving_approval = screen(&approval, 100, 30);
+        assert!(resolving_approval.contains("Resolving approval"));
+        assert!(resolving_approval.contains("Approving/Waiting"));
+        assert!(!resolving_approval.contains("1 Allow once"));
+        assert!(!resolving_approval.contains("3 Deny"));
 
         let mut input = model();
         input.interaction = Interaction::InputPending(InputRequest {
@@ -433,7 +451,10 @@ mod tests {
             },
             value: "pinvou-tui".into(),
         };
-        assert!(screen(&input, 100, 30).contains("Submitting input"));
+        let resolving_input = screen(&input, 100, 30);
+        assert!(resolving_input.contains("Submitting input"));
+        assert!(resolving_input.contains("Submitting/Waiting"));
+        assert!(!resolving_input.contains("Enter submit"));
 
         let mut error = model();
         error.status_message = Some("runtime disconnected unexpectedly".into());
@@ -472,9 +493,16 @@ mod tests {
         assert!(output.contains("Switch runtime"));
         assert!(output.contains("OpenAI Codex"));
         assert!(output.contains("Switching to claude"));
-        assert!(output.contains("↑/↓ select"));
-        assert!(output.contains("Enter switch"));
-        assert!(output.contains("Esc close"));
+        assert!(output.contains("Switching/Waiting"));
+        assert!(!output.contains("↑/↓ select"));
+        assert!(!output.contains("Enter switch"));
+        assert!(!output.contains("Esc close"));
+
+        model.pending_runtime_switch = None;
+        let selectable = screen(&model, 100, 30);
+        assert!(selectable.contains("↑/↓ select"));
+        assert!(selectable.contains("Enter switch"));
+        assert!(selectable.contains("Esc close"));
     }
 
     #[test]
@@ -511,7 +539,8 @@ mod tests {
             operation_token: OperationToken::new(4),
         };
         let output = screen(&streaming, 100, 30);
-        assert!(output.contains("Esc interrupt"));
+        assert!(output.contains("Starting/Waiting"));
+        assert!(!output.contains("Esc interrupt"));
         assert!(output.contains("Ctrl+C detach"));
         streaming.turn = TurnState::Streaming {
             operation_token: OperationToken::new(4),
@@ -526,6 +555,38 @@ mod tests {
                 "unexpected {forbidden:?}\n{output}\n{streaming_output}"
             );
         }
+    }
+
+    #[test]
+    fn keymap_priority_is_interaction_then_runtime_then_turn() {
+        let mut model = model();
+        model.turn = TurnState::Streaming {
+            operation_token: OperationToken::new(7),
+            turn_id: "turn-7".into(),
+        };
+        model.overlay = Overlay::RuntimeList;
+        model.pending_runtime_switch = Some(PendingRuntimeSwitch {
+            target: "claude".into(),
+            operation_token: OperationToken::new(8),
+        });
+        let runtime_pending = screen(&model, 100, 30);
+        assert!(runtime_pending.contains("Switching/Waiting"));
+        assert!(!runtime_pending.contains("Esc interrupt"));
+        assert!(!runtime_pending.contains("Enter switch"));
+
+        model.interaction = Interaction::ApprovalPending(ApprovalRequest {
+            turn_id: "turn-7".into(),
+            approval_id: "approval-7".into(),
+            operation_token: OperationToken::new(7),
+            tool: "shell".into(),
+            summary: "Run tests".into(),
+            options: vec!["allow".into(), "deny".into()],
+        });
+        let approval = screen(&model, 100, 30);
+        assert!(approval.contains("1 Allow once"));
+        assert!(approval.contains("3 Deny"));
+        assert!(!approval.contains("Esc interrupt"));
+        assert!(!approval.contains("Enter switch"));
     }
 
     #[test]
