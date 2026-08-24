@@ -136,13 +136,13 @@ Use these placement rules when drawing Chart.js value labels:
 
 - Vertical bars: positive labels sit above the bar; negative labels sit below the bar. Pull labels inward near chart edges.
 - Horizontal bars: positive labels sit after the bar end; negative labels sit before the bar end. Move labels inside the bar when outside space is tight.
-- Line charts: show every point only when the series is short. For dense series, label endpoints, peaks, troughs, important thresholds, or Top N values with 6-8px spacing from the point.
+- Line charts: show every point only when the series is short; keep labels 6-8px away from the point.
 - Area charts: follow line chart labeling, and avoid covering the main filled trend shape.
 - Doughnut and pie charts: show percentage or Top N labels. Do not force persistent labels on tiny slices; put those values in the custom legend instead.
 - Scatter and bubble charts: label the selected business metric, usually `y`, and keep labels outside the marker when practical.
 - Multi-dataset charts: label the primary dataset by default. If labeling every dataset would clutter the chart, use the custom legend and tooltip for secondary datasets.
 - Format every label with `Intl.NumberFormat`, `Math.round()`, or `.toFixed(n)`, matching the metric type and keeping labels compact.
-- Use at least 11px text, weight 400 or 500, and hardcoded neutral hex colors in canvas drawing code.
+- Use at least 11px text, weight 400 or 500, and hardcoded neutral hex from the c-gray scale (such as #5F5E5A or #444441) in canvas drawing code.
 
 ### Legends
 Always disable the default legend and use custom HTML:

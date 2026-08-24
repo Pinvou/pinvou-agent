@@ -26,6 +26,7 @@ description: 当用户要求数据可视化、做图表、生成看板、数据�
 - 直接在聊天正文粘贴完整 HTML，而没有写 `.html` 文件和展示 artifact。
 - `<canvas>` 缺少 `role="img"`、`aria-label` 或 fallback text。
 - 使用默认 Chart.js legend，而没有自定义 HTML legend。
+- 图表数值只出现在 hover tooltip 中，画布上没有常驻数值标签。
 - 使用彩虹渐变 KPI、重阴影、发光、深色 hero、emoji 或营销页式大标题。
 - HTML/CSS/JS 中出现 `<!-- comments -->`、`/* comments */` 或独立行 `// comments`。
 - `scripts/validate_visualizer_html.py` 返回失败。
@@ -62,7 +63,6 @@ Pinvou 的聊天正文会转义或清理 `<script>`，所以不要把带 Chart.j
 - 不要编造真实业务数据。缺数据时先询问，或明确生成空模板/示例模板。
 - 用户给出 Excel、CSV、JSON、表格或明细数据时，先做必要聚合，再写入图表。
 - 所有展示数字都要四舍五入到合理精度。
-- 图表默认常驻显示关键数值标签；hover tooltip 可以保留，但不能作为唯一的数值展示方式。
 - 图表解释写在普通回复中；HTML 产物内部只放视觉元素、必要标题、图例和简短标签。
 
 ## HTML 产物硬规则
@@ -70,7 +70,7 @@ Pinvou 的聊天正文会转义或清理 `<script>`，所以不要把带 Chart.j
 - 使用 Chart.js UMD：`https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js`。
 - 每个 `<canvas>` 必须有 `role="img"`、描述性 `aria-label` 和 fallback text。
 - 默认 legend 必须关闭，使用自定义 HTML legend。
-- 默认在图表关键数据点上常驻显示数值标签，不只依赖 hover tooltip；柱状图显示在柱体末端或顶部，折线图显示在关键节点附近，饼图/环图显示分类占比。若数据点过密导致重叠，只显示首尾、峰值、谷值或 Top N，并在图例、KPI 或标题旁保留完整口径。
+- 默认在图表关键数据点上常驻显示数值标签，不只依赖 hover tooltip；柱状图显示在柱体末端或顶部，折线图显示在关键节点附近，饼图/环图显示分类占比。数据密集时只显示首尾、峰值、谷值或 Top N 等关键标签，避免重叠；完整数值保留在图例或 KPI 卡中。
 - canvas 外层 wrapper 设置高度，canvas 本身不直接设置高度。
 - Chart.js 配置里使用硬编码 hex，不使用 CSS 变量。
 - 页面视觉要扁平、紧凑、无渐变背景、无阴影、无深色外层容器。
