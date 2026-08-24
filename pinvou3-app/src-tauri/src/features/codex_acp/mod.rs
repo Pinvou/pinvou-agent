@@ -2829,10 +2829,9 @@ impl AcpPool {
         .into_iter()
         .find_map(find_in_path)
         {
-            std::process::Command::new(&browser)
-                .arg("--new-window")
-                .arg(&url)
-                .spawn()
+            let mut browser_command = std::process::Command::new(&browser);
+            browser_command.arg("--new-window").arg(&url);
+            crate::platform::os::spawn_detached_and_reap(&mut browser_command)
                 .with_context(|| format!("启动浏览器失败: {}", browser.display()))?;
             eprintln!(
                 "[pinvou3-app] {} authorization page requested via {}",

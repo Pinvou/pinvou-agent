@@ -6,6 +6,22 @@ pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String>
     super::super::platform::open_target(target, label)
 }
 
+/// spawn 一个“点火即忘”进程并按平台语义收割。
+///
+/// Unix 上经 posix 收割线程 `wait()` 防僵尸；Windows 无 waitpid 契约，
+/// spawn 后 drop 句柄即由系统回收。供 features 层复用（open/notify 同类
+/// 的浏览器拉起等），避免各自内联 `cfg` 平台细节。
+pub fn spawn_detached_and_reap(command: &mut std::process::Command) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        super::super::posix::spawn_detached_and_reap(command)
+    }
+    #[cfg(not(unix))]
+    {
+        command.spawn().map(|_| ())
+    }
+}
+
 pub fn reveal_target(target: &Path) -> Result<(), String> {
     super::super::platform::reveal_target(target)
 }

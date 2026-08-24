@@ -308,7 +308,7 @@ function bootWebBridge() {
     };
   };
   return {
-    flat, storage, calls, handlers, deferreds,
+    flat, storage, calls, handlers, deferreds, listeners,
     view() { return flat.getState(); },
   };
 }
@@ -367,4 +367,52 @@ test('web scene sidecar 保存失败 + 容量淘汰后，localStorage 缓存仍�
   assert.equal(await rt.flat.deleteSession('s1'), true);
   assert.equal(rt.storage.has(key), false,
     '真实会话删除必须清理 scene 缓存键（防无界累积）');
+});
+
+// ── 计划任务重开：淘汰后 scheduled 打开流程的草稿恢复 ────────────────
+// openScheduledRunChatOnce 两分支（queued/running 的 beginScheduledOpenActivation
+// 与其余的 scheduledRunBuffer）都先经 getBuffer 重建 buffer——回填发生在
+// getBuffer 恢复点（switchToSessionInternal 的 hydrateLive 入口恢复是防御
+// 性兜底，正常调用图不可达）。本测试锁定可达路径：淘汰 → 计划任务重开 →
+// 草稿必须回到可见工作集。
+
+test('web 计划任务重开：淘汰后经 scheduled 打开，草稿经 getBuffer 重建回填', async () => {
+  const rt = bootWebBridge();
+  // sched 会话此前被切到过并留下未发送草稿，后被容量淘汰（buffer 无了，
+  // 草稿只剩侧表）。running 运行重开走 hydrateLiveSession: true 路径。
+  const sid = 'sched-run-1';
+  assert.equal(await rt.flat.switchToSession(sid), true);
+  rt.flat.setComposerDraft('sched-live-draft');
+  for (let i = 1; i <= 33; i++) {
+    assert.equal(await rt.flat.switchToSession(`s${i}`), true);
+  }
+  assert.equal(await rt.flat.openScheduledRunChat(
+    { sessionId: sid, status: 'running', runId: 'run-1' },
+    { id: 'task-1' },
+  ), true);
+  assert.equal(rt.flat.getComposerDraft(), 'sched-live-draft',
+    '淘汰后计划任务重开（getBuffer 重建）必须回填侧表草稿');
+  assert.equal(rt.view().pinvouSceneEvents.length, 0, '注水成功：会话已打开');
+  assert.notEqual(rt.view().activeSessionId, null);
+});
+
+// ── web getBuffer 回填：迟到事件重建 buffer 的恢复点 ─────────────────
+
+test('web 迟到 chat:usage 事件：淘汰后经事件 getBuffer 重建，草稿回填', async () => {
+  const rt = bootWebBridge();
+  assert.equal(await rt.flat.switchToSession('s1'), true);
+  rt.flat.setComposerDraft('late-event-draft');
+  for (let i = 2; i <= 34; i++) {
+    assert.equal(await rt.flat.switchToSession(`s${i}`), true);
+  }
+  // s1 已被容量淘汰；非回合事件（chat:usage）点名 s1 → onSessionEvent 经
+  // getBuffer 重建空 buffer → 回填暂存草稿。之后切回走快路径，草稿仍在。
+  const listeners = rt.listeners && rt.listeners['chat:usage'];
+  assert.ok(Array.isArray(listeners) && listeners.length > 0, 'chat:usage 监听已注册');
+  for (const fn of listeners) {
+    await fn({ event: 'chat:usage', payload: { session_id: 's1', input_tokens: 10 } });
+  }
+  assert.equal(await rt.flat.switchToSession('s1'), true);
+  assert.equal(rt.flat.getComposerDraft(), 'late-event-draft',
+    '迟到事件经 getBuffer 重建 buffer 时必须回填侧表草稿');
 });

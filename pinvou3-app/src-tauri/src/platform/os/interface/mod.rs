@@ -22,5 +22,5 @@ pub use system::{
     pdf_ocr_missing_message, pdf_render_missing_message, pdf_text_missing_message, pdf_tool_exists,
     pdf_tool_path, presentation_pdf_missing_message, reveal_target, show_archive_dependency_check,
     show_ocr_dependency_check, show_pandoc_dependency_check, show_pdf_dependency_check,
-    system_default_open_supported,
+    spawn_detached_and_reap, system_default_open_supported,
 };

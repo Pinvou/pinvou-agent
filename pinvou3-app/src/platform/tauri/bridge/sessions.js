@@ -58,8 +58,11 @@
     var MAX_SESSION_BUFFERS = 32;
     // composerDraft 等不可重水化的轻量草稿不随 buffer 淘汰丢弃：磁盘 transcript
     // 只含已提交内容，淘汰前先转移到这张侧表，buffer 重建时回填。侧表只存
-    // 短字符串且上限远大于 buffer 上限，重对象仍随淘汰照常释放。
+    // 短字符串（超长草稿不入表，维持淘汰即丢弃的旧行为——外部 transport 调
+    // 用可绕过 Composer 的输入上限）且条数上限远大于 buffer 上限，重对象仍
+    // 随淘汰照常释放。
     var MAX_EVICTED_SESSION_DRAFTS = 256;
+    var MAX_EVICTED_SESSION_DRAFT_CHARS = 65536;
     var sessionBufferTouchClock = 0;
     var scheduledRunOwnerTouchClock = 0;
     var scheduledRunOpenInFlight = Object.create(null);
@@ -70,6 +73,7 @@
     delete evictedSessionDrafts[id]; // 重新入队时移到表尾,溢出时从表头淘汰
     var draft = String(buf.composerDraft || "");
     if (!draft) return;
+    if (draft.length > MAX_EVICTED_SESSION_DRAFT_CHARS) return;
     evictedSessionDrafts[id] = draft;
     var keys = Object.keys(evictedSessionDrafts);
     if (keys.length > MAX_EVICTED_SESSION_DRAFTS) delete evictedSessionDrafts[keys[0]];
