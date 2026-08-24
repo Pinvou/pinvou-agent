@@ -12,7 +12,11 @@ use crate::model::{
 
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 16;
-const EXIT_HINT: &str = "Ctrl+C exit";
+const KEYMAP_IDLE: &str = "Enter send  ·  Ctrl+R runtime  ·  Ctrl+C detach/exit";
+const KEYMAP_ACTIVE: &str = "Esc interrupt  ·  Ctrl+C detach";
+const KEYMAP_APPROVAL: &str = "1 Allow once  ·  3 Deny  ·  Ctrl+C detach";
+const KEYMAP_INPUT: &str = "Enter submit  ·  Ctrl+C detach";
+const KEYMAP_RUNTIME: &str = "↑/↓ select  ·  Enter switch  ·  Esc close";
 
 pub fn render(frame: &mut Frame<'_>, model: &Model) {
     let area = frame.area();
@@ -36,8 +40,10 @@ pub fn render(frame: &mut Frame<'_>, model: &Model) {
     render_composer(frame, regions[2], model);
     render_status(frame, regions[3], model);
 
-    if matches!(model.overlay, Overlay::RuntimeList) {
-        render_runtime_overlay(frame, area, model);
+    match &model.overlay {
+        Overlay::None => {}
+        Overlay::Help { commands } => render_help_overlay(frame, area, model, commands),
+        Overlay::RuntimeList => render_runtime_overlay(frame, area, model),
     }
 }
 
@@ -52,7 +58,7 @@ fn render_too_small(frame: &mut Frame<'_>, area: Rect) {
             message_area,
         );
         frame.render_widget(
-            Paragraph::new("Ctrl+C").alignment(Alignment::Center),
+            Paragraph::new("Ctrl+C detach/exit").alignment(Alignment::Center),
             exit_area,
         );
     } else {
@@ -125,8 +131,8 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, model: &Model) {
             &mut lines,
             "Approval required",
             &format!(
-                "{}\nTool: {}\n[y] allow once  [n] deny",
-                request.summary, request.tool
+                "{}\nTool: {}\n{}",
+                request.summary, request.tool, KEYMAP_APPROVAL
             ),
             Color::Yellow,
         ),
@@ -139,7 +145,7 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, model: &Model) {
         Interaction::InputPending(request) => push_card(
             &mut lines,
             "Input requested",
-            &format!("{}\nType your answer and press Enter", request.prompt),
+            &format!("{}\n{KEYMAP_INPUT}", request.prompt),
             Color::Magenta,
         ),
         Interaction::InputResolving { request, .. } => push_card(
@@ -155,21 +161,13 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, model: &Model) {
         push_card(&mut lines, "Error", error.safe_message(), Color::Red);
     }
 
-    let content_width = area.width.max(1) as usize;
     let visible_height = area.height as usize;
-    let visual_height: usize = lines
-        .iter()
-        .map(|line| line.width().max(1).div_ceil(content_width))
-        .sum();
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let visual_height = paragraph.line_count(area.width);
     let scroll = visual_height
         .saturating_sub(visible_height)
         .min(u16::MAX as usize) as u16;
-    frame.render_widget(
-        Paragraph::new(lines)
-            .scroll((scroll, 0))
-            .wrap(Wrap { trim: false }),
-        area,
-    );
+    frame.render_widget(paragraph.scroll((scroll, 0)), area);
 }
 
 fn push_plain(lines: &mut Vec<Line<'static>>, role: &'static str, text: &str, color: Color) {
@@ -206,7 +204,7 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, model: &Model) {
     let turn = match model.turn {
         TurnState::Idle => "ready",
         TurnState::Starting { .. } => "starting…",
-        TurnState::Streaming { .. } => "working…  Ctrl+C interrupt",
+        TurnState::Streaming { .. } => "working…",
     };
     let input = if model.composer.input.is_empty() {
         Span::styled("Message Pinvou", Style::default().fg(Color::DarkGray))
@@ -229,39 +227,85 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, model: &Model) {
 }
 
 fn render_status(frame: &mut Frame<'_>, area: Rect, model: &Model) {
-    let left = model.status_message.as_deref().unwrap_or("Ready");
-    let line = Line::from(vec![
-        Span::styled(
-            left,
+    let mut spans = Vec::new();
+    if let Some(status) = model.status_message.as_deref() {
+        spans.push(Span::styled(
+            status,
             Style::default().fg(if model.last_backend_error.is_some() {
                 Color::Red
             } else {
                 Color::DarkGray
             }),
-        ),
-        Span::raw("  ·  Ctrl+R runtime  ·  Ctrl+L clear  ·  "),
-        Span::styled(EXIT_HINT, Style::default().fg(Color::DarkGray)),
-    ]);
+        ));
+        spans.push(Span::raw("  ·  "));
+    }
+    spans.push(Span::styled(
+        keymap(model),
+        Style::default().fg(Color::DarkGray),
+    ));
+    let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line), area);
 }
 
+fn keymap(model: &Model) -> &'static str {
+    match model.interaction {
+        Interaction::ApprovalPending(_) | Interaction::ApprovalResolving { .. } => KEYMAP_APPROVAL,
+        Interaction::InputPending(_) | Interaction::InputResolving { .. } => KEYMAP_INPUT,
+        Interaction::None => match model.turn {
+            TurnState::Idle => KEYMAP_IDLE,
+            TurnState::Starting { .. } | TurnState::Streaming { .. } => KEYMAP_ACTIVE,
+        },
+    }
+}
+
+fn render_help_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model, commands: &[&str]) {
+    let width = area.width.saturating_sub(8).clamp(20, 60);
+    let desired_height = (commands.len() as u16).saturating_add(7);
+    let height = desired_height.min(area.height.saturating_sub(4)).max(5);
+    let popup = centered_rect(area, width, height);
+    let mut lines = vec![Line::from(Span::styled(
+        "Commands",
+        Style::default().add_modifier(Modifier::BOLD),
+    ))];
+    lines.extend(
+        commands
+            .iter()
+            .map(|command| Line::from(format!("  {command}"))),
+    );
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        keymap(model),
+        Style::default().fg(Color::DarkGray),
+    )));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .title("Help · commands")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
+}
+
 fn render_runtime_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model) {
-    let width = area.width.saturating_sub(8).min(56).max(20);
+    let width = area.width.saturating_sub(8).clamp(20, 56);
     let height = 8.min(area.height.saturating_sub(4)).max(5);
     let popup = centered_rect(area, width, height);
     frame.render_widget(Clear, popup);
-    let pending = model.pending_runtime_switch.as_ref().map_or_else(
-        || "↑/↓ select · Enter switch · Esc close".to_owned(),
-        |switch| format!("Switching to {}…", switch.target),
-    );
+    let pending = model
+        .pending_runtime_switch
+        .as_ref()
+        .map(|switch| format!("Switching to {}…", switch.target));
     let active = format!("● {} ({})", model.runtime.display_name, model.runtime.id);
+    let mut lines = vec![Line::from(active), Line::default()];
+    if let Some(pending) = pending {
+        lines.push(Line::from(pending));
+    }
+    lines.push(Line::from(KEYMAP_RUNTIME));
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(active),
-            Line::default(),
-            Line::from(pending),
-        ])
-        .block(
+        Paragraph::new(lines).block(
             Block::default()
                 .title("Switch runtime")
                 .borders(Borders::ALL)
@@ -329,7 +373,9 @@ mod tests {
             "Explain the change",
             "I updated the runtime stream.",
             "Message Pinvou",
+            "Enter send",
             "Ctrl+R runtime",
+            "Ctrl+C detach/exit",
         ] {
             assert!(output.contains(expected), "missing {expected:?}\n{output}");
         }
@@ -357,7 +403,9 @@ mod tests {
         let approval_output = screen(&approval, 100, 30);
         assert!(approval_output.contains("Approval required"));
         assert!(approval_output.contains("Run cargo test"));
-        assert!(approval_output.contains("[y] allow once"));
+        assert!(approval_output.contains("1 Allow once"));
+        assert!(approval_output.contains("3 Deny"));
+        assert!(!approval_output.contains("[y]"));
 
         approval.interaction = Interaction::ApprovalResolving {
             request: match &approval.interaction {
@@ -377,6 +425,7 @@ mod tests {
         });
         assert!(screen(&input, 100, 30).contains("Input requested"));
         assert!(screen(&input, 100, 30).contains("Which package?"));
+        assert!(screen(&input, 100, 30).contains("Enter submit"));
         input.interaction = Interaction::InputResolving {
             request: match &input.interaction {
                 Interaction::InputPending(request) => request.clone(),
@@ -423,6 +472,60 @@ mod tests {
         assert!(output.contains("Switch runtime"));
         assert!(output.contains("OpenAI Codex"));
         assert!(output.contains("Switching to claude"));
+        assert!(output.contains("↑/↓ select"));
+        assert!(output.contains("Enter switch"));
+        assert!(output.contains("Esc close"));
+    }
+
+    #[test]
+    fn every_overlay_variant_renders_current_commands_without_future_features() {
+        let none = screen(&model(), 100, 30);
+        assert!(!none.contains("Help · commands"));
+        assert!(!none.contains("Switch runtime"));
+
+        let mut help = model();
+        help.overlay = Overlay::Help {
+            commands: vec!["/help", "/runtime", "/exit", "/quit"],
+        };
+        let output = screen(&help, 100, 30);
+        for command in ["/help", "/runtime", "/exit", "/quit"] {
+            assert!(output.contains(command));
+        }
+        for future in ["/resume", "/model", "/permissions"] {
+            assert!(!output.contains(future));
+        }
+        assert!(output.contains("Help · commands"));
+        assert!(output.contains("Enter send"));
+        assert!(output.contains("Ctrl+C detach/exit"));
+        assert!(screen(&help, 20, 5).contains("Ctrl+C"));
+
+        help.overlay = Overlay::RuntimeList;
+        assert!(screen(&help, 100, 30).contains("Switch runtime"));
+        assert!(screen(&help, 20, 5).contains("Ctrl+C"));
+    }
+
+    #[test]
+    fn state_specific_keymap_never_advertises_conflicting_or_unimplemented_keys() {
+        let mut streaming = model();
+        streaming.turn = TurnState::Starting {
+            operation_token: OperationToken::new(4),
+        };
+        let output = screen(&streaming, 100, 30);
+        assert!(output.contains("Esc interrupt"));
+        assert!(output.contains("Ctrl+C detach"));
+        streaming.turn = TurnState::Streaming {
+            operation_token: OperationToken::new(4),
+            turn_id: "turn-4".into(),
+        };
+        let streaming_output = screen(&streaming, 60, 16);
+        assert!(streaming_output.contains("Esc interrupt"));
+        assert!(streaming_output.contains("Ctrl+C detach"));
+        for forbidden in ["Ctrl+C interrupt", "Ctrl+L clear", "[y]", "[n]"] {
+            assert!(
+                !output.contains(forbidden) && !streaming_output.contains(forbidden),
+                "unexpected {forbidden:?}\n{output}\n{streaming_output}"
+            );
+        }
     }
 
     #[test]
@@ -460,5 +563,24 @@ mod tests {
         assert!(output.contains("LATEST"));
         assert!(output.contains("Important status"));
         assert!(!output.contains("ordinary diagnostic"));
+    }
+
+    #[test]
+    fn word_boundary_wrapping_uses_actual_paragraph_height_when_scrolling_to_latest() {
+        let mut model = model();
+        for index in 0..2 {
+            model.transcript.push_user(format!("earlier-{index}"));
+        }
+        let word_a = "a".repeat(30);
+        let word_b = "b".repeat(30);
+        let word_c = "c".repeat(30);
+        model
+            .transcript
+            .append_assistant(&format!("{word_a} {word_b} {word_c}\nLATEST-TAIL"));
+        let output = screen(&model, 60, 16);
+        assert!(
+            output.contains("LATEST-TAIL"),
+            "latest wrapped tail missing\n{output}"
+        );
     }
 }
