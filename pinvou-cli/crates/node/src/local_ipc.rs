@@ -157,6 +157,199 @@ mod platform {
     }
 }
 
+#[cfg(all(test, any(windows, target_os = "linux")))]
+mod tests {
+    use super::*;
+    use crate::{NodeRuntimeEventStream, NodeRuntimeHost};
+    use pinvou_protocol::{
+        HelloServer, IpcMessageKind, RuntimeEventEnvelope, encode_frame, read_frame,
+    };
+    use std::{
+        sync::{Arc, Mutex, mpsc},
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    #[derive(Debug)]
+    struct ScriptedRuntime(Mutex<Option<Vec<RuntimeEventEnvelope>>>);
+
+    impl NodeRuntimeHost for ScriptedRuntime {
+        fn start_turn(
+            &self,
+            _: &str,
+            _: &str,
+            _: u64,
+        ) -> Result<NodeRuntimeEventStream, NodeError> {
+            Ok(Box::new(
+                self.0.lock().unwrap().take().unwrap().into_iter().map(Ok),
+            ))
+        }
+    }
+
+    trait TestStream: std::io::Read + std::io::Write {}
+    impl<T: std::io::Read + std::io::Write> TestStream for T {}
+
+    #[cfg(windows)]
+    fn open(endpoint: &str) -> std::io::Result<Box<dyn TestStream>> {
+        Ok(Box::new(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(endpoint)?,
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn open(endpoint: &str) -> std::io::Result<Box<dyn TestStream>> {
+        Ok(Box::new(std::os::unix::net::UnixStream::connect(endpoint)?))
+    }
+
+    fn event(kind: &str, seq: u64, payload: serde_json::Value) -> RuntimeEventEnvelope {
+        let control = matches!(
+            kind,
+            "turn.started" | "turn.ended" | "approval.requested" | "input.requested"
+        );
+        RuntimeEventEnvelope::from_value(serde_json::json!({
+            "protocol_version":pinvou_protocol::IPC_VERSION,"schema_version":1,
+            "node_id":"node","logical_session_id":"session","attachment_id":"attachment",
+            "work_id":null,"collaborative_run_id":null,
+            "stream_id":if control { "control" } else { "main" },"turn_id":"turn",
+            "seq":seq,"source_span":null,"timestamp":"2026-08-24T00:00:00.000Z",
+            "rate_class":if control { "R0" } else { "R1" },"kind":kind,"payload":payload
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn chat_start_writes_every_runtime_event_on_the_same_connection() {
+        let events = vec![
+            event(
+                "turn.started",
+                1,
+                serde_json::json!({"user_input_ref":"prompt"}),
+            ),
+            event(
+                "text.delta",
+                2,
+                serde_json::json!({"role":"assistant","content":"one","merged_count":1}),
+            ),
+            event(
+                "text.delta",
+                3,
+                serde_json::json!({"role":"assistant","content":"two","merged_count":1}),
+            ),
+            event(
+                "approval.requested",
+                4,
+                serde_json::json!({"approval_id":"approval-1","tool":"shell","summary":"run","options":["approved","denied"],"timeout_ms":30000}),
+            ),
+            event(
+                "input.requested",
+                5,
+                serde_json::json!({"input_id":"input-1","prompt":"choose","schema":{"type":"string"}}),
+            ),
+            event(
+                "tool.call.started",
+                6,
+                serde_json::json!({"tool_id":"call-1","name":"read","args_json":{}}),
+            ),
+            event(
+                "tool.call.completed",
+                7,
+                serde_json::json!({"tool_id":"call-1","result":{},"is_error":false,"exit_code":0}),
+            ),
+            event(
+                "turn.ended",
+                8,
+                serde_json::json!({"end_reason":"completed","error":null}),
+            ),
+        ];
+        let unique = format!(
+            "ipc-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        #[cfg(windows)]
+        let endpoint = format!(r"\\.\pipe\pinvou-node-{unique}");
+        #[cfg(target_os = "linux")]
+        let endpoint = std::env::temp_dir()
+            .join(format!("pinvou-node-{unique}/node.sock"))
+            .display()
+            .to_string();
+        let mut listener = NodeLocalListener::bind(&endpoint).unwrap();
+        let session = NodeSession::with_runtime(
+            "instance",
+            Arc::new(ScriptedRuntime(Mutex::new(Some(events)))),
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let client = std::thread::spawn(move || {
+            let mut stream = (0..80)
+                .find_map(|_| {
+                    let result = open(&endpoint).ok();
+                    if result.is_none() {
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                    result
+                })
+                .unwrap();
+            stream
+                .write_all(
+                    &encode_frame(&HelloClient::new(serde_json::json!({})).unwrap()).unwrap(),
+                )
+                .unwrap();
+            let _: HelloServer = read_frame(&mut stream).unwrap();
+            let request = IpcMessage::request(
+                serde_json::json!(1),
+                "chat.start",
+                serde_json::json!({"instance_id":"instance","prompt":"go"}),
+            )
+            .unwrap();
+            stream.write_all(&encode_frame(&request).unwrap()).unwrap();
+            for _ in 0..8 {
+                tx.send(read_frame::<_, IpcMessage>(&mut stream)).unwrap();
+            }
+        });
+        listener.serve_one(&session).unwrap();
+        let messages = (0..8)
+            .map(|_| rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap())
+            .collect::<Vec<_>>();
+        client.join().unwrap();
+        assert!(messages.iter().all(|message| {
+            message.kind() == IpcMessageKind::Evt && message.topic() == Some("runtime.event")
+        }));
+        let envelopes = messages
+            .into_iter()
+            .map(|message| RuntimeEventEnvelope::from_value(message.payload().clone()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            envelopes
+                .iter()
+                .map(RuntimeEventEnvelope::kind)
+                .collect::<Vec<_>>(),
+            [
+                "turn.started",
+                "text.delta",
+                "text.delta",
+                "approval.requested",
+                "input.requested",
+                "tool.call.started",
+                "tool.call.completed",
+                "turn.ended"
+            ]
+        );
+        assert_eq!(
+            envelopes
+                .iter()
+                .map(RuntimeEventEnvelope::seq)
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5, 6, 7, 8]
+        );
+    }
+}
+
 #[cfg(windows)]
 mod platform {
     use crate::NodeError;

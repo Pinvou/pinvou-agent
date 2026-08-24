@@ -2,7 +2,9 @@ use pinvou_agent_adapter_codex::{CodexAdapter, CodexAdapterConfig};
 use pinvou_protocol::{
     HelloClient, HelloServer, IpcMessage, IpcMessageKind, RuntimeEventEnvelope, RuntimeEventKind,
 };
-use pinvou_runtime_api::{AgentRuntimeAdapter, RuntimeCommand, RuntimeOperation, RuntimeSession};
+use pinvou_runtime_api::{
+    AgentRuntimeAdapter, RuntimeCommand, RuntimeEventSubscription, RuntimeOperation, RuntimeSession,
+};
 use serde_json::json;
 use std::{
     fmt,
@@ -68,23 +70,25 @@ pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
 }
 
 pub struct AdapterRuntimeHost {
-    inner: Mutex<AdapterRuntimeState>,
+    inner: Arc<Mutex<AdapterRuntimeState>>,
 }
 
 struct AdapterRuntimeState {
     adapter: Box<dyn AgentRuntimeAdapter>,
     probed: bool,
     session: Option<RuntimeSession>,
+    subscription: Option<RuntimeEventSubscription>,
 }
 
 impl AdapterRuntimeHost {
     pub fn new(adapter: Box<dyn AgentRuntimeAdapter>) -> Self {
         Self {
-            inner: Mutex::new(AdapterRuntimeState {
+            inner: Arc::new(Mutex::new(AdapterRuntimeState {
                 adapter,
                 probed: false,
                 session: None,
-            }),
+                subscription: None,
+            })),
         }
     }
 }
@@ -99,7 +103,7 @@ impl fmt::Debug for AdapterRuntimeHost {
 
 impl Drop for AdapterRuntimeHost {
     fn drop(&mut self) {
-        let Ok(state) = self.inner.get_mut() else {
+        let Ok(mut state) = self.inner.lock() else {
             return;
         };
         if let Some(session) = state.session.take() {
@@ -138,9 +142,17 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
         inner
             .adapter
             .send(&session, RuntimeCommand::text(prompt)?)?;
-        let events = inner.adapter.subscribe_events(&session)?;
+        let events = match inner.subscription.take() {
+            Some(events) => events,
+            None => inner.adapter.subscribe_events(&session)?,
+        };
         drop(inner);
-        Ok(Box::new(events.map(|event| event.map_err(NodeError::from))))
+        Ok(Box::new(AdapterTurnStream {
+            inner: Arc::clone(&self.inner),
+            subscription: Some(events),
+            turn_id: None,
+            finished: false,
+        }))
     }
 
     fn resolve_approval(
@@ -179,6 +191,70 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
         let session = ensure_adapter_session(&mut inner)?;
         inner.adapter.interrupt(&session)?;
         Ok(json!({"status":"ok", "method":"turn.interrupt", "turn_id":turn_id}))
+    }
+}
+
+struct AdapterTurnStream {
+    inner: Arc<Mutex<AdapterRuntimeState>>,
+    subscription: Option<RuntimeEventSubscription>,
+    turn_id: Option<String>,
+    finished: bool,
+}
+
+impl AdapterTurnStream {
+    fn return_subscription(&mut self) {
+        let Some(subscription) = self.subscription.take() else {
+            return;
+        };
+        if let Ok(mut inner) = self.inner.lock()
+            && inner.subscription.is_none()
+        {
+            inner.subscription = Some(subscription);
+        }
+    }
+}
+
+impl Iterator for AdapterTurnStream {
+    type Item = Result<RuntimeEventEnvelope, NodeError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        let next = self.subscription.as_mut()?.next();
+        match next {
+            Some(Ok(event)) => {
+                if self.turn_id.is_none() && event.event_kind() == RuntimeEventKind::TurnStarted {
+                    self.turn_id = event.turn_id().map(str::to_owned);
+                }
+                let terminal = event.event_kind() == RuntimeEventKind::TurnEnded
+                    && self
+                        .turn_id
+                        .as_deref()
+                        .is_some_and(|turn_id| event.turn_id() == Some(turn_id));
+                if terminal {
+                    self.finished = true;
+                    self.return_subscription();
+                }
+                Some(Ok(event))
+            }
+            Some(Err(error)) => {
+                self.finished = true;
+                self.subscription.take();
+                Some(Err(NodeError::from(error)))
+            }
+            None => {
+                self.finished = true;
+                self.subscription.take();
+                Some(Err(NodeError::InvalidMessage))
+            }
+        }
+    }
+}
+
+impl Drop for AdapterTurnStream {
+    fn drop(&mut self) {
+        self.return_subscription();
     }
 }
 
@@ -246,9 +322,14 @@ fn runtime_error_kind(error: &pinvou_runtime_api::AdapterError) -> &'static str 
 pub struct NodeSession {
     instance_id: String,
     next_seq: Arc<AtomicU64>,
-    runtime: Arc<Mutex<RuntimeSlot>>,
-    active_turn: Arc<Mutex<Option<u64>>>,
+    coordinator: Arc<Mutex<RuntimeCoordinator>>,
     pending_switch: Arc<Mutex<Option<PreparedRuntimeSwitch>>>,
+}
+
+#[derive(Debug)]
+struct RuntimeCoordinator {
+    runtime: RuntimeSlot,
+    active_turn: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -308,12 +389,14 @@ impl NodeSession {
             Ok(Self {
                 instance_id,
                 next_seq: Arc::new(AtomicU64::new(1)),
-                active_turn: Arc::new(Mutex::new(None)),
                 pending_switch: Arc::new(Mutex::new(None)),
-                runtime: Arc::new(Mutex::new(RuntimeSlot {
-                    id: runtime_id,
-                    host: runtime,
-                    state_file,
+                coordinator: Arc::new(Mutex::new(RuntimeCoordinator {
+                    active_turn: None,
+                    runtime: RuntimeSlot {
+                        id: runtime_id,
+                        host: runtime,
+                        state_file,
+                    },
                 })),
             })
         }
@@ -344,9 +427,12 @@ impl NodeSession {
                 json!({"status":"ok", "instance_id":self.instance_id, "protocol_version":pinvou_protocol::IPC_VERSION})
             }
             Some("runtime.list") => {
-                let runtime = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
+                let coordinator = self
+                    .coordinator
+                    .lock()
+                    .map_err(|_| NodeError::InvalidMessage)?;
                 json!({
-                    "current": runtime.id,
+                    "current": coordinator.runtime.id,
                     "runtimes": [
                         {"id":"echo", "label":"Stage 1 Echo", "available":true},
                         {"id":"codex", "label":"Codex App Server", "available":true}
@@ -362,8 +448,14 @@ impl NodeSession {
                 {
                     (runtime.to_owned(), create_runtime_host(runtime)?)
                 } else {
-                    let runtime = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
-                    (runtime.id.clone(), runtime.host.clone())
+                    let coordinator = self
+                        .coordinator
+                        .lock()
+                        .map_err(|_| NodeError::InvalidMessage)?;
+                    (
+                        coordinator.runtime.id.clone(),
+                        coordinator.runtime.host.clone(),
+                    )
                 };
                 let mut payload = host.detect()?;
                 payload["runtime"] = json!(runtime_id);
@@ -371,14 +463,6 @@ impl NodeSession {
                 payload
             }
             Some("runtime.switch") => {
-                if self
-                    .active_turn
-                    .lock()
-                    .map_err(|_| NodeError::InvalidMessage)?
-                    .is_some()
-                {
-                    return Err(NodeError::RuntimeBusy);
-                }
                 let runtime = request
                     .payload()
                     .get("runtime")
@@ -389,14 +473,6 @@ impl NodeSession {
                 json!({"status":"ok", "runtime":runtime})
             }
             Some("runtime.switch.prepare") => {
-                if self
-                    .active_turn
-                    .lock()
-                    .map_err(|_| NodeError::InvalidMessage)?
-                    .is_some()
-                {
-                    return Err(NodeError::RuntimeBusy);
-                }
                 let runtime = request
                     .payload()
                     .get("runtime")
@@ -404,12 +480,15 @@ impl NodeSession {
                     .filter(|value| !value.is_empty())
                     .ok_or(NodeError::InvalidMessage)?;
                 let _host = create_runtime_host(runtime)?;
-                let current_runtime = self
-                    .runtime
+                let coordinator = self
+                    .coordinator
                     .lock()
-                    .map_err(|_| NodeError::InvalidMessage)?
-                    .id
-                    .clone();
+                    .map_err(|_| NodeError::InvalidMessage)?;
+                if coordinator.active_turn.is_some() {
+                    return Err(NodeError::RuntimeBusy);
+                }
+                let current_runtime = coordinator.runtime.id.clone();
+                drop(coordinator);
                 let switch_token = format!(
                     "runtime-switch-{}",
                     self.next_seq.fetch_add(1, Ordering::Relaxed)
@@ -440,14 +519,6 @@ impl NodeSession {
                 })
             }
             Some("runtime.switch.commit") => {
-                if self
-                    .active_turn
-                    .lock()
-                    .map_err(|_| NodeError::InvalidMessage)?
-                    .is_some()
-                {
-                    return Err(NodeError::RuntimeBusy);
-                }
                 let runtime = request
                     .payload()
                     .get("runtime")
@@ -461,7 +532,7 @@ impl NodeSession {
                     .filter(|value| !value.is_empty())
                     .ok_or(NodeError::InvalidMessage)?;
                 {
-                    let mut pending = self
+                    let pending = self
                         .pending_switch
                         .lock()
                         .map_err(|_| NodeError::InvalidMessage)?;
@@ -471,9 +542,18 @@ impl NodeSession {
                     if prepared.runtime != runtime || prepared.token != switch_token {
                         return Err(NodeError::InvalidMessage);
                     }
-                    *pending = None;
                 }
                 self.commit_runtime_switch(runtime)?;
+                let mut pending = self
+                    .pending_switch
+                    .lock()
+                    .map_err(|_| NodeError::InvalidMessage)?;
+                if pending
+                    .as_ref()
+                    .is_some_and(|prepared| prepared.token == switch_token)
+                {
+                    *pending = None;
+                }
                 json!({"status":"ok", "runtime":runtime, "switch_token":switch_token})
             }
             Some("runtime.echo") => {
@@ -483,8 +563,7 @@ impl NodeSession {
                     .and_then(|value| value.as_str())
                     .ok_or(NodeError::InvalidMessage)?;
                 let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-                let runtime = self.current_runtime_host()?;
-                let _active = ActiveTurnGuard::enter(Arc::clone(&self.active_turn), seq)?;
+                let (runtime, _active) = self.begin_turn(seq)?;
                 let envelope = runtime
                     .start_turn(&self.instance_id, text, seq)?
                     .find_map(|event| match event {
@@ -586,8 +665,7 @@ impl NodeSession {
             .filter(|value| !value.is_empty())
             .ok_or(NodeError::InvalidMessage)?;
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let runtime = self.current_runtime_host()?;
-        let _active = ActiveTurnGuard::enter(Arc::clone(&self.active_turn), seq)?;
+        let (runtime, _active) = self.begin_turn(seq)?;
         for envelope in runtime.start_turn(&self.instance_id, prompt, seq)? {
             let event = IpcMessage::event(
                 "runtime.event",
@@ -601,48 +679,66 @@ impl NodeSession {
 
     fn current_runtime_host(&self) -> Result<Arc<dyn NodeRuntimeHost>, NodeError> {
         Ok(self
-            .runtime
+            .coordinator
             .lock()
             .map_err(|_| NodeError::InvalidMessage)?
+            .runtime
             .host
             .clone())
     }
 
+    fn begin_turn(
+        &self,
+        seq: u64,
+    ) -> Result<(Arc<dyn NodeRuntimeHost>, ActiveTurnGuard), NodeError> {
+        let mut coordinator = self
+            .coordinator
+            .lock()
+            .map_err(|_| NodeError::InvalidMessage)?;
+        if coordinator.active_turn.is_some() {
+            return Err(NodeError::RuntimeBusy);
+        }
+        coordinator.active_turn = Some(seq);
+        let runtime = coordinator.runtime.host.clone();
+        drop(coordinator);
+        Ok((
+            runtime,
+            ActiveTurnGuard {
+                coordinator: Arc::clone(&self.coordinator),
+                seq,
+            },
+        ))
+    }
+
     fn commit_runtime_switch(&self, runtime: &str) -> Result<(), NodeError> {
-        let mut active = self.runtime.lock().map_err(|_| NodeError::InvalidMessage)?;
         let host = create_runtime_host(runtime)?;
-        if let Some(state_file) = &active.state_file {
+        let mut coordinator = self
+            .coordinator
+            .lock()
+            .map_err(|_| NodeError::InvalidMessage)?;
+        if coordinator.active_turn.is_some() {
+            return Err(NodeError::RuntimeBusy);
+        }
+        if let Some(state_file) = &coordinator.runtime.state_file {
             persist_runtime_selection(state_file, runtime)?;
         }
-        active.id = runtime.into();
-        active.host = host;
+        coordinator.runtime.id = runtime.into();
+        coordinator.runtime.host = host;
         Ok(())
     }
 }
 
 struct ActiveTurnGuard {
-    active_turn: Arc<Mutex<Option<u64>>>,
+    coordinator: Arc<Mutex<RuntimeCoordinator>>,
     seq: u64,
-}
-
-impl ActiveTurnGuard {
-    fn enter(active_turn: Arc<Mutex<Option<u64>>>, seq: u64) -> Result<Self, NodeError> {
-        let mut active = active_turn.lock().map_err(|_| NodeError::InvalidMessage)?;
-        if active.is_some() {
-            return Err(NodeError::RuntimeBusy);
-        }
-        *active = Some(seq);
-        drop(active);
-        Ok(Self { active_turn, seq })
-    }
 }
 
 impl Drop for ActiveTurnGuard {
     fn drop(&mut self) {
-        if let Ok(mut active) = self.active_turn.lock()
-            && *active == Some(self.seq)
+        if let Ok(mut coordinator) = self.coordinator.lock()
+            && coordinator.active_turn == Some(self.seq)
         {
-            *active = None;
+            coordinator.active_turn = None;
         }
     }
 }

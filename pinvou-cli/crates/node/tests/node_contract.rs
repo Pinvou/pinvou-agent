@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pinvou_node::{
-    AdapterRuntimeHost, NodeError, NodeInstanceLock, NodeLocalListener, NodeRuntimeEventStream,
-    NodeRuntimeHost, NodeSession, NodeTransportPolicy,
+    AdapterRuntimeHost, NodeError, NodeInstanceLock, NodeRuntimeEventStream, NodeRuntimeHost,
+    NodeSession, NodeTransportPolicy,
 };
 use pinvou_protocol::{
     HelloClient, IpcMessage, IpcMessageKind, RuntimeEventEnvelope, StableExitCode,
@@ -31,6 +31,14 @@ fn scripted_runtime_events() -> Vec<RuntimeEventEnvelope> {
             serde_json::json!({"role":"assistant","content":"two","merged_count":1}),
         ),
         (
+            "approval.requested",
+            serde_json::json!({"approval_id":"approval-1","tool":"shell","summary":"run","options":["approved","denied"],"timeout_ms":30000}),
+        ),
+        (
+            "input.requested",
+            serde_json::json!({"input_id":"input-1","prompt":"choose","schema":{"type":"string"}}),
+        ),
+        (
             "tool.call.started",
             serde_json::json!({"tool_id":"call-1","name":"read","args_json":{}}),
         ),
@@ -46,7 +54,7 @@ fn scripted_runtime_events() -> Vec<RuntimeEventEnvelope> {
     .into_iter()
     .enumerate()
     .map(|(index, (kind, payload))| match kind {
-        "turn.started" | "turn.ended" => {
+        "turn.started" | "turn.ended" | "approval.requested" | "input.requested" => {
             runtime_event_with_seq(kind, "R0", "control", payload, index as u64 + 1)
         }
         _ => runtime_event_with_seq(kind, "R1", "main", payload, index as u64 + 1),
@@ -107,147 +115,13 @@ fn node_stream_bound_emits_the_complete_runtime_event_stream_in_order() {
             "turn.started",
             "text.delta",
             "text.delta",
+            "approval.requested",
+            "input.requested",
             "tool.call.started",
             "tool.call.completed",
             "turn.ended",
         ]
     );
-}
-
-trait ChatTestStream: std::io::Read + std::io::Write {}
-impl<T: std::io::Read + std::io::Write> ChatTestStream for T {}
-
-#[cfg(windows)]
-fn open_chat_endpoint(endpoint: &str) -> std::io::Result<Box<dyn ChatTestStream>> {
-    Ok(Box::new(
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(endpoint)?,
-    ))
-}
-
-#[cfg(target_os = "linux")]
-fn open_chat_endpoint(endpoint: &str) -> std::io::Result<Box<dyn ChatTestStream>> {
-    Ok(Box::new(std::os::unix::net::UnixStream::connect(endpoint)?))
-}
-
-#[test]
-fn node_local_ipc_streams_chat_start_as_runtime_events() {
-    use std::io::Write as _;
-
-    let unique = format!(
-        "chat-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    #[cfg(windows)]
-    let endpoint = format!(r"\\.\pipe\pinvou-node-contract-{unique}");
-    #[cfg(target_os = "linux")]
-    let endpoint = std::env::temp_dir()
-        .join(format!("pinvou-node-{unique}/node.sock"))
-        .display()
-        .to_string();
-    let mut listener = NodeLocalListener::bind(&endpoint).unwrap();
-    let session = NodeSession::with_runtime(
-        "chat-instance",
-        Arc::new(ScriptedRuntime {
-            events: Mutex::new(Some(scripted_runtime_events())),
-        }),
-    )
-    .unwrap();
-    let (event_tx, event_rx) = mpsc::channel();
-    let client_endpoint = endpoint.clone();
-    let client_worker = std::thread::spawn(move || {
-        let mut stream = (0..80)
-            .find_map(|_| {
-                let stream = open_chat_endpoint(&client_endpoint).ok();
-                if stream.is_none() {
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-                stream
-            })
-            .expect("node endpoint must become ready");
-        let hello = HelloClient::new(serde_json::json!({"client":"chat-contract"})).unwrap();
-        stream
-            .write_all(&pinvou_protocol::encode_frame(&hello).unwrap())
-            .unwrap();
-        let answer: pinvou_protocol::HelloServer =
-            pinvou_protocol::read_frame(&mut stream).unwrap();
-        assert_eq!(answer.instance_id(), "chat-instance");
-        let request = IpcMessage::request(
-            serde_json::json!(104),
-            "chat.start",
-            serde_json::json!({"instance_id":"chat-instance", "prompt":"stream me"}),
-        )
-        .unwrap();
-        stream
-            .write_all(&pinvou_protocol::encode_frame(&request).unwrap())
-            .unwrap();
-        for _ in 0..6 {
-            event_tx
-                .send(pinvou_protocol::read_frame::<_, IpcMessage>(&mut stream))
-                .unwrap();
-        }
-    });
-    listener.serve_one(&session).unwrap();
-    let messages = (0..6)
-        .map(|_| {
-            event_rx
-                .recv_timeout(Duration::from_secs(2))
-                .expect("timed out waiting for the next runtime.event frame")
-                .unwrap()
-        })
-        .collect::<Vec<_>>();
-    client_worker.join().unwrap();
-    assert!(messages.iter().all(|event| {
-        event.kind() == IpcMessageKind::Evt && event.topic() == Some("runtime.event")
-    }));
-    let envelopes = messages
-        .into_iter()
-        .map(|event| RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        envelopes
-            .iter()
-            .map(RuntimeEventEnvelope::kind)
-            .collect::<Vec<_>>(),
-        [
-            "turn.started",
-            "text.delta",
-            "text.delta",
-            "tool.call.started",
-            "tool.call.completed",
-            "turn.ended",
-        ]
-    );
-    assert_eq!(
-        envelopes
-            .iter()
-            .map(RuntimeEventEnvelope::seq)
-            .collect::<Vec<_>>(),
-        [1, 2, 3, 4, 5, 6]
-    );
-    let payloads = envelopes
-        .iter()
-        .map(|event| serde_json::from_str::<serde_json::Value>(event.payload().get()).unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(payloads[0]["user_input_ref"], "prompt");
-    assert_eq!(
-        (
-            payloads[1]["content"].as_str(),
-            payloads[2]["content"].as_str()
-        ),
-        (Some("one"), Some("two"))
-    );
-    assert_eq!(payloads[3]["tool_id"], "call-1");
-    assert_eq!(payloads[3]["name"], "read");
-    assert_eq!(payloads[4]["result"], serde_json::json!({}));
-    assert_eq!(payloads[4]["is_error"], false);
-    assert_eq!(payloads[5]["end_reason"], "completed");
 }
 
 #[test]
@@ -916,6 +790,226 @@ impl AgentRuntimeAdapter for FakeAdapter {
 }
 
 #[derive(Debug)]
+struct LongLivedAdapter {
+    receiver: Option<mpsc::Receiver<Result<RuntimeEventEnvelope, AdapterError>>>,
+    keepalive: Arc<Mutex<Option<mpsc::Sender<Result<RuntimeEventEnvelope, AdapterError>>>>>,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl AgentRuntimeAdapter for LongLivedAdapter {
+    fn probe(&mut self) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
+    fn capabilities(&self) -> Result<RuntimeCapabilities, AdapterError> {
+        Ok(RuntimeCapabilities::default())
+    }
+
+    fn auth_status(&mut self) -> Result<AuthStatus, AdapterError> {
+        Ok(AuthStatus::NotRequired)
+    }
+
+    fn create(&mut self, _: RuntimeOperation) -> Result<RuntimeSession, AdapterError> {
+        RuntimeSession::new("long-lived-session")
+    }
+
+    fn send(&mut self, _: &RuntimeSession, command: RuntimeCommand) -> Result<(), AdapterError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("send:{}", command.payload.as_str().unwrap()));
+        Ok(())
+    }
+
+    fn subscribe_events(
+        &mut self,
+        _: &RuntimeSession,
+    ) -> Result<RuntimeEventSubscription, AdapterError> {
+        self.calls.lock().unwrap().push("subscribe".into());
+        Ok(Box::new(self.receiver.take().unwrap().into_iter()))
+    }
+
+    fn close(&mut self, _: &RuntimeSession) -> Result<(), AdapterError> {
+        self.keepalive.lock().unwrap().take();
+        Ok(())
+    }
+}
+
+#[test]
+fn adapter_stream_stops_at_turn_end_and_reuses_the_long_lived_subscription() {
+    let (event_tx, event_rx) = mpsc::channel();
+    for event in [
+        runtime_event_for_turn(
+            "turn.started",
+            "R0",
+            "control",
+            serde_json::json!({"user_input_ref":"one"}),
+            "turn-one",
+            1,
+        ),
+        runtime_event_for_turn(
+            "approval.requested",
+            "R0",
+            "control",
+            serde_json::json!({"approval_id":"approval-1","tool":"shell","summary":"run","options":["approved","denied"],"timeout_ms":30000}),
+            "turn-one",
+            2,
+        ),
+        runtime_event_for_turn(
+            "input.requested",
+            "R0",
+            "control",
+            serde_json::json!({"input_id":"input-1","prompt":"choose","schema":{"type":"string"}}),
+            "turn-one",
+            3,
+        ),
+        runtime_event_for_turn(
+            "turn.ended",
+            "R0",
+            "control",
+            serde_json::json!({"end_reason":"completed","error":null}),
+            "other-turn",
+            4,
+        ),
+        runtime_event_for_turn(
+            "turn.ended",
+            "R0",
+            "control",
+            serde_json::json!({"end_reason":"completed","error":null}),
+            "turn-one",
+            5,
+        ),
+        runtime_event_for_turn(
+            "turn.started",
+            "R0",
+            "control",
+            serde_json::json!({"user_input_ref":"two"}),
+            "turn-two",
+            6,
+        ),
+        runtime_event_for_turn(
+            "text.delta",
+            "R1",
+            "main",
+            serde_json::json!({"role":"assistant","content":"second","merged_count":1}),
+            "turn-two",
+            7,
+        ),
+        runtime_event_for_turn(
+            "turn.ended",
+            "R0",
+            "control",
+            serde_json::json!({"end_reason":"completed","error":null}),
+            "turn-two",
+            8,
+        ),
+    ] {
+        event_tx.send(Ok(event)).unwrap();
+    }
+    let keepalive = Arc::new(Mutex::new(Some(event_tx)));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let session = NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(AdapterRuntimeHost::new(Box::new(LongLivedAdapter {
+            receiver: Some(event_rx),
+            keepalive: keepalive.clone(),
+            calls: calls.clone(),
+        }))),
+    )
+    .unwrap();
+
+    let first_session = session.clone();
+    let (first_tx, first_rx) = mpsc::channel();
+    let first_worker = std::thread::spawn(move || {
+        let request = IpcMessage::request(
+            serde_json::json!(110),
+            "chat.start",
+            serde_json::json!({"instance_id":"node-instance","prompt":"one"}),
+        )
+        .unwrap();
+        let mut kinds = Vec::new();
+        let result = first_session.stream_bound(request, |message| {
+            kinds.push(
+                RuntimeEventEnvelope::from_value(message.payload().clone())
+                    .unwrap()
+                    .kind()
+                    .to_owned(),
+            );
+            Ok(())
+        });
+        first_tx.send((result, kinds)).unwrap();
+    });
+    let first = first_rx.recv_timeout(Duration::from_secs(2));
+    if first.is_err() {
+        keepalive.lock().unwrap().take();
+    }
+    first_worker.join().unwrap();
+    let (first_result, first_kinds) = first.expect("first turn waited for subscription EOF");
+    first_result.unwrap();
+    assert_eq!(
+        first_kinds,
+        [
+            "turn.started",
+            "approval.requested",
+            "input.requested",
+            "turn.ended",
+            "turn.ended"
+        ]
+    );
+
+    let second = IpcMessage::request(
+        serde_json::json!(111),
+        "chat.start",
+        serde_json::json!({"instance_id":"node-instance","prompt":"two"}),
+    )
+    .unwrap();
+    let mut second_kinds = Vec::new();
+    session
+        .stream_bound(second, |message| {
+            second_kinds.push(
+                RuntimeEventEnvelope::from_value(message.payload().clone())
+                    .unwrap()
+                    .kind()
+                    .to_owned(),
+            );
+            Ok(())
+        })
+        .unwrap();
+    keepalive.lock().unwrap().take();
+    assert_eq!(second_kinds, ["turn.started", "text.delta", "turn.ended"]);
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        ["send:one", "subscribe", "send:two"]
+    );
+}
+
+#[test]
+fn adapter_stream_reports_eof_before_turn_end() {
+    let adapter = FakeAdapter::with_events(vec![runtime_event(
+        "turn.started",
+        "R0",
+        "control",
+        serde_json::json!({"user_input_ref":"truncated"}),
+    )]);
+    let session = NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(AdapterRuntimeHost::new(Box::new(adapter))),
+    )
+    .unwrap();
+    let request = IpcMessage::request(
+        serde_json::json!(112),
+        "chat.start",
+        serde_json::json!({"instance_id":"node-instance","prompt":"truncated"}),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        session.stream_bound(request, |_| Ok(())),
+        Err(NodeError::InvalidMessage)
+    ));
+}
+
+#[derive(Debug)]
 struct ApprovalBlockingAdapter {
     approval_seen: Mutex<Option<mpsc::Sender<()>>>,
     release_stream: Mutex<Option<mpsc::Receiver<()>>>,
@@ -955,7 +1049,13 @@ impl AgentRuntimeAdapter for ApprovalBlockingAdapter {
         let mut step = 0;
         Ok(Box::new(std::iter::from_fn(move || {
             let event = match step {
-                0 => {
+                0 => runtime_event(
+                    "turn.started",
+                    "R0",
+                    "control",
+                    serde_json::json!({"user_input_ref":"approval"}),
+                ),
+                1 => {
                     approval_seen.send(()).unwrap();
                     runtime_event(
                         "approval.requested",
@@ -970,7 +1070,7 @@ impl AgentRuntimeAdapter for ApprovalBlockingAdapter {
                         }),
                     )
                 }
-                1 => {
+                2 => {
                     release_stream.recv().unwrap();
                     runtime_event(
                         "turn.ended",
@@ -1059,6 +1159,17 @@ fn runtime_event_with_seq(
     payload: serde_json::Value,
     seq: u64,
 ) -> RuntimeEventEnvelope {
+    runtime_event_for_turn(kind, rate_class, stream_id, payload, "adapter-turn", seq)
+}
+
+fn runtime_event_for_turn(
+    kind: &str,
+    rate_class: &str,
+    stream_id: &str,
+    payload: serde_json::Value,
+    turn_id: &str,
+    seq: u64,
+) -> RuntimeEventEnvelope {
     RuntimeEventEnvelope::from_value(serde_json::json!({
         "protocol_version":pinvou_protocol::IPC_VERSION,
         "schema_version":1,
@@ -1068,7 +1179,7 @@ fn runtime_event_with_seq(
         "work_id":null,
         "collaborative_run_id":null,
         "stream_id":stream_id,
-        "turn_id":"adapter-turn",
+        "turn_id":turn_id,
         "seq":seq,
         "source_span":null,
         "timestamp":"2026-08-21T00:00:00.000Z",

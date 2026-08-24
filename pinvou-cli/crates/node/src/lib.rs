@@ -12,7 +12,7 @@ mod windows_security;
 pub use daemon::run_from_env;
 pub use error::NodeError;
 pub use instance_lock::NodeInstanceLock;
-pub use local_ipc::{NodeLocalListener, NodeTransportPolicy};
+pub use local_ipc::NodeTransportPolicy;
 pub use session::{AdapterRuntimeHost, NodeRuntimeEventStream, NodeRuntimeHost, NodeSession};
 pub use spool::{NodeSpool, RawSpoolRecord, SpoolError, SpoolRecovery, TransportRecord};
 
