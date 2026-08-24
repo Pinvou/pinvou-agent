@@ -21,6 +21,10 @@ pub type NodeRuntimeEventStream =
     Box<dyn Iterator<Item = Result<RuntimeEventEnvelope, NodeError>> + Send>;
 
 pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
+    fn sequence_reservation(&self) -> u64 {
+        1
+    }
+
     fn start_turn(
         &self,
         node_id: &str,
@@ -681,8 +685,7 @@ impl NodeSession {
                     .get("text")
                     .and_then(|value| value.as_str())
                     .ok_or(NodeError::InvalidMessage)?;
-                let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-                let (runtime, _active) = self.begin_turn(seq)?;
+                let (runtime, _active, seq) = self.begin_turn()?;
                 let mut stream = runtime.start_turn(&self.instance_id, text, seq)?;
                 let mut first_delta = None;
                 for event in stream.by_ref() {
@@ -782,8 +785,7 @@ impl NodeSession {
             .and_then(|value| value.as_str())
             .filter(|value| !value.is_empty())
             .ok_or(NodeError::InvalidMessage)?;
-        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let (runtime, _active) = self.begin_turn(seq)?;
+        let (runtime, _active, seq) = self.begin_turn()?;
         let mut stream = runtime.start_turn(&self.instance_id, prompt, seq)?;
         let mut turn_id = None;
         while let Some(envelope) = stream.next() {
@@ -816,10 +818,7 @@ impl NodeSession {
             .clone())
     }
 
-    fn begin_turn(
-        &self,
-        seq: u64,
-    ) -> Result<(Arc<dyn NodeRuntimeHost>, ActiveTurnGuard), NodeError> {
+    fn begin_turn(&self) -> Result<(Arc<dyn NodeRuntimeHost>, ActiveTurnGuard, u64), NodeError> {
         let mut coordinator = self
             .coordinator
             .lock()
@@ -827,8 +826,11 @@ impl NodeSession {
         if coordinator.active_turn.is_some() {
             return Err(NodeError::RuntimeBusy);
         }
-        coordinator.active_turn = Some(seq);
         let runtime = coordinator.runtime.host.clone();
+        let seq = self
+            .next_seq
+            .fetch_add(runtime.sequence_reservation().max(1), Ordering::Relaxed);
+        coordinator.active_turn = Some(seq);
         drop(coordinator);
         Ok((
             runtime,
@@ -836,6 +838,7 @@ impl NodeSession {
                 coordinator: Arc::clone(&self.coordinator),
                 seq,
             },
+            seq,
         ))
     }
 
@@ -968,22 +971,46 @@ fn debug_json_args(name: &str) -> Result<Option<Vec<std::ffi::OsString>>, NodeEr
 struct StageOneEchoRuntime;
 
 impl NodeRuntimeHost for StageOneEchoRuntime {
+    fn sequence_reservation(&self) -> u64 {
+        3
+    }
+
     fn start_turn(
         &self,
         node_id: &str,
         prompt: &str,
         seq: u64,
     ) -> Result<NodeRuntimeEventStream, NodeError> {
-        let event = pinvou_protocol::RuntimeEventEnvelope::from_value(json!({
+        let turn_id = format!("m1-turn-{seq}");
+        let timestamp = utc_timestamp_now();
+        let started = pinvou_protocol::RuntimeEventEnvelope::from_value(json!({
+            "protocol_version":pinvou_protocol::IPC_VERSION,"schema_version":1,"node_id":node_id,
+            "logical_session_id":"m1-session","attachment_id":"m1-attachment",
+            "work_id":null,"collaborative_run_id":null,"stream_id":"control",
+            "turn_id":turn_id,"seq":seq,"source_span":null,
+            "timestamp":timestamp,"rate_class":"R0","kind":"turn.started",
+            "payload":{"user_input_ref":"echo"}
+        }))
+        .map_err(|_| NodeError::InvalidMessage)?;
+        let delta = pinvou_protocol::RuntimeEventEnvelope::from_value(json!({
             "protocol_version":pinvou_protocol::IPC_VERSION,"schema_version":1,"node_id":node_id,
             "logical_session_id":"m1-session","attachment_id":"m1-attachment",
             "work_id":null,"collaborative_run_id":null,"stream_id":"main",
-            "turn_id":"m1-turn","seq":seq,"source_span":{"start":seq,"end":seq},
-            "timestamp":utc_timestamp_now(),"rate_class":"R1","kind":"text.delta",
+            "turn_id":turn_id,"seq":seq + 1,"source_span":{"start":seq + 1,"end":seq + 1},
+            "timestamp":timestamp,"rate_class":"R1","kind":"text.delta",
             "payload":{"role":"assistant","content":prompt,"merged_count":1}
         }))
         .map_err(|_| NodeError::InvalidMessage)?;
-        Ok(Box::new(std::iter::once(Ok(event))))
+        let ended = pinvou_protocol::RuntimeEventEnvelope::from_value(json!({
+            "protocol_version":pinvou_protocol::IPC_VERSION,"schema_version":1,"node_id":node_id,
+            "logical_session_id":"m1-session","attachment_id":"m1-attachment",
+            "work_id":null,"collaborative_run_id":null,"stream_id":"control",
+            "turn_id":turn_id,"seq":seq + 2,"source_span":null,
+            "timestamp":timestamp,"rate_class":"R0","kind":"turn.ended",
+            "payload":{"end_reason":"completed","error":null}
+        }))
+        .map_err(|_| NodeError::InvalidMessage)?;
+        Ok(Box::new([Ok(started), Ok(delta), Ok(ended)].into_iter()))
     }
 }
 

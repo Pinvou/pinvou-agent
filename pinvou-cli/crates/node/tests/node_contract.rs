@@ -126,6 +126,52 @@ fn node_stream_bound_emits_the_complete_runtime_event_stream_in_order() {
 }
 
 #[test]
+fn default_echo_runtime_emits_real_turn_boundaries_with_contiguous_sequences() {
+    let session = NodeSession::new("echo-instance").unwrap();
+    let mut envelopes = Vec::new();
+    for (id, prompt) in [(130, "one"), (131, "two")] {
+        let request = IpcMessage::request(
+            serde_json::json!(id),
+            "chat.start",
+            serde_json::json!({"instance_id":"echo-instance","prompt":prompt}),
+        )
+        .unwrap();
+        session
+            .stream_bound(request, |message| {
+                envelopes
+                    .push(RuntimeEventEnvelope::from_value(message.payload().clone()).unwrap());
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    assert_eq!(
+        envelopes
+            .iter()
+            .map(RuntimeEventEnvelope::kind)
+            .collect::<Vec<_>>(),
+        [
+            "turn.started",
+            "text.delta",
+            "turn.ended",
+            "turn.started",
+            "text.delta",
+            "turn.ended",
+        ]
+    );
+    assert_eq!(
+        envelopes
+            .iter()
+            .map(RuntimeEventEnvelope::seq)
+            .collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5, 6]
+    );
+    assert_eq!(envelopes[0].turn_id(), envelopes[1].turn_id());
+    assert_eq!(envelopes[1].turn_id(), envelopes[2].turn_id());
+    assert_ne!(envelopes[2].turn_id(), envelopes[3].turn_id());
+}
+
+#[test]
 fn node_has_local_only_transport_and_no_tcp_surface() {
     let policy = NodeTransportPolicy::stage_one();
     assert!(policy.local_ipc());
