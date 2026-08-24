@@ -841,6 +841,9 @@ impl AgentRuntimeAdapter for DrainTrackingAdapter {
         }
         Ok(())
     }
+    fn interrupt(&mut self, _: &RuntimeSession) -> Result<(), AdapterError> {
+        Ok(())
+    }
     fn subscribe_events(
         &mut self,
         _: &RuntimeSession,
@@ -1011,6 +1014,10 @@ struct NeverEndingAdapter {
     sends: Arc<AtomicUsize>,
     interrupts: Arc<AtomicUsize>,
     closes: Arc<AtomicUsize>,
+    interrupt_entered: mpsc::Sender<()>,
+    interrupt_release: Mutex<mpsc::Receiver<()>>,
+    close_entered: mpsc::Sender<()>,
+    close_release: Mutex<mpsc::Receiver<()>>,
 }
 
 impl AgentRuntimeAdapter for NeverEndingAdapter {
@@ -1032,6 +1039,8 @@ impl AgentRuntimeAdapter for NeverEndingAdapter {
     }
     fn interrupt(&mut self, _: &RuntimeSession) -> Result<(), AdapterError> {
         self.interrupts.fetch_add(1, AtomicOrdering::SeqCst);
+        self.interrupt_entered.send(()).unwrap();
+        self.interrupt_release.lock().unwrap().recv().unwrap();
         Ok(())
     }
     fn subscribe_events(
@@ -1042,6 +1051,8 @@ impl AgentRuntimeAdapter for NeverEndingAdapter {
     }
     fn close(&mut self, _: &RuntimeSession) -> Result<(), AdapterError> {
         self.closes.fetch_add(1, AtomicOrdering::SeqCst);
+        self.close_entered.send(()).unwrap();
+        self.close_release.lock().unwrap().recv().unwrap();
         self.keepalive.lock().unwrap().take();
         Ok(())
     }
@@ -1065,6 +1076,11 @@ fn disconnected_client_times_out_cleanup_retires_adapter_and_releases_guard() {
     let sends = Arc::new(AtomicUsize::new(0));
     let interrupts = Arc::new(AtomicUsize::new(0));
     let closes = Arc::new(AtomicUsize::new(0));
+    let (interrupt_entered_tx, interrupt_entered_rx) = mpsc::channel();
+    let (interrupt_release_tx, interrupt_release_rx) = mpsc::channel();
+    let (close_entered_tx, close_entered_rx) = mpsc::channel();
+    let (close_release_tx, close_release_rx) = mpsc::channel();
+    let late_event_tx = keepalive.lock().unwrap().as_ref().unwrap().clone();
     let session = NodeSession::with_runtime(
         "node-instance",
         Arc::new(AdapterRuntimeHost::with_cleanup_timeout(
@@ -1074,6 +1090,10 @@ fn disconnected_client_times_out_cleanup_retires_adapter_and_releases_guard() {
                 sends: sends.clone(),
                 interrupts: interrupts.clone(),
                 closes: closes.clone(),
+                interrupt_entered: interrupt_entered_tx,
+                interrupt_release: Mutex::new(interrupt_release_rx),
+                close_entered: close_entered_tx,
+                close_release: Mutex::new(close_release_rx),
             }),
             Duration::from_millis(50),
         )),
@@ -1100,15 +1120,14 @@ fn disconnected_client_times_out_cleanup_retires_adapter_and_releases_guard() {
             }))
             .unwrap();
     });
-    let result = done_rx.recv_timeout(Duration::from_secs(1));
-    if result.is_err() {
-        keepalive.lock().unwrap().take();
-    }
-    worker.join().unwrap();
+    interrupt_entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    let result = done_rx.recv_timeout(Duration::from_millis(500));
     assert!(started.elapsed() < Duration::from_secs(1));
     assert!(matches!(result.unwrap(), Err(NodeError::Io(_))));
     assert_eq!(interrupts.load(AtomicOrdering::SeqCst), 1);
-    assert_eq!(closes.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(closes.load(AtomicOrdering::SeqCst), 0);
 
     let retry = IpcMessage::request(
         serde_json::json!(125),
@@ -1125,6 +1144,24 @@ fn disconnected_client_times_out_cleanup_retires_adapter_and_releases_guard() {
     )
     .unwrap();
     assert_eq!(session.handle(switch).unwrap().payload()["status"], "ok");
+
+    interrupt_release_tx.send(()).unwrap();
+    late_event_tx
+        .send(Ok(runtime_event_for_turn(
+            "turn.ended",
+            "R0",
+            "control",
+            serde_json::json!({"end_reason":"interrupted","error":null}),
+            "stuck-turn",
+            3,
+        )))
+        .unwrap();
+    close_entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    close_release_tx.send(()).unwrap();
+    worker.join().unwrap();
+    assert_eq!(closes.load(AtomicOrdering::SeqCst), 1);
 }
 
 impl AgentRuntimeAdapter for LongLivedAdapter {
@@ -1355,13 +1392,20 @@ fn adapter_stream_reports_eof_before_turn_end() {
             .count(),
         1
     );
-    assert!(
-        calls
+    let closed = (0..40).any(|_| {
+        if calls
             .lock()
             .unwrap()
             .iter()
             .any(|call| call == "close:adapter-session")
-    );
+        {
+            true
+        } else {
+            std::thread::sleep(Duration::from_millis(25));
+            false
+        }
+    });
+    assert!(closed, "retired adapter was not closed within one second");
 }
 
 #[derive(Debug)]

@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -79,6 +79,7 @@ pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
 
 pub struct AdapterRuntimeHost {
     inner: Arc<Mutex<AdapterRuntimeState>>,
+    retired: Arc<AtomicBool>,
     cleanup_timeout: std::time::Duration,
 }
 
@@ -87,7 +88,7 @@ struct AdapterRuntimeState {
     probed: bool,
     session: Option<RuntimeSession>,
     subscription: Option<RuntimeEventSubscription>,
-    retired: bool,
+    closed: bool,
 }
 
 impl AdapterRuntimeHost {
@@ -105,8 +106,9 @@ impl AdapterRuntimeHost {
                 probed: false,
                 session: None,
                 subscription: None,
-                retired: false,
+                closed: false,
             })),
+            retired: Arc::new(AtomicBool::new(false)),
             cleanup_timeout,
         }
     }
@@ -122,18 +124,20 @@ impl fmt::Debug for AdapterRuntimeHost {
 
 impl Drop for AdapterRuntimeHost {
     fn drop(&mut self) {
-        let Ok(mut state) = self.inner.lock() else {
-            return;
-        };
-        if let Some(session) = state.session.take() {
-            let _ = state.adapter.close(&session);
+        self.retired.store(true, Ordering::Release);
+        if let Ok(mut state) = self.inner.try_lock() {
+            close_adapter_state(&mut state);
+        } else {
+            close_adapter_state_async(Arc::clone(&self.inner));
         }
     }
 }
 
 impl NodeRuntimeHost for AdapterRuntimeHost {
     fn detect(&self) -> Result<serde_json::Value, NodeError> {
+        ensure_adapter_available(&self.retired)?;
         let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
+        ensure_adapter_available(&self.retired)?;
         if let Err(error) = ensure_adapter_probe(&mut inner) {
             return Ok(runtime_error_status(&error));
         }
@@ -156,7 +160,9 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
         prompt: &str,
         _: u64,
     ) -> Result<NodeRuntimeEventStream, NodeError> {
+        ensure_adapter_available(&self.retired)?;
         let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
+        ensure_adapter_available(&self.retired)?;
         let session = ensure_adapter_session(&mut inner)?;
         inner
             .adapter
@@ -168,6 +174,7 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
         drop(inner);
         Ok(Box::new(AdapterTurnStream {
             inner: Arc::clone(&self.inner),
+            retired: Arc::clone(&self.retired),
             subscription: Some(events),
             turn_id: None,
             finished: false,
@@ -179,18 +186,28 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
         mut stream: NodeRuntimeEventStream,
         turn_id: Option<&str>,
     ) {
-        if let Some(turn_id) = turn_id {
-            let _ = self.interrupt_turn(turn_id);
-        }
+        let deadline = std::time::Instant::now() + self.cleanup_timeout;
+        let inner = Arc::clone(&self.inner);
+        let retired = Arc::clone(&self.retired);
+        let turn_id = turn_id.map(str::to_owned);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let _ = std::thread::Builder::new()
             .name("pinvou-node-runtime-drain".into())
             .spawn(move || {
-                let _ = done_tx.send(drain_runtime_stream(&mut stream));
+                let interrupt = match turn_id {
+                    Some(_) => interrupt_adapter_state(&inner, &retired),
+                    None => Ok(()),
+                };
+                let drained = interrupt.and_then(|_| drain_runtime_stream(&mut stream));
+                if drained.is_err() || retired.load(Ordering::Acquire) {
+                    retire_adapter_state_blocking(&inner, &retired);
+                }
+                let _ = done_tx.send(drained);
             });
-        match done_rx.recv_timeout(self.cleanup_timeout) {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match done_rx.recv_timeout(remaining) {
             Ok(Ok(())) => {}
-            Ok(Err(_)) | Err(_) => retire_adapter_state(&self.inner),
+            Ok(Err(_)) | Err(_) => retire_adapter_state(&self.inner, &self.retired),
         }
     }
 
@@ -199,7 +216,9 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
         approval_id: &str,
         accepted: bool,
     ) -> Result<serde_json::Value, NodeError> {
+        ensure_adapter_available(&self.retired)?;
         let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
+        ensure_adapter_available(&self.retired)?;
         let session = ensure_adapter_session(&mut inner)?;
         inner.adapter.approve(
             &session,
@@ -216,7 +235,9 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
         input_id: &str,
         value: &serde_json::Value,
     ) -> Result<serde_json::Value, NodeError> {
+        ensure_adapter_available(&self.retired)?;
         let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
+        ensure_adapter_available(&self.retired)?;
         let session = ensure_adapter_session(&mut inner)?;
         inner.adapter.respond_input(
             &session,
@@ -226,7 +247,9 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
     }
 
     fn interrupt_turn(&self, turn_id: &str) -> Result<serde_json::Value, NodeError> {
+        ensure_adapter_available(&self.retired)?;
         let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
+        ensure_adapter_available(&self.retired)?;
         let session = ensure_adapter_session(&mut inner)?;
         inner.adapter.interrupt(&session)?;
         Ok(json!({"status":"ok", "method":"turn.interrupt", "turn_id":turn_id}))
@@ -235,6 +258,7 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
 
 struct AdapterTurnStream {
     inner: Arc<Mutex<AdapterRuntimeState>>,
+    retired: Arc<AtomicBool>,
     subscription: Option<RuntimeEventSubscription>,
     turn_id: Option<String>,
     finished: bool,
@@ -242,10 +266,15 @@ struct AdapterTurnStream {
 
 impl AdapterTurnStream {
     fn return_subscription(&mut self) {
+        if self.retired.load(Ordering::Acquire) {
+            self.subscription.take();
+            return;
+        }
         let Some(subscription) = self.subscription.take() else {
             return;
         };
         if let Ok(mut inner) = self.inner.lock()
+            && !self.retired.load(Ordering::Acquire)
             && inner.subscription.is_none()
         {
             inner.subscription = Some(subscription);
@@ -280,31 +309,76 @@ impl Iterator for AdapterTurnStream {
             Some(Err(error)) => {
                 self.finished = true;
                 self.subscription.take();
-                retire_adapter_state(&self.inner);
+                retire_adapter_state(&self.inner, &self.retired);
                 Some(Err(NodeError::from(error)))
             }
             None => {
                 self.finished = true;
                 self.subscription.take();
-                retire_adapter_state(&self.inner);
+                retire_adapter_state(&self.inner, &self.retired);
                 Some(Err(NodeError::InvalidMessage))
             }
         }
     }
 }
 
-fn retire_adapter_state(inner: &Arc<Mutex<AdapterRuntimeState>>) {
-    let Ok(mut state) = inner.lock() else {
-        return;
-    };
-    if state.retired {
+fn retire_adapter_state(inner: &Arc<Mutex<AdapterRuntimeState>>, retired: &Arc<AtomicBool>) {
+    retired.store(true, Ordering::Release);
+    close_adapter_state_async(Arc::clone(inner));
+}
+
+fn retire_adapter_state_blocking(
+    inner: &Arc<Mutex<AdapterRuntimeState>>,
+    retired: &Arc<AtomicBool>,
+) {
+    retired.store(true, Ordering::Release);
+    if let Ok(mut state) = inner.lock() {
+        close_adapter_state(&mut state);
+    }
+}
+
+fn close_adapter_state_async(inner: Arc<Mutex<AdapterRuntimeState>>) {
+    let _ = std::thread::Builder::new()
+        .name("pinvou-node-runtime-close".into())
+        .spawn(move || {
+            if let Ok(mut state) = inner.lock() {
+                close_adapter_state(&mut state);
+            }
+        });
+}
+
+fn close_adapter_state(state: &mut AdapterRuntimeState) {
+    if state.closed {
         return;
     }
-    state.retired = true;
+    state.closed = true;
     state.subscription.take();
     if let Some(session) = state.session.take() {
         let _ = state.adapter.close(&session);
     }
+}
+
+fn interrupt_adapter_state(
+    inner: &Arc<Mutex<AdapterRuntimeState>>,
+    retired: &Arc<AtomicBool>,
+) -> Result<(), NodeError> {
+    ensure_adapter_available(retired)?;
+    let mut state = inner.lock().map_err(|_| NodeError::InvalidMessage)?;
+    ensure_adapter_available(retired)?;
+    let session = ensure_adapter_session(&mut state)?;
+    state.adapter.interrupt(&session)?;
+    Ok(())
+}
+
+fn ensure_adapter_available(retired: &AtomicBool) -> Result<(), NodeError> {
+    if retired.load(Ordering::Acquire) {
+        return Err(NodeError::Runtime(
+            pinvou_runtime_api::AdapterError::InvalidRequest {
+                details: "adapter runtime is retired".into(),
+            },
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_adapter_session(state: &mut AdapterRuntimeState) -> Result<RuntimeSession, NodeError> {
@@ -320,13 +394,6 @@ fn ensure_adapter_session(state: &mut AdapterRuntimeState) -> Result<RuntimeSess
 }
 
 fn ensure_adapter_probe(state: &mut AdapterRuntimeState) -> Result<(), NodeError> {
-    if state.retired {
-        return Err(NodeError::Runtime(
-            pinvou_runtime_api::AdapterError::InvalidRequest {
-                details: "adapter runtime is retired".into(),
-            },
-        ));
-    }
     if !state.probed {
         state.adapter.probe()?;
         state.probed = true;
