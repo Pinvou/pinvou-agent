@@ -1020,6 +1020,103 @@ struct NeverEndingAdapter {
     close_release: Mutex<mpsc::Receiver<()>>,
 }
 
+#[derive(Debug)]
+struct BlockingCloseAdapter {
+    close_entered: mpsc::Sender<()>,
+    close_release: Mutex<mpsc::Receiver<()>>,
+    closes: Arc<AtomicUsize>,
+}
+
+impl AgentRuntimeAdapter for BlockingCloseAdapter {
+    fn probe(&mut self) -> Result<(), AdapterError> {
+        Ok(())
+    }
+    fn capabilities(&self) -> Result<RuntimeCapabilities, AdapterError> {
+        Ok(RuntimeCapabilities::default())
+    }
+    fn auth_status(&mut self) -> Result<AuthStatus, AdapterError> {
+        Ok(AuthStatus::NotRequired)
+    }
+    fn create(&mut self, _: RuntimeOperation) -> Result<RuntimeSession, AdapterError> {
+        RuntimeSession::new("blocking-close")
+    }
+    fn approve(&mut self, _: &RuntimeSession, _: RuntimeOperation) -> Result<(), AdapterError> {
+        Ok(())
+    }
+    fn subscribe_events(
+        &mut self,
+        _: &RuntimeSession,
+    ) -> Result<RuntimeEventSubscription, AdapterError> {
+        Ok(Box::new(std::iter::empty()))
+    }
+    fn close(&mut self, _: &RuntimeSession) -> Result<(), AdapterError> {
+        self.closes.fetch_add(1, AtomicOrdering::SeqCst);
+        self.close_entered.send(()).unwrap();
+        self.close_release.lock().unwrap().recv().unwrap();
+        Ok(())
+    }
+}
+
+#[test]
+fn runtime_switch_does_not_wait_for_idle_adapter_close() {
+    let (close_entered_tx, close_entered_rx) = mpsc::channel();
+    let (close_release_tx, close_release_rx) = mpsc::channel();
+    let closes = Arc::new(AtomicUsize::new(0));
+    let session = NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(AdapterRuntimeHost::new(Box::new(BlockingCloseAdapter {
+            close_entered: close_entered_tx,
+            close_release: Mutex::new(close_release_rx),
+            closes: closes.clone(),
+        }))),
+    )
+    .unwrap();
+    session.handle(IpcMessage::request(
+        serde_json::json!(127), "approval.resolve",
+        serde_json::json!({"instance_id":"node-instance","approval_id":"approval","accepted":true}),
+    ).unwrap()).unwrap();
+
+    let switching = session.clone();
+    let (switched_tx, switched_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        switched_tx
+            .send(
+                switching.handle(
+                    IpcMessage::request(
+                        serde_json::json!(128),
+                        "runtime.switch",
+                        serde_json::json!({"instance_id":"node-instance","runtime":"echo"}),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+    });
+    close_entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    let switched_without_close = switched_rx.recv_timeout(Duration::from_millis(250));
+    if switched_without_close.is_ok() {
+        let list = session
+            .handle(
+                IpcMessage::request(
+                    serde_json::json!(129),
+                    "runtime.list",
+                    serde_json::json!({"instance_id":"node-instance"}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(list.payload()["current"], "echo");
+    }
+    close_release_tx.send(()).unwrap();
+    worker.join().unwrap();
+    switched_without_close
+        .expect("runtime switch blocked on AdapterRuntimeHost::drop")
+        .unwrap();
+    assert_eq!(closes.load(AtomicOrdering::SeqCst), 1);
+}
+
 impl AgentRuntimeAdapter for NeverEndingAdapter {
     fn probe(&mut self) -> Result<(), AdapterError> {
         Ok(())
@@ -1633,6 +1730,24 @@ fn adapter_runtime_host_drives_probe_create_send_events_and_control_methods() {
 
     drop(session);
     drop(host);
+
+    let closed = (0..40).any(|_| {
+        if calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call.starts_with("close:"))
+        {
+            true
+        } else {
+            std::thread::sleep(Duration::from_millis(25));
+            false
+        }
+    });
+    assert!(
+        closed,
+        "adapter close worker did not finish within one second"
+    );
 
     assert_eq!(
         calls.lock().unwrap().as_slice(),

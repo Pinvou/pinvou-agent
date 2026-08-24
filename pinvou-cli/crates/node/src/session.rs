@@ -125,11 +125,7 @@ impl fmt::Debug for AdapterRuntimeHost {
 impl Drop for AdapterRuntimeHost {
     fn drop(&mut self) {
         self.retired.store(true, Ordering::Release);
-        if let Ok(mut state) = self.inner.try_lock() {
-            close_adapter_state(&mut state);
-        } else {
-            close_adapter_state_async(Arc::clone(&self.inner));
-        }
+        close_adapter_state_async(Arc::clone(&self.inner));
     }
 }
 
