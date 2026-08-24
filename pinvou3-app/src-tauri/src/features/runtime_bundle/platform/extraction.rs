@@ -123,6 +123,23 @@ impl Pinvou3Bundle {
                 migration.kept.len()
             ),
         );
+        // 自愈对账：认领错位归位/去重、孤儿副本、瘫记录、内置释放目录残旧收敛。
+        // 名称无关（按归属证明判定，各发行版构建自动适配），排在布局迁移之后
+        // （旧扁平目录已搬完）、gates 之前（CLI 静态所有目录不受影响）。
+        let heal = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .self_heal_skills(Self::BUILTIN_RELEASED_SKILL_DIRS);
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:skills_self_heal:done",
+            &format!(
+                "rehomed={} deduped={} orphan={} stale_records={} converged={}",
+                heal.rehomed.len(),
+                heal.deduped.len(),
+                heal.removed_orphan_dirs.len(),
+                heal.removed_stale_records.len(),
+                heal.converged_builtin_dirs.len()
+            ),
+        );
         // 飞书 / 企微 / 钉钉鉴权 CLI 不得阻塞 Tauri setup。启动阶段只沿用上次落盘的完整
         // 技能目录作为缓存；React 首屏提交后调用 refresh_connector_auth_gates 并行
         // 实时探测，再按真实状态修正目录。bundle 升级时仅刷新当前可见的缓存目录。
@@ -319,6 +336,11 @@ impl Pinvou3Bundle {
                 crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
 
                 let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
+                // 按包聚合新布局的退役残留：`migrate_custom_mcp_layout` 会先把旧目录
+                // 搬进 bundles/<id>/mcp/，而 uninstall 的 can_redeliver=false 规则
+                // （非内嵌 id 不可重释放）保留包目录——不删则 manifest 存活、退役
+                // 工具以「自定义 MCP 卡」复活（G8a）。Upload 保护已在上方判定。
+                let _ = std::fs::remove_dir_all(paths::bundles_root().join(tool_id));
             }
         }
         Ok(())
@@ -331,6 +353,11 @@ impl Pinvou3Bundle {
     /// contains 级探测——宁可误报(多跑一次幂等清理)也不漏报(残留永驻)。
     fn marketplace_tool_residue_present(tool_id: &str) -> bool {
         if paths::bundle_mcp_servers_dir().join(tool_id).exists() {
+            return true;
+        }
+        // 新布局包目录（含迁移搬入的 bundles/<id>/mcp/）也是残留面——否则只剩
+        // 它时探测漏报，退役工具的 manifest 会以自定义 MCP 卡复活。
+        if paths::bundles_root().join(tool_id).exists() {
             return true;
         }
         let home = paths::pinvou3_home();
@@ -369,6 +396,13 @@ impl Pinvou3Bundle {
             None => true,
         }
     }
+
+    /// 当前构建内嵌释放到 `bundle/skills/` 的内置技能目录集合——与
+    /// [`Self::write_builtin_skills`] 的释放面保持一致。自愈对账
+    /// （`self_heal_skills` 第 4 步）以此为「本构建内嵌什么」的判定基准：
+    /// 不在集内且无归属证明的目录判残旧收敛；其它发行版构建内嵌更多技能
+    /// 时扩充本常量即可，天然保留。
+    pub(crate) const BUILTIN_RELEASED_SKILL_DIRS: &[&str] = &["visual-design"];
 
     /// 解包内嵌的内置 skills 到 pinvou3 单一来源 `bundle/skills`。v0.9 clean re-fork
     /// 后 catalogue 与 `load_skill` 都只扫描此目录，不再写 `~/.agents/skills`。
@@ -681,6 +715,18 @@ impl Pinvou3Bundle {
                     if crate::features::marketplace::mcp_catalog::spec_for(&record.id).is_none() {
                         continue; // 非内嵌包（自定义/上传），无内嵌资源可校验
                     }
+                    // 上传/未知来源的记录即使 id 撞内嵌目录也不得重释放：重释放
+                    // 以嵌入资源为基准覆盖包目录（release_package 先删后建），对
+                    // 用户内容即数据销毁。镜像卸载路径 source_may_be_upload 的
+                    // fail-closed 口径（六轮评审 R1），只放行预置/内置来源。
+                    if !should_ensure_embedded_release(record) {
+                        log::warn!(
+                            "[runtime-bundle] 跳过非预置来源记录的内嵌重释放（{}，source={:?}）",
+                            record.id,
+                            record.source
+                        );
+                        continue;
+                    }
                     if let Err(e) =
                         crate::features::marketplace::mcp_catalog::ensure_package_released(
                             &record.id,
@@ -726,5 +772,37 @@ impl Pinvou3Bundle {
         }
         std::fs::write(path, contents)?;
         Ok(true)
+    }
+}
+
+/// 内嵌重释放放行判定（G1）：仅预置/内置来源。上传/未知来源即使 id 撞内嵌
+/// 目录也不得重释放——重释放以嵌入资源为基准覆盖包目录（`release_package`
+/// 先删后建），对用户内容即数据销毁。镜像卸载路径 `source_may_be_upload`
+/// 的 fail-closed 口径（六轮评审 R1）。
+fn should_ensure_embedded_release(
+    record: &crate::features::marketplace::store::BundleRecord,
+) -> bool {
+    matches!(
+        record.source,
+        crate::features::marketplace::store::BundleSource::Preset
+            | crate::features::marketplace::store::BundleSource::Builtin
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    /// G1 回归：上传来源记录不得进入内嵌重释放（防用户内容被嵌入资源覆盖）。
+    #[test]
+    fn embedded_release_skips_non_preset_sources() {
+        use crate::features::marketplace::store::{BundleRecord, BundleSource};
+        let preset = BundleRecord::installed_now("weather".to_string(), BundleSource::Preset);
+        let builtin = BundleRecord::installed_now("weather".to_string(), BundleSource::Builtin);
+        let upload = BundleRecord::installed_now(
+            "weather".to_string(),
+            BundleSource::Upload("x.zip".to_string()),
+        );
+        assert!(super::should_ensure_embedded_release(&preset));
+        assert!(super::should_ensure_embedded_release(&builtin));
+        assert!(!super::should_ensure_embedded_release(&upload));
     }
 }

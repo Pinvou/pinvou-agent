@@ -646,8 +646,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 据此动态合成卡片（安装时显示、卸载后消失），不依赖前端硬编码。
       const [toolBackend, setToolBackend] = useState([]);
       const [toolAuthStates, setToolAuthStates] = useState({});
-      // 配套技能 id → 所属 MCP id(由 list_marketplace_tools 的 companion_skills 反建,manifest 单一真源)。
-      // 有配套 MCP 的技能卡据此把状态/装卸联动到该 MCP,避免命名不一致(government-writing↔gongwen)时状态分叉。
+      // 配套技能 id → 所属 MCP id(由 list_marketplace_tools 的 companion_skills 反建,manifest 单一真源;
+      // 只认领已装 MCP,与后端 skill_owner_package 条件认领同口径)。
+      // 有配套 MCP 且已装的技能卡据此把状态/装卸联动到该 MCP,避免命名不一致(government-writing↔gongwen)时状态分叉。
       const [skillToMcp, setSkillToMcp] = useState({});
       const [busyId, setBusyId] = useState(null);
       const busyRef = useRef(null); // 拖放 controller 经 ref 读最新 busyId(闭包不刷新)
@@ -710,10 +711,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const toggleModeVisibility = (id, mode, checked) => {
         if (!canMutateToolStore || !visibilityLoaded || !id) return;
         // 可见性按包 id 落库（后端 save_hidden_bundles_for 经 to_package_id 归一为包
-        // id，scope.rs；get_bundle_visibility 原样返回包 id）：companion 技能卡
-        // （government-writing→gongwen 等）先经 skillToMcp 映射为所属 MCP 包 id——
-        // 与安装态联动同一映射源（manifest companion_skills 反建，不随安装态变化），
-        // 否则写技能 id、读回包 id，勾选永不命中（五轮评审）。
+        // id，scope.rs；读回经 normalize_stored_pkg_ids 按当前认领再归一）：companion
+        // 技能卡（government-writing→gongwen 等）先经 skillToMcp 映射为所属 MCP 包
+        // id（只认领已装 MCP，与后端条件认领同口径）；MCP 未装时按技能 id 直接落库，
+        // 读回归一后仍能命中。
         const pkgId = skillToMcp[id] || id;
         const prev = hiddenByModeRef.current;
         const next = new Set(prev[mode] || []);
@@ -763,10 +764,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         try {
           const list = await invokeTauri('list_marketplace_tools');
           const states = {};
-          const s2m = {}; // 配套技能 → 所属 MCP(manifest companion_skills 反建,单一真源)
+          const s2m = {}; // 配套技能 → 所属 MCP(manifest companion_skills 反建,单一真源)。
+          // 与后端条件认领同口径（skill_owner_package 以包本体安装态判定归属）：
+          // 只认领**已装** MCP 的配套技能。无条件认领会让独立安装的 companion
+          // 技能卡跟随未装 MCP 显示「未安装」、无卸载入口，且点安装被路由去装
+          // MCP 从而制造双份副本（G3/F2）。可见性读写在后端读时归一（scope.rs
+          // normalize_stored_pkg_ids），不依赖本映射的安装态无关性。
           list.forEach(t => {
             states[t.id] = t.installed;
-            (t.companion_skills || []).forEach(sid => { s2m[sid] = t.id; });
+            if (t.installed) (t.companion_skills || []).forEach(sid => { s2m[sid] = t.id; });
           });
           setToolStates(states);
           setSkillToMcp(s2m);

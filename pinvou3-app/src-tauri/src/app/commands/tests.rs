@@ -584,6 +584,60 @@ fn mcp_install_links_companion_skills() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// 卸载顺序回归：MCP 已装时 companion 技能落盘在 `bundles/<pkg>/skills/`（条件认领，
+/// `skill_owner_package` 以包本体安装态判定归属）。若先卸 MCP 本体再删 companion，
+/// 认领翻转、技能卸载按「独立纯技能包」算错目录而静默残留（gongwen 先卸 →
+/// government-writing 删不掉）。命令层必须先删 companion 再卸 MCP。
+#[test]
+fn mcp_uninstall_removes_companion_skills_before_teardown() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let root = std::env::temp_dir().join(format!(
+        "pinvou3-companion-unlink-test-{}",
+        std::process::id()
+    ));
+    let previous = std::env::var("PINVOU3_HOME").ok();
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::env::set_var("PINVOU3_HOME", &root);
+
+    let mgr = crate::features::marketplace::MarketplaceManager::new();
+    let skill_mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+    // 复刻命令层安装路径：装 MCP → 联动装 companion 技能（gongwen 已装 →
+    // government-writing 认领进 bundles/gongwen/skills/）。
+    mgr.install("gongwen", &std::collections::HashMap::new())
+        .unwrap();
+    for sid in mgr.companion_skills("gongwen") {
+        skill_mgr.install(&sid).unwrap();
+    }
+    let skill_dir = crate::platform::paths::bundles_root()
+        .join("gongwen")
+        .join("skills")
+        .join("government-writing");
+    assert!(skill_dir.is_dir(), "companion 技能应随包装入包目录");
+
+    uninstall_marketplace_tool_sync("gongwen").unwrap();
+
+    assert!(
+        !skill_dir.exists(),
+        "卸 MCP 后 companion 技能目录不得残留（顺序依赖回归）"
+    );
+    assert!(
+        !skill_mgr
+            .list_skills()
+            .iter()
+            .any(|s| s.id == "government-writing" && s.installed),
+        "卸 MCP 后 companion 技能不得仍为已装态"
+    );
+
+    match previous {
+        Some(value) => std::env::set_var("PINVOU3_HOME", value),
+        None => std::env::remove_var("PINVOU3_HOME"),
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn file_url_from_path_encodes_local_artifact_paths() {
     let tmp = std::env::temp_dir().join(format!("pinvou3 file-url test {}", std::process::id()));
