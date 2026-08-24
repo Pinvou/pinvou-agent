@@ -5,7 +5,9 @@ use crate::{
     action::{Action, ApprovalDecision, Effect},
     backend::BackendError,
     commands::{AVAILABLE_COMMANDS, SlashCommand, parse},
-    model::{ApprovalRequest, InputRequest, Interaction, Model, Overlay, TurnState},
+    model::{
+        ApprovalRequest, InputRequest, Interaction, Model, Overlay, PendingRuntimeSwitch, TurnState,
+    },
 };
 
 pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
@@ -17,26 +19,24 @@ pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
         }
         Action::ApprovalChosen(decision) => choose_approval(model, decision),
         Action::ApprovalResolutionCompleted {
+            turn_id,
             approval_id,
+            operation_token,
             result,
-        } => complete_approval(model, &approval_id, result),
+        } => complete_approval(model, &turn_id, &approval_id, operation_token, result),
         Action::InputSubmitted(value) => submit_input(model, value),
-        Action::InputResolutionCompleted { input_id, result } => {
-            complete_input(model, &input_id, result)
-        }
+        Action::InputResolutionCompleted {
+            turn_id,
+            input_id,
+            operation_token,
+            result,
+        } => complete_input(model, &turn_id, &input_id, operation_token, result),
         Action::Interrupt => interrupt(model),
         Action::RuntimeSwitch(runtime) => switch_runtime(model, runtime),
-        Action::RuntimeSwitched(result) => {
-            match result {
-                Ok(runtime) => {
-                    model.runtime = runtime;
-                    model.status_message = None;
-                    model.last_backend_error = None;
-                }
-                Err(error) => record_backend_error(model, error),
-            }
-            Vec::new()
-        }
+        Action::RuntimeSwitched {
+            operation_token,
+            result,
+        } => complete_runtime_switch(model, operation_token, result),
     }
 }
 
@@ -70,7 +70,10 @@ fn submit(model: &mut Model, input: String) -> Vec<Effect> {
 }
 
 fn submit_prompt(model: &mut Model, prompt: &str) -> Vec<Effect> {
-    if model.turn != TurnState::Idle || model.interaction != Interaction::None {
+    if model.turn != TurnState::Idle
+        || model.interaction != Interaction::None
+        || model.pending_runtime_switch.is_some()
+    {
         model.status_message = Some("an active turn or interaction must finish first".into());
         return Vec::new();
     }
@@ -80,7 +83,9 @@ fn submit_prompt(model: &mut Model, prompt: &str) -> Vec<Effect> {
     model.composer.input.clear();
     model.overlay = Overlay::None;
     model.status_message = None;
+    model.diagnostic_message = None;
     model.last_backend_error = None;
+    model.pending_runtime_switch = None;
     model.turn = TurnState::Starting;
     vec![Effect::StartTurn { prompt }]
 }
@@ -95,7 +100,9 @@ fn choose_approval(model: &mut Model, decision: ApprovalDecision) -> Vec<Effect>
 
     let request = request.clone();
     let effect = Effect::ResolveApproval {
+        turn_id: request.turn_id.clone(),
         approval_id: request.approval_id.clone(),
+        operation_token: request.operation_token,
         accepted: decision == ApprovalDecision::AllowOnce,
     };
     model.interaction = Interaction::ApprovalResolving { request, decision };
@@ -106,13 +113,19 @@ fn choose_approval(model: &mut Model, decision: ApprovalDecision) -> Vec<Effect>
 
 fn complete_approval(
     model: &mut Model,
+    turn_id: &str,
     approval_id: &str,
+    operation_token: crate::model::OperationToken,
     result: Result<(), BackendError>,
 ) -> Vec<Effect> {
     let Interaction::ApprovalResolving { request, .. } = &model.interaction else {
         return Vec::new();
     };
-    if request.approval_id != approval_id {
+    if request.turn_id != turn_id
+        || request.approval_id != approval_id
+        || request.operation_token != operation_token
+    {
+        record_ignored(model, "ignored stale approval completion".into());
         return Vec::new();
     }
 
@@ -123,7 +136,8 @@ fn complete_approval(
             model.last_backend_error = None;
         }
         Err(error) => {
-            let request = request.clone();
+            let mut request = request.clone();
+            request.operation_token = model.allocate_operation_token();
             model.interaction = Interaction::ApprovalPending(request);
             record_backend_error(model, error);
         }
@@ -141,7 +155,9 @@ fn submit_input(model: &mut Model, value: String) -> Vec<Effect> {
 
     let request = request.clone();
     let effect = Effect::ResolveInput {
+        turn_id: request.turn_id.clone(),
         input_id: request.input_id.clone(),
+        operation_token: request.operation_token,
         value: value.clone(),
     };
     model.interaction = Interaction::InputResolving { request, value };
@@ -152,13 +168,19 @@ fn submit_input(model: &mut Model, value: String) -> Vec<Effect> {
 
 fn complete_input(
     model: &mut Model,
+    turn_id: &str,
     input_id: &str,
+    operation_token: crate::model::OperationToken,
     result: Result<(), BackendError>,
 ) -> Vec<Effect> {
     let Interaction::InputResolving { request, .. } = &model.interaction else {
         return Vec::new();
     };
-    if request.input_id != input_id {
+    if request.turn_id != turn_id
+        || request.input_id != input_id
+        || request.operation_token != operation_token
+    {
+        record_ignored(model, "ignored stale input completion".into());
         return Vec::new();
     }
 
@@ -169,7 +191,8 @@ fn complete_input(
             model.last_backend_error = None;
         }
         Err(error) => {
-            let request = request.clone();
+            let mut request = request.clone();
+            request.operation_token = model.allocate_operation_token();
             model.interaction = Interaction::InputPending(request);
             record_backend_error(model, error);
         }
@@ -187,8 +210,58 @@ fn interrupt(model: &mut Model) -> Vec<Effect> {
 }
 
 fn switch_runtime(model: &mut Model, runtime: String) -> Vec<Effect> {
-    model.overlay = Overlay::None;
-    vec![Effect::SwitchRuntime { runtime }]
+    if model.turn != TurnState::Idle || model.interaction != Interaction::None {
+        model.status_message = Some("runtime cannot switch during an active turn".into());
+        return Vec::new();
+    }
+    if model.pending_runtime_switch.is_some() {
+        model.status_message = Some("runtime switch is already in progress".into());
+        return Vec::new();
+    }
+
+    let operation_token = model.allocate_operation_token();
+    model.pending_runtime_switch = Some(PendingRuntimeSwitch {
+        target: runtime.clone(),
+        operation_token,
+    });
+    model.status_message = None;
+    model.diagnostic_message = None;
+    model.last_backend_error = None;
+    vec![Effect::SwitchRuntime {
+        runtime,
+        operation_token,
+    }]
+}
+
+fn complete_runtime_switch(
+    model: &mut Model,
+    operation_token: crate::model::OperationToken,
+    result: Result<crate::backend::RuntimeStatus, BackendError>,
+) -> Vec<Effect> {
+    let Some(pending) = &model.pending_runtime_switch else {
+        record_ignored(
+            model,
+            "ignored runtime switch completion without pending operation".into(),
+        );
+        return Vec::new();
+    };
+    if pending.operation_token != operation_token {
+        record_ignored(model, "ignored stale runtime switch completion".into());
+        return Vec::new();
+    }
+
+    model.pending_runtime_switch = None;
+    match result {
+        Ok(runtime) => {
+            model.runtime = runtime;
+            model.overlay = Overlay::None;
+            model.status_message = None;
+            model.diagnostic_message = None;
+            model.last_backend_error = None;
+        }
+        Err(error) => record_backend_error(model, error),
+    }
+    Vec::new()
 }
 
 fn project_runtime_event(model: &mut Model, event: &RuntimeEventEnvelope) {
@@ -262,26 +335,36 @@ fn project_runtime_event(model: &mut Model, event: &RuntimeEventEnvelope) {
 
 fn bind_turn(model: &mut Model, event: &RuntimeEventEnvelope) {
     let TurnState::Starting = model.turn else {
-        model.status_message = Some(format!("ignored {} without a starting turn", event.kind()));
+        record_ignored(
+            model,
+            format!("ignored {} without a starting turn", event.kind()),
+        );
         return;
     };
     let Some(turn_id) = event.turn_id() else {
-        model.status_message = Some("ignored turn.started without turn_id".into());
+        record_ignored(model, "ignored turn.started without turn_id".into());
         return;
     };
     model.turn = TurnState::Streaming {
         turn_id: turn_id.to_owned(),
     };
     model.status_message = None;
+    model.diagnostic_message = None;
 }
 
 fn belongs_to_active_turn(model: &mut Model, event: &RuntimeEventEnvelope) -> bool {
     let TurnState::Streaming { turn_id } = &model.turn else {
-        model.status_message = Some(format!("ignored {} without an active turn", event.kind()));
+        record_ignored(
+            model,
+            format!("ignored {} without an active turn", event.kind()),
+        );
         return false;
     };
     if event.turn_id() != Some(turn_id.as_str()) {
-        model.status_message = Some(format!("ignored {} for a different turn", event.kind()));
+        record_ignored(
+            model,
+            format!("ignored {} for a different turn", event.kind()),
+        );
         return false;
     }
     true
@@ -306,7 +389,10 @@ fn is_projected_turn_event(kind: RuntimeEventKind) -> bool {
 
 fn request_approval(model: &mut Model, payload: &Value) {
     if model.interaction != Interaction::None {
-        model.status_message = Some("ignored approval while another interaction is active".into());
+        record_ignored(
+            model,
+            "ignored approval while another interaction is active".into(),
+        );
         return;
     }
     if let (Some(approval_id), Some(tool), Some(summary), Some(options)) = (
@@ -315,25 +401,45 @@ fn request_approval(model: &mut Model, payload: &Value) {
         string(payload, "summary"),
         strings(payload, "options"),
     ) {
+        let Some(turn_id) = active_turn_id(model) else {
+            return;
+        };
+        let operation_token = model.allocate_operation_token();
         model.interaction = Interaction::ApprovalPending(ApprovalRequest {
+            turn_id,
             approval_id,
+            operation_token,
             tool,
             summary,
             options,
         });
         model.status_message = None;
+        model.diagnostic_message = None;
     }
 }
 
 fn request_input(model: &mut Model, payload: &Value) {
     if model.interaction != Interaction::None {
-        model.status_message = Some("ignored input while another interaction is active".into());
+        record_ignored(
+            model,
+            "ignored input while another interaction is active".into(),
+        );
         return;
     }
     if let (Some(input_id), Some(prompt)) = (string(payload, "input_id"), string(payload, "prompt"))
     {
-        model.interaction = Interaction::InputPending(InputRequest { input_id, prompt });
+        let Some(turn_id) = active_turn_id(model) else {
+            return;
+        };
+        let operation_token = model.allocate_operation_token();
+        model.interaction = Interaction::InputPending(InputRequest {
+            turn_id,
+            input_id,
+            operation_token,
+            prompt,
+        });
         model.status_message = None;
+        model.diagnostic_message = None;
     }
 }
 
@@ -350,6 +456,7 @@ fn resolve_approval_from_runtime(model: &mut Model, payload: &Value) {
     if matches {
         model.interaction = Interaction::None;
         model.status_message = None;
+        model.diagnostic_message = None;
         model.last_backend_error = None;
     }
 }
@@ -367,6 +474,7 @@ fn resolve_input_from_runtime(model: &mut Model, payload: &Value) {
     if matches {
         model.interaction = Interaction::None;
         model.status_message = None;
+        model.diagnostic_message = None;
         model.last_backend_error = None;
     }
 }
@@ -374,11 +482,27 @@ fn resolve_input_from_runtime(model: &mut Model, payload: &Value) {
 fn finish_turn(model: &mut Model) {
     model.turn = TurnState::Idle;
     model.interaction = Interaction::None;
+    model.pending_runtime_switch = None;
 }
 
 fn record_backend_error(model: &mut Model, error: BackendError) {
     model.status_message = Some(error.safe_message().to_owned());
+    model.diagnostic_message = None;
     model.last_backend_error = Some(error);
+}
+
+fn record_ignored(model: &mut Model, message: String) {
+    model.diagnostic_message = Some(message.clone());
+    if model.last_backend_error.is_none() {
+        model.status_message = Some(message);
+    }
+}
+
+fn active_turn_id(model: &Model) -> Option<String> {
+    match &model.turn {
+        TurnState::Streaming { turn_id } => Some(turn_id.clone()),
+        TurnState::Idle | TurnState::Starting => None,
+    }
 }
 
 fn string(payload: &Value, field: &str) -> Option<String> {

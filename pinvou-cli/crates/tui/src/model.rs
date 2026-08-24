@@ -2,6 +2,25 @@ use std::path::PathBuf;
 
 use crate::backend::{BackendError, RuntimeStatus};
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct OperationToken(u64);
+
+impl OperationToken {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingRuntimeSwitch {
+    pub target: String,
+    pub operation_token: OperationToken,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConnectionState {
     Disconnected,
@@ -106,7 +125,9 @@ pub struct Composer {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApprovalRequest {
+    pub turn_id: String,
     pub approval_id: String,
+    pub operation_token: OperationToken,
     pub tool: String,
     pub summary: String,
     pub options: Vec<String>,
@@ -114,7 +135,9 @@ pub struct ApprovalRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InputRequest {
+    pub turn_id: String,
     pub input_id: String,
+    pub operation_token: OperationToken,
     pub prompt: String,
 }
 
@@ -151,8 +174,11 @@ pub struct Model {
     pub interaction: Interaction,
     pub overlay: Overlay,
     pub status_message: Option<String>,
+    pub diagnostic_message: Option<String>,
     pub last_backend_error: Option<BackendError>,
+    pub pending_runtime_switch: Option<PendingRuntimeSwitch>,
     pub should_quit: bool,
+    next_operation_token: u64,
 }
 
 impl Model {
@@ -167,8 +193,17 @@ impl Model {
             interaction: Interaction::None,
             overlay: Overlay::None,
             status_message: None,
+            diagnostic_message: None,
             last_backend_error: None,
+            pending_runtime_switch: None,
             should_quit: false,
+            next_operation_token: 1,
         }
+    }
+
+    pub(crate) fn allocate_operation_token(&mut self) -> OperationToken {
+        let token = OperationToken::new(self.next_operation_token);
+        self.next_operation_token = self.next_operation_token.wrapping_add(1).max(1);
+        token
     }
 }

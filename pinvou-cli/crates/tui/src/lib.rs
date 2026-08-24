@@ -15,7 +15,7 @@ mod tests {
         action::{Action, ApprovalDecision, Effect},
         backend::{Backend, BackendError, BackendErrorKind, RuntimeList, RuntimeStatus},
         commands::{CommandError, SlashCommand, parse},
-        model::{Interaction, Model, Overlay, TranscriptEntry, TurnState},
+        model::{Interaction, Model, OperationToken, Overlay, TranscriptEntry, TurnState},
         update::update,
     };
 
@@ -115,16 +115,19 @@ mod tests {
             model.interaction,
             Interaction::ApprovalPending(ref request) if request.approval_id == "approval-1"
         ));
-        assert_eq!(
-            update(
-                &mut model,
-                Action::ApprovalChosen(ApprovalDecision::AllowOnce)
-            ),
-            vec![Effect::ResolveApproval {
-                approval_id: "approval-1".into(),
-                accepted: true,
-            }]
+        let approval_effects = update(
+            &mut model,
+            Action::ApprovalChosen(ApprovalDecision::AllowOnce),
         );
+        assert!(matches!(
+            approval_effects.as_slice(),
+            [Effect::ResolveApproval {
+                approval_id,
+                turn_id,
+                accepted: true,
+                ..
+            }] if approval_id == "approval-1" && turn_id == "turn-1"
+        ));
         update(
             &mut model,
             Action::Runtime(event(
@@ -175,13 +178,16 @@ mod tests {
             )),
         );
         assert!(matches!(model.interaction, Interaction::InputPending(_)));
-        assert_eq!(
-            update(&mut model, Action::InputSubmitted("yes".into())),
-            vec![Effect::ResolveInput {
-                input_id: "input-1".into(),
-                value: "yes".into(),
-            }]
-        );
+        let input_effects = update(&mut model, Action::InputSubmitted("yes".into()));
+        assert!(matches!(
+            input_effects.as_slice(),
+            [Effect::ResolveInput {
+                input_id,
+                turn_id,
+                value,
+                ..
+            }] if input_id == "input-1" && turn_id == "turn-1" && value == "yes"
+        ));
         assert!(model.transcript.entries().iter().any(|entry| matches!(
             entry,
             TranscriptEntry::Tool { output, .. } if output == "done"
@@ -193,12 +199,8 @@ mod tests {
                 turn_id: "turn-1".into()
             }]
         );
-        assert_eq!(
-            update(&mut model, Action::RuntimeSwitch("claude".into())),
-            vec![Effect::SwitchRuntime {
-                runtime: "claude".into()
-            }]
-        );
+        assert!(update(&mut model, Action::RuntimeSwitch("claude".into())).is_empty());
+        assert!(model.pending_runtime_switch.is_none());
 
         update(
             &mut model,
@@ -215,6 +217,7 @@ mod tests {
         );
         assert_eq!(model.status_message.as_deref(), Some("runtime stopped"));
         assert_eq!(model.turn, TurnState::Idle);
+        assert_eq!(model.interaction, Interaction::None);
     }
 
     #[test]
@@ -545,7 +548,16 @@ mod tests {
             &mut model,
             Action::ApprovalChosen(ApprovalDecision::AllowOnce),
         );
-        assert_eq!(effect.len(), 1);
+        let (approval_turn, approval_token) = match effect.as_slice() {
+            [
+                Effect::ResolveApproval {
+                    turn_id,
+                    operation_token,
+                    ..
+                },
+            ] => (turn_id.clone(), *operation_token),
+            other => panic!("unexpected approval effects: {other:?}"),
+        };
         assert!(matches!(
             model.interaction,
             Interaction::ApprovalResolving { ref request, .. }
@@ -567,17 +579,30 @@ mod tests {
         update(
             &mut model,
             Action::ApprovalResolutionCompleted {
+                turn_id: approval_turn,
                 approval_id: "approval-1".into(),
+                operation_token: approval_token,
                 result: Err(error.clone()),
             },
         );
         assert!(matches!(model.interaction, Interaction::ApprovalPending(_)));
         assert_eq!(model.last_backend_error.as_ref(), Some(&error));
 
-        update(
+        let retry_effect = update(
             &mut model,
             Action::ApprovalChosen(ApprovalDecision::AllowOnce),
         );
+        let (retry_turn, retry_token) = match retry_effect.as_slice() {
+            [
+                Effect::ResolveApproval {
+                    turn_id,
+                    operation_token,
+                    ..
+                },
+            ] => (turn_id.clone(), *operation_token),
+            other => panic!("unexpected retry effects: {other:?}"),
+        };
+        assert_ne!(retry_token, approval_token);
         update(
             &mut model,
             Action::Runtime(event(
@@ -590,7 +615,9 @@ mod tests {
         update(
             &mut model,
             Action::ApprovalResolutionCompleted {
+                turn_id: retry_turn,
                 approval_id: "approval-1".into(),
+                operation_token: retry_token,
                 result: Err(error),
             },
         );
@@ -608,7 +635,17 @@ mod tests {
                 2,
             )),
         );
-        update(&mut model, Action::InputSubmitted("yes".into()));
+        let first_effect = update(&mut model, Action::InputSubmitted("yes".into()));
+        let (input_turn, first_token) = match first_effect.as_slice() {
+            [
+                Effect::ResolveInput {
+                    turn_id,
+                    operation_token,
+                    ..
+                },
+            ] => (turn_id.clone(), *operation_token),
+            other => panic!("unexpected input effects: {other:?}"),
+        };
         assert!(matches!(
             model.interaction,
             Interaction::InputResolving { ref request, ref value }
@@ -627,17 +664,32 @@ mod tests {
         update(
             &mut model,
             Action::InputResolutionCompleted {
+                turn_id: input_turn,
                 input_id: "input-1".into(),
+                operation_token: first_token,
                 result: Err(error),
             },
         );
         assert!(matches!(model.interaction, Interaction::InputPending(_)));
 
-        update(&mut model, Action::InputSubmitted("yes".into()));
+        let retry_effect = update(&mut model, Action::InputSubmitted("yes".into()));
+        let (retry_turn, retry_token) = match retry_effect.as_slice() {
+            [
+                Effect::ResolveInput {
+                    turn_id,
+                    operation_token,
+                    ..
+                },
+            ] => (turn_id.clone(), *operation_token),
+            other => panic!("unexpected input retry effects: {other:?}"),
+        };
+        assert_ne!(retry_token, first_token);
         update(
             &mut model,
             Action::InputResolutionCompleted {
+                turn_id: retry_turn,
                 input_id: "input-1".into(),
+                operation_token: retry_token,
                 result: Ok(()),
             },
         );
@@ -649,13 +701,254 @@ mod tests {
         let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
         let error = BackendError::new(BackendErrorKind::AuthBlocked, "sign in required")
             .with_exit_code(StableExitCode::BlockedAuth);
+        let effects = update(&mut model, Action::RuntimeSwitch("claude".into()));
+        let operation_token = match effects.as_slice() {
+            [
+                Effect::SwitchRuntime {
+                    operation_token, ..
+                },
+            ] => *operation_token,
+            other => panic!("unexpected runtime effects: {other:?}"),
+        };
 
-        update(&mut model, Action::RuntimeSwitched(Err(error.clone())));
+        update(
+            &mut model,
+            Action::RuntimeSwitched {
+                operation_token,
+                result: Err(error.clone()),
+            },
+        );
 
         assert_eq!(model.status_message.as_deref(), Some("sign in required"));
         assert_eq!(model.last_backend_error.as_ref(), Some(&error));
+        assert!(model.pending_runtime_switch.is_none());
         assert_eq!(error.kind(), BackendErrorKind::AuthBlocked);
         assert_eq!(error.exit_code(), Some(StableExitCode::BlockedAuth));
+    }
+
+    #[test]
+    fn runtime_switch_is_idle_only_single_flight_and_token_correlated() {
+        let mut active = active_model();
+        update(&mut active, Action::Submit("/runtime".into()));
+        let overlay = active.overlay.clone();
+        assert!(update(&mut active, Action::RuntimeSwitch("claude".into())).is_empty());
+        assert_eq!(active.overlay, overlay);
+        assert!(active.pending_runtime_switch.is_none());
+
+        let mut starting = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        update(&mut starting, Action::Submit("hello".into()));
+        update(&mut starting, Action::Submit("/runtime".into()));
+        let overlay = starting.overlay.clone();
+        assert!(update(&mut starting, Action::RuntimeSwitch("claude".into())).is_empty());
+        assert_eq!(starting.overlay, overlay);
+
+        let mut approval = active_model();
+        request_approval(&mut approval);
+        update(&mut approval, Action::Submit("/runtime".into()));
+        let interaction = approval.interaction.clone();
+        let overlay = approval.overlay.clone();
+        assert!(update(&mut approval, Action::RuntimeSwitch("claude".into())).is_empty());
+        assert_eq!(approval.interaction, interaction);
+        assert_eq!(approval.overlay, overlay);
+
+        let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        update(&mut model, Action::Submit("/runtime".into()));
+        let effects = update(&mut model, Action::RuntimeSwitch("claude".into()));
+        let operation_token = match effects.as_slice() {
+            [
+                Effect::SwitchRuntime {
+                    runtime,
+                    operation_token,
+                },
+            ] if runtime == "claude" => *operation_token,
+            other => panic!("unexpected runtime switch effects: {other:?}"),
+        };
+        let pending = model.pending_runtime_switch.clone();
+        assert!(pending.is_some());
+        assert_eq!(model.overlay, Overlay::RuntimeList);
+        assert!(update(&mut model, Action::Submit("wait".into())).is_empty());
+        assert_eq!(model.pending_runtime_switch, pending);
+        assert!(model.transcript.entries().is_empty());
+
+        assert!(update(&mut model, Action::RuntimeSwitch("kimi".into())).is_empty());
+        assert_eq!(model.pending_runtime_switch, pending);
+
+        update(
+            &mut model,
+            Action::RuntimeSwitched {
+                operation_token: OperationToken::new(operation_token.as_u64() + 100),
+                result: Ok(runtime("kimi")),
+            },
+        );
+        assert_eq!(model.runtime.id, "codex");
+        assert_eq!(model.pending_runtime_switch, pending);
+
+        update(
+            &mut model,
+            Action::RuntimeSwitched {
+                operation_token,
+                result: Ok(runtime("claude")),
+            },
+        );
+        assert_eq!(model.runtime.id, "claude");
+        assert!(model.pending_runtime_switch.is_none());
+        assert_eq!(model.overlay, Overlay::None);
+    }
+
+    #[test]
+    fn old_control_completion_cannot_mutate_reused_id_in_a_new_turn() {
+        let mut model = active_model();
+        request_approval(&mut model);
+        let old_effects = update(
+            &mut model,
+            Action::ApprovalChosen(ApprovalDecision::AllowOnce),
+        );
+        let (old_turn, old_token) = match old_effects.as_slice() {
+            [
+                Effect::ResolveApproval {
+                    turn_id,
+                    operation_token,
+                    ..
+                },
+            ] => (turn_id.clone(), *operation_token),
+            other => panic!("unexpected old control effects: {other:?}"),
+        };
+        update(
+            &mut model,
+            Action::Runtime(event(
+                RuntimeEventKind::TurnEnded,
+                json!({"end_reason": "completed"}),
+                3,
+            )),
+        );
+
+        update(&mut model, Action::Submit("second".into()));
+        update(
+            &mut model,
+            Action::Runtime(event_for(
+                RuntimeEventKind::TurnStarted,
+                json!({"user_input_ref": "prompt-2"}),
+                4,
+                Some("turn-2"),
+            )),
+        );
+        update(
+            &mut model,
+            Action::Runtime(event_for(
+                RuntimeEventKind::ApprovalRequested,
+                json!({
+                    "approval_id": "approval-1",
+                    "tool": "shell",
+                    "summary": "same id, new turn",
+                    "options": ["allow", "deny"]
+                }),
+                5,
+                Some("turn-2"),
+            )),
+        );
+        let new_effects = update(
+            &mut model,
+            Action::ApprovalChosen(ApprovalDecision::AllowOnce),
+        );
+        let new_token = match new_effects.as_slice() {
+            [
+                Effect::ResolveApproval {
+                    turn_id,
+                    operation_token,
+                    ..
+                },
+            ] if turn_id == "turn-2" => *operation_token,
+            other => panic!("unexpected new control effects: {other:?}"),
+        };
+        assert_ne!(old_token, new_token);
+
+        update(
+            &mut model,
+            Action::ApprovalResolutionCompleted {
+                turn_id: old_turn,
+                approval_id: "approval-1".into(),
+                operation_token: old_token,
+                result: Err(BackendError::new(
+                    BackendErrorKind::Operation,
+                    "stale failure",
+                )),
+            },
+        );
+        assert!(matches!(
+            model.interaction,
+            Interaction::ApprovalResolving { ref request, .. }
+                if request.turn_id == "turn-2" && request.operation_token == new_token
+        ));
+    }
+
+    #[test]
+    fn ignored_runtime_diagnostic_does_not_hide_actionable_backend_error() {
+        let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        let effects = update(&mut model, Action::RuntimeSwitch("claude".into()));
+        let token = match effects.as_slice() {
+            [
+                Effect::SwitchRuntime {
+                    operation_token, ..
+                },
+            ] => *operation_token,
+            other => panic!("unexpected runtime effects: {other:?}"),
+        };
+        let error = BackendError::new(BackendErrorKind::AuthBlocked, "sign in required")
+            .with_exit_code(StableExitCode::BlockedAuth);
+        update(
+            &mut model,
+            Action::RuntimeSwitched {
+                operation_token: token,
+                result: Err(error.clone()),
+            },
+        );
+
+        update(
+            &mut model,
+            Action::Runtime(event_for(
+                RuntimeEventKind::TurnStarted,
+                json!({"user_input_ref": "orphan"}),
+                1,
+                Some("old-turn"),
+            )),
+        );
+
+        assert_eq!(model.status_message.as_deref(), Some("sign in required"));
+        assert_eq!(model.last_backend_error.as_ref(), Some(&error));
+        assert!(
+            model
+                .diagnostic_message
+                .as_deref()
+                .unwrap()
+                .contains("ignored")
+        );
+    }
+
+    #[test]
+    fn stream_abort_clears_the_active_control_operation() {
+        let mut model = active_model();
+        request_approval(&mut model);
+        update(
+            &mut model,
+            Action::ApprovalChosen(ApprovalDecision::AllowOnce),
+        );
+        assert!(matches!(
+            model.interaction,
+            Interaction::ApprovalResolving { .. }
+        ));
+
+        update(
+            &mut model,
+            Action::Runtime(event(
+                RuntimeEventKind::StreamAborted,
+                json!({"reason": "transport closed"}),
+                3,
+            )),
+        );
+
+        assert_eq!(model.turn, TurnState::Idle);
+        assert_eq!(model.interaction, Interaction::None);
+        assert!(model.pending_runtime_switch.is_none());
     }
 
     fn active_model() -> Model {
