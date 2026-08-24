@@ -776,6 +776,26 @@
   // 上限取 32：典型用户活跃切换集中在个位数，96×1-4MB 最坏数百 MB 且高水位
   // 命中率趋近于零；被淘汰会话重访问走 load_session 磁盘重水化，代价仅一次重载。
   var MAX_SESSION_BUFFERS = 32;
+  // composerDraft 等不可重水化的轻量草稿不随 buffer 淘汰丢弃（web 桥不落盘
+  // 草稿，磁盘 transcript 只含已提交内容）：淘汰前先转移到这张侧表，buffer
+  // 重建时回填。侧表只存短字符串且上限远大于 buffer 上限，重对象仍随淘汰
+  // 照常释放。
+  var MAX_EVICTED_SESSION_DRAFTS = 256;
+  var evictedSessionDrafts = Object.create(null);
+  function stashEvictedSessionDraft(id, buf) {
+    if (!id || !buf) return;
+    delete evictedSessionDrafts[id]; // 重新入队时移到表尾,溢出时从表头淘汰
+    var draft = String(buf.composerDraft || "");
+    if (!draft) return;
+    evictedSessionDrafts[id] = draft;
+    var keys = Object.keys(evictedSessionDrafts);
+    if (keys.length > MAX_EVICTED_SESSION_DRAFTS) delete evictedSessionDrafts[keys[0]];
+  }
+  function restoreEvictedSessionDraft(id, buf) {
+    if (!id || !buf || buf.composerDraft) return;
+    var draft = evictedSessionDrafts[id];
+    if (draft) buf.composerDraft = draft;
+  }
   var sessionBufferTouchClock = 0;
   var scheduledRunOwnerTouchClock = 0;
   var suppressNotify = false;
@@ -911,7 +931,10 @@
   }
   function getBuffer(id) {
     if (!id) return null;
-    if (!sessionStates[id]) sessionStates[id] = freshBuffer();
+    if (!sessionStates[id]) {
+      sessionStates[id] = freshBuffer();
+      restoreEvictedSessionDraft(id, sessionStates[id]);
+    }
     return touchSessionBuffer(id, sessionStates[id], id.indexOf("sched-") === 0);
   }
   function isProtectedScheduledBuffer(id, buf) {
@@ -937,12 +960,14 @@
       var id = scheduledIds[i];
       var buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
+      stashEvictedSessionDraft(id, buf);
       delete sessionStates[id];
       delete turnUsageDirty[id];
       delete personaPlaceholderTitles[id];
-      if (window.localStorage) {
-        try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
-      }
+      // scene 事件的 localStorage 缓存是 sidecar 保存失败/离线时的唯一恢复
+      // 副本（savePinvouSceneEventsForSession 的后端失败被有意吞掉，
+      // syncPinvouSceneEventsForSession 靠它兜底重放），容量淘汰不得删键；
+      // 真实会话删除（purgeSessionBuffer）才清理。
       // The owner tombstone has its own bounded LRU and must outlive a
       // presentation-buffer eviction. Otherwise a stale `running` list row can
       // resurrect a run that already emitted chat:done.
@@ -958,8 +983,8 @@
     return buf;
   }
   // 全会话 LRU：与 scheduled 淘汰共用保护谓词（busy/queued/remote turn 不回收），
-  // 仅淘汰空闲 buffer（messages/chatItems 可从磁盘重水化；composerDraft 等
-  // buffer 内草稿会随之丢弃——切走未发送的草稿本就不保证跨淘汰存活）。
+  // 仅淘汰空闲 buffer。messages/chatItems 可从磁盘重水化；composerDraft 等
+  // 不可重水化的草稿先转移到 evictedSessionDrafts 侧表，重建时回填。
   function pruneSessionBuffers(keepId) {
     var ids = Object.keys(sessionStates);
     var overflow = ids.length - MAX_SESSION_BUFFERS;
@@ -972,18 +997,20 @@
       var id = ids[i];
       var buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
+      stashEvictedSessionDraft(id, buf);
       delete sessionStates[id];
       delete turnUsageDirty[id];
       delete personaPlaceholderTitles[id];
-      if (window.localStorage) {
-        try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
-      }
+      // scene 缓存键在容量淘汰时保留（唯一离线恢复副本），见上方 scheduled
+      // 淘汰处的说明；仅 purgeSessionBuffer（真实会话删除）清理。
       overflow -= 1;
     }
   }
   function purgeSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;
     delete sessionStates[id];
+    // 真实会话删除:任何暂存草稿一并作废,不得回流到同 id 的重建 buffer。
+    delete evictedSessionDrafts[id];
     delete turnUsageDirty[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];
@@ -1495,8 +1522,12 @@
     if (!buf || (opts && opts.fresh)) {
       buf = sessionStates[id] = freshBuffer();
       // `fresh` is used for a Session this client just created, so its empty
-      // buffer is authoritative rather than an event-created partial cache.
+      // buffer is authoritative rather than an event-created partial cache —
+      // and it must not resurrect a draft stashed from an earlier eviction of
+      // the same (recycled) id. Non-fresh fallback recreates an evicted
+      // buffer, so restore its stashed draft.
       if (opts && opts.fresh) buf.loadedFromDisk = true;
+      else restoreEvictedSessionDraft(id, buf);
     }
     touchSessionBuffer(id, buf, id.indexOf("sched-") === 0);
     loadWorkingSetFrom(buf);
@@ -3334,7 +3365,10 @@
       reportSessionSwitchFailure(new Error(bt("runNoSession")), errorScope);
       return false;
     }
-    if (hydrateLiveSession && !sessionStates[id]) sessionStates[id] = freshBuffer();
+    if (hydrateLiveSession && !sessionStates[id]) {
+      sessionStates[id] = freshBuffer();
+      restoreEvictedSessionDraft(id, sessionStates[id]);
+    }
     var existingBuffer = sessionStates[id];
     if (existingBuffer && (existingBuffer.remoteTurnActive ||
         (!existingBuffer.loadedFromDisk &&
@@ -3464,7 +3498,10 @@
       liveBuffer.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
       saveWorkingSetTo(liveBuffer);
     } else {
-      loadWorkingSetFrom(sessionStates[id] = freshBuffer());
+      sessionStates[id] = freshBuffer();
+      // 慢路径磁盘重水化不经 getBuffer,淘汰时暂存的草稿须在这里回填。
+      restoreEvictedSessionDraft(id, sessionStates[id]);
+      loadWorkingSetFrom(sessionStates[id]);
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
       sessionStates[id].loadedFromDisk = true;
       sessionStates[id].sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");

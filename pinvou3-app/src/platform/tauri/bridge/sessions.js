@@ -5,7 +5,9 @@
   registry.sessions = function (context) {
     var state = context.state;
     // 可选 hook：会话 buffer 被回收/删除时清理宿主侧 per-session 副表
-    // （bridge.js 的 modeStateEpochs、scene 事件 localStorage 键）。无返回值。
+    // （bridge.js 的 modeStateEpochs、scene 事件 localStorage 键）。
+    // reason === "evict" 为 LRU 容量淘汰，"delete" 为会话真实删除；
+    // 宿主侧可据此区分保留可恢复数据（如 scene 缓存键）。无返回值。
     var onSessionBufferPurged = context.onSessionBufferPurged || null;
     var invoke = context.invoke;
     var listen = context.listen;
@@ -45,19 +47,38 @@
     var loadPinvouSceneEventsForSession = context.loadPinvouSceneEventsForSession || function () { return []; };
     var syncPinvouSceneEventsForSession = context.syncPinvouSceneEventsForSession ||
       function (sid) { return Promise.resolve(loadPinvouSceneEventsForSession(sid)); };
-  var MAX_SCHEDULED_SESSION_BUFFERS = 64;
-  var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
-  // 全会话缓冲上限：sessionStates 每条持有完整 messages+chatItems(含渲染
-  // html)+artifacts（重会话 1-4MB/条），曾只对 scheduled 会话做 64 条 LRU——
-  // 普通会话切过即永久驻留。上限取 32：典型用户活跃切换集中在个位数会话，
-  // 96×1-4MB 最坏数百 MB 且 >20 的命中率趋近于零；被淘汰会话重访问走
-  // load_session 磁盘重水化（ensureSessionBufferLoaded/switchTo 已支持），
-  // 代价仅一次重载。
-  var MAX_SESSION_BUFFERS = 32;
+    var MAX_SCHEDULED_SESSION_BUFFERS = 64;
+    var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
+    // 全会话缓冲上限：sessionStates 每条持有完整 messages+chatItems(含渲染
+    // html)+artifacts（重会话 1-4MB/条），曾只对 scheduled 会话做 64 条 LRU——
+    // 普通会话切过即永久驻留。上限取 32：典型用户活跃切换集中在个位数会话，
+    // 96×1-4MB 最坏数百 MB 且 >20 的命中率趋近于零；被淘汰会话重访问走
+    // load_session 磁盘重水化（ensureSessionBufferLoaded/switchTo 已支持），
+    // 代价仅一次重载。
+    var MAX_SESSION_BUFFERS = 32;
+    // composerDraft 等不可重水化的轻量草稿不随 buffer 淘汰丢弃：磁盘 transcript
+    // 只含已提交内容，淘汰前先转移到这张侧表，buffer 重建时回填。侧表只存
+    // 短字符串且上限远大于 buffer 上限，重对象仍随淘汰照常释放。
+    var MAX_EVICTED_SESSION_DRAFTS = 256;
     var sessionBufferTouchClock = 0;
     var scheduledRunOwnerTouchClock = 0;
     var scheduledRunOpenInFlight = Object.create(null);
     var sessionSwitchRequestToken = 0;
+    var evictedSessionDrafts = Object.create(null);
+  function stashEvictedSessionDraft(id, buf) {
+    if (!id || !buf) return;
+    delete evictedSessionDrafts[id]; // 重新入队时移到表尾,溢出时从表头淘汰
+    var draft = String(buf.composerDraft || "");
+    if (!draft) return;
+    evictedSessionDrafts[id] = draft;
+    var keys = Object.keys(evictedSessionDrafts);
+    if (keys.length > MAX_EVICTED_SESSION_DRAFTS) delete evictedSessionDrafts[keys[0]];
+  }
+  function restoreEvictedSessionDraft(id, buf) {
+    if (!id || !buf || buf.composerDraft) return;
+    var draft = evictedSessionDrafts[id];
+    if (draft) buf.composerDraft = draft;
+  }
   function freshBuffer() {
     return {
       messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], pinvouSceneEvents: [], artifacts: [], busy: false, queued: [],
@@ -93,7 +114,10 @@
   }
   function getBuffer(id) {
     if (!id) return null;
-    if (!sessionStates[id]) sessionStates[id] = freshBuffer();
+    if (!sessionStates[id]) {
+      sessionStates[id] = freshBuffer();
+      restoreEvictedSessionDraft(id, sessionStates[id]);
+    }
     return touchSessionBuffer(id, sessionStates[id], id.indexOf("sched-") === 0);
   }
   function isProtectedScheduledBuffer(id, buf) {
@@ -119,11 +143,12 @@
       var id = scheduledIds[i];
       var buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
+      stashEvictedSessionDraft(id, buf);
       delete sessionStates[id];
       delete turnUsageDirty[id];
       delete personaPlaceholderTitles[id];
       pruneScheduledRunSessionOwner(id);
-      if (onSessionBufferPurged) onSessionBufferPurged(id);
+      if (onSessionBufferPurged) onSessionBufferPurged(id, "evict");
       overflow -= 1;
     }
   }
@@ -136,8 +161,8 @@
     return buf;
   }
   // 全会话 LRU：scheduled 语义保护仍适用（busy/queued/remote turn 不回收），
-  // 仅淘汰空闲 buffer（messages/chatItems 可从磁盘重水化；composerDraft 等
-  // buffer 内草稿会随之丢弃——切走未发送的草稿本就不保证跨淘汰存活）。
+  // 仅淘汰空闲 buffer。messages/chatItems 可从磁盘重水化；composerDraft 等
+  // 不可重水化的草稿先转移到 evictedSessionDrafts 侧表，重建时回填。
   // active 会话由 isProtected 兜底。
   function pruneSessionBuffers(keepId) {
     var ids = Object.keys(sessionStates);
@@ -151,17 +176,20 @@
       var id = ids[i];
       var buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
+      stashEvictedSessionDraft(id, buf);
       delete sessionStates[id];
       delete turnUsageDirty[id];
       delete personaPlaceholderTitles[id];
-      if (onSessionBufferPurged) onSessionBufferPurged(id);
+      if (onSessionBufferPurged) onSessionBufferPurged(id, "evict");
       overflow -= 1;
     }
   }
   function purgeSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;
     delete sessionStates[id];
-    if (onSessionBufferPurged) onSessionBufferPurged(id);
+    // 真实会话删除:任何暂存草稿一并作废,不得回流到同 id 的重建 buffer。
+    delete evictedSessionDrafts[id];
+    if (onSessionBufferPurged) onSessionBufferPurged(id, "delete");
     delete turnUsageDirty[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];
@@ -435,7 +463,10 @@
     state.activeSessionId = id;
     if (previousActiveId) saveWorkingSetTo(getBuffer(previousActiveId));
     var buf = sessionStates[id];
-    if (!buf || (opts && opts.fresh)) buf = sessionStates[id] = freshBuffer();
+    if (!buf || (opts && opts.fresh)) {
+      buf = sessionStates[id] = freshBuffer();
+      if (!opts || !opts.fresh) restoreEvictedSessionDraft(id, buf);
+    }
     touchSessionBuffer(id, buf, id.indexOf("sched-") === 0);
     loadWorkingSetFrom(buf);
     state.artifacts = filterSessionArtifacts(state.artifacts, id);
@@ -788,7 +819,10 @@
       reportSessionSwitchFailure(new Error(bt("runHasNoSession")), errorScope);
       return false;
     }
-    if (hydrateLiveSession && !sessionStates[id]) sessionStates[id] = freshBuffer();
+    if (hydrateLiveSession && !sessionStates[id]) {
+      sessionStates[id] = freshBuffer();
+      restoreEvictedSessionDraft(id, sessionStates[id]);
+    }
     if (id === state.activeSessionId && !forceDurableLoad && !hydrateLiveSession) {
       if (!preserveScheduledRunContext) state.scheduledRunContext = null;
       state.scheduledTaskPendingGuide = null;
@@ -881,7 +915,10 @@
       }
       saveWorkingSetTo(liveBuffer);
     } else {
-      loadWorkingSetFrom(sessionStates[id] = freshBuffer());
+      sessionStates[id] = freshBuffer();
+      // 慢路径磁盘重水化不经 getBuffer,淘汰时暂存的草稿须在这里回填。
+      restoreEvictedSessionDraft(id, sessionStates[id]);
+      loadWorkingSetFrom(sessionStates[id]);
       state.messages = Array.isArray(saved.messages) ? saved.messages : [];
       sessionStates[id].loadedFromDisk = true;
       state.personaEvents = personaEvents;

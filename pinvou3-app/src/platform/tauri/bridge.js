@@ -875,11 +875,16 @@
     personaPlaceholderTitles: personaPlaceholderTitles, turnUsageDirty: turnUsageDirty,
     // 会话 buffer 删除/淘汰时清理宿主侧 per-session 副表（modeStateEpochs
     // 定义在本文件后段，无法直接传入引用，用延迟取值 hook）。
-    onSessionBufferPurged: function (id) {
+    onSessionBufferPurged: function (id, reason) {
       delete modeStateEpochs[id];
-      // scene 事件的 localStorage 缓存键也不随会话消亡而清理,会随历史会话数
-      // 无界累积（约 5MB 配额共享）。
-      if (id && window.localStorage) {
+      // scene 事件的 localStorage 缓存是 sidecar 保存失败/离线时的唯一恢复
+      // 副本（savePinvouSceneEventsForSession 的后端失败被有意吞掉，
+      // syncPinvouSceneEventsForSession 靠它兜底重放）。LRU 容量淘汰
+      // （reason === "evict"）≠ 会话删除：此时删键会让一次保存失败 +
+      // 淘汰的组合静默丢失全部 scene 映射，且键本体只有几百字节，保留
+      // 代价远低于丢数据。仅真实会话删除（"delete"）时清理，防随历史
+      // 会话数无界累积（约 5MB 配额共享）。
+      if (id && reason === "delete" && window.localStorage) {
         try { window.localStorage.removeItem(PINVOU_SCENE_EVENTS_STORAGE_PREFIX + id); } catch (_) {}
       }
     },
