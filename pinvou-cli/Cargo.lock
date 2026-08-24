@@ -6472,6 +6472,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinvou-tui"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "pinvou-protocol",
+ "ratatui",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "pinvou3-tauri"
 version = "0.8.4"
 dependencies = [
