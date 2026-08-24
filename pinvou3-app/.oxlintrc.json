@@ -1,0 +1,76 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "ignorePatterns": [
+    "dist/**",
+    "src/vendor/**",
+    "src/types/**",
+    "src/**/*.d.ts",
+    "src-tauri/**",
+    "node_modules/**"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "pedantic": "warn",
+    "perf": "warn"
+  },
+  "plugins": [
+    "react",
+    "react-hooks",
+    "unicorn",
+    "import",
+    "oxc",
+    "jest",
+    "vitest",
+    "typescript"
+  ],
+  "rules": {
+    "typescript-eslint/no-non-null-assertion": "off",
+    "typescript-eslint/no-explicit-any": "off",
+    "unicorn/prefer-at": "off",
+    "unicorn/no-array-sort": "off",
+    "unicorn/no-array-reverse": "off",
+    "no-unused-vars": [
+      "warn",
+      {
+        "args": "none"
+      }
+    ],
+    "no-underscore-dangle": "off",
+    "no-shadow": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "react-hooks/exhaustive-deps": "off",
+    "react/exhaustive-effect-dependencies": "off",
+    "react/set-state-in-effect": "off",
+    "react/refs": "off",
+    "react/hooks": "off",
+    "react/no-unstable-nested-components": "off",
+    "react/static-components": "off",
+    "react/purity": "off",
+    "react/immutability": "off",
+    "react/preserve-manual-memoization": "off",
+    "react/iframe-missing-sandbox": "off",
+    "import/no-unassigned-import": "off",
+    "no-unused-expressions": "warn",
+    "unicorn/prefer-add-event-listener": "warn",
+    "unicorn/prefer-string-starts-ends-with": "warn",
+    "unicorn/no-useless-spread": "warn",
+    "no-inline-comments": "off",
+    "require-unicode-regexp": "off",
+    "max-lines-per-function": "off",
+    "max-lines": "off",
+    "sort-vars": "off",
+    "unicorn/explicit-length-check": "off",
+    "unicorn/no-array-callback-reference": "off"
+  },
+  "overrides": [
+    {
+      "files": [
+        "*.jsx"
+      ],
+      "rules": {
+        "react/react-in-jsx-scope": "off"
+      }
+    }
+  ]
+}

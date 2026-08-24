@@ -43,7 +43,7 @@ const PERSONAL_WORKBENCH_TEMPLATES = [
 ];
 
 function getPersonalWorkbenchTemplate(index) {
-  if (!Number.isInteger(index)) return null;
+  if (!Number.isSafeInteger(index)) return null;
   return PERSONAL_WORKBENCH_TEMPLATES[index] || null;
 }
 

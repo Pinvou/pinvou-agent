@@ -37,7 +37,7 @@ assert.strictEqual(logic.versionKey({ current_version: '1.0.0' }), '1.0.0');
 
 assert.strictEqual(logic.viewModel(null, null).visible, false);
 
-let vmIdle = logic.viewModel(
+const vmIdle = logic.viewModel(
   { appVersion: '1.1.0' },
   { available: true, latest_version: '1.2.0', platform: 'linux' }
 );
@@ -48,14 +48,14 @@ assert.strictEqual(vmIdle.action, 'download');
 assert.strictEqual(vmIdle.disabled, false);
 assert.strictEqual(vmIdle.restartAfterInstall, true);
 
-let vmWindowsIdle = logic.viewModel(
+const vmWindowsIdle = logic.viewModel(
   { appVersion: '1.1.0' },
   { available: true, latest_version: '1.2.0', platform: 'windows' }
 );
 assert.strictEqual(vmWindowsIdle.label, '下载并安装');
 assert.strictEqual(vmWindowsIdle.restartAfterInstall, false);
 
-let vmCustomLabels = logic.viewModel(
+const vmCustomLabels = logic.viewModel(
   { appVersion: '1.1.0' },
   { available: true, latest_version: '1.2.0', platform: 'linux' },
   null,
@@ -63,7 +63,7 @@ let vmCustomLabels = logic.viewModel(
 );
 assert.strictEqual(vmCustomLabels.label, 'Update & Restart');
 
-let vmDownloading = logic.viewModel(
+const vmDownloading = logic.viewModel(
   { updateDownloading: true, updateProgress: 42 },
   { available: true, latest_version: '1.2.0' }
 );
@@ -71,14 +71,14 @@ assert.strictEqual(vmDownloading.label, '下载中 42%');
 assert.strictEqual(vmDownloading.action, 'none');
 assert.strictEqual(vmDownloading.disabled, true);
 
-let vmInstalling = logic.viewModel(
+const vmInstalling = logic.viewModel(
   { updateDownloading: true, updateProgress: 100 },
   { available: true, latest_version: '1.2.0' }
 );
 assert.strictEqual(vmInstalling.label, '安装中...');
 assert.strictEqual(vmInstalling.action, 'none');
 
-let vmReady = logic.viewModel(
+const vmReady = logic.viewModel(
   { updateReady: true },
   { available: true, latest_version: '1.2.0', platform: 'linux' }
 );
@@ -89,7 +89,7 @@ assert.strictEqual(vmReady.disabled, false);
 // (此前 ready 路径未断言此字段,改错也不会被发现)。
 assert.strictEqual(vmReady.restartAfterInstall, true);
 
-let vmWindowsReady = logic.viewModel(
+const vmWindowsReady = logic.viewModel(
   { updateReady: true },
   { available: true, latest_version: '1.2.0', platform: 'windows' }
 );
@@ -100,7 +100,7 @@ assert.strictEqual(vmWindowsReady.disabled, true);
 // macOS 与 Linux 同型:后端 Ok(false) → 前端自动 restartApp(app.restart() 按路径 exec 新
 // bundle,inode 语义与 Linux 一致)。与 Windows 启动外部 MSI 安装器不同。因此 macOS ready
 // 应走 restart 分支(label=立即重启, action=restart, disabled=false, restartAfterInstall=true)。
-let vmMacReady = logic.viewModel(
+const vmMacReady = logic.viewModel(
   { updateReady: true },
   { available: true, latest_version: '1.2.0', platform: 'macos' }
 );
@@ -111,7 +111,7 @@ assert.strictEqual(vmMacReady.restartAfterInstall, true);
 
 // macOS idle 态:restartAfterInstall=true(mac 与 linux 同型),idle 应走"升级并重启"
 // 而非"下载并安装"(后者是 Windows/无 restartAfterInstall 的默认)。
-let vmMacIdle = logic.viewModel(
+const vmMacIdle = logic.viewModel(
   { appVersion: '1.1.0' },
   { available: true, latest_version: '1.2.0', platform: 'macos' }
 );
@@ -121,7 +121,7 @@ assert.strictEqual(vmMacIdle.action, 'download');
 assert.strictEqual(vmMacIdle.disabled, false);
 assert.strictEqual(vmMacIdle.restartAfterInstall, true);
 
-let vmError = logic.viewModel(
+const vmError = logic.viewModel(
   { updateError: 'sha256 failed' },
   { available: true, latest_version: '1.2.0' }
 );
@@ -131,7 +131,7 @@ assert.strictEqual(vmError.error, 'sha256 failed');
 // restartAfterInstall 只对 linux/macos 为 true(见 update-notice-logic.js),未知平台(如未来
 // 新增的 freebsd)不应假定可自动重启,故 idle 态走"下载并安装"而非"升级并重启",
 // action='download'(非 'restart')、restartAfterInstall=false。
-let vmUnknownIdle = logic.viewModel(
+const vmUnknownIdle = logic.viewModel(
   { appVersion: '1.1.0' },
   { available: true, latest_version: '1.2.0', platform: 'freebsd' }
 );

@@ -89,7 +89,7 @@ test('catalogItemMatchesModel 精确比较+legacyAliases 兼容迁移拼写', ()
   assert.strictEqual(catalogItemMatchesModel(glm52, 'GLM-5.2'), true);
   assert.strictEqual(catalogItemMatchesModel(glm52, 'Glm-5.2'), false);
   assert.strictEqual(catalogItemMatchesModel(glm52, 'glm-5.3'), false);
-  assert.strictEqual(catalogItemMatchesModel(glm52, undefined), false);
+  assert.strictEqual(catalogItemMatchesModel(glm52), false);
 });
 test('本地 case-only 模型 ID 仍为自定义(vLLM ID 大小写敏感)', () => {
   // 本地 OpenAI-compatible 服务的模型 ID 是不透明字符串、可能区分大小写:
@@ -230,7 +230,7 @@ test('同 provider 多个目录内自定义模型主标签仍各不相同', () =
 // ── 思考深度档位（reasoning effort）──
 test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位', () => {
   // vm 上下文数组与宿主 realm 不同，deepStrictEqual 会因原型不同误报，用 Array.from 归一
-  const tiers = model => Array.from(reasoningEffortTiersForModel(model) || []);
+  const tiers = model => [...reasoningEffortTiersForModel(model) || []];
   const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
   assert.deepStrictEqual(tiers(deepseek), ['off', 'low', 'high', 'max']);
   const moonshot = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.ai/v1' };
@@ -312,7 +312,7 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
 });
 
 test('OpenAI reasoning 家族判定对齐底座 model_is_openai_reasoning_family（含手输自定义模型）', () => {
-  const tiers = model => Array.from(reasoningEffortTiersForModel(model) || []);
+  const tiers = model => [...reasoningEffortTiersForModel(model) || []];
   const openai = model => ({ preset: 'openai', vendor: 'openai', model });
   // 官方 OpenAI 支持手输自定义模型 ID：这些模型底座会注入多档 reasoning_effort，
   // 前端必须提供切换，不能因「不在目录内」返回 null（否则后端注入、前端不可控）。
@@ -338,7 +338,7 @@ test('OpenAI reasoning 家族判定对齐底座 model_is_openai_reasoning_family
 });
 
 test('reasoningEffortTiersForModel：精确路由语义对齐底座 is_exact_https_route', () => {
-  const tiers = model => Array.from(reasoningEffortTiersForModel(model) || []);
+  const tiers = model => [...reasoningEffortTiersForModel(model) || []];
   const mkZai = baseUrl => ({ preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: baseUrl });
   // 一个尾斜杠无意义（底座 strip_suffix('/')），仍为精确端点
   assert.deepStrictEqual(tiers(mkZai('https://api.z.ai/api/paas/v4/')), ['off', 'high', 'max']);
@@ -355,8 +355,8 @@ test('reasoningEffortForModelSwitch：K2.6(off) → K3 重置为 high', () => {
   const k26 = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k2.6' };
   const k3 = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.ai/v1' };
   // K2.6 上用户可存 off；切到 K3 后 off 不在其档位表（low/high/max）内，必须重置为 high
-  assert.deepStrictEqual(Array.from(reasoningEffortTiersForModel(k26)), ['off', 'high']);
-  assert.ok(!Array.from(reasoningEffortTiersForModel(k3)).includes('off'));
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(k26)], ['off', 'high']);
+  assert.ok(![...reasoningEffortTiersForModel(k3)].includes('off'));
   assert.strictEqual(reasoningEffortForModelSwitch(k3), 'high');
   // 无档位模型切换置 null（未显式设置）；vllm 切回 off
   assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'xai', vendor: 'xai', model: 'grok-4.3' }), null);
@@ -390,7 +390,7 @@ test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 n
   assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'max'), 'max');
   // 无存量 → 回退默认档位
   assert.strictEqual(normalizeStoredReasoningEffort(deepseek, null), 'high');
-  assert.strictEqual(normalizeStoredReasoningEffort(deepseek, undefined), 'high');
+  assert.strictEqual(normalizeStoredReasoningEffort(deepseek), 'high');
   // vllm 默认 off，存量为空时同样回退 off
   const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
   assert.strictEqual(normalizeStoredReasoningEffort(vllm, null), 'off');

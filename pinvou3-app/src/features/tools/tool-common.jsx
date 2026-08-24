@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
-import { BookOpen, Building2, ChevronDown, ChevronLeft, ChevronRight, CloudSun, Code, Cpu, FileText, Globe, Hexagon, IconGrid, IconList, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, Server, TrendingDown, TrendingUp, User, Video, Wrench, XIcon, Zap } from '../../components/icons.jsx';
+import { BookOpen, Building2, ChevronDown, CloudSun, Code, FileText, Hexagon, Layout, LineChart, Mail, MessageCircle, Navigation, Palette, Presentation, Search, Send, TrendingDown, TrendingUp, Video } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { can, isWeb } from '../../shared/platform.js';
@@ -12,12 +12,12 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
 
 const AcFmtIcon = FileTypeIcon;
     // 设计稿专用图标（逐字照搬 前端-产物卡片.txt，含其独有 strokeWidth）。
-    const AcShieldCheck = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>;
-    const AcSparkles = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>;
-    const AcArrowUpRight = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>;
-    const AcFolder = ({ className }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>;
+    const AcShieldCheck = ({ className }) => <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>;
+    const AcSparkles = ({ className }) => <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>;
+    const AcArrowUpRight = ({ className }) => <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>;
+    const AcFolder = ({ className }) => <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>;
 
-    const ArtifactCard = ({ item, theme, t, isLatest }) => {
+    const ArtifactCard = ({ item, _theme, t, isLatest }) => { // eslint-disable-line no-unused-vars -- theme 为既有 props 契约保留,调用方仍传入
       const path = item.path || '';
       const canOpenArtifact = !isWeb || can('artifactDownload');
       const kind = _artifactKind(path);
@@ -31,7 +31,7 @@ const AcFmtIcon = FileTypeIcon;
       const [coverUrl, setCoverUrl] = useState(null);
       useEffect(() => {
         let alive = true;
-        setCoverUrl(null);
+        setCoverUrl(null); // eslint-disable-line react-hooks/set-state-in-effect -- path/kind 变化时同步清空旧封面,避免显示上一个产物的缩略图
         if (kind === 'pptx' && bridge.available && bridge.artifacts.readArtifactThumbnail && path) {
           bridge.artifacts.readArtifactThumbnail(path).then((u) => { if (alive && u) setCoverUrl(u); }).catch(() => {});
         }
@@ -45,6 +45,8 @@ const AcFmtIcon = FileTypeIcon;
 
             {/* 封面区域 */}
             {hasCover ? (
+              // biome-ignore lint/a11y/useKeyWithClickEvents: 封面点击为鼠标快捷方式,键盘路径由标题行打开按钮(aria-label=open)承担
+              // biome-ignore lint/a11y/noStaticElementInteractions: 封面点击热区扩展层,非独立交互控件
               <div className={`relative group/cover rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/[0.02] dark:border-white/[0.02] ${canOpenArtifact ? 'cursor-pointer' : ''}`} onClick={canOpenArtifact ? open : undefined}>
                 <div className="w-full aspect-[16/9] relative">
                   <img src={coverUrl} alt={tc(t).coverAlt} className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover/cover:scale-[1.02]" />
@@ -65,11 +67,13 @@ const AcFmtIcon = FileTypeIcon;
             )}
 
             {/* 标题与打开按钮区 */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: 标题行点击为鼠标快捷方式,键盘路径由行内打开按钮承担 */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: 标题行点击热区扩展层,非独立交互控件 */}
             <div onClick={canOpenArtifact ? open : undefined} className={`px-3 pt-4 pb-5 flex justify-between items-center gap-4 group/header ${canOpenArtifact ? 'cursor-pointer' : ''}`}>
               <h2 className="text-[20px] font-semibold tracking-tight text-[#111] dark:text-[#eee] leading-snug truncate group-hover/header:text-[#007AFF] transition-colors">
                 {title}
               </h2>
-              {canOpenArtifact && <button onClick={(e) => { e.stopPropagation(); open(); }} className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label={tc(t).open}>
+              {canOpenArtifact && <button type="button" onClick={(e) => { e.stopPropagation(); open(); }} className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label={tc(t).open}>
                 <AcArrowUpRight className="w-[18px] h-[18px]" />
               </button>}
             </div>
@@ -77,13 +81,13 @@ const AcFmtIcon = FileTypeIcon;
             {/* 智能操作区：品 / 悟，横排单行、无副标题；仅最新产物显示 */}
             {isLatest && (
               <div className="grid grid-cols-2 gap-3 mb-4 px-3">
-                <button onClick={() => bridge.available && bridge.interaction.summonPinvou(path)} title={t.pvBtnPinTitle}
+                <button type="button" onClick={() => bridge.available && bridge.interaction.summonPinvou(path)} title={t.pvBtnPinTitle}
                   className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label={tc(t).pinAriaLabel}>
                   <AcShieldCheck className="w-[18px] h-[18px] text-[#FF9500] dark:text-[#FF9F0A] mr-2 shrink-0" />
                   <span className="text-[14px] font-medium text-[#111] dark:text-[#eee] truncate">{t.pvBtnPinLabel}</span>
                 </button>
 
-                <button onClick={() => bridge.available && bridge.interaction.inspectPinvou(path)} title={t.pvBtnWuTitle}
+                <button type="button" onClick={() => bridge.available && bridge.interaction.inspectPinvou(path)} title={t.pvBtnWuTitle}
                   className="flex items-center justify-center min-w-0 py-3.5 px-3 rounded-[12px] bg-[#F9F9F9] dark:bg-white/5 hover:bg-[#F0F0F0] dark:hover:bg-white/10 transition-colors active:scale-[0.98] group/btn" aria-label={tc(t).wuAriaLabel}>
                   <AcSparkles className="w-[18px] h-[18px] text-[#5E5CE6] dark:text-[#5E5CE6] mr-2 shrink-0" />
                   <span className="text-[14px] font-medium text-[#111] dark:text-[#eee] truncate">{t.pvBtnWuLabel}</span>
@@ -123,11 +127,12 @@ const AcFmtIcon = FileTypeIcon;
 
     const toolBasename = (p) => {
       if (typeof p !== 'string' || !p) return '';
-      const parts = p.replace(/\/+$/, '').split('/');
+      const parts = p.replace(/\/+$/, '').split('/'); // eslint-disable-line sonarjs/super-linear-regex -- 尾斜杠规范化,输入为路径,长度有限
       return parts[parts.length - 1] || p;
     };
 
     // A 档摘要：只从结构化 args 提“动作对象”（文件名/命令/模式），稳且免费，不 parse output。
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- 逐工具 switch 摘要映射,按工具拆分收益低;legacy view; tracked separately
     const toolSummary = (name, args, t) => {
       if (!args || typeof args !== 'object') return '';
       switch (name) {
@@ -162,11 +167,11 @@ const AcFmtIcon = FileTypeIcon;
             };
             add(args.path);
             for (const key of ['replace', 'changes']) {
-              if (Array.isArray(args[key])) args[key].forEach(change => add(change?.path));
+              if (Array.isArray(args[key])) args[key].forEach(change => { add(change?.path); });
             }
             String(args.patch || '').split(/\r?\n/).forEach(line => {
-              const match = line.match(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/)
-                || line.match(/^\+\+\+\s+(?:b\/)?(.+?)\s*$/);
+              const match = line.match(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/) // eslint-disable-line sonarjs/super-linear-regex -- 行级单行匹配,回溯范围受限于单行长度
+                || line.match(/^\+\+\+\s+(?:b\/)?(.+?)\s*$/); // eslint-disable-line sonarjs/super-linear-regex -- 行级单行匹配,回溯范围受限于单行长度
               if (match && match[1] !== '/dev/null') add(match[1]);
             });
             return paths.join(', ');
@@ -186,7 +191,7 @@ const AcFmtIcon = FileTypeIcon;
         case 'task_shell_start':
         case 'shell':
         case 'Bash':
-          return typeof args.command === 'string' ? args.command.replace(/\s+/g, ' ').trim() : '';
+          return typeof args.command === 'string' ? args.command.replaceAll(/\s+/g, ' ').trim() : '';
         case 'checklist_update':
         case 'todo_update':
           return args.status === 'completed' ? t.tsDone
@@ -199,11 +204,11 @@ const AcFmtIcon = FileTypeIcon;
 
     // 底座对超 12K 的工具输出会压成 [TOOL_OUTPUT_RECEIPT]（content-addressed 溢出），
     // 直接展示一堆 sha/handle 是噪音 —— 翻译成人话 + 保留 preview 摘要。
-    const isReceipt = (text) => typeof text === 'string' && text.trim().startsWith('[TOOL_OUTPUT_RECEIPT]');
+    const isReceipt = (text) => typeof text === 'string' && text.trimStart().startsWith('[TOOL_OUTPUT_RECEIPT]');
     const parseReceipt = (text) => {
       const fields = {};
       String(text).split('\n').forEach((line) => {
-        const m = line.match(/^\s*([a-z_]+):\s*(.*)$/);
+        const m = line.match(/^\s*([a-z_]+):\s*(.*)$/); // eslint-disable-line sonarjs/super-linear-regex -- 行级单行匹配,回溯范围受限于单行长度
         if (m) fields[m[1]] = m[2];
       });
       return fields;
@@ -211,11 +216,10 @@ const AcFmtIcon = FileTypeIcon;
     const ReceiptBlock = ({ text, t }) => {
       const f = parseReceipt(text);
       const muted = 'text-[#757575] dark:text-[#8E8E8E]';
-      const body = 'text-[#444746] dark:text-[#C4C7C5]';
       // 输出超大被底座存档、只回传 preview。存档/压缩机制对用户无意义 ——
       // 只展示内容开头 + 一句不带术语的诚实提示（避免误以为是完整输出）。
-      const pv = (f.preview && f.preview !== '(none)') ? f.preview.replace(/\\n/g, '\n') : '';
-      const pvIsDiff = pv && (/(^|\n)@@/.test(pv) || (pv.indexOf('@@') >= 0 && /(^|\n)[+-]/.test(pv)));
+      const pv = (f.preview && f.preview !== '(none)') ? f.preview.replaceAll(String.raw`\n`, '\n') : '';
+      const pvIsDiff = pv && (/(^|\n)@@/.test(pv) || (pv.includes('@@') && /(^|\n)[+-]/.test(pv)));
       const note = <div className={`mt-0.5 text-[11px] ${muted}`}>{t.receiptNote}</div>;
       if (pvIsDiff) return (<div><DiffView text={pv} t={t} />{note}</div>);
       return (
@@ -227,13 +231,13 @@ const AcFmtIcon = FileTypeIcon;
     };
 
     // ── 每工具定制结果视图（仿 Claude Code）：解析失败一律 fallback 纯文本，永不崩 ──
-    const tryParseJson = (text) => { try { return JSON.parse(text); } catch (_) { return null; } };
+    const tryParseJson = (text) => { try { return JSON.parse(text); } catch { return null; } };
     // checklist/plan 输出是「摘要行\n{json}」，切首个换行后 parse
     const tryTailJson = (text) => {
       if (typeof text !== 'string') return null;
       const i = text.indexOf('\n');
       if (i < 0) return null;
-      try { return JSON.parse(text.slice(i + 1)); } catch (_) { return null; }
+      try { return JSON.parse(text.slice(i + 1)); } catch { return null; }
     };
     const looksDiff = (text) => typeof text === 'string'
       && /(^|\n)--- /.test(text) && /(^|\n)\+\+\+ /.test(text);
@@ -253,7 +257,7 @@ const AcFmtIcon = FileTypeIcon;
     );
     const ListDirView = ({ items, t }) => {
       const muted = 'text-[#757575] dark:text-[#8E8E8E]';
-      const sorted = items.slice().sort((a, b) => ((b.is_dir ? 1 : 0) - (a.is_dir ? 1 : 0)) || String(a.name).localeCompare(String(b.name)));
+      const sorted = [...items].sort((a, b) => ((b.is_dir ? 1 : 0) - (a.is_dir ? 1 : 0)) || String(a.name).localeCompare(String(b.name)));
       return (
         <div className={outBox()} style={{ fontFamily: 'monospace' }}>
           <div className={`mb-1 ${muted}`} style={{ fontFamily: 'inherit' }}>{t.listDirCount(items.length)}</div>
@@ -267,8 +271,8 @@ const AcFmtIcon = FileTypeIcon;
       return (
         <div className={outBox()}>
           <div className={`mb-1 ${muted}`}>
-            {t.grepHits(data.total_matches != null ? data.total_matches : matches.length)}
-            {data.files_searched != null ? t.grepFiles(data.files_searched) : ''}
+            {t.grepHits(data.total_matches == null ? matches.length : data.total_matches)}
+            {data.files_searched == null ? '' : t.grepFiles(data.files_searched)}
             {data.truncated ? t.grepTruncated : ''}
           </div>
           {matches.map((m, i) => (
@@ -383,8 +387,8 @@ const AcFmtIcon = FileTypeIcon;
                       <div className={`px-3 py-0.5 text-[11px] font-mono ${mutedText} ${hunkBg}`}>{h.header}</div>
                       {h.lines.map((l, li) => {
                         // 行号列(右对齐,固定 4 字符宽)。空侧用 ''。
-                        const oldStr = l.oldNo != null ? String(l.oldNo) : '';
-                        const newStr = l.newNo != null ? String(l.newNo) : '';
+                        const oldStr = l.oldNo == null ? '' : String(l.oldNo);
+                        const newStr = l.newNo == null ? '' : String(l.newNo);
                         let bg = '', txt = ctxText, marker = ' ';
                         if (l.kind === 'add') { bg = addBg; txt = addText; marker = '+'; }
                         else if (l.kind === 'del') { bg = delBg; txt = delText; marker = '−'; }
@@ -434,8 +438,8 @@ const AcFmtIcon = FileTypeIcon;
       return (
         <div className={outBox()}>
           <div className={`mb-1 ${muted}`}>
-            {data.status || ''}{data.exit_code != null ? ` · exit ${data.exit_code}` : ''}
-            {data.duration_ms != null ? ` · ${data.duration_ms}ms` : ''}
+            {data.status || ''}{data.exit_code == null ? '' : ` · exit ${data.exit_code}`}
+            {data.duration_ms == null ? '' : ` · ${data.duration_ms}ms`}
             {data.stdout_truncated ? t.shellStdoutTrunc : ''}
           </div>
           {data.stdout != null && data.stdout !== '' && <pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontFamily: 'monospace' }}>{data.stdout}</pre>}
@@ -546,7 +550,7 @@ const AcFmtIcon = FileTypeIcon;
       if (!Array.isArray(backendFields) || backendFields.length === 0) return overlayFields;
       const overlayByKey = {};
       (overlayFields || []).forEach((f) => { if (f && f.key) overlayByKey[f.key] = f; });
-      return backendFields.map((f) => ({ ...(overlayByKey[f.key] || {}), ...f }));
+      return backendFields.map((f) => ({ ...overlayByKey[f.key], ...f }));
     };
 
     const weatherIconSvg = (code) => {
@@ -573,7 +577,7 @@ const AcFmtIcon = FileTypeIcon;
             <div className="grid gap-4 w-full h-full items-center" style={{ gridTemplateColumns: `repeat(${daily.length},minmax(0,1fr))` }}>
               {daily.map((item, i) => {
                 const label = i === 0 ? T.today : i === 1 ? T.tomorrow : i === 2 ? T.dayAfterTomorrow : (item.week || T.dayN(i + 1));
-                const dateText = (item.date || '').length >= 10 ? item.date.slice(5).replace(/-/g, '/') : (item.date || '--/--');
+                const dateText = (item.date || '').length >= 10 ? item.date.slice(5).replaceAll('-', '/') : (item.date || '--/--');
                 return (
                   <div key={i} className="flex flex-col items-center justify-center gap-3 px-2" style={i > 0 ? { borderLeft: '1px solid rgba(255,255,255,0.1)' } : {}}>
                     <span className={`text-[15px] ${i === 0 ? 'font-medium' : 'text-white/90'}`}>{label} ({dateText})</span>
@@ -621,11 +625,11 @@ const AcFmtIcon = FileTypeIcon;
     const isStockQuoteTool = (name) => name === 'mcp_iwencai_hithink_market_query';
     const StockQuoteCard = ({ data, t }) => {
       const T = tc(t);
-      const price = typeof data.price === 'string' ? parseFloat(data.price) : data.price;
-      const changePercent = typeof data.changePercent === 'string' ? parseFloat(data.changePercent) : data.changePercent;
-      const open = typeof data.open === 'string' ? parseFloat(data.open) : data.open;
-      const high = typeof data.high === 'string' ? parseFloat(data.high) : data.high;
-      const low = typeof data.low === 'string' ? parseFloat(data.low) : data.low;
+      const price = typeof data.price === 'string' ? Number(data.price) : data.price;
+      const changePercent = typeof data.changePercent === 'string' ? Number(data.changePercent) : data.changePercent;
+      const open = typeof data.open === 'string' ? Number(data.open) : data.open;
+      const high = typeof data.high === 'string' ? Number(data.high) : data.high;
+      const low = typeof data.low === 'string' ? Number(data.low) : data.low;
       const isPositive = changePercent >= 0;
       const mainColor = isPositive ? 'text-[#eb4335]' : 'text-[#34a853]';
       const bgGradient = isPositive
@@ -635,7 +639,7 @@ const AcFmtIcon = FileTypeIcon;
         ? 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
         : 'bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400';
       const TrendIcon = isPositive ? TrendingUp : TrendingDown;
-      const fmt = (v) => isNaN(v) ? '--' : v.toFixed(2);
+      const fmt = (v) => Number.isNaN(v) ? '--' : v.toFixed(2);
       return (
         <div className={`w-full max-w-md rounded-[24px] shadow-xl overflow-hidden border transition-all bg-white border-slate-100 shadow-slate-200/50 dark:bg-[#1C1C1E] dark:border-white/10 dark:shadow-none`}>
           <div className={`p-6 pb-5 ${bgGradient}`}>
@@ -649,7 +653,7 @@ const AcFmtIcon = FileTypeIcon;
               <div className="flex items-baseline space-x-4">
                 <span className={`text-[3.5rem] leading-none font-black tracking-tighter font-mono ${mainColor}`} style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(price)}</span>
                 <div className="flex flex-col justify-end pb-1 space-y-0.5">
-                  <span className={`text-sm font-bold font-mono px-1.5 py-0.5 rounded ${badgeColor}`}>{isPositive ? '+' : ''}{isNaN(changePercent) ? '--' : changePercent.toFixed(2)}%</span>
+                  <span className={`text-sm font-bold font-mono px-1.5 py-0.5 rounded ${badgeColor}`}>{isPositive ? '+' : ''}{Number.isNaN(changePercent) ? '--' : changePercent.toFixed(2)}%</span>
                 </div>
               </div>
               <TrendIcon className={`w-12 h-12 mb-2 opacity-15 ${mainColor}`} />
@@ -728,6 +732,7 @@ const AcFmtIcon = FileTypeIcon;
       return TOOL_BUSINESS_GROUPS.includes(tool.category) ? tool.category : 'life';
     };
 
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- 工具卡动作按钮多分支渲染;legacy view; tracked separately
     const TsActionBtn = ({ tool, busy, onAction, onUpdate, size = 'sm', t }) => {
       const T = tc(t);
       const isLg = size === 'lg';
@@ -743,14 +748,14 @@ const AcFmtIcon = FileTypeIcon;
       }
       if (!tool.backendId) {
         return (
-          <button {...actionAttrs} disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed`}>
+          <button type="button" {...actionAttrs} disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed`}>
             {T.comingSoon}
           </button>
         );
       }
       if (busy) {
         return (
-          <button {...actionAttrs} disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold opacity-50 cursor-wait bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-500`}>
+          <button type="button" {...actionAttrs} disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold opacity-50 cursor-wait bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-500`}>
             ...
           </button>
         );
@@ -779,7 +784,7 @@ const AcFmtIcon = FileTypeIcon;
         const list = tool.actions.filter(a => specs[a.id]);
         // ima 等认领技能的 update 挂在连接器卡上，后端 actions 不含它——沿用
         // updateAvailable 本地补一个 update 按钮（V5 认领退出后清理）。
-        if (tool.updateAvailable && onUpdate && !list.some(a => a.id === 'update')) {
+        if (tool.updateAvailable && onUpdate && list.every(a => a.id !== 'update')) {
           list.push({ id: 'update', enabled: true });
         }
         return (
@@ -787,7 +792,7 @@ const AcFmtIcon = FileTypeIcon;
             {list.map((a) => {
               const s = specs[a.id];
               return (
-                <button
+                <button type="button"
                   key={a.id}
                   {...actionAttrs}
                   {...(s.testid ? { 'data-testid': s.testid } : {})}
@@ -806,7 +811,7 @@ const AcFmtIcon = FileTypeIcon;
       // —— 以下为无 actions 时的旧分支（回退；Phase 3 清理）——
       if (tool.installed) {
         const uninstallBtn = (
-          <button
+          <button type="button"
             {...actionAttrs}
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
@@ -819,7 +824,7 @@ const AcFmtIcon = FileTypeIcon;
         if (!tool.updateAvailable || !onUpdate) return uninstallBtn;
         return (
           <div className="flex items-center gap-2">
-            <button
+            <button type="button"
               data-testid="tool-store-update"
               data-tool-id={tool.backendId || ''}
               data-tool-title={tool.title || ''}
@@ -835,7 +840,7 @@ const AcFmtIcon = FileTypeIcon;
       if (tool.oauthMcp) {
         const retry = tool.authStatus && tool.authStatus !== 'not_installed';
         return (
-          <button
+          <button type="button"
             {...actionAttrs}
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
@@ -846,7 +851,7 @@ const AcFmtIcon = FileTypeIcon;
       }
       const hasConfig = tool.configFields && tool.configFields.length > 0;
       return (
-        <button
+        <button type="button"
           {...actionAttrs}
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
           className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}

@@ -1,5 +1,5 @@
 const notifyComposerToolsChanged = () => {
-  try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch (_) {}
+  try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch { /* 静默 */ }
 };
 
 // 新一轮对话已提交（后端受理）：会话中「打开」的工具/技能自此进入上下文，

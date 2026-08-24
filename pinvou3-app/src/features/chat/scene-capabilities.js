@@ -57,20 +57,24 @@ async function prepareSceneCapabilities(meta, invoke) {
   let skills = await listMarketplaceSkills(invoke);
 
   for (const toolId of requirements.tools) {
-    if (!isInstalled(tools, toolId)) {
-      await invoke('install_marketplace_tool', { toolId });
-      installed = true;
-      tools = await listMarketplaceTools(invoke);
-      skills = await listMarketplaceSkills(invoke);
+    if (isInstalled(tools, toolId)) {
+    	continue;
     }
+
+    await invoke('install_marketplace_tool', { toolId });
+    installed = true;
+    tools = await listMarketplaceTools(invoke);
+    skills = await listMarketplaceSkills(invoke);
   }
 
   for (const skillId of requirements.skills) {
-    if (!isInstalled(skills, skillId)) {
-      await invoke('install_marketplace_skill', { skillId });
-      installed = true;
-      skills = await listMarketplaceSkills(invoke);
+    if (isInstalled(skills, skillId)) {
+    	continue;
     }
+
+    await invoke('install_marketplace_skill', { skillId });
+    installed = true;
+    skills = await listMarketplaceSkills(invoke);
   }
 
   const missingTools = requirements.tools.filter((toolId) => !isInstalled(tools, toolId));

@@ -13,8 +13,8 @@
 //      flags need 17/15.4 — regexes are never downlevelled by bundlers, so
 //      they must not enter the bundle at all.
 //   3. Runtime member/global APIs added after Safari 14.0 (.at(), findLast,
-//      copy-methods, Object.hasOwn, structuredClone, ...): parse-time clean
-//      but a TypeError the moment a code path runs.
+//      copy-methods, Object.hasOwn, structuredClone, ...; Error `cause` needs
+//      Safari 15.0): parse-time clean but a TypeError the moment a code path runs.
 //
 // Inputs: built chunks under dist/assets, plus the verbatim-copied static
 // runtime scripts and the inline <script> blocks of the HTML entries (the
@@ -59,7 +59,7 @@ const MEMBER_API_BASELINE = Object.assign(Object.create(null), {
 const GLOBAL_API_BASELINE = Object.assign(Object.create(null), {
   BroadcastChannel: 'BroadcastChannel — Safari 15.4',
   structuredClone: 'structuredClone — Safari 15.4',
-  requestIdleCallback: 'requestIdleCallback — Safari 18.1',
+  requestIdleCallback: 'requestIdleCallback — never shipped in a Safari release (Technology Preview flag only; MDN compat-data)',
   WeakRef: 'WeakRef — Safari 14.1',
   FinalizationRegistry: 'FinalizationRegistry — Safari 14.1',
 });

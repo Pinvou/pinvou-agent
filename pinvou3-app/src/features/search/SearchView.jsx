@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Filter, PinIcon, Search, X } from '../../components/icons.jsx';
 import { ArchivedDeleteConfirmDialog, RecentItem } from '../../components/layout/NavigationComponents.jsx';
@@ -15,6 +15,7 @@ import { sessionRoute } from '../../shared/session-management.js';
 // (在线:置顶/重命名/收纳/删除;已收纳:恢复/永久删除,按对话自身更新时间分组)。
 // 无搜索词:右侧显示所选日期的对话;有搜索词:右侧按日期分组显示全部匹配项,
 // 左侧只保留有匹配的日期,点击日期平滑滚动到右侧对应分组。
+// eslint-disable-next-line sonarjs/cognitive-complexity -- 会话管理页:筛选/排序/分组/批量选择为一套内聚管线,拆分会引入大量透传状态
 export const SearchView = ({ theme, history, t, language, archived = [], showArchived: showArchivedProp, onShowArchivedConsumed, onSelect, onOpenCodex, onOpenScheduledRun, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onArchiveMany, onDeleteMany, onRestoreArchived, onRestoreMany }) => {
   const [query, setQuery] = useState('');
   const [selectedDate, setSelectedDate] = useState(null);
@@ -34,9 +35,11 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
   // 收纳 toast「前往查看」的一次性信号:展开「已收纳」面板后立刻消费,避免下次进页又自动打开
   useEffect(() => {
     if (showArchivedProp) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 一次性信号:收到后立即镜像并消费,避免重复展开
       setShowArchived(true);
       onShowArchivedConsumed && onShowArchivedConsumed();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按一次性信号 prop 触发;补充回调依赖会重复消费信号
   }, [showArchivedProp]);
 
   const archivedList = archived || [];
@@ -84,7 +87,7 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
 
   // 筛选菜单:点外部/Escape 关闭(与侧栏筛选菜单同款交互)
   useEffect(() => {
-    if (!filterOpen) return undefined;
+    if (!filterOpen) return;
     const closeOnPointerDown = (event) => {
       if (filterRef.current && !filterRef.current.contains(event.target)) setFilterOpen(false);
     };
@@ -112,7 +115,7 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
       if (!byDate.has(key)) byDate.set(key, []);
       byDate.get(key).push(chat);
     });
-    byDate.forEach((rows, key) => dateGroups.push({ key, rows }));
+    byDate.forEach((rows, key) => { dateGroups.push({ key, rows }); });
     dateGroups.sort((a, b) => {
       if (a.key === 'unknown') return 1;
       if (b.key === 'unknown') return -1;
@@ -151,9 +154,9 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
   });
   const toggleSelectAll = () => setSelectedIds(allVisibleSelected ? new Set() : new Set(visibleIds));
   const switchPanel = (toArchived) => { setShowArchived(toArchived); exitBatch(); };
-  const runBatchArchive = () => { if (onArchiveMany) onArchiveMany(Array.from(selectedIds)); exitBatch(); };
-  const runBatchDelete = () => { if (onDeleteMany) onDeleteMany(Array.from(selectedIds)); exitBatch(); };
-  const runBatchRestore = () => { if (onRestoreMany) onRestoreMany(Array.from(selectedIds)); exitBatch(); };
+  const runBatchArchive = () => { if (onArchiveMany) { onArchiveMany([...selectedIds]); } exitBatch(); };
+  const runBatchDelete = () => { if (onDeleteMany) { onDeleteMany([...selectedIds]); } exitBatch(); };
+  const runBatchRestore = () => { if (onRestoreMany) { onRestoreMany([...selectedIds]); } exitBatch(); };
 
   const handlePickDate = (key) => {
     setSelectedDate(key);
@@ -170,9 +173,13 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
     if (batchMode) {
       const selected = selectedIds.has(chat.id);
       return (
+        // biome-ignore lint/a11y/useSemanticElements: 批选行含自绘圆点复选样式,button 会破坏既有布局
         <div
           key={chat.id}
+          role="button"
+          tabIndex={0}
           onClick={() => toggleSelect(chat.id)}
+          onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleSelect(chat.id); } }}
           className="flex items-center gap-3 px-4 py-[10px] cursor-pointer rounded-[16px] transition-colors hover:bg-[#F0F4F9] dark:hover:bg-[#1E1F20]"
         >
           <span className={`w-5 h-5 shrink-0 rounded-full border flex items-center justify-center transition-colors ${
@@ -457,6 +464,8 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                 {t.searchSelectedCount(selectedIds.size)}
               </span>
               {batchDeleteConfirming ? (
+                // biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理
+                // biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器
                 <span className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
                   <span className="text-[13px] whitespace-nowrap text-[#C5221F] dark:text-[#F28B82]">{t.riDelQ}</span>
                   <button

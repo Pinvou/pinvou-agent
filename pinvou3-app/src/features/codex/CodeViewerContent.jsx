@@ -1,4 +1,4 @@
-import React, { useMemo, useSyncExternalStore } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 import { RefreshCw } from '../../components/icons.jsx';
 import {
   getSyntaxHighlightVersion,
@@ -49,13 +49,13 @@ function languageHintForFile(name) {
 }
 
 export function useCodeHighlight(preview, fileName, languageHint) {
-  // 懒加载语言注册完成会 bump 版本号:加入 deps 让已打开的文件重算,恢复高亮。
-  const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
+  // 懒加载语言注册完成会 bump 版本号:该订阅触发重渲染,使 useMemo 重新计算,恢复高亮。
+  useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
   return useMemo(() => {
     if (preview?.kind !== 'text' || typeof preview.text !== 'string') return null;
     if (languageHint === 'diff') return highlightDiffCode(preview.text);
     return highlightCode(preview.text, languageHint || languageHintForFile(preview.name || fileName));
-  }, [preview, fileName, languageHint, syntaxVersion]);
+  }, [preview, fileName, languageHint]);
 }
 
 export function CodeViewerContent({

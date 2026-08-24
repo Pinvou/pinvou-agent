@@ -56,7 +56,7 @@ export function readScheduledNoticeAcknowledgedAt(storage = window.localStorage)
   try {
     const value = Number(storage.getItem(SCHEDULED_NOTICE_ACK_KEY));
     return Number.isFinite(value) && value > 0 ? value : 0;
-  } catch (_) {
+  } catch {
     return 0;
   }
 }
@@ -66,7 +66,7 @@ export function acknowledgeScheduledNotice(notice, storage = window.localStorage
   const next = Math.max(current, Number(notice && notice.endedAtMs) || 0);
   try {
     storage.setItem(SCHEDULED_NOTICE_ACK_KEY, String(next));
-  } catch (_) {
+  } catch {
     // A denied storage write should not block dismissing the in-memory notice.
   }
   return next;

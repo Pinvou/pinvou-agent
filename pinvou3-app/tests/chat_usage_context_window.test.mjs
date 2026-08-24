@@ -111,8 +111,8 @@ for (const [label, section] of [['tauri', tauriSection], ['web', webSection]]) {
   const windowRead = section.indexOf('e.payload.context_window');
   assert.ok(dirtyGuard !== -1 && windowRead !== -1, `${label}: chat:usage handler 片段完整`);
   assert.ok(windowRead < dirtyGuard, `${label}: context_window 消费必须先于 dirty guard（否则工具轮永不更新分母）`);
-  assert.ok(section.indexOf('windowTok !== state.tokens.max') !== -1, `${label}: 窗口变化才更新分母`);
-  assert.ok(section.indexOf('windowTok > 0') !== -1, `${label}: 窗口 0 守卫保留`);
+  assert.ok(section.includes('windowTok !== state.tokens.max'), `${label}: 窗口变化才更新分母`);
+  assert.ok(section.includes('windowTok > 0'), `${label}: 窗口 0 守卫保留`);
 }
 
 console.log('chat_usage_context_window.test.mjs: OK');

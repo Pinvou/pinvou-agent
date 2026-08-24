@@ -3,14 +3,16 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["dependencies"] = function (context) {
-    var state = context.state;
-    var notify = context.notify;
-    var invoke = context.invoke;
-    var listen = context.listen;
-    var bt = context.bt;
+    const state = context.state;
+    const notify = context.notify;
+    const invoke = context.invoke;
+    const listen = context.listen;
+    const bt = context.bt;
   // ── 依赖体检 ─────────────────────────────────────────────────────
   // 实时检测各文件解析能力(PDF/Office/OCR/压缩包/邮件)的系统依赖是否齐全,
   // 设置页展示缺失项 + 一键 apt 命令。后端 check_dependencies 不走缓存,装完可复检。
@@ -19,27 +21,27 @@
     state.depsChecking = true; state.depsInstallError = null; notify();
     try {
       state.deps = await invoke("check_dependencies");
-    } catch (e) { state.deps = []; }
+    } catch { state.deps = []; }
     state.depsChecking = false; notify();
   }
   // 一键安装缺失依赖: 收集缺失项的包名 → 后端 pkexec apt 提权安装 → 装完实时重检。
   async function installDependencies() {
-    var deps = state.deps || [];
-    var missing = deps.filter(function (d) { return !d.installed; });
+    const deps = state.deps || [];
+    const missing = deps.filter(function (d) { return !d.installed; });
     if (!missing.length || state.depsInstalling) return;
-    var pkgs = [];
-    var actions = [];
+    const pkgs = [];
+    const actions = [];
     missing.forEach(function (d) {
-      var action = String(d.install_action || "").trim();
-      if (/^[a-z0-9_]+$/i.test(action) && actions.indexOf(action) < 0) {
+      const action = String(d.install_action || "").trim();
+      if (/^[a-z0-9_]+$/i.test(action) && !actions.includes(action)) {
         actions.push(action);
       }
-      var parts = String(d.apt).trim().split(/\s+/).filter(Boolean);
-      if (!parts.length || !parts.every(function (p) { return /^[a-z0-9][a-z0-9+.-]*$/i.test(p); })) {
+      const parts = String(d.apt).trim().split(/\s+/).filter(Boolean);
+      if (!parts.length || parts.some(function (p) { return !/^[a-z0-9][a-z0-9+.-]*$/i.test(p); })) {
         return;
       }
       parts.forEach(function (p) {
-        if (pkgs.indexOf(p) < 0) pkgs.push(p);
+        if (!pkgs.includes(p)) pkgs.push(p);
       });
     });
     if (!pkgs.length && !actions.length) {
@@ -53,13 +55,13 @@
     // 触发安装,否则安装开始前发出的第一条进度事件会因监听器未就绪而丢失。
     // 监听注册、安装、unlisten 与状态复位统一放在 try/catch/finally 中:
     // 监听注册失败也必须复位 depsInstalling,否则界面会一直停在「安装中」。
-    var unlisten = null;
+    let unlisten = null;
     try {
       unlisten = await listen("deps:install_progress", function (event) {
         state.depsInstallProgress = event.payload;
         notify();
       });
-      await invoke("install_dependencies", { packages: pkgs, actions: actions });
+      await invoke("install_dependencies", { packages: pkgs, actions });
     } catch (e) {
       state.depsInstallError = String(e);
     } finally {
@@ -71,7 +73,7 @@
     // 用户再次点击会触发第二个并发安装(Homebrew/winget/模型下载都可能被重复触发)。
     try {
       state.deps = await invoke("check_dependencies"); // 成功或部分成功后均实时反映当前状态
-    } catch (_) { /* keep the last successful dependency snapshot */ }
+    } catch { /* keep the last successful dependency snapshot */ }
     finally {
       // 最终 dependency snapshot 更新完成后再解锁并通知。
       state.depsInstalling = false; state.depsInstallProgress = null; notify();
@@ -79,8 +81,8 @@
   }
 
     return {
-      checkDependencies: checkDependencies,
-      installDependencies: installDependencies
+      checkDependencies,
+      installDependencies
     };
   };
 })(window);

@@ -26,10 +26,10 @@ const bridgeMessages = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'shared', 'bridge-messages.js'),
   'utf8'
 );
-const tauriBridge = [bridgeMessages]
-  .concat(tauriBridgeFeatureNames.map(name => fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', `${name}.js`), 'utf8')))
-  .concat(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8'))
-  .join('\n');
+const tauriBridge = [bridgeMessages,
+    ...tauriBridgeFeatureNames.map(name => fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', `${name}.js`), 'utf8')),
+    fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8'),
+  ].join('\n');
 const webBridge = [
   bridgeMessages,
   fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge', 'turn-terminal.js'), 'utf8'),
@@ -158,7 +158,7 @@ assert.ok(
   'scheduled back navigation must await restoration before committing the Scheduled route'
 );
 assert.ok(
-  /async function startScheduledTaskChat\(\)\s*\{[\s\S]*?var prompt = await invoke\("scheduled_task_chat_prompt"\);[\s\S]*?await createNewSession\(\);[\s\S]*?state\.scheduledTaskPendingGuide = prompt;[\s\S]*?prefillComposer\(/s.test(tauriBridge),
+  /async function startScheduledTaskChat\(\)\s*\{[\s\S]*?(?:var|const|let) prompt = await invoke\("scheduled_task_chat_prompt"\);[\s\S]*?await createNewSession\(\);[\s\S]*?state\.scheduledTaskPendingGuide = prompt;[\s\S]*?prefillComposer\(/s.test(tauriBridge),
   'startScheduledTaskChat should stash the guide and prefill the composer instead of auto-sending'
 );
 assert.ok(
@@ -202,7 +202,7 @@ assert.ok(
 assert.ok(
   /function lockScheduledTaskDraftModel\(draft\)[\s\S]{0,260}draft\.model = draft\.model \|\| \(active && active\.model\)/.test(tauriBridge) &&
     /draft\.modelId = draft\.modelId \|\| \(active && active\.id\)/.test(tauriBridge) &&
-    /var lockedModelId = state\.scheduledTaskDraft\.modelId \|\| \(active && active\.id\)/.test(tauriBridge),
+    /(?:var|const|let) lockedModelId = state\.scheduledTaskDraft\.modelId \|\| \(active && active\.id\)/.test(tauriBridge),
   'the final draft should lock the active saved model wire name and stable model id before creation'
 );
 assert.ok(
@@ -288,10 +288,10 @@ assert.ok(
     /data-testid="scheduled-filter-tabs"/.test(indexHtml) &&
     /data-testid="scheduled-left-toolbar"/.test(indexHtml) &&
     /data-testid="scheduled-list-intro"/.test(indexHtml) &&
-    /\{renderTemplateSuggestions\(\)\}[\s\S]{0,120}<MyTasksSection className="mb-0" \/>/.test(indexHtml) &&
-    /const DetailTaskDialog = \(\) => !\(selected && detailForm\) \? null/.test(indexHtml) &&
+    /\{renderTemplateSuggestions\(\)\}[\s\S]{0,120}(?:<MyTasksSection className="mb-0" \/>|\{MyTasksSection\(\{ className: 'mb-0' \}\)\})/.test(indexHtml) &&
+    /const DetailTaskDialog = \(\) => (?:!\(selected && detailForm\) \? null|\(selected && detailForm\) \? renderModal\()/.test(indexHtml) &&
     /const renderModal = node => modalPortalTarget \? createPortal\(node, modalPortalTarget\) : node/.test(indexHtml) &&
-    /DetailTaskDialog = \(\) => !\(selected && detailForm\) \? null : renderModal\(/.test(indexHtml) &&
+    /DetailTaskDialog = \(\) => (?:!\(selected && detailForm\) \? null :|\(selected && detailForm\) \?) ?renderModal\(/.test(indexHtml) &&
     /role="dialog"/.test(indexHtml) &&
     /data-testid="scheduled-detail-toolbar"/.test(indexHtml) &&
     /data-testid="scheduled-detail-close"/.test(indexHtml) &&
@@ -299,7 +299,7 @@ assert.ok(
     !/data-testid="scheduled-detail-menu-popover"/.test(indexHtml) &&
     !/data-testid="scheduled-detail-toggle"/.test(indexHtml) &&
     /flex shrink-0 flex-wrap items-center justify-between/.test(indexHtml) &&
-    /data-testid="scheduled-run-now"[\s\S]{0,520}scheduledCopy\.runNow/.test(indexHtml) &&
+    /data-testid="scheduled-run-now"[\s\S]{0,640}scheduledCopy\.runNow/.test(indexHtml) &&
     /data-testid="scheduled-open-folder"[\s\S]{0,520}scheduledCopy\.openFolder/.test(indexHtml) &&
     !/data-testid="scheduled-detail-cancel"/.test(indexHtml) &&
     /data-testid="scheduled-detail-save"[\s\S]{0,320}scheduledCopy\.save/.test(indexHtml) &&
@@ -325,7 +325,7 @@ assert.ok(
   !/data-testid="scheduled-run-mode"/.test(indexHtml) &&
     !/data-testid="scheduled-live-mode"/.test(indexHtml) &&
     /function scheduledTaskBackendInput\(input\)/.test(tauriBridge) &&
-    /var backendInput = \{ mode: "yolo" \}/.test(tauriBridge) &&
+    /(?:var|const|let) backendInput = \{ mode: "yolo" \}/.test(tauriBridge) &&
     (tauriBridge.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 3,
   'scheduled tasks should hide mode controls and force Yolo on every write'
 );
@@ -473,7 +473,7 @@ assert.ok(
   'custom creation should collect a valid task in a dialog before creating it'
 );
 assert.ok(
-  /var selectAfterCreate = !input \|\| input\.selectAfterCreate !== false/.test(tauriBridge) &&
+  /(?:var|const|let) selectAfterCreate = !input \|\| input\.selectAfterCreate !== false/.test(tauriBridge) &&
     /if \(!created \|\| !created\.id\)/.test(tauriBridge) &&
     /if \(selectAfterCreate\) selectScheduledTask\(created\.id\)/.test(tauriBridge) &&
     /if \(selectAfterCreate\) state\.scheduledTaskDetail = created/.test(tauriBridge),
@@ -492,8 +492,8 @@ assert.ok(
   'desktop and Web bridges must share the display-only interrupted response behavior'
 );
 assert.ok(
-  tauriBridge.includes('provenance === "runtime" || provenance === "subagent_handoff"') &&
-    webBridge.includes('provenance === "runtime" || provenance === "subagent_handoff"'),
+  /provenance === "runtime" \|\| provenance === "subagent_handoff"|\["runtime", "subagent_handoff"(?:, "[a-z_]+")*\]\.includes\(provenance\)/.test(tauriBridge) &&
+    /provenance === "runtime" \|\| provenance === "subagent_handoff"|\["runtime", "subagent_handoff"(?:, "[a-z_]+")*\]\.includes\(provenance\)/.test(webBridge),
   'desktop and Web bridges must both hide internal runtime and sub-agent handoff messages'
 );
 assert.ok(
@@ -589,16 +589,16 @@ assert.ok(
 );
 assert.ok(
   /scheduled-task-template-sources-v1/.test(tauriBridge) &&
-    /var templateId = input && typeof input\.templateId === "string"/.test(tauriBridge) &&
+    /(?:var|const|let) templateId = input && typeof input\.templateId === "string"/.test(tauriBridge) &&
     !/SCHEDULED_TASK_WRITABLE_FIELDS[^;]*templateId/.test(tauriBridge) &&
     /templateId:\s*template\.id/.test(indexHtml),
   'template source ids should persist in the frontend sidecar without leaking into the base automation request'
 );
 
 function deferred() {
-  var resolve;
-  var reject;
-  var promise = new Promise(function (res, rej) {
+  let resolve;
+  let reject;
+  const promise = new Promise(function (res, rej) {
     resolve = res;
     reject = rej;
   });
@@ -611,26 +611,26 @@ function tick() {
 
 function createBridgeHarness(sharedStorage, runtimeOptions) {
   runtimeOptions = runtimeOptions || {};
-  var bridgeKind = runtimeOptions.bridgeKind === "web" ? "web" : "tauri";
-  var listeners = Object.create(null);
-  var windowListeners = Object.create(null);
-  var handlers = Object.create(null);
-  var calls = [];
-  var dialogCalls = [];
-  var dialogResult = null;
-  var createdSession = 0;
-  var structuredCloneCalls = 0;
-  var storageData = sharedStorage || Object.create(null);
-  var webSupportedCommands = new Set(runtimeOptions.webSupportedCommands || []);
-  var webCapabilitiesReady = runtimeOptions.webCapabilitiesReady !== false;
-  var webConnectionState = Object.assign({ status: "connected", desktop_online: true }, runtimeOptions.webConnectionState || {});
-  var webConnectionStateReader = null;
-  var storage = {
+  const bridgeKind = runtimeOptions.bridgeKind === "web" ? "web" : "tauri";
+  const listeners = Object.create(null);
+  const windowListeners = Object.create(null);
+  const handlers = Object.create(null);
+  const calls = [];
+  const dialogCalls = [];
+  let dialogResult = null;
+  let createdSession = 0;
+  let structuredCloneCalls = 0;
+  const storageData = sharedStorage || Object.create(null);
+  let webSupportedCommands = new Set(runtimeOptions.webSupportedCommands || []);
+  let webCapabilitiesReady = runtimeOptions.webCapabilitiesReady !== false;
+  let webConnectionState = Object.assign({ status: "connected", desktop_online: true }, runtimeOptions.webConnectionState || {});
+  let webConnectionStateReader = null;
+  const storage = {
     getItem: function (key) { return Object.prototype.hasOwnProperty.call(storageData, key) ? storageData[key] : null; },
     setItem: function (key, value) { storageData[key] = String(value); },
     removeItem: function (key) { delete storageData[key]; },
   };
-  var document = {
+  const document = {
     readyState: "loading",
     addEventListener: function () {},
   };
@@ -680,23 +680,23 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   }
 
   function invoke(cmd, args) {
-    calls.push({ cmd: cmd, args: args || null });
+    calls.push({ cmd, args: args || null });
     try {
-      var handler = handlers[cmd];
+      let handler = handlers[cmd];
       if (!handler && cmd === "web_access_list_sessions") handler = handlers.list_sessions;
       if (!handler && cmd === "web_access_list_archived_sessions") {
         handler = handlers.list_archived_sessions;
       }
       if (handler) return Promise.resolve(handler(args || {}));
       if (cmd === "web_access_load_session_chunk") {
-        var saved = handlers.load_session
+        const saved = handlers.load_session
           ? handlers.load_session({ id: args.id })
           : defaultInvoke("load_session", { id: args.id });
-        var encoded = Buffer.from(JSON.stringify(saved), "utf8");
-        var offset = Number(args.offset || 0);
+        const encoded = Buffer.from(JSON.stringify(saved), "utf8");
+        const offset = Number(args.offset || 0);
         return Promise.resolve({
           download_id: args.downloadId || args.requestedDownloadId || "test-download-" + args.id,
-          offset: offset,
+          offset,
           total: encoded.length,
           data_base64: encoded.subarray(offset).toString("base64"),
           eof: true,
@@ -708,9 +708,9 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     }
   }
 
-  var window = {
+  const window = {
     __TAURI__: {
-      core: { invoke: invoke },
+      core: { invoke },
       event: {
         listen: function (name, fn) {
           if (!listeners[name]) listeners[name] = [];
@@ -735,7 +735,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
       });
     },
     dispatchEvent: function (event) {
-      (windowListeners[event.type] || []).slice().forEach(function (listener) { listener(event); });
+      [...(windowListeners[event.type] || [])].forEach(function (listener) { listener(event); });
       return true;
     },
     localStorage: storage,
@@ -759,9 +759,9 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   }
   window.window = window;
   window.document = document;
-  var context = {
-    window: window,
-    document: document,
+  const context = {
+    window,
+    document,
     localStorage: storage,
     sessionStorage: storage,
     console: { log: function () {}, warn: function () {}, error: function () {} },
@@ -773,8 +773,8 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
       structuredCloneCalls += 1;
       return JSON.parse(JSON.stringify(value));
     },
-    TextDecoder: TextDecoder,
-    Uint8Array: Uint8Array,
+    TextDecoder,
+    Uint8Array,
   };
   vm.runInNewContext(
     bridgeKind === "web" ? webBridge : tauriBridge,
@@ -782,8 +782,8 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     { filename: bridgeKind + "-bridge.js" }
   );
 
-  var rawBridge = window.TauriBridge;
-  var bridge = bridgeKind === "web" ? {
+  const rawBridge = window.TauriBridge;
+  const bridge = bridgeKind === "web" ? {
     sessions: {
       switchToSession: function (id) { return rawBridge.switchToSession(id); },
       createNewSession: function () { return rawBridge.createNewSession(); },
@@ -804,17 +804,17 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   } : rawBridge;
 
   return {
-    bridge: bridge,
-    bridgeKind: bridgeKind,
-    handlers: handlers,
-    calls: calls,
-    storageData: storageData,
-    dialogCalls: dialogCalls,
+    bridge,
+    bridgeKind,
+    handlers,
+    calls,
+    storageData,
+    dialogCalls,
     getStructuredCloneCalls: function () { return structuredCloneCalls; },
     setDialogResult: function (value) { dialogResult = value; },
     emit: function (name, payload) {
       assert.ok(listeners[name] && listeners[name].length, "expected listener " + name);
-      var event = { payload: payload || {} };
+      const event = { payload: payload || {} };
       return Promise.all(listeners[name].map(function (listener) { return listener(event); }));
     },
     setWebCapabilities: function (commands) {
@@ -822,7 +822,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
       webCapabilitiesReady = true;
       window.dispatchEvent({
         type: "pinvou:web-capabilities",
-        detail: { commands: Array.from(webSupportedCommands), events: [] },
+        detail: { commands: [...webSupportedCommands], events: [] },
       });
     },
     setWebConnection: function (state) {
@@ -836,26 +836,26 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
 }
 
 async function interruptedWebSessionDownloadReleasesItsLease() {
-  var sharedStorage = Object.create(null);
-  var harness = createBridgeHarness(sharedStorage, {
+  const sharedStorage = Object.create(null);
+  const harness = createBridgeHarness(sharedStorage, {
     bridgeKind: "web",
     webSupportedCommands: ["web_access_cancel_session_download"],
   });
-  var sessionId = "chat-download-cancel";
-  var saved = {
+  const sessionId = "chat-download-cancel";
+  const saved = {
     metadata: { id: sessionId, title: "Download cancel", message_count: 0 },
     messages: [],
     artifacts: [],
   };
-  var encoded = Buffer.from(JSON.stringify(saved), "utf8");
-  var chunkCalls = 0;
-  var interruptedDownloadId = "";
+  const encoded = Buffer.from(JSON.stringify(saved), "utf8");
+  let chunkCalls = 0;
+  let interruptedDownloadId = "";
   harness.handlers.web_access_load_session_chunk = function (args) {
     chunkCalls += 1;
     if (chunkCalls === 1) {
       interruptedDownloadId = args.requestedDownloadId;
       assert.ok(interruptedDownloadId && interruptedDownloadId.indexOf("download_web_") === 0);
-      var first = encoded.subarray(0, Math.max(1, Math.floor(encoded.length / 2)));
+      const first = encoded.subarray(0, Math.max(1, Math.floor(encoded.length / 2)));
       return {
         download_id: interruptedDownloadId,
         offset: 0,
@@ -876,7 +876,7 @@ async function interruptedWebSessionDownloadReleasesItsLease() {
       eof: true,
     };
   };
-  var cancelCalls = 0;
+  let cancelCalls = 0;
   harness.handlers.web_access_cancel_session_download = function (args) {
     cancelCalls += 1;
     assert.strictEqual(args.id, sessionId);
@@ -904,13 +904,13 @@ async function interruptedWebSessionDownloadReleasesItsLease() {
     download_id: "download_reload_12345678",
     session_id: "chat-download-reload",
   }]);
-  var reloaded = createBridgeHarness(sharedStorage, {
+  const reloaded = createBridgeHarness(sharedStorage, {
     bridgeKind: "web",
     webSupportedCommands: ["web_access_cancel_session_download"],
   });
   reloaded.handlers.web_access_cancel_session_download = function () { return false; };
   assert.strictEqual(await reloaded.bridge.sessions.switchToSession("chat-download-reload"), true);
-  var transferCalls = reloaded.calls.filter(function (call) {
+  const transferCalls = reloaded.calls.filter(function (call) {
     return call.cmd === "web_access_cancel_session_download" || call.cmd === "web_access_load_session_chunk";
   });
   assert.deepStrictEqual(
@@ -922,17 +922,17 @@ async function interruptedWebSessionDownloadReleasesItsLease() {
 }
 
 async function mismatchedEchoedDownloadIdCancelsBothLeases() {
-  var sharedStorage = Object.create(null);
-  var harness = createBridgeHarness(sharedStorage, {
+  const sharedStorage = Object.create(null);
+  const harness = createBridgeHarness(sharedStorage, {
     bridgeKind: "web",
     webSupportedCommands: ["web_access_cancel_session_download"],
   });
-  var sessionId = "chat-download-id-mismatch";
-  var requestedId = "";
-  var echoedId = "download_server_ignored_requested";
+  const sessionId = "chat-download-id-mismatch";
+  let requestedId = "";
+  const echoedId = "download_server_ignored_requested";
   harness.handlers.web_access_load_session_chunk = function (args) {
     requestedId = args.requestedDownloadId;
-    var encoded = Buffer.from(JSON.stringify({
+    const encoded = Buffer.from(JSON.stringify({
       metadata: { id: sessionId, title: "Mismatch", message_count: 0 },
       messages: [],
       artifacts: [],
@@ -945,7 +945,7 @@ async function mismatchedEchoedDownloadIdCancelsBothLeases() {
       eof: true,
     };
   };
-  var cancelled = [];
+  const cancelled = [];
   harness.handlers.web_access_cancel_session_download = function (args) {
     cancelled.push(args.downloadId);
     assert.strictEqual(args.id, sessionId);
@@ -954,32 +954,32 @@ async function mismatchedEchoedDownloadIdCancelsBothLeases() {
 
   assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), false);
   assert.ok(requestedId && requestedId !== echoedId);
-  assert.deepStrictEqual(cancelled.sort(), [requestedId, echoedId].sort(),
+  assert.deepStrictEqual(cancelled.sort(), [requestedId, echoedId].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
     "a protocol mismatch must release both the requested and desktop-echoed leases");
   assert.strictEqual(sharedStorage["pinvou.web_session_download_leases.v1"], undefined);
 }
 
 async function lostFirstWebSessionChunkStillHasCancellableLease() {
-  var sharedStorage = Object.create(null);
-  var harness = createBridgeHarness(sharedStorage, {
+  const sharedStorage = Object.create(null);
+  const harness = createBridgeHarness(sharedStorage, {
     bridgeKind: "web",
     webSupportedCommands: ["web_access_cancel_session_download"],
   });
-  var sessionId = "chat-download-first-response-lost";
-  var requestedId = "";
-  var loadCalls = 0;
+  const sessionId = "chat-download-first-response-lost";
+  let requestedId = "";
+  let loadCalls = 0;
   harness.handlers.web_access_load_session_chunk = function (args) {
     loadCalls += 1;
     if (loadCalls === 1) {
       requestedId = args.requestedDownloadId;
       throw new Error("first Relay response was lost");
     }
-    var saved = {
+    const saved = {
       metadata: { id: sessionId, title: "Recovered", message_count: 0 },
       messages: [],
       artifacts: [],
     };
-    var encoded = Buffer.from(JSON.stringify(saved), "utf8");
+    const encoded = Buffer.from(JSON.stringify(saved), "utf8");
     return {
       download_id: args.requestedDownloadId,
       offset: 0,
@@ -988,7 +988,7 @@ async function lostFirstWebSessionChunkStillHasCancellableLease() {
       eof: true,
     };
   };
-  var cancelCalls = 0;
+  let cancelCalls = 0;
   harness.handlers.web_access_cancel_session_download = function (args) {
     cancelCalls += 1;
     assert.strictEqual(args.downloadId, requestedId);
@@ -1005,17 +1005,17 @@ async function lostFirstWebSessionChunkStillHasCancellableLease() {
 }
 
 async function subscriptionSnapshotsAvoidTranscriptDeepClone() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var chatUpdates = [];
-  var combinedUpdates = [];
-  var unsubscribeChat = bridge.state.subscribe("chat", function (snapshot) {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const chatUpdates = [];
+  const combinedUpdates = [];
+  const unsubscribeChat = bridge.state.subscribe("chat", function (snapshot) {
     chatUpdates.push(snapshot);
   });
-  var unsubscribeCombined = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
+  const unsubscribeCombined = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
     combinedUpdates.push(snapshot);
   });
-  var cloneCallsBeforeNotify = harness.getStructuredCloneCalls();
+  const cloneCallsBeforeNotify = harness.getStructuredCloneCalls();
 
   await bridge.sessions.createNewSession();
 
@@ -1034,7 +1034,7 @@ async function subscriptionSnapshotsAvoidTranscriptDeepClone() {
   }, /not extensible|read only|frozen/i, "subscription array containers should be read-only");
   assert.strictEqual(bridge.state.get("chat").chatItems.length, 0,
     "subscription array containers must not mutate bridge state");
-  var detached = bridge.state.get("chat");
+  const detached = bridge.state.get("chat");
   detached.thinking.active = true;
   assert.strictEqual(bridge.state.get("chat").thinking.active, false,
     "get/getMany must retain their defensive deep-copy contract");
@@ -1044,16 +1044,16 @@ async function subscriptionSnapshotsAvoidTranscriptDeepClone() {
 }
 
 async function reentrantSubscriptionNotificationsStayOrdered() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var firstOrder = [];
-  var secondOrder = [];
-  var unsubscribeFirst = bridge.state.subscribe("chat", function (snapshot) {
-    var text = snapshot.composerPrefill.text;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const firstOrder = [];
+  const secondOrder = [];
+  const unsubscribeFirst = bridge.state.subscribe("chat", function (snapshot) {
+    const text = snapshot.composerPrefill.text;
     firstOrder.push(text);
     if (text === "outer") bridge.chat.prefillComposer("nested");
   });
-  var unsubscribeSecond = bridge.state.subscribe("chat", function (snapshot) {
+  const unsubscribeSecond = bridge.state.subscribe("chat", function (snapshot) {
     secondOrder.push(snapshot.composerPrefill.text);
   });
 
@@ -1064,15 +1064,16 @@ async function reentrantSubscriptionNotificationsStayOrdered() {
   unsubscribeFirst();
   unsubscribeSecond();
 
-  var membershipHarness = createBridgeHarness();
-  var membershipBridge = membershipHarness.bridge;
-  var membershipFirst = [];
-  var membershipSecond = [];
-  var membershipAdded = [];
-  var unsubscribeMembershipSecond;
-  var unsubscribeAdded = function () {};
-  var unsubscribeMembershipFirst = membershipBridge.state.subscribe("chat", function (snapshot) {
-    var text = snapshot.composerPrefill.text;
+  const membershipHarness = createBridgeHarness();
+  const membershipBridge = membershipHarness.bridge;
+  const membershipFirst = [];
+  const membershipSecond = [];
+  const membershipAdded = [];
+  // eslint-disable-next-line prefer-const -- 测试桩/后置赋值保留
+  let unsubscribeMembershipSecond;
+  let unsubscribeAdded = function () {};
+  const unsubscribeMembershipFirst = membershipBridge.state.subscribe("chat", function (snapshot) {
+    const text = snapshot.composerPrefill.text;
     membershipFirst.push(text);
     if (text === "membership-outer") {
       unsubscribeMembershipSecond();
@@ -1095,16 +1096,16 @@ async function reentrantSubscriptionNotificationsStayOrdered() {
   unsubscribeMembershipFirst();
   unsubscribeAdded();
 
-  var errorHarness = createBridgeHarness();
-  var errorBridge = errorHarness.bridge;
-  var interruptedSecond = [];
-  var unsubscribeThrowing = errorBridge.state.subscribe("chat", function (snapshot) {
+  const errorHarness = createBridgeHarness();
+  const errorBridge = errorHarness.bridge;
+  const interruptedSecond = [];
+  const unsubscribeThrowing = errorBridge.state.subscribe("chat", function (snapshot) {
     if (snapshot.composerPrefill.text === "error-outer") {
       errorBridge.chat.prefillComposer("discarded-nested");
       throw new Error("subscriber failed");
     }
   });
-  var unsubscribeInterruptedSecond = errorBridge.state.subscribe("chat", function (snapshot) {
+  const unsubscribeInterruptedSecond = errorBridge.state.subscribe("chat", function (snapshot) {
     interruptedSecond.push(snapshot.composerPrefill.text);
   });
   assert.throws(function () { errorBridge.chat.prefillComposer("error-outer"); }, /subscriber failed/,
@@ -1113,8 +1114,8 @@ async function reentrantSubscriptionNotificationsStayOrdered() {
   unsubscribeThrowing();
   unsubscribeInterruptedSecond();
 
-  var recovered = [];
-  var unsubscribeRecovered = errorBridge.state.subscribe("chat", function (snapshot) {
+  const recovered = [];
+  const unsubscribeRecovered = errorBridge.state.subscribe("chat", function (snapshot) {
     recovered.push(snapshot.composerPrefill.text);
   });
   errorBridge.chat.prefillComposer("recovered");
@@ -1124,24 +1125,24 @@ async function reentrantSubscriptionNotificationsStayOrdered() {
 }
 
 async function persistentSubscriptionSnapshotsPreserveJsonEdges() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var snapshots = [];
-  var negativeZero = true;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const snapshots = [];
+  let negativeZero = true;
   function settingsResult() {
-    var result = JSON.parse('{"language":"en","__proto__":{"marker":"own-value"}}');
+    const result = JSON.parse('{"language":"en","__proto__":{"marker":"own-value"}}');
     Object.defineProperty(result, "nan", { enumerable: true, value: NaN, writable: true });
     result.zero = negativeZero ? -0 : 0;
     return result;
   }
   harness.handlers.update_settings = settingsResult;
   harness.handlers.get_effective_model_config = function () { return null; };
-  var unsubscribe = bridge.state.subscribe("settings", function (snapshot) { snapshots.push(snapshot); });
+  const unsubscribe = bridge.state.subscribe("settings", function (snapshot) { snapshots.push(snapshot); });
 
   assert.strictEqual(await bridge.settings.saveSettings({ language: "en" }), true);
   assert.ok(snapshots.length >= 2, "settings save should publish its effective-model and saved revisions");
-  var first = snapshots[0];
-  var repeated = snapshots[1];
+  const first = snapshots[0];
+  const repeated = snapshots[1];
   assert.ok(Object.prototype.hasOwnProperty.call(first.settings, "__proto__"));
   assert.strictEqual(first.settings["__proto__"].marker, "own-value");
   assert.strictEqual(Object.getPrototypeOf(first.settings), Object.getPrototypeOf(first),
@@ -1153,7 +1154,7 @@ async function persistentSubscriptionSnapshotsPreserveJsonEdges() {
 
   negativeZero = false;
   assert.strictEqual(await bridge.settings.saveSettings({ language: "en" }), true);
-  var changed = snapshots[snapshots.length - 1];
+  const changed = snapshots[snapshots.length - 1];
   assert.notStrictEqual(changed.settings, repeated.settings, "Object.is should distinguish -0 from +0");
   assert.ok(Object.is(changed.settings.zero, 0));
   assert.ok(Object.prototype.hasOwnProperty.call(changed.settings, "__proto__"),
@@ -1166,23 +1167,23 @@ async function persistentSubscriptionSnapshotsPreserveJsonEdges() {
 
 async function persistentSubscriptionSnapshotsRejectUnsupportedValues() {
   async function rejects(result, pattern) {
-    var harness = createBridgeHarness();
+    const harness = createBridgeHarness();
     harness.handlers.ingest_file = function () { return result; };
-    var unsubscribe = harness.bridge.state.subscribe("chat", function () {});
+    const unsubscribe = harness.bridge.state.subscribe("chat", function () {});
     await assert.rejects(harness.bridge.attachments.addAttachmentByPath("C:\\snapshot-edge.txt"), pattern);
     unsubscribe();
   }
   await rejects(new Date(0), /only supports arrays and plain objects/);
-  var cyclic = { value: "cycle" };
+  const cyclic = { value: "cycle" };
   cyclic.self = cyclic;
   await rejects(cyclic, /must not contain cycles/);
 }
 
 async function longSessionStreamingAvoidsPerDeltaDeepClone() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var sessionId = "chat-long-stream";
-  var messages = [
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sessionId = "chat-long-stream";
+  const messages = [
     {
       role: "assistant",
       content: [{
@@ -1197,7 +1198,7 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
       content: [{ type: "tool_result", tool_use_id: "tool-stable-history", content: "stable output" }],
     },
   ];
-  for (var index = messages.length; index < 469; index++) {
+  for (let index = messages.length; index < 469; index++) {
     messages.push({
       role: index % 2 === 0 ? "user" : "assistant",
       content: [{ type: "text", text: "history-" + index + "-" + "x".repeat(1024) }],
@@ -1206,30 +1207,30 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   harness.handlers.load_session = function () {
     return {
       metadata: { id: sessionId, title: "Long stream", message_count: messages.length },
-      messages: messages,
+      messages,
       artifacts: [],
     };
   };
   assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
 
-  var updates = 0;
-  var secondSubscriberUpdates = 0;
-  var snapshots = [];
-  var secondSubscriberSnapshots = [];
-  var unsubscribe = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
+  let updates = 0;
+  let secondSubscriberUpdates = 0;
+  const snapshots = [];
+  const secondSubscriberSnapshots = [];
+  const unsubscribe = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
     updates += 1;
     snapshots.push(snapshot);
   });
-  var unsubscribeSecond = bridge.state.subscribe("chat", function (snapshot) {
+  const unsubscribeSecond = bridge.state.subscribe("chat", function (snapshot) {
     secondSubscriberUpdates += 1;
     secondSubscriberSnapshots.push(snapshot);
   });
-  var cloneCallsBeforeStream = harness.getStructuredCloneCalls();
+  const cloneCallsBeforeStream = harness.getStructuredCloneCalls();
   harness.emit("chat:turn_started", { session_id: sessionId });
   harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
 
-  var firstDeltaSnapshot = snapshots[1];
-  var firstDeltaItem = firstDeltaSnapshot.chatItems.filter(function (item) {
+  const firstDeltaSnapshot = snapshots[1];
+  const firstDeltaItem = firstDeltaSnapshot.chatItems.filter(function (item) {
     return item.type === "assistant" && item.streaming;
   }).pop();
   assert.strictEqual(firstDeltaItem.text, "abcd", "the first delta snapshot should capture its own text");
@@ -1244,7 +1245,7 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   }).pop().text, "abcd", "one subscriber must not affect bridge state");
   assert.strictEqual(harness.getStructuredCloneCalls(), cloneCallsBeforeStream + 1,
     "the explicit state.get isolation check should retain its defensive deep copy");
-  var cloneCallsAfterDefensiveRead = harness.getStructuredCloneCalls();
+  const cloneCallsAfterDefensiveRead = harness.getStructuredCloneCalls();
 
   harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
   assert.strictEqual(firstDeltaItem.text, "abcd", "an older subscription snapshot must remain stable");
@@ -1252,7 +1253,7 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
     return item.type === "assistant" && item.streaming;
   }).pop().text, "abcdabcd", "the next snapshot should observe the next delta");
 
-  for (var delta = 2; delta < 1000; delta++) {
+  for (let delta = 2; delta < 1000; delta++) {
     harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
   }
   await tick();
@@ -1269,20 +1270,20 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
     "a long transcript must not be deep-cloned for each streamed delta"
   );
 
-  var representativeFrames = [0, 1, 499, 500, 999, 1000];
-  var stableMessages = snapshots[0].messages;
-  var stableHistoryMessage = stableMessages[0];
-  var stableHistoryContent = stableHistoryMessage.content;
-  var stableHistoryBlock = stableHistoryContent[0];
-  var stableToolItem = snapshots[0].chatItems.find(function (item) {
+  const representativeFrames = [0, 1, 499, 500, 999, 1000];
+  const stableMessages = snapshots[0].messages;
+  const stableHistoryMessage = stableMessages[0];
+  const stableHistoryContent = stableHistoryMessage.content;
+  const stableHistoryBlock = stableHistoryContent[0];
+  const stableToolItem = snapshots[0].chatItems.find(function (item) {
     return item.type === "tool" && item.toolId === "tool-stable-history";
   });
   assert.ok(stableToolItem, "the fixture should expose a historical tool chat item");
   assert.strictEqual(stableToolItem.args.options.environment.MODE, "test");
   representativeFrames.forEach(function (frame) {
-    var snapshot = snapshots[frame];
-    var secondSnapshot = secondSubscriberSnapshots[frame];
-    var toolItem = snapshot.chatItems.find(function (item) {
+    const snapshot = snapshots[frame];
+    const secondSnapshot = secondSubscriberSnapshots[frame];
+    const toolItem = snapshot.chatItems.find(function (item) {
       return item.type === "tool" && item.toolId === "tool-stable-history";
     });
     assert.strictEqual(snapshot.messages, stableMessages,
@@ -1310,14 +1311,14 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
       return item.type === "assistant" && item.streaming;
     }).pop();
   }
-  for (var frame = 1; frame < snapshots.length; frame++) {
+  for (let frame = 1; frame < snapshots.length; frame++) {
     assert.notStrictEqual(streamingItemAt(frame - 1), streamingItemAt(frame),
       "the changed streaming item must receive a new reference in every adjacent revision");
   }
   assert.strictEqual(streamingItemAt(1).text, "abcd", "the first retained delta must remain stable");
   assert.strictEqual(streamingItemAt(500).text.length, 2000, "the middle retained delta must remain stable");
   assert.strictEqual(streamingItemAt(1000).text.length, 4000, "the final retained delta must be complete");
-  var finalAssistant = bridge.state.get("chat").chatItems.filter(function (item) {
+  const finalAssistant = bridge.state.get("chat").chatItems.filter(function (item) {
     return item.type === "assistant" && item.streaming;
   }).pop();
   assert.strictEqual(finalAssistant.text.length, 4000, "subscription snapshot optimization must not lose text");
@@ -1326,16 +1327,16 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
 }
 
 async function olderDesktopUsesServerGeneratedSessionDownloadId() {
-  var harness = createBridgeHarness(null, { bridgeKind: "web", webSupportedCommands: [] });
-  var sessionId = "chat-legacy-download";
-  var saved = {
+  const harness = createBridgeHarness(null, { bridgeKind: "web", webSupportedCommands: [] });
+  const sessionId = "chat-legacy-download";
+  const saved = {
     metadata: { id: sessionId, title: "Legacy download", message_count: 0 },
     messages: [],
     artifacts: [],
   };
-  var encoded = Buffer.from(JSON.stringify(saved), "utf8");
-  var split = Math.max(1, Math.floor(encoded.length / 2));
-  var calls = 0;
+  const encoded = Buffer.from(JSON.stringify(saved), "utf8");
+  const split = Math.max(1, Math.floor(encoded.length / 2));
+  let calls = 0;
   harness.handlers.web_access_load_session_chunk = function (args) {
     calls += 1;
     assert.strictEqual(Object.prototype.hasOwnProperty.call(args, "requestedDownloadId"), false,
@@ -1371,12 +1372,12 @@ async function olderDesktopUsesServerGeneratedSessionDownloadId() {
 }
 
 async function sessionDownloadWaitsForCapabilitySnapshot() {
-  var harness = createBridgeHarness(null, {
+  const harness = createBridgeHarness(null, {
     bridgeKind: "web",
     webCapabilitiesReady: false,
   });
-  var sessionId = "chat-capabilities-late";
-  var pending = harness.bridge.sessions.switchToSession(sessionId);
+  const sessionId = "chat-capabilities-late";
+  const pending = harness.bridge.sessions.switchToSession(sessionId);
   await tick();
   assert.strictEqual(
     harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
@@ -1385,17 +1386,17 @@ async function sessionDownloadWaitsForCapabilitySnapshot() {
   );
   harness.setWebCapabilities(["web_access_cancel_session_download"]);
   assert.strictEqual(await pending, true);
-  var load = harness.calls.find(function (call) { return call.cmd === "web_access_load_session_chunk"; });
+  const load = harness.calls.find(function (call) { return call.cmd === "web_access_load_session_chunk"; });
   assert.ok(load.args.requestedDownloadId,
     "the post-snapshot request must select the newly advertised cancellable protocol");
 }
 
 async function sessionDownloadCapabilityWaitStopsOnDisconnect() {
-  var harness = createBridgeHarness(null, {
+  const harness = createBridgeHarness(null, {
     bridgeKind: "web",
     webCapabilitiesReady: false,
   });
-  var pending = harness.bridge.sessions.switchToSession("chat-capabilities-disconnected");
+  const pending = harness.bridge.sessions.switchToSession("chat-capabilities-disconnected");
   await tick();
   harness.setWebConnection({ status: "desktop_offline", desktop_online: false });
   assert.strictEqual(await pending, false);
@@ -1407,8 +1408,8 @@ async function sessionDownloadCapabilityWaitStopsOnDisconnect() {
 }
 
 async function sessionDownloadCapabilityWaitRejectsAlreadyOfflineDesktop() {
-  var capabilityTimeouts = 0;
-  var harness = createBridgeHarness(null, {
+  let capabilityTimeouts = 0;
+  const harness = createBridgeHarness(null, {
     bridgeKind: "web",
     webCapabilitiesReady: false,
     webConnectionState: { status: "desktop_offline", desktop_online: false },
@@ -1428,8 +1429,8 @@ async function sessionDownloadCapabilityWaitRejectsAlreadyOfflineDesktop() {
 }
 
 async function sessionDownloadCapabilityWaitClosesLostDisconnectEventRace() {
-  var capabilityTimeouts = 0;
-  var harness = createBridgeHarness(null, {
+  let capabilityTimeouts = 0;
+  const harness = createBridgeHarness(null, {
     bridgeKind: "web",
     webCapabilitiesReady: false,
     setTimeout: function (callback, delay) {
@@ -1437,7 +1438,7 @@ async function sessionDownloadCapabilityWaitClosesLostDisconnectEventRace() {
       return setTimeout(callback, delay);
     },
   });
-  var reads = 0;
+  let reads = 0;
   harness.setWebConnectionStateReader(function () {
     reads += 1;
     return reads === 1
@@ -1459,8 +1460,8 @@ async function sessionDownloadCapabilityWaitHasTimeout() {
   // 能力超时的切换进入宽限等待（5s 内快照到达即自动重试），期间不报错、
   // 不落失败。能力超时（10s）压成微任务立即触发；宽限 timer（5s）只登记
   // 不自动触发，模拟真实时序中快照先于宽限到期到达。
-  var graceTimers = [];
-  var harness = createBridgeHarness(null, {
+  const graceTimers = [];
+  const harness = createBridgeHarness(null, {
     bridgeKind: "web",
     webCapabilitiesReady: false,
     setTimeout: function (callback, delay) {
@@ -1475,8 +1476,8 @@ async function sessionDownloadCapabilityWaitHasTimeout() {
       return setTimeout(callback, delay);
     },
   });
-  var switchedPromise = harness.bridge.sessions.switchToSession("chat-capabilities-timeout");
-  for (var waitAttempt = 0; waitAttempt < 4; waitAttempt++) await tick();
+  const switchedPromise = harness.bridge.sessions.switchToSession("chat-capabilities-timeout");
+  for (let waitAttempt = 0; waitAttempt < 4; waitAttempt++) await tick();
   assert.strictEqual(graceTimers.length, 1,
     "the capability timeout must arm exactly one grace timer");
   harness.setWebCapabilities(["web_access_cancel_session_download"]);
@@ -1496,8 +1497,8 @@ async function sessionDownloadCapabilityWaitHasTimeout() {
 async function sessionDownloadCapabilityGraceExpiryFailsOnce() {
   // 宽限期内快照始终未到：切换按失败收口且只报一次错；随后快照到达也不得
   // 复活已被取代的等待（无新切换请求时不产生多余 RPC）。
-  var graceFired = false;
-  var harness = createBridgeHarness(null, {
+  let graceFired = false;
+  const harness = createBridgeHarness(null, {
     bridgeKind: "web",
     webCapabilitiesReady: false,
     setTimeout: function (callback, delay) {
@@ -1521,7 +1522,7 @@ async function sessionDownloadCapabilityGraceExpiryFailsOnce() {
     false
   );
   harness.setWebCapabilities(["web_access_cancel_session_download"]);
-  for (var settleAttempt = 0; settleAttempt < 4; settleAttempt++) await tick();
+  for (let settleAttempt = 0; settleAttempt < 4; settleAttempt++) await tick();
   assert.strictEqual(
     harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
     false,
@@ -1533,8 +1534,8 @@ async function sessionDownloadCapabilityGraceSupersededByDraftFailsSilently() {
   // 宽限等待期间用户进入草稿（enterDraft 使切换 token 失效但不收口 pending）：
   // 宽限 timer 到期必须按失败静默收口，原调用方收到 false，且不在草稿页
   // 误报“加载对话失败”（与快照到达路径对已被取代等待的处理一致）。
-  var graceTimers = [];
-  var harness = createBridgeHarness(null, {
+  const graceTimers = [];
+  const harness = createBridgeHarness(null, {
     bridgeKind: "web",
     webCapabilitiesReady: false,
     setTimeout: function (callback, delay) {
@@ -1549,8 +1550,8 @@ async function sessionDownloadCapabilityGraceSupersededByDraftFailsSilently() {
       return setTimeout(callback, delay);
     },
   });
-  var switchedPromise = harness.bridge.sessions.switchToSession("chat-capabilities-superseded");
-  for (var waitAttempt = 0; waitAttempt < 4; waitAttempt++) await tick();
+  const switchedPromise = harness.bridge.sessions.switchToSession("chat-capabilities-superseded");
+  for (let waitAttempt = 0; waitAttempt < 4; waitAttempt++) await tick();
   assert.strictEqual(graceTimers.length, 1,
     "the capability timeout must arm exactly one grace timer");
   await harness.bridge.sessions.createNewSession();
@@ -1565,7 +1566,7 @@ async function sessionDownloadCapabilityGraceSupersededByDraftFailsSilently() {
     "a superseded grace wait must not report a load failure in the draft view"
   );
   harness.setWebCapabilities(["web_access_cancel_session_download"]);
-  for (var settleAttempt = 0; settleAttempt < 4; settleAttempt++) await tick();
+  for (let settleAttempt = 0; settleAttempt < 4; settleAttempt++) await tick();
   assert.strictEqual(
     harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
     false,
@@ -1574,8 +1575,8 @@ async function sessionDownloadCapabilityGraceSupersededByDraftFailsSilently() {
 }
 
 async function deepSeekTurnTimelineLifecycleBehavior() {
-  var harness = createBridgeHarness();
-  var sessionId = "chat-turn-timeline";
+  const harness = createBridgeHarness();
+  const sessionId = "chat-turn-timeline";
   harness.handlers.load_session = function () {
     return {
       metadata: { id: sessionId, title: "Turn timeline", message_count: 2 },
@@ -1597,12 +1598,12 @@ async function deepSeekTurnTimelineLifecycleBehavior() {
   assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
   await harness.emit("chat:user_message", { session_id: sessionId, content: "继续" });
   await harness.emit("chat:turn_started", { session_id: sessionId });
-  var running = harness.bridge.state.get("chat").turnTimeline;
+  const running = harness.bridge.state.get("chat").turnTimeline;
   assert.strictEqual(running.length, 3, "turn_started must reuse a freshly loaded unmatched timing event");
   assert.strictEqual(running[2].ui_turn_index, 1, "live lifecycle must bind to the visible user Turn");
 
   await harness.emit("chat:done", { session_id: sessionId, status: "Failed", error: "模型失败" });
-  var completed = harness.bridge.state.get("chat").turnTimeline;
+  const completed = harness.bridge.state.get("chat").turnTimeline;
   assert.strictEqual(completed.length, 4);
   assert.strictEqual(completed[3].turn_id, "turn-current");
   assert.strictEqual(completed[3].status, "Failed");
@@ -1610,16 +1611,16 @@ async function deepSeekTurnTimelineLifecycleBehavior() {
 }
 
 async function internalSubagentHandoffStaysOutOfPresentation(bridgeKind) {
-  var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
-  var sessionId = "chat-subagent-handoff";
-  var completionText = [
+  const harness = createBridgeHarness(null, { bridgeKind });
+  const sessionId = "chat-subagent-handoff";
+  const completionText = [
     '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
     'This is an internal runtime event, not user input.',
     'child-only completion summary',
     '<codewhale:subagent.done>{"agent_id":"agent_7fb1c7be","status":"completed"}</codewhale:subagent.done>',
     '</codewhale:runtime_event>',
   ].join('\n');
-  var persistedToolOutput = [
+  const persistedToolOutput = [
     'Error: deterministic provider failure',
     '',
     '<codewhale:runtime_event kind="stuck_guard" visibility="internal">',
@@ -1652,9 +1653,9 @@ async function internalSubagentHandoffStaysOutOfPresentation(bridgeKind) {
   };
 
   assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
-  var state = harness.bridge.state.get("chat");
-  var visible = JSON.stringify(state.chatItems);
-  var raw = JSON.stringify(state.messages);
+  const state = harness.bridge.state.get("chat");
+  let visible = JSON.stringify(state.chatItems);
+  let raw = JSON.stringify(state.messages);
   assert.ok(visible.includes("请调研这个问题"), "real user input must remain visible");
   assert.ok(visible.includes("这是父智能体的最终汇总"), "parent synthesis must remain visible");
   assert.ok(!visible.includes("child-only completion summary"), "sub-agent handoff must not render as a user bubble");
@@ -1698,23 +1699,23 @@ async function internalSubagentHandoffStaysOutOfPresentation(bridgeKind) {
 }
 
 async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
-  var completionText = [
+  const completionText = [
     '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
     'This is an internal runtime event, not user input.',
     'current child-only completion summary',
     '<codewhale:subagent.done>{"agent_id":"agent_current","status":"completed"}</codewhale:subagent.done>',
     '</codewhale:runtime_event>',
   ].join('\n');
-  var shellCompletionText = [
+  const shellCompletionText = [
     '<codewhale:runtime_event kind="background_shell_completion" visibility="internal">',
     'internal shell completion payload',
     '</codewhale:runtime_event>',
   ].join('\n');
 
-  for (var bridgeIndex = 0; bridgeIndex < 2; bridgeIndex++) {
-    var bridgeKind = bridgeIndex === 0 ? "tauri" : "web";
-    var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
-    var sessionId = "chat-current-internal-provenance-" + bridgeKind;
+  for (let bridgeIndex = 0; bridgeIndex < 2; bridgeIndex++) {
+    const bridgeKind = bridgeIndex === 0 ? "tauri" : "web";
+    const harness = createBridgeHarness(null, { bridgeKind });
+    const sessionId = "chat-current-internal-provenance-" + bridgeKind;
     harness.handlers.load_session = function () {
       return {
         metadata: { id: sessionId, title: "Current internal provenance", message_count: 5 },
@@ -1750,9 +1751,9 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
     };
 
     assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
-    var state = harness.bridge.state.get("chat");
-    var visible = JSON.stringify(state.chatItems);
-    var raw = JSON.stringify(state.messages);
+    const state = harness.bridge.state.get("chat");
+    const visible = JSON.stringify(state.chatItems);
+    const raw = JSON.stringify(state.messages);
     assert.ok(visible.includes("real user request"), bridgeKind + " must retain real user input");
     assert.ok(visible.includes("parent final answer"), bridgeKind + " must retain the parent answer");
     [
@@ -1780,9 +1781,9 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
 }
 
 async function autoTitleSkipsInternalAndStripsTurnMeta() {
-  for (var bridgeIndex = 0; bridgeIndex < 2; bridgeIndex++) {
-    var bridgeKind = bridgeIndex === 0 ? "tauri" : "web";
-    var envelopeText = [
+  for (let bridgeIndex = 0; bridgeIndex < 2; bridgeIndex++) {
+    const bridgeKind = bridgeIndex === 0 ? "tauri" : "web";
+    const envelopeText = [
       '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
       'This is an internal runtime event, not user input.',
       'auto-title child completion summary',
@@ -1790,8 +1791,8 @@ async function autoTitleSkipsInternalAndStripsTurnMeta() {
     ].join('\n');
 
     // 场景 1：首条 user 消息为内部信封 → 不得 rename（XML 不得进 sidebar 标题）。
-    var h1 = createBridgeHarness(null, { bridgeKind: bridgeKind });
-    var sid1 = "chat-title-internal-" + bridgeKind;
+    const h1 = createBridgeHarness(null, { bridgeKind });
+    const sid1 = "chat-title-internal-" + bridgeKind;
     h1.handlers.list_sessions = function () {
       return [{ id: sid1, title: "New chat" }];
     };
@@ -1815,14 +1816,14 @@ async function autoTitleSkipsInternalAndStripsTurnMeta() {
     await new Promise(function (r) { setTimeout(r, 150); });
     assert.ok(h1.calls.some(function (c) { return c.cmd === "save_session_artifacts"; }),
       bridgeKind + " persistMessagesFor 应执行（前置条件成立，防止假绿）");
-    var rename1 = h1.calls.filter(function (c) { return c.cmd === "rename_session"; });
+    const rename1 = h1.calls.filter(function (c) { return c.cmd === "rename_session"; });
     assert.strictEqual(rename1.length, 0,
       bridgeKind + " 首条内部信封不得触发自动命名（信封 XML 不得进 sidebar）：" + JSON.stringify(rename1));
 
     // 场景 2：首条 user 消息为普通消息（引擎标准布局：正文 + 尾随 turn_meta block）
     // → 标题应为正文，不得拼入 turn_meta/workspace XML。
-    var h2 = createBridgeHarness(null, { bridgeKind: bridgeKind });
-    var sid2 = "chat-title-normal-" + bridgeKind;
+    const h2 = createBridgeHarness(null, { bridgeKind });
+    const sid2 = "chat-title-normal-" + bridgeKind;
     h2.handlers.list_sessions = function () {
       return [{ id: sid2, title: "New chat" }];
     };
@@ -1844,22 +1845,22 @@ async function autoTitleSkipsInternalAndStripsTurnMeta() {
     await new Promise(function (r) { setTimeout(r, 50); });
     await h2.emit("chat:done", { session_id: sid2, status: "Completed" });
     await new Promise(function (r) { setTimeout(r, 150); });
-    var rename2 = h2.calls.filter(function (c) { return c.cmd === "rename_session"; });
+    const rename2 = h2.calls.filter(function (c) { return c.cmd === "rename_session"; });
     assert.strictEqual(rename2.length, 1,
       bridgeKind + " 普通首条消息应触发自动命名");
-    var title2 = String(rename2[0] && rename2[0].args && rename2[0].args.title || "");
+    const title2 = String(rename2[0] && rename2[0].args && rename2[0].args.title || "");
     assert.ok(title2.indexOf("帮我修登录页") === 0,
       bridgeKind + " 标题应以真实正文开头：" + JSON.stringify(title2));
-    assert.ok(title2.indexOf("<turn_meta>") < 0 && title2.indexOf("Current workspace") < 0,
+    assert.ok(!title2.includes("<turn_meta>") && !title2.includes("Current workspace"),
       bridgeKind + " 标题不得包含 turn_meta/workspace XML：" + JSON.stringify(title2));
   }
 }
 
 async function webLiveEnvelopeStaysOutOfPresentation() {
-  var bridgeKind = "web";
-  var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
-  var sessionId = "chat-web-live-envelope";
-  var envelopeText = [
+  const bridgeKind = "web";
+  const harness = createBridgeHarness(null, { bridgeKind });
+  const sessionId = "chat-web-live-envelope";
+  const envelopeText = [
     '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
     'This is an internal runtime event, not user input.',
     'web live child completion summary',
@@ -1874,7 +1875,7 @@ async function webLiveEnvelopeStaysOutOfPresentation() {
   };
   assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
   await harness.emit("chat:user_message", { session_id: sessionId, content: envelopeText, operation: "append" });
-  var visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+  const visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
   assert.ok(!visible.includes("web live child completion summary"),
     "web live 内部信封不得渲染为用户气泡");
   assert.ok(!visible.includes("codewhale:runtime_event"),
@@ -1882,14 +1883,14 @@ async function webLiveEnvelopeStaysOutOfPresentation() {
 }
 
 async function draftToggleFailureAbortsFirstSend() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
   harness.handlers.set_multi_agent_mode = function () { throw new Error("git missing"); };
 
   await bridge.interaction.setMultiAgentMode(true); // 草稿态寄存意图
   await bridge.chat.sendMessage("并行调研测试");
 
-  var calls = harness.calls.map(function (call) { return call.cmd; });
+  const calls = harness.calls.map(function (call) { return call.cmd; });
   assert.ok(!calls.includes("chat"), "开关落盘失败后首条消息不得发出（否则静默退化成普通对话）");
   assert.ok(calls.includes("delete_session"), "中止物化必须清掉刚建的空会话");
   assert.equal(bridge.state.get("sessions").activeSessionId, null, "必须回到草稿态");
@@ -1906,7 +1907,7 @@ async function draftToggleFailureAbortsFirstSend() {
   // 意图保留：修好依赖后再次发送，开关重试且消息正常发出。
   harness.handlers.set_multi_agent_mode = function () { return { mode: "yolo", multi_agent: true }; };
   await bridge.chat.sendMessage("再来一次");
-  var after = harness.calls.map(function (call) { return call.cmd; });
+  const after = harness.calls.map(function (call) { return call.cmd; });
   assert.ok(
     after.filter(function (cmd) { return cmd === "set_multi_agent_mode"; }).length >= 2,
     "草稿开关意图必须保留到下一次物化重试"
@@ -1915,9 +1916,9 @@ async function draftToggleFailureAbortsFirstSend() {
 }
 
 async function multiAgentToggleFailureIsRoutedToTriggerSession() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var rejectToggle = null;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  let rejectToggle = null;
   harness.handlers.set_multi_agent_mode = function () {
     return new Promise(function (_resolve, reject) { rejectToggle = reject; });
   };
@@ -1926,8 +1927,8 @@ async function multiAgentToggleFailureIsRoutedToTriggerSession() {
   };
 
   await bridge.sessions.switchToSession("chat-a");
-  var flight = bridge.interaction.setMultiAgentMode(true);
-  for (var i = 0; i < 20 && !rejectToggle; i++) await Promise.resolve();
+  const flight = bridge.interaction.setMultiAgentMode(true);
+  for (let i = 0; i < 20 && !rejectToggle; i++) await Promise.resolve();
   assert.ok(rejectToggle, "toggle request must reach the backend handler");
   assert.strictEqual(bridge.state.get("chat").modeState.multiAgent, true,
     "optimistic flip must be visible on the trigger session immediately");
@@ -1938,7 +1939,7 @@ async function multiAgentToggleFailureIsRoutedToTriggerSession() {
   rejectToggle(new Error("roster boom"));
   await flight;
 
-  var chatOnB = bridge.state.get("chat");
+  const chatOnB = bridge.state.get("chat");
   assert.strictEqual(chatOnB.modeState.multiAgent, true,
     "the rollback must not clobber the session the user switched to");
   assert.ok(!JSON.stringify(chatOnB.chatItems).includes("roster boom"),
@@ -1952,14 +1953,14 @@ async function multiAgentToggleFailureIsRoutedToTriggerSession() {
 }
 
 async function scheduledRunUnreadBehavior() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var task = { id: "automation-unread", name: "Unread task", hasUnreadRuns: true };
-  var runs = [
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const task = { id: "automation-unread", name: "Unread task", hasUnreadRuns: true };
+  const runs = [
     { id: "run-1", automationId: task.id, sessionId: "sched-run-1", status: "completed", unread: true },
     { id: "run-2", automationId: task.id, sessionId: "sched-run-2", status: "completed", unread: true },
   ];
-  var openedContextPublished = false;
+  let openedContextPublished = false;
   bridge.state.subscribe("scheduled", function (state) {
     if (state.scheduledRunContext && state.scheduledRunContext.runId) openedContextPublished = true;
   });
@@ -1993,11 +1994,11 @@ async function scheduledRunUnreadBehavior() {
   );
 
   assert.strictEqual(await bridge.scheduled.openScheduledRunChat(runs[0], task), true);
-  var marks = harness.calls.filter(function (call) { return call.cmd === "mark_scheduled_run_viewed"; });
+  const marks = harness.calls.filter(function (call) { return call.cmd === "mark_scheduled_run_viewed"; });
   assert.strictEqual(JSON.stringify(marks.map(function (call) { return call.args; })), JSON.stringify([
     { automationId: task.id, runId: "run-1" },
   ]));
-  var afterFirst = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const afterFirst = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(afterFirst.scheduledTaskRuns[0].unread, false, "the opened run should become viewed");
   assert.strictEqual(afterFirst.scheduledTaskRuns[1].unread, true, "sibling runs remain independently unread");
   assert.strictEqual(afterFirst.scheduledTaskRecentRuns[0].unread, false, "the opened sidebar run should lose its dot immediately");
@@ -2007,7 +2008,7 @@ async function scheduledRunUnreadBehavior() {
 
   assert.strictEqual(await bridge.scheduled.exitScheduledRunChat(), true);
   assert.strictEqual(await bridge.scheduled.openScheduledRunChat(runs[1], task), true);
-  var afterSecond = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const afterSecond = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.ok(afterSecond.scheduledTaskRuns.every(function (run) { return run.unread === false; }));
   assert.ok(afterSecond.scheduledTaskRecentRuns.every(function (run) { return run.unread === false; }));
   assert.strictEqual(afterSecond.scheduledTasks[0].hasUnreadRuns, false, "task dot clears only after every child run was opened");
@@ -2034,8 +2035,8 @@ async function scheduledRunUnreadBehavior() {
       messages: [], artifacts: [],
     };
   };
-  var markCount = harness.calls.filter(function (call) { return call.cmd === "mark_scheduled_run_viewed"; }).length;
-  var loadCount = harness.calls.filter(function (call) { return call.cmd === "load_session"; }).length;
+  const markCount = harness.calls.filter(function (call) { return call.cmd === "mark_scheduled_run_viewed"; }).length;
+  const loadCount = harness.calls.filter(function (call) { return call.cmd === "load_session"; }).length;
   assert.strictEqual(
     await bridge.scheduled.openScheduledRunChat(
       { id: "run-running", automationId: task.id, sessionId: "sched-running", status: "running", unread: false },
@@ -2065,7 +2066,7 @@ async function scheduledRunUnreadBehavior() {
     JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems).includes("durable scheduled prompt"),
     "the normal chat transcript should also include the durable user prompt"
   );
-  var visibleScheduledTranscript = JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems);
+  const visibleScheduledTranscript = JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems);
   assert.ok(!visibleScheduledTranscript.includes("system-reminder"), "scheduled bubbles must hide the internal reminder");
   assert.ok(!visibleScheduledTranscript.includes("turn_meta"), "scheduled bubbles must hide turn metadata");
   assert.ok(!visibleScheduledTranscript.includes("sudo/apt/systemctl/pkexec"), "scheduled bubbles must hide internal policy text");
@@ -2113,7 +2114,7 @@ async function scheduledRunUnreadBehavior() {
 }
 
 async function scheduledFolderPickerBehavior() {
-  var harness = createBridgeHarness();
+  const harness = createBridgeHarness();
   harness.setDialogResult("D:/workspace-picked");
   assert.strictEqual(await harness.bridge.scheduled.pickFolder(), "D:/workspace-picked");
   assert.strictEqual(JSON.stringify(harness.dialogCalls[0]), JSON.stringify({
@@ -2126,9 +2127,9 @@ async function scheduledFolderPickerBehavior() {
 }
 
 async function scheduledRunningHydrationRaceBehavior() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var load = deferred();
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const load = deferred();
   harness.handlers.load_session = function (args) {
     if (args.id === "sched-live-race") return load.promise;
     return {
@@ -2140,7 +2141,7 @@ async function scheduledRunningHydrationRaceBehavior() {
     return { automationId: "automation-race-live", runId: "run-race-live", hasUnreadRuns: false };
   };
   await bridge.sessions.switchToSession("chat-origin");
-  var opening = bridge.scheduled.openScheduledRunChat(
+  const opening = bridge.scheduled.openScheduledRunChat(
     {
       id: "run-race-live", automationId: "automation-race-live",
       sessionId: "sched-live-race", status: "running", unread: false,
@@ -2171,11 +2172,11 @@ async function scheduledRunningHydrationRaceBehavior() {
     artifacts: [],
   });
   assert.strictEqual(await opening, true);
-  var hydratedItems = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems;
-  var rendered = JSON.stringify(hydratedItems);
+  const hydratedItems = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems;
+  const rendered = JSON.stringify(hydratedItems);
   assert.ok(rendered.includes("persisted scheduled prompt"), "durable history should survive live hydration");
   assert.ok(rendered.includes("delta received during durable load"), "live deltas received during load should survive hydration");
-  var overlappingAssistantItems = hydratedItems.filter(function (item) {
+  const overlappingAssistantItems = hydratedItems.filter(function (item) {
     return item.type === "assistant" && item.text === "delta received during durable load";
   });
   assert.strictEqual(overlappingAssistantItems.length, 1, "durable and live overlap should render once");
@@ -2189,9 +2190,9 @@ async function scheduledRunningHydrationRaceBehavior() {
 }
 
 async function openingRunningMarksBusyBeforeHydration() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var load = deferred();
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const load = deferred();
   harness.handlers.load_session = function (args) {
     if (args.id === "sched-opening-busy") return load.promise;
     return {
@@ -2200,7 +2201,7 @@ async function openingRunningMarksBusyBeforeHydration() {
     };
   };
   await bridge.sessions.switchToSession("chat-origin");
-  var opening = bridge.scheduled.openScheduledRunChat({
+  const opening = bridge.scheduled.openScheduledRunChat({
     id: "run-opening-busy",
     automationId: "automation-opening-busy",
     sessionId: "sched-opening-busy",
@@ -2223,8 +2224,8 @@ async function openingRunningMarksBusyBeforeHydration() {
 }
 
 async function followupQueuedUntilScheduledInitialTurnTerminal() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
   await bridge.sessions.switchToSession("chat-origin");
   assert.strictEqual(await bridge.scheduled.openScheduledRunChat({
     id: "run-followup",
@@ -2234,12 +2235,12 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
     unread: false,
   }, { id: "automation-followup", name: "Follow-up task" }), true);
   harness.emit("chat:delta", { session_id: "sched-followup", text: "initial scheduled output" });
-  var initialAssistantCount = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.filter(function (item) {
+  const initialAssistantCount = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.filter(function (item) {
     return item.type === "assistant";
   }).length;
 
   await bridge.chat.sendMessage("follow up after the scheduled run");
-  var queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(queued.queued.length, 1, "follow-up input must queue while the initial scheduled turn is active");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
@@ -2255,7 +2256,7 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
   harness.emit("chat:done", { session_id: "sched-followup" });
   await tick();
   await tick();
-  var flushed = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const flushed = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(flushed.queued.length, 0);
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
@@ -2269,7 +2270,7 @@ async function webFollowupQueuedUntilScheduledInitialTurnTerminal() {
   // Web-bridge mirror of the case above: the scheduled session's terminal
   // event must release the remote-authority gate (not arm it), so the queued
   // follow-up drains instead of dead-locking inside reconcileRemoteTurn.
-  var harness = createBridgeHarness(Object.create(null), {
+  const harness = createBridgeHarness(Object.create(null), {
     bridgeKind: "web",
     webSupportedCommands: [
       "web_access_chat", "web_access_load_session_chunk",
@@ -2279,7 +2280,7 @@ async function webFollowupQueuedUntilScheduledInitialTurnTerminal() {
       "web_access_status",
     ],
   });
-  var bridge = harness.bridge;
+  const bridge = harness.bridge;
   await bridge.sessions.switchToSession("chat-origin");
   assert.strictEqual(await bridge.scheduled.openScheduledRunChat({
     id: "run-followup-web",
@@ -2289,12 +2290,12 @@ async function webFollowupQueuedUntilScheduledInitialTurnTerminal() {
     unread: false,
   }, { id: "automation-followup-web", name: "Follow-up task" }), true);
   harness.emit("chat:delta", { session_id: "sched-followup-web", text: "initial scheduled output" });
-  var initialAssistantCount = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.filter(function (item) {
+  const initialAssistantCount = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.filter(function (item) {
     return item.type === "assistant";
   }).length;
 
   await bridge.chat.sendMessage("follow up after the scheduled run");
-  var queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(queued.queued.length, 1, "web: follow-up input must queue while the initial scheduled turn is active");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "web_access_chat" || call.cmd === "chat"; }).length,
@@ -2310,7 +2311,7 @@ async function webFollowupQueuedUntilScheduledInitialTurnTerminal() {
   harness.emit("chat:done", { session_id: "sched-followup-web" });
   await tick();
   await tick();
-  var flushed = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const flushed = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(flushed.queued.length, 0, "web: the queued follow-up must drain after the scheduled terminal event");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "web_access_chat" || call.cmd === "chat"; }).length,
@@ -2321,10 +2322,10 @@ async function webFollowupQueuedUntilScheduledInitialTurnTerminal() {
 }
 
 async function terminalEventWinsStaleRunningOpen() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var firstLoad = deferred();
-  var loads = 0;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const firstLoad = deferred();
+  let loads = 0;
   harness.handlers.load_session = function (args) {
     if (args.id !== "sched-terminal-wins") {
       return { metadata: { id: args.id, title: "Origin" }, messages: [], artifacts: [] };
@@ -2336,7 +2337,7 @@ async function terminalEventWinsStaleRunningOpen() {
       messages: [], artifacts: [],
     };
   };
-  var staleRun = {
+  const staleRun = {
     id: "run-terminal-wins",
     automationId: "automation-terminal-wins",
     sessionId: "sched-terminal-wins",
@@ -2344,7 +2345,7 @@ async function terminalEventWinsStaleRunningOpen() {
     unread: false,
   };
   await bridge.sessions.switchToSession("chat-origin");
-  var opening = bridge.scheduled.openScheduledRunChat(staleRun, {
+  const opening = bridge.scheduled.openScheduledRunChat(staleRun, {
     id: staleRun.automationId,
     name: "Terminal wins task",
   });
@@ -2374,9 +2375,9 @@ async function terminalEventWinsStaleRunningOpen() {
     "a follow-up after terminal should start normally instead of remaining queued"
   );
 
-  var completedHarness = createBridgeHarness();
-  var completedBridge = completedHarness.bridge;
-  var completedSessionId = "owned-completed-session";
+  const completedHarness = createBridgeHarness();
+  const completedBridge = completedHarness.bridge;
+  const completedSessionId = "owned-completed-session";
   await completedBridge.sessions.switchToSession("chat-origin");
   assert.strictEqual(await completedBridge.scheduled.openScheduledRunChat({
     id: "run-completed-owned",
@@ -2401,8 +2402,8 @@ async function terminalEventWinsStaleRunningOpen() {
 }
 
 async function scheduledDoneBeforeBufferCreatesTerminalTombstone() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
   await bridge.sessions.switchToSession("chat-origin");
 
   harness.emit("chat:done", { session_id: "sched-done-before-buffer" });
@@ -2437,18 +2438,18 @@ async function scheduledDoneBeforeBufferCreatesTerminalTombstone() {
 }
 
 async function authoritativeTurnSyncDoesNotCrossSessions() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
   await bridge.sessions.switchToSession("chat-authority-a");
   harness.emit("chat:delta", { session_id: "chat-authority-a", text: "remote tail" });
-  var authorityLoad = deferred();
+  const authorityLoad = deferred();
   harness.handlers.load_session = function (args) {
     if (args.id === "chat-authority-a") return authorityLoad.promise;
     return { metadata: { id: args.id, title: "Other" }, messages: [], artifacts: [] };
   };
   harness.emit("chat:done", { session_id: "chat-authority-a" });
   await tick();
-  var pendingSend = bridge.chat.sendMessage("must stay in A");
+  const pendingSend = bridge.chat.sendMessage("must stay in A");
   await tick();
   assert.strictEqual(await bridge.sessions.switchToSession("chat-authority-b"), true);
   authorityLoad.resolve({
@@ -2471,8 +2472,8 @@ async function authoritativeTurnSyncDoesNotCrossSessions() {
 }
 
 async function authoritativeHydrateDropsReplayedAssistantTail() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
   await bridge.sessions.switchToSession("chat-authority-tail");
   harness.emit("chat:delta", { session_id: "chat-authority-tail", text: "answer tail" });
   harness.handlers.load_session = function (args) {
@@ -2489,7 +2490,7 @@ async function authoritativeHydrateDropsReplayedAssistantTail() {
   harness.emit("chat:done", { session_id: "chat-authority-tail" });
   await tick();
   await tick();
-  var assistantItems = bridge.state.get('chat').chatItems.filter(function (item) {
+  const assistantItems = bridge.state.get('chat').chatItems.filter(function (item) {
     return item.type === "assistant";
   });
   assert.strictEqual(assistantItems.length, 1, "durable full answer must replace the replayed assistant tail");
@@ -2506,10 +2507,10 @@ async function authoritativeHydrateDropsReplayedAssistantTail() {
 }
 
 async function interruptedTurnRetainsDisplayOnlyPartial() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var sessionId = "chat-interrupted-display-only";
-  var durableMessages = [];
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sessionId = "chat-interrupted-display-only";
+  let durableMessages = [];
   harness.handlers.create_session = function () {
     return { id: sessionId, title: "New chat", transcript_revision: "empty" };
   };
@@ -2543,7 +2544,7 @@ async function interruptedTurnRetainsDisplayOnlyPartial() {
   await tick();
   await tick();
 
-  var interruptedState = bridge.state.get("chat");
+  const interruptedState = bridge.state.get("chat");
   assert.strictEqual(
     interruptedState.messages.some(function (message) {
       return JSON.stringify(message).includes("partial reply");
@@ -2560,14 +2561,14 @@ async function interruptedTurnRetainsDisplayOnlyPartial() {
   );
 
   await bridge.chat.sendMessage("follow up");
-  var followupState = bridge.state.get("chat");
-  var firstUserIndex = followupState.chatItems.findIndex(function (item) {
+  const followupState = bridge.state.get("chat");
+  const firstUserIndex = followupState.chatItems.findIndex(function (item) {
     return item.type === "user" && item.text === "first question";
   });
-  var partialIndex = followupState.chatItems.findIndex(function (item) {
+  const partialIndex = followupState.chatItems.findIndex(function (item) {
     return item.type === "assistant" && item.interruptedDisplayOnly === true;
   });
-  var followupIndex = followupState.chatItems.findIndex(function (item) {
+  const followupIndex = followupState.chatItems.findIndex(function (item) {
     return item.type === "user" && item.text === "follow up";
   });
   assert.ok(
@@ -2589,12 +2590,12 @@ async function interruptedTurnRetainsDisplayOnlyPartial() {
   await tick();
   await tick();
 
-  var completedState = bridge.state.get("chat");
-  var completedPartialIndex = completedState.chatItems.findIndex(function (item) {
+  const completedState = bridge.state.get("chat");
+  const completedPartialIndex = completedState.chatItems.findIndex(function (item) {
     return item.type === "assistant" && item.interruptedDisplayOnly === true &&
       String(item.html || "").includes("partial reply");
   });
-  var completedFollowupIndex = completedState.chatItems.findIndex(function (item) {
+  const completedFollowupIndex = completedState.chatItems.findIndex(function (item) {
     return item.type === "user" && item.text === "follow up";
   });
   assert.ok(
@@ -2611,10 +2612,10 @@ async function interruptedTurnRetainsDisplayOnlyPartial() {
 }
 
 async function remoteInterruptedTurnKeepsItsDisplayPosition() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var sessionId = "chat-remote-interrupted-display";
-  var durableMessages = [
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sessionId = "chat-remote-interrupted-display";
+  let durableMessages = [
     { role: "user", content: [{ type: "text", text: "older question" }] },
     { role: "assistant", content: [{ type: "text", text: "remote partial reply" }] },
   ];
@@ -2639,9 +2640,9 @@ async function remoteInterruptedTurnKeepsItsDisplayPosition() {
     base_transcript_revision: "remote-2",
   });
   await harness.emit("chat:turn_started", { session_id: sessionId });
-  durableMessages = durableMessages.concat([
+  durableMessages = [...durableMessages, 
     { role: "user", content: [{ type: "text", text: "remote question" }] },
-  ]);
+  ];
   await harness.emit("chat:delta", {
     session_id: sessionId,
     text: "remote partial reply",
@@ -2654,14 +2655,14 @@ async function remoteInterruptedTurnKeepsItsDisplayPosition() {
   await tick();
   await tick();
 
-  var chatItems = bridge.state.get("chat").chatItems;
-  var olderUserIndex = chatItems.findIndex(function (item) {
+  const chatItems = bridge.state.get("chat").chatItems;
+  const olderUserIndex = chatItems.findIndex(function (item) {
     return item.type === "user" && item.text === "older question";
   });
-  var remoteUserIndex = chatItems.findIndex(function (item) {
+  const remoteUserIndex = chatItems.findIndex(function (item) {
     return item.type === "user" && item.text === "remote question";
   });
-  var partialIndex = chatItems.findIndex(function (item) {
+  const partialIndex = chatItems.findIndex(function (item) {
     return item.type === "assistant" && item.interruptedDisplayOnly === true &&
       String(item.html || "").includes("remote partial reply");
   });
@@ -2672,10 +2673,10 @@ async function remoteInterruptedTurnKeepsItsDisplayPosition() {
 }
 
 async function interruptedTurnWithoutUserItemDropsPartial() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var sessionId = "chat-interrupted-no-user-anchor";
-  var durableMessages = [
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sessionId = "chat-interrupted-no-user-anchor";
+  let durableMessages = [
     { role: "assistant", content: [{ type: "text", text: "old reply" }] },
   ];
   harness.handlers.list_sessions = function () {
@@ -2708,7 +2709,7 @@ async function interruptedTurnWithoutUserItemDropsPartial() {
   await tick();
   await tick();
 
-  var unanchoredState = bridge.state.get("chat");
+  const unanchoredState = bridge.state.get("chat");
   assert.ok(
     !unanchoredState.chatItems.some(function (item) {
       return item.interruptedDisplayOnly === true;
@@ -2744,8 +2745,8 @@ async function interruptedTurnWithoutUserItemDropsPartial() {
   await tick();
   await tick();
 
-  var followupState = bridge.state.get("chat");
-  var assistantMessages = followupState.messages.filter(function (message) {
+  const followupState = bridge.state.get("chat");
+  const assistantMessages = followupState.messages.filter(function (message) {
     return message.role === "assistant";
   });
   assert.ok(
@@ -2756,11 +2757,11 @@ async function interruptedTurnWithoutUserItemDropsPartial() {
 }
 
 async function completedTurnWaitsForAssistantInAuthoritySnapshot() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var sessionId = "chat-created-authority-barrier";
-  var authorityLoads = 0;
-  var remoteTurnStarted = false;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sessionId = "chat-created-authority-barrier";
+  let authorityLoads = 0;
+  let remoteTurnStarted = false;
   harness.handlers.load_session = function () {
     if (!remoteTurnStarted) {
       return {
@@ -2818,14 +2819,14 @@ async function completedTurnWaitsForAssistantInAuthoritySnapshot() {
 }
 
 async function localCompletedTurnNeverBlocksTheNextMessage() {
-  for (var bridgeKind of ["tauri", "web"]) {
-    var harness = createBridgeHarness(null, {
-      bridgeKind: bridgeKind,
+  for (const bridgeKind of ["tauri", "web"]) {
+    const harness = createBridgeHarness(null, {
+      bridgeKind,
       setTimeout: function (callback) { return setImmediate(callback); },
     });
-    var bridge = harness.bridge;
-    var sessionId = "chat-local-terminal-nonblocking-" + bridgeKind;
-    var durable = {
+    const bridge = harness.bridge;
+    const sessionId = "chat-local-terminal-nonblocking-" + bridgeKind;
+    const durable = {
       metadata: { id: sessionId, title: "Local nonblocking", message_count: 0 },
       messages: [],
       artifacts: [],
@@ -2851,9 +2852,9 @@ async function localCompletedTurnNeverBlocksTheNextMessage() {
       transcript_revision: "revision-after-local-turn",
     });
     await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
-    for (var settleTick = 0; settleTick < 12; settleTick++) await tick();
+    for (let settleTick = 0; settleTick < 12; settleTick++) await tick();
 
-    var afterDone = bridge.state.get("chat");
+    const afterDone = bridge.state.get("chat");
     assert.strictEqual(afterDone.busy, false,
       bridgeKind + " completed local turn must release busy immediately");
     assert.ok(
@@ -2862,7 +2863,7 @@ async function localCompletedTurnNeverBlocksTheNextMessage() {
     );
 
     await bridge.chat.sendMessage("second local question");
-    var chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
+    const chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
     assert.strictEqual(
       harness.calls.filter(function (call) { return call.cmd === chatCommand; }).length,
       2,
@@ -2879,14 +2880,14 @@ async function localCompletedTurnNeverBlocksTheNextMessage() {
 }
 
 async function completedTurnUsesCommittedRevisionAsAuthority() {
-  var harness = createBridgeHarness(null, {
+  const harness = createBridgeHarness(null, {
     // A broken implementation exhausts all fallback retries. Keep that path
     // deterministic and fast instead of adding more than a second to the test.
     setTimeout: function (callback) { return setImmediate(callback); },
   });
-  var bridge = harness.bridge;
-  var sessionId = "chat-committed-revision-authority";
-  var durable = {
+  const bridge = harness.bridge;
+  const sessionId = "chat-committed-revision-authority";
+  let durable = {
     metadata: { id: sessionId, title: "Revision authority", message_count: 0 },
     messages: [],
     artifacts: [],
@@ -2923,7 +2924,7 @@ async function completedTurnUsesCommittedRevisionAsAuthority() {
   await tick();
   await tick();
 
-  var state = bridge.state.get("chat");
+  const state = bridge.state.get("chat");
   assert.ok(
     state.chatItems.some(function (item) {
       return item.type === "assistant" && String(item.html || "").includes("canonical persisted answer");
@@ -2946,12 +2947,12 @@ async function completedTurnUsesCommittedRevisionAsAuthority() {
 }
 
 async function completedTurnKeepsWarningWhenRevisionMismatches() {
-  var harness = createBridgeHarness(null, {
+  const harness = createBridgeHarness(null, {
     setTimeout: function (callback) { return setImmediate(callback); },
   });
-  var bridge = harness.bridge;
-  var sessionId = "chat-revision-mismatch-warning";
-  var durable = {
+  const bridge = harness.bridge;
+  const sessionId = "chat-revision-mismatch-warning";
+  let durable = {
     metadata: { id: sessionId, title: "Revision mismatch", message_count: 0 },
     messages: [],
     artifacts: [],
@@ -2982,9 +2983,9 @@ async function completedTurnKeepsWarningWhenRevisionMismatches() {
   });
   await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
   // 负向路径会耗尽 6 次重试:用 setImmediate 加速的轮次等待对账终态。
-  for (var mismatchTick = 0; mismatchTick < 20; mismatchTick++) await tick();
+  for (let mismatchTick = 0; mismatchTick < 20; mismatchTick++) await tick();
 
-  var state = bridge.state.get("chat");
+  const state = bridge.state.get("chat");
   assert.ok(
     state.chatItems.some(function (item) {
       return item.type === "system" && String(item.text || "").includes("权威记录暂未同步");
@@ -2994,12 +2995,12 @@ async function completedTurnKeepsWarningWhenRevisionMismatches() {
 }
 
 async function completedTurnAdoptsLateCommittedRevision() {
-  var harness = createBridgeHarness(null, {
+  const harness = createBridgeHarness(null, {
     setTimeout: function (callback) { return setImmediate(callback); },
   });
-  var bridge = harness.bridge;
-  var sessionId = "chat-late-committed-revision";
-  var durable = {
+  const bridge = harness.bridge;
+  const sessionId = "chat-late-committed-revision";
+  let durable = {
     metadata: { id: sessionId, title: "Late committed", message_count: 0 },
     messages: [],
     artifacts: [],
@@ -3029,9 +3030,9 @@ async function completedTurnAdoptsLateCommittedRevision() {
     session_id: sessionId,
     transcript_revision: "revision-after-done",
   });
-  for (var i = 0; i < 8; i++) await tick();
+  for (let i = 0; i < 8; i++) await tick();
 
-  var state = bridge.state.get("chat");
+  const state = bridge.state.get("chat");
   assert.ok(
     state.chatItems.some(function (item) {
       return item.type === "assistant" && String(item.html || "").includes("canonical persisted answer");
@@ -3047,12 +3048,12 @@ async function completedTurnAdoptsLateCommittedRevision() {
 }
 
 async function completedTurnFallsBackWhenSnapshotLacksRevision() {
-  var harness = createBridgeHarness(null, {
+  const harness = createBridgeHarness(null, {
     setTimeout: function (callback) { return setImmediate(callback); },
   });
-  var bridge = harness.bridge;
-  var sessionId = "chat-snapshot-no-revision";
-  var durable = {
+  const bridge = harness.bridge;
+  const sessionId = "chat-snapshot-no-revision";
+  let durable = {
     metadata: { id: sessionId, title: "No revision", message_count: 0 },
     messages: [],
     artifacts: [],
@@ -3083,7 +3084,7 @@ async function completedTurnFallsBackWhenSnapshotLacksRevision() {
   await tick();
   await tick();
 
-  var state = bridge.state.get("chat");
+  const state = bridge.state.get("chat");
   assert.ok(
     state.chatItems.some(function (item) {
       return item.type === "assistant" && String(item.html || "").includes("final answer");
@@ -3099,12 +3100,12 @@ async function completedTurnFallsBackWhenSnapshotLacksRevision() {
 }
 
 async function completedTurnAdoptsRevisionBumpDuringRetry() {
-  var harness = createBridgeHarness(null, {
+  const harness = createBridgeHarness(null, {
     setTimeout: function (callback) { return setImmediate(callback); },
   });
-  var bridge = harness.bridge;
-  var sessionId = "chat-revision-bump-during-retry";
-  var durable = {
+  const bridge = harness.bridge;
+  const sessionId = "chat-revision-bump-during-retry";
+  let durable = {
     metadata: { id: sessionId, title: "Revision bump", message_count: 0 },
     messages: [],
     artifacts: [],
@@ -3146,9 +3147,9 @@ async function completedTurnAdoptsRevisionBumpDuringRetry() {
     session_id: sessionId,
     transcript_revision: "revision-2",
   });
-  for (var bumpTick = 0; bumpTick < 12; bumpTick++) await tick();
+  for (let bumpTick = 0; bumpTick < 12; bumpTick++) await tick();
 
-  var state = bridge.state.get("chat");
+  const state = bridge.state.get("chat");
   assert.ok(
     state.chatItems.some(function (item) {
       return item.type === "assistant" && String(item.html || "").includes("canonical answer 2");
@@ -3164,12 +3165,12 @@ async function completedTurnAdoptsRevisionBumpDuringRetry() {
 }
 
 async function editLastTurnBlockedWhileAuthorityReconcilePending() {
-  var harness = createBridgeHarness(null, {
+  const harness = createBridgeHarness(null, {
     setTimeout: function (callback) { return setImmediate(callback); },
   });
-  var bridge = harness.bridge;
-  var sessionId = "chat-edit-blocked-unsynced";
-  var durable = {
+  const bridge = harness.bridge;
+  const sessionId = "chat-edit-blocked-unsynced";
+  let durable = {
     metadata: { id: sessionId, title: "Edit blocked", message_count: 0 },
     messages: [],
     artifacts: [],
@@ -3201,18 +3202,18 @@ async function editLastTurnBlockedWhileAuthorityReconcilePending() {
   });
   await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
   // 负向路径耗尽 6 次重试:setImmediate 加速的轮次等待对账终态。
-  for (var mismatchTick = 0; mismatchTick < 20; mismatchTick++) await tick();
+  for (let mismatchTick = 0; mismatchTick < 20; mismatchTick++) await tick();
 
-  var editCallsBefore = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; }).length;
+  const editCallsBefore = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; }).length;
   await bridge.interaction.editLastTurn("edited question");
   await bridge.interaction.editLastTurn("edited question again");
-  var editCallsAfter = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; }).length;
+  const editCallsAfter = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; }).length;
   assert.strictEqual(
     editCallsAfter, editCallsBefore,
     "editing must be blocked while the authority reconcile is still pending"
   );
 
-  var blockedState = bridge.state.get("chat");
+  const blockedState = bridge.state.get("chat");
   assert.strictEqual(
     blockedState.chatItems.filter(function (item) {
       return item && item.authoritySyncNotice;
@@ -3300,10 +3301,10 @@ async function rejectedEditRestoresAuthoritativeTranscript(bridgeKind) {
 }
 
 async function remoteAcceptPlanConvergesAcrossClients() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var backendMode = "plan";
-  var planSnapshot = {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  let backendMode = "plan";
+  const planSnapshot = {
     explanation: "execute the approved work",
     items: [{ step: "ship it", status: "pending" }],
   };
@@ -3315,7 +3316,7 @@ async function remoteAcceptPlanConvergesAcrossClients() {
     mode_state: { mode: "plan" },
     plan_snapshot: planSnapshot,
   });
-  var activePlan = bridge.state.get('chat').chatItems.find(function (item) {
+  const activePlan = bridge.state.get('chat').chatItems.find(function (item) {
     return item.type === "plan_card" && item.cardState === "active";
   });
   assert.ok(activePlan, "the remote-accept regression needs one actionable plan card");
@@ -3331,8 +3332,8 @@ async function remoteAcceptPlanConvergesAcrossClients() {
     mode_state: { mode: "yolo" },
     base_transcript_revision: "plan-before-accept",
   });
-  var admitted = bridge.state.getMany(['sessions', 'chat']);
-  var admittedPlan = admitted.chatItems.find(function (item) { return item.id === activePlan.id; });
+  const admitted = bridge.state.getMany(['sessions', 'chat']);
+  const admittedPlan = admitted.chatItems.find(function (item) { return item.id === activePlan.id; });
   assert.ok(admittedPlan && admittedPlan.resolved, "a remote accept must resolve the local active plan immediately");
   assert.notStrictEqual(admittedPlan.cardState, "active", "a remote accepted plan must stop being actionable");
   assert.strictEqual(admitted.modeState.mode, "yolo", "the accept event must synchronize the shared mode");
@@ -3373,8 +3374,8 @@ async function remoteAcceptPlanConvergesAcrossClients() {
   await tick();
   await tick();
 
-  var terminal = bridge.state.getMany(['sessions', 'chat']);
-  var terminalPlans = terminal.chatItems.filter(function (item) { return item.type === "plan_card"; });
+  const terminal = bridge.state.getMany(['sessions', 'chat']);
+  const terminalPlans = terminal.chatItems.filter(function (item) { return item.type === "plan_card"; });
   assert.strictEqual(terminalPlans.length, 1, "terminal authority hydrate must not duplicate the resolved plan card");
   assert.ok(
     terminalPlans.every(function (item) { return item.resolved && item.cardState !== "active"; }),
@@ -3394,8 +3395,8 @@ async function remoteAcceptPlanConvergesAcrossClients() {
 }
 
 async function activePlanSurvivesUnrelatedTerminalHydrate() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
   harness.handlers.get_mode_state = function () { return { mode: "plan" }; };
   await bridge.sessions.switchToSession("chat-active-plan-survives");
   harness.emit("chat:plan_ready", {
@@ -3424,18 +3425,18 @@ async function activePlanSurvivesUnrelatedTerminalHydrate() {
   harness.emit("chat:done", { session_id: "chat-active-plan-survives" });
   await tick();
   await tick();
-  var plans = bridge.state.get('chat').chatItems.filter(function (item) { return item.type === "plan_card"; });
+  const plans = bridge.state.get('chat').chatItems.filter(function (item) { return item.type === "plan_card"; });
   assert.strictEqual(plans.length, 1, "an unrelated terminal hydrate must retain the genuinely active plan");
   assert.strictEqual(plans[0].cardState, "active");
   assert.strictEqual(plans[0].resolved, false);
 }
 
 async function activePlanHydrateMigratesTicketWithoutDuplicate() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var sessionId = "chat-active-plan-hydrate";
-  var planId = "plan-ticket-active-hydrate";
-  var planSnapshot = {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sessionId = "chat-active-plan-hydrate";
+  const planId = "plan-ticket-active-hydrate";
+  const planSnapshot = {
     explanation: "hydrate the canonical plan card",
     items: [{ step: "keep one actionable card", status: "pending" }],
   };
@@ -3474,7 +3475,7 @@ async function activePlanHydrateMigratesTicketWithoutDuplicate() {
   await tick();
   await tick();
 
-  var hydratedPlans = bridge.state.get('chat').chatItems.filter(function (item) {
+  const hydratedPlans = bridge.state.get('chat').chatItems.filter(function (item) {
     return item.type === "plan_card";
   });
   assert.strictEqual(
@@ -3505,9 +3506,9 @@ async function activePlanHydrateMigratesTicketWithoutDuplicate() {
 }
 
 async function planNotActiveRollbackFreezesStaleCard() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var backendMode = "plan";
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  let backendMode = "plan";
   harness.handlers.get_mode_state = function () { return { mode: backendMode }; };
   harness.handlers.accept_plan = function (args) {
     assert.strictEqual(args.planId, "plan-ticket-stale", "accept_plan must carry the exact plan ticket");
@@ -3520,20 +3521,20 @@ async function planNotActiveRollbackFreezesStaleCard() {
     mode_state: { mode: "plan" },
     plan_snapshot: { items: [{ step: "stale work", status: "pending" }] },
   });
-  var plan = bridge.state.get('chat').chatItems.find(function (item) { return item.type === "plan_card"; });
+  const plan = bridge.state.get('chat').chatItems.find(function (item) { return item.type === "plan_card"; });
   assert.ok(plan && plan.cardState === "active");
   backendMode = "yolo";
   await bridge.interaction.acceptPlan(plan.id, plan.planMarkdown, undefined, plan.planId);
-  var rolledBack = bridge.state.getMany(['sessions', 'chat']);
-  var stalePlan = rolledBack.chatItems.find(function (item) { return item.id === plan.id; });
+  const rolledBack = bridge.state.getMany(['sessions', 'chat']);
+  const stalePlan = rolledBack.chatItems.find(function (item) { return item.id === plan.id; });
   assert.ok(stalePlan && stalePlan.resolved, "plan_not_active must freeze the stale local card");
   assert.notStrictEqual(stalePlan.cardState, "active", "plan_not_active must never restore an old action button");
   assert.strictEqual(rolledBack.modeState.mode, "yolo", "plan_not_active must resynchronize backend mode");
 }
 
 async function planTicketCommandsAndRemoteDiscardConverge() {
-  var localHarness = createBridgeHarness();
-  var localBridge = localHarness.bridge;
+  const localHarness = createBridgeHarness();
+  const localBridge = localHarness.bridge;
   localHarness.handlers.get_mode_state = function () { return { mode: "plan" }; };
   localHarness.handlers.discard_plan = function (args) {
     assert.strictEqual(args.sessionId, "chat-local-plan-discard");
@@ -3547,7 +3548,7 @@ async function planTicketCommandsAndRemoteDiscardConverge() {
     mode_state: { mode: "plan" },
     plan_snapshot: { items: [{ step: "discard locally", status: "pending" }] },
   });
-  var localPlan = localBridge.state.get('chat').chatItems.find(function (item) { return item.type === "plan_card"; });
+  const localPlan = localBridge.state.get('chat').chatItems.find(function (item) { return item.type === "plan_card"; });
   await localBridge.interaction.discardPlan(localPlan.id, localPlan.planId);
   assert.strictEqual(
     localHarness.calls.filter(function (call) { return call.cmd === "discard_plan"; }).length,
@@ -3561,8 +3562,8 @@ async function planTicketCommandsAndRemoteDiscardConverge() {
     "a locally discarded card must not be executable again"
   );
 
-  var remoteHarness = createBridgeHarness();
-  var remoteBridge = remoteHarness.bridge;
+  const remoteHarness = createBridgeHarness();
+  const remoteBridge = remoteHarness.bridge;
   remoteHarness.handlers.get_mode_state = function () { return { mode: "plan" }; };
   await remoteBridge.sessions.switchToSession("chat-remote-plan-discard");
   remoteHarness.emit("chat:plan_ready", {
@@ -3571,15 +3572,15 @@ async function planTicketCommandsAndRemoteDiscardConverge() {
     mode_state: { mode: "plan" },
     plan_snapshot: { items: [{ step: "discard remotely", status: "pending" }] },
   });
-  var remotePlan = remoteBridge.state.get('chat').chatItems.find(function (item) { return item.type === "plan_card"; });
-  var userCountBefore = remoteBridge.state.get('chat').chatItems.filter(function (item) { return item.type === "user"; }).length;
+  const remotePlan = remoteBridge.state.get('chat').chatItems.find(function (item) { return item.type === "plan_card"; });
+  const userCountBefore = remoteBridge.state.get('chat').chatItems.filter(function (item) { return item.type === "user"; }).length;
   remoteHarness.emit("chat:plan_resolved", {
     session_id: "chat-remote-plan-discard",
     plan_id: "plan-ticket-remote-discard",
     mode_state: { mode: "plan" },
   });
-  var remotelyResolved = remoteBridge.state.get('chat');
-  var resolvedCard = remotelyResolved.chatItems.find(function (item) { return item.id === remotePlan.id; });
+  const remotelyResolved = remoteBridge.state.get('chat');
+  const resolvedCard = remotelyResolved.chatItems.find(function (item) { return item.id === remotePlan.id; });
   assert.ok(resolvedCard && resolvedCard.resolved && resolvedCard.cardState === "frozen",
     "chat:plan_resolved must immediately freeze the matching remote card");
   assert.strictEqual(remotelyResolved.busy, false, "discard resolution must not create a model turn");
@@ -3598,8 +3599,8 @@ async function planTicketCommandsAndRemoteDiscardConverge() {
 }
 
 async function discardPlanFailureRollbackFollowsTicketAuthority() {
-  var transientHarness = createBridgeHarness();
-  var transientBridge = transientHarness.bridge;
+  const transientHarness = createBridgeHarness();
+  const transientBridge = transientHarness.bridge;
   transientHarness.handlers.get_mode_state = function () { return { mode: "plan" }; };
   transientHarness.handlers.discard_plan = function () { throw new Error("relay temporarily unavailable"); };
   await transientBridge.sessions.switchToSession("chat-discard-transient");
@@ -3609,15 +3610,15 @@ async function discardPlanFailureRollbackFollowsTicketAuthority() {
     mode_state: { mode: "plan" },
     plan_snapshot: { items: [{ step: "retry discard", status: "pending" }] },
   });
-  var transientPlan = transientBridge.state.get('chat').chatItems.find(function (item) { return item.type === "plan_card"; });
+  const transientPlan = transientBridge.state.get('chat').chatItems.find(function (item) { return item.type === "plan_card"; });
   await transientBridge.interaction.discardPlan(transientPlan.id, transientPlan.planId);
-  var restoredPlan = transientBridge.state.get('chat').chatItems.find(function (item) { return item.id === transientPlan.id; });
+  const restoredPlan = transientBridge.state.get('chat').chatItems.find(function (item) { return item.id === transientPlan.id; });
   assert.ok(restoredPlan && restoredPlan.cardState === "active" && restoredPlan.resolved === false,
     "a definite transient discard failure must restore the still-valid ticket");
 
-  var staleHarness = createBridgeHarness();
-  var staleBridge = staleHarness.bridge;
-  var backendMode = "plan";
+  const staleHarness = createBridgeHarness();
+  const staleBridge = staleHarness.bridge;
+  let backendMode = "plan";
   staleHarness.handlers.get_mode_state = function () { return { mode: backendMode }; };
   staleHarness.handlers.discard_plan = function () { throw new Error("discard_plan: plan_not_active"); };
   await staleBridge.sessions.switchToSession("chat-discard-stale");
@@ -3627,10 +3628,10 @@ async function discardPlanFailureRollbackFollowsTicketAuthority() {
     mode_state: { mode: "plan" },
     plan_snapshot: { items: [{ step: "already resolved", status: "pending" }] },
   });
-  var stalePlan = staleBridge.state.get('chat').chatItems.find(function (item) { return item.type === "plan_card"; });
+  const stalePlan = staleBridge.state.get('chat').chatItems.find(function (item) { return item.type === "plan_card"; });
   backendMode = "yolo";
   await staleBridge.interaction.discardPlan(stalePlan.id, stalePlan.planId);
-  var frozenPlan = staleBridge.state.get('chat').chatItems.find(function (item) { return item.id === stalePlan.id; });
+  const frozenPlan = staleBridge.state.get('chat').chatItems.find(function (item) { return item.id === stalePlan.id; });
   assert.ok(frozenPlan && frozenPlan.cardState === "frozen" && frozenPlan.resolved,
     "plan_not_active must keep the stale discard ticket frozen");
   assert.strictEqual(staleBridge.state.get('chat').modeState.mode, "yolo",
@@ -3638,7 +3639,7 @@ async function discardPlanFailureRollbackFollowsTicketAuthority() {
 }
 
 async function failedRunningOpenRollsBackOnlyItsProvisionalBusy() {
-  var failedLoadHarness = createBridgeHarness();
+  const failedLoadHarness = createBridgeHarness();
   await failedLoadHarness.bridge.sessions.switchToSession("chat-origin");
   failedLoadHarness.handlers.load_session = function (args) {
     if (args.id === "sched-open-load-fails") throw new Error("scheduled load failed");
@@ -3656,14 +3657,14 @@ async function failedRunningOpenRollsBackOnlyItsProvisionalBusy() {
     "a failed running open must roll back the provisional busy flag it introduced"
   );
 
-  var staleRequestHarness = createBridgeHarness();
-  var targetLoad = deferred();
+  const staleRequestHarness = createBridgeHarness();
+  const targetLoad = deferred();
   staleRequestHarness.handlers.load_session = function (args) {
     if (args.id === "sched-open-stale-request") return targetLoad.promise;
     return { metadata: { id: args.id, title: "Other" }, messages: [], artifacts: [] };
   };
   await staleRequestHarness.bridge.sessions.switchToSession("chat-origin");
-  var staleOpening = staleRequestHarness.bridge.scheduled.openScheduledRunChat({
+  const staleOpening = staleRequestHarness.bridge.scheduled.openScheduledRunChat({
     id: "run-open-stale-request",
     automationId: "automation-open-stale-request",
     sessionId: "sched-open-stale-request",
@@ -3682,9 +3683,9 @@ async function failedRunningOpenRollsBackOnlyItsProvisionalBusy() {
     "an invalidated running open must roll back only its provisional busy flag"
   );
 
-  var liveHarness = createBridgeHarness();
+  const liveHarness = createBridgeHarness();
   await liveHarness.bridge.sessions.switchToSession("chat-origin");
-  var liveRun = {
+  const liveRun = {
     id: "run-open-live",
     automationId: "automation-open-live",
     sessionId: "sched-open-live",
@@ -3706,9 +3707,9 @@ async function failedRunningOpenRollsBackOnlyItsProvisionalBusy() {
 }
 
 async function concurrentFailedRunningOpensShareRollback() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var loadCalls = 0;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  let loadCalls = 0;
   await bridge.sessions.switchToSession("chat-origin");
   harness.handlers.load_session = function (args) {
     if (args.id === "sched-double-open-fails") {
@@ -3717,15 +3718,15 @@ async function concurrentFailedRunningOpensShareRollback() {
     }
     return { metadata: { id: args.id, title: "Origin" }, messages: [], artifacts: [] };
   };
-  var run = {
+  const run = {
     id: "run-double-open-fails",
     automationId: "automation-double-open-fails",
     sessionId: "sched-double-open-fails",
     status: "running",
   };
-  var first = bridge.scheduled.openScheduledRunChat(run, { name: "Double open task" });
-  var second = bridge.scheduled.openScheduledRunChat(run, { name: "Double open task" });
-  var results = await Promise.all([first, second]);
+  const first = bridge.scheduled.openScheduledRunChat(run, { name: "Double open task" });
+  const second = bridge.scheduled.openScheduledRunChat(run, { name: "Double open task" });
+  const results = await Promise.all([first, second]);
 
   assert.deepStrictEqual(results, [false, false]);
   assert.strictEqual(loadCalls, 1, "concurrent opens for one scheduled session must share one durable load");
@@ -3736,10 +3737,10 @@ async function concurrentFailedRunningOpensShareRollback() {
 }
 
 async function scheduledOwnerRegistryIsBoundedAndProtectsLive() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
   await bridge.sessions.switchToSession("chat-origin");
-  var liveRun = {
+  const liveRun = {
     id: "run-owner-live",
     automationId: "automation-owner-live",
     sessionId: "owned-owner-live",
@@ -3795,9 +3796,9 @@ async function scheduledOwnerRegistryIsBoundedAndProtectsLive() {
     "the most recent visible terminal run owner must survive registry pruning"
   );
 
-  var busyHarness = createBridgeHarness();
+  const busyHarness = createBridgeHarness();
   await busyHarness.bridge.sessions.switchToSession("chat-origin");
-  for (var busyIndex = 0; busyIndex < 70; busyIndex++) {
+  for (let busyIndex = 0; busyIndex < 70; busyIndex++) {
     assert.strictEqual(await busyHarness.bridge.scheduled.openScheduledRunChat({
       id: "run-owner-busy-" + busyIndex,
       automationId: "automation-owner-busy-" + busyIndex,
@@ -3822,8 +3823,8 @@ async function scheduledOwnerRegistryIsBoundedAndProtectsLive() {
 }
 
 async function scheduledBufferLruNeverEvictsLive() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
   await bridge.sessions.switchToSession("chat-origin");
 
   harness.emit("chat:delta", {
@@ -3845,7 +3846,7 @@ async function scheduledBufferLruNeverEvictsLive() {
   assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 1);
   assert.strictEqual(await bridge.scheduled.exitScheduledRunChat(), true);
 
-  for (var i = 0; i < 70; i++) {
+  for (let i = 0; i < 70; i++) {
     harness.emit("chat:delta", {
       session_id: "sched-lru-cold-" + i,
       text: "cold " + i,
@@ -3872,16 +3873,16 @@ async function scheduledBufferLruNeverEvictsLive() {
     status: "running",
     unread: false,
   }, { id: "automation-lru-live", name: "LRU live task" }), true);
-  var live = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const live = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.ok(
     JSON.stringify(live.chatItems).includes("live buffer must survive"),
     "LRU must never evict a busy scheduled buffer"
   );
   assert.strictEqual(live.queued.length, 1, "LRU must never evict a scheduled buffer with queued input");
 
-  var saturatedHarness = createBridgeHarness();
+  const saturatedHarness = createBridgeHarness();
   await saturatedHarness.bridge.sessions.switchToSession("chat-origin");
-  for (var protectedIndex = 0; protectedIndex < 64; protectedIndex++) {
+  for (let protectedIndex = 0; protectedIndex < 64; protectedIndex++) {
     assert.strictEqual(await saturatedHarness.bridge.scheduled.openScheduledRunChat({
       id: "run-protected-" + protectedIndex,
       automationId: "automation-protected-" + protectedIndex,
@@ -3904,9 +3905,9 @@ async function scheduledBufferLruNeverEvictsLive() {
 }
 
 async function scheduledTemplateSourcePersistenceBehavior() {
-  var sharedStorage = Object.create(null);
-  var first = createBridgeHarness(sharedStorage);
-  var backendInput = null;
+  const sharedStorage = Object.create(null);
+  const first = createBridgeHarness(sharedStorage);
+  let backendInput = null;
   first.handlers.create_scheduled_task = function (args) {
     backendInput = args.input;
     return Object.assign({ id: "automation-template" }, args.input);
@@ -3915,7 +3916,7 @@ async function scheduledTemplateSourcePersistenceBehavior() {
   first.handlers.list_scheduled_tasks = function () {
     return backendInput ? [Object.assign({ id: "automation-template" }, backendInput)] : [];
   };
-  var created = await first.bridge.scheduled.createScheduledTask({
+  const created = await first.bridge.scheduled.createScheduledTask({
     name: "Completely renamed",
     prompt: "Completely edited prompt",
     rrule: "FREQ=HOURLY;INTERVAL=3",
@@ -3924,7 +3925,7 @@ async function scheduledTemplateSourcePersistenceBehavior() {
   assert.ok(!Object.prototype.hasOwnProperty.call(backendInput, "templateId"), "UI-only template ids must not leak into the base request");
   assert.strictEqual(created.templateId, "weekly-review");
 
-  var second = createBridgeHarness(sharedStorage);
+  const second = createBridgeHarness(sharedStorage);
   second.handlers.list_scheduled_tasks = function () {
     return [{
       id: "automation-template",
@@ -3942,10 +3943,10 @@ async function scheduledTemplateSourcePersistenceBehavior() {
 }
 
 async function scheduledUnreadPollingRaceBehavior() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var task = { id: "automation-race", name: "Race task", hasUnreadRuns: true };
-  var run = {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const task = { id: "automation-race", name: "Race task", hasUnreadRuns: true };
+  const run = {
     id: "run-race", automationId: task.id, sessionId: "sched-race",
     status: "completed", unread: true,
   };
@@ -3960,13 +3961,13 @@ async function scheduledUnreadPollingRaceBehavior() {
   await bridge.scheduled.readScheduledTask(task.id);
   await bridge.scheduled.loadScheduledTaskRuns(task.id, 20);
 
-  var staleTasks = deferred();
-  var staleDetail = deferred();
-  var staleRuns = deferred();
+  const staleTasks = deferred();
+  const staleDetail = deferred();
+  const staleRuns = deferred();
   harness.handlers.list_scheduled_tasks = function () { return staleTasks.promise; };
   harness.handlers.read_scheduled_task = function () { return staleDetail.promise; };
   harness.handlers.list_scheduled_task_runs = function () { return staleRuns.promise; };
-  var staleRefresh = bridge.scheduled.refreshScheduledTaskData(20);
+  const staleRefresh = bridge.scheduled.refreshScheduledTaskData(20);
   await tick();
 
   assert.strictEqual(await bridge.scheduled.openScheduledRunChat(run, task), true);
@@ -3975,15 +3976,15 @@ async function scheduledUnreadPollingRaceBehavior() {
   staleDetail.resolve(Object.assign({}, task));
   staleRuns.resolve([Object.assign({}, run)]);
   await staleRefresh;
-  var finalState = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const finalState = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(finalState.scheduledTaskRuns[0].unread, false, "an older poll must not resurrect a viewed run dot");
   assert.strictEqual(finalState.scheduledTasks[0].hasUnreadRuns, false, "an older poll must not resurrect the task aggregate dot");
   assert.strictEqual(finalState.scheduledTaskDetail.hasUnreadRuns, false);
 }
 
 async function scheduledRunNavigationBehavior() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
 
   assert.strictEqual(await bridge.sessions.switchToSession("chat-origin"), true);
   bridge.scheduled.selectScheduledTask("automation-1");
@@ -4000,16 +4001,16 @@ async function scheduledRunNavigationBehavior() {
     true
   );
   await bridge.chat.sendMessage("continue the scheduled conversation");
-  var followup = harness.calls.filter(function (call) { return call.cmd === "chat"; }).pop();
+  const followup = harness.calls.filter(function (call) { return call.cmd === "chat"; }).pop();
   assert.strictEqual(followup.args.sessionId, "sched-run-1");
   assert.strictEqual(followup.args.restrictTools, false);
   await harness.emit("chat:done", { session_id: "sched-run-1", status: "Completed", error: null });
-  var editCallsBefore = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; }).length;
+  const editCallsBefore = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; }).length;
   await bridge.interaction.editLastTurn("rewrite scheduled output");
-  var editCalls = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; });
+  const editCalls = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; });
   assert.strictEqual(editCalls.length, editCallsBefore + 1);
   assert.strictEqual(editCalls[editCalls.length - 1].args.sessionId, "sched-run-1");
-  var opened = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const opened = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(opened.activeSessionId, "sched-run-1");
   assert.deepStrictEqual(opened.scheduledRunContext, {
     sessionId: "sched-run-1",
@@ -4022,7 +4023,7 @@ async function scheduledRunNavigationBehavior() {
   });
 
   assert.strictEqual(await bridge.scheduled.exitScheduledRunChat(), true);
-  var restored = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const restored = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(restored.activeSessionId, "chat-origin");
   assert.strictEqual(restored.scheduledRunContext, null);
   assert.strictEqual(restored.selectedScheduledTaskId, "automation-1");
@@ -4053,7 +4054,7 @@ async function scheduledRunNavigationBehavior() {
       artifacts: [],
     };
   };
-  var chatItemsBeforeFailure = JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems);
+  const chatItemsBeforeFailure = JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems);
   assert.strictEqual(
     await bridge.scheduled.openScheduledRunChat(
       { id: "run-missing", automationId: "automation-1", sessionId: "sched-missing", status: "completed" },
@@ -4061,7 +4062,7 @@ async function scheduledRunNavigationBehavior() {
     ),
     false
   );
-  var failedOpen = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const failedOpen = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(failedOpen.activeSessionId, "chat-origin");
   assert.strictEqual(failedOpen.scheduledRunContext, null);
   assert.ok(String(failedOpen.scheduledTaskError).includes("missing scheduled session"));
@@ -4071,32 +4072,32 @@ async function scheduledRunNavigationBehavior() {
 }
 
 async function scheduledSelectionGenerationBehavior() {
-  var harness = createBridgeHarness();
-  var listA = deferred();
-  var listB = deferred();
-  var listCalls = 0;
+  const harness = createBridgeHarness();
+  const listA = deferred();
+  const listB = deferred();
+  let listCalls = 0;
   harness.handlers.list_scheduled_tasks = function () {
     listCalls += 1;
     return listCalls === 1 ? listA.promise : listB.promise;
   };
 
   harness.bridge.scheduled.selectScheduledTask("automation-a");
-  var tasksA = harness.bridge.scheduled.loadScheduledTasks();
+  const tasksA = harness.bridge.scheduled.loadScheduledTasks();
   harness.bridge.scheduled.selectScheduledTask("automation-b");
-  var tasksB = harness.bridge.scheduled.loadScheduledTasks();
+  const tasksB = harness.bridge.scheduled.loadScheduledTasks();
   listB.resolve([{ id: "automation-b", name: "B" }]);
   await tasksB;
   assert.strictEqual(harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTaskLoading, false, "an old task-list generation must not keep the current selection loading");
   listA.resolve([{ id: "automation-a", name: "A" }]);
   await tasksA;
-  var state = harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  let state = harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(state.selectedScheduledTaskId, "automation-b");
   assert.strictEqual(state.scheduledTasks[0].id, "automation-b", "a stale task list must not replace the current generation");
 
-  var detailA = deferred();
-  var detailB = deferred();
-  var runsA = deferred();
-  var runsB = deferred();
+  const detailA = deferred();
+  const detailB = deferred();
+  const runsA = deferred();
+  const runsB = deferred();
   harness.handlers.read_scheduled_task = function (args) {
     return args.id === "automation-a" ? detailA.promise : detailB.promise;
   };
@@ -4105,11 +4106,11 @@ async function scheduledSelectionGenerationBehavior() {
   };
 
   harness.bridge.scheduled.selectScheduledTask("automation-a");
-  var readA = harness.bridge.scheduled.readScheduledTask("automation-a");
-  var loadRunsA = harness.bridge.scheduled.loadScheduledTaskRuns("automation-a", 20);
+  const readA = harness.bridge.scheduled.readScheduledTask("automation-a");
+  const loadRunsA = harness.bridge.scheduled.loadScheduledTaskRuns("automation-a", 20);
   harness.bridge.scheduled.selectScheduledTask("automation-b");
-  var readB = harness.bridge.scheduled.readScheduledTask("automation-b");
-  var loadRunsB = harness.bridge.scheduled.loadScheduledTaskRuns("automation-b", 20);
+  const readB = harness.bridge.scheduled.readScheduledTask("automation-b");
+  const loadRunsB = harness.bridge.scheduled.loadScheduledTaskRuns("automation-b", 20);
   detailB.resolve({ id: "automation-b", name: "B detail" });
   runsB.resolve([{ id: "run-b", automationId: "automation-b" }]);
   await Promise.all([readB, loadRunsB]);
@@ -4123,8 +4124,8 @@ async function scheduledSelectionGenerationBehavior() {
   assert.strictEqual(state.scheduledTaskRuns[0].id, "run-b");
   assert.strictEqual(state.scheduledTaskLoading, false);
 
-  var refreshes = 0;
-  var aggregateRefreshes = 0;
+  let refreshes = 0;
+  let aggregateRefreshes = 0;
   harness.handlers.list_scheduled_task_runs = function () {
     refreshes += 1;
     return [{ id: "run-b2", automationId: "automation-b" }];
@@ -4151,18 +4152,18 @@ async function scheduledSelectionGenerationBehavior() {
 }
 
 async function scheduledRefreshDoesNotOverlap() {
-  var harness = createBridgeHarness();
-  var pendingTasks = deferred();
-  var pendingDetail = deferred();
-  var pendingRuns = deferred();
-  var counts = { tasks: 0, detail: 0, runs: 0 };
+  const harness = createBridgeHarness();
+  const pendingTasks = deferred();
+  const pendingDetail = deferred();
+  const pendingRuns = deferred();
+  const counts = { tasks: 0, detail: 0, runs: 0 };
   harness.handlers.list_scheduled_tasks = function () { counts.tasks += 1; return pendingTasks.promise; };
   harness.handlers.read_scheduled_task = function () { counts.detail += 1; return pendingDetail.promise; };
   harness.handlers.list_scheduled_task_runs = function () { counts.runs += 1; return pendingRuns.promise; };
   harness.bridge.scheduled.selectScheduledTask("automation-b");
 
-  var first = harness.bridge.scheduled.refreshScheduledTaskData(20);
-  var overlapping = harness.bridge.scheduled.refreshScheduledTaskData(20);
+  const first = harness.bridge.scheduled.refreshScheduledTaskData(20);
+  const overlapping = harness.bridge.scheduled.refreshScheduledTaskData(20);
   await tick();
   assert.deepStrictEqual(counts, { tasks: 1, detail: 1, runs: 1 }, "overlapping polls must share one refresh");
   pendingTasks.resolve([{ id: "automation-b", name: "B" }]);
@@ -4178,26 +4179,26 @@ async function scheduledRefreshDoesNotOverlap() {
 }
 
 async function scheduledMutationErrorBehavior() {
-  var cases = [
+  const cases = [
     ["pauseScheduledTask", "pause_scheduled_task", ["automation-1"]],
     ["resumeScheduledTask", "resume_scheduled_task", ["automation-1"]],
     ["deleteScheduledTask", "delete_scheduled_task", ["automation-1"]],
     ["runScheduledTaskNow", "run_scheduled_task_now", ["automation-1"]],
     ["createScheduledTask", "create_scheduled_task", [{ name: "X", prompt: "Y", rrule: "FREQ=DAILY" }]],
   ];
-  for (var i = 0; i < cases.length; i++) {
-    var harness = createBridgeHarness();
-    var entry = cases[i];
+  for (let i = 0; i < cases.length; i++) {
+    const harness = createBridgeHarness();
+    const entry = cases[i];
     harness.handlers[entry[1]] = function () { throw new Error("visible scheduled failure"); };
     await assert.rejects(function () { return harness.bridge.scheduled[entry[0]].apply(null, entry[2]); }, /visible scheduled failure/);
-    var state = harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+    const state = harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']);
     assert.ok(String(state.scheduledTaskError).includes("visible scheduled failure"), entry[0] + " should expose its error");
     assert.strictEqual(state.scheduledTaskBusyAction, null, entry[0] + " should clear busy after failure");
     harness.bridge.scheduled.dismissScheduledTaskError();
     assert.strictEqual(harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTaskError, null, entry[0] + " errors should be dismissible");
   }
 
-  var chatHarness = createBridgeHarness();
+  const chatHarness = createBridgeHarness();
   chatHarness.handlers.scheduled_task_chat_prompt = function () { throw new Error("chat creation failed"); };
   await assert.rejects(function () { return chatHarness.bridge.scheduled.startScheduledTaskChat(); }, /chat creation failed/);
   assert.ok(String(chatHarness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTaskError).includes("chat creation failed"));
@@ -4206,8 +4207,8 @@ async function scheduledMutationErrorBehavior() {
 }
 
 async function scheduledDeletePurgesOnlyReportedSessionBuffers() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
   harness.emit("chat:delta", { session_id: "sched-delete-exact", text: "purge this exact buffer" });
   harness.emit("chat:delta", { session_id: "sched-delete-retain", text: "retain this sibling buffer" });
   harness.handlers.delete_scheduled_task = function () {
@@ -4240,7 +4241,7 @@ async function scheduledDeletePurgesOnlyReportedSessionBuffers() {
     "deleting one task must not guess at or purge unreported scheduled session ids"
   );
 
-  var noIdsHarness = createBridgeHarness();
+  const noIdsHarness = createBridgeHarness();
   noIdsHarness.handlers.list_scheduled_tasks = function () {
     return [{ id: "automation-no-ids", name: "No ids task" }];
   };
@@ -4281,8 +4282,8 @@ async function scheduledDeletePurgesOnlyReportedSessionBuffers() {
 }
 
 async function scheduledRecentRunsIgnoreStaleAggregate() {
-  var harness = createBridgeHarness();
-  var staleRuns = deferred();
+  const harness = createBridgeHarness();
+  const staleRuns = deferred();
   harness.handlers.list_scheduled_tasks = function () {
     return [{ id: "automation-stale", name: "Stale task" }];
   };
@@ -4291,7 +4292,7 @@ async function scheduledRecentRunsIgnoreStaleAggregate() {
     return { id: "automation-stale", deletedSessionIds: ["sched-stale"] };
   };
   await harness.bridge.scheduled.loadScheduledTasks();
-  var loading = harness.bridge.scheduled.loadScheduledTaskRecentRuns();
+  const loading = harness.bridge.scheduled.loadScheduledTaskRecentRuns();
   await tick();
   await harness.bridge.scheduled.deleteScheduledTask("automation-stale");
   staleRuns.resolve([{
@@ -4310,23 +4311,23 @@ async function scheduledRecentRunsIgnoreStaleAggregate() {
 }
 
 async function scheduledRunRecordSessionActionsBehavior() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var sessionId = "sched-run-record-actions";
-  var sessionTitle = "每天给我推送时尚新闻";
-  var pinned = false;
-  var pinnedAt = null;
-  var task = {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sessionId = "sched-run-record-actions";
+  let sessionTitle = "每天给我推送时尚新闻";
+  let pinned = false;
+  let pinnedAt = null;
+  const task = {
     id: "automation-record",
     name: "Fashion brief",
     prompt: "Run",
     rrule: "FREQ=HOURLY;INTERVAL=1",
   };
-  var archivedIds = [];
+  let archivedIds = [];
   harness.handlers.list_sessions = function () { return []; };
   harness.handlers.list_archived_sessions = function () {
     return archivedIds.map(function (id) {
-      return { id: id, title: sessionTitle, hidden_at: "2026-07-15T11:00:00Z", archived_at: "2026-07-15T11:00:00Z" };
+      return { id, title: sessionTitle, hidden_at: "2026-07-15T11:00:00Z", archived_at: "2026-07-15T11:00:00Z" };
     });
   };
   harness.handlers.list_scheduled_tasks = function () { return [Object.assign({}, task)]; };
@@ -4334,13 +4335,13 @@ async function scheduledRunRecordSessionActionsBehavior() {
     return [{
       id: "run-record",
       automationId: task.id,
-      sessionId: sessionId,
-      sessionTitle: sessionTitle,
+      sessionId,
+      sessionTitle,
       status: "completed",
       unread: true,
-      pinned: pinned,
-      pinnedAt: pinnedAt,
-      archived: archivedIds.indexOf(sessionId) >= 0,
+      pinned,
+      pinnedAt,
+      archived: archivedIds.includes(sessionId),
     }];
   }
   harness.handlers.list_scheduled_task_runs = listRecordRuns;
@@ -4434,10 +4435,10 @@ async function scheduledRunRecordSessionActionsBehavior() {
 }
 
 async function scheduledSessionPersistenceBehavior() {
-  var harness = createBridgeHarness();
-  var sessionId = "owned-run-session-1";
+  const harness = createBridgeHarness();
+  const sessionId = "owned-run-session-1";
   await harness.bridge.scheduled.openScheduledRunChat(
-    { id: "run-1", automationId: "automation-1", sessionId: sessionId, status: "running" },
+    { id: "run-1", automationId: "automation-1", sessionId, status: "running" },
     { name: "Nightly report" }
   );
   await harness.bridge.scheduled.exitScheduledRunChat();
@@ -4449,7 +4450,7 @@ async function scheduledSessionPersistenceBehavior() {
   harness.emit("chat:done", { session_id: sessionId });
   await tick();
   await tick();
-  var scheduledCalls = harness.calls.filter(function (call) {
+  const scheduledCalls = harness.calls.filter(function (call) {
     return call.args && (call.args.id === sessionId || call.args.sessionId === sessionId);
   });
   assert.ok(
@@ -4471,9 +4472,9 @@ async function scheduledSessionPersistenceBehavior() {
 }
 
 async function scheduledDraftModelBehavior() {
-  var harness = createBridgeHarness();
-  var capturedInput = null;
-  var rejectCreate = true;
+  const harness = createBridgeHarness();
+  let capturedInput = null;
+  let rejectCreate = true;
   harness.handlers.create_scheduled_task = function (args) {
     if (rejectCreate) throw new Error("cannot create scheduled draft");
     capturedInput = args.input;
@@ -4482,7 +4483,7 @@ async function scheduledDraftModelBehavior() {
   await harness.bridge.lifecycle.init();
   await harness.bridge.scheduled.startScheduledTaskChat();
   await harness.bridge.chat.sendMessage("Create a report schedule");
-  var sessionId = harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).activeSessionId;
+  let sessionId = harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).activeSessionId;
   harness.emit("chat:delta", {
     session_id: sessionId,
     text: "```scheduled-task-draft\n{\"name\":\"Report\",\"prompt\":\"Run report\",\"rrule\":\"FREQ=DAILY\"}\n```",
@@ -4529,10 +4530,10 @@ async function scheduledDraftModelBehavior() {
 }
 
 async function completedRunReopenPreservesStreamingFollowup() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var scheduledSessionLoads = 0;
-  var run = {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  let scheduledSessionLoads = 0;
+  const run = {
     id: "run-streaming-followup",
     automationId: "automation-streaming-followup",
     sessionId: "sched-streaming-followup",
@@ -4541,7 +4542,7 @@ async function completedRunReopenPreservesStreamingFollowup() {
   };
   harness.handlers.load_session = function (args) {
     if (args.id === run.sessionId) scheduledSessionLoads += 1;
-    var messages = [
+    const messages = [
       { role: "user", content: [{ type: "text", text: "durable scheduled prompt" }] },
       { role: "assistant", content: [{ type: "text", text: "durable scheduled answer" }] },
     ];
@@ -4556,7 +4557,7 @@ async function completedRunReopenPreservesStreamingFollowup() {
     }
     return {
       metadata: { id: args.id, title: "Completed scheduled run" },
-      messages: messages,
+      messages,
       artifacts: [],
     };
   };
@@ -4578,7 +4579,7 @@ async function completedRunReopenPreservesStreamingFollowup() {
     id: run.automationId,
     name: "Streaming follow-up task",
   }), true);
-  var reopened = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const reopened = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(
     scheduledSessionLoads,
     1,
@@ -4603,9 +4604,9 @@ async function completedRunReopenPreservesStreamingFollowup() {
 }
 
 async function scheduledTaskWriteSanitizationBehavior() {
-  var harness = createBridgeHarness();
-  var createInput = null;
-  var updateInput = null;
+  const harness = createBridgeHarness();
+  let createInput = null;
+  let updateInput = null;
   harness.handlers.create_scheduled_task = function (args) {
     createInput = args.input;
     return Object.assign({ id: "automation-sanitized" }, args.input);
@@ -4660,10 +4661,10 @@ async function scheduledTaskWriteSanitizationBehavior() {
 // 修复1:立即运行返回时 run 还没有 sessionId。bridge 只轮询该任务的运行列表,
 // 匹配到 sessionId 后把记录并入侧边栏并停止轮询。
 async function scheduledRunNowSidebarLinkBehavior() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var task = { id: "automation-poll", name: "Poll task" };
-  var linked = false;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const task = { id: "automation-poll", name: "Poll task" };
+  let linked = false;
   harness.handlers.list_scheduled_tasks = function () { return [Object.assign({}, task)]; };
   harness.handlers.run_scheduled_task_now = function (args) {
     assert.strictEqual(args.id, task.id);
@@ -4702,7 +4703,7 @@ async function scheduledRunNowSidebarLinkBehavior() {
     "sched-run-now-1",
     "once the run links its session it must appear in the sidebar list"
   );
-  var pollsAfterLink = harness.calls.filter(function (call) { return call.cmd === "list_scheduled_task_runs"; }).length;
+  const pollsAfterLink = harness.calls.filter(function (call) { return call.cmd === "list_scheduled_task_runs"; }).length;
   await new Promise(function (resolve) { setTimeout(resolve, 1300); });
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "list_scheduled_task_runs"; }).length,
@@ -4713,17 +4714,17 @@ async function scheduledRunNowSidebarLinkBehavior() {
 
 // 修复2:侧边栏聚合所有任务的所有现存运行(不再有 8 条总量 / 12 任务 / 每任务 3 条截断)。
 async function scheduledRecentRunsShowAllBehavior() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var tasks = [];
-  for (var index = 1; index <= 14; index++) tasks.push({ id: "auto-" + index, name: "任务" + index });
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const tasks = [];
+  for (let index = 1; index <= 14; index++) tasks.push({ id: "auto-" + index, name: "任务" + index });
   harness.handlers.list_scheduled_tasks = function () {
     return tasks.map(function (task) { return Object.assign({}, task); });
   };
   harness.handlers.list_scheduled_runs = function () {
-    var runs = [];
+    const runs = [];
     tasks.forEach(function (task, taskIndex) {
-      for (var i = 1; i <= 4; i++) {
+      for (let i = 1; i <= 4; i++) {
         runs.push({
           id: task.id + "-run-" + i,
           automationId: task.id,
@@ -4739,9 +4740,9 @@ async function scheduledRecentRunsShowAllBehavior() {
     return runs;
   };
   await bridge.scheduled.loadScheduledTasks();
-  var rows = await bridge.scheduled.loadScheduledTaskRecentRuns();
+  const rows = await bridge.scheduled.loadScheduledTaskRecentRuns();
   assert.strictEqual(rows.length, 14 * 4, "every existing run conversation must be listed");
-  for (var check = 1; check < rows.length; check++) {
+  for (let check = 1; check < rows.length; check++) {
     assert.ok(
       new Date(rows[check - 1].scheduledFor).getTime() >= new Date(rows[check].scheduledFor).getTime(),
       "sidebar runs must be sorted by time, newest first"
@@ -4760,11 +4761,11 @@ async function scheduledRecentRunsShowAllBehavior() {
 // 修复4:聊天/页面创建任务必须等 create_scheduled_task 返回真实 ID 才算成功,
 // 且创建成功后立即重拉任务列表,旧的在途 list 响应不能覆盖新任务。
 async function scheduledCreateListRefreshBehavior() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var created = null;
-  var staleResolve = null;
-  var listCalls = 0;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  let created = null;
+  let staleResolve = null;
+  let listCalls = 0;
   harness.handlers.list_scheduled_tasks = function () {
     listCalls += 1;
     if (listCalls === 1) return new Promise(function (resolve) { staleResolve = resolve; });
@@ -4775,8 +4776,8 @@ async function scheduledCreateListRefreshBehavior() {
     return Object.assign({}, created);
   };
 
-  var stale = bridge.scheduled.loadScheduledTasks();
-  var createdTask = await bridge.scheduled.createScheduledTask({
+  const stale = bridge.scheduled.loadScheduledTasks();
+  const createdTask = await bridge.scheduled.createScheduledTask({
     name: "新任务",
     prompt: "run",
     rrule: "FREQ=HOURLY;INTERVAL=1",
@@ -4792,7 +4793,7 @@ async function scheduledCreateListRefreshBehavior() {
 
   // 后端没有返回真实 ID 时不能算创建成功。
   harness.handlers.create_scheduled_task = function () { return null; };
-  var threw = false;
+  let threw = false;
   try {
     await bridge.scheduled.createScheduledTask({ name: "坏任务", prompt: "run", rrule: "FREQ=HOURLY;INTERVAL=1" });
   } catch (error) {
@@ -4810,16 +4811,17 @@ async function scheduledCreateListRefreshBehavior() {
 // main.jsx 只按 scheduledRunContext 的真值决定渲染 ChatView 还是 ScheduledTasksView,
 // 而 ChatView 内部还要求 sessionId===activeSessionId 才渲染返回按钮 —— 只清
 // activeSessionId 会卡在「定时路由下的空白页且没有返回按钮」。
+// eslint-disable-next-line no-unused-vars -- 测试桩/后置赋值保留
 async function sessionSwitchCriticalPathBehavior() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var load = deferred();
-  var personaEvents = deferred();
-  var reviews = deferred();
-  var mode = deferred();
-  var persona = deferred();
-  var collection = deferred();
-  var memory = deferred();
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const load = deferred();
+  const personaEvents = deferred();
+  const reviews = deferred();
+  const mode = deferred();
+  const persona = deferred();
+  const collection = deferred();
+  const memory = deferred();
   harness.handlers.load_session = function () { return load.promise; };
   harness.handlers.get_session_persona_events = function () { return personaEvents.promise; };
   harness.handlers.get_session_pinvou_reviews = function () { return reviews.promise; };
@@ -4828,7 +4830,7 @@ async function sessionSwitchCriticalPathBehavior() {
   harness.handlers.session_mounted_collection = function () { return collection.promise; };
   harness.handlers.get_memory_overview = function () { return memory.promise; };
 
-  var switching = bridge.sessions.switchToSession("chat-fast-path");
+  const switching = bridge.sessions.switchToSession("chat-fast-path");
   await tick();
   assert.ok(
     ["load_session", "get_session_persona_events", "get_session_pinvou_reviews"].every(function (command) {
@@ -4843,7 +4845,7 @@ async function sessionSwitchCriticalPathBehavior() {
   });
   personaEvents.resolve([]);
   reviews.resolve([]);
-  var switchingSettled = false;
+  let switchingSettled = false;
   switching.then(function () { switchingSettled = true; });
   await tick();
   await tick();
@@ -4863,16 +4865,16 @@ async function sessionSwitchCriticalPathBehavior() {
   assert.strictEqual(await switching, true, "the guarded switch completes after parallel presentation state settles");
   await tick();
   await tick();
-  var completed = bridge.state.getMany(['sessions', 'chat', 'knowledge', 'personas', 'memory']);
+  const completed = bridge.state.getMany(['sessions', 'chat', 'knowledge', 'personas', 'memory']);
   assert.strictEqual(completed.modeState.mode, "plan");
   assert.strictEqual(completed.activePersona.id, "persona-fast");
   assert.strictEqual(completed.mountedCollection, "collection-fast");
   assert.strictEqual(completed.memory.loading, false);
 
-  var staleMode = deferred();
-  var stalePersona = deferred();
-  var staleCollection = deferred();
-  var staleMemory = deferred();
+  const staleMode = deferred();
+  const stalePersona = deferred();
+  const staleCollection = deferred();
+  const staleMemory = deferred();
   harness.handlers.load_session = function (args) {
     return { metadata: { id: args.id, title: args.id }, messages: [], artifacts: [] };
   };
@@ -4890,7 +4892,7 @@ async function sessionSwitchCriticalPathBehavior() {
   harness.handlers.get_memory_overview = function (args) {
     return args.sessionId === "chat-stale" ? staleMemory.promise : { profile: { summary: "current" } };
   };
-  var staleSwitch = bridge.sessions.switchToSession("chat-stale");
+  const staleSwitch = bridge.sessions.switchToSession("chat-stale");
   await tick();
   await tick();
   assert.strictEqual(bridge.state.get('sessions').activeSessionId, "chat-stale");
@@ -4904,7 +4906,7 @@ async function sessionSwitchCriticalPathBehavior() {
   assert.strictEqual(await staleSwitch, false, "a superseded switch must report that it did not finish committing");
   await tick();
   await tick();
-  var current = bridge.state.getMany(['sessions', 'chat', 'knowledge', 'personas', 'memory']);
+  const current = bridge.state.getMany(['sessions', 'chat', 'knowledge', 'personas', 'memory']);
   assert.strictEqual(current.activeSessionId, "chat-current");
   assert.strictEqual(current.modeState.mode, "agent");
   assert.strictEqual(current.activePersona.id, "persona-current");
@@ -4913,8 +4915,8 @@ async function sessionSwitchCriticalPathBehavior() {
 }
 
 async function scheduledRunViewExitBehavior() {
-  var task = { id: "automation-exit", name: "Exit task" };
-  var run = {
+  const task = { id: "automation-exit", name: "Exit task" };
+  const run = {
     id: "run-exit",
     automationId: task.id,
     sessionId: "sched-exit-1",
@@ -4925,7 +4927,7 @@ async function scheduledRunViewExitBehavior() {
   };
 
   async function openedHarness() {
-    var harness = createBridgeHarness();
+    const harness = createBridgeHarness();
     harness.handlers.list_scheduled_tasks = function () { return [Object.assign({}, task)]; };
     harness.handlers.list_scheduled_task_runs = function () { return [Object.assign({}, run)]; };
     harness.handlers.list_scheduled_runs = function () { return [Object.assign({}, run)]; };
@@ -4938,7 +4940,7 @@ async function scheduledRunViewExitBehavior() {
     return harness;
   }
 
-  var deleting = await openedHarness();
+  const deleting = await openedHarness();
   await deleting.bridge.sessions.deleteSession(run.sessionId);
   assert.strictEqual(
     deleting.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledRunContext,
@@ -4947,7 +4949,7 @@ async function scheduledRunViewExitBehavior() {
   );
   assert.strictEqual(deleting.bridge.state.getMany(['sessions', 'chat', 'scheduled']).activeSessionId, null);
 
-  var archiving = await openedHarness();
+  const archiving = await openedHarness();
   await archiving.bridge.sessions.archiveSession(run.sessionId);
   assert.strictEqual(
     archiving.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledRunContext,
@@ -4964,10 +4966,10 @@ async function scheduledRunViewExitBehavior() {
   );
 
   // 收纳失败要把视图和侧边栏一起回滚,不能留下「active 有值但 context 空」的错位态。
-  var failing = await openedHarness();
+  const failing = await openedHarness();
   failing.handlers.set_session_archived = function () { throw new Error("archive failed"); };
   await failing.bridge.sessions.archiveSession(run.sessionId);
-  var rolledBack = failing.bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  const rolledBack = failing.bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(rolledBack.activeSessionId, run.sessionId, "收纳失败必须回到原会话");
   assert.ok(rolledBack.scheduledRunContext, "收纳失败必须恢复定时运行上下文");
   assert.strictEqual(rolledBack.scheduledRunContext.sessionId, run.sessionId);
@@ -4982,27 +4984,27 @@ async function scheduledRunViewExitBehavior() {
 
 // 立即运行后的轮询按 run 自身状态收工,不用固定次数:worker_count=1 时排队几分钟是常态。
 async function scheduledRunNowPollStopsOnTerminalBehavior() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var task = { id: "automation-terminal", name: "Terminal task" };
-  var status = "queued";
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const task = { id: "automation-terminal", name: "Terminal task" };
+  let status = "queued";
   harness.handlers.list_scheduled_tasks = function () { return [Object.assign({}, task)]; };
   harness.handlers.run_scheduled_task_now = function () {
     return { id: "run-terminal", automationId: task.id, sessionId: null, status: "queued" };
   };
   harness.handlers.list_scheduled_task_runs = function () {
     // 会话始终没建起来(例如 create_session 失败),run 最终失败收场。
-    return [{ id: "run-terminal", automationId: task.id, sessionId: null, status: status }];
+    return [{ id: "run-terminal", automationId: task.id, sessionId: null, status }];
   };
   await bridge.scheduled.loadScheduledTasks();
   await bridge.scheduled.runScheduledTaskNow(task.id);
   await new Promise(function (resolve) { setTimeout(resolve, 1300); });
-  var pollsWhileQueued = harness.calls.filter(function (c) { return c.cmd === "list_scheduled_task_runs"; }).length;
+  const pollsWhileQueued = harness.calls.filter(function (c) { return c.cmd === "list_scheduled_task_runs"; }).length;
   assert.ok(pollsWhileQueued >= 2, "queued 且无会话时应继续轮询");
 
   status = "failed";
   await new Promise(function (resolve) { setTimeout(resolve, 1300); });
-  var pollsAtTerminal = harness.calls.filter(function (c) { return c.cmd === "list_scheduled_task_runs"; }).length;
+  const pollsAtTerminal = harness.calls.filter(function (c) { return c.cmd === "list_scheduled_task_runs"; }).length;
   await new Promise(function (resolve) { setTimeout(resolve, 1300); });
   assert.strictEqual(
     harness.calls.filter(function (c) { return c.cmd === "list_scheduled_task_runs"; }).length,
@@ -5017,10 +5019,10 @@ async function scheduledRunNowPollStopsOnTerminalBehavior() {
 }
 
 async function presentationReconciliationUsesStableEventIdentity() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var sessionId = "chat-presentation-identity";
-  var durable = {
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const sessionId = "chat-presentation-identity";
+  let durable = {
     metadata: { id: sessionId, title: "Presentation identity", message_count: 0 },
     messages: [], artifacts: [], transcript_revision: "rev-0",
   };
@@ -5030,7 +5032,7 @@ async function presentationReconciliationUsesStableEventIdentity() {
   await bridge.sessions.switchToSession(sessionId);
   await bridge.chat.sendMessage("写一个贪吃蛇游戏");
 
-  var writePayload = {
+  const writePayload = {
     session_id: sessionId,
     id: "tool-write-snake",
     name: "File",
@@ -5046,7 +5048,7 @@ async function presentationReconciliationUsesStableEventIdentity() {
     "a replayed tool_start must not create a second tool card"
   );
 
-  var absoluteArtifactPath = "C:\\Users\\tester\\.pinvou3\\sessions\\" + sessionId +
+  const absoluteArtifactPath = "C:\\Users\\tester\\.pinvou3\\sessions\\" + sessionId +
     "\\workspace\\snake-game.html";
   harness.emit("artifact:disk", {
     session_id: sessionId,
@@ -5095,8 +5097,8 @@ async function presentationReconciliationUsesStableEventIdentity() {
   await tick();
   await tick();
 
-  var reconciled = bridge.state.get('chat');
-  var artifactCards = reconciled.chatItems.filter(function (item) {
+  const reconciled = bridge.state.get('chat');
+  const artifactCards = reconciled.chatItems.filter(function (item) {
     return item.type === "artifact_card" && /snake-game\.html$/.test(item.path || "");
   });
   assert.strictEqual(artifactCards.length, 1,
@@ -5109,12 +5111,12 @@ async function presentationReconciliationUsesStableEventIdentity() {
     "the artifact panel must use the same semantic identity as chat cards"
   );
 
-  var questions = [{ id: "choice", header: "选择", question: "继续吗？", options: [] }];
+  const questions = [{ id: "choice", header: "选择", question: "继续吗？", options: [] }];
   harness.emit("chat:user_input_required", {
-    session_id: sessionId, id: "tool-question", questions: questions,
+    session_id: sessionId, id: "tool-question", questions,
   });
   harness.emit("chat:user_input_required", {
-    session_id: sessionId, id: "tool-question", questions: questions,
+    session_id: sessionId, id: "tool-question", questions,
   });
   assert.strictEqual(
     bridge.state.get('chat').chatItems.filter(function (item) {
@@ -5124,7 +5126,7 @@ async function presentationReconciliationUsesStableEventIdentity() {
     "a replayed user-input event must not create a second question card"
   );
 
-  var planPayload = {
+  const planPayload = {
     session_id: sessionId,
     plan_id: "plan-stable-1",
     plan_snapshot: [{ step: "实现游戏", status: "pending" }],
@@ -5140,10 +5142,11 @@ async function presentationReconciliationUsesStableEventIdentity() {
   );
 }
 
+// eslint-disable-next-line no-unused-vars -- 测试桩/后置赋值保留
 async function remoteSessionDeletionConvergesPresentationState() {
-  var harness = createBridgeHarness();
-  var deletedId = "chat-deleted-remotely";
-  var retainedId = "chat-retained-locally";
+  const harness = createBridgeHarness();
+  const deletedId = "chat-deleted-remotely";
+  const retainedId = "chat-retained-locally";
   harness.handlers.list_sessions = function () {
     return [
       { id: deletedId, title: "Delete me" },
@@ -5158,7 +5161,7 @@ async function remoteSessionDeletionConvergesPresentationState() {
   assert.strictEqual(await harness.bridge.sessions.switchToSession(deletedId), true);
   await harness.emit("session:deleted", { id: deletedId });
 
-  var state = harness.bridge.state.get('sessions');
+  const state = harness.bridge.state.get('sessions');
   assert.strictEqual(state.activeSessionId, null,
     "a remotely deleted active session must return the other client to draft state");
   assert.deepStrictEqual(Array.from(state.sessions, function (session) { return session.id; }), [retainedId]);
@@ -5166,24 +5169,24 @@ async function remoteSessionDeletionConvergesPresentationState() {
 }
 
 async function multipleKnowledgeMountBehavior() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-multi-kb"), true);
-  var serverMounted = [];
-  var serverRemoteMounted = [];
-  var revision = 0;
+  let serverMounted = [];
+  let serverRemoteMounted = [];
+  let revision = 0;
   function snapshot() {
     revision += 1;
-    return { revision: revision, collections: serverMounted };
+    return { revision, collections: serverMounted };
   }
   harness.handlers.session_add_mounted_collection = function (args) {
-    var existing = serverMounted.find(function (entry) { return entry.collectionId === args.collectionId; });
+    const existing = serverMounted.find(function (entry) { return entry.collectionId === args.collectionId; });
     if (existing) existing.enabled = true;
     else serverMounted.push({ collectionId: args.collectionId, enabled: true });
     return snapshot();
   };
   harness.handlers.session_set_mounted_collection_enabled = function (args) {
-    var existing = serverMounted.find(function (entry) { return entry.collectionId === args.collectionId; });
+    const existing = serverMounted.find(function (entry) { return entry.collectionId === args.collectionId; });
     if (existing) existing.enabled = !!args.enabled;
     return snapshot();
   };
@@ -5193,7 +5196,7 @@ async function multipleKnowledgeMountBehavior() {
   };
   harness.handlers.session_unmount_collection = function () { serverMounted = []; return snapshot(); };
   harness.handlers.session_add_mounted_remote_collection = function (args) {
-    var existing = serverRemoteMounted.find(function (entry) {
+    const existing = serverRemoteMounted.find(function (entry) {
       return entry.serverId === args.serverId && entry.collectionId === args.collectionId;
     });
     if (existing) existing.enabled = true;
@@ -5209,7 +5212,7 @@ async function multipleKnowledgeMountBehavior() {
 
   await bridge.knowledge.mountCollection(7);
   await bridge.knowledge.mountCollection(8);
-  var mounted = bridge.state.get('knowledge');
+  let mounted = bridge.state.get('knowledge');
   assert.deepStrictEqual(
     JSON.parse(JSON.stringify(mounted.mountedCollections)),
     [
@@ -5248,7 +5251,7 @@ async function multipleKnowledgeMountBehavior() {
   assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)), [],
     "clearing all mounts must also remove remote collections");
   assert.deepStrictEqual(serverRemoteMounted, [], "the remote mount fact source must be cleared");
-  var remoteRemove = harness.calls.find(function (call) {
+  const remoteRemove = harness.calls.find(function (call) {
     return call.cmd === "session_remove_mounted_remote_collection";
   });
   assert.strictEqual(remoteRemove.args.sessionId, "chat-multi-kb",
@@ -5257,31 +5260,31 @@ async function multipleKnowledgeMountBehavior() {
 }
 
 async function queuedKnowledgeMountKeepsOriginalSession() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-origin"), true);
-  var pending = deferred();
+  const pending = deferred();
   harness.handlers.session_add_mounted_collection = function () { return pending.promise; };
 
-  var mount = bridge.knowledge.mountCollection(7);
+  const mount = bridge.knowledge.mountCollection(7);
   await tick();
   assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-other"), true);
   pending.resolve({ revision: 1, collections: [{ collectionId: 7, enabled: true }] });
   await mount;
 
-  var addCall = harness.calls.find(function (call) { return call.cmd === "session_add_mounted_collection"; });
+  const addCall = harness.calls.find(function (call) { return call.cmd === "session_add_mounted_collection"; });
   assert.strictEqual(addCall.args.sessionId, "chat-kb-origin",
     "a queued mutation must stay bound to the session active when the user clicked");
-  var mounted = bridge.state.get("knowledge");
+  const mounted = bridge.state.get("knowledge");
   assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedCollections)), [],
     "a late response for another session must not overwrite the active session view");
 }
 
 async function staleKnowledgeSnapshotDoesNotCrossSessions() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var staleSnapshot = deferred();
-  var staleReadStarted = deferred();
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const staleSnapshot = deferred();
+  const staleReadStarted = deferred();
   harness.handlers.session_mounted_collections_snapshot = function (args) {
     if (args.sessionId === "chat-kb-stale") {
       staleReadStarted.resolve();
@@ -5290,13 +5293,13 @@ async function staleKnowledgeSnapshotDoesNotCrossSessions() {
     return { revision: 1, collections: [{ collectionId: 8, enabled: true }] };
   };
 
-  var staleSwitch = bridge.sessions.switchToSession("chat-kb-stale");
+  const staleSwitch = bridge.sessions.switchToSession("chat-kb-stale");
   await staleReadStarted.promise;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-current"), true);
   staleSnapshot.resolve({ revision: 9, collections: [{ collectionId: 7, enabled: true }] });
   assert.strictEqual(await staleSwitch, false);
 
-  var mounted = bridge.state.get("knowledge");
+  const mounted = bridge.state.get("knowledge");
   assert.deepStrictEqual(
     JSON.parse(JSON.stringify(mounted.mountedCollections)),
     [{ collectionId: 8, enabled: true }],
@@ -5306,8 +5309,8 @@ async function staleKnowledgeSnapshotDoesNotCrossSessions() {
 }
 
 async function remoteKnowledgeMountSnapshotDeduplicatesCollections() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-remote"), true);
   harness.handlers.session_mounted_collections_snapshot = function () {
     return {
@@ -5332,7 +5335,7 @@ async function remoteKnowledgeMountSnapshotDeduplicatesCollections() {
   await tick();
   await tick();
 
-  var mounted = bridge.state.get("knowledge");
+  const mounted = bridge.state.get("knowledge");
   assert.deepStrictEqual(
     JSON.parse(JSON.stringify(mounted.mountedCollections)),
     [
@@ -5346,9 +5349,9 @@ async function remoteKnowledgeMountSnapshotDeduplicatesCollections() {
 }
 
 async function remoteKnowledgeDeletionEventRefreshesRemoteMounts() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var serverRemoteMounted = [
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  let serverRemoteMounted = [
     { serverId: "cube", collectionId: 7, enabled: true },
     { serverId: "cube", collectionId: 8, enabled: true },
     { serverId: "other", collectionId: 7, enabled: false },
@@ -5357,7 +5360,7 @@ async function remoteKnowledgeDeletionEventRefreshesRemoteMounts() {
     return serverRemoteMounted;
   };
   assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-remote-delete"), true);
-  var readsBeforePayload = harness.calls.filter(function (call) {
+  const readsBeforePayload = harness.calls.filter(function (call) {
     return call.cmd === "session_mounted_remote_collections";
   }).length;
 
@@ -5371,7 +5374,7 @@ async function remoteKnowledgeDeletionEventRefreshesRemoteMounts() {
     ],
   });
 
-  var mounted = bridge.state.get("knowledge");
+  let mounted = bridge.state.get("knowledge");
   assert.deepStrictEqual(
     JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)),
     [
@@ -5405,27 +5408,27 @@ async function remoteKnowledgeDeletionEventRefreshesRemoteMounts() {
 }
 
 async function draftKnowledgeMountsCreateOneSession() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var create = deferred();
-  var serverMounted = [];
-  var revision = 0;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const create = deferred();
+  const serverMounted = [];
+  let revision = 0;
   harness.handlers.create_session = function () { return create.promise; };
   harness.handlers.session_add_mounted_collection = function (args) {
     serverMounted.push({ collectionId: args.collectionId, enabled: true });
     revision += 1;
-    return { revision: revision, collections: serverMounted };
+    return { revision, collections: serverMounted };
   };
 
-  var first = bridge.knowledge.mountCollection(7);
-  var second = bridge.knowledge.mountCollection(8);
+  const first = bridge.knowledge.mountCollection(7);
+  const second = bridge.knowledge.mountCollection(8);
   await tick();
   assert.strictEqual(harness.calls.filter(function (call) { return call.cmd === "create_session"; }).length, 1,
     "rapid draft mounts must share one serialized session creation");
   create.resolve({ id: "chat-kb-created" });
   await Promise.all([first, second]);
 
-  var addCalls = harness.calls.filter(function (call) { return call.cmd === "session_add_mounted_collection"; });
+  const addCalls = harness.calls.filter(function (call) { return call.cmd === "session_add_mounted_collection"; });
   assert.strictEqual(addCalls.length, 2);
   assert.ok(addCalls.every(function (call) { return call.args.sessionId === "chat-kb-created"; }),
     "all draft mounts must target the one materialized session");
@@ -5436,11 +5439,11 @@ async function draftKnowledgeMountsCreateOneSession() {
 }
 
 async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
-  var harness = createBridgeHarness();
-  var bridge = harness.bridge;
-  var firstMutation = deferred();
-  var firstMutationStarted = deferred();
-  var mutationCount = 0;
+  const harness = createBridgeHarness();
+  const bridge = harness.bridge;
+  const firstMutation = deferred();
+  const firstMutationStarted = deferred();
+  let mutationCount = 0;
   harness.handlers.session_add_mounted_collection = function (args) {
     mutationCount += 1;
     if (mutationCount === 1) {
@@ -5456,17 +5459,17 @@ async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
     };
   };
 
-  var first = bridge.knowledge.mountCollection(7);
-  var second = bridge.knowledge.mountCollection(8);
+  const first = bridge.knowledge.mountCollection(7);
+  const second = bridge.knowledge.mountCollection(8);
   await firstMutationStarted.promise;
-  var materializedSessionId = harness.calls.find(function (call) {
+  const materializedSessionId = harness.calls.find(function (call) {
     return call.cmd === "session_add_mounted_collection";
   }).args.sessionId;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-navigated"), true);
   firstMutation.resolve({ revision: 1, collections: [{ collectionId: 7, enabled: true }] });
   await Promise.all([first, second]);
 
-  var addCalls = harness.calls.filter(function (call) { return call.cmd === "session_add_mounted_collection"; });
+  const addCalls = harness.calls.filter(function (call) { return call.cmd === "session_add_mounted_collection"; });
   assert.strictEqual(addCalls.length, 2);
   assert.ok(addCalls.every(function (call) { return call.args.sessionId === materializedSessionId; }),
     "queued draft mounts must remain on their shared materialized session after navigation");
@@ -5564,7 +5567,7 @@ Promise.resolve()
   .then(scheduledDraftModelBehavior)
   .then(scheduledTaskWriteSanitizationBehavior)
   .then(function () { console.log('PASS scheduled tasks unit'); })
+  // eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
   .catch(function (error) {
     console.error(error && error.stack || error);
-    process.exitCode = 1;
-  });
+    process.exitCode = 1;  });

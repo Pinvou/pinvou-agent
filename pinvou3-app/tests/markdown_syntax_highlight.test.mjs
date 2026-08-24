@@ -83,7 +83,7 @@ const json = renderMarkdownMarkup('```json\n{"enabled": true}\n```');
 assert.match(json, /hljs-attr">&quot;enabled&quot;</u);
 assert.match(json, /hljs-punctuation">\{/u);
 
-const sql = renderMarkdownMarkup('```sql\nSELECT COUNT\(\*\) FROM users WHERE id = :id;\n```');
+const sql = renderMarkdownMarkup('```sql\nSELECT COUNT(*) FROM users WHERE id = :id;\n```');
 assert.match(sql, /hljs-keyword">SELECT</u);
 assert.match(sql, /hljs-built_in">COUNT</u);
 
@@ -270,7 +270,7 @@ for (const hostile of ['constructor', '__proto__', 'toString', 'hasOwnProperty',
   assert.match(rendered, /class="hljs language-plaintext"/u, `${hostile} fence must fall back to plaintext`);
 }
 
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = (ms) => new Promise(resolve => { setTimeout(resolve, ms); });
 async function waitForLazyHighlight(hint, sample, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {

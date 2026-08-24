@@ -8,7 +8,7 @@
 // 容错原则:解析失败 / 截断的 receipt preview 都不能崩,降级为单列文本。
 
 /**
- * @typedef {Object} DiffLine
+ * @typedef {object} DiffLine
  * @property {'add'|'del'|'context'|'meta'} kind
  * @property {string} text        行内容(不含 +/- 前缀)
  * @property {number|null} oldNo  旧文件行号(del/context 有,add/hunk/meta 为 null)
@@ -16,7 +16,7 @@
  */
 
 /**
- * @typedef {Object} DiffHunk
+ * @typedef {object} DiffHunk
  * @property {string} header        完整 hunk 头文本,如 `@@ -1,3 +1,4 @@`
  * @property {number} oldStart      旧文件起始行号(从 1 起)
  * @property {number} oldCount      旧行数
@@ -26,14 +26,14 @@
  */
 
 /**
- * @typedef {Object} DiffFile
+ * @typedef {object} DiffFile
  * @property {string|null} oldPath
  * @property {string|null} newPath
  * @property {DiffHunk[]} hunks
  */
 
 /**
- * @typedef {Object} ParsedDiff
+ * @typedef {object} ParsedDiff
  * @property {boolean} ok          true = 成功解析出 hunks;false = 降级文本
  * @property {string|null} oldPath 顶层兼容字段:多文件场景下取首个文件的 oldPath(单文件最常见用法)
  * @property {string|null} newPath 顶层兼容字段:同上
@@ -55,7 +55,7 @@ const META_RE = /^(---|\+\+\+) /;
 function parseHeaderPath(raw) {
   let p = raw.split('\t')[0].trim();
   if (p.length >= 2 && p.startsWith('"') && p.endsWith('"')) {
-    p = p.slice(1, -1).replace(/\\(["\\])/g, '$1');
+    p = p.slice(1, -1).replaceAll(/\\(["\\])/g, '$1');
   }
   return p;
 }
@@ -64,6 +64,7 @@ function parseHeaderPath(raw) {
  * 把 unified diff 文本解析成结构化数据。
  * 容错:任何解析异常都返回 { ok: false, raw },不抛异常。
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- 解析器主循环:diff 逐行状态机,拆分会破坏可读性;legacy view; tracked separately
 function parseUnifiedDiff(text) {
   if (typeof text !== 'string') return { ok: false, raw: String(text ?? ''), hunks: [], files: [], summary: '', trailingDiagnostics: '', omitReason: null };
   // split('\n') 后,CRLF 输入每行末尾会残留一个 '\r'(只有 + 1 个前缀被剥,
@@ -131,10 +132,10 @@ function parseUnifiedDiff(text) {
       }
       cur = {
         header: l,
-        oldStart: parseInt(hm[1], 10),
-        oldCount: hm[2] != null ? parseInt(hm[2], 10) : 1,
-        newStart: parseInt(hm[3], 10),
-        newCount: hm[4] != null ? parseInt(hm[4], 10) : 1,
+        oldStart: Number.parseInt(hm[1], 10), // eslint-disable-line unicorn/prefer-number-coercion -- 保留 parseInt 对 undefined/污染输入的 NaN 语义,不做显式取整
+        oldCount: hm[2] == null ? 1 : Number.parseInt(hm[2], 10), // eslint-disable-line unicorn/prefer-number-coercion -- 同上,保持 NaN 容错语义
+        newStart: Number.parseInt(hm[3], 10), // eslint-disable-line unicorn/prefer-number-coercion -- 同上,保持 NaN 容错语义
+        newCount: hm[4] == null ? 1 : Number.parseInt(hm[4], 10), // eslint-disable-line unicorn/prefer-number-coercion -- 同上,保持 NaN 容错语义
         lines: [],
       };
       curFile.hunks.push(cur);
@@ -185,7 +186,7 @@ function parseUnifiedDiff(text) {
       }
       if (nextHunkIdx > i) {
         // 跳过 [i, nextHunkIdx) 的污染段;但保留这段当 summary 仅当后面真无 hunk。
-        i = nextHunkIdx - 1; // for 循环 i++ 后落到 nextHunkIdx
+        i = nextHunkIdx - 1; // eslint-disable-line sonarjs/updated-loop-counter -- for 循环 i++ 后落到 nextHunkIdx,跳过 [i, nextHunkIdx) 的污染段
         // 当前 hunk 结束(不再追加行);cur 保留,让下一轮 hunk 头分支新建。
         cur = null;
         continue;
@@ -232,10 +233,10 @@ function parseUnifiedDiff(text) {
   //   (2) XML 块:`<diagnostics file="...">...</diagnostics>`
   //     (diagnostics.rs::render,见 CodeWhale/crates/tui/src/lsp/diagnostics.rs)。
   // XML 块优先匹配到闭合标签;无闭合标签(被截断/旧格式)时取到行尾。
-  const dm = tail.match(/(?:\n|^)(Diagnostics[^\n]*|LSP Diagnostics[^\n]*|诊断[^\n]*|── diagnostics[^\n]*|--- diagnostics|<diagnostics[^\n]*>)\n([\s\S]*?(?:<\/diagnostics>|$))/i);
+  const dm = tail.match(/(?:\n|^)(Diagnostics[^\n]*|LSP Diagnostics[^\n]*|诊断[^\n]*|── diagnostics[^\n]*|--- diagnostics|<diagnostics[^\n]*>)\n([\s\S]*?(?:<\/diagnostics>|$))/i); // eslint-disable-line sonarjs/regex-complexity -- 诊断块多格式判定,分支数受控
   if (dm) {
     const cut = tail.indexOf(dm[1]);
-    summary = tail.slice(0, cut).replace(/\n+$/, '');
+    summary = tail.slice(0, cut).replace(/\n+$/, ''); // eslint-disable-line sonarjs/super-linear-regex -- 尾段剥换行,文本有限
     trailingDiagnostics = `${dm[1]}\n${dm[2].trim()}`;
   }
 

@@ -1,4 +1,3 @@
-import React from 'react';
 
 // 统一的 iOS 风格开关：收敛 SettingsView 内多处手写的「圆角轨道 + 白色圆形滑块」开关。
 // 尺寸：

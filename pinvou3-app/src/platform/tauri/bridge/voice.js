@@ -3,20 +3,22 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["voice"] = function (context) {
-    var state = context.state;
-    var notify = context.notify;
-    var invoke = context.invoke;
-    var bt = context.bt;
+    const state = context.state;
+    const notify = context.notify;
+    const invoke = context.invoke;
+    const bt = context.bt;
   // ── 语音输入（WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR；Linux webview 录音授权见 lib.rs setup）──────────────
-  var activeVoiceInput = null;
-  var VOICE_DEVICE_PROBE_TIMEOUT_MS = 1500;
-  var VOICE_DEVICE_REQUEST_TIMEOUT_MS = 8000;
+  let activeVoiceInput = null;
+  const VOICE_DEVICE_PROBE_TIMEOUT_MS = 1500;
+  const VOICE_DEVICE_REQUEST_TIMEOUT_MS = 8000;
 
   function setVoiceInputStatus(status, patch) {
-    var next = Object.assign({}, state.voiceInput, patch || {});
+    const next = Object.assign({}, state.voiceInput, patch || {});
     next.status = status;
     if (status !== "failed") {
       next.error = null;
@@ -27,23 +29,23 @@
   }
 
   function emitVoiceDiagnostic(stage, level, message, userMessage, category) {
-    var event = {
-      stage: stage,
-      level: level,
-      message: message,
+    const event = {
+      stage,
+      level,
+      message,
       user_message: userMessage || "",
       category: category || "",
     };
-    var fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+    const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
     fn.call(console, "[voice-input]", event);
   }
 
   function normalizeVoiceError(err, fallbackStage) {
-    var name = String((err && err.name) || "");
-    var rawCategory = (err && err.category) || "";
-    var rawStage = (err && err.stage) || fallbackStage || "recording";
-    var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
-    var constraint = String((err && err.constraint) || "");
+    const name = String((err && err.name) || "");
+    const rawCategory = (err && err.category) || "";
+    const rawStage = (err && err.stage) || fallbackStage || "recording";
+    const rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
+    const constraint = String((err && err.constraint) || "");
     if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
       return { category: "permission_denied", stage: "permission", message: bt("voicePermissionDenied") };
     }
@@ -84,7 +86,17 @@
 
   function stopMediaTracks(stream) {
     if (!stream) return;
-    stream.getTracks().forEach(function (track) { try { track.stop(); } catch (_) {} });
+    stream.getTracks().forEach(function (track) { try { track.stop(); } catch { /* 已停止的轨道无需处理 */ } });
+  }
+
+  // 语音流程的错误载体:Error 实例 + category/stage 附加字段,供 normalizeVoiceError 分类。
+  // (原实现抛裸对象字面量,违反 no-throw-literal;此处收拢为 Error 工厂,
+  // normalizeVoiceError 的分类字段 category/stage/message 语义不变。)
+  function voiceFlowError(category, stage, message) {
+    const error = new Error(message);
+    error.category = category;
+    error.stage = stage;
+    return error;
   }
 
   function cleanupVoiceInputSession(session) {
@@ -93,17 +105,17 @@
     if (session.permissionTimeoutId) clearTimeout(session.permissionTimeoutId);
     session.permissionTimeoutId = null;
     if (session.cancelPermissionRequest) {
-      var cancelPermissionRequest = session.cancelPermissionRequest;
+      const cancelPermissionRequest = session.cancelPermissionRequest;
       session.cancelPermissionRequest = null;
-      try { cancelPermissionRequest(); } catch (_) {}
+      try { cancelPermissionRequest(); } catch { /* 取消回调异常不阻断清理 */ }
     }
     // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
     // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
     // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
-    try { if (session.processor) session.processor.onaudioprocess = null; } catch (_) {}
-    try { if (session.processor) session.processor.disconnect(); } catch (_) {}
-    try { if (session.source) session.source.disconnect(); } catch (_) {}
-    try { if (session.zeroGain) session.zeroGain.disconnect(); } catch (_) {}
+    try { if (session.processor) session.processor.onaudioprocess = null; } catch { /* 释放失败仅影响本页音频 */ }
+    try { if (session.processor) session.processor.disconnect(); } catch { /* 释放失败仅影响本页音频 */ }
+    try { if (session.source) session.source.disconnect(); } catch { /* 释放失败仅影响本页音频 */ }
+    try { if (session.zeroGain) session.zeroGain.disconnect(); } catch { /* 释放失败仅影响本页音频 */ }
     stopMediaTracks(session.stream);
     session.processor = null;
     session.source = null;
@@ -111,16 +123,16 @@
     session.stream = null;
     // close() 触发 GStreamer 管线异步拆解，与上面的 disconnect/track.stop 在同一拍里竞争最易崩；
     // 摘干净节点后挪到下一个事件循环再关，并吞掉 close 的异常。
-    var ctx = session.audioContext;
+    const ctx = session.audioContext;
     session.audioContext = null;
     if (ctx && ctx.state !== "closed") {
-      setTimeout(function () { try { ctx.close().catch(function () {}); } catch (_) {} }, 0);
+      setTimeout(function () { try { ctx.close().catch(function () {}); } catch { /* 音频上下文已关闭 */ } }, 0);
     }
   }
 
   async function probeVoiceAudioInput(timeoutMs) {
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== "function") return null;
-    var timer = null;
+    let timer = null;
     try {
       return await Promise.race([
         navigator.mediaDevices.enumerateDevices().then(function (devices) {
@@ -130,7 +142,7 @@
           timer = setTimeout(function () { resolve(null); }, timeoutMs || VOICE_DEVICE_PROBE_TIMEOUT_MS);
         }),
       ]);
-    } catch (_) {
+    } catch {
       return null;
     } finally {
       if (timer) clearTimeout(timer);
@@ -138,28 +150,24 @@
   }
 
   function requestVoiceMedia(session, constraints, timeoutMs) {
-    var abandoned = false;
-    var mediaPromise = navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
+    let abandoned = false;
+    const mediaPromise = navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
       if (abandoned || activeVoiceInput !== session) {
         stopMediaTracks(stream);
-        throw { category: "cancelled", stage: "permission", message: bt("voiceCancelled") };
+        throw voiceFlowError("cancelled", "permission", bt("voiceCancelled"));
       }
       return stream;
     });
-    var timeoutPromise = new Promise(function (_, reject) {
+    const timeoutPromise = new Promise(function (_, reject) {
       session.permissionTimeoutId = setTimeout(function () {
         abandoned = true;
-        reject({
-          category: "device_unavailable",
-          stage: "device",
-          message: bt("voiceDeviceTimeout"),
-        });
+        reject(voiceFlowError("device_unavailable", "device", bt("voiceDeviceTimeout")));
       }, timeoutMs || VOICE_DEVICE_REQUEST_TIMEOUT_MS);
     });
-    var cancelPromise = new Promise(function (_, reject) {
+    const cancelPromise = new Promise(function (_, reject) {
       session.cancelPermissionRequest = function () {
         abandoned = true;
-        reject({ category: "cancelled", stage: "permission", message: bt("voiceCancelled") });
+        reject(voiceFlowError("cancelled", "permission", bt("voiceCancelled")));
       };
     });
     return Promise.race([mediaPromise, timeoutPromise, cancelPromise]).finally(function () {
@@ -170,9 +178,9 @@
   }
 
   function mergeFloatChunks(chunks) {
-    var total = chunks.reduce(function (sum, chunk) { return sum + chunk.length; }, 0);
-    var out = new Float32Array(total);
-    var offset = 0;
+    const total = chunks.reduce(function (sum, chunk) { return sum + chunk.length; }, 0);
+    const out = new Float32Array(total);
+    let offset = 0;
     chunks.forEach(function (chunk) {
       out.set(chunk, offset);
       offset += chunk.length;
@@ -182,26 +190,27 @@
 
   function downsamplePcm(samples, sourceRate, targetRate) {
     if (!samples.length || sourceRate === targetRate) return samples;
-    var ratio = sourceRate / targetRate;
-    var len = Math.max(1, Math.round(samples.length / ratio));
-    var out = new Float32Array(len);
-    for (var i = 0; i < len; i++) {
-      var start = Math.floor(i * ratio);
-      var end = Math.min(samples.length, Math.floor((i + 1) * ratio));
-      var sum = 0;
-      var count = 0;
-      for (var j = start; j < end; j++) { sum += samples[j]; count++; }
+    const ratio = sourceRate / targetRate;
+    const len = Math.max(1, Math.round(samples.length / ratio));
+    const out = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+      const start = Math.floor(i * ratio);
+      const end = Math.min(samples.length, Math.floor((i + 1) * ratio));
+      let sum = 0;
+      let count = 0;
+      for (let j = start; j < end; j++) { sum += samples[j]; count++; }
       out[i] = count ? sum / count : samples[Math.min(start, samples.length - 1)];
     }
     return out;
   }
 
   function encodeWav(samples, sampleRate) {
-    var dataSize = samples.length * 2;
-    var buffer = new ArrayBuffer(44 + dataSize);
-    var view = new DataView(buffer);
+    const dataSize = samples.length * 2;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
     function writeString(offset, value) {
-      for (var i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+      // WAV 头只写 ASCII,charCode 即目标字节值;fromCodePoint/codePointAt 在此无增益。
+      for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); // eslint-disable-line unicorn/prefer-code-point
     }
     writeString(0, "RIFF");
     view.setUint32(4, 36 + dataSize, true);
@@ -216,16 +225,16 @@
     view.setUint16(34, 16, true);
     writeString(36, "data");
     view.setUint32(40, dataSize, true);
-    var offset = 44;
-    for (var i = 0; i < samples.length; i++, offset += 2) {
-      var s = Math.max(-1, Math.min(1, samples[i]));
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
       view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
     }
     return buffer;
   }
 
   async function finishVoiceInput(cancelled, timedOut) {
-    var session = activeVoiceInput;
+    const session = activeVoiceInput;
     if (!session) return;
     if (cancelled) {
       cleanupVoiceInputSession(session);
@@ -242,25 +251,25 @@
       if (timedOut) {
         emitVoiceDiagnostic("recording", "warn", "recording reached max duration", "", "timeout");
       }
-      var raw = mergeFloatChunks(session.chunks);
-      var durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
+      const raw = mergeFloatChunks(session.chunks);
+      const durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
       if (durationMs < 300) {
-        throw { category: "recording_failed", stage: "recording", message: bt("voiceRecordingTooShort") };
+        throw voiceFlowError("recording_failed", "recording", bt("voiceRecordingTooShort"));
       }
-      var pcm = downsamplePcm(raw, session.sampleRate, 16000);
-      var wav = encodeWav(pcm, 16000);
-      var bytes = Array.from(new Uint8Array(wav));
-      var res = await invoke("transcribe_voice_audio", {
+      const pcm = downsamplePcm(raw, session.sampleRate, 16000);
+      const wav = encodeWav(pcm, 16000);
+      const bytes = [...new Uint8Array(wav)];
+      const res = await invoke("transcribe_voice_audio", {
         request: {
           audio_bytes: bytes,
           session_id: session.sessionId,
         },
       });
       if (activeVoiceInput !== session) return;
-      var text = String((res && res.text) || "").trim();
-      if (!text) throw { category: "empty_result", stage: "transcribing", message: "未识别到语音内容" };
+      const text = String((res && res.text) || "").trim();
+      if (!text) throw voiceFlowError("empty_result", "transcribing", "未识别到语音内容");
       if (state.activeSessionId !== session.sessionId) {
-        throw { category: "context_mismatch", stage: "writeback", message: "voice result discarded because active session changed" };
+        throw voiceFlowError("context_mismatch", "writeback", "voice result discarded because active session changed");
       }
       if (typeof session.writeback === "function") {
         session.writeback(text, session.draftBeforeStart);
@@ -268,7 +277,7 @@
       setVoiceInputStatus("completed", { message: bt("voiceWrittenBack"), completedAt: Date.now() });
       emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
     } catch (err) {
-      var normalized = normalizeVoiceError(err, "transcribing");
+      const normalized = normalizeVoiceError(err, "transcribing");
       setVoiceInputStatus("failed", {
         message: normalized.message,
         error: normalized.message,
@@ -289,14 +298,14 @@
     state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: true, cancelling: false, error: null, progress: { stage: "start" } });
     notify();
     try {
-      var st = await invoke("install_voice_asr");
-      var patch = { installing: false, cancelling: false, status: st, progress: { stage: "done" } };
+      const st = await invoke("install_voice_asr");
+      const patch = { installing: false, cancelling: false, status: st, progress: { stage: "done" } };
       if (st && st.ready) patch.open = false;
       state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
       notify();
     } catch (e) {
-      var cancelled = state.voiceAsrSetup.cancelling || String(e).indexOf("已取消") >= 0;
-      var failedPatch = {
+      const cancelled = state.voiceAsrSetup.cancelling || String(e).includes("已取消");
+      const failedPatch = {
         installing: false,
         cancelling: false,
         progress: cancelled ? { stage: "cancelled" } : state.voiceAsrSetup.progress,
@@ -360,11 +369,11 @@
 
     // 点击后立即进入可见、可取消的检测态。模型状态查询首次可能需要读取模型文件，
     // 如果等查询结束后才更新 UI，Windows 上会表现为按钮点击后没有任何反馈。
-    var session = {
+    const session = {
       id: Date.now().toString(36),
       sessionId: state.activeSessionId || null,
       draftBeforeStart: String(draftText || ""),
-      writeback: writeback,
+      writeback,
       chunks: [],
       sampleRate: 16000,
       startedAt: Date.now(),
@@ -380,7 +389,7 @@
 
     // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
     try {
-      var asrStatus = await invoke("voice_asr_status");
+      const asrStatus = await invoke("voice_asr_status");
       if (activeVoiceInput !== session) return;
       // 未装好即弹安装引导；installable 决定当前平台是否提供内置安装入口。
       if (asrStatus && !asrStatus.ready) {
@@ -391,12 +400,12 @@
         notify();
         return;
       }
-    } catch (e) {
+    } catch {
       if (activeVoiceInput !== session) return;
       // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
     }
 
-    var AudioCtor = window.AudioContext || window.webkitAudioContext; // eslint-disable-line compat/compat -- Safari 14.0 ships webkitAudioContext; the || fallback above selects it
+    const AudioCtor = window.AudioContext || window.webkitAudioContext; // eslint-disable-line compat/compat -- Safari 14.0 ships webkitAudioContext; the || fallback above selects it
     setVoiceInputStatus("requesting_permission", {
       message: bt("voiceRequestingPermission"),
       stage: "permission",
@@ -405,15 +414,15 @@
 
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw { category: "device_unavailable", stage: "device", message: bt("voiceWebviewNoMic") };
+        throw voiceFlowError("device_unavailable", "device", bt("voiceWebviewNoMic"));
       }
       if (!AudioCtor) {
-        throw { category: "recording_failed", stage: "recording", message: bt("voiceWebviewNoRecording") };
+        throw voiceFlowError("recording_failed", "recording", bt("voiceWebviewNoRecording"));
       }
-      var hasAudioInput = await probeVoiceAudioInput(VOICE_DEVICE_PROBE_TIMEOUT_MS);
+      const hasAudioInput = await probeVoiceAudioInput(VOICE_DEVICE_PROBE_TIMEOUT_MS);
       if (activeVoiceInput !== session) return;
       if (hasAudioInput === false) {
-        throw { category: "device_unavailable", stage: "device", message: bt("voiceNoDeviceConnect") };
+        throw voiceFlowError("device_unavailable", "device", bt("voiceNoDeviceConnect"));
       }
       session.stream = await requestVoiceMedia(session, {
         audio: {
@@ -435,7 +444,7 @@
       session.zeroGain.gain.value = 0;
       session.processor.onaudioprocess = function (event) {
         if (activeVoiceInput !== session) return;
-        var input = event.inputBuffer.getChannelData(0);
+        const input = event.inputBuffer.getChannelData(0);
         session.chunks.push(new Float32Array(input));
       };
       session.source.connect(session.processor);
@@ -455,10 +464,10 @@
       cleanupVoiceInputSession(session);
       if (activeVoiceInput !== session) return;
       activeVoiceInput = null;
-      var normalized = normalizeVoiceError(err, "recording");
+      const normalized = normalizeVoiceError(err, "recording");
       if (normalized.category === "permission_denied") {
         try {
-          var permissionReset = await invoke("reset_microphone_permission");
+          const permissionReset = await invoke("reset_microphone_permission");
           if (permissionReset) {
             normalized.message = bt("voicePermissionDeniedRetry");
             emitVoiceDiagnostic("permission", "info", "microphone permission reset to default", normalized.message, normalized.category);
@@ -497,18 +506,18 @@
   }
 
   function appendVoiceText(base, text) {
-    var left = String(base || "").trimEnd();
-    var right = String(text || "").trim();
+    const left = String(base || "").trimEnd();
+    const right = String(text || "").trim();
     if (!left) return right;
     if (!right) return left;
     return left + (/[。！？.!?，,;；:]$/.test(left) ? " " : "\n") + right;
   }
 
   function runVoiceInputDebugAssertions() {
-    var denied = normalizeVoiceError({ name: "NotAllowedError" });
-    var noDevice = normalizeVoiceError({ name: "NotFoundError" });
-    var unsupportedConstraint = normalizeVoiceError({ name: "OverconstrainedError", message: "Invalid constraint", constraint: "channelCount" });
-    var mismatch = normalizeVoiceError({ category: "context_mismatch" });
+    const denied = normalizeVoiceError({ name: "NotAllowedError" });
+    const noDevice = normalizeVoiceError({ name: "NotFoundError" });
+    const unsupportedConstraint = normalizeVoiceError({ name: "OverconstrainedError", message: "Invalid constraint", constraint: "channelCount" });
+    const mismatch = normalizeVoiceError({ category: "context_mismatch" });
     console.assert(denied.category === "permission_denied", "permission error classified");
     console.assert(noDevice.category === "device_unavailable", "device error classified");
     console.assert(unsupportedConstraint.category === "constraint_unsupported", "unsupported constraint classified");
@@ -519,14 +528,14 @@
   }
 
     return {
-      startVoiceInput: startVoiceInput,
-      installVoiceAsr: installVoiceAsr,
-      cancelVoiceAsrSetup: cancelVoiceAsrSetup,
-      closeVoiceAsrSetup: closeVoiceAsrSetup,
-      cancelVoiceInput: cancelVoiceInput,
-      clearVoiceInput: clearVoiceInput,
-      appendVoiceText: appendVoiceText,
-      runVoiceInputDebugAssertions: runVoiceInputDebugAssertions
+      startVoiceInput,
+      installVoiceAsr,
+      cancelVoiceAsrSetup,
+      closeVoiceAsrSetup,
+      cancelVoiceInput,
+      clearVoiceInput,
+      appendVoiceText,
+      runVoiceInputDebugAssertions
     };
   };
 })(window);

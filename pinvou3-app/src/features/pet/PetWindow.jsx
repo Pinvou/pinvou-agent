@@ -1,4 +1,4 @@
-import React, {
+import {
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -111,9 +111,10 @@ function PetSprite({ pet, animation }) {
   );
   const [frameIndex, setFrameIndex] = useState(0);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换动画序列时同步重置帧索引,一次性镜像
   useEffect(() => setFrameIndex(0), [sequence]);
   useEffect(() => {
-    if (reducedMotion || sequence.frames.length <= 1) return undefined;
+    if (reducedMotion || sequence.frames.length <= 1) return;
     const frame = sequence.frames[frameIndex] || sequence.frames[0];
     const timer = window.setTimeout(() => {
       setFrameIndex((current) => (
@@ -222,12 +223,16 @@ export default function PetWindow({
   const openingSessionRef = useRef(null);
   const openingScheduledRunRef = useRef(null);
   const scheduledNoticeRef = useRef(null);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref 同步:仅在事件回调/物理帧里读取,渲染输出不依赖它
   scheduledNoticeRef.current = scheduledNotice;
   const scaleRef = useRef(startupScale);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref 同步:缩放值仅在窗口 IPC/物理帧里读取
   scaleRef.current = scale;
   const edgeAlignRef = useRef(edgeAlign);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref 同步:贴边方向仅在窗口 IPC 回调里读取
   edgeAlignRef.current = edgeAlign;
   const edgeVAlignRef = useRef(edgeVAlign);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref 同步:垂直对齐仅在窗口 IPC 回调里读取
   edgeVAlignRef.current = edgeVAlign;
   const verticalAlignmentSaveTimerRef = useRef(0);
 
@@ -270,12 +275,14 @@ export default function PetWindow({
   // 新活动到来保持收起，仅数字增长。窗口大小仍只跟随"有没有内容"。
   const [cardsCollapsed, setCardsCollapsed] = useState(false);
   const cardsCollapsedRef = useRef(cardsCollapsed);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref 同步:收起态仅在 DOM 徽标渲染辅助里读取
   cardsCollapsedRef.current = cardsCollapsed;
   const activityBadgeCount = activities.length + (scheduledNotice ? 1 : 0);
   const activityVisible = activities.length > 0
     || !!scheduledNotice
     || (firstAwake && !!activePet);
   const activityVisibleRef = useRef(activityVisible);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref 同步:可见性仅在窗口 scale IPC 里读取
   activityVisibleRef.current = activityVisible;
 
   const measureActivityCard = () => {
@@ -296,13 +303,13 @@ export default function PetWindow({
   };
 
   const animation = dragAnimation
-    || (hovered ? 'jumping' : (baseAnimation !== 'idle' ? baseAnimation : (firstAwake ? 'waving' : 'idle')));
+    || (hovered ? 'jumping' : (baseAnimation === 'idle' ? (firstAwake ? 'waving' : 'idle') : baseAnimation));
   const activePetName = activePet
     ? (t.uiPetSettings.pets[activePet.id]?.name || activePet.name)
     : '';
 
   useEffect(() => {
-    if (!isTauriAvailable()) return undefined;
+    if (!isTauriAvailable()) return;
     let disposed = false;
     let unlisten = null;
     invokeTauri('get_settings').then((settings) => {
@@ -339,7 +346,7 @@ export default function PetWindow({
 
   useEffect(() => {
     const core = isTauriAvailable() ? tauriCommands : null;
-    if (!core) return undefined;
+    if (!core) return;
     let disposed = false;
     const requestSequence = petActivationRef.current.requestSequence;
     core.invoke('get_selected_pet').then(async (id) => {
@@ -381,7 +388,7 @@ export default function PetWindow({
   useEffect(() => {
     const ev = isTauriAvailable() ? tauriEvents : null;
     const core = isTauriAvailable() ? tauriCommands : null;
-    if (!ev) return undefined;
+    if (!ev) return;
     let disposed = false;
     let noticeRequest = 0;
     let scheduledRefreshTimer = 0;
@@ -406,7 +413,7 @@ export default function PetWindow({
         );
         scheduledNoticeRef.current = next;
         setScheduledNotice(next);
-      } catch (_) {
+      } catch {
         // The task page remains the source of truth; a transient read failure
         // must not remove an already visible completion reminder.
       }
@@ -516,7 +523,7 @@ export default function PetWindow({
     }));
 
     Promise.all(subscriptions).then((items) => {
-      if (disposed) items.forEach((unlisten) => unlisten());
+      if (disposed) items.forEach((unlisten) => { unlisten(); });
       else {
         unlisteners.push(...items);
         ev.emit('pet:request_snapshot').catch(() => {});
@@ -530,13 +537,14 @@ export default function PetWindow({
       window.clearInterval(timer);
       window.clearTimeout(scheduledRefreshTimer);
       window.clearTimeout(activityCollapseTimerRef.current);
-      unlisteners.forEach((unlisten) => { try { unlisten(); } catch (_) {} });
+      unlisteners.forEach((unlisten) => { try { unlisten(); } catch { /* 解绑失败无需处理 */ } });
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 事件订阅按错误文案身份重建;refresh/refreshScheduledNotice 引用变化不应重订
   }, [petCopy.sendFailed]);
 
   useLayoutEffect(() => {
     const core = isTauriAvailable() ? tauriCommands : null;
-    if (!core) return undefined;
+    if (!core) return;
     // 人物锚点由 Rust 从当前窗口几何自行反推（前端此刻的 DOM 已经因卡片
     // 卸载而漂移，测量结果不可信），这里只需带上人物贴边方向。
     const invokeActivityVisible = (visible, activityHeight) => {
@@ -560,7 +568,7 @@ export default function PetWindow({
         activityCollapseTimerRef.current = 0;
         invokeActivityVisible(false, null);
       }, ACTIVITY_COLLAPSE_DEBOUNCE_MS);
-      return undefined;
+      return;
     }
 
     // 有内容立即展开，不等防抖窗口，避免收起→新活动到达时窗口迟滞一帧。
@@ -571,11 +579,10 @@ export default function PetWindow({
     activityHeightRef.current = PET_ACTIVITY_WINDOW_HEIGHT;
     measureActivityCard();
     invokeActivityVisible(true, PET_ACTIVITY_WINDOW_HEIGHT);
-    return undefined;
   }, [activityVisible]);
 
   useEffect(() => {
-    if (!isTauriAvailable()) return undefined;
+    if (!isTauriAvailable()) return;
     const scaleRequest = Number.isFinite(configuredScale)
       ? invokeTauri('set_pet_scale', {
         scale: startupScale,
@@ -618,6 +625,7 @@ export default function PetWindow({
         if (positionQueue.requested && positionQueue.requested.drag === activeDrag) {
           positionQueue.requested = null;
         }
+        // eslint-disable-next-line react-hooks/immutability -- waitForPetPositionWrites/measurePetLocalRect 为组件内稳定工具函数,声明顺序先于运行时调用
         const queuedMoveSettled = waitForPetPositionWrites();
         window.requestAnimationFrame(() => {
           measureActivityCard();
@@ -639,6 +647,7 @@ export default function PetWindow({
                 activeDrag.lastTx = shifted(activeDrag.lastTx, dx);
                 activeDrag.lastTy = shifted(activeDrag.lastTy, dy);
               }
+              // eslint-disable-next-line react-hooks/immutability -- 稳定工具函数,声明顺序先于运行时调用
               activeDrag.localRect = measurePetLocalRect(activeDrag);
               activeDrag.resizeSyncToken = null;
             })
@@ -656,8 +665,9 @@ export default function PetWindow({
     return () => {
       disposed = true;
       window.clearTimeout(saveTimer);
-      unlisteners.forEach((unlisten) => unlisten());
+      unlisteners.forEach((unlisten) => { unlisten(); });
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 窗口几何/缩放同步只挂载一次;补充 scale 依赖会重复发起原生窗口调用
   }, []);
 
   const openMain = (sessionId = null) => {
@@ -703,6 +713,7 @@ export default function PetWindow({
 
   const stopPhysics = (expected = null) => {
     if (expected && dragRef.current !== expected) return;
+    // eslint-disable-next-line react-hooks/immutability -- 事件/物理循环里清空拖拽 ref,非渲染路径
     dragRef.current = null;
     cancelAnimationFrame(physRafRef.current);
     physRafRef.current = 0;
@@ -714,6 +725,7 @@ export default function PetWindow({
     return writes.length > 0 ? Promise.allSettled(writes) : Promise.resolve();
   };
 
+  // drag 为命令式物理帧对象(非 React 状态);按帧改写其字段是拖拽模型的核心
   const queuePetWindowPosition = (drag) => {
     const queue = positionQueueRef.current;
     const x = Math.round(drag.x);
@@ -723,6 +735,7 @@ export default function PetWindow({
       && queue.requested.x === x
       && queue.requested.y === y) return;
     const job = { drag, x, y };
+    // eslint-disable-next-line react-hooks/immutability -- 位置队列为命令式去重队列,非 React 状态
     queue.requested = job;
     // rAF 已经把同一帧的鼠标事件合并成最新坐标。这里必须立即提交，不能等待
     // 上一笔 GTK setPosition Promise；串行等待会让原生窗口阶梯式追赶鼠标，
@@ -740,6 +753,7 @@ export default function PetWindow({
       });
   };
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- 拖拽物理帧步进:贴边/惯性/边界逐一处理,拆分会破坏每帧单次读写的时序
   const stepPhysics = () => {
     const drag = dragRef.current;
     if (!drag || !drag.geometryReady || !drag.win) return;
@@ -751,6 +765,7 @@ export default function PetWindow({
     const currentVAlign = edgeVAlignRef.current;
     let monitorScale = Number(drag.pointerScale) || 1;
     const measuredLocalRect = drag.localRect || measurePetLocalRect(drag);
+    // eslint-disable-next-line react-hooks/immutability -- 拖拽物理对象:按帧缓存测量结果
     if (measuredLocalRect) drag.localRect = measuredLocalRect;
     const metrics = {
       size: drag.windowSize,
@@ -924,7 +939,7 @@ export default function PetWindow({
     const el = characterSlotRef.current;
     if (!el) return null;
     const rect = el.getBoundingClientRect();
-    if (!(rect.width > 0) || !(rect.height > 0)) return null;
+    if (rect.width <= 0 || rect.height <= 0) return null;
     const sf = Number(drag && drag.pointerScale) || window.devicePixelRatio || 1;
     return {
       t: rect.top * sf,
@@ -956,7 +971,6 @@ export default function PetWindow({
       moved: false,
     };
     const pointerScale = window.devicePixelRatio || 1;
-    const previous = dragRef.current;
     const drag = {
       win: null,
       holding: true,
@@ -975,11 +989,13 @@ export default function PetWindow({
       vy: 0,
       bounds: null,
     };
+    // eslint-disable-next-line react-hooks/immutability -- 指针按下开始新拖拽:命令式载荷写入
     dragRef.current = drag;
     // 立刻停掉上一次拖拽遗留的动画帧,避免它作用到这次的新 drag 上。
     cancelAnimationFrame(physRafRef.current);
     physRafRef.current = 0;
     const positionQueue = positionQueueRef.current;
+    // eslint-disable-next-line react-hooks/immutability -- 新拖拽丢弃未决位置请求
     positionQueue.requested = null;
     const previousPositionSettled = waitForPetPositionWrites();
     if (!isTauriAvailable()) {
@@ -1019,6 +1035,7 @@ export default function PetWindow({
       const dy = event.screenY - press.y;
       if (Math.abs(dx) + Math.abs(dy) > 4) {
         press.moved = true;
+        // eslint-disable-next-line react-hooks/immutability -- 拖拽物理对象:命令式载荷的位移标记
         if (drag) drag.didMove = true;
       }
       motionX = event.screenX - press.lastX;
@@ -1082,7 +1099,7 @@ export default function PetWindow({
           scaleRef.current = actual;
           setScale(actual);
         }
-      } catch (_) {
+      } catch {
         drag.pendingScale = null;
         break;
       }
@@ -1204,7 +1221,7 @@ export default function PetWindow({
   // 菜单开启时:窗口外(菜单以外)点击 / Esc / 失焦都收起。捕获阶段监听,
   // 命中菜单内部则不收,与旧独立菜单窗口的 blur/透明区收起语义一致。
   useEffect(() => {
-    if (!ctxMenu) return undefined;
+    if (!ctxMenu) return;
     const close = () => setCtxMenu(null);
     const onPointerDownAway = (event) => {
       if (ctxMenuRef.current && ctxMenuRef.current.contains(event.target)) return;
@@ -1234,6 +1251,8 @@ export default function PetWindow({
   const submitPetReply = async (activity) => {
     const text = normalizedPetReply(cardUi.draft);
     if (!text || cardUi.pendingRequestId) return;
+    // Math.random 仅用于请求 id 的碰撞兜底:前缀已含 Date.now(),同毫秒碰撞概率可忽略
+    // eslint-disable-next-line sonarjs/pseudo-random -- UI 请求 id 非安全场景,时间戳前缀已兜底唯一性
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     dispatchCardUi({ type: 'submit-reply', requestId });
     const core = isTauriAvailable() ? tauriCommands : null;
@@ -1262,6 +1281,7 @@ export default function PetWindow({
   };
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: 桌宠根节点仅屏蔽右键菜单,非交互容器
     <div
       ref={petRootRef}
       className={`pet-root pet-align-${edgeAlign} pet-valign-${edgeVAlign}`}
@@ -1288,7 +1308,7 @@ export default function PetWindow({
                 <div className="pet-activity-main">
                   <div className="pet-activity-title-row">
                     <span className="pet-activity-title">{petCopy.scheduledDone}</span>
-                    <span className="pet-scheduled-status" aria-label={petCopy.done}>✓</span>
+                    <span className="pet-scheduled-status" role="img" aria-label={petCopy.done}>✓</span>
                   </div>
                   <div className="pet-activity-body-row">
                     <span className="pet-activity-body">
@@ -1331,6 +1351,7 @@ export default function PetWindow({
                       <span className="pet-activity-title">{activity.title}</span>
                       <span
                         className="pet-activity-status"
+                        role="img"
                         aria-label={petCopy[activity.status]}
                       >
                         {STATUS_SYMBOL[activity.status]}
@@ -1388,6 +1409,7 @@ export default function PetWindow({
                     }}
                   >
                     <textarea
+                      // biome-ignore lint/a11y/noAutofocus: 展开回复卡即聚焦输入框,焦点即回复意图
                       autoFocus
                       rows={1}
                       value={cardUi.draft}
@@ -1462,6 +1484,7 @@ export default function PetWindow({
       >
         {activePet && (
           <div className="pet-stage" style={{ transform: `translateX(-50%) scale(${scale})` }}>
+            {/* biome-ignore lint/a11y/useSemanticElements: 桌宠角色为动画容器,div+role 承载精灵帧渲染,button 会破坏拖拽/动画 */}
             <div
               className="pet-character"
               role="button"
@@ -1519,14 +1542,14 @@ export default function PetWindow({
         {allowResize && (
           <div
             className="pet-resize-grip"
-            role="separator"
-            aria-label={petCopy.resize}
+            aria-hidden="true"
             title={petCopy.resizeTitle}
             onPointerDown={onResizePointerDown}
             onPointerMove={onResizePointerMove}
             onPointerUp={onResizePointerUp}
             onPointerCancel={onResizePointerUp}
           >
+            {/* 纯指针拖拽把手,无键盘交互路径:对辅助技术整体隐藏,故不用 role="separator"。 */}
             <svg
               className="pet-resize-grip-icon"
               viewBox="0 0 16 16"
@@ -1539,6 +1562,7 @@ export default function PetWindow({
         )}
       </div>
       {ctxMenu && (
+        // biome-ignore lint/a11y/noStaticElementInteractions: 右键菜单定位容器,菜单项为真实按钮
         <div
           ref={ctxMenuRef}
           className="pet-context-menu"

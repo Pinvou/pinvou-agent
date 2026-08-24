@@ -117,7 +117,7 @@ assert.equal(
 
 const firstId = state.attachments[0].id;
 api.removeAttachment(firstId);
-await new Promise(resolve => setTimeout(resolve, 0));
+await new Promise(resolve => { setTimeout(resolve, 0); });
 assert.equal(invokedCommands[1].command, 'cancel_draft_file_upload');
 
 await api.uploadDeviceFiles([fakeFile()]);
@@ -133,7 +133,7 @@ assert.equal(attachment.result.__pinvouManagedDraftAttachmentId, undefined);
 assert.equal(attachment.result.__pinvouManagedAttachmentSessionId, 'session_test_123');
 
 api.removeAttachment(attachment.id);
-await new Promise(resolve => setTimeout(resolve, 0));
+await new Promise(resolve => { setTimeout(resolve, 0); });
 assert.equal(invokedCommands.at(-1).command, 'discard_dropped_attachment');
 assert.equal(invokedCommands.at(-1).args.sessionId, 'session_test_123');
 

@@ -11,7 +11,7 @@ export function useReducedMotion() {
   ));
 
   useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return undefined;
+    if (typeof window.matchMedia !== 'function') return;
     const media = window.matchMedia(query);
     const onChange = () => setReduced(media.matches);
     media.addEventListener?.('change', onChange);

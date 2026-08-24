@@ -1,4 +1,3 @@
-import React from 'react';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 
 export function FileTypeIcon({ name, kind, className = '' }) {

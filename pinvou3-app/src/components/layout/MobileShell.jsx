@@ -1,4 +1,3 @@
-import React from 'react';
 import { createPortal } from 'react-dom';
 import { Edit2, Menu } from '../icons.jsx';
 
@@ -7,7 +6,7 @@ import { Edit2, Menu } from '../icons.jsx';
 // 主导航收敛为 对话/卡池/运行状态 三个 Tab，其余入口全部走「更多」；
 // 会话列表复用现有侧栏抽屉（max-sm 下是 overlay），不重建第二套列表。
 
-const MobileTopBar = ({ theme, t, title, onMenu, onNewChat }) => {
+const MobileTopBar = ({ t, title, onMenu, onNewChat }) => {
   const btnCls = 'w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors text-[#444746] hover:bg-[#E1E5EA] dark:text-[#E3E3E3] dark:hover:bg-[#333537]';
   return (
     <div data-testid="mobile-top-bar" className="h-12 shrink-0 flex items-center gap-1 px-2 bg-[#F0F4F9] dark:bg-[#1E1F20]">
@@ -27,7 +26,7 @@ const MobileTopBar = ({ theme, t, title, onMenu, onNewChat }) => {
   );
 };
 
-const MobileTabBar = ({ theme, tabs }) => {
+const MobileTabBar = ({ tabs }) => {
   return (
     <div data-testid="mobile-tab-bar" className="h-14 shrink-0 flex items-stretch border-t bg-[#F0F4F9] border-black/10 dark:bg-[#1E1F20] dark:border-white/10">
       {tabs.map(tab => (
@@ -48,10 +47,16 @@ const MobileTabBar = ({ theme, tabs }) => {
   );
 };
 
-const MobileMoreSheet = ({ theme, title, items, onClose }) => {
+const MobileMoreSheet = ({ title, items, onClose }) => {
   return createPortal(
+    // 底部面板:外层点击 backdrop 关闭;键盘路径由面板内真实 <button type="button"> 项承担
+    // (mobileNavigate 导航即关闭面板,见 main.jsx 的 setMobileMoreOpen(false))。
+    // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop 点击关闭层,键盘路径由面板内按钮承担
+    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop 点击关闭层,非交互容器
     <div data-testid="mobile-more-sheet" className="fixed inset-0 z-[70] flex flex-col justify-end" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40" />
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: 面板体仅阻止冒泡以免误触 backdrop 关闭,自身非交互控件 */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: 面板体仅阻止冒泡,非交互容器 */}
       <div onClick={e => e.stopPropagation()}
         className="relative rounded-t-[20px] px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
         <div className="mx-auto mb-3 h-1 w-9 rounded-full bg-black/15 dark:bg-white/20" />

@@ -22,7 +22,7 @@ const tauriConfigSource = await readFile(
 // 1. 拖放控制器:capture 选项存在,四个监听带 capture,已受理路径 stopPropagation
 assert.match(
   dropControllerSource,
-  /var capture = options\.capture === true/,
+  /(?:var|const|let) capture = options\.capture === true/,
   'controller must support the capture option',
 );
 assert.match(

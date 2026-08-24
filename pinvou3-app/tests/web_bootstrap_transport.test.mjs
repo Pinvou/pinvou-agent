@@ -393,7 +393,7 @@ async function connectWithCapabilities(events, listener) {
   const client = window.PinvouWebClient;
   await client.policyPromise;
   client.markFrontendReady();
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => { setImmediate(resolve); });
   client.markStateReady();
 
   const firstSocket = MockWebSocket.instances[0];
@@ -419,14 +419,14 @@ async function connectWithCapabilities(events, listener) {
     { message: 'hello', attachmentHandles: [], restrictTools: false },
     stableId,
   );
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => { setImmediate(resolve); });
   const firstRequest = firstSocket.sent.find(message => message.type === 'rpc_request');
   assert.ok(firstRequest, JSON.stringify({
     sent: firstSocket.sent,
     frontendReady: client.frontendReady,
     stateReady: client.stateReady,
     desktopCapabilitiesReady: client.desktopCapabilitiesReady,
-    allowedCommands: Array.from(client.allowedCommands || []),
+    allowedCommands: [...client.allowedCommands || []],
   }));
   assert.equal(firstRequest.id, stableId);
   assert.equal(firstRequest.client_request_id, stableId);
@@ -491,7 +491,7 @@ async function connectWithCapabilities(events, listener) {
   });
   const requestId = 'first_turn_outcome_unknown';
   const rejected = harness.window.__TAURI__.core.invokeWithRequestId(command, { message: 'hello' }, requestId);
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => { setImmediate(resolve); });
   socket.message({
     v: 2,
     type: 'rpc_response',

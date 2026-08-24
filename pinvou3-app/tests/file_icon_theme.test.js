@@ -126,7 +126,7 @@ test('unknown names fall back to default file icon', () => {
   assert.strictEqual(resolveFileIcon('data.xyz123'), 'file.svg');
   assert.strictEqual(resolveFileIcon('no-extension'), 'file.svg');
   assert.strictEqual(resolveFileIcon(''), 'file.svg');
-  assert.strictEqual(resolveFileIcon(undefined), 'file.svg');
+  assert.strictEqual(resolveFileIcon(), 'file.svg');
 });
 
 // 5. 路径形式入参只取末段文件名

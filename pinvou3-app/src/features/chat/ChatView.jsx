@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Palette, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -190,7 +190,8 @@ const openChatExternalUrl = (url) => {
   invokeTauri('open_user_external_url', { url }).catch(() => {});
 };
 
-const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
+// eslint-disable-next-line no-unused-vars -- theme 由调用方统一注入,保留契约位
+const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const [hovered, setHovered] = useState(null);
       // 组合包化的本地能力(pptx)已无商店连接器卡,欢迎卡数据回退 tsToolWelcomeData
       const tool = localizeTool(tsToolsData.find(item => item.backendId === toolId) || tsToolWelcomeData.find(item => item.backendId === toolId), t);
@@ -232,7 +233,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 {tool.welcomeQueries.map((q, i) => (
-                  <button
+                  <button type="button"
                     key={i}
                     onMouseEnter={() => setHovered(i)}
                     onMouseLeave={() => setHovered(null)}
@@ -290,17 +291,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const entryCls = 'w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group';
       return (
         <div className="relative">
-          <button ref={triggerRef} onClick={onTriggerClick} title={t.attachAdd} className={COMPOSER_ICON_BUTTON_CLASS}>
+          <button type="button" ref={triggerRef} onClick={onTriggerClick} title={t.attachAdd} className={COMPOSER_ICON_BUTTON_CLASS}>
             <Paperclip size={18} />
           </button>
           <input ref={fileInputRef} type="file" multiple className="hidden" data-testid="device-file-input" onChange={onFilesChosen} />
           <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
             desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-56 bg-white/95 dark:bg-[#1E1E20]/95 backdrop-blur-xl border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-            <button onClick={pickFromDevice} className={entryCls}>
+            <button type="button" onClick={pickFromDevice} className={entryCls}>
               <Upload size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
               {t.attachFromDevice}
             </button>
-            <button onClick={pickFromHost} className={entryCls}>
+            <button type="button" onClick={pickFromHost} className={entryCls}>
               <Monitor size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
               {t.attachFromHost}
             </button>
@@ -462,6 +463,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy 主视图:会话/模式/产物状态高度内聚,拆分重构另行跟踪
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
@@ -509,7 +511,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const updateDesignAiState = useCallback((valueOrUpdater) => {
         setDesignAiState((prev) => {
           const next = typeof valueOrUpdater === 'function' ? valueOrUpdater(prev) : valueOrUpdater;
-          const merged = { text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0, ...(next || {}) };
+          const merged = { text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0, ...next };
           if (typeof window !== 'undefined') {
             if (merged.status !== 'idle' || merged.text || merged.lastPrompt) {
               window.__PINVOU_DESIGN_AI_STATE__ = merged;
@@ -528,10 +530,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       };
       const rootRef = useRef(null);
       const artColRef = useRef(null);
-      const [isWide, setIsWide] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 1200) >= ART_NARROW);
+      const [isWide, setIsWide] = useState(() => (typeof window === 'undefined' ? 1200 : window.innerWidth) >= ART_NARROW);
       const [artifactW, setArtifactW] = useState(() => {
-        const s = parseInt(localStorage.getItem('pinvou_artifactW') || '', 10);
-        const w = (typeof window !== 'undefined' ? window.innerWidth : 1200);
+        const s = Number(localStorage.getItem('pinvou_artifactW') || '');
+        const w = (typeof window === 'undefined' ? 1200 : window.innerWidth);
         const next = Number.isFinite(s) && s >= ART_MIN ? s : Math.round(w * ART_DEFAULT_RATIO);
         return clampArtifactWidth(next, w);
       });
@@ -594,7 +596,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const [floatingVoicePos, setFloatingVoicePos] = useState(null);
       const [floatingVoicePressed, setFloatingVoicePressed] = useState(false);
       useEffect(() => {
-        if (!focusComposerTick) return undefined;
+        if (!focusComposerTick) return;
         const timer = window.setTimeout(() => {
           if (composerRef.current) composerRef.current.focus();
         }, 80);
@@ -659,6 +661,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const workSubtab = pinvouModeState.workSubtab;
       const designSubtab = pinvouModeState.designSubtab;
       const designScopeKey = createDesignChangeScopeKey(activeSessionId, activeArtifactPath);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- designChanges 为作用域映射派生值,handleApplyDesignChange 依赖其引用以读取最新设计修改,包 useMemo 无行为收益
       const designChanges = designChangesByScope[designScopeKey] || [];
       const visibleDesignChanges = uniqueDesignChanges(designChanges);
       const reduceCurrentDesignChanges = useCallback((action) => {
@@ -702,6 +705,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         pinvouModeScopeRef.current = nextScope;
         pinvouModeStateRef.current = restored;
         setPinvouModeState(restored);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:仅按会话与消息数变化重估迁移,补全 chatItems 会随流式每条 delta 重跑
       }, [activeSessionId, chatItems.length]);
       // 把当前工作区 lane（work/design）同步给 bridge：草稿态 mode 的全局默认
       // 按 lane 三分（工作/设计/代码各记各的），lane 是纯前端概念，bridge
@@ -712,6 +716,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
       }, [pinvouMode]);
       useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 设计作用域切换时同步复位本地选中元素
         setSelectedDesignElement(null);
         updatePinvouModeState({ type: 'set-selected-design-element', elementId: undefined });
       }, [designScopeKey, updatePinvouModeState]);
@@ -828,7 +833,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           return {
             ...prev,
             computedStyle: {
-              ...(prev.computedStyle || {}),
+              ...prev.computedStyle,
               [property]: String(newValue || ''),
             },
           };
@@ -847,6 +852,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const element = payload && payload.element;
         const changes = Array.isArray(payload && payload.changes) ? payload.changes : [];
         if (!element || !changes.length) return;
+        // eslint-disable-next-line sonarjs/pseudo-random -- Math.random 仅生成本地设计修改分组 id,无安全或公平性用途
         const groupId = `design-group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const groupLabel = payload.groupLabel || chatViewCopy.designEditGroup;
         changes.forEach((item) => {
@@ -922,10 +928,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         .find(turn => turn.status === 'running') || null;
       const [conversationNow, setConversationNow] = useState(Date.now());
       useEffect(() => {
-        if (!busy || !useUnifiedConversationUi) return undefined;
+        if (!busy || !useUnifiedConversationUi) return;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 建 ticker 前先同步一次时钟基准,busy 起始即刻显示已耗时
         setConversationNow(Date.now());
         const timer = window.setInterval(() => setConversationNow(Date.now()), 1000);
         return () => window.clearInterval(timer);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:仅在思考阶段起点(startedAt)变化时重启秒级 ticker
       }, [busy, useUnifiedConversationUi, bs && bs.thinking && bs.thinking.startedAt]);
 
       // 外部入口可预填输入框并把焦点移到末尾。
@@ -940,6 +948,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           }, 80);
           if (onPrefillConsumed) onPrefillConsumed();
         }
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:仅在 prefill 变化时预填,setInputText 为稳定回调,补 onPrefillConsumed 会重复触发消费
       }, [prefill]);
 
       // 用户向上翻历史时暂停流式自动贴底；回到底部或发送新消息后恢复。
@@ -980,6 +989,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const el = scrollRef.current;
         if (!el) return;
         const lastItem = chatItems[chatItems.length - 1];
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 无消息时同步复位回底按钮
         if (!lastItem) { autoScrollRef.current = true; setShowScrollBottom(false); return; }
         if (autoScrollRef.current || lastItem.type === 'user') {
           el.scrollTop = el.scrollHeight;
@@ -989,9 +999,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           const shouldShow = el.scrollHeight > el.clientHeight + 4;
           setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         }
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:按末条消息特征窄依赖,补全整个 chatItems 会随引用变化频繁重滚
       }, [
         chatItems.length,
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 末条消息 html 是有意的复杂表达式窄依赖
         chatItems[chatItems.length - 1]?.html,
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 流式输出长度是有意的条件表达式窄依赖
         chatItems[chatItems.length - 1]?.state === 'running'
           ? chatItems[chatItems.length - 1]?.output?.length
           : 0,
@@ -1006,12 +1019,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const el = scrollRef.current;
         autoScrollRef.current = true;
         lastScrollTopRef.current = 0;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换会话时同步复位回底按钮状态
         setShowScrollBottom(false);
         if (el) {
           el.scrollTop = el.scrollHeight;
           lastScrollTopRef.current = el.scrollTop;
           lastScrollHeightRef.current = el.scrollHeight;
         }
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:以复杂表达式精确依赖会话 id
       }, [bs && bs.activeSessionId]);
 
       // Session content can finish measuring after the active-session effect runs, especially
@@ -1021,7 +1036,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       useEffect(() => {
         const scrollElement = scrollRef.current;
         const contentElement = conversationContentRef.current;
-        if (!scrollElement || !contentElement) return undefined;
+        if (!scrollElement || !contentElement) return;
         return startConversationBottomFollower({
           scrollElement,
           contentElement,
@@ -1058,14 +1073,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const saved = window.__PINVOU_DESIGN_AI_STATE__;
         if (!saved || (!saved.text && !saved.lastPrompt && saved.status === 'idle')) return;
         if (!designAiState.text && !designAiState.lastPrompt && designAiState.status === 'idle') {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- 全屏打开时把 window 上的设计 AI 快照镜像回本地 state
           setDesignAiState(saved);
         }
       }, [artifactsFullscreen, designAiState.text, designAiState.lastPrompt, designAiState.status]);
       useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 会话关闭时同步收起产物面板并退出全屏
         if (!activeSessionId) setArtifactsOpen(false);
         if (!activeSessionId) setArtifactsFullscreen(false);
       }, [activeSessionId]);
       useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 产物面板不可见时同步退出全屏态
         if (!artifactsVisible) setArtifactsFullscreen(false);
       }, [artifactsVisible]);
       const closeArtifactsPanel = useCallback(() => {
@@ -1077,6 +1095,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       // null=关闭；agentId 为空进列表页。selectionRequestId 让“详情→返回列表→
       // 再点同一张主对话卡”也成为一次新选择，不能只靠相同 agentId 的 prop 变化。
       const [subagentPanel, setSubagentPanel] = useState(null);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换会话时同步关闭子智能体面板
       useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
       const rememberScrollBeforeSubagentPanelChange = useCallback(() => {
         subagentPanelScrollRef.current = captureConversationScrollPosition(
@@ -1102,7 +1121,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
       }, [subagentPanel]);
       useEffect(() => {
-        if (typeof window === 'undefined') return undefined;
+        if (typeof window === 'undefined') return;
         const onOpen = (event) => {
           const detail = event && event.detail;
           if (detail?.sessionId && detail.sessionId !== activeSessionId) return;
@@ -1118,6 +1137,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         return () => window.removeEventListener('pinvou:open-subagent', onOpen);
       }, [activeSessionId, closeArtifactsPanel, rememberScrollBeforeSubagentPanelChange]);
       useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 产物面板与子智能体面板互斥,打开一侧同步关闭另一侧
         if (artifactsVisible) setSubagentPanel(null);
       }, [artifactsVisible]);
       const handlePreviewArtifact = useCallback((artifact) => {
@@ -1146,9 +1166,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           ? bridge.chat.getComposerDraft()
           : ((bs && bs.composerDraft) || '');
         setInputText(restored);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:仅按会话与草稿纪元恢复,补全 bs 会在每次后端快照变更时重读草稿,覆盖正在输入的内容
       }, [activeSessionId, draftEpoch, setInputText]);
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
-      const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
+      const voiceActive = ['requesting_permission', 'recording', 'transcribing'].includes(voiceInput.status);
       const voiceRecording = voiceInput.status === 'recording';
       const voiceBusy = voiceInput.status === 'transcribing';
       const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
@@ -1163,6 +1184,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
       const canFloatingSend = canSend && !voiceActive && !sceneCapabilityPreparing;
       const canClearInput = hasDraftText && !voiceActive;
+      // eslint-disable-next-line sonarjs/cognitive-complexity -- 场景能力预检与发送编排内聚于单个回调,拆分重构另行跟踪
       const sendChatMessage = useCallback(async (text) => {
         if (!bridge.available) return false;
         const outgoing = String(text || '').trim();
@@ -1183,9 +1205,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const requirements = requiredCapabilitiesForMeta(meta);
         if (requirements) {
           const sceneCopy = t.uiChatScenes[requirements.key];
-          if (!canPrepareSceneCapabilities({ isWebHost: isWeb, dependencyInstallAvailable: can('dependencyInstall') })) {
-            setSceneCapabilityStatus(null);
-          } else {
+          if (canPrepareSceneCapabilities({ isWebHost: isWeb, dependencyInstallAvailable: can('dependencyInstall') })) {
             setSceneCapabilityStatus({ kind: 'preparing', text: sceneCopy.preparing });
             try {
               const prepared = await prepareSceneCapabilities(meta, invokeTauri);
@@ -1211,6 +1231,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               });
               return false;
             }
+          } else {
+            setSceneCapabilityStatus(null);
           }
         } else {
           setSceneCapabilityStatus(null);
@@ -1233,16 +1255,18 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const raw = String(text || '').trim();
         if (!raw) return;
         const elementLabel = selectedDesignElement
+          // eslint-disable-next-line sonarjs/no-nested-template-literals -- 内联拼接类名首段,等价于先提取局部变量,保持既有结构
           ? `${selectedDesignElement.tagName || chatViewCopy.designElementFallback}${selectedDesignElement.className ? `.${String(selectedDesignElement.className).trim().split(/\s+/)[0]}` : ''}`
           : '';
         const scopedText = selectedDesignElement
           ? chatViewCopy.designAdjustSelected(elementLabel || chatViewCopy.designElementFallback, raw)
           : raw;
         sendChatMessage(scopedText);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:chatViewCopy 仅参与文案拼接,补全只会高频重建回调
       }, [selectedDesignElement, sendChatMessage]);
       const [deviceMode, setDeviceMode] = useState(() => {
-        const w = typeof window !== 'undefined' ? window.innerWidth : 1280;
-        const h = typeof window !== 'undefined' ? window.innerHeight : 900;
+        const w = typeof window === 'undefined' ? 1280 : window.innerWidth;
+        const h = typeof window === 'undefined' ? 900 : window.innerHeight;
         const coarse = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(pointer: coarse)').matches : false;
         const touch = coarse || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0);
         return { w, h, touch };
@@ -1282,6 +1306,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       useEffect(() => {
         const sessionKey = `${activeSessionId || 'draft'}:${draftEpoch}`;
         if (justInstalledTool) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- 装完工具后一次性落地欢迎卡状态
           setWelcomeToolId(justInstalledTool);
           welcomeSessionKeyRef.current = sessionKey;
           if (setJustInstalledTool) setJustInstalledTool(null);
@@ -1293,6 +1318,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         // 本 effect → 这次走 else 把刚显示的欢迎卡又清空(表现为"装完工具欢迎卡一闪即消失")。
         // 依赖 activeSessionId(切会话)+ draftEpoch(每次点「新建对话」自增):后者保证即便已在草稿态
         // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:setJustInstalledTool 为父级一次性指令回调,补全会在父组件重渲染时重复触发清空
       }, [justInstalledTool, activeSessionId, draftEpoch]);
 
       useEffect(() => {
@@ -1338,7 +1364,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             finishFloatingVoiceDrag(drag, pointerId);
             try {
               if (target && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
-            } catch (_) {}
+            } catch { /* 指针捕获失败可忽略 */ }
           }
           voiceDragRef.current = null;
         };
@@ -1350,6 +1376,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           setFloatingVoicePos(pos => pos ? clampFloatingVoicePos(pos.x, pos.y) : pos);
         });
         return () => cancelAnimationFrame(raf);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:拖动期间 floatingVoicePos 每帧变化,补全会让 rAF 夹取逐帧重建,位置改写已用函数式更新在回调内完成
       }, [tabletVoiceMode, hasDraftText, hasReadyAttachment, deviceMode.w, deviceMode.h]);
 
       // chip 显示当前会话绑定的模型:切会话/草稿时刷新 currentSessionModelId
@@ -1367,8 +1394,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       useEffect(() => {
         if (!hasImageAttachment || isScheduledSession || !bridge.available
           || !bridge.models || typeof bridge.models.getImageInputCapability !== 'function') {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- 前置条件不满足时同步清空图片路由提示
           setImageInputInfo(null);
-          return undefined;
+          return;
         }
         let cancelled = false;
         bridge.models.getImageInputCapability(activeSessionId)
@@ -1376,6 +1404,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           // 查询失败(如凭据未备/旧后端无此命令)按无警告处理,绝不误报。
           .catch(() => { if (!cancelled) setImageInputInfo(null); });
         return () => { cancelled = true; };
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:以复杂表达式精确依赖已保存模型列表
       }, [hasImageAttachment, isScheduledSession, activeSessionId, sessionModelKey, bs && bs.savedModels]);
       const imageInputWarning = imageInputInfo && imageInputInfo.image_mode === 'unsupported'
         ? (imageInputInfo.capability === 'unknown' ? t.uiAttachments.imageUnknown : t.uiAttachments.imageUnsupported)
@@ -1443,7 +1472,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const drag = voiceDragRef.current;
         const target = drag && drag.target;
         const result = finishFloatingVoiceDrag(drag, pointerId, {
-          suppressCompatibleClick: reason === 'pointerup' || reason === 'lostpointercapture' || reason === 'buttons-released',
+          suppressCompatibleClick: ['pointerup', 'lostpointercapture', 'buttons-released'].includes(reason),
         });
         if (!result.matched) return false;
 
@@ -1462,7 +1491,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (releaseCapture) {
           try {
             if (target && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
-          } catch (_) {}
+          } catch { /* 指针捕获失败可忽略 */ }
         }
         drag.target = null;
         return true;
@@ -1524,7 +1553,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         drag.target = target;
         voiceDragRef.current = drag;
         setFloatingVoicePressed(true);
-        try { target.setPointerCapture(e.pointerId); } catch (_) {}
+        try { target.setPointerCapture(e.pointerId); } catch { /* 指针捕获失败可忽略 */ }
       }
 
       function handleFloatingVoicePointerMove(e) {
@@ -1577,18 +1606,20 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (isWeb) return;
         const items = (e.clipboardData && e.clipboardData.items) || [];
         for (const it of items) {
-          if (it.type && it.type.indexOf('image/') === 0) {
-            const file = it.getAsFile();
-            if (!file) continue;
-            e.preventDefault();
-            const reader = new FileReader();
-            reader.onload = () => {
-              const bytes = Array.from(new Uint8Array(reader.result));
-              const ext = (file.type.split('/')[1] || 'png');
-              if (bridge.available) bridge.attachments.addPasteImage(`paste-${Date.now()}.${ext}`, bytes);
-            };
-            reader.readAsArrayBuffer(file);
+          if (!(it.type && it.type.indexOf('image/') === 0)) {
+          	continue;
           }
+
+          const file = it.getAsFile();
+          if (!file) continue;
+          e.preventDefault();
+          const reader = new FileReader();
+          reader.onload = () => {
+            const bytes = [...new Uint8Array(reader.result)];
+            const ext = (file.type.split('/')[1] || 'png');
+            if (bridge.available) bridge.attachments.addPasteImage(`paste-${Date.now()}.${ext}`, bytes);
+          };
+          reader.readAsArrayBuffer(file); // eslint-disable-line unicorn/prefer-blob-reading-methods -- FileReader 流程与进度回调配套,改造需重测拖拽链路
         }
       }
 
@@ -1621,7 +1652,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             <div className="flex items-center gap-2">
               {/* 窄屏：只留图标+计数（避免被左侧返回按钮挤到换行），文字标签 ≥sm 才显示 */}
               {activeSessionId && (
-                <button
+                <button type="button"
                   data-testid="chat-artifacts-entry"
                   onMouseEnter={() => prefetchChatPanel('artifacts')}
                   onFocus={() => prefetchChatPanel('artifacts')}
@@ -1693,8 +1724,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                       // reasoning 由 ConversationTimeline 的 ReasoningItem 负责，
                       // 不能交给旧 ChatBubble；后者不认识该类型，会返回 null，
                       // 导致后端已收到的实时 thinking 被静默吞掉。
-                      if (item.type === 'reasoning') return undefined;
-                      if (!item.legacyItem) return undefined;
+                      if (item.type === 'reasoning') return;
+                      if (!item.legacyItem) return;
                       return (
                         <ChatBubble
                           item={item.legacyItem}
@@ -1790,7 +1821,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           )}
           {tabletVoiceMode && (
             <div ref={floatingVoiceRef} style={floatingVoiceStyle} className="absolute z-30 flex items-center gap-2">
-              <button
+              <button type="button"
                 onClick={handleFloatingVoiceClick}
                 onPointerDown={handleFloatingVoicePointerDown}
                 onPointerMove={handleFloatingVoicePointerMove}
@@ -1814,7 +1845,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 {voiceRecording ? <StopCircle size={26} /> : <Mic size={26} />}
               </button>
               {hasDraftText && (
-                <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
+                <button type="button" onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
                   className={`w-12 h-12 rounded-full flex items-center justify-center border shadow-lg backdrop-blur-2xl transition-all ${
                     canClearInput
                       ? 'bg-white/90 border-black/[0.06] text-[#5F6368] hover:bg-[#F1F3F4] dark:bg-[#161618]/90 dark:border-white/10 dark:text-[#C4C7C5] dark:hover:bg-[#252629]'
@@ -1824,7 +1855,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 </button>
               )}
               {(hasDraftText || hasReadyAttachment) && (
-                <button onClick={handleSend} disabled={!canFloatingSend} aria-label={t.sendMsg} title={t.sendMsg}
+                <button type="button" onClick={handleSend} disabled={!canFloatingSend} aria-label={t.sendMsg} title={t.sendMsg}
                   className={`w-12 h-12 rounded-full flex items-center justify-center shadow-lg transition-all ${
                     canFloatingSend
                       ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white hover:-translate-y-0.5 active:translate-y-0'
@@ -1879,7 +1910,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   <div key={q.id} className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] self-start max-w-full ${'bg-[#EAEDF1] text-[#444746] dark:bg-[#2A2B2D] dark:text-[#C4C7C5]'}`}>
                     <span className="opacity-60">{t.queuedTag}</span>
                     <span className="max-w-[480px] truncate">{q.displayText}</span>
-                    <button onClick={() => bridge.chat.removeQueued(q.id)} title={t.queuedCancel} className={`w-5 h-5 rounded-full flex items-center justify-center ${'hover:bg-[#F0F4F9] dark:hover:bg-[#333537]'}`}>×</button>
+                    <button type="button" onClick={() => bridge.chat.removeQueued(q.id)} title={t.queuedCancel} className={`w-5 h-5 rounded-full flex items-center justify-center ${'hover:bg-[#F0F4F9] dark:hover:bg-[#333537]'}`}>×</button>
                   </div>
                 ))}
               </div>
@@ -1925,16 +1956,16 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 </span>
                 <div className="flex items-center gap-1 shrink-0">
                   {voiceInput.status === 'failed' && voiceInput.category === 'recognition_failed' && canInstallLocalAsr && onGotoSettings && (
-                    <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${'bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20'}`}>{t.voiceGotoDeps}</button>
+                    <button type="button" onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${'bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20'}`}>{t.voiceGotoDeps}</button>
                   )}
                   {voiceInput.status === 'failed' && (
-                    <button onClick={handleVoiceClick} className={`px-2 py-1 rounded-full ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{t.voiceRetry}</button>
+                    <button type="button" onClick={handleVoiceClick} className={`px-2 py-1 rounded-full ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{t.voiceRetry}</button>
                   )}
                   {voiceActive && (
-                    <button onClick={handleVoiceCancel} className={`px-2 py-1 rounded-full ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{t.voiceCancel}</button>
+                    <button type="button" onClick={handleVoiceCancel} className={`px-2 py-1 rounded-full ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{t.voiceCancel}</button>
                   )}
                   {!voiceActive && (
-                    <button onClick={handleVoiceClose} title={t.voiceClose} className={`w-6 h-6 rounded-full flex items-center justify-center ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>×</button>
+                    <button type="button" onClick={handleVoiceClose} title={t.voiceClose} className={`w-6 h-6 rounded-full flex items-center justify-center ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>×</button>
                   )}
                 </div>
               </div>
@@ -1942,7 +1973,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             {voiceAsrSetup.open && !canInstallLocalAsr && (
               <div className={`flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-2xl text-[12px] ${'bg-[#E8F0FE] text-[#174EA6] dark:bg-[#1E2B3A] dark:text-[#A8C7FA]'}`}>
                 <span>{chatCopy.asrUnavailable}</span>
-                <button onClick={() => bridge.voice.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{chatCopy.gotIt}</button>
+                <button type="button" onClick={() => bridge.voice.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{chatCopy.gotIt}</button>
               </div>
             )}
             {voiceAsrSetup.open && canInstallLocalAsr && (() => {
@@ -1950,13 +1981,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               const prog = su.progress || {};
               const pct = (prog.stage === 'model' && prog.total) ? Math.floor(prog.downloaded / prog.total * 100) : null;
               const missing = (su.status && su.status.missing) || [];
-              const needFfmpeg = missing.indexOf('ffmpeg') >= 0;
-              const needModel = missing.indexOf('model') >= 0;
-              const needEngine = missing.indexOf('engine') >= 0 || missing.indexOf('runtime') >= 0;
+              const needFfmpeg = missing.includes('ffmpeg');
+              const needModel = missing.includes('model');
+              const needEngine = missing.includes('engine') || missing.includes('runtime');
               const modelSizeText = (su.status && su.status.engine && needModel && !needFfmpeg) ? chatCopy.sizeModelOnly : chatCopy.sizeFull;
               return (
+                // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担
+                // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
                 <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45"
                   onClick={() => { if (!su.installing) bridge.voice.closeVoiceAsrSetup(); }}>
+                  {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
+                  {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
                   <div className={`w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 ${'bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]'}`}
                     onClick={e => e.stopPropagation()}>
                     <h3 className="text-[16px] font-semibold mb-2">
@@ -1973,23 +2008,23 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                       <div className="mb-4">
                         <div className="text-[12px] opacity-70 mb-1">
                           {prog.stage === 'model'
-                            ? chatCopy.downloadingModel(pct != null ? pct + '%' : '…')
+                            ? chatCopy.downloadingModel(pct == null ? '…' : pct + '%')
                             : (chatCopy.asrStages[prog.stage] || chatCopy.asrStages.preparing)}
                         </div>
                         <div className={`h-2 rounded-full overflow-hidden ${'bg-black/10 dark:bg-white/10'}`}>
-                          <div className="h-full bg-[#0B57D0] transition-all" style={{ width: (pct != null ? pct : 30) + '%' }} />
+                          <div className="h-full bg-[#0B57D0] transition-all" style={{ width: (pct == null ? 30 : pct) + '%' }} />
                         </div>
                       </div>
                     )}
                     {su.error && <div className="text-[13px] text-[#EA4335] mb-3">❌ {su.error}</div>}
                     <div className="flex items-center justify-end gap-2">
-                      <button onClick={() => bridge.voice.cancelVoiceAsrSetup()} disabled={su.cancelling}
+                      <button type="button" onClick={() => bridge.voice.cancelVoiceAsrSetup()} disabled={su.cancelling}
                         className={`text-[13px] px-4 py-2 rounded-full ${'bg-[#E1E5EA] hover:bg-[#D3D9E0] dark:bg-[#333537] dark:hover:bg-[#444746]'} ${su.cancelling ? 'opacity-50' : ''}`}>
                         {su.installing ? (su.cancelling ? chatCopy.cancelling : chatCopy.cancelDownload) : chatCopy.cancel}</button>
                       {!su.installing && (
-                        <button onClick={() => bridge.voice.installVoiceAsr()} disabled={!su.status?.installable}
-                          className={`text-[13px] font-medium px-4 py-2 rounded-full ${'bg-[#0B57D0] text-white hover:bg-[#1967D2] dark:bg-[#A8C7FA] dark:text-[#041E49] dark:hover:bg-[#C2D7FB]'} ${!su.status?.installable ? 'opacity-50' : ''}`}>
-                          {!su.status?.installable ? chatCopy.repairInstall : (needModel ? chatCopy.downloadModel : chatCopy.install)}</button>
+                        <button type="button" onClick={() => bridge.voice.installVoiceAsr()} disabled={!su.status?.installable}
+                          className={`text-[13px] font-medium px-4 py-2 rounded-full ${'bg-[#0B57D0] text-white hover:bg-[#1967D2] dark:bg-[#A8C7FA] dark:text-[#041E49] dark:hover:bg-[#C2D7FB]'} ${su.status?.installable ? '' : 'opacity-50'}`}>
+                          {su.status?.installable ? (needModel ? chatCopy.downloadModel : chatCopy.install) : chatCopy.repairInstall}</button>
                       )}
                     </div>
                   </div>
@@ -2064,7 +2099,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
                   <ComposerAttachButton t={t} compact={composerCompact} />
-                  <button onClick={handleVoiceClick} disabled={primaryVoiceDisabled} data-testid="composer-voice-button" aria-label={primaryVoiceLabel} title={primaryVoiceLabel}
+                  <button type="button" onClick={handleVoiceClick} disabled={primaryVoiceDisabled} data-testid="composer-voice-button" aria-label={primaryVoiceLabel} title={primaryVoiceLabel}
                     className={`${
                       voiceRecording
                         ? 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors bg-[#C5221F] text-white hover:bg-[#A50E0E] border border-transparent'
@@ -2080,7 +2115,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
                 {!tabletVoiceMode && hasDraftText && (
-                  <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
+                  <button type="button" onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
                     className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                       canClearInput
                         ? 'text-[#5F6368] hover:bg-black/5 dark:text-[#C4C7C5] dark:hover:bg-white/10'
@@ -2090,14 +2125,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   </button>
                 )}
                 {busy ? (
-                  <button onClick={handleCancel} disabled={cancellingSessionIds.has(activeSessionId)}
+                  <button type="button" onClick={handleCancel} disabled={cancellingSessionIds.has(activeSessionId)}
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                     <StopCircle size={20} />
                   </button>
                 ) : (() => {
                   const ready = canSend && !sceneCapabilityPreparing;
                   return (
-                    <button onClick={handleSend} disabled={!ready} aria-label={t.sendMsg} title={t.sendMsg}
+                    <button type="button" onClick={handleSend} disabled={!ready} aria-label={t.sendMsg} title={t.sendMsg}
                       className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
                       <Send size={17} className="translate-x-[1px]" />
                     </button>
@@ -2162,6 +2197,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
           {artifactsVisible && isWide && !artifactsFullscreen && (
             <>
+              {/* biome-ignore lint/a11y/useSemanticElements: 拖拽分隔条需要 div 语义 */}
+              {/* biome-ignore lint/a11y/useFocusableInteractive: 拖拽分隔条依赖鼠标拖拽,div 语义见上 */}
+              {/* biome-ignore lint/a11y/useAriaPropsForRole: aria-orientation 对可拖拽 div 分隔条是既有语义标注 */}
               <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
                 className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${'bg-black/10 hover:bg-[#0B57D0]/50 dark:bg-white/10 dark:hover:bg-[#A8C7FA]/60'}`} />
               <div
@@ -2250,7 +2288,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     // ==========================================
     // Chat Bubble (message rendering)
     // ==========================================
-    const SelectionCopyButton = ({ hostRef, targetRef, theme, t }) => {
+    // eslint-disable-next-line no-unused-vars -- theme 由调用方统一注入,保留契约位
+const SelectionCopyButton = ({ hostRef, targetRef, _theme, t }) => {
       const [selCopy, setSelCopy] = useState({ visible: false, copied: false, text: '', x: 0, y: 0 });
       const hideTimerRef = useRef(null);
 
@@ -2281,7 +2320,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const maxX = Math.max(minX, hostRect.width - 100);
         const x = Math.max(minX, Math.min(event.clientX - hostRect.left, maxX));
         const y = Math.max(4, event.clientY - hostRect.top + 8);
-        setSelCopy({ visible: true, copied: false, text: text, x: x, y: y });
+        setSelCopy({ visible: true, copied: false, text, x, y });
         return true;
       }, [hideSelectionCopy, hostRef, targetRef]);
 
@@ -2354,7 +2393,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
-    const TextareaContextMenu = ({ inputRef, setValue, theme, t }) => {
+    // eslint-disable-next-line no-unused-vars -- theme 由调用方统一注入,保留契约位
+const TextareaContextMenu = ({ inputRef, setValue, _theme, t }) => {
       const [menu, setMenu] = useState({ visible: false, x: 0, y: 0, canCopy: false });
 
       const closeMenu = useCallback(() => {
@@ -2380,7 +2420,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setValue(next);
         requestAnimationFrame(function () {
           el.focus();
-          try { el.setSelectionRange(cursor, cursor); } catch (e) {}
+          try { el.setSelectionRange(cursor, cursor); } catch { /* 指针捕获失败可忽略 */ }
         });
       }, [inputRef, setValue]);
 
@@ -2396,7 +2436,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           const menuH = 116;
           const x = Math.max(6, Math.min(e.clientX, window.innerWidth - menuW - 6));
           const y = Math.max(6, Math.min(e.clientY, window.innerHeight - menuH - 6));
-          setMenu({ visible: true, x: x, y: y, canCopy: start !== end });
+          setMenu({ visible: true, x, y, canCopy: start !== end });
         };
         const onContextMenu = (e) => openMenu(e);
         const onMouseDown = (e) => { if (e.button === 2) openMenu(e); };
@@ -2457,6 +2497,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
       if (!menu.visible) return null;
       return createPortal((
+        // biome-ignore lint/a11y/noStaticElementInteractions: 右键菜单定位容器,preventDefault 防失焦,菜单项为真实按钮
         <div
           data-textarea-context-menu="true"
           className={`w-[136px] overflow-hidden rounded-[12px] py-1 shadow-xl backdrop-blur border ${
@@ -2478,7 +2519,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       ), document.body);
     };
 
-    const UserBubble = ({ item, sessionId, theme, editable, t, conversationVariant }) => {
+    // eslint-disable-next-line no-unused-vars -- theme 由调用方统一注入,保留契约位
+const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant }) => {
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
       const sceneDisplay = pinvouSceneDisplay(item.pinvouScene, t.uiChat.sceneModes);
@@ -2503,6 +2545,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         return (
           <div className="flex justify-end min-w-0 max-w-full">
             <div className="max-w-[85%] w-full min-w-0">
+              {/* biome-ignore lint/a11y/noAutofocus: 进入消息编辑态立即聚焦编辑框,焦点即编辑意图 */}
               <textarea autoFocus value={val} onChange={e => setVal(e.target.value)}
                 rows={Math.min(6, Math.max(1, val.split('\n').length))}
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
@@ -2512,8 +2555,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     : 'bg-[#D3E3FD] text-[#1F1F1F] dark:bg-[#004A77] dark:text-[#E3E3E3]'
                 }`} />
               <div className="flex gap-2 justify-end mt-1">
-                <button className={cardBtnCls()} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
-                <button className={cardBtnCls('primary')} onClick={commit}>{t.resend}</button>
+                <button type="button" className={cardBtnCls()} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
+                <button type="button" className={cardBtnCls('primary')} onClick={commit}>{t.resend}</button>
               </div>
             </div>
           </div>
@@ -2580,6 +2623,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     'bg-black text-white dark:bg-black/35'
                   }`}
                 >
+                  {/* eslint-disable-next-line react-hooks/static-components -- SceneIcon 取自场景元数据中的既有图标组件,非渲染期新建有状态组件 */}
                   {SceneIcon && <SceneIcon size={14} className="shrink-0" />}
                   <span>{sceneDisplay.label}</span>
                 </span>
@@ -2613,12 +2657,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             )}
             {/* iOS 风操作条：hover 气泡时下方浮现；窄屏无 hover，常显保证触屏可达。复制=所有 query；编辑重发=仅最新(editable)。 */}
             <div className="flex items-center gap-0.5 mt-1 pr-1 opacity-0 group-hover:opacity-100 max-sm:opacity-100 transition-opacity duration-150">
-              <button title={copied ? t.copied : t.copyMsg} onClick={copyText}
+              <button type="button" title={copied ? t.copied : t.copyMsg} onClick={copyText}
                 className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${actBtn}`}>
                 {copied ? <Check size={14} className="text-[#34C759]" /> : <Copy size={14} />}
               </button>
               {editable && !deliveryState && (
-                <button title={t.editResend} onClick={() => { setVal(item.text); setEditing(true); }}
+                <button type="button" title={t.editResend} onClick={() => { setVal(item.text); setEditing(true); }}
                   className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${actBtn}`}>
                   <Edit2 size={14} />
                 </button>
@@ -2631,13 +2675,16 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
     // 思考指示器：Braille 转圈 + 思考中/调用工具 + 计时（每阶段切换重置）
     const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    const ThinkingBubble = ({ thinking, theme, t, isLocal }) => {
+    // eslint-disable-next-line no-unused-vars -- theme 由调用方统一注入,保留契约位
+const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
       const [frame, setFrame] = useState(0);
       const [elapsed, setElapsed] = useState(0);
       const phase = thinking ? thinking.phase : 'thinking';
       const toolName = thinking ? thinking.toolName : '';
+      // eslint-disable-next-line react-hooks/purity -- 后端未携带 startedAt 时以当前时间兜底,是该思考指示器的既有行为
       const startedAt = (thinking && thinking.startedAt) || Date.now();
       useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 阶段切换时同步复位动画帧与计时
         setFrame(0); setElapsed(0);
         const id = setInterval(() => {
           setFrame(f => (f + 1) % BRAILLE.length);
@@ -2663,15 +2710,15 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
     // ③ 卡牌制造专家: 从助手消息渲染后的 html 里抠出 ```persona-card 草稿块 → 解析成卡。
     function htmlUnescape(s) {
-      return String(s).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#(?:39|x27);/gi,"'").replace(/&amp;/g,'&');
+      return String(s).replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&quot;','"').replaceAll(/&#(?:39|x27);/gi,"'").replaceAll('&amp;','&');
     }
     function highlightedCodeText(s) {
-      return htmlUnescape(String(s).replace(/<\/?span\b[^>]*>/gi, ''));
+      return htmlUnescape(String(s).replaceAll(/<\/?span\b[^>]*>/gi, ''));
     }
     function asDraft(d) {
       if (!d || typeof d !== 'object' || !d.name || !d.body) return null;
-      var dept = (d.dept && DEPT_ORDER.indexOf(d.dept) >= 0) ? d.dept : 'specialized';
-      return { name: d.name, dept: dept, emoji: d.emoji || '🃏', color: d.color || '', description: d.description || '', body: d.body };
+      const dept = (d.dept && DEPT_ORDER.includes(d.dept)) ? d.dept : 'specialized';
+      return { name: d.name, dept, emoji: d.emoji || '🃏', color: d.color || '', description: d.description || '', body: d.body };
     }
     function asScheduledTaskDraft(d) {
       if (!d || typeof d !== 'object' || !d.name || !d.prompt || !d.rrule) return null;
@@ -2688,66 +2735,74 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     // 形状校验(name+body)避免把别的 JSON 误判成草稿。明确 persona-card 标签的优先。
     // 返回 { draft, html }:html 是把那段原始 JSON 块抹掉后的版本(用户只看友好草稿卡,不看机器载荷)。
     function parsePersonaDraft(html) {
-      if (!html || html.indexOf('{') < 0) return { draft: null, html: html };
-      var re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m, chosen = null, chosenDraft = null;
+      if (!html || !html.includes('{')) return { draft: null, html };
+      const re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g;
+      let m; let chosen = null; let chosenDraft = null;
+      // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
       while ((m = re.exec(html))) {
-        var raw = highlightedCodeText(m[3]).trim();
+        const raw = highlightedCodeText(m[3]).trim();
         if (raw.charAt(0) !== '{') continue;
         try {
-          var draft = asDraft(parseLooseJson(raw));
+          const draft = asDraft(parseLooseJson(raw));
           if (!draft) continue;
           if (/persona-card/i.test(m[1] + m[2])) { chosen = m[0]; chosenDraft = draft; break; } // 明确标签优先
           if (!chosenDraft) { chosen = m[0]; chosenDraft = draft; }
-        } catch (e) { /* 非 JSON 块,跳过 */ }
+        } catch { /* 非 JSON 块,跳过 */ }
       }
-      if (!chosenDraft) return { draft: null, html: html };
+      if (!chosenDraft) return { draft: null, html };
       return { draft: chosenDraft, html: html.replace(chosen, '') };
     }
     function parseScheduledTaskDraft(html) {
-      if (!html || html.indexOf('{') < 0) return { draft: null, html: html };
-      var re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m, chosen = null, chosenDraft = null;
+      if (!html || !html.includes('{')) return { draft: null, html };
+      const re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g;
+      let m; let chosen = null; let chosenDraft = null;
+      // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
       while ((m = re.exec(html))) {
-        var raw = highlightedCodeText(m[3]).trim();
+        const raw = highlightedCodeText(m[3]).trim();
         if (raw.charAt(0) !== '{') continue;
-        var draft = asScheduledTaskDraft(parseLooseJson(raw));
+        const draft = asScheduledTaskDraft(parseLooseJson(raw));
         if (!draft) continue;
         if (/scheduled-task-draft/i.test(m[1] + m[2])) { chosen = m[0]; chosenDraft = draft; break; }
         if (!chosenDraft) { chosen = m[0]; chosenDraft = draft; }
       }
-      if (!chosenDraft) return { draft: null, html: html };
+      if (!chosenDraft) return { draft: null, html };
       return { draft: chosenDraft, html: html.replace(chosen, '') };
     }
     // 卡牌制造专家追问时,若问题有可选项,会输出一个 ```card-question 块 {question, options[]}。
     // 抠出来 → 渲染成可点击的 iOS 选项卡;点选项即把它作为回答发送。返回 { q, html(抹掉块) }。
     function parseCardQuestion(html) {
-      if (!html || !/card-question/i.test(html)) return { q: null, html: html };
-      var re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m;
+      if (!html || !/card-question/i.test(html)) return { q: null, html };
+      const re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g;
+      let m;
+      // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
       while ((m = re.exec(html))) {
         if (!/card-question/i.test(m[1] + m[2])) continue;
-        var raw = highlightedCodeText(m[3]).trim();
+        const raw = highlightedCodeText(m[3]).trim();
         if (raw.charAt(0) !== '{') continue;
-        var d = parseLooseJson(raw);
+        const d = parseLooseJson(raw);
         if (d && d.question && Array.isArray(d.options)) {
-          var opts = d.options.filter(function (o) { return typeof o === 'string' && o.trim(); });
+          const opts = d.options.filter(function (o) { return typeof o === 'string' && o.trim(); });
           if (opts.length) return { q: { question: String(d.question), options: opts }, html: html.replace(m[0], '') };
         }
       }
-      return { q: null, html: html };
+      return { q: null, html };
     }
     // 点选项时实际发送的回答:取"短标签 —— 说明"里的短标签;没分隔符就发整句。
     function optionAnswer(opt) {
-      var s = String(opt).split(/\s*(?:——|—|::|:|：|\(|（)/)[0].trim();
+      // eslint-disable-next-line sonarjs/super-linear-regex -- 分隔符交替按先长后短排列,输入为短选项文本,回溯有界且为有意写法
+      const s = String(opt).split(/\s*(?:——|—|::|:|：|\(|（)/)[0].trim();
       return s || String(opt).trim();
     }
     // 流式中: JSON 还没闭合无法解析,把正在生成的卡牌/选项代码块折叠成占位,避免原始 JSON 一直刷屏。
     function hideStreamingDraft(html, label) {
       if (!html) return html;
-      var m = /<pre[^>]*>\s*<code[^>]*(?:persona-card|card-question|scheduled-task-draft)[\s\S]*$/i.exec(html); // persona-card / card-question / scheduled-task-draft 标签块(到末尾)
+      let m = /<pre[^>]*>\s*<code[^>]*(?:persona-card|card-question|scheduled-task-draft)[\s\S]*$/i.exec(html); // persona-card / card-question / scheduled-task-draft 标签块(到末尾)
       if (!m) m = /<pre[^>]*>\s*<code[^>]*>\s*\{[\s\S]*?(?:name|&quot;name|rrule|&quot;rrule)[\s\S]*$/i.exec(html); // 兜底: 以 { 开头且含 name / rrule 的块
       if (!m) return html;
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '…') + '</div>';
     }
 
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy 气泡按消息类型分派渲染,拆分重构另行跟踪
     const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
@@ -2768,7 +2823,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       // 懒加载语言注册完成会 bump 版本号:legacy assistant 气泡由 item.text 现算
       // markdown(见下),订阅版本号让注册后本组件重渲染,历史消息恢复高亮。
       const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
-      void syntaxVersion;
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
       if (item.type === 'plan_card') return <PlanCard item={item} t={t} onPrefill={onPrefill} />;
@@ -2810,6 +2864,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         return (
           <div className="flex justify-start">
             <div ref={assistantSelectionHostRef} className={`relative ${cq.q ? 'w-full' : 'max-w-[95%]'} light-code dark-code`}>
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 链接拦截层,键盘路径由渲染出的 <a> 自身聚焦承担 */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: 静态富文本容器,onClick 仅拦截链接走外部浏览器 */}
               <div
                 ref={assistantSelectionTargetRef}
                 className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${'text-[#1F1F1F] dark:text-[#E3E3E3]'}`}
@@ -2831,7 +2887,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   <div className="text-[14px] font-medium mb-2" style={{ color: theme === 'dark' ? '#fff' : '#000' }}>{cq.q.question}</div>
                   <div className="rounded-[14px] overflow-hidden" style={{ background: theme === 'dark' ? '#1C1C1E' : '#fff', border: theme === 'dark' ? 'none' : '0.5px solid rgba(60,60,67,.12)' }}>
                     {cq.q.options.map((opt, i) => (
-                      <button key={i} onClick={()=> onSend && onSend(optionAnswer(opt))}
+                      <button type="button" key={i} onClick={()=> onSend && onSend(optionAnswer(opt))}
                         className="w-full flex items-center gap-3 px-4 py-3 text-left transition-opacity active:opacity-60 hover:opacity-90"
                         style={i ? { borderTop: '0.5px solid ' + (theme === 'dark' ? 'rgba(84,84,88,.45)' : 'rgba(60,60,67,.12)') } : undefined}>
                         <span className="text-[15px] shrink-0 text-right" style={{ color: '#8E8E93', width: 15, fontVariantNumeric: 'tabular-nums' }}>{i + 1}</span>
@@ -2851,7 +2907,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   </div>
                   {draftSaved
                     ? <span className="shrink-0 inline-flex items-center gap-1 h-8 px-1 text-[13px] font-medium" style={{ color:'#8E8E93' }} title={t.cpDraftSavedTitle}><Check size={15} strokeWidth={2.5} style={{ color:'#34C759' }} />{t.cpDraftSaved}</span>
-                    : <button onClick={()=> onOpenEditor && onOpenEditor(pd.draft)} className="shrink-0 px-4 h-8 rounded-full text-[13px] font-semibold text-white" style={{ background: theme === 'dark' ? '#0A84FF' : '#007AFF' }} title={t.cpDraftViewTitle}>{t.cpDraftView}</button>}
+                    : <button type="button" onClick={()=> onOpenEditor && onOpenEditor(pd.draft)} className="shrink-0 px-4 h-8 rounded-full text-[13px] font-semibold text-white" style={{ background: theme === 'dark' ? '#0A84FF' : '#007AFF' }} title={t.cpDraftViewTitle}>{t.cpDraftView}</button>}
                 </div>
               ) : null}
               {showAssistantActions && assistantCopyAvailable && <AssistantMessageFooter>
@@ -2872,7 +2928,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
       if (item.type === 'persona_equip') {
         const c = item.card || {};
-        const tc = (typeof deptColor !== 'undefined' ? deptColor(c.dept) : '#ffae1e');
         const deptLabel = deptLabelFor(t, c.dept);
         const cd = personaText(c, t);
         return (
@@ -2988,7 +3043,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 <div className="shrink-0 flex items-center gap-2">
                   <span className="text-[11px] px-2 py-1 rounded-full bg-white/[0.07] text-[#AEB4BC]">{meta.label}</span>
                   {!resolved && (
-                    <button
+                    <button type="button"
                       className="w-6 h-6 rounded-full flex items-center justify-center text-[#8E8E93] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors"
                       title={chatCopy.ignoreOnce}
                       data-testid="memory-candidate-dismiss"
@@ -3005,9 +3060,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               {!resolved && <div className="mt-2 ml-9 text-[12px] leading-relaxed text-[#AEB4BC]">{meta.hint}</div>}
               {!resolved && (
                 <div className="mt-3 ml-9 flex flex-wrap items-center gap-2">
-                  <button data-testid="memory-candidate-confirm" className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-full bg-[#0A84FF] text-white hover:bg-[#1677D2] transition-colors" onClick={() => bridge.available && bridge.memory.confirmMemoryCandidate && bridge.memory.confirmMemoryCandidate(item.memoryId, item.id)}><Check size={14} />{chatCopy.remember}</button>
-                  <button data-testid="memory-candidate-ignore" className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/[0.08] text-[#E8EAED] hover:bg-white/[0.12] transition-colors" onClick={() => bridge.available && bridge.memory.ignoreMemoryCandidate && bridge.memory.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />{chatCopy.ignoreOnce}</button>
-                  <button data-testid="memory-candidate-never" className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors" onClick={() => bridge.available && bridge.memory.neverMemoryCandidate && bridge.memory.neverMemoryCandidate(item.memoryId, item.id)}>{chatCopy.neverAsk}</button>
+                  <button type="button" data-testid="memory-candidate-confirm" className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-full bg-[#0A84FF] text-white hover:bg-[#1677D2] transition-colors" onClick={() => bridge.available && bridge.memory.confirmMemoryCandidate && bridge.memory.confirmMemoryCandidate(item.memoryId, item.id)}><Check size={14} />{chatCopy.remember}</button>
+                  <button type="button" data-testid="memory-candidate-ignore" className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/[0.08] text-[#E8EAED] hover:bg-white/[0.12] transition-colors" onClick={() => bridge.available && bridge.memory.ignoreMemoryCandidate && bridge.memory.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />{chatCopy.ignoreOnce}</button>
+                  <button type="button" data-testid="memory-candidate-never" className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors" onClick={() => bridge.available && bridge.memory.neverMemoryCandidate && bridge.memory.neverMemoryCandidate(item.memoryId, item.id)}>{chatCopy.neverAsk}</button>
                 </div>
               )}
             </div>

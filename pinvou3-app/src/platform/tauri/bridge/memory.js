@@ -3,45 +3,46 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["memory"] = function (context) {
-    var state = context.state;
-    var notify = context.notify;
-    var invoke = context.invoke;
-    var bt = context.bt;
-    var addSystemItem = context.addSystemItem;
-    var runSyncOnSession = context.runSyncOnSession;
-    var patchItemByIdFor = context.patchItemByIdFor;
-    var runOnSession = context.runOnSession;
-    var addChatItem = context.addChatItem;
-    var timeStr = context.timeStr;
+    const state = context.state;
+    const notify = context.notify;
+    const invoke = context.invoke;
+    const bt = context.bt;
+    const addSystemItem = context.addSystemItem;
+    const patchItemByIdFor = context.patchItemByIdFor;
+    const runOnSession = context.runOnSession;
+    const addChatItem = context.addChatItem;
+    const timeStr = context.timeStr;
   function memoryWriteLabel(event) {
-    var text = event && event.text || "";
+    const text = event && event.text || "";
     if (!text) return "记忆已更新";
     return text;
   }
   function memoryWriteStatusLabel(event) {
-    var action = event && event.action || "";
+    const action = event && event.action || "";
     if (action === "confirmed" || action === "remembered") return "记忆已更新";
     if (action === "archived") return "记忆已归档";
     if (action === "deleted") return "记忆已删除";
     return "记忆已更新";
   }
   function normalizeMemoryCandidateText(text) {
-    return String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
+    return String(text || "").replaceAll(/\s+/g, " ").trim().toLowerCase();
   }
   function handleMemoryWrite(payload) {
-    var sid = payload && payload.session_id || state.activeSessionId;
-    var events = payload && Array.isArray(payload.events) ? payload.events : [];
+    const sid = payload && payload.session_id || state.activeSessionId;
+    const events = payload && Array.isArray(payload.events) ? payload.events : [];
     if (!sid || !events.length) return;
     runOnSession(sid, function () {
       events.forEach(function (event) {
         if (!event) return;
         if (event.action === "pending") {
-          var label = memoryWriteLabel(event);
-          var labelKey = normalizeMemoryCandidateText(label);
-          var existing = state.chatItems.find(function (it) {
+          const label = memoryWriteLabel(event);
+          const labelKey = normalizeMemoryCandidateText(label);
+          const existing = state.chatItems.find(function (it) {
             return it.type === "memory_candidate" && !it.resolved && (
               (event.id && it.memoryId === event.id) ||
               (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
@@ -64,9 +65,9 @@
           });
           return;
         }
-        var label = memoryWriteLabel(event);
-        var labelKey = normalizeMemoryCandidateText(label);
-        var existing = state.chatItems.find(function (it) {
+        const label = memoryWriteLabel(event);
+        const labelKey = normalizeMemoryCandidateText(label);
+        const existing = state.chatItems.find(function (it) {
           return it.type === "memory_candidate" && (
             (event.id && it.memoryId === event.id) ||
             (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
@@ -110,14 +111,15 @@
   }
 
   function applyMemoryOverview(overview) {
-    var previous = state.memory || {};
-    var sourceStates = overview && overview.sources || {};
+    const previous = state.memory || {};
+    const sourceStates = overview && overview.sources || {};
     // stateKey:后端 source 名与前端 state 字段名通常一致,但 snapshot 源对应
     // state.memory.snapshot_path,两者不同;保留上次值时按 state 字段名查找。
     function sourceValue(source, value, fallback, stateKey) {
-      var status = sourceStates[source];
+      const status = sourceStates[source];
       if (status && status.available === false) {
-        var key = stateKey || source;
+        const key = stateKey || source;
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
         return Object.prototype.hasOwnProperty.call(previous, key) ? previous[key] : fallback;
       }
       return value;
@@ -140,12 +142,15 @@
     };
   }
   function orderedMemoryWarnings(warnings) {
-    var items = Array.isArray(warnings) ? warnings : [];
-    return items.filter(function (warning) {
-      return warning && warning.code === "memory_topic_cleanup_required";
-    }).concat(items.filter(function (warning) {
-      return !warning || warning.code !== "memory_topic_cleanup_required";
-    }));
+    const items = Array.isArray(warnings) ? warnings : [];
+    return [
+      ...items.filter(function (warning) {
+        return warning && warning.code === "memory_topic_cleanup_required";
+      }),
+      ...items.filter(function (warning) {
+        return !warning || warning.code !== "memory_topic_cleanup_required";
+      }),
+    ];
   }
   function applyMemoryProfileState(result) {
     if (!result || !result.profile) return;
@@ -159,7 +164,7 @@
   }
   function applyMemoryWriteState(result, update) {
     if (!result) return;
-    var next = Object.assign({}, state.memory, {
+    const next = Object.assign({}, state.memory, {
       loading: false,
       error: null,
       runtime: result.runtime || null,
@@ -171,7 +176,7 @@
   }
   function upsertMemoryValue(items, value, replacedId) {
     if (!value) return items || [];
-    var next = (items || []).filter(function (item) {
+    const next = (items || []).filter(function (item) {
       return item && item.id !== value.id && item.id !== replacedId;
     });
     next.push(value);
@@ -179,10 +184,10 @@
   }
   function upsertPendingMemoryCandidate(item) {
     if (!item || item.status !== "pending_confirm") return;
-    var label = item.content || item.text || "";
+    const label = item.content || item.text || "";
     if (!label) return;
-    var labelKey = normalizeMemoryCandidateText(label);
-    var existing = state.chatItems.find(function (it) {
+    const labelKey = normalizeMemoryCandidateText(label);
+    const existing = state.chatItems.find(function (it) {
       return it.type === "memory_candidate" && !it.resolved && (
         (item.id && it.memoryId === item.id) ||
         (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
@@ -204,7 +209,7 @@
     });
   }
   function rehydratePendingMemoryCandidates(overview) {
-    var pending = overview && Array.isArray(overview.pending) ? overview.pending : [];
+    const pending = overview && Array.isArray(overview.pending) ? overview.pending : [];
     pending.forEach(upsertPendingMemoryCandidate);
   }
   // 记忆面板混合两类数据：runtime 按 session 分文件，profile/preferences/
@@ -212,17 +217,17 @@
   // await 挂起期间切会话或再次加载，旧响应返回后不得覆盖当前显示(尤其
   // runtime 属于别的会话)，也不得把候选卡 rehydrate 进当前对话流(串台)。
   // 任何新加载都会递增序号使在途读取作废(审计)。
-  var memoryOverviewSeq = 0;
+  let memoryOverviewSeq = 0;
   async function loadMemoryOverview(options) {
     if (!invoke) return null;
     options = options || {};
-    var sid = state.activeSessionId;
-    var seq = ++memoryOverviewSeq;
+    const sid = state.activeSessionId;
+    const seq = ++memoryOverviewSeq;
     state.memory = Object.assign({}, state.memory, { loading: true, error: null });
     notify();
     try {
       // invoke 形状保持原样（协议指纹按文本计算）；发起瞬间 activeSessionId === sid。
-      var overview = await invoke("get_memory_overview", { sessionId: state.activeSessionId });
+      const overview = await invoke("get_memory_overview", { sessionId: state.activeSessionId });
       if (sid !== state.activeSessionId || seq !== memoryOverviewSeq) return discardStaleLoad(seq);
       applyMemoryOverview(overview);
       if (options.rehydratePending) rehydratePendingMemoryCandidates(overview);
@@ -249,11 +254,11 @@
     if (!invoke) return null;
     // 入口捕获触发会话：invoke 往返期间切走，A 的写结果/错误不得渲染进
     // B 的面板(与 loadMemoryOverview 同一不变量，审计补充)。
-    var sid = state.activeSessionId;
+    const sid = state.activeSessionId;
     try {
-      var result = await invoke("update_memory_profile", { patch: patch || {}, sessionId: state.activeSessionId });
+      const result = await invoke("update_memory_profile", { patch: patch || {}, sessionId: state.activeSessionId });
       if (sid === state.activeSessionId) { applyMemoryProfileState(result); notify(); }
-      var overview = await loadMemoryOverview();
+      const overview = await loadMemoryOverview();
       return overview || result;
     } catch (e) {
       if (sid === state.activeSessionId) {
@@ -265,9 +270,9 @@
   }
   async function deleteMemoryPreference(id) {
     if (!id || !invoke) return false;
-    var sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(审计补充)
+    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(审计补充)
     try {
-      var res = await invoke("delete_memory_preference", { id: id, sessionId: state.activeSessionId });
+      const res = await invoke("delete_memory_preference", { id, sessionId: state.activeSessionId });
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(res, function (next, changed) {
           if (changed) next.preferences = (next.preferences || []).filter(function (item) { return item.id !== id; });
@@ -285,20 +290,20 @@
   }
   async function updateMemoryItem(kind, id, patch) {
     if (!id || !invoke) return null;
-    var sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(审计补充)
+    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(审计补充)
     try {
-      var command = kind === "preference" ? "update_memory_preference"
+      const command = kind === "preference" ? "update_memory_preference"
         : kind === "work_context" ? "update_work_context_memory"
         : (kind === "current_focus" || kind === "recent_activity") ? "update_timed_memory"
         : null;
       if (!command) return null;
-      var args = { id: id, patch: patch || {}, sessionId: state.activeSessionId };
+      const args = { id, patch: patch || {}, sessionId: state.activeSessionId };
       if (command === "update_timed_memory") args.kind = kind;
-      var res = await invoke(command, args);
+      const res = await invoke(command, args);
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(res, function (next, value) {
           if (!value) return;
-          var source = kind === "preference" ? "preferences" : kind;
+          const source = kind === "preference" ? "preferences" : kind;
           next[source] = upsertMemoryValue(next[source], value, id);
         });
       }
@@ -314,20 +319,20 @@
   }
   async function deleteMemoryItem(kind, id) {
     if (!id || !invoke) return false;
-    var sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(审计补充)
+    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(审计补充)
     try {
-      var command = kind === "preference" ? "delete_memory_preference"
+      const command = kind === "preference" ? "delete_memory_preference"
         : kind === "work_context" ? "delete_work_context_memory"
         : (kind === "current_focus" || kind === "recent_activity") ? "delete_timed_memory"
         : null;
       if (!command) return false;
-      var args = { id: id, sessionId: state.activeSessionId };
+      const args = { id, sessionId: state.activeSessionId };
       if (command === "delete_timed_memory") args.kind = kind;
-      var res = await invoke(command, args);
+      const res = await invoke(command, args);
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(res, function (next, changed) {
           if (!changed) return;
-          var source = kind === "preference" ? "preferences" : kind;
+          const source = kind === "preference" ? "preferences" : kind;
           next[source] = (next[source] || []).filter(function (item) { return item.id !== id; });
         });
       }
@@ -343,9 +348,9 @@
   }
   async function archiveRecentWorkMemory(id) {
     if (!id || !invoke) return false;
-    var sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(审计补充)
+    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(审计补充)
     try {
-      var res = await invoke("archive_recent_work_memory", { id: id, sessionId: state.activeSessionId });
+      const res = await invoke("archive_recent_work_memory", { id, sessionId: state.activeSessionId });
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(res, function (next, changed) {
           if (changed) next.recent_work = (next.recent_work || []).filter(function (item) { return item.id !== id; });
@@ -363,9 +368,9 @@
   }
   async function confirmMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
-    var sid = state.activeSessionId; // 入口捕获：候选卡 patch 与面板写入都定向回发起会话(审计补充)
+    const sid = state.activeSessionId; // 入口捕获：候选卡 patch 与面板写入都定向回发起会话(审计补充)
     try {
-      var result = await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
+      const result = await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(result, function (next) {
           next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
@@ -382,9 +387,9 @@
   }
   async function ignoreMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
-    var sid = state.activeSessionId; // 同 confirmMemoryCandidate：定向回发起会话(审计补充)
+    const sid = state.activeSessionId; // 同 confirmMemoryCandidate：定向回发起会话(审计补充)
     try {
-      var result = await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
+      const result = await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(result, function (next) {
           next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
@@ -399,9 +404,9 @@
   }
   async function neverMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
-    var sid = state.activeSessionId; // 同 confirmMemoryCandidate：定向回发起会话(审计补充)
+    const sid = state.activeSessionId; // 同 confirmMemoryCandidate：定向回发起会话(审计补充)
     try {
-      var result = await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
+      const result = await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(result, function (next) {
           next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
@@ -415,16 +420,16 @@
     }
   }
     return {
-      handleMemoryWrite: handleMemoryWrite,
-      loadMemoryOverview: loadMemoryOverview,
-      saveMemoryProfilePatch: saveMemoryProfilePatch,
-      deleteMemoryPreference: deleteMemoryPreference,
-      updateMemoryItem: updateMemoryItem,
-      deleteMemoryItem: deleteMemoryItem,
-      archiveRecentWorkMemory: archiveRecentWorkMemory,
-      confirmMemoryCandidate: confirmMemoryCandidate,
-      ignoreMemoryCandidate: ignoreMemoryCandidate,
-      neverMemoryCandidate: neverMemoryCandidate
+      handleMemoryWrite,
+      loadMemoryOverview,
+      saveMemoryProfilePatch,
+      deleteMemoryPreference,
+      updateMemoryItem,
+      deleteMemoryItem,
+      archiveRecentWorkMemory,
+      confirmMemoryCandidate,
+      ignoreMemoryCandidate,
+      neverMemoryCandidate
     };
   };
 })(window);

@@ -229,7 +229,7 @@ assert.equal(typeof sessionListeners.get('session:list_changed'), 'function');
 sessionListeners.get('session:list_changed')({
   payload: { id: 'kept-session', action: 'renamed' },
 });
-await new Promise(resolve => setTimeout(resolve, 0));
+await new Promise(resolve => { setTimeout(resolve, 0); });
 assert.deepEqual(
   JSON.parse(JSON.stringify(sessionState.sessions)),
   backendSessions,
@@ -253,14 +253,14 @@ assert.equal(typeof sessionListeners.get('session:persona_changed'), 'function')
 sessionListeners.get('session:persona_changed')({
   payload: { id: 'kept-session', action: 'equipped' },
 });
-await new Promise(resolve => setTimeout(resolve, 0));
+await new Promise(resolve => { setTimeout(resolve, 0); });
 assert.deepEqual(loadedSessionModels, ['kept-session']);
 assert.equal(personaSyncs, 1);
 assert.equal(sessionNotifications, 3);
 
 sessionListeners.get('session:model_changed')({ payload: { id: 'other-session' } });
 sessionListeners.get('session:persona_changed')({ payload: { id: 'other-session' } });
-await new Promise(resolve => setTimeout(resolve, 0));
+await new Promise(resolve => { setTimeout(resolve, 0); });
 assert.deepEqual(loadedSessionModels, ['kept-session']);
 assert.equal(personaSyncs, 1);
 

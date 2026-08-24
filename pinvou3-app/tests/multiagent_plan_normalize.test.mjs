@@ -231,12 +231,12 @@ function loadFeature(invokeImpl) {
 test('桥不再维护运行状态机，只暴露发起与只读投影', () => {
   const { api, listeners } = loadFeature();
   assert.deepEqual(
-    Object.keys(api).sort(),
+    Object.keys(api).sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
     ['listSubagentTranscripts', 'readSubagentTranscript'],
     '台账/审批/运行列表与 startRun 独立入口的 API 已随 ADR-0006 退役',
   );
   assert.deepEqual(
-    Object.keys(listeners).sort(),
+    Object.keys(listeners).sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
     ['multiagent:agent_complete', 'multiagent:agent_progress'],
     '只监听子智能体进展/完成，不重建运行状态机',
   );
@@ -458,7 +458,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   const sessionsSource = fs
     .readdirSync(sessionsDir)
     .filter((f) => f.endsWith('.rs'))
-    .sort()
+    .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
     .map((f) => fs.readFileSync(path.join(sessionsDir, f), 'utf8'))
     .join('\n');
   assert.match(
@@ -607,7 +607,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   assert.match(
     sessionsBridgeSource,
-    /function switchActiveTo\(id, opts\) \{\s*\/\/[^\n]*\n    state\.pendingDraftMultiAgent = false;/,
+    /function switchActiveTo\(id, opts\) \{\s*\/\/[^\n]*\n {4}state\.pendingDraftMultiAgent = false;/,
     '离开草稿时未消费的寄存意图必须作废',
   );
   assert.match(
@@ -727,7 +727,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const managerSource = fs
     .readdirSync(managerDir)
     .filter((f) => f.endsWith('.rs'))
-    .sort()
+    .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
     .map((f) => fs.readFileSync(path.join(managerDir, f), 'utf8'))
     .join('\n');
   assert.match(
@@ -774,7 +774,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   assert.match(
     toolRenderersSource,
-    /\.\.\.\(prev \|\| \{\}\), \.\.\.detail/,
+    /\.\.\.(?:\(prev \|\| \{\}\)|prev), \.\.\.detail/,
     '实时事件不带 seq/blocked 等补字段，卡片状态必须字段合并，不得整包覆盖',
   );
   const personasBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'personas.js');
@@ -997,7 +997,7 @@ test('主对话行内卡只投影自己的后代，按子节点逐级展开', ()
 test('agent 工具调用渲染成行内专家卡，点击打开只读面板', () => {
   assert.match(
     timelineSource,
-    /if \(item\.type === 'tool' \|\| item\.type === 'command_execution' \|\| item\.type === 'file_change'\)/,
+    /if \((?:item\.type === 'tool' \|\| item\.type === 'command_execution' \|\| item\.type === 'file_change'|\['tool', 'command_execution', 'file_change'\]\.includes\(item\.type\))\)/,
     '独立 agent 工具项不得被共享时间线丢弃',
   );
   assert.match(

@@ -71,10 +71,11 @@ function parsedModeStoreFromRaw(raw) {
       draft: persistedPinvouModeState(parsed.draft),
       sessions: normalizedSessions,
       sessionOrder: Array.isArray(parsed.sessionOrder)
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
         ? parsed.sessionOrder.filter((key) => Object.prototype.hasOwnProperty.call(normalizedSessions, key))
         : Object.keys(normalizedSessions),
     };
-  } catch (_) {
+  } catch {
     return empty;
   }
 }
@@ -104,7 +105,7 @@ function readModeStore(target) {
     const previous = target.getItem(PREVIOUS_PINVOU_MODE_STORAGE_KEY);
     if (previous) return migratePreviousModeStore(previous);
     return empty;
-  } catch (_) {
+  } catch {
     return empty;
   }
 }
@@ -115,7 +116,7 @@ function readLegacyDraftState(target) {
     const raw = target.getItem(LEGACY_PINVOU_MODE_STORAGE_KEY);
     if (!raw) return null;
     return persistedPinvouModeState(JSON.parse(raw));
-  } catch (_) {
+  } catch {
     return null;
   }
 }
@@ -124,19 +125,20 @@ function hasStoredModeState(target) {
   if (!target || typeof target.getItem !== 'function') return false;
   try {
     return !!target.getItem(PINVOU_MODE_STORAGE_KEY) || !!target.getItem(PREVIOUS_PINVOU_MODE_STORAGE_KEY);
-  } catch (_) {
+  } catch {
     return false;
   }
 }
 
 function loadPinvouModeState(storage, scopeKey = DEFAULT_PINVOU_MODE_SCOPE) {
-  const target = storage || (typeof window !== 'undefined' ? window.localStorage : null);
+  const target = storage || (typeof window === 'undefined' ? null : window.localStorage);
   const store = readModeStore(target);
   if (scopeKey === DEFAULT_PINVOU_MODE_SCOPE) {
     return createPinvouModeState(
       hasStoredModeState(target) ? store.draft : (readLegacyDraftState(target) || store.draft),
     );
   }
+  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
   if (Object.prototype.hasOwnProperty.call(store.sessions, scopeKey)) {
     return createPinvouModeState(store.sessions[scopeKey]);
   }
@@ -146,13 +148,14 @@ function loadPinvouModeState(storage, scopeKey = DEFAULT_PINVOU_MODE_SCOPE) {
 
 function hasPinvouModeState(storage, scopeKey) {
   if (!scopeKey || scopeKey === DEFAULT_PINVOU_MODE_SCOPE) return false;
-  const target = storage || (typeof window !== 'undefined' ? window.localStorage : null);
+  const target = storage || (typeof window === 'undefined' ? null : window.localStorage);
   const store = readModeStore(target);
+  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
   return Object.prototype.hasOwnProperty.call(store.sessions, scopeKey);
 }
 
 function savePinvouModeState(state, storage, scopeKey = DEFAULT_PINVOU_MODE_SCOPE) {
-  const target = storage || (typeof window !== 'undefined' ? window.localStorage : null);
+  const target = storage || (typeof window === 'undefined' ? null : window.localStorage);
   const normalized = createPinvouModeState(state);
   if (!target || typeof target.setItem !== 'function') return normalized;
 
@@ -170,7 +173,7 @@ function savePinvouModeState(state, storage, scopeKey = DEFAULT_PINVOU_MODE_SCOP
   }
   try {
     target.setItem(PINVOU_MODE_STORAGE_KEY, JSON.stringify(store));
-  } catch (_) {
+  } catch {
     // 持久化失败不影响当前会话内模式切换。
   }
   return normalized;

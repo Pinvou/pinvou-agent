@@ -19,7 +19,7 @@ const PROVIDERS = path.join(TAU, 'features', 'codex_acp', 'providers');
 const MOD = fs
   .readdirSync(path.join(TAU, 'features', 'codex_acp'))
   .filter((f) => f.endsWith('.rs'))
-  .sort()
+  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
   .map((f) => fs.readFileSync(path.join(TAU, 'features', 'codex_acp', f), 'utf8'))
   .join('\n');
 const PROVIDERS_MOD = fs.readFileSync(path.join(PROVIDERS, 'mod.rs'), 'utf8');
@@ -27,10 +27,6 @@ const CLAUDE = fs.readFileSync(path.join(PROVIDERS, 'claude.rs'), 'utf8');
 const CODEX = fs.readFileSync(path.join(PROVIDERS, 'codex.rs'), 'utf8');
 const KIMI = fs.readFileSync(path.join(PROVIDERS, 'kimi.rs'), 'utf8');
 const LIFECYCLE = fs.readFileSync(path.join(PROVIDERS, 'lifecycle.rs'), 'utf8');
-const COMMANDS = fs.readFileSync(
-  path.join(TAU, 'app', 'commands', 'acp_providers.rs'),
-  'utf8'
-);
 const COMMANDS_MOD = fs.readFileSync(path.join(TAU, 'app', 'commands', 'mod.rs'), 'utf8');
 const LIB = fs.readFileSync(path.join(TAU, 'lib.rs'), 'utf8');
 const CREDENTIALS = fs.readFileSync(

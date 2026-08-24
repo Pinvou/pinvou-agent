@@ -1,5 +1,6 @@
 /** Browser-side Tauri compatibility layer for the shared Full WebUI. */
 (function () {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
   "use strict";
 
   const WEB_CAPABILITIES = {
@@ -80,7 +81,7 @@
 
   function errorText(key, arg) {
     const custom = (window.PinvouWebClientStrings || {})[key];
-    const entry = custom !== undefined ? custom : FALLBACK_ERRORS[key];
+    const entry = custom === undefined ? FALLBACK_ERRORS[key] : custom;
     return typeof entry === "function" ? entry(arg) : entry;
   }
 
@@ -114,6 +115,7 @@
     if (window.crypto && typeof window.crypto.getRandomValues === "function") {
       window.crypto.getRandomValues(bytes);
     } else {
+      // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:randomUUID/getRandomValues 均不可用时的请求 ID 兜底
       for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
     }
     return `${prefix}_${Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")}`;
@@ -148,6 +150,10 @@
       this.negotiatedEvents = new Set();
       this.webAllowedCommands = new Set();
       this.webAllowedEvents = new Set();
+      // allowedCommands/allowedEvents 在策略/能力协商完成后才赋值;先声明为 null(与原
+      // 动态挂载的 undefined 同为 falsy,612 行的存在性检查语义不变)。
+      this.allowedCommands = null;
+      this.allowedEvents = null;
       this.pendingListenerRegistrations = 0;
       this.connectionListeners = new Set();
       this.eventDispatch = Promise.resolve();
@@ -172,7 +178,7 @@
       this.cursorKey = endpointId ? `pinvou.web.cursor.${endpointId}` : "";
       let cursor = {};
       if (this.cursorKey) {
-        try { cursor = JSON.parse(sessionStorage.getItem(this.cursorKey) || "{}"); } catch (_) {}
+        try { cursor = JSON.parse(sessionStorage.getItem(this.cursorKey) || "{}"); } catch { /* 损坏的游标按空态处理 */ }
       }
       this.streamEpoch = typeof cursor.stream_epoch === "string" ? cursor.stream_epoch : "";
       this.lastSeq = Number.isFinite(Number(cursor.after_seq)) ? Number(cursor.after_seq) : 0;
@@ -190,7 +196,7 @@
       this.connectionState = detail;
       window.dispatchEvent(new CustomEvent("pinvou:web-connection", { detail }));
       this.connectionListeners.forEach((listener) => {
-        try { listener(detail); } catch (_) {}
+        try { listener(detail); } catch { /* 单个监听器异常不阻断广播 */ }
       });
     }
 
@@ -228,6 +234,7 @@
       if (this.closedPermanently || this.reconnectTimer) return;
       this.setConnection("connecting", message);
       const base = Math.min(10_000, 500 * (2 ** Math.min(this.reconnectAttempt, 5)));
+      // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:重连退避抖动(±20%),仅影响重试节奏
       const delay = Math.round(base * (0.8 + Math.random() * 0.4));
       this.reconnectAttempt += 1;
       this.reconnectTimer = window.setTimeout(() => {
@@ -247,10 +254,11 @@
       return this.sendRaw({ ...value, v: protocolVersion, lease_id: this.leaseId });
     }
 
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
     handleMessage(raw, sourceSocket) {
       if (typeof raw !== "string") return;
       let message;
-      try { message = JSON.parse(raw); } catch (_) { return; }
+      try { message = JSON.parse(raw); } catch { return; }
       switch (message.type) {
         case "web_client_joined":
           // A TCP/WebSocket open only proves that the Relay is reachable. The
@@ -318,7 +326,7 @@
             // user's stable link.
             this.desktopOnline = false;
             this.setConnection("desktop_offline", "等待桌面端重新连接…");
-            try { this.socket && this.socket.close(); } catch (_) {}
+            try { this.socket && this.socket.close(); } catch { /* 套接字已关闭 */ }
           } else {
             this.setConnection("error", message.message || "远程控制连接异常。");
           }
@@ -338,7 +346,7 @@
       this.negotiatedEvents.clear();
       if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
-      try { this.socket && this.socket.close(); } catch (_) {}
+      try { this.socket && this.socket.close(); } catch { /* 套接字已关闭 */ }
       this.socket = null;
       const error = new Error(message);
       this.pending.forEach((entry) => {
@@ -359,7 +367,7 @@
           stream_epoch: this.streamEpoch,
           after_seq: this.lastSeq,
         }));
-      } catch (_) {}
+      } catch { /* sessionStorage 不可用时游标仅留内存 */ }
     }
 
     handleRemoteEvent(message, sourceSocket = this.socket) {
@@ -375,7 +383,7 @@
           // the same connection cannot overtake the failed event. The durable
           // cursor is unchanged, so the desktop replays it after reconnect.
           this.socket = null;
-          try { sourceSocket.close(); } catch (_) {
+          try { sourceSocket.close(); } catch {
             this.scheduleReconnect("事件处理失败，正在重新连接…");
           }
         });
@@ -449,10 +457,10 @@
         return;
       }
       this.allowedCommands = new Set(
-        Array.from(this.webAllowedCommands).filter((command) => commands.has(command)),
+        [...this.webAllowedCommands].filter((command) => commands.has(command)),
       );
       this.allowedEvents = new Set(
-        Array.from(this.webAllowedEvents).filter((eventName) => events.has(eventName)),
+        [...this.webAllowedEvents].filter((eventName) => events.has(eventName)),
       );
       this.negotiatedCommands = new Set(this.allowedCommands);
       this.negotiatedEvents = new Set(this.allowedEvents);
@@ -461,7 +469,7 @@
       this.awaitingCapabilitySnapshot = false;
       this.desktopCapabilitiesReady = true;
       window.dispatchEvent(new CustomEvent("pinvou:web-capabilities", {
-        detail: { commands: Array.from(this.allowedCommands), events: Array.from(this.allowedEvents) },
+        detail: { commands: [...this.allowedCommands], events: [...this.allowedEvents] },
       }));
       this.pending.forEach((entry, id) => {
         if (this.allowedCommands.has(entry.command)) return;
@@ -549,7 +557,7 @@
       });
     }
 
-    flushPending() { this.pending.forEach((entry) => this.sendRpc(entry)); }
+    flushPending() { this.pending.forEach((entry) => { this.sendRpc(entry); }); }
 
     async listen(eventName, callback) {
       this.pendingListenerRegistrations += 1;
@@ -588,7 +596,7 @@
 
     flushSubscriptions() {
       this.subscribed.clear();
-      this.listeners.forEach((_callbacks, eventName) => this.subscribeEvent(eventName));
+      this.listeners.forEach((_callbacks, eventName) => { this.subscribeEvent(eventName); });
     }
 
     markFrontendReady() {

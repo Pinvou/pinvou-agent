@@ -68,6 +68,7 @@ vm.runInContext(
   );
 
   console.log("voice_asr_cancel_logic: ok");
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
 })().catch((error) => {
   console.error(error);
   process.exit(1);

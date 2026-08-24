@@ -1,11 +1,9 @@
-import React from 'react';
 import { Search, X } from './icons.jsx';
 
 function IosSearchField({
   value,
   onChange,
   placeholder,
-  isDark,
   className = '',
   inputClassName = '',
   onKeyDown,
@@ -85,13 +83,13 @@ function IosSegmentedControl({ value, onChange, segments, isDark, className = ''
             >
               {Icon ? <Icon size={iconSize} /> : null}
               {label ? <span>{label}</span> : null}
-              {count != null ? (
+              {count == null ? null : (
                 <span
                   className="ml-0.5 min-w-5 rounded-full px-1.5 py-0.5 text-center text-[11px] font-bold leading-none bg-[#007AFF] dark:bg-[#0A84FF] text-[#fff]"
                 >
                   {count}
                 </span>
-              ) : null}
+              )}
             </button>
           );
         })}
@@ -107,7 +105,7 @@ function IosSegmentedControl({ value, onChange, segments, isDark, className = ''
         boxShadow: 'none',
       }}
     >
-      {segments.map(({ key, label, Icon, title, count, testId }) => {
+      {segments.map(({ key, label, Icon, title, testId }) => {
         const selected = value === key;
         return (
           <button

@@ -23,5 +23,5 @@ export function ensurePersonaI18nOverlay(onLoaded) {
   s.src = resolveAppAssetUrl('features/personas/personas-i18n.js');
   s.onload = onLoaded;
   s.onerror = () => s.remove();
-  document.head.appendChild(s);
+  document.head.append(s);
 }

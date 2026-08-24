@@ -43,13 +43,14 @@ async function ensureLegacyHtmlConverter() {
           && node.firstChild.nodeName === 'CODE'
           && node.getAttribute('data-language')
         ),
-        replacement: (content, node, options) => {
+        replacement: (_content, node, options) => {
           const code = node.firstChild;
           const language = legacyFencedCodeLanguage(node);
           const fenceChar = options.fence.charAt(0);
           let fenceSize = 3;
           const fenceInCodeRegex = new RegExp(`^${fenceChar}{3,}`, 'gm');
           let match;
+          // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
           while ((match = fenceInCodeRegex.exec(code.textContent))) {
             if (match[0].length >= fenceSize) fenceSize = match[0].length + 1;
           }
@@ -72,7 +73,7 @@ async function ensureLegacyHtmlConverter() {
 async function legacyAssistantHtmlToMarkdown(html) {
   if (!html) return '';
   const converter = await ensureLegacyHtmlConverter();
-  return converter.turndown(String(html)).replace(/\u00a0/g, ' ');
+  return converter.turndown(String(html)).replaceAll('\u00A0', ' ');
 }
 
 export function readClipboardText() {
@@ -103,7 +104,7 @@ export async function assistantResponseText(turn) {
       ? turn.presentation
       : [];
   const agentMessages = items.filter(item => item?.type === 'agent_message');
-  const messages = (await Promise.all(agentMessages
+  const collected = await Promise.all(agentMessages
     .filter(item => item.phase !== 'commentary')
     .map(async item => {
       if (item.copyText != null) return normalizeAssistantMessageText(item.copyText);
@@ -111,8 +112,10 @@ export async function assistantResponseText(turn) {
       if (source && item.copyOptions !== undefined) {
         return assistantMarkdownCopyText(source, item.copyOptions);
       }
-      return source || await assistantItemCopyText(item.legacyItem, item.copyOptions);
-    }))).filter(Boolean);
+      if (source) return source;
+      return assistantItemCopyText(item.legacyItem, item.copyOptions);
+    }));
+  const messages = collected.filter(Boolean);
   if (agentMessages.length) return normalizeAssistantMessageText(messages.join('\n\n'));
   return normalizeAssistantMessageText(turn.assistantText);
 }

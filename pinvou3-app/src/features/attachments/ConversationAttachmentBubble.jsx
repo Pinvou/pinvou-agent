@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { Copy, Download, ExternalLink, FolderOpen } from '../../components/icons.jsx';
@@ -25,7 +25,7 @@ export function ConversationAttachmentBubble({
   const closeMenu = useCallback(() => setMenu(null), []);
 
   useEffect(() => {
-    if (!menu) return undefined;
+    if (!menu) return;
     const close = event => {
       if (event?.target?.closest?.('[data-conversation-attachment-menu]')) return;
       closeMenu();
@@ -59,7 +59,7 @@ export function ConversationAttachmentBubble({
     try {
       const path = await bridge.attachments.resolveConversationAttachment(reference);
       await copyText(path);
-    } catch (_) {}
+    } catch { /* 解析/复制失败则静默,不弹错 */ }
   };
   const revealAttachment = () => {
     closeMenu();

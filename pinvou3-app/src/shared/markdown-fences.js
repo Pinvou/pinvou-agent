@@ -1,3 +1,4 @@
+/* eslint-disable sonarjs/super-linear-regex, unicorn/prefer-number-is-safe-integer, sonarjs/cognitive-complexity, import-x/namespace -- 围栏解析算法既有实现,正则行为经测试钉死 */
 import { Marked } from 'marked';
 
 export const MARKDOWN_OPTIONS = Object.freeze({
@@ -121,7 +122,7 @@ function matchTokenText(value, parentText, cursor) {
   const expansion = lexerSourceMap(raw);
   const expandedMap = subsequenceMap(expansion.text, parentText, cursor);
   if (!expandedMap) return null;
-  const map = new Array(raw.length).fill(null);
+  const map = Array.from({length: raw.length}).fill(null);
   for (let index = 0; index < expandedMap.length; index += 1) {
     map[expansion.offsets[index]] = expandedMap[index];
   }

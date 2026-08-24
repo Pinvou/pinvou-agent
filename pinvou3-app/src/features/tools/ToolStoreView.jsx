@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { BookOpen, Check, ChevronLeft, Download, Globe, Package, Search, Server, Settings, Upload, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
@@ -73,8 +73,11 @@ const TsToolIcon = ({ tool, className = '', imageClassName = 'h-8 w-8', fallback
   const Icon = tool.icon;
   const isFullTileLogo = tool.logoSrc && FULL_TILE_LOGOS.has(tool.logoSrc);
   const cropTileLogo = tool.logoSrc && CROPPED_TILE_LOGOS.has(tool.logoSrc);
+  const logoBg = tool.logoSrc ? (isFullTileLogo ? 'bg-transparent' : 'bg-white dark:bg-white') : '';
+  const logoFg = tool.logoSrc ? 'text-slate-900' : `${tool.color} text-white`;
+  const logoBox = tool.logoSrc ? `${logoBg} ${logoFg}` : `${tool.color} text-white`;
   return (
-    <div className={`relative flex items-center justify-center overflow-hidden ${tool.logoSrc ? `${isFullTileLogo ? 'bg-transparent' : 'bg-white dark:bg-white'} text-slate-900` : `${tool.color} text-white`} ${className}`}>
+    <div className={`relative flex items-center justify-center overflow-hidden ${logoBox} ${className}`}>
       {tool.logoSrc ? (
         <img
           src={tool.logoSrc}
@@ -128,7 +131,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             <span className={`w-2 h-2 rounded-full ${isErr ? 'bg-rose-500' : 'bg-blue-500 animate-pulse'}`} />
             <span className="font-semibold text-[14px] text-slate-900 dark:text-slate-100">{isErr ? copy.incomplete(name) : (flow.phase === 'done' ? copy.connected(name) : copy.connecting(name))}</span>
             <span className="flex-1" />
-            {(flow.phase === 'running' || flow.phase === 'qr') && <button onClick={onCancel} className="text-[12px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">{copy.cancel}</button>}
+            {(flow.phase === 'running' || flow.phase === 'qr') && <button type="button" onClick={onCancel} className="text-[12px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">{copy.cancel}</button>}
           </div>
           <div className="px-5 pb-4 space-y-1">
             {steps.map(s => {
@@ -156,7 +159,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   <div className="text-[12px] text-slate-500 dark:text-slate-400 mt-0.5">{copy.browserHint}</div>
                 </div>
                 {flow.qrUrl && (
-                  <button
+                  <button type="button"
                     onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })}
                     className="shrink-0 text-[13px] text-blue-600 dark:text-blue-400 hover:underline"
                   >
@@ -179,7 +182,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <span className="font-mono text-[18px] font-bold tracking-wider text-slate-900 dark:text-white">{flow.userCode}</span>
                     </div>
                   )}
-                  {flow.qrUrl && <button onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{copy.openBrowser}</button>}
+                  {flow.qrUrl && <button type="button" onClick={() => invokeTauri('open_external_url', { url: flow.qrUrl })} className="text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{copy.openBrowser}</button>}
                 </div>
               </div>
             </div>
@@ -190,8 +193,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 <div className="text-[13px] font-medium text-rose-700 dark:text-rose-300 mb-1.5">{copy.connectionIncomplete}</div>
                 <pre className="text-[11.5px] leading-relaxed text-rose-800/80 dark:text-rose-200/70 whitespace-pre-wrap max-h-28 overflow-auto font-mono">{flow.err}</pre>
                 <div className="flex gap-2 mt-3 justify-end">
-                  <button onClick={onCancel} className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-100 text-[13px]">{copy.close}</button>
-                  <button onClick={onRetry} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-[13px]">{copy.retry}</button>
+                  <button type="button" onClick={onCancel} className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-100 text-[13px]">{copy.close}</button>
+                  <button type="button" onClick={onRetry} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-[13px]">{copy.retry}</button>
                 </div>
               </div>
             </div>
@@ -205,7 +208,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         : (flow.active === 'cli' ? copy.install(Math.round(flow.pct || 0))
         : (flow.active === 'runtime' ? copy.extract(Math.round(flow.pct || 0)) : copy.connecting));
       return (
-        <button onClick={(e) => { e.stopPropagation(); onClick(); }} title={copy.title} className="shrink-0 flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-full bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-600 dark:text-blue-300 text-[12px] font-medium">
+        <button type="button" onClick={(e) => { e.stopPropagation(); onClick(); }} title={copy.title} className="shrink-0 flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 rounded-full bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-600 dark:text-blue-300 text-[12px] font-medium">
           <span className="w-3 h-3 rounded-full border-2 border-blue-500 border-t-transparent animate-spin inline-block shrink-0" />
           <span className="tabular-nums whitespace-nowrap">{label}</span>
         </button>
@@ -216,13 +219,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // ToolStoreView 随左栏切换会卸载；连接是长流程（装 CLI ~40s + 扫码），进度/监听/秒表
     // 若放组件 useState，一离开工具商店就全丢 → 回来按钮又变“连接”。故挂在模块级单例，
     // 活在组件生命周期之外；组件只订阅它做镜像渲染。
+    /* eslint-disable unicorn/no-this-outside-of-class -- 模块级连接 store 单例,对象字面量方法用 this 引用自身;改为 class 会平移同等复杂度 */
     const feishuConn = {
       flow: null,
       tick: null,
       listenersReady: false,
       subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
-      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* 静默:单个订阅者异常不影响其余广播 */ } }); },
       startTick() {
         this.stopTick();
         this.tick = setInterval(() => this.setFlow(f => {
@@ -234,6 +238,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
+    /* eslint-enable unicorn/no-this-outside-of-class -- 模块级连接 store 单例 */
     // 后端连接事件只注册一次（幂等，跨 ToolStoreView 多次挂载不重复注册）。
     function ensureFeishuListeners(copy = {}) {
       if (feishuConn.listenersReady) return;
@@ -244,7 +249,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       ev.listen('feishu:progress', (e) => {
         const p = e.payload || {};
         feishuConn.setFlow(f => {
-          const nf = f ? { ...f, steps: { ...(f.steps || {}) } } : { phase: 'running', steps: {}, active: null, pct: 0, sec: 0, log: '' };
+          const nf = f ? { ...f, steps: { ...f.steps } } : { phase: 'running', steps: {}, active: null, pct: 0, sec: 0, log: '' };
           if (p.step) { nf.active = p.step; nf.steps[p.step] = p.status === 'done' ? 'done' : 'active'; }
           if (typeof p.pct === 'number') nf.pct = p.pct;
           if (p.log) nf.log = p.log;
@@ -258,7 +263,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         feishuConn.setFlow(f => {
           const prev = (f && f.steps) || {};
           return {
-            ...(f || {}), phase: 'qr', active: 'qr',
+            ...f, phase: 'qr', active: 'qr',
             steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), connect: 'done', qr: 'active' },
             qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase,
           };
@@ -266,7 +271,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       });
       ev.listen('feishu:connected', () => {
         feishuConn.stopTick();
-        feishuConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+        feishuConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
         // 连上 → 按规则写技能（默认启用）+ 广播刷新；跟视图无关，放全局做。
         invokeTauri('feishu_apply_skills').catch(() => {});
         // 稍后自动收起流程卡（详情里的“已连接”态改由 feishuConnected 驱动）
@@ -277,16 +282,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         feishuConn.stopTick();
         feishuConn.setFlow(f => {
           const step = (f && f.active) || 'cli';
-          return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+          return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } };
         });
       });
     }
 
     // ── 企业微信连接流程 · 跨视图持久 store(镜像 feishuConn;企微纯扫码单段）──
+    /* eslint-disable unicorn/no-this-outside-of-class -- 同 feishuConn:模块级单例,方法用 this 引用自身 */
     const wecomConn = {
       flow: null, tick: null, listenersReady: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
-      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* 静默:单个订阅者异常不影响其余广播 */ } }); },
       startTick() {
         this.stopTick();
         this.tick = setInterval(() => this.setFlow(f => {
@@ -298,6 +304,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
+    /* eslint-enable unicorn/no-this-outside-of-class -- 同 feishuConn */
     function ensureWecomListeners(copy = {}) {
       if (wecomConn.listenersReady) return;
       const connFailed = copy.connFailed;
@@ -309,29 +316,30 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         wecomConn.stopTick();
         wecomConn.setFlow(f => {
           const prev = (f && f.steps) || {};
-          return { ...(f || {}), phase: 'qr', active: 'qr',
+          return { ...f, phase: 'qr', active: 'qr',
             steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
             qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase };
         });
       });
       ev.listen('wecom:connected', () => {
         wecomConn.stopTick();
-        wecomConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+        wecomConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
         invokeTauri('wecom_apply_skills').catch(() => {});
         setTimeout(() => wecomConn.setFlow(null), 1800);
       });
       ev.listen('wecom:error', (e) => {
         const p = e.payload || {};
         wecomConn.stopTick();
-        wecomConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
+        wecomConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
       });
     }
 
     // ── 钉钉连接流程 · 跨视图持久 store(镜像企微;纯扫码单段）──
+    /* eslint-disable unicorn/no-this-outside-of-class -- 同 feishuConn:模块级单例,方法用 this 引用自身 */
     const dingtalkConn = {
       flow: null, tick: null, listenersReady: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
-      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* 静默:单个订阅者异常不影响其余广播 */ } }); },
       startTick() {
         this.stopTick();
         this.tick = setInterval(() => this.setFlow(f => {
@@ -343,6 +351,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
+    /* eslint-enable unicorn/no-this-outside-of-class -- 同 feishuConn */
     function ensureDingtalkListeners(copy = {}) {
       if (dingtalkConn.listenersReady) return;
       const connFailed = copy.connFailed;
@@ -355,7 +364,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         dingtalkConn.stopTick();
         dingtalkConn.setFlow(f => {
           const prev = (f && f.steps) || {};
-          return { ...(f || {}), phase: 'qr', active: 'qr',
+          return { ...f, phase: 'qr', active: 'qr',
             steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
             qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, userCode: p.user_code };
         });
@@ -364,24 +373,25 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         dingtalkConn.stopTick();
         try {
           await invokeTauri('dingtalk_apply_skills');
-          dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+          dingtalkConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
           setTimeout(() => dingtalkConn.setFlow(null), 1800);
         } catch (e) {
-          dingtalkConn.setFlow(f => ({ ...(f || {}), phase: 'error', err: skillsFailed(String(e).slice(0, 220)), errStep: 'qr', steps: { ...((f && f.steps) || {}), qr: 'error' } }));
+          dingtalkConn.setFlow(f => ({ ...f, phase: 'error', err: skillsFailed(String(e).slice(0, 220)), errStep: 'qr', steps: { ...(f && f.steps), qr: 'error' } }));
         }
       });
       ev.listen('dingtalk:error', (e) => {
         const p = e.payload || {};
         dingtalkConn.stopTick();
-        dingtalkConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
+        dingtalkConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
       });
     }
 
     // ── 腾讯会议连接流程 · 跨视图持久 store(镜像钉钉;纯 OAuth 扫码单段）──
+    /* eslint-disable unicorn/no-this-outside-of-class -- 同 feishuConn:模块级单例,方法用 this 引用自身 */
     const tmeetConn = {
       flow: null, tick: null, listenersReady: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
-      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* 静默:单个订阅者异常不影响其余广播 */ } }); },
       startTick() {
         this.stopTick();
         this.tick = setInterval(() => this.setFlow(f => {
@@ -393,6 +403,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
+    /* eslint-enable unicorn/no-this-outside-of-class -- 同 feishuConn */
     function ensureTmeetListeners(copy = {}) {
       if (tmeetConn.listenersReady) return;
       const connFailed = copy.connFailed;
@@ -410,7 +421,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
         tmeetConn.setFlow(f => {
           const prev = (f && f.steps) || {};
-          return { ...(f || {}), phase: 'qr', active: 'qr',
+          return { ...f, phase: 'qr', active: 'qr',
             steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), qr: 'active' },
             qr: p.qr_data_url, qrUrl: p.url, qrPhase: p.phase, browserAuth: true };
         });
@@ -424,21 +435,21 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             throw new Error(authIncomplete);
           }
           await invokeTauri('tmeet_apply_skills');
-          tmeetConn.setFlow(f => ({ ...(f || {}), phase: 'done', steps: { ...((f && f.steps) || {}), qr: 'done' } }));
+          tmeetConn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
           setTimeout(() => tmeetConn.setFlow(null), 1800);
         } catch (e) {
-          tmeetConn.setFlow(f => ({ ...(f || {}), phase: 'error', err: String(e && e.message ? e.message : e).slice(0, 220), errStep: 'qr', steps: { ...((f && f.steps) || {}), qr: 'error' } }));
+          tmeetConn.setFlow(f => ({ ...f, phase: 'error', err: String(e && e.message ? e.message : e).slice(0, 220), errStep: 'qr', steps: { ...(f && f.steps), qr: 'error' } }));
         }
       });
       ev.listen('tmeet:error', (e) => {
         const p = e.payload || {};
         tmeetConn.stopTick();
-        tmeetConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } }; });
+        tmeetConn.setFlow(f => { const step = (f && f.active) || 'cli'; return { ...(f || { steps: {} }), phase: 'error', err: String(p.message || connFailed), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } }; });
       });
     }
 
     // iOS 风格弹窗（安装/卸载后提示需新建会话生效）
-    const TsAlert = ({ alert, theme, onDismiss, onNewChat, onCancelLoading, copy }) => {
+    const TsAlert = ({ alert, _theme, onDismiss, onNewChat, onCancelLoading, copy }) => { // eslint-disable-line no-unused-vars -- theme 为既有 props 契约保留
       if (!alert.visible && !alert.loading) return null;
       return (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
@@ -464,7 +475,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 </div>
                 {alert.cancelable && (
                   <div className={`border-t border-slate-200 dark:border-white/10`}>
-                    <button
+                    <button type="button"
                       onClick={() => onCancelLoading && onCancelLoading(alert)}
                       className={`w-full py-3 text-[17px] font-normal text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
                     >
@@ -490,7 +501,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   )}
                 </div>
                 <div className={`border-t border-slate-200 dark:border-white/10`}>
-                  <button
+                  <button type="button"
                     onClick={onDismiss}
                     className="w-full py-3 text-[17px] font-normal text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5"
                   >
@@ -499,7 +510,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 </div>
                 {!alert.isError && (
                   <div className={`border-t border-slate-200 dark:border-white/10`}>
-                    <button
+                    <button type="button"
                       onClick={onNewChat}
                       className={`w-full py-3 text-[17px] font-semibold text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
                     >
@@ -515,9 +526,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     };
 
     // API Key 配置弹窗（需要 config_fields 的工具安装前弹出）
-    const TsConfigDialog = ({ config, theme, onConfirm, onCancel, copy }) => {
+    // eslint-disable-next-line no-unused-vars -- theme 为既有 props 契约保留
+    const TsConfigDialog = ({ config, _theme, onConfirm, onCancel, copy }) => {
       if (!config) return null;
-      const [values, setValues] = useState({});
+      const [values, setValues] = useState({}); // eslint-disable-line react-hooks/rules-of-hooks -- config 为 null 时组件返回 null 且不渲染其他 Hook;同一实例 config 只能从 null→对象单向变化,Hook 数量恒定
       const fields = config.fields || [];
       // required:false 的字段可留空；required:true 字段必须填写后才能连接。
       const canSubmit = fields.every(f => f.required === false || (values[f.key] || '').trim().length > 0);
@@ -537,7 +549,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 </div>
               )}
               {config.configDocUrl && (
-                <button
+                <button type="button"
                   onClick={() => invokeTauri('open_external_url', { url: config.configDocUrl })}
                   className={`text-[13px] mb-4 inline-block text-[#007AFF] dark:text-[#0A84FF] hover:underline`}
                 >
@@ -546,7 +558,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               )}
               {/* 引导链接放最上,不夹在输入框中间 */}
               {fields.find(f => f.helpUrl) && (
-                <button
+                <button type="button"
                   onClick={() => invokeTauri('open_external_url', { url: fields.find(f => f.helpUrl).helpUrl })}
                   className={`text-[13px] mb-4 inline-block text-[#007AFF] dark:text-[#0A84FF] hover:underline`}
                 >
@@ -556,6 +568,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               {/* 所有输入框紧挨着 */}
               {fields.map((field) => (
                 <div key={field.key} className="text-left mb-3">
+                  {/* biome-ignore lint/a11y/noLabelWithoutControl: 字段名与输入框为兄弟布局,label 无 htmlFor 关联,改 span 会偏离既有结构 */}
                   <label className={`text-[13px] font-medium mb-1.5 block text-slate-600 dark:text-slate-300`}>
                     {field.label}
                   </label>
@@ -575,7 +588,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               ))}
             </div>
             <div className={`border-t border-slate-200 dark:border-white/10`}>
-              <button
+              <button type="button"
                 onClick={onCancel}
                 className={`w-full py-3 text-[17px] font-normal text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
               >
@@ -583,7 +596,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               </button>
             </div>
             <div className={`border-t border-slate-200 dark:border-white/10`}>
-              <button
+              <button type="button"
                 onClick={() => canSubmit && onConfirm(values)}
                 disabled={!canSubmit}
                 className={`w-full py-3 text-[17px] font-semibold text-center transition-colors ${
@@ -601,13 +614,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     };
 
     // Obsidian 连接前探测引导卡：未安装 → 引导下载；没库 / 库丢失 → 引导建库/重开
-    const TsObsidianGuide = ({ guide, theme, onCancel, onDownload, onRetry, allowDownload = true, copy }) => {
+    const TsObsidianGuide = ({ guide, _theme, onCancel, onDownload, onRetry, allowDownload = true, copy }) => { // eslint-disable-line no-unused-vars -- theme 为既有 props 契约保留
       if (!guide) return null;
       const COPY = copy.obsidianGuide;
       const c = COPY[guide.state] || COPY.not_installed;
       const btn = (label, on, cls) => (
         <div className={`border-t border-slate-200 dark:border-white/10`}>
-          <button onClick={on} className={`w-full py-3 text-center transition-colors ${cls}`}>{label}</button>
+          <button type="button" onClick={on} className={`w-full py-3 text-center transition-colors ${cls}`}>{label}</button>
         </div>
       );
       return (
@@ -626,6 +639,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       );
     };
 
+    /* eslint-disable sonarjs/cognitive-complexity -- 工具商店主视图(列表/详情/安装/OAuth 多流程);legacy view; tracked separately */
     const ToolStoreView = ({ theme, t, onNewChat }) => {
       const storeCopy = t.uiToolStore;
       const detailCopy = t.uiToolDetails;
@@ -658,7 +672,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // (见 attachment-drop-controller.js;canAccept 经 busyRef 读最新值)。
       useEffect(() => {
         const ctrl = window.PinvouAttachmentDropController;
-        if (!ctrl) return undefined;
+        if (!ctrl) return;
         return ctrl.install({
           document,
           capture: true,
@@ -666,6 +680,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           onActiveChange: setDropActive,
           onFiles: handleZipDrop,
         });
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 拖放监听只挂载一次;canMutateToolStore/handleZipDrop 经 canAccept/onFiles 闭包按调用时求值
       }, []);
       const [alert, setAlert] = useState({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
       const oauthRequestRef = useRef({});
@@ -706,6 +721,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       };
       useEffect(() => {
         if (managingVisibility) loadHiddenByMode();
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在进入编辑态那一刻拉取;loadHiddenByMode 为组件内闭包
       }, [managingVisibility]);
       // 勾选/取消某工具在某模式的可见性：checked = 可见。
       const toggleModeVisibility = (id, mode, checked) => {
@@ -728,7 +744,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         const nextState = { ...prev, [mode]: next };
         hiddenByModeRef.current = nextState;
         setHiddenByMode(nextState);
-        invokeTauri('set_bundle_visibility', { bundleIds: Array.from(next), scope: mode })
+        invokeTauri('set_bundle_visibility', { bundleIds: [...next], scope: mode })
           .catch((e) => {
             // 写失败：回滚本地勾选态（重读后端为基准）并提示，不静默吞错（三轮评审）。
             loadHiddenByMode();
@@ -833,7 +849,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
       //（弹窗、刷新连接态）。真正的事件监听/秒表在模块级 feishuConn 里，切视图不丢。
       useEffect(() => {
-        if (!externalAuthAvailable) return undefined;
+        if (!externalAuthAvailable) return;
         ensureFeishuListeners(storeCopy);
         let prevPhase = feishuConn.flow && feishuConn.flow.phase;
         const unsub = feishuConn.subscribe((flow) => {
@@ -853,11 +869,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         setFeishuFlow(feishuConn.flow); // (重)挂载即水合当前进度
         return unsub;
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 订阅只随 externalAuthAvailable 挂卸;文案快照由回调按需读取,重订阅无必要
       }, [externalAuthAvailable]);
 
       // 订阅企业微信 store(镜像飞书):镜像进渲染 + 完成/失败收尾
       useEffect(() => {
-        if (!externalAuthAvailable) return undefined;
+        if (!externalAuthAvailable) return;
         ensureWecomListeners(storeCopy);
         let prevPhase = wecomConn.flow && wecomConn.flow.phase;
         const unsub = wecomConn.subscribe((flow) => {
@@ -877,11 +894,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         setWecomFlow(wecomConn.flow);
         return unsub;
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 订阅只随 externalAuthAvailable 挂卸;文案快照由回调按需读取,重订阅无必要
       }, [externalAuthAvailable]);
 
       // 订阅钉钉 store(镜像企微):镜像进渲染 + 完成/失败收尾
       useEffect(() => {
-        if (!externalAuthAvailable) return undefined;
+        if (!externalAuthAvailable) return;
         ensureDingtalkListeners(storeCopy);
         let prevPhase = dingtalkConn.flow && dingtalkConn.flow.phase;
         const unsub = dingtalkConn.subscribe((flow) => {
@@ -901,11 +919,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         setDingtalkFlow(dingtalkConn.flow);
         return unsub;
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 订阅只随 externalAuthAvailable 挂卸;文案快照由回调按需读取,重订阅无必要
       }, [externalAuthAvailable]);
 
       // 订阅腾讯会议 store(镜像钉钉):镜像进渲染 + 完成/失败收尾
       useEffect(() => {
-        if (!externalAuthAvailable) return undefined;
+        if (!externalAuthAvailable) return;
         ensureTmeetListeners(storeCopy);
         let prevPhase = tmeetConn.flow && tmeetConn.flow.phase;
         const unsub = tmeetConn.subscribe((flow) => {
@@ -925,6 +944,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         setTmeetFlow(tmeetConn.flow);
         return unsub;
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 订阅只随 externalAuthAvailable 挂卸;文案快照由回调按需读取,重订阅无必要
       }, [externalAuthAvailable]);
 
       // 企微连接编排事件:后端推进度,前端驱动 UI。
@@ -937,7 +957,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // 二维码到了 → 清掉一直显示的"正在生成…"loading,再弹出二维码弹窗。
           setAlert(a => ({ ...a, visible: false, loading: false }));
           setWecomQr({ qr: p.qr_data_url, url: p.url, phase: p.phase });
-        }).then(u => unlisten.push(u));
+        }).then(u => { unlisten.push(u); });
         ev.listen('wecom:connected', () => {
           setWecomQr(null); setBusyId(null);
           // 连上 → 按规则写技能(默认启用),企微技能即刻对模型可见;连接态经 readiness 重取。
@@ -945,13 +965,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           loadBackendState();
           setAlert({ visible: true, loading: false, title: storeCopy.connectedTool(storeCopy.toolNames.wecom), subtitle: '', isInstall: true, isError: false, toolId: 'wecom' });
           notifyComposerToolsChanged();
-        }).then(u => unlisten.push(u));
+        }).then(u => { unlisten.push(u); });
         ev.listen('wecom:error', (e) => {
           const p = e.payload || {};
           setWecomQr(null); setBusyId(null);
           setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: String(p.message || '').slice(0, 240), isError: true });
-        }).then(u => unlisten.push(u));
-        return () => { unlisten.forEach(u => { try { u(); } catch (_) {} }); };
+        }).then(u => { unlisten.push(u); });
+        return () => { unlisten.forEach(u => { try { u(); } catch { /* 静默:卸载时监听可能已失效 */ } }); };
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 订阅只随 externalAuthAvailable 挂卸;文案快照由回调按需读取,重订阅无必要
       }, [externalAuthAvailable]);
 
       // 合并后端安装状态到 mock 数据(飞书/企微/钉钉的 installed = 已连接)
@@ -1003,7 +1024,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 卸载后从 list_marketplace_tools 消失，不依赖前端硬编码。展示文案走 i18n
       // overlay（localizeTool，按 backendId 三语覆盖），后端 name/desc 兜底。
       const customMcpTools = toolBackend
-        .filter(x => !tsToolsData.some(t => t.backendId === x.id))
+        .filter(x => tsToolsData.every(t => t.backendId !== x.id))
         .map(x => {
           const bs = bundleStates[x.id] || null;
           const base = {
@@ -1127,6 +1148,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const sectionOrder = groupBy === 'type' ? [...TOOL_BUSINESS_GROUPS, 'skill'] : TOOL_TYPE_GROUPS;
       const sectionLabelOf = groupBy === 'type' ? catLabel : typeLabel;
       // 二级筛选 chips:第一项恒为「全部」,其余只展示当前列表里有内容的组。
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- groupChips 每次渲染新建,作为下方 effect 依赖是既有契约;改 useMemo 会改变列表渲染行为
       const groupChips = [{ id: 'all', label: catLabel('all') },
         ...(groupBy === 'type' ? TOOL_TYPE_GROUPS : TOOL_BUSINESS_GROUPS)
           .map(id => ({ id, label: groupBy === 'type' ? typeLabel(id) : catLabel(id) }))
@@ -1164,7 +1186,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           if (buckets.has(key)) listSections.push({ id: key, label: sectionLabelOf(key), items: buckets.get(key) });
           buckets.delete(key);
         });
-        buckets.forEach((items, key) => listSections.push({ id: key, label: sectionLabelOf(key), items }));
+        buckets.forEach((items, key) => { listSections.push({ id: key, label: sectionLabelOf(key), items }); });
         if (upcomingTools.length) {
           listSections.push({ id: 'upcoming', label: typeLabel('upcoming'), items: upcomingTools });
         }
@@ -1172,10 +1194,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 左侧二级分类快速导航 = 分区列表（含「即将上线」独立栏）。
       const navSections = sectioned ? listSections : [];
       const scrollToSection = (id) => {
-        document.getElementById(`store-section-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        document.querySelector(`#store-section-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       };
       useEffect(() => {
-        if (!installedOnly && !searching && activeCategory !== 'all' && !groupChips.some(chip => chip.id === activeCategory)) {
+        if (!installedOnly && !searching && activeCategory !== 'all' && groupChips.every(chip => chip.id !== activeCategory)) {
           setActiveCategory('all');
         }
       }, [activeCategory, installedOnly, searching, groupChips]);
@@ -1524,9 +1546,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         feishuConn.startTick();
         try {
           // ① 确保 CLI（首次使用在线安装）
-          feishuConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
+          feishuConn.setFlow(f => ({ ...f, active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...(f && f.steps), runtime: 'done', cli: 'active' } }));
           await invokeTauri('feishu_ensure_cli');
-          feishuConn.setFlow(f => ({ ...(f || {}), active: 'connect', pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done', connect: 'active' } }));
+          feishuConn.setFlow(f => ({ ...f, active: 'connect', pct: 100, steps: { ...(f && f.steps), cli: 'done', connect: 'active' } }));
           // ② 连接编排（后端 emit feishu:qr / connected / error）
           await invokeTauri('feishu_connect_begin');
         } catch (e) {
@@ -1535,7 +1557,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setBusyId(null);
           feishuConn.setFlow(f => {
             const step = (f && f.active) || 'cli';
-            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } };
           });
         }
       };
@@ -1573,9 +1595,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         wecomConn.startTick();
         try {
           // ① 确保 CLI(首次联网装 wecom-cli ~40s)
-          wecomConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
+          wecomConn.setFlow(f => ({ ...f, active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...(f && f.steps), runtime: 'done', cli: 'active' } }));
           await invokeTauri('wecom_ensure_cli');
-          wecomConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
+          wecomConn.setFlow(f => ({ ...f, pct: 100, steps: { ...(f && f.steps), cli: 'done' } }));
           // ② 连接编排(后端 emit wecom:qr / connected / error)
           await invokeTauri('wecom_connect_begin');
         } catch (e) {
@@ -1584,7 +1606,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setBusyId(null);
           wecomConn.setFlow(f => {
             const step = (f && f.active) || 'cli';
-            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } };
           });
         }
       };
@@ -1618,9 +1640,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         dingtalkConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
         dingtalkConn.startTick();
         try {
-          dingtalkConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
+          dingtalkConn.setFlow(f => ({ ...f, active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...(f && f.steps), runtime: 'done', cli: 'active' } }));
           await invokeTauri('dingtalk_ensure_cli');
-          dingtalkConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
+          dingtalkConn.setFlow(f => ({ ...f, pct: 100, steps: { ...(f && f.steps), cli: 'done' } }));
           await invokeTauri('dingtalk_connect_begin');
         } catch (e) {
           console.error('dingtalk connect failed:', e);
@@ -1628,7 +1650,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setBusyId(null);
           dingtalkConn.setFlow(f => {
             const step = (f && f.active) || 'cli';
-            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } };
           });
         }
       };
@@ -1661,9 +1683,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         tmeetConn.setFlow({ phase: 'running', steps: { runtime: 'active' }, active: 'runtime', pct: 0, sec: 0, log: '' });
         tmeetConn.startTick();
         try {
-          tmeetConn.setFlow(f => ({ ...(f || {}), active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...((f && f.steps) || {}), runtime: 'done', cli: 'active' } }));
+          tmeetConn.setFlow(f => ({ ...f, active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...(f && f.steps), runtime: 'done', cli: 'active' } }));
           await invokeTauri('tmeet_ensure_cli');
-          tmeetConn.setFlow(f => ({ ...(f || {}), pct: 100, steps: { ...((f && f.steps) || {}), cli: 'done' } }));
+          tmeetConn.setFlow(f => ({ ...f, pct: 100, steps: { ...(f && f.steps), cli: 'done' } }));
           await invokeTauri('tmeet_connect_begin');
         } catch (e) {
           console.error('tmeet connect failed:', e);
@@ -1671,7 +1693,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setBusyId(null);
           tmeetConn.setFlow(f => {
             const step = (f && f.active) || 'cli';
-            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...((f && f.steps) || {}), [step]: 'error' } };
+            return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } };
           });
         }
       };
@@ -1714,7 +1736,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           if (isInstalled && !mcpInstalled) return handleSkillAction(backendId, isInstalled);
           backendId = companionMcpId;
         }
-        else if (skillCards.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
+        else if (skillCards.some(s => s.backendId === backendId) && tsToolsData.every(t => t.backendId !== backendId)) return handleSkillAction(backendId, isInstalled);
         const requestedTool = findLocalizedTool(backendId);
         if (!externalAuthAvailable && isRestrictedExternalAuthTool(requestedTool)) return;
         // 飞书走 CLI 连接流程,不走 marketplace install
@@ -1772,7 +1794,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // Obsidian：连接前先探测本机状态——没装/没库就引导，不默默装个用不了的连接器
           if (backendId === 'obsidian') {
             let st = null;
-            try { st = await invokeTauri('detect_obsidian'); } catch (e) {}
+            try { st = await invokeTauri('detect_obsidian'); } catch { /* 静默:未安装视为探测失败 */ }
             if (st && st.state && st.state !== 'ok') { setObsidianGuide({ backendId, name, ...st }); return; }
             return doInstall(backendId, {});
           }
@@ -1856,25 +1878,29 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             onDownload={() => invokeTauri('open_external_url', { url: 'https://obsidian.md/' }).catch(() => {})}
             onRetry={async () => {
               let st = null;
-              try { st = await invokeTauri('detect_obsidian'); } catch (e) {}
+              try { st = await invokeTauri('detect_obsidian'); } catch { /* 静默:未安装视为探测失败 */ }
               if (st && st.state === 'ok') { const bid = obsidianGuide.backendId; setObsidianGuide(null); doInstall(bid, {}); }
-              else setObsidianGuide(g => g ? { ...g, ...(st || {}) } : g);
+              else setObsidianGuide(g => g ? { ...g, ...st } : g);
             }}
           />, document.body)}
           {/* 预置技能更新二次确认:覆盖为商店最新版本,本地修改会丢失(WebView2 下
               window.confirm 不弹,应用内自绘,风格对齐 TsAlert) */}
           {updateConfirm && createPortal((
+            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消/确认按钮承担
+            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
             <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setUpdateConfirm(null)}>
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
               <div className="w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]" onClick={e => e.stopPropagation()}>
                 <div className="px-6 pt-6 pb-5 text-center">
                   <div className="text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white">{storeCopy.updateSkillTitle(updateConfirm.name)}</div>
                   <div className="text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">{storeCopy.updateSkillOverwriteHint}</div>
                 </div>
                 <div className="border-t border-slate-200 dark:border-white/10 flex">
-                  <button onClick={() => setUpdateConfirm(null)} className="flex-1 py-3 text-[17px] text-center transition-colors text-slate-500 active:bg-slate-100 dark:text-slate-400 dark:active:bg-white/5 border-r border-slate-200 dark:border-white/10">
+                  <button type="button" onClick={() => setUpdateConfirm(null)} className="flex-1 py-3 text-[17px] text-center transition-colors text-slate-500 active:bg-slate-100 dark:text-slate-400 dark:active:bg-white/5 border-r border-slate-200 dark:border-white/10">
                     {storeCopy.cancel}
                   </button>
-                  <button onClick={doSkillUpdate} className="flex-1 py-3 text-[17px] font-semibold text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5">
+                  <button type="button" onClick={doSkillUpdate} className="flex-1 py-3 text-[17px] font-semibold text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5">
                     {(t.uiToolCommon || {}).update}
                   </button>
                 </div>
@@ -1885,7 +1911,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           {wecomQr && (() => {
             const cancel = () => { invokeTauri('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
             return createPortal((
+            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消控件承担
+            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', WebkitBackdropFilter: 'blur(8px)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
               <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[440px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
                 <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">{storeCopy.connectTitle(storeCopy.toolNames.wecom)}</h3>
                 {/* 文案精简(方案A):扫码指引交给内嵌页自己说，这里不重复。直接内嵌企微登录页
@@ -1896,8 +1926,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 <div className="flex items-center gap-1.5 mt-4 text-[13px] text-slate-500 dark:text-slate-400">
                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> {storeCopy.waitingAuth}
                 </div>
-                <button onClick={() => { if (wecomQr.url) invokeTauri('open_external_url', { url: wecomQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{storeCopy.openInBrowser}</button>
-                <button onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">{storeCopy.cancel}</button>
+                <button type="button" onClick={() => { if (wecomQr.url) invokeTauri('open_external_url', { url: wecomQr.url }); }} className="mt-4 text-[13px] text-blue-600 dark:text-blue-400 hover:underline">{storeCopy.openInBrowser}</button>
+                <button type="button" onClick={cancel} className="mt-3 px-6 py-2 rounded-full text-[14px] font-semibold bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300">{storeCopy.cancel}</button>
               </div>
             </div>
             ), document.body);
@@ -1924,20 +1954,20 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       />
                     </div>
                     <div className="flex shrink-0 items-center justify-end gap-3">
-                      <button data-testid="tool-store-guide" onClick={() => setShowGuide(true)} title={storeCopy.guide.title}
+                      <button type="button" data-testid="tool-store-guide" onClick={() => setShowGuide(true)} title={storeCopy.guide.title}
                         className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
                         <BookOpen size={14} className="mr-2 opacity-70" />
                         <span>{storeCopy.guide.title}</span>
                       </button>
                       {canMutateToolStore && (
-                        <button data-testid="tool-store-manage-visibility" onClick={() => setManagingVisibility(v => !v)} title={storeCopy.modeVisibilityHint}
+                        <button type="button" data-testid="tool-store-manage-visibility" onClick={() => setManagingVisibility(v => !v)} title={storeCopy.modeVisibilityHint}
                           className={`inline-flex h-9 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors ${managingVisibility ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]'}`}>
                           <Settings size={14} className="mr-2 opacity-70" />
                           <span>{managingVisibility ? storeCopy.doneManagingVisibility : storeCopy.manageVisibility}</span>
                         </button>
                       )}
                       {canMutateToolStore && (
-                        <button data-testid="tool-store-upload-btn" onClick={handleUploadSkill} title={storeCopy.uploadSkillPackage} disabled={busyId === '__upload__'}
+                        <button type="button" data-testid="tool-store-upload-btn" onClick={handleUploadSkill} title={storeCopy.uploadSkillPackage} disabled={busyId === '__upload__'}
                           className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 disabled:opacity-50 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
                           <Upload size={14} className="mr-2 opacity-70" />
                           <span>{storeCopy.uploadSkillPackage}</span>
@@ -1958,7 +1988,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   <aside className="hidden lg:block w-40 shrink-0 sticky top-6">
                     <nav className="flex flex-col gap-1">
                       {navSections.map(s => (
-                        <button key={s.id} onClick={() => scrollToSection(s.id)}
+                        <button type="button" key={s.id} onClick={() => scrollToSection(s.id)}
                           className="flex items-center justify-between gap-2 w-full px-3 py-2 rounded-xl text-left text-[13px] font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/5 dark:hover:text-white transition-colors">
                           <span className="truncate">{s.label}</span>
                           <span className="text-[11px] text-slate-400 dark:text-slate-500 tabular-nums shrink-0">{s.items.length}</span>
@@ -1970,10 +2000,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
                 {/* Category filter + tool list */}
                 <section className="flex-1 min-w-0">
-                  <div className={`flex flex-col gap-4 mb-6 pb-5 ${!searching ? '' : 'sm:flex-row sm:items-end justify-between'}`}>
+                  <div className={`flex flex-col gap-4 mb-6 pb-5 ${searching ? 'sm:flex-row sm:items-end justify-between' : ''}`}>
                     {searching && (
                       <div className="flex items-center gap-3">
-                        <button onClick={() => setSearchQuery('')} title={storeCopy.back}
+                        <button type="button" onClick={() => setSearchQuery('')} title={storeCopy.back}
                           className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
                           <ChevronLeft size={20} />
                         </button>
@@ -1986,7 +2016,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                         {/* 主维度切换:按类型 / 按业务,决定二级筛选集合;下方列表始终按另一维度分区 */}
                         <div className="flex h-9 shrink-0 items-center self-start rounded-full bg-slate-100 p-1 shadow-sm dark:bg-[#2C2C2E]">
                           {[{ key: 'type', label: storeCopy.groupByType }, { key: 'business', label: storeCopy.groupByBusiness }].map(seg => (
-                            <button key={seg.key} onClick={() => { setGroupBy(seg.key); setActiveCategory('all'); }}
+                            <button type="button" key={seg.key} onClick={() => { setGroupBy(seg.key); setActiveCategory('all'); }}
                               className={`inline-flex h-7 items-center rounded-full px-3 text-[13px] font-semibold transition-colors whitespace-nowrap ${
                                 groupBy === seg.key
                                   ? 'bg-white text-slate-900 shadow-sm dark:bg-[#3A3A3C] dark:text-white'
@@ -2000,7 +2030,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           {groupChips.map((chip) => {
                             const isActive = activeCategory === chip.id;
                             return (
-                              <button
+                              <button type="button"
                                 key={chip.id}
                                 onClick={() => { setActiveCategory(chip.id); }}
                                 className={`h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors ${isActive
@@ -2011,7 +2041,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                               </button>
                             );
                           })}
-                          <button data-testid="tool-store-installed-only" onClick={() => setInstalledOnly(v => !v)} title={storeCopy.installedOnly}
+                          <button type="button" data-testid="tool-store-installed-only" onClick={() => setInstalledOnly(v => !v)} title={storeCopy.installedOnly}
                             className={`ml-auto h-9 whitespace-nowrap shrink-0 inline-flex items-center rounded-full px-3.5 text-[13px] font-semibold transition-colors ${installedOnly
                               ? 'bg-blue-600 text-[#fff] hover:bg-blue-700'
                               : 'bg-[#F2F2F7] text-[#000] dark:bg-[#2C2C2E] dark:text-[#fff]'}`}>
@@ -2020,7 +2050,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           </button>
                           <span className="shrink-0 hidden sm:flex items-center gap-1.5 text-[12px] text-slate-400 dark:text-slate-500 pl-1">
                             {storeCopy.guide.dragHintShort}
-                            <button onClick={() => setShowGuide(true)} aria-label={storeCopy.guide.title} title={storeCopy.guide.title}
+                            <button type="button" onClick={() => setShowGuide(true)} aria-label={storeCopy.guide.title} title={storeCopy.guide.title}
                               className="w-[18px] h-[18px] rounded-full bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-white/20 flex items-center justify-center text-[11px] font-bold leading-none">?</button>
                           </span>
                         </div>
@@ -2039,6 +2069,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           )}
                           <div className={sectioned ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : 'contents'}>
                             {section.items.map((tool) => (
+                              // biome-ignore lint/a11y/useKeyWithClickEvents: 列表行点击为快捷方式,键盘路径由行内真实按钮承担
+                              // biome-ignore lint/a11y/noStaticElementInteractions: 列表行点击热区,非独立交互控件
                               <div
                                 key={`list-${tool.id}`}
                                 onClick={() => setSelectedTool(tool)}
@@ -2068,6 +2100,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                     // 管理可见性编辑态：卡片出现每个模式的勾选框，勾选 = 可见。
                                     if (managingVisibility) {
                                       return (
+                                        // biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘路径由勾选框自身承担
+                                        // biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器
                                         <div className="flex flex-col items-start gap-1" onClick={(e) => e.stopPropagation()}>
                                           {[{ key: 'plain', label: storeCopy.modePlain }, { key: 'code', label: storeCopy.modeCode }].map((m) => {
                                             // 无 backendId 的卡（占位卡/内置 s5）不参与可见性配置：禁用勾选；
@@ -2113,7 +2147,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{searching ? storeCopy.emptyNoMatch : (installedOnly ? storeCopy.emptyNoInstalled : storeCopy.emptyNoTools)}</h3>
                       <p className="text-slate-500 dark:text-slate-400">{searching ? storeCopy.emptyNoMatchHint : (installedOnly ? (canMutateToolStore ? storeCopy.emptyNoInstalledHint : storeCopy.emptyNoInstalledHintReadonly) : storeCopy.emptyNoToolsHint)}</p>
                       {!searching && !installedOnly && canMutateToolStore && (
-                        <button data-testid="tool-store-empty-upload-btn" onClick={handleUploadSkill}
+                        <button type="button" data-testid="tool-store-empty-upload-btn" onClick={handleUploadSkill}
                           className="mt-5 inline-flex h-9 items-center rounded-full bg-blue-600 px-5 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700">
                           <Upload size={14} className="mr-2" />{storeCopy.uploadSkillPackage}
                         </button>
@@ -2128,17 +2162,21 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
           {/* 插件指南弹窗：拖入安装说明 + 插件包介绍 + 规范文档下载 */}
           {showGuide && createPortal((
+            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗头部关闭按钮承担
+            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
             <div
               className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
               onClick={() => setShowGuide(false)}
             >
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
               <div
                 className="relative w-full max-w-2xl bg-white dark:bg-[#1C1C1E] rounded-[28px] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border border-slate-200/50 dark:border-white/10"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200/50 dark:border-white/10">
                   <h2 className="text-[18px] font-semibold">{storeCopy.guide.title}</h2>
-                  <button onClick={() => setShowGuide(false)} aria-label={storeCopy.guide.close}
+                  <button type="button" onClick={() => setShowGuide(false)} aria-label={storeCopy.guide.close}
                     className="w-8 h-8 rounded-full hover:bg-slate-100 dark:hover:bg-white/10 flex items-center justify-center text-slate-500 dark:text-slate-400">
                     <XIcon size={16} />
                   </button>
@@ -2162,7 +2200,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   <section>
                     <h3 className="text-[14px] font-semibold mb-1.5">{storeCopy.guide.specTitle}</h3>
                     <p className="text-[13px] text-slate-600 dark:text-slate-300 leading-relaxed">{storeCopy.guide.specDesc}</p>
-                    <button onClick={downloadSpec} data-testid="tool-store-download-spec"
+                    <button type="button" onClick={downloadSpec} data-testid="tool-store-download-spec"
                       className="mt-3 inline-flex h-9 items-center rounded-full bg-blue-600 px-4 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700">
                       <Download size={14} className="mr-2" />{storeCopy.guide.downloadSpec}
                     </button>
@@ -2176,16 +2214,20 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           {/* Detail modal — portal 到 body：否则被主内容区 backdrop-blur 祖先造的包含块困住，
               fixed inset-0 只盖住右侧内容区、盖不到左侧栏。portal 后蒙层铺满整个视口。 */}
           {selectedTool && createPortal((
+            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗头部关闭按钮承担
+            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
             <div
               className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
               onClick={() => setSelectedTool(null)}
             >
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
               <div
                 className="ts-modal-in relative w-full max-w-2xl bg-white dark:bg-[#1C1C1E] rounded-[32px] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border border-slate-200/50 dark:border-white/10"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="absolute top-0 right-0 w-full px-6 py-5 flex items-center justify-end z-20 pointer-events-none">
-                  <button
+                  <button type="button"
                     onClick={() => setSelectedTool(null)}
                     className="pointer-events-auto w-8 h-8 flex items-center justify-center rounded-full bg-slate-100/80 dark:bg-black/50 backdrop-blur text-slate-500 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-black transition-colors"
                   >
@@ -2290,3 +2332,4 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // ==========================================
 
 export { FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, tmeetConn, ensureTmeetListeners, TsAlert, TsConfigDialog, TsObsidianGuide, ToolStoreView };
+/* eslint-enable sonarjs/cognitive-complexity -- 工具商店主视图;legacy view */

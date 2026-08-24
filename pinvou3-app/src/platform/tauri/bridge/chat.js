@@ -1,38 +1,39 @@
 (function () {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
   "use strict";
 
-  var registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.chat = function (context) {
-    var state = context.state;
-    var invoke = context.invoke;
-    var notify = context.notify;
-    var TAURI = context.TAURI;
-    var sessionStates = context.sessionStates;
-    var turnUsageDirty = context.turnUsageDirty;
-    var personaPlaceholderTitles = context.personaPlaceholderTitles;
-    var renderMarkdown = context.renderMarkdown;
-    var safeConsoleInfo = context.safeConsoleInfo;
-    var recordAuthoritySyncDiagnostic = context.recordAuthoritySyncDiagnostic || function () {};
-    var authoritySyncBufferSnapshot = context.authoritySyncBufferSnapshot || function () { return {}; };
-    var bt = context.bt;
-    var isDefaultChatTitle = context.isDefaultChatTitle;
-    var runSyncOnSession = context.runSyncOnSession;
-    var startThinking = context.startThinking;
-    var stopThinking = context.stopThinking;
-    var ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
-    var ensureSession = context.ensureSession;
-    var getBuffer = context.getBuffer;
-    var recordPinvouSceneForMessage = context.recordPinvouSceneForMessage || function () {};
-    var reconcileRemoteTurn = context.reconcileRemoteTurn;
-    var markRemoteTurn = context.markRemoteTurn;
-    var adoptManagedAttachments = context.adoptManagedAttachments || function () { return Promise.resolve(); };
-    var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
-    var isScheduledRunSession = context.isScheduledRunSession;
-    var basename = context.basename;
-    var userMessageDisplayText = context.userMessageDisplayText;
-    var extractArtifactPaths = context.extractArtifactPaths;
-    var parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
-    var autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
+    const state = context.state;
+    const invoke = context.invoke;
+    const notify = context.notify;
+    const TAURI = context.TAURI;
+    const sessionStates = context.sessionStates;
+    const turnUsageDirty = context.turnUsageDirty;
+    const personaPlaceholderTitles = context.personaPlaceholderTitles;
+    const safeConsoleInfo = context.safeConsoleInfo;
+    const recordAuthoritySyncDiagnostic = context.recordAuthoritySyncDiagnostic || function () {};
+    const authoritySyncBufferSnapshot = context.authoritySyncBufferSnapshot || function () { return {}; };
+    const bt = context.bt;
+    const isDefaultChatTitle = context.isDefaultChatTitle;
+    const runSyncOnSession = context.runSyncOnSession;
+    const startThinking = context.startThinking;
+    const stopThinking = context.stopThinking;
+    const ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
+    const ensureSession = context.ensureSession;
+    const getBuffer = context.getBuffer;
+    const recordPinvouSceneForMessage = context.recordPinvouSceneForMessage || function () {};
+    const reconcileRemoteTurn = context.reconcileRemoteTurn;
+    const markRemoteTurn = context.markRemoteTurn;
+    const adoptManagedAttachments = context.adoptManagedAttachments || function () { return Promise.resolve(); };
+    const discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
+    const isScheduledRunSession = context.isScheduledRunSession;
+    const basename = context.basename;
+    const userMessageDisplayText = context.userMessageDisplayText;
+    const extractArtifactPaths = context.extractArtifactPaths;
+    const parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
+    const autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
 
   // Composer 草稿是纯前端短期状态：写入时不 notify，避免每次按键都克隆
   // 整个 chat slice 并触发 App 重渲染。会话切换本身会 notify，ChatView 会在
@@ -41,9 +42,9 @@
     return String(state.composerDraft || "");
   }
   function setComposerDraft(value) {
-    var text = value == null ? "" : String(value);
+    const text = value == null ? "" : String(value);
     state.composerDraft = text;
-    var activeBuffer = state.activeSessionId && sessionStates[state.activeSessionId];
+    const activeBuffer = state.activeSessionId && sessionStates[state.activeSessionId];
     if (activeBuffer) activeBuffer.composerDraft = text;
     return text;
   }
@@ -55,11 +56,11 @@
   }
   function messageHasToolBlock(type, toolCallId) {
     if (!toolCallId) return false;
-    for (var i = state.messages.length - 1; i >= 0; i--) {
-      var blocks = state.messages[i] && state.messages[i].content;
+    for (let i = state.messages.length - 1; i >= 0; i--) {
+      const blocks = state.messages[i] && state.messages[i].content;
       if (!Array.isArray(blocks)) continue;
-      for (var j = blocks.length - 1; j >= 0; j--) {
-        var block = blocks[j];
+      for (let j = blocks.length - 1; j >= 0; j--) {
+        const block = blocks[j];
         if (!block || block.type !== type) continue;
         if ((type === "tool_use" ? block.id : block.tool_use_id) === toolCallId) return true;
       }
@@ -90,12 +91,12 @@
   // 例外:扫到**用户发言**就放行——用户在上一张卡之后又开了口(典型「再推一次」「没看到」),
   // 这次 present 是新请求的响应,不是模型自发啰嗦;再去重 = 用户主动要却看不到任何反馈(实测 bug)。
   function isDuplicateArtifactCard(pathv) {
-    var bn = basename(pathv);
+    const bn = basename(pathv);
     if (!bn) return false;
-    for (var i = state.chatItems.length - 1; i >= 0; i--) {
-      var it = state.chatItems[i];
+    for (let i = state.chatItems.length - 1; i >= 0; i--) {
+      const it = state.chatItems[i];
       if (it.type === "tool" && context.fileMutationAction(it.name, it.args)) {
-        var changedPaths = extractArtifactPaths(it.args);
+        const changedPaths = extractArtifactPaths(it.args);
         if (changedPaths.some(function (ap) { return basename(ap) === bn; })) return false;
       }
       if (it.type === "user") return false;
@@ -104,9 +105,9 @@
     return false;
   }
   function addSystemItem(text, meta) {
-    var item = { type: "system", text: text, time: timeStr() };
+    const item = { type: "system", text, time: timeStr() };
     if (meta) {
-      for (var k in meta) item[k] = meta[k];
+      for (const k in meta) item[k] = meta[k];
     }
     addChatItem(item);
     notify();
@@ -123,8 +124,8 @@
   }
   function removeCompactionStartItem(compactId) {
     if (!compactId) return;
-    for (var i = state.chatItems.length - 1; i >= 0; i--) {
-      var it = state.chatItems[i];
+    for (let i = state.chatItems.length - 1; i >= 0; i--) {
+      const it = state.chatItems[i];
       if (it.type === "system" && it.compactId === compactId && it.compactPhase === "start") {
         state.chatItems.splice(i, 1);
         return;
@@ -133,7 +134,7 @@
   }
   function addOrMergePruneCompaction(compactId) {
     removeCompactionStartItem(compactId);
-    var last = state.chatItems[state.chatItems.length - 1];
+    const last = state.chatItems[state.chatItems.length - 1];
     if (last && last.type === "system" && last.compactPruneRollup) {
       last.compactPruneCount = (last.compactPruneCount || 1) + 1;
       last.text = compactPruneRollupText(last.compactPruneCount);
@@ -164,12 +165,12 @@
   function flushAssistantMessageToHistory() {
     flushPendingTextBlock();
     if (context.pendingAssistantBlocks.length) {
-      var assistantText = context.pendingAssistantBlocks
+      const assistantText = context.pendingAssistantBlocks
         .filter(function (block) { return block && block.type === "text" && block.text; })
         .map(function (block) { return block.text; })
         .join("\n\n");
       if (state.activeSessionId && state.activeSessionId === state.scheduledTaskCreationSessionId) {
-        var scheduledTaskDraft = parseScheduledTaskDraftFromText(assistantText);
+        const scheduledTaskDraft = parseScheduledTaskDraftFromText(assistantText);
         if (scheduledTaskDraft) {
           autoCreateScheduledTaskDraft(scheduledTaskDraft, state.activeSessionId);
         }
@@ -192,11 +193,11 @@
     return sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
   }
   function formatAttachmentDisplayText(text, attachments) {
-    var names = (attachments || []).map(function (attachment) {
+    const names = (attachments || []).map(function (attachment) {
       return typeof attachment === "string" ? attachment : attachment && attachment.basename;
     }).filter(Boolean).map(String);
     if (!names.length) return String(text || "");
-    var attachmentLine = "📎 " + JSON.stringify(names);
+    const attachmentLine = "📎 " + JSON.stringify(names);
     return String(text || "").trim()
       ? String(text) + "\n\n" + attachmentLine
       : attachmentLine;
@@ -207,12 +208,12 @@
   function emitPetEvent(name, sid) {
     try {
       if (TAURI && TAURI.event && TAURI.event.emit) TAURI.event.emit(name, { session_id: sid });
-    } catch (_) { /* 桌宠是纯装饰,广播失败不影响对话 */ }
+    } catch { /* 桌宠是纯装饰,广播失败不影响对话 */ }
   }
   function trackSceneBehavior(sid, scene) {
-    var raw = String(scene || "");
+    const raw = String(scene || "");
     if (!sid || !raw) return;
-    var parts = raw.split(":");
+    const parts = raw.split(":");
     invoke("track_behavior_event", {
       request: {
         eventName: "scene_triggered",
@@ -227,16 +228,16 @@
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
   function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
     safeConsoleInfo("[pinvou3][chat-ui] send start", {
-      sid: sid,
+      sid,
       textLen: (text || "").length,
       attachments: attachmentsPayload ? attachmentsPayload.length : 0,
     });
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
-    var turnOwnerBuffer = getBuffer(sid);
-    var submittedMessage = null;
-    var submittedMessagePos = -1;
-    var submittedUserItemId = 0;
-    var submittedStreamId = 0;
+    const turnOwnerBuffer = getBuffer(sid);
+    let submittedMessage = null;
+    let submittedMessagePos = -1;
+    let submittedUserItemId = 0;
+    let submittedStreamId = 0;
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
       recordAuthoritySyncDiagnostic("local_send_blocked_by_remote_sync", authoritySyncBufferSnapshot(sid, turnOwnerBuffer));
       return Promise.reject(new Error(bt("sessionSyncingTurn")));
@@ -254,7 +255,7 @@
       state.chatItems = state.chatItems.filter(function (item) {
         return !item.turnErrorNotice && !item.authoritySyncNotice;
       });
-      var uitem = {
+      const uitem = {
         type: "user",
         text: displayText,
         time: timeStr(),
@@ -296,12 +297,12 @@
       })
       .catch(function (err) {
         console.warn("[pinvou3][chat-ui] send failed", {
-          sid: sid,
+          sid,
           error: err && err.toString ? err.toString() : err,
         });
         emitPetEvent("pet:turn_end", sid);
-        var errorText = String(err && err.message ? err.message : err || "");
-        var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
+        const errorText = String(err && err.message ? err.message : err || "");
+        const concurrentTurn = errorText.includes("session_turn_in_progress");
         recordAuthoritySyncDiagnostic("local_turn_admission_failed", Object.assign({
           operation: "send",
           concurrent_turn: concurrentTurn,
@@ -326,9 +327,9 @@
           // 透传后端硬编码中文——英/日界面不该看到中文结论;文案与 ChatView
           // 前置警告(t.uiAttachments.*)同源。与 web bridge displayTurnError
           // 同一口径(chat.rs IMAGE_INPUT_*_ERROR)。
-          var errorText = String(err && err.toString ? err.toString() : err || "");
+          let errorText = String(err && err.toString ? err.toString() : err || "");
           if (errorText.indexOf("image_input_unsupported") === 0) {
-            errorText = errorText.indexOf("能力未知") >= 0
+            errorText = errorText.includes("能力未知")
               ? bt("imageUnknown")
               : bt("imageUnsupported");
           }
@@ -351,7 +352,7 @@
   // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
   // 连续输入的多个独立任务合并成一个模型请求。
   function flushQueued(sid) {
-    var pendingBuffer = sessionStates[sid];
+    const pendingBuffer = sessionStates[sid];
     if (pendingBuffer && pendingBuffer.remoteTurnActive) {
       reconcileRemoteTurn(sid).then(function (ready) {
         if (ready) flushQueued(sid);
@@ -359,17 +360,17 @@
       return;
     }
     if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
-    var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
+    const q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
-    var item = q.shift();
-    var attachments = item.attachments || [];
-    var displayText = item.displayText == null
+    const item = q.shift();
+    const attachments = item.attachments || [];
+    const displayText = item.displayText == null
       ? formatAttachmentDisplayText(item.text, attachments)
       : item.displayText;
     notify();
     doSendFor(sid, item.text, displayText, attachments, item.meta || null, !!item.restrictTools, true)
       .catch(function () {
-        var retryQueue = sid === state.activeSessionId
+        const retryQueue = sid === state.activeSessionId
           ? state.queued
           : (sessionStates[sid] && sessionStates[sid].queued);
         if (!retryQueue) return;
@@ -379,16 +380,16 @@
   }
 
   async function sendMessageToSession(sessionId, text, meta) {
-    var sid = String(sessionId || "").trim();
-    var content = String(text || "").trim();
+    const sid = String(sessionId || "").trim();
+    const content = String(text || "").trim();
     if (!sid) throw new Error(bt("targetSessionMissing"));
     if (!content) throw new Error(bt("replyContentEmpty"));
-    var exists = state.sessions.some(function (session) { return String(session.id) === sid; });
+    const exists = state.sessions.some(function (session) { return String(session.id) === sid; });
     if (!exists) throw new Error(bt("targetSessionMissing"));
 
     await ensureSessionBufferLoaded(sid);
-    var targetBuffer = getBuffer(sid);
-    var targetQueue = targetBuffer && targetBuffer.queued;
+    let targetBuffer = getBuffer(sid);
+    const targetQueue = targetBuffer && targetBuffer.queued;
     if (isBusyFor(sid) || (targetQueue && targetQueue.length > 0)) {
       runSyncOnSession(sid, function () {
         state.queued.push({
@@ -426,17 +427,17 @@
       if (!isBusyFor(sid)) flushQueued(sid);
       return { accepted: true, queued: true };
     }
-    var completion = doSendFor(sid, content, content, [], meta || null, false, true)
+    const completion = doSendFor(sid, content, content, [], meta || null, false, true)
       .then(
         function () { return { ok: true }; },
-        function (error) { return { ok: false, error: error }; }
+        function (error) { return { ok: false, error }; }
       );
-    return { accepted: true, queued: false, completion: completion };
+    return { accepted: true, queued: false, completion };
   }
 
   async function sendMessage(text, meta) {
     text = (text || "").trim();
-    var readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
+    const readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
     if (!text && readyAttachments.length === 0) return;
     // 还有解析中的附件 → 等
     if (state.attachments.some(function (a) { return a.status === "parsing"; })) {
@@ -449,7 +450,7 @@
       // 必须用返回值判空：切走场景 ensureSession 返回 null 但 activeSessionId
       // 非空（用户已切到别的会话），按 activeSessionId 继续会把本条消息发进
       // 错误会话（审计 #257）。
-      var materialized = await ensureSession();
+      const materialized = await ensureSession();
       if (!materialized) {
         // 物化中止（如草稿态多智能体开关落盘失败 / await 期间切走）：把输入放回
         // 输入框，不静默丢字；错误提示由 ensureSession 内如实给出（复核 P1）。
@@ -457,10 +458,10 @@
         return;
       }
     }
-    var sid = state.activeSessionId;
+    const sid = state.activeSessionId;
     function abandonPreparedAttachments() {
       state.attachments = state.attachments.filter(function (attachment) {
-        return readyAttachments.indexOf(attachment) < 0;
+        return !readyAttachments.includes(attachment);
       });
       readyAttachments.forEach(function (attachment) {
         if (attachment && attachment.result) discardManagedAttachment(attachment.result);
@@ -481,22 +482,22 @@
       abandonPreparedAttachments();
       return;
     }
-    var activeTurnBuffer = getBuffer(sid);
+    const activeTurnBuffer = getBuffer(sid);
     // 展示文本：把附件 chip 名附在用户消息末尾
-    var displayText = formatAttachmentDisplayText(text, readyAttachments);
-    var attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
+    const displayText = formatAttachmentDisplayText(text, readyAttachments);
+    const attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
     function consumeUiTurnState() {
-      var consumed = {
+      const consumed = {
         scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
         scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
         scheduledTaskDraft: state.scheduledTaskDraft,
         activeSkill: state.activeSkill,
       };
-      var requestedPayloadText = meta && meta.pinvouPayloadText
+      const requestedPayloadText = meta && meta.pinvouPayloadText
         ? String(meta.pinvouPayloadText || "").trim()
         : "";
-      var payloadText = requestedPayloadText || text;
-      var restrictTools = false;
+      let payloadText = requestedPayloadText || text;
+      let restrictTools = false;
       if (state.scheduledTaskPendingGuide) {
         payloadText = state.scheduledTaskPendingGuide + "\n\n" + text;
         if (requestedPayloadText) payloadText = state.scheduledTaskPendingGuide + "\n\n" + requestedPayloadText;
@@ -506,7 +507,7 @@
         state.scheduledTaskDraft = null;
       }
       state.activeSkill = null;
-      return { snapshot: consumed, payloadText: payloadText, restrictTools: restrictTools };
+      return { snapshot: consumed, payloadText, restrictTools };
     }
     function restoreUiTurnState(consumed) {
       if (!consumed || state.activeSessionId !== sid) return;
@@ -519,13 +520,13 @@
       state.queued.push({
         id: ++context.itemIdSeq,
         text: prepared.payloadText,
-        displayText: displayText,
+        displayText,
         attachments: attachmentsPayload,
         meta: meta || null,
         restrictTools: prepared.restrictTools,
       });
       state.attachments = state.attachments.filter(function (attachment) {
-        return readyAttachments.indexOf(attachment) < 0;
+        return !readyAttachments.includes(attachment);
       });
       notify();
     }
@@ -533,7 +534,7 @@
     // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
     // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
     if (isBusyFor(sid) || state.queued.length > 0) {
-      var queuedPreparation = consumeUiTurnState();
+      const queuedPreparation = consumeUiTurnState();
       queuePrepared(queuedPreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
       return;
@@ -555,14 +556,14 @@
       return;
     }
     if (isBusyFor(sid) || state.queued.length > 0) {
-      var racedQueuePreparation = consumeUiTurnState();
+      const racedQueuePreparation = consumeUiTurnState();
       queuePrepared(racedQueuePreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
       return;
     }
 
-    var preparation = consumeUiTurnState();
-    var accepted = await doSendFor(
+    const preparation = consumeUiTurnState();
+    const accepted = await doSendFor(
       sid,
       preparation.payloadText,
       displayText,
@@ -570,18 +571,18 @@
       meta,
       preparation.restrictTools,
     );
-    if (!accepted) {
-      if (state.activeSessionId !== sid) {
-        abandonPreparedAttachments();
-      } else {
-        restoreUiTurnState(preparation.snapshot);
-        notify();
-      }
-    } else {
+    if (accepted) {
       state.attachments = state.attachments.filter(function (attachment) {
-        return readyAttachments.indexOf(attachment) < 0;
+        return !readyAttachments.includes(attachment);
       });
       notify();
+    } else {
+      if (state.activeSessionId === sid) {
+        restoreUiTurnState(preparation.snapshot);
+        notify();
+      } else {
+        abandonPreparedAttachments();
+      }
     }
   }
   // WebUI 草稿首条消息失败时的专用重试入口。桌面端没有远程草稿，
@@ -593,7 +594,7 @@
   }
   // 撤销一条待发消息(点 chip 的 ✕)。
   function removeQueued(id) {
-    var removed = state.queued.find(function (q) { return q.id === id; });
+    const removed = state.queued.find(function (q) { return q.id === id; });
     if (removed && removed.attachments) {
       removed.attachments.forEach(discardManagedAttachment);
     }
@@ -608,14 +609,14 @@
     if (!state.activeSessionId) { addSystemItem(bt("summonNeedsSession")); return; }
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
-    var sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
+    const sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
     // 检阅结果弹 modal(不进对话流):一次只一个,裁决/跳过直接操作 state.pinvouModal.review、
     // 不靠 pos 定位(根治连续召唤 pos 重复串卡)。
     state.pinvouModal = { loading: true, coverage: mode === "coverage" };
     notify();
     try {
       // focus=产出物 path(品=审产物); mode="coverage"=悟(通盘体检)。
-      var review = await invoke("summon_pinvou", { sessionId: sid, focus: focus || null, mode: mode || null });
+      const review = await invoke("summon_pinvou", { sessionId: sid, focus: focus || null, mode: mode || null });
       if (state.activeSessionId !== sid) return; // 召唤期间切了 session → 丢弃,绝不 record/写进别的 session
       recordPinvouReview(review); // 存 sidecar(供核账读上轮账目);modal.review 同引用,裁决写它=写 sidecar
       if (state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.review = review; }
@@ -636,10 +637,10 @@
   // 范式,**不进 messages/LLM**;rerenderFromMessages 按 pos 插回,切会话/重载不丢。
   function recordPinvouReview(review) {
     if (!state.activeSessionId || !review) return null;
-    var pos = state.messages.length;
-    state.pinvouReviews.push({ pos: pos, review: review });
-    var sid = state.activeSessionId;
-    var snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
+    const pos = state.messages.length;
+    state.pinvouReviews.push({ pos, review });
+    const sid = state.activeSessionId;
+    const snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
     invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot }).catch(function () {});
     return pos; // 供卡片记 reviewPos,裁决时按 pos 定位原 state 写 resolution
   }
@@ -649,11 +650,11 @@
   async function resolvePinvouReview(resolutions, actions) {
     // 检阅发生的会话归属捕获：persist 挂起期间用户可能切走，修订指令必须发回
     // 检阅会话，不得漂进当前 active 会话（审计）。
-    var reviewSid = state.activeSessionId;
+    const reviewSid = state.activeSessionId;
     // 弹窗只一个 review(state.pinvouModal.review),直接在它上面写 resolution——不靠 pos 定位
     // (根治连续召唤 pos 重复串卡)。它和 sidecar entry.review 同引用,写它=写 sidecar。
-    var isWu = !!(state.pinvouModal && state.pinvouModal.coverage); // 关窗前取,供转交标品/悟
-    var review = state.pinvouModal && state.pinvouModal.review;
+    const isWu = !!(state.pinvouModal && state.pinvouModal.coverage); // 关窗前取,供转交标品/悟
+    const review = state.pinvouModal && state.pinvouModal.review;
     if (review && resolutions) {
       (review.recommendations || []).forEach(function (r, k) { if (resolutions.recs && resolutions.recs[k]) r.resolution = resolutions.recs[k]; });
       (review.issues || []).forEach(function (x, k) { if (resolutions.issues && resolutions.issues[k]) x.resolution = resolutions.issues[k]; });
@@ -665,11 +666,11 @@
     if (!actions || !actions.length) return;
     // 按动作类型分组,组装一条 Boss 消息发给主 AI(Boss 驾驶,非自动回传):
     //   fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
-    var fix = actions.filter(function (a) { return a.t === "fix"; });
-    var verify = actions.filter(function (a) { return a.t === "verify"; });
-    var adopt = actions.filter(function (a) { return a.t === "adopt"; });
-    var ask = actions.filter(function (a) { return a.t === "ask"; });
-    var parts = [];
+    const fix = actions.filter(function (a) { return a.t === "fix"; });
+    const verify = actions.filter(function (a) { return a.t === "verify"; });
+    const adopt = actions.filter(function (a) { return a.t === "adopt"; });
+    const ask = actions.filter(function (a) { return a.t === "ask"; });
+    const parts = [];
     if (fix.length) {
       parts.push("请按下面的检阅意见，**只定向修改对应段落，不要全文重写**：");
       fix.forEach(function (a) { parts.push("- " + a.text); });
@@ -689,7 +690,7 @@
       parts.push("以下待定项请用 request_user_input 正式问我，别自己猜：");
       ask.forEach(function (a) { parts.push("- " + a.topic); });
     }
-    var fill = actions.filter(function (a) { return a.t === "fill"; });
+    const fill = actions.filter(function (a) { return a.t === "fill"; });
     if (fill.length) {
       if (parts.length) parts.push("");
       parts.push("以下维度产物还缺，请补充进去（保留其余、只增不改）：");
@@ -712,7 +713,7 @@
   // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。返回 promise 供 await。
   function persistPinvouReviews() {
     if (!state.activeSessionId) return Promise.resolve();
-    var snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
+    const snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
     return invoke("save_session_pinvou_reviews", { sessionId: state.activeSessionId, reviews: snapshot }).catch(function () {});
   }
 
@@ -743,17 +744,17 @@
     try {
       await invoke("save_session_messages", { id: state.activeSessionId, messages: state.messages });
       // artifacts 一起落盘，重启/切换 session 后能恢复
-      try { await invoke("save_session_artifacts", { id: state.activeSessionId, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
+      try { await invoke("save_session_artifacts", { id: state.activeSessionId, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* 产物落盘失败不阻断消息持久化 */ }
       // Auto-title
-      var meta = state.sessions.find(function (s) { return s.id === state.activeSessionId; });
+      const meta = state.sessions.find(function (s) { return s.id === state.activeSessionId; });
       if (meta && (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[state.activeSessionId])) {
-        var firstUser = state.messages.find(function (m) { return m.role === "user"; });
+        const firstUser = state.messages.find(function (m) { return m.role === "user"; });
         // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
         // sidebar。hideInternalEnvelope=true 剥离 turn_meta/system-reminder 元数据块，
         // 否则普通消息的标题会拼入尾随 turn_meta（引擎持久化为独立 text block）。
-        var titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        const titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
         if (titleText) {
-          var newTitle = titleText.slice(0, 20);
+          const newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: state.activeSessionId, title: newTitle });
           meta.title = newTitle;
           delete personaPlaceholderTitles[state.activeSessionId]; // 已被对话内容命名,卸下占位标记
@@ -766,39 +767,39 @@
 
 
     return {
-      addChatItem: addChatItem,
-      toolCallAlreadyStarted: toolCallAlreadyStarted,
-      toolCallAlreadyFinished: toolCallAlreadyFinished,
-      hasChatItemForTool: hasChatItemForTool,
-      isDuplicateArtifactCard: isDuplicateArtifactCard,
-      addSystemItem: addSystemItem,
-      addAuthoritySyncNotice: addAuthoritySyncNotice,
-      compactPruneRollupText: compactPruneRollupText,
-      removeCompactionStartItem: removeCompactionStartItem,
-      addOrMergePruneCompaction: addOrMergePruneCompaction,
-      timeStr: timeStr,
-      flushPendingTextBlock: flushPendingTextBlock,
-      flushAssistantMessageToHistory: flushAssistantMessageToHistory,
-      resetPendingAssistant: resetPendingAssistant,
-      isBusyFor: isBusyFor,
-      emitPetEvent: emitPetEvent,
-      doSendFor: doSendFor,
-      flushQueued: flushQueued,
-      sendMessageToSession: sendMessageToSession,
-      sendMessage: sendMessage,
-      getComposerDraft: getComposerDraft,
-      setComposerDraft: setComposerDraft,
-      retryFirstTurn: retryFirstTurn,
-      prefillComposer: prefillComposer,
-      removeQueued: removeQueued,
-      summonPinvou: summonPinvou,
-      inspectPinvou: inspectPinvou,
-      recordPinvouReview: recordPinvouReview,
-      resolvePinvouReview: resolvePinvouReview,
-      dismissPinvouReview: dismissPinvouReview,
-      persistPinvouReviews: persistPinvouReviews,
-      cancelGeneration: cancelGeneration,
-      persistMessages: persistMessages,
+      addChatItem,
+      toolCallAlreadyStarted,
+      toolCallAlreadyFinished,
+      hasChatItemForTool,
+      isDuplicateArtifactCard,
+      addSystemItem,
+      addAuthoritySyncNotice,
+      compactPruneRollupText,
+      removeCompactionStartItem,
+      addOrMergePruneCompaction,
+      timeStr,
+      flushPendingTextBlock,
+      flushAssistantMessageToHistory,
+      resetPendingAssistant,
+      isBusyFor,
+      emitPetEvent,
+      doSendFor,
+      flushQueued,
+      sendMessageToSession,
+      sendMessage,
+      getComposerDraft,
+      setComposerDraft,
+      retryFirstTurn,
+      prefillComposer,
+      removeQueued,
+      summonPinvou,
+      inspectPinvou,
+      recordPinvouReview,
+      resolvePinvouReview,
+      dismissPinvouReview,
+      persistPinvouReviews,
+      cancelGeneration,
+      persistMessages,
     };
   };
 })();

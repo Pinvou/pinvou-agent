@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { tryGetCurrentTauriWindow } from '../platform/tauri/client.js';
 
 const appWindow = tryGetCurrentTauriWindow();
-export const TitleBar = ({ theme, t, sidebarOpen = true }) => {
+export const TitleBar = ({ t, sidebarOpen = true }) => {
   const hoverBg = 'hover:bg-black/10 dark:hover:bg-white/10';
   // 明暗同形:明态固定 #F0F4F9;暗态视侧栏开合在 #1E1F20 / #131314 间切,
   // 二者均为暗态专属,以 dark: 前缀静态挂载,sidebarOpen 仅决定暗态取哪一组。
@@ -26,6 +26,9 @@ export const TitleBar = ({ theme, t, sidebarOpen = true }) => {
         .then((decorated) => { if (!cancelled) setNativeControls(decorated === true); })
         .catch(() => { if (!cancelled) setNativeControls(false); });
     } else {
+      // 一次性探测外部系统(窗口 decorations)并回写本地镜像,非 props 派生,
+      // 无法在渲染期推导;保持同步 setState 以避免多渲染一帧错误三键。
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 探测无 Tauri 窗口时的同步 fail-safe 回退,仅在挂载时执行一次
       setNativeControls(false);
     }
     return () => { cancelled = true; };
@@ -39,17 +42,18 @@ export const TitleBar = ({ theme, t, sidebarOpen = true }) => {
       </div>
       {nativeControls === false && (
       <div className="flex items-center h-full">
-        <button onClick={() => appWindow && appWindow.minimize()} title={t.winMin}
+        <button type="button" onClick={() => appWindow && appWindow.minimize()} title={t.winMin}
           className={`h-full w-12 flex items-center justify-center transition-colors ${hoverBg}`}>
-          <svg width="11" height="11" viewBox="0 0 11 11"><rect x="1" y="5" width="9" height="1" fill="currentColor"/></svg>
+          {/* 装饰性图标:按钮自身已有 title 作为可访问名称,SVG 对辅助技术隐藏 */}
+          <svg aria-hidden="true" width="11" height="11" viewBox="0 0 11 11"><rect x="1" y="5" width="9" height="1" fill="currentColor"/></svg>
         </button>
-        <button onClick={() => appWindow && appWindow.toggleMaximize()} title={t.winMax}
+        <button type="button" onClick={() => appWindow && appWindow.toggleMaximize()} title={t.winMax}
           className={`h-full w-12 flex items-center justify-center transition-colors ${hoverBg}`}>
-          <svg width="11" height="11" viewBox="0 0 11 11"><rect x="1.5" y="1.5" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="1"/></svg>
+          <svg aria-hidden="true" width="11" height="11" viewBox="0 0 11 11"><rect x="1.5" y="1.5" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="1"/></svg>
         </button>
-        <button onClick={() => appWindow && appWindow.close()} title={t.winClose}
+        <button type="button" onClick={() => appWindow && appWindow.close()} title={t.winClose}
           className="h-full w-12 flex items-center justify-center transition-colors hover:bg-[#E81123] hover:text-white">
-          <svg width="11" height="11" viewBox="0 0 11 11"><path d="M1 1 L10 10 M10 1 L1 10" stroke="currentColor" strokeWidth="1.1"/></svg>
+          <svg aria-hidden="true" width="11" height="11" viewBox="0 0 11 11"><path d="M1 1 L10 10 M10 1 L1 10" stroke="currentColor" strokeWidth="1.1"/></svg>
         </button>
       </div>
       )}

@@ -41,7 +41,12 @@ const LONGPRESS_MS = 350;
       };
       const onPointerUp = () => clearPress();
       const guardClick = (fn) => (e) => {
-        if (pickedRef.current) { pickedRef.current = false; e.stopPropagation(); if (e.preventDefault) e.preventDefault(); return; }
+        if (pickedRef.current) {
+          pickedRef.current = false;
+          e.stopPropagation();
+          if (e.preventDefault) e.preventDefault();
+          return;
+        }
         if (fn) fn(e);
       };
       return { handlers: { onPointerDown, onPointerMove, onPointerUp }, guardClick };

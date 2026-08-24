@@ -9,11 +9,13 @@
  * startRun 独立入口已随会话级开关上线退役（开关见 interaction 域）。
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["multiagent"] = function (context) {
-    var invoke = context.invoke;
-    var listen = context.listen;
+    const invoke = context.invoke;
+    const listen = context.listen;
 
     /**
      * 子智能体列表（底座 worker ledger 为主表、transcripts 为附表的只读投影）。
@@ -23,7 +25,7 @@
      */
     async function listSubagentTranscripts(runId) {
       try {
-        return (await invoke("list_subagent_transcripts", { runId: runId })) || [];
+        return (await invoke("list_subagent_transcripts", { runId })) || [];
       } catch (err) {
         console.warn("list_subagent_transcripts failed", err);
         return null;
@@ -32,7 +34,7 @@
 
     async function readSubagentTranscript(runId, agentId, cursor) {
       try {
-        var args = { runId: runId, agentId: agentId };
+        const args = { runId, agentId };
         if (cursor && Number.isSafeInteger(cursor.offset) && cursor.offset >= 0 && typeof cursor.revision === "string") {
           args.offset = cursor.offset;
           args.revision = cursor.revision;
@@ -50,13 +52,13 @@
       if (typeof root.dispatchEvent !== "function" || typeof root.CustomEvent !== "function") return;
       try {
         root.dispatchEvent(new root.CustomEvent("pinvou:subagent-update", { detail: payload }));
-      } catch (err) {
+      } catch {
         // CustomEvent 不可用（极旧 webview）时静默降级：界面还有轮询兜底。
       }
     }
 
     listen("multiagent:agent_progress", function (e) {
-      var p = e.payload || {};
+      const p = e.payload || {};
       if (!p.session_id || !p.agent_id) return;
       dispatchSubagentUpdate({
         sessionId: p.session_id,
@@ -69,7 +71,7 @@
     });
 
     listen("multiagent:agent_complete", function (e) {
-      var p = e.payload || {};
+      const p = e.payload || {};
       if (!p.session_id || !p.agent_id) return;
       dispatchSubagentUpdate({
         sessionId: p.session_id,
@@ -82,8 +84,8 @@
     });
 
     return {
-      listSubagentTranscripts: listSubagentTranscripts,
-      readSubagentTranscript: readSubagentTranscript,
+      listSubagentTranscripts,
+      readSubagentTranscript,
     };
   };
-})(typeof window !== "undefined" ? window : globalThis);
+})(typeof window === "undefined" ? globalThis : window);

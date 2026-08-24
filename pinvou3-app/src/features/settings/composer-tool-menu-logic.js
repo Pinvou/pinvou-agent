@@ -11,7 +11,7 @@ const DEFAULT_BUILTIN_SKILLS = [
 function asArray(value) {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== 'object') return [];
-  return Object.entries(value).map(([id, state]) => ({ id, ...(state || {}) }));
+  return Object.entries(value).map(([id, state]) => ({ id, ...state }));
 }
 
 function buildComposerToolMenuState({

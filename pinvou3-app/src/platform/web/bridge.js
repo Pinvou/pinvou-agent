@@ -5,6 +5,7 @@
  * 浏览器预览时（无 window.__TAURI__）自动降级。
  */
 (function () {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
   "use strict";
 
   if (!window.PinvouPlatform || (window.PinvouPlatform.kind !== "web" && window.PinvouPlatform.isWeb !== true)) return;
@@ -35,7 +36,7 @@
   function canInvoke(command) {
     return !IS_WEB || (typeof PLATFORM.canInvoke === "function" && PLATFORM.canInvoke(command) === true);
   }
-  var WEB_CAPABILITIES_WAIT_TIMEOUT_MS = 10_000;
+  const WEB_CAPABILITIES_WAIT_TIMEOUT_MS = 10_000;
   function webInvokeCapabilitiesReady() {
     if (!IS_WEB) return true;
     if (typeof PLATFORM.areInvokeCapabilitiesReady === "function") {
@@ -47,7 +48,7 @@
     if (typeof PLATFORM.getConnectionState !== "function") return null;
     try {
       return PLATFORM.getConnectionState();
-    } catch (_) {
+    } catch {
       return null;
     }
   }
@@ -55,7 +56,7 @@
     return !!(connection && connection.desktop_online === false && connection.status !== "connecting");
   }
   function unavailableWebCapabilitiesError() {
-    var error = new Error("desktop disconnected before command capabilities were ready");
+    const error = new Error("desktop disconnected before command capabilities were ready");
     error.code = "desktop_capabilities_unavailable";
     return error;
   }
@@ -65,8 +66,8 @@
       return Promise.reject(unavailableWebCapabilitiesError());
     }
     return new Promise(function (resolve, reject) {
-      var settled = false;
-      var timeout = null;
+      let settled = false;
+      let timeout = null;
       function finish(error) {
         if (settled) return;
         settled = true;
@@ -79,13 +80,13 @@
         if (webInvokeCapabilitiesReady()) finish();
       }
       function onConnection(event) {
-        var connection = event && event.detail;
+        const connection = event && event.detail;
         if (webInvokeCapabilitiesUnavailable(connection)) finish(unavailableWebCapabilitiesError());
       }
       window.addEventListener("pinvou:web-capabilities", onCapabilities);
       window.addEventListener("pinvou:web-connection", onConnection);
       timeout = setTimeout(function () {
-        var error = new Error("desktop command capability snapshot timed out");
+        const error = new Error("desktop command capability snapshot timed out");
         error.code = "desktop_capabilities_timeout";
         finish(error);
       }, WEB_CAPABILITIES_WAIT_TIMEOUT_MS);
@@ -102,6 +103,7 @@
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
       return prefix + "_" + window.crypto.randomUUID(); // safari14-ok: guarded above
     }
+    // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:仅生成请求去重 ID,碰撞可安全重试
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
   }
 
@@ -122,7 +124,7 @@
   // 因此 escapeHtml 作为安全原语保留在本文件（不依赖任何外部脚本），仅 marked.parse+sanitize
   // 这段较重的兜底被抽到共享文件。
   function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, function (c) {
+    return String(s).replaceAll(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
@@ -142,17 +144,16 @@
   // return before chat listeners, session loading, polling, or update checks.
   const locationSearch = String((window.location && window.location.search) || "");
   const isPetWindow = /(?:^|[?&])window=pet(?:&|$)/.test(locationSearch);
-  const isDetachedWindow = /(?:^|[?&])detached=1(?:&|$)/.test(locationSearch);
   if (isPetWindow) {
     window.TauriBridge = {
       available: false,
-      renderMarkdown: renderMarkdown,
+      renderMarkdown,
     };
     return;
   }
 
   // ── State ────────────────────────────────────────────────────────
-  var state = {
+  const state = {
     sessions: [],
     archivedSessions: [],
     activeSessionId: null,
@@ -326,64 +327,64 @@
     // 「通过聊天创建」的引导词:只随该会话首条消息发给模型,永不显示在气泡里。
     scheduledTaskPendingGuide: null,
   };
-  var initPromise = null;
-  var webInitRetryArmed = false;
-  var webInitRetryHandler = null;
+  let initPromise = null;
+  let webInitRetryArmed = false;
+  let webInitRetryHandler = null;
   // 卡片池 1078 张卡的前端缓存。只读,通过 getPersonas() 取引用,不走 notify 快照。
-  var personaPoolCache = [];
-  var SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY = "pinvou3-scheduled-task-template-sources-v1";
-  var scheduledTaskTemplateSources = loadScheduledTaskTemplateSources();
+  let personaPoolCache = [];
+  const SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY = "pinvou3-scheduled-task-template-sources-v1";
+  const scheduledTaskTemplateSources = loadScheduledTaskTemplateSources();
 
   // internal streaming state
-  var currentStreamText = "";
-  var currentStreamId = 0;
-  var pendingAssistantText = "";
-  var pendingAssistantBlocks = [];
-  var itemIdSeq = 0;
-  var toolMeta = {};       // id → { name, args }
-  var shellPollState = Object.create(null); // session_id → { timer, inFlight, waitBudget }
+  let currentStreamText = "";
+  let currentStreamId = 0;
+  let pendingAssistantText = "";
+  let pendingAssistantBlocks = [];
+  let itemIdSeq = 0;
+  let toolMeta = {};       // id → { name, args }
+  const shellPollState = Object.create(null); // session_id → { timer, inFlight, waitBudget }
   // 上下文行口径保护：TurnComplete 的 usage.input_tokens 是本轮所有请求的累加
   // （计费口径）。只有单请求的"干净轮"该值才等于当前上下文占用；本轮一旦出现
   // 工具调用/重试/压缩（= 多请求），就跳过这次 tokens 更新，保留上一个准确值。
-  var turnUsageDirty = {};  // session_id → bool
-  var monitorIntervalId = null;
-  var monitorPollInFlight = false;
-  var gpuUtilHistory = [];
-  var maxModelLen = 32768;
+  const turnUsageDirty = {};  // session_id → bool
+  let monitorIntervalId = null;
+  let monitorPollInFlight = false;
+  let gpuUtilHistory = [];
+  let maxModelLen = 32768;
   // 监控页「清除统计」基准点：vLLM 的几个累计 counter（TTFT/TPOT/tokens/prefix
   // cache）无法真正清零（它们跟随远端 vLLM 进程生命周期，归零要重启共享进程）。
   // 改为记一个基准快照，显示值 = 当前 counter − 基准。换模型 / vLLM 重启 → counter
   // 倒退到小于基准，自动判定基准失效并丢弃，回落到生命周期累计值。持久化到
   // localStorage，关掉应用再开仍保持「自某时起」的统计。
-  var MONITOR_BASELINE_KEY = "pinvou3.monitorStatsBaseline.self";
-  var monitorBaseline = null;
+  const MONITOR_BASELINE_KEY = "pinvou3.monitorStatsBaseline.self";
+  let monitorBaseline = null;
   try {
-    var _mb = localStorage.getItem(MONITOR_BASELINE_KEY);
+    const _mb = localStorage.getItem(MONITOR_BASELINE_KEY);
     if (_mb) monitorBaseline = JSON.parse(_mb);
-  } catch (e) { monitorBaseline = null; }
-  var attachIdSeq = 0;
-  var scheduledTaskSelectionGeneration = 0;
-  var scheduledTaskRequestTokens = { tasks: 0, detail: 0, runs: 0 };
-  var scheduledTaskRefreshInFlight = null;
-  var scheduledRecentRunsRequestToken = 0;
-  var scheduledRunEventRefreshTimer = null;
-  var scheduledTaskPendingLoads = Object.create(null);
-  var scheduledTaskAutoCreateInFlight = Object.create(null);
-  var sessionSwitchRequestToken = 0;
-  var pendingCapabilitySessionSwitch = null;
+  } catch { monitorBaseline = null; }
+  let attachIdSeq = 0;
+  let scheduledTaskSelectionGeneration = 0;
+  const scheduledTaskRequestTokens = { tasks: 0, detail: 0, runs: 0 };
+  let scheduledTaskRefreshInFlight = null;
+  let scheduledRecentRunsRequestToken = 0;
+  let scheduledRunEventRefreshTimer = null;
+  const scheduledTaskPendingLoads = Object.create(null);
+  const scheduledTaskAutoCreateInFlight = Object.create(null);
+  let sessionSwitchRequestToken = 0;
+  let pendingCapabilitySessionSwitch = null;
   // 能力快照迟到时的切换宽限：等待期间不向用户报错，快照到达即自动重试；
   // 宽限期内快照仍未到达才报错并按失败收口（见 switchToSessionInternal 的 catch）。
-  var WEB_CAPABILITY_SWITCH_RETRY_GRACE_MS = 5000;
+  const WEB_CAPABILITY_SWITCH_RETRY_GRACE_MS = 5000;
   // modeState 读取请求序号（评审 P1，定义前置供 syncSessionPresentationState
   // 与权威写回收敛点共用）：任何权威 modeState 写回（invoke 返回 / 事件负载 /
   // 会话切换状态恢复）都必须 bump 它，作废在途 syncModeState 的旧读取——
   // 否则旧读返回时序号未变、校验通过，把刚写回的权威值覆盖回去。
-  var modeSyncSeq = 0;
+  let modeSyncSeq = 0;
 
   // ── bridge 层 UI 文案（系统消息/状态标签）──────────────────────
   // bridge 在事件回调里生成文案,拿不到 React 的 t;按 state.settings.language 取词,中文兜底。
   // 注意:发给 LLM 的指令不在此表,保持中文。
-  var BT_TABLE = {
+  const BT_TABLE = {
     en: {
       newChatFailed: "⚠️ Failed to create chat: ", loadChatFailed: "⚠️ Failed to load chat: ", deleteFailed: "⚠️ Delete failed: ",
       personaUnequipped: "🎴 Expert card removed: ",
@@ -713,16 +714,15 @@
     },
   };
   function bt(key) {
-    var lang = state.settings && state.settings.language;
-    var m = lang === "en" ? BT_TABLE.en : lang === "ja" ? BT_TABLE.ja : BT_TABLE.zh;
-    return m[key] !== undefined ? m[key] : BT_TABLE.zh[key];
+    const lang = state.settings && state.settings.language;
+    const m = lang === "en" ? BT_TABLE.en : lang === "ja" ? BT_TABLE.ja : BT_TABLE.zh;
+    return m[key] === undefined ? BT_TABLE.zh[key] : m[key];
   }
   // 默认会话标题哨兵:三语兜底标题都视为占位(自动改名/显示映射的依据),
   // 与 tauri 桥和 main.jsx 的同款判断保持一致。
   function isDefaultChatTitle(title) {
-    return title === BT_TABLE.zh.newChatFallbackTitle
-      || title === BT_TABLE.en.newChatFallbackTitle
-      || title === BT_TABLE.ja.newChatFallbackTitle;
+    return [BT_TABLE.zh.newChatFallbackTitle, BT_TABLE.en.newChatFallbackTitle, BT_TABLE.ja.newChatFallbackTitle]
+      .includes(title);
   }
 
   // ── Per-session 工作集缓冲（多 session 并发）────────────────────
@@ -730,19 +730,19 @@
   // 后台 session 的工作集存在 sessionStates[id];后台事件进来时临时把工作集切到对应
   // buffer 跑同步逻辑再切回(saveWorkingSetTo/loadWorkingSetFrom),期间 suppressNotify
   // 避免把后台渲染成 active。异步收尾(落盘)按显式 session_id 路由,不依赖工作集。
-  var sessionStates = {};
+  const sessionStates = {};
   // Web 草稿首条消息的本地提交记录。内容只留在当前页面内，用固定 RPC ID
   // 支撑断线重发与人工重试；切走草稿后不会把待发内容泄漏到其他会话。
-  var firstTurnSubmissions = Object.create(null);
-  var authoritativeTranscriptSyncs = Object.create(null);
-  var authoritySyncTraceSequence = 0;
+  const firstTurnSubmissions = Object.create(null);
+  const authoritativeTranscriptSyncs = Object.create(null);
+  let authoritySyncTraceSequence = 0;
   function recordAuthoritySyncDiagnostic(event, details) {
     try {
-      var diagnostics = window.PinvouAuthoritySyncDiagnostics;
+      const diagnostics = window.PinvouAuthoritySyncDiagnostics;
       if (diagnostics && typeof diagnostics.record === "function") {
         diagnostics.record(event, details || {});
       }
-    } catch (_) {}
+    } catch { /* 诊断上报失败需静默降级 */ }
   }
   function authoritySyncBufferSnapshot(sid, buf) {
     return {
@@ -767,10 +767,10 @@
       baseline_trusted: !!(buf && buf.remoteBaselineTrusted),
     };
   }
-  var scheduledRunSessionOwners = Object.create(null);
-  var scheduledRunOpenInFlight = Object.create(null);
-  var MAX_SCHEDULED_SESSION_BUFFERS = 64;
-  var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
+  const scheduledRunSessionOwners = Object.create(null);
+  const scheduledRunOpenInFlight = Object.create(null);
+  const MAX_SCHEDULED_SESSION_BUFFERS = 64;
+  const MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
   // All-session buffer cap: each sessionStates entry holds the full
   // messages+chatItems (heavy sessions run 1-4MB each); previously only
   // scheduled sessions had a 64-entry LRU — normal sessions stayed
@@ -779,7 +779,7 @@
   // ~32-128MB, and cold sessions beyond the cap have near-zero hit
   // rate; revisiting an evicted session goes through load_session disk
   // rehydration, costing one reload.
-  var MAX_SESSION_BUFFERS = 32;
+  const MAX_SESSION_BUFFERS = 32;
   // Unsent composer drafts are the one piece of a working set that cannot be
   // rebuilt from disk (this bridge never persists drafts; transcripts hold
   // committed content only): before a buffer is dropped, its draft moves to
@@ -789,15 +789,15 @@
   // stays resident rather than silently losing user input. Real session
   // deletion (purgeSessionBuffer) invalidates stashed drafts so they never
   // flow back into a recycled session id.
-  var MAX_EVICTED_SESSION_DRAFTS = 256;
-  var MAX_EVICTED_SESSION_DRAFT_CHARS = 1000000;
-  var evictedSessionDrafts = Object.create(null);
+  const MAX_EVICTED_SESSION_DRAFTS = 256;
+  const MAX_EVICTED_SESSION_DRAFT_CHARS = 1000000;
+  const evictedSessionDrafts = Object.create(null);
   // Returns true when the buffer's non-rehydratable state is safely retained
   // (or empty) and the caller may drop the buffer; false means eviction must
   // be skipped so the draft stays in the live buffer.
   function stashEvictedSessionDraft(id, buf) {
     if (!id || !buf) return true;
-    var draft = String(buf.composerDraft || "");
+    const draft = String(buf.composerDraft || "");
     if (!draft) {
       delete evictedSessionDrafts[id]; // input was cleared; a stale stash must not resurrect it
       return true;
@@ -811,17 +811,17 @@
   }
   function restoreEvictedSessionDraft(id, buf) {
     if (!id || !buf || buf.composerDraft) return;
-    var draft = evictedSessionDrafts[id];
+    const draft = evictedSessionDrafts[id];
     if (draft) buf.composerDraft = draft;
   }
-  var sessionBufferTouchClock = 0;
-  var scheduledRunOwnerTouchClock = 0;
-  var suppressNotify = false;
+  let sessionBufferTouchClock = 0;
+  let scheduledRunOwnerTouchClock = 0;
+  let suppressNotify = false;
   // sessionId → true:标题当前是「卡牌占位名」(加卡时自动取的),可被首条用户消息覆盖。
   // 卡牌名只在「加了卡但还没开口」时当临时标题;一旦开始对话,对话内容更能区分同卡会话。
   // 内存态(不持久化):重启后丢标记仅影响「加卡→重启→才发首条消息」这一冷门路径。
-  var personaPlaceholderTitles = {};
-  var PINVOU_SCENE_EVENTS_STORAGE_PREFIX = "pinvou_scene_events_v1:";
+  const personaPlaceholderTitles = {};
+  const PINVOU_SCENE_EVENTS_STORAGE_PREFIX = "pinvou_scene_events_v1:";
   function normalizePinvouScene(scene) {
     scene = String(scene || "").trim();
     return /^(work:document-writing|work:personal-workbench|design:poster|design:data-visualization)$/.test(scene) ? scene : "";
@@ -831,28 +831,28 @@
   }
   function normalizePinvouSceneEvents(events) {
     return (Array.isArray(events) ? events : []).map(function (event) {
-      var pos = Number(event && event.pos);
-      var scene = normalizePinvouScene(event && event.scene);
+      const pos = Number(event && event.pos);
+      const scene = normalizePinvouScene(event && event.scene);
       if (!Number.isFinite(pos) || pos < 0 || !scene) return null;
-      return { pos: Math.floor(pos), scene: scene };
+      return { pos: Math.floor(pos), scene };
     }).filter(Boolean).sort(function (left, right) { return left.pos - right.pos; });
   }
   function loadPinvouSceneEventsForSession(sid) {
     if (!sid || !window.localStorage) return [];
     try {
       return normalizePinvouSceneEvents(JSON.parse(window.localStorage.getItem(pinvouSceneStorageKey(sid)) || "[]"));
-    } catch (_) {
+    } catch {
       return [];
     }
   }
   function savePinvouSceneEventsForSession(sid, events) {
     if (!sid) return;
-    var normalized = normalizePinvouSceneEvents(events);
+    const normalized = normalizePinvouSceneEvents(events);
     try {
       if (window.localStorage) {
         window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(normalized));
       }
-    } catch (_) {
+    } catch {
       // localStorage 只作旧版本迁移和离线缓存，写失败不影响后端 sidecar。
     }
     Promise.resolve().then(function () {
@@ -863,23 +863,23 @@
     }).catch(function () {});
   }
   async function syncPinvouSceneEventsForSession(sid) {
-    var cached = loadPinvouSceneEventsForSession(sid);
+    const cached = loadPinvouSceneEventsForSession(sid);
     if (!sid) return cached;
     try {
-      var remote = normalizePinvouSceneEvents(
+      const remote = normalizePinvouSceneEvents(
         await invoke("get_session_pinvou_scene_events", { sessionId: sid })
       );
       if (remote.length) {
         try {
           window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
-        } catch (_) {}
+        } catch { /* localStorage 写失败时退回远端数据即可 */ }
         return remote;
       }
       if (cached.length) {
         await invoke("save_session_pinvou_scene_events", { sessionId: sid, events: cached });
       }
       return cached;
-    } catch (_) {
+    } catch {
       return cached;
     }
   }
@@ -888,9 +888,9 @@
     pos = Number(pos);
     if (!sid || !scene || !Number.isFinite(pos) || pos < 0) return;
     pos = Math.floor(pos);
-    var events = normalizePinvouSceneEvents(state.pinvouSceneEvents)
+    let events = normalizePinvouSceneEvents(state.pinvouSceneEvents)
       .filter(function (event) { return event.pos !== pos; });
-    events.push({ pos: pos, scene: scene });
+    events.push({ pos, scene });
     events = normalizePinvouSceneEvents(events);
     state.pinvouSceneEvents = events;
     savePinvouSceneEventsForSession(sid, events);
@@ -900,16 +900,16 @@
     if (!sid || !buffer || !scene) return;
     pos = Number(pos);
     if (!Number.isFinite(pos) || pos < 0) return;
-    var events = normalizePinvouSceneEvents(buffer.pinvouSceneEvents)
+    let events = normalizePinvouSceneEvents(buffer.pinvouSceneEvents)
       .filter(function (event) { return event.pos !== Math.floor(pos); });
-    events.push({ pos: Math.floor(pos), scene: scene });
+    events.push({ pos: Math.floor(pos), scene });
     events = normalizePinvouSceneEvents(events);
     buffer.pinvouSceneEvents = events;
     savePinvouSceneEventsForSession(sid, events);
   }
   function pinvouSceneForMessagePos(pos) {
-    var events = normalizePinvouSceneEvents(state.pinvouSceneEvents);
-    for (var i = 0; i < events.length; i++) {
+    const events = normalizePinvouSceneEvents(state.pinvouSceneEvents);
+    for (let i = 0; i < events.length; i++) {
       if (events[i].pos === pos) return events[i].scene;
     }
     return "";
@@ -965,18 +965,18 @@
       state.scheduledTaskCreationSessionId === id;
   }
   function pruneScheduledSessionBuffers(keepId) {
-    var scheduledIds = Object.keys(sessionStates).filter(function (id) {
+    const scheduledIds = Object.keys(sessionStates).filter(function (id) {
       return !!sessionStates[id].scheduledRunSession;
     });
-    var overflow = scheduledIds.length - MAX_SCHEDULED_SESSION_BUFFERS;
+    let overflow = scheduledIds.length - MAX_SCHEDULED_SESSION_BUFFERS;
     if (overflow <= 0) return;
     scheduledIds.sort(function (left, right) {
-      var delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
+      const delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
       return delta || left.localeCompare(right);
     });
-    for (var i = 0; i < scheduledIds.length && overflow > 0; i++) {
-      var id = scheduledIds[i];
-      var buf = sessionStates[id];
+    for (let i = 0; i < scheduledIds.length && overflow > 0; i++) {
+      const id = scheduledIds[i];
+      const buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
       delete sessionStates[id];
@@ -1013,16 +1013,16 @@
   // when the table cannot hold a draft the eviction is refused (see
   // stashEvictedSessionDraft).
   function pruneSessionBuffers(keepId) {
-    var ids = Object.keys(sessionStates);
-    var overflow = ids.length - MAX_SESSION_BUFFERS;
+    const ids = Object.keys(sessionStates);
+    let overflow = ids.length - MAX_SESSION_BUFFERS;
     if (overflow <= 0) return;
     ids.sort(function (left, right) {
-      var delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
+      const delta = (sessionStates[left].lastTouched || 0) - (sessionStates[right].lastTouched || 0);
       return delta || left.localeCompare(right);
     });
-    for (var i = 0; i < ids.length && overflow > 0; i++) {
-      var id = ids[i];
-      var buf = sessionStates[id];
+    for (let i = 0; i < ids.length && overflow > 0; i++) {
+      const id = ids[i];
+      const buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
       delete sessionStates[id];
@@ -1062,7 +1062,7 @@
   }
   function registerScheduledRunOwner(id, phase) {
     if (typeof id !== "string" || !id) return null;
-    var owner = scheduledRunSessionOwners[id];
+    let owner = scheduledRunSessionOwners[id];
     if (!owner) owner = scheduledRunSessionOwners[id] = { phase: null, lastTouched: 0 };
     if (owner.phase !== "terminal" && phase) owner.phase = phase;
     owner.lastTouched = ++scheduledRunOwnerTouchClock;
@@ -1070,8 +1070,8 @@
     return owner;
   }
   function scheduledRunOwnerVisibleRank(id) {
-    var runs = state.scheduledTaskRuns || [];
-    for (var i = 0; i < runs.length; i++) {
+    const runs = state.scheduledTaskRuns || [];
+    for (let i = 0; i < runs.length; i++) {
       if (runs[i] && runs[i].sessionId === id) return i;
     }
     return -1;
@@ -1082,53 +1082,50 @@
     if (scheduledRunOwnerVisibleRank(id) >= 0) return 2;
     return 1;
   }
-  function isProtectedScheduledRunOwner(id) {
-    return scheduledRunOwnerPriority(id) > 1;
-  }
   function pruneScheduledRunSessionOwners() {
-    var ids = Object.keys(scheduledRunSessionOwners);
+    const ids = Object.keys(scheduledRunSessionOwners);
     if (ids.length <= MAX_SCHEDULED_RUN_SESSION_OWNERS) return;
     ids.sort(function (left, right) {
-      var priorityDelta = scheduledRunOwnerPriority(right) - scheduledRunOwnerPriority(left);
+      const priorityDelta = scheduledRunOwnerPriority(right) - scheduledRunOwnerPriority(left);
       if (priorityDelta) return priorityDelta;
-      var leftVisibleRank = scheduledRunOwnerVisibleRank(left);
-      var rightVisibleRank = scheduledRunOwnerVisibleRank(right);
+      const leftVisibleRank = scheduledRunOwnerVisibleRank(left);
+      const rightVisibleRank = scheduledRunOwnerVisibleRank(right);
       if (leftVisibleRank >= 0 || rightVisibleRank >= 0) {
         if (leftVisibleRank < 0) return 1;
         if (rightVisibleRank < 0) return -1;
         if (leftVisibleRank !== rightVisibleRank) return leftVisibleRank - rightVisibleRank;
       }
-      var touchDelta = (scheduledRunSessionOwners[right].lastTouched || 0) -
+      const touchDelta = (scheduledRunSessionOwners[right].lastTouched || 0) -
         (scheduledRunSessionOwners[left].lastTouched || 0);
       return touchDelta || left.localeCompare(right);
     });
-    for (var i = MAX_SCHEDULED_RUN_SESSION_OWNERS; i < ids.length; i++) {
+    for (let i = MAX_SCHEDULED_RUN_SESSION_OWNERS; i < ids.length; i++) {
       delete scheduledRunSessionOwners[ids[i]];
     }
   }
   function isScheduledRunTerminal(status) {
-    var value = String(status || "").toLowerCase();
-    return value === "completed" || value === "failed" || value === "canceled";
+    const value = String(status || "").toLowerCase();
+    return ["completed", "failed", "canceled"].includes(value);
   }
   function rememberScheduledRunOwner(run) {
     if (!run) return;
-    var id = typeof run.sessionId === "string" ? run.sessionId.trim() : "";
+    const id = typeof run.sessionId === "string" ? run.sessionId.trim() : "";
     if (!id) return;
-    var status = String(run.status || "").toLowerCase();
-    var phase = isScheduledRunTerminal(status)
+    const status = String(run.status || "").toLowerCase();
+    const phase = isScheduledRunTerminal(status)
       ? "terminal"
       : (status === "queued" || status === "running" ? "active" : null);
     registerScheduledRunOwner(id, phase);
   }
   function scheduledRunBuffer(id) {
-    var buf = getBuffer(id);
+    const buf = getBuffer(id);
     if (!buf) return null;
     registerScheduledRunOwner(id, null);
     return touchSessionBuffer(id, buf, true);
   }
   function markScheduledInitialTurnActive(id) {
-    var buf = scheduledRunBuffer(id);
-    var owner = registerScheduledRunOwner(id, "active");
+    const buf = scheduledRunBuffer(id);
+    const owner = registerScheduledRunOwner(id, "active");
     if (!buf) return buf;
     if (buf.scheduledInitialTurnPhase === "terminal" || (owner && owner.phase === "terminal")) {
       buf.scheduledInitialTurnPhase = "terminal";
@@ -1142,7 +1139,7 @@
     return buf;
   }
   function markScheduledInitialTurnTerminal(id) {
-    var buf = scheduledRunBuffer(id);
+    const buf = scheduledRunBuffer(id);
     registerScheduledRunOwner(id, "terminal");
     if (!buf || buf.scheduledInitialTurnPhase === "terminal") return buf;
     if (buf.scheduledInitialTurnPhase !== "active") {
@@ -1152,15 +1149,15 @@
     return buf;
   }
   function beginScheduledOpenActivation(id) {
-    var previous = sessionStates[id] || null;
-    var snapshot = {
-      id: id,
+    const previous = sessionStates[id] || null;
+    const snapshot = {
+      id,
       existed: !!previous,
       previousPhase: previous && previous.scheduledInitialTurnPhase,
       previousBusy: previous ? !!previous.busy : false,
       previousStateBusy: state.activeSessionId === id ? !!state.busy : null,
     };
-    var buf = markScheduledInitialTurnActive(id);
+    const buf = markScheduledInitialTurnActive(id);
     snapshot.buffer = buf;
     snapshot.activationTouch = buf && buf.lastTouched;
     snapshot.changed = !!buf && (
@@ -1172,15 +1169,15 @@
   }
   function rollbackScheduledOpenActivation(snapshot) {
     if (!snapshot || !snapshot.changed) return;
-    var current = sessionStates[snapshot.id];
+    const current = sessionStates[snapshot.id];
     if (!current || current !== snapshot.buffer) return;
     if (current.scheduledInitialTurnPhase === "terminal") return;
     if (current.lastTouched !== snapshot.activationTouch) return;
-    if (!snapshot.existed) {
-      delete sessionStates[snapshot.id];
-    } else {
+    if (snapshot.existed) {
       current.scheduledInitialTurnPhase = snapshot.previousPhase;
       current.busy = snapshot.previousBusy;
+    } else {
+      delete sessionStates[snapshot.id];
     }
     if (state.activeSessionId === snapshot.id && snapshot.previousStateBusy !== null) {
       state.busy = snapshot.previousStateBusy;
@@ -1204,9 +1201,9 @@
     buf.mountedCollectionsRevision = state.mountedCollectionsRevision;
     buf.scheduledTaskDraft = state.scheduledTaskDraft;
     buf.stream = {
-      currentStreamText: currentStreamText, currentStreamId: currentStreamId,
-      pendingAssistantText: pendingAssistantText, pendingAssistantBlocks: pendingAssistantBlocks,
-      itemIdSeq: itemIdSeq, toolMeta: toolMeta,
+      currentStreamText, currentStreamId,
+      pendingAssistantText, pendingAssistantBlocks,
+      itemIdSeq, toolMeta,
     };
   }
   function loadWorkingSetFrom(buf) {
@@ -1231,21 +1228,21 @@
       : (state.mountedCollection == null ? [] : [{ collectionId: state.mountedCollection, enabled: true }]);
     state.mountedCollectionsRevision = Number(buf.mountedCollectionsRevision || 0);
     state.scheduledTaskDraft = buf.scheduledTaskDraft || null;
-    var s = buf.stream || {};
+    const s = buf.stream || {};
     currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
     pendingAssistantText = s.pendingAssistantText || ""; pendingAssistantBlocks = s.pendingAssistantBlocks || [];
     itemIdSeq = s.itemIdSeq || 0; toolMeta = s.toolMeta || {};
   }
   function hydrateWorkingSetFromSaved(buf, saved) {
     if (!buf || !saved) return;
-    var completedRemoteTurn = !!buf.remoteTerminalSeen || (!!buf.remoteTurnActive && !buf.busy);
+    const completedRemoteTurn = !!buf.remoteTerminalSeen || (!!buf.remoteTurnActive && !buf.busy);
     buf.messages = Array.isArray(saved.messages) ? saved.messages : [];
     buf.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
     buf.chatItems = [];
     buf.turnTimeline = [];
     buf.activeTurnTimelineId = null;
     buf.artifacts = Array.isArray(saved.artifacts) ? saved.artifacts.map(function (a) {
-      var p = typeof a === "string" ? a : (a.storage_path || a.path || "");
+      const p = typeof a === "string" ? a : (a.storage_path || a.path || "");
       return { path: p, basename: basename(p) };
     }) : [];
     buf.artifacts = filterSessionArtifacts(buf.artifacts, saved.metadata && saved.metadata.id);
@@ -1267,38 +1264,40 @@
     };
   }
   function decodeBase64Bytes(encoded) {
-    var binary = window.atob(String(encoded || ""));
-    var bytes = new Uint8Array(binary.length);
-    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const binary = window.atob(String(encoded || ""));
+    const bytes = new Uint8Array(binary.length);
+// binary 是 atob 产出的单字节 Latin-1 字符串,charCode 即字节值;codePointAt 在此等价但无增益。
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i); // eslint-disable-line unicorn/prefer-code-point
     return bytes;
   }
   function encodeBase64Bytes(bytes) {
-    var binary = "";
-    var chunkSize = 0x8000;
-    for (var offset = 0; offset < bytes.length; offset += chunkSize) {
-      var chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
-      binary += String.fromCharCode.apply(null, chunk);
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
+      // chunk 只含 0-255 字节值,fromCharCode/fromCodePoint 等价;保留 apply 分块热路径。
+      binary += String.fromCharCode.apply(null, chunk); // eslint-disable-line unicorn/prefer-code-point
     }
     return window.btoa(binary);
   }
-  var SESSION_DOWNLOAD_LEASES_KEY = "pinvou.web_session_download_leases.v1";
-  var activeSessionDownloads = Object.create(null);
-  var sessionDownloadLeases = null;
-  var sessionDownloadCleanupPromise = null;
+  const SESSION_DOWNLOAD_LEASES_KEY = "pinvou.web_session_download_leases.v1";
+  const activeSessionDownloads = Object.create(null);
+  let sessionDownloadLeases = null;
+  let sessionDownloadCleanupPromise = null;
   function readSessionDownloadLeases() {
-    if (sessionDownloadLeases !== null) return sessionDownloadLeases.slice();
+    if (sessionDownloadLeases !== null) return [...sessionDownloadLeases];
     try {
-      var raw = window.sessionStorage && window.sessionStorage.getItem(SESSION_DOWNLOAD_LEASES_KEY);
-      var parsed = raw ? JSON.parse(raw) : [];
+      const raw = window.sessionStorage && window.sessionStorage.getItem(SESSION_DOWNLOAD_LEASES_KEY);
+      let parsed = raw ? JSON.parse(raw) : [];
       if (!Array.isArray(parsed)) parsed = [];
       sessionDownloadLeases = parsed.filter(function (entry) {
         return entry && typeof entry.download_id === "string" && entry.download_id &&
           typeof entry.session_id === "string" && entry.session_id;
       }).slice(-16);
-      return sessionDownloadLeases.slice();
-    } catch (_) {
+      return [...sessionDownloadLeases];
+    } catch {
       sessionDownloadLeases = [];
-      return sessionDownloadLeases.slice();
+      return [...sessionDownloadLeases];
     }
   }
   function writeSessionDownloadLeases(entries) {
@@ -1310,10 +1309,10 @@
       } else {
         window.sessionStorage.removeItem(SESSION_DOWNLOAD_LEASES_KEY);
       }
-    } catch (_) {}
+    } catch { /* 存储不可用时租约仅留内存态 */ }
   }
   function rememberSessionDownloadLease(downloadId, sid) {
-    var entries = readSessionDownloadLeases().filter(function (entry) {
+    const entries = readSessionDownloadLeases().filter(function (entry) {
       return entry.download_id !== downloadId;
     });
     entries.push({ download_id: downloadId, session_id: sid });
@@ -1327,22 +1326,22 @@
   async function cancelSessionDownloadLease(downloadId, sid) {
     return invoke("web_access_cancel_session_download", {
       id: sid,
-      downloadId: downloadId,
+      downloadId,
     });
   }
   async function cleanupAbandonedSessionDownloads(diagnostics) {
-    var entries = readSessionDownloadLeases().filter(function (entry) {
+    const entries = readSessionDownloadLeases().filter(function (entry) {
       return !activeSessionDownloads[entry.download_id];
     });
     if (!entries.length) return;
     diagnostics.cleanup_requested_count = entries.length;
-    var failed = [];
-    for (var index = 0; index < entries.length; index++) {
-      var entry = entries[index];
+    const failed = [];
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index];
       try {
         await cancelSessionDownloadLease(entry.download_id, entry.session_id);
         forgetSessionDownloadLease(entry.download_id);
-      } catch (error) {
+      } catch {
         failed.push(entry.download_id);
       }
     }
@@ -1355,7 +1354,7 @@
   }
   function scheduleAbandonedSessionDownloadCleanup() {
     if (!IS_WEB || sessionDownloadCleanupPromise) return sessionDownloadCleanupPromise;
-    var diagnostics = {
+    const diagnostics = {
       transport_kind: "web_chunked_rpc",
       cleanup_requested_count: 0,
       cleanup_failed_count: 0,
@@ -1374,15 +1373,17 @@
     return sessionDownloadCleanupPromise;
   }
   function newSessionDownloadId() {
-    var token = "";
+    let token = "";
     try {
       if (window.crypto && typeof window.crypto.randomUUID === "function") {
-        token = window.crypto.randomUUID().replace(/-/g, ""); // safari14-ok: guarded above
+        token = window.crypto.randomUUID().replaceAll('-', ""); // safari14-ok: guarded above
       }
-    } catch (_) {}
+    } catch { /* UUID 生成异常时走下方兜底 */ }
+    // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:下载 ID 去重,失败可安全重试
     if (!token) token = Date.now().toString(36) + Math.random().toString(36).slice(2);
     return "download_web_" + token;
   }
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   async function loadSessionForClient(sid, setActive, diagnostics) {
     diagnostics = diagnostics || {};
     diagnostics.transport_kind = IS_WEB ? "web_chunked_rpc" : "desktop_invoke";
@@ -1390,7 +1391,7 @@
     diagnostics.chunk_count = 0;
     diagnostics.bytes_received = 0;
     if (!IS_WEB) {
-      var localSaved = await invoke("load_session", { id: sid, setActive: !!setActive });
+      const localSaved = await invoke("load_session", { id: sid, setActive: !!setActive });
       diagnostics.elapsed_ms = Date.now() - diagnostics.started_at_ms;
       return localSaved;
     }
@@ -1412,16 +1413,16 @@
       });
       throw capabilityError;
     }
-    var supportsSessionDownloadCancellation = canInvoke("web_access_cancel_session_download");
+    const supportsSessionDownloadCancellation = canInvoke("web_access_cancel_session_download");
     if (supportsSessionDownloadCancellation) {
       await cleanupAbandonedSessionDownloads(diagnostics);
     }
-    var offset = 0;
-    var total = null;
-    var payload = null;
-    var downloadId = supportsSessionDownloadCancellation ? newSessionDownloadId() : "";
-    var unexpectedDownloadId = "";
-    var maxSessionBytes = 256 * 1024 * 1024;
+    let offset = 0;
+    let total = null;
+    let payload = null;
+    let downloadId = supportsSessionDownloadCancellation ? newSessionDownloadId() : "";
+    let unexpectedDownloadId = "";
+    const maxSessionBytes = 256 * 1024 * 1024;
     diagnostics.cancellable_lease = supportsSessionDownloadCancellation;
     if (supportsSessionDownloadCancellation) {
       activeSessionDownloads[downloadId] = true;
@@ -1430,21 +1431,21 @@
     }
     try {
       while (true) {
-        var chunkArgs = {
+        const chunkArgs = {
           id: sid,
           downloadId: offset ? downloadId : null,
-          offset: offset,
+          offset,
           // 不传 limit，由桌面端按自身版本上限决定块大小；新 WebUI
           // 先于桌面部署时也不会因为块大小超过旧桌面上限而被拒绝。
         };
         if (supportsSessionDownloadCancellation && !offset) {
           chunkArgs.requestedDownloadId = downloadId;
         }
-        var chunk = await invoke("web_access_load_session_chunk", chunkArgs);
+        const chunk = await invoke("web_access_load_session_chunk", chunkArgs);
         diagnostics.chunk_count += 1;
-        var chunkOffset = Number(chunk && chunk.offset);
-        var chunkTotal = Number(chunk && chunk.total);
-        var chunkDownloadId = String((chunk && (chunk.download_id || chunk.downloadId)) || "");
+        const chunkOffset = Number(chunk && chunk.offset);
+        const chunkTotal = Number(chunk && chunk.total);
+        const chunkDownloadId = String((chunk && (chunk.download_id || chunk.downloadId)) || "");
         if (supportsSessionDownloadCancellation && downloadId &&
             chunkDownloadId !== downloadId && validSessionDownloadId(chunkDownloadId)) {
           unexpectedDownloadId = chunkDownloadId;
@@ -1464,7 +1465,7 @@
         } else if (chunkTotal !== total) {
           throw new Error(bt("sessionChunkChanged"));
         }
-        var data = decodeBase64Bytes(chunk.data_base64 || chunk.dataBase64);
+        const data = decodeBase64Bytes(chunk.data_base64 || chunk.dataBase64);
         diagnostics.bytes_received += data.length;
         diagnostics.declared_total_bytes = total;
         if (offset + data.length > total) throw new Error(bt("sessionChunkOverflow"));
@@ -1482,19 +1483,19 @@
       }
     } catch (error) {
       if (supportsSessionDownloadCancellation && downloadId) {
-        var cancellationIds = [downloadId];
+        const cancellationIds = [downloadId];
         if (unexpectedDownloadId && unexpectedDownloadId !== downloadId) {
           cancellationIds.push(unexpectedDownloadId);
         }
         cancellationIds.forEach(function (id) { delete activeSessionDownloads[id]; });
         diagnostics.cancel_requested = true;
         diagnostics.cancel_succeeded = true;
-        for (var cancelIndex = 0; cancelIndex < cancellationIds.length; cancelIndex++) {
-          var cancellationId = cancellationIds[cancelIndex];
+        for (let cancelIndex = 0; cancelIndex < cancellationIds.length; cancelIndex++) {
+          const cancellationId = cancellationIds[cancelIndex];
           try {
             await cancelSessionDownloadLease(cancellationId, sid);
             forgetSessionDownloadLease(cancellationId);
-          } catch (cancelError) {
+          } catch {
             diagnostics.cancel_succeeded = false;
             diagnostics.error_category = "cancel_rpc_failed";
           }
@@ -1508,14 +1509,14 @@
   async function ensureSessionBufferLoaded(sid) {
     if (!sid) return;
     if (sid === state.activeSessionId) return;
-    var buf = getBuffer(sid);
-    var meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
-    var knownCount = Number(meta.message_count || 0);
+    const buf = getBuffer(sid);
+    const meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
+    const knownCount = Number(meta.message_count || 0);
     if (buf.busy) return;
     if (buf.loadedFromDisk && (!knownCount || buf.messages.length >= knownCount)) return;
     if (!buf.loadedFromDisk && (buf.messages.length || buf.chatItems.length) && (!knownCount || buf.messages.length >= knownCount)) return;
-    var saved = await loadSessionForClient(sid, false);
-    var savedCount = saved && saved.metadata ? Number(saved.metadata.message_count || 0) : 0;
+    const saved = await loadSessionForClient(sid, false);
+    const savedCount = saved && saved.metadata ? Number(saved.metadata.message_count || 0) : 0;
     if ((buf.messages.length || buf.chatItems.length) && savedCount <= buf.messages.length) {
       buf.loadedFromDisk = true;
       return;
@@ -1524,10 +1525,10 @@
     // 快照 hydrate 会截断正在流式生成的内容，必须复检后放弃（审计）。
     if (buf.busy || buf.remoteTurnActive) return;
     hydrateWorkingSetFromSaved(buf, saved);
-    try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
-    try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
+    try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch { buf.personaEvents = []; }
+    try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch { buf.pinvouReviews = []; }
     buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
-    try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch (e) { buf.turnTimeline = []; }
+    try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
     // 不再 rerenderFromMessages，桌面便只看得到手机唤醒后的新内容，历史像是“丢了”。
@@ -1546,10 +1547,10 @@
     // the old buffer first (active id still old) could evict an idle target as
     // the oldest entry, and the freshBuffer() fallback below would silently
     // show an empty session.
-    var previousActiveId = state.activeSessionId;
+    const previousActiveId = state.activeSessionId;
     state.activeSessionId = id;
     if (previousActiveId) saveWorkingSetTo(getBuffer(previousActiveId));
-    var buf = sessionStates[id];
+    let buf = sessionStates[id];
     if (!buf || (opts && opts.fresh)) {
       buf = sessionStates[id] = freshBuffer();
       // `fresh` is used for a Session this client just created, so its empty
@@ -1569,19 +1570,19 @@
   // 否则临时切到该 buffer 跑完再切回(期间不 notify)。
   function runSyncOnSession(sid, fn) {
     if (!sid || sid === state.activeSessionId) { fn(); return; }
-    var bg = sessionStates[sid]; if (!bg) return;
+    const bg = sessionStates[sid]; if (!bg) return;
     touchSessionBuffer(sid, bg, isScheduledRunSession(sid));
-    var realId = state.activeSessionId;
-    var draftComposer = realId ? "" : (state.composerDraft || "");
+    const realId = state.activeSessionId;
+    const draftComposer = realId ? "" : (state.composerDraft || "");
     // A null active id no longer guarantees an empty draft: WebUI can already
     // be showing an optimistic first message while its Session is being
     // materialized. Snapshot the complete draft just like a regular Session
     // before routing a late event from another Session in the background.
-    var restoreBuffer = realId ? getBuffer(realId) : freshBuffer();
+    const restoreBuffer = realId ? getBuffer(realId) : freshBuffer();
     saveWorkingSetTo(restoreBuffer);
     loadWorkingSetFrom(bg);
     state.activeSessionId = sid;
-    var prev = suppressNotify; suppressNotify = true;
+    const prev = suppressNotify; suppressNotify = true;
     try { fn(); }
     finally {
       suppressNotify = prev;
@@ -1597,9 +1598,9 @@
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
   function markRemoteTurn(sid, buf, preserveCommittedRevision, cause) {
     if (!sid || !buf || buf.localTurnOwned) return;
-    var wasActive = !!buf.remoteTurnActive;
+    const wasActive = !!buf.remoteTurnActive;
     if (!buf.remoteTurnActive) {
-      var meta = state.sessions.find(function (session) { return session.id === sid; });
+      const meta = state.sessions.find(function (session) { return session.id === sid; });
       buf.remoteBaselineTrusted = !!buf.loadedFromDisk;
       buf.remoteBaselineMessageCount = buf.loadedFromDisk
         ? (buf.messages || []).length
@@ -1623,16 +1624,16 @@
     }
   }
   function onSessionEvent(e, fn) {
-    var sid = (e && e.payload && e.payload.session_id) || state.activeSessionId;
+    const sid = (e && e.payload && e.payload.session_id) || state.activeSessionId;
     if (sid) {
-      var eventBuffer = getBuffer(sid);
-      var eventName = String((e && e.event) || "");
-      var isTurnEvent = /chat:(user_message|turn_started|delta|reasoning_start|reasoning_delta|reasoning_done|tool_start|tool_end|user_input_required|transient_error)$/.test(eventName);
+      const eventBuffer = getBuffer(sid);
+      const eventName = String((e && e.event) || "");
+      const isTurnEvent = /chat:(user_message|turn_started|delta|reasoning_start|reasoning_delta|reasoning_done|tool_start|tool_end|user_input_required|transient_error)$/.test(eventName);
       if (eventBuffer && !eventBuffer.localTurnOwned && (eventBuffer.busy || isTurnEvent)) {
         markRemoteTurn(sid, eventBuffer, false, "event:" + eventName);
       }
     }
-    var isBg = sid && sid !== state.activeSessionId;
+    const isBg = sid && sid !== state.activeSessionId;
     runSyncOnSession(sid, fn);
     if (isBg) notify();
   }
@@ -1655,23 +1656,23 @@
     // 跳过产物索引与自动重命名：meta 缺失时 msgs 会错读 active 聊天 state 的
     // 首条用户消息，把别的会话文本命名到代码会话上。正常聊天会话经
     // ensureSession 创建后即 refreshHistoryList 入列，!meta 只会命中非桥接会话。
-    var meta = state.sessions.find(function (s) { return s.id === sid; });
+    const meta = state.sessions.find(function (s) { return s.id === sid; });
     if (!meta) return;
-    var buf = sid === state.activeSessionId ? null : sessionStates[sid];
-    var msgs = buf ? buf.messages : state.messages;
-    var arts = filterSessionArtifacts(buf ? buf.artifacts : state.artifacts, sid);
+    const buf = sid === state.activeSessionId ? null : sessionStates[sid];
+    const msgs = buf ? buf.messages : state.messages;
+    const arts = filterSessionArtifacts(buf ? buf.artifacts : state.artifacts, sid);
     if (buf) buf.artifacts = arts;
     else state.artifacts = arts;
     try {
-      try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
+      try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch { /* 落盘失败不阻断会话切换 */ }
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
-        var firstUser = msgs.find(function (m) { return m.role === "user"; });
+        const firstUser = msgs.find(function (m) { return m.role === "user"; });
         // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
         // sidebar。hideInternalEnvelope=true 剥离 turn_meta/system-reminder 元数据块，
         // 否则普通消息的标题会拼入尾随 turn_meta（引擎持久化为独立 text block）。
-        var titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        const titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
         if (titleText) {
-          var newTitle = titleText.slice(0, 20);
+          const newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
           meta.title = newTitle;
           delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
@@ -1682,7 +1683,7 @@
 
   async function reconcileRemoteTurn(sid) {
     if (!sid) return true;
-    var buf = sessionStates[sid];
+    const buf = sessionStates[sid];
     if (!buf || (!buf.remoteTurnActive && !buf.remoteTerminalSeen)) return true;
     if (!buf.remoteTerminalSeen && isBusyFor(sid)) {
       recordAuthoritySyncDiagnostic("reconcile_deferred_busy", authoritySyncBufferSnapshot(sid, buf));
@@ -1692,22 +1693,22 @@
       recordAuthoritySyncDiagnostic("reconcile_joined_inflight", authoritySyncBufferSnapshot(sid, buf));
       return authoritativeTranscriptSyncs[sid];
     }
-    var traceId = "authority_reconcile_" + Date.now().toString(36) + "_" + (++authoritySyncTraceSequence);
+    const traceId = "authority_reconcile_" + Date.now().toString(36) + "_" + (++authoritySyncTraceSequence);
     // chat:done 与远端 load_session 分属两条异步通道。尤其是 WebUI 刚创建的
     // Session，第一份可读快照可能仍停在本轮 user，若立即拿它重建展示层，会把
     // 已完整显示的流式 assistant 气泡一闪覆盖掉。优先用后端已提交 revision
     // 建立 authority barrier；旧桌面端未提供 revision 时，才回退到消息数与
     // 最后一条 assistant 的展示身份校验。
-    var expectedAssistantKey = buf.remoteTerminalSeen
+    const expectedAssistantKey = buf.remoteTerminalSeen
       ? String(buf.remoteExpectedAssistantKey || "")
       : "";
     // The committed revision identifies the canonical terminal transcript.
     // Streamed/native-tool blocks may be normalized before persistence, so a
     // presentation-derived message key is only a fallback for older desktops.
-    var expectedCommittedRevision = buf.remoteTerminalSeen
+    let expectedCommittedRevision = buf.remoteTerminalSeen
       ? String(buf.remoteCommittedRevision || "")
       : "";
-    var minimumTerminalMessageCount = expectedAssistantKey && Array.isArray(buf.messages)
+    const minimumTerminalMessageCount = expectedAssistantKey && Array.isArray(buf.messages)
       ? buf.messages.length
       : 0;
     recordAuthoritySyncDiagnostic("reconcile_started", Object.assign({
@@ -1715,8 +1716,8 @@
       expected_committed_revision: expectedCommittedRevision,
       minimum_terminal_message_count: minimumTerminalMessageCount,
     }, authoritySyncBufferSnapshot(sid, buf)));
-    var sync = (async function () {
-      for (var attempt = 0; attempt < 6; attempt++) {
+    const sync = (async function () {
+      for (let attempt = 0; attempt < 6; attempt++) {
         if (attempt) await new Promise(function (resolve) { setTimeout(resolve, 250); });
         // Relay replay may deliver the commit marker immediately after done,
         // and a newer turn's commit can land while this retry window is open.
@@ -1726,10 +1727,10 @@
         if (buf.remoteTerminalSeen) {
           expectedCommittedRevision = String(buf.remoteCommittedRevision || "");
         }
-        var attemptStartedAt = Date.now();
-        var transfer = {};
+        const attemptStartedAt = Date.now();
+        const transfer = {};
         try {
-          var saved = await loadSessionForClient(sid, false, transfer);
+          const saved = await loadSessionForClient(sid, false, transfer);
           if (!saved || !Array.isArray(saved.messages)) {
             recordAuthoritySyncDiagnostic("reconcile_attempt_rejected", {
               trace_id: traceId, session_id: sid, attempt: attempt + 1,
@@ -1738,7 +1739,7 @@
             });
             continue;
           }
-          var savedRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
+          const savedRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
           // 仅当快照确实携带 revision 时才用严格相等作为权威屏障;旧后端/旧契约
           // 不含该字段时降级到消息数与 assistant 身份校验,避免「期望非空但快照
           // 无字段」导致对账必然失败(每轮误报)。
@@ -1767,7 +1768,7 @@
             }
           }
           if ((!expectedCommittedRevision || !savedRevision) && expectedAssistantKey) {
-            var hasExpectedAssistant = saved.messages.some(function (message) {
+            const hasExpectedAssistant = saved.messages.some(function (message) {
               return message && message.role === "assistant" &&
                 hydratedMessageKey(message, isScheduledRunSession(sid)) === expectedAssistantKey;
             });
@@ -1796,12 +1797,12 @@
             // The durable transcript already reconstructs user/assistant/tool
             // items. Preserve only presentation-side cards; otherwise a client
             // joining mid-turn appends its replayed tail after the full answer.
-            var rawLiveChatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
-            var resolvedPlanTickets = Object.create(null);
-            var activePlanCards = Object.create(null);
+            const rawLiveChatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
+            const resolvedPlanTickets = Object.create(null);
+            const activePlanCards = Object.create(null);
             rawLiveChatItems.forEach(function (item) {
               if (!item || item.type !== "plan_card") return;
-              var key = planCardHydrationKey(item);
+              const key = planCardHydrationKey(item);
               if (!key) return;
               if (!item.resolved && item.cardState === "active" && item.planId) {
                 if (!activePlanCards[key]) activePlanCards[key] = [];
@@ -1812,7 +1813,7 @@
               if (!resolvedPlanTickets[key]) resolvedPlanTickets[key] = [];
               resolvedPlanTickets[key].push(String(item.planId));
             });
-            var liveChatItems = rawLiveChatItems.filter(function (item) {
+            const liveChatItems = rawLiveChatItems.filter(function (item) {
               if (!item || item.type === "user" || item.type === "tool") return false;
               if (item.type === "assistant") return item.interruptedDisplayOnly === true;
               if (item.turnErrorNotice && !item.legacyConversationOnly) return false;
@@ -1834,13 +1835,13 @@
             // the durable transcript cannot reconstruct it on its own. Carry
             // active state or resolved tickets onto the matching canonical card,
             // newest-to-newest for repeated identical plans.
-            for (var planIndex = state.chatItems.length - 1; planIndex >= 0; planIndex--) {
-              var hydratedPlan = state.chatItems[planIndex];
+            for (let planIndex = state.chatItems.length - 1; planIndex >= 0; planIndex--) {
+              const hydratedPlan = state.chatItems[planIndex];
               if (!hydratedPlan || hydratedPlan.type !== "plan_card") continue;
-              var hydratedKey = planCardHydrationKey(hydratedPlan);
-              var activeQueue = hydratedKey && activePlanCards[hydratedKey];
+              const hydratedKey = planCardHydrationKey(hydratedPlan);
+              const activeQueue = hydratedKey && activePlanCards[hydratedKey];
               if (activeQueue && activeQueue.length) {
-                var liveActivePlan = activeQueue.pop();
+                const liveActivePlan = activeQueue.pop();
                 hydratedPlan.planId = String(liveActivePlan.planId);
                 hydratedPlan.cardState = "active";
                 hydratedPlan.resolved = false;
@@ -1848,10 +1849,10 @@
                 hydratedPlan.planResolutionConfirmed = !!liveActivePlan.planResolutionConfirmed;
                 continue;
               }
-              var ticketQueue = hydratedKey && resolvedPlanTickets[hydratedKey];
+              const ticketQueue = hydratedKey && resolvedPlanTickets[hydratedKey];
               if (!hydratedPlan.planId && ticketQueue && ticketQueue.length) hydratedPlan.planId = ticketQueue.pop();
             }
-            var unmatchedActivePlans = [];
+            const unmatchedActivePlans = [];
             Object.keys(activePlanCards).forEach(function (key) {
               (activePlanCards[key] || []).forEach(function (item) { unmatchedActivePlans.push(item); });
             });
@@ -1886,7 +1887,7 @@
             transport: transfer,
           }, authoritySyncBufferSnapshot(sid, buf)));
           return true;
-        } catch (error) {
+        } catch {
           recordAuthoritySyncDiagnostic("reconcile_attempt_failed", {
             trace_id: traceId,
             session_id: sid,
@@ -1914,10 +1915,10 @@
   }
 
   // ── Pub/Sub ──────────────────────────────────────────────────────
-  var subscribers = [];
+  let subscribers = [];
   function snapshotState() {
     if (typeof structuredClone === "function") {
-      try { return structuredClone(state); } catch (_) {} // safari14-ok: typeof-guarded with JSON fallback
+      try { return structuredClone(state); } catch { /* 静默回退 JSON */ } // safari14-ok: typeof-guarded with JSON fallback
     }
     return JSON.parse(JSON.stringify(state));
   }
@@ -1928,30 +1929,32 @@
     Object.defineProperty(target, key, {
       configurable: true,
       enumerable: true,
-      value: value,
+      value,
       writable: true,
     });
   }
   function copySubscriptionStateObject(source) {
-    var result = {};
+    const result = {};
     Object.keys(source).forEach(function (key) {
       defineSubscriptionStateProperty(result, key, source[key]);
     });
     return result;
   }
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   function subscriptionStateValue(value, previous, ancestors) {
-    var valueType = typeof value;
+    const valueType = typeof value;
     if (!value || valueType !== "object") {
-      if (valueType === "function" || valueType === "symbol" || valueType === "bigint") {
+      if (["function", "symbol", "bigint"].includes(valueType)) {
         throw new TypeError("Subscription state only supports JSON-like scalar values");
       }
       return value;
     }
-    var isArray = Array.isArray(value);
+    const isArray = Array.isArray(value);
     if (!isArray) {
-      var prototype = Object.getPrototypeOf(value);
-      var isPlainObject = prototype === null || (
+      const prototype = Object.getPrototypeOf(value);
+      const isPlainObject = prototype === null || (
         Object.getPrototypeOf(prototype) === null &&
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
         Object.prototype.hasOwnProperty.call(prototype, "constructor") &&
         prototype.constructor && prototype.constructor.name === "Object"
       );
@@ -1964,35 +1967,36 @@
     ancestors.add(value);
     try {
       if (isArray) {
-        var previousArray = Array.isArray(previous) ? previous : null;
+        const previousArray = Array.isArray(previous) ? previous : null;
         if (!previousArray) {
           return Object.freeze(value.map(function (item) {
             return subscriptionStateValue(item, undefined, ancestors);
           }));
         }
-        var nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
-        for (var arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
-          var nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex], ancestors);
+        let nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
+        for (let arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
+          const nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex], ancestors);
           if (!Object.is(nextItem, previousArray[arrayIndex])) {
-            if (!nextArray) nextArray = previousArray.slice();
+            if (!nextArray) nextArray = [...previousArray];
             nextArray[arrayIndex] = nextItem;
           }
         }
         return nextArray ? Object.freeze(nextArray) : previousArray;
       }
 
-      var keys = Object.keys(value);
-      var previousObject = previous && typeof previous === "object" && !Array.isArray(previous)
+      const keys = Object.keys(value);
+      const previousObject = previous && typeof previous === "object" && !Array.isArray(previous)
         ? previous
         : null;
-      var previousKeys = previousObject ? Object.keys(previousObject) : [];
-      var sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
+      const previousKeys = previousObject ? Object.keys(previousObject) : [];
+      const sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
         return Object.prototype.hasOwnProperty.call(previousObject, key);
       });
-      var nextObject = sameShape ? null : {};
-      for (var objectIndex = 0; objectIndex < keys.length; objectIndex++) {
-        var key = keys[objectIndex];
-        var nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key], ancestors);
+      let nextObject = sameShape ? null : {};
+      for (let objectIndex = 0; objectIndex < keys.length; objectIndex++) {
+        const key = keys[objectIndex];
+        const nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key], ancestors);
         if (!sameShape || !Object.is(nextValue, previousObject[key])) {
           if (!nextObject) nextObject = copySubscriptionStateObject(previousObject);
           defineSubscriptionStateProperty(nextObject, key, nextValue);
@@ -2003,29 +2007,29 @@
       ancestors.delete(value);
     }
   }
-  var subscriptionSnapshot = null;
+  let subscriptionSnapshot = null;
   function subscriptionState() {
     subscriptionSnapshot = subscriptionStateValue(state, subscriptionSnapshot);
     return subscriptionSnapshot;
   }
-  var notificationQueue = [];
-  var notificationDispatching = false;
+  let notificationQueue = [];
+  let notificationDispatching = false;
   function notify() {
     if (suppressNotify) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
     state.sessionBusy = {};
-    for (var id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
+    for (const id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
     if (state.activeSessionId) state.sessionBusy[state.activeSessionId] = !!state.busy;
-    var snapshot = subscriptionState();
+    const snapshot = subscriptionState();
     // Each queued round fixes both state and membership. Callback-time
     // subscription changes apply only to rounds queued afterwards.
-    notificationQueue.push({ snapshot: snapshot, subscribers: subscribers.slice() });
+    notificationQueue.push({ snapshot, subscribers: [...subscribers] });
     if (notificationDispatching) return;
     notificationDispatching = true;
     try {
       while (notificationQueue.length) {
-        var round = notificationQueue.shift();
-        for (var i = 0; i < round.subscribers.length; i++) round.subscribers[i](round.snapshot);
+        const round = notificationQueue.shift();
+        for (let i = 0; i < round.subscribers.length; i++) round.subscribers[i](round.snapshot);
       }
     } catch (error) {
       // Preserve synchronous callback error propagation. Later queued rounds may
@@ -2046,7 +2050,7 @@
 
   function loadScheduledTaskTemplateSources() {
     try {
-      var parsed = JSON.parse(window.localStorage.getItem(SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY) || "{}");
+      const parsed = JSON.parse(window.localStorage.getItem(SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY) || "{}");
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return Object.create(null);
       return Object.keys(parsed).reduce(function (result, taskId) {
         if (typeof parsed[taskId] === "string" && parsed[taskId].trim()) {
@@ -2054,7 +2058,7 @@
         }
         return result;
       }, Object.create(null));
-    } catch (_) {
+    } catch {
       return Object.create(null);
     }
   }
@@ -2065,7 +2069,7 @@
         SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY,
         JSON.stringify(scheduledTaskTemplateSources)
       );
-    } catch (_) {}
+    } catch { /* localStorage 不可用时忽略 */ }
   }
 
   function rememberScheduledTaskTemplateSource(taskId, templateId) {
@@ -2075,6 +2079,7 @@
   }
 
   function forgetScheduledTaskTemplateSource(taskId) {
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
     if (!taskId || !Object.prototype.hasOwnProperty.call(scheduledTaskTemplateSources, taskId)) return;
     delete scheduledTaskTemplateSources[taskId];
     persistScheduledTaskTemplateSources();
@@ -2082,7 +2087,7 @@
 
   function attachScheduledTaskTemplateSource(task) {
     if (!task || !task.id) return task;
-    var templateId = task.templateId || scheduledTaskTemplateSources[task.id] || null;
+    const templateId = task.templateId || scheduledTaskTemplateSources[task.id] || null;
     if (templateId) {
       task.templateId = templateId;
       if (scheduledTaskTemplateSources[task.id] !== templateId) {
@@ -2093,13 +2098,13 @@
   }
 
   function attachAndPruneScheduledTaskTemplateSources(tasks) {
-    var activeIds = Object.create(null);
+    const activeIds = Object.create(null);
     (tasks || []).forEach(function (task) {
       if (!task || !task.id) return;
       activeIds[task.id] = true;
       attachScheduledTaskTemplateSource(task);
     });
-    var changed = false;
+    let changed = false;
     Object.keys(scheduledTaskTemplateSources).forEach(function (taskId) {
       if (activeIds[taskId]) return;
       delete scheduledTaskTemplateSources[taskId];
@@ -2112,36 +2117,36 @@
   function upsertScheduledTask(task) {
     if (!task || !task.id) return;
     attachScheduledTaskTemplateSource(task);
-    var found = false;
+    let found = false;
     state.scheduledTasks = (state.scheduledTasks || []).map(function (item) {
       if (item.id !== task.id) return item;
       found = true;
       return task;
     });
-    if (!found) state.scheduledTasks = [task].concat(state.scheduledTasks || []);
+    if (!found) state.scheduledTasks = [task, ...(state.scheduledTasks || [])];
   }
 
   function applyScheduledRunViewed(automationId, runId, receipt) {
     function markRunViewed(item) {
-      var itemAutomationId = item.automationId || state.selectedScheduledTaskId;
+      const itemAutomationId = item.automationId || state.selectedScheduledTaskId;
       if (itemAutomationId !== automationId || item.id !== runId) return item;
       return Object.assign({}, item, { unread: false });
     }
     state.scheduledTaskRuns = (state.scheduledTaskRuns || []).map(markRunViewed);
     state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).map(markRunViewed);
-    var hasUnreadRuns = receipt && typeof receipt.hasUnreadRuns === "boolean"
+    const hasUnreadRuns = receipt && typeof receipt.hasUnreadRuns === "boolean"
       ? receipt.hasUnreadRuns
       : (state.scheduledTaskRuns || []).some(function (item) {
           return (item.automationId || state.selectedScheduledTaskId) === automationId && !!item.unread;
         });
     state.scheduledTasks = (state.scheduledTasks || []).map(function (task) {
       return task.id === automationId
-        ? Object.assign({}, task, { hasUnreadRuns: hasUnreadRuns })
+        ? Object.assign({}, task, { hasUnreadRuns })
         : task;
     });
     if (state.scheduledTaskDetail && state.scheduledTaskDetail.id === automationId) {
       state.scheduledTaskDetail = Object.assign({}, state.scheduledTaskDetail, {
-        hasUnreadRuns: hasUnreadRuns,
+        hasUnreadRuns,
       });
     }
   }
@@ -2196,7 +2201,7 @@
   }
 
   function beginScheduledTaskLoad(stamp) {
-    var generation = stamp.generation;
+    const generation = stamp.generation;
     scheduledTaskPendingLoads[generation] = (scheduledTaskPendingLoads[generation] || 0) + 1;
     if (generation === scheduledTaskSelectionGeneration) {
       state.scheduledTaskLoading = true;
@@ -2206,7 +2211,7 @@
   }
 
   function endScheduledTaskLoad(stamp) {
-    var generation = stamp.generation;
+    const generation = stamp.generation;
     scheduledTaskPendingLoads[generation] = Math.max(0, (scheduledTaskPendingLoads[generation] || 0) - 1);
     if (!scheduledTaskPendingLoads[generation]) delete scheduledTaskPendingLoads[generation];
     if (generation === scheduledTaskSelectionGeneration) {
@@ -2218,7 +2223,7 @@
   function scheduledTaskRequestStamp(kind, id) {
     scheduledTaskRequestTokens[kind] += 1;
     return {
-      kind: kind,
+      kind,
       token: scheduledTaskRequestTokens[kind],
       generation: scheduledTaskSelectionGeneration,
       id: id || null,
@@ -2233,8 +2238,9 @@
     return true;
   }
 
+  // eslint-disable-next-line sonarjs/no-invariant-returns -- 回显归一化后的 id 是刻意的 API 约定
   function selectScheduledTask(id) {
-    var nextId = typeof id === "string" && id.trim() ? id.trim() : null;
+    const nextId = typeof id === "string" && id.trim() ? id.trim() : null;
     if (state.selectedScheduledTaskId === nextId) return nextId;
     scheduledTaskSelectionGeneration += 1;
     state.scheduledTaskSelectionGeneration = scheduledTaskSelectionGeneration;
@@ -2252,13 +2258,13 @@
   }
 
   function extractBalancedJsonObject(text) {
-    var start = String(text || "").indexOf("{");
+    const start = String(text || "").indexOf("{");
     if (start < 0) return null;
-    var depth = 0;
-    var inString = false;
-    var escaping = false;
-    for (var i = start; i < text.length; i++) {
-      var ch = text.charAt(i);
+    let depth = 0;
+    let inString = false;
+    let escaping = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text.charAt(i);
       if (inString) {
         if (escaping) escaping = false;
         else if (ch === "\\") escaping = true;
@@ -2276,12 +2282,12 @@
   }
 
   function parseLooseJsonObject(text) {
-    try { return JSON.parse(text); } catch (_) {}
-    try { return JSON.parse(String(text || "").replace(/,(\s*[}\]])/g, "$1")); } catch (_) {}
-    var balanced = extractBalancedJsonObject(String(text || ""));
+    try { return JSON.parse(text); } catch { /* 非法 JSON 由调用方回退原文 */ }
+    try { return JSON.parse(String(text || "").replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* 非法 JSON 由调用方回退原文 */ }
+    const balanced = extractBalancedJsonObject(String(text || ""));
     if (!balanced) return null;
-    try { return JSON.parse(balanced); } catch (_) {}
-    try { return JSON.parse(balanced.replace(/,(\s*[}\]])/g, "$1")); } catch (_) {}
+    try { return JSON.parse(balanced); } catch { /* 非法 JSON 由调用方回退原文 */ }
+    try { return JSON.parse(balanced.replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* 非法 JSON 由调用方回退原文 */ }
     return null;
   }
 
@@ -2305,30 +2311,26 @@
     }) || null;
   }
 
-  function activeScheduledTaskModel() {
-    var model = activeScheduledTaskModelConfig();
-    return model && model.model || null;
-  }
-
   function lockScheduledTaskDraftModel(draft) {
     if (!draft) return null;
-    var active = activeScheduledTaskModelConfig();
+    const active = activeScheduledTaskModelConfig();
     draft.model = draft.model || (active && active.model) || null;
     draft.modelId = draft.modelId || (active && active.id) || null;
     return draft;
   }
 
   function parseScheduledTaskDraftFromText(text) {
-    if (!text || text.indexOf("{") < 0) return null;
-    var preferred = null;
-    var fallback = null;
-    var re = /```([^\n`]*)\n([\s\S]*?)```/g;
-    var match;
+    if (!text || !text.includes("{")) return null;
+    let preferred = null;
+    let fallback = null;
+    const re = /```([^\n`]*)\n([\s\S]*?)```/g;
+    let match;
+    // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
     while ((match = re.exec(text))) {
-      var label = String(match[1] || "").trim().toLowerCase();
-      var raw = String(match[2] || "").trim();
+      const label = String(match[1] || "").trim().toLowerCase();
+      const raw = String(match[2] || "").trim();
       if (!raw || raw.charAt(0) !== "{") continue;
-      var candidate = normalizeScheduledTaskDraft(parseLooseJsonObject(raw));
+      const candidate = normalizeScheduledTaskDraft(parseLooseJsonObject(raw));
       if (!candidate) continue;
       if (label === "scheduled-task-draft") return candidate;
       if ((label === "json" || !label) && !fallback) fallback = candidate;
@@ -2347,20 +2349,20 @@
 
   async function confirmScheduledTaskDraft(editedDraft) {
     if (!state.scheduledTaskDraft || state.activeSessionId !== state.scheduledTaskCreationSessionId) return null;
-    var active = activeScheduledTaskModelConfig();
-    var lockedModel = state.scheduledTaskDraft.model || (active && active.model) || null;
-    var lockedModelId = state.scheduledTaskDraft.modelId || (active && active.id) || null;
-    var draft = normalizeScheduledTaskDraft(Object.assign({}, state.scheduledTaskDraft, editedDraft || {}, {
+    const active = activeScheduledTaskModelConfig();
+    const lockedModel = state.scheduledTaskDraft.model || (active && active.model) || null;
+    const lockedModelId = state.scheduledTaskDraft.modelId || (active && active.id) || null;
+    const draft = normalizeScheduledTaskDraft(Object.assign({}, state.scheduledTaskDraft, editedDraft || {}, {
       model: lockedModel,
       modelId: lockedModelId,
     }));
     if (!draft) {
-      var invalidDraftError = new Error(bt("scheduledDraftInvalid"));
+      const invalidDraftError = new Error(bt("scheduledDraftInvalid"));
       setScheduledTaskError(invalidDraftError, "action");
       notify();
       throw invalidDraftError;
     }
-    var created = await createScheduledTask({
+    const created = await createScheduledTask({
       name: draft.name,
       prompt: draft.prompt,
       rrule: draft.rrule,
@@ -2390,13 +2392,13 @@
   // 聊天创建拿到合法参数后立即落成任务。草稿不会进入可渲染 state，避免再出现一层确认卡。
   // autoOpenId 全局 last-writer：两会话并发创建时后完成者覆盖，且 startScheduledTaskChat
   // 清空后陈旧 completion 会复活 auto-open（审计 f）。全局单调创建序号，仅最新意图可写。
-  var scheduledTaskAutoCreateSeq = 0;
+  let scheduledTaskAutoCreateSeq = 0;
   function autoCreateScheduledTaskDraft(draft, creationSessionId) {
     if (!draft || !creationSessionId || scheduledTaskAutoCreateInFlight[creationSessionId]) return;
-    var lockedDraft = lockScheduledTaskDraftModel(draft);
+    const lockedDraft = lockScheduledTaskDraftModel(draft);
     state.scheduledTaskDraft = null;
-    var creationSeq = ++scheduledTaskAutoCreateSeq;
-    var creation = Promise.resolve()
+    const creationSeq = ++scheduledTaskAutoCreateSeq;
+    const creation = Promise.resolve()
       .then(function () {
         return createScheduledTask(scheduledTaskInputFromDraft(lockedDraft));
       })
@@ -2404,7 +2406,7 @@
         if (state.scheduledTaskCreationSessionId === creationSessionId) {
           state.scheduledTaskCreationSessionId = null;
         }
-        var creationBuffer = sessionStates[creationSessionId];
+        const creationBuffer = sessionStates[creationSessionId];
         if (creationBuffer) creationBuffer.scheduledTaskDraft = null;
         // 仅最新创建意图可写 autoOpenId（陈旧 completion 不得复活 auto-open，审计 f）
         if (created && created.id && creationSeq === scheduledTaskAutoCreateSeq) state.scheduledTaskAutoOpenId = created.id;
@@ -2431,17 +2433,17 @@
   }
 
   async function loadScheduledTasks() {
-    var stamp = scheduledTaskRequestStamp("tasks", null);
+    const stamp = scheduledTaskRequestStamp("tasks", null);
     beginScheduledTaskLoad(stamp);
     try {
-      var tasks = await invoke("list_scheduled_tasks");
+      const tasks = await invoke("list_scheduled_tasks");
       if (!isCurrentScheduledTaskRequest(stamp)) return state.scheduledTasks;
       state.scheduledTasks = attachAndPruneScheduledTaskTemplateSources(
         Array.isArray(tasks) ? tasks : []
       );
       if (
         state.selectedScheduledTaskId &&
-        !(state.scheduledTasks || []).some(function (task) { return task.id === state.selectedScheduledTaskId; })
+        (state.scheduledTasks || []).every(function (task) { return task.id !== state.selectedScheduledTaskId; })
       ) {
         selectScheduledTask(null);
       }
@@ -2459,10 +2461,10 @@
       return null;
     }
     if (state.selectedScheduledTaskId !== id) selectScheduledTask(id);
-    var stamp = scheduledTaskRequestStamp("detail", id);
+    const stamp = scheduledTaskRequestStamp("detail", id);
     beginScheduledTaskLoad(stamp);
     try {
-      var detail = await invoke("read_scheduled_task", { id: id });
+      const detail = await invoke("read_scheduled_task", { id });
       if (!isCurrentScheduledTaskRequest(stamp)) return state.scheduledTaskDetail;
       state.scheduledTaskDetail = attachScheduledTaskTemplateSource(detail) || null;
       upsertScheduledTask(detail);
@@ -2480,16 +2482,16 @@
   function mergeScheduledTaskRecentRuns(task, runs) {
     if (!task || !task.id) return state.scheduledTaskRecentRuns || [];
     invalidateScheduledRecentRuns();
-    var rows = (state.scheduledTaskRecentRuns || []).slice();
+    let rows = [...(state.scheduledTaskRecentRuns || [])];
     (Array.isArray(runs) ? runs : []).forEach(function (run) {
       if (!run) return;
       rememberScheduledRunOwner(run);
-      var merged = Object.assign({}, run, {
+      const merged = Object.assign({}, run, {
         automationId: run.automationId || task.id,
         taskName: task.name || bt("scheduledTaskFallbackName"),
         taskModel: task.model || null,
       });
-      var index = rows.findIndex(function (row) { return row && row.id === merged.id; });
+      const index = rows.findIndex(function (row) { return row && row.id === merged.id; });
       if (index >= 0) rows[index] = merged;
       else rows.push(merged);
     });
@@ -2508,10 +2510,10 @@
       return [];
     }
     if (state.selectedScheduledTaskId !== id) selectScheduledTask(id);
-    var stamp = scheduledTaskRequestStamp("runs", id);
+    const stamp = scheduledTaskRequestStamp("runs", id);
     beginScheduledTaskLoad(stamp);
     try {
-      var runs = await invoke("list_scheduled_task_runs", { id: id, limit: limit });
+      const runs = await invoke("list_scheduled_task_runs", { id, limit });
       if (!isCurrentScheduledTaskRequest(stamp)) return state.scheduledTaskRuns;
       state.scheduledTaskRuns = Array.isArray(runs) ? runs : [];
       state.scheduledTaskRuns.forEach(rememberScheduledRunOwner);
@@ -2530,29 +2532,29 @@
   // 侧边栏"定时任务记录"一次读取所有保留的运行。后端只做一次 reconcile 和
   // Session 元数据扫描，避免任务数增长后形成 N 次命令调用与重复完整会话读取。
   async function loadScheduledTaskRecentRuns() {
-    var requestToken = ++scheduledRecentRunsRequestToken;
+    const requestToken = ++scheduledRecentRunsRequestToken;
     try {
-      var tasks = state.scheduledTasks && state.scheduledTasks.length
+      const tasks = state.scheduledTasks && state.scheduledTasks.length
         ? state.scheduledTasks
         : await loadScheduledTasks();
       if (requestToken !== scheduledRecentRunsRequestToken) {
         return state.scheduledTaskRecentRuns || [];
       }
-      var runs = await invoke("list_scheduled_runs");
+      const runs = await invoke("list_scheduled_runs");
       if (requestToken !== scheduledRecentRunsRequestToken) {
         return state.scheduledTaskRecentRuns || [];
       }
-      var tasksById = Object.create(null);
+      const tasksById = Object.create(null);
       (tasks || []).forEach(function (task) {
         if (task && task.id) tasksById[task.id] = task;
       });
-      var rows = (Array.isArray(runs) ? runs : []).map(function (run) {
+      const rows = (Array.isArray(runs) ? runs : []).map(function (run) {
         if (!run) return null;
         rememberScheduledRunOwner(run);
-        var automationId = run.automationId || run.automation_id;
-        var task = tasksById[automationId] || null;
+        const automationId = run.automationId || run.automation_id;
+        const task = tasksById[automationId] || null;
         return Object.assign({}, run, {
-          automationId: automationId,
+          automationId,
           taskName: task && task.name || bt("scheduledTaskFallbackName"),
           taskModel: task && task.model || null,
         });
@@ -2578,32 +2580,32 @@
   }
 
   function refreshScheduledTaskData(limit) {
-    var generation = scheduledTaskSelectionGeneration;
+    const generation = scheduledTaskSelectionGeneration;
     if (scheduledTaskRefreshInFlight && scheduledTaskRefreshInFlight.generation === generation) {
       return scheduledTaskRefreshInFlight.promise;
     }
-    var selectedId = state.selectedScheduledTaskId;
-    var requests = [loadScheduledTasks()];
+    const selectedId = state.selectedScheduledTaskId;
+    const requests = [loadScheduledTasks()];
     if (selectedId) {
       requests.push(readScheduledTask(selectedId));
       requests.push(loadScheduledTaskRuns(selectedId, limit || 20));
     }
-    var promise = Promise.all(requests).finally(function () {
+    const promise = Promise.all(requests).finally(function () {
       if (scheduledTaskRefreshInFlight && scheduledTaskRefreshInFlight.promise === promise) {
         scheduledTaskRefreshInFlight = null;
       }
     });
-    scheduledTaskRefreshInFlight = { generation: generation, promise: promise };
+    scheduledTaskRefreshInFlight = { generation, promise };
     return promise;
   }
 
-  var scheduledRunShortcutRefreshes = Object.create(null);
-  var SCHEDULED_LINK_POLL_FAST_MS = 1000;
-  var SCHEDULED_LINK_POLL_SLOW_MS = 5000;
-  var SCHEDULED_LINK_POLL_FAST_ATTEMPTS = 15;
+  const scheduledRunShortcutRefreshes = Object.create(null);
+  const SCHEDULED_LINK_POLL_FAST_MS = 1000;
+  const SCHEDULED_LINK_POLL_SLOW_MS = 5000;
+  const SCHEDULED_LINK_POLL_FAST_ATTEMPTS = 15;
   // 兜底上限:只在 run 卡在 queued/running 且永不终态时才会走到,正常路径靠下面
   // 「拿到 sessionId」或「进入终态」提前收工。
-  var SCHEDULED_LINK_POLL_DEADLINE_MS = 30 * 60 * 1000;
+  const SCHEDULED_LINK_POLL_DEADLINE_MS = 30 * 60 * 1000;
 
   // Fallback for run-now:正常路径由 sched-* 文件 watcher 推送刷新；但文件事件可能
   // 早于 ThreadCreated / ThreadLinked 被 run 记录吸收，或 watcher 本身不可用，因此
@@ -2615,10 +2617,10 @@
   // watcher 是主路径；这里保留较长窗口只为覆盖事件丢失和链接时序空窗。
   function refreshScheduledRunShortcutUntilLinked(automationId, runId) {
     if (!automationId || !runId) return;
-    var key = automationId + ":" + runId;
+    const key = automationId + ":" + runId;
     if (scheduledRunShortcutRefreshes[key]) return;
     scheduledRunShortcutRefreshes[key] = true;
-    var deadline = Date.now() + SCHEDULED_LINK_POLL_DEADLINE_MS;
+    const deadline = Date.now() + SCHEDULED_LINK_POLL_DEADLINE_MS;
 
     function stop() {
       delete scheduledRunShortcutRefreshes[key];
@@ -2643,7 +2645,7 @@
       invoke("list_scheduled_task_runs", { id: automationId }).then(function (runs) {
         // 任务已被删除时不再回填：陈旧轮询响应会把已删任务以 fallback 名
         // 复活回侧边栏（审计 R1）。任务不在列表即收工，不 merge、不续排。
-        var task = (state.scheduledTasks || []).find(function (item) {
+        const task = (state.scheduledTasks || []).find(function (item) {
           return item && item.id === automationId;
         });
         if (!task) {
@@ -2654,7 +2656,7 @@
         notify();
         // 必须看原始响应:mergeScheduledTaskRecentRuns 会滤掉尚无 sessionId 的记录,
         // 从合并结果里读不到目标 run 的状态。
-        var target = (Array.isArray(runs) ? runs : []).find(function (run) {
+        const target = (Array.isArray(runs) ? runs : []).find(function (run) {
           return run && run.id === runId;
         });
         // 会话已挂上 → 记录已进侧边栏;run 已终态却仍无会话 → 会话没建起来,再等也不会有;
@@ -2682,7 +2684,7 @@
     if (!run || !run.id) return;
     rememberScheduledRunOwner(run);
     if (state.selectedScheduledTaskId && run.automationId && state.selectedScheduledTaskId !== run.automationId) return;
-    var found = false;
+    let found = false;
     state.scheduledTaskRuns = (state.scheduledTaskRuns || []).map(function (item) {
       if (item.id === run.id) {
         found = true;
@@ -2690,7 +2692,7 @@
       }
       return item;
     });
-    if (!found) state.scheduledTaskRuns = [run].concat(state.scheduledTaskRuns || []);
+    if (!found) state.scheduledTaskRuns = [run, ...(state.scheduledTaskRuns || [])];
   }
 
   async function runScheduledTaskAction(action, operation) {
@@ -2711,14 +2713,15 @@
     }
   }
 
-  var SCHEDULED_TASK_WRITABLE_FIELDS = ["name", "prompt", "rrule", "model", "modelId", "paused"];
+  const SCHEDULED_TASK_WRITABLE_FIELDS = ["name", "prompt", "rrule", "model", "modelId", "paused"];
 
   // Scheduled tasks always run as Yolo. Keep the wire boundary intentionally narrow so
   // legacy callers cannot reintroduce task-level permissions or external directories.
   function scheduledTaskBackendInput(input) {
-    var source = input || {};
-    var backendInput = { mode: "yolo" };
+    const source = input || {};
+    const backendInput = { mode: "yolo" };
     SCHEDULED_TASK_WRITABLE_FIELDS.forEach(function (field) {
+      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
       if (Object.prototype.hasOwnProperty.call(source, field)) backendInput[field] = source[field];
     });
     return backendInput;
@@ -2726,10 +2729,10 @@
 
   async function createScheduledTask(input) {
     return runScheduledTaskAction("create", async function () {
-      var templateId = input && typeof input.templateId === "string" ? input.templateId.trim() : "";
-      var selectAfterCreate = !input || input.selectAfterCreate !== false;
-      var backendInput = scheduledTaskBackendInput(input);
-      var created = await invoke("create_scheduled_task", { input: backendInput });
+      const templateId = input && typeof input.templateId === "string" ? input.templateId.trim() : "";
+      const selectAfterCreate = !input || input.selectAfterCreate !== false;
+      const backendInput = scheduledTaskBackendInput(input);
+      const created = await invoke("create_scheduled_task", { input: backendInput });
       if (!created || !created.id) {
         throw new Error(bt("scheduledCreateNoId"));
       }
@@ -2748,8 +2751,8 @@
 
   async function updateScheduledTask(id, input) {
     return runScheduledTaskAction("update", async function () {
-      var backendInput = scheduledTaskBackendInput(input);
-      var updated = await invoke("update_scheduled_task", { id: id, input: backendInput });
+      const backendInput = scheduledTaskBackendInput(input);
+      const updated = await invoke("update_scheduled_task", { id, input: backendInput });
       upsertScheduledTask(updated);
       if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
       notify();
@@ -2759,7 +2762,7 @@
 
   async function pauseScheduledTask(id) {
     return runScheduledTaskAction("pause", async function () {
-      var updated = await invoke("pause_scheduled_task", { id: id });
+      const updated = await invoke("pause_scheduled_task", { id });
       upsertScheduledTask(updated);
       if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
       notify();
@@ -2769,7 +2772,7 @@
 
   async function resumeScheduledTask(id) {
     return runScheduledTaskAction("resume", async function () {
-      var updated = await invoke("resume_scheduled_task", { id: id });
+      const updated = await invoke("resume_scheduled_task", { id });
       upsertScheduledTask(updated);
       if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
       notify();
@@ -2779,7 +2782,7 @@
 
   async function toggleScheduledTaskPinned(id, pinned) {
     return runScheduledTaskAction(pinned ? "pin" : "unpin", async function () {
-      var updated = await invoke("set_scheduled_task_pinned", { id: id, pinned: !!pinned });
+      const updated = await invoke("set_scheduled_task_pinned", { id, pinned: !!pinned });
       upsertScheduledTask(updated);
       if (state.selectedScheduledTaskId === id) state.scheduledTaskDetail = updated;
       notify();
@@ -2790,15 +2793,15 @@
   async function deleteScheduledTask(id) {
     return runScheduledTaskAction("delete", async function () {
       invalidateScheduledRecentRuns();
-      var deleted = await invoke("delete_scheduled_task", { id: id });
+      const deleted = await invoke("delete_scheduled_task", { id });
       // 作废删除前在途的整表 list / detail / runs 读（与 run-now 同模式）：否则
       // 3 秒轮询的旧 list 响应落地时会把刚删的任务复活回侧边栏（含本 feature
       // run-now 轮询依赖的 taskStillListed 判断，幽灵窗口会击穿 R1 守卫）。
       invalidateScheduledTaskReads(id);
-      var deletedSessionIds = deleted && Array.isArray(deleted.deletedSessionIds)
+      const deletedSessionIds = deleted && Array.isArray(deleted.deletedSessionIds)
         ? deleted.deletedSessionIds
         : [];
-      var deletedSessionSet = Object.create(null);
+      const deletedSessionSet = Object.create(null);
       deletedSessionIds.forEach(function (sessionId) {
         deletedSessionSet[sessionId] = true;
         purgeSessionBuffer(sessionId);
@@ -2819,10 +2822,10 @@
 
   async function runScheduledTaskNow(id) {
     return runScheduledTaskAction("run-now", async function () {
-      var run = await invoke("run_scheduled_task_now", { id: id });
+      const run = await invoke("run_scheduled_task_now", { id });
       invalidateScheduledTaskReads(id);
       upsertScheduledTaskRun(run);
-      var runStatus = String(run && run.status || "").toLowerCase();
+      const runStatus = String(run && run.status || "").toLowerCase();
       if (runStatus === "queued" || runStatus === "running") {
         state.scheduledTasks = (state.scheduledTasks || []).map(function (task) {
           return task.id === id ? Object.assign({}, task, { isRunning: true }) : task;
@@ -2840,7 +2843,7 @@
   // 不直接替用户发消息:引导词存为 pending,预填一句短话进输入框,由用户编辑后自己发送。
   async function startScheduledTaskChat() {
     return runScheduledTaskAction("chat-create", async function () {
-      var prompt = await invoke("scheduled_task_chat_prompt");
+      const prompt = await invoke("scheduled_task_chat_prompt");
       state.scheduledTaskDraft = null;
       state.scheduledTaskCreationSessionId = null;
       scheduledTaskAutoCreateSeq++; // 清空意图：作废在途 auto-create 的陈旧 completion（审计 f）
@@ -2862,11 +2865,11 @@
     if (!toolCallId) return false;
     // Replayed events belong to the current tail in practice. Scan backwards so
     // long-running Sessions do not pay a full-history walk on every tool frame.
-    for (var i = state.messages.length - 1; i >= 0; i--) {
-      var blocks = state.messages[i] && state.messages[i].content;
+    for (let i = state.messages.length - 1; i >= 0; i--) {
+      const blocks = state.messages[i] && state.messages[i].content;
       if (!Array.isArray(blocks)) continue;
-      for (var j = blocks.length - 1; j >= 0; j--) {
-        var block = blocks[j];
+      for (let j = blocks.length - 1; j >= 0; j--) {
+        const block = blocks[j];
         if (!block || block.type !== type) continue;
         if ((type === "tool_use" ? block.id : block.tool_use_id) === toolCallId) return true;
       }
@@ -2897,22 +2900,20 @@
   // 例外:扫到**用户发言**就放行——用户在上一张卡之后又开了口(典型「再推一次」「没看到」),
   // 这次 present 是新请求的响应,不是模型自发啰嗦;再去重 = 用户主动要却看不到任何反馈(实测 bug)。
   function isDuplicateArtifactCard(pathv) {
-    var bn = basename(pathv);
+    const bn = basename(pathv);
     if (!bn) return false;
-    for (var i = state.chatItems.length - 1; i >= 0; i--) {
-      var it = state.chatItems[i];
-      if (it.type === "tool" && fileMutationAction(it.name, it.args)) {
-        if (extractArtifactPaths(it.args).some(function (ap) { return basename(ap) === bn; })) return false;
-      }
+    for (let i = state.chatItems.length - 1; i >= 0; i--) {
+      const it = state.chatItems[i];
+      if (it.type === "tool" && fileMutationAction(it.name, it.args) && extractArtifactPaths(it.args).some(function (ap) { return basename(ap) === bn; })) return false;
       if (it.type === "user") return false;
       if (it.type === "artifact_card" && basename(it.path) === bn) return true;
     }
     return false;
   }
   function addSystemItem(text, meta) {
-    var item = { type: "system", text: text, time: timeStr() };
+    const item = { type: "system", text, time: timeStr() };
     if (meta) {
-      for (var k in meta) item[k] = meta[k];
+      for (const k in meta) item[k] = meta[k];
     }
     addChatItem(item);
     notify();
@@ -2929,8 +2930,8 @@
   }
   function removeCompactionStartItem(compactId) {
     if (!compactId) return;
-    for (var i = state.chatItems.length - 1; i >= 0; i--) {
-      var it = state.chatItems[i];
+    for (let i = state.chatItems.length - 1; i >= 0; i--) {
+      const it = state.chatItems[i];
       if (it.type === "system" && it.compactId === compactId && it.compactPhase === "start") {
         state.chatItems.splice(i, 1);
         return;
@@ -2939,7 +2940,7 @@
   }
   function addOrMergePruneCompaction(compactId) {
     removeCompactionStartItem(compactId);
-    var last = state.chatItems[state.chatItems.length - 1];
+    const last = state.chatItems[state.chatItems.length - 1];
     if (last && last.type === "system" && last.compactPruneRollup) {
       last.compactPruneCount = (last.compactPruneCount || 1) + 1;
       last.text = compactPruneRollupText(last.compactPruneCount);
@@ -2970,12 +2971,12 @@
   function flushAssistantMessageToHistory() {
     flushPendingTextBlock();
     if (pendingAssistantBlocks.length) {
-      var assistantText = pendingAssistantBlocks
+      const assistantText = pendingAssistantBlocks
         .filter(function (block) { return block && block.type === "text" && block.text; })
         .map(function (block) { return block.text; })
         .join("\n\n");
       if (state.activeSessionId && state.activeSessionId === state.scheduledTaskCreationSessionId) {
-        var scheduledTaskDraft = parseScheduledTaskDraftFromText(assistantText);
+        const scheduledTaskDraft = parseScheduledTaskDraftFromText(assistantText);
         if (scheduledTaskDraft) {
           autoCreateScheduledTaskDraft(scheduledTaskDraft, state.activeSessionId);
         }
@@ -2992,8 +2993,8 @@
   }
 
   // ── Session management ───────────────────────────────────────────
-  var refreshHistoryInflight = null;
-  var refreshHistoryQueued = false;
+  let refreshHistoryInflight = null;
+  let refreshHistoryQueued = false;
   async function refreshHistoryList() {
     if (refreshHistoryInflight) {
       refreshHistoryQueued = true;
@@ -3013,7 +3014,7 @@
             state.archivedSessions = await invoke(
               IS_WEB ? "web_access_list_archived_sessions" : "list_archived_sessions",
             );
-          } catch (e) {
+          } catch {
             state.archivedSessions = state.archivedSessions || [];
           }
           notify();
@@ -3062,27 +3063,28 @@
   // 并发防护（审计）：草稿态双击发送会并发 create_session，导致两条消息分家到两个新
   // 会话——in-flight 复用同一 promise；create_session await 期间用户切走会物化在错误
   // 会话（导航被劫持）——物化前校验 activeSessionId 仍为空，已切走则只登记后台 buffer。
-  var ensureSessionInFlight = null;
+  let ensureSessionInFlight = null;
   async function ensureSession() {
     if (state.activeSessionId) return state.activeSessionId;
     if (ensureSessionInFlight) return ensureSessionInFlight;
     // 捕获导航 token：仅判 activeSessionId 覆盖不了「再进草稿」——enterDraft
     // 只推进 token 不改 activeSessionId（仍为 null），在途 create_session 返回
     // 后必须连同 token 一起校验，否则会劫持用户新进的草稿（三审 P1）。
-    var navToken = sessionSwitchRequestToken;
-    var p = (async function () {
+    const navToken = sessionSwitchRequestToken;
+    const p = (async function () {
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
-        var meta = await invoke(IS_WEB ? "web_access_create_session" : "create_session");
+        const meta = await invoke(IS_WEB ? "web_access_create_session" : "create_session");
         // create_session 等待期间用户可能已发送/清空输入，迁移当下的最新值。
-        var composerDraft = state.composerDraft || "";
+        const composerDraft = state.composerDraft || "";
         // create_session 等待期间用户可能已退出草稿（切到既有会话或再进草稿）：
         // 物化不得劫持 active（审计），新会话登记为后台 buffer 等下次切换，
         // 调用方按 null 处理不发送本条消息。「切到既有会话」→ activeSessionId
         // 非空；「再进草稿」→ activeSessionId 仍为 null 但导航 token 已前移——
         // 两种导航都中止物化（三审 P1）。
         if (state.activeSessionId || navToken !== sessionSwitchRequestToken) {
-          var bg = sessionStates[meta.id] = freshBuffer();
+          const bg = freshBuffer();
+          sessionStates[meta.id] = bg;
           bg.loadedFromDisk = true;
           bg.sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
           return null;
@@ -3096,13 +3098,13 @@
         // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
         // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
         // 该会话自己的 per-session 记录，全局默认不受影响）。
-        var laneDefault = state.modeDefaults
+        const laneDefault = state.modeDefaults
           && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
         // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
         // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
         if (laneDefault === "plan") {
           try {
-            var laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
+            const laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
             applyAuthoritativeModeState(meta.id, laneModeState);
           } catch (laneModeError) {
             runSyncOnSession(meta.id, function () {
@@ -3145,9 +3147,9 @@
 
   function invokeOutcome(command, args) {
     return invoke(command, args).then(function (value) {
-      return { ok: true, value: value };
+      return { ok: true, value };
     }, function (error) {
-      return { ok: false, error: error };
+      return { ok: false, error };
     });
   }
 
@@ -3155,13 +3157,13 @@
   // presentation-only states in parallel and commit them once, guarded by the
   // switch token so a slow response cannot leak into a newer active Session.
   async function syncSessionPresentationState(sessionId, requestToken) {
-    var results = await Promise.all([
-      invokeOutcome("get_mode_state", { sessionId: sessionId }),
-      invokeOutcome("get_active_persona", { sessionId: sessionId }),
-      invokeOutcome("session_mounted_collections_snapshot", { sessionId: sessionId }),
-      invokeOutcome("session_mounted_collections", { sessionId: sessionId }),
-      invokeOutcome("session_mounted_collection", { sessionId: sessionId }),
-      invokeOutcome("get_memory_overview", { sessionId: sessionId }),
+    const results = await Promise.all([
+      invokeOutcome("get_mode_state", { sessionId }),
+      invokeOutcome("get_active_persona", { sessionId }),
+      invokeOutcome("session_mounted_collections_snapshot", { sessionId }),
+      invokeOutcome("session_mounted_collections", { sessionId }),
+      invokeOutcome("session_mounted_collection", { sessionId }),
+      invokeOutcome("get_memory_overview", { sessionId }),
     ]);
     if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== sessionId) return false;
 
@@ -3174,12 +3176,12 @@
     // sid+seq），不 bump 则 A→B→A 快速切回时可被旧 sync 响应覆盖(二审补充)。
     personaSyncSeq += 1;
     memoryOverviewSeq += 1;
-    var mode = results[0];
-    var persona = results[1];
-    var snapshot = results[2];
-    var collections = results[3];
-    var legacyCollection = results[4];
-    var memory = results[5];
+    const mode = results[0];
+    const persona = results[1];
+    const snapshot = results[2];
+    const collections = results[3];
+    const legacyCollection = results[4];
+    const memory = results[5];
     state.modeState = mode.ok && mode.value
       ? { mode: mode.value.mode || "yolo", multiAgent: !!mode.value.multi_agent }
       : { mode: "yolo", multiAgent: false };
@@ -3222,34 +3224,34 @@
   }
 
   function hydratedMessageKey(message, hideInternalEnvelope) {
-    var blocks = message && Array.isArray(message.content) ? message.content : [];
+    let blocks = message && Array.isArray(message.content) ? message.content : [];
     if (message && message.role === "user") {
-      var resultIds = blocks.filter(function (block) {
+      const resultIds = blocks.filter(function (block) {
         return block && block.type === "tool_result" && block.tool_use_id;
-      }).map(function (block) { return block.tool_use_id; }).sort();
+      }).map(function (block) { return block.tool_use_id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // 键归一化需字典序,显式声明语义
       if (resultIds.length) return "user:tool_results:" + resultIds.join("|");
       return "user:text:" + userMessageDisplayText(blocks, hideInternalEnvelope);
     }
     if (message && message.role === "assistant") {
-      var toolIds = blocks.filter(function (block) {
+      const toolIds = blocks.filter(function (block) {
         return block && block.type === "tool_use" && block.id;
-      }).map(function (block) { return block.id; }).sort();
+      }).map(function (block) { return block.id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // 键归一化需字典序,显式声明语义
       if (toolIds.length) return "assistant:tool_uses:" + toolIds.join("|");
       blocks = blocks.filter(function (block) { return !block || block.type !== "thinking"; });
-      try { return "assistant:" + JSON.stringify(blocks); } catch (_) {}
+      try { return "assistant:" + JSON.stringify(blocks); } catch { /* 序列化失败按原文落盘 */ }
     }
-    try { return JSON.stringify(message); } catch (_) { return String(message); }
+    try { return JSON.stringify(message); } catch { return String(message); }
   }
 
   function mergeHydratedMessages(durableMessages, liveMessages, hideInternalEnvelope) {
-    var durable = Array.isArray(durableMessages) ? durableMessages.slice() : [];
-    var counts = Object.create(null);
+    const durable = Array.isArray(durableMessages) ? [...durableMessages] : [];
+    const counts = Object.create(null);
     durable.forEach(function (message) {
-      var key = hydratedMessageKey(message, hideInternalEnvelope);
+      const key = hydratedMessageKey(message, hideInternalEnvelope);
       counts[key] = (counts[key] || 0) + 1;
     });
     (Array.isArray(liveMessages) ? liveMessages : []).forEach(function (message) {
-      var key = hydratedMessageKey(message, hideInternalEnvelope);
+      const key = hydratedMessageKey(message, hideInternalEnvelope);
       if (counts[key]) {
         counts[key] -= 1;
       } else {
@@ -3260,24 +3262,24 @@
   }
 
   function mergeHydratedArtifacts(durableArtifacts, liveArtifacts) {
-    var merged = [];
-    var seen = Object.create(null);
-    (durableArtifacts || []).concat(liveArtifacts || []).forEach(function (artifact) {
-      var path = typeof artifact === "string" ? artifact : (artifact && (artifact.path || artifact.storage_path)) || "";
-      var identity = basename(path);
+    const merged = [];
+    const seen = Object.create(null);
+    [...(durableArtifacts || []), ...(liveArtifacts || [])].forEach(function (artifact) {
+      const path = typeof artifact === "string" ? artifact : (artifact && (artifact.path || artifact.storage_path)) || "";
+      const identity = basename(path);
       if (!path || !identity) return;
       if (seen[identity] !== undefined) {
         // The durable transcript commonly stores a relative write_file path while
         // artifact:disk has already supplied the absolute path. They are the same
         // presentation object; retain the path that can actually be opened.
-        var existingIndex = seen[identity];
+        const existingIndex = seen[identity];
         if (isAbsPath(path) && !isAbsPath(merged[existingIndex].path)) {
-          merged[existingIndex] = { path: path, basename: identity };
+          merged[existingIndex] = { path, basename: identity };
         }
         return;
       }
       seen[identity] = merged.length;
-      merged.push({ path: path, basename: identity });
+      merged.push({ path, basename: identity });
     });
     return merged;
   }
@@ -3293,26 +3295,26 @@
     if (item.type === "plan_card" && item.planId) return "plan:" + item.planId;
     if (item.type === "user") return "user:" + String(item.text || item.html || "");
     if (item.type === "system") return "system:" + String(item.text || "");
-    var stable = Object.assign({}, item);
+    const stable = Object.assign({}, item);
     delete stable.id;
     delete stable.time;
     delete stable.streaming;
-    try { return item.type + ":" + JSON.stringify(stable); } catch (_) { return item.type + ":" + String(stable); }
+    try { return item.type + ":" + JSON.stringify(stable); } catch { return item.type + ":" + String(stable); }
   }
 
   function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {
-    var remappedCurrentStreamId = 0;
-    var availableByKey = Object.create(null);
+    let remappedCurrentStreamId = 0;
+    const availableByKey = Object.create(null);
     function interruptedDisplayRange(item) {
       if (!item || item.interruptedDisplayOnly !== true) return null;
-      var anchorIndex = -1;
-      var nextUserIndex = -1;
-      var afterMessageIndex = Number(item.afterMessageIndex);
+      let anchorIndex = -1;
+      let nextUserIndex = -1;
+      const afterMessageIndex = Number(item.afterMessageIndex);
       if (Number.isFinite(afterMessageIndex) && afterMessageIndex >= 0) {
-        for (var index = 0; index < state.chatItems.length; index++) {
-          var candidate = state.chatItems[index];
+        for (let index = 0; index < state.chatItems.length; index++) {
+          const candidate = state.chatItems[index];
           if (!candidate || candidate.type !== "user") continue;
-          var candidateMessageIndex = Number(candidate.messageIndex);
+          const candidateMessageIndex = Number(candidate.messageIndex);
           if (candidateMessageIndex === afterMessageIndex) anchorIndex = index;
           else if (anchorIndex >= 0 && candidateMessageIndex > afterMessageIndex) {
             nextUserIndex = index;
@@ -3320,11 +3322,11 @@
           }
         }
       }
-      var afterUserOrdinal = Number(item.afterUserOrdinal);
-      if (anchorIndex < 0 && Number.isInteger(afterUserOrdinal) && afterUserOrdinal >= 0) {
-        var userOrdinal = -1;
-        for (var fallbackIndex = 0; fallbackIndex < state.chatItems.length; fallbackIndex++) {
-          var fallback = state.chatItems[fallbackIndex];
+      const afterUserOrdinal = Number(item.afterUserOrdinal);
+      if (anchorIndex < 0 && Number.isSafeInteger(afterUserOrdinal) && afterUserOrdinal >= 0) {
+        let userOrdinal = -1;
+        for (let fallbackIndex = 0; fallbackIndex < state.chatItems.length; fallbackIndex++) {
+          const fallback = state.chatItems[fallbackIndex];
           if (!fallback || fallback.type !== "user") continue;
           userOrdinal += 1;
           if (userOrdinal === afterUserOrdinal) anchorIndex = fallbackIndex;
@@ -3343,18 +3345,18 @@
       };
     }
     state.chatItems.forEach(function (item, index) {
-      var key = hydratedChatItemKey(item);
+      const key = hydratedChatItemKey(item);
       if (!key) return;
       if (!availableByKey[key]) availableByKey[key] = [];
       availableByKey[key].push(index);
     });
     (liveChatItems || []).forEach(function (item) {
-      var key = hydratedChatItemKey(item);
-      var range = interruptedDisplayRange(item);
-      var existingIndex = -1;
+      const key = hydratedChatItemKey(item);
+      const range = interruptedDisplayRange(item);
+      let existingIndex = -1;
       if (range) {
-        for (var rangeIndex = range.start; rangeIndex < range.end; rangeIndex++) {
-          var rangeItem = state.chatItems[rangeIndex];
+        for (let rangeIndex = range.start; rangeIndex < range.end; rangeIndex++) {
+          const rangeItem = state.chatItems[rangeIndex];
           if (rangeItem && rangeItem.interruptedDisplayOnly !== true &&
               hydratedChatItemKey(rangeItem) === key) {
             existingIndex = rangeIndex;
@@ -3362,18 +3364,18 @@
           }
         }
       } else {
-        var matches = key && availableByKey[key];
+        const matches = key && availableByKey[key];
         existingIndex = matches && matches.length ? matches.shift() : -1;
       }
       if (existingIndex >= 0) {
-        var existingId = state.chatItems[existingIndex].id;
+        const existingId = state.chatItems[existingIndex].id;
         state.chatItems[existingIndex] = Object.assign({}, state.chatItems[existingIndex], item, {
           id: existingId,
         });
         if (item && item.id === liveCurrentStreamId) remappedCurrentStreamId = existingId;
         return;
       }
-      var clone = Object.assign({}, item, { id: ++itemIdSeq });
+      const clone = Object.assign({}, item, { id: ++itemIdSeq });
       if (item && item.id === liveCurrentStreamId) remappedCurrentStreamId = clone.id;
       if (range && range.end < state.chatItems.length) {
         state.chatItems.splice(range.end, 0, clone);
@@ -3387,11 +3389,12 @@
     return remappedCurrentStreamId;
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   async function switchToSessionInternal(id, preserveScheduledRunContext, errorScope, options) {
-    var requestToken = ++sessionSwitchRequestToken;
+    const requestToken = ++sessionSwitchRequestToken;
     settlePendingCapabilitySessionSwitch(false);
-    var forceDurableLoad = !!(options && options.forceDurableLoad);
-    var hydrateLiveSession = !!(options && options.hydrateLiveSession);
+    const forceDurableLoad = !!(options && options.forceDurableLoad);
+    let hydrateLiveSession = !!(options && options.hydrateLiveSession);
     if (!id) {
       reportSessionSwitchFailure(new Error(bt("runNoSession")), errorScope);
       return false;
@@ -3400,7 +3403,7 @@
       sessionStates[id] = freshBuffer();
       restoreEvictedSessionDraft(id, sessionStates[id]);
     }
-    var existingBuffer = sessionStates[id];
+    const existingBuffer = sessionStates[id];
     if (existingBuffer && (existingBuffer.remoteTurnActive ||
         (!existingBuffer.loadedFromDisk &&
           (existingBuffer.busy || existingBuffer.messages.length || existingBuffer.chatItems.length)))) {
@@ -3423,20 +3426,20 @@
       if (!preserveScheduledRunContext) state.scheduledRunContext = null;
       state.scheduledTaskPendingGuide = null; // 仅在目标会话已确认可用后提交导航状态
       switchActiveTo(id, null);
-      var cachedPresentationSync = beginSessionPresentationSync(id, requestToken);
+      const cachedPresentationSync = beginSessionPresentationSync(id, requestToken);
       publishSessionTranscriptReady(options);
       await cachedPresentationSync;
       if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== id) return false;
       reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
       return true;
     }
-    var saved;
-    var personaEvents;
-    var pinvouReviews;
-    var pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
-    var turnTimeline;
+    let saved;
+    let personaEvents;
+    let pinvouReviews;
+    const pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
+    let turnTimeline;
     try {
-      var primary = await Promise.all([
+      const primary = await Promise.all([
         loadSessionForClient(id, !IS_WEB),
         invoke("get_session_persona_events", { sessionId: id }).catch(function () { return []; }),
         invoke("get_session_pinvou_reviews", { sessionId: id }).catch(function () { return []; }),
@@ -3453,18 +3456,19 @@
         // await 到重试的最终结果——scheduled 收尾（terminal 标记/已查看回执/
         // 返回上下文）与 UI 错误状态始终与最终结果一致；宽限期内快照仍未到
         // 达才报错并按失败收口，避免“先报错、后台静默重试成功”的状态分裂。
-        var capabilityRetry = {
+        const capabilityRetry = {
           spec: {
-            id: id,
-            preserveScheduledRunContext: preserveScheduledRunContext,
-            errorScope: errorScope,
-            options: options,
-            requestToken: requestToken,
+            id,
+            preserveScheduledRunContext,
+            errorScope,
+            options,
+            requestToken,
           },
           resolve: null,
           timer: null,
         };
-        return await new Promise(function (resolve) {
+        // await 在 async 函数 return 中冗余;Promise 直接透传语义一致。
+        return new Promise(function (resolve) {
           capabilityRetry.resolve = resolve;
           capabilityRetry.timer = setTimeout(function () {
             if (pendingCapabilitySessionSwitch !== capabilityRetry) return;
@@ -3496,13 +3500,13 @@
     state.scheduledTaskPendingGuide = null;
     state.activeSessionId = saved.metadata.id;
     if (hydrateLiveSession) {
-      var liveBuffer = sessionStates[id] || freshBuffer();
+      const liveBuffer = sessionStates[id] || freshBuffer();
       loadWorkingSetFrom(liveBuffer);
-      var liveMessages = Array.isArray(state.messages) ? state.messages.slice() : [];
-      var liveChatItems = Array.isArray(state.chatItems) ? state.chatItems.slice() : [];
-      var liveArtifacts = Array.isArray(state.artifacts) ? state.artifacts.slice() : [];
-      var liveCurrentStreamId = currentStreamId;
-      var hasLivePresentation = !!state.busy || !!currentStreamText || !!pendingAssistantText ||
+      const liveMessages = Array.isArray(state.messages) ? [...state.messages] : [];
+      const liveChatItems = Array.isArray(state.chatItems) ? [...state.chatItems] : [];
+      const liveArtifacts = Array.isArray(state.artifacts) ? [...state.artifacts] : [];
+      const liveCurrentStreamId = currentStreamId;
+      const hasLivePresentation = !!state.busy || !!currentStreamText || !!pendingAssistantText ||
         (Array.isArray(pendingAssistantBlocks) && pendingAssistantBlocks.length > 0);
       state.messages = mergeHydratedMessages(
         saved.messages,
@@ -3551,7 +3555,7 @@
     // selected. Start Shell reconciliation only after that rebuild; polling
     // earlier can attach task ids to a transient card which hydration replaces.
     scheduleShellPoll(id, true);
-    var presentationSync = beginSessionPresentationSync(id, requestToken);
+    const presentationSync = beginSessionPresentationSync(id, requestToken);
     publishSessionTranscriptReady(options);
     await presentationSync;
     if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== saved.metadata.id) return false;
@@ -3559,14 +3563,14 @@
     return true;
   }
   function settlePendingCapabilitySessionSwitch(outcome) {
-    var pending = pendingCapabilitySessionSwitch;
+    const pending = pendingCapabilitySessionSwitch;
     if (!pending) return;
     if (pending.timer) clearTimeout(pending.timer);
     pendingCapabilitySessionSwitch = null;
     pending.resolve(outcome);
   }
   function retryCapabilityBlockedSessionSwitch() {
-    var pending = pendingCapabilitySessionSwitch;
+    const pending = pendingCapabilitySessionSwitch;
     if (!pending || !webInvokeCapabilitiesReady()) return;
     if (pending.spec.requestToken !== sessionSwitchRequestToken) {
       // 已有更新的切换请求：按失败收口旧调用方，不让其悬停等待。
@@ -3590,14 +3594,14 @@
   }
 
   async function openScheduledRunChatOnce(run, task) {
-    var sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
+    const sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
     if (!sessionId) {
       reportSessionSwitchFailure(new Error(bt("runNoSession")), "scheduled");
       return false;
     }
     rememberScheduledRunOwner(run);
-    var runStatus = String(run && run.status || "").toLowerCase();
-    var openActivation = null;
+    const runStatus = String(run && run.status || "").toLowerCase();
+    let openActivation = null;
     if (runStatus === "queued" || runStatus === "running") {
       openActivation = beginScheduledOpenActivation(sessionId);
     } else {
@@ -3605,31 +3609,31 @@
     }
     setScheduledTaskError(null);
     notify();
-    var returnSessionId = state.scheduledRunContext
+    const returnSessionId = state.scheduledRunContext
       ? state.scheduledRunContext.returnSessionId
       : state.activeSessionId;
-    var automationId = (run && run.automationId) || (task && task.id) || null;
-    var runId = (run && (run.runId || run.id)) || null;
-    var scheduledContext = {
-      sessionId: sessionId,
-      returnSessionId: returnSessionId,
-      automationId: automationId,
-      runId: runId,
+    const automationId = (run && run.automationId) || (task && task.id) || null;
+    const runId = (run && (run.runId || run.id)) || null;
+    const scheduledContext = {
+      sessionId,
+      returnSessionId,
+      automationId,
+      runId,
       taskName: (task && task.name) || (run && (run.taskName || run.name)) || "",
       model: (task && task.model) || null,
       mode: "yolo",
     };
-    var liveBuffer = sessionStates[sessionId];
-    var hasLiveTurn = !!(liveBuffer && (
+    const liveBuffer = sessionStates[sessionId];
+    const hasLiveTurn = !!(liveBuffer && (
       liveBuffer.busy ||
       liveBuffer.scheduledInitialTurnPhase === "active" ||
       (liveBuffer.queued && liveBuffer.queued.length) ||
       (liveBuffer.thinking && liveBuffer.thinking.active)
     ));
-    var isTerminalRun = runStatus === "completed" || runStatus === "failed" || runStatus === "canceled";
-    var forceDurableLoad = isTerminalRun && !hasLiveTurn;
-    var switched = await switchToSessionInternal(sessionId, true, "scheduled", {
-      forceDurableLoad: forceDurableLoad,
+    const isTerminalRun = ["completed", "failed", "canceled"].includes(runStatus);
+    const forceDurableLoad = isTerminalRun && !hasLiveTurn;
+    const switched = await switchToSessionInternal(sessionId, true, "scheduled", {
+      forceDurableLoad,
       hydrateLiveSession: !isTerminalRun,
       onTranscriptReady: function () {
         state.scheduledRunContext = scheduledContext;
@@ -3646,9 +3650,9 @@
     notify();
     if (automationId && runId && runStatus === "completed") {
       try {
-        var receipt = await invoke("mark_scheduled_run_viewed", {
-          automationId: automationId,
-          runId: runId,
+        const receipt = await invoke("mark_scheduled_run_viewed", {
+          automationId,
+          runId,
         });
         invalidateScheduledTaskReads(automationId);
         applyScheduledRunViewed(automationId, runId, receipt);
@@ -3661,10 +3665,10 @@
   }
 
   function openScheduledRunChat(run, task) {
-    var sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
+    const sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
     if (!sessionId) return openScheduledRunChatOnce(run, task);
     if (scheduledRunOpenInFlight[sessionId]) return scheduledRunOpenInFlight[sessionId];
-    var opening = openScheduledRunChatOnce(run, task);
+    const opening = openScheduledRunChatOnce(run, task);
     scheduledRunOpenInFlight[sessionId] = opening;
     function clearOpening() {
       if (scheduledRunOpenInFlight[sessionId] === opening) {
@@ -3676,10 +3680,10 @@
   }
 
   async function exitScheduledRunChat() {
-    var context = state.scheduledRunContext;
+    const context = state.scheduledRunContext;
     if (!context) return false;
     if (context.returnSessionId && context.returnSessionId !== context.sessionId) {
-      var restored = await switchToSessionInternal(context.returnSessionId, true, "scheduled");
+      const restored = await switchToSessionInternal(context.returnSessionId, true, "scheduled");
       if (restored) {
         state.scheduledRunContext = null;
         notify();
@@ -3739,7 +3743,7 @@
     try {
       // 后端按 SessionKind 分发:定时运行会话在 delete_session 里联动删除
       // 该次 Session、Run 与底座 Task,任务定义与共享工作间保留。
-      await invoke("delete_session", { id: id });
+      await invoke("delete_session", { id });
       applyDeletedSession(id);
       return true;
     } catch (e) {
@@ -3751,8 +3755,8 @@
   async function renameSession(id, title) {
     invalidateScheduledRecentRunsForSession(id);
     try {
-      await invoke("rename_session", { id: id, title: title });
-      var s = state.sessions.find(function (s) { return s.id === id; });
+      await invoke("rename_session", { id, title });
+      const s = state.sessions.find(function (s) { return s.id === id; });
       if (s) s.title = title;
       state.scheduledTaskRecentRuns = (state.scheduledTaskRecentRuns || []).map(function (run) {
         return run && run.sessionId === id ? Object.assign({}, run, { sessionTitle: title }) : run;
@@ -3766,12 +3770,12 @@
 
   async function toggleSessionPinned(id, pinned) {
     invalidateScheduledRecentRunsForSession(id);
-    var s = state.sessions.find(function (s) { return s.id === id; });
-    var scheduledRun = recentScheduledRunForSession(id);
-    var prev = s ? !!s.pinned : false;
-    var prevPinnedAt = s ? s.pinned_at : null;
-    var previousRunPinned = scheduledRun ? !!scheduledRun.pinned : false;
-    var previousRunPinnedAt = scheduledRun ? scheduledRun.pinnedAt : null;
+    const s = state.sessions.find(function (s) { return s.id === id; });
+    const scheduledRun = recentScheduledRunForSession(id);
+    const prev = s ? !!s.pinned : false;
+    const prevPinnedAt = s ? s.pinned_at : null;
+    const previousRunPinned = scheduledRun ? !!scheduledRun.pinned : false;
+    const previousRunPinnedAt = scheduledRun ? scheduledRun.pinnedAt : null;
     if (s) {
       s.pinned = !!pinned;
       s.pinned_at = pinned ? new Date().toISOString() : null;
@@ -3782,7 +3786,7 @@
     }
     notify();
     try {
-      await invoke("set_session_pinned", { id: id, pinned: !!pinned });
+      await invoke("set_session_pinned", { id, pinned: !!pinned });
       await refreshHistoryList();
     } catch (e) {
       if (s) {
@@ -3800,14 +3804,14 @@
 
   async function archiveSession(id) {
     invalidateScheduledRecentRunsForSession(id);
-    var idx = state.sessions.findIndex(function (s) { return s.id === id; });
+    const idx = state.sessions.findIndex(function (s) { return s.id === id; });
     if (idx < 0) {
       // 定时运行会话不在 state.sessions;收起 = 从侧边栏记录移除,进设置页归档列表。
-      var scheduledRun = recentScheduledRunForSession(id);
+      const scheduledRun = recentScheduledRunForSession(id);
       // Codex 等独立会话也不在 state.sessions；交给后端判定并刷新统一历史列表。
       if (!scheduledRun) {
         try {
-          await invoke("set_session_archived", { id: id, archived: true });
+          await invoke("set_session_archived", { id, archived: true });
           await refreshHistoryList();
           return true;
         } catch (e) {
@@ -3815,13 +3819,13 @@
           return false;
         }
       }
-      var previousRuns = state.scheduledTaskRecentRuns || [];
-      var wasViewingRun = state.activeSessionId === id;
-      var previousContext = state.scheduledRunContext;
+      const previousRuns = state.scheduledTaskRecentRuns || [];
+      const wasViewingRun = state.activeSessionId === id;
+      const previousContext = state.scheduledRunContext;
       // 归档等待期间的导航 token：失败回滚时「activeSessionId === null」不足以
       // 证明无新导航——用户再进草稿也保持 null（enterDraft 只推进 token），
       // 仅 token 未前移才允许把 active 拽回归档会话（三审 P1）。
-      var navToken = sessionSwitchRequestToken;
+      const navToken = sessionSwitchRequestToken;
       // 与普通会话收纳同语义:保留 buffer(还能从设置页还原后重开),但要离开当前视图。
       if (wasViewingRun) saveWorkingSetTo(getBuffer(id));
       state.scheduledTaskRecentRuns = previousRuns.filter(function (run) {
@@ -3830,7 +3834,7 @@
       leaveSessionView(id);
       notify();
       try {
-        await invoke("set_session_archived", { id: id, archived: true });
+        await invoke("set_session_archived", { id, archived: true });
         await refreshHistoryList();
         return true;
       } catch (e) {
@@ -3850,19 +3854,19 @@
         return false;
       }
     }
-    var s = state.sessions[idx];
-    var archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
-    var wasActive = state.activeSessionId === id;
+    const s = state.sessions[idx];
+    const archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
+    const wasActive = state.activeSessionId === id;
     // 与 scheduled 分支同源：失败回滚须以导航 token 证明「无新导航」——
     // 归档等待期间再进草稿 activeSessionId 仍为 null（三审 P1）。
-    var navToken = sessionSwitchRequestToken;
+    const navToken = sessionSwitchRequestToken;
     if (wasActive) saveWorkingSetTo(getBuffer(id));
     state.sessions.splice(idx, 1);
-    state.archivedSessions = [archived].concat((state.archivedSessions || []).filter(function (x) { return x.id !== id; }));
+    state.archivedSessions = [archived, ...(state.archivedSessions || []).filter(function (x) { return x.id !== id; })];
     leaveSessionView(id);
     notify();
     try {
-      await invoke("set_session_archived", { id: id, archived: true });
+      await invoke("set_session_archived", { id, archived: true });
       await refreshHistoryList();
       return true;
     } catch (e) {
@@ -3882,16 +3886,16 @@
   }
 
   async function restoreArchivedSession(id) {
-    var idx = (state.archivedSessions || []).findIndex(function (s) { return s.id === id; });
+    const idx = (state.archivedSessions || []).findIndex(function (s) { return s.id === id; });
     if (idx < 0) return false;
-    var s = state.archivedSessions[idx];
+    const s = state.archivedSessions[idx];
     invalidateScheduledRecentRunsForSession(id);
-    var restored = Object.assign({}, s, { archived: false, archived_at: null });
+    const restored = Object.assign({}, s, { archived: false, archived_at: null });
     state.archivedSessions.splice(idx, 1);
-    state.sessions = [restored].concat(state.sessions || []);
+    state.sessions = [restored, ...(state.sessions || [])];
     notify();
     try {
-      await invoke("set_session_archived", { id: id, archived: false });
+      await invoke("set_session_archived", { id, archived: false });
       await refreshHistoryList();
       // 还原的定时运行会话回侧边栏"定时任务记录"(refreshHistoryList 只管普通会话)。
       if (String(id).indexOf("sched-") === 0) loadScheduledTaskRecentRuns().catch(function () {});
@@ -3906,7 +3910,7 @@
   }
 
   // 实时态有专属气泡的工具（方案卡），重建时要还原成原卡而非普通工具卡。
-  var PLAN_TOOLS = ["update_plan", "checklist_write", "todo_write"];
+  const PLAN_TOOLS = ["update_plan", "checklist_write", "todo_write"];
 
   // tool_result.content 可能是 string 或 Anthropic content blocks 数组，归一成纯文本。
   function toolResultText(content) {
@@ -3921,17 +3925,17 @@
   // to preserve strict provider role ordering. Keep that guidance in durable/model
   // context, but remove only the two known internal suffix kinds from tool cards.
   function stripInternalToolRuntimeSuffix(value) {
-    var text = String(value == null ? "" : value);
-    var marker = "\n\n<codewhale:runtime_event";
+    let text = String(value == null ? "" : value);
+    const marker = "\n\n<codewhale:runtime_event";
     while (true) {
-      var start = text.lastIndexOf(marker);
+      const start = text.lastIndexOf(marker);
       if (start < 0) return text;
-      var suffix = text.slice(start + 2);
-      var opening = suffix.match(/^<codewhale:runtime_event\b[^>]*>/i);
+      const suffix = text.slice(start + 2);
+      const opening = suffix.match(/^<codewhale:runtime_event\b[^>]*>/i);
       if (!opening || !/<\/codewhale:runtime_event>\s*$/i.test(suffix)) return text;
-      var tag = opening[0];
-      var knownKind = /\bkind=(["'])(?:stuck_guard|tool_error_degradation)\1/i.test(tag);
-      var internal = /\bvisibility=(["'])internal\1/i.test(tag);
+      const tag = opening[0];
+      const knownKind = /\bkind=(["'])(?:stuck_guard|tool_error_degradation)\1/i.test(tag);
+      const internal = /\bvisibility=(["'])internal\1/i.test(tag);
       if (!knownKind || !internal) return text;
       text = text.slice(0, start);
     }
@@ -3948,27 +3952,28 @@
 
   // plan 类工具结果格式："...updated:\n{json}"——切第一个换行后 parse（与 engine.rs 一致）。
   function parsePlanSnapshot(content) {
-    var txt = toolResultText(content);
-    var i = txt.indexOf("\n");
+    const txt = toolResultText(content);
+    const i = txt.indexOf("\n");
     if (i < 0) return null;
-    try { return JSON.parse(txt.slice(i + 1)); } catch (_) { return null; }
+    try { return JSON.parse(txt.slice(i + 1)); } catch { return null; }
   }
 
   // request_user_input 结果是纯 JSON {answers:[{id,label,value}]}（turn_loop.rs ToolResult::json）。
   // 按 question.id 匹配，还原成 UserInputCard 的 answers 数组（顺序对齐 questions）。
   // multi_select 多选保留全部同 id 答案、不塌缩（与 code-native-lane parseNativeUserAnswers 对齐）。
   function parseUserAnswers(content, questions) {
-    var ans;
-    try { ans = JSON.parse(toolResultText(content)).answers; } catch (_) { return null; }
+    let ans;
+    try { ans = JSON.parse(toolResultText(content)).answers; } catch { return null; }
     if (!Array.isArray(ans)) return null;
     // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
     // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
-    var byId = Object.create(null);
-    ans.forEach(function (a) { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
-    var out = [];
-    for (var qi = 0; qi < questions.length; qi++) {
-      var q = questions[qi];
-      var matches = byId[q.id];
+    const byId = Object.create(null);
+    ans.forEach(function (a) { if (a && a.id != null) byId[a.id] = byId[a.id] || [];
+        byId[a.id].push(a); });
+    const out = [];
+    for (let qi = 0; qi < questions.length; qi++) {
+      const q = questions[qi];
+      const matches = byId[q.id];
       if (!matches || !matches.length) { out.push(null); continue; }
       matches.forEach(function (a) { out.push({ id: q.id, label: a.label, value: a.value }); });
     }
@@ -3979,8 +3984,8 @@
   // metadata 不进持久化 messages,session 重载只能从 tool_result 文本识别,否则 🛑 红卡重启即丢。
   function parseCarefulBlocked(text) {
     if (typeof text !== "string" || text.indexOf("BLOCKED: This command was blocked for safety reasons") !== 0) return null;
-    var rm = text.match(/Reasons: ([^\n]*)/);
-    var sm = text.match(/Suggestions: ([^\n]*)/);
+    const rm = text.match(/Reasons: ([^\n]*)/);
+    const sm = text.match(/Suggestions: ([^\n]*)/);
     return {
       safety_level: "dangerous", blocked: true,
       reasons: rm && rm[1] ? rm[1].split("; ") : [],
@@ -3989,16 +3994,16 @@
   }
 
   function userMessageInputProvenance(blocks) {
-    var textBlocks = Array.isArray(blocks) ? blocks : [];
-    for (var i = 0; i < textBlocks.length; i++) {
-      var block = textBlocks[i];
+    const textBlocks = Array.isArray(blocks) ? blocks : [];
+    for (let i = 0; i < textBlocks.length; i++) {
+      const block = textBlocks[i];
       if (!block || block.type !== "text") continue;
-      var text = String(block.text || "").trim();
+      const text = String(block.text || "").trim();
       if (text.indexOf("<turn_meta>") !== 0) continue;
       // CodeWhale appends human-readable authority detail after the stable
       // provenance identifier. Parse only that identifier so both the current
       // one-line shape and legacy two-line metadata remain compatible.
-      var match = text.match(/(?:^|\n)Input provenance:\s*([a-z0-9_-]+)/i);
+      const match = text.match(/(?:^|\n)Input provenance:\s*([a-z0-9_-]+)/i);
       if (match && match[1]) return match[1].toLowerCase();
     }
     return "";
@@ -4006,7 +4011,7 @@
 
   function isInternalUserMessageProvenance(provenance) {
     // shell_completion 同为 CodeWhale 非权威内部来源（SHELL_COMPLETION_HANDOFF_TURN_META）。
-    return provenance === "runtime" || provenance === "subagent_handoff" || provenance === "shell_completion";
+    return ["runtime", "subagent_handoff", "shell_completion"].includes(provenance);
   }
   // isInternalRuntimeUserMessage（下方 live 路径同一判定）与本函数等价：
   // 历史重载与实时事件两条展示路径共用同一信封判定，避免两处实现漂移。
@@ -4016,7 +4021,7 @@
   // 原始 blocks 必须保留给模型续聊；展示层只隐藏该内部消息，避免伪装成用户气泡/新 Turn。
   // 定时会话还会过滤送模 envelope，只投影真实任务正文。
   function userMessageDisplayText(blocks, hideInternalEnvelope) {
-    var textParts = (Array.isArray(blocks) ? blocks : [])
+    const textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
     if (textParts.some(isInternalRuntimeUserMessage)) return "";
@@ -4024,7 +4029,7 @@
     if (!hideInternalEnvelope) return textParts.join("");
 
     return textParts.filter(function (text) {
-      var trimmed = text.trim();
+      const trimmed = text.trim();
       return !(
         (trimmed.indexOf("<turn_meta>") === 0 && trimmed.endsWith("</turn_meta>")) ||
         trimmed === "<turn_meta_unchanged />"
@@ -4040,6 +4045,7 @@
   // tools (tool_use not yet in messages), and clearing it would leave
   // the later chat:tool_end without its meta (stuck selection card /
   // degraded artifact card).
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   function rerenderFromMessages(opts) {
     state.chatItems = [];
     itemIdSeq = 0;
@@ -4054,10 +4060,10 @@
     // tool_uses inside messages.
     if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
-    var pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
+    const pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
     function emitPersonaAt(atOrAfter, isTail) {
-      for (var k = 0; k < pe.length; k++) {
-        var ev = pe[k];
+      for (let k = 0; k < pe.length; k++) {
+        const ev = pe[k];
         if (isTail ? (ev.pos < atOrAfter) : (ev.pos !== atOrAfter)) continue;
         if (ev.kind === "equip" && ev.card) addChatItem({ type: "persona_equip", card: ev.card, time: "" });
         else if (ev.kind === "unequip") addChatItem({ type: "system", text: bt("personaUnequipped") + (ev.name || ""), time: "" });
@@ -4066,11 +4072,11 @@
     }
     // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
     // 才能在还原选择卡/方案卡时拿到结果（选项/快照）。
-    var resultById = {};
-    for (var ri = 0; ri < state.messages.length; ri++) {
-      var rc = state.messages[ri].content;
+    const resultById = {};
+    for (let ri = 0; ri < state.messages.length; ri++) {
+      const rc = state.messages[ri].content;
       if (!Array.isArray(rc)) continue;
-      for (var rj = 0; rj < rc.length; rj++) {
+      for (let rj = 0; rj < rc.length; rj++) {
         if (rc[rj].type === "tool_result") {
           resultById[rc[rj].tool_use_id] = { content: rc[rj].content, is_error: !!rc[rj].is_error };
         }
@@ -4078,16 +4084,16 @@
     }
     // 预扫:每个产物最后一次被 write/append/edit 改的 tool_use id → rerender 只在最后一次
     // 续一张成品卡(与实时 chat:done 的一张对齐,不刷一堆)。
-    var lastDirtyArtifactId = {};
-    var writtenArtifacts = {}; // write/append 写过的 path=产物;没 present 时兜底补首卡
-    var presentedArtifacts = {}; // 整篇 present_artifact 过的 path → 别再兜底补首卡(present 会出卡,否则重复)
-    var presentedArtifactNames = {}; // path 可能一边相对一边绝对,basename 去重防重复卡
-    for (var di = 0; di < state.messages.length; di++) {
-      var dc = state.messages[di].content;
+    const lastDirtyArtifactId = {};
+    const writtenArtifacts = {}; // write/append 写过的 path=产物;没 present 时兜底补首卡
+    const presentedArtifacts = {}; // 整篇 present_artifact 过的 path → 别再兜底补首卡(present 会出卡,否则重复)
+    const presentedArtifactNames = {}; // path 可能一边相对一边绝对,basename 去重防重复卡
+    for (let di = 0; di < state.messages.length; di++) {
+      const dc = state.messages[di].content;
       if (!Array.isArray(dc)) continue;
-      for (var dj = 0; dj < dc.length; dj++) {
-        var db = dc[dj];
-        var dbMutation = db.type === "tool_use" && fileMutationAction(db.name, db.input);
+      for (let dj = 0; dj < dc.length; dj++) {
+        const db = dc[dj];
+        const dbMutation = db.type === "tool_use" && fileMutationAction(db.name, db.input);
         if (dbMutation) {
           extractArtifactPaths(db.input).forEach(function (dap) {
             lastDirtyArtifactId[dap] = db.id;
@@ -4096,17 +4102,17 @@
             if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;
           });
         } else if (db.type === "tool_use" && isPresentArtifactTool(db.name)) {
-          var pap = extractArtifactPath(db.input);
-          var pres = resultById[db.id];
-          var pp = presentArtifactAbsPath(pres && pres.content, pap);
+          const pap = extractArtifactPath(db.input);
+          const pres = resultById[db.id];
+          const pp = presentArtifactAbsPath(pres && pres.content, pap);
           if (pp) {
             presentedArtifacts[pp] = true;
             presentedArtifactNames[basename(pp)] = true;
           }
         } else if (db.type === "tool_use" && shouldUseToolOutputAsArtifact(db.name)) {
-          var gres = resultById[db.id];
+          const gres = resultById[db.id];
           if (!(gres && gres.is_error)) {
-            var gp = artifactPathFromToolOutput(gres && gres.content);
+            const gp = artifactPathFromToolOutput(gres && gres.content);
             if (gp && isDeliverable(gp)) {
               lastDirtyArtifactId[gp] = db.id;
               writtenArtifacts[gp] = true;
@@ -4115,29 +4121,29 @@
         }
       }
     }
-    for (var mi = 0; mi < state.messages.length; mi++) {
+    for (let mi = 0; mi < state.messages.length; mi++) {
       emitPersonaAt(mi, false); // 该消息之前发生的卡牌事件先插
-      var m = state.messages[mi];
-      var blocks = Array.isArray(m.content) ? m.content : [];
+      const m = state.messages[mi];
+      const blocks = Array.isArray(m.content) ? m.content : [];
       if (m.role === "user") {
-        var utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
+        const utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
-          var uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
-          var scene = pinvouSceneForMessagePos(mi);
+          const uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
+          const scene = pinvouSceneForMessagePos(mi);
           if (scene) uitem2.pinvouScene = scene;
-          if (utext.indexOf("以下维度产物还缺") >= 0) uitem2.pinvouTransfer = "悟";
-          else if (utext.indexOf("请按下面的检阅意见") >= 0 || utext.indexOf("以下事项我已拍板") >= 0 || utext.indexOf("request_user_input 正式问我") >= 0) uitem2.pinvouTransfer = "品";
+          if (utext.includes("以下维度产物还缺")) uitem2.pinvouTransfer = "悟";
+          else if (utext.includes("请按下面的检阅意见") || utext.includes("以下事项我已拍板") || utext.includes("request_user_input 正式问我")) uitem2.pinvouTransfer = "品";
           addChatItem(uitem2);
         }
         // tool_result（只回填普通工具卡；选择卡/方案卡的结果已在 tool_use 处还原）
-        for (var ci = 0; ci < blocks.length; ci++) {
-          var c = blocks[ci];
+        for (let ci = 0; ci < blocks.length; ci++) {
+          const c = blocks[ci];
           if (c.type !== "tool_result") continue;
-          var tm = toolMeta[c.tool_use_id];
+          const tm = toolMeta[c.tool_use_id];
           if (tm) {
             // careful hook 拦截 → 还原 🛑 红卡(实时由 tool_end metadata 插,重载从文本反解)
-            var blockedMd = parseCarefulBlocked(toolResultText(c.content));
+            const blockedMd = parseCarefulBlocked(toolResultText(c.content));
             if (blockedMd) {
               updateToolItem(c.tool_use_id, toolResultDisplayContent(c.content), false); // 被拦=失败态,与实时一致
               addChatItem({
@@ -4146,7 +4152,7 @@
               });
             } else {
               // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
-              var contentForCard = (tm.name === "load_skill")
+              const contentForCard = (tm.name === "load_skill")
                 ? bt("skillContentHidden")
                 : toolResultDisplayContent(c.content);
               updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
@@ -4156,10 +4162,10 @@
         continue;
       }
       if (m.role !== "assistant") continue;
-      var textBuf = "";
-      var planSnap = null, todosSnap = null, sawPlanTool = false;
-      for (var bi = 0; bi < blocks.length; bi++) {
-        var b = blocks[bi];
+      let textBuf = "";
+      let planSnap = null, todosSnap = null, sawPlanTool = false;
+      for (let bi = 0; bi < blocks.length; bi++) {
+        const b = blocks[bi];
         if (b.type === "text") {
           textBuf += b.text;
         } else if (b.type === "thinking") {
@@ -4167,7 +4173,7 @@
             addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
-          var reasoningText = String(b.thinking || b.text || "");
+          const reasoningText = String(b.thinking || b.text || "");
           if (reasoningText) {
             addChatItem({
               type: "reasoning", text: reasoningText, time: "", streaming: false,
@@ -4182,9 +4188,9 @@
           toolMeta[b.id] = { name: b.name, args: b.input };
           // request_user_input → 还原只读选择卡（问题来自 input，选项高亮来自 result）
           if (b.name === "request_user_input") {
-            var qs = (b.input && b.input.questions) || [];
+            const qs = (b.input && b.input.questions) || [];
             if (Array.isArray(qs) && qs.length) {
-              var res = resultById[b.id];
+              const res = resultById[b.id];
               // 快照可能落在 turn 进行中（底座每次落盘）：tool_use 尚无对应
               // tool_result，不能按历史恢复为 submitted。跳过，等
               // chat:user_input_required 事件渲染可交互的 active 卡。
@@ -4200,9 +4206,9 @@
           // present_artifact → 还原成品卡(切会话不丢)。仅当工具成功时还原:
           // 失败的调用回退成普通工具卡(下方 default addChatItem)。
           if (isPresentArtifactTool(b.name)) {
-            var pares = resultById[b.id];
+            const pares = resultById[b.id];
             if (!(pares && pares.is_error)) {
-              var rpp = presentArtifactAbsPath(pares && pares.content, b.input && b.input.path);
+              const rpp = presentArtifactAbsPath(pares && pares.content, b.input && b.input.path);
               if (!isDuplicateArtifactCard(rpp)) {
                 addChatItem({
                   type: "artifact_card",
@@ -4217,8 +4223,8 @@
             }
           }
           // update_plan / checklist_write / todo_write → 收集快照，本条消息末尾还原方案卡
-          if (PLAN_TOOLS.indexOf(b.name) >= 0) {
-            var snap = parsePlanSnapshot(resultById[b.id] && resultById[b.id].content);
+          if (PLAN_TOOLS.includes(b.name)) {
+            const snap = parsePlanSnapshot(resultById[b.id] && resultById[b.id].content);
             if (snap) {
               if (b.name === "update_plan") planSnap = snap; else todosSnap = snap;
             }
@@ -4227,10 +4233,10 @@
           }
           addChatItem({ type: "tool", toolId: b.id, name: b.name, args: b.input, output: null, success: null, state: "pending" });
           if (shouldUseToolOutputAsArtifact(b.name)) {
-            var gres2 = resultById[b.id];
-            var gap = artifactPathFromToolOutput(gres2 && gres2.content);
+            const gres2 = resultById[b.id];
+            const gap = artifactPathFromToolOutput(gres2 && gres2.content);
             if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
-              var gprev = findPresentedArtifact(gap);
+              const gprev = findPresentedArtifact(gap);
               if (gprev) {
                 addChatItem({
                   type: "artifact_card", path: gprev.path, title: gprev.title,
@@ -4245,11 +4251,11 @@
           // 成品卡(与实时 tool_end 的自动续逻辑对齐,切会话不丢)。present 的卡按
           // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
           if (fileMutationAction(b.name, b.input)) {
-            var wres = resultById[b.id];
+            const wres = resultById[b.id];
             extractArtifactPaths(b.input).forEach(function (wap) {
               // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
               if ((wres && wres.is_error) || lastDirtyArtifactId[wap] !== b.id) return;
-              var wprev = findPresentedArtifact(wap);
+              const wprev = findPresentedArtifact(wap);
               if (wprev) {
                 addChatItem({
                   type: "artifact_card", path: wprev.path, title: wprev.title,
@@ -4268,7 +4274,7 @@
       }
       // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡
       if (sawPlanTool && (planSnap || todosSnap)) {
-        var snaps = { plan: planSnap, todos: todosSnap };
+        const snaps = { plan: planSnap, todos: todosSnap };
         addChatItem({
           type: "plan_card", plan: planSnap, todos: todosSnap,
           planMarkdown: composePlanMarkdown(snaps),
@@ -4280,7 +4286,7 @@
   }
 
   function updateToolItem(toolId, output, success) {
-    for (var i = 0; i < state.chatItems.length; i++) {
+    for (let i = 0; i < state.chatItems.length; i++) {
       if (state.chatItems[i].type === "tool" && state.chatItems[i].toolId === toolId) {
         state.chatItems[i].output = output;
         state.chatItems[i].success = success;
@@ -4292,31 +4298,35 @@
   }
 
   function isShellExecutionTool(name) {
-    return name === "exec_shell" || name === "task_shell_start" || name === "shell" || name === "Bash";
+    return ["exec_shell", "task_shell_start", "shell", "Bash"].includes(name);
   }
 
   function utf8Length(text) {
     try { return new TextEncoder().encode(String(text || "")).length; }
-    catch (_) { return String(text || "").length; }
+    catch { return String(text || "").length; }
   }
 
   // Shell snapshots are a tail view, not an append-only byte stream. Normalize
   // terminal control sequences and state omissions explicitly instead of
   // pretending the visible tail is the complete log.
   function normalizeTerminalTail(text) {
-    var value = String(text || "")
-      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
-      .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, "");
-    var out = [];
+    // 终端控制序列本身即协议内容(OSC/CSI/DEL),按原样匹配:eslint-disable-line 注释见下。
+    const value = String(text || "")
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: 协议分隔符:ESC/BEL/ST 是终端协议字节,与同行 eslint 注释同理
+      .replaceAll(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "") // eslint-disable-line no-control-regex, sonarjs/no-control-regex -- OSC 终止符(BEL/ST)与 ESC 是终端协议字节
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: 协议分隔符:CSI 序列按终端协议定义
+      .replaceAll(/\x1B\[[0-?]*[ -/]*[@-~]/g, ""); // eslint-disable-line no-control-regex -- CSI 序列按协议定义
+    const out = [];
     value.split("\n").forEach(function (line) {
       // After splitting on LF, a normal Windows CRLF line still ends in CR.
       // Remove that delimiter first; only an *internal* CR means a terminal
       // progress line overwrote earlier content on the same row.
-      var visible = line.endsWith("\r") ? line.slice(0, -1) : line;
-      var overwriteAt = visible.lastIndexOf("\r");
+      let visible = line.endsWith("\r") ? line.slice(0, -1) : line;
+      const overwriteAt = visible.lastIndexOf("\r");
       if (overwriteAt >= 0) visible = visible.slice(overwriteAt + 1);
-      while (visible.indexOf("\x08") >= 0) {
-        visible = visible.replace(/[^\x08]\x08/g, "").replace(/^\x08+/, "");
+      while (visible.includes("\x08")) {
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: 协议分隔符:退格符是终端协议字节
+        visible = visible.replaceAll(/[^\x08]\x08/g, "").replace(/^\x08+/, ""); // eslint-disable-line no-control-regex, sonarjs/no-control-regex -- 退格符是终端协议字节
       }
       out.push(visible);
     });
@@ -4326,19 +4336,19 @@
   function formatShellSnapshot(job) {
     function section(raw, total, kind) {
       raw = String(raw || "");
-      var visibleRaw = raw.replace(/^\.\.\.\s*/, "");
-      var omitted = /^\.\.\./.test(raw) || Number(total || 0) > utf8Length(visibleRaw);
-      var body = normalizeTerminalTail(visibleRaw);
+      const visibleRaw = raw.replace(/^\.\.\.\s*/, "");
+      const omitted = /^\.\.\./.test(raw) || Number(total || 0) > utf8Length(visibleRaw);
+      let body = normalizeTerminalTail(visibleRaw);
       if (omitted) body = bt("shellOutputOmitted")(kind) + "\n" + body;
       return body;
     }
-    var stdout = section(job.stdout_tail, job.stdout_len, "stdout");
-    var stderr = section(job.stderr_tail, job.stderr_len, "stderr");
-    var parts = [];
+    const stdout = section(job.stdout_tail, job.stdout_len, "stdout");
+    const stderr = section(job.stderr_tail, job.stderr_len, "stderr");
+    const parts = [];
     if (stdout) parts.push(stdout);
     if (stderr) parts.push((stdout ? "[STDERR]\n" : "") + stderr);
     if (String(job.status || "").toLowerCase() !== "running") {
-      var code = job.exit_code == null ? bt("shellUnknownExit") : String(job.exit_code);
+      const code = job.exit_code == null ? bt("shellUnknownExit") : String(job.exit_code);
       parts.push(bt("shellTaskFinished")(code));
     }
     return parts.join("\n");
@@ -4360,35 +4370,35 @@
         !isShellExecutionTool(item.name) || shellCommandForItem(item) !== String(job.command || "")) {
       return false;
     }
-    var output = normalizeTerminalTail(String(item.output || ""));
-    if (output.indexOf(String(job.id || "")) >= 0 && job.id) return true;
-    var evidence = [job.stdout_tail, job.stderr_tail].map(function (raw) {
+    const output = normalizeTerminalTail(String(item.output || ""));
+    if (output.includes(String(job.id || "")) && job.id) return true;
+    const evidence = [job.stdout_tail, job.stderr_tail].map(function (raw) {
       return normalizeTerminalTail(String(raw || "").replace(/^\.\.\.\s*/, "")).trim();
     }).filter(Boolean);
-    if (evidence.length) return evidence.every(function (text) { return output.indexOf(text) >= 0; });
+    if (evidence.length) return evidence.every(function (text) { return output.includes(text); });
     return /\(no output\)|no output|无输出|出力なし/i.test(output);
   }
 
   function applyShellSnapshots(sid, jobs) {
-    var anyRunning = false;
-    var changed = false;
-    var runningCommandCounts = {};
+    let anyRunning = false;
+    let changed = false;
+    const runningCommandCounts = {};
     (jobs || []).forEach(function (job) {
       if (String(job.status || "").toLowerCase() !== "running") return;
-      var command = String(job.command || "");
+      const command = String(job.command || "");
       runningCommandCounts[command] = (runningCommandCounts[command] || 0) + 1;
     });
     runSyncOnSession(sid, function () {
       (jobs || []).forEach(function (job) {
-        var status = String(job.status || "").toLowerCase();
-        var running = status === "running";
+        const status = String(job.status || "").toLowerCase();
+        const running = status === "running";
         if (running) anyRunning = true;
-        var item = state.chatItems.find(function (it) {
+        let item = state.chatItems.find(function (it) {
           return it.type === "tool" && it.taskId === job.id;
         });
         if (!item && running) {
-          var command = String(job.command || "");
-          var candidates = state.chatItems.filter(function (it) {
+          const command = String(job.command || "");
+          const candidates = state.chatItems.filter(function (it) {
             return it.type === "tool" && isShellExecutionTool(it.name) && !it.taskId &&
               it.state === "running" && shellCommandForItem(it) === command;
           });
@@ -4414,7 +4424,7 @@
           addChatItem(item);
           changed = true;
         }
-        var snapshotKey = shellSnapshotKey(job);
+        const snapshotKey = shellSnapshotKey(job);
         if (item.shellSnapshotKey === snapshotKey) return;
         item.taskId = job.id;
         item.sessionId = sid;
@@ -4436,22 +4446,23 @@
 
   function scheduleShellPoll(sid, immediate) {
     if (!sid) return;
-    var poll = shellPollState[sid] || (shellPollState[sid] = {
+    if (!shellPollState[sid]) shellPollState[sid] = {
       timer: null, inFlight: false, waitBudget: 0,
-    });
+    };
+    const poll = shellPollState[sid];
     poll.waitBudget = Math.max(poll.waitBudget, 12);
     if (poll.timer || poll.inFlight) return;
     poll.timer = setTimeout(function () { runShellPoll(sid); }, immediate ? 0 : 250);
   }
 
   async function runShellPoll(sid) {
-    var poll = shellPollState[sid];
+    const poll = shellPollState[sid];
     if (!poll || poll.inFlight) return;
     poll.timer = null;
     poll.inFlight = true;
-    var running = false;
+    let running = false;
     try {
-      var jobs = await invoke("list_shell_tasks", { sessionId: sid });
+      const jobs = await invoke("list_shell_tasks", { sessionId: sid });
       running = applyShellSnapshots(sid, Array.isArray(jobs) ? jobs : []);
       if (!running) poll.waitBudget = Math.max(0, poll.waitBudget - 1);
     } catch (error) {
@@ -4468,10 +4479,10 @@
   }
 
   async function cancelShellTask(sessionId, taskId) {
-    var sid = sessionId || state.activeSessionId;
+    const sid = sessionId || state.activeSessionId;
     if (!sid || !taskId) return;
     try {
-      await invoke("cancel_shell_task", { sessionId: sid, taskId: taskId });
+      await invoke("cancel_shell_task", { sessionId: sid, taskId });
     } finally {
       scheduleShellPoll(sid, true);
     }
@@ -4479,7 +4490,7 @@
 
   // 找最后一条匹配的 chat item（用于卡片状态机更新）
   function patchLastItem(pred, patch) {
-    for (var i = state.chatItems.length - 1; i >= 0; i--) {
+    for (let i = state.chatItems.length - 1; i >= 0; i--) {
       if (pred(state.chatItems[i])) {
         Object.assign(state.chatItems[i], patch);
         return state.chatItems[i];
@@ -4495,20 +4506,20 @@
   // ── 产物跟踪 ─────────────────────────────────────────────────────
   function basename(p) {
     if (!p) return "";
-    var parts = String(p).split(/[\\/]/);
+    const parts = String(p).split(/[\\/]/);
     return parts[parts.length - 1] || p;
   }
   function isAbsPath(p) {
     return typeof p === "string" && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p));
   }
   function normalizedPath(p) {
-    return String(p || "").replace(/\\/g, "/");
+    return String(p || "").replaceAll('\\', "/");
   }
   function noteArtifactChange(path, event, sessionId) {
     if (!path) return;
     state.artifactChange = {
       seq: (state.artifactChange && state.artifactChange.seq || 0) + 1,
-      path: path,
+      path,
       event: event || "modified",
       sessionId: sessionId || "",
       at: Date.now(),
@@ -4516,16 +4527,16 @@
     notify();
   }
   function isSharedMcpArtifactPath(path) {
-    return normalizedPath(path).indexOf("/sessions/default/artifacts/") >= 0;
+    return normalizedPath(path).includes("/sessions/default/artifacts/");
   }
   function artifactBelongsToSession(path, sid) {
     if (!path || !sid) return false;
     if (!isAbsPath(path)) return true;
     if (isSharedMcpArtifactPath(path)) return true;
-    var normalized = normalizedPath(path);
-    if (normalized.indexOf("/sessions/") >= 0) {
-      return normalized.indexOf("/sessions/" + sid + "/workspace/") >= 0 ||
-        normalized.indexOf("/sessions/" + sid + "/artifacts/") >= 0;
+    const normalized = normalizedPath(path);
+    if (normalized.includes("/sessions/")) {
+      return normalized.includes("/sessions/" + sid + "/workspace/") ||
+        normalized.includes("/sessions/" + sid + "/artifacts/");
     }
     return true;
   }
@@ -4538,7 +4549,7 @@
   // 办公文档 + markdown 报告 + 数据表 + 图片 + 打包件都算成品(覆盖 AI 常见产出格式)。
   // 中间/草稿(.txt/.json/.xml 等)刻意不在此列 → 不进面板,避免一堆过程文件污染产物列表;
   // 这类格式若确是成品,靠模型 present_artifact 显式挂出(present 过的不受扩展名门控)。
-  var DELIVERABLE_EXTS = [
+  const DELIVERABLE_EXTS = [
     "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls",
     "md", "csv", "png", "jpg", "jpeg", "svg", "gif", "webp", "zip",
   ];
@@ -4546,43 +4557,43 @@
   // 不进产出物列表)。tmp/ 下的文件即使扩展名是成品型(.md/.html 等)也不算自动成品;
   // 确需展示只能靠模型显式 present_artifact(显式 present 不经 isDeliverable 门控)。
   function isTmpPath(path) {
-    var segs = normalizedPath(path).split("/");
-    for (var i = 0; i < segs.length; i++) {
+    const segs = normalizedPath(path).split("/");
+    for (let i = 0; i < segs.length; i++) {
       if (segs[i] === "tmp") return true;
     }
     return false;
   }
   function isDeliverable(path) {
     if (isTmpPath(path)) return false;
-    var ext = (String(path || "").split(".").pop() || "").toLowerCase();
-    return DELIVERABLE_EXTS.indexOf(ext) >= 0;
+    const ext = (String(path || "").split(".").pop() || "").toLowerCase();
+    return DELIVERABLE_EXTS.includes(ext);
   }
   function trackArtifact(path) {
     if (!path) return;
     if (state.activeSessionId && !artifactBelongsToSession(path, state.activeSessionId)) return;
-    var bn = basename(path);
-    for (var i = 0; i < state.artifacts.length; i++) {
+    const bn = basename(path);
+    for (let i = 0; i < state.artifacts.length; i++) {
       if (basename(state.artifacts[i].path) === bn) {
         // 已有同名:write_file 跟踪的是相对路径、disk watcher 推的是绝对路径——同一文件
         // 两种 path 会重复。新 path 绝对而旧的相对则用绝对替换(open 可靠),否则忽略重复。
         if (isAbsPath(path) && !isAbsPath(state.artifacts[i].path)) {
-          state.artifacts[i] = { path: path, basename: bn };
+          state.artifacts[i] = { path, basename: bn };
           notify();
         }
         return;
       }
     }
-    state.artifacts.push({ path: path, basename: bn });
+    state.artifacts.push({ path, basename: bn });
     notify();
   }
   function markTurnDirtyArtifact(path) {
-    var bn = basename(path);
+    const bn = basename(path);
     if (!bn) return;
     if ((state.turnDirtyArtifacts || []).some(function (p) { return basename(p) === bn; })) return;
     state.turnDirtyArtifacts.push(path);
   }
   function untrackArtifact(path) {
-    var before = state.artifacts.length;
+    const before = state.artifacts.length;
     state.artifacts = state.artifacts.filter(function (a) { return a.path !== path; });
     if (state.artifacts.length !== before) notify();
   }
@@ -4592,10 +4603,10 @@
   // 从 chatItems 里的成品卡推导,无需单独 per-session map(chatItems 已按 session
   // 隔离 + rerender 重建)。返回最近一张同名成品卡(取 title/description 复用)。
   function findPresentedArtifact(path) {
-    var bn = basename(path);
+    const bn = basename(path);
     if (!bn) return null;
-    for (var i = state.chatItems.length - 1; i >= 0; i--) {
-      var it = state.chatItems[i];
+    for (let i = state.chatItems.length - 1; i >= 0; i--) {
+      const it = state.chatItems[i];
       if (it.type === "artifact_card" && basename(it.path) === bn) return it;
     }
     return null;
@@ -4606,39 +4617,39 @@
     if (!sid) return;
     if (isScheduledRunSession(sid)) return;
     try {
-      var files = await invoke("list_workspace_files", { sessionId: sid });
+      const files = await invoke("list_workspace_files", { sessionId: sid });
       if (sid !== state.activeSessionId) return; // 已切走,放弃(避免写错 session)
-      var byName = {};
+      const byName = {};
       state.artifacts.forEach(function (a) { byName[basename(a.path)] = a; });
-      var added = false;
+      let added = false;
       files.forEach(function (p) {
-        var bn = basename(p);
-        var ex = byName[bn];
+        const bn = basename(p);
+        const ex = byName[bn];
         // 已 present_artifact 过的成品在 saved.artifacts(ex 命中);扫盘只「新增」成品型文件,
         // 不再把所有过程文件全扫进面板(修「飞书 CLI scratch 全暴露成产物」)。
         if (!ex) {
           if (!isDeliverable(p)) return;
-          var na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
+          const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
         }
         else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
       });
       if (added) {
         notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
+        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* 落盘失败不阻断前端更新 */ }
       }
-    } catch (e) { /* workspace 不存在(新 session)等,忽略 */ }
+    } catch { /* workspace 不存在(新 session)等,忽略 */ }
   }
   function pushArtifactPath(paths, path) {
     if (typeof path !== "string" || !path.trim()) return;
     path = path.trim();
-    if (paths.indexOf(path) < 0) paths.push(path);
+    if (!paths.includes(path)) paths.push(path);
   }
   function extractArtifactPaths(args) {
     if (!args) return [];
     if (typeof args === "string") {
-      try { args = JSON.parse(args); } catch (e) { return []; }
+      try { args = JSON.parse(args); } catch { return []; }
     }
-    var paths = [];
+    const paths = [];
     pushArtifactPath(paths, args.path || args.file_path || args.filename);
     [args.replace, args.changes].forEach(function (changes) {
       if (!Array.isArray(changes)) return;
@@ -4647,9 +4658,11 @@
       });
     });
     String(args.patch || "").split(/\r?\n/).forEach(function (line) {
-      var custom = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/.exec(line);
+      // eslint-disable-next-line sonarjs/super-linear-regex -- 输入按行拆分且行长由补丁头限定,回溯上界可忽略
+      const custom = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/.exec(line);
       if (custom) { pushArtifactPath(paths, custom[1]); return; }
-      var unified = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
+      // eslint-disable-next-line sonarjs/super-linear-regex -- 输入按行拆分且行长由补丁头限定,回溯上界可忽略
+      const unified = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
       if (unified && unified[1] !== "/dev/null") pushArtifactPath(paths, unified[1]);
     });
     return paths;
@@ -4660,11 +4673,11 @@
 
   function fileMutationAction(name, args) {
     if (typeof args === "string") {
-      try { args = JSON.parse(args); } catch (_) { args = null; }
+      try { args = JSON.parse(args); } catch { args = null; }
     }
     if (String(name || "").toLowerCase() === "file") {
-      var action = String(args && args.action || "").toLowerCase();
-      return action === "write" || action === "edit" || action === "patch" ? action : null;
+      const action = String(args && args.action || "").toLowerCase();
+      return ["write", "edit", "patch"].includes(action) ? action : null;
     }
     if (name === "write_file") return "write";
     if (name === "edit_file") return "edit";
@@ -4673,9 +4686,9 @@
 
   // ── Plan markdown 拼接（accept 时发给后端，与 main.js 对齐）────────
   function composePlanMarkdown(snapshots) {
-    var lines = [];
-    var plan = snapshots && snapshots.plan;
-    var todos = snapshots && snapshots.todos;
+    const lines = [];
+    const plan = snapshots && snapshots.plan;
+    const todos = snapshots && snapshots.todos;
     function sym(s) { return s === "completed" ? "●" : s === "in_progress" ? "◎" : "○"; }
     if (plan && Array.isArray(plan.items)) {
       if (plan.explanation) { lines.push("**方案：**", plan.explanation, ""); }
@@ -4696,11 +4709,11 @@
     return sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
   }
   function formatAttachmentDisplayText(text, attachments) {
-    var names = (attachments || []).map(function (attachment) {
+    const names = (attachments || []).map(function (attachment) {
       return typeof attachment === "string" ? attachment : attachment && attachment.basename;
     }).filter(Boolean).map(String);
     if (!names.length) return String(text || "");
-    var attachmentLine = "📎 " + JSON.stringify(names);
+    const attachmentLine = "📎 " + JSON.stringify(names);
     return String(text || "").trim()
       ? String(text) + "\n\n" + attachmentLine
       : attachmentLine;
@@ -4711,7 +4724,7 @@
   function emitPetEvent(name, sid) {
     try {
       if (TAURI && TAURI.event && TAURI.event.emit) TAURI.event.emit(name, { session_id: sid });
-    } catch (_) { /* 桌宠是纯装饰,广播失败不影响对话 */ }
+    } catch { /* 桌宠是纯装饰,广播失败不影响对话 */ }
   }
 
   // 后端命令错误的展示文本:稳定错误码(如 image_input_unsupported,与
@@ -4719,9 +4732,9 @@
   // 透传后端硬编码中文——英/日界面不该看到中文结论;文案与 ChatView 前置警告
   // (t.uiAttachments.*)同源语义。与 tauri bridge chat.js 同一口径。
   function displayTurnError(err) {
-    var text = String(err && err.toString ? err.toString() : err || "");
+    const text = String(err && err.toString ? err.toString() : err || "");
     if (text.indexOf("image_input_unsupported") === 0) {
-      return text.indexOf("能力未知") >= 0 ? bt("imageUnknown") : bt("imageUnsupported");
+      return text.includes("能力未知") ? bt("imageUnknown") : bt("imageUnsupported");
     }
     return text;
   }
@@ -4730,11 +4743,11 @@
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
   function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
-    var turnOwnerBuffer = getBuffer(sid);
-    var submittedMessage = null;
-    var submittedMessagePos = -1;
-    var submittedUserItemId = 0;
-    var submittedStreamId = 0;
+    const turnOwnerBuffer = getBuffer(sid);
+    let submittedMessage = null;
+    let submittedMessagePos = -1;
+    let submittedUserItemId = 0;
+    let submittedStreamId = 0;
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
       recordAuthoritySyncDiagnostic("local_send_blocked_by_remote_sync", authoritySyncBufferSnapshot(sid, turnOwnerBuffer));
       return Promise.reject(new Error(bt("turnSyncRejected")));
@@ -4752,7 +4765,7 @@
       state.chatItems = state.chatItems.filter(function (item) {
         return !item.turnErrorNotice && !item.authoritySyncNotice;
       });
-      var uitem = {
+      const uitem = {
         type: "user",
         text: displayText,
         time: timeStr(),
@@ -4774,8 +4787,8 @@
     });
     notify();
     emitPetEvent("pet:turn_start", sid);
-    var chatCommand = IS_WEB ? "web_access_chat" : "chat";
-    var chatArgs = IS_WEB
+    const chatCommand = IS_WEB ? "web_access_chat" : "chat";
+    const chatArgs = IS_WEB
       ? {
           message: text,
           attachmentHandles: (attachmentsPayload || []).map(function (attachment) {
@@ -4803,8 +4816,8 @@
         return true;
       })
       .catch(function (err) {
-        var errorText = String(err && err.message ? err.message : err || "");
-        var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
+        const errorText = String(err && err.message ? err.message : err || "");
+        const concurrentTurn = errorText.includes("session_turn_in_progress");
         recordAuthoritySyncDiagnostic("local_turn_admission_failed", Object.assign({
           operation: "send",
           concurrent_turn: concurrentTurn,
@@ -4825,7 +4838,7 @@
           state.busy = false;
           stopThinking();
         });
-        var deferredApplied = applyDeferredRemoteUserMessage(sid, turnOwnerBuffer);
+        const deferredApplied = applyDeferredRemoteUserMessage(sid, turnOwnerBuffer);
         if (concurrentTurn && turnOwnerBuffer && !deferredApplied) {
           markRemoteTurn(sid, turnOwnerBuffer, false, "local_send_concurrent_turn");
         }
@@ -4845,7 +4858,7 @@
   // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
   // 连续输入的多个独立任务合并成一个模型请求。
   function flushQueued(sid) {
-    var pendingBuffer = sessionStates[sid];
+    const pendingBuffer = sessionStates[sid];
     if (pendingBuffer && pendingBuffer.remoteTurnActive) {
       reconcileRemoteTurn(sid).then(function (ready) {
         if (ready) flushQueued(sid);
@@ -4853,17 +4866,17 @@
       return;
     }
     if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
-    var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
+    const q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
-    var item = q.shift();
-    var attachments = item.attachments || [];
-    var displayText = item.displayText == null
+    const item = q.shift();
+    const attachments = item.attachments || [];
+    const displayText = item.displayText == null
       ? formatAttachmentDisplayText(item.text, attachments)
       : item.displayText;
     notify();
     doSendFor(sid, item.text, displayText, attachments, item.meta || null, !!item.restrictTools, true)
       .catch(function () {
-        var retryQueue = sid === state.activeSessionId
+        const retryQueue = sid === state.activeSessionId
           ? state.queued
           : (sessionStates[sid] && sessionStates[sid].queued);
         if (!retryQueue) return;
@@ -4873,16 +4886,16 @@
   }
 
   async function sendMessageToSession(sessionId, text, meta) {
-    var sid = String(sessionId || "").trim();
-    var content = String(text || "").trim();
+    const sid = String(sessionId || "").trim();
+    const content = String(text || "").trim();
     if (!sid) throw new Error(bt("targetSessionMissing"));
     if (!content) throw new Error(bt("replyContentEmpty"));
-    var exists = state.sessions.some(function (session) { return String(session.id) === sid; });
+    const exists = state.sessions.some(function (session) { return String(session.id) === sid; });
     if (!exists) throw new Error(bt("targetSessionMissing"));
 
     await ensureSessionBufferLoaded(sid);
-    var targetBuffer = getBuffer(sid);
-    var targetQueue = targetBuffer && targetBuffer.queued;
+    let targetBuffer = getBuffer(sid);
+    const targetQueue = targetBuffer && targetBuffer.queued;
     if (isBusyFor(sid) || (targetQueue && targetQueue.length > 0)) {
       runSyncOnSession(sid, function () {
         state.queued.push({
@@ -4920,12 +4933,12 @@
       if (!isBusyFor(sid)) flushQueued(sid);
       return { accepted: true, queued: true };
     }
-    var completion = doSendFor(sid, content, content, [], meta || null, false, true)
+    const completion = doSendFor(sid, content, content, [], meta || null, false, true)
       .then(
         function () { return { ok: true }; },
-        function (error) { return { ok: false, error: error }; }
+        function (error) { return { ok: false, error }; }
       );
-    return { accepted: true, queued: false, completion: completion };
+    return { accepted: true, queued: false, completion };
   }
 
   function findFirstTurnItem(clientMessageId) {
@@ -4943,7 +4956,7 @@
 
   function restoreFirstTurnUiState(submission) {
     if (!submission || !submission.uiSnapshot || !firstTurnStillVisible(submission)) return;
-    var snapshot = submission.uiSnapshot;
+    const snapshot = submission.uiSnapshot;
     state.scheduledTaskPendingGuide = snapshot.scheduledTaskPendingGuide;
     state.scheduledTaskCreationSessionId = snapshot.scheduledTaskCreationSessionId;
     state.scheduledTaskDraft = snapshot.scheduledTaskDraft;
@@ -4951,17 +4964,17 @@
   }
 
   function consumeFirstTurnUiState(text, meta) {
-    var snapshot = {
+    const snapshot = {
       scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
       scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
       scheduledTaskDraft: state.scheduledTaskDraft,
       activeSkill: state.activeSkill,
     };
-    var requestedPayloadText = meta && meta.pinvouPayloadText
+    const requestedPayloadText = meta && meta.pinvouPayloadText
       ? String(meta.pinvouPayloadText || "").trim()
       : "";
-    var payloadText = requestedPayloadText || text;
-    var restrictTools = false;
+    let payloadText = requestedPayloadText || text;
+    let restrictTools = false;
     if (state.scheduledTaskPendingGuide) {
       payloadText = state.scheduledTaskPendingGuide + "\n\n" + (requestedPayloadText || text);
       restrictTools = true;
@@ -4969,12 +4982,12 @@
       state.scheduledTaskDraft = null;
     }
     state.activeSkill = null;
-    return { snapshot: snapshot, payloadText: payloadText, restrictTools: restrictTools };
+    return { snapshot, payloadText, restrictTools };
   }
 
   function seedAcceptedFirstTurn(sessionId, buffer, submission) {
-    var existingUser = null;
-    for (var index = buffer.chatItems.length - 1; index >= 0; index--) {
+    let existingUser = null;
+    for (let index = buffer.chatItems.length - 1; index >= 0; index--) {
       if (buffer.chatItems[index] && buffer.chatItems[index].type === "user") {
         existingUser = buffer.chatItems[index];
         break;
@@ -4988,11 +5001,11 @@
       return;
     }
 
-    var nextItemId = Math.max(
+    const nextItemId = Math.max(
       Number(buffer.stream && buffer.stream.itemIdSeq || 0),
       Number(submission.optimisticItemId || 0),
     ) + 1;
-    var userItem = {
+    const userItem = {
       id: nextItemId,
       type: "user",
       text: submission.displayText,
@@ -5037,15 +5050,15 @@
   }
 
   function acceptFirstTurnSubmission(submission, metadata) {
-    var sessionId = String(metadata && metadata.id || "").trim();
+    const sessionId = String(metadata && metadata.id || "").trim();
     if (!sessionId) throw new Error(bt("sessionIdMissing"));
-    var existingMetaIndex = state.sessions.findIndex(function (session) {
+    const existingMetaIndex = state.sessions.findIndex(function (session) {
       return session && session.id === sessionId;
     });
     if (existingMetaIndex >= 0) state.sessions[existingMetaIndex] = metadata;
     else state.sessions.unshift(metadata);
 
-    var buffer = getBuffer(sessionId);
+    const buffer = getBuffer(sessionId);
     buffer.loadedFromDisk = true;
     buffer.sessionRevision = String(
       metadata.transcript_revision || metadata.transcriptRevision || buffer.sessionRevision || "",
@@ -5057,9 +5070,9 @@
     // attachment objects from whichever composer is now visible so a later
     // draft cannot retry already-consumed handles.
     state.attachments = state.attachments.filter(function (attachment) {
-      return submission.readyAttachments.indexOf(attachment) < 0;
+      return !submission.readyAttachments.includes(attachment);
     });
-    var shouldActivate = firstTurnStillVisible(submission);
+    const shouldActivate = firstTurnStillVisible(submission);
     if (shouldActivate) {
       if (submission.uiSnapshot && submission.uiSnapshot.scheduledTaskPendingGuide) {
         state.scheduledTaskCreationSessionId = sessionId;
@@ -5076,14 +5089,14 @@
   async function runFirstTurnSubmission(submission) {
     if (!submission || submission.inFlight) return;
     submission.inFlight = true;
-    var item = findFirstTurnItem(submission.clientMessageId);
+    const item = findFirstTurnItem(submission.clientMessageId);
     if (item) {
       item.deliveryState = "sending";
       item.deliveryError = "";
       notify();
     }
     try {
-      var metadata = await invokeWithRequestId(
+      const metadata = await invokeWithRequestId(
         "web_access_create_session_and_chat",
         submission.args,
         submission.requestId,
@@ -5096,7 +5109,7 @@
       submission.lastErrorCode = String(error && error.code || "rpc_failed");
       submission.lastError = String(error && error.message ? error.message : error || "");
       if (!firstTurnStillVisible(submission)) return;
-      var failedItem = findFirstTurnItem(submission.clientMessageId);
+      const failedItem = findFirstTurnItem(submission.clientMessageId);
       if (failedItem) {
         failedItem.deliveryState = submission.lastErrorCode === "outcome_unknown"
           ? "unknown"
@@ -5109,30 +5122,30 @@
   }
 
   function submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta) {
-    var prepared = consumeFirstTurnUiState(text, meta);
-    var clientMessageId = webRequestId("chat");
-    var requestId = "first_turn_" + clientMessageId;
-    var time = timeStr();
-    var optimisticItem = {
+    const prepared = consumeFirstTurnUiState(text, meta);
+    const clientMessageId = webRequestId("chat");
+    const requestId = "first_turn_" + clientMessageId;
+    const time = timeStr();
+    const optimisticItem = {
       type: "user",
       text: displayText,
-      time: time,
+      time,
       messageIndex: 0,
       deliveryState: "sending",
       deliveryError: "",
-      clientMessageId: clientMessageId,
+      clientMessageId,
     };
     if (meta && meta.pinvouScene) optimisticItem.pinvouScene = meta.pinvouScene;
     addChatItem(optimisticItem);
-    var submission = {
-      clientMessageId: clientMessageId,
-      requestId: requestId,
+    const submission = {
+      clientMessageId,
+      requestId,
       draftEpoch: state.draftEpoch,
       optimisticItemId: optimisticItem.id,
-      time: time,
-      displayText: displayText,
+      time,
+      displayText,
       pinvouScene: meta && meta.pinvouScene,
-      readyAttachments: readyAttachments.slice(),
+      readyAttachments: [...readyAttachments],
       uiSnapshot: prepared.snapshot,
       args: {
         message: prepared.payloadText,
@@ -5151,7 +5164,7 @@
   }
 
   function retryFirstTurn(clientMessageId) {
-    var submission = firstTurnSubmissions[String(clientMessageId || "")];
+    const submission = firstTurnSubmissions[String(clientMessageId || "")];
     if (!submission || submission.inFlight || !firstTurnStillVisible(submission)) return;
     if (submission.lastErrorCode !== "rpc_timeout") {
       submission.requestId = "first_turn_" + webRequestId("retry");
@@ -5161,7 +5174,7 @@
 
   async function sendMessage(text, meta) {
     text = (text || "").trim();
-    var readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
+    const readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
     if (!text && readyAttachments.length === 0) return;
     // 还有解析中/上传中的附件 → 等
     if (state.attachments.some(function (a) { return a.status === "parsing"; })) {
@@ -5173,11 +5186,11 @@
       return;
     }
 
-    var displayText = formatAttachmentDisplayText(text, readyAttachments);
-    var attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
+    const displayText = formatAttachmentDisplayText(text, readyAttachments);
+    const attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
 
     if (!state.activeSessionId && IS_WEB && canInvoke("web_access_create_session_and_chat")) {
-      var existingFirstTurn = state.chatItems.some(function (item) {
+      const existingFirstTurn = state.chatItems.some(function (item) {
         return item && item.type === "user" && !!item.deliveryState;
       });
       if (existingFirstTurn) return;
@@ -5190,7 +5203,7 @@
       // 必须用返回值判空：切走场景 ensureSession 返回 null 但 activeSessionId
       // 非空（用户已切到别的会话），按 activeSessionId 继续会把本条消息发进
       // 错误会话（审计 #257）。
-      var materialized = await ensureSession();
+      const materialized = await ensureSession();
       // 物化中止（await 期间切走）→ 把输入放回输入框，不静默丢字
       // （与 tauri 版对齐，二审 F3；错误提示由 ensureSession 内如实给出）。
       if (!materialized) {
@@ -5198,20 +5211,20 @@
         return;
       }
     }
-    var sid = state.activeSessionId;
-    var activeTurnBuffer = getBuffer(sid);
+    const sid = state.activeSessionId;
+    const activeTurnBuffer = getBuffer(sid);
     function consumeUiTurnState() {
-      var consumed = {
+      const consumed = {
         scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
         scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
         scheduledTaskDraft: state.scheduledTaskDraft,
         activeSkill: state.activeSkill,
       };
-      var requestedPayloadText = meta && meta.pinvouPayloadText
+      const requestedPayloadText = meta && meta.pinvouPayloadText
         ? String(meta.pinvouPayloadText || "").trim()
         : "";
-      var payloadText = requestedPayloadText || text;
-      var restrictTools = false;
+      let payloadText = requestedPayloadText || text;
+      let restrictTools = false;
       // 定时任务引导只进入模型 payload；准入失败时由下面的 snapshot 恢复。
       if (state.scheduledTaskPendingGuide) {
         payloadText = state.scheduledTaskPendingGuide + "\n\n" + text;
@@ -5223,7 +5236,7 @@
       }
       // 新一轮先熄灭技能标；本轮 load_skill 会重新点亮。
       state.activeSkill = null;
-      return { snapshot: consumed, payloadText: payloadText, restrictTools: restrictTools };
+      return { snapshot: consumed, payloadText, restrictTools };
     }
     function restoreUiTurnState(consumed) {
       if (!consumed || state.activeSessionId !== sid) return;
@@ -5236,13 +5249,13 @@
       state.queued.push({
         id: ++itemIdSeq,
         text: prepared.payloadText,
-        displayText: displayText,
+        displayText,
         attachments: attachmentsPayload,
         meta: meta || null,
         restrictTools: prepared.restrictTools,
       });
       state.attachments = state.attachments.filter(function (attachment) {
-        return readyAttachments.indexOf(attachment) < 0;
+        return !readyAttachments.includes(attachment);
       });
       notify();
     }
@@ -5250,7 +5263,7 @@
     // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
     // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
     if (isBusyFor(sid) || state.queued.length > 0) {
-      var queuedPreparation = consumeUiTurnState();
+      const queuedPreparation = consumeUiTurnState();
       queuePrepared(queuedPreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
       return;
@@ -5268,14 +5281,14 @@
     // originated in Session A drift into Session B if the user navigated away.
     if (state.activeSessionId !== sid) return;
     if (isBusyFor(sid) || state.queued.length > 0) {
-      var racedQueuePreparation = consumeUiTurnState();
+      const racedQueuePreparation = consumeUiTurnState();
       queuePrepared(racedQueuePreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
       return;
     }
 
-    var preparation = consumeUiTurnState();
-    var accepted = await doSendFor(
+    const preparation = consumeUiTurnState();
+    const accepted = await doSendFor(
       sid,
       preparation.payloadText,
       displayText,
@@ -5283,14 +5296,14 @@
       meta,
       preparation.restrictTools,
     );
-    if (!accepted) {
-      restoreUiTurnState(preparation.snapshot);
-      notify();
-    } else {
+    if (accepted) {
       // Do not clear files selected while the admission RPC was in flight.
       state.attachments = state.attachments.filter(function (attachment) {
-        return readyAttachments.indexOf(attachment) < 0;
+        return !readyAttachments.includes(attachment);
       });
+      notify();
+    } else {
+      restoreUiTurnState(preparation.snapshot);
       notify();
     }
   }
@@ -5298,9 +5311,9 @@
     return String(state.composerDraft || "");
   }
   function setComposerDraft(value) {
-    var text = value == null ? "" : String(value);
+    const text = value == null ? "" : String(value);
     state.composerDraft = text;
-    var activeBuffer = state.activeSessionId && sessionStates[state.activeSessionId];
+    const activeBuffer = state.activeSessionId && sessionStates[state.activeSessionId];
     if (activeBuffer) activeBuffer.composerDraft = text;
     return text;
   }
@@ -5321,14 +5334,14 @@
     if (!state.activeSessionId) { addSystemItem(bt("pinvouNeedSession")); return; }
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
-    var sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
+    const sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
     // 检阅结果弹 modal(不进对话流):一次只一个,裁决/跳过直接操作 state.pinvouModal.review、
     // 不靠 pos 定位(根治连续召唤 pos 重复串卡)。
     state.pinvouModal = { loading: true, coverage: mode === "coverage" };
     notify();
     try {
       // focus=产出物 path(品=审产物); mode="coverage"=悟(通盘体检)。
-      var review = await invoke("summon_pinvou", { sessionId: sid, focus: focus || null, mode: mode || null });
+      const review = await invoke("summon_pinvou", { sessionId: sid, focus: focus || null, mode: mode || null });
       if (state.activeSessionId !== sid) return; // 召唤期间切了 session → 丢弃,绝不 record/写进别的 session
       recordPinvouReview(review); // 存 sidecar(供核账读上轮账目);modal.review 同引用,裁决写它=写 sidecar
       if (state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.review = review; }
@@ -5349,10 +5362,10 @@
   // 范式,**不进 messages/LLM**;rerenderFromMessages 按 pos 插回,切会话/重载不丢。
   function recordPinvouReview(review) {
     if (!state.activeSessionId || !review) return null;
-    var pos = state.messages.length;
-    state.pinvouReviews.push({ pos: pos, review: review });
-    var sid = state.activeSessionId;
-    var snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
+    const pos = state.messages.length;
+    state.pinvouReviews.push({ pos, review });
+    const sid = state.activeSessionId;
+    const snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
     invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot }).catch(function () {});
     return pos; // 供卡片记 reviewPos,裁决时按 pos 定位原 state 写 resolution
   }
@@ -5362,11 +5375,11 @@
   async function resolvePinvouReview(resolutions, actions) {
     // 检阅发生的会话归属捕获：persist 挂起期间用户可能切走，修订指令必须发回
     // 检阅会话，不得漂进当前 active 会话（与 tauri 版对齐，二审 F2）。
-    var reviewSid = state.activeSessionId;
+    const reviewSid = state.activeSessionId;
     // 弹窗只一个 review(state.pinvouModal.review),直接在它上面写 resolution——不靠 pos 定位
     // (根治连续召唤 pos 重复串卡)。它和 sidecar entry.review 同引用,写它=写 sidecar。
-    var isWu = !!(state.pinvouModal && state.pinvouModal.coverage); // 关窗前取,供转交标品/悟
-    var review = state.pinvouModal && state.pinvouModal.review;
+    const isWu = !!(state.pinvouModal && state.pinvouModal.coverage); // 关窗前取,供转交标品/悟
+    const review = state.pinvouModal && state.pinvouModal.review;
     if (review && resolutions) {
       (review.recommendations || []).forEach(function (r, k) { if (resolutions.recs && resolutions.recs[k]) r.resolution = resolutions.recs[k]; });
       (review.issues || []).forEach(function (x, k) { if (resolutions.issues && resolutions.issues[k]) x.resolution = resolutions.issues[k]; });
@@ -5377,12 +5390,12 @@
     notify();
     if (!actions || !actions.length) return;
     // 按动作类型分组,组装一条 Boss 消息发给主 AI(Boss 驾驶,非自动回传):
-    // fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
-    var fix = actions.filter(function (a) { return a.t === "fix"; });
-    var verify = actions.filter(function (a) { return a.t === "verify"; });
-    var adopt = actions.filter(function (a) { return a.t === "adopt"; });
-    var ask = actions.filter(function (a) { return a.t === "ask"; });
-    var parts = [];
+    //   fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
+    const fix = actions.filter(function (a) { return a.t === "fix"; });
+    const verify = actions.filter(function (a) { return a.t === "verify"; });
+    const adopt = actions.filter(function (a) { return a.t === "adopt"; });
+    const ask = actions.filter(function (a) { return a.t === "ask"; });
+    const parts = [];
     if (fix.length) {
       parts.push("请按下面的检阅意见，**只定向修改对应段落，不要全文重写**：");
       fix.forEach(function (a) { parts.push("- " + a.text); });
@@ -5402,7 +5415,7 @@
       parts.push("以下待定项请用 request_user_input 正式问我，别自己猜：");
       ask.forEach(function (a) { parts.push("- " + a.topic); });
     }
-    var fill = actions.filter(function (a) { return a.t === "fill"; });
+    const fill = actions.filter(function (a) { return a.t === "fill"; });
     if (fill.length) {
       if (parts.length) parts.push("");
       parts.push("以下维度产物还缺，请补充进去（保留其余、只增不改）：");
@@ -5427,7 +5440,7 @@
   // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。返回 promise 供 await。
   function persistPinvouReviews() {
     if (!state.activeSessionId) return Promise.resolve();
-    var snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
+    const snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
     return invoke("save_session_pinvou_reviews", { sessionId: state.activeSessionId, reviews: snapshot }).catch(function () {});
   }
 
@@ -5450,14 +5463,14 @@
     });
   });
   listen("session:model_changed", function (e) {
-    var payload = e && e.payload || {};
+    const payload = e && e.payload || {};
     if (payload.id !== state.activeSessionId) return;
     loadSessionModel(payload.id).catch(function (error) {
       console.error("[sessions] session:model_changed refresh failed", error);
     });
   });
   listen("session:persona_changed", function (e) {
-    var payload = e && e.payload || {};
+    const payload = e && e.payload || {};
     if (payload.id !== state.activeSessionId) return;
     Promise.resolve(syncActivePersona()).then(notify).catch(function (error) {
       console.error("[sessions] session:persona_changed refresh failed", error);
@@ -5469,16 +5482,16 @@
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
   function isInternalRuntimeUserMessage(value) {
-    var text = String(value || "").trim();
+    const text = String(value || "").trim();
     return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
       /<\/codewhale:runtime_event>\s*$/i.test(text);
   }
 
   function applyRemoteUserMessageEvent(e, force) {
-    var payload = e && e.payload || {};
-    var sid = payload.session_id || state.activeSessionId;
+    const payload = e && e.payload || {};
+    const sid = payload.session_id || state.activeSessionId;
     if (!sid) return false;
-    var userBuffer = getBuffer(sid);
+    const userBuffer = getBuffer(sid);
     if (!userBuffer) return false;
     if (userBuffer.localTurnOwned && !force) {
       // Usually this is the acknowledgement for our optimistic bubble. Keep
@@ -5487,29 +5500,29 @@
       userBuffer.deferredRemoteUserEvent = e;
       return false;
     }
-    var content = String(payload.content || "");
-    var hideInternalRuntimeMessage = isInternalRuntimeUserMessage(content);
-    var operation = String(payload.operation || "append");
-    var action = String(payload.action || "");
-    var actionPlanId = String(payload.plan_id || payload.planId || "").trim();
-    var baseRevision = String(payload.base_transcript_revision || "");
-    var admissionKey = baseRevision
+    const content = String(payload.content || "");
+    const hideInternalRuntimeMessage = isInternalRuntimeUserMessage(content);
+    const operation = String(payload.operation || "append");
+    const action = String(payload.action || "");
+    const actionPlanId = String(payload.plan_id || payload.planId || "").trim();
+    const baseRevision = String(payload.base_transcript_revision || "");
+    const admissionKey = baseRevision
       ? operation + ":" + baseRevision
       : (e && e.id ? "event:" + e.id : "");
-    if (admissionKey && userBuffer.remoteAdmissionKeys.indexOf(admissionKey) >= 0) return false;
+    if (admissionKey && userBuffer.remoteAdmissionKeys.includes(admissionKey)) return false;
     if (admissionKey) {
       userBuffer.remoteAdmissionKeys.push(admissionKey);
       if (userBuffer.remoteAdmissionKeys.length > 32) userBuffer.remoteAdmissionKeys.shift();
     }
-    var lastUserText = "";
-    for (var messageIndex = userBuffer.messages.length - 1; messageIndex >= 0; messageIndex--) {
-      var candidate = userBuffer.messages[messageIndex];
+    let lastUserText = "";
+    for (let messageIndex = userBuffer.messages.length - 1; messageIndex >= 0; messageIndex--) {
+      const candidate = userBuffer.messages[messageIndex];
       if (candidate && candidate.role === "user") {
         lastUserText = userMessageDisplayText(candidate.content || [], false);
         break;
       }
     }
-    var snapshotAlreadyCoversTurn = !!(
+    const snapshotAlreadyCoversTurn = !!(
       userBuffer.loadedFromDisk && baseRevision && userBuffer.sessionRevision &&
       userBuffer.sessionRevision !== baseRevision && lastUserText === content
     );
@@ -5524,7 +5537,7 @@
             item.statusLabel = bt("approved");
           }
         });
-        var acceptedMode = payload.mode_state || payload.modeState;
+        const acceptedMode = payload.mode_state || payload.modeState;
         // 事件负载的权威 mode 写回走收敛点（bump seq 防在途旧读覆盖；
         // 此回调在 runSyncOnSession(sid) 内，sid 即触发会话）。
         if (acceptedMode) applyAuthoritativeModeState(sid, acceptedMode);
@@ -5532,7 +5545,7 @@
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
       if (!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage) {
         if (operation === "edit_last") {
-          for (var index = state.chatItems.length - 1; index >= 0; index--) {
+          for (let index = state.chatItems.length - 1; index >= 0; index--) {
             if (state.chatItems[index] && state.chatItems[index].type === "user") {
               state.chatItems.splice(index);
               break;
@@ -5556,14 +5569,14 @@
     if (item.planMarkdown) return "markdown:" + String(item.planMarkdown);
     try {
       return "snapshot:" + JSON.stringify({ plan: item.plan || null, todos: item.todos || null });
-    } catch (_) {
+    } catch {
       return "";
     }
   }
 
-  function applyDeferredRemoteUserMessage(sid, buf) {
+  function applyDeferredRemoteUserMessage(_sid, buf) {
     if (!buf || !buf.deferredRemoteUserEvent) return false;
-    var deferredEvent = buf.deferredRemoteUserEvent;
+    const deferredEvent = buf.deferredRemoteUserEvent;
     buf.deferredRemoteUserEvent = null;
     return applyRemoteUserMessageEvent(deferredEvent, true);
   }
@@ -5573,12 +5586,12 @@
   });
 
   listen("chat:transcript_committed", function (e) {
-    var payload = e && e.payload || {};
-    var sid = payload.session_id || state.activeSessionId;
+    const payload = e && e.payload || {};
+    const sid = payload.session_id || state.activeSessionId;
     if (!sid) return;
-    var committedBuffer = getBuffer(sid);
+    const committedBuffer = getBuffer(sid);
     if (!committedBuffer) return;
-    var revision = String(payload.transcript_revision || payload.transcriptRevision || "");
+    const revision = String(payload.transcript_revision || payload.transcriptRevision || "");
     if (revision) {
       committedBuffer.sessionRevision = revision;
       committedBuffer.remoteCommittedRevision = revision;
@@ -5595,18 +5608,18 @@
   });
 
   function visibleUserTurnIndex() {
-    var count = state.chatItems.filter(function (item) { return item && item.type === "user"; }).length;
+    const count = state.chatItems.filter(function (item) { return item && item.type === "user"; }).length;
     return Math.max(0, count - 1);
   }
 
   function latestOpenTimelineStart() {
-    var events = state.turnTimeline || [];
-    var completed = Object.create(null);
+    const events = state.turnTimeline || [];
+    const completed = Object.create(null);
     events.forEach(function (event) {
       if (event && event.event === "assistant_done") completed[event.turn_id] = true;
     });
-    for (var index = events.length - 1; index >= 0; index--) {
-      var event = events[index];
+    for (let index = events.length - 1; index >= 0; index--) {
+      const event = events[index];
       if (event && event.event === "user_start" && !completed[event.turn_id]) return event;
     }
     return null;
@@ -5614,31 +5627,31 @@
 
   function recordTurnStarted() {
     if (state.activeTurnTimelineId) return;
-    var timestamp = Date.now();
-    var turnIndex = visibleUserTurnIndex();
-    var existing = latestOpenTimelineStart();
+    const timestamp = Date.now();
+    const turnIndex = visibleUserTurnIndex();
+    const existing = latestOpenTimelineStart();
     if (existing && Math.abs(timestamp - Number(existing.timestamp || 0)) < 60000) {
       existing.ui_turn_index = turnIndex;
       state.activeTurnTimelineId = existing.turn_id;
       return;
     }
-    var turnId = "ui_" + String(state.activeSessionId || "session") + "_" + timestamp + "_" + turnIndex;
+    const turnId = "ui_" + String(state.activeSessionId || "session") + "_" + timestamp + "_" + turnIndex;
     state.activeTurnTimelineId = turnId;
-    state.turnTimeline = (state.turnTimeline || []).concat([{
+    state.turnTimeline = [...(state.turnTimeline || []), {
       turn_id: turnId,
       event: "user_start",
-      timestamp: timestamp,
+      timestamp,
       ts: new Date(timestamp).toISOString(),
       ui_turn_index: turnIndex,
-    }]);
+    }];
   }
 
   function preserveInterruptedAssistantPresentation() {
-    var userItemIndex = -1;
-    var afterMessageIndex = -1;
-    var afterUserOrdinal = -1;
-    for (var index = 0; index < state.chatItems.length; index++) {
-      var candidate = state.chatItems[index];
+    let userItemIndex = -1;
+    let afterMessageIndex = -1;
+    let afterUserOrdinal = -1;
+    for (let index = 0; index < state.chatItems.length; index++) {
+      const candidate = state.chatItems[index];
       if (!candidate || candidate.type !== "user") continue;
       afterUserOrdinal += 1;
       userItemIndex = index;
@@ -5655,8 +5668,8 @@
       pendingAssistantBlocks = [];
       return;
     }
-    for (var itemIndex = userItemIndex + 1; itemIndex < state.chatItems.length; itemIndex++) {
-      var item = state.chatItems[itemIndex];
+    for (let itemIndex = userItemIndex + 1; itemIndex < state.chatItems.length; itemIndex++) {
+      const item = state.chatItems[itemIndex];
       if (!item || item.type !== "assistant" || !item.html) continue;
       item.interruptedDisplayOnly = true;
       item.afterMessageIndex = afterMessageIndex;
@@ -5674,25 +5687,25 @@
   }); });
 
   function reasoningEventIndex(e) {
-    var value = e && e.payload && e.payload.index;
-    if (value === undefined || value === null || value === "") return null;
-    var parsed = Number(value);
+    const value = e && e.payload && e.payload.index;
+    if ([undefined, null, ""].includes(value)) return null;
+    const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : String(value);
   }
 
   function streamingReasoningItem(index) {
-    for (var itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
-      var item = state.chatItems[itemIndex];
+    for (let itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
+      const item = state.chatItems[itemIndex];
       if (!item || item.type !== "reasoning" || !item.streaming) continue;
-      if (index === undefined || index === null || item.reasoningIndex === index) return item;
+      if ([undefined, null].includes(index) || item.reasoningIndex === index) return item;
     }
     return null;
   }
 
   function finalizeStreamingReasoning(index) {
-    var completedAt = Date.now();
-    for (var itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
-      var item = state.chatItems[itemIndex];
+    const completedAt = Date.now();
+    for (let itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
+      const item = state.chatItems[itemIndex];
       if (!item || item.type !== "reasoning" || !item.streaming) continue;
       if (index !== undefined && index !== null && item.reasoningIndex !== index) continue;
       item.streaming = false;
@@ -5702,7 +5715,7 @@
 
   function finalizeAssistantStreamBeforeReasoning() {
     flushPendingTextBlock();
-    var item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
+    const item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
     if (item) {
       if (item.html) item.streaming = false;
       else state.chatItems = state.chatItems.filter(function (it) { return it !== item; });
@@ -5712,11 +5725,11 @@
   }
 
   function startReasoningBlock(index) {
-    var existing = streamingReasoningItem(index);
+    const existing = streamingReasoningItem(index);
     if (existing) return existing;
     finalizeStreamingReasoning();
     finalizeAssistantStreamBeforeReasoning();
-    var item = {
+    const item = {
       type: "reasoning",
       text: "",
       time: timeStr(),
@@ -5731,7 +5744,7 @@
   }
 
   function appendReasoningBlock(text) {
-    var last = pendingAssistantBlocks[pendingAssistantBlocks.length - 1];
+    const last = pendingAssistantBlocks[pendingAssistantBlocks.length - 1];
     if (last && last.type === "thinking") last.thinking += text;
     else pendingAssistantBlocks.push({ type: "thinking", thinking: text });
   }
@@ -5742,10 +5755,10 @@
   }); });
 
   listen("chat:reasoning_delta", function (e) { onSessionEvent(e, function () {
-    var text = String(e.payload && e.payload.text || "");
+    const text = String(e.payload && e.payload.text || "");
     if (!text) return;
-    var index = reasoningEventIndex(e);
-    var item = streamingReasoningItem(index);
+    const index = reasoningEventIndex(e);
+    let item = streamingReasoningItem(index);
     if (!item) {
       item = startReasoningBlock(index);
     }
@@ -5755,12 +5768,12 @@
   }); });
 
   listen("chat:reasoning_done", function (e) { onSessionEvent(e, function () {
-    var index = reasoningEventIndex(e);
-    var item = streamingReasoningItem(index);
+    const index = reasoningEventIndex(e);
+    const item = streamingReasoningItem(index);
     finalizeStreamingReasoning(index);
     if (item && !item.text) {
       state.chatItems = state.chatItems.filter(function (candidate) { return candidate !== item; });
-      var last = pendingAssistantBlocks[pendingAssistantBlocks.length - 1];
+      const last = pendingAssistantBlocks[pendingAssistantBlocks.length - 1];
       if (last && last.type === "thinking" && !last.thinking) pendingAssistantBlocks.pop();
     }
     notify();
@@ -5768,11 +5781,11 @@
 
   listen("chat:delta", function (e) { onSessionEvent(e, function () {
     finalizeStreamingReasoning();
-    var text = e.payload && e.payload.text || "";
+    const text = e.payload && e.payload.text || "";
     pendingAssistantText += text;
     currentStreamText += text;
     // Update the streaming chat item
-    var item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
+    const item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
     if (item) {
       item.text = currentStreamText;
       item.html = renderMarkdown(currentStreamText);
@@ -5792,7 +5805,7 @@
     notify();
   }); });
 
-  listen("scheduled_task:run_updated", function (e) {
+  listen("scheduled_task:run_updated", function () {
     scheduleScheduledRunRefresh();
   });
 
@@ -5813,23 +5826,23 @@
   // 兼容两种结果格式:直接 payload {abs_path} / MCP content 数组 {content:[{text}]} 包一层。
   function parseToolResultPayload(toolResultContent) {
     try {
-      var raw = typeof toolResultContent === "string" ? toolResultContent : JSON.stringify(toolResultContent || {});
-      var obj = JSON.parse(raw);
+      const raw = typeof toolResultContent === "string" ? toolResultContent : JSON.stringify(toolResultContent || {});
+      const obj = JSON.parse(raw);
       if (obj && obj.content && obj.content[0] && typeof obj.content[0].text === "string") {
         try {
-          var inner = JSON.parse(obj.content[0].text);
+          const inner = JSON.parse(obj.content[0].text);
           if (inner && typeof inner === "object") return inner;
-        } catch (_) {}
+        } catch { /* 内层不是 JSON 时按外层对象使用 */ }
       }
       return obj;
-    } catch (_) {
+    } catch {
       return null;
     }
   }
   function artifactPathFromToolOutput(toolResultContent) {
-    var obj = parseToolResultPayload(toolResultContent);
+    const obj = parseToolResultPayload(toolResultContent);
     if (!obj || typeof obj !== "object") return null;
-    var p = obj.abs_path || obj.path || obj.file_path || obj.local_path;
+    const p = obj.abs_path || obj.path || obj.file_path || obj.local_path;
     return typeof p === "string" && p ? p : null;
   }
   function shouldUseToolOutputAsArtifact(name) {
@@ -5841,13 +5854,13 @@
   }
   function presentArtifactAbsPath(toolResultContent, fallbackPath) {
     fallbackPath = fallbackPath || "";
-    var parsed = artifactPathFromToolOutput(toolResultContent);
+    const parsed = artifactPathFromToolOutput(toolResultContent);
     if (parsed) return parsed;
     return fallbackPath;
   }
 
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
+    const p = e.payload || {};
     // Relay reconnects and the desktop event bridge may replay the last frame.
     // Tool-call ids are durable identities, so never create a second message/card
     // for the same call. Normal repeated calls have distinct ids and remain visible.
@@ -5860,7 +5873,7 @@
     pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
 
     // Finalize current streaming bubble
-    var streamItem = state.chatItems.find(function (it) { return it.id === currentStreamId; });
+    const streamItem = state.chatItems.find(function (it) { return it.id === currentStreamId; });
     if (streamItem) {
       streamItem.streaming = false;
     }
@@ -5875,14 +5888,14 @@
 
     // load_skill：模型加载技能 → 点亮 composer 技能标（内置自动技能"正在使用"指示）。
     if (p.name === "load_skill") {
-      var skArg = ((p.args && (p.args.name || p.args.skill)) || "").toString();
-      var skLower = skArg.toLowerCase();
-      if (skArg.indexOf("视觉设计") >= 0 || skLower.indexOf("visual-design") >= 0) state.activeSkill = "visual-design";
-      else if (skArg.indexOf("插件包标准化") >= 0 || skLower.indexOf("package-author") >= 0) state.activeSkill = "package-author";
-      else if (skArg.indexOf("技能创建") >= 0 || skLower.indexOf("skill-author") >= 0) state.activeSkill = "skill-author";
-      else if (skArg.indexOf("公文写作") >= 0 || skLower.indexOf("government-writing") >= 0) state.activeSkill = "government-writing";
-      else if (skArg.indexOf("PPT") >= 0 || skArg.indexOf("幻灯片") >= 0 || skLower.indexOf("pptx") >= 0) state.activeSkill = "pptx";
-      else if (skArg.indexOf("数据分析可视化") >= 0 || skArg.indexOf("数据可视化") >= 0 || skLower.indexOf("visualizer") >= 0) state.activeSkill = "visualizer";
+      const skArg = ((p.args && (p.args.name || p.args.skill)) || "").toString();
+      const skLower = skArg.toLowerCase();
+      if (skArg.includes("视觉设计") || skLower.includes("visual-design")) state.activeSkill = "visual-design";
+      else if (skArg.includes("插件包标准化") || skLower.includes("package-author")) state.activeSkill = "package-author";
+      else if (skArg.includes("技能创建") || skLower.includes("skill-author")) state.activeSkill = "skill-author";
+      else if (skArg.includes("公文写作") || skLower.includes("government-writing")) state.activeSkill = "government-writing";
+      else if (skArg.includes("PPT") || skArg.includes("幻灯片") || skLower.includes("pptx")) state.activeSkill = "pptx";
+      else if (skArg.includes("数据分析可视化") || skArg.includes("数据可视化") || skLower.includes("visualizer")) state.activeSkill = "visualizer";
       // 不 return：照常出工具卡。卡内容在 tool_end / rerender 处脱敏成占位，
       // 展开看不到 SKILL.md 全文（防设计系统泄露），但保留"加载了技能"的痕迹。
     }
@@ -5898,14 +5911,15 @@
     notify();
   }); });
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   listen("chat:tool_end", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
+    const p = e.payload || {};
     if (toolCallAlreadyFinished(p.id)) return;
-    var meta = toolMeta[p.id];
+    const meta = toolMeta[p.id];
     thinkingIdle();
-    var resultContent = typeof p.output === "string" ? p.output : JSON.stringify(p.output);
+    const resultContent = typeof p.output === "string" ? p.output : JSON.stringify(p.output);
     flushAssistantMessageToHistory();
-    var trBlock = { type: "tool_result", tool_use_id: p.id, content: resultContent };
+    const trBlock = { type: "tool_result", tool_use_id: p.id, content: resultContent };
     if (!p.success) trBlock.is_error = true;
     state.messages.push({ role: "user", content: [trBlock] });
 
@@ -5928,7 +5942,7 @@
       if (p.success) {
         // 用 server 解析好的绝对路径(present_artifact_server.py 的 abs_path),而非模型可能
         // 给的相对 args.path → 卡片 path 绝对,点 Open 不再报「path must be absolute」。
-        var presentedPath = presentArtifactAbsPath(p.output, meta.args && meta.args.path);
+        const presentedPath = presentArtifactAbsPath(p.output, meta.args && meta.args.path);
         // 同一产物没改又 present 一次 → 跳过出卡(防模型啰嗦重复);改完再 present/续卡会保留。
         if (!isDuplicateArtifactCard(presentedPath)) {
           addChatItem({
@@ -5964,7 +5978,7 @@
     // 随后模型按约定再调 present_artifact。若模型漏调，仍把该成品归到当前
     // tool_end 所属 session，并在 chat:done 统一补一张成品卡。
     if (p.success && meta && shouldUseToolOutputAsArtifact(meta.name)) {
-      var producedPath = artifactPathFromToolOutput(p.output);
+      const producedPath = artifactPathFromToolOutput(p.output);
       if (producedPath && isDeliverable(producedPath)) {
         trackArtifact(producedPath);
         markTurnDirtyArtifact(producedPath);
@@ -5972,13 +5986,13 @@
     }
 
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
-    var outForCard = (meta && meta.name === "load_skill")
+    const outForCard = (meta && meta.name === "load_skill")
       ? bt("skillContentHidden")
       : toolResultDisplayContent(p.output);
-    var updatedToolItem = updateToolItem(p.id, outForCard, p.success);
-    var shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
+    const updatedToolItem = updateToolItem(p.id, outForCard, p.success);
+    const shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
     if (updatedToolItem && shellTaskId) {
-      var syntheticShellItem = state.chatItems.find(function (it) {
+      const syntheticShellItem = state.chatItems.find(function (it) {
         return it !== updatedToolItem && it.shellSnapshot === true && it.taskId === shellTaskId;
       });
       if (syntheticShellItem) {
@@ -5986,12 +6000,12 @@
           .forEach(function (key) {
             if (syntheticShellItem[key] !== undefined) updatedToolItem[key] = syntheticShellItem[key];
           });
-        var syntheticIndex = state.chatItems.indexOf(syntheticShellItem);
+        const syntheticIndex = state.chatItems.indexOf(syntheticShellItem);
         if (syntheticIndex >= 0) state.chatItems.splice(syntheticIndex, 1);
       }
       updatedToolItem.taskId = shellTaskId;
       updatedToolItem.sessionId = p.session_id || state.activeSessionId;
-      var shellStatus = String((p.metadata && p.metadata.status) || "").toLowerCase();
+      const shellStatus = String((p.metadata && p.metadata.status) || "").toLowerCase();
       if (shellStatus === "running" || /running|background/i.test(String(p.output || ""))) {
         updatedToolItem.state = "running";
         updatedToolItem.success = null;
@@ -6000,20 +6014,18 @@
     }
 
     // Careful hook：CodeWhale shell.rs 拦截 Dangerous → 红色拦截卡
-    var md = p.metadata;
-    if (md && md.safety_level === "dangerous" && md.blocked) {
-      if (!hasChatItemForTool("careful_blocked", p.id)) {
+    const md = p.metadata;
+    if (md && md.safety_level === "dangerous" && md.blocked && !hasChatItemForTool("careful_blocked", p.id)) {
         addChatItem({
           type: "careful_blocked", toolCallId: p.id,
           args: meta && meta.args, metadata: md, time: timeStr(),
         });
       }
-    }
 
     // File.write/File.edit/File.patch 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
     // 改成记账+去重:AI 一个 turn 会 edit_file 改很多次,实时续会刷出一堆卡;且 edit_file
     // 之前不触发续卡 → 改完没新卡片 → 没法对改后产物再召唤 pinvou(核账闭环断裂)。
-    var mutationAction = meta && fileMutationAction(meta.name, meta.args);
+    const mutationAction = meta && fileMutationAction(meta.name, meta.args);
     if (p.success && mutationAction) {
       extractArtifactPaths(meta.args).forEach(function (ap) {
         // 面板只收「成品」:成品型扩展名(自动当成品)或之前 present_artifact 过的文件;
@@ -6024,8 +6036,8 @@
         // 按 basename 比对:disk watcher(artifact:disk)写盘后抢先用**绝对**路径 trackArtifact
         // 占了名额,而这里 ap 是 write_file 的**相对**参数 —— 用 a.path===ap 比绝对≠相对永远落空,
         // turnDirty 收不到 → 实时不补成品卡(只能靠重启 rerender 才出)。basename 比对消除该竞态。
-        var _apbn = basename(ap);
-        var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return basename(a.path) === _apbn; });
+        const _apbn = basename(ap);
+        const isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return basename(a.path) === _apbn; });
         if (isArtifact) markTurnDirtyArtifact(ap);
       });
     }
@@ -6034,11 +6046,9 @@
     if (!p.success && state.modeState.mode === "plan" && typeof p.output === "string" &&
         (p.output.includes("not available in the current tool catalog") ||
          p.output.includes("unavailable in Plan mode") ||
-         p.output.includes("PermissionDenied"))) {
-      if (!hasUnresolvedItem("plan_stuck")) {
+         p.output.includes("PermissionDenied")) && !hasUnresolvedItem("plan_stuck")) {
         addChatItem({ type: "plan_stuck", toolName: meta && meta.name, resolved: false, time: timeStr() });
       }
-    }
 
     delete toolMeta[p.id];
     currentStreamText = "";
@@ -6050,20 +6060,20 @@
   // 路由到对应 session;异步收尾(discard_plan/落盘/刷新列表)按显式 sid 路由,
   // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
   listen("chat:done", function (e) {
-    var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
-    var knownDoneSession = !!sid && state.sessions.some(function (session) { return session.id === sid; });
-    var scheduledDoneSession = isScheduledRunSession(sid);
+    const sid = (e.payload && e.payload.session_id) || state.activeSessionId;
+    const knownDoneSession = !!sid && state.sessions.some(function (session) { return session.id === sid; });
+    const scheduledDoneSession = isScheduledRunSession(sid);
     if (sid && sid !== state.activeSessionId && !sessionStates[sid] &&
         !knownDoneSession && !scheduledDoneSession) {
       // A stale/malformed terminal for an unknown ordinary Session must not
       // allocate a background buffer or persist the active Session into it.
       return;
     }
-    var doneBuffer = sid ? getBuffer(sid) : null;
+    const doneBuffer = sid ? getBuffer(sid) : null;
     // Match the Tauri client: rejected optimistic edits must hydrate the
     // unchanged authoritative transcript before another local turn starts.
-    var operationRejected = !!(e.payload && e.payload.operation_rejected);
-    var completedLocalTurn = !!(
+    const operationRejected = !!(e.payload && e.payload.operation_rejected);
+    const completedLocalTurn = !!(
       doneBuffer && doneBuffer.localTurnOwned && !isScheduledRunSession(sid) && !operationRejected
     );
     recordAuthoritySyncDiagnostic("chat_done_classified", Object.assign({
@@ -6081,7 +6091,7 @@
     if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
-      var error = e.payload && e.payload.error;
+      const error = e.payload && e.payload.error;
       window.PinvouWebTurnTerminal.recordCompleted(
         state,
         latestOpenTimelineStart(),
@@ -6091,8 +6101,8 @@
       // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
       if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
       if (error) {
-        var finalNotice = "⚠️ " + error;
-        var finalNoticeItem = state.chatItems.find(function (item) {
+        const finalNotice = "⚠️ " + error;
+        const finalNoticeItem = state.chatItems.find(function (item) {
           return item && item.turnErrorNotice && item.text === finalNotice;
         });
         if (finalNoticeItem) {
@@ -6105,9 +6115,8 @@
         }
       }
       window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
-      var terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
-      var interrupted = terminalStatus === "interrupted" ||
-        terminalStatus === "cancelled" || terminalStatus === "canceled";
+      const terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
+      const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
@@ -6116,13 +6125,13 @@
       (state.turnDirtyArtifacts || []).forEach(function (ap) {
         // 按 basename 比对:present 存 server 绝对路径、turnDirty 存 write 相对路径,
         // 直接 indexOf 比不中 → present 过的文件会被兜底再补一张(重复)。
-        var _apbn = basename(ap);
+        const _apbn = basename(ap);
         if ((state.turnPresentedArtifacts || []).some(function (pp) { return basename(pp) === _apbn; })) return;
-        var prev = findPresentedArtifact(ap);
+        const prev = findPresentedArtifact(ap);
         // 补卡 path 优先用 disk watcher 落进产物列表的同名**绝对**路径(open 可靠、跨 session 稳);
         // 没有再退回 write_file 的相对 ap(由 sessionId 兜底解析)。
-        var tracked = state.artifacts.find(function (a) { return basename(a.path) === _apbn && isAbsPath(a.path); });
-        var cardPath = (tracked && tracked.path) || ap;
+        const tracked = state.artifacts.find(function (a) { return basename(a.path) === _apbn && isAbsPath(a.path); });
+        const cardPath = (tracked && tracked.path) || ap;
         if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
         else addChatItem({ type: "artifact_card", path: cardPath, title: basename(ap), description: "", time: timeStr(), sessionId: sid });
       });
@@ -6130,7 +6139,7 @@
       state.turnPresentedArtifacts = [];
       finalizeStreamingReasoning();
       // Finalize streaming bubble
-      var streamItem = state.chatItems.find(function (it) { return it.id === currentStreamId; });
+      const streamItem = state.chatItems.find(function (it) { return it.id === currentStreamId; });
       if (streamItem) streamItem.streaming = false;
       // Remove empty assistant bubbles
       state.chatItems = state.chatItems.filter(function (it) {
@@ -6144,8 +6153,8 @@
     if (doneBuffer && !completedLocalTurn && !isScheduledRunSession(sid)) {
       // Rust has already committed the final transcript before chat:done. Keep
       // both UIs behind a short authority barrier until that snapshot is loaded.
-      var finalAssistantMessage = null;
-      for (var doneMessageIndex = doneBuffer.messages.length - 1; doneMessageIndex >= 0; doneMessageIndex--) {
+      let finalAssistantMessage = null;
+      for (let doneMessageIndex = doneBuffer.messages.length - 1; doneMessageIndex >= 0; doneMessageIndex--) {
         if (doneBuffer.messages[doneMessageIndex] && doneBuffer.messages[doneMessageIndex].role === "assistant") {
           finalAssistantMessage = doneBuffer.messages[doneMessageIndex];
           break;
@@ -6187,7 +6196,7 @@
       // Scheduled runs skip transcript reconciliation entirely, mirroring the
       // Tauri bridge: Rust owns the durable transcript for a scheduled session,
       // and the gate was already fully released in the synchronous tail above.
-      var reconciled = (completedLocalTurn || isScheduledRunSession(sid))
+      const reconciled = (completedLocalTurn || isScheduledRunSession(sid))
         ? true
         : await reconcileRemoteTurn(sid);
       if (reconciled) await persistMessagesFor(sid);
@@ -6207,40 +6216,40 @@
   });
 
   listen("chat:usage", function (e) { onSessionEvent(e, function () {
-    var sid = e.payload && e.payload.session_id;
+    const sid = e.payload && e.payload.session_id;
     // 真实窗口是模型能力常量，不随轮内请求数变化，必须先于 dirty guard 消费：
     // 工具轮（最常见的 Agent 场景）只跳过不可信的累计 input，分母仍要更新。
-    var windowTok = Number(e.payload && e.payload.context_window) || 0;
+    const windowTok = Number(e.payload && e.payload.context_window) || 0;
     if (windowTok > 0 && windowTok !== state.tokens.max) {
       state.tokens.max = windowTok; // 云端真实窗口，替代 32K 假分母
       notify(); // 窗口变化也要通知 UI（即使本轮 input 不可信）
     }
     if (sid && turnUsageDirty[sid]) return; // 本轮多请求，累加 input 不可信，保留上个准确值
-    var input = Number(e.payload && e.payload.input_tokens || 0);
+    const input = Number(e.payload && e.payload.input_tokens || 0);
     // 累加值超过窗口说明仍有多请求（内部重试等无事件轮），跳过避免显示超上限
     if (input > 0 && input <= state.tokens.max) {
-      state.tokens = { input: input, max: state.tokens.max };
+      state.tokens = { input, max: state.tokens.max };
       notify();
     }
   }); });
 
   listen("chat:compaction", function (e) { onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
-    var phase = e.payload && e.payload.phase;
-    var msg = e.payload && e.payload.message || "";
-    var auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
-    var compactId = e.payload && e.payload.id;
-    var before = Number(e.payload && e.payload.messages_before);
-    var after = Number(e.payload && e.payload.messages_after);
-    var looksLikePruneOnly = /0 removed|messages unchanged|tool results pruned/i.test(msg);
-    var pruneOnlyAuto = !!(e.payload && e.payload.auto) &&
+    const phase = e.payload && e.payload.phase;
+    const msg = e.payload && e.payload.message || "";
+    const auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
+    const compactId = e.payload && e.payload.id;
+    const before = Number(e.payload && e.payload.messages_before);
+    const after = Number(e.payload && e.payload.messages_after);
+    const looksLikePruneOnly = /0 removed|messages unchanged|tool results pruned/i.test(msg);
+    const pruneOnlyAuto = !!(e.payload && e.payload.auto) &&
       phase === "done" &&
       Number.isFinite(before) &&
       Number.isFinite(after) &&
       before === after &&
       looksLikePruneOnly &&
       msg.indexOf("Emergency compaction") !== 0;
-    if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId: compactId, compactPhase: "start" });
+    if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
@@ -6249,12 +6258,12 @@
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────
   // payload: { id: tool_call_id, questions: [{header, id, question, options:[{label, description}]}] }
   listen("chat:user_input_required", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
-    var questions = p.questions || [];
+    const p = e.payload || {};
+    const questions = p.questions || [];
     if (!Array.isArray(questions) || questions.length === 0) return;
     if (hasChatItemForTool("user_input", p.id)) return;
     addChatItem({
-      type: "user_input", toolCallId: p.id, questions: questions,
+      type: "user_input", toolCallId: p.id, questions,
       resolved: false, cardState: "active", time: timeStr(),
     });
     notify();
@@ -6264,10 +6273,10 @@
   // 绝不 setBusy(false)，只飘一条 ⚠️ 提示。
   listen("chat:transient_error", function (e) { onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
-    var error = e.payload && e.payload.error;
+    const error = e.payload && e.payload.error;
     if (error) {
-      var notice = "⚠️ " + error;
-      var duplicate = state.chatItems.some(function (item) {
+      const notice = "⚠️ " + error;
+      const duplicate = state.chatItems.some(function (item) {
         return item && item.turnErrorNotice && item.text === notice;
       });
       if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
@@ -6281,7 +6290,7 @@
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。
   // 路由到对应 session 的产物列表(后台 session 的产物也跟踪)。
   listen("artifact:disk", function (e) {
-    var p = e.payload || {};
+    const p = e.payload || {};
     if (!p.path) return;
     // 公共 MCP 产物目录没有真实 session 归属；归属由对应 chat:tool_end
     // 的 session_id 决定。这里跳过，避免文件系统事件把 PPT/公文错塞到 default/当前会话。
@@ -6297,7 +6306,7 @@
 
   // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）
   listen("voice_asr:progress", function (e) {
-    var p = e && e.payload;
+    const p = e && e.payload;
     if (!p) return;
     state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { progress: p });
     notify();
@@ -6305,7 +6314,7 @@
 
   // vllm-setup:phase —— MegaCube 本地大模型引导阶段(authorizing→waiting{attempt}→ready),驱动引导框步骤指示。
   listen("vllm-setup:phase", function (e) {
-    var p = e.payload || {};
+    const p = e.payload || {};
     if (!p.phase) return;
     state.vllmSetupPhase = p.phase;
     if (typeof p.attempt === "number") state.vllmSetupAttempt = p.attempt;
@@ -6314,7 +6323,7 @@
 
   // 知识库 embedding 模型下载进度（download → verify → prepare → done）
   listen("kb_model:progress", function (e) {
-    var p = e && e.payload;
+    const p = e && e.payload;
     if (!p) return;
     state.kbModelSetup = Object.assign({}, state.kbModelSetup, { progress: p });
     notify();
@@ -6324,19 +6333,19 @@
   // managed model after startup. Replace the cached snapshot when the backend
   // publishes a newly observed status.
   listen("kb_model:status", function (e) {
-    var status = e && e.payload;
+    const status = e && e.payload;
     if (!status) return;
     state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
       startupLoading: !!status.loading,
       startupReady: typeof status.ready === "boolean" ? status.ready : state.kbModelSetup.startupReady,
-      status: status,
+      status,
     });
     notify();
   });
 
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
   listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
+    const p = e.payload || {};
     if (p.plan_snapshot) state.planSnapshot.plan = p.plan_snapshot;
     if (p.todos_snapshot) state.planSnapshot.todos = p.todos_snapshot;
     notify();
@@ -6344,9 +6353,9 @@
 
   // chat:plan_ready —— 底座式:Plan 模式调过 update_plan 即弹方案卡(快照非空)
   listen("chat:plan_ready", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
-    var planId = String(p.plan_id || p.planId || "").trim();
-    var readyMode = p.mode_state || p.modeState;
+    const p = e.payload || {};
+    const planId = String(p.plan_id || p.planId || "").trim();
+    const readyMode = p.mode_state || p.modeState;
     // 事件负载的权威 mode 写回走收敛点（bump seq 防在途旧读覆盖）。
     if (readyMode) applyAuthoritativeModeState(state.activeSessionId, readyMode);
     if (planId && state.chatItems.some(function (item) {
@@ -6358,7 +6367,7 @@
         it.cardState = "frozen"; it.statusLabel = bt("planSuperseded");
       }
     });
-    var snaps = { plan: p.plan_snapshot || null, todos: p.todos_snapshot || null };
+    const snaps = { plan: p.plan_snapshot || null, todos: p.todos_snapshot || null };
     addChatItem({
       type: "plan_card", plan: snaps.plan, todos: snaps.todos,
       planMarkdown: composePlanMarkdown(snaps), planId: planId || null,
@@ -6373,9 +6382,9 @@
   // directly to the matching ticket without marking the Session busy or adding
   // a synthetic user bubble.
   listen("chat:plan_resolved", function (e) {
-    var p = e && e.payload || {};
-    var sid = p.session_id || state.activeSessionId;
-    var planId = String(p.plan_id || p.planId || "").trim();
+    const p = e && e.payload || {};
+    const sid = p.session_id || state.activeSessionId;
+    const planId = String(p.plan_id || p.planId || "").trim();
     if (!sid || !planId) return;
     runSyncOnSession(sid, function () {
       state.chatItems.forEach(function (item) {
@@ -6386,7 +6395,7 @@
           item.statusLabel = bt("planDiscarded");
         }
       });
-      var resolvedMode = p.mode_state || p.modeState;
+      const resolvedMode = p.mode_state || p.modeState;
       // 事件负载的权威 mode 写回走收敛点（bump seq 防在途旧读覆盖）。
       if (resolvedMode) applyAuthoritativeModeState(sid, resolvedMode);
     });
@@ -6394,14 +6403,14 @@
   });
 
   // ── Monitor ──────────────────────────────────────────────────────
-  var PinvouFU = window.PinvouFormatUtils || {};
-  var fmtMiB = PinvouFU.fmtMiB || function (mib) { return mib == null ? "—" : String(mib); };
-  var fmtKiB = PinvouFU.fmtKiB || function (kib) { return kib == null ? "—" : String(kib); };
-  var fmtDuration = PinvouFU.fmtDuration || function (secs) { return secs == null ? "—" : String(secs); };
-  var fmtTok = PinvouFU.fmtTok || function (n) { return n == null ? "—" : String(n); };
+  const PinvouFU = window.PinvouFormatUtils || {};
+  const fmtMiB = PinvouFU.fmtMiB || function (mib) { return mib == null ? "—" : String(mib); };
+  const fmtKiB = PinvouFU.fmtKiB || function (kib) { return kib == null ? "—" : String(kib); };
+  const fmtDuration = PinvouFU.fmtDuration || function (secs) { return secs == null ? "—" : String(secs); };
+  const fmtTok = PinvouFU.fmtTok || function (n) { return n == null ? "—" : String(n); };
 
 
-  function numOr0(x) { return (typeof x === "number" && isFinite(x)) ? x : 0; }
+  function numOr0(x) { return (typeof x === "number" && Number.isFinite(x)) ? x : 0; }
 
   // 用基准点把累计 counter 换算成「自清除以来」的区间值。sp=app 自测(snap.self_perf,
   // TTFT/TPS/tokens 全从这);v=vllm(仅 KV 的本地 prefix_cache 分支要它)。无基准 → 直接
@@ -6411,13 +6420,13 @@
   // cache token 口径(selfKvPct,给云端/D3)。二者都按区间(扣基准)重算。
   function adjustCounters(sp, v) {
     sp = sp || {};
-    var kvRatio = function (hit, miss) {
-      var d = hit + miss;
+    const kvRatio = function (hit, miss) {
+      const d = hit + miss;
       return d > 0 ? (hit / d * 100) : null;
     };
-    var b = monitorBaseline;
+    let b = monitorBaseline;
     if (b) {
-      var reset =
+      const reset =
         numOr0(sp.ttft_sum_s) < b.ttft_sum_s ||
         numOr0(sp.tps_time_s) < b.tps_time_s ||
         numOr0(sp.gen_tokens_total) < b.gen_tokens ||
@@ -6427,11 +6436,11 @@
         (v && numOr0(v.prefix_cache_queries) < numOr0(b.pc_queries));
       if (reset) { clearMonitorBaseline(); b = null; }
     }
-    var base = function (k) { return b ? numOr0(b[k]) : 0; };
-    var vllmKvPct = null;
+    const base = function (k) { return b ? numOr0(b[k]) : 0; };
+    let vllmKvPct = null;
     if (v) {
-      var pcH = numOr0(v.prefix_cache_hits) - base("pc_hits");
-      var pcQ = numOr0(v.prefix_cache_queries) - base("pc_queries");
+      const pcH = numOr0(v.prefix_cache_hits) - base("pc_hits");
+      const pcQ = numOr0(v.prefix_cache_queries) - base("pc_queries");
       vllmKvPct = pcQ > 0 ? (pcH / pcQ * 100) : null;
     }
     return {
@@ -6442,7 +6451,7 @@
       tps_time_s: numOr0(sp.tps_time_s) - base("tps_time_s"),
       gen: numOr0(sp.gen_tokens_total) - base("gen_tokens"),
       prompt: numOr0(sp.prompt_tokens_total) - base("prompt_tokens"),
-      vllmKvPct: vllmKvPct,
+      vllmKvPct,
       selfKvPct: kvRatio(
         numOr0(sp.cache_hit_tokens) - base("cache_hit"),
         numOr0(sp.cache_miss_tokens) - base("cache_miss")
@@ -6453,15 +6462,15 @@
 
   function clearMonitorBaseline() {
     monitorBaseline = null;
-    try { localStorage.removeItem(MONITOR_BASELINE_KEY); } catch (e) {}
+    try { localStorage.removeItem(MONITOR_BASELINE_KEY); } catch { /* localStorage 不可用时忽略 */ }
   }
 
   // 把当前 counter 快照存为基准点 → 监控页「后 4 项」从此刻起重新计。
   // 自测计数(TTFT/TPS/tokens/usage-cache)+ vLLM prefix_cache(供本地 KV 分支)一起存。
   function clearMonitorStats() {
-    var sp = state.monitor && state.monitor.self_perf;
+    const sp = state.monitor && state.monitor.self_perf;
     if (!sp) return false;
-    var v = (state.monitor && state.monitor.vllm) || {};
+    const v = (state.monitor && state.monitor.vllm) || {};
     monitorBaseline = {
       ttft_sum_s: numOr0(sp.ttft_sum_s),
       ttft_count: numOr0(sp.ttft_count),
@@ -6475,59 +6484,59 @@
       pc_queries: numOr0(v.prefix_cache_queries),
       at: Date.now(),  // 记录清除时刻，供「统计自 HH:MM 起」状态文字
     };
-    try { localStorage.setItem(MONITOR_BASELINE_KEY, JSON.stringify(monitorBaseline)); } catch (e) {}
+    try { localStorage.setItem(MONITOR_BASELINE_KEY, JSON.stringify(monitorBaseline)); } catch { /* localStorage 不可用时忽略 */ }
     pollMonitor();  // 立即刷新显示，无需等下一个轮询周期
     return true;
   }
 
   function appQueueSnapshot() {
-    var running = 0;
-    var waiting = state.queued ? state.queued.length : 0;
-    var busyMap = {};
-    for (var id in sessionStates) {
+    let waiting = state.queued ? state.queued.length : 0;
+    const busyMap = {};
+    for (const id in sessionStates) {
+      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
       if (!Object.prototype.hasOwnProperty.call(sessionStates, id)) continue;
       if (id === state.activeSessionId) continue;
-      var buf = sessionStates[id] || {};
+      const buf = sessionStates[id] || {};
       if (buf.busy) busyMap[id] = true;
       if (Array.isArray(buf.queued)) waiting += buf.queued.length;
     }
     if (state.activeSessionId && state.busy) busyMap[state.activeSessionId] = true;
-    running = Object.keys(busyMap).length;
-    return { running: running, waiting: waiting };
+    const running = Object.keys(busyMap).length;
+    return { running, waiting };
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   async function pollMonitor() {
     if (monitorPollInFlight) return;
     monitorPollInFlight = true;
     try {
-      var snap = await invoke("get_monitor_snapshot");
+      const snap = await invoke("get_monitor_snapshot");
       state.monitorError = null;
       // GPU util sliding window
       if (snap.gpu) {
         gpuUtilHistory.push(snap.gpu.utilization_pct);
         if (gpuUtilHistory.length > 5) gpuUtilHistory.shift();
-        snap.gpu._utilMax = Math.max.apply(null, [0].concat(gpuUtilHistory));
+        snap.gpu._utilMax = Math.max(...[0, ...gpuUtilHistory]);
       }
       // 监控页「后 4 项」累计指标：TTFT/TPS/tokens 来自 app 侧自测(snap.self_perf,
       // 任何后端都有);KV 混合(本地 vLLM prefix_cache 优先,否则 usage 口径)。
       // 按「清除统计」基准点换算成区间值后再格式化。
-      var sadj = adjustCounters(snap.self_perf, snap.vllm);
+      const sadj = adjustCounters(snap.self_perf, snap.vllm);
       // KV 显示值:本地 vLLM 的 /metrics prefix_cache 优先,拿不到用 usage cache 口径(云端)。
-      var kvShown = sadj ? (sadj.vllmKvPct != null ? sadj.vllmKvPct
-        : (sadj.selfKvPct != null ? sadj.selfKvPct : null)) : null;
+      const kvShown = sadj ? (sadj.vllmKvPct == null ? (sadj.selfKvPct == null ? null : sadj.selfKvPct)
+        : sadj.vllmKvPct) : null;
       // Format values for display
-      var vllm = snap.vllm || null;
-      var metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
-      var metricNotApplicableText = bt("metricNotApplicable");
-      var metricUnavailableText = bt("metricUnavailable");
-      var diagnostic = vllm && vllm.diagnostic ? vllm.diagnostic : null;
-      var metricDiagnostic = vllm && vllm.metric_diagnostics && vllm.metric_diagnostics.length
+      const vllm = snap.vllm || null;
+      const metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
+      const metricUnavailableText = bt("metricUnavailable");
+      const diagnostic = vllm && vllm.diagnostic ? vllm.diagnostic : null;
+      const metricDiagnostic = vllm && vllm.metric_diagnostics && vllm.metric_diagnostics.length
         ? vllm.metric_diagnostics[0] : null;
-      var targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
-      var targetKindLabel = targetKind === "remote" ? bt("targetKindRemote") : (targetKind === "local" ? bt("targetKindLocal") : bt("targetKindInvalid"));
-      var vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
-      var healthStatus = vllm && vllm.health_status ? vllm.health_status : (vllm ? "verified" : "offline");
-      var appQueue = appQueueSnapshot();
+      const targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
+      const targetKindLabel = targetKind === "remote" ? bt("targetKindRemote") : (targetKind === "local" ? bt("targetKindLocal") : bt("targetKindInvalid"));
+      const vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
+      const healthStatus = vllm && vllm.health_status ? vllm.health_status : (vllm ? "verified" : "offline");
+      const appQueue = appQueueSnapshot();
       snap._fmt = {
         gpuName: snap.gpu ? snap.gpu.name : bt("gpuUnavailable"),
         gpuVram: snap.gpu && snap.gpu.vram_total_mib > 0
@@ -6576,7 +6585,7 @@
         // TTFT/TPS/tokens 一律用 app 侧自测——任何后端(vLLM/LM Studio/Ollama/云端)都有值,
         // 不再受 metricsApplicable 门控。KV 见 kvShown(本地 prefix_cache / 云端 usage 口径),
         // 拿不到则 "—"。队列仍归 vLLM(见 vllmQueue)。
-        vllmKv: kvShown != null ? kvShown.toFixed(1) + "%" : "0%",
+        vllmKv: kvShown == null ? "0%" : kvShown.toFixed(1) + "%",
         vllmKvHasData: kvShown != null,
         vllmTtft: sadj && sadj.ttft_count > 0
           ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "—",
@@ -6591,8 +6600,8 @@
           kvPct: kvShown,
           ttftS: sadj.ttft_count > 0 ? sadj.ttft_sum_s / sadj.ttft_count : null,
           tps: sadj.tps_time_s > 0 ? sadj.tps_tokens / sadj.tps_time_s : null,
-          gen: sadj.gen != null ? sadj.gen : null,
-          prompt: sadj.prompt != null ? sadj.prompt : null,
+          gen: sadj.gen == null ? null : sadj.gen,
+          prompt: sadj.prompt == null ? null : sadj.prompt,
         } : null,
         appVersion: snap.app ? snap.app.pinvou3_version + bt("betaTag") : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
@@ -6628,19 +6637,19 @@
   }
 
   // ── Backend status (live dot) ────────────────────────────────────
-  var backendStatusPollInFlight = false;
+  let backendStatusPollInFlight = false;
   async function pollBackendStatus() {
     if (backendStatusPollInFlight) return;
     backendStatusPollInFlight = true;
     try {
-      var s = await invoke("get_backend_status");
+      const s = await invoke("get_backend_status");
       state.backendOnline = !!s.vllm_online;
       // 修 token 分母时机 bug：不再依赖用户打开监控页才拿到真实 max_model_len
       if (s.max_model_len) {
         maxModelLen = s.max_model_len;
         state.tokens.max = maxModelLen;
       }
-    } catch (e) {
+    } catch {
       state.backendOnline = false;
     } finally {
       backendStatusPollInFlight = false;
@@ -6661,7 +6670,7 @@
   });
 
   listen("pet:selected_changed", function (e) {
-    var selectedPet = e.payload && e.payload.selected_pet;
+    const selectedPet = e.payload && e.payload.selected_pet;
     if (typeof selectedPet === "string") {
       state.selectedPet = selectedPet;
       notify();
@@ -6671,7 +6680,7 @@
   async function loadSettings() {
     try {
       state.settings = await invoke("get_settings");
-    } catch (e) {
+    } catch {
       state.settings = { theme: "genesis", language: "zh-Hans" };
     }
     notify();
@@ -6679,37 +6688,37 @@
   async function loadSelectedPet() {
     try {
       state.selectedPet = await invoke("get_selected_pet");
-    } catch (e) {
+    } catch {
       state.selectedPet = "lingling";
     }
     notify();
   }
   async function setSelectedPet(id) {
-    return await invoke("set_selected_pet", { id: id });
+    return invoke("set_selected_pet", { id });
   }
   async function loadEffectiveModelConfig(sessionId) {
-    var requestedSessionId = arguments.length ? (sessionId || null) : (state.activeSessionId || null);
+    const requestedSessionId = arguments.length ? (sessionId || null) : (state.activeSessionId || null);
     try {
-      var config = await invoke("get_effective_model_config", { sessionId: requestedSessionId });
+      const config = await invoke("get_effective_model_config", { sessionId: requestedSessionId });
       // 快速切会话时，旧请求可能晚于新请求返回；禁止旧会话配置覆盖当前遮罩状态。
       if ((state.activeSessionId || null) !== requestedSessionId) return;
       state.effectiveModelConfig = config;
-    } catch (e) {
+    } catch {
       if ((state.activeSessionId || null) !== requestedSessionId) return;
       state.effectiveModelConfig = null;
     }
     notify();
   }
-  var settingsWriteQueue = Promise.resolve();
+  let settingsWriteQueue = Promise.resolve();
   function enqueueSettingsWrite(write) {
-    var pending = settingsWriteQueue.then(write, write);
+    const pending = settingsWriteQueue.then(write, write);
     settingsWriteQueue = pending.then(function () {}, function () {});
     return pending;
   }
   async function saveSettings(patch) {
     return enqueueSettingsWrite(async function () {
       try {
-        state.settings = await invoke(IS_WEB ? "web_access_update_settings" : "update_settings", { patch: patch });
+        state.settings = await invoke(IS_WEB ? "web_access_update_settings" : "update_settings", { patch });
         notify();
         return true;
       } catch (e) {
@@ -6725,7 +6734,7 @@
     }
     return enqueueSettingsWrite(async function () {
       try {
-        await invoke("save_settings_and_restart", { patch: patch });
+        await invoke("save_settings_and_restart", { patch });
         return true;
       } catch (e) {
         console.warn("save settings and restart failed", e);
@@ -6737,9 +6746,9 @@
     return enqueueSettingsWrite(async function () {
       try {
         if (IS_WEB) {
-          state.settings = await invoke("web_access_update_settings", { patch: { search: search } });
+          state.settings = await invoke("web_access_update_settings", { patch: { search } });
         } else {
-          state.settings = await invoke("update_search_settings", { search: search });
+          state.settings = await invoke("update_search_settings", { search });
         }
         notify();
         return true;
@@ -6756,7 +6765,7 @@
     }
     return enqueueSettingsWrite(async function () {
       try {
-        await invoke("save_search_settings_and_restart", { search: search });
+        await invoke("save_search_settings_and_restart", { search });
         return true;
       } catch (e) {
         console.warn("save search settings and restart failed", e);
@@ -6765,22 +6774,22 @@
     });
   }
   async function submitFeedback(request) {
-    return await invoke("submit_feedback", { request: request });
+    return invoke("submit_feedback", { request });
   }
   async function discoverLocalVllm(request) {
-    return await invoke("discover_local_vllm", { request: request || null });
+    return invoke("discover_local_vllm", { request: request || null });
   }
 
   // ── MegaCube(GB10) 本地大模型一键引导 ────────────────────────────
-  var vllmSetupPollTimer = null;
-  var vllmSetupPollStartedAt = 0;
-  var VLLM_SETUP_POLL_INTERVAL_MS = 3000;
-  var VLLM_SETUP_POLL_TIMEOUT_MS = 12 * 60 * 1000;
+  let vllmSetupPollTimer = null;
+  let vllmSetupPollStartedAt = 0;
+  const VLLM_SETUP_POLL_INTERVAL_MS = 3000;
+  const VLLM_SETUP_POLL_TIMEOUT_MS = 12 * 60 * 1000;
   // 首屏检测「预装但未启用」状态;eligible 时前端弹引导框。
   // 开机加载中不弹框，每 3 秒静默复查；12 分钟后仍 starting 则恢复可重试入口。
   // autoPoll 只供内部定时器续接；用户手动检测会重置本轮截止时间。
   async function detectLocalVllmSetup(options) {
-    var autoPoll = !!(options && options.autoPoll);
+    const autoPoll = !!(options && options.autoPoll);
     if (vllmSetupPollTimer) {
       clearTimeout(vllmSetupPollTimer);
       vllmSetupPollTimer = null;
@@ -6788,12 +6797,12 @@
     if (!autoPoll) vllmSetupPollStartedAt = Date.now();
     try {
       state.vllmSetup = await invoke("detect_local_vllm_setup");
-    } catch (e) {
+    } catch {
       state.vllmSetup = null; // 检测失败静默,不打扰(等同不弹)
       vllmSetupPollStartedAt = 0;
     }
     if (state.vllmSetup && state.vllmSetup.engine_state === 'starting' && state.vllmSetup.may_offer_setup !== false) {
-      var elapsed = Date.now() - vllmSetupPollStartedAt;
+      const elapsed = Date.now() - vllmSetupPollStartedAt;
       if (vllmSetupPollStartedAt > 0 && elapsed >= VLLM_SETUP_POLL_TIMEOUT_MS) {
         state.vllmSetup = Object.assign({}, state.vllmSetup, {
           engine_state: 'failed',
@@ -6838,18 +6847,18 @@
   }
   // 点「不再提醒 → 确认」:持久婉拒,开机引导框不再自动弹(仍可在设置→模型管理手动启用)。
   async function declineVllmSetup() {
-    try { await invoke("decline_local_vllm_setup"); } catch (e) { /* 持久失败也先隐藏本会话,不阻断 */ }
+    try { await invoke("decline_local_vllm_setup"); } catch { /* 持久失败也先隐藏本会话,不阻断 */ }
     state.vllmSetupDismissed = true;
     notify();
   }
   async function getEffectiveModelConfig(sessionId) {
-    return await invoke("get_effective_model_config", {
+    return invoke("get_effective_model_config", {
       sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
     });
   }
   // 当前有效模型的图片输入能力(普通会话选图即时警告用);后端按会话模型绑定解析。
   async function getImageInputCapability(sessionId) {
-    return await invoke("get_image_input_capability", {
+    return invoke("get_image_input_capability", {
       sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
     });
   }
@@ -6857,15 +6866,15 @@
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
   // 整表覆盖加载：保存/删除/切换链式 loadModels 并发时旧列表不得覆盖新列表
   // （审计 b）。请求序号后发者胜（与 tauri settings 侧一致）。
-  var modelsLoadSeq = 0;
+  let modelsLoadSeq = 0;
   async function loadModels() {
-    var seq = ++modelsLoadSeq;
+    const seq = ++modelsLoadSeq;
     try {
-      var v = await invoke("list_models");
+      const v = await invoke("list_models");
       if (seq !== modelsLoadSeq) return;
       state.savedModels = (v && v.models) || [];
       state.activeModelId = (v && v.active_model_id) || null;
-    } catch (e) {
+    } catch {
       if (seq !== modelsLoadSeq) return;
       state.savedModels = []; state.activeModelId = null;
     }
@@ -6874,30 +6883,30 @@
   // model 对象字段须是 snake_case(SavedModel serde):
   // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action,image_capability_override,vision_model_id}
  async function saveModel(model) {
-   await invoke("save_model", { model: model });
+   await invoke("save_model", { model });
    await loadModels();
    await loadEffectiveModelConfig();
  }
  async function revealModelApiKey(id) {
-   return await invoke("reveal_model_api_key", { id: id });
+   return invoke("reveal_model_api_key", { id });
  }
  async function deleteModel(id) {
-   await invoke("delete_model", { id: id });
+   await invoke("delete_model", { id });
    await loadModels();
    await loadEffectiveModelConfig();
   }
   async function setActiveModel(id) {
-    await invoke("set_active_model", { id: id });
+    await invoke("set_active_model", { id });
     await loadModels();
     await loadEffectiveModelConfig();
   }
   // 读某会话当前绑定的模型 id(切会话时刷新 chip)。
   async function loadSessionModel(sessionId) {
-    var requestedSessionId = sessionId || null;
-    var modelId = null;
-    var config = null;
+    const requestedSessionId = sessionId || null;
+    let modelId = null;
+    let config = null;
     try {
-      var results = await Promise.all([
+      const results = await Promise.all([
         requestedSessionId
           ? invoke("get_session_model_id", { sessionId: requestedSessionId }).catch(function () { return null; })
           : Promise.resolve(null),
@@ -6905,9 +6914,8 @@
       ]);
       modelId = results[0];
       config = results[1];
-    } catch (e) {
-      modelId = null;
-      config = null;
+    } catch {
+      // 读取失败时按未配置处理(下方统一提交 null)。
     }
     // ChatView effect 可能并发加载相邻两个会话；只提交仍为当前会话的结果。
     if ((state.activeSessionId || null) !== requestedSessionId) return;
@@ -6918,35 +6926,35 @@
   // 切当前会话模型(chip 热切)。无 session(草稿态)时改全局默认。
   async function switchModel(sessionId, modelId) {
     if (sessionId) {
-      await invoke("set_session_model", { sessionId: sessionId, modelId: modelId });
+      await invoke("set_session_model", { sessionId, modelId });
       await loadSessionModel(sessionId);
     } else {
       await setActiveModel(modelId);
     }
   }
   async function testModelConnection(baseUrl, apiKey, modelId) {
-    return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
+    return invoke("test_model_connection", { baseUrl, apiKey, modelId: modelId || null });
   }
   // 测试图片输入能力(设计 §7.3):用当前表单的 model/base_url/key 发一张内置纯色图,
   // 仅由模型编辑弹窗主动点击触发,无任何启动/定时自动测试。
   async function testImageInputCapability(model, baseUrl, apiKey, modelId) {
-    return await invoke("test_image_input_capability", { model: model, baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
+    return invoke("test_image_input_capability", { model, baseUrl, apiKey, modelId: modelId || null });
   }
   async function testSearchProvider(provider, apiKey) {
-    return await invoke("test_search_provider", { provider: provider, apiKey: apiKey || null });
+    return invoke("test_search_provider", { provider, apiKey: apiKey || null });
   }
 
   // ── Super permission ─────────────────────────────────────────────
   async function refreshSuperPerm() {
     try {
       state.superPermEnabled = !!(await invoke("get_super_permission_status"));
-    } catch (e) {
+    } catch {
       state.superPermEnabled = false;
     }
     notify();
   }
   async function toggleSuperPerm() {
-    var target = !state.superPermEnabled;
+    const target = !state.superPermEnabled;
     try {
       state.superPermEnabled = !!(await invoke("set_super_permission", { enabled: target }));
       addSystemItem(state.superPermEnabled
@@ -6956,7 +6964,7 @@
       return { ok: state.superPermEnabled === target, enabled: state.superPermEnabled };
     } catch (e) {
       addSystemItem("⚠️ " + e);
-      try { state.superPermEnabled = !!(await invoke("get_super_permission_status")); } catch (e2) {}
+      try { state.superPermEnabled = !!(await invoke("get_super_permission_status")); } catch { /* 查询失败按未开启处理 */ }
       notify();
       return { ok: false, enabled: state.superPermEnabled, error: String(e) };
     }
@@ -6969,15 +6977,15 @@
   // 旧响应不得覆盖新响应（A→B→A 快速切换时 #1 的慢响应覆盖 #3 的新值，审计；
   // tauri 版 epoch 对齐）。权威写回一律 bump 该序号，见 applyAuthoritativeModeState。
   async function syncModeState() {
-    var sid = state.activeSessionId;
+    const sid = state.activeSessionId;
     if (!sid) {
       // 草稿态：显示当前 lane 的全局默认（三分 lane 语义），不再恒 yolo。
       state.modeState = currentDraftModeState();
       return;
     }
-    var seq = ++modeSyncSeq;
+    const seq = ++modeSyncSeq;
     try {
-      var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
+      const ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
       if (seq !== modeSyncSeq) return; // 已有更新的读取发起，本响应陈旧
       if (state.activeSessionId !== sid) {
         runSyncOnSession(sid, function () {
@@ -6986,7 +6994,7 @@
         return;
       }
       state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
-    } catch (e) {
+    } catch {
       if (seq !== modeSyncSeq) return;
       if (state.activeSessionId !== sid) return;
       state.modeState = { mode: "yolo", multiAgent: false };
@@ -6996,15 +7004,15 @@
   // ── lane 全局默认（工作/设计/代码三分，与 tauri bridge 对齐）────────
   // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认，缺省 yolo。
   function currentDraftModeState() {
-    var lane = state.modeLane === "design" ? "design" : "work";
-    var d = state.modeDefaults && state.modeDefaults[lane];
+    const lane = state.modeLane === "design" ? "design" : "work";
+    const d = state.modeDefaults && state.modeDefaults[lane];
     return { mode: d || "yolo", multiAgent: false };
   }
   async function refreshModeDefaults() {
     try {
-      var defaults = await invoke("get_mode_defaults");
+      const defaults = await invoke("get_mode_defaults");
       if (defaults) state.modeDefaults = defaults;
-    } catch (e) { /* 读取失败保留旧值/缺省，不打扰交互 */ }
+    } catch { /* 读取失败保留旧值/缺省，不打扰交互 */ }
     if (!state.activeSessionId) {
       state.modeState = currentDraftModeState();
       notify();
@@ -7012,7 +7020,7 @@
   }
   // ChatView 随 pinvouMode 传入当前 lane；草稿态立即按新 lane 默认刷新显示。
   function setModeLane(lane) {
-    var next = lane === "design" ? "design" : "work";
+    const next = lane === "design" ? "design" : "work";
     if (state.modeLane === next) return;
     state.modeLane = next;
     if (!state.activeSessionId) {
@@ -7023,9 +7031,9 @@
   // 草稿态 chip 切换：写本 lane 全局默认（不物化会话——物化时由
   // ensureSession 把 lane 默认应用到新会话）。
   async function setDraftMode(target) {
-    var lane = state.modeLane === "design" ? "design" : "work";
+    const lane = state.modeLane === "design" ? "design" : "work";
     try {
-      var defaults = await invoke("set_mode_default", { lane: lane, mode: target });
+      const defaults = await invoke("set_mode_default", { lane, mode: target });
       if (defaults) state.modeDefaults = defaults;
       if (!state.activeSessionId) {
         state.modeState = {
@@ -7039,19 +7047,19 @@
 
   // ── 卡片动作辅助 ─────────────────────────────────────────────────
   function patchItemById(id, patch) {
-    for (var i = 0; i < state.chatItems.length; i++) {
+    for (let i = 0; i < state.chatItems.length; i++) {
       if (state.chatItems[i].id === id) { Object.assign(state.chatItems[i], patch); break; }
     }
   }
   function pushUserEcho(text, persist) {
-    var item = { type: "user", text: text, time: timeStr() };
-    var message = null;
+    const item = { type: "user", text, time: timeStr() };
+    let message = null;
     addChatItem(item);
     if (persist) {
-      message = { role: "user", content: [{ type: "text", text: text }] };
+      message = { role: "user", content: [{ type: "text", text }] };
       state.messages.push(message);
     }
-    return { item: item, message: message };
+    return { item, message };
   }
   function markResolved(id, statusLabel) { patchItemById(id, { resolved: true, statusLabel: statusLabel || "" }); notify(); }
 
@@ -7067,31 +7075,31 @@
   // 记忆状态值是固定中文数据（会被持久化，且 React 侧按固定键做逻辑判断与本地化映射），
   // 因此这里刻意不走 bt()，与 tauri 端 memory.js 保持一致。
   function memoryWriteLabel(event) {
-    var text = event && event.text || "";
+    const text = event && event.text || "";
     if (!text) return "记忆已更新";
     return text;
   }
   function memoryWriteStatusLabel(event) {
-    var action = event && event.action || "";
+    const action = event && event.action || "";
     if (action === "confirmed" || action === "remembered") return "记忆已更新";
     if (action === "archived") return "记忆已归档";
     if (action === "deleted") return "记忆已删除";
     return "记忆已更新";
   }
   function normalizeMemoryCandidateText(text) {
-    return String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
+    return String(text || "").replaceAll(/\s+/g, " ").trim().toLowerCase();
   }
   function handleMemoryWrite(payload) {
-    var sid = payload && payload.session_id || state.activeSessionId;
-    var events = payload && Array.isArray(payload.events) ? payload.events : [];
+    const sid = payload && payload.session_id || state.activeSessionId;
+    const events = payload && Array.isArray(payload.events) ? payload.events : [];
     if (!sid || !events.length) return;
     runOnSession(sid, function () {
       events.forEach(function (event) {
         if (!event) return;
         if (event.action === "pending") {
-          var label = memoryWriteLabel(event);
-          var labelKey = normalizeMemoryCandidateText(label);
-          var existing = state.chatItems.find(function (it) {
+          const label = memoryWriteLabel(event);
+          const labelKey = normalizeMemoryCandidateText(label);
+          const existing = state.chatItems.find(function (it) {
             return it.type === "memory_candidate" && !it.resolved && (
               (event.id && it.memoryId === event.id) ||
               (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
@@ -7114,9 +7122,9 @@
           });
           return;
         }
-        var label = memoryWriteLabel(event);
-        var labelKey = normalizeMemoryCandidateText(label);
-        var existing = state.chatItems.find(function (it) {
+        const label = memoryWriteLabel(event);
+        const labelKey = normalizeMemoryCandidateText(label);
+        const existing = state.chatItems.find(function (it) {
           return it.type === "memory_candidate" && (
             (event.id && it.memoryId === event.id) ||
             (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
@@ -7160,14 +7168,15 @@
   }
 
   function applyMemoryOverview(overview) {
-    var previous = state.memory || {};
-    var sourceStates = overview && overview.sources || {};
+    const previous = state.memory || {};
+    const sourceStates = overview && overview.sources || {};
     // stateKey:后端 source 名与前端 state 字段名通常一致,但 snapshot 源对应
     // state.memory.snapshot_path,两者不同;保留上次值时按 state 字段名查找。
     function sourceValue(source, value, fallback, stateKey) {
-      var status = sourceStates[source];
+      const status = sourceStates[source];
       if (status && status.available === false) {
-        var key = stateKey || source;
+        const key = stateKey || source;
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
         return Object.prototype.hasOwnProperty.call(previous, key) ? previous[key] : fallback;
       }
       return value;
@@ -7190,12 +7199,15 @@
     };
   }
   function orderedMemoryWarnings(warnings) {
-    var items = Array.isArray(warnings) ? warnings : [];
-    return items.filter(function (warning) {
-      return warning && warning.code === "memory_topic_cleanup_required";
-    }).concat(items.filter(function (warning) {
-      return !warning || warning.code !== "memory_topic_cleanup_required";
-    }));
+    const items = Array.isArray(warnings) ? warnings : [];
+    return [
+      ...items.filter(function (warning) {
+        return warning && warning.code === "memory_topic_cleanup_required";
+      }),
+      ...items.filter(function (warning) {
+        return !warning || warning.code !== "memory_topic_cleanup_required";
+      }),
+    ];
   }
   function applyMemoryProfileState(result) {
     if (!result || !result.profile) return;
@@ -7209,7 +7221,7 @@
   }
   function applyMemoryWriteState(result, update) {
     if (!result) return;
-    var next = Object.assign({}, state.memory, {
+    const next = Object.assign({}, state.memory, {
       loading: false,
       error: null,
       runtime: result.runtime || null,
@@ -7221,7 +7233,7 @@
   }
   function upsertMemoryValue(items, value, replacedId) {
     if (!value) return items || [];
-    var next = (items || []).filter(function (item) {
+    const next = (items || []).filter(function (item) {
       return item && item.id !== value.id && item.id !== replacedId;
     });
     next.push(value);
@@ -7229,10 +7241,10 @@
   }
   function upsertPendingMemoryCandidate(item) {
     if (!item || item.status !== "pending_confirm") return;
-    var label = item.content || item.text || "";
+    const label = item.content || item.text || "";
     if (!label) return;
-    var labelKey = normalizeMemoryCandidateText(label);
-    var existing = state.chatItems.find(function (it) {
+    const labelKey = normalizeMemoryCandidateText(label);
+    const existing = state.chatItems.find(function (it) {
       return it.type === "memory_candidate" && !it.resolved && (
         (item.id && it.memoryId === item.id) ||
         (labelKey && normalizeMemoryCandidateText(it.text) === labelKey)
@@ -7254,7 +7266,7 @@
     });
   }
   function rehydratePendingMemoryCandidates(overview) {
-    var pending = overview && Array.isArray(overview.pending) ? overview.pending : [];
+    const pending = overview && Array.isArray(overview.pending) ? overview.pending : [];
     pending.forEach(upsertPendingMemoryCandidate);
   }
   // 记忆面板混合两类数据：runtime 按 session 分文件，profile/preferences/
@@ -7262,16 +7274,16 @@
   // (与 tauri memory.js 对齐，审计)：await 挂起期间切会话或再次加载，旧
   // 响应不得覆盖当前显示(尤其 runtime 属于别的会话)，也不得把候选卡
   // rehydrate 进当前对话流。
-  var memoryOverviewSeq = 0;
+  let memoryOverviewSeq = 0;
   async function loadMemoryOverview(options) {
     if (!invoke) return null;
     options = options || {};
-    var sid = state.activeSessionId;
-    var seq = ++memoryOverviewSeq;
+    const sid = state.activeSessionId;
+    const seq = ++memoryOverviewSeq;
     state.memory = Object.assign({}, state.memory, { loading: true, error: null });
     notify();
     try {
-      var overview = await invoke("get_memory_overview", { sessionId: state.activeSessionId });
+      const overview = await invoke("get_memory_overview", { sessionId: state.activeSessionId });
       if (sid !== state.activeSessionId || seq !== memoryOverviewSeq) return discardStaleLoad(seq);
       applyMemoryOverview(overview);
       if (options.rehydratePending) rehydratePendingMemoryCandidates(overview);
@@ -7298,11 +7310,11 @@
     if (!invoke) return null;
     // 入口捕获触发会话：invoke 往返期间切走，A 的写结果/错误不得渲染进
     // B 的面板(与 tauri memory.js 对齐，审计补充)。
-    var sid = state.activeSessionId;
+    const sid = state.activeSessionId;
     try {
-      var result = await invoke("update_memory_profile", { patch: patch || {}, sessionId: state.activeSessionId });
+      const result = await invoke("update_memory_profile", { patch: patch || {}, sessionId: state.activeSessionId });
       if (sid === state.activeSessionId) { applyMemoryProfileState(result); notify(); }
-      var overview = await loadMemoryOverview();
+      const overview = await loadMemoryOverview();
       return overview || result;
     } catch (e) {
       if (sid === state.activeSessionId) {
@@ -7314,9 +7326,9 @@
   }
   async function deleteMemoryPreference(id) {
     if (!id || !invoke) return false;
-    var sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
+    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
     try {
-      var res = await invoke("delete_memory_preference", { id: id, sessionId: state.activeSessionId });
+      const res = await invoke("delete_memory_preference", { id, sessionId: state.activeSessionId });
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(res, function (next, changed) {
           if (changed) next.preferences = (next.preferences || []).filter(function (item) { return item.id !== id; });
@@ -7334,20 +7346,20 @@
   }
   async function updateMemoryItem(kind, id, patch) {
     if (!id || !invoke) return null;
-    var sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
+    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
     try {
-      var command = kind === "preference" ? "update_memory_preference"
+      const command = kind === "preference" ? "update_memory_preference"
         : kind === "work_context" ? "update_work_context_memory"
         : (kind === "current_focus" || kind === "recent_activity") ? "update_timed_memory"
         : null;
       if (!command) return null;
-      var args = { id: id, patch: patch || {}, sessionId: state.activeSessionId };
+      const args = { id, patch: patch || {}, sessionId: state.activeSessionId };
       if (command === "update_timed_memory") args.kind = kind;
-      var res = await invoke(command, args);
+      const res = await invoke(command, args);
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(res, function (next, value) {
           if (!value) return;
-          var source = kind === "preference" ? "preferences" : kind;
+          const source = kind === "preference" ? "preferences" : kind;
           next[source] = upsertMemoryValue(next[source], value, id);
         });
       }
@@ -7363,20 +7375,20 @@
   }
   async function deleteMemoryItem(kind, id) {
     if (!id || !invoke) return false;
-    var sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
+    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
     try {
-      var command = kind === "preference" ? "delete_memory_preference"
+      const command = kind === "preference" ? "delete_memory_preference"
         : kind === "work_context" ? "delete_work_context_memory"
         : (kind === "current_focus" || kind === "recent_activity") ? "delete_timed_memory"
         : null;
       if (!command) return false;
-      var args = { id: id, sessionId: state.activeSessionId };
+      const args = { id, sessionId: state.activeSessionId };
       if (command === "delete_timed_memory") args.kind = kind;
-      var res = await invoke(command, args);
+      const res = await invoke(command, args);
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(res, function (next, changed) {
           if (!changed) return;
-          var source = kind === "preference" ? "preferences" : kind;
+          const source = kind === "preference" ? "preferences" : kind;
           next[source] = (next[source] || []).filter(function (item) { return item.id !== id; });
         });
       }
@@ -7392,9 +7404,9 @@
   }
   async function archiveRecentWorkMemory(id) {
     if (!id || !invoke) return false;
-    var sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
+    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(与 tauri 对齐，审计补充)
     try {
-      var res = await invoke("archive_recent_work_memory", { id: id, sessionId: state.activeSessionId });
+      const res = await invoke("archive_recent_work_memory", { id, sessionId: state.activeSessionId });
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(res, function (next, changed) {
           if (changed) next.recent_work = (next.recent_work || []).filter(function (item) { return item.id !== id; });
@@ -7412,9 +7424,9 @@
   }
   async function confirmMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
-    var sid = state.activeSessionId; // 入口捕获：候选卡 patch 与面板写入都定向回发起会话(与 tauri 对齐，审计补充)
+    const sid = state.activeSessionId; // 入口捕获：候选卡 patch 与面板写入都定向回发起会话(与 tauri 对齐，审计补充)
     try {
-      var result = await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
+      const result = await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(result, function (next) {
           next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
@@ -7431,9 +7443,9 @@
   }
   async function ignoreMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
-    var sid = state.activeSessionId; // 同 confirmMemoryCandidate：定向回发起会话(与 tauri 对齐，审计补充)
+    const sid = state.activeSessionId; // 同 confirmMemoryCandidate：定向回发起会话(与 tauri 对齐，审计补充)
     try {
-      var result = await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
+      const result = await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(result, function (next) {
           next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
@@ -7448,9 +7460,9 @@
   }
   async function neverMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
-    var sid = state.activeSessionId; // 同 confirmMemoryCandidate：定向回发起会话(与 tauri 对齐，审计补充)
+    const sid = state.activeSessionId; // 同 confirmMemoryCandidate：定向回发起会话(与 tauri 对齐，审计补充)
     try {
-      var result = await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
+      const result = await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
       if (sid === state.activeSessionId) {
         applyMemoryWriteState(result, function (next) {
           next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
@@ -7493,16 +7505,16 @@
   // sid 在 entry 捕获一次,thread through 所有 await —— 防用户切 session 后,
   // 后续 UI 写入/IPC 把卡片塞到错误的 session。
   async function acceptPlan(itemId, planMarkdown, echo, planId) {
-    var sid = state.activeSessionId;
+    const sid = state.activeSessionId;
     if (!sid) return;
-    var planTicket = String(planId || "").trim();
+    const planTicket = String(planId || "").trim();
     if (!planTicket) {
       if (itemId) patchItemByIdFor(sid, itemId, { cardState: "frozen", statusLabel: bt("planHistorical"), resolved: true });
       addSystemItemFor(sid, bt("planTicketExpired"));
       notify();
       return;
     }
-    var planBuffer = getBuffer(sid);
+    const planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
       recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
         operation: "accept_plan",
@@ -7520,8 +7532,8 @@
       planBuffer.remoteCommittedRevision = "";
     }
     if (itemId) patchItemByIdFor(sid, itemId, { cardState: "approved", statusLabel: bt("approved"), resolved: true });
-    var echoEntry = null;
-    var displayEcho = echo || bt("echoGo");
+    let echoEntry = null;
+    const displayEcho = echo || bt("echoGo");
     runOnSession(sid, function () {
       echoEntry = pushUserEcho(displayEcho, true);
       state.busy = true;
@@ -7529,7 +7541,7 @@
     });
     notify();
     try {
-      var st = await invoke("accept_plan", {
+      const st = await invoke("accept_plan", {
         sessionId: sid,
         planMarkdown: planMarkdown || "",
         displayMessage: displayEcho,
@@ -7540,9 +7552,9 @@
       if (planBuffer) planBuffer.deferredRemoteUserEvent = null;
       applyAuthoritativeModeState(sid, st);
     } catch (e) {
-      var errorText = String(e && e.message ? e.message : e || "");
-      var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
-      var planNotActive = errorText.indexOf("plan_not_active") >= 0;
+      const errorText = String(e && e.message ? e.message : e || "");
+      const concurrentTurn = errorText.includes("session_turn_in_progress");
+      const planNotActive = errorText.includes("plan_not_active");
       if (planBuffer) planBuffer.localTurnOwned = false;
       if (itemId) {
         patchItemByIdFor(sid, itemId, planNotActive
@@ -7557,21 +7569,21 @@
         state.busy = false;
         stopThinking();
       });
-      var deferredApplied = applyDeferredRemoteUserMessage(sid, planBuffer);
+      const deferredApplied = applyDeferredRemoteUserMessage(sid, planBuffer);
       if (concurrentTurn && planBuffer && !deferredApplied) {
         markRemoteTurn(sid, planBuffer, false, "accept_plan_concurrent_turn");
       }
       try {
-        var currentMode = await invoke("get_mode_state", { sessionId: sid });
+        const currentMode = await invoke("get_mode_state", { sessionId: sid });
         applyAuthoritativeModeState(sid, currentMode);
-      } catch (_) {}
+      } catch { /* 状态回读失败不掩盖原始错误 */ }
       addSystemItemFor(sid, bt("acceptPlanFailed") + e);
     }
     notify();
   }
   async function discardPlan(itemId, planId) {
-    var sid = state.activeSessionId;
-    var planTicket = String(planId || "").trim();
+    const sid = state.activeSessionId;
+    const planTicket = String(planId || "").trim();
     if (!sid || !isActionablePlanCard(sid, itemId, planTicket)) return;
     patchItemByIdFor(sid, itemId, {
       cardState: "frozen", statusLabel: bt("planDiscarded"), resolved: true,
@@ -7581,13 +7593,13 @@
     // pending until its transport timeout when the desktop disconnects.
     notify();
     try {
-      var st = await invoke("discard_plan", { sessionId: sid, planId: planTicket });
+      const st = await invoke("discard_plan", { sessionId: sid, planId: planTicket });
       applyAuthoritativeModeState(sid, st);
     } catch (e) {
-      var errorText = String(e && e.message ? e.message : e || "");
-      var planNotActive = errorText.indexOf("plan_not_active") >= 0;
+      const errorText = String(e && e.message ? e.message : e || "");
+      const planNotActive = errorText.includes("plan_not_active");
       runOnSession(sid, function () {
-        var card = state.chatItems.find(function (item) {
+        const card = state.chatItems.find(function (item) {
           return item && item.id === itemId && item.type === "plan_card" &&
             String(item.planId || "") === planTicket;
         });
@@ -7604,22 +7616,22 @@
       });
       if (planNotActive) {
         try {
-          var currentMode = await invoke("get_mode_state", { sessionId: sid });
+          const currentMode = await invoke("get_mode_state", { sessionId: sid });
           applyAuthoritativeModeState(sid, currentMode);
-        } catch (_) {}
+        } catch { /* 状态回读失败不掩盖原始错误 */ }
       }
       addSystemItemFor(sid, bt("discardPlanFailed") + e);
     }
     notify();
   }
   async function exitPlanToYolo() {
-    var sid = state.activeSessionId;
+    const sid = state.activeSessionId;
     // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义）。
     if (!sid) { await setDraftMode("yolo"); return; }
     try {
       // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
       // 计算）；await 返回后按发起时 sid 定向写回并 bump modeSyncSeq。
-      var st = await invoke("exit_plan_to_yolo", { sessionId: state.activeSessionId });
+      const st = await invoke("exit_plan_to_yolo", { sessionId: state.activeSessionId });
       applyAuthoritativeModeState(sid, st);
     } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
     notify();
@@ -7628,10 +7640,10 @@
   async function setPlanModeNext() {
     // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义；旧实现会先
     // ensureSession 物化——草稿页点 Plan 凭空造出空会话）。
-    var sid = state.activeSessionId;
+    const sid = state.activeSessionId;
     if (!sid) { await setDraftMode("plan"); return; }
     try {
-      var st = await invoke("set_plan_mode_next", { sessionId: sid });
+      const st = await invoke("set_plan_mode_next", { sessionId: sid });
       applyAuthoritativeModeState(sid, st);
     } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
     notify();
@@ -7642,7 +7654,7 @@
     await sendMessage("请用 todo_write 工具输出完整方案步骤,不要直接调写工具。");
   }
   async function planStuckGo(itemId) {
-    var sid = state.activeSessionId;
+    const sid = state.activeSessionId;
     if (!sid) return;
     patchItemById(itemId, { resolved: true }); notify();
     await exitPlanToYolo();
@@ -7660,23 +7672,24 @@
   // 都定向到 sid（runOnSession / patchItemByIdFor），避免用户提交期间切会话导致
   // echo/restoredAnswers 漏写触发会话或污染当前会话（与 acceptPlan 同一约定）。
   async function submitUserInput(itemId, toolCallId, answers, questions) {
-    var sid = state.activeSessionId;
+    const sid = state.activeSessionId;
     if (!sid) return;
     patchItemByIdFor(sid, itemId, { submitting: true }); notify();
     try {
-      await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: sid });
+      await invoke("submit_user_input", { toolCallId, answers, sessionId: sid });
       // 摘要按 question 分组拼接：answers 是按选项展开的（multi_select 时同一题多条），
       // 不能按 answers 索引一一对应 questions（会越界抛 TypeError，复核 P1）。
       // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
       // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
-      var byId = Object.create(null);
-      answers.forEach(function (a) { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
-      var summary = questions.map(function (q, qi) {
-        var list = byId[q.id];
+      const byId = Object.create(null);
+      answers.forEach(function (a) { if (a && a.id != null) byId[a.id] = byId[a.id] || [];
+        byId[a.id].push(a); });
+      const summary = questions.map(function (q, qi) {
+        const list = byId[q.id];
         if (!list || !list.length) return null;
-        var header = q.header || ("Q" + (qi + 1));
+        const header = q.header || ("Q" + (qi + 1));
         return header + ": " + list.map(function (a) {
-          var text = (a.other || a.label === "其他") ? bt("echoOtherPrefix") + a.value : a.label;
+          const text = (a.other || a.label === "其他") ? bt("echoOtherPrefix") + a.value : a.label;
           return text;
         }).join(" · ");
       }).filter(Boolean).join(" · ");
@@ -7693,9 +7706,9 @@
     notify();
   }
   async function cancelUserInput(itemId, toolCallId) {
-    var sid = state.activeSessionId;
+    const sid = state.activeSessionId;
     if (!sid) return;
-    try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: sid }); } catch (_) {}
+    try { await invoke("cancel_user_input", { toolCallId, sessionId: sid }); } catch { /* 取消失败时等待后端超时回收 */ }
     patchItemByIdFor(sid, itemId, { resolved: true, cardState: "cancelled" });
     notify();
   }
@@ -7705,8 +7718,8 @@
     if (state.busy || !state.activeSessionId) return;
     newText = (newText || "").trim();
     if (!newText) return;
-    var sid = state.activeSessionId;
-    var editBuffer = getBuffer(sid);
+    const sid = state.activeSessionId;
+    const editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
       recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
         operation: "edit_last_turn",
@@ -7719,15 +7732,15 @@
     // Re-check after the asynchronous reconciliation: the user may have
     // switched Session or another turn may have started in the meantime.
     if (state.activeSessionId !== sid || state.busy) return;
-    var previous = {
-      messages: state.messages.slice(),
-      chatItems: state.chatItems.slice(),
+    const previous = {
+      messages: [...state.messages],
+      chatItems: [...state.chatItems],
       busy: state.busy,
       thinking: Object.assign({}, state.thinking),
-      currentStreamText: currentStreamText,
-      currentStreamId: currentStreamId,
-      pendingAssistantText: pendingAssistantText,
-      pendingAssistantBlocks: pendingAssistantBlocks.slice(),
+      currentStreamText,
+      currentStreamId,
+      pendingAssistantText,
+      pendingAssistantBlocks: [...pendingAssistantBlocks],
     };
     if (editBuffer) {
       editBuffer.localTurnOwned = true;
@@ -7738,9 +7751,9 @@
     // Remove the latest displayable user turn and everything after it, then
     // append the replacement. Tool results and internal runtime envelopes also
     // use role="user", so a bare role scan would cut at the wrong boundary.
-    var cut = -1;
-    for (var i = state.messages.length - 1; i >= 0; i--) {
-      var editCandidate = state.messages[i];
+    let cut = -1;
+    for (let i = state.messages.length - 1; i >= 0; i--) {
+      const editCandidate = state.messages[i];
       if (editCandidate.role === "user" && userMessageDisplayText(editCandidate.content)) { cut = i; break; }
     }
     if (cut >= 0) state.messages.splice(cut);
@@ -7763,8 +7776,8 @@
       try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch (_) {}
       if (editBuffer) editBuffer.deferredRemoteUserEvent = null;
     } catch (e) {
-      var errorText = String(e && e.message ? e.message : e || "");
-      var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
+      const errorText = String(e && e.message ? e.message : e || "");
+      const concurrentTurn = errorText.includes("session_turn_in_progress");
       emitPetEvent("pet:turn_end", sid);
       if (editBuffer) editBuffer.localTurnOwned = false;
       runSyncOnSession(sid, function () {
@@ -7778,7 +7791,7 @@
         pendingAssistantBlocks = previous.pendingAssistantBlocks;
       });
       if (state.activeSessionId === sid && editBuffer) saveWorkingSetTo(editBuffer);
-      var deferredApplied = applyDeferredRemoteUserMessage(sid, editBuffer);
+      const deferredApplied = applyDeferredRemoteUserMessage(sid, editBuffer);
       if (concurrentTurn && editBuffer && !deferredApplied) {
         markRemoteTurn(sid, editBuffer, false, "edit_last_turn_concurrent_turn");
       }
@@ -7788,17 +7801,17 @@
     }
   }
   async function compactNow() {
-    var sid = state.activeSessionId;
+    const sid = state.activeSessionId;
     if (!sid) return;
     try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) {
-      var compactErr = String(e || "");
+      const compactErr = String(e || "");
       addSystemItemFor(sid, bt("compactFail") + ": " + (compactErr.indexOf("session_engine_not_running") >= 0 ? bt("compactInactive") : compactErr));
     }
   }
 
   // ── 产物面板 ─────────────────────────────────────────────────────
   function invokeArtifact(nativeCommand, webCommand, path, sessionId, extra) {
-    var args = Object.assign({ path: path }, extra || {});
+    const args = Object.assign({ path }, extra || {});
     if (IS_WEB) {
       args.sessionId = sessionId || state.activeSessionId;
       return invoke(webCommand, args);
@@ -7812,7 +7825,7 @@
     return invokeArtifact("read_artifact_text", "web_access_read_artifact_text", path, sessionId);
   }
   function writeArtifactText(path, content, sessionId) {
-    return invokeArtifact("write_artifact_text", "web_access_write_artifact_text", path, sessionId, { content: content });
+    return invokeArtifact("write_artifact_text", "web_access_write_artifact_text", path, sessionId, { content });
   }
   function readArtifactImageB64(path, sessionId) {
     return invokeArtifact("read_artifact_image_b64", "web_access_read_artifact_image_b64", path, sessionId);
@@ -7824,58 +7837,58 @@
   function renderArtifactVisual(path, sessionId) {
     return invokeArtifact("render_artifact_visual", "web_access_render_artifact_visual", path, sessionId);
   }
-  function openContainingFolder(path) { return invoke("open_containing_folder", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  function revealSessionFolder(sessionId) { return invoke("reveal_session_folder", { sessionId: sessionId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  function openScheduledTaskFolder(automationId) { return invoke("open_scheduled_task_folder", { automationId: automationId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function openContainingFolder(path) { return invoke("open_containing_folder", { path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function revealSessionFolder(sessionId) { return invoke("reveal_session_folder", { sessionId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  function openScheduledTaskFolder(automationId) { return invoke("open_scheduled_task_folder", { automationId }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   function openInSystem(path) {
     if (IS_WEB) return downloadArtifact(path, null);
-    return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+    return invoke("open_in_system", { path }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
   }
   // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
   function openExternalUrl(url) {
     if (IS_WEB) {
-      var opened = window.open(url, "_blank", "noopener,noreferrer");
+      const opened = window.open(url, "_blank", "noopener,noreferrer");
       return Promise.resolve(!!opened);
     }
-    return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+    return invoke("open_external_url", { url }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
   }
   function openUserExternalUrl(url) {
     try {
-      var rawUrl = String(url || "").trim();
+      const rawUrl = String(url || "").trim();
       if (!/^https?:\/\/[^/\\\s]/i.test(rawUrl)) {
         return Promise.reject(new Error("only credential-free HTTP(S) links are supported"));
       }
-      var parsed = new URL(rawUrl);
+      const parsed = new URL(rawUrl);
       if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname || parsed.username || parsed.password) {
         return Promise.reject(new Error("only credential-free HTTP(S) links are supported"));
       }
       if (IS_WEB) {
-        var opened = window.open(parsed.href, "_blank", "noopener,noreferrer");
+        const opened = window.open(parsed.href, "_blank", "noopener,noreferrer");
         return Promise.resolve(!!opened);
       }
       return invoke("open_user_external_url", { url: parsed.href }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
-    } catch (_) {
+    } catch {
       return Promise.reject(new Error("invalid external link"));
     }
   }
   function deliverableCategory(path) {
-    var ext = (String(path || "").split(".").pop() || "").toLowerCase();
-    if (ext === "html" || ext === "htm" || ext === "mhtml" || ext === "mht") return "web";
-    if (ext === "ppt" || ext === "pptx" || ext === "odp" || ext === "dps") return "ppt";
-    if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic"].indexOf(ext) >= 0) return "img";
+    const ext = (String(path || "").split(".").pop() || "").toLowerCase();
+    if (["html", "htm", "mhtml", "mht"].includes(ext)) return "web";
+    if (["ppt", "pptx", "odp", "dps"].includes(ext)) return "ppt";
+    if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic"].includes(ext)) return "img";
     return "doc";
   }
   function sessionTitleById(sid) {
-    var m = state.sessions.find(function (s) { return s.id === sid; });
+    const m = state.sessions.find(function (s) { return s.id === sid; });
     return (m && m.title) || "";
   }
   function currentMemoryArtifacts() {
-    var rows = [];
+    const rows = [];
     function addFrom(sid, arts) {
       (arts || []).forEach(function (a) {
-        var path = a && a.path;
+        const path = a && a.path;
         if (!path || !isDeliverable(path)) return;
-        rows.push({ path: path, sessionId: sid || state.activeSessionId, source: sessionTitleById(sid || state.activeSessionId), name: basename(path) });
+        rows.push({ path, sessionId: sid || state.activeSessionId, source: sessionTitleById(sid || state.activeSessionId), name: basename(path) });
       });
     }
     addFrom(state.activeSessionId, state.artifacts);
@@ -7885,27 +7898,27 @@
   // 跨会话产出物索引:磁盘 session JSON 为主,再合并当前内存工作集。
   // 新产物在 chat:done/save_session_artifacts 前也能立刻出现在「产出物」一级入口。
   async function listDeliverableIndex() {
-    var disk = await invoke("list_deliverable_index").catch(function () { return []; });
-    var byPath = {};
+    const disk = await invoke("list_deliverable_index").catch(function () { return []; });
+    const byPath = {};
     (disk || []).forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
-    var mem = currentMemoryArtifacts().filter(function (x) { return x.path && !byPath[x.path]; });
-    var hydrated = await Promise.all(mem.map(async function (x) {
-      var path = x.path;
+    const mem = currentMemoryArtifacts().filter(function (x) { return x.path && !byPath[x.path]; });
+    const hydrated = await Promise.all(mem.map(async function (x) {
+      let path = x.path;
       if (!isAbsPath(path) && x.sessionId) {
         try {
-          var ws = await invoke("list_workspace_files", { sessionId: x.sessionId });
-          var bn = basename(path);
-          var resolved = (ws || []).find(function (p) { return basename(p) === bn; });
+          const ws = await invoke("list_workspace_files", { sessionId: x.sessionId });
+          const bn = basename(path);
+          const resolved = (ws || []).find(function (p) { return basename(p) === bn; });
           if (resolved) path = resolved;
-        } catch (_) {}
+        } catch { /* 解析失败保留原路径 */ }
       }
-      var info = null;
-      try { info = await artifactInfo(path, x.sessionId); } catch (_) {}
-      var ext = (String(path).split(".").pop() || "").toLowerCase();
+      let info = null;
+      try { info = await artifactInfo(path, x.sessionId); } catch { /* 信息缺失按无详情降级 */ }
+      const ext = (String(path).split(".").pop() || "").toLowerCase();
       return {
         name: x.name || basename(path),
-        path: path,
-        ext: ext,
+        path,
+        ext,
         category: deliverableCategory(path),
         sessionId: x.sessionId || "",
         source: x.source || sessionTitleById(x.sessionId) || "",
@@ -7924,14 +7937,14 @@
   // session 才解析得准(否则相对路径被拼到错的 workspace 报 not a file)。绝对路径无视它。
   function openArtifactExternal(path, sessionId) {
     if (IS_WEB) return downloadArtifact(path, sessionId);
-    var ext = (String(path).split(".").pop() || "").toLowerCase();
-    var cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
-    return invoke(cmd, { path: path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+    const ext = (String(path).split(".").pop() || "").toLowerCase();
+    const cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
+    return invoke(cmd, { path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
   }
 
-  var MAX_WEB_ARTIFACT_DOWNLOAD_BYTES = 256 * 1024 * 1024;
+  const MAX_WEB_ARTIFACT_DOWNLOAD_BYTES = 256 * 1024 * 1024;
   function webArtifactDownloadLimitError(size) {
-    var suffix = Number.isSafeInteger(size) && size >= 0
+    const suffix = Number.isSafeInteger(size) && size >= 0
       ? bt("downloadLimitSuffix")((size / (1024 * 1024)).toFixed(1))
       : "";
     return new Error(bt("downloadLimitError")(suffix));
@@ -7954,29 +7967,29 @@
     if (!IS_WEB || !hasCapability("artifactDownload")) {
       throw new Error(bt("downloadNotEnabled"));
     }
-    var resolvedSessionId = sessionId || state.activeSessionId || null;
-    var info = await artifactInfo(path, resolvedSessionId);
+    const resolvedSessionId = sessionId || state.activeSessionId || null;
+    const info = await artifactInfo(path, resolvedSessionId);
     if (!info || info.exists === false) throw new Error(bt("artifactMissing"));
-    var expectedSize = Number(info.size);
+    const expectedSize = Number(info.size);
     if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) {
       throw new Error(bt("artifactSizeInvalid"));
     }
     if (expectedSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
       throw webArtifactDownloadLimitError(expectedSize);
     }
-    var offset = 0;
-    var chunks = [];
-    var filename = basename(path) || "artifact";
+    let offset = 0;
+    const chunks = [];
+    let filename = basename(path) || "artifact";
     while (true) {
-      var part = await invoke("web_access_read_artifact_chunk", {
-        path: path,
+      const part = await invoke("web_access_read_artifact_chunk", {
+        path,
         sessionId: resolvedSessionId,
-        offset: offset,
+        offset,
         limit: 262144,
       });
       if (!part) throw new Error("Artifact download returned no data");
-      var partOffset = Number(part.offset);
-      var partSize = Number(part.size);
+      const partOffset = Number(part.offset);
+      const partSize = Number(part.size);
       if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
           !Number.isSafeInteger(partSize) || partSize < 0) {
         throw new Error(bt("artifactChunkInvalid"));
@@ -7988,10 +8001,11 @@
         throw new Error(bt("artifactChanged"));
       }
       filename = part.name || filename;
-      var encoded = String(part.data_base64 || part.dataBase64 || "");
-      var binary = atob(encoded);
-      var bytes = new Uint8Array(binary.length);
-      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const encoded = String(part.data_base64 || part.dataBase64 || "");
+      const binary = atob(encoded);
+      const bytes = new Uint8Array(binary.length);
+// binary 是 atob 产出的单字节 Latin-1 字符串,charCode 即字节值;codePointAt 在此等价但无增益。
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i); // eslint-disable-line unicorn/prefer-code-point
       if (!bytes.length && !part.eof) throw new Error(bt("artifactNoProgress"));
       if (bytes.length > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES - offset) {
         throw webArtifactDownloadLimitError(offset + bytes.length);
@@ -8006,13 +8020,13 @@
         break;
       }
     }
-    var blob = new Blob(chunks, { type: "application/octet-stream" });
-    var objectUrl = URL.createObjectURL(blob);
-    var anchor = document.createElement("a");
+    const blob = new Blob(chunks, { type: "application/octet-stream" });
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
     anchor.href = objectUrl;
     anchor.download = filename;
     anchor.style.display = "none";
-    document.body.appendChild(anchor);
+    document.body.append(anchor);
     anchor.click();
     anchor.remove();
     setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 30000);
@@ -8040,19 +8054,19 @@
     if (!hasCapability("artifactDownload")) {
       throw new Error(bt("attachDownloadUnsupported"));
     }
-    var args = conversationAttachmentArgs(reference);
-    var expectedSize = null;
-    var offset = 0;
-    var chunks = [];
-    var filename = args.basename || "attachment";
+    const args = conversationAttachmentArgs(reference);
+    let expectedSize = null;
+    let offset = 0;
+    const chunks = [];
+    let filename = args.basename || "attachment";
     while (true) {
-      var part = await invoke("web_access_read_conversation_attachment_chunk", Object.assign({
-        offset: offset,
+      const part = await invoke("web_access_read_conversation_attachment_chunk", Object.assign({
+        offset,
         limit: 262144,
       }, args));
       if (!part) throw new Error(bt("attachNoData"));
-      var partOffset = Number(part.offset);
-      var partSize = Number(part.size);
+      const partOffset = Number(part.offset);
+      const partSize = Number(part.size);
       if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
           !Number.isSafeInteger(partSize) || partSize < 0) {
         throw new Error(bt("attachChunkInvalid"));
@@ -8066,10 +8080,11 @@
         throw new Error(bt("attachChanged"));
       }
       filename = part.name || filename;
-      var encoded = String(part.data_base64 || part.dataBase64 || "");
-      var binary = atob(encoded);
-      var bytes = new Uint8Array(binary.length);
-      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const encoded = String(part.data_base64 || part.dataBase64 || "");
+      const binary = atob(encoded);
+      const bytes = new Uint8Array(binary.length);
+// binary 是 atob 产出的单字节 Latin-1 字符串,charCode 即字节值;codePointAt 在此等价但无增益。
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i); // eslint-disable-line unicorn/prefer-code-point
       if (!bytes.length && !part.eof) throw new Error(bt("attachNoProgress"));
       if (offset + bytes.length > expectedSize) {
         throw new Error(bt("attachOverflow"));
@@ -8081,13 +8096,13 @@
         break;
       }
     }
-    var blob = new Blob(chunks, { type: "application/octet-stream" });
-    var objectUrl = URL.createObjectURL(blob);
-    var anchor = document.createElement("a");
+    const blob = new Blob(chunks, { type: "application/octet-stream" });
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
     anchor.href = objectUrl;
     anchor.download = filename;
     anchor.style.display = "none";
-    document.body.appendChild(anchor);
+    document.body.append(anchor);
     anchor.click();
     anchor.remove();
     setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 30000);
@@ -8117,25 +8132,25 @@
   }
 
   async function addAttachmentByPath(path) {
-    var id = ++attachIdSeq;
-    var att = { id: id, basename: basename(path), status: "parsing", result: null, error: null };
+    const id = ++attachIdSeq;
+    const att = { id, basename: basename(path), status: "parsing", result: null, error: null };
     state.attachments.push(att); notify();
     try {
-      var result = await invoke(IS_WEB ? "web_access_ingest_file" : "ingest_file", { path: path });
+      const result = await invoke(IS_WEB ? "web_access_ingest_file" : "ingest_file", { path });
       att.status = "ready"; att.result = result;
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
   async function addPasteImage(filename, bytes) {
     try {
-      var path = await invoke("save_paste_image", { filename: filename, bytes: bytes });
+      const path = await invoke("save_paste_image", { filename, bytes });
       await addAttachmentByPath(path);
     } catch (e) { addSystemItem(bt("pasteImageFailed") + e); }
   }
   function releaseAttachmentOnDesktop(attachment) {
-    var handle = attachment && attachment.result && attachment.result.handle;
+    const handle = attachment && attachment.result && attachment.result.handle;
     if (handle && canInvoke("web_access_discard_attachment")) {
-      invoke("web_access_discard_attachment", { handle: handle }).catch(function () {});
+      invoke("web_access_discard_attachment", { handle }).catch(function () {});
       return;
     }
     if (attachment && attachment.uploadId && canInvoke("web_access_abort_attachment_upload")) {
@@ -8143,13 +8158,13 @@
     }
   }
   function removeAttachment(id) {
-    var removed = state.attachments.find(function (attachment) { return attachment.id === id; });
+    const removed = state.attachments.find(function (attachment) { return attachment.id === id; });
     state.attachments = state.attachments.filter(function (a) { return a.id !== id; });
     releaseAttachmentOnDesktop(removed);
     notify();
   }
   function clearAttachments() {
-    var removed = state.attachments.slice();
+    const removed = [...state.attachments];
     state.attachments = [];
     removed.forEach(releaseAttachmentOnDesktop);
   }
@@ -8157,10 +8172,10 @@
   async function pickAndAttach() {
     if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return; }
     try {
-      var selected = await dialogOpen({ multiple: true });
+      const selected = await dialogOpen({ multiple: true });
       if (!selected) return;
-      var paths = Array.isArray(selected) ? selected : [selected];
-      for (var i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
+      const paths = Array.isArray(selected) ? selected : [selected];
+      for (let i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
     } catch (e) { addSystemItem(bt("filePickFailed") + e); }
   }
 
@@ -8168,13 +8183,14 @@
   // 「从此设备上传」入口:文件按 256KB 分块经 Relay 转发(Relay 只转发不保存),
   // 桌面端最后一块落盘 + ingest 后返回与桌面文件附件相同的 WebAttachmentSummary。
   async function uploadDeviceFile(file) {
-    var uploader = window.PinvouChunkedFileUpload;
-    var id = ++attachIdSeq;
-    var uploadId = uploader && typeof uploader.uploadId === "function"
+    const uploader = window.PinvouChunkedFileUpload;
+    const id = ++attachIdSeq;
+    const uploadId = uploader && typeof uploader.uploadId === "function"
       ? uploader.uploadId("webatt")
+      // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:附件上传临时 ID,序号前缀已保证唯一
       : "webatt_" + id + "_" + Math.random().toString(36).slice(2, 12);
-    var att = {
-      id: id, uploadId: uploadId, basename: file.name,
+    const att = {
+      id, uploadId, basename: file.name,
       status: "uploading", progress: 0, result: null, error: null,
     };
     state.attachments.push(att); notify();
@@ -8182,10 +8198,10 @@
       if (!uploader || typeof uploader.uploadFile !== "function") {
         throw new Error("chunked attachment uploader is unavailable");
       }
-      var completed = await uploader.uploadFile({
-        file: file,
-        uploadId: uploadId,
-        isCancelled: function () { return state.attachments.indexOf(att) < 0; },
+      const completed = await uploader.uploadFile({
+        file,
+        uploadId,
+        isCancelled: function () { return !state.attachments.includes(att); },
         sendChunk: function (chunk) {
           return invoke("web_access_upload_attachment_chunk", {
             uploadId: chunk.uploadId,
@@ -8205,7 +8221,7 @@
           return invoke("web_access_abort_attachment_upload", { uploadId: upload.uploadId });
         },
       });
-      var summary = completed.result;
+      const summary = completed.result;
       att.status = "ready"; att.progress = 100; att.result = summary;
       att.basename = summary.basename || att.basename;
     } catch (e) {
@@ -8224,8 +8240,8 @@
 
   // 顺序处理选中的多个文件;桌面端另有并发缓冲与总量上限兜底。
   async function uploadDeviceFiles(files) {
-    var list = Array.prototype.slice.call(files || []).filter(Boolean);
-    for (var i = 0; i < list.length; i++) await uploadDeviceFile(list[i]);
+    const list = Array.prototype.slice.call(files || []).filter(Boolean);
+    for (let i = 0; i < list.length; i++) await uploadDeviceFile(list[i]);
   }
 
 
@@ -8249,19 +8265,19 @@
   }
   // ── 用户自创卡 CRUD(写盘后刷新缓存) ──
   async function createPersona(input) {
-    var sum = await invoke("create_persona", { input: input });
+    const sum = await invoke("create_persona", { input });
     await refreshPersonas();
     return sum;
   }
   async function updatePersona(personaId, input) {
-    var sum = await invoke("update_persona", { personaId: personaId, input: input });
+    const sum = await invoke("update_persona", { personaId, input });
     await refreshPersonas();
     // 若改的正是当前 session 加持的卡, 同步挂件显示
     if (state.activePersona && state.activePersona.id === personaId) { state.activePersona = sum; notify(); }
     return sum;
   }
   async function deletePersona(personaId) {
-    await invoke("delete_persona", { personaId: personaId });
+    await invoke("delete_persona", { personaId });
     await refreshPersonas();
   }
   // 给当前 session 加持一张专家面具。后端存 persona_id + 每 turn 注入人设;
@@ -8270,9 +8286,9 @@
   function personaName(p) {
     if (!p) return "";
     // 内置卡名按 UI 语言显示(personas-i18n.js overlay),中文兜底;自制卡不翻
-    var lang = state.settings && state.settings.language;
-    var L = lang === "en" ? "en" : lang === "ja" ? "ja" : null;
-    var tr = L && p.source !== "user" && window.PERSONA_I18N && window.PERSONA_I18N[p.id] && window.PERSONA_I18N[p.id][L];
+    const lang = state.settings && state.settings.language;
+    const L = lang === "en" ? "en" : lang === "ja" ? "ja" : null;
+    const tr = L && p.source !== "user" && window.PERSONA_I18N && window.PERSONA_I18N[p.id] && window.PERSONA_I18N[p.id][L];
     if (tr && tr.name) return tr.name;
     return (p.name || p.cn_name) || "";
   }
@@ -8281,35 +8297,35 @@
     if (!state.activeSessionId) return;
     ev.pos = state.messages.length;
     state.personaEvents.push(ev);
-    var sid = state.activeSessionId;
-    var snapshot = JSON.parse(JSON.stringify(state.personaEvents));
+    const sid = state.activeSessionId;
+    const snapshot = JSON.parse(JSON.stringify(state.personaEvents));
     invoke("save_session_persona_events", { sessionId: sid, events: snapshot }).catch(function () {});
   }
   async function equipPersona(personaId) {
     if (!state.activeSessionId) {
       // 草稿态加卡 → 先物化 session(lazy session)。用返回值判空：切走场景
       // ensureSession 返回 null 但 activeSessionId 非空，会把卡加进新会话。
-      var materialized = await ensureSession();
+      const materialized = await ensureSession();
       if (!materialized) return; // 物化失败/切走,放弃
     }
     // 入口捕获触发会话：await 期间用户可能切走，UI 写入不得落进别的会话
     // （错误会话被重命名/插卡是持久化污染，不可自愈）。后端已按发起会话
     // 定向；切走后放弃前端播报，挂件靠 syncActivePersona 恢复（与 tauri
     // personas.js 对齐，审计）。
-    var sid = state.activeSessionId;
+    const sid = state.activeSessionId;
     try {
-      var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
+      const card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId });
       lastEquippedSid = sid; // 成功加持的目标会话(即使已切走)：供紧随其后的引导卡定向(与 tauri 对齐，审计补充)
       if (sid !== state.activeSessionId) return card; // 已切走：不写当前显示
       // 标题仍是默认占位(三语哨兵,见 isDefaultChatTitle)→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
       // 用户已主动改名 / 已被首条消息命名的会话不动)。决策:卡牌优先于首条消息。
-      var m = state.sessions.find(function (s) { return s.id === sid; });
+      const m = state.sessions.find(function (s) { return s.id === sid; });
       // 标题还是默认值 / 仍是卡牌占位(换卡场景)→ 用(新)卡牌名命名,并标记为占位。
       // 占位名会被首条用户消息覆盖(见 persistMessages*),让同卡会话靠对话内容区分。
       if (m && (isDefaultChatTitle(m.title) || personaPlaceholderTitles[sid])) {
-        var newTitle = personaName(card);
+        const newTitle = personaName(card);
         if (newTitle) {
-          try { await invoke("rename_session", { id: sid, title: newTitle }); } catch (_) {}
+          try { await invoke("rename_session", { id: sid, title: newTitle }); } catch { /* 改名失败不影响本地展示 */ }
           if (sid !== state.activeSessionId) return card; // rename 挂起期间切走:放弃后续 UI 写入(审计补充)
           m.title = newTitle;
           personaPlaceholderTitles[sid] = true;
@@ -8318,15 +8334,15 @@
       // 同 session 换了一张不同的卡 → 先弹一条"已卸下旧专家",再弹新加持。
       // 旧专家在写点复核而非入口捕获：同会话快速连续换卡时,入口值可能已被
       // 上一次 equip 的权威写覆盖,陈旧值会播报错误的"已卸下"(与 tauri 对齐,二审补充)。
-      var prev = state.activePersona;
+      const prev = state.activePersona;
       if (prev && prev.id !== card.id) {
         addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() });
         recordPersonaEvent({ kind: "unequip", name: personaName(prev) });
       }
       personaSyncSeq++; // 权威写前 bump：作废在途 syncActivePersona 的旧快照(与 tauri 对齐，审计补充)
       state.activePersona = card;
-      addChatItem({ type: "persona_equip", card: card, time: timeStr() });
-      recordPersonaEvent({ kind: "equip", card: card });
+      addChatItem({ type: "persona_equip", card, time: timeStr() });
+      recordPersonaEvent({ kind: "equip", card });
       notify();
       return card;
     } catch (e) {
@@ -8342,13 +8358,13 @@
   async function unequipPersona() {
     if (!state.activeSessionId) return;
     // 入口捕获触发会话：await 期间切走，卸下播报不得写进别的会话（与 tauri 对齐，审计）。
-    var sid = state.activeSessionId;
-    try { await invoke("unequip_persona", { sessionId: state.activeSessionId }); } catch (e) { /* 忽略,前端照样摘 */ }
+    const sid = state.activeSessionId;
+    try { await invoke("unequip_persona", { sessionId: state.activeSessionId }); } catch { /* 忽略,前端照样摘 */ }
     if (sid !== state.activeSessionId) return; // 已切走：不写当前显示
     personaSyncSeq++; // 权威写前 bump：作废在途 syncActivePersona 的旧快照(与 tauri 对齐，审计补充)
     // 旧专家同样在写点复核：await 窗口内若已被 equip 换成新卡,播报新卡,
     // 入口捕获的陈旧值会重复播报早已卸下的旧卡(与 tauri 对齐,二审补充)。
-    var prev = state.activePersona;
+    const prev = state.activePersona;
     state.activePersona = null;
     if (prev) { addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() }); recordPersonaEvent({ kind: "unequip", name: personaName(prev) }); }
     notify();
@@ -8358,19 +8374,19 @@
   // 返回 null 会把刚加持的挂件覆盖掉,且无人再纠正)。序号在每次 sync 发起
   // 与 equip/unequip 权威写时递增,旧快照一律作废(审计补充)。
   // - lastEquippedSid 供 equip 后紧随的播报(如卡牌制造者引导卡)定向回
-  // 发起会话——equip 的 await 窗口用户可能已切走。
-  var personaSyncSeq = 0;
-  var lastEquippedSid = null;
+  //   发起会话——equip 的 await 窗口用户可能已切走。
+  let personaSyncSeq = 0;
+  let lastEquippedSid = null;
   // 切换/重载 session 后,从后端拉该 session 的加持状态还原挂件(backend 是真相)。
   async function syncActivePersona() {
     if (!state.activeSessionId) { state.activePersona = null; return; }
-    var sid = state.activeSessionId;
-    var seq = ++personaSyncSeq;
+    const sid = state.activeSessionId;
+    const seq = ++personaSyncSeq;
     try {
-      var persona = await invoke("get_active_persona", { sessionId: state.activeSessionId }) || null;
+      const persona = await invoke("get_active_persona", { sessionId: state.activeSessionId }) || null;
       if (sid !== state.activeSessionId || seq !== personaSyncSeq) return; // 已切走或被权威写/新 sync 作废
       state.activePersona = persona;
-    } catch (e) { /* 旧 session 无加持,忽略 */ }
+    } catch { /* 旧 session 无加持,忽略 */ }
   }
   // 在【指定 session】追加卡牌制造者引导卡并落 sidecar(持久化,重载按 pos 插回)。
   // 默认定向最近一次成功 equip 的目标会话：AI 造卡链路 equip→intro 之间用户
@@ -8378,7 +8394,7 @@
   // (错误会话被插卡是持久化污染,不可自愈)。显式传 sid 可覆盖(与 tauri 对齐，
   // 审计补充)。
   function postCardCreatorIntro(sid) {
-    var target = sid || lastEquippedSid || state.activeSessionId;
+    const target = sid || lastEquippedSid || state.activeSessionId;
     if (!target) return;
     runOnSession(target, function () {
       addChatItem({ type: "card_creator_intro", time: "" });
@@ -8390,42 +8406,42 @@
   // ── 多知识库挂载(会话级粘连,仿 persona) ──
   function normalizeMountedCollections(value) {
     if (!Array.isArray(value)) return [];
-    var seen = Object.create(null);
+    const seen = Object.create(null);
     return value.map(function (entry) {
       if (entry == null) return null;
-      var collectionId = typeof entry === "object"
-        ? (entry.collectionId != null ? entry.collectionId : entry.collection_id)
+      const collectionId = typeof entry === "object"
+        ? (entry.collectionId == null ? entry.collection_id : entry.collectionId)
         : entry;
       if (collectionId == null || seen[String(collectionId)]) return null;
       seen[String(collectionId)] = true;
-      return { collectionId: collectionId, enabled: typeof entry === "object" ? entry.enabled !== false : true };
+      return { collectionId, enabled: typeof entry === "object" ? entry.enabled !== false : true };
     }).filter(Boolean);
   }
   function applyMountedCollections(value) {
-    var hasSnapshot = value && !Array.isArray(value) && Array.isArray(value.collections);
-    var revision = hasSnapshot ? Number(value.revision || 0) : Number(state.mountedCollectionsRevision || 0);
+    const hasSnapshot = value && !Array.isArray(value) && Array.isArray(value.collections);
+    const revision = hasSnapshot ? Number(value.revision || 0) : Number(state.mountedCollectionsRevision || 0);
     if (hasSnapshot && revision < Number(state.mountedCollectionsRevision || 0)) {
       return normalizeMountedCollections(state.mountedCollections);
     }
-    var normalized = normalizeMountedCollections(hasSnapshot ? value.collections : value);
+    const normalized = normalizeMountedCollections(hasSnapshot ? value.collections : value);
     state.mountedCollections = normalized;
     state.mountedCollectionsRevision = revision;
-    var firstEnabled = normalized.find(function (entry) { return entry.enabled; });
+    const firstEnabled = normalized.find(function (entry) { return entry.enabled; });
     state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
     return normalized;
   }
-  var mountedCollectionUpdate = Promise.resolve();
-  var mountedCollectionDraftTarget = null;
+  let mountedCollectionUpdate = Promise.resolve();
+  let mountedCollectionDraftTarget = null;
   function mountedCollectionTargetAtEnqueue() {
     if (state.activeSessionId) return { draft: false, promise: Promise.resolve(state.activeSessionId) };
-    var draftEpoch = Number(state.draftEpoch || 0);
+    const draftEpoch = Number(state.draftEpoch || 0);
     if (!mountedCollectionDraftTarget || mountedCollectionDraftTarget.epoch !== draftEpoch || mountedCollectionDraftTarget.failed) {
-      var target = { draft: true, epoch: draftEpoch, failed: false, pending: 0, promise: null };
+      const target = { draft: true, epoch: draftEpoch, failed: false, pending: 0, promise: null };
       target.promise = Promise.resolve().then(async function () {
         // Navigation before draft materialization cancels this batch instead of
         // silently retargeting it to the newly active session.
         if (state.activeSessionId) return null;
-        var sessionId = await ensureSession();
+        const sessionId = await ensureSession();
         if (!sessionId) target.failed = true;
         return sessionId;
       });
@@ -8435,15 +8451,15 @@
     return mountedCollectionDraftTarget;
   }
   function updateMountedCollections(command, args) {
-    var requestedTarget = mountedCollectionTargetAtEnqueue();
+    const requestedTarget = mountedCollectionTargetAtEnqueue();
     mountedCollectionUpdate = mountedCollectionUpdate.catch(function () {}).then(async function () {
       // The target is captured at click time. Rapid draft actions share one
       // materialization promise and remain bound to that session after navigation.
-      var sessionId = await requestedTarget.promise;
+      const sessionId = await requestedTarget.promise;
       if (!sessionId) return null;
       try {
-        var saved = await invoke(command, Object.assign({ sessionId: sessionId }, args || {}));
-        var normalized = normalizeMountedCollections(saved && saved.collections);
+        const saved = await invoke(command, Object.assign({ sessionId }, args || {}));
+        const normalized = normalizeMountedCollections(saved && saved.collections);
         if (state.activeSessionId === sessionId) {
           applyMountedCollections(saved);
           notify();
@@ -8467,17 +8483,17 @@
   // 添加知识集；已挂载但停用时重新启用，不覆盖其他挂载项。
   async function mountCollection(collectionId) {
     if (collectionId == null) return null;
-    var saved = await updateMountedCollections("session_add_mounted_collection", { collectionId: collectionId });
+    const saved = await updateMountedCollections("session_add_mounted_collection", { collectionId });
     return saved ? collectionId : null;
   }
   async function setCollectionEnabled(collectionId, enabled) {
     return updateMountedCollections("session_set_mounted_collection_enabled", {
-      collectionId: collectionId,
+      collectionId,
       enabled: !!enabled,
     });
   }
   async function removeCollection(collectionId) {
-    return updateMountedCollections("session_remove_mounted_collection", { collectionId: collectionId });
+    return updateMountedCollections("session_remove_mounted_collection", { collectionId });
   }
   // 兼容旧入口：摘下当前对话的全部知识集挂载。
   async function unmountCollection() {
@@ -8487,23 +8503,23 @@
   // 切换/重载 session 后从后端还原挂载状态(backend 是真相;仅驻内存,重启后为 null)。
   async function syncMountedCollection() {
     if (!state.activeSessionId) { applyMountedCollections([]); return; }
-    var sessionId = state.activeSessionId;
+    const sessionId = state.activeSessionId;
     try {
-      var snapshot = await invoke("session_mounted_collections_snapshot", { sessionId: sessionId });
+      const snapshot = await invoke("session_mounted_collections_snapshot", { sessionId });
       if (state.activeSessionId !== sessionId) return;
       if (snapshot && Array.isArray(snapshot.collections)) { applyMountedCollections(snapshot); return; }
-      var mounted = await invoke("session_mounted_collections", { sessionId: sessionId });
+      const mounted = await invoke("session_mounted_collections", { sessionId });
       if (state.activeSessionId !== sessionId) return;
       if (Array.isArray(mounted)) { applyMountedCollections(mounted); return; }
-      var legacy = await invoke("session_mounted_collection", { sessionId: sessionId });
+      const legacy = await invoke("session_mounted_collection", { sessionId });
       if (state.activeSessionId !== sessionId) return;
       applyMountedCollections(legacy == null ? [] : [legacy]);
-    } catch (e) {
+    } catch {
       try {
-        var cid = await invoke("session_mounted_collection", { sessionId: sessionId });
+        const cid = await invoke("session_mounted_collection", { sessionId });
         if (state.activeSessionId !== sessionId) return;
         applyMountedCollections(cid == null ? [] : [cid]);
-      } catch (_) { if (state.activeSessionId === sessionId) applyMountedCollections([]); }
+      } catch { if (state.activeSessionId === sessionId) applyMountedCollections([]); }
     }
   }
 
@@ -8511,7 +8527,7 @@
   // 链路: check_for_update(对比服务器 latest.json) → download_update(流式下载+sha256,
   // 进度走 update:progress 事件) → install_update(pkexec apt) → restart_app。
   listen("update:progress", function (e) {
-    var p = e.payload || {};
+    const p = e.payload || {};
     state.updateProgress = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
     notify();
   });
@@ -8522,22 +8538,22 @@
   async function loadAppVersion() {
     try {
       state.appVersion = await invoke("get_app_version");
-    } catch (_) {}
+    } catch { /* 版本读取失败留空即可 */ }
   }
   // 启动静默检查: 失败全吞(网络差/更新源挂了不打扰用户)。结果不管新旧都存——
   // available 驱动红点,current_version 给设置页显示当前版本用。
   async function checkForUpdateSilently() {
     try {
-      var info = await invoke("check_for_update");
+      const info = await invoke("check_for_update");
       if (info && info.current_version) state.appVersion = info.current_version;
       if (info) { state.updateInfo = info; notify(); }
-    } catch (e) { /* 静默 */ }
+    } catch { /* 静默 */ }
   }
   // 设置页手动检查: 错误和「已是最新」都要反馈。
   async function checkForUpdate() {
     state.updateChecking = true; state.updateCheckError = null; notify();
     try {
-      var info = await invoke("check_for_update");
+      const info = await invoke("check_for_update");
       if (info && info.current_version) state.appVersion = info.current_version;
       state.updateInfo = info;
       if (!info.available) state.updateCheckError = "latest"; // 前端按 i18n 显示「已是最新」
@@ -8555,13 +8571,13 @@
     // bundle 被替换后该路径已指向新文件,spawn 新进程即加载新版(inode 语义与 Linux 同)。
     // Ok(false) 表示「安装完成,进程未退出,由前端决定 restart」,不是「需手动重启」。
     // 唯一不自动重启的是 Windows(MSI 安装器接管,后端 Ok(true)→app.exit)。
-    var shouldRestartAfterInstall =
+    const shouldRestartAfterInstall =
       state.updateInfo.platform === "linux" || state.updateInfo.platform === "macos";
-    var installed = false;
+    let installed = false;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
     try {
-      var downloadResult = await invoke("download_update", { info: state.updateInfo });
+      const downloadResult = await invoke("download_update", { info: state.updateInfo });
       state.updateProgress = 100; notify();
       if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
         await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
@@ -8598,7 +8614,7 @@
   // ── Persistent instance-scoped Web access ──────────────────────
   async function refreshWebAccessStatus() {
     try {
-      var status = await invoke("web_access_status");
+      const status = await invoke("web_access_status");
       state.webAccess = Object.assign({}, state.webAccess, status || {});
     } catch (e) {
       state.webAccess = Object.assign({}, state.webAccess, { last_error: String(e) });
@@ -8609,7 +8625,7 @@
     state.webAccess = Object.assign({}, state.webAccess, { starting: true, last_error: null });
     notify();
     try {
-      var info = await invoke("web_access_enable");
+      const info = await invoke("web_access_enable");
       state.webAccess = Object.assign({}, state.webAccess, info || {}, { active: true, starting: false, last_error: null });
       await refreshWebAccessStatus();
       return info;
@@ -8632,7 +8648,7 @@
   }
   async function rotateWebAccessLink() {
     try {
-      var info = await invoke("web_access_rotate");
+      const info = await invoke("web_access_rotate");
       state.webAccess = Object.assign({}, state.webAccess, info || {}, { active: true, last_error: null });
       await refreshWebAccessStatus();
       return info;
@@ -8648,12 +8664,12 @@
     return invoke("web_access_relay_settings");
   }
   async function setWebRelayAddress(address) {
-    var info = await invoke("web_access_set_relay", { address: address });
+    const info = await invoke("web_access_set_relay", { address });
     await refreshWebAccessStatus();
     return info;
   }
   async function resetWebRelayAddress() {
-    var info = await invoke("web_access_reset_relay");
+    const info = await invoke("web_access_reset_relay");
     await refreshWebAccessStatus();
     return info;
   }
@@ -8666,27 +8682,27 @@
     state.depsChecking = true; state.depsInstallError = null; notify();
     try {
       state.deps = await invoke("check_dependencies");
-    } catch (e) { state.deps = []; }
+    } catch { state.deps = []; }
     state.depsChecking = false; notify();
   }
   // 一键安装缺失依赖: 收集缺失项的包名 → 后端 pkexec apt 提权安装 → 装完实时重检。
   async function installDependencies() {
-    var deps = state.deps || [];
-    var missing = deps.filter(function (d) { return !d.installed; });
+    const deps = state.deps || [];
+    const missing = deps.filter(function (d) { return !d.installed; });
     if (!missing.length || state.depsInstalling) return;
-    var pkgs = [];
-    var actions = [];
+    const pkgs = [];
+    const actions = [];
     missing.forEach(function (d) {
-      var action = String(d.install_action || "").trim();
-      if (/^[a-z0-9_]+$/i.test(action) && actions.indexOf(action) < 0) {
+      const action = String(d.install_action || "").trim();
+      if (/^[a-z0-9_]+$/i.test(action) && !actions.includes(action)) {
         actions.push(action);
       }
-      var parts = String(d.apt).trim().split(/\s+/).filter(Boolean);
-      if (!parts.length || !parts.every(function (p) { return /^[a-z0-9][a-z0-9+.-]*$/i.test(p); })) {
+      const parts = String(d.apt).trim().split(/\s+/).filter(Boolean);
+      if (!parts.length || parts.some(function (p) { return !/^[a-z0-9][a-z0-9+.-]*$/i.test(p); })) {
         return;
       }
       parts.forEach(function (p) {
-        if (pkgs.indexOf(p) < 0) pkgs.push(p);
+        if (!pkgs.includes(p)) pkgs.push(p);
       });
     });
     if (!pkgs.length && !actions.length) {
@@ -8696,21 +8712,21 @@
     }
     state.depsInstalling = true; state.depsInstallError = null; notify();
     try {
-      await invoke("install_dependencies", { packages: pkgs, actions: actions });
+      await invoke("install_dependencies", { packages: pkgs, actions });
     } catch (e) {
       state.depsInstallError = String(e);
     }
     try {
       state.deps = await invoke("check_dependencies"); // 成功或部分成功后均实时反映当前状态
-    } catch (_) { /* keep the last successful dependency snapshot */ }
+    } catch { /* keep the last successful dependency snapshot */ }
     state.depsInstalling = false; notify();
   }
 
   // ── 语音输入（WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR；Linux webview 录音授权见 lib.rs setup）──────────────
-  var activeVoiceInput = null;
+  let activeVoiceInput = null;
 
   function setVoiceInputStatus(status, patch) {
-    var next = Object.assign({}, state.voiceInput, patch || {});
+    const next = Object.assign({}, state.voiceInput, patch || {});
     next.status = status;
     if (status !== "failed") {
       next.error = null;
@@ -8721,23 +8737,30 @@
   }
 
   function emitVoiceDiagnostic(stage, level, message, userMessage, category) {
-    var event = {
-      stage: stage,
-      level: level,
-      message: message,
+    const event = {
+      stage,
+      level,
+      message,
       user_message: userMessage || "",
       category: category || "",
     };
-    var fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+    const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
     fn.call(console, "[voice-input]", event);
   }
 
+  // 语音流程的错误载体:Error 实例 + category/stage 附加字段,供 normalizeVoiceError 分类。
+  function voiceFlowError(category, stage, message) {
+    const error = new Error(message);
+    error.category = category;
+    error.stage = stage;
+    return error;
+  }
   function normalizeVoiceError(err, fallbackStage) {
-    var name = String((err && err.name) || "");
-    var rawCategory = (err && err.category) || "";
-    var rawStage = (err && err.stage) || fallbackStage || "recording";
-    var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
-    var constraint = String((err && err.constraint) || "");
+    const name = String((err && err.name) || "");
+    const rawCategory = (err && err.category) || "";
+    const rawStage = (err && err.stage) || fallbackStage || "recording";
+    const rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
+    const constraint = String((err && err.constraint) || "");
     if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
       return { category: "permission_denied", stage: "permission", message: bt("voicePermissionDenied") };
     }
@@ -8775,7 +8798,7 @@
 
   function stopMediaTracks(stream) {
     if (!stream) return;
-    stream.getTracks().forEach(function (track) { try { track.stop(); } catch (_) {} });
+    stream.getTracks().forEach(function (track) { try { track.stop(); } catch { /* 已停止的轨道无需处理 */ } });
   }
 
   function cleanupVoiceInputSession(session) {
@@ -8784,10 +8807,10 @@
     // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
     // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
     // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
-    try { if (session.processor) session.processor.onaudioprocess = null; } catch (_) {}
-    try { if (session.processor) session.processor.disconnect(); } catch (_) {}
-    try { if (session.source) session.source.disconnect(); } catch (_) {}
-    try { if (session.zeroGain) session.zeroGain.disconnect(); } catch (_) {}
+    try { if (session.processor) session.processor.onaudioprocess = null; } catch { /* 释放失败仅影响本页音频 */ }
+    try { if (session.processor) session.processor.disconnect(); } catch { /* 释放失败仅影响本页音频 */ }
+    try { if (session.source) session.source.disconnect(); } catch { /* 释放失败仅影响本页音频 */ }
+    try { if (session.zeroGain) session.zeroGain.disconnect(); } catch { /* 释放失败仅影响本页音频 */ }
     stopMediaTracks(session.stream);
     session.processor = null;
     session.source = null;
@@ -8795,17 +8818,17 @@
     session.stream = null;
     // close() 触发 GStreamer 管线异步拆解，与上面的 disconnect/track.stop 在同一拍里竞争最易崩；
     // 摘干净节点后挪到下一个事件循环再关，并吞掉 close 的异常。
-    var ctx = session.audioContext;
+    const ctx = session.audioContext;
     session.audioContext = null;
     if (ctx && ctx.state !== "closed") {
-      setTimeout(function () { try { ctx.close().catch(function () {}); } catch (_) {} }, 0);
+      setTimeout(function () { try { ctx.close().catch(function () {}); } catch { /* 音频上下文已关闭 */ } }, 0);
     }
   }
 
   function mergeFloatChunks(chunks) {
-    var total = chunks.reduce(function (sum, chunk) { return sum + chunk.length; }, 0);
-    var out = new Float32Array(total);
-    var offset = 0;
+    const total = chunks.reduce(function (sum, chunk) { return sum + chunk.length; }, 0);
+    const out = new Float32Array(total);
+    let offset = 0;
     chunks.forEach(function (chunk) {
       out.set(chunk, offset);
       offset += chunk.length;
@@ -8815,26 +8838,27 @@
 
   function downsamplePcm(samples, sourceRate, targetRate) {
     if (!samples.length || sourceRate === targetRate) return samples;
-    var ratio = sourceRate / targetRate;
-    var len = Math.max(1, Math.round(samples.length / ratio));
-    var out = new Float32Array(len);
-    for (var i = 0; i < len; i++) {
-      var start = Math.floor(i * ratio);
-      var end = Math.min(samples.length, Math.floor((i + 1) * ratio));
-      var sum = 0;
-      var count = 0;
-      for (var j = start; j < end; j++) { sum += samples[j]; count++; }
+    const ratio = sourceRate / targetRate;
+    const len = Math.max(1, Math.round(samples.length / ratio));
+    const out = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+      const start = Math.floor(i * ratio);
+      const end = Math.min(samples.length, Math.floor((i + 1) * ratio));
+      let sum = 0;
+      let count = 0;
+      for (let j = start; j < end; j++) { sum += samples[j]; count++; }
       out[i] = count ? sum / count : samples[Math.min(start, samples.length - 1)];
     }
     return out;
   }
 
   function encodeWav(samples, sampleRate) {
-    var dataSize = samples.length * 2;
-    var buffer = new ArrayBuffer(44 + dataSize);
-    var view = new DataView(buffer);
+    const dataSize = samples.length * 2;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
     function writeString(offset, value) {
-      for (var i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+// WAV 头只写 ASCII,charCode 即目标字节值;fromCodePoint/codePointAt 在此无增益。
+      for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); // eslint-disable-line unicorn/prefer-code-point
     }
     writeString(0, "RIFF");
     view.setUint32(4, 36 + dataSize, true);
@@ -8849,16 +8873,16 @@
     view.setUint16(34, 16, true);
     writeString(36, "data");
     view.setUint32(40, dataSize, true);
-    var offset = 44;
-    for (var i = 0; i < samples.length; i++, offset += 2) {
-      var s = Math.max(-1, Math.min(1, samples[i]));
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
       view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
     }
     return buffer;
   }
 
   async function finishVoiceInput(cancelled, timedOut) {
-    var session = activeVoiceInput;
+    const session = activeVoiceInput;
     if (!session) return;
     if (cancelled) {
       cleanupVoiceInputSession(session);
@@ -8875,30 +8899,30 @@
       if (timedOut) {
         emitVoiceDiagnostic("recording", "warn", "recording reached max duration", "", "timeout");
       }
-      var raw = mergeFloatChunks(session.chunks);
-      var durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
+      const raw = mergeFloatChunks(session.chunks);
+      const durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
       if (durationMs < 300) {
-        throw { category: "recording_failed", stage: "recording", message: bt("voiceTooShort") };
+        throw voiceFlowError("recording_failed", "recording", bt("voiceTooShort"));
       }
-      var pcm = downsamplePcm(raw, session.sampleRate, 16000);
-      var wav = encodeWav(pcm, 16000);
-      var wavBytes = new Uint8Array(wav);
-      var res = IS_WEB
+      const pcm = downsamplePcm(raw, session.sampleRate, 16000);
+      const wav = encodeWav(pcm, 16000);
+      const wavBytes = new Uint8Array(wav);
+      const res = IS_WEB
         ? await invoke("web_access_transcribe_voice_audio", {
             audioBase64: encodeBase64Bytes(wavBytes),
             sessionId: session.sessionId,
           })
         : await invoke("transcribe_voice_audio", {
             request: {
-              audio_bytes: Array.from(wavBytes),
+              audio_bytes: [...wavBytes],
               session_id: session.sessionId,
             },
           });
       if (activeVoiceInput !== session) return;
-      var text = String((res && res.text) || "").trim();
-      if (!text) throw { category: "empty_result", stage: "transcribing", message: "未识别到语音内容" };
+      const text = String((res && res.text) || "").trim();
+      if (!text) throw voiceFlowError("empty_result", "transcribing", "未识别到语音内容");
       if (state.activeSessionId !== session.sessionId) {
-        throw { category: "context_mismatch", stage: "writeback", message: "voice result discarded because active session changed" };
+        throw voiceFlowError("context_mismatch", "writeback", "voice result discarded because active session changed");
       }
       if (typeof session.writeback === "function") {
         session.writeback(text, session.draftBeforeStart);
@@ -8906,7 +8930,7 @@
       setVoiceInputStatus("completed", { message: bt("voiceWritten"), completedAt: Date.now() });
       emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
     } catch (err) {
-      var normalized = normalizeVoiceError(err, "transcribing");
+      const normalized = normalizeVoiceError(err, "transcribing");
       setVoiceInputStatus("failed", {
         message: normalized.message,
         error: normalized.message,
@@ -8927,8 +8951,8 @@
     state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { installing: true, error: null, progress: { stage: "start" } });
     notify();
     try {
-      var st = await invoke("install_voice_asr");
-      var patch = { installing: false, status: st, progress: { stage: "done" } };
+      const st = await invoke("install_voice_asr");
+      const patch = { installing: false, status: st, progress: { stage: "done" } };
       if (st && st.ready) patch.open = false;
       state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
       notify();
@@ -8950,7 +8974,7 @@
     state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: true, error: null, progress: { stage: "start" } });
     notify();
     try {
-      var st = await invoke("kb_model_download", { repair: !!repair });
+      const st = await invoke("kb_model_download", { repair: !!repair });
       state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
         downloading: false,
         startupLoading: false,
@@ -8961,7 +8985,7 @@
       notify();
       return st;
     } catch (e) {
-      var failedStatus = await invoke("kb_model_status").catch(function () { return null; });
+      const failedStatus = await invoke("kb_model_status").catch(function () { return null; });
       state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
         downloading: false,
         startupLoading: false,
@@ -8990,16 +9014,16 @@
 
     // iOS/WebKit 只允许在用户点击的同步调用栈里启动 AudioContext。Web 端先在任何
     // await 之前创建并 resume，后续依赖检测和麦克风授权完成后复用这个 context。
-    var AudioCtor = window.AudioContext || window.webkitAudioContext; // eslint-disable-line compat/compat -- Safari 14.0 ships webkitAudioContext; the || fallback above selects it
-    var primedAudioContext = null;
-    var primedAudioResume = null;
+    const AudioCtor = window.AudioContext || window.webkitAudioContext; // eslint-disable-line compat/compat -- Safari 14.0 ships webkitAudioContext; the || fallback above selects it
+    let primedAudioContext = null;
+    let primedAudioResume = null;
     if (IS_WEB && AudioCtor) {
       try {
         primedAudioContext = new AudioCtor();
         primedAudioResume = primedAudioContext.state === "suspended"
           ? primedAudioContext.resume().catch(function () {})
           : Promise.resolve();
-      } catch (_) {
+      } catch {
         primedAudioContext = null;
         primedAudioResume = null;
       }
@@ -9007,7 +9031,7 @@
 
     // 首次/缺组件：先检测本地语音识别依赖，缺则弹安装框、不进录音。
     try {
-      var asrStatus = await invoke("voice_asr_status");
+      const asrStatus = await invoke("voice_asr_status");
       // VoiceAsrStatus 只有 engine/ffmpeg/model/ready/missing,无 installable 字段。
       // 未装好即弹安装引导;平台 gating 若要做,需先给后端补 installable(当前无此需求)。
       if (asrStatus && !asrStatus.ready) {
@@ -9026,15 +9050,15 @@
         notify();
         return;
       }
-    } catch (e) {
+    } catch {
       // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
     }
 
-    var session = {
+    const session = {
       id: Date.now().toString(36),
       sessionId: state.activeSessionId || null,
       draftBeforeStart: String(draftText || ""),
-      writeback: writeback,
+      writeback,
       chunks: [],
       sampleRate: 16000,
       startedAt: Date.now(),
@@ -9051,10 +9075,10 @@
 
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw { category: "device_unavailable", stage: "device", message: bt("voiceNoMicCapture") };
+        throw voiceFlowError("device_unavailable", "device", bt("voiceNoMicCapture"));
       }
       if (!AudioCtor) {
-        throw { category: "recording_failed", stage: "recording", message: bt("voiceNoAudioRecording") };
+        throw voiceFlowError("recording_failed", "recording", bt("voiceNoAudioRecording"));
       }
       session.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -9072,7 +9096,7 @@
       if (primedAudioResume) await primedAudioResume;
       if (session.audioContext.state === "suspended") await session.audioContext.resume();
       if (session.audioContext.state !== "running") {
-        throw { category: "recording_failed", stage: "recording", message: bt("voiceAudioStartBlocked") };
+        throw voiceFlowError("recording_failed", "recording", bt("voiceAudioStartBlocked"));
       }
       session.sampleRate = session.audioContext.sampleRate || 16000;
       session.source = session.audioContext.createMediaStreamSource(session.stream);
@@ -9081,7 +9105,7 @@
       session.zeroGain.gain.value = 0;
       session.processor.onaudioprocess = function (event) {
         if (activeVoiceInput !== session) return;
-        var input = event.inputBuffer.getChannelData(0);
+        const input = event.inputBuffer.getChannelData(0);
         session.chunks.push(new Float32Array(input));
       };
       session.source.connect(session.processor);
@@ -9093,7 +9117,7 @@
     } catch (err) {
       cleanupVoiceInputSession(session);
       if (activeVoiceInput === session) activeVoiceInput = null;
-      var normalized = normalizeVoiceError(err, "recording");
+      const normalized = normalizeVoiceError(err, "recording");
       setVoiceInputStatus("failed", {
         message: normalized.message,
         error: normalized.message,
@@ -9124,18 +9148,18 @@
   }
 
   function appendVoiceText(base, text) {
-    var left = String(base || "").trimEnd();
-    var right = String(text || "").trim();
+    const left = String(base || "").trimEnd();
+    const right = String(text || "").trim();
     if (!left) return right;
     if (!right) return left;
     return left + (/[。！？.!?，,;；:]$/.test(left) ? " " : "\n") + right;
   }
 
   function runVoiceInputDebugAssertions() {
-    var denied = normalizeVoiceError({ name: "NotAllowedError" });
-    var noDevice = normalizeVoiceError({ name: "NotFoundError" });
-    var unsupportedConstraint = normalizeVoiceError({ name: "OverconstrainedError", message: "Invalid constraint", constraint: "channelCount" });
-    var mismatch = normalizeVoiceError({ category: "context_mismatch" });
+    const denied = normalizeVoiceError({ name: "NotAllowedError" });
+    const noDevice = normalizeVoiceError({ name: "NotFoundError" });
+    const unsupportedConstraint = normalizeVoiceError({ name: "OverconstrainedError", message: "Invalid constraint", constraint: "channelCount" });
+    const mismatch = normalizeVoiceError({ category: "context_mismatch" });
     console.assert(denied.category === "permission_denied", "permission error classified");
     console.assert(noDevice.category === "device_unavailable", "device error classified");
     console.assert(unsupportedConstraint.category === "constraint_unsupported", "unsupported constraint classified");
@@ -9147,13 +9171,13 @@
 
   async function pickFiles() {
     if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
-    var selected = await dialogOpen({ multiple: true });
+    const selected = await dialogOpen({ multiple: true });
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
   }
   async function pickFolder() {
     if (!dialogOpen) throw new Error(bt("folderPickerUnavailable"));
-    var selected = await dialogOpen({
+    const selected = await dialogOpen({
       directory: true,
       multiple: false,
       title: bt("pickFolderTitle"),
@@ -9165,14 +9189,14 @@
   // 包成数组交给后端 kb_collection_add_sources（在桌面进程用 WalkDir 递归展开）。
   async function pickFolders() {
     if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
-    var selected = await dialogOpen({ directory: true, multiple: false, title: bt("kbPickFolderTitle") });
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("kbPickFolderTitle") });
     if (!selected) return [];
-    var p = Array.isArray(selected) ? selected[0] : selected;
+    const p = Array.isArray(selected) ? selected[0] : selected;
     return p ? [p] : [];
   }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
-    var selected = await dialogOpen({
+    const selected = await dialogOpen({
       multiple: true,
       filters: [
         { name: "Images and videos", extensions: ["png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"] },
@@ -9193,7 +9217,7 @@
     if (!IS_WEB || webInitRetryArmed) return;
     webInitRetryArmed = true;
     webInitRetryHandler = function (event) {
-      var status = event && event.detail && event.detail.status;
+      const status = event && event.detail && event.detail.status;
       if (status !== "connected") return;
       disarmWebInitRetry();
       window.setTimeout(function () {
@@ -9207,12 +9231,12 @@
 
   async function init() {
     if (initPromise) return initPromise;
-    var attempt = (async function () {
+    const attempt = (async function () {
     // 启动加载各自写互不重叠的状态片、彼此无数据依赖(每个 loader 自吞 invoke
     // 错误并落兜底值),串行 await 会把多个 RPC 往返叠进首屏延迟——并行后往返
     // 宽度收敛为 1。enterDraft/markStateReady 必须等本组完成后才走(durable
     // state 未就绪前不得放行桌面事件重放,这是 web 重试契约的前提)。
-    var parallelLoads = [
+    const parallelLoads = [
       loadSettings(),
       hasCapability("pet") ? loadSelectedPet() : Promise.resolve(),
       loadEffectiveModelConfig(),
@@ -9253,7 +9277,7 @@
       // A rejected Promise must not permanently poison every later init call.
       // Keep replay closed and retry only after the browser observes a fresh
       // connected transition; durable state must succeed before state_ready.
-      var client = IS_WEB && window.PinvouWebClient;
+      const client = IS_WEB && window.PinvouWebClient;
       if (client && !client.stateReady) {
         initPromise = null;
         armWebInitRetry();
@@ -9268,185 +9292,185 @@
     available: true,
     platform: PLATFORM.kind || "desktop",
     capabilities: PLATFORM.capabilities || {},
-    hasCapability: hasCapability,
-    subscribe: subscribe,
+    hasCapability,
+    subscribe,
     getState: function () { return snapshotState(); },
-    init: init,
-    sendMessage: sendMessage,
-    sendMessageToSession: sendMessageToSession,
-    getComposerDraft: getComposerDraft,
-    setComposerDraft: setComposerDraft,
-    retryFirstTurn: retryFirstTurn,
-    prefillComposer: prefillComposer,
-    removeQueued: removeQueued,
-    startVoiceInput: startVoiceInput,
-    installVoiceAsr: installVoiceAsr,
-    closeVoiceAsrSetup: closeVoiceAsrSetup,
-    downloadKbModel: downloadKbModel,
-    cancelKbModel: cancelKbModel,
-    cancelVoiceInput: cancelVoiceInput,
-    clearVoiceInput: clearVoiceInput,
-    appendVoiceText: appendVoiceText,
-    runVoiceInputDebugAssertions: runVoiceInputDebugAssertions,
-    loadScheduledTasks: loadScheduledTasks,
-    readScheduledTask: readScheduledTask,
-    loadScheduledTaskRuns: loadScheduledTaskRuns,
-    loadScheduledTaskRecentRuns: loadScheduledTaskRecentRuns,
-    selectScheduledTask: selectScheduledTask,
-    refreshScheduledTaskData: refreshScheduledTaskData,
-    clearScheduledTaskSelection: clearScheduledTaskSelection,
-    dismissScheduledTaskError: dismissScheduledTaskError,
-    createScheduledTask: createScheduledTask,
-    updateScheduledTask: updateScheduledTask,
-    pauseScheduledTask: pauseScheduledTask,
-    resumeScheduledTask: resumeScheduledTask,
-    toggleScheduledTaskPinned: toggleScheduledTaskPinned,
-    deleteScheduledTask: deleteScheduledTask,
-    runScheduledTaskNow: runScheduledTaskNow,
-    pickFolder: pickFolder,
-    startScheduledTaskChat: startScheduledTaskChat,
-    confirmScheduledTaskDraft: confirmScheduledTaskDraft,
-    clearScheduledTaskDraft: clearScheduledTaskDraft,
-    cancelGeneration: cancelGeneration,
-    cancelShellTask: cancelShellTask,
-    createNewSession: createNewSession,
-    switchToSession: switchToSession,
-    openScheduledRunChat: openScheduledRunChat,
-    exitScheduledRunChat: exitScheduledRunChat,
-    deleteSession: deleteSession,
-    renameSession: renameSession,
-    toggleSessionPinned: toggleSessionPinned,
-    archiveSession: archiveSession,
-    restoreArchivedSession: restoreArchivedSession,
-    startMonitorPolling: startMonitorPolling,
-    stopMonitorPolling: stopMonitorPolling,
-    clearMonitorStats: clearMonitorStats,
-    setSelectedPet: setSelectedPet,
-    saveSettings: saveSettings,
-    saveSettingsAndRestart: saveSettingsAndRestart,
-    saveSearchSettings: saveSearchSettings,
-    saveSearchSettingsAndRestart: saveSearchSettingsAndRestart,
-    submitFeedback: submitFeedback,
-    discoverLocalVllm: discoverLocalVllm,
-    detectLocalVllmSetup: detectLocalVllmSetup,
-    bootstrapLocalVllm: bootstrapLocalVllm,
-    dismissVllmSetup: dismissVllmSetup,
-    declineVllmSetup: declineVllmSetup,
-    getEffectiveModelConfig: getEffectiveModelConfig,
-   loadModels: loadModels,
-   saveModel: saveModel,
-   revealModelApiKey: revealModelApiKey,
-   deleteModel: deleteModel,
-    getImageInputCapability: getImageInputCapability,
-    testImageInputCapability: testImageInputCapability,
-    setActiveModel: setActiveModel,
-    loadSessionModel: loadSessionModel,
-    switchModel: switchModel,
-    testModelConnection: testModelConnection,
-    testSearchProvider: testSearchProvider,
-    toggleSuperPerm: toggleSuperPerm,
-    renderMarkdown: renderMarkdown,
-    enableWebAccess: enableWebAccess,
-    disableWebAccess: disableWebAccess,
-    rotateWebAccessLink: rotateWebAccessLink,
-    refreshWebAccessStatus: refreshWebAccessStatus,
-    getWebRelaySettings: getWebRelaySettings,
-    setWebRelayAddress: setWebRelayAddress,
-    resetWebRelayAddress: resetWebRelayAddress,
+    init,
+    sendMessage,
+    sendMessageToSession,
+    getComposerDraft,
+    setComposerDraft,
+    retryFirstTurn,
+    prefillComposer,
+    removeQueued,
+    startVoiceInput,
+    installVoiceAsr,
+    closeVoiceAsrSetup,
+    downloadKbModel,
+    cancelKbModel,
+    cancelVoiceInput,
+    clearVoiceInput,
+    appendVoiceText,
+    runVoiceInputDebugAssertions,
+    loadScheduledTasks,
+    readScheduledTask,
+    loadScheduledTaskRuns,
+    loadScheduledTaskRecentRuns,
+    selectScheduledTask,
+    refreshScheduledTaskData,
+    clearScheduledTaskSelection,
+    dismissScheduledTaskError,
+    createScheduledTask,
+    updateScheduledTask,
+    pauseScheduledTask,
+    resumeScheduledTask,
+    toggleScheduledTaskPinned,
+    deleteScheduledTask,
+    runScheduledTaskNow,
+    pickFolder,
+    startScheduledTaskChat,
+    confirmScheduledTaskDraft,
+    clearScheduledTaskDraft,
+    cancelGeneration,
+    cancelShellTask,
+    createNewSession,
+    switchToSession,
+    openScheduledRunChat,
+    exitScheduledRunChat,
+    deleteSession,
+    renameSession,
+    toggleSessionPinned,
+    archiveSession,
+    restoreArchivedSession,
+    startMonitorPolling,
+    stopMonitorPolling,
+    clearMonitorStats,
+    setSelectedPet,
+    saveSettings,
+    saveSettingsAndRestart,
+    saveSearchSettings,
+    saveSearchSettingsAndRestart,
+    submitFeedback,
+    discoverLocalVllm,
+    detectLocalVllmSetup,
+    bootstrapLocalVllm,
+    dismissVllmSetup,
+    declineVllmSetup,
+    getEffectiveModelConfig,
+   loadModels,
+   saveModel,
+   revealModelApiKey,
+   deleteModel,
+    getImageInputCapability,
+    testImageInputCapability,
+    setActiveModel,
+    loadSessionModel,
+    switchModel,
+    testModelConnection,
+    testSearchProvider,
+    toggleSuperPerm,
+    renderMarkdown,
+    enableWebAccess,
+    disableWebAccess,
+    rotateWebAccessLink,
+    refreshWebAccessStatus,
+    getWebRelaySettings,
+    setWebRelayAddress,
+    resetWebRelayAddress,
     // modeState 权威读取（评审 P1 后纳入公开面，与 tauri 端对齐）
-    syncModeState: syncModeState,
+    syncModeState,
     // Plan/YOLO
-    acceptPlan: acceptPlan,
-    discardPlan: discardPlan,
-    exitPlanToYolo: exitPlanToYolo,
-    setPlanModeNext: setPlanModeNext,
-    setDraftMode: setDraftMode,
-    setModeLane: setModeLane,
-    refreshModeDefaults: refreshModeDefaults,
-    planStuckReplan: planStuckReplan,
-    planStuckGo: planStuckGo,
+    acceptPlan,
+    discardPlan,
+    exitPlanToYolo,
+    setPlanModeNext,
+    setDraftMode,
+    setModeLane,
+    refreshModeDefaults,
+    planStuckReplan,
+    planStuckGo,
     // 用户交互
-    submitUserInput: submitUserInput,
-    cancelUserInput: cancelUserInput,
-    summonPinvou: summonPinvou,
-    inspectPinvou: inspectPinvou,
-    resolvePinvouReview: resolvePinvouReview,
-    dismissPinvouReview: dismissPinvouReview,
+    submitUserInput,
+    cancelUserInput,
+    summonPinvou,
+    inspectPinvou,
+    resolvePinvouReview,
+    dismissPinvouReview,
     // 编辑/压缩
-    editLastTurn: editLastTurn,
-    compactNow: compactNow,
+    editLastTurn,
+    compactNow,
     // 产物
-    artifactInfo: artifactInfo,
-    readArtifactText: readArtifactText,
-    writeArtifactText: writeArtifactText,
-    readArtifactImageB64: readArtifactImageB64,
-    readArtifactThumbnail: readArtifactThumbnail,
-    renderArtifactVisual: renderArtifactVisual,
-    openContainingFolder: openContainingFolder,
-    revealSessionFolder: revealSessionFolder,
-    openScheduledTaskFolder: openScheduledTaskFolder,
-    openInSystem: openInSystem,
-    openArtifactExternal: openArtifactExternal,
-    downloadArtifact: downloadArtifact,
-    listDeliverableIndex: listDeliverableIndex,
-    openExternalUrl: openExternalUrl,
-    openUserExternalUrl: openUserExternalUrl,
+    artifactInfo,
+    readArtifactText,
+    writeArtifactText,
+    readArtifactImageB64,
+    readArtifactThumbnail,
+    renderArtifactVisual,
+    openContainingFolder,
+    revealSessionFolder,
+    openScheduledTaskFolder,
+    openInSystem,
+    openArtifactExternal,
+    downloadArtifact,
+    listDeliverableIndex,
+    openExternalUrl,
+    openUserExternalUrl,
     // 附件
-    addAttachmentByPath: addAttachmentByPath,
-    addPasteImage: addPasteImage,
-    removeAttachment: removeAttachment,
-    clearAttachments: clearAttachments,
-    pickAndAttach: pickAndAttach,
-    uploadDeviceFiles: uploadDeviceFiles,
-    resolveConversationAttachment: resolveConversationAttachment,
-    openConversationAttachment: openConversationAttachment,
-    revealConversationAttachment: revealConversationAttachment,
-    markResolved: markResolved,
+    addAttachmentByPath,
+    addPasteImage,
+    removeAttachment,
+    clearAttachments,
+    pickAndAttach,
+    uploadDeviceFiles,
+    resolveConversationAttachment,
+    openConversationAttachment,
+    revealConversationAttachment,
+    markResolved,
     // 通用宿主文件选择器（知识库、反馈等功能继续复用）。
-    pickFiles: pickFiles,
-    pickFolders: pickFolders,
-    pickFeedbackFiles: pickFeedbackFiles,
+    pickFiles,
+    pickFolders,
+    pickFeedbackFiles,
     // 卡片池: 专家面具
-    loadPersonas: loadPersonas,
+    loadPersonas,
     getPersonas: function () { return personaPoolCache; }, // 返回引用(只读),不进 notify 快照
     readPersonaBody: function (id) { return invoke("read_persona_body", { personaId: id }); }, // Side B: 详情拉完整正文
-    equipPersona: equipPersona,
-    unequipPersona: unequipPersona,
+    equipPersona,
+    unequipPersona,
     // 知识库挂载(会话级)
-    mountCollection: mountCollection,
-    setCollectionEnabled: setCollectionEnabled,
-    removeCollection: removeCollection,
-    unmountCollection: unmountCollection,
+    mountCollection,
+    setCollectionEnabled,
+    removeCollection,
+    unmountCollection,
     listCollections: function () { return invoke("kb_collection_list"); }, // 挂载选择器用
     kbModelStatus: function () { return invoke("kb_model_status"); }, // 挂载选择器门控:模型未装则不可选
-    loadMemoryOverview: loadMemoryOverview,
-    saveMemoryProfilePatch: saveMemoryProfilePatch,
-    deleteMemoryPreference: deleteMemoryPreference,
-    updateMemoryItem: updateMemoryItem,
-    deleteMemoryItem: deleteMemoryItem,
-    archiveRecentWorkMemory: archiveRecentWorkMemory,
-    confirmMemoryCandidate: confirmMemoryCandidate,
-    ignoreMemoryCandidate: ignoreMemoryCandidate,
-    neverMemoryCandidate: neverMemoryCandidate,
+    loadMemoryOverview,
+    saveMemoryProfilePatch,
+    deleteMemoryPreference,
+    updateMemoryItem,
+    deleteMemoryItem,
+    archiveRecentWorkMemory,
+    confirmMemoryCandidate,
+    ignoreMemoryCandidate,
+    neverMemoryCandidate,
     // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
     // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
-    postCardCreatorIntro: postCardCreatorIntro,
+    postCardCreatorIntro,
     // 用户自创卡
-    createPersona: createPersona,
-    updatePersona: updatePersona,
-    deletePersona: deletePersona,
+    createPersona,
+    updatePersona,
+    deletePersona,
     // 应用内升级
-    checkForUpdate: checkForUpdate,
-    downloadAndInstallUpdate: downloadAndInstallUpdate,
-    cancelUpdate: cancelUpdate,
-    restartApp: restartApp,
-    checkDependencies: checkDependencies,
-    installDependencies: installDependencies,
+    checkForUpdate,
+    downloadAndInstallUpdate,
+    cancelUpdate,
+    restartApp,
+    checkDependencies,
+    installDependencies,
   };
 
   function retryWebAuthoritySynchronization() {
     Object.keys(sessionStates).forEach(function (sid) {
-      var buf = sessionStates[sid];
+      const buf = sessionStates[sid];
       if (!buf) return;
       if (buf.remoteTerminalSeen || (buf.remoteTurnActive && !buf.busy)) {
         reconcileRemoteTurn(sid).then(function (ready) {

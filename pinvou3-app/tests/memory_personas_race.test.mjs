@@ -38,6 +38,7 @@ function loadFeature(fileName, state, contextOverrides) {
     addSystemItem(text) { state.chatItems.push({ type: 'system', text, id: 'sys-' + (state.chatItems.length + 1) }); },
     addChatItem(item) { item.id = item.id || ('item-' + (state.chatItems.length + 1)); state.chatItems.push(item); },
     timeStr() { return ''; },
+    // eslint-disable-next-line no-unused-vars -- 桩函数保留完整调用签名
     invoke(name, args) {
       calls.invoke.push(name);
       if (deferreds[name] && deferreds[name].promise) return deferreds[name].promise;
@@ -245,7 +246,7 @@ test('equipPersona rename 挂起期间切走：不插卡/不写挂件/不记事�
   const rename = rt.defer('rename_session');
   const p = rt.api.equipPersona('persona-x');       // A 会话发起，标题默认 → 走 rename 分支
   equip.resolve({ id: 'persona-x', name: '专家X' });
-  await new Promise(r => setTimeout(r, 0));          // 推进微任务：equip 恢复并挂起在 rename
+  await new Promise(r => { setTimeout(r, 0); });          // 推进微任务：equip 恢复并挂起在 rename
   rt.state.activeSessionId = 'chat-b';               // rename 挂起期间切走
   rename.resolve({});
   await p;

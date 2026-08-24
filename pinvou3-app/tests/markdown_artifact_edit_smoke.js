@@ -12,13 +12,13 @@ const path = require('path');
 const { startUiTestServer } = require('./ui_test_server');
 
 function loadPuppeteer() {
-  try { return require('puppeteer-core'); } catch (_) { /* fall through */ }
+  try { return require('puppeteer-core'); } catch { /* fall through */ }
   const npx = path.join(os.homedir(), '.npm', '_npx');
   if (fs.existsSync(npx)) {
     for (const d of fs.readdirSync(npx)) {
       const p = path.join(npx, d, 'node_modules', 'puppeteer-core');
       if (fs.existsSync(p)) {
-        try { return require(p); } catch (_) { /* next */ }
+        try { return require(p); } catch { /* next */ }
       }
     }
   }
@@ -134,7 +134,7 @@ function injectSource() {
   })();`;
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 async function clickText(page, text) {
   return page.evaluate((needle) => {
@@ -334,7 +334,7 @@ async function rec(results, name, pass, detail) {
   await page.evaluate(() => {
     const editable = document.querySelector('[contenteditable="true"]');
     const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT);
-    var node = null;
+    let node;
     while ((node = walker.nextNode())) {
       if (node.nodeValue.includes('literal ``` fence')) {
         const start = node.nodeValue.indexOf('literal');
@@ -371,7 +371,7 @@ async function rec(results, name, pass, detail) {
   await page.evaluate(() => {
     const editable = document.querySelector('[contenteditable="true"]');
     const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT);
-    var node = null;
+    let node;
     while ((node = walker.nextNode())) {
       if (node.nodeValue.includes('literal ``` fence')) {
         const start = node.nodeValue.indexOf('literal');
@@ -509,6 +509,7 @@ async function rec(results, name, pass, detail) {
   const failed = results.filter((r) => !r.pass).length;
   console.log(failed ? `\\n${failed}/${results.length} FAILED` : `\\nALL ${results.length} PASS`);
   process.exit(failed ? 1 : 0);
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
 })().catch((e) => {
   console.error('FATAL', e && e.stack ? e.stack : e);
   process.exit(1);

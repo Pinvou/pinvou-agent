@@ -1,4 +1,3 @@
-import React from 'react';
 import { createPortal } from 'react-dom';
 import { Code, FileText, ImageIcon } from '../../components/icons.jsx';
 

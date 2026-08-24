@@ -292,7 +292,7 @@ function injectSource() {
   })();`;
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const sleep = ms => new Promise(r => { setTimeout(r, ms); });
 
 async function clickExactText(page, text) {
   return page.evaluate((text) => {
@@ -323,6 +323,7 @@ async function openScheduledNav(page) {
   return true;
 }
 
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
 (async () => {
   const { server, url } = await startUiTestServer();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-scheduled-tasks-'));
@@ -411,7 +412,7 @@ async function openScheduledNav(page) {
       !document.querySelector('[data-testid="scheduled-live-title"]')
   }));
   await page.evaluate(() => {
-    const buttons = Array.from(document.querySelectorAll('button[aria-label^="查看定时任务"]'));
+    const buttons = [...document.querySelectorAll('button[aria-label^="查看定时任务"]')];
     const target = buttons.find(button => /每日早报/.test(button.textContent || ''));
     if (target) {
       target.click();
@@ -468,7 +469,7 @@ async function openScheduledNav(page) {
       executionModeAbsent: !document.querySelector('[data-testid="scheduled-yolo-mode"]') &&
         !document.body.innerText.includes('执行模式'),
       permissionControlsAbsent: !document.body.innerText.includes('权限') &&
-        !Array.from(document.querySelectorAll('label')).some(el => /Shell|信任模式/.test(el.textContent || '')),
+        ![...document.querySelectorAll('label')].some(el => /Shell|信任模式/.test(el.textContent || '')),
       insetGroupsNoOuterBorder: noOuterBorder(settings) && noOuterBorder(actions) && noOuterBorder(history),
       navUnread: !!document.querySelector('[data-testid="scheduled-nav-unread"]'),
       createCalls: invokes.filter(x => x.cmd === 'create_scheduled_task').length,
@@ -506,7 +507,7 @@ async function openScheduledNav(page) {
     });
   }, { itemVisible: true, moreVisible: true });
   await page.evaluate(() => {
-    const rename = Array.from(document.querySelectorAll('button'))
+    const rename = [...document.querySelectorAll('button')]
       .find(button => (button.textContent || '').trim() === '重命名');
     if (!rename) throw new Error('missing scheduled record rename action');
     rename.click();
@@ -524,7 +525,7 @@ async function openScheduledNav(page) {
   await page.click('[data-testid="scheduled-run-sidebar-item"]', { button: 'right' });
   await page.waitForSelector('[data-testid="scheduled-run-sidebar-menu"]', { timeout: 10000 });
   await page.evaluate(() => {
-    const pin = Array.from(document.querySelectorAll('button'))
+    const pin = [...document.querySelectorAll('button')]
       .find(button => (button.textContent || '').trim() === '置顶');
     if (!pin) throw new Error('missing scheduled record pin action');
     pin.click();
@@ -542,13 +543,13 @@ async function openScheduledNav(page) {
   await page.click('[data-testid="scheduled-run-sidebar-item"]', { button: 'right' });
   await page.waitForSelector('[data-testid="scheduled-run-sidebar-menu"]', { timeout: 10000 });
   await page.evaluate(() => {
-    const del = Array.from(document.querySelectorAll('button'))
+    const del = [...document.querySelectorAll('button')]
       .find(button => (button.textContent || '').trim() === '删除');
     if (!del) throw new Error('missing scheduled record delete action');
     del.click();
   });
   await page.evaluate(() => {
-    const cancel = Array.from(document.querySelectorAll('button[title="取消"]')).pop();
+    const cancel = [...document.querySelectorAll('button[title="取消"]')].pop();
     if (!cancel) throw new Error('missing scheduled record delete cancellation');
     cancel.click();
   });
@@ -563,7 +564,7 @@ async function openScheduledNav(page) {
   await openScheduledNav(page);
   await page.waitForSelector('[data-testid="scheduled-list"]', { timeout: 10000 });
   await page.evaluate(() => {
-    const buttons = Array.from(document.querySelectorAll('button[aria-label^="查看定时任务"]'));
+    const buttons = [...document.querySelectorAll('button[aria-label^="查看定时任务"]')];
     const target = buttons.find(button => /每日早报/.test(button.textContent || ''));
     if (target) {
       target.click();
@@ -963,7 +964,7 @@ async function openScheduledNav(page) {
     return {
       inChatView: !document.querySelector('[data-testid="scheduled-page"]'),
       guidePending: !!state.scheduledTaskPendingGuide,
-      composerPrefilled: Array.from(document.querySelectorAll('textarea')).some(el => (el.value || '').includes('我想创建一个定时任务')),
+      composerPrefilled: [...document.querySelectorAll('textarea')].some(el => (el.value || '').includes('我想创建一个定时任务')),
       guideHidden: !document.body.innerText.includes('请一次只问我一个问题'),
       confirmVisible: !!document.querySelector('[data-testid="scheduled-task-draft-card"]'),
       chatCalls: invokes.filter(x => x.cmd === 'chat').length,
@@ -1090,7 +1091,7 @@ async function openScheduledNav(page) {
     value: document.querySelector('[data-testid="scheduled-live-day"]') &&
       document.querySelector('[data-testid="scheduled-live-day"]').value,
     menuStayedOpen: !!document.querySelector('[role="listbox"][aria-multiselectable="true"]'),
-    selected: Array.from(document.querySelectorAll('[data-testid="scheduled-live-day-option"][aria-selected="true"]'))
+    selected: [...document.querySelectorAll('[data-testid="scheduled-live-day-option"][aria-selected="true"]')]
       .map(option => option.dataset.value),
   }));
   if (!weeklyMultiSelectState.value || weeklyMultiSelectState.selected.length !== 1) {
@@ -1131,7 +1132,7 @@ async function openScheduledNav(page) {
     return title && title.value === '五小时任务';
   }, { timeout: 10000 });
   const intervalDisplayBefore = await page.evaluate(() => {
-    const summaries = Array.from(document.querySelectorAll('[data-testid="scheduled-task-summary"]'));
+    const summaries = [...document.querySelectorAll('[data-testid="scheduled-task-summary"]')];
     const summary = summaries.find(el => (el.textContent || '').includes('每 5 小时'));
     const repeat = document.querySelector('[data-testid="scheduled-live-repeat"]');
     return {
@@ -1147,7 +1148,7 @@ async function openScheduledNav(page) {
   });
   await sleep(1200);
   const intervalDisplayAfter = await page.evaluate(() => {
-    const summaries = Array.from(document.querySelectorAll('[data-testid="scheduled-task-summary"]'));
+    const summaries = [...document.querySelectorAll('[data-testid="scheduled-task-summary"]')];
     const summary = summaries.find(el => (el.textContent || '').includes('每 5 小时'));
     return { summary: summary && summary.textContent, allSummaries: summaries.map(el => el.textContent) };
   });

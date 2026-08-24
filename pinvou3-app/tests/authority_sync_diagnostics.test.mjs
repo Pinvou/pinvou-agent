@@ -90,7 +90,7 @@ test('diagnostics allow-list metadata and drop privacy-sensitive fields', async 
   ]) {
     assert.equal(serialized.includes(secret), false, `diagnostic leaked ${secret}`);
   }
-  assert.deepEqual(Object.keys(attempt).sort(), ['connection', 'details', 'event', 'event_id']);
+  assert.deepEqual(Object.keys(attempt).sort(), ['connection', 'details', 'event', 'event_id']); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
   assert.ok(calls.every(call => call.command === 'record_authority_sync_diagnostics'));
 });
 
@@ -183,11 +183,11 @@ test('frontend allowlists stay in lockstep between JS and Rust', () => {
 
   // --- Extract the JS-side allowlists from the shared module source. ---
   const jsSet = name => {
-    const match = source.match(new RegExp(`var ${name} = new Set\\(\\[([^\\]]+)\\]\\)`));
+    const match = source.match(new RegExp(`(?:var|const|let) ${name} = new Set\\(\\[([^\\]]+)\\]\\)`));
     assert.ok(match, `${name} not found in JS source`);
     return new Set([...match[1].matchAll(/"([^"]+)"/g)].map(entry => entry[1]));
   };
-  const jsEnumBlock = source.match(/var ENUM_FIELDS = \{([\s\S]*?)\n  \};/);
+  const jsEnumBlock = source.match(/(?:var|const|let) ENUM_FIELDS = \{([\s\S]*?)\n {2}\};/);
   assert.ok(jsEnumBlock, 'ENUM_FIELDS not found in JS source');
   const jsEnums = new Map();
   for (const arm of jsEnumBlock[1].matchAll(/(\w+):\s*new Set\(\[([^\]]+)\]\)/g)) {
@@ -215,7 +215,7 @@ test('frontend allowlists stay in lockstep between JS and Rust', () => {
   const rustEvents = rust.match(/const FRONTEND_EVENTS: &\[&str\] = &\[([\s\S]*?)\];/);
   assert.ok(rustEvents, 'FRONTEND_EVENTS not found in Rust source');
   const rustEventSet = new Set([...rustEvents[1].matchAll(/"([^"]+)"/g)].map(e => e[1]));
-  assert.deepEqual([...jsSet('ALLOWED_EVENTS')].sort(), [...rustEventSet].sort(),
+  assert.deepEqual([...jsSet('ALLOWED_EVENTS')].sort(), [...rustEventSet].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
     'frontend event allowlists drifted between JS and Rust');
 
   // Detail fields: every key JS may emit must be recognized by Rust normalization.
@@ -224,14 +224,14 @@ test('frontend allowlists stay in lockstep between JS and Rust', () => {
     ...jsSet('NUMBER_FIELDS'), ...jsSet('BOOLEAN_FIELDS'),
     ...jsEnums.keys(), 'transport', 'cause', 'saved_roles',
   ]);
-  assert.deepEqual([...jsFieldUnion].sort(), [...rustFields].sort(),
+  assert.deepEqual([...jsFieldUnion].sort(), [...rustFields].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
     'frontend detail-field allowlists drifted between JS and Rust');
 
   // Enum values: JS accepts exactly the values Rust re-validates.
   for (const [field, jsValues] of jsEnums) {
     const rustValues = rustEnums.get(field);
     assert.ok(rustValues, `Rust normalization is missing enum field "${field}"`);
-    assert.deepEqual([...jsValues].sort(), [...rustValues].sort(),
+    assert.deepEqual([...jsValues].sort(), [...rustValues].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
       `enum values for "${field}" drifted between JS and Rust`);
   }
 
@@ -242,12 +242,12 @@ test('frontend allowlists stay in lockstep between JS and Rust', () => {
   );
   const rustConnection = new Map();
   for (const field of ['platform_kind', 'visibility', 'connection_status']) {
-    const anchor = connectionBody.indexOf(`\"${field}\"`);
+    const anchor = connectionBody.indexOf(`"${field}"`);
     assert.ok(anchor > 0, `Rust connection normalization is missing "${field}"`);
     const tail = connectionBody.slice(anchor + field.length + 2, connectionBody.indexOf('[..]', anchor));
     rustConnection.set(field, new Set([...tail.matchAll(/"([^"]+)"/g)].map(e => e[1])));
   }
-  const jsConnectionBody = source.match(/function normalizeConnection\(snapshot\) \{[\s\S]*?\n  \}/);
+  const jsConnectionBody = source.match(/function normalizeConnection\(snapshot\) \{[\s\S]*?\n {2}\}/);
   assert.ok(jsConnectionBody, 'normalizeConnection not found in JS source');
   const jsAlternations = [...jsConnectionBody[0].matchAll(/\/\^\(([^)]+)\)\$\//g)].map(m => m[1]);
   assert.equal(jsAlternations.length, 3, 'expected exactly three connection gates in JS');
@@ -257,12 +257,12 @@ test('frontend allowlists stay in lockstep between JS and Rust', () => {
     ['connection_status', new Set(jsAlternations[2].split('|'))],
   ]);
   for (const [field, jsValues] of jsConnection) {
-    assert.deepEqual([...jsValues].sort(), [...rustConnection.get(field)].sort(),
+    assert.deepEqual([...jsValues].sort(), [...rustConnection.get(field)].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
       `connection field "${field}" drifted between JS and Rust`);
   }
 
   // Numeric ceiling: JS must reject above the exact cap Rust re-validates.
-  const jsCap = Number(source.match(/var MAX_NUMBER_VALUE = (\d+);/)[1]);
+  const jsCap = Number(source.match(/(?:var|const|let) MAX_NUMBER_VALUE = (\d+);/)[1]);
   const rustCap = Number(
     rust.match(/\*value <= ([\d_]+)/)[1].replace(/_/g, ''),
   );

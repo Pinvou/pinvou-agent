@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AppWindow, Check, Copy, ExternalLink, FolderOpen, Link, X,
@@ -108,7 +108,7 @@ export function CodeViewerModal({
   }, []);
 
   useEffect(() => {
-    if (!copied) return undefined;
+    if (!copied) return;
     const timer = window.setTimeout(() => setCopied(''), 1200);
     return () => window.clearTimeout(timer);
   }, [copied]);
@@ -184,6 +184,8 @@ export function CodeViewerModal({
 
   return createPortal(
     <div data-testid="code-viewer-modal" className="fixed inset-0 z-[300] flex items-center justify-center">
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由 Escape 与标题栏关闭按钮承担 */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器 */}
       <div className="absolute inset-0 bg-black/30 backdrop-blur-[1px]" onClick={onClose} />
       <div
         ref={dialogRef}
@@ -281,7 +283,10 @@ export function CodeViewerModal({
           copy={copy}
         />
 
+        {/* biome-ignore lint/a11y/useSemanticElements: 拖拽分隔条需要 div 语义(role=separator 为冒烟测试契约) */}
+        {/* biome-ignore lint/a11y/useFocusableInteractive: 拖拽分隔条依赖鼠标拖拽,div 语义见上 */}
         <div
+          // biome-ignore lint/a11y/useAriaPropsForRole: 拖拽分隔条非焦点控件,valuenow 语义不适用,role 为冒烟测试契约
           role="separator"
           aria-label={copy.resizeWidth}
           aria-orientation="vertical"
@@ -290,7 +295,10 @@ export function CodeViewerModal({
           className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-col-resize hover:bg-[#0B57D0]/40 dark:hover:bg-[#A8C7FA]/50 transition-colors"
           title={copy.resizeWidth}
         />
+        {/* biome-ignore lint/a11y/useSemanticElements: 拖拽分隔条需要 div 语义(role=separator 为冒烟测试契约) */}
+        {/* biome-ignore lint/a11y/useFocusableInteractive: 拖拽分隔条依赖鼠标拖拽,div 语义见上 */}
         <div
+          // biome-ignore lint/a11y/useAriaPropsForRole: 拖拽分隔条非焦点控件,valuenow 语义不适用,role 为冒烟测试契约
           role="separator"
           aria-label={copy.resizeHeight}
           aria-orientation="horizontal"
@@ -299,7 +307,10 @@ export function CodeViewerModal({
           className="absolute inset-x-0 bottom-0 z-10 h-1.5 cursor-row-resize hover:bg-[#0B57D0]/40 dark:hover:bg-[#A8C7FA]/50 transition-colors"
           title={copy.resizeHeight}
         />
+        {/* biome-ignore lint/a11y/useSemanticElements: 拖拽分隔条需要 div 语义(role=separator 为冒烟测试契约) */}
+        {/* biome-ignore lint/a11y/useFocusableInteractive: 拖拽分隔条依赖鼠标拖拽,div 语义见上 */}
         <div
+          // biome-ignore lint/a11y/useAriaPropsForRole: 拖拽分隔条非焦点控件,valuenow 语义不适用,role 为冒烟测试契约
           role="separator"
           aria-label={copy.resizeCorner}
           data-testid="code-viewer-resize-xy"

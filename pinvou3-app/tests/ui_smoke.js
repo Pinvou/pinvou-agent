@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable no-useless-escape -- 消息载荷中的转义序列是数据 */
 /**
  * pinvou3 前端 UI 冒烟回归测试 — headless chromium + mock TauriBridge,加载真 src/index.html。
  * 覆盖易回归的前端通路:
@@ -14,12 +15,12 @@ const fs = require('fs'), path = require('path'), os = require('os');
 const { startUiTestServer } = require('./ui_test_server');
 
 function loadPuppeteer() {
-  try { return require('puppeteer-core'); } catch (e) { /* fall through */ }
+  try { return require('puppeteer-core'); } catch { /* fall through */ }
   const npx = path.join(os.homedir(), '.npm', '_npx');
   if (fs.existsSync(npx)) {
     for (const d of fs.readdirSync(npx)) {
       const p = path.join(npx, d, 'node_modules', 'puppeteer-core');
-      if (fs.existsSync(p)) { try { return require(p); } catch (e) { /* next */ } }
+      if (fs.existsSync(p)) { try { return require(p); } catch { /* next */ } }
     }
   }
   console.error('SKIP: 找不到 puppeteer-core。装一个再跑:  npm i -D puppeteer-core   (或  npx -y puppeteer-core)');
@@ -75,7 +76,7 @@ function injectSource() {
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell-history',content:'history output'}]},
       {role:'assistant',content:[{type:'tool_use',id:'t-mcp',name:'mcp_pptx_make_pptx',input:{title:'季度报告'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]},
-      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060json\\n{"name":"Reviewer\\\'s Agent","body":"hidden-prompt","description":"It\\\'s a highlighted JSON card"}\\n\\u0060\\u0060\\u0060'}]},
+      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060json\\n{"name":"Reviewer\\\'s Agent","body":"hidden-prompt","description":"It\\\'s a highlighted JSON card"}\\n\\u0060\\u0060\\u0060'}]}
       {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060card-question\\n{"question":"继续执行？","options":["继续","取消"]}\\n\\u0060\\u0060\\u0060'}]}]}};
     function invoke(cmd,args){
       window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});
@@ -201,7 +202,7 @@ function injectSource() {
   })();`;
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const sleep = ms => new Promise(r => { setTimeout(r, ms); });
 async function clickText(page, t) {
   return page.evaluate((t) => {
     const els = [...document.querySelectorAll('span,div,button,a')].filter(el => (el.textContent || '').trim() === t);
@@ -680,14 +681,14 @@ async function expand(page) {
     const children = [...(footer?.children || [])];
     if (!button || children.length < 2) return { found: false, childCount: children.length };
     button.click();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise(resolve => { setTimeout(resolve, 50); });
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: async () => { throw new Error('clipboard denied'); } },
     });
     document.execCommand = () => false;
     button.click();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise(resolve => { setTimeout(resolve, 50); });
     const firstRect = children[0].getBoundingClientRect();
     return {
       found: true,
@@ -723,7 +724,7 @@ async function expand(page) {
     const reasoningToggle = turn?.querySelector('[data-testid="conversation-reasoning-toggle"]');
     const reasoningBefore = controlledState(reasoningToggle);
     reasoningToggle?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
     const reasoningAfter = controlledState(reasoningToggle);
     const reasoning = turn?.querySelector('[data-testid="conversation-reasoning-content"]');
     const commandButton = turn?.querySelector('[data-testid="conversation-compact-item-toggle"]');
@@ -738,16 +739,16 @@ async function expand(page) {
     const planRect = plan?.getBoundingClientRect();
     const summaryRect = summary?.getBoundingClientRect();
     reasoningToggle?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
     const reasoningCollapsed = controlledState(reasoningToggle);
     const commandClipped = Boolean(commandTitle && commandTitle.scrollWidth > commandTitle.clientWidth
       && commandButton.scrollWidth <= commandButton.clientWidth + 1);
     const commandBefore = controlledState(commandButton);
     commandButton?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
     const commandAfter = controlledState(commandButton);
     commandButton?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
     const commandCollapsed = controlledState(commandButton);
     return {
       found: Boolean(turn && reasoning && plan && summary && commandButton && commandTitle),
@@ -824,7 +825,7 @@ async function expand(page) {
     const expandedBefore = summary?.getAttribute('aria-expanded') || '';
     const detailsBefore = Boolean(controls && document.getElementById(controls));
     summary?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
     return {
       summary: summary?.textContent.trim() || '',
       containsRawCommand: Boolean(summary?.textContent.includes('overflow-marker-')),
@@ -908,7 +909,7 @@ async function expand(page) {
   });
   await sleep(700);
   const modelModalOutsideClick = await page.evaluate(async () => {
-    const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+    const settle = () => new Promise(resolve => { setTimeout(resolve, 50); });
     const modelSection = [...document.querySelectorAll('aside button')]
       .find(button => (button.textContent || '').trim() === '模型');
     if (modelSection) {
@@ -998,7 +999,7 @@ async function expand(page) {
     JSON.stringify({ hit, ...restored }));
 
   const multiKb = await page.evaluate(async () => {
-    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const wait = ms => new Promise(resolve => { setTimeout(resolve, ms); });
     document.querySelector('[data-testid="kb-mount-trigger"]')?.click();
     await wait(100);
     const row = name => [...document.querySelectorAll('[data-testid="kb-mount-row"]')]
@@ -1034,7 +1035,7 @@ async function expand(page) {
     multiKb.menuText.includes('项目资料') && multiKb.menuText.includes('已停用'),
     JSON.stringify(multiKb));
   const kbRuntimeGate = await page.evaluate(async () => {
-    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const wait = ms => new Promise(resolve => { setTimeout(resolve, ms); });
     window.__KB_MODEL_STATUS__ = { installed: true, ready: false, loading: true };
     const trigger = document.querySelector('[data-testid="kb-mount-trigger"]');
     // 上一个场景结束时菜单仍展开：先关闭，再打开以刷新运行时状态。
@@ -1059,7 +1060,7 @@ async function expand(page) {
     kbRuntimeGate.disabled && kbRuntimeGate.blockedCopy && kbRuntimeGate.mountCallsUnchanged,
     JSON.stringify(kbRuntimeGate));
   const kbRepairFlow = await page.evaluate(async () => {
-    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const wait = ms => new Promise(resolve => { setTimeout(resolve, ms); });
     window.__KB_MODEL_STATUS__ = {
       installed: true,
       ready: false,
@@ -1077,7 +1078,7 @@ async function expand(page) {
       .find(button => (button.textContent || '').includes('重新下载并修复'));
     repairButton?.click();
     await wait(250);
-    const calls = window.__KB_MODEL_DOWNLOAD_ARGS__.slice();
+    const calls = [...window.__KB_MODEL_DOWNLOAD_ARGS__];
     return {
       failedVisible,
       repairFound: Boolean(repairButton),
@@ -1103,7 +1104,7 @@ async function expand(page) {
     const footer = action.closest('[data-testid="assistant-message-footer"]');
     const footerChildren = [...(footer?.children || [])];
     button.click();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise(resolve => { setTimeout(resolve, 50); });
     return {
       found: true,
       copied: window.__ASSISTANT_COPY_TEXT__ || '',
@@ -1139,7 +1140,7 @@ async function expand(page) {
     if (!exportButton || !shareButton) return { found: false };
 
     exportButton.click();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     const exportMenu = document.querySelector('[data-testid="assistant-message-export-menu"]');
     const markdownOption = exportMenu?.querySelector('[data-testid="assistant-export-md"]');
     const htmlOption = exportMenu?.querySelector('[data-testid="assistant-export-html"]');
@@ -1160,21 +1161,21 @@ async function expand(page) {
     exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
     const exportEnd = document.activeElement === htmlOption;
     exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     const exportEscapeRestored = !document.querySelector('[data-testid="assistant-message-export-menu"]') &&
       document.activeElement === exportButton && exportButton.getAttribute('aria-expanded') === 'false';
 
     exportButton.click();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     document.querySelector('[data-testid="assistant-export-html"]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     const exportInvoke = [...window.__TAURI_INVOKES__]
       .reverse()
       .find(call => call.cmd === 'export_assistant_response');
     const exportSelectionRestored = document.activeElement === exportButton;
 
     shareButton.click();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     let shareMenu = document.querySelector('[data-testid="assistant-message-share-menu"]');
     const targets = ['wechat', 'wecom', 'feishu', 'dingtalk', 'qq'];
     const allTargets = targets.every(target => shareMenu?.querySelector(`[data-testid="assistant-share-${target}"]`));
@@ -1194,15 +1195,15 @@ async function expand(page) {
     shareMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
     const shareArrowUpWrap = document.activeElement === qqShare;
     shareMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     const tabClosedWithoutRestore = !document.querySelector('[data-testid="assistant-message-share-menu"]') &&
       document.activeElement !== shareButton;
 
     shareButton.click();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     shareMenu = document.querySelector('[data-testid="assistant-message-share-menu"]');
     shareMenu?.querySelector('[data-testid="assistant-share-feishu"]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => { setTimeout(resolve, 30); });
     const shareInvoke = [...window.__TAURI_INVOKES__]
       .reverse()
       .find(call => call.cmd === 'open_assistant_share_target');
@@ -1583,7 +1584,7 @@ async function expand(page) {
     window.__PAUSE_BACKEND_STATUS_POLL__=true;
     let count=0;
     const unsubscribe=window.TauriBridge.state.subscribe('chat', () => { count+=1; });
-    await new Promise(resolve=>setTimeout(resolve,650));
+    await new Promise(resolve=> { setTimeout(resolve,650); });
     unsubscribe();
     window.__PAUSE_BACKEND_STATUS_POLL__=false;
     return count;
@@ -1755,7 +1756,7 @@ async function expand(page) {
         detailsPresent: Boolean(controls && document.getElementById(controls)),
       };
     };
-    const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const settle = () => new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
     const reasoningToggle = document.querySelector('[data-testid="conversation-reasoning-toggle"]');
     const reasoningBefore = state(reasoningToggle);
     reasoningToggle?.click();
@@ -1846,7 +1847,7 @@ async function expand(page) {
       await emit('chat:reasoning_delta', { session_id: 's1', index: `legacy-reasoning-${i}`, text: `离屏推理历史 ${i} `.repeat(40) });
       await emit('chat:reasoning_done', { session_id: 's1', index: `legacy-reasoning-${i}` });
     }
-    await new Promise(r => setTimeout(r, 400));
+    await new Promise(r => { setTimeout(r, 400); });
     const wrappers = [...document.querySelectorAll('.cv-bubble')];
     const emptyWrappers = wrappers.filter(w => w.children.length === 0);
     const reasoningLeaked = document.body.innerText.includes('离屏推理历史');
@@ -1869,4 +1870,5 @@ async function expand(page) {
   const failed = results.filter(r => !r.pass).length;
   console.log(failed ? `\n❌ ${failed}/${results.length} FAILED` : `\n✅ ALL ${results.length} PASS`);
   process.exit(failed ? 1 : 0);
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
 })().catch(e => { console.error('FATAL', e.message); process.exit(1); });

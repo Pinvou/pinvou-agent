@@ -308,7 +308,7 @@ try {
   assert.match(view, /data-testid="native-yolo-confirm"/, 'yolo 确认卡渲染');
   assert.match(view, /needsYoloConfirmation\(prefs\)/, '切 yolo 前过确认门');
   assert.doesNotMatch(view, /mountedId: null, mode: 'yolo'/, '不再写死 yolo 初始 mode');
-  assert.doesNotMatch(view, /\|\| 'yolo'/, '不再有 \|\| \'yolo\' 兜底');
+  assert.doesNotMatch(view, /\|\| 'yolo'/, '不再有 || yolo 兜底');  
 
   console.log('code_permission_state: ok');
 } finally {

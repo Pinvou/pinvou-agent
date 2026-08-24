@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, FileText, Wrench } from '../../components/icons.jsx';
+import { useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, Wrench } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can } from '../../shared/platform.js';
 import { expertDelegationText, isAgentWaitCall, isExpertDelegationCall } from '../conversation/conversation-model.js';
@@ -12,7 +12,7 @@ import {
 } from '../multiagent/subagent-conversation.mjs';
 import { AppIcon } from '../personas/persona-shared.jsx';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
-import { AcShieldCheck, AcSparkles, ArtifactCard, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, outBox, parseReceipt, toolBasename, toolSummary, tryParseJson, tryTailJson } from './tool-common.jsx';
+import { AcShieldCheck, AcSparkles, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, toolSummary, tryParseJson, tryTailJson } from './tool-common.jsx';
 
 const isShellExecutionTool = name => [
   'exec_shell',
@@ -29,8 +29,10 @@ const isShellExecutionTool = name => [
 // 关闭时走回通用工具卡。模块级常量：对一次构建恒定，不破坏 Hook 数量稳定。
 const EXPERT_CARD_ENABLED = can('multiAgent');
 
-/** worker ledger 的英文状态 token（agent_worker_status_name）。这些必须映射
- * i18n 文案；不在此列的 status 是实时进展短语（模型侧输出），原样展示。 */
+/**
+ * worker ledger 的英文状态 token（agent_worker_status_name）。这些必须映射
+ * i18n 文案；不在此列的 status 是实时进展短语（模型侧输出），原样展示。
+ */
 const LEDGER_STATUS_TOKENS = new Set([
   'running', 'queued', 'pending', 'starting',
   'completed', 'failed', 'cancelled', 'canceled', 'stopped', 'interrupted',
@@ -120,7 +122,7 @@ function kickExpertPoll(delay = 2000) {
             done: subagentTreeIsDone(list, entry.agentId),
           });
         }
-      } catch (_) {
+      } catch {
         // 单次轮询失败不致命，下一轮重试。
       }
     }
@@ -144,7 +146,7 @@ function watchExpertCard(sessionId, agentId) {
       expertCardWatch.set(key, { ...current, count: current.count - 1 });
     } else {
       expertCardWatch.delete(key);
-      if (![...expertCardWatch.values()].some(entry => entry.sessionId === sessionId)) {
+      if ([...expertCardWatch.values()].every(entry => entry.sessionId !== sessionId)) {
         expertLedgerSnapshots.delete(sessionId);
       }
     }
@@ -159,6 +161,7 @@ function openSubagentTranscript(agentId, sessionId) {
   }));
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- 专家卡状态判定多来源(实时事件/ledger/兜底)分支密集;legacy view; tracked separately
 function expertStatusPresentation({ summary, failedSpawn = false, itemState, copy }) {
   const blocked = !!(summary && summary.done && !summary.failed && summary.blocked);
   const statusToken = String(summary?.status || '').toLowerCase();
@@ -229,11 +232,11 @@ const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
   const [childrenExpanded, setChildrenExpanded] = useState(false);
   const [expandedChildIds, setExpandedChildIds] = useState(() => new Set());
   useEffect(() => {
-    setChildrenExpanded(false);
+    setChildrenExpanded(false); // eslint-disable-line react-hooks/set-state-in-effect -- agentId 切换即另一张卡,同步重置展开态
     setExpandedChildIds(new Set());
   }, [agentId]);
   useEffect(() => {
-    if (!isDelegation || failedSpawn || !agentId || typeof window === 'undefined') return undefined;
+    if (!isDelegation || failedSpawn || !agentId || typeof window === 'undefined') return;
     const onUpdate = event => {
       const detail = event && event.detail;
       if (!detail) return;
@@ -251,7 +254,7 @@ const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
         // 终态 ratchet：落盘终态是权威，迟到的非终态实时事件不得翻回"工作中"。
         if (prev && prev.done && !detail.done) return prev;
         // 字段合并：实时事件不带 seq/roleCount/blocked，不能把轮询补的字段冲掉。
-        return { ...(prev || {}), ...detail };
+        return { ...prev, ...detail };
       });
     };
     const onLedgerUpdate = event => {
@@ -259,7 +262,7 @@ const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
       if (!detail || detail.sessionId !== sessionId || !Array.isArray(detail.agents)) return;
       setLedger(detail.agents);
     };
-    setLedger(expertLedgerSnapshots.get(sessionId)?.agents || []);
+    setLedger(expertLedgerSnapshots.get(sessionId)?.agents || []); // eslint-disable-line react-hooks/set-state-in-effect -- 挂载时同步 seed 已缓存的 ledger 快照,避免先渲染空树
     window.addEventListener('pinvou:subagent-update', onUpdate);
     window.addEventListener('pinvou:subagent-ledger-update', onLedgerUpdate);
     const unwatch = watchExpertCard(sessionId, agentId);
@@ -474,6 +477,7 @@ const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
   );
 };
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- 逐工具输出视图路由,按工具拆分收益低;legacy view; tracked separately
 const ToolOutput = ({ item, t }) => {
       const out = item.output;
       if (item.success === false) return <OutputError text={out} />;
@@ -500,14 +504,14 @@ const ToolOutput = ({ item, t }) => {
           const d = w.datas[0];
           const findVal = (obj, keyword) => {
             for (const k of Object.keys(obj)) {
-              if (k.includes(keyword)) return parseFloat(obj[k]);
+              if (k.includes(keyword)) return Number(obj[k]);
             }
-            return undefined;
+            return null; // 未命中返回 null;StockQuoteCard 侧 isNaN(null) 为 false,但 null.toFixed 走 '--' 由 fmt 兜底
           };
           const mapped = {
             name: d['股票简称'] || '--',
             code: (d['股票代码'] || '').replace(/\.\w+$/, ''),
-            price: parseFloat(d['最新价']),
+            price: Number.parseFloat(d['最新价']), // eslint-disable-line unicorn/prefer-number-coercion -- 行情字段可能带单位字符,保留 parseFloat 宽松解析
             changePercent: findVal(d, '涨跌幅'),
             open: findVal(d, '开盘价'),
             high: findVal(d, '最高价'),
@@ -540,10 +544,11 @@ const ToolOutput = ({ item, t }) => {
         }
       }
       else if ((item.name === 'File' && ['write', 'edit'].includes(item.args?.action)) || item.name === 'edit_file' || item.name === 'write_file') { if (looksDiff(out)) return <DiffView text={out} t={t} />; }
-      else if (TODO_TOOLS.indexOf(item.name) >= 0) { const v = tryTailJson(out); if (v && Array.isArray(v.items)) return <TodoView snap={v} t={t} />; }
+      else if (TODO_TOOLS.includes(item.name)) { const v = tryTailJson(out); if (v && Array.isArray(v.items)) return <TodoView snap={v} t={t} />; }
       return <OutputPre text={out} />;
     };
 
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- 工具卡渲染含大量内联分支;legacy view; tracked separately
     const ToolCard = ({ item, t, variant = 'legacy', sessionId }) => {
       // 委派实例不走通用工具卡：专家卡是多智能体的第一公民展示（ADR-0006）。
       // 提前返回发生在本组件任何 Hook 之前，且 item.name 对一个实例终生不变，
@@ -553,17 +558,21 @@ const ToolOutput = ({ item, t }) => {
       }
       const isTimeline = variant === 'timeline';
       const isRunning = item.state === 'running';
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- 早退分支对实例终生不变(见上方注释),每实例 Hook 数量恒定
       const [cancelling, setCancelling] = useState(false);
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- 同上
       const [shellCancelError, setShellCancelError] = useState('');
       // 有可视化卡片的工具(天气/股票)完成后直接展开,不折叠
       const hasCard = (isWeatherTool(item.name) || isStockQuoteTool(item.name)) && item.state === 'done';
       const hasLiveShellOutput = isShellExecutionTool(item.name)
         && isRunning
         && (item.liveOutput || item.output != null);
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- 同上
       const [expanded, setExpanded] = useState(!isTimeline && hasCard);
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- 同上
       useEffect(() => {
         if (!isTimeline && hasCard) {
-          setExpanded(true);
+          setExpanded(true); // eslint-disable-line react-hooks/set-state-in-effect -- 天气/股票卡片完成时展开一次,幂等
         }
       }, [hasCard, isTimeline]);
       const displayExpanded = hasLiveShellOutput || expanded;
@@ -580,14 +589,14 @@ const ToolOutput = ({ item, t }) => {
           : 'text-[#C5221F] dark:text-[#F28B82]';
 
       const statusText = isRunning ? t.toolRunning
-        : (item.exitCode != null ? `${isDone ? t.toolDone : t.toolFailed} · exit ${item.exitCode}` : (isDone ? t.toolDone : t.toolFailed));
+        : (item.exitCode == null ? (isDone ? t.toolDone : t.toolFailed) : `${isDone ? t.toolDone : t.toolFailed} · exit ${item.exitCode}`);
       const timelineStatusText = isRunning
         ? t.uiToolRender.running
-        : item.exitCode != null
-          ? `${isDone ? t.uiToolRender.done : t.uiToolRender.failed} · exit ${item.exitCode}`
-          : isDone
+        : item.exitCode == null
+          ? isDone
             ? t.uiToolRender.done
-            : t.uiToolRender.failed;
+            : t.uiToolRender.failed
+          : `${isDone ? t.uiToolRender.done : t.uiToolRender.failed} · exit ${item.exitCode}`;
       const mutedColor = 'text-[#757575] dark:text-[#8E8E8E]';
       const cancelBackground = async (event) => {
         event.stopPropagation();
@@ -618,9 +627,9 @@ const ToolOutput = ({ item, t }) => {
 
       const detail = displayExpanded ? (
         <div className={`${isTimeline ? 'px-3 pb-3' : 'px-4 pb-3'} border-t border-black/5 dark:border-white/5`}>
-          {item.output != null
-            ? <div className="mt-2"><ToolOutput item={item} t={t} /></div>
-            : null}
+          {item.output == null
+            ? null
+            : <div className="mt-2"><ToolOutput item={item} t={t} /></div>}
         </div>
       ) : null;
 
@@ -630,7 +639,8 @@ const ToolOutput = ({ item, t }) => {
           : isRunning
             ? 'text-blue-500 bg-blue-500/10'
             : 'text-gray-500 bg-black/[0.04] dark:bg-white/[0.06]';
-        const meta = `${summary ? `${summary} · ` : ''}${timelineStatusText}`;
+        const summaryPrefix = summary ? `${summary} · ` : '';
+        const meta = `${summaryPrefix}${timelineStatusText}`;
         const toggleExpanded = () => setExpanded(value => !value);
         return (
           <div
@@ -640,6 +650,7 @@ const ToolOutput = ({ item, t }) => {
               isFailed ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'
             } bg-white/45 dark:bg-white/[0.015]`}
           >
+            {/* biome-ignore lint/a11y/useSemanticElements: 工具卡折叠头承载多子元素布局,button 会破坏既有样式 */}
             <div
               role="button"
               tabIndex={0}
@@ -676,9 +687,13 @@ const ToolOutput = ({ item, t }) => {
         const iconColor = isDone ? mutedColor : statusColor;
         return (
           <div className={expanded ? `rounded-[12px] overflow-hidden border border-black/5 dark:border-white/5` : ''}>
+            {/* biome-ignore lint/a11y/useSemanticElements: 工具卡折叠头承载多子元素布局,button 会破坏既有样式 */}
             <div
+              role="button"
+              tabIndex={0}
               className={`flex items-center gap-2 px-2 py-1 rounded-[8px] cursor-pointer hover:bg-[#E8EDF2] dark:hover:bg-[#282A2C]`}
               onClick={() => setExpanded(!expanded)}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setExpanded(!expanded); } }}
             >
               <Wrench size={12} className={iconColor} />
               <span className={`text-[12px] ${mutedColor}`}>{item.name}</span>
@@ -698,9 +713,13 @@ const ToolOutput = ({ item, t }) => {
       // 有产出类：保留醒目卡片，标题行带摘要。
       return (
         <div className={`rounded-[16px] overflow-hidden border bg-[#F0F4F9] border-black/5 dark:bg-[#1E1F20] dark:border-white/5`}>
+          {/* biome-ignore lint/a11y/useSemanticElements: 工具卡折叠头承载多子元素布局,button 会破坏既有样式 */}
           <div
+            role="button"
+            tabIndex={0}
             className={`flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[#E8EDF2] dark:hover:bg-[#282A2C]`}
             onClick={() => setExpanded(!expanded)}
+            onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setExpanded(!expanded); } }}
           >
             <Wrench size={14} className={statusColor} />
             <span className={`text-[13px] font-medium text-[#1F1F1F] dark:text-[#E3E3E3]`}>
@@ -773,7 +792,7 @@ const ToolOutput = ({ item, t }) => {
     //   issue 其他(产物缺陷,AI 改得动)→ 让 AI 改 / 接受现状(high 默认勾)。
     // 「交给 AI 处理」按各条动作组装定向指令走 B1。单独子组件:useState 放这避 hooks 错位。
     const PinvouRows = ({ review, t, role }) => {
-      role = role || pvRole(false, false);
+      const roleLabel = role || pvRole(false, false);
       const body = 'text-[#000] dark:text-[#fff]';
       const muted = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
       // iOS 语义色：high 红 / medium 橙 / low 灰
@@ -842,7 +861,7 @@ const ToolOutput = ({ item, t }) => {
           <div className="space-y-2">
             {rows.map(it => {
               const decided = res[it.k];
-              const passive = decided === 'accept' || decided === 'confirmed' || decided === 'skip';
+              const passive = ['accept', 'confirmed', 'skip'].includes(decided);
               return (
                 <div key={it.k} className={`rounded-[12px] px-3 py-2.5 transition-opacity ${passive ? 'opacity-40' : ''} bg-[#F2F2F7] dark:bg-white/[0.06]`}>
                   <div className="flex gap-2.5">
@@ -855,8 +874,8 @@ const ToolOutput = ({ item, t }) => {
                       {it.sub && <div className={`text-[13px] mt-0.5 ${muted}`}>{it.sub}</div>}
                       <div className="flex gap-2 mt-2">
                         {ACT[it.kind].map(([v, label]) => (
-                          <button key={v} onClick={() => setOne(it.k, v)} className={chip(decided === v, !!ACTIVE[v])}
-                            style={decided === v && ACTIVE[v] ? { background: role.accentHex } : undefined}>{label}</button>
+                          <button type="button" key={v} onClick={() => setOne(it.k, v)} className={chip(decided === v, !!ACTIVE[v])}
+                            style={decided === v && ACTIVE[v] ? { background: roleLabel.accentHex } : undefined}>{label}</button>
                         ))}
                       </div>
                     </div>
@@ -867,13 +886,13 @@ const ToolOutput = ({ item, t }) => {
           </div>
           <div className="flex items-center gap-2 mt-4 pt-1">
             {activeCount > 0 && (
-              <button onClick={onResolve}
+              <button type="button" onClick={onResolve}
                 className="px-4 py-2 rounded-full text-[14px] font-semibold text-white active:scale-[0.97] transition-transform"
                 style={{ background: role.accentHex }}>
                 {t.pvHandToAi(activeCount)}
               </button>
             )}
-            <button onClick={() => bridge.available && bridge.interaction.dismissPinvouReview()} title={t.pvSkipTitle}
+            <button type="button" onClick={() => bridge.available && bridge.interaction.dismissPinvouReview()} title={t.pvSkipTitle}
               className={`px-4 py-2 rounded-full text-[14px] font-medium transition-colors text-[#3C3C43]/70 hover:bg-black/5 dark:text-[#EBEBF5]/70 dark:hover:bg-white/5`}>
               {t.pvSkip}
             </button>
@@ -895,7 +914,7 @@ const ToolOutput = ({ item, t }) => {
       return (
         <div className="py-8 flex flex-col items-center text-center">
           {/* iOS activity spinner：底环 + 角色色弧，匀速旋转 */}
-          <svg className="w-9 h-9" viewBox="0 0 24 24" fill="none" style={{ animation: 'tsSpinner 0.8s linear infinite' }}>
+          <svg aria-hidden="true" className="w-9 h-9" viewBox="0 0 24 24" fill="none" style={{ animation: 'tsSpinner 0.8s linear infinite' }}>
             <circle cx="12" cy="12" r="9" stroke={isDark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.08)'} strokeWidth="3" />
             <path d="M12 3a9 9 0 0 1 9 9" stroke={role.accentHex} strokeWidth="3" strokeLinecap="round" />
           </svg>
@@ -978,9 +997,9 @@ const ToolOutput = ({ item, t }) => {
           {active ? (
             <div className="flex items-center gap-2 flex-wrap">
               <span className={`text-[13px] mr-1 text-[#444746] dark:text-[#C4C7C5]`}>{t.planNext}</span>
-              <button className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.acceptPlan(item.id, item.planMarkdown, undefined, item.planId)}>{t.planGo}</button>
-              <button className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => onPrefill && onPrefill(t.planRevisePrefill)}>{t.planEdit}</button>
-              <button className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.discardPlan(item.id, item.planId)}>{t.planDrop}</button>
+              <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.acceptPlan(item.id, item.planMarkdown, undefined, item.planId)}>{t.planGo}</button>
+              <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => onPrefill && onPrefill(t.planRevisePrefill)}>{t.planEdit}</button>
+              <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.discardPlan(item.id, item.planId)}>{t.planDrop}</button>
             </div>
           ) : (
             <div className={`text-[13px] font-medium text-[#137333] dark:text-[#93D5A6]`}>{item.statusLabel}</div>
@@ -1004,8 +1023,8 @@ const ToolOutput = ({ item, t }) => {
             <div className={`text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{item.statusLabel || t.handled}</div>
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
-              <button className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
-              <button className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckGo(item.id)}>⚡ {t.stuckGo}</button>
+              <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
+              <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckGo(item.id)}>⚡ {t.stuckGo}</button>
             </div>
           )}
         </div>
@@ -1050,7 +1069,7 @@ const ToolOutput = ({ item, t }) => {
           <div className={`text-[12px] leading-relaxed mb-1.5 text-[#757575] dark:text-[#8E8E8E]`}>{t.cbNote}</div>
           {hasTech && (
             <div>
-              <button onClick={() => setShowTech(!showTech)} className={`text-[11px] text-[#0B57D0] dark:text-[#8AB4F8]`}>{showTech ? t.cbTechHide : t.cbTechShow}</button>
+              <button type="button" onClick={() => setShowTech(!showTech)} className={`text-[11px] text-[#0B57D0] dark:text-[#8AB4F8]`}>{showTech ? t.cbTechHide : t.cbTechShow}</button>
               {showTech && (
                 <div className={`mt-1 text-[11px] font-mono space-y-0.5 text-[#757575] dark:text-[#8E8E8E]`}>
                   {rawReasons.map((r, i) => <div key={'r' + i}>· {r}</div>)}
@@ -1068,7 +1087,7 @@ const ToolOutput = ({ item, t }) => {
     // ==========================================
     const isFreeTextPlaceholderOption = (option) => {
       const label = String(option?.label || '').trim();
-      return /^(?:其他|其它|other)(?:\s*[\(（][^()（）]*[\)）])?$/i.test(label);
+      return /^(?:其他|其它|other)(?:\s*[（(][^()（）]*[)）])?$/i.test(label);
     };
 
     const UserInputCard = ({ item, t }) => {

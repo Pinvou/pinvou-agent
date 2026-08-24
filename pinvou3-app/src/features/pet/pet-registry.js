@@ -34,6 +34,7 @@ export const PET_REGISTRY = Object.freeze(Object.fromEntries(
 
 export function normalizePetId(id) {
   // hasOwnProperty.call instead of Object.hasOwn: Safari 14 (WKWebView) lacks the latter.
+  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
   return typeof id === 'string' && Object.prototype.hasOwnProperty.call(PET_REGISTRY, id)
     ? id
     : DEFAULT_PET_ID;

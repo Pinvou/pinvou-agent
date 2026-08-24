@@ -1,4 +1,5 @@
 import hljs from 'highlight.js/lib/core';
+/* eslint-disable sonarjs/regex-complexity, sonarjs/super-linear-regex -- 高亮 token 正则是既有测试钉死的行为 */
 import bash from 'highlight.js/lib/languages/bash';
 import c from 'highlight.js/lib/languages/c';
 import cpp from 'highlight.js/lib/languages/cpp';
@@ -235,7 +236,7 @@ export const supportedSyntaxLanguages = Object.freeze([
 ]);
 
 export function escapeCodeHtml(value) {
-  return String(value).replace(/[&<>"']/g, character => ({
+  return String(value).replaceAll(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   })[character]);
 }
@@ -311,7 +312,7 @@ function displayName(language, originalHint) {
   if (original === 'html' || original === 'xhtml') return 'HTML';
   if (original === 'svg') return 'SVG';
   if (original === 'toml') return 'TOML';
-  return DISPLAY_NAMES[language] || language.replace(/(^|[-_])([a-z])/gu, (_, separator, letter) => `${separator ? ' ' : ''}${letter.toUpperCase()}`);
+  return DISPLAY_NAMES[language] || language.replaceAll(/(^|[-_])([a-z])/gu, (_, separator, letter) => `${separator ? ' ' : ''}${letter.toUpperCase()}`);
 }
 
 // diff 视图专用快速着色：diff 文法是行级的（+/−/@@/头），逐行按前缀着色即可，
@@ -400,7 +401,7 @@ export function highlightCode(code, languageHint, options = {}) {
         }, sourceBytes);
       }
     }
-  } catch (_) {
+  } catch {
     // Invalid or partially streamed code must remain readable as plain text.
   }
 

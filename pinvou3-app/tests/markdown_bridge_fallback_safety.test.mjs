@@ -102,8 +102,8 @@ function buildWebBridgeContext() {
   // 但它已不在任何真实标签内（前面是 &lt;img ...），不再被浏览器当作事件处理器。
   assert.equal(out.indexOf('<img'), -1, 'raw <img must not survive the final fallback');
   assert.equal(out.indexOf('<script'), -1, 'raw <script must not survive the final fallback');
-  assert.ok(out.indexOf('&lt;img') >= 0, `dangerous tags must be HTML-escaped, got: ${out}`);
-  assert.ok(out.indexOf('&lt;script') >= 0, `script tags must be HTML-escaped, got: ${out}`);
+  assert.ok(out.includes('&lt;img'), `dangerous tags must be HTML-escaped, got: ${out}`);
+  assert.ok(out.includes('&lt;script'), `script tags must be HTML-escaped, got: ${out}`);
   console.log('✓ web bridge escapes dangerous HTML when both renderers are absent');
 }
 
@@ -127,7 +127,7 @@ function buildWebBridgeContext() {
   });
   const out = windowObject.TauriBridge.renderMarkdown('before <script>x()</script> after');
   assert.ok(
-    out.indexOf('&lt;script') >= 0 && out.indexOf('<script') < 0,
+    out.includes('&lt;script') && !out.includes('<script'),
     `shared fallback must neutralize raw <script>, got: ${out}`,
   );
   console.log('✓ web bridge delegates to shared fallback to neutralize dangerous tags');
@@ -144,7 +144,7 @@ function buildWebBridgeContext() {
     '<iframe src=evil></iframe>',
   );
   assert.equal(out.indexOf('<iframe'), -1, 'raw <iframe must not survive missing vendors');
-  assert.ok(out.indexOf('&lt;iframe') >= 0, `iframe must be escaped, got: ${out}`);
+  assert.ok(out.includes('&lt;iframe'), `iframe must be escaped, got: ${out}`);
   console.log('✓ shared fallback escapes HTML when vendor globals are missing');
 }
 

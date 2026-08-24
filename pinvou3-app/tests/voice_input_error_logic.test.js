@@ -9,7 +9,7 @@ const source = fs.readFileSync(bridgePath, "utf8");
 // voice.js 的文案走 bridge.js 的 BT_TABLE（bt(key)，按语言取词、中文兜底）；
 // 这里从 bridge.js 抽出 zh 表构造 bt，保持断言面向真实文案。
 const bridgeMainSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "tauri", "bridge.js"), "utf8");
-const zhTableMatch = bridgeMainSource.match(/    zh: \{([\s\S]*?)\r?\n    \},\r?\n  \};/);
+const zhTableMatch = bridgeMainSource.match(/ {4}zh: \{([\s\S]*?)\r?\n {4}\},\r?\n {2}\};/);
 assert.notStrictEqual(zhTableMatch, null, "bridge.js BT_TABLE zh block must exist");
 const zhTable = new Function(`return ({${zhTableMatch[1]}});`)();
 const bt = (key) => zhTable[key] !== undefined ? zhTable[key] : key;
@@ -92,7 +92,7 @@ vm.runInContext(
   resolveLateStream({
     getTracks: () => [{ stop: () => { stoppedTracks += 1; } }],
   });
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
   assert.strictEqual(stoppedTracks, 1, "late microphone stream must be stopped after timeout");
 
   const chatPath = path.join(__dirname, "..", "src", "features", "chat", "ChatView.jsx");
@@ -135,6 +135,7 @@ vm.runInContext(
   );
 
   console.log("voice_input_error_logic: ok");
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
 })().catch((error) => {
   console.error(error);
   process.exit(1);

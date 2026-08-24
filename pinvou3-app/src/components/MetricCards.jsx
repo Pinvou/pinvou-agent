@@ -1,4 +1,3 @@
-import React from 'react';
 
 const WidgetCard = ({ title, children }) => (
   <div className="rounded-[24px] p-8 flex flex-col transition-shadow hover:shadow-md bg-[#F0F4F9] dark:bg-[#1E1F20]">

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const rgbToHex = (value, fallback = '#000000') => {
@@ -12,7 +12,7 @@ const rgbToHex = (value, fallback = '#000000') => {
 };
 
 const pxNumber = (value) => {
-  const n = parseFloat(String(value || '').replace('px', ''));
+  const n = Number(String(value || '').replace('px', ''));
   return Number.isFinite(n) ? Math.round(n) : 0;
 };
 
@@ -22,7 +22,7 @@ const cssValue = (style, key, fallback = '') => {
 };
 
 const normalizeNumber = (value, unit = 'px') => {
-  const n = parseFloat(String(value || '').replace(unit, ''));
+  const n = Number(String(value || '').replace(unit, ''));
   if (!Number.isFinite(n)) return '';
   return String(Math.round(n * 100) / 100);
 };
@@ -56,8 +56,8 @@ const FONT_PRESETS = [
 ];
 
 const normalizeFontFamily = (value) => String(value || '')
-  .replace(/["']/g, '')
-  .replace(/\s+/g, ' ')
+  .replaceAll(/["']/g, '')
+  .replaceAll(/\s+/g, ' ')
   .trim()
   .toLowerCase();
 
@@ -87,13 +87,13 @@ const describeSelectedElement = (element, L) => {
   const selector = String(element.selector || '');
   const lower = `${tag} ${className} ${selector}`.toLowerCase();
   let typeKey = 'element';
-  if (tag === 'img' || tag === 'svg' || tag === 'canvas' || lower.includes('icon')) typeKey = 'graphic';
+  if (['img', 'svg', 'canvas'].includes(tag) || lower.includes('icon')) typeKey = 'graphic';
   else if (tag === 'button' || lower.includes('button') || lower.includes('btn')) typeKey = 'button';
   else if (tag === 'a') typeKey = 'link';
-  else if (tag === 'input' || tag === 'textarea' || tag === 'select') typeKey = 'input';
-  else if (tag === 'span' || tag === 'p' || tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6' || text) typeKey = 'text';
+  else if (['input', 'textarea', 'select'].includes(tag)) typeKey = 'input';
+  else if (['span', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag) || text) typeKey = 'text';
   else if (lower.includes('card') || lower.includes('item')) typeKey = 'card';
-  else if (tag === 'section' || tag === 'article' || tag === 'main' || tag === 'header' || tag === 'footer' || tag === 'div') typeKey = 'container';
+  else if (['section', 'article', 'main', 'header', 'footer', 'div'].includes(tag)) typeKey = 'container';
   const readableClass = className.split(/\s+/).filter(Boolean)[0] || '';
   const fallbackTag = tag || L.diTypes.element;
   return {
@@ -114,18 +114,22 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = [], onApplyChange,
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const committedTextRef = useRef('');
+  const selectedElementId = selectedElement && selectedElement.id;
   useEffect(() => {
     const next = selectedElement ? selectedElement.text || '' : '';
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 选中元素切换时同步文本草稿,一次性镜像外部选择状态
     setTextDraft(next);
     committedTextRef.current = next;
-  }, [selectedElement && selectedElement.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按元素 id 边沿重置;依赖整个 selectedElement 会在无关字段变化时覆盖用户草稿
+  }, [selectedElementId]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换元素/字体时同步收起弹层,无级联渲染风险
     setFontMenuOpen(false);
     setColorMenu(null);
     setDetailsOpen(false);
     setAdvancedOpen(false);
-  }, [selectedElement && selectedElement.id, style.fontFamily]);
+  }, [selectedElementId, style.fontFamily]);
 
   const panelCls = docked
     ? 'flex h-full w-full flex-col overflow-hidden bg-[#F5F5F7] text-[#1D1D1F] dark:bg-[#1C1C1E] dark:text-[#F5F5F7]'

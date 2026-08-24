@@ -18,7 +18,7 @@ function check(condition, message) {
 }
 
 function sorted(values) {
-  return [...values].sort();
+  return [...values].sort(); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
 }
 
 function sameValues(actual, expected) {
@@ -81,6 +81,7 @@ async function loadRegistry(registrySource, manifest) {
 
   const executableSource = registrySource.replace(
     importLine,
+    // eslint-disable-next-line unicorn/no-unsafe-string-replacement -- 替换值为受控字面量
     `const manifest = ${JSON.stringify(manifest)};`,
   );
   const dataUrl = `data:text/javascript;base64,${Buffer.from(executableSource).toString('base64')}`;

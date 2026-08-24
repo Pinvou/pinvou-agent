@@ -33,6 +33,7 @@ function loadFeature(fileName, state, contextOverrides) {
     addSystemItem() {},
     addChatItem() {},
     timeStr() { return ''; },
+    // eslint-disable-next-line no-unused-vars -- 测试桩/后置赋值保留
     invoke(name, args) {
       calls.invoke.push(name);
       if (deferreds[name] && deferreds[name].promise) return deferreds[name].promise;

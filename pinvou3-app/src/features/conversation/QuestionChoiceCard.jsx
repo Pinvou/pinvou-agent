@@ -1,10 +1,10 @@
-import React, { useId, useState } from 'react';
+import { useId, useState } from 'react';
 import { MessageCircle } from '../../components/icons.jsx';
 
 function normalizedOptions(question) {
   return (question.options || []).map(option => ({
-    value: option.value != null ? option.value : option.label,
-    label: option.label != null ? String(option.label) : String(option.value),
+    value: option.value == null ? option.label : option.value,
+    label: option.label == null ? String(option.value) : String(option.label),
     description: option.description || '',
   }));
 }
@@ -62,6 +62,7 @@ function initialState(questions, initialAnswers, otherAnswerLabel) {
 }
 
 function hasOwn(object, key) {
+  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
   return Object.prototype.hasOwnProperty.call(object, key);
 }
 
@@ -216,6 +217,7 @@ export function QuestionChoiceCard({
                       {options.map(option => {
                         const active = selectedValues.includes(option.value);
                         return (
+                          // biome-ignore lint/a11y/useKeyWithClickEvents: label 内含真实 input,键盘路径由 input 承担,onClick 为 WebView 兜底
                           <label key={String(option.value)}
                             onClick={(event) => {
                               // 选项整行可点：点击文本/描述区域直接选中（WebView 下 label 隐式
@@ -252,13 +254,14 @@ export function QuestionChoiceCard({
                       })}
                     </div>
                   ) : question.inputType === 'boolean' ? (
+                    // biome-ignore lint/a11y/useKeyWithClickEvents: label 内含真实 input,键盘路径由 input 承担,onClick 为 WebView 兜底
                     <label
                       className="mt-2 flex items-center gap-2 text-[12px]"
                       onClick={(event) => {
                         if (locked) return;
                         if (event.target === event.currentTarget.querySelector('input')) return;
                         event.preventDefault();
-                        changeValue(question, !Boolean(selected[question.id]));
+                        changeValue(question, !selected[question.id]);
                       }}
                     >
                       <input
@@ -301,7 +304,7 @@ export function QuestionChoiceCard({
               );
             })}
           </div>
-          {!resolved ? (
+          {resolved ? null : (
             <div className="mt-4 flex items-center gap-2">
               <button
                 type="button"
@@ -322,7 +325,7 @@ export function QuestionChoiceCard({
                 </button>
               )}
             </div>
-          ) : null}
+          )}
           {statusText && (
             <div className={`mt-3 text-[11px] ${error ? 'text-red-500' : 'text-gray-400'}`}>
               {statusText}

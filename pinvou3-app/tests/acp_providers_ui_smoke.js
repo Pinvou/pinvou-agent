@@ -7,17 +7,16 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const assert = require('assert');
 const { startUiTestServer } = require('./ui_test_server');
 
 function loadPuppeteer() {
-  try { return require('puppeteer-core'); } catch (_) { /* fall through */ }
+  try { return require('puppeteer-core'); } catch { /* fall through */ }
   const npx = path.join(os.homedir(), '.npm', '_npx');
   if (fs.existsSync(npx)) {
     for (const directory of fs.readdirSync(npx)) {
       const candidate = path.join(npx, directory, 'node_modules', 'puppeteer-core');
       if (fs.existsSync(candidate)) {
-        try { return require(candidate); } catch (_) { /* try next */ }
+        try { return require(candidate); } catch { /* try next */ }
       }
     }
   }
@@ -199,7 +198,7 @@ function injectSource() {
   })();`;
 }
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = ms => new Promise(resolve => { setTimeout(resolve, ms); });
 const callCount = (page, cmd) => page.evaluate(command =>
   window.__ACP_PROVIDERS_TEST__.calls.filter(call => call.cmd === command).length, cmd);
 
@@ -457,7 +456,7 @@ async function clickSettingsSection(page, label) {
     const el = document.querySelector('[data-testid="acp-providers-effective"]');
     if (!el) return false;
     const values = [...el.querySelectorAll('.font-mono')].map(span => (span.textContent || '').trim());
-    return values.some(value => value === 'gpt-5.2') && values.some(value => value === 'https://api.example.com/v1');
+    return values.includes('gpt-5.2') && values.includes('https://api.example.com/v1');
   }));
   rec('⑨.2 env 覆盖时徽标降格', await page.evaluate(() => {
     const section = document.querySelector('[data-testid="acp-providers-section"]');
@@ -468,7 +467,7 @@ async function clickSettingsSection(page, label) {
     if (!el) return false;
     // URL 明文可见；凭据只显示「已设置」掩码，值不得出现
     const values = [...el.querySelectorAll('.font-mono')].map(span => (span.textContent || '').trim());
-    return values.some(value => value === 'https://env-override.example.com')
+    return values.includes('https://env-override.example.com')
       && (el.textContent || '').includes('已设置（值已隐藏）');
   }));
 
@@ -542,6 +541,7 @@ async function clickSettingsSection(page, label) {
   }
   console.log('ACP providers UI smoke passed');
   process.exit(0);
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
 })().catch(async error => {
   console.error('ACP providers UI smoke crashed:', error);
   process.exit(1);

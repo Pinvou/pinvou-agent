@@ -34,7 +34,7 @@ const desktopBridgeSources = [
   fs.readFileSync(path.join(bridgeRoot, 'bridge.js'), 'utf8'),
   ...fs.readdirSync(path.join(bridgeRoot, 'bridge'))
     .filter(name => name.endsWith('.js'))
-    .sort()
+    .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
     .map(name => fs.readFileSync(path.join(bridgeRoot, 'bridge', name), 'utf8')),
 ];
 const bridge = [
@@ -50,7 +50,7 @@ const hostFilePicker = fs.readFileSync(
 const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
 const commands = fs.readdirSync(commandsRoot)
   .filter(name => name.endsWith('.rs'))
-  .sort()
+  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
   .map(name => fs.readFileSync(path.join(commandsRoot, name), 'utf8'))
   .join('\n');
 const remoteControlCommands = fs.readFileSync(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
@@ -64,7 +64,7 @@ const remoteControlManagerRoot = path.join(
 );
 const remoteControlManager = fs.readdirSync(remoteControlManagerRoot)
   .filter(name => name.endsWith('.rs'))
-  .sort()
+  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
   .map(name => fs.readFileSync(path.join(remoteControlManagerRoot, name), 'utf8'))
   .join('\n');
 const remoteControlPlatformRoot = path.join(
@@ -77,7 +77,7 @@ const remoteControlPlatformRoot = path.join(
 );
 const remoteControlPlatform = fs.readdirSync(remoteControlPlatformRoot)
   .filter(name => name.endsWith('.rs'))
-  .sort()
+  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
   .map(name => fs.readFileSync(path.join(remoteControlPlatformRoot, name), 'utf8'))
   .join('\n');
 const settingsView = fs.readFileSync(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
@@ -483,7 +483,7 @@ assert.match(main, /const saved = isWeb[\s\S]{0,180}saveSearchSettings\(search\)
   'the shared UI must save without requesting a desktop restart in WebUI');
 assert.match(webBridge, /state\.settings = await invoke\(IS_WEB \? "web_access_update_settings" : "update_settings"/,
   'WebUI must keep the canonical settings returned by the desktop backend');
-assert.match(webBridge, /web_access_update_settings", \{ patch: \{ search: search \} \}/,
+assert.match(webBridge, /web_access_update_settings", \{ patch: \{ (?:search: search|search) \} \}/,
   'WebUI search saves must send a narrow patch instead of a full settings snapshot');
 assert.match(remoteControlCommands, /web_access_update_settings\([\s\S]{0,120}patch: super::settings::WebSettingsPatch,[\s\S]{0,80}\) -> Result<UserPrefs, String>/,
   'the bounded Web settings command must return canonical preferences');
@@ -521,7 +521,7 @@ assert.match(webBridge, /buf\.composerDraft = state\.composerDraft/,
   'WebUI session switching must save the active composer draft');
 assert.match(webBridge, /state\.composerDraft = buf\.composerDraft/,
   'WebUI session switching must restore the destination composer draft');
-assert.match(webBridge, /var draftComposer = realId \? "" : \(state\.composerDraft \|\| ""\)/,
+assert.match(webBridge, /(?:var|const|let) draftComposer = realId \? "" : \(state\.composerDraft \|\| ""\)/,
   'WebUI background session events must snapshot an unmaterialized draft');
 assert.match(webBridge, /if \(!realId\) restoreBuffer\.composerDraft = draftComposer/,
   'WebUI background session events must restore an unmaterialized draft');
@@ -547,16 +547,16 @@ assert.match(bridge, /session_turn_in_progress/);
 assert.match(bridge, /turnAlreadyInProgress/);
 assert.match(bridge, /addSystemItem\(concurrentTurn[\s\S]{0,120}bt\("turnAlreadyInProgress"\)/,
   'turn admission conflicts must show product copy instead of an internal reservation error');
-assert.match(bridge, /var sid = state\.activeSessionId;/);
+assert.match(bridge, /(?:var|const|let) sid = state\.activeSessionId;/);
 assert.match(bridge, /if \(state\.activeSessionId !== sid\) return;/);
 assert.match(bridge, /remoteAdmissionKeys/);
-assert.match(bridge, /var activePlanCards = Object\.create\(null\)/);
-assert.match(bridge, /var hydratedKey = planCardHydrationKey\(hydratedPlan\)/);
+assert.match(bridge, /(?:var|const|let) activePlanCards = Object\.create\(null\)/);
+assert.match(bridge, /(?:var|const|let) hydratedKey = planCardHydrationKey\(hydratedPlan\)/);
 assert.match(bridge, /hydratedPlan\.cardState = "active"/);
 assert.match(bridge, /if \(item\.type === "plan_card"\) return false/);
 assert.match(bridge, /action === "accept_plan"/);
 assert.match(bridge, /acceptedMode = payload\.mode_state \|\| payload\.modeState/);
-assert.match(bridge, /planNotActive = errorText\.indexOf\("plan_not_active"\)/);
+assert.match(bridge, /planNotActive = errorText\.(?:indexOf\("plan_not_active"\)|includes\("plan_not_active"\))/);
 assert.match(bridge, /planId = String\(p\.plan_id \|\| p\.planId \|\| ""\)\.trim\(\)/);
 assert.match(bridge, /readyMode = p\.mode_state \|\| p\.modeState/);
 assert.match(bridge, /listen\("chat:plan_resolved"/);
@@ -610,7 +610,7 @@ assert.doesNotMatch(
 );
 assert.match(bridge, /MAX_WEB_ARTIFACT_DOWNLOAD_BYTES = 256 \* 1024 \* 1024/);
 assert.match(bridge, /if \(IS_WEB && !hasCapability\("artifactDownload"\)\)/);
-assert.match(bridge, /var info = await artifactInfo\(path, resolvedSessionId\)/);
+assert.match(bridge, /(?:var|const|let) info = await artifactInfo\(path, resolvedSessionId\)/);
 assert.match(bridge, /if \(expectedSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES\)/);
 assert.match(bridge, /if \(bytes\.length > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES - offset\)/);
 assert.match(artifactsPanel, /const canDownloadArtifacts = can\('artifactDownload'\);/);

@@ -1,4 +1,5 @@
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: 本文件经 index.html 以经典脚本(非 ESM)加载,函数级严格模式是载荷
   "use strict";
 
   function hasFiles(event) {
@@ -7,13 +8,13 @@
   }
 
   function install(options) {
-    var doc = options.document || root.document;
+    const doc = options.document || root.document;
     // capture: true 时在捕获阶段监听并在已受理路径 stopPropagation —— 供
     // 工具市场等子视图在 document 上接管文件拖放,隔离全局附件通道
     // (doc 冒泡阶段监听仍会收到事件)。
-    var capture = options.capture === true;
-    var dragDepth = 0;
-    var active = false;
+    const capture = options.capture === true;
+    let dragDepth = 0;
+    let active = false;
 
     function canAccept() {
       return !options.canAccept || options.canAccept() === true;
@@ -53,13 +54,13 @@
     }
 
     function onDrop(event) {
-      var files = event.dataTransfer && event.dataTransfer.files;
+      const files = event.dataTransfer && event.dataTransfer.files;
       if (!canAccept() || !files || files.length === 0) return;
       event.preventDefault();
       if (capture) event.stopPropagation();
       dragDepth = 0;
       setActive(false);
-      var droppedFiles = Array.prototype.slice.call(files);
+      const droppedFiles = Array.prototype.slice.call(files);
       Promise.resolve(options.onFiles(droppedFiles)).catch(function (error) {
         console.warn("[attachment] dropped file processing failed", error);
       });
@@ -81,6 +82,6 @@
   }
 
   root.PinvouAttachmentDropController = Object.freeze({
-    install: install,
+    install,
   });
 })(window);

@@ -1,4 +1,4 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore } from 'react';
 import { Check, Sparkles, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -125,6 +125,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     setAiInputOpen(false);
     setAiInstruction('');
     applyMarkdownToDom(text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅按 artifact 路径边沿整体重置;同路径下 initialText 变化不应清掉用户编辑
   }, [artifact?.path, applyMarkdownToDom]);
 
   // 输入是高频事件,turndown 未就绪时不做 DOM→Markdown 投影(编辑暂存于 DOM,
@@ -172,7 +173,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     const promise = (async () => {
       await bridge.artifacts.writeArtifactText(artifact.path, content);
       let info = initialInfo || null;
-      try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch (_) {}
+      try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch { /* 元信息拉取失败则沿用 initialInfo */ }
       lastSavedRef.current = content;
       setSaveState('saved');
       // 保存成功即草稿==已保存:立即补一次懒语言重放。刚保存的内容若含首次
@@ -196,7 +197,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
       return saveNow();
     }
     return ok;
-  }, [artifact?.path, initialInfo, onSaved]);
+  }, [artifact?.path, initialInfo, markdownFromDom, onSaved]);
 
   useEffect(() => {
     saveNowRef.current = saveNow;
@@ -208,7 +209,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     try {
       const text = await bridge.artifacts.readArtifactText(artifact.path);
       let info = initialInfo || null;
-      try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch (_) {}
+      try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch { /* 元信息拉取失败则沿用 initialInfo */ }
       latestDraftRef.current = text || '';
       lastSavedRef.current = text || '';
       setDraft(text || '');
@@ -254,7 +255,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
       // 这段输入),并驱动下方保存 effect 立即标 dirty——否则窗口内关面板时
       // flush 因 refs 相等短路,这段输入会被静默丢弃。
       pendingDomEditRef.current = true;
-      setDraft((prev) => (prev === lastSavedRef.current ? `${prev}\u200b` : prev));
+      setDraft((prev) => (prev === lastSavedRef.current ? `${prev}\u200B` : prev));
       loadTurndown();
       return;
     }
@@ -314,7 +315,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
       return;
     }
     const range = sel.getRangeAt(0);
-    const rects = Array.from(range.getClientRects()).filter((r) => r.width || r.height);
+    const rects = [...range.getClientRects()].filter((r) => r.width || r.height);
     const rect = rects[rects.length - 1] || range.getBoundingClientRect();
     if (!rect || (!rect.width && !rect.height)) {
       setSelectionUi(null);
@@ -347,7 +348,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   }, [updateSelection]);
 
   useEffect(() => {
-    if (!aiInputOpen) return undefined;
+    if (!aiInputOpen) return;
     const handler = (e) => {
       const overlay = overlayRef.current;
       if (overlay && overlay.contains(e.target)) return;
@@ -362,7 +363,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     e.stopPropagation();
     setAiInputOpen(true);
     setTimeout(() => {
-      const input = document.getElementById('md-selection-ai-input');
+      const input = document.querySelector('#md-selection-ai-input');
       if (input) input.focus();
     }, 0);
   }, []);
@@ -385,7 +386,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   }, [aiInstruction, artifact, clearAiUi, saveNow, selectionUi, t]);
 
   const status = statusText(t, saveState);
-  const showStatus = saveState === 'dirty' || saveState === 'saving' || saveState === 'error';
+  const showStatus = ['dirty', 'saving', 'error'].includes(saveState);
 
   return (
     <div ref={rootRef} className="relative min-h-[420px]">
@@ -397,6 +398,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
         </div>
       ) : null}
 
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: contentEditable 富文本编辑区,原生可聚焦可键入,事件为编辑器内部机制 */}
       <div
         ref={editableRef}
         contentEditable
@@ -416,12 +418,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
           className="fixed z-[90]"
           style={{ left: aiInputOpen ? selectionUi.inputX : selectionUi.buttonX, top: selectionUi.y }}
         >
-          {!aiInputOpen ? (
-            <button type="button" onMouseDown={openAiInput}
-              className="h-9 rounded-full border px-3 shadow-[0_8px_24px_rgba(0,0,0,0.16)] inline-flex items-center gap-1.5 text-[13px] font-medium transition-transform duration-150 ease-out hover:scale-[1.02] active:scale-[0.98] border-black/10 bg-white text-[#1C1C1E] dark:border-white/10 dark:bg-[#1C1C1E] dark:text-[#F2F2F7]">
-              <Sparkles size={15} /> {t.apMdAiEdit}
-            </button>
-          ) : (
+          {aiInputOpen ? (
             <div className="w-[316px] max-w-[calc(100vw-24px)] h-11 rounded-[22px] border shadow-[0_12px_32px_rgba(0,0,0,0.18)] flex items-center gap-1.5 px-2.5 border-black/10 bg-white dark:border-white/10 dark:bg-[#1C1C1E]">
               <input
                 id="md-selection-ai-input"
@@ -448,6 +445,11 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
                 <X size={14} />
               </button>
             </div>
+          ) : (
+            <button type="button" onMouseDown={openAiInput}
+              className="h-9 rounded-full border px-3 shadow-[0_8px_24px_rgba(0,0,0,0.16)] inline-flex items-center gap-1.5 text-[13px] font-medium transition-transform duration-150 ease-out hover:scale-[1.02] active:scale-[0.98] border-black/10 bg-white text-[#1C1C1E] dark:border-white/10 dark:bg-[#1C1C1E] dark:text-[#F2F2F7]">
+              <Sparkles size={15} /> {t.apMdAiEdit}
+            </button>
           )}
         </div>
       ) : null}

@@ -5,12 +5,12 @@ const os = require('os');
 const { startUiTestServer } = require('./ui_test_server');
 
 function loadPuppeteer() {
-  try { return require('puppeteer-core'); } catch (_) {}
+  try { return require('puppeteer-core'); } catch { /* fall through */ }
   const npx = path.join(os.homedir(), '.npm', '_npx');
   if (fs.existsSync(npx)) {
     for (const d of fs.readdirSync(npx)) {
       const p = path.join(npx, d, 'node_modules', 'puppeteer-core');
-      if (fs.existsSync(p)) { try { return require(p); } catch (_) {} }
+      if (fs.existsSync(p)) { try { return require(p); } catch { /* next */ } }
     }
   }
   console.error('SKIP: 找不到 puppeteer-core');
@@ -114,6 +114,7 @@ async function main() {
   console.log('update_notice_ui_smoke: ok');
 }
 
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
 main().catch(err => {
   console.error('FAIL:', err && err.stack || err);
   process.exit(1);

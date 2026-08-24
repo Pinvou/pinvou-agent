@@ -3,15 +3,16 @@
  * the desktop UI. The legacy flat object stays private to this platform layer.
  */
 (function () {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
   "use strict";
 
-  var platform = window.PinvouPlatform;
+  const platform = window.PinvouPlatform;
   if (!platform || (platform.kind !== "web" && platform.isWeb !== true)) return;
 
-  var flat = window.TauriBridge;
+  const flat = window.TauriBridge;
   if (!flat || !flat.available || typeof flat.getState !== "function") return;
 
-  var fields = {
+  const fields = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
     chat: ["activeSkill", "artifacts", "artifactChange", "attachmentDragActive", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
@@ -32,15 +33,15 @@
 
   function clone(value) {
     if (typeof structuredClone === "function") {
-      try { return structuredClone(value); } catch (_) {} // safari14-ok: typeof-guarded with JSON fallback
+      try { return structuredClone(value); } catch { /* 静默回退 JSON */ } // safari14-ok: typeof-guarded with JSON fallback
     }
     return JSON.parse(JSON.stringify(value));
   }
 
   function pick(full, domainName) {
-    var names = fields[domainName];
+    const names = fields[domainName];
     if (!names) throw new Error("Unknown Tauri bridge state slice: " + domainName);
-    var result = {};
+    const result = {};
     names.forEach(function (name) { result[name] = full[name]; });
     return result;
   }
@@ -60,8 +61,8 @@
   // same full reference implies this domain's field set cannot have
   // changed.
   function stablePick() {
-    var lastFull = null;
-    var lastSlice = null;
+    let lastFull = null;
+    let lastSlice = null;
     return function (full, domainName) {
       if (full === lastFull) return lastSlice;
       lastFull = full;
@@ -76,15 +77,15 @@
 
   function getMany(domains) {
     if (!Array.isArray(domains) || domains.length === 0) throw new Error("Tauri bridge state.getMany requires at least one domain");
-    var full = flat.getState();
-    var result = {};
+    const full = flat.getState();
+    const result = {};
     domains.forEach(function (domainName) { Object.assign(result, pick(full, domainName)); });
     return clone(result);
   }
 
   function subscribe(domainName, callback) {
     get(domainName);
-    var stable = stablePick();
+    const stable = stablePick();
     return flat.subscribe(function (full) {
       callback(stable(full, domainName));
     });
@@ -95,7 +96,7 @@
     // One stable cache per domain: the stablePick closure memoizes a
     // single (lastFull,lastSlice) slot; sharing one instance across
     // domains would make them overwrite each other.
-    var stables = {};
+    const stables = {};
     domains.forEach(function (domainName) { stables[domainName] = stablePick(); });
     // The combined outer object is likewise memoized on the full
     // reference in a single slot: a React setState subscriber can only
@@ -103,11 +104,11 @@
     // object every round would make even no-change notifications trigger
     // full re-renders, cancelling out the inner slices' identity
     // stability (see useBridge.js's subscribeMany for the consumer).
-    var lastFull = null;
-    var lastResult = null;
+    let lastFull = null;
+    let lastResult = null;
     return flat.subscribe(function (full) {
       if (full !== lastFull) {
-        var result = {};
+        const result = {};
         domains.forEach(function (domainName) { Object.assign(result, stables[domainName](full, domainName)); });
         lastFull = full;
         lastResult = Object.freeze(result);
@@ -117,10 +118,10 @@
   }
 
   function domain(names, aliases) {
-    var result = {};
+    const result = {};
     names.forEach(function (name) { if (typeof flat[name] === "function") result[name] = flat[name]; });
     Object.keys(aliases || {}).forEach(function (name) {
-      var fn = flat[aliases[name]];
+      const fn = flat[aliases[name]];
       if (typeof fn === "function") result[name] = fn;
     });
     return result;
@@ -129,7 +130,7 @@
   window.TauriBridge = {
     available: true,
     lifecycle: { init: flat.init },
-    state: { get: get, getMany: getMany, subscribe: subscribe, subscribeMany: subscribeMany },
+    state: { get, getMany, subscribe, subscribeMany },
     platform: {},
     chat: domain(["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft", "retryFirstTurn", "prefillComposer", "removeQueued", "cancelGeneration", "cancelShellTask"]),
     voice: domain(["startVoiceInput", "installVoiceAsr", "closeVoiceAsrSetup", "cancelVoiceInput", "clearVoiceInput", "appendVoiceText", "runVoiceInputDebugAssertions"]),

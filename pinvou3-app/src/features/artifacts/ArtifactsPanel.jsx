@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
-import { Download, ExternalLink, FolderOpen, Maximize2, Minimize2, XCircle } from '../../components/icons.jsx';
+import { ExternalLink, FolderOpen, Maximize2, Minimize2, XCircle } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
@@ -36,7 +36,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const ext = ((name || '').split('.').pop() || '').toUpperCase();
       return ext || (kind || 'FILE');
     };
-    const normalizeArtifactPath = (path) => String(path || '').replace(/\\/g, '/').toLowerCase();
+    const normalizeArtifactPath = (path) => String(path || '').replaceAll('\\', '/').toLowerCase();
     const sameArtifactPath = (left, right) => {
       const a = normalizeArtifactPath(left);
       const b = normalizeArtifactPath(right);
@@ -61,6 +61,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- 预览/设计工作台一体面板:状态机分支均对应一种预览 kind 或设计运行时事件,拆分会割裂 pv/sel 联动
     const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = [], onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
       const uiA = t.uiArtifacts;
       const showDesignWorkbench = isFullscreen && designMode;
@@ -89,6 +90,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const designRuntimeScriptRef = useRef(null);
       const designAiTimerRef = useRef(null);
       const designChangesRef = useRef(designChanges);
+      // eslint-disable-next-line react-hooks/refs -- latest-ref 同步:仅在回调/事件里读取(发布设计变更),渲染输出不依赖它
       designChangesRef.current = designChanges;
 
       function setDesignStatus(status, error) {
@@ -119,7 +121,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         const apply = (prev) => {
           const base = prev || { text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 };
           const patch = typeof patchOrUpdater === 'function' ? patchOrUpdater(base) : patchOrUpdater;
-          return { ...base, ...(patch || {}) };
+          return { ...base, ...patch };
         };
         if (onDesignAiStateChange) onDesignAiStateChange(apply);
         else setLocalDesignAiState(apply);
@@ -171,7 +173,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       };
 
       useEffect(() => {
-        if (designAiStatus !== 'sending' && designAiStatus !== 'running') return undefined;
+        if (designAiStatus !== 'sending' && designAiStatus !== 'running') return;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 立即给出已耗时基线,再由定时器每秒推进
         setDesignAiNow(Date.now());
         const timer = window.setInterval(() => setDesignAiNow(Date.now()), 1000);
         return () => window.clearInterval(timer);
@@ -182,7 +185,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!frame || !frame.contentWindow) return;
         try {
           frame.contentWindow.postMessage({ type: DESIGN_MESSAGE_TYPES.DESTROY }, '*');
-        } catch (_) {
+        } catch {
           // ignore
         }
       }
@@ -193,7 +196,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         try {
           frame.contentWindow.postMessage(message, '*');
           return true;
-        } catch (_) {
+        } catch {
           return false;
         }
       }
@@ -221,7 +224,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!designMode || !frame || !frame.contentWindow) return;
         setDesignStatus('injecting');
         try {
-          const script = designRuntimeScriptRef.current || (designRuntimeScriptRef.current = buildDesignRuntimeScript());
+          if (!designRuntimeScriptRef.current) designRuntimeScriptRef.current = buildDesignRuntimeScript();
+          const script = designRuntimeScriptRef.current;
           frame.contentWindow.eval(script);
         } catch (error) {
           setDesignStatus('error', String(error && error.message || error));
@@ -236,10 +240,10 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!designMode) {
           destroyDesignRuntime();
           setDesignStatus('idle');
-          return undefined;
+          return;
         }
         injectDesignRuntime(designFrameRef.current);
-        return undefined;
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅需在预览文档身份变化时重注入;依赖注入函数本身会破坏该触发时机
       }, [designMode, tab, pv.kind, pv.text, pv.visual && pv.visual.html]);
 
       useEffect(() => {
@@ -255,6 +259,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         } else if (designCommand.kind === 'clear') {
           postDesignCommand({ type: DESIGN_MESSAGE_TYPES.CLEAR_CHANGES });
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按命令序号触发一次;designCommand 对象/回调每次渲染都是新引用
       }, [designMode, designCommand && designCommand.seq]);
 
       useEffect(() => {
@@ -274,20 +279,19 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             setDesignStatus('idle');
           } else if (data.type === DESIGN_MESSAGE_TYPES.CHANGE_APPLIED) {
             if (onDesignChangeApplied) onDesignChangeApplied(data.payload || {});
-          } else if (data.type === DESIGN_MESSAGE_TYPES.ELEMENT_MUTATED) {
-            if (onDesignMutation) onDesignMutation(data.payload || {});
-          }
+          } else if (data.type === DESIGN_MESSAGE_TYPES.ELEMENT_MUTATED && onDesignMutation) onDesignMutation(data.payload || {});
         };
         window.addEventListener('message', onMessage);
         return () => {
           window.removeEventListener('message', onMessage);
           destroyDesignRuntime();
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 事件监听只需挂载一次;回调经 ref/参数透传,加入依赖会反复解绑重放设计变更
       }, [onDesignElementSelected, onDesignRuntimeStatus, onDesignMutation]);
 
       async function flushMarkdownPreview() {
         if (tab !== 'preview' || pv.kind !== 'md' || !mdPreviewRef.current) return true;
-        return await mdPreviewRef.current.flush();
+        return mdPreviewRef.current.flush();
       }
 
       function hasDirtyMarkdownPreview() {
@@ -301,7 +305,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         (async () => {
           const entries = await Promise.all(artifacts.map(async (a) => {
             try { return [a.path, await bridge.artifacts.artifactInfo(a.path)]; }
-            catch (_) { return [a.path, null]; }
+            catch { return [a.path, null]; }
           }));
           if (cancelled) return;
           const m = {};
@@ -309,12 +313,13 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           setInfos(m);
         })();
         return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 以 pathsKey 作为 artifacts 的稳定摘要;直接依赖 artifacts 数组会因引用变化重复拉取
       }, [pathsKey, activeSessionId]);
 
       // 切 session(artifacts 整批换了)→ 选中文件已不在新列表 → 清预览、退回列表。
       // 路径含 session id,故「不在列表」可靠区分换 session vs 同 session 内新增文件。
       useEffect(() => {
-        if (sel && !artifacts.some((a) => a.path === sel.path)) {
+        if (sel && artifacts.every((a) => a.path !== sel.path)) {
           const change = bs && bs.artifactChange;
           if (
             changeMatchesSession(change, bs) &&
@@ -322,6 +327,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             sameArtifactPath(change.path, sel.path)
           ) {
             if (hasDirtyMarkdownPreview()) {
+              // eslint-disable-next-line react-hooks/set-state-in-effect -- 外部删除但本地有未保存编辑:同步标记拦截,避免脏数据被覆盖
               setExternalUpdateBlocked('removed');
               setTab('preview');
               return;
@@ -339,6 +345,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           })();
           return () => { cancelled = true; };
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 以 pathsKey 摘要触发;依赖 flush/hasDirty 等闭包函数会改变触发频率
       }, [pathsKey]);
 
       async function preview(a, options = {}) {
@@ -360,7 +367,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             const info = await bridge.artifacts.artifactInfo(sel.path);
             if (cancelled) return;
             if (!info || !info.exists) { setPv({ missing: true, info }); return; }
-            if (info.kind === 'md' || info.kind === 'html' || info.kind === 'text') {
+            if (['md', 'html', 'text'].includes(info.kind)) {
               const text = await bridge.artifacts.readArtifactText(sel.path);
               if (!cancelled) setPv({ kind: info.kind, text, info });
             } else {
@@ -372,6 +379,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           }
         })();
         return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅按选中路径 + loading 边沿触发一次加载;artifacts 等无关依赖会重复拉取
       }, [sel && sel.path, pv.loading]);
 
       useEffect(() => {
@@ -380,15 +388,19 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           ? artifacts.find((a) => sameArtifactPath(a.path, preferredArtifactPath))
           : null;
         const fallback = artifacts[artifacts.length - 1] || null;
-        const target = preferred || (!sel ? fallback : null);
+        const target = preferred || (sel ? null : fallback);
         if (!target) return;
         if (sel && sameArtifactPath(sel.path, target.path)) return;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 进入面板时自动选中最新的 artifact,属于一次性同步外部列表到本地选中态
         preview(target, { skipFlush: !sel });
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 自动选中只需在候选集合/选中路径变化边沿评估;依赖 preview 函数会反复触发
       }, [preferredArtifactPath, pathsKey, activeSessionId, sel && sel.path, pv.loading]);
 
+      const selectedArtifactPath = sel && sel.path;
       useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换选中/页签时同步收起菜单,无级联渲染风险
         setArtifactMenuOpen(false);
-      }, [sel && sel.path, tab]);
+      }, [selectedArtifactPath, tab]);
 
       async function handleTabSelect(key) {
         if (key === tab) return;
@@ -415,7 +427,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!change?.seq || !sel || tab !== 'preview') return;
         if (!changeMatchesSession(change, bs)) return;
         if (!sameArtifactPath(change.path, sel.path)) return;
-        if (designAiStatus === 'sending' || designAiStatus === 'running' || designAiStatus === 'refreshing') {
+        if (['sending', 'running', 'refreshing'].includes(designAiStatus)) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- 磁盘变更到达时同步翻转 AI 状态,避免状态指示滞留
           setDesignAiStatePatch({ status: 'updated', startedAt: 0 });
           resetDesignAiStatusSoon();
         }
@@ -438,10 +451,12 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           if (sel) await preview(sel);
         })();
         return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按 artifactChange.seq 边沿触发;其他依赖会在每次渲染重复评估预览刷新
       }, [bs?.artifactChange?.seq]);
 
       useEffect(() => {
         if (designAiStatus === 'sending' && bs && bs.busy) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- busy 边沿同步推进 AI 状态机 sending→running
           setDesignAiStatePatch((current) => ({ status: 'running', startedAt: current.startedAt || Date.now() }));
         }
         if ((designAiStatus === 'sending' || designAiStatus === 'running') && bs && !bs.busy) {
@@ -454,6 +469,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             if (designAiPendingPath) resetDesignAiStatusSoon(2600);
           }, 3500);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 状态机按 busy/status 边沿驱动;补充函数依赖会导致定时器被反复重建
       }, [bs && bs.busy, designAiStatus, designAiPendingPath]);
 
       useEffect(() => () => {
@@ -464,14 +480,14 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const needsDependencyCheck = (message) => /LibreOffice/i.test(String(message || ''));
       const dependencyCheckButton = (message) => (
         needsDependencyCheck(message) && onGotoSettings
-          ? <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium bg-black/5 hover:bg-black/10 text-[#1F1F1F] dark:bg-white/10 dark:hover:bg-white/20 dark:text-[#E3E3E3]`}>{t.depGoInstall || t.depInstallBtn}</button>
+          ? <button type="button" onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium bg-black/5 hover:bg-black/10 text-[#1F1F1F] dark:bg-white/10 dark:hover:bg-white/20 dark:text-[#E3E3E3]`}>{t.depGoInstall || t.depInstallBtn}</button>
           : null
       );
       const tabBtn = (key, label) => {
         const active = tab === key;
         const disabled = key === 'preview' && !sel;
         return (
-          <button key={key} disabled={disabled}
+          <button type="button" key={key} disabled={disabled}
             onClick={() => !disabled && handleTabSelect(key)}
             className={`px-4 py-1.5 rounded-full text-[13px] font-medium transition-colors
               ${active ? 'bg-[#E8EDF2] text-[#1F1F1F] dark:bg-[#333537] dark:text-[#E3E3E3]'
@@ -520,6 +536,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                   const itemInfo = infos[a.path];
                   const active = sel && sameArtifactPath(sel.path, a.path);
                   return (
+                    // biome-ignore lint/a11y/useFocusableInteractive: 菜单项容器,键盘路径由内层真实按钮(artifact-switcher-item)承担
                     <div
                       key={a.path}
                       role="menuitem"
@@ -602,6 +619,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           return (
             <ScaledHtmlPreview
               html={pv.text || ''}
+              title={(sel && sel.path) || t.apTabPreview}
               onFrameLoad={handlePreviewFrameLoad}
               onOpenExternal={(url) => bridge.artifacts.openUserExternalUrl(url)}
               zoomMode={showDesignWorkbench ? htmlZoomMode : 'auto-width'}
@@ -621,6 +639,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             <div className="flex flex-col gap-2 h-full">
               {vis.warning && <div className={`flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
               <iframe sandbox="allow-same-origin allow-scripts" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
+                title={(sel && sel.path) || t.apTabPreview}
                 data-testid="artifact-html-preview-frame"
                 onLoad={(e) => handlePreviewFrameLoad(e.currentTarget)}
                 srcDoc={(vis.html || '') + OFFICE_HTML_STYLE} />
@@ -647,7 +666,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
             {vis && dependencyCheckButton(vis.warning)}
             {(!isWeb || canDownloadArtifacts) && (
-              <button onClick={() => sel && bridge.artifacts.openArtifactExternal(sel.path)} className={cardBtnCls('primary')}>
+              <button type="button" onClick={() => sel && bridge.artifacts.openArtifactExternal(sel.path)} className={cardBtnCls('primary')}>
                 {t.apBtnOpen}
               </button>
             )}
@@ -657,6 +676,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
 
       return (
         <div className={isWide ? "relative w-full h-full" : "absolute inset-0 z-30 flex justify-end pointer-events-auto"}>
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由标题栏关闭按钮(artifact-close)承担 */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器 */}
           {!isWide && <div className="absolute inset-0 bg-black/40" onClick={handleClose}></div>}
           <div className={`relative h-full flex flex-col bg-white dark:bg-[#1E1F20] ${isWide ? 'w-full border-l border-black/10 dark:border-white/10' : 'w-[680px] max-w-[88vw] shadow-2xl animate-in slide-in-from-right duration-200'}`}>
             {/* header + tabs */}
@@ -664,7 +685,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
               {renderArtifactSwitcher()}
               <div className="flex items-center gap-1.5">
                 {onToggleFullscreen && (
-                  <button
+                  <button type="button"
                     onClick={onToggleFullscreen}
                     data-testid="artifact-fullscreen-toggle"
                     aria-label={designMode
@@ -684,7 +705,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     {designMode && <span>{isFullscreen ? uiA.fsExitEditShort : uiA.fsEditMode}</span>}
                   </button>
                 )}
-                <button
+                <button type="button"
                   onClick={handleClose}
                   data-testid="artifact-close"
                   aria-label={uiA.closePreviewAria}
@@ -704,7 +725,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                   ) : artifacts.map((a) => {
                     const info = infos[a.path];
                     return (
-                      <div key={a.path} onClick={() => preview(a)}
+                      // biome-ignore lint/a11y/useSemanticElements: 列表行含多处嵌套布局与行内按钮,button 会破坏既有样式
+                      <div key={a.path} role="button" tabIndex={0} onClick={() => preview(a)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); preview(a); } }}
                         className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer
                           ${sel && sel.path === a.path ? 'bg-[#E8EDF2] dark:bg-[#333537]' : 'hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C]'}`}>
                         <ArtifactTileIcon name={a.basename} />
@@ -714,16 +737,14 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                             {t.apLastMod} {info ? apFormatMtime(info.modified) : '—'}
                           </div>
                         </div>
-                        {canOpenContainingFolder && <button title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
+                        {canOpenContainingFolder && <button type="button" title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
                           className={`opacity-0 group-hover:opacity-100 w-8 h-8 rounded-full flex items-center justify-center hover:bg-white text-[#444746] dark:hover:bg-[#1E1F20] dark:text-[#C4C7C5]`}><FolderOpen size={16} /></button>
                         }
                       </div>
                     );
                   })}
                 </div>
-              ) : !sel ? (
-                <div className={`flex-1 flex items-center justify-center text-[13px] ${muted}`}>{t.apPreviewHint}</div>
-              ) : (
+              ) : sel ? (
                 <>
                   {/* preview content */}
                   <div className={`flex-1 min-h-0 flex min-w-0 ${showDesignWorkbench ? 'flex-row' : 'flex-col xl:flex-row'}`}>
@@ -894,13 +915,13 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     ) : null}
                     <div className="mt-3 flex items-center gap-2">
                       {(!isWeb || canDownloadArtifacts) && (
-                        <button onClick={() => bridge.artifacts.openArtifactExternal(sel.path)}
+                        <button type="button" onClick={() => bridge.artifacts.openArtifactExternal(sel.path)}
                           className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls('primary')}`}>
                           <ExternalLink size={15} /> {t.apBtnOpen}
                         </button>
                       )}
                       {canOpenContainingFolder && (
-                        <button onClick={() => bridge.artifacts.openContainingFolder(sel.path)}
+                        <button type="button" onClick={() => bridge.artifacts.openContainingFolder(sel.path)}
                           className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls()}`}>
                           <FolderOpen size={15} /> {t.apBtnLocate}
                         </button>
@@ -908,6 +929,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     </div>
                   </div>}
                 </>
+              ) : (
+                <div className={`flex-1 flex items-center justify-center text-[13px] ${muted}`}>{t.apPreviewHint}</div>
               )}
             </div>
           </div>

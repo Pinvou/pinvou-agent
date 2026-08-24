@@ -467,7 +467,8 @@ export function dragAnimationFromMotion(current, deltaX, deltaY) {
 }
 
 export function stepPetDrag(state) {
-  let { x, y, tx, ty } = state;
+  let { x, y } = state;
+  const { tx, ty } = state;
   const followPointer = state.holding || state.releasePending;
   if (followPointer) {
     // 人物位置就是鼠标目标，不保留速度、弹簧或惯性状态。

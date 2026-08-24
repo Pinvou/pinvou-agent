@@ -3,13 +3,15 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  */
 (function (root) {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
   "use strict";
-  var registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["settings"] = function (context) {
-    var state = context.state;
-    var notify = context.notify;
-    var invoke = context.invoke;
-    var listen = context.listen;
+    const state = context.state;
+    const notify = context.notify;
+    const invoke = context.invoke;
+    const listen = context.listen;
   // ── Settings ─────────────────────────────────────────────────────
   // 桌宠开关由 Rust set_pet_enabled 直接写盘(设置页/宠物右键/快捷图标共用),
   // 这里同步进内存副本，保证设置界面立即反映专用命令返回的桌宠状态。
@@ -23,7 +25,7 @@
   });
 
   listen("pet:selected_changed", function (e) {
-    var selectedPet = e.payload && e.payload.selected_pet;
+    const selectedPet = e.payload && e.payload.selected_pet;
     if (typeof selectedPet === "string") {
       state.selectedPet = selectedPet;
       notify();
@@ -33,7 +35,7 @@
   async function loadSettings() {
     try {
       state.settings = await invoke("get_settings");
-    } catch (e) {
+    } catch {
       state.settings = { theme: "genesis", language: "zh-Hans" };
     }
     notify();
@@ -41,35 +43,35 @@
   async function loadSelectedPet() {
     try {
       state.selectedPet = await invoke("get_selected_pet");
-    } catch (e) {
+    } catch {
       state.selectedPet = "lingling";
     }
     notify();
   }
   async function setSelectedPet(id) {
-    return await invoke("set_selected_pet", { id: id });
+    return invoke("set_selected_pet", { id });
   }
   async function loadEffectiveModelConfig(sessionId) {
-    var requestedSessionId = arguments.length ? (sessionId || null) : (state.activeSessionId || null);
+    const requestedSessionId = arguments.length ? (sessionId || null) : (state.activeSessionId || null);
     try {
-      var config = await invoke("get_effective_model_config", { sessionId: requestedSessionId });
+      const config = await invoke("get_effective_model_config", { sessionId: requestedSessionId });
       if (requestedSessionId !== (state.activeSessionId || null)) return;
       state.effectiveModelConfig = config;
-    } catch (e) {
+    } catch {
       state.effectiveModelConfig = null;
     }
     notify();
   }
-  var settingsWriteQueue = Promise.resolve();
+  let settingsWriteQueue = Promise.resolve();
   function enqueueSettingsWrite(write) {
-    var pending = settingsWriteQueue.then(write, write);
+    const pending = settingsWriteQueue.then(write, write);
     settingsWriteQueue = pending.then(function () {}, function () {});
     return pending;
   }
   async function saveSettings(patch) {
     return enqueueSettingsWrite(async function () {
       try {
-        state.settings = await invoke("update_settings", { patch: patch });
+        state.settings = await invoke("update_settings", { patch });
         await loadEffectiveModelConfig();
         notify();
         return true;
@@ -82,7 +84,7 @@
   async function saveSettingsAndRestart(patch) {
     return enqueueSettingsWrite(async function () {
       try {
-        await invoke("save_settings_and_restart", { patch: patch });
+        await invoke("save_settings_and_restart", { patch });
         return true;
       } catch (e) {
         console.warn("save settings and restart failed", e);
@@ -93,7 +95,7 @@
   async function saveSearchSettings(search) {
     return enqueueSettingsWrite(async function () {
       try {
-        state.settings = await invoke("update_search_settings", { search: search });
+        state.settings = await invoke("update_search_settings", { search });
         await loadEffectiveModelConfig();
         notify();
         return true;
@@ -106,7 +108,7 @@
   async function saveSearchSettingsAndRestart(search) {
     return enqueueSettingsWrite(async function () {
       try {
-        await invoke("save_search_settings_and_restart", { search: search });
+        await invoke("save_search_settings_and_restart", { search });
         return true;
       } catch (e) {
         console.warn("save search settings and restart failed", e);
@@ -116,17 +118,17 @@
   }
 
   async function submitFeedback(request) {
-    return await invoke("submit_feedback", { request: request });
+    return invoke("submit_feedback", { request });
   }
   async function discoverLocalVllm(request) {
-    return await invoke("discover_local_vllm", { request: request || null });
+    return invoke("discover_local_vllm", { request: request || null });
   }
 
   // ── MegaCube(GB10) 本地大模型一键引导 ────────────────────────────
-  var vllmSetupPollTimer = null;
-  var vllmSetupPollStartedAt = 0;
-  var VLLM_SETUP_POLL_INTERVAL_MS = 3000;
-  var VLLM_SETUP_POLL_TIMEOUT_MS = 12 * 60 * 1000;
+  let vllmSetupPollTimer = null;
+  let vllmSetupPollStartedAt = 0;
+  const VLLM_SETUP_POLL_INTERVAL_MS = 3000;
+  const VLLM_SETUP_POLL_TIMEOUT_MS = 12 * 60 * 1000;
   // 首屏检测「预装但未启用」状态;eligible 时前端弹引导框。
   // 开机加载中不弹框，每 3 秒静默复查；12 分钟后仍 starting 则恢复可重试入口。
   // autoPoll 只供内部定时器续接；用户手动检测会重置本轮截止时间。
@@ -134,26 +136,26 @@
   // 旧快照会把已就绪引擎覆盖回 starting。任何新检测与引导完成都递增序号，
   // 在途读取一律作废。社区版后端 detect 恒 stopped / bootstrap 恒 Err（厂商版
   // 语义的桩），此守卫为防御性：后端恢复真实探测时竞态即真实存在。
-  var vllmDetectSeq = 0;
+  let vllmDetectSeq = 0;
   async function detectLocalVllmSetup(options) {
-    var autoPoll = !!(options && options.autoPoll);
-    var seq = ++vllmDetectSeq;
+    const autoPoll = !!(options && options.autoPoll);
+    const seq = ++vllmDetectSeq;
     if (vllmSetupPollTimer) {
       clearTimeout(vllmSetupPollTimer);
       vllmSetupPollTimer = null;
     }
     if (!autoPoll) vllmSetupPollStartedAt = Date.now();
     try {
-      var snapshot = await invoke("detect_local_vllm_setup");
+      const snapshot = await invoke("detect_local_vllm_setup");
       if (seq !== vllmDetectSeq) return state.vllmSetup; // 已作废的陈旧读取
       state.vllmSetup = snapshot;
-    } catch (e) {
+    } catch {
       if (seq !== vllmDetectSeq) return state.vllmSetup;
       state.vllmSetup = null; // 检测失败静默,不打扰(等同不弹)
       vllmSetupPollStartedAt = 0;
     }
     if (state.vllmSetup && state.vllmSetup.engine_state === 'starting' && state.vllmSetup.may_offer_setup !== false) {
-      var elapsed = Date.now() - vllmSetupPollStartedAt;
+      const elapsed = Date.now() - vllmSetupPollStartedAt;
       if (vllmSetupPollStartedAt > 0 && elapsed >= VLLM_SETUP_POLL_TIMEOUT_MS) {
         state.vllmSetup = Object.assign({}, state.vllmSetup, {
           engine_state: 'failed',
@@ -202,18 +204,18 @@
   }
   // 点「不再提醒 → 确认」:持久婉拒,开机引导框不再自动弹(仍可在设置→模型管理手动启用)。
   async function declineVllmSetup() {
-    try { await invoke("decline_local_vllm_setup"); } catch (e) { /* 持久失败也先隐藏本会话,不阻断 */ }
+    try { await invoke("decline_local_vllm_setup"); } catch { /* 持久失败也先隐藏本会话,不阻断 */ }
     state.vllmSetupDismissed = true;
     notify();
   }
   async function getEffectiveModelConfig(sessionId) {
-    return await invoke("get_effective_model_config", {
+    return invoke("get_effective_model_config", {
       sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
     });
   }
   // 当前有效模型的图片输入能力(普通会话选图即时警告用);后端按会话模型绑定解析。
   async function getImageInputCapability(sessionId) {
-    return await invoke("get_image_input_capability", {
+    return invoke("get_image_input_capability", {
       sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
     });
   }
@@ -221,15 +223,15 @@
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
   // 整表覆盖加载：保存/删除/切换链式 loadModels 并发时旧列表不得覆盖新列表
   // （审计 b）。请求序号后发者胜（同 vllmDetectSeq 模式）。
-  var modelsLoadSeq = 0;
+  let modelsLoadSeq = 0;
   async function loadModels() {
-    var seq = ++modelsLoadSeq;
+    const seq = ++modelsLoadSeq;
     try {
-      var v = await invoke("list_models");
+      const v = await invoke("list_models");
       if (seq !== modelsLoadSeq) return;
       state.savedModels = (v && v.models) || [];
       state.activeModelId = (v && v.active_model_id) || null;
-    } catch (e) {
+    } catch {
       if (seq !== modelsLoadSeq) return;
       state.savedModels = []; state.activeModelId = null;
     }
@@ -238,30 +240,30 @@
   // model 对象字段须是 snake_case(SavedModel serde):
   // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action,image_capability_override,vision_model_id}
  async function saveModel(model) {
-   await invoke("save_model", { model: model });
+   await invoke("save_model", { model });
    await loadModels();
    await loadSettings();
    await loadEffectiveModelConfig();
  }
  async function revealModelApiKey(id) {
-   return await invoke("reveal_model_api_key", { id: id });
+   return invoke("reveal_model_api_key", { id });
  }
  async function deleteModel(id) {
-   await invoke("delete_model", { id: id });
+   await invoke("delete_model", { id });
    await loadModels();
    await loadSettings();
    await loadEffectiveModelConfig();
   }
   async function setActiveModel(id) {
-    await invoke("set_active_model", { id: id });
+    await invoke("set_active_model", { id });
     await loadModels();
     await loadSettings();
     await loadEffectiveModelConfig();
   }
   // 读某会话当前绑定的模型 id(切会话时刷新 chip)。
   async function loadSessionModel(sessionId) {
-    var requestedSessionId = sessionId || null;
-    var results = await Promise.all([
+    const requestedSessionId = sessionId || null;
+    const results = await Promise.all([
       requestedSessionId
         ? invoke("get_session_model_id", { sessionId: requestedSessionId }).catch(function () { return null; })
         : Promise.resolve(null),
@@ -275,51 +277,51 @@
   // 切当前会话模型(chip 热切)。无 session(草稿态)时改全局默认。
   async function switchModel(sessionId, modelId) {
     if (sessionId) {
-      await invoke("set_session_model", { sessionId: sessionId, modelId: modelId });
+      await invoke("set_session_model", { sessionId, modelId });
       await loadSessionModel(sessionId);
     } else {
       await setActiveModel(modelId);
     }
   }
   async function testModelConnection(baseUrl, apiKey, modelId) {
-    return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
+    return invoke("test_model_connection", { baseUrl, apiKey, modelId: modelId || null });
   }
   // 测试图片输入能力(设计 §7.3):用当前表单的 model/base_url/key 发一张内置纯色图,
   // 仅由模型编辑弹窗主动点击触发,无任何启动/定时自动测试。
   async function testImageInputCapability(model, baseUrl, apiKey, modelId) {
-    return await invoke("test_image_input_capability", { model: model, baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
+    return invoke("test_image_input_capability", { model, baseUrl, apiKey, modelId: modelId || null });
   }
   async function testSearchProvider(provider, apiKey) {
-    return await invoke("test_search_provider", { provider: provider, apiKey: apiKey || null });
+    return invoke("test_search_provider", { provider, apiKey: apiKey || null });
   }
 
     return {
-      loadSettings: loadSettings,
-      loadSelectedPet: loadSelectedPet,
-      setSelectedPet: setSelectedPet,
-      loadEffectiveModelConfig: loadEffectiveModelConfig,
-      saveSettings: saveSettings,
-      saveSettingsAndRestart: saveSettingsAndRestart,
-      saveSearchSettings: saveSearchSettings,
-      saveSearchSettingsAndRestart: saveSearchSettingsAndRestart,
-      submitFeedback: submitFeedback,
-      discoverLocalVllm: discoverLocalVllm,
-      detectLocalVllmSetup: detectLocalVllmSetup,
-      bootstrapLocalVllm: bootstrapLocalVllm,
-      dismissVllmSetup: dismissVllmSetup,
-      declineVllmSetup: declineVllmSetup,
-      getEffectiveModelConfig: getEffectiveModelConfig,
-      getImageInputCapability: getImageInputCapability,
-      loadModels: loadModels,
-      saveModel: saveModel,
-      revealModelApiKey: revealModelApiKey,
-      deleteModel: deleteModel,
-      setActiveModel: setActiveModel,
-      loadSessionModel: loadSessionModel,
-      switchModel: switchModel,
-      testModelConnection: testModelConnection,
-      testImageInputCapability: testImageInputCapability,
-      testSearchProvider: testSearchProvider
+      loadSettings,
+      loadSelectedPet,
+      setSelectedPet,
+      loadEffectiveModelConfig,
+      saveSettings,
+      saveSettingsAndRestart,
+      saveSearchSettings,
+      saveSearchSettingsAndRestart,
+      submitFeedback,
+      discoverLocalVllm,
+      detectLocalVllmSetup,
+      bootstrapLocalVllm,
+      dismissVllmSetup,
+      declineVllmSetup,
+      getEffectiveModelConfig,
+      getImageInputCapability,
+      loadModels,
+      saveModel,
+      revealModelApiKey,
+      deleteModel,
+      setActiveModel,
+      loadSessionModel,
+      switchModel,
+      testModelConnection,
+      testImageInputCapability,
+      testSearchProvider
     };
   };
 })(window);

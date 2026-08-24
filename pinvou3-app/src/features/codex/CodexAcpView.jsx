@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -137,6 +137,7 @@ const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection';
 const CODE_AGENT_IDS = ['pinvou', 'codex', 'claude', 'kimi'];
 
 function workspaceName(path, unknownDirectory) {
+  // eslint-disable-next-line sonarjs/super-linear-regex -- 尾部 [\\/]+ 剥离路径分隔符,字符类单一,回溯线性
   const normalized = String(path || '').replace(/[\\/]+$/, '');
   if (!normalized) return unknownDirectory;
   return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
@@ -414,11 +415,12 @@ function CommandExecutionItem({ item, now, copy }) {
   const detailsId = useId();
   const countHint = details.commandCount > 1 ? ` · ${copy.segments(details.commandCount)}` : '';
   const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
+  const exitHint = details.exitCode == null ? '' : ` · exit ${details.exitCode}`;
   const outcome = state === 'running'
     ? `${copy.running} · ${duration}`
     : state === 'failed'
-      ? `${copy.executionFailed}${details.exitCode == null ? '' : ` · exit ${details.exitCode}`}`
-      : `${copy.executionFinished}${details.exitCode == null ? '' : ` · exit ${details.exitCode}`} · ${duration}`;
+      ? `${copy.executionFailed}${exitHint}`
+      : `${copy.executionFinished}${exitHint} · ${duration}`;
   return (
     <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
       <CompactItemRow icon={<Terminal size={13} />} title={details.summary}
@@ -446,18 +448,23 @@ function GenericToolItem({ item, now, copy, cv, onOpenResource }) {
   const detailsId = useId();
   const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const label = item.type === 'file_change' ? copy.fileChange : (tool.kind || cv.codexTool);
+  const stateLabel = state === 'running'
+    ? `${copy.inProgress} · ${duration}`
+    : state === 'failed'
+      ? copy.failed
+      : `${cv.ended} · ${duration}`;
   const resources = toolWorkspaceResources(tool);
   return (
     <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
       <CompactItemRow icon={<Wrench size={13} />} title={tool.title || label}
-        meta={`${label} · ${state === 'running' ? `${copy.inProgress} · ${duration}` : state === 'failed' ? copy.failed : `${cv.ended} · ${duration}`}`}
+        meta={`${label} · ${stateLabel}`}
         status={state} open={open} controlsId={detailsId}
         onToggle={() => setOpen(value => !value)} />
       <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
       {open && (
         <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           <StructuredValue label={copy.arguments} value={tool.rawInput} />
-          <StructuredValue label={copy.result} value={tool.rawOutput != null ? tool.rawOutput : tool.content} />
+          <StructuredValue label={copy.result} value={tool.rawOutput == null ? tool.content : tool.rawOutput} />
         </div>
       )}
     </div>
@@ -557,7 +564,7 @@ function PermissionCard({ permission, pending, onRespond, responding, agentName,
             : <StructuredValue label={copy.operationArguments} value={tool.rawInput} />}
           <div className="mt-3 flex flex-wrap gap-2">
             {options.map(option => (
-              <button key={option.optionId} disabled={!actionable || responding}
+              <button type="button" key={option.optionId} disabled={!actionable || responding}
                 onClick={() => onRespond(permission.toolCallId, option.optionId)}
                 className={`max-w-full min-w-0 whitespace-normal break-all px-3 py-1.5 rounded-xl text-[12px] leading-5 font-medium transition-colors ${
                   String(option.kind || '').startsWith('allow')
@@ -645,11 +652,11 @@ function ElicitationCard({ elicitation, pending, onRespond, responding, copy, co
       cancelLabel={copy.cancel}
       otherAnswerLabel={conversationCopy && conversationCopy.otherAnswer}
       inputPlaceholder={conversationCopy && conversationCopy.inputPlaceholder}
-      statusText={!actionable
-        ? elicitation.resolved
+      statusText={actionable
+        ? ''
+        : elicitation.resolved
           ? (elicitation.action === 'accept' ? copy.submitted : copy.canceled)
-          : copy.inputExpired
-        : ''}
+          : copy.inputExpired}
       onSubmit={submit}
       onCancel={actionable
         ? () => onRespond(elicitation.elicitationId, 'cancel', {})
@@ -684,6 +691,8 @@ const NATIVE_CHAT_EVENTS = [
 
 function isFreeTextPlaceholderOption(option) {
   const label = String(option?.label || '').trim();
+  // 括号内为排除定界符后的自由文本,量词不嵌套于自身字符类,回溯为线性
+  // eslint-disable-next-line no-useless-escape -- \( \) 在字符类内保持转义以明确「字面括号」语义,与 [^()（）] 呼应
   return /^(?:其他|其它|other)(?:\s*[\(（][^()（）]*[\)）])?$/i.test(label);
 }
 
@@ -731,9 +740,9 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
       cancelLabel={copy.cancel}
       otherAnswerLabel={conversationCopy && conversationCopy.otherAnswer}
       inputPlaceholder={conversationCopy && conversationCopy.inputPlaceholder}
-      statusText={!actionable
-        ? (item.cardState === 'cancelled' ? copy.canceled : copy.submitted)
-        : ''}
+      statusText={actionable
+        ? ''
+        : (item.cardState === 'cancelled' ? copy.canceled : copy.submitted)}
       onSubmit={submit}
       onCancel={actionable ? () => onCancelInput(item.toolCallId) : undefined}
     />
@@ -974,6 +983,7 @@ function Turn({
   );
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- ACP 代码主视图:会话/事件/草稿/附件/滚动等生命周期共用一组 ref+state,重构风险高
 export function CodexAcpView({
   theme,
   t,
@@ -1099,7 +1109,7 @@ export function CodexAcpView({
   }, [acpConfigOperationTracker, acpSendOperationTracker, activeId]);
   const projection = useMemo(() => projectAcpTimeline(events), [events]);
   // 草稿态（!activeId）没有会话，退回使用该 agent 缓存的配置快照来预展示选项。
-  const draftControlsInfo = !activeId ? draftControlsCache[draftAgentId] || null : null;
+  const draftControlsInfo = activeId ? null : draftControlsCache[draftAgentId] || null;
   const sessionControlsInfo = sessionInfoSessionId === activeId ? sessionInfo : null;
   const controls = useMemo(
     () => resolveAcpSessionControls(sessionControlsInfo || draftControlsInfo),
@@ -1121,7 +1131,7 @@ export function CodexAcpView({
     const staged = draftConfigSelection && draftConfigSelection.configs
       ? draftConfigSelection.configs[option.id]
       : undefined;
-    return staged !== undefined ? String(staged) : (option.currentValue || '');
+    return staged === undefined ? (option.currentValue || '') : String(staged);
   }
   const availableCommands = useMemo(() => {
     const event = [...projection.global].reverse().find(item => item.event && item.event.type === 'available_commands');
@@ -1219,6 +1229,7 @@ export function CodexAcpView({
   const nativeProjection = useMemo(
     () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId) : null),
     // nativeLaneTick 是 lane 内容变化的版本号（lane 本体是可变对象，靠 tick 触发重投影）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick 是 lane 可变对象的版本号,必须留在 deps 触发重投影
     [isNativeAgent, activeNativeLane, activeId, nativeLaneTick],
   );
   const visibleTurns = isNativeAgent
@@ -1307,10 +1318,11 @@ export function CodexAcpView({
     }
   }, [subagentPanel, workspaceOpen]);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换会话时同步收起子代理面板,一次性镜像
     setSubagentPanel(null);
   }, [activeId]);
   useEffect(() => {
-    if (typeof window === 'undefined' || !isNativeAgent) return undefined;
+    if (typeof window === 'undefined' || !isNativeAgent) return;
     const onOpen = (event) => {
       const detail = event && event.detail;
       const sessionId = detail && detail.sessionId;
@@ -1411,9 +1423,9 @@ export function CodexAcpView({
     setDraftConfigSelections(current => {
       const prev = current[draftAgentId] || {};
       const next = {
-        model: patch.model !== undefined ? patch.model : prev.model,
-        mode: patch.mode !== undefined ? patch.mode : prev.mode,
-        configs: { ...(prev.configs || {}), ...(patch.configs || {}) },
+        model: patch.model === undefined ? prev.model : patch.model,
+        mode: patch.mode === undefined ? prev.mode : patch.mode,
+        configs: { ...prev.configs, ...patch.configs },
       };
       return { ...current, [draftAgentId]: next };
     });
@@ -1512,6 +1524,7 @@ export function CodexAcpView({
 
   // 启动时拉一次全局 code 权限偏好（草稿态默认 mode + yolo 确认门）。
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 挂载时拉取一次全局权限偏好;后续由切换/确认路径就地刷新
     refreshCodePermPrefs();
     // 仅挂载拉取一次；后续由切换/确认路径就地刷新。
   }, []);
@@ -1527,6 +1540,7 @@ export function CodexAcpView({
   }
 
   async function persistNativeDraftControls(sessionId, staged) {
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
     const hasMultiAgentSelection = Object.prototype.hasOwnProperty.call(staged, 'multiAgent');
     const hasStaged = staged.modelId || staged.mountedId != null || staged.mode || hasMultiAgentSelection;
     if (!hasStaged) return false;
@@ -1718,8 +1732,10 @@ export function CodexAcpView({
     }
   }
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- agent 切换边沿同步写入该 agent 的 Provider 视图缓存
     if (activeAgentId) refreshProviders(activeAgentId);
     // activeAgentId 变化时刷新一次即可；切换/回退后由调用方显式刷新。
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按 agent 切换边沿刷新;refreshProviders 引用变化不应重复拉取
   }, [activeAgentId]);
   const activeProvidersView = providersViews[activeAgentId] || null;
   // Kimi 中转激活时（会话覆盖 > 全局当前 Provider），模型列表只保留受管
@@ -2036,7 +2052,7 @@ export function CodexAcpView({
   }
 
   async function uploadDeviceFiles(files, sessionId = attachmentKey) {
-    const selected = Array.from(files || []).filter(Boolean);
+    const selected = [...files || []].filter(Boolean);
     for (const file of selected) {
       const id = `codex-attachment-${++attachmentIdRef.current}`;
       cancelledAttachmentIdsRef.current.delete(id);
@@ -2121,9 +2137,7 @@ export function CodexAcpView({
   // ── 语音输入（与 ChatView 同款：bridge.voice 一次录音 → 本地 ASR → 写回 draft）。
   // 代码车道不物化聊天会话，语音状态仍由 bridge 全局管理（bs.voiceInput），写回走代码页 draft。
   const nativeVoiceInput = (bs && bs.voiceInput) || { status: 'idle' };
-  const nativeVoiceActive = nativeVoiceInput.status === 'requesting_permission'
-    || nativeVoiceInput.status === 'recording'
-    || nativeVoiceInput.status === 'transcribing';
+  const nativeVoiceActive = ['requesting_permission', 'recording', 'transcribing'].includes(nativeVoiceInput.status);
   const nativeVoiceRecording = nativeVoiceInput.status === 'recording';
   const nativeVoiceBusy = nativeVoiceInput.status === 'transcribing';
   const nativeVoiceDisabled = !bridge.available || nativeVoiceBusy;
@@ -2162,9 +2176,7 @@ export function CodexAcpView({
   useEffect(() => {
     return () => {
       const voice = nativeVoiceInputRef.current;
-      if (voice && (voice.status === 'requesting_permission'
-        || voice.status === 'recording'
-        || voice.status === 'transcribing')
+      if (voice && ['requesting_permission', 'recording', 'transcribing'].includes(voice.status)
         && bridge.available) {
         bridge.voice.cancelVoiceInput();
       }
@@ -2172,7 +2184,7 @@ export function CodexAcpView({
   }, []);
 
   function handlePaste(event) {
-    const items = Array.from(event.clipboardData && event.clipboardData.items || []);
+    const items = [...event.clipboardData && event.clipboardData.items || []];
     const images = items.filter(item => item.type && item.type.startsWith('image/'));
     if (!images.length) return;
     if (!deviceFileUploadAvailable && !canInvoke('save_paste_image')) return;
@@ -2184,9 +2196,10 @@ export function CodexAcpView({
         uploadDeviceFiles([file]).catch(showError);
         return;
       }
+      // Safari 14 无 Blob#arrayBuffer,粘贴图片的桥接通道保留 FileReader 读取
       const reader = new FileReader();
       reader.onload = async () => {
-        const bytes = Array.from(new Uint8Array(reader.result));
+        const bytes = [...new Uint8Array(reader.result)];
         const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
         try {
           const path = await invoke('save_paste_image', {
@@ -2198,6 +2211,7 @@ export function CodexAcpView({
           showError(err);
         }
       };
+      // eslint-disable-next-line unicorn/prefer-blob-reading-methods -- ES2021/Safari 14 地板不支持 Blob#arrayBuffer
       reader.readAsArrayBuffer(file);
     });
   }
@@ -2251,6 +2265,7 @@ export function CodexAcpView({
       disposed = true;
       if (unlisten) unlisten();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ACP 事件订阅只挂载一次;依赖刷新函数会反复解绑/重订
   }, []);
 
   useEffect(() => () => {
@@ -2272,6 +2287,7 @@ export function CodexAcpView({
         console.warn('[acp] restore authoritative session after reconnect failed', error);
       });
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 远程重连回调:只挂载订阅,依赖刷新函数会反复解绑/重订
   }), []);
 
   // 原生（品悟）会话的 engine 事件：按 session 推进对应 lane，仅当前会话 bump 渲染；
@@ -2292,13 +2308,14 @@ export function CodexAcpView({
         setNativeLaneTick(tick => tick + 1);
       }
     }))).then(fns => {
-      if (disposed) fns.forEach(fn => fn());
+      if (disposed) fns.forEach(fn => { fn(); });
       else unlisteners = fns;
     }).catch(error => console.warn('[codex] native chat events unavailable', error));
     return () => {
       disposed = true;
-      unlisteners.forEach(fn => fn());
+      unlisteners.forEach(fn => { fn(); });
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 原生事件订阅只挂载一次;依赖刷新函数会反复解绑/重订
   }, []);
 
   useEffect(() => {
@@ -2306,17 +2323,20 @@ export function CodexAcpView({
     // 避免切换时并发执行两次 CLI/认证探测。外部安装变化由“重新检测”强制刷新。
     // 原生（品悟）会话没有 ACP 状态机，跳过 get_acp_agent_status（后端会拒绝非 ACP agent）。
     if (activeAgentId === 'pinvou') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 原生会话无 ACP 状态机,同步清空状态展示
       setStatus(null);
       return;
     }
     if (activeId) return;
     refreshStatus(activeAgentId).catch(showError);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按 agent/会话切换边沿探测;refreshStatus/showError 引用变化不应重复探测
   }, [activeAgentId, activeId]);
 
   useEffect(() => {
     const latest = events[events.length - 1];
     if (!isAcpAuthenticationFailure(latest)) return;
     refreshStatus(activeAgentId).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按事件序列边沿重查认证;refreshStatus 引用变化不应重复探测
   }, [events.length, activeAgentId]);
 
   // 一次性模型探针：切换/删除 Provider（或恢复官方）后设置页会写探针标记。
@@ -2324,9 +2344,9 @@ export function CodexAcpView({
   // 的真实 session/new 上报覆盖 reseed 的占位快照，之后恢复懒加载。标记先清
   // 再探（一次性、防重入）；失败静默，保留占位快照不影响使用。
   useEffect(() => {
-    if (activeId || isNativeAgent) return undefined;
-    if (!activeStatus?.installed || !activeStatus?.authenticated) return undefined;
-    if (!consumeAcpModelsProbePending(draftAgentId)) return undefined;
+    if (activeId || isNativeAgent) return;
+    if (!activeStatus?.installed || !activeStatus?.authenticated) return;
+    if (!consumeAcpModelsProbePending(draftAgentId)) return;
     let alive = true;
     invoke('probe_acp_agent_models', { agent: draftAgentId })
       .then(info => {
@@ -2346,6 +2366,7 @@ export function CodexAcpView({
       sessionLoadRequestRef.current += 1;
       if (preserveDraftWorkspaceRef.current) preserveDraftWorkspaceRef.current = false;
       else setDraftWorkspacePath(null);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 回草稿时同步复位事件/待办/会话信息,一次性镜像
       setEvents([]);
       setPending([]);
       setPendingElicitations([]);
@@ -2359,16 +2380,18 @@ export function CodexAcpView({
       return;
     }
     loadSession(activeId).catch(showError);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按会话切换边沿加载;loadSession/showError 引用变化不应重复加载
   }, [activeId]);
 
   useEffect(() => {
     if (draftEpochRef.current === draftEpoch) return;
     draftEpochRef.current = draftEpoch;
     beginDraft(null, { clearComposer: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按草稿纪元边沿重置;beginDraft 引用变化不应重复清空草稿
   }, [draftEpoch]);
 
   useEffect(() => {
-    if (!activeStatus?.login_in_progress) return undefined;
+    if (!activeStatus?.login_in_progress) return;
     let cancelled = false;
     let timer = null;
     const poll = async () => {
@@ -2380,23 +2403,26 @@ export function CodexAcpView({
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按登录中状态边沿轮询;refreshStatus 引用变化不应重启轮询链
   }, [activeAgentId, activeStatus?.login_in_progress]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 立即给出已耗时基线,再由定时器每秒推进
     setNow(Date.now());
-    if (!busy) return undefined;
+    if (!busy) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [busy]);
 
   // 切会话/回草稿时关掉记忆弹层（徽标内容按新会话 lane 自动切换）。
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换会话时同步收起记忆弹层,一次性镜像
     setMemoryOpen(false);
   }, [activeId]);
 
   useEffect(() => {
     const element = scroller.current;
-    if (!element) return undefined;
+    if (!element) return;
     const onScroll = () => {
       const near = isNearConversationBottom(element);
       const movingUp = element.scrollTop < lastScrollTopRef.current - 1;
@@ -2427,6 +2453,7 @@ export function CodexAcpView({
   useEffect(() => {
     autoScrollRef.current = true;
     lastScrollTopRef.current = 0;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换会话重置滚动基准时同步隐藏回底按钮
     setShowScrollBottom(false);
     const frame = window.requestAnimationFrame(() => {
       const element = scroller.current;
@@ -2612,7 +2639,7 @@ export function CodexAcpView({
         workspaceReferences: workspaceReferencesAtSend,
       });
       updateAttachments(targetId, current => current.filter(
-        attachment => !readyAttachments.some(ready => ready.id === attachment.id),
+        attachment => readyAttachments.every(ready => ready.id !== attachment.id),
       ));
       setWorkspaceReferenceDrafts(current => removeAcpDraftItems(
         current,
@@ -2686,11 +2713,13 @@ export function CodexAcpView({
           reference => reference,
         ));
       }
+      const referenceMentions = workspaceReferencesAtSend.map(path => `@${path}`).join(' ');
       const referencePrefix = workspaceReferencesAtSend.length
-        ? `${workspaceReferencesAtSend.map(path => `@${path}`).join(' ')}\n\n`
+        ? `${referenceMentions}\n\n`
         : '';
+      const attachmentLead = message ? '\n' : '';
       const displayText = message + (readyAttachments.length
-        ? `${message ? '\n' : ''}📎 ${readyAttachments.map(attachment => attachment.basename).join(', ')}`
+        ? `${attachmentLead}📎 ${readyAttachments.map(attachment => attachment.basename).join(', ')}`
         : '');
       const lane = getNativeLane(targetId);
       const optimisticId = appendLocalUserMessage(lane, displayText);
@@ -2718,7 +2747,7 @@ export function CodexAcpView({
         throw sendError;
       }
       updateAttachments(targetId, current => current.filter(
-        attachment => !readyAttachments.some(ready => ready.id === attachment.id),
+        attachment => readyAttachments.every(ready => ready.id !== attachment.id),
       ));
       setWorkspaceReferenceDrafts(current => removeAcpDraftItems(
         current,
@@ -2855,7 +2884,7 @@ export function CodexAcpView({
       notifyChatRoundCommitted('code');
     } catch (err) {
       const errorText = String(err && err.message ? err.message : err || '');
-      const planNotActive = errorText.indexOf('plan_not_active') >= 0;
+      const planNotActive = errorText.includes('plan_not_active');
       if (planNotActive) {
         card.cardState = 'frozen';
         card.resolved = true;
@@ -2892,7 +2921,7 @@ export function CodexAcpView({
       await invoke('discard_plan', { sessionId: sid, planId });
     } catch (err) {
       const errorText = String(err && err.message ? err.message : err || '');
-      const planNotActive = errorText.indexOf('plan_not_active') >= 0;
+      const planNotActive = errorText.includes('plan_not_active');
       if (planNotActive) {
         card.statusKey = 'historical';
         refreshNativeControls(sid).catch(() => {});
@@ -2968,7 +2997,7 @@ export function CodexAcpView({
       }
       return <div className="px-1 text-[11px] text-gray-400">{legacy.text}</div>;
     }
-    return undefined;
+    return null;
   }
 
   async function openWorkspaceResource(resourcePath) {
@@ -3097,7 +3126,7 @@ export function CodexAcpView({
             <div className="text-[14px] font-semibold">{activeSession.title || 'Codex'}</div>
             <div className={`text-[10px] truncate ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
               title={activeSession && activeSession.workspace_path}>
-              {`${activeAgentName} · ${activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace}${activeSession.workspace_available ? '' : ` · ${codexCopy.projectMissing}`}`}
+              {activeAgentName + ' · ' + (activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace) + (activeSession.workspace_available ? '' : ' · ' + codexCopy.projectMissing)}
             </div>
           </div>
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">{codexCopy.applyingConfig}</span>}
@@ -3362,16 +3391,16 @@ export function CodexAcpView({
                   <div className="flex items-center gap-1 shrink-0">
                     {nativeVoiceInput.status === 'failed' && nativeVoiceInput.category === 'recognition_failed'
                       && nativeVoiceCanInstallAsr && onGotoSettings && (
-                      <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${theme === 'dark' ? 'bg-white/10 hover:bg-white/20' : 'bg-black/5 hover:bg-black/10'}`}>{t.voiceGotoDeps}</button>
+                      <button type="button" onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${theme === 'dark' ? 'bg-white/10 hover:bg-white/20' : 'bg-black/5 hover:bg-black/10'}`}>{t.voiceGotoDeps}</button>
                     )}
                     {nativeVoiceInput.status === 'failed' && (
-                      <button onClick={handleNativeVoiceClick} className={`px-2 py-1 rounded-full ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceRetry}</button>
+                      <button type="button" onClick={handleNativeVoiceClick} className={`px-2 py-1 rounded-full ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceRetry}</button>
                     )}
                     {nativeVoiceActive && (
-                      <button onClick={handleNativeVoiceCancel} className={`px-2 py-1 rounded-full ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceCancel}</button>
+                      <button type="button" onClick={handleNativeVoiceCancel} className={`px-2 py-1 rounded-full ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceCancel}</button>
                     )}
                     {!nativeVoiceActive && (
-                      <button onClick={handleNativeVoiceClose} title={t.voiceClose} className={`w-6 h-6 rounded-full flex items-center justify-center ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>×</button>
+                      <button type="button" onClick={handleNativeVoiceClose} title={t.voiceClose} className={`w-6 h-6 rounded-full flex items-center justify-center ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>×</button>
                     )}
                   </div>
                 </div>
@@ -3807,9 +3836,9 @@ export function CodexAcpView({
                   )}
                 </div>
                 {busy ? (
-                  <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
+                  <button type="button" onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || Boolean(configApplying) || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
+                  <button type="button" onClick={send} disabled={!sessionReady || (!draft.trim() && attachments.every(attachment => attachment.status !== 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || Boolean(configApplying) || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
                     className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                     <Send size={16} />
                   </button>

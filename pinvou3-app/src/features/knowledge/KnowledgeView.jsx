@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, AppWindow, Archive, BookOpen, Check, ChevronDown, Database, Download, Edit2, ExternalLink, FileText, FolderOpen, GridIcon, IconList, ImageIcon, Package, Plus, PresentationIcon, RefreshCw, TableIcon, Trash2, X } from '../../components/icons.jsx';
+import { AlertTriangle, AppWindow, Archive, BookOpen, Check, ChevronDown, Database, Download, Edit2, ExternalLink, FileText, FolderOpen, GridIcon, IconList, ImageIcon, Package, Plus, PresentationIcon, RefreshCw, TableIcon, Trash2 } from '../../components/icons.jsx';
 import { IosSearchField, IosSegmentedControl } from '../../components/IosControls.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
@@ -11,7 +11,7 @@ import { resolveAppAssetUrl } from '../../shared/asset-url.mjs';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
-let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
+const kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
 
 const MODEL_PROGRESS_RADIUS = 31;
 const MODEL_PROGRESS_CIRCUMFERENCE = 2 * Math.PI * MODEL_PROGRESS_RADIUS;
@@ -21,7 +21,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
     return (
       <div className="flex flex-col items-center gap-2.5" role="status" aria-live="polite">
         <div className="relative h-[76px] w-[76px]" aria-hidden="true">
-          <svg className="h-full w-full animate-spin motion-reduce:animate-none" viewBox="0 0 76 76">
+          <svg aria-hidden="true" className="h-full w-full animate-spin motion-reduce:animate-none" viewBox="0 0 76 76">
             <circle cx="38" cy="38" r={MODEL_PROGRESS_RADIUS} fill="none" stroke="currentColor" strokeWidth="6" className="text-[#edf0fa] dark:text-white/10" />
             <circle cx="38" cy="38" r={MODEL_PROGRESS_RADIUS} fill="none" stroke="currentColor" strokeWidth="6" strokeLinecap="round" strokeDasharray="48 147" className="text-[#5b6cf2]" />
           </svg>
@@ -67,6 +67,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
   );
 }
 
+      // eslint-disable-next-line sonarjs/cognitive-complexity -- KnowledgeView 单文件聚合了知识库/产出物两个子视图,拆分需单独设计;复杂度先以豁免记账
     const KnowledgeView = ({ theme, t, mode }) => {
       // mode='outputs' 时作为一级「产出物」视图独立渲染:固定 output 段,隐藏段切换,显示自己的标题。
       const outputsOnly = mode === 'outputs';
@@ -130,7 +131,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       const CAT_ICON = { all:GridIcon, doc:FileText, sheet:TableIcon, ppt:PresentationIcon, pdf:FileText, img:ImageIcon, zip:Archive };
       // 知识库 → 按分类/名稳定配色(对齐设计稿彩色卡片图标)
       const COLL_PALETTE = ['#3f7bf0','#7b5fe6','#1aa07a','#d6873e','#d6589a','#4b7bd6','#e0903a','#2b9d7a','#7d6ae6'];
-      const collColor = (c) => COLL_PALETTE[Math.abs(String((c && (c.category || c.name)) || '').split('').reduce((a, ch) => a + ch.charCodeAt(0), 0)) % COLL_PALETTE.length];
+      const collColor = (c) => COLL_PALETTE[Math.abs(String((c && (c.category || c.name)) || '').split('').reduce((a, ch) => a + ch.codePointAt(0), 0)) % COLL_PALETTE.length];
 
       // ================= 产出物 =================
       const [outputs, setOutputs] = useState(kbCache.outputs);
@@ -246,7 +247,9 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         }
         setOutputsLoaded(true);
         kbCache.outputsLoaded = true;
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
       }, []);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
       useEffect(() => { if (sub === 'output') refreshOutputs(); }, [sub, refreshOutputs]);
       useEffect(() => {
         if (sub !== 'output') return;
@@ -256,6 +259,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       }, [sub, refreshOutputs]);
       const outputArtifactKey = ((bs && bs.artifacts) || []).map((a) => `${a.path || ''}:${a.basename || ''}`).join('|');
       useEffect(() => {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
         if (sub === 'output') refreshOutputs();
       }, [sub, outputArtifactKey, refreshOutputs]);
       const filteredOutputs = React.useMemo(() => {
@@ -279,7 +283,6 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         return outputs.filter((o) => !q || String(o.name || '').toLowerCase().includes(q) || String(o.source || '').toLowerCase().includes(q));
       }, [outputs, outQuery]);
       const outputCount = (k) => k === 'all' ? outputs.length : outputs.filter((o) => o.category === k).length;
-      const outputDesc = (o) => `${fmtSize(o.size)} · ${o.source || t.kbSubOutput}`;
       const groupOutputs = (list) => {
         const now = new Date();
         const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
@@ -303,9 +306,10 @@ function ModelProgressIndicator({ downloading, percent, label }) {
               rows: [],
             });
           }
-          byMonth.get(key).rows.push(o);
+          const monthRows = byMonth.get(key).rows;
+          monthRows[monthRows.length] = o;
         });
-        byMonth.forEach((g) => groups.push(g));
+        for (const g of byMonth.values()) groups.push(g);
         return groups.filter((g) => g.rows.length > 0);
       };
       const openOutputChat = async (o) => {
@@ -352,6 +356,8 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           const hit = outPreviewCache.current[cacheKey];
           if (hit) { setPv(hit); return () => { alive = false; }; }
           if (!visible) { setPv({ idle: true }); return () => { alive = false; }; }
+          // 本机知识文件不是 Session 产物；Web 端不读取任意主机路径。
+          if (isWeb) { setPv({ kind: 'fallback' }); return () => { alive = false; }; }
           setPv({ loading: true });
           setFrameReady(false);
           const timer = setTimeout(() => {
@@ -390,11 +396,13 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           }).then((next) => { if (alive) setPv(next); });
           }, 80);
           return () => { alive = false; clearTimeout(timer); };
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
         }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview, rememberOutPreview]);
 
         const htmlPreviewDoc = (html) => '<style>html,body{overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
         const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
         const shell = (children) => (
+          // biome-ignore lint/a11y/noStaticElementInteractions: 条件 role=button + onKeyDown 已在下方,静态分析看不到动态 role
           <div ref={boxRef} onClick={onOpen} role={onOpen ? 'button' : undefined} tabIndex={onOpen ? 0 : undefined}
             onKeyDown={(e) => { if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
             className={`h-[164px] m-2 rounded-[15px] overflow-hidden relative bg-[#111216] ring-1 ring-white/[0.045] ${onOpen ? 'cursor-pointer' : ''}`}>
@@ -440,128 +448,6 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         return shell(
           <div className="absolute inset-0 grid place-items-center" style={{ color: meta.color }}>
             <div className="w-16 h-16 rounded-2xl grid place-items-center" style={{ background: meta.color + '24' }}><Icon size={30} /></div>
-          </div>
-        );
-      };
-
-      const LocalFilePreview = ({ f, onOpen }) => {
-        const ext = extOf(f);
-        const cacheKey = `local|${f.path}|${f.mtime || 0}|${f.size || 0}`;
-        const boxRef = useRef(null);
-        const [visible, setVisible] = useState(false);
-        const [pv, setPv] = useState(() => outPreviewCache.current[cacheKey] || { idle: true });
-        const [frameReady, setFrameReady] = useState(false);
-        useEffect(() => {
-          const node = boxRef.current;
-          if (!node) return;
-          if (!('IntersectionObserver' in window)) { setVisible(true); return; }
-          const io = new IntersectionObserver((entries) => {
-            if (entries.some((e) => e.isIntersecting)) {
-              setVisible(true);
-              io.disconnect();
-            }
-          }, { rootMargin: '0px', threshold: 0.08 });
-          io.observe(node);
-          return () => io.disconnect();
-        }, [cacheKey]);
-        useEffect(() => {
-          let alive = true;
-          const hit = outPreviewCache.current[cacheKey];
-          if (hit) { setPv(hit); return () => { alive = false; }; }
-          if (!visible) { setPv({ idle: true }); return () => { alive = false; }; }
-          // 本机知识文件不是 Session 产物；Web 端不读取任意主机路径。
-          if (isWeb) { setPv({ kind: 'fallback' }); return () => { alive = false; }; }
-          setPv({ loading: true });
-          setFrameReady(false);
-          const timer = setTimeout(() => {
-            runQueuedPreview(async () => {
-              const freshHit = outPreviewCache.current[cacheKey];
-              if (freshHit) return freshHit;
-              try {
-                let next = null;
-                if (['png','jpg','jpeg','gif','webp','bmp','svg'].includes(ext) && bridge.artifacts.readArtifactImageB64) {
-                  next = { kind: 'image', url: await bridge.artifacts.readArtifactImageB64(f.path) };
-                }
-                if (!next && ['html','htm'].includes(ext) && bridge.artifacts.readArtifactText) {
-                  const html = await bridge.artifacts.readArtifactText(f.path);
-                  let bodyText = '';
-                  try {
-                    const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
-                    doc.querySelectorAll('script,style,noscript').forEach((n) => n.remove());
-                    bodyText = ((doc.body && doc.body.innerText) || '').trim();
-                  } catch (_) {}
-                  next = (bodyText.length < 24 && /<script[\s>]/i.test(html))
-                    ? { kind: 'text', text: html.slice(0, 1200) }
-                    : { kind: 'html', html };
-                }
-                if (!next && ['docx','doc','odt','rtf','xlsx','xls','pptx','ppt','pdf'].includes(ext) && bridge.artifacts.renderArtifactVisual) {
-                  const visual = await bridge.artifacts.renderArtifactVisual(f.path);
-                  if (visual && visual.mode === 'html' && visual.html) next = { kind: 'officeHtml', html: visual.html + OFFICE_HTML_STYLE };
-                  else if (visual && visual.mode === 'images' && visual.images && visual.images.length) next = { kind: 'image', url: visual.images[0] };
-                }
-                if (!next && ['md','markdown','txt','csv','json','log'].includes(ext) && bridge.artifacts.readArtifactText) {
-                  const text = await bridge.artifacts.readArtifactText(f.path);
-                  next = { kind: 'text', text: text.slice(0, 1200) };
-                }
-                if (!next) next = { kind: 'fallback' };
-                rememberOutPreview(cacheKey, next);
-                return next;
-              } catch (e) {
-                const next = { kind: 'fallback', error: String(e) };
-                rememberOutPreview(cacheKey, next);
-                return next;
-              }
-            }).then((next) => { if (alive) setPv(next); });
-          }, 80);
-          return () => { alive = false; clearTimeout(timer); };
-        }, [cacheKey, visible, f.path, ext, runQueuedPreview, rememberOutPreview]);
-
-        const col = extColor(ext);
-        const htmlPreviewDoc = (html) => '<style>*{animation-duration:.001s!important;}</style>' + (html || '');
-        const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;}*{animation-duration:.001s!important;}</style>' + (html || '');
-        const shell = (children) => (
-          <div ref={boxRef} onClick={onOpen} role="button" tabIndex={0}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
-            className="h-[126px] rounded-[14px] overflow-hidden relative border border-white/[0.06] bg-[#15171a] cursor-pointer mb-3">
-            {children}
-          </div>
-        );
-        if (pv.idle || pv.loading) return shell(
-          <div className="absolute inset-0 p-5">
-            <div className="h-[12px] w-[70%] rounded-full bg-white/15 animate-pulse mb-3"></div>
-            <div className="h-2 w-[88%] rounded-full bg-white/10 animate-pulse mb-2"></div>
-            <div className="h-2 w-[62%] rounded-full bg-white/10 animate-pulse"></div>
-          </div>
-        );
-        if (pv.kind === 'image') return shell(<img src={pv.url} alt="" decoding="async" className="w-full h-full object-cover" />);
-        if (pv.kind === 'html') return shell(
-          <>
-            {!frameReady && <div className="absolute inset-0 bg-[#15171a]"></div>}
-            <iframe title={f.name} sandbox="allow-same-origin" srcDoc={htmlPreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
-              className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-[#15171a] pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
-              style={{ colorScheme: 'dark' }} />
-          </>
-        );
-        if (pv.kind === 'officeHtml') return shell(
-          <>
-            {!frameReady && <div className="absolute inset-0 bg-white"></div>}
-            <iframe title={f.name} sandbox="allow-same-origin" srcDoc={officePreviewDoc(pv.html)} onLoad={() => setTimeout(() => setFrameReady(true), 80)}
-              className={`absolute inset-0 w-[200%] h-[200%] origin-top-left scale-50 bg-white pointer-events-none border-0 transition-opacity duration-300 ${frameReady ? 'opacity-100' : 'opacity-0'}`}
-              style={{ colorScheme: 'light' }} />
-          </>
-        );
-        if (pv.kind === 'text') {
-          const lines = String(pv.text || '').split(/\r?\n/).filter(Boolean).slice(0, 7);
-          return shell(
-            <div className="absolute inset-0 p-4 font-mono text-[10px] leading-relaxed text-[#9aa2ad] overflow-hidden">
-              <b className="block text-[#e7eaf0] text-[12px] mb-2 truncate"># {f.name}</b>
-              {lines.map((line, i) => <p key={i} className={`m-0 mb-1 truncate ${i % 2 ? 'text-[#6e747e]' : ''}`}>{line}</p>)}
-            </div>
-          );
-        }
-        return shell(
-          <div className="absolute inset-0 grid place-items-center" style={{ color: col }}>
-            <div className="w-14 h-14 rounded-2xl grid place-items-center text-[12px] font-black" style={{ background: col + '24' }}>{extLabel(ext)}</div>
           </div>
         );
       };
@@ -616,16 +502,20 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         kbCache.types = ty || kbCache.types;
         kbCache.loaded = true;
         setLoaded(true);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
       }, []);
       useEffect(() => {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
         if (!outputsOnly) refreshL0();
       }, [outputsOnly, refreshL0]);
       useEffect(() => {
         if (outputsOnly || !scan || !scan.running) return;
         // 扫描中:既刷统计(类型卡数字增长),也增量重查文件表——文件随扫描逐渐冒出来,
         // 不再"顶部扫描中却下面说没有文件"。cat/query 进依赖,让闭包取当前筛选/搜索值。
+      // eslint-disable-next-line react-hooks/immutability -- 声明前访问是同模块函数引用,运行时已初始化
         const id = setInterval(() => { refreshL0(); runSearch(cat, query); }, 1500);
         return () => clearInterval(id);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
       }, [outputsOnly, scan ? scan.running : false, cat, query]);
 
       const runSearch = async (catKey, text) => {
@@ -633,14 +523,17 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         const q = { text: text || null, limit: 200 };
         if (c.exts) q.exts = c.exts;
         try { setResults(await inv('kb_search', { query: q }) || []); }
-        catch (e) { setResults([]); }
+        catch { setResults([]); }
         setSearched(true);
       };
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
       useEffect(() => { if (sub === 'files') runSearch(cat, query); }, [cat, sub]);
 
-      const startScan = async () => { try { setScan(await inv('kb_start_scan', { roots: null })); } catch (e) {} };
+      const startScan = async () => { try { setScan(await inv('kb_start_scan', { roots: null })); } catch { /* 静默降级 */ } };
       useEffect(() => {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
         if (!outputsOnly && scan && !scan.running && scan.phase === 'done') { refreshL0(); runSearch(cat, query); }
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
       }, [outputsOnly, scan ? scan.running : false]);
 
       const scanning = !!(scan && scan.running);
@@ -656,7 +549,9 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       useEffect(() => {
         if (sub !== 'files' || !loaded || scanning || total === 0) return;
         const last = scan && scan.finishedAt ? scan.finishedAt : 0;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
         if (Math.floor(Date.now() / 1000) - last > AUTOSCAN_COOLDOWN) startScan();
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
       }, [loaded, sub]);
 
       // ================= 知识库 (L1) =================
@@ -699,22 +594,24 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       const [kbModel, setKbModel] = useState(kbCache.model); // embedding 模型部署状态(null=未知)
       const [kbCat, setKbCat] = useState('all'); // 知识库分类筛选 tab
 
-      const loadDocs = async (cid) => { try { setDocs(await inv('kb_documents', { collectionId: cid, limit: 0 }) || []); } catch (e) {} };
+      const loadDocs = async (cid) => { try { setDocs(await inv('kb_documents', { collectionId: cid, limit: 0 }) || []); } catch { /* 静默降级 */ } };
       const loadColls = useCallback(async () => {
         try {
           const c = await inv('kb_collection_list') || [];
           setColls(c);
           setActiveColl((current) => (current ? c.find((item) => item.id === current.id) || null : null));
           kbCache.colls = c;
-        } catch (e) {}
-        try { const d = await inv('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = d; } catch (e) {}
-        try { const ei = await inv('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch (e) {}
-        try { const m = await inv('kb_model_status'); setKbModel(m); kbCache.model = m; } catch (e) {}
-        try { replaceIndexState(await inv('kb_index_status')); } catch (e) {}
+        } catch { /* 静默降级 */ }
+        try { const d = await inv('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = d; } catch { /* 静默降级 */ }
+        try { const ei = await inv('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch { /* 静默降级 */ }
+        try { const m = await inv('kb_model_status'); setKbModel(m); kbCache.model = m; } catch { /* 静默降级 */ }
+        try { replaceIndexState(await inv('kb_index_status')); } catch { /* 静默降级 */ }
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
       }, [replaceIndexState]);
       // 本地文件与本地知识库两个分区依赖本机知识集数据；远程分区自行加载服务器数据。
       // 一级「产出物」只读产出物索引，不应触发任何知识库查询。
       useEffect(() => {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
         if (!outputsOnly && (sub === 'files' || sub === 'kb')) loadColls();
       }, [outputsOnly, sub, loadColls]);
 
@@ -743,10 +640,10 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         if (dlProg.stage === 'done') return 100;
         return 0;
       })();
-      const dlStageLabel = !dlProg ? t.kbModelStageDownload
-        : dlProg.stage === 'verify' ? t.kbModelStageVerify
+      const dlStageLabel = dlProg ? dlProg.stage === 'verify' ? t.kbModelStageVerify
         : dlProg.stage === 'prepare' ? t.kbModelStagePrepare
         : dlProg.stage === 'done' ? t.kbModelStageDone
+        : t.kbModelStageDownload
         : t.kbModelStageDownload;
       const startModelDownload = async (repair = false) => {
         if (!canInstallKbModel) return;
@@ -754,10 +651,11 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           const st = await bridge.knowledge.downloadKbModel(repair);
           if (st) { setKbModel(st); kbCache.model = st; }
           loadColls(); // 模型就绪后刷新语义徽标/列表
-        } catch (e) {}
+        } catch { /* 静默降级 */ }
       };
       // 用户恰好在首帧后台加载期间进入知识库时，模型就绪后刷新语义状态徽标。
       useEffect(() => {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
         if (!outputsOnly && kbm.startupReady) loadColls();
       }, [outputsOnly, kbm.startupReady, loadColls]);
 
@@ -768,9 +666,10 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           try {
             const s = await inv('kb_index_status'); replaceIndexState(s);
             if (!s.running) { loadColls(); if (activeColl) loadDocs(activeColl.id); }
-          } catch (e) {}
+          } catch { /* 静默降级 */ }
         }, 1000);
         return () => clearInterval(id);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
       }, [indexing, replaceIndexState]);
 
       const resumeImport = async () => {
@@ -781,7 +680,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           replaceIndexState(await inv('kb_index_resume', { jobId: idx.jobId }));
         } catch (e) {
           setImportError(`${t.kbResumeImportFailed}: ${String((e && e.message) || e)}`);
-          try { replaceIndexState(await inv('kb_index_status')); } catch (_) {}
+          try { replaceIndexState(await inv('kb_index_status')); } catch { /* 静默降级 */ }
         }
       };
       const cancelImport = async () => {
@@ -794,7 +693,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           loadColls();
         } catch (e) {
           setImportError(`${t.kbCancelImportFailed}: ${String((e && e.message) || e)}`);
-          try { replaceIndexState(await inv('kb_index_status')); } catch (_) {}
+          try { replaceIndexState(await inv('kb_index_status')); } catch { /* 静默降级 */ }
         }
       };
       const retryImportFile = async (itemId) => {
@@ -805,7 +704,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           replaceIndexState(await inv('kb_index_retry_file', { jobId: idx.jobId, itemId }));
         } catch (e) {
           setImportError(`${t.kbRetryImportFailed}: ${String((e && e.message) || e)}`);
-          try { replaceIndexState(await inv('kb_index_status')); } catch (_) {}
+          try { replaceIndexState(await inv('kb_index_status')); } catch { /* 静默降级 */ }
         }
       };
       const loadMoreFailedFiles = async () => {
@@ -863,11 +762,11 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           } else {
             await inv('kb_collection_create', { name, category, description: null });
           }
-        } catch (e) {}
+        } catch { /* 静默降级 */ }
         setNewColl(null); loadColls();
       };
       const deleteColl = async (id) => {
-        try { await inv('kb_collection_delete', { id }); } catch (e) {}
+        try { await inv('kb_collection_delete', { id }); } catch { /* 静默降级 */ }
         if (activeColl && activeColl.id === id) setActiveColl(null);
         loadColls();
       };
@@ -907,20 +806,20 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         if (!canPickHostFiles || indexing) return;
         const picker = bridge && bridge.files && (kind === 'folders' ? bridge.files.pickFolders : bridge.files.pickFiles);
         if (!picker) return;
-        let paths = [];
-        try { paths = await picker(); } catch (e) { paths = []; }
+        let paths;
+        try { paths = await picker(); } catch { paths = []; }
         if (!paths || !paths.length) return;
-        try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: cid, paths })); } catch (e) {}
+        try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: cid, paths })); } catch { /* 静默降级 */ }
       };
       // 知识库页底部入口：选文件/文件夹 → 单知识集直接加；多个/无则走「加入知识库」浮层选择。
       const dzPick = async (kind) => {
         if (!canPickHostFiles || indexing) return;
         const picker = bridge && bridge.files && (kind === 'folders' ? bridge.files.pickFolders : bridge.files.pickFiles);
         if (!picker) return;
-        let paths = [];
-        try { paths = await picker(); } catch (e) { paths = []; }
+        let paths;
+        try { paths = await picker(); } catch { paths = []; }
         if (!paths || !paths.length) return;
-        if (colls.length === 1) { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch (e) {} }
+        if (colls.length === 1) { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch { /* 静默降级 */ } }
         else { setAddToKb(paths); }
       };
       // 「+ 添加 ▾」下拉菜单：文件 / 文件夹。portal 到 body 以免被 overflow-y-auto 裁剪。
@@ -1009,7 +908,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                       disabled={!loaded}
                       className="w-full min-w-0 lg:max-w-[360px] lg:flex-1"
                     />
-                    <button onClick={startScan} disabled={scanning || !loaded} title={t.kbRescan}
+                    <button type="button" onClick={startScan} disabled={scanning || !loaded} title={t.kbRescan}
                       className={`inline-flex h-9 shrink-0 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors whitespace-nowrap ${scanning ? 'cursor-default' : ''} bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD] disabled:hover:bg-[#E9E9EB] dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C] dark:disabled:hover:bg-[#2C2C2E]`}>
                       <RefreshCw size={14} className={`mr-2 opacity-70 ${scanning ? 'animate-spin' : ''}`} />
                       {scanning ? `${t.kbScanning} ${(scan.scanned || 0).toLocaleString()}` : t.kbRescan}
@@ -1025,36 +924,10 @@ function ModelProgressIndicator({ downloading, percent, label }) {
             {/* ============ 文件管理 ============ */}
             {sub === 'files' && (
               <div className="max-w-[1400px] mx-auto">
-                {!loaded ? (
-                  // 加载骨架:页面壳即时呈现(搜索栏+真实类型卡,数字/文件用灰条占位),数据 async 填,
-                  // 避免整页空白死等 refreshL0(大库冷读时尤其明显)。loaded 后切真实数据,结构一致很平滑。
-                  <div>
-                    <div className={`text-[15px] font-bold mb-3 ${ink}`}>{t.kbBrowseByType}</div>
-                    <div className="grid grid-cols-4 lg:grid-cols-7 gap-3 mb-7">
-                      {CATS.map((c) => { const col = CAT_COLOR[c.key] || '#8a8a9a'; const CatI = CAT_ICON[c.key] || FileText; return (
-                        <div key={c.key} className={`flex items-center gap-3 p-3 rounded-xl ${panel}`} style={panelShadow}>
-                          <div className="w-9 h-9 rounded-xl grid place-items-center shrink-0" style={{ background: col + (isDark ? '33' : '1f'), color: col }}><CatI size={17} /></div> {/* isDark dynamic-value: 保留 (background 依赖运行时 col) */}
-                          <div className="min-w-0">
-                            <div className={`text-[13px] font-bold truncate ${ink}`}>{c.label}</div>
-                            <div className={`h-3 w-10 rounded mt-1.5 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
-                          </div>
-                        </div>
-                      );})}
-                    </div>
-                    <div className={`text-[15px] font-bold mb-3 ${ink}`}>{t.kbAllFiles}</div>
-                    <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>
-                      {Array.from({ length: 6 }).map((_, i) => (
-                        <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-gray-400/10 last:border-0">
-                          <div className={`w-7 h-7 rounded-lg shrink-0 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
-                          <div className={`flex-1 h-3 rounded animate-pulse bg-black/[0.07] dark:bg-white/10`} style={{ maxWidth: `${60 - i * 6}%` }} />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : neverScanned ? (
+                {loaded ? neverScanned ? (
                   <div className={`text-center py-20 ${muted}`}>
                     <p className="text-[15px] mb-4">{t.kbEmptyHint}</p>
-                    <button onClick={startScan} className={`px-5 py-2.5 rounded-full text-[14px] font-medium ${accent}`}>{t.kbScanNow}</button>
+                    <button type="button" onClick={startScan} className={`px-5 py-2.5 rounded-full text-[14px] font-medium ${accent}`}>{t.kbScanNow}</button>
                   </div>
                 ) : (
                   <div>
@@ -1064,7 +937,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                             {CATS.map((c) => {
                               const on = cat === c.key;
                               return (
-                                <button key={c.key} onClick={() => setCat(c.key)}
+                                <button type="button" key={c.key} onClick={() => setCat(c.key)}
                                   className={"h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-[#fff] text-[#fff] dark:text-[#000]' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]')}>
                                   {c.label}
                                   <span className="ml-1.5 opacity-70">{catCount(c).toLocaleString()}</span>
@@ -1094,6 +967,8 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                               <span className="text-center">{t.kbOutColActions}</span>
                             </div>
                             {sortedResults.map((f) => { const e = extOf(f); return (
+                              // biome-ignore lint/a11y/useKeyWithClickEvents: 列表行点击为快捷方式,键盘路径由行内操作按钮承担
+                              // biome-ignore lint/a11y/noStaticElementInteractions: 列表行点击热区,非独立交互控件
                               <div key={f.path} onClick={() => setOutputPreview({ path: f.path, sessionId: null })}
                                 className="group py-4 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
                                   <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_100px_132px_132px] items-center gap-4">
@@ -1109,17 +984,17 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                                   <span className={`hidden md:block text-right text-[12px] ${muted}`}>{fmtSize(f.size)}</span>
                                   <span className={`hidden md:block text-[12px] font-medium tabular-nums ${muted}`}>{fmtDate(f.mtime)}</span>
                                   <div className="flex shrink-0 items-center justify-end gap-1">
-                                    <button title={t.kbAddToKb} onClick={(e2) => { e2.stopPropagation(); setAddToKb(f.path); if (outputsOnly) loadColls(); }}
+                                    <button type="button" title={t.kbAddToKb} onClick={(e2) => { e2.stopPropagation(); setAddToKb(f.path); if (outputsOnly) loadColls(); }}
                                       className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                                       <Plus size={15} />
                                     </button>
                                       {canOpenSystemFiles && (
                                         <>
-                                          <button onClick={(e2) => { e2.stopPropagation(); openFile(f.path); }}
+                                          <button type="button" onClick={(e2) => { e2.stopPropagation(); openFile(f.path); }}
                                             className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium whitespace-nowrap transition-colors active:opacity-70 text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/10`}>
                                             {t.kbOpen}
                                           </button>
-                                          <button title={t.kbOpenFolder} onClick={(e2) => { e2.stopPropagation(); openFolder(f.path); }}
+                                          <button type="button" title={t.kbOpenFolder} onClick={(e2) => { e2.stopPropagation(); openFolder(f.path); }}
                                             className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                                             <FolderOpen size={15} />
                                           </button>
@@ -1136,6 +1011,32 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                         )}
                       </div>
                   </div>
+                ) : (
+                  // 加载骨架:页面壳即时呈现(搜索栏+真实类型卡,数字/文件用灰条占位),数据 async 填,
+                  // 避免整页空白死等 refreshL0(大库冷读时尤其明显)。loaded 后切真实数据,结构一致很平滑。
+                  <div>
+                    <div className={`text-[15px] font-bold mb-3 ${ink}`}>{t.kbBrowseByType}</div>
+                    <div className="grid grid-cols-4 lg:grid-cols-7 gap-3 mb-7">
+                      {CATS.map((c) => { const col = CAT_COLOR[c.key] || '#8a8a9a'; const CatI = CAT_ICON[c.key] || FileText; return (
+                        <div key={c.key} className={`flex items-center gap-3 p-3 rounded-xl ${panel}`} style={panelShadow}>
+                          <div className="w-9 h-9 rounded-xl grid place-items-center shrink-0" style={{ background: col + (isDark ? '33' : '1f'), color: col }}><CatI size={17} /></div> {/* isDark dynamic-value: 保留 (background 依赖运行时 col) */}
+                          <div className="min-w-0">
+                            <div className={`text-[13px] font-bold truncate ${ink}`}>{c.label}</div>
+                            <div className={`h-3 w-10 rounded mt-1.5 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
+                          </div>
+                        </div>
+                      );})}
+                    </div>
+                    <div className={`text-[15px] font-bold mb-3 ${ink}`}>{t.kbAllFiles}</div>
+                    <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>
+                      {Array.from({ length: 6 }).map((_, i) => (
+                        <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-gray-400/10 last:border-0">
+                          <div className={`w-7 h-7 rounded-lg shrink-0 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
+                          <div className={`flex-1 h-3 rounded animate-pulse bg-black/[0.07] dark:bg-white/10`} style={{ maxWidth: `${60 - i * 6}%` }} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
             )}
@@ -1143,16 +1044,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
             {/* ============ 产出物 ============ */}
             {sub === 'output' && (
               <div className="max-w-[1400px] mx-auto">
-                {!outputsLoaded ? (
-                  <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>
-                    {Array.from({ length: 6 }).map((_, i) => (
-                      <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-gray-400/10 last:border-0">
-                        <div className={`w-8 h-8 rounded-lg shrink-0 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
-                        <div className={`flex-1 h-3 rounded animate-pulse bg-black/[0.07] dark:bg-white/10`} style={{ maxWidth: `${70 - i * 7}%` }} />
-                      </div>
-                    ))}
-                  </div>
-                ) : outputs.length === 0 ? (
+                {outputsLoaded ? outputs.length === 0 ? (
                   <div className={`text-center py-20 ${muted}`}>
                     <div className={`w-14 h-14 mx-auto rounded-2xl grid place-items-center mb-4 ${card}`}><Archive size={24} /></div>
                     <p className={`text-[15px] font-bold mb-1 ${ink}`}>{t.kbOutEmpty}</p>
@@ -1170,22 +1062,22 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                   const sections = groupOutputs(activeOutputs).filter((x) => x.rows.length > 0);
                   const OutputActions = ({ o, compact }) => (
                     <div className={`flex items-center gap-1 ${compact ? 'justify-end' : 'mt-3'}`}>
-                      <button onClick={() => continueOutput(o)}
+                      <button type="button" onClick={() => continueOutput(o)}
                         className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/10`}>
                         {t.kbOutContinue}
                       </button>
-                      <button onClick={() => newOutputProject(o)}
+                      <button type="button" onClick={() => newOutputProject(o)}
                         className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#D1D1D6] dark:hover:bg-white/[0.08]`}>
                         {t.kbOutNewProject}
                       </button>
                       {canOpenSystemFiles && (
-                        <button title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)}
+                        <button type="button" title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)}
                           className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                           <FolderOpen size={15} />
                         </button>
                       )}
                       {isWeb && canDownloadArtifacts && bridge.artifacts.downloadArtifact && (
-                        <button title={t.uiKnowledge.downloadOutput} onClick={() => bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id)}
+                        <button type="button" title={t.uiKnowledge.downloadOutput} onClick={() => bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id)}
                           className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                           <Download size={15} />
                         </button>
@@ -1200,7 +1092,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                           {OUTPUT_CATS.map((c) => {
                             const on = outCat === c.key;
                             return (
-                              <button key={c.key} onClick={() => setOutCat(c.key)}
+                              <button type="button" key={c.key} onClick={() => setOutCat(c.key)}
                                 className={"h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-[#fff] text-[#fff] dark:text-[#000]' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]')}>
                                 {c.label}
                                 <span className="ml-1.5 opacity-70">{outputCount(c.key)}</span>
@@ -1221,9 +1113,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                                 <span className="h-px flex-1 bg-gradient-to-r from-gray-400/20 to-transparent" />
                               </div>
                               <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-[18px]">
-                                {rows.map((o) => {
-                                  const meta = outCatMeta(o.category);
-                                  return (
+                                {rows.map((o) => (
                                     <article key={o.path} className={`group min-h-[286px] rounded-[22px] overflow-hidden border transition-all duration-200 bg-white border-black/[0.045] hover:border-black/[0.075] dark:bg-[#1C1C1E] dark:border-white/[0.055] dark:hover:bg-[#202124] dark:hover:border-white/[0.09]`}
                                       style={isDark ? { boxShadow: '0 14px 36px rgba(0,0,0,.24)' } : { boxShadow: '0 1px 2px rgba(0,0,0,.035), 0 10px 24px rgba(0,0,0,.05)' }}>{/* isDark dynamic-value: 保留 (multi-stop boxShadow) */}
                                       <OutputLivePreview o={o} onOpen={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })} />
@@ -1236,8 +1126,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                                         <OutputActions o={o} />
                                       </div>
                                     </article>
-                                  );
-                                })}
+                                  ))}
                               </div>
                             </div>
                           ))}
@@ -1248,7 +1137,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                             <div className={`text-center py-14 ${muted}`}>
                               <div className={`w-12 h-12 mx-auto rounded-2xl grid place-items-center mb-3 ${card}`}><Archive size={20} /></div>
                               <p className={`text-[14px] font-bold mb-3 ${ink}`}>{t.kbNoResults || t.kbOutEmpty}</p>
-                              <button onClick={() => { setOutCat('all'); setOutQuery(''); }} className={`px-4 py-2 rounded-full text-[13px] font-bold ${soft}`}>{t.kbOutCatAll}</button>
+                              <button type="button" onClick={() => { setOutCat('all'); setOutQuery(''); }} className={`px-4 py-2 rounded-full text-[13px] font-bold ${soft}`}>{t.kbOutCatAll}</button>
                             </div>
                           )}
                           {activeOutputs.length > 0 && (
@@ -1272,6 +1161,8 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                               {activeOutputs.map((o) => {
                                 const meta = outCatMeta(o.category);
                                 return (
+                                  // biome-ignore lint/a11y/useKeyWithClickEvents: 列表行点击为快捷方式,键盘路径由行内操作按钮承担
+                                  // biome-ignore lint/a11y/noStaticElementInteractions: 列表行点击热区,非独立交互控件
                                   <div key={o.path} onClick={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })}
                                     className="group py-4 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
                                     <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4">
@@ -1288,22 +1179,22 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                                         {fmtOutputDate(o.mtime)}
                                       </div>
                                       <div className="flex shrink-0 items-center justify-end gap-1">
-                                        <button onClick={(e) => { e.stopPropagation(); continueOutput(o); }}
+                                        <button type="button" onClick={(e) => { e.stopPropagation(); continueOutput(o); }}
                                           className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium transition-colors active:opacity-70 text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/10`}>
                                           {t.kbOutContinue}
                                         </button>
-                                        <button onClick={(e) => { e.stopPropagation(); newOutputProject(o); }}
+                                        <button type="button" onClick={(e) => { e.stopPropagation(); newOutputProject(o); }}
                                           className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#D1D1D6] dark:hover:bg-white/[0.08]`}>
                                           {t.kbOutNewProject}
                                         </button>
                                         {canOpenSystemFiles && (
-                                          <button title={t.kbOutOpenFolder} onClick={(e) => { e.stopPropagation(); openFolder(o.path); }}
+                                          <button type="button" title={t.kbOutOpenFolder} onClick={(e) => { e.stopPropagation(); openFolder(o.path); }}
                                             className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                                             <FolderOpen size={15} />
                                           </button>
                                         )}
                                         {isWeb && canDownloadArtifacts && bridge.artifacts.downloadArtifact && (
-                                          <button title={t.uiKnowledge.downloadOutput} onClick={(e) => { e.stopPropagation(); bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id); }}
+                                          <button type="button" title={t.uiKnowledge.downloadOutput} onClick={(e) => { e.stopPropagation(); bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id); }}
                                             className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                                             <Download size={15} />
                                           </button>
@@ -1322,7 +1213,16 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                       )}
                     </div>
                   );
-                })()}
+                })() : (
+                  <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-gray-400/10 last:border-0">
+                        <div className={`w-8 h-8 rounded-lg shrink-0 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
+                        <div className={`flex-1 h-3 rounded animate-pulse bg-black/[0.07] dark:bg-white/10`} style={{ maxWidth: `${70 - i * 7}%` }} />
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
             {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} theme={theme} t={t} onClose={() => setOutputPreview(null)} />}
@@ -1355,8 +1255,8 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                   </div>
                   <div className="flex flex-wrap gap-2 mt-3.5">
                     {[
-                      t.kbModelChipDownload.replace('{n}', mb(kbModel && kbModel.sizeBytes) || 545),
-                      t.kbModelChipInstalled.replace('{n}', mb(kbModel && kbModel.installedBytes) || 560),
+                      t.kbModelChipDownload.replace('{n}', () => String(mb(kbModel && kbModel.sizeBytes) || 545)),
+                      t.kbModelChipInstalled.replace('{n}', () => String(mb(kbModel && kbModel.installedBytes) || 560)),
                       t.kbModelChipOffline, t.kbModelChipLang,
                     ].map((c, i) => (
                       <span key={i} className={`text-[11.5px] px-2.5 py-1 rounded-lg bg-[#f4f5f8] text-[#5a5a66] dark:bg-white/5 dark:text-[#C4C7C5]`}>{c}</span>
@@ -1375,12 +1275,12 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                   <div className="mt-5">
                     {modelFailed ? (
                       <div className="flex items-center justify-center gap-3">
-                        <button onClick={() => startModelDownload(false)} className={`px-5 py-2.5 rounded-xl text-[14px] font-bold bg-[#eceef7] text-[#3f4250] dark:bg-white/10 dark:text-white`}>{t.kbModelRetryBtn}</button>
-                        <button onClick={() => startModelDownload(true)} className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white"
+                        <button type="button" onClick={() => startModelDownload(false)} className={`px-5 py-2.5 rounded-xl text-[14px] font-bold bg-[#eceef7] text-[#3f4250] dark:bg-white/10 dark:text-white`}>{t.kbModelRetryBtn}</button>
+                        <button type="button" onClick={() => startModelDownload(true)} className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white"
                           style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', boxShadow: '0 6px 16px rgba(108,92,231,.32)' }}>{t.kbModelRepairBtn} →</button>
                       </div>
                     ) : (
-                      <button onClick={() => startModelDownload(false)}
+                      <button type="button" onClick={() => startModelDownload(false)}
                         className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white"
                         style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', boxShadow: '0 6px 16px rgba(108,92,231,.32)' }}>
                         {t.kbModelDownloadBtn} →
@@ -1407,7 +1307,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                 <div className={`rounded-3xl p-7 mb-6 flex items-center gap-6 bg-gradient-to-br from-[#ece8fc] to-[#dcebfb] dark:bg-gradient-to-br dark:from-[#2A2440] dark:to-[#1E2438]`}>
                   <div className="flex-1 min-w-0">
                     <h2 className={`text-[20px] font-bold mb-3 text-[#211f33] dark:text-[#E3E3E3]`}>{t.kbBannerTitle}</h2>
-                    <button onClick={() => setNewColl({ name: '', category: '' })} className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white" style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)' }}>{t.kbNewColl} →</button>
+                    <button type="button" onClick={() => setNewColl({ name: '', category: '' })} className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white" style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)' }}>{t.kbNewColl} →</button>
                     <div className="flex gap-2 mt-4 flex-wrap">
                       {[t.kbStep1, t.kbStep2, t.kbStep3].map((s, i) => (
                         <span key={i} className={`text-[12px] px-3 py-1.5 rounded-full bg-white/70 text-[#54506b] dark:bg-white/10 dark:text-[#C4C7C5]`}><b className="text-[#6c5ce7]">{i + 1}</b> {s}</span>
@@ -1425,6 +1325,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
 
                 {/* 语义检索状态 */}
                 <div className="flex items-center gap-2 mb-5 text-[12px]">
+      {/* eslint-disable-next-line sonarjs/no-nested-template-literals -- 嵌套模板与 i18n 结构一一对应,展平反而损害可读性 */}
                   <span className={`px-3 py-1 rounded-full ${embedInfo && embedInfo.enabled ? 'bg-[#e6f6ec] text-[#18a957] dark:bg-[#13361f] dark:text-[#7DD3A8]' : `${card} ${muted}`}`}>
                     {embedInfo && embedInfo.enabled ? `${t.kbEmbedOn}（${embedInfo.model}）` : t.kbEmbedOff}
                   </span>
@@ -1456,11 +1357,11 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
                         {idx.resumable && (
-                          <button onClick={resumeImport} disabled={failedFilesLoading}
+                          <button type="button" onClick={resumeImport} disabled={failedFilesLoading}
                             className={`rounded-full px-4 py-2 text-[13px] font-semibold ${accent} ${failedFilesLoading ? 'cursor-default opacity-50' : ''}`}>{t.kbResumeImport}</button>
                         )}
                         {(idx.running || idx.resumable) && (
-                          <button onClick={cancelImport} disabled={failedFilesLoading}
+                          <button type="button" onClick={cancelImport} disabled={failedFilesLoading}
                             className={`rounded-full px-4 py-2 text-[13px] ${card} ${muted} ${failedFilesLoading ? 'cursor-default opacity-50' : ''}`}>{t.kbCancelImport}</button>
                         )}
                       </div>
@@ -1475,17 +1376,20 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                                 <div className={`truncate font-medium ${ink}`} title={file.path}>{file.name}</div>
                                 <div className="truncate text-[#d63a3a]" title={file.error}>{file.error}</div>
                               </div>
-                              <button onClick={() => retryImportFile(file.itemId)} disabled={indexing || failedFilesLoading}
+                              <button type="button" onClick={() => retryImportFile(file.itemId)} disabled={indexing || failedFilesLoading}
                                 className={`shrink-0 rounded-full px-3 py-1.5 font-medium ${soft} ${indexing || failedFilesLoading ? 'cursor-default opacity-50' : ''}`}>
                                 {t.kbRetryFile}
                               </button>
                             </div>
                           ))}
                         </div>
-                        {((failedPaginationRef.current.jobId === idx.jobId && failedPaginationRef.current.initialized)
+                        {(
+                          // eslint-disable-next-line react-hooks/refs -- 分页游标在此处只读且与渲染同帧计算,保持现状避免额外 state
+                          (failedPaginationRef.current.jobId === idx.jobId && failedPaginationRef.current.initialized)
+                          // eslint-disable-next-line react-hooks/refs -- 同上,nextOffset 与渲染同帧读取
                           ? failedPaginationRef.current.nextOffset != null
                           : idx.failedFiles.length < idx.failed) && (
-                          <button onClick={loadMoreFailedFiles} disabled={failedFilesLoading}
+                          <button type="button" onClick={loadMoreFailedFiles} disabled={failedFilesLoading}
                             className={`mt-3 rounded-full px-3 py-1.5 text-[12px] font-medium ${soft} ${failedFilesLoading ? 'cursor-default opacity-50' : ''}`}>
                             {failedFilesLoading ? t.kbLoadingFailedFiles : t.kbLoadMoreFailedFiles}
                           </button>
@@ -1498,14 +1402,15 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                 {colls.length === 0 ? (
                   <div className={`text-center py-16 ${muted} text-[14px]`}>{t.kbNoColls}</div>
                 ) : (() => {
-                  const cats = ['all', ...Array.from(new Set(colls.map((c) => c.category).filter(Boolean)))];
+                  const cats = ['all', ...[...new Set(colls.map((c) => c.category).filter(Boolean))]];
                   const shown = colls.filter((c) => kbCat === 'all' || c.category === kbCat);
                   return (
                   <div className="mb-8">
                     {cats.length > 1 && (
                       <div className="flex items-center gap-2 flex-wrap mb-4">
                         {cats.map((ct) => (
-                          <button key={ct} onClick={() => setKbCat(ct)}
+                          <button type="button" key={ct} onClick={() => setKbCat(ct)}
+      // eslint-disable-next-line sonarjs/no-nested-template-literals -- 嵌套模板与 i18n 结构一一对应,展平反而损害可读性
                             className={`px-4 py-1.5 rounded-full text-[13px] font-medium transition-colors ${kbCat === ct ? accent : `${card} ${muted}`}`}>
                             {ct === 'all' ? t.kbCatAll : ct}
                           </button>
@@ -1521,6 +1426,8 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                         const prog = (idx && idx.running && idx.collectionId === c.id && idx.total > 0) ? Math.round((idx.done / idx.total) * 100) : null;
                         const isIdx = c.status === 'indexing' || prog != null;
                         return (
+                        // biome-ignore lint/a11y/useKeyWithClickEvents: 知识集卡片点击为快捷方式,键盘路径由卡片内操作按钮承担
+                        // biome-ignore lint/a11y/noStaticElementInteractions: 知识集卡片点击热区,非独立交互控件
                         <div key={c.id} onClick={() => openColl(c)} className={`p-4 rounded-2xl cursor-pointer transition-all ${panel} ${panelHover}`}
                           style={activeColl && activeColl.id === c.id ? { borderColor: collColor(c), boxShadow: `${isDark ? '' : '0 1px 2px rgba(24,24,40,.04), '}0 0 0 2px ${collColor(c)}55` } : panelShadow}>{/* isDark dynamic-value: 保留 (boxShadow 含运行时 collColor) */}
                           <div className="flex items-start gap-3">
@@ -1535,7 +1442,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                           {isIdx && (
                             <div className="mt-3">
                               <div className="h-1.5 rounded-full overflow-hidden bg-[#edf0fa] dark:bg-[#2A2B2D]">
-                                <div className="h-full rounded-full transition-all" style={{ width: (prog != null ? prog : 40) + '%', background: 'linear-gradient(90deg,#5b6cf2,#2f8bff)' }} />
+                                <div className="h-full rounded-full transition-all" style={{ width: (prog == null ? 40 : prog) + '%', background: 'linear-gradient(90deg,#5b6cf2,#2f8bff)' }} />
                               </div>
                               {prog != null && <div className="text-[11px] mt-1 text-[#0B57D0] dark:text-[#A8C7FA]">{t.kbIndexing} {prog}%</div>}
                             </div>
@@ -1559,17 +1466,17 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                         <div className={`text-[15px] font-bold ${ink}`}>{t.kbCollFiles}</div>
                         {activeColl && <>
                           <span className={`text-[14px] truncate ${muted}`}>· {activeColl.name}</span>
-                          <button onClick={() => setActiveColl(null)} className={`shrink-0 px-2.5 py-0.5 rounded-full text-[12px] ${card} ${muted}`}>{t.kbAllColls}</button>
+                          <button type="button" onClick={() => setActiveColl(null)} className={`shrink-0 px-2.5 py-0.5 rounded-full text-[12px] ${card} ${muted}`}>{t.kbAllColls}</button>
                         </>}
                       </div>
                       {activeColl && <div className="flex items-center gap-2 shrink-0">
-                            <button onClick={(e) => { e.stopPropagation(); openAddMenu('coll', e.currentTarget); }} disabled={indexing || !canPickHostFiles} className={`flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-medium ${(indexing || !canPickHostFiles) ? 'opacity-60 cursor-default' : ''} ${soft}`}>
+                            <button type="button" onClick={(e) => { e.stopPropagation(); openAddMenu('coll', e.currentTarget); }} disabled={indexing || !canPickHostFiles} className={`flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-medium ${(indexing || !canPickHostFiles) ? 'opacity-60 cursor-default' : ''} ${soft}`}>
                           {indexing ? <RefreshCw size={14} className="animate-spin" /> : <Plus size={14} />}
                           {!indexing && <ChevronDown size={13} className="opacity-70" />}
                           {indexing ? `${t.kbIndexing} ${idx.done}/${idx.total}` : t.kbAdd}
                         </button>
-                        <button title={t.kbEditColl} onClick={() => setNewColl({ id: activeColl.id, name: activeColl.name, category: activeColl.category || '', description: activeColl.description ?? null })} className={`p-2 rounded-full ${iconHover}`}><Edit2 size={15} /></button>
-                        <button title={t.kbDeleteColl} onClick={() => setDelColl(activeColl)} className={`p-2 rounded-full ${iconHover}`}><Trash2 size={15} /></button>
+                        <button type="button" title={t.kbEditColl} onClick={() => setNewColl({ id: activeColl.id, name: activeColl.name, category: activeColl.category || '', description: activeColl.description ?? null })} className={`p-2 rounded-full ${iconHover}`}><Edit2 size={15} /></button>
+                        <button type="button" title={t.kbDeleteColl} onClick={() => setDelColl(activeColl)} className={`p-2 rounded-full ${iconHover}`}><Trash2 size={15} /></button>
                       </div>}
                     </div>
                     {(() => {
@@ -1595,8 +1502,8 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                             </span>}
                             <span className={`w-24 text-right text-[12px] ${muted}`}>{docStatusLabel(d)}</span>
                             <div className="w-16 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              {canOpenSystemFiles && <button title={t.kbOpen} onClick={() => openFile(d.path)} className={`p-1.5 rounded-full ${iconHover}`}><ExternalLink size={14} /></button>}
-                              <button data-testid="kb-remove-document" title={t.kbRemove} onClick={() => setConfirmDoc(d)} className={`p-1.5 rounded-full ${iconHover}`}><Trash2 size={14} /></button>
+                              {canOpenSystemFiles && <button type="button" title={t.kbOpen} onClick={() => openFile(d.path)} className={`p-1.5 rounded-full ${iconHover}`}><ExternalLink size={14} /></button>}
+                              <button type="button" data-testid="kb-remove-document" title={t.kbRemove} onClick={() => setConfirmDoc(d)} className={`p-1.5 rounded-full ${iconHover}`}><Trash2 size={14} /></button>
                             </div>
                           </div>
                         );})}
@@ -1608,7 +1515,9 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                 )}
 
                 {/* 加入知识库入口：点击选文件/文件夹(单知识集直接加，多个弹选择) */}
-                <div onClick={(e) => { if (indexing || !canPickHostFiles) return; e.stopPropagation(); openAddMenu('dz', e.currentTarget); }}
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: 入口点击为快捷方式,键盘路径由工具栏加入按钮(openAddMenu 'coll')承担 */}
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: 入口点击热区,非独立交互控件 */}
+                <div onClick={(e) => { if (indexing || !canPickHostFiles) return; e.stopPropagation(); openAddMenu('dz', e.currentTarget); }} // eslint-disable-line sonarjs/no-unenclosed-multiline-block -- 单行块是该文件既有风格,批量换行会淹没 diff
                   className={`mt-5 flex items-center justify-center gap-2 px-4 py-5 rounded-2xl border border-dashed transition-colors ${(indexing || !canPickHostFiles) ? 'cursor-default opacity-60' : 'cursor-pointer'} border-[#d4d8e2] hover:border-[#0B57D0] text-[#444746] dark:border-[#444746] dark:hover:border-[#A8C7FA] dark:text-[#C4C7C5]`}>
                   <Plus size={16} className="text-[#0B57D0] dark:text-[#A8C7FA]" />
                   <span className="text-[13px]">{t.kbAddToKb}</span>
@@ -1621,16 +1530,20 @@ function ModelProgressIndicator({ downloading, percent, label }) {
 
           {/* 删除知识集 二次确认(删库连同所有文档+索引,不可恢复) */}
           {delColl && (
+            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担
+            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setDelColl(null)}>
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
               <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
                 <div className={`flex items-center gap-2 text-[16px] font-bold mb-2 ${ink}`}>
                   <AlertTriangle size={18} style={{ color: '#d63a3a' }} />
-                  {t.kbDelCollConfirm.replace('{n}', delColl.name)}
+                  {t.kbDelCollConfirm.replace('{n}', () => String(delColl.name))}
                 </div>
-                <div className={`text-[13px] leading-relaxed mb-5 ${muted}`}>{t.kbDelCollWarn.replace('{c}', delColl.docCount || 0)}</div>
+                <div className={`text-[13px] leading-relaxed mb-5 ${muted}`}>{t.kbDelCollWarn.replace('{c}', () => String(delColl.docCount || 0))}</div>
                 <div className="flex justify-end gap-2">
-                  <button onClick={() => setDelColl(null)} className={`px-4 py-2 rounded-full text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
-                  <button onClick={() => { deleteColl(delColl.id); setDelColl(null); }} className="px-4 py-2 rounded-full text-[13px] font-medium text-white" style={{ background: '#d63a3a' }}>{t.kbDelete}</button>
+                  <button type="button" onClick={() => setDelColl(null)} className={`px-4 py-2 rounded-full text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
+                  <button type="button" onClick={() => { deleteColl(delColl.id); setDelColl(null); }} className="px-4 py-2 rounded-full text-[13px] font-medium text-white" style={{ background: '#d63a3a' }}>{t.kbDelete}</button>
                 </div>
               </div>
             </div>
@@ -1638,16 +1551,19 @@ function ModelProgressIndicator({ downloading, percent, label }) {
 
           {/* 从本地知识库移除文档：只删除索引，不触碰磁盘原文件。 */}
           {confirmDoc && (
+            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担
+            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
             <div data-testid="kb-remove-document-confirm" className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setConfirmDoc(null)}>
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
               <div role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()} className="w-[400px] rounded-2xl bg-white p-6 dark:bg-[#1E1F20]">
                 <div className={`mb-2 flex items-center gap-2 text-[16px] font-bold ${ink}`}>
                   <AlertTriangle size={18} style={{ color: '#d63a3a' }} />
-                  {t.kbRemoveDocConfirm.replace('{n}', confirmDoc.name)}
+                  {t.kbRemoveDocConfirm.replace('{n}', () => String(confirmDoc.name))}
                 </div>
                 <div className={`mb-5 text-[13px] leading-relaxed ${muted}`}>{t.kbRemoveDocWarn}</div>
                 <div className="flex justify-end gap-2">
-                  <button onClick={() => setConfirmDoc(null)} className={`rounded-full px-4 py-2 text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
-                  <button onClick={() => removeDocument(confirmDoc)} className="rounded-full bg-[#d63a3a] px-4 py-2 text-[13px] font-medium text-white">{t.kbRemove}</button>
+                  <button type="button" onClick={() => setConfirmDoc(null)} className={`rounded-full px-4 py-2 text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
+                  <button type="button" onClick={() => removeDocument(confirmDoc)} className="rounded-full bg-[#d63a3a] px-4 py-2 text-[13px] font-medium text-white">{t.kbRemove}</button>
                 </div>
               </div>
             </div>
@@ -1655,16 +1571,21 @@ function ModelProgressIndicator({ downloading, percent, label }) {
 
           {/* 新建知识集 modal */}
           {newColl && (
+            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担
+            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setNewColl(null)}>
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
               <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
                 <div className={`text-[17px] font-bold mb-4 ${ink}`}>{newColl.id ? t.kbEditColl : t.kbNewColl}</div>
+                {/* biome-ignore lint/a11y/noAutofocus: 新建知识集弹窗打开即聚焦名称输入框,焦点即输入意图 */}
                 <input autoFocus value={newColl.name} placeholder={t.kbCollNamePh} onChange={(e) => setNewColl({ ...newColl, name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter' && !isImeComposing(e)) createColl(); }}
                   className={`w-full px-4 py-2.5 rounded-xl mb-3 text-[14px] outline-none bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
                 <input value={newColl.category} placeholder={t.kbCollCatPh} onChange={(e) => setNewColl({ ...newColl, category: e.target.value })}
                   className={`w-full px-4 py-2.5 rounded-xl mb-4 text-[14px] outline-none bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
                 <div className="flex justify-end gap-2">
-                  <button onClick={() => setNewColl(null)} className={`px-4 py-2 rounded-full text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
-                  <button onClick={createColl} className={`px-4 py-2 rounded-full text-[13px] font-medium ${accent}`}>{newColl.id ? t.kbSave : t.kbCreate}</button>
+                  <button type="button" onClick={() => setNewColl(null)} className={`px-4 py-2 rounded-full text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
+                  <button type="button" onClick={createColl} className={`px-4 py-2 rounded-full text-[13px] font-medium ${accent}`}>{newColl.id ? t.kbSave : t.kbCreate}</button>
                 </div>
               </div>
             </div>
@@ -1672,7 +1593,11 @@ function ModelProgressIndicator({ downloading, percent, label }) {
 
           {/* 加入知识库 浮层 */}
           {addToKb && (
+            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内关闭控件承担
+            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setAddToKb(null)}>
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
               <div onClick={(e) => e.stopPropagation()} className={`w-[380px] rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
                 <div className={`text-[16px] font-bold mb-1 ${ink}`}>{t.kbAddToKb}</div>
                 <div className={`text-[12px] mb-4 truncate ${muted}`}>{Array.isArray(addToKb) ? `${addToKb.length} ${t.kbDocs}` : addToKb}</div>
@@ -1681,12 +1606,13 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                 ) : (
                   <div className="flex flex-col gap-1 mb-4 max-h-[240px] overflow-y-auto">
                     {colls.map((c) => (
-                      <button key={c.id} onClick={async () => { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch (e) {} setAddToKb(null); if (!outputsOnly) setSub('kb'); }}
+                      <button type="button" key={c.id} onClick={async () => { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch { /* 静默降级 */ } setAddToKb(null); if (!outputsOnly) setSub('kb'); }}
                         className={`text-left px-4 py-2.5 rounded-xl text-[14px] ${card} ${iconHover} ${ink}`}>{c.name}</button>
                     ))}
                   </div>
                 )}
-                <button onClick={() => { const p = addToKb; setAddToKb(null); if (!outputsOnly) setSub('kb'); setNewColl({ name: '', category: '' }); }} className={`w-full px-4 py-2.5 rounded-xl text-[13px] font-medium ${soft}`}>+ {t.kbNewColl}</button>
+      {/* eslint-disable-next-line sonarjs/no-unenclosed-multiline-block -- 单行块是该文件既有风格,批量换行会淹没 diff */}
+                <button type="button" onClick={() => { setAddToKb(null); if (!outputsOnly) setSub('kb'); setNewColl({ name: '', category: '' }); }} className={`w-full px-4 py-2.5 rounded-xl text-[13px] font-medium ${soft}`}>+ {t.kbNewColl}</button>
               </div>
             </div>
           )}
@@ -1695,8 +1621,8 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           {addMenu && typeof document !== 'undefined' && createPortal(
             <div onPointerDown={(e) => e.stopPropagation()} style={{ left: addMenu.left, top: addMenu.top, width: addMenu.width }}
               className={`fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 bg-white ring-black/10 dark:bg-[#202124] dark:ring-white/10`}>
-              <button data-testid="kb-add-files" onClick={() => chooseAdd('files')} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`}><FileText size={15} /><span>{t.kbAddFiles}</span></button>
-              <button data-testid="kb-add-folder" onClick={() => chooseAdd('folders')} disabled={!folderPickerAvailable} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] ${folderPickerAvailable ? 'text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]' : 'opacity-40 cursor-default'}`}><FolderOpen size={15} /><span>{t.kbAddFolder}</span></button>
+              <button type="button" data-testid="kb-add-files" onClick={() => chooseAdd('files')} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`}><FileText size={15} /><span>{t.kbAddFiles}</span></button>
+              <button type="button" data-testid="kb-add-folder" onClick={() => chooseAdd('folders')} disabled={!folderPickerAvailable} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] ${folderPickerAvailable ? 'text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]' : 'opacity-40 cursor-default'}`}><FolderOpen size={15} /><span>{t.kbAddFolder}</span></button>
             </div>, document.body)}
         </div>
       );

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ChevronDown, ChevronRight, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
@@ -47,6 +47,7 @@ function clampPanelWidth(width, rootWidth) {
 
 function savedPanelWidth() {
   try {
+    // eslint-disable-next-line unicorn/prefer-number-coercion -- 需要整数语义:解析失败/非整数宽度应回退默认值,Number() 会接受小数
     const value = Number.parseInt(localStorage.getItem(PANEL_WIDTH_KEY) || '', 10);
     return Number.isFinite(value) && value >= PANEL_MIN_WIDTH ? value : PANEL_DEFAULT_WIDTH;
   } catch {
@@ -117,6 +118,7 @@ function CompactToolRow({ item, conversationCopy }) {
   );
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- 列表/详情双态面板:轮询复位、祖先展开与窗口步进共享同一组会话生命周期状态,拆分会割裂联动
 export function SubagentTranscriptPanel({
   sessionId,
   initialAgentId,
@@ -132,6 +134,7 @@ export function SubagentTranscriptPanel({
 
   const [selectedAgentId, setSelectedAgentId] = useState(initialAgentId || null);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 外部选定代理变化时同步镜像一次,避免展示过期详情
     setSelectedAgentId(initialAgentId || null);
   }, [sessionId, initialAgentId, selectionRequestId]);
 
@@ -140,11 +143,12 @@ export function SubagentTranscriptPanel({
   const [listReadFailed, setListReadFailed] = useState(false);
   const [listWake, setListWake] = useState(0);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 换会话时同步复位列表态,一次性镜像
     setAgents(null);
     setListReadFailed(false);
   }, [sessionId]);
   useEffect(() => {
-    if (!bridge.available) return undefined;
+    if (!bridge.available) return;
     return startTranscriptPolling({
       read: () => bridge.multiAgent.listSubagentTranscripts(sessionId),
       onMessages: (list) => {
@@ -168,7 +172,7 @@ export function SubagentTranscriptPanel({
     && !listReadFailed
     && agents.every((entry) => entry.done);
   useEffect(() => {
-    if (!listPollingDormant || typeof window === 'undefined') return undefined;
+    if (!listPollingDormant || typeof window === 'undefined') return;
     const wakeForNewAgent = (event) => {
       const detail = event && event.detail;
       if (!detail || detail.sessionId !== sessionId || !detail.agentId) return;
@@ -187,12 +191,14 @@ export function SubagentTranscriptPanel({
   const roleOrdinals = useMemo(() => subagentRoleOrdinals(agents || []), [agents]);
   const [expandedAgentIds, setExpandedAgentIds] = useState(() => new Set());
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 换会话时同步清空展开集,一次性镜像
     setExpandedAgentIds(new Set());
   }, [sessionId]);
   useEffect(() => {
     if (!selectedAgentId || !Array.isArray(agents)) return;
     const ancestors = subagentAncestorIds(agents, selectedAgentId);
     if (!ancestors.length) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 选定代理后同步展开其祖先链,保证目标行可见
     setExpandedAgentIds((current) => {
       if (ancestors.every(id => current.has(id))) return current;
       return new Set([...current, ...ancestors]);
@@ -224,9 +230,11 @@ export function SubagentTranscriptPanel({
   const transcriptUnavailable = !!(agent && agent.has_transcript === false);
   const terminalWithoutTranscript = agentDone && transcriptUnavailable;
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换代理时同步重置可见窗口步长
     setVisibleTranscriptItems(TRANSCRIPT_WINDOW_STEP);
   }, [sessionId, selectedAgentId]);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换代理时同步清空旧记录并复位读取态
     setMessages(null);
     setTranscriptReadFailed(false);
     transcriptCursorRef.current = null;
@@ -393,7 +401,10 @@ export function SubagentTranscriptPanel({
       className="flex relative max-w-[88vw] min-w-0 shrink-0 border-l border-black/[0.06] dark:border-white/[0.07] bg-white/92 dark:bg-[#17181A]/96 backdrop-blur-xl flex-col"
       data-testid="subagent-transcript-panel"
     >
+      {/* biome-ignore lint/a11y/useFocusableInteractive: 拖拽分隔条依赖鼠标拖拽,div 语义 */}
+      {/* biome-ignore lint/a11y/useSemanticElements: 拖拽分隔条需要 div 语义 */}
       <div
+        // biome-ignore lint/a11y/useAriaPropsForRole: 拖拽分隔条非焦点控件,valuenow 语义不适用
         role="separator"
         aria-label={copy.panelResize}
         aria-orientation="vertical"

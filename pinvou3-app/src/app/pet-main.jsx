@@ -1,4 +1,3 @@
-import React from 'react';
 import { createRoot } from 'react-dom/client';
 import PetWindow from '../features/pet/PetWindow.jsx';
 import { ensureLanguage, initialSystemLanguage } from '../shared/i18n.js';

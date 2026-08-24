@@ -1,7 +1,6 @@
-import React from 'react';
 
 const I = ({size=24,className='',children}) => (
-      <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none"
         stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
         className={className}>{children}</svg>
     );

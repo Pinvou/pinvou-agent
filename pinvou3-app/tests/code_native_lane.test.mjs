@@ -35,7 +35,7 @@ try {
 
   // ── 发送 + 流式回合 ─────────────────────────────────────────────
   const lane = createNativeLane();
-  const optimisticId = appendLocalUserMessage(lane, '修复登录页样式');
+  appendLocalUserMessage(lane, '修复登录页样式');
   assert.equal(lane.busy, true, '乐观插入后即 busy');
   assert.equal(lane.timeline.filter(event => event.event === 'user_start').length, 1);
 

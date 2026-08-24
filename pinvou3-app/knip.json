@@ -1,0 +1,51 @@
+{
+  "$schema": "./node_modules/knip/schema.json",
+  "entry": [
+    "src/index.html",
+    "src/pet.html",
+    "src/reader.html",
+    "src/app/main.jsx",
+    "src/app/pet-main.jsx",
+    "src/app/personas-overlay.js",
+    "scripts/tauri/build.js",
+    "scripts/audit-compat.mjs",
+    "vite.config.js",
+    "tests/*.test.{js,mjs}",
+    "tests/*.js",
+    "src/platform/tauri/bridge.js",
+    "src/platform/tauri/bridge/*.js",
+    "src/platform/web/bridge.js",
+    "src/platform/web/bridge/*.js",
+    "src/platform/web/bootstrap.js",
+    "src/platform/web/host-file-picker.js",
+    "src/features/attachments/attachment-drop-controller.js",
+    "src/features/personas/personas-i18n.js",
+    "src/features/updater/update-notice-logic.js",
+    "src/shared/authority-sync-diagnostics.js",
+    "src/shared/bridge-messages.js",
+    "src/shared/chunked-file-upload.js",
+    "src/shared/format-utils.js",
+    "src/shared/legacy-polyfills.js",
+    "src/shared/markdown-bridge-fallback.js",
+    "src/app/reader-main.jsx",
+    "src/features/reader/ReaderApp.jsx",
+    "scripts/tauri/*.js",
+    "scripts/*.mjs"
+  ],
+  "project": [
+    "src/**/*.{js,jsx}",
+    "scripts/**/*.{js,mjs}",
+    "tests/**/*.{js,mjs}"
+  ],
+  "ignore": [
+    "src/vendor/**"
+  ],
+  "ignoreDependencies": [
+    "@tauri-apps/cli",
+    "puppeteer-core"
+  ],
+  "ignoreExportsUsedInFile": true,
+  "rules": {
+    "exports": "warn"
+  }
+}

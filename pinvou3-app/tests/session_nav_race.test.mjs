@@ -63,6 +63,7 @@ function loadSessionsFeature(overrides) {
     addSystemItem(text) { state.chatItems.push({ type: 'system', text, id: 'sys-' + (state.chatItems.length + 1) }); },
     addChatItem(item) { item.id = item.id || ('item-' + (state.chatItems.length + 1)); state.chatItems.push(item); },
     timeStr() { return ''; },
+    // eslint-disable-next-line no-unused-vars -- 测试桩/后置赋值保留
     invoke(name, args) {
       calls.invoke.push(name);
       if (deferreds[name] && deferreds[name].promise) return deferreds[name].promise;
@@ -139,7 +140,7 @@ test('ensureSession：尾部 await 期间再进草稿 → 返回 null 不漂移'
   const list = rt.defer('list_sessions'); // 挂住尾部链，制造真实 await 窗口
   const p = rt.api.ensureSession();
   create.resolve({ id: 'chat-tail' });
-  await new Promise(r => setTimeout(r, 0)); // 物化推进到尾部 refreshHistoryList 并挂起
+  await new Promise(r => { setTimeout(r, 0); }); // 物化推进到尾部 refreshHistoryList 并挂起
   rt.api.enterDraft(); // 尾部 await 期间再进草稿：activeSessionId 被 enterDraft 置 null、token 前移
   list.resolve([]);
   assert.equal(await p, null, '尾部窗口的再进草稿同样必须中止物化');
@@ -165,7 +166,7 @@ test('archiveSession（普通会话）：归档失败但等待期间再进草稿
   rt.state.activeSessionId = 'chat-a';
   const set = rt.defer('set_session_archived');
   const p = rt.api.archiveSession('chat-a');
-  await new Promise(r => setTimeout(r, 0)); // 推进到 leaveSessionView 已执行（active 已置 null）
+  await new Promise(r => { setTimeout(r, 0); }); // 推进到 leaveSessionView 已执行（active 已置 null）
   assert.equal(rt.state.activeSessionId, null);
   rt.api.enterDraft(); // 归档等待期间用户再进草稿：token 前移、active 仍为 null
   set.reject(new Error('backend down'));
@@ -180,7 +181,7 @@ test('archiveSession（普通会话）：归档失败且无导航 → 回滚 act
   rt.state.activeSessionId = 'chat-a';
   const set = rt.defer('set_session_archived');
   const p = rt.api.archiveSession('chat-a');
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   set.reject(new Error('backend down'));
   assert.equal(await p, false);
   assert.equal(rt.state.activeSessionId, 'chat-a', '无新导航时仍应回滚恢复 active');
@@ -193,7 +194,7 @@ test('archiveSession（scheduled run）：归档失败但等待期间再进草�
   rt.state.scheduledTaskRecentRuns = [{ sessionId: 'sched-run-1', runId: 'run-1' }];
   const set = rt.defer('set_session_archived');
   const p = rt.api.archiveSession('sched-run-1');
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   assert.equal(rt.state.activeSessionId, null);
   rt.api.enterDraft(); // 等待期间再进草稿
   set.reject(new Error('backend down'));
@@ -209,7 +210,7 @@ test('archiveSession（scheduled run）：归档失败且无导航 → active/co
   rt.state.scheduledTaskRecentRuns = [{ sessionId: 'sched-run-1', runId: 'run-1' }];
   const set = rt.defer('set_session_archived');
   const p = rt.api.archiveSession('sched-run-1');
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => { setTimeout(r, 0); });
   set.reject(new Error('backend down'));
   assert.equal(await p, false);
   assert.equal(rt.state.activeSessionId, 'sched-run-1', '无新导航时成对回滚');

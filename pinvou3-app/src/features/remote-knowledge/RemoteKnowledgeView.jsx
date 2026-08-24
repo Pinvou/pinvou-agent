@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle, BookOpen, Check, CheckCircle2, ChevronDown, Copy, Database, Download, FolderPlus,
@@ -29,7 +29,7 @@ const documentStatusBatchSize = 500;
 const uploadIndexPollIntervalMs = 1000;
 const uploadIndexPollTimeoutMs = 60000;
 
-const wait = duration => new Promise(resolve => window.setTimeout(resolve, duration));
+const wait = duration => new Promise(resolve => { window.setTimeout(resolve, duration); });
 
 function uploadPollSetting(name, fallback) {
   const value = Number(window[name]);
@@ -67,7 +67,7 @@ async function settleDocumentStatusBatches(documentIds, deadline, requestBatch) 
 }
 
 function stableColor(value) {
-  const hash = [...String(value || '')].reduce((total, character) => total + character.charCodeAt(0), 0);
+  const hash = [...String(value || '')].reduce((total, character) => total + character.codePointAt(0), 0);
   return collectionPalette[Math.abs(hash) % collectionPalette.length];
 }
 
@@ -91,6 +91,7 @@ function OverlayDialog({
   children,
 }) {
   const dialog = (
+    // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,键盘路径由弹窗右上角关闭按钮承担
     <div
       className="fixed inset-0 z-[80] flex items-center justify-center bg-[#17181b]/35 p-4 backdrop-blur-[2px] animate-in fade-in duration-150 motion-reduce:animate-none"
       onMouseDown={() => { if (!closeDisabled) onClose(); }}
@@ -111,7 +112,7 @@ function OverlayDialog({
             <h2 className={`text-[16px] font-bold ${ink}`}>{title}</h2>
             {description && <p className={`mt-1 text-[12px] leading-5 ${muted}`}>{description}</p>}
           </div>
-          <button className={iconButton} onClick={onClose} disabled={closeDisabled} aria-label={closeLabel}><X size={16} /></button>
+          <button type="button" className={iconButton} onClick={onClose} disabled={closeDisabled} aria-label={closeLabel}><X size={16} /></button>
         </div>
         <div className={`mt-5 ${scrollBody ? 'min-h-0 overflow-y-auto pr-1' : ''}`}>{children}</div>
       </section>
@@ -120,6 +121,7 @@ function OverlayDialog({
   return typeof document === 'undefined' ? dialog : createPortal(dialog, document.body);
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- 视图主体聚合连接/集合/文档/成员多条数据流,拆分会破坏既有结构
 function RemoteKnowledgeView({ t, embedded = false }) {
   const [connections, setConnections] = useState([]);
   const [connectionsLoaded, setConnectionsLoaded] = useState(false);
@@ -211,10 +213,10 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   const isBusy = useCallback(key => Boolean(busyCounts[key]), [busyCounts]);
   const anyBusy = Object.keys(busyCounts).length > 0;
   const connecting = isBusy('connect');
-  const invitationIsShareLink = invitation.trim().startsWith('pinvou-knowledge://share');
+  const invitationIsShareLink = invitation.trimStart().startsWith('pinvou-knowledge://share');
   const connectionDetailsReady = Boolean(deviceName.trim() && invitation.trim());
   const visibleNearbyHosts = useMemo(
-    () => nearbyHosts.filter(item => !connections.some(connection => connection.serverId === item.serverId)),
+    () => nearbyHosts.filter(item => connections.every(connection => connection.serverId !== item.serverId)),
     [connections, nearbyHosts],
   );
   const pendingOwnerJoinRequests = useMemo(
@@ -224,9 +226,9 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   const totalDocuments = collections.reduce((total, collection) => total + (collection.docCount || 0), 0);
   const totalChunks = collections.reduce((total, collection) => total + (collection.chunkCount || 0), 0);
   const uploadHasStarted = uploadQueue.some(item => item.status !== 'queued');
-  const uploadCloseLabel = !uploadHasStarted
-    ? t.remoteKbCancel
-    : (uploadInProgress ? t.remoteKbCollapse : t.remoteKbDone);
+  const uploadCloseLabel = uploadHasStarted
+    ? (uploadInProgress ? t.remoteKbCollapse : t.remoteKbDone)
+    : t.remoteKbCancel;
 
   const documentStatusLabel = status => ({
     pending: t.remoteKbStatusPending,
@@ -251,7 +253,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
       return value;
     } catch (error) {
       setNotice({ type: 'error', text: String(error) });
-      return undefined;
+      return;
     } finally {
       setBusyCounts(current => {
         const count = current[key] || 0;
@@ -274,7 +276,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   }
 
   useEffect(() => {
-    if (!isTauriAvailable()) return undefined;
+    if (!isTauriAvailable()) return;
     let disposed = false;
     let unlisten = null;
     listenTauri('shared-knowledge-host-progress', event => {
@@ -294,8 +296,9 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     };
   }, []);
 
+  /* eslint-disable react-hooks/immutability, react-hooks/exhaustive-deps -- 既有结构:下载轮询仅在下载态翻转时重建,补充 loadConnections 会造成循环重建 */
   useEffect(() => {
-    if (!showOwnerPanel || !ownerModelStatus?.downloading || !selectedServerId) return undefined;
+    if (!showOwnerPanel || !ownerModelStatus?.downloading || !selectedServerId) return;
     const serverId = selectedServerId;
     const requestId = ownerPanelRequestRef.current;
     const timer = window.setInterval(async () => {
@@ -310,6 +313,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     }, 2000);
     return () => window.clearInterval(timer);
   }, [showOwnerPanel, ownerModelStatus?.downloading, selectedServerId]);
+  /* eslint-enable react-hooks/immutability, react-hooks/exhaustive-deps */
 
   const closeOwnerPanel = useCallback(() => {
     ownerPanelRequestRef.current += 1;
@@ -342,7 +346,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   }, []);
 
   useEffect(() => {
-    if (!showOwnerPanel || showRecoveryCode || showRestoreDialog || confirmation) return undefined;
+    if (!showOwnerPanel || showRecoveryCode || showRestoreDialog || confirmation) return;
     const frame = window.requestAnimationFrame(() => {
       (ownerPanelTab === 'host' ? ownerHostTabRef : ownerPeopleTabRef).current?.focus();
     });
@@ -388,6 +392,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     setNotice(null);
   }, [resetDocumentPaging]);
 
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization -- 既有结构:请求序号 ref 防竞态写法无法被编译器保留,保持手动 memo
   const loadConnections = useCallback(async () => {
     if (!isTauriAvailable()) return;
     const requestId = ++connectionsRequestRef.current;
@@ -411,6 +416,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     }
   }, []);
 
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization -- 既有结构:飞行中 ref 防重入写法无法被编译器保留,保持手动 memo
   const refreshPendingJoins = useCallback(async () => {
     if (!isTauriAvailable() || pendingRefreshInFlightRef.current) return;
     pendingRefreshInFlightRef.current = true;
@@ -539,6 +545,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     }
   }), [loadCollections, loadConnections, loadDocuments, loadHostStatus, run]);
 
+  /* eslint-disable react-hooks/set-state-in-effect -- 既有结构:挂载/轮询同步外部桥接数据到 state,run-once 语义,重构为派生 state 风险大 */
   useEffect(() => { loadConnections(); }, [loadConnections]);
   useEffect(() => { loadHostStatus(); }, [loadHostStatus]);
   useEffect(() => {
@@ -549,7 +556,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   useEffect(() => {
     if (!isOwner || !selectedServerId) {
       setOwnerJoinRequests([]);
-      return undefined;
+      return;
     }
     let disposed = false;
     const serverId = selectedServerId;
@@ -574,13 +581,16 @@ function RemoteKnowledgeView({ t, embedded = false }) {
       window.clearInterval(timer);
     };
   }, [isOwner, selectedServerId]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+  /* eslint-disable react-hooks/set-state-in-effect -- 既有结构:选中集合/服务器变化时同步拉取列表并收敛回收站开关,run-once 语义 */
   useEffect(() => { loadCollections(selectedServerId); }, [loadCollections, selectedServerId]);
   useEffect(() => { loadDocuments(selectedServerId, selectedCollectionId, true); }, [loadDocuments, selectedCollectionId, selectedServerId]);
   useEffect(() => {
     if (selectedConnection && !canManage && includeTrash) setIncludeTrash(false);
   }, [canManage, includeTrash, selectedConnection]);
+  /* eslint-enable react-hooks/set-state-in-effect */
   useEffect(() => {
-    if (!showConnector && !showOwnerPanel && !showCollectionCreator && !showPublishDialog && !showUploadDialog && !showRecoveryCode && !showRestoreDialog && !documentToTrash && !confirmation) return undefined;
+    if (!showConnector && !showOwnerPanel && !showCollectionCreator && !showPublishDialog && !showUploadDialog && !showRecoveryCode && !showRestoreDialog && !documentToTrash && !confirmation) return;
     const closeOnEscape = event => {
       if (event.key !== 'Escape') return;
       if (confirmation) finishConfirmation(false);
@@ -604,7 +614,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [closeOwnerPanel, confirmation, documentToTrash, finishConfirmation, isBusy, joinFeedback?.status, showCollectionCreator, showConnector, showOwnerPanel, showPublishDialog, showRecoveryCode, showRestoreDialog, showUploadDialog, uploadHasStarted]);
   useEffect(() => {
-    if (!showUploadSourceMenu) return undefined;
+    if (!showUploadSourceMenu) return;
     const closeMenu = event => {
       if (event.key === 'Escape' || !uploadSourceMenuRef.current?.contains(event.target)) {
         setShowUploadSourceMenu(false);
@@ -916,7 +926,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     const confirmed = await requestConfirmation({
       testId: 'remote-remove-member-confirm',
       title: t.remoteKbRemoveMemberAction,
-      description: t.remoteKbRemoveMemberConfirm.replace('{name}', device.name),
+      description: t.remoteKbRemoveMemberConfirm.replace('{name}', () => device.name),
       confirmLabel: t.remoteKbRemoveMemberAction,
       dangerous: true,
     });
@@ -930,7 +940,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     const confirmed = await requestConfirmation({
       testId: 'remote-owner-change-confirm',
       title: owner ? t.remoteKbPromoteOwner : t.remoteKbDemoteOwner,
-      description: (owner ? t.remoteKbPromoteOwnerConfirm : t.remoteKbDemoteOwnerConfirm).replace('{name}', device.name),
+      description: (owner ? t.remoteKbPromoteOwnerConfirm : t.remoteKbDemoteOwnerConfirm).replace('{name}', () => device.name),
       confirmLabel: owner ? t.remoteKbPromoteOwner : t.remoteKbDemoteOwner,
     });
     if (!confirmed) return;
@@ -1016,7 +1026,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     const confirmed = await requestConfirmation({
       testId: 'remote-permanent-delete-confirm',
       title: t.remoteKbPermanentDelete,
-      description: t.remoteKbPermanentDeleteConfirm.replace('{name}', name),
+      description: t.remoteKbPermanentDeleteConfirm.replace('{name}', () => name),
       confirmLabel: t.remoteKbPermanentDelete,
       dangerous: true,
     });
@@ -1161,6 +1171,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     setShowUploadDialog(true);
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- 上传队列状态机含轮询/重试/失败分类,拆分会破坏既有结构
   async function startUpload() {
     const retryable = item => item.status === 'queued' || item.status === 'failed';
     const pending = item => item.status === 'pending_index' || item.status === 'duplicate_pending';
@@ -1287,14 +1298,14 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     const processing = (counts.pending_index || 0) + (counts.duplicate_pending || 0);
     const failed = (counts.index_failed || 0) + (counts.duplicate_failed || 0) + (counts.failed || 0);
     const summary = [
-      completed ? t.remoteKbUploadSuccess.replace('{count}', String(completed)) : '',
-      existing ? t.remoteKbUploadExistingSummary.replace('{count}', String(existing)) : '',
-      processing ? t.remoteKbUploadProcessingSummary.replace('{count}', String(processing)) : '',
-      failed ? t.remoteKbUploadFailedSummary.replace('{count}', String(failed)) : '',
+      completed ? t.remoteKbUploadSuccess.replace('{count}', () => String(completed)) : '',
+      existing ? t.remoteKbUploadExistingSummary.replace('{count}', () => String(existing)) : '',
+      processing ? t.remoteKbUploadProcessingSummary.replace('{count}', () => String(processing)) : '',
+      failed ? t.remoteKbUploadFailedSummary.replace('{count}', () => String(failed)) : '',
     ].filter(Boolean).join(' · ');
     setNotice({
       type: failed || refreshError ? 'error' : 'success',
-      text: refreshError ? `${summary} ${t.remoteKbUploadRefreshFailed.replace('{error}', refreshError)}` : summary,
+      text: refreshError ? `${summary} ${t.remoteKbUploadRefreshFailed.replace('{error}', () => refreshError)}` : summary,
     });
   }
 
@@ -1454,7 +1465,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
             <p className="mt-1.5 max-w-[680px] text-[13px] leading-5 text-[#456267] dark:text-[#b9cacc]">{t.remoteKbDesc}</p>
             <div className="mt-4 flex flex-wrap items-center gap-2">
               {hostStatus?.supported && !hostStatus.installed && (
-                <button
+                <button type="button"
                   data-testid="shared-kb-create-host"
                   className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-[#0B57D0] px-5 text-[14px] font-bold text-white transition-all hover:-translate-y-0.5 hover:bg-[#0848ad] disabled:opacity-45"
                   onClick={installHost}
@@ -1465,7 +1476,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                 </button>
               )}
               {connectionsLoaded && hostStatus?.supported && hostStatus.installed && !hasLocalHostOwner && (
-                <button
+                <button type="button"
                   data-testid="shared-kb-reconnect-host"
                   className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-[#0B57D0] px-5 text-[14px] font-bold text-white transition-all hover:-translate-y-0.5 hover:bg-[#0848ad] disabled:opacity-45"
                   onClick={reconnectHost}
@@ -1476,12 +1487,12 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                 </button>
               )}
               {hostStatus?.supported && hostStatus.upgradeAvailable && !hostStatus.clientOutdated && (
-                <button data-testid="shared-kb-upgrade-host" className={soft} onClick={upgradeHost} disabled={isBusy('upgrade-host')}>
+                <button type="button" data-testid="shared-kb-upgrade-host" className={soft} onClick={upgradeHost} disabled={isBusy('upgrade-host')}>
                   {isBusy('upgrade-host') && <RefreshCw size={14} className="animate-spin" />}
                   {t.remoteKbUpgradeHost}
                 </button>
               )}
-              <button
+              <button type="button"
                 data-testid="remote-add-server"
                 className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-[#087e8b] px-5 text-[14px] font-bold text-white transition-all hover:-translate-y-0.5 hover:bg-[#066b75] disabled:opacity-45"
                 onClick={openConnector}
@@ -1489,7 +1500,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                 <Plus size={15} />
                 {t.remoteKbAddServer}
               </button>
-              <button
+              <button type="button"
                 className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-white/70 px-4 text-[13px] font-semibold text-[#456267] transition-colors hover:bg-white disabled:opacity-45 dark:bg-white/10 dark:text-[#C4C7C5] dark:hover:bg-white/15"
                 onClick={refreshRemoteKnowledge}
                 disabled={anyBusy}
@@ -1515,8 +1526,8 @@ function RemoteKnowledgeView({ t, embedded = false }) {
               <p className="text-[13px] font-semibold">{t.remoteKbClientOutdatedTitle}</p>
               <p className="mt-0.5 text-[12px] leading-5 opacity-85">
                 {t.remoteKbClientOutdatedDesc
-                  .replace('{appVersion}', hostStatus.appVersion || '—')
-                  .replace('{serviceVersion}', hostStatus.serviceVersion || '—')}
+                  .replace('{appVersion}', () => hostStatus.appVersion || '—')
+                  .replace('{serviceVersion}', () => hostStatus.serviceVersion || '—')}
               </p>
             </div>
           </div>
@@ -1526,7 +1537,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
           <div role="status" className={`flex items-start gap-2 rounded-xl border px-3.5 py-3 text-[13px] ${notice.type === 'error' ? 'border-[#d63a3a]/20 bg-[#d63a3a]/8 text-[#b72f2f]' : 'border-[#18a957]/20 bg-[#18a957]/8 text-[#16894a]'}`}>
             {notice.type === 'error' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
             <span className="min-w-0 flex-1 break-all">{notice.text}</span>
-            <button className="opacity-70 hover:opacity-100" onClick={() => setNotice(null)}><X size={15} /></button>
+            <button type="button" className="opacity-70 hover:opacity-100" onClick={() => setNotice(null)}><X size={15} /></button>
           </div>
         )}
 
@@ -1537,7 +1548,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                 <h2 className={`text-[14px] font-bold ${ink}`}>{t.remoteKbPendingTitle}</h2>
                 <p className={`mt-0.5 text-[12px] ${muted}`}>{t.remoteKbPendingDesc}</p>
               </div>
-              <button className={iconButton} onClick={refreshPendingJoins} title={t.remoteKbRefresh}><RefreshCw size={14} /></button>
+              <button type="button" className={iconButton} onClick={refreshPendingJoins} title={t.remoteKbRefresh}><RefreshCw size={14} /></button>
             </div>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               {pendingJoins.map(item => (
@@ -1547,7 +1558,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                     <p className={`truncate text-[13px] font-semibold ${ink}`}>{item.serverName}</p>
                     <p className={`truncate text-[11px] ${muted}`}>{item.deviceName}</p>
                   </div>
-                  <button data-testid="remote-cancel-pending-join" className={quiet} onClick={() => cancelPendingJoin(item.requestId)} disabled={isBusy(`cancel-join-${item.requestId}`)}>{t.remoteKbCancelRequest}</button>
+                  <button type="button" data-testid="remote-cancel-pending-join" className={quiet} onClick={() => cancelPendingJoin(item.requestId)} disabled={isBusy(`cancel-join-${item.requestId}`)}>{t.remoteKbCancelRequest}</button>
                 </div>
               ))}
             </div>
@@ -1561,7 +1572,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
               const selected = selectedServerId === connection.serverId;
               const dot = connection.online ? (connection.ready ? 'bg-[#18a957]' : 'bg-[#d6873e]') : 'bg-[#d63a3a]';
               return (
-                <button key={connection.serverId} onClick={() => selectServer(connection.serverId)}
+                <button type="button" key={connection.serverId} onClick={() => selectServer(connection.serverId)}
                   className={`flex h-10 shrink-0 items-center gap-2 rounded-xl border px-3 text-left transition-colors ${selected ? 'border-[#0B57D0]/30 bg-[#eaf2ff] text-[#0B57D0] dark:border-[#A8C7FA]/30 dark:bg-[#172b49] dark:text-[#A8C7FA]' : 'border-[#ececf1] bg-white text-[#444746] hover:bg-[#F0F4F9] dark:border-white/10 dark:bg-[#1E1F20] dark:text-[#C4C7C5] dark:hover:bg-[#2A2B2D]'}`}>
                   <span className={`h-2 w-2 rounded-full ${dot}`} />
                   <span className="max-w-[220px] truncate text-[13px] font-semibold">{connection.name}</span>
@@ -1576,7 +1587,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
           <div className={`rounded-2xl border border-dashed border-[#d4d8e2] py-16 text-center dark:border-white/15 ${muted}`}>
             <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[#F0F4F9] text-[#0B57D0] dark:bg-[#2A2B2D] dark:text-[#A8C7FA]"><Server size={24} /></div>
             <p className="mt-4 text-[14px] font-semibold">{t.remoteKbNoServers}</p>
-            <button className={`${soft} mt-4`} onClick={openConnector}><Plus size={14} />{t.remoteKbAddServer}</button>
+            <button type="button" className={`${soft} mt-4`} onClick={openConnector}><Plus size={14} />{t.remoteKbAddServer}</button>
           </div>
         )}
 
@@ -1606,7 +1617,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                 </div>
                 <div className="flex items-center gap-1">
                   {isOwner && (
-                    <button ref={ownerPanelTriggerRef} data-testid="remote-govern" className={soft} onClick={openOwnerPanel}>
+                    <button type="button" ref={ownerPanelTriggerRef} data-testid="remote-govern" className={soft} onClick={openOwnerPanel}>
                       <Users size={14} />{t.remoteKbGovern}
                       {!!pendingOwnerJoinRequests.length && (
                         <span data-testid="remote-govern-pending-count" className="grid h-5 min-w-5 place-items-center rounded-full bg-[#0B57D0] px-1 text-[10px] font-bold text-white animate-in zoom-in-75 duration-150 dark:bg-[#A8C7FA] dark:text-[#062E6F]">
@@ -1623,7 +1634,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                     </label>
                   )}
                   {!isLocalHostOwner && (
-                    <button data-testid="remote-disconnect" className={danger} onClick={() => removeConnection(selectedServerId)}><Trash2 size={14} />{t.remoteKbDisconnect}</button>
+                    <button type="button" data-testid="remote-disconnect" className={danger} onClick={() => removeConnection(selectedServerId)}><Trash2 size={14} />{t.remoteKbDisconnect}</button>
                   )}
                 </div>
               </div>
@@ -1638,15 +1649,13 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                 </div>
                 {canManage && (
                   <div className="flex flex-wrap items-center gap-2">
-                    <button data-testid="remote-publish-local" className={quiet} onClick={openPublishDialog} disabled={isBusy('local-collections')}><FolderPlus size={14} />{t.remoteKbPublishLocal}</button>
-                    {!showCollectionCreator && <button className={soft} onClick={() => setShowCollectionCreator(true)}><Plus size={14} />{t.remoteKbNewCollection}</button>}
+                    <button type="button" data-testid="remote-publish-local" className={quiet} onClick={openPublishDialog} disabled={isBusy('local-collections')}><FolderPlus size={14} />{t.remoteKbPublishLocal}</button>
+                    {!showCollectionCreator && <button type="button" className={soft} onClick={() => setShowCollectionCreator(true)}><Plus size={14} />{t.remoteKbNewCollection}</button>}
                   </div>
                 )}
               </div>
 
-              {!collections.length ? (
-                <div className={`rounded-2xl border border-dashed border-[#d4d8e2] py-12 text-center text-[13px] dark:border-white/15 ${muted}`}>{t.remoteKbNoCollections}</div>
-              ) : (
+              {collections.length ? (
                 <div data-testid="remote-collections-grid" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   {collections.map(collection => {
                     const color = stableColor(collection.name);
@@ -1657,7 +1666,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                         data-selected={selected ? 'true' : 'false'}
                         className={`relative rounded-2xl p-4 transition-all ${panel} ${panelShadow} ${selected ? 'ring-2 ring-[#0B57D0]/25 dark:ring-[#A8C7FA]/25' : 'hover:border-[#dfe4f5] dark:hover:border-white/20'}`}
                       >
-                        <button
+                        <button type="button"
                           className="w-full text-left"
                           aria-current={selected ? 'true' : undefined}
                           onClick={() => { if (!selected) selectCollection(collection.id); }}
@@ -1679,10 +1688,10 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                           </span>
                           {canManage && (
                             <div className="flex items-center gap-1">
-                              <button className={collection.deletedAt ? quiet : 'text-[11.5px] text-[#d63a3a] hover:underline disabled:opacity-50'} disabled={isBusy('collection-trash')} onClick={() => changeCollectionTrash(collection)}>
+                              <button type="button" className={collection.deletedAt ? quiet : 'text-[11.5px] text-[#d63a3a] hover:underline disabled:opacity-50'} disabled={isBusy('collection-trash')} onClick={() => changeCollectionTrash(collection)}>
                                 {collection.deletedAt ? t.remoteKbRestore : t.remoteKbTrash}
                               </button>
-                              {isOwner && collection.deletedAt && <button className={danger} onClick={() => permanentlyDelete('collection', collection.id, collection.name)} disabled={isBusy(`permanent-collection-${collection.id}`)} title={t.remoteKbPermanentDelete}><Trash2 size={13} /></button>}
+                              {isOwner && collection.deletedAt && <button type="button" className={danger} onClick={() => permanentlyDelete('collection', collection.id, collection.name)} disabled={isBusy(`permanent-collection-${collection.id}`)} title={t.remoteKbPermanentDelete}><Trash2 size={13} /></button>}
                             </div>
                           )}
                         </div>
@@ -1690,6 +1699,8 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                     );
                   })}
                 </div>
+              ) : (
+                <div className={`rounded-2xl border border-dashed border-[#d4d8e2] py-12 text-center text-[13px] dark:border-white/15 ${muted}`}>{t.remoteKbNoCollections}</div>
               )}
             </section>
 
@@ -1704,12 +1715,12 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                     <p data-testid="remote-documents-summary" className={`mt-0.5 text-[12px] ${muted}`}>{selectedCollection?.docCount || 0} {t.remoteKbDocuments} · {selectedCollection?.chunkCount || 0} {t.remoteKbChunks}</p>
                   </div>
                   {canManage && (uploadInProgress ? (
-                    <button className={soft} onClick={() => setShowUploadDialog(true)}>
+                    <button type="button" className={soft} onClick={() => setShowUploadDialog(true)}>
                       <RefreshCw size={14} className="animate-spin" />{t.remoteKbUploading}
                     </button>
                   ) : (
                     <div ref={uploadSourceMenuRef} className="relative">
-                      <button
+                      <button type="button"
                         data-testid="remote-upload-menu-toggle"
                         className={soft}
                         aria-haspopup="menu"
@@ -1724,10 +1735,10 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                           role="menu"
                           className="absolute right-0 top-11 z-30 w-40 overflow-hidden rounded-xl border border-black/10 bg-white py-1 shadow-xl dark:border-white/10 dark:bg-[#202124]"
                         >
-                          <button data-testid="remote-upload-files" role="menuitem" className="flex h-9 w-full items-center gap-2 px-3 text-left text-[13px] hover:bg-[#F1F3F4] dark:hover:bg-[#303134]" onClick={chooseUploadFiles}>
+                          <button type="button" data-testid="remote-upload-files" role="menuitem" className="flex h-9 w-full items-center gap-2 px-3 text-left text-[13px] hover:bg-[#F1F3F4] dark:hover:bg-[#303134]" onClick={chooseUploadFiles}>
                             <Upload size={15} />{t.remoteKbUpload}
                           </button>
-                          <button data-testid="remote-upload-folder" role="menuitem" className="flex h-9 w-full items-center gap-2 px-3 text-left text-[13px] hover:bg-[#F1F3F4] dark:hover:bg-[#303134]" onClick={chooseUploadFolders}>
+                          <button type="button" data-testid="remote-upload-folder" role="menuitem" className="flex h-9 w-full items-center gap-2 px-3 text-left text-[13px] hover:bg-[#F1F3F4] dark:hover:bg-[#303134]" onClick={chooseUploadFolders}>
                             <FolderPlus size={15} />{t.remoteKbUploadFolder}
                           </button>
                         </div>
@@ -1762,16 +1773,16 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                       <span className={`w-auto text-right text-[11.5px] md:w-20 ${muted}`}>{document.nChunks}</span>
                       <span className={`w-auto text-right text-[11.5px] md:w-20 ${muted}`}>{formatBytes(document.size)}</span>
                       <div className="ml-auto flex w-auto items-center justify-end gap-0.5 md:w-28">
-                        {!document.deletedAt && <button className={iconButton} onClick={() => downloadDocument(document)} title={t.remoteKbDownload}><Download size={14} /></button>}
-                        {canManage && !document.deletedAt && <button className={iconButton} onClick={() => replaceDocument(document)} title={t.remoteKbReplace}><RefreshCw size={14} /></button>}
-                        {canManage && <button data-testid="remote-document-trash" className={`${iconButton} ${document.deletedAt ? '' : 'text-[#d63a3a]'}`} onClick={() => requestDocumentTrash(document)} disabled={isBusy(`document-trash-${document.id}`)} title={document.deletedAt ? t.remoteKbRestore : t.remoteKbTrash}>{isBusy(`document-trash-${document.id}`) ? <RefreshCw size={14} className="animate-spin" /> : document.deletedAt ? <RefreshCw size={14} /> : <Trash2 size={14} />}</button>}
-                        {isOwner && document.deletedAt && <button className={`${iconButton} text-[#d63a3a]`} onClick={() => permanentlyDelete('document', document.id, document.name)} disabled={isBusy(`permanent-document-${document.id}`)} title={t.remoteKbPermanentDelete}><Trash2 size={14} /></button>}
+                        {!document.deletedAt && <button type="button" className={iconButton} onClick={() => downloadDocument(document)} title={t.remoteKbDownload}><Download size={14} /></button>}
+                        {canManage && !document.deletedAt && <button type="button" className={iconButton} onClick={() => replaceDocument(document)} title={t.remoteKbReplace}><RefreshCw size={14} /></button>}
+                        {canManage && <button type="button" data-testid="remote-document-trash" className={`${iconButton} ${document.deletedAt ? '' : 'text-[#d63a3a]'}`} onClick={() => requestDocumentTrash(document)} disabled={isBusy(`document-trash-${document.id}`)} title={document.deletedAt ? t.remoteKbRestore : t.remoteKbTrash}>{isBusy(`document-trash-${document.id}`) ? <RefreshCw size={14} className="animate-spin" /> : document.deletedAt ? <RefreshCw size={14} /> : <Trash2 size={14} />}</button>}
+                        {isOwner && document.deletedAt && <button type="button" className={`${iconButton} text-[#d63a3a]`} onClick={() => permanentlyDelete('document', document.id, document.name)} disabled={isBusy(`permanent-document-${document.id}`)} title={t.remoteKbPermanentDelete}><Trash2 size={14} /></button>}
                       </div>
                     </div>
                   ))}
                   {documentsHasMore && (
                     <div className="flex justify-center border-t border-gray-400/10 px-4 py-3">
-                      <button
+                      <button type="button"
                         data-testid="remote-documents-load-more"
                         className={quiet}
                         onClick={() => loadDocuments(selectedServerId, selectedCollectionId, false)}
@@ -1794,7 +1805,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                 </div>
                 <div className="mt-3 flex gap-2">
                   <input className={field} value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') search(); }} placeholder={t.remoteKbSearchPlaceholder} />
-                  <button className={primary} onClick={search} disabled={!query.trim() || isBusy('search')}>{isBusy('search') ? <RefreshCw size={14} className="animate-spin" /> : <Search size={14} />}{t.remoteKbSearch}</button>
+                  <button type="button" className={primary} onClick={search} disabled={!query.trim() || isBusy('search')}>{isBusy('search') ? <RefreshCw size={14} className="animate-spin" /> : <Search size={14} />}{t.remoteKbSearch}</button>
                 </div>
                 {!!results.length && <div className="mt-4 grid gap-2">{results.map((result, index) => <article key={`${result.documentId}:${result.ord}:${index}`} className="rounded-xl border border-[#ececf1] bg-[#fbfbfd] p-3 dark:border-white/10 dark:bg-white/[0.04]"><div className="flex items-center gap-2"><BookOpen size={13} className="text-[#0B57D0] dark:text-[#A8C7FA]" /><p className={`truncate text-[12px] font-semibold ${ink}`}>{result.documentName}</p></div><p className={`mt-2 whitespace-pre-wrap text-[12px] leading-5 ${muted}`}>{result.text}</p></article>)}</div>}
               </section>
@@ -1823,7 +1834,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                 className="h-2 overflow-hidden rounded-full bg-[#e8ebf0] dark:bg-white/10"
               >
                 <div
-                  className={`h-full rounded-full transition-[width] duration-500 ${hostProgress.phase === 'failed' ? 'bg-[#d63a3a]' : 'bg-[#0B57D0] dark:bg-[#A8C7FA]'} ${!['complete', 'failed'].includes(hostProgress.phase) ? 'animate-pulse' : ''}`}
+                  className={`h-full rounded-full transition-[width] duration-500 ${hostProgress.phase === 'failed' ? 'bg-[#d63a3a]' : 'bg-[#0B57D0] dark:bg-[#A8C7FA]'} ${['complete', 'failed'].includes(hostProgress.phase) ? '' : 'animate-pulse'}`}
                   style={{ width: `${Math.max(5, Math.min(100, hostProgress.percent || 0))}%` }}
                 />
               </div>
@@ -1844,8 +1855,8 @@ function RemoteKnowledgeView({ t, embedded = false }) {
               )}
               {hostProgress.phase === 'failed' && (
                 <div className="flex justify-end gap-2">
-                  <button className={quiet} onClick={() => setHostProgress(null)}>{t.remoteKbClose}</button>
-                  <button className={primary} onClick={hostProgress.operation === 'upgrade'
+                  <button type="button" className={quiet} onClick={() => setHostProgress(null)}>{t.remoteKbClose}</button>
+                  <button type="button" className={primary} onClick={hostProgress.operation === 'upgrade'
                     ? upgradeHost
                     : (hostProgress.operation === 'reconnect' ? reconnectHost : installHost)}>
                     <RefreshCw size={14} />
@@ -1882,7 +1893,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                 {joinFeedback.serverName && <p className={`mt-1 text-[13px] font-semibold ${muted}`}>{joinFeedback.serverName}</p>}
                 {joinFeedback.status === 'pending' && <p className={`mt-2 text-[12px] ${muted}`}>{t.remoteKbPendingDesc}</p>}
                 {joinFeedback.status === 'pending' && (
-                  <button
+                  <button type="button"
                     data-testid="remote-join-feedback-close"
                     className={`${primary} mt-5`}
                     onClick={closeConnector}
@@ -1942,6 +1953,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                     </section>
                     <div className="flex items-center gap-3" aria-hidden="true"><span className="h-px flex-1 bg-[#e3e7ee] dark:bg-white/10" /><span className={`text-[11px] ${muted}`}>{t.remoteKbManualConnect}</span><span className="h-px flex-1 bg-[#e3e7ee] dark:bg-white/10" /></div>
                     <input
+                      // biome-ignore lint/a11y/noAutofocus: 弹窗打开即聚焦邀请码输入框,焦点即输入意图
                       autoFocus
                       data-testid="remote-invitation"
                       className={field}
@@ -1964,11 +1976,11 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                 )}
                 {connectorError && <p role="alert" className="mt-3 rounded-xl bg-[#d63a3a]/8 px-3.5 py-3 text-[12px] leading-5 text-[#b72f2f]">{connectorError}</p>}
                 <div className="mt-5 flex justify-end gap-2">
-                  <button className={quiet} onClick={() => {
+                  <button type="button" className={quiet} onClick={() => {
                     if (identityProbe) setIdentityProbe(null);
                     else closeConnector();
                   }} disabled={connecting}>{identityProbe ? t.remoteKbBack : t.remoteKbCancel}</button>
-                  <button data-testid="remote-connect-submit" className={primary} disabled={connecting || !connectionDetailsReady} onClick={connectServer}>
+                  <button type="button" data-testid="remote-connect-submit" className={primary} disabled={connecting || !connectionDetailsReady} onClick={connectServer}>
                     {connecting && <RefreshCw size={14} className="animate-spin" />}{identityProbe ? t.remoteKbConfirmIdentity : (invitationIsShareLink ? t.remoteKbConnect : t.remoteKbVerify)}
                   </button>
                 </div>
@@ -2038,7 +2050,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                         <h3 className={`text-[15px] font-bold ${ink}`}>{t.remoteKbShareTitle}</h3>
                         <p className={`mt-1 text-[13px] leading-5 ${muted}`}>{t.remoteKbShareDesc}</p>
                       </div>
-                      <button data-testid="remote-create-share" className={`${soft} w-full sm:w-auto`} onClick={createShare} disabled={isBusy('create-share')}><Link size={14} />{t.remoteKbCreateShare}</button>
+                      <button type="button" data-testid="remote-create-share" className={`${soft} w-full sm:w-auto`} onClick={createShare} disabled={isBusy('create-share')}><Link size={14} />{t.remoteKbCreateShare}</button>
                     </div>
                     <label className={`mt-4 flex cursor-pointer items-start gap-2.5 text-[13px] leading-5 ${muted}`}>
                       <input className="mt-0.5 h-4 w-4 shrink-0" type="checkbox" checked={autoApproveRead} onChange={event => setAutoApproveRead(event.target.checked)} />
@@ -2054,14 +2066,14 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                         <button data-testid="remote-copy-share" type="button" className={iconButton} title={t.remoteKbCopy} aria-label={t.remoteKbCopy} onClick={() => copyWithFeedback(shareLink, t.remoteKbLinkCopied)}><Copy size={15} /></button>
                       </div>
                     )}
-                    {!!ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).length && (
+                    {!!ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).length && ( // eslint-disable-line react-hooks/purity -- 过期时间相对当前时刻计算,列表仅在面板打开期间渲染
                       <div className="mt-3 space-y-2">
-                        {ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).map(item => (
+                        {ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).map(item => ( // eslint-disable-line react-hooks/purity -- 同上,按当前时刻过滤已过期分享
                           <div key={item.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-[#F7F9FC] px-3 py-2.5 dark:bg-white/[0.04]">
                             <Link size={14} className="text-[#0B57D0] dark:text-[#A8C7FA]" />
                             <span className={`min-w-[180px] flex-1 truncate text-[12.5px] ${muted}`}>{new Date(item.expiresAt * 1000).toLocaleString()}</span>
                             {item.autoApproveRead && <span className="text-[12px] text-[#16894a] dark:text-[#7DD3A8]">{t.remoteKbAutoReadShort}</span>}
-                            <button className={quiet} onClick={() => stopShare(item.id)} disabled={isBusy(`stop-share-${item.id}`)}>{t.remoteKbStopShare}</button>
+                            <button type="button" className={quiet} onClick={() => stopShare(item.id)} disabled={isBusy(`stop-share-${item.id}`)}>{t.remoteKbStopShare}</button>
                           </div>
                         ))}
                       </div>
@@ -2084,9 +2096,9 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                           <div key={item.id} data-testid="remote-owner-join-request" className="flex flex-col gap-2 rounded-xl bg-[#F7F9FC] px-3 py-3 animate-in fade-in slide-in-from-top-1 duration-150 dark:bg-white/[0.04] sm:flex-row sm:items-center">
                             <div className="min-w-0 flex-1"><p className={`truncate text-[13.5px] font-semibold ${ink}`}>{item.deviceName}</p></div>
                             <div className="flex flex-wrap items-center gap-1.5">
-                              <button className={quiet} disabled={requestBusy} onClick={() => resolveJoinRequest(item.id, 'read')}>{t.remoteKbApproveRead}</button>
-                              <button className={quiet} disabled={requestBusy} onClick={() => resolveJoinRequest(item.id, 'manage')}>{t.remoteKbApproveManage}</button>
-                              <button className={danger} disabled={requestBusy} onClick={() => resolveJoinRequest(item.id, null)}>{t.remoteKbReject}</button>
+                              <button type="button" className={quiet} disabled={requestBusy} onClick={() => resolveJoinRequest(item.id, 'read')}>{t.remoteKbApproveRead}</button>
+                              <button type="button" className={quiet} disabled={requestBusy} onClick={() => resolveJoinRequest(item.id, 'manage')}>{t.remoteKbApproveManage}</button>
+                              <button type="button" className={danger} disabled={requestBusy} onClick={() => resolveJoinRequest(item.id, null)}>{t.remoteKbReject}</button>
                             </div>
                           </div>
                         );
@@ -2116,9 +2128,9 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                                   <option value="manage">{t.remoteKbManage}</option>
                                 </select>
                               )}
-                              {!device.scope?.includes('owner') && <button className={quiet} disabled={busy} onClick={() => updateMember(device, { revoked: !device.revoked })}>{device.revoked ? t.remoteKbRestoreAccess : t.remoteKbRevokeAccess}</button>}
-                              {isLocalHostOwner && !current && !device.revoked && <button className={quiet} disabled={busy} onClick={() => changeOwner(device, device.scope !== 'owner')}>{device.scope === 'owner' ? t.remoteKbDemoteOwner : t.remoteKbPromoteOwner}</button>}
-                              {!current && device.scope !== 'owner' && <button type="button" className={danger} disabled={busy} onClick={() => removeMember(device)} aria-label={t.remoteKbRemoveMember.replace('{name}', device.name)} title={t.remoteKbRemoveMember.replace('{name}', device.name)}><Trash2 size={13} /></button>}
+                              {!device.scope?.includes('owner') && <button type="button" className={quiet} disabled={busy} onClick={() => updateMember(device, { revoked: !device.revoked })}>{device.revoked ? t.remoteKbRestoreAccess : t.remoteKbRevokeAccess}</button>}
+                              {isLocalHostOwner && !current && !device.revoked && <button type="button" className={quiet} disabled={busy} onClick={() => changeOwner(device, device.scope !== 'owner')}>{device.scope === 'owner' ? t.remoteKbDemoteOwner : t.remoteKbPromoteOwner}</button>}
+                              {!current && device.scope !== 'owner' && <button type="button" className={danger} disabled={busy} onClick={() => removeMember(device)} aria-label={t.remoteKbRemoveMember.replace('{name}', () => device.name)} title={t.remoteKbRemoveMember.replace('{name}', () => device.name)}><Trash2 size={13} /></button>}
                             </div>
                           </div>
                         );
@@ -2147,7 +2159,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                         <h3 className={`text-[15px] font-bold ${ink}`}>{t.remoteKbModelTitle}</h3>
                         <p className={`mt-1 text-[13px] leading-5 ${ownerModelStatus?.error ? 'text-[#d63a3a]' : muted}`}>{ownerModelStatus?.error || (ownerModelStatus?.ready ? t.remoteKbModelReady : ownerModelStatus?.downloading ? t.remoteKbModelDownloading : t.remoteKbModelMissing)}</p>
                       </div>
-                      {isLocalHostOwner && !ownerModelStatus?.ready && <button className={`${soft} w-full sm:w-auto`} onClick={downloadOwnerModel} disabled={ownerModelStatus?.downloading || isBusy('owner-model-download')}>{ownerModelStatus?.downloading ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}{ownerModelStatus?.downloading ? t.remoteKbModelDownloadingAction : t.remoteKbDownloadModel}</button>}
+                      {isLocalHostOwner && !ownerModelStatus?.ready && <button type="button" className={`${soft} w-full sm:w-auto`} onClick={downloadOwnerModel} disabled={ownerModelStatus?.downloading || isBusy('owner-model-download')}>{ownerModelStatus?.downloading ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}{ownerModelStatus?.downloading ? t.remoteKbModelDownloadingAction : t.remoteKbDownloadModel}</button>}
                     </div>
                   </section>
 
@@ -2157,16 +2169,16 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                         <h3 className={`text-[15px] font-bold ${ink}`}>{t.remoteKbHostSettings}</h3>
                         <p className={`mt-1 text-[13px] leading-5 ${muted}`}>{t.remoteKbHostSettingsDesc}</p>
                         <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                          <button data-testid="shared-kb-backup" className={`${soft} w-full`} onClick={backupHost} disabled={isBusy('backup-host')}><Download size={14} />{t.remoteKbBackup}</button>
-                          <button data-testid="shared-kb-restore" className={`${soft} w-full`} onClick={openRestoreDialog} disabled={isBusy('restore-host')}><Upload size={14} />{t.remoteKbRestoreBackup}</button>
+                          <button type="button" data-testid="shared-kb-backup" className={`${soft} w-full`} onClick={backupHost} disabled={isBusy('backup-host')}><Download size={14} />{t.remoteKbBackup}</button>
+                          <button type="button" data-testid="shared-kb-restore" className={`${soft} w-full`} onClick={openRestoreDialog} disabled={isBusy('restore-host')}><Upload size={14} />{t.remoteKbRestoreBackup}</button>
                         </div>
                       </section>
                       <section className="rounded-2xl border border-[#d63a3a]/20 bg-[#d63a3a]/[0.035] p-4 dark:bg-[#d63a3a]/[0.06] sm:p-5">
                         <h3 className="text-[15px] font-bold text-[#b72f2f] dark:text-[#ff8a80]">{t.remoteKbDangerZone}</h3>
                         <p className={`mt-1 text-[13px] leading-5 ${muted}`}>{t.remoteKbDangerZoneDesc}</p>
                         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
-                          <button data-testid="shared-kb-remove-host" className={`${quiet} w-full sm:w-auto`} onClick={() => removeHost(false)} disabled={isBusy('remove-host')}>{t.remoteKbRemoveHost}</button>
-                          <button data-testid="shared-kb-delete-host" className={`${danger} w-full bg-white sm:w-auto dark:bg-[#1E1F20]`} onClick={() => removeHost(true)} disabled={isBusy('delete-host')}><Trash2 size={14} />{t.remoteKbDeleteHost}</button>
+                          <button type="button" data-testid="shared-kb-remove-host" className={`${quiet} w-full sm:w-auto`} onClick={() => removeHost(false)} disabled={isBusy('remove-host')}>{t.remoteKbRemoveHost}</button>
+                          <button type="button" data-testid="shared-kb-delete-host" className={`${danger} w-full bg-white sm:w-auto dark:bg-[#1E1F20]`} onClick={() => removeHost(true)} disabled={isBusy('delete-host')}><Trash2 size={14} />{t.remoteKbDeleteHost}</button>
                         </div>
                       </section>
                     </>
@@ -2193,8 +2205,8 @@ function RemoteKnowledgeView({ t, embedded = false }) {
               </p>
             )}
             <div className="mt-5 flex justify-end gap-2">
-              <button data-testid="shared-kb-copy-recovery" className={quiet} onClick={() => copyWithFeedback(backupRecoveryCode, t.remoteKbRecoveryCopied, true)}><Copy size={13} />{t.remoteKbCopyRecovery}</button>
-              <button data-testid="shared-kb-recovery-done" className={primary} onClick={() => setShowRecoveryCode(false)}>{t.remoteKbDone}</button>
+              <button type="button" data-testid="shared-kb-copy-recovery" className={quiet} onClick={() => copyWithFeedback(backupRecoveryCode, t.remoteKbRecoveryCopied, true)}><Copy size={13} />{t.remoteKbCopyRecovery}</button>
+              <button type="button" data-testid="shared-kb-recovery-done" className={primary} onClick={() => setShowRecoveryCode(false)}>{t.remoteKbDone}</button>
             </div>
           </OverlayDialog>
         )}
@@ -2210,11 +2222,12 @@ function RemoteKnowledgeView({ t, embedded = false }) {
             closeDisabled={isBusy('restore-host')}
           >
             <p className={`truncate rounded-xl bg-[#F7F9FC] px-3.5 py-3 text-[12px] dark:bg-white/[0.04] ${muted}`} title={restoreSource}>{restoreSource}</p>
+            {/* biome-ignore lint/a11y/noAutofocus: 弹窗打开即聚焦恢复码输入框,焦点即输入意图 */}
             <textarea autoFocus className={`${field} mt-3 h-24 resize-none py-3 font-mono text-[11px]`} value={restoreCode} onChange={event => setRestoreCode(event.target.value)} placeholder={t.remoteKbRecoveryPlaceholder} />
             <p className={`mt-2 text-[11px] leading-5 ${muted}`}>{restoreCode.trim() ? t.remoteKbMigrationMode : t.remoteKbSameHostMode}</p>
             <div className="mt-5 flex justify-end gap-2">
-              <button className={quiet} onClick={() => setShowRestoreDialog(false)} disabled={isBusy('restore-host')}>{t.remoteKbCancel}</button>
-              <button data-testid="shared-kb-restore-submit" className={primary} onClick={restoreHost} disabled={isBusy('restore-host')}>
+              <button type="button" className={quiet} onClick={() => setShowRestoreDialog(false)} disabled={isBusy('restore-host')}>{t.remoteKbCancel}</button>
+              <button type="button" data-testid="shared-kb-restore-submit" className={primary} onClick={restoreHost} disabled={isBusy('restore-host')}>
                 {isBusy('restore-host') && <RefreshCw size={14} className="animate-spin" />}{t.remoteKbRestoreAction}
               </button>
             </div>
@@ -2230,13 +2243,14 @@ function RemoteKnowledgeView({ t, embedded = false }) {
             closeLabel={t.remoteKbClose}
             closeDisabled={isBusy('create-collection')}
           >
+            {/* biome-ignore lint/a11y/noAutofocus: 弹窗打开即聚焦集合名输入框,焦点即输入意图 */}
             <input autoFocus className={field} value={newCollectionName}
               onChange={event => setNewCollectionName(event.target.value)}
               onKeyDown={event => { if (event.key === 'Enter') createCollection(); }}
               placeholder={t.remoteKbCollectionName} />
             <div className="mt-5 flex justify-end gap-2">
-              <button className={quiet} onClick={() => setShowCollectionCreator(false)} disabled={isBusy('create-collection')}>{t.remoteKbCancel}</button>
-              <button className={primary} onClick={createCollection} disabled={!newCollectionName.trim() || isBusy('create-collection')}>
+              <button type="button" className={quiet} onClick={() => setShowCollectionCreator(false)} disabled={isBusy('create-collection')}>{t.remoteKbCancel}</button>
+              <button type="button" className={primary} onClick={createCollection} disabled={!newCollectionName.trim() || isBusy('create-collection')}>
                 {isBusy('create-collection') && <RefreshCw size={14} className="animate-spin" />}{t.remoteKbCreate}
               </button>
             </div>
@@ -2255,6 +2269,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
           >
             {localCollections.length ? (
               <select
+                // biome-ignore lint/a11y/noAutofocus: 弹窗打开即聚焦集合选择框,焦点即选择意图
                 autoFocus
                 className={field}
                 value={publishCollectionId}
@@ -2271,8 +2286,8 @@ function RemoteKnowledgeView({ t, embedded = false }) {
               <p className={`rounded-xl bg-[#F7F9FC] px-3.5 py-4 text-[12px] ${muted}`}>{t.remoteKbNoLocalCollections}</p>
             )}
             <div className="mt-5 flex justify-end gap-2">
-              <button className={quiet} onClick={() => setShowPublishDialog(false)} disabled={isBusy('prepare-publish')}>{t.remoteKbCancel}</button>
-              <button data-testid="remote-publish-continue" className={primary} onClick={preparePublish} disabled={!publishCollectionId || isBusy('prepare-publish')}>
+              <button type="button" className={quiet} onClick={() => setShowPublishDialog(false)} disabled={isBusy('prepare-publish')}>{t.remoteKbCancel}</button>
+              <button type="button" data-testid="remote-publish-continue" className={primary} onClick={preparePublish} disabled={!publishCollectionId || isBusy('prepare-publish')}>
                 {isBusy('prepare-publish') && <RefreshCw size={14} className="animate-spin" />}{t.remoteKbPublishContinue}
               </button>
             </div>
@@ -2293,8 +2308,8 @@ function RemoteKnowledgeView({ t, embedded = false }) {
           >
             {uploadDiscovery && (
               <p data-testid="remote-folder-discovery-summary" className={`mb-3 text-[12px] ${muted}`}>
-                {t.remoteKbFolderSummary.replace('{count}', String(uploadDiscovery.count))}
-                {uploadDiscovery.skipped ? ` · ${t.remoteKbFolderSkipped.replace('{count}', String(uploadDiscovery.skipped))}` : ''}
+                {t.remoteKbFolderSummary.replace('{count}', () => String(uploadDiscovery.count))}
+                {uploadDiscovery.skipped ? ` · ${t.remoteKbFolderSkipped.replace('{count}', () => String(uploadDiscovery.skipped))}` : ''}
               </p>
             )}
             <div className="max-h-[360px] overflow-y-auto rounded-2xl border border-[#ececf1] dark:border-white/10">
@@ -2308,10 +2323,10 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                     {item.error && <p className="mt-0.5 truncate text-[11px] text-[#d63a3a]" title={item.error}>{item.error}</p>}
                   </div>
                   {item.status !== 'queued' && (
-                      <span className={`inline-flex shrink-0 items-center gap-1.5 text-[11.5px] ${item.status === 'success' || item.status === 'duplicate' ? 'text-[#16894a] dark:text-[#7DD3A8]' : item.status === 'failed' || item.status === 'index_failed' || item.status === 'duplicate_failed' ? 'text-[#d63a3a]' : item.status === 'pending_index' || item.status === 'duplicate_pending' ? 'text-[#a76518] dark:text-[#eab66f]' : muted}`}>
+                      <span className={`inline-flex shrink-0 items-center gap-1.5 text-[11.5px] ${['success', 'duplicate'].includes(item.status) ? 'text-[#16894a] dark:text-[#7DD3A8]' : ['failed', 'index_failed', 'duplicate_failed'].includes(item.status) ? 'text-[#d63a3a]' : ['pending_index', 'duplicate_pending'].includes(item.status) ? 'text-[#a76518] dark:text-[#eab66f]' : muted}`}>
                       {item.status === 'uploading' && <RefreshCw size={13} className="animate-spin" />}
-                      {(item.status === 'success' || item.status === 'duplicate') && <CheckCircle2 size={13} />}
-                      {(item.status === 'failed' || item.status === 'index_failed' || item.status === 'duplicate_failed') && <AlertTriangle size={13} />}
+                      {['success', 'duplicate'].includes(item.status) && <CheckCircle2 size={13} />}
+                      {['failed', 'index_failed', 'duplicate_failed'].includes(item.status) && <AlertTriangle size={13} />}
                       {(item.status === 'pending_index' || item.status === 'duplicate_pending') && !item.pollTimedOut && <RefreshCw size={13} className="animate-spin" />}
                       {(item.status === 'pending_index' || item.status === 'duplicate_pending') && item.pollTimedOut
                         ? (item.status === 'duplicate_pending' ? t.remoteKbUploadExistingStillIndexing : t.remoteKbUploadStillIndexing)
@@ -2327,12 +2342,12 @@ function RemoteKnowledgeView({ t, embedded = false }) {
               </div>
             )}
             <div className="mt-5 flex justify-end gap-2">
-              <button className={quiet} onClick={() => {
+              <button type="button" className={quiet} onClick={() => {
                 if (!uploadHasStarted) setPublishDraft(null);
                 setShowUploadDialog(false);
               }} disabled={isBusy('upload')}>{uploadCloseLabel}</button>
               {uploadQueue.some(item => item.status === 'queued' || item.status === 'failed') && (
-                <button className={primary} onClick={startUpload} disabled={uploadInProgress}>
+                <button type="button" className={primary} onClick={startUpload} disabled={uploadInProgress}>
                   {isBusy('upload') && <RefreshCw size={14} className="animate-spin" />}
                   {uploadQueue.some(item => item.status === 'failed') ? t.remoteKbRetryFailed : t.remoteKbStartUpload}
                 </button>
@@ -2352,6 +2367,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
           >
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <button
+                // biome-ignore lint/a11y/noAutofocus: 确认弹窗默认聚焦取消按钮,防误触危险操作的既有保护
                 autoFocus
                 type="button"
                 data-testid={`${confirmation.testId || 'remote-action-confirm'}-cancel`}
@@ -2363,7 +2379,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
               <button
                 type="button"
                 data-testid={`${confirmation.testId || 'remote-action-confirm'}-submit`}
-                className={`${confirmation.dangerous ? `${danger} border border-[#d63a3a]/25 bg-[#d63a3a]/[0.06]` : primary} w-full sm:w-auto`}
+                className={`${confirmation.dangerous /* eslint-disable-line sonarjs/no-nested-template-literals -- 危险态在基础样式上叠加红色边框,保持就地拼接 */ ? `${danger} border border-[#d63a3a]/25 bg-[#d63a3a]/[0.06]` : primary} w-full sm:w-auto`}
                 onClick={() => finishConfirmation(true)}
               >
                 {confirmation.confirmLabel}
@@ -2375,15 +2391,15 @@ function RemoteKnowledgeView({ t, embedded = false }) {
         {documentToTrash && !confirmation && (
           <OverlayDialog
             testId="remote-document-trash-confirm"
-            title={t.remoteKbDocumentTrashConfirm.replace('{name}', documentToTrash.name)}
+            title={t.remoteKbDocumentTrashConfirm.replace('{name}', () => documentToTrash.name)}
             description={t.remoteKbDocumentTrashHint}
             icon={Trash2}
             onClose={() => setDocumentToTrash(null)}
             closeLabel={t.remoteKbClose}
           >
             <div className="flex justify-end gap-2">
-              <button className={quiet} onClick={() => setDocumentToTrash(null)}>{t.remoteKbCancel}</button>
-              <button className={danger} onClick={() => changeDocumentTrash(documentToTrash)}>{t.remoteKbTrash}</button>
+              <button type="button" className={quiet} onClick={() => setDocumentToTrash(null)}>{t.remoteKbCancel}</button>
+              <button type="button" className={danger} onClick={() => changeDocumentTrash(documentToTrash)}>{t.remoteKbTrash}</button>
             </div>
           </OverlayDialog>
         )}

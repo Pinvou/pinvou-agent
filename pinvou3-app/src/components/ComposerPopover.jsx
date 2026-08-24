@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { isWeb } from '../shared/platform.js';
 
@@ -17,7 +17,7 @@ function useAnchoredPosition(open, triggerRef, active) {
   useLayoutEffect(() => {
     if (!open || !active || !triggerRef.current) {
       setStyle(null);
-      return undefined;
+      return;
     }
     const position = () => {
       const trigger = triggerRef.current;
@@ -40,12 +40,17 @@ function useAnchoredPosition(open, triggerRef, active) {
     };
     position();
     window.addEventListener('resize', position);
-    window.visualViewport && window.visualViewport.addEventListener('resize', position);
-    window.visualViewport && window.visualViewport.addEventListener('scroll', position);
+    // visualViewport 在桌面 Safari 14+/iOS 上存在;不存在时跳过监听,行为不变
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', position);
+      window.visualViewport.addEventListener('scroll', position);
+    }
     return () => {
       window.removeEventListener('resize', position);
-      window.visualViewport && window.visualViewport.removeEventListener('resize', position);
-      window.visualViewport && window.visualViewport.removeEventListener('scroll', position);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', position);
+        window.visualViewport.removeEventListener('scroll', position);
+      }
     };
   }, [open, active, triggerRef]);
   return style;
@@ -58,11 +63,15 @@ function useAnchoredPosition(open, triggerRef, active) {
 // 弹层打开时再点触发按钮会先被外点关闭、随后 toggle 又把它重新打开。
 function useOutsidePointerClose(open, onClose, insideRefs) {
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
   const insideRefsRef = useRef(insideRefs);
-  insideRefsRef.current = insideRefs;
+  // latest-ref 同步:在 effect 中写回而不是渲染期写回,避免渲染期访问 ref;
+  // 消费方(pointerdown 捕获监听)只在提交后触发,行为不变。
   useEffect(() => {
-    if (!open) return undefined;
+    onCloseRef.current = onClose;
+    insideRefsRef.current = insideRefs;
+  });
+  useEffect(() => {
+    if (!open) return;
     const handlePointerDown = (event) => {
       const refs = insideRefsRef.current || [];
       const inside = refs.some((ref) => ref && ref.current && ref.current.contains(event.target));
@@ -89,6 +98,10 @@ const ComposerPopover = ({ open, onClose, triggerRef, compact, desktopClassName,
   }
   return createPortal(
     <>
+      {/* 透明外点关闭层:仅吸收指针点击以关闭弹层;键盘路径由触发按钮(再次
+          激活可切换关闭)与面板内的真实 <button type="button"> 菜单项承担,故非交互元素。 */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: 纯指针外点关闭层,键盘路径由触发按钮与面板内按钮承担 */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: 纯指针外点关闭层,非交互容器 */}
       <div className="fixed inset-0 z-40" onClick={onClose}></div>
       <div {...menuProps} style={style || { position: 'fixed', visibility: 'hidden' }} className={`fixed ${POPOVER_SURFACE}`}>
         {children}

@@ -1,4 +1,4 @@
-import React, { lazy, Suspense } from 'react';
+import { lazy, Suspense } from 'react';
 
 const CodexAcpWorkspace = lazy(() => import('./CodexAcpView.jsx')
   .then(module => ({ default: module.CodexAcpView })));

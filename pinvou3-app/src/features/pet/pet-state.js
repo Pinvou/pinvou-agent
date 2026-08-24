@@ -41,9 +41,9 @@ function sessionId(payload) {
 
 function normalizeConversationText(text) {
   return String(text || '')
-    .replace(/\r\n?/g, '\n')
-    .replace(/[\t ]+/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
+    .replaceAll(/\r\n?/g, '\n')
+    .replaceAll(/[\t ]+/g, ' ')
+    .replaceAll(/\n{3,}/g, '\n\n')
     .trim();
 }
 
@@ -190,10 +190,12 @@ export function syncSessionTitles(state, sessions) {
   }
   let changed = false;
   for (const sid of state.sessions.keys()) {
-    if (!next.has(sid)) {
-      changed = state.sessions.delete(sid) || changed;
-      if (state.pendingRemoval) state.pendingRemoval.delete(sid);
+    if (next.has(sid)) {
+    	continue;
     }
+
+    changed = state.sessions.delete(sid) || changed;
+    if (state.pendingRemoval) state.pendingRemoval.delete(sid);
   }
   if (state.viewedSessions) {
     for (const sid of state.viewedSessions) {
@@ -221,10 +223,12 @@ function pruneExpired(state, now) {
   // 快照宽限期收尾：标记后一直没有任何事件(会话真消失)才真正删卡。
   if (state.pendingRemoval && state.pendingRemoval.size) {
     for (const [sid, markedAt] of state.pendingRemoval) {
-      if (now - markedAt >= SNAPSHOT_REMOVAL_GRACE_MS) {
-        state.sessions.delete(sid);
-        state.pendingRemoval.delete(sid);
+      if (now - markedAt < SNAPSHOT_REMOVAL_GRACE_MS) {
+      	continue;
       }
+
+      state.sessions.delete(sid);
+      state.pendingRemoval.delete(sid);
     }
   }
 }
@@ -289,18 +293,16 @@ export function applyActivitySnapshot(state, sessions, sequence, now = Date.now(
       if (!card && !(state.viewedSessions && state.viewedSessions.has(key))) {
         changed = applyEvent(state, 'pet:turn_start', { session_id: key }, now, copy) || changed;
       }
-    } else if (card && card.status === 'running') {
-      // 不立即删卡：快照的 working 来自主窗口 busy 状态，可能早于终态事件
+    } else // 不立即删卡：快照的 working 来自主窗口 busy 状态，可能早于终态事件
       // 到达桌宠窗口。立即删除会让 running 卡消失 → 窗口收起，随后迟到的
       // chat:done/chat:delta 又把卡建回 → 窗口展开。多会话并发时这种
       // 收起/展开反复发生，就是用户看到的"闪现"。改为宽限期标记，事件流
       // 优先收尾；宽限期后仍无事件(会话确实消失)才真正删除。
-      if (!(state.pendingRemoval && state.pendingRemoval.has(key))) {
+      if (card && card.status === 'running' && !(state.pendingRemoval && state.pendingRemoval.has(key))) {
         if (!state.pendingRemoval) state.pendingRemoval = new Map();
         state.pendingRemoval.set(key, now);
         changed = true;
       }
-    }
   }
   return changed;
 }

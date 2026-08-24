@@ -1,7 +1,7 @@
 function createDesignChange({ element, type, property, oldValue, newValue, groupId, groupLabel }) {
   const selector = element && element.selector ? element.selector : '';
   return {
-    id: `design-change-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: `design-change-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, // eslint-disable-line sonarjs/pseudo-random -- 非安全场景,仅用于生成展示 ID
     elementId: element && element.id ? element.id : '',
     selector,
     elementLabel: element && element.label ? element.label : '',

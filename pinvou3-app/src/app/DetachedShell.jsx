@@ -13,7 +13,7 @@ const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ defau
 const LazyCardPoolView = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.CardPoolView })));
 const DetachedViewFallback = () => <div className="p-6 text-sm opacity-60">…</div>;
 import { useBridgeState } from '../hooks/useBridge.js';
-import { emitTauri, invokeTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
+import { emitTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
 import { listAcpSessions } from '../features/codex/acpClient.js';
 import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../shared/i18n.js';
 import { ensurePersonaI18nOverlay } from './personas-overlay.js';
@@ -31,7 +31,9 @@ function useDetachedBase() {
   useEffect(() => {
     if (initRef.current || !bs || !bs.settings) return;
     const lang = TAG_TO_LANG[bs.settings.language];
-    // en/ja 惰性词典:入口只引导系统语言,落盘语言可能未装载
+    // 桥接状态到位后的一次性引导(语言/主题只在撕离窗启动时取初值,此后由本窗
+    // 自主管理),initRef 挡住后续 settings 变更的重复写入,保持原一次性语义。
+    // en/ja 惰性词典:入口只引导系统语言,落盘语言可能未装载,ensure 后再切。
     if (lang) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
     setActiveTheme(bs.settings.theme === 'liquid-light' ? 'light' : 'dark');
     initRef.current = true;
@@ -112,7 +114,7 @@ function DetachedCodexSessionView({ id, theme, t, bs }) {
   if (sessions === null) {
     return <div className="p-6 text-sm opacity-60">…</div>;
   }
-  if (!sessions.some(session => session && session.id === id)) {
+  if (sessions.every(session => !(session && session.id === id))) {
     return <div className="p-6 text-sm opacity-70">{t.uiMainApp.detachedSessionMissing}</div>;
   }
   return (

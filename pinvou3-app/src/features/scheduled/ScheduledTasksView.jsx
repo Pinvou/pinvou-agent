@@ -1,6 +1,6 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
-import { Check, ChevronDown, ChevronRight, ClipboardCheck, Clock, FileChartLine, MessageCircle, Newspaper, Play, Plus, Trash2, X } from '../../components/icons.jsx';
+import { Check, ChevronDown, ChevronRight, ClipboardCheck, Clock, FileChartLine, MessageCircle, Newspaper, Plus, X } from '../../components/icons.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
@@ -164,6 +164,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
 
       useLayoutEffect(() => {
         if (!open) return;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 打开时同步定位下拉菜单位置,必须同帧完成避免闪烁
         updateMenuPosition();
         const closeOutside = (event) => {
           if (
@@ -188,9 +189,11 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           window.removeEventListener('resize', updateOnViewportChange);
           window.removeEventListener('scroll', updateOnViewportChange, true);
         };
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 既有结构:仅在 open 变化时重挂监听,回调闭包保持挂载时快照
       }, [open]);
 
       const effectiveMenuStyle = open && typeof document !== 'undefined'
+        // eslint-disable-next-line react-hooks/refs -- 首帧无缓存样式时同步计算定位,读取 DOM 几何而非可变 state
         ? (menuStyle || calculateMenuPosition())
         : null;
       const menu = open && effectiveMenuStyle && typeof document !== 'undefined' ? createPortal(
@@ -263,6 +266,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         const el = listRef.current;
         if (el) el.scrollTop = Math.max(0, values.indexOf(value)) * WHEEL_ITEM_H;
         return () => clearTimeout(settleRef.current);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 值变化时仅重新对齐滚动位置,values 列表在会话内固定
       }, [value]);
       function settle() {
         const el = listRef.current;
@@ -373,6 +377,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       ) : null;
       return (
         <span ref={rootRef} className="relative justify-self-end">
+          {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: 只读 input 承载 listbox 弹层触发语义,aria-haspopup/expanded 为既有契约 */}
           <input readOnly data-testid={testId} value={valid ? value : ''} placeholder={placeholder} aria-label={ariaLabel}
             aria-haspopup="listbox" aria-expanded={open}
             onClick={() => {
@@ -417,7 +422,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const tasks = previewMode
         ? [...PREVIEW_SCHEDULED_TASKS, ...previewCreatedTasks].map(task => ({
           ...task,
-          ...(scheduledCopy.previewTasks[task.id] || {}),
+          ...scheduledCopy.previewTasks[task.id],
           model: task.model === '自动选择' ? scheduledCopy.autoModel : task.model,
           status: previewTaskStatus[task.id] || task.status,
           nextRunAt: task.nextRunAt || new Date(clockNow + (task.nextRunOffsetMs || 1000 * 60 * 60)).toISOString(),
@@ -547,7 +552,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       };
       const visibleSuggestions = SCHEDULED_TASK_TEMPLATES.map(template => ({
         ...template,
-        ...(scheduledCopy.templateMap[template.id] || {}),
+        ...scheduledCopy.templateMap[template.id],
       }));
       const detailFormIsValid = !!detailForm &&
         !!String(detailForm.name || '').trim() &&
@@ -570,9 +575,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         saveTimerRef.current = null;
         pendingPatchRef.current = {};
         editTaskIdRef.current = detail && detail.id || null;
-        setDetailForm(taskForm(detail));
+        setDetailForm(taskForm(detail)); // eslint-disable-line react-hooks/set-state-in-effect -- 选中任务变化时整体重置编辑态(run-once 语义),改为派生 state 会破坏草稿保存时序
         setScheduleRepeatIntent(null);
         setSaveState('idle');
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖数组刻意只跟踪选中 id,避免 detail 对象引用触发重复重置
       }, [effectiveSelectedId, detail && detail.id]);
 
       useEffect(() => {
@@ -585,6 +591,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           saveChainRef.current.catch(() => {}).then(() => {
             const patch = pendingPatchRef.current;
             const invalid = ['name', 'prompt', 'rrule'].some(key =>
+              // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
               Object.prototype.hasOwnProperty.call(patch, key) && !String(patch[key] || '').trim()
             );
             if (!taskId || invalid || !Object.keys(patch).length || !bridge || !bridge.scheduled.updateScheduledTask) return null;
@@ -612,6 +619,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             const restored = {...pendingPatchRef.current};
             const failureIsCurrent = Object.keys(payload).some(key => latestFieldSequenceRef.current[key] === sequence);
             Object.keys(payload).forEach(key => {
+              // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
               if (latestFieldSequenceRef.current[key] === sequence && !Object.prototype.hasOwnProperty.call(restored, key)) {
                 restored[key] = payload[key];
               }
@@ -630,6 +638,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         saveTimerRef.current = null;
         const patch = pendingPatchRef.current;
         const hasBlankRequiredField = ['name', 'prompt', 'rrule'].some(key =>
+          // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
           Object.prototype.hasOwnProperty.call(patch, key) && !String(patch[key] || '').trim()
         );
         if (hasBlankRequiredField) {
@@ -659,7 +668,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       }
 
       function finishTextField(key) {
-        const required = key === 'name' || key === 'prompt' || key === 'rrule';
+        const required = ['name', 'prompt', 'rrule'].includes(key);
         const value = detailForm && detailForm[key];
         if (required && !String(value || '').trim()) {
           if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -742,7 +751,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         if (!name || !prompt) return;
         if (previewMode) {
           const created = {
-            id: `preview-created-${Date.now()}`,
+            id: `preview-created-${Date.now()}`, // eslint-disable-line react-hooks/purity -- 预览模式生成本地临时 id,无需确定性
             templateId: createForm.templateId || null,
             name,
             status: createForm.paused ? 'paused' : 'active',
@@ -777,7 +786,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           if (bridge.scheduled.selectScheduledTask) bridge.scheduled.selectScheduledTask(null);
           setCreateForm(null);
           setCreateScheduleRepeatIntent(null);
-        } catch (_) {}
+        } catch { /* 静默:桥接失败已在 UI 层呈现 */ }
       }
 
       function requestDeleteTask(e, task) {
@@ -799,7 +808,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         try {
           await bridge.scheduled.deleteScheduledTask(id);
           setDeleteConfirmTask(null);
-        } catch (_) {}
+        } catch { /* 静默:桥接失败已在 UI 层呈现 */ }
       }
 
       async function toggleTaskPaused(task) {
@@ -816,7 +825,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           if (!(await flushBeforeAction())) return;
           if (task.status === 'active' && bridge.scheduled.pauseScheduledTask) await bridge.scheduled.pauseScheduledTask(task.id);
           if (task.status !== 'active' && bridge.scheduled.resumeScheduledTask) await bridge.scheduled.resumeScheduledTask(task.id);
-        } catch (_) {}
+        } catch { /* 静默:桥接失败已在 UI 层呈现 */ }
       }
 
       async function toggleTask(e, task) {
@@ -833,7 +842,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           if (!(await flushBeforeAction())) return;
           const started = await bridge.scheduled.startScheduledTaskChat();
           if (started && onOpenChat) onOpenChat();
-        } catch (_) {}
+        } catch { /* 静默:桥接失败已在 UI 层呈现 */ }
       }
 
       async function runTaskNow(id) {
@@ -842,7 +851,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         try {
           if (!(await flushBeforeAction())) return;
           await bridge.scheduled.runScheduledTaskNow(id);
-        } catch (_) {}
+        } catch { /* 静默:桥接失败已在 UI 层呈现 */ }
       }
 
       async function saveDetailAndClose() {
@@ -858,7 +867,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           if (!(await flushBeforeAction())) return;
           const opened = await bridge.scheduled.openScheduledRunChat(run, detail || selected);
           if (!opened) return;
-        } catch (_) {}
+        } catch { /* 静默:桥接失败已在 UI 层呈现 */ }
       }
 
       function parseScheduleFields(rrule) {
@@ -888,7 +897,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           day: days[0] || 'MO',
           interval: Number(fields.INTERVAL || 1),
           time: hasTimeAnchor
-            ? `${String(fields.BYHOUR != null ? fields.BYHOUR : 0).padStart(2, '0')}:${String(fields.BYMINUTE != null ? fields.BYMINUTE : 0).padStart(2, '0')}`
+            ? `${String(fields.BYHOUR == null ? 0 : fields.BYHOUR).padStart(2, '0')}:${String(fields.BYMINUTE == null ? 0 : fields.BYMINUTE).padStart(2, '0')}`
             : '',
           hasTimeAnchor,
         };
@@ -906,8 +915,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       function buildRrule(currentRrule, key, value) {
         const fields = parseScheduleFields(currentRrule);
         const previousEditor = scheduleEditorValue(currentRrule);
-        const editor = {...previousEditor};
-        editor[key] = value;
+        const editor = {...previousEditor, [key]: value,};
         const [hour, minute] = String(editor.time || '08:00').split(':');
         if (key === 'time') {
           fields.BYHOUR = String(Number(hour || 0));
@@ -950,13 +958,13 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       function editSchedule(key, value) {
         // 连续勾选恰好组成“工作日”或“每天”时，仍保持每周编辑器可见。
         if (key === 'repeat') setScheduleRepeatIntent(value === 'weekly' ? 'weekly' : null);
-        if (key === 'days') setScheduleRepeatIntent('weekly');
+        else if (key === 'days') setScheduleRepeatIntent('weekly');
         editImmediateField('rrule', buildEditedRrule(key, value));
       }
 
       function editCreateSchedule(key, value) {
         if (key === 'repeat') setCreateScheduleRepeatIntent(value === 'weekly' ? 'weekly' : null);
-        if (key === 'days') setCreateScheduleRepeatIntent('weekly');
+        else if (key === 'days') setCreateScheduleRepeatIntent('weekly');
         setCreateForm(current => current
           ? {...current, rrule: buildRrule(current.rrule, key, value)}
           : current);
@@ -976,7 +984,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         label: selectorMainLabel(model, t),
         model: model.model,
       }));
-      if (detailForm && detailForm.modelId && !modelOptions.some(option => option.value === detailForm.modelId)) {
+      if (detailForm && detailForm.modelId && modelOptions.every(option => option.value !== detailForm.modelId)) {
         modelOptions.unshift({ value: detailForm.modelId, label: detailForm.model || detailForm.modelId, model: detailForm.model });
       } else if (detailForm && !detailForm.modelId) {
         modelOptions.unshift({ value: '', label: detailForm.model ? scheduledCopy.reselectModel(detailForm.model) : scheduledCopy.currentModel });
@@ -999,7 +1007,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const iosHistorySurface = 'bg-[#F5F5F7] dark:bg-[#2C2C2E]';
       const mutedValue = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
       const pressedRow = 'active:bg-[#E5E5EA] dark:active:bg-[#3A3A3C]';
-      const modalPortalTarget = typeof document !== 'undefined' ? document.body : null;
+      const modalPortalTarget = typeof document === 'undefined' ? null : document.body;
       const renderModal = node => modalPortalTarget ? createPortal(node, modalPortalTarget) : node;
 
       const MacSwitch = ({ task }) => {
@@ -1067,7 +1075,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         </div>
       );
 
-      const FormScheduleRows = ({ editor, selectedDays, prefix, onEdit, onCloseWeekly }) => !editor ? null : (
+      const FormScheduleRows = ({ editor, selectedDays, prefix, onEdit, onCloseWeekly }) => editor ? (
         <>
           <div className={`flex items-center pl-3.5 ${pressedRow} cursor-pointer border-b ${iosSeparator}`}>
             <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
@@ -1115,9 +1123,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             </div>
           </div>
         </>
-      );
+      ) : null;
 
-      const CreateTaskDialog = () => !createForm ? null : renderModal(
+      const CreateTaskDialog = () => createForm ? renderModal(
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[6px]">
           <form aria-labelledby="scheduled-create-dialog-title"
             data-testid="scheduled-create-dialog" onSubmit={submitCustomTask}
@@ -1177,7 +1185,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             </div>
           </form>
         </div>
-      );
+      ) : null;
 
       const renderTemplateSuggestions = () => (
         <section className="mb-10" data-testid="scheduled-template-suggestions">
@@ -1251,11 +1259,11 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                       {taskListStatusLabel(task.status)}
                     </span>
                     {task.isRunning && (
-                      <span data-testid="scheduled-task-running" aria-label={scheduledCopy.running}
+                      <span data-testid="scheduled-task-running" role="img" aria-label={scheduledCopy.running}
                         className="ml-2 h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[#007AFF] border-t-transparent dark:border-[#0A84FF]" />
                     )}
                     {task.hasUnreadRuns && (
-                      <span data-testid="scheduled-task-unread" aria-label={scheduledCopy.unread}
+                      <span data-testid="scheduled-task-unread" role="img" aria-label={scheduledCopy.unread}
                         className="ml-2 h-2.5 w-2.5 shrink-0 rounded-full bg-[#007AFF] dark:bg-[#0A84FF]" />
                     )}
                   </span>
@@ -1301,7 +1309,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         </section>
       );
 
-      const DetailTaskDialog = () => !(selected && detailForm) ? null : renderModal(
+      const DetailTaskDialog = () => (selected && detailForm) ? renderModal(
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[6px]">
           <div
             data-testid="scheduled-detail"
@@ -1400,7 +1408,8 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 <button type="button" data-testid="scheduled-run-now"
                   disabled={!!busyAction || !detailFormIsValid}
                   onClick={() => runTaskNow(selected.id)}
-                  className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${canOpenTaskFolder ? `border-b ${iosSeparator}` : ''} ${pressedRow}`}>
+                  className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${canOpenTaskFolder
+                    ? `border-b ${iosSeparator}` : ''} ${pressedRow}` /* eslint-disable-line sonarjs/no-nested-template-literals -- 条件边框与按压态组合,拆出变量会割裂 className 就地拼接 */}>
                   <span className={`font-medium ${bodyText}`}>{scheduledCopy.runNow}</span>
                   <ChevronRight className={`h-4 w-4 shrink-0 text-[#3C3C43]/30 dark:text-[#EBEBF5]/30`} />
                 </button>
@@ -1428,10 +1437,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                           aria-label={item.sessionId ? scheduledCopy.openRunLabel(runStatusLabel(item.status)) : scheduledCopy.noOpenRun}>
                           <span className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center">
                             {['queued', 'running'].includes(item.status) ? (
-                              <span data-testid="scheduled-run-running" aria-label={scheduledCopy.runInProgress}
+                              <span data-testid="scheduled-run-running" aria-hidden="true"
                                 className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-[#007AFF] border-t-transparent dark:border-[#0A84FF]" />
                             ) : item.unread ? (
-                              <span data-testid="scheduled-run-unread" aria-label={scheduledCopy.unread}
+                              <span data-testid="scheduled-run-unread" aria-hidden="true"
                                 className="h-2.5 w-2.5 shrink-0 rounded-full bg-[#007AFF] dark:bg-[#0A84FF]" />
                             ) : (
                               <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: item.status === 'failed' ? '#FF3B30' : '#8E8E93' }} />
@@ -1477,7 +1486,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             </div>
           </div>
         </div>
-      );
+      ) : null;
 
       const deleteTarget = deleteConfirmTask;
 
@@ -1520,16 +1529,19 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               </div>
               <main className="min-h-0 flex-1 overflow-y-auto pb-6 custom-scrollbar">
                 {renderTemplateSuggestions()}
-                <MyTasksSection className="mb-0" />
+                {MyTasksSection({ className: 'mb-0' })}
               </main>
             </div>
           </div>
 
+          {/* eslint-disable-next-line react-hooks/refs -- 既有结构:详情对话框为渲染期函数调用,内部按需读取 refs */}
           {DetailTaskDialog()}
           {CreateTaskDialog()}
 
           {deleteTarget && renderModal(
             <div className="fixed inset-0 z-[300] flex items-center justify-center px-4">
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担 */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器 */}
               <div className="absolute inset-0 bg-black/28 backdrop-blur-[1px]" onClick={(event) => cancelDeleteTask(event)} />
               <div
                 role="alertdialog"

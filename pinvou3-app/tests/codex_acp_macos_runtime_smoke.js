@@ -167,6 +167,7 @@ initializeClaudeBridge()
   .then(() => {
     console.log("macOS universal Codex + Claude ACP Bridge Runtime: ok");
   })
+  // eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
   .catch((error) => {
     console.error(error);
     process.exitCode = 1;

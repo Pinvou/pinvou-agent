@@ -39,6 +39,7 @@ function loadScheduledFeature() {
     prefillComposer() {},
     sessionStates: {},
     runSyncOnSession() { return Promise.resolve(); },
+    // eslint-disable-next-line no-unused-vars -- 桩函数保留完整调用签名
     invoke(name, args) {
       if (deferreds[name] && deferreds[name].promise) return deferreds[name].promise;
       return Promise.resolve({});

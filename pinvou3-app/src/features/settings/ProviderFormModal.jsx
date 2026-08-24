@@ -1,7 +1,7 @@
 // ACP Provider（第三方中转）新增/编辑弹窗。照 ModelFormModal 范式：
 // 预设填充 + 掩码 key（keep/replace/delete）+ 草稿-保存。
 
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, X } from '../../components/icons.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
@@ -130,7 +130,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
   );
   // Claude Code 细化模型槽位：默认跟随主模型，可单独修改；必填（留空槽位
   // 会让 CC 子 agent 回落官方模型走官方流量）。
-  const [modelSlots, setModelSlots] = useState(() => ({ ...(initial?.modelSlots || {}) }));
+  const [modelSlots, setModelSlots] = useState(() => ({ ...initial?.modelSlots }));
   const [apiKey, setApiKey] = useState('');
   const [keyLoaded, setKeyLoaded] = useState(false);
   // 用户在密钥框操作过（输入/清空）后，迟到的回填不得覆盖用户输入
@@ -185,7 +185,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
   // 编辑有 key 的 Provider 时回填真实密钥：输入框 type=password 自然掩码，
   // 点「显示」切 text 变明文（密码管理器范式）。仅编辑时拉取，列表永不回传。
   useEffect(() => {
-    if (!initial || !initial.hasCredential) return undefined;
+    if (!initial || !initial.hasCredential) return;
     let alive = true;
     invokeTauri('get_acp_provider_key', { agent, providerId: initial.id })
       .then(key => {
@@ -259,7 +259,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
     }
     let contextWindowPayload = null;
     if (agent !== 'claude' && String(contextWindow || '').trim()) {
-      const parsed = Number.parseInt(String(contextWindow).trim(), 10);
+      const parsed = Number.parseInt(String(contextWindow).trim(), 10); // eslint-disable-line unicorn/prefer-number-coercion -- 保持 parseInt 宽松解析语义
       if (!Number.isFinite(parsed) || parsed <= 0) {
         setError(copy.contextWindowInvalid);
         return;
@@ -279,11 +279,11 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
     // - 编辑 + 清空 key（有已存密钥）：= 删除密钥，确认防误触
     // 回填失败（keyLoaded=false）且有已存密钥时恒走 keep 且不弹确认：
     // 密钥实际存在，不得提示「未填写」，更不能删。
-    const apiKeyAction = !initial
-      ? (trimmedKey ? 'replace' : 'keep')
-      : trimmedKey
+    const apiKeyAction = initial
+      ? trimmedKey
         ? 'replace'
-        : (!initial.hasCredential || !keyLoaded ? 'keep' : 'delete');
+        : (!initial.hasCredential || !keyLoaded ? 'keep' : 'delete')
+      : (trimmedKey ? 'replace' : 'keep');
     if (!trimmedKey && (!initial || !initial.hasCredential)) {
       setConfirmStep('emptyKey');
       return;
@@ -323,6 +323,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
   const inputClass = `w-full h-10 rounded-xl px-3 text-[13px] outline-none transition-colors bg-[#F0F4F9] text-[#1F1F1F] border border-black/[0.06] focus:border-[#0B57D0]/50 dark:bg-white/[0.06] dark:text-[#E8EAED] dark:border-white/[0.09] dark:focus:border-[#64B5F6]/50`;
 
   return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由表单右上角关闭按钮承担
     <div
       data-testid="acp-provider-form-dialog"
       role="dialog"
@@ -330,6 +331,8 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
       className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
       onClick={onClose}
     >
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
       <div
         onClick={event => event.stopPropagation()}
         className={`relative w-[min(480px,calc(100vw-24px))] max-h-[calc(100vh-48px)] overflow-y-auto custom-scrollbar rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}
@@ -338,7 +341,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
           <h2 className="text-[17px] font-semibold">
             {initial ? `${copy.edit} · ${initial.name}` : copy.addProvider}
           </h2>
-          <button data-testid="acp-provider-form-close" onClick={onClose} aria-label={copy.cancel} className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-black/[0.06] dark:hover:bg-white/[0.08]">
+          <button type="button" data-testid="acp-provider-form-close" onClick={onClose} aria-label={copy.cancel} className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-black/[0.06] dark:hover:bg-white/[0.08]">
             <X size={16} />
           </button>
         </div>
@@ -444,6 +447,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
             <span className="block text-[12px] font-medium opacity-70 mb-1.5">{copy.modelSlotsTitle}</span>
             <div className="space-y-2">
               {CLAUDE_MODEL_SLOT_IDS.map(slot => (
+                // biome-ignore lint/a11y/noLabelWithoutControl: 槽位名仅为行内布局文本,输入控件为自定义组件自带 aria
                 <label key={slot} className="flex items-center gap-2">
                   <span className="w-20 shrink-0 text-[12px] opacity-60">{copy[`slot_${slot}`]}</span>
                   <span className="flex-1">
@@ -473,7 +477,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
               data-testid="acp-provider-context-window"
               className={`${inputClass} mt-1.5 font-mono`}
               value={contextWindow}
-              onChange={event => setContextWindow(event.target.value.replace(/[^0-9]/g, ''))}
+              onChange={event => setContextWindow(event.target.value.replaceAll(/[^0-9]/g, ''))} // eslint-disable-line sonarjs/concise-regex -- 字面量数字过滤,可读性优先
               placeholder={copy.contextWindowPlaceholder}
               inputMode="numeric"
               spellCheck={false}
@@ -529,6 +533,8 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
             自绘弹窗无此限制）：新建/无密钥编辑 + 空 key、编辑清空已存密钥。
             z-[120] 压在整个表单弹窗（z-[110]）之上；背景点击只关确认层 */}
         {confirmStep && (
+          // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由确认层内真实按钮承担
+          // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
           <div
             data-testid="acp-provider-form-confirm"
             className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
@@ -537,6 +543,8 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
               setConfirmStep(null);
             }}
           >
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
             <div
               onClick={event => event.stopPropagation()}
               className="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
@@ -545,14 +553,14 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
                 {confirmStep === 'emptyKey' ? copy.apiKeyEmptyConfirm : copy.deleteKeyConfirm}
               </p>
               <div className="mt-6 flex justify-end gap-2">
-                <button
+                <button type="button"
                   onClick={() => setConfirmStep(null)}
                   disabled={saving}
                   className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
                 >
                   {copy.cancel}
                 </button>
-                <button
+                <button type="button"
                   data-testid="acp-provider-form-confirm-ok"
                   onClick={() => {
                     const action = confirmStep === 'emptyKey' ? 'keep' : 'delete';
@@ -571,7 +579,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
         )}
 
         <div className="mt-6 flex justify-end gap-2">
-          <button
+          <button type="button"
             data-testid="acp-provider-form-cancel"
             onClick={onClose}
             disabled={saving}
@@ -579,7 +587,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
           >
             {copy.cancel}
           </button>
-          <button
+          <button type="button"
             data-testid="acp-provider-form-save"
             onClick={save}
             disabled={saving}

@@ -1,60 +1,62 @@
 (function () {
+  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
   "use strict";
 
-  var registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
+  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["chat-events"] = function (context) {
-    var state = context.state;
-    var recordAuthoritySyncDiagnostic = context.recordAuthoritySyncDiagnostic || function () {};
-    var authoritySyncBufferSnapshot = context.authoritySyncBufferSnapshot || function () { return {}; };
-    var listen = context.listen;
-    var notify = context.notify;
-    var invoke = context.invoke;
-    var turnUsageDirty = context.turnUsageDirty;
-    var sessionStates = context.sessionStates;
-    var renderMarkdown = context.renderMarkdown;
-    var bt = context.bt;
-    var onSessionEvent = context.onSessionEvent;
-    var runSyncOnSession = context.runSyncOnSession;
+    const state = context.state;
+    const recordAuthoritySyncDiagnostic = context.recordAuthoritySyncDiagnostic || function () {};
+    const authoritySyncBufferSnapshot = context.authoritySyncBufferSnapshot || function () { return {}; };
+    const listen = context.listen;
+    const notify = context.notify;
+    const invoke = context.invoke;
+    const turnUsageDirty = context.turnUsageDirty;
+    const sessionStates = context.sessionStates;
+    const renderMarkdown = context.renderMarkdown;
+    const bt = context.bt;
+    const onSessionEvent = context.onSessionEvent;
+    const runSyncOnSession = context.runSyncOnSession;
     // 权威 modeState 写回收敛点（bridge.js 共享，评审 P1）：事件负载携带的
     // modeState 更新也必须 bump epoch，否则在途 syncModeState 旧读会覆盖
     // 事件写回的权威值。
-    var applyAuthoritativeModeState = context.applyAuthoritativeModeState;
-    var addChatItem = context.addChatItem;
-    var toolCallAlreadyStarted = context.toolCallAlreadyStarted;
-    var toolCallAlreadyFinished = context.toolCallAlreadyFinished;
-    var hasChatItemForTool = context.hasChatItemForTool;
-    var addSystemItem = context.addSystemItem;
-    var addAuthoritySyncNotice = context.addAuthoritySyncNotice;
-    var timeStr = context.timeStr;
-    var flushPendingTextBlock = context.flushPendingTextBlock;
-    var flushAssistantMessageToHistory = context.flushAssistantMessageToHistory;
-    var resetPendingAssistant = context.resetPendingAssistant;
-    var flushQueued = context.flushQueued;
-    var isBusyFor = context.isBusyFor;
-    var doSendFor = context.doSendFor;
-    var ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
-    var getBuffer = context.getBuffer;
-    var markRemoteTurn = context.markRemoteTurn;
-    var reconcileRemoteTurn = context.reconcileRemoteTurn;
-    var saveWorkingSetTo = context.saveWorkingSetTo;
-    var hydratedMessageKey = context.hydratedMessageKey;
-    var thinkingTool = context.thinkingTool;
-    var thinkingIdle = context.thinkingIdle;
-    var startThinking = context.startThinking;
-    var stopThinking = context.stopThinking;
-    var userMessageDisplayText = context.userMessageDisplayText;
-    var scheduleScheduledRunRefresh = context.scheduleScheduledRunRefresh;
-    var handleMemoryWrite = context.handleMemoryWrite;
-    var isPresentArtifactTool = context.isPresentArtifactTool;
-    var artifactPathFromToolOutput = context.artifactPathFromToolOutput;
-    var shouldUseToolOutputAsArtifact = context.shouldUseToolOutputAsArtifact;
-    var presentArtifactAbsPath = context.presentArtifactAbsPath;
-    var extractArtifactPaths = context.extractArtifactPaths;
-    var fileMutationAction = context.fileMutationAction;
+    const applyAuthoritativeModeState = context.applyAuthoritativeModeState;
+    const addChatItem = context.addChatItem;
+    const toolCallAlreadyStarted = context.toolCallAlreadyStarted;
+    const toolCallAlreadyFinished = context.toolCallAlreadyFinished;
+    const hasChatItemForTool = context.hasChatItemForTool;
+    const addSystemItem = context.addSystemItem;
+    const addAuthoritySyncNotice = context.addAuthoritySyncNotice;
+    const timeStr = context.timeStr;
+    const flushPendingTextBlock = context.flushPendingTextBlock;
+    const flushAssistantMessageToHistory = context.flushAssistantMessageToHistory;
+    const resetPendingAssistant = context.resetPendingAssistant;
+    const flushQueued = context.flushQueued;
+    const isBusyFor = context.isBusyFor;
+    const doSendFor = context.doSendFor;
+    const ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
+    const getBuffer = context.getBuffer;
+    const markRemoteTurn = context.markRemoteTurn;
+    const reconcileRemoteTurn = context.reconcileRemoteTurn;
+    const saveWorkingSetTo = context.saveWorkingSetTo;
+    const hydratedMessageKey = context.hydratedMessageKey;
+    const thinkingTool = context.thinkingTool;
+    const thinkingIdle = context.thinkingIdle;
+    const startThinking = context.startThinking;
+    const stopThinking = context.stopThinking;
+    const userMessageDisplayText = context.userMessageDisplayText;
+    const scheduleScheduledRunRefresh = context.scheduleScheduledRunRefresh;
+    const handleMemoryWrite = context.handleMemoryWrite;
+    const isPresentArtifactTool = context.isPresentArtifactTool;
+    const artifactPathFromToolOutput = context.artifactPathFromToolOutput;
+    const shouldUseToolOutputAsArtifact = context.shouldUseToolOutputAsArtifact;
+    const presentArtifactAbsPath = context.presentArtifactAbsPath;
+    const extractArtifactPaths = context.extractArtifactPaths;
+    const fileMutationAction = context.fileMutationAction;
 
     function refreshEffectiveModelConfigAfterAuthError(error) {
       if (!error || !/\b401\b|unauthorized|authentication/i.test(String(error))) return;
-      var requestedSessionId = state.activeSessionId || null;
+      const requestedSessionId = state.activeSessionId || null;
       invoke("get_effective_model_config", { sessionId: requestedSessionId })
         .then(function (config) {
           if (requestedSessionId !== (state.activeSessionId || null)) return;
@@ -65,18 +67,18 @@
     }
 
     function visibleUserTurnIndex() {
-      var count = state.chatItems.filter(function (item) { return item && item.type === "user"; }).length;
+      const count = state.chatItems.filter(function (item) { return item && item.type === "user"; }).length;
       return Math.max(0, count - 1);
     }
 
     function latestOpenTimelineStart() {
-      var events = state.turnTimeline || [];
-      var completed = Object.create(null);
+      const events = state.turnTimeline || [];
+      const completed = Object.create(null);
       events.forEach(function (event) {
         if (event && event.event === "assistant_done") completed[event.turn_id] = true;
       });
-      for (var index = events.length - 1; index >= 0; index--) {
-        var event = events[index];
+      for (let index = events.length - 1; index >= 0; index--) {
+        const event = events[index];
         if (event && event.event === "user_start" && !completed[event.turn_id]) return event;
       }
       return null;
@@ -84,62 +86,62 @@
 
     function recordTurnStarted() {
       if (state.activeTurnTimelineId) return;
-      var timestamp = Date.now();
-      var turnIndex = visibleUserTurnIndex();
-      var existing = latestOpenTimelineStart();
+      const timestamp = Date.now();
+      const turnIndex = visibleUserTurnIndex();
+      const existing = latestOpenTimelineStart();
       if (existing && Math.abs(timestamp - Number(existing.timestamp || 0)) < 60000) {
         existing.ui_turn_index = turnIndex;
         state.activeTurnTimelineId = existing.turn_id;
         return;
       }
-      var turnId = "ui_" + String(state.activeSessionId || "session") + "_" + timestamp + "_" + turnIndex;
+      const turnId = "ui_" + String(state.activeSessionId || "session") + "_" + timestamp + "_" + turnIndex;
       state.activeTurnTimelineId = turnId;
-      state.turnTimeline = (state.turnTimeline || []).concat([{
+      state.turnTimeline = [...(state.turnTimeline || []), {
         turn_id: turnId,
         event: "user_start",
-        timestamp: timestamp,
+        timestamp,
         ts: new Date(timestamp).toISOString(),
         ui_turn_index: turnIndex,
-      }]);
+      }];
     }
 
     function recordTurnCompleted(payload) {
-      var openStart = latestOpenTimelineStart();
-      var turnId = state.activeTurnTimelineId || (openStart && openStart.turn_id);
+      const openStart = latestOpenTimelineStart();
+      const turnId = state.activeTurnTimelineId || (openStart && openStart.turn_id);
       if (!turnId) return;
-      var timestamp = Date.now();
-      var start = openStart || (state.turnTimeline || []).find(function (event) {
+      const timestamp = Date.now();
+      const start = openStart || (state.turnTimeline || []).find(function (event) {
         return event && event.turn_id === turnId && event.event === "user_start";
       });
-      state.turnTimeline = (state.turnTimeline || []).concat([{
+      state.turnTimeline = [...(state.turnTimeline || []), {
         turn_id: turnId,
         event: "assistant_done",
-        timestamp: timestamp,
+        timestamp,
         ts: new Date(timestamp).toISOString(),
         status: payload && payload.status || (payload && payload.error ? "Failed" : "Completed"),
         error: payload && payload.error || null,
         ui_turn_index: start && start.ui_turn_index,
-      }]);
+      }];
       state.activeTurnTimelineId = null;
     }
 
     function latestTimelineCompletion(events) {
-      var latest = 0;
+      let latest = 0;
       (Array.isArray(events) ? events : []).forEach(function (event) {
         if (!event || event.event !== "assistant_done") return;
-        var timestamp = Number(event.timestamp || 0);
+        const timestamp = Number(event.timestamp || 0);
         if (Number.isFinite(timestamp)) latest = Math.max(latest, timestamp);
       });
       return latest;
     }
 
     function authoritativeTimelineMissesKnownCompletion(local, authoritative) {
-      var authoritativeStarts = Object.create(null);
-      var authoritativeCompletions = Object.create(null);
+      const authoritativeStarts = Object.create(null);
+      const authoritativeCompletions = Object.create(null);
       (Array.isArray(authoritative) ? authoritative : []).forEach(function (event) {
         if (!event || !event.turn_id) return;
         if (event.event === "user_start") authoritativeStarts[event.turn_id] = true;
-        if (event.event === "assistant_done") authoritativeCompletions[event.turn_id] = true;
+        else if (event.event === "assistant_done") authoritativeCompletions[event.turn_id] = true;
       });
       return (Array.isArray(local) ? local : []).some(function (event) {
         return event && event.event === "assistant_done" && event.turn_id &&
@@ -152,16 +154,16 @@
     // 权威时间线，避免明明已完成却漏掉状态徽标与耗时。读取失败时保留本地投影。
     function refreshAuthoritativeTurnTimeline(sessionId) {
       if (!sessionId) return Promise.resolve(false);
-      return invoke("get_session_timeline", { sessionId: sessionId })
+      return invoke("get_session_timeline", { sessionId })
         .then(function (authoritative) {
           if (!Array.isArray(authoritative) || authoritative.length === 0) return false;
-          var changed = false;
+          let changed = false;
           runSyncOnSession(sessionId, function () {
             // 不允许一次短暂的旧磁盘快照把刚收到的本地终态倒退回“执行中”。
             // 正常后端已保证先落盘再发事件；这层同时保护旧版本和异常 I/O 时序。
             if (authoritativeTimelineMissesKnownCompletion(state.turnTimeline, authoritative)) return;
-            var localLatest = latestTimelineCompletion(state.turnTimeline);
-            var authoritativeLatest = latestTimelineCompletion(authoritative);
+            const localLatest = latestTimelineCompletion(state.turnTimeline);
+            const authoritativeLatest = latestTimelineCompletion(authoritative);
             // timing sidecar 是 best-effort；若权威快照明显旧于刚收到的本地终态，
             // 不用旧数据覆盖当前可见状态。
             if (localLatest && authoritativeLatest + 5000 < localLatest) return;
@@ -181,11 +183,11 @@
     }
 
     function preserveInterruptedAssistantPresentation() {
-      var userItemIndex = -1;
-      var afterMessageIndex = -1;
-      var afterUserOrdinal = -1;
-      for (var index = 0; index < state.chatItems.length; index++) {
-        var candidate = state.chatItems[index];
+      let userItemIndex = -1;
+      let afterMessageIndex = -1;
+      let afterUserOrdinal = -1;
+      for (let index = 0; index < state.chatItems.length; index++) {
+        const candidate = state.chatItems[index];
         if (!candidate || candidate.type !== "user") continue;
         afterUserOrdinal += 1;
         userItemIndex = index;
@@ -202,8 +204,8 @@
         context.pendingAssistantBlocks = [];
         return;
       }
-      for (var itemIndex = userItemIndex + 1; itemIndex < state.chatItems.length; itemIndex++) {
-        var item = state.chatItems[itemIndex];
+      for (let itemIndex = userItemIndex + 1; itemIndex < state.chatItems.length; itemIndex++) {
+        const item = state.chatItems[itemIndex];
         if (!item || item.type !== "assistant" || !item.html) continue;
         item.interruptedDisplayOnly = true;
         item.afterMessageIndex = afterMessageIndex;
@@ -212,72 +214,72 @@
       context.pendingAssistantText = "";
       context.pendingAssistantBlocks = [];
     }
-    var markTurnDirtyArtifact = context.markTurnDirtyArtifact;
-    var trackArtifact = context.trackArtifact;
-    var untrackArtifact = context.untrackArtifact;
-    var findPresentedArtifact = context.findPresentedArtifact;
-    var isDeliverable = context.isDeliverable;
-    var noteArtifactChange = context.noteArtifactChange;
-    var persistMessagesFor = context.persistMessagesFor;
-    var composePlanMarkdown = context.composePlanMarkdown;
-    var refreshHistoryList = context.refreshHistoryList;
-    var isShellExecutionTool = context.isShellExecutionTool;
-    var scheduleShellPoll = context.scheduleShellPoll;
-    var appendToolItemOutput = context.appendToolItemOutput;
-    var scheduleShellNotify = context.scheduleShellNotify;
-    var markBackgroundToolItem = context.markBackgroundToolItem;
-    var patchLastItem = context.patchLastItem;
-    var isDuplicateArtifactCard = context.isDuplicateArtifactCard;
-    var updateToolItem = context.updateToolItem;
-    var basename = context.basename;
-    var hasUnresolvedItem = context.hasUnresolvedItem;
-    var finishBackgroundToolItem = context.finishBackgroundToolItem;
-    var safeConsoleInfo = context.safeConsoleInfo;
-    var isScheduledRunSession = context.isScheduledRunSession;
-    var markScheduledInitialTurnTerminal = context.markScheduledInitialTurnTerminal;
-    var isAbsPath = context.isAbsPath;
-    var addOrMergePruneCompaction = context.addOrMergePruneCompaction;
+    const markTurnDirtyArtifact = context.markTurnDirtyArtifact;
+    const trackArtifact = context.trackArtifact;
+    const untrackArtifact = context.untrackArtifact;
+    const findPresentedArtifact = context.findPresentedArtifact;
+    const isDeliverable = context.isDeliverable;
+    const noteArtifactChange = context.noteArtifactChange;
+    const persistMessagesFor = context.persistMessagesFor;
+    const composePlanMarkdown = context.composePlanMarkdown;
+    const refreshHistoryList = context.refreshHistoryList;
+    const isShellExecutionTool = context.isShellExecutionTool;
+    const scheduleShellPoll = context.scheduleShellPoll;
+    const appendToolItemOutput = context.appendToolItemOutput;
+    const scheduleShellNotify = context.scheduleShellNotify;
+    const markBackgroundToolItem = context.markBackgroundToolItem;
+    const patchLastItem = context.patchLastItem;
+    const isDuplicateArtifactCard = context.isDuplicateArtifactCard;
+    const updateToolItem = context.updateToolItem;
+    const basename = context.basename;
+    const hasUnresolvedItem = context.hasUnresolvedItem;
+    const finishBackgroundToolItem = context.finishBackgroundToolItem;
+    const safeConsoleInfo = context.safeConsoleInfo;
+    const isScheduledRunSession = context.isScheduledRunSession;
+    const markScheduledInitialTurnTerminal = context.markScheduledInitialTurnTerminal;
+    const isAbsPath = context.isAbsPath;
+    const addOrMergePruneCompaction = context.addOrMergePruneCompaction;
 
   // ── Event listeners ──────────────────────────────────────────────
   // 所有 chat:* 事件都带 session_id(后端 spawn_event_forwarder 打的 tag)。
   // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
-  var isInternalRuntimeUserMessage = context.isInternalRuntimeUserMessage;
+  const isInternalRuntimeUserMessage = context.isInternalRuntimeUserMessage;
 
   function applyRemoteUserMessageEvent(e, force) {
-    var payload = e && e.payload || {};
-    var sid = payload.session_id || state.activeSessionId;
+    const payload = e && e.payload || {};
+    const sid = payload.session_id || state.activeSessionId;
     if (!sid) return false;
-    var userBuffer = getBuffer(sid);
+    const userBuffer = getBuffer(sid);
     if (!userBuffer) return false;
     if (userBuffer.localTurnOwned && !force) {
       userBuffer.deferredRemoteUserEvent = e;
       return false;
     }
-    var content = String(payload.content || "");
-    var hideInternalRuntimeMessage = isInternalRuntimeUserMessage(content);
-    var operation = String(payload.operation || "append");
-    var action = String(payload.action || "");
-    var actionPlanId = String(payload.plan_id || payload.planId || "").trim();
-    var baseRevision = String(payload.base_transcript_revision || "");
-    var admissionKey = baseRevision
+    const content = String(payload.content || "");
+    const hideInternalRuntimeMessage = isInternalRuntimeUserMessage(content);
+    const operation = String(payload.operation || "append");
+    const action = String(payload.action || "");
+    const actionPlanId = String(payload.plan_id || payload.planId || "").trim();
+    const baseRevision = String(payload.base_transcript_revision || "");
+    const admissionKey = baseRevision
       ? operation + ":" + baseRevision
       : (e && e.id ? "event:" + e.id : "");
-    if (admissionKey && userBuffer.remoteAdmissionKeys.indexOf(admissionKey) >= 0) return false;
+    if (admissionKey && userBuffer.remoteAdmissionKeys.includes(admissionKey)) return false;
     if (admissionKey) {
       userBuffer.remoteAdmissionKeys.push(admissionKey);
       if (userBuffer.remoteAdmissionKeys.length > 32) userBuffer.remoteAdmissionKeys.shift();
     }
-    var lastUserText = "";
-    for (var messageIndex = userBuffer.messages.length - 1; messageIndex >= 0; messageIndex--) {
-      var candidate = userBuffer.messages[messageIndex];
+    let lastUserText = "";
+    for (let messageIndex = userBuffer.messages.length - 1; messageIndex >= 0; messageIndex--) {
+      const candidate = userBuffer.messages[messageIndex];
       if (candidate && candidate.role === "user") {
         lastUserText = userMessageDisplayText(candidate.content || [], false);
         break;
       }
     }
-    var snapshotAlreadyCoversTurn = !!(
+    const snapshotAlreadyCoversTurn = !!(
       userBuffer.loadedFromDisk && baseRevision && userBuffer.sessionRevision &&
       userBuffer.sessionRevision !== baseRevision && lastUserText === content
     );
@@ -292,7 +294,7 @@
             item.statusLabel = bt("approved");
           }
         });
-        var acceptedMode = payload.mode_state || payload.modeState;
+        const acceptedMode = payload.mode_state || payload.modeState;
         // 事件按 sid 定向写回 + bump epoch（此回调在 runSyncOnSession(sid) 内，
         // sid 即触发会话；不能用 active 兜底，await 竞态下两者可能不同）。
         if (acceptedMode) applyAuthoritativeModeState(sid, acceptedMode);
@@ -300,7 +302,7 @@
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
       if (!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage) {
         if (operation === "edit_last") {
-          for (var index = state.chatItems.length - 1; index >= 0; index--) {
+          for (let index = state.chatItems.length - 1; index >= 0; index--) {
             if (state.chatItems[index] && state.chatItems[index].type === "user") {
               state.chatItems.splice(index);
               break;
@@ -320,8 +322,8 @@
   }
 
   listen("chat:user_message", async function (e) {
-    var payload = e && e.payload || {};
-    var sid = payload.session_id || state.activeSessionId;
+    const payload = e && e.payload || {};
+    const sid = payload.session_id || state.activeSessionId;
     if (sid && sid !== state.activeSessionId) {
       try { await ensureSessionBufferLoaded(sid); }
       catch (err) {
@@ -333,12 +335,12 @@
   });
 
   listen("chat:transcript_committed", function (e) {
-    var payload = e && e.payload || {};
-    var sid = payload.session_id || state.activeSessionId;
+    const payload = e && e.payload || {};
+    const sid = payload.session_id || state.activeSessionId;
     if (!sid) return;
-    var committedBuffer = getBuffer(sid);
+    const committedBuffer = getBuffer(sid);
     if (!committedBuffer) return;
-    var revision = String(payload.transcript_revision || payload.transcriptRevision || "");
+    const revision = String(payload.transcript_revision || payload.transcriptRevision || "");
     if (revision) {
       committedBuffer.sessionRevision = revision;
       committedBuffer.remoteCommittedRevision = revision;
@@ -362,25 +364,25 @@
   }); });
 
   function reasoningEventIndex(e) {
-    var value = e && e.payload && e.payload.index;
-    if (value === undefined || value === null || value === "") return null;
-    var parsed = Number(value);
+    const value = e && e.payload && e.payload.index;
+    if ([undefined, null, ""].includes(value)) return null;
+    const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : String(value);
   }
 
   function streamingReasoningItem(index) {
-    for (var itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
-      var item = state.chatItems[itemIndex];
+    for (let itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
+      const item = state.chatItems[itemIndex];
       if (!item || item.type !== "reasoning" || !item.streaming) continue;
-      if (index === undefined || index === null || item.reasoningIndex === index) return item;
+      if ([undefined, null].includes(index) || item.reasoningIndex === index) return item;
     }
     return null;
   }
 
   function finalizeStreamingReasoning(index) {
-    var completedAt = Date.now();
-    for (var itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
-      var item = state.chatItems[itemIndex];
+    const completedAt = Date.now();
+    for (let itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
+      const item = state.chatItems[itemIndex];
       if (!item || item.type !== "reasoning" || !item.streaming) continue;
       if (index !== undefined && index !== null && item.reasoningIndex !== index) continue;
       item.streaming = false;
@@ -390,7 +392,7 @@
 
   function finalizeAssistantStreamBeforeReasoning() {
     flushPendingTextBlock();
-    var item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
+    const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (item) {
       if (item.html) item.streaming = false;
       else state.chatItems = state.chatItems.filter(function (it) { return it !== item; });
@@ -400,11 +402,11 @@
   }
 
   function startReasoningBlock(index) {
-    var existing = streamingReasoningItem(index);
+    const existing = streamingReasoningItem(index);
     if (existing) return existing;
     finalizeStreamingReasoning();
     finalizeAssistantStreamBeforeReasoning();
-    var item = {
+    const item = {
       type: "reasoning",
       text: "",
       time: timeStr(),
@@ -421,8 +423,8 @@
   }
 
   function appendReasoningBlock(text) {
-    var blocks = context.pendingAssistantBlocks;
-    var last = blocks[blocks.length - 1];
+    const blocks = context.pendingAssistantBlocks;
+    const last = blocks[blocks.length - 1];
     if (last && last.type === "thinking") last.thinking += text;
     else blocks.push({ type: "thinking", thinking: text });
   }
@@ -433,10 +435,10 @@
   }); });
 
   listen("chat:reasoning_delta", function (e) { onSessionEvent(e, function () {
-    var text = String(e.payload && e.payload.text || "");
+    const text = String(e.payload && e.payload.text || "");
     if (!text) return;
-    var index = reasoningEventIndex(e);
-    var item = streamingReasoningItem(index);
+    const index = reasoningEventIndex(e);
+    let item = streamingReasoningItem(index);
     if (!item) {
       item = startReasoningBlock(index);
     }
@@ -446,12 +448,12 @@
   }); });
 
   listen("chat:reasoning_done", function (e) { onSessionEvent(e, function () {
-    var index = reasoningEventIndex(e);
-    var item = streamingReasoningItem(index);
+    const index = reasoningEventIndex(e);
+    const item = streamingReasoningItem(index);
     finalizeStreamingReasoning(index);
     if (item && !item.text) {
       state.chatItems = state.chatItems.filter(function (candidate) { return candidate !== item; });
-      var last = context.pendingAssistantBlocks[context.pendingAssistantBlocks.length - 1];
+      const last = context.pendingAssistantBlocks[context.pendingAssistantBlocks.length - 1];
       if (last && last.type === "thinking" && !last.thinking) context.pendingAssistantBlocks.pop();
     }
     notify();
@@ -459,11 +461,11 @@
 
   listen("chat:delta", function (e) { onSessionEvent(e, function () {
     finalizeStreamingReasoning();
-    var text = e.payload && e.payload.text || "";
+    const text = e.payload && e.payload.text || "";
     context.pendingAssistantText += text;
     context.currentStreamText += text;
     // Update the streaming chat item
-    var item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
+    const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (item) {
       item.text = context.currentStreamText;
       item.html = renderMarkdown(context.currentStreamText);
@@ -483,7 +485,7 @@
     notify();
   }); });
 
-  listen("scheduled_task:run_updated", function (e) {
+  listen("scheduled_task:run_updated", function () {
     scheduleScheduledRunRefresh();
   });
 
@@ -495,7 +497,7 @@
   // (实测透传名若带前缀仍命中)。命中则渲染成品卡而非灰色工具卡。
 
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
+    const p = e.payload || {};
     if (toolCallAlreadyStarted(p.id) || toolCallAlreadyFinished(p.id)) return;
     if (p.session_id) turnUsageDirty[p.session_id] = true; // 多请求轮，usage 累加值不可当占用
     context.toolMeta[p.id] = { name: p.name, args: p.args };
@@ -505,7 +507,7 @@
     context.pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
 
     // Finalize current streaming bubble
-    var streamItem = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
+    const streamItem = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (streamItem) {
       streamItem.streaming = false;
     }
@@ -520,14 +522,14 @@
 
     // load_skill：模型加载技能 → 点亮 composer 技能标（内置自动技能"正在使用"指示）。
     if (p.name === "load_skill") {
-      var skArg = ((p.args && (p.args.name || p.args.skill)) || "").toString();
-      var skLower = skArg.toLowerCase();
-      if (skArg.indexOf("视觉设计") >= 0 || skLower.indexOf("visual-design") >= 0) state.activeSkill = "visual-design";
-      else if (skArg.indexOf("插件包标准化") >= 0 || skLower.indexOf("package-author") >= 0) state.activeSkill = "package-author";
-      else if (skArg.indexOf("技能创建") >= 0 || skLower.indexOf("skill-author") >= 0) state.activeSkill = "skill-author";
-      else if (skArg.indexOf("公文写作") >= 0 || skLower.indexOf("government-writing") >= 0) state.activeSkill = "government-writing";
-      else if (skArg.indexOf("PPT") >= 0 || skArg.indexOf("幻灯片") >= 0 || skLower.indexOf("pptx") >= 0) state.activeSkill = "pptx";
-      else if (skArg.indexOf("数据分析可视化") >= 0 || skArg.indexOf("数据可视化") >= 0 || skLower.indexOf("visualizer") >= 0) state.activeSkill = "visualizer";
+      const skArg = ((p.args && (p.args.name || p.args.skill)) || "").toString();
+      const skLower = skArg.toLowerCase();
+      if (skArg.includes("视觉设计") || skLower.includes("visual-design")) state.activeSkill = "visual-design";
+      else if (skArg.includes("插件包标准化") || skLower.includes("package-author")) state.activeSkill = "package-author";
+      else if (skArg.includes("技能创建") || skLower.includes("skill-author")) state.activeSkill = "skill-author";
+      else if (skArg.includes("公文写作") || skLower.includes("government-writing")) state.activeSkill = "government-writing";
+      else if (skArg.includes("PPT") || skArg.includes("幻灯片") || skLower.includes("pptx")) state.activeSkill = "pptx";
+      else if (skArg.includes("数据分析可视化") || skArg.includes("数据可视化") || skLower.includes("visualizer")) state.activeSkill = "visualizer";
       // 不 return：照常出工具卡。卡内容在 tool_end / rerender 处脱敏成占位，
       // 展开看不到 SKILL.md 全文（防设计系统泄露），但保留"加载了技能"的痕迹。
     }
@@ -545,23 +547,24 @@
   }); });
 
   listen("chat:tool_delta", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
+    const p = e.payload || {};
     appendToolItemOutput(p.id, p.content, p.stream);
     scheduleShellNotify();
   }); });
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   listen("chat:tool_end", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
+    const p = e.payload || {};
     if (toolCallAlreadyFinished(p.id)) return;
-    var meta = context.toolMeta[p.id];
+    const meta = context.toolMeta[p.id];
     thinkingIdle();
-    var resultContent = typeof p.output === "string" ? p.output : JSON.stringify(p.output);
+    const resultContent = typeof p.output === "string" ? p.output : JSON.stringify(p.output);
     flushAssistantMessageToHistory();
-    var trBlock = { type: "tool_result", tool_use_id: p.id, content: resultContent };
+    const trBlock = { type: "tool_result", tool_use_id: p.id, content: resultContent };
     if (!p.success) trBlock.is_error = true;
     state.messages.push({ role: "user", content: [trBlock] });
 
-    var backgroundTaskId = p.metadata && p.metadata.backgrounded === true &&
+    const backgroundTaskId = p.metadata && p.metadata.backgrounded === true &&
       p.metadata.status === "Running" && p.metadata.task_id;
     if (meta && (meta.name === "exec_shell" || meta.name === "Bash") && backgroundTaskId) {
       markBackgroundToolItem(p.id, p.session_id, backgroundTaskId, p.output);
@@ -590,7 +593,7 @@
       if (p.success) {
         // 用 server 解析好的绝对路径(present_artifact_server.py 的 abs_path),而非模型可能
         // 给的相对 args.path → 卡片 path 绝对,点 Open 不再报「path must be absolute」。
-        var presentedPath = presentArtifactAbsPath(p.output, meta.args && meta.args.path);
+        const presentedPath = presentArtifactAbsPath(p.output, meta.args && meta.args.path);
         // 同一产物没改又 present 一次 → 跳过出卡(防模型啰嗦重复);改完再 present/续卡会保留。
         if (!isDuplicateArtifactCard(presentedPath)) {
           addChatItem({
@@ -626,7 +629,7 @@
     // 随后模型按约定再调 present_artifact。若模型漏调，仍把该成品归到当前
     // tool_end 所属 session，并在 chat:done 统一补一张成品卡。
     if (p.success && meta && shouldUseToolOutputAsArtifact(meta.name)) {
-      var producedPath = artifactPathFromToolOutput(p.output);
+      const producedPath = artifactPathFromToolOutput(p.output);
       if (producedPath && isDeliverable(producedPath)) {
         trackArtifact(producedPath);
         markTurnDirtyArtifact(producedPath);
@@ -634,13 +637,13 @@
     }
 
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
-    var outForCard = (meta && meta.name === "load_skill")
+    const outForCard = (meta && meta.name === "load_skill")
       ? bt("skillContentHidden")
       : context.toolResultDisplayContent(p.output);
-    var updatedToolItem = updateToolItem(p.id, outForCard, p.success);
-    var shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
+    const updatedToolItem = updateToolItem(p.id, outForCard, p.success);
+    const shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
     if (updatedToolItem && shellTaskId) {
-      var syntheticShellItem = state.chatItems.find(function (it) {
+      const syntheticShellItem = state.chatItems.find(function (it) {
         return it !== updatedToolItem && it.shellSnapshot === true && it.taskId === shellTaskId;
       });
       if (syntheticShellItem) {
@@ -648,12 +651,12 @@
           .forEach(function (key) {
             if (syntheticShellItem[key] !== undefined) updatedToolItem[key] = syntheticShellItem[key];
           });
-        var syntheticIndex = state.chatItems.indexOf(syntheticShellItem);
+        const syntheticIndex = state.chatItems.indexOf(syntheticShellItem);
         if (syntheticIndex >= 0) state.chatItems.splice(syntheticIndex, 1);
       }
       updatedToolItem.taskId = shellTaskId;
       updatedToolItem.sessionId = p.session_id || state.activeSessionId;
-      var shellStatus = String((p.metadata && p.metadata.status) || "").toLowerCase();
+      const shellStatus = String((p.metadata && p.metadata.status) || "").toLowerCase();
       if (shellStatus === "running" || /running|background/i.test(String(p.output || ""))) {
         updatedToolItem.state = "running";
         updatedToolItem.success = null;
@@ -662,7 +665,7 @@
     }
 
     // Careful hook：CodeWhale shell.rs 拦截 Dangerous → 红色拦截卡
-    var md = p.metadata;
+    const md = p.metadata;
     if (md && md.safety_level === "dangerous" && md.blocked) {
       addChatItem({ type: "careful_blocked", args: meta && meta.args, metadata: md, time: timeStr() });
     }
@@ -670,7 +673,7 @@
     // File.write/File.edit/File.patch 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
     // 改成记账+去重:AI 一个 turn 会 edit 多次,实时续会刷出一堆卡;且 edit
     // 之前不触发续卡 → 改完没新卡片 → 没法对改后产物再召唤 pinvou(核账闭环断裂)。
-    var mutationAction = meta && fileMutationAction(meta.name, meta.args);
+    const mutationAction = meta && fileMutationAction(meta.name, meta.args);
     if (p.success && mutationAction) {
       extractArtifactPaths(meta.args).forEach(function (ap) {
         // 面板只收「成品」:成品型扩展名(自动当成品)或之前 present_artifact 过的文件;
@@ -681,8 +684,8 @@
         // 按 basename 比对:disk watcher(artifact:disk)写盘后抢先用**绝对**路径 trackArtifact
         // 占了名额,而这里 ap 是 write_file 的**相对**参数 —— 用 a.path===ap 比绝对≠相对永远落空,
         // turnDirty 收不到 → 实时不补成品卡(只能靠重启 rerender 才出)。basename 比对消除该竞态。
-        var _apbn = basename(ap);
-        var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return basename(a.path) === _apbn; });
+        const _apbn = basename(ap);
+        const isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return basename(a.path) === _apbn; });
         if (isArtifact) markTurnDirtyArtifact(ap);
       });
     }
@@ -691,11 +694,9 @@
     if (!p.success && state.modeState.mode === "plan" && typeof p.output === "string" &&
         (p.output.includes("not available in the current tool catalog") ||
          p.output.includes("unavailable in Plan mode") ||
-         p.output.includes("PermissionDenied"))) {
-      if (!hasUnresolvedItem("plan_stuck")) {
+         p.output.includes("PermissionDenied")) && !hasUnresolvedItem("plan_stuck")) {
         addChatItem({ type: "plan_stuck", toolName: meta && meta.name, resolved: false, time: timeStr() });
       }
-    }
 
     delete context.toolMeta[p.id];
     context.currentStreamText = "";
@@ -704,7 +705,7 @@
   }); });
 
   listen("chat:shell_task_status", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
+    const p = e.payload || {};
     finishBackgroundToolItem(p.tool_id, p);
     notify();
   }); });
@@ -713,23 +714,23 @@
   // 路由到对应 session;异步收尾(discard_plan/落盘/刷新列表)按显式 sid 路由,
   // 不依赖工作集 —— 这样后台 session 跑完也能正确落盘。
   listen("chat:done", function (e) {
-    var sid = (e.payload && e.payload.session_id) || state.activeSessionId;
-    var knownDoneSession = !!sid && state.sessions.some(function (session) { return session.id === sid; });
-    var scheduledDoneSession = isScheduledRunSession(sid);
+    const sid = (e.payload && e.payload.session_id) || state.activeSessionId;
+    const knownDoneSession = !!sid && state.sessions.some(function (session) { return session.id === sid; });
+    const scheduledDoneSession = isScheduledRunSession(sid);
     if (sid && sid !== state.activeSessionId && !sessionStates[sid] &&
         !knownDoneSession && !scheduledDoneSession) {
       return;
     }
     safeConsoleInfo("[pinvou3][chat-ui] chat done event", {
-      sid: sid,
+      sid,
       error: e.payload && e.payload.error || null,
     });
-    var doneBuffer = sid ? getBuffer(sid) : null;
-    var requiresAuthorityReconcile = !isScheduledRunSession(sid);
+    const doneBuffer = sid ? getBuffer(sid) : null;
+    const requiresAuthorityReconcile = !isScheduledRunSession(sid);
     // A rejected local edit never became authoritative in Rust. Reclassify it
     // as a reconciliation case so hydration rolls back the optimistic cut.
-    var operationRejected = !!(e.payload && e.payload.operation_rejected);
-    var completedLocalTurn = !!(
+    const operationRejected = !!(e.payload && e.payload.operation_rejected);
+    const completedLocalTurn = !!(
       requiresAuthorityReconcile && doneBuffer && doneBuffer.localTurnOwned && !operationRejected
     );
     recordAuthoritySyncDiagnostic("chat_done_classified", Object.assign({
@@ -747,12 +748,12 @@
     }
     if (!requiresAuthorityReconcile) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
-      var error = e.payload && e.payload.error;
+      const error = e.payload && e.payload.error;
       recordTurnCompleted(e.payload || {});
       refreshEffectiveModelConfigAfterAuthError(error);
       if (error) {
-        var finalNotice = "⚠️ " + error;
-        var finalNoticeItem = state.chatItems.find(function (item) {
+        const finalNotice = "⚠️ " + error;
+        const finalNoticeItem = state.chatItems.find(function (item) {
           return item && item.turnErrorNotice && item.text === finalNotice;
         });
         if (finalNoticeItem) {
@@ -765,9 +766,8 @@
         }
       }
       window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
-      var terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
-      var interrupted = terminalStatus === "interrupted" ||
-        terminalStatus === "cancelled" || terminalStatus === "canceled";
+      const terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
+      const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
@@ -776,13 +776,13 @@
       (state.turnDirtyArtifacts || []).forEach(function (ap) {
         // 按 basename 比对:present 存 server 绝对路径、turnDirty 存 write 相对路径,
         // 直接 indexOf 比不中 → present 过的文件会被兜底再补一张(重复)。
-        var _apbn = basename(ap);
+        const _apbn = basename(ap);
         if ((state.turnPresentedArtifacts || []).some(function (pp) { return basename(pp) === _apbn; })) return;
-        var prev = findPresentedArtifact(ap);
+        const prev = findPresentedArtifact(ap);
         // 补卡 path 优先用 disk watcher 落进产物列表的同名**绝对**路径(open 可靠、跨 session 稳);
         // 没有再退回 write_file 的相对 ap(由 sessionId 兜底解析)。
-        var tracked = state.artifacts.find(function (a) { return basename(a.path) === _apbn && isAbsPath(a.path); });
-        var cardPath = (tracked && tracked.path) || ap;
+        const tracked = state.artifacts.find(function (a) { return basename(a.path) === _apbn && isAbsPath(a.path); });
+        const cardPath = (tracked && tracked.path) || ap;
         if (prev) addChatItem({ type: "artifact_card", path: prev.path, title: prev.title, description: prev.description, time: timeStr(), sessionId: sid });
         else addChatItem({ type: "artifact_card", path: cardPath, title: basename(ap), description: "", time: timeStr(), sessionId: sid });
       });
@@ -790,7 +790,7 @@
       state.turnPresentedArtifacts = [];
       finalizeStreamingReasoning();
       // Finalize streaming bubble
-      var streamItem = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
+      const streamItem = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
       if (streamItem) streamItem.streaming = false;
       // Remove empty assistant bubbles
       state.chatItems = state.chatItems.filter(function (it) {
@@ -802,8 +802,8 @@
       context.currentStreamId = 0;
     });
     if (requiresAuthorityReconcile && doneBuffer && !completedLocalTurn) {
-      var finalAssistantMessage = null;
-      for (var doneMessageIndex = doneBuffer.messages.length - 1; doneMessageIndex >= 0; doneMessageIndex--) {
+      let finalAssistantMessage = null;
+      for (let doneMessageIndex = doneBuffer.messages.length - 1; doneMessageIndex >= 0; doneMessageIndex--) {
         if (doneBuffer.messages[doneMessageIndex] && doneBuffer.messages[doneMessageIndex].role === "assistant") {
           finalAssistantMessage = doneBuffer.messages[doneMessageIndex];
           break;
@@ -844,7 +844,7 @@
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       await persistMessagesFor(sid);
-      var reconciled = requiresAuthorityReconcile && !completedLocalTurn
+      const reconciled = requiresAuthorityReconcile && !completedLocalTurn
         ? await reconcileRemoteTurn(sid)
         : true;
       if (reconciled) await persistMessagesFor(sid);
@@ -864,40 +864,40 @@
   });
 
   listen("chat:usage", function (e) { onSessionEvent(e, function () {
-    var sid = e.payload && e.payload.session_id;
+    const sid = e.payload && e.payload.session_id;
     // 真实窗口是模型能力常量，不随轮内请求数变化，必须先于 dirty guard 消费：
     // 工具轮（最常见的 Agent 场景）只跳过不可信的累计 input，分母仍要更新。
-    var windowTok = Number(e.payload && e.payload.context_window) || 0;
+    const windowTok = Number(e.payload && e.payload.context_window) || 0;
     if (windowTok > 0 && windowTok !== state.tokens.max) {
       state.tokens.max = windowTok; // 云端真实窗口，替代 32K 假分母
       notify(); // 窗口变化也要通知 UI（即使本轮 input 不可信）
     }
     if (sid && turnUsageDirty[sid]) return; // 本轮多请求，累加 input 不可信，保留上个准确值
-    var input = Number(e.payload && e.payload.input_tokens || 0);
+    const input = Number(e.payload && e.payload.input_tokens || 0);
     // 累加值超过窗口说明仍有多请求（内部重试等无事件轮），跳过避免显示超上限
     if (input > 0 && input <= state.tokens.max) {
-      state.tokens = { input: input, max: state.tokens.max };
+      state.tokens = { input, max: state.tokens.max };
       notify();
     }
   }); });
 
   listen("chat:compaction", function (e) { onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
-    var phase = e.payload && e.payload.phase;
-    var msg = e.payload && e.payload.message || "";
-    var auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
-    var compactId = e.payload && e.payload.id;
-    var before = Number(e.payload && e.payload.messages_before);
-    var after = Number(e.payload && e.payload.messages_after);
-    var looksLikePruneOnly = /0 removed|messages unchanged|tool results pruned/i.test(msg);
-    var pruneOnlyAuto = !!(e.payload && e.payload.auto) &&
+    const phase = e.payload && e.payload.phase;
+    const msg = e.payload && e.payload.message || "";
+    const auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
+    const compactId = e.payload && e.payload.id;
+    const before = Number(e.payload && e.payload.messages_before);
+    const after = Number(e.payload && e.payload.messages_after);
+    const looksLikePruneOnly = /0 removed|messages unchanged|tool results pruned/i.test(msg);
+    const pruneOnlyAuto = !!(e.payload && e.payload.auto) &&
       phase === "done" &&
       Number.isFinite(before) &&
       Number.isFinite(after) &&
       before === after &&
       looksLikePruneOnly &&
       msg.indexOf("Emergency compaction") !== 0;
-    if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId: compactId, compactPhase: "start" });
+    if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
@@ -906,12 +906,12 @@
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────
   // payload: { id: tool_call_id, questions: [{header, id, question, options:[{label, description}]}] }
   listen("chat:user_input_required", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
+    const p = e.payload || {};
     if (hasChatItemForTool("user_input", p.id)) return;
-    var questions = p.questions || [];
+    const questions = p.questions || [];
     if (!Array.isArray(questions) || questions.length === 0) return;
     addChatItem({
-      type: "user_input", toolCallId: p.id, questions: questions,
+      type: "user_input", toolCallId: p.id, questions,
       resolved: false, cardState: "active", time: timeStr(),
     });
     notify();
@@ -921,11 +921,11 @@
   // 绝不 setBusy(false)，只飘一条 ⚠️ 提示。
   listen("chat:transient_error", function (e) { onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
-    var error = e.payload && e.payload.error;
+    const error = e.payload && e.payload.error;
     refreshEffectiveModelConfigAfterAuthError(error);
     if (error) {
-      var notice = "⚠️ " + error;
-      var duplicate = state.chatItems.some(function (item) {
+      const notice = "⚠️ " + error;
+      const duplicate = state.chatItems.some(function (item) {
         return item && item.turnErrorNotice && item.text === notice;
       });
       if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
@@ -935,7 +935,7 @@
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。
   // 路由到对应 session 的产物列表(后台 session 的产物也跟踪)。
   listen("artifact:disk", function (e) {
-    var p = e.payload || {};
+    const p = e.payload || {};
     if (!p.path) return;
     onSessionEvent(e, function () {
       noteArtifactChange(p.path, p.event || "modified", p.session_id || state.activeSessionId || "");
@@ -947,10 +947,10 @@
   });
 
   listen("remote_control:mobile_user_message", async function (e) {
-    var p = e.payload || {};
-    var sid = p.session_id;
-    var content = (p.content || "").trim();
-    var attachments = p.attachments || [];
+    const p = e.payload || {};
+    const sid = p.session_id;
+    const content = (p.content || "").trim();
+    const attachments = p.attachments || [];
     // 允许纯附件消息(content 为空但 attachments 非空),对齐 Group E user_message 改造。
     if (!sid || (!content && !attachments.length)) return;
     try { await ensureSessionBufferLoaded(sid); }
@@ -958,20 +958,20 @@
       console.warn("remote session hydrate failed", err);
       return;
     }
-    var attachmentNames = attachments.map(function (attachment) {
+    const attachmentNames = attachments.map(function (attachment) {
       return attachment && attachment.basename;
     }).filter(Boolean);
-    var displayText = attachmentNames.length
+    const displayText = attachmentNames.length
       ? content + (content ? "\n\n" : "") + "📎 " + JSON.stringify(attachmentNames)
       : content;
-    var remoteBuffer = getBuffer(sid);
+    const remoteBuffer = getBuffer(sid);
     if (isBusyFor(sid) || (remoteBuffer && remoteBuffer.queued && remoteBuffer.queued.length > 0)) {
       runSyncOnSession(sid, function () {
         state.queued.push({
           id: ++context.itemIdSeq,
           text: content,
-          displayText: displayText,
-          attachments: attachments,
+          displayText,
+          attachments,
           meta: { remoteClientMessageId: p.client_message_id || null },
         });
       });
@@ -986,7 +986,7 @@
   // 桌面前端监听的 DOM CustomEvent 'pinvou:tools-changed'(tool-events.js / 类似入口),
   // 让 chip 上的工具开关计数立即同步。
   listen("remote_control:tools_changed", function () {
-    try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch (_) {}
+    try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch { /* DOM 事件分发失败仅影响计数刷新 */ }
   });
 
   // 远程 mobile 挂载/摘挂 KB → Rust emit remote_control:kb_mount_changed → 这里同步
@@ -994,41 +994,41 @@
   // 桌面端 chip 仍显旧状态直到用户切 session 强制重读。
   // 新 payload 带 collections；collection_id 保留给旧远程端兼容。
   // 只处理当前 active session 的变更(其他 session 的挂载不影响当前视图)。
-  var kbMountSyncGeneration = 0;
+  let kbMountSyncGeneration = 0;
   function normalizeMountedCollections(value) {
     if (!Array.isArray(value)) return [];
-    var seen = Object.create(null);
+    const seen = Object.create(null);
     return value.map(function (entry) {
       if (entry == null) return null;
-      var collectionId = typeof entry === "object"
-        ? (entry.collectionId != null ? entry.collectionId : entry.collection_id)
+      const collectionId = typeof entry === "object"
+        ? (entry.collectionId == null ? entry.collection_id : entry.collectionId)
         : entry;
       if (collectionId == null || seen[String(collectionId)]) return null;
       seen[String(collectionId)] = true;
-      return { collectionId: collectionId, enabled: typeof entry === "object" ? entry.enabled !== false : true };
+      return { collectionId, enabled: typeof entry === "object" ? entry.enabled !== false : true };
     }).filter(Boolean);
   }
   function normalizeMountedRemoteCollections(value) {
     if (!Array.isArray(value)) return [];
-    var seen = Object.create(null);
+    const seen = Object.create(null);
     return value.map(function (entry) {
       if (!entry || typeof entry !== "object") return null;
-      var serverId = entry.serverId != null ? entry.serverId : entry.server_id;
-      var collectionId = entry.collectionId != null ? entry.collectionId : entry.collection_id;
+      const serverId = entry.serverId == null ? entry.server_id : entry.serverId;
+      const collectionId = entry.collectionId == null ? entry.collection_id : entry.collectionId;
       if (!serverId || collectionId == null) return null;
-      var key = String(serverId) + ":" + String(collectionId);
+      const key = String(serverId) + ":" + String(collectionId);
       if (seen[key]) return null;
       seen[key] = true;
-      return { serverId: serverId, collectionId: collectionId, enabled: entry.enabled !== false };
+      return { serverId, collectionId, enabled: entry.enabled !== false };
     }).filter(Boolean);
   }
   listen("remote_control:kb_mount_changed", function (e) {
-    var p = e && e.payload;
+    const p = e && e.payload;
     if (!p || !state.activeSessionId) return;
     if (p.session_id !== state.activeSessionId) return;
-    var sessionId = p.session_id;
-    var generation = ++kbMountSyncGeneration;
-    var payloadMounted = Array.isArray(p.collections)
+    const sessionId = p.session_id;
+    const generation = ++kbMountSyncGeneration;
+    const payloadMounted = Array.isArray(p.collections)
       ? normalizeMountedCollections(p.collections)
       : (p.collection_id == null ? [] : [{ collectionId: p.collection_id, enabled: true }]);
     function normalizeSnapshot(value) {
@@ -1039,12 +1039,12 @@
     }
     function commit(value) {
       if (generation !== kbMountSyncGeneration || state.activeSessionId !== sessionId) return;
-      var snapshot = normalizeSnapshot(value);
+      const snapshot = normalizeSnapshot(value);
       if (snapshot.revision < Number(state.mountedCollectionsRevision || 0)) return;
-      var mounted = normalizeMountedCollections(snapshot.collections);
+      const mounted = normalizeMountedCollections(snapshot.collections);
       state.mountedCollections = mounted;
       state.mountedCollectionsRevision = snapshot.revision;
-      var firstEnabled = mounted.find(function (entry) { return entry.enabled; });
+      const firstEnabled = mounted.find(function (entry) { return entry.enabled; });
       state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
       notify();
     }
@@ -1054,7 +1054,7 @@
       state.mountedRemoteCollections = normalizeMountedRemoteCollections(value);
       notify();
     }
-    var payloadRemote = Array.isArray(p.remote_collections)
+    const payloadRemote = Array.isArray(p.remote_collections)
       ? p.remote_collections
       : (Array.isArray(p.remoteCollections) ? p.remoteCollections : null);
     if (payloadRemote) {
@@ -1064,12 +1064,12 @@
     } else {
       // Older producers omit remote mounts. Re-read the session fact source so this shared event
       // still converges both local and remote mount state.
-      invoke("session_mounted_remote_collections", { sessionId: sessionId })
+      invoke("session_mounted_remote_collections", { sessionId })
         .then(function (collections) { commitRemote(collections); })
         .catch(function () {});
     }
     // 事件可能由并发命令乱序发出；重新读取后端事实源，并以 generation 防止旧请求晚回覆盖。
-    invoke("session_mounted_collections_snapshot", { sessionId: sessionId })
+    invoke("session_mounted_collections_snapshot", { sessionId })
       .then(function (snapshot) { commit(snapshot); })
       .catch(function () {
         commit({ revision: Number(p.revision || 0), collections: payloadMounted });
@@ -1078,7 +1078,7 @@
 
   // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）
   listen("voice_asr:progress", function (e) {
-    var p = e && e.payload;
+    const p = e && e.payload;
     if (!p) return;
     state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, { progress: p });
     notify();
@@ -1086,7 +1086,7 @@
 
   // vllm-setup:phase —— MegaCube 本地大模型引导阶段(authorizing→waiting{attempt}→ready),驱动引导框步骤指示。
   listen("vllm-setup:phase", function (e) {
-    var p = e.payload || {};
+    const p = e.payload || {};
     if (!p.phase) return;
     state.vllmSetupPhase = p.phase;
     if (typeof p.attempt === "number") state.vllmSetupAttempt = p.attempt;
@@ -1095,7 +1095,7 @@
 
   // 知识库 embedding 模型下载进度（download → verify → prepare → done）
   listen("kb_model:progress", function (e) {
-    var p = e && e.payload;
+    const p = e && e.payload;
     if (!p) return;
     state.kbModelSetup = Object.assign({}, state.kbModelSetup, { progress: p });
     notify();
@@ -1103,7 +1103,7 @@
 
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
   listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
+    const p = e.payload || {};
     if (p.plan_snapshot) state.planSnapshot.plan = p.plan_snapshot;
     if (p.todos_snapshot) state.planSnapshot.todos = p.todos_snapshot;
     notify();
@@ -1111,9 +1111,9 @@
 
   // chat:plan_ready —— 底座式:Plan 模式调过 update_plan 即弹方案卡(快照非空)
   listen("chat:plan_ready", function (e) { onSessionEvent(e, function () {
-    var p = e.payload || {};
-    var planId = String(p.plan_id || p.planId || "").trim();
-    var readyMode = p.mode_state || p.modeState;
+    const p = e.payload || {};
+    const planId = String(p.plan_id || p.planId || "").trim();
+    const readyMode = p.mode_state || p.modeState;
     // 事件负载的权威 mode 写回走收敛点（bump epoch 防在途旧读覆盖；
     // sid 取事件 payload，onSessionEvent 内与 state.activeSessionId 一致）。
     if (readyMode) applyAuthoritativeModeState(state.activeSessionId, readyMode);
@@ -1126,7 +1126,7 @@
         it.cardState = "frozen"; it.statusLabel = bt("planSuperseded");
       }
     });
-    var snaps = { plan: p.plan_snapshot || null, todos: p.todos_snapshot || null };
+    const snaps = { plan: p.plan_snapshot || null, todos: p.todos_snapshot || null };
     addChatItem({
       type: "plan_card", plan: snaps.plan, todos: snaps.todos,
       planMarkdown: composePlanMarkdown(snaps), planId: planId || null,
@@ -1138,9 +1138,9 @@
   }); });
 
   listen("chat:plan_resolved", function (e) {
-    var p = e && e.payload || {};
-    var sid = p.session_id || state.activeSessionId;
-    var planId = String(p.plan_id || p.planId || "").trim();
+    const p = e && e.payload || {};
+    const sid = p.session_id || state.activeSessionId;
+    const planId = String(p.plan_id || p.planId || "").trim();
     if (!sid || !planId) return;
     runSyncOnSession(sid, function () {
       state.chatItems.forEach(function (item) {
@@ -1151,7 +1151,7 @@
           item.statusLabel = bt("planDiscarded");
         }
       });
-      var resolvedMode = p.mode_state || p.modeState;
+      const resolvedMode = p.mode_state || p.modeState;
       // 事件负载的权威 mode 写回走收敛点（bump epoch 防在途旧读覆盖），
       // 与 web 版对齐：方案在别处（另一窗口/远端）被 discard 时 chip 须刷新。
       if (resolvedMode) applyAuthoritativeModeState(sid, resolvedMode);
@@ -1160,9 +1160,9 @@
   });
 
     return {
-      latestTimelineCompletion: latestTimelineCompletion,
-      authoritativeTimelineMissesKnownCompletion: authoritativeTimelineMissesKnownCompletion,
-      refreshAuthoritativeTurnTimeline: refreshAuthoritativeTurnTimeline,
+      latestTimelineCompletion,
+      authoritativeTimelineMissesKnownCompletion,
+      refreshAuthoritativeTurnTimeline,
     };
   };
 })();

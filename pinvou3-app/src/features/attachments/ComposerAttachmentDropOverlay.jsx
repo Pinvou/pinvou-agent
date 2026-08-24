@@ -1,4 +1,3 @@
-import React from 'react';
 import { AttachmentDropOverlay } from './AttachmentDropOverlay.jsx';
 import { useAttachmentDrop } from './useAttachmentDrop.js';
 
