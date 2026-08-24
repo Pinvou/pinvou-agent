@@ -126,6 +126,23 @@ Use Chart.js UMD from cdnjs:
 - Bubble/scatter charts should pad the scale range about 10% beyond the data range.
 - 12 categories or fewer: set `scales.x.ticks: { autoSkip: false, maxRotation: 45 }`.
 - Negative currency values: `-$5M`, not `$-5M`.
+- Show persistent value labels by default instead of relying only on hover tooltips. Use a small custom Chart.js plugin, usually with `afterDatasetsDraw`, to draw rounded values near bars, points, or segments.
+- Keep hover tooltips available for detail, but do not make hover the only way to see chart values.
+- Extract label values according to the dataset shape. Numeric arrays can use the numeric value directly; scatter data should read `{x,y}` and usually label `y`; bubble data should read `{x,y,r}` and label the business metric or `y`. Never pass an object directly into `Math.round()`.
+- For dense series, label only endpoints, peaks, troughs, important thresholds, or Top N values to avoid overlap.
+
+### Persistent value labels
+Use these placement rules when drawing Chart.js value labels:
+
+- Vertical bars: positive labels sit above the bar; negative labels sit below the bar. Pull labels inward near chart edges.
+- Horizontal bars: positive labels sit after the bar end; negative labels sit before the bar end. Move labels inside the bar when outside space is tight.
+- Line charts: show every point only when the series is short. For dense series, label endpoints, peaks, troughs, important thresholds, or Top N values with 6-8px spacing from the point.
+- Area charts: follow line chart labeling, and avoid covering the main filled trend shape.
+- Doughnut and pie charts: show percentage or Top N labels. Do not force persistent labels on tiny slices; put those values in the custom legend instead.
+- Scatter and bubble charts: label the selected business metric, usually `y`, and keep labels outside the marker when practical.
+- Multi-dataset charts: label the primary dataset by default. If labeling every dataset would clutter the chart, use the custom legend and tooltip for secondary datasets.
+- Format every label with `Intl.NumberFormat`, `Math.round()`, or `.toFixed(n)`, matching the metric type and keeping labels compact.
+- Use at least 11px text, weight 400 or 500, and hardcoded neutral hex colors in canvas drawing code.
 
 ### Legends
 Always disable the default legend and use custom HTML:
