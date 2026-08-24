@@ -44,6 +44,78 @@ fn unknown_notification_is_preserved_as_conservative_r1_vendor_event() {
 }
 
 #[test]
+fn remote_control_status_notification_is_benign_startup_telemetry() {
+    let mut projector = CodexEventProjector::new("node", "attachment");
+    let frame = serde_json::json!({
+        "method":"remoteControl/status/changed",
+        "params":{
+            "status":"disabled",
+            "serverName":"local",
+            "installationId":"install",
+            "environmentId":null
+        }
+    });
+    let ProjectedFrame::Event(event) = projector.project(&frame).unwrap() else {
+        panic!("remote control status was not projected")
+    };
+    assert_eq!(event.kind(), "vendor");
+    assert_eq!(event.rate_class(), RateClass::R1);
+    assert_eq!(
+        event.vendor_extension().unwrap()["method"],
+        "remoteControl/status/changed"
+    );
+}
+
+#[test]
+fn canonical_user_message_lifecycle_is_benign_and_never_projected_as_tool_activity() {
+    let mut projector = CodexEventProjector::new("node", "attachment");
+    let started = serde_json::json!({
+        "method":"item/started",
+        "params":{
+            "threadId":"thread",
+            "turnId":"turn",
+            "item":{"type":"userMessage","id":"user-1","content":[{"type":"text","text":"hello"}]}
+        }
+    });
+    let completed = serde_json::json!({
+        "method":"item/completed",
+        "params":{
+            "threadId":"thread",
+            "turnId":"turn",
+            "item":{"type":"userMessage","id":"user-1","content":[{"type":"text","text":"hello"}]}
+        }
+    });
+
+    assert!(matches!(
+        projector.project(&started).unwrap(),
+        ProjectedFrame::Ignored
+    ));
+    assert!(matches!(
+        projector.project(&completed).unwrap(),
+        ProjectedFrame::Ignored
+    ));
+}
+
+#[test]
+fn canonical_reasoning_and_plan_completion_lifecycle_is_benign() {
+    let mut projector = CodexEventProjector::new("node", "attachment");
+    for item_type in ["reasoning", "plan"] {
+        let completed = serde_json::json!({
+            "method":"item/completed",
+            "params":{
+                "threadId":"thread",
+                "turnId":"turn",
+                "item":{"type":item_type,"id":"item-1","summary":[],"content":[]}
+            }
+        });
+        assert!(matches!(
+            projector.project(&completed).unwrap(),
+            ProjectedFrame::Ignored
+        ));
+    }
+}
+
+#[test]
 fn unknown_server_request_fails_closed() {
     let mut projector = CodexEventProjector::new("node", "attachment");
     let frame = serde_json::json!({"id":44,"method":"future/requestPermission","params":{}});

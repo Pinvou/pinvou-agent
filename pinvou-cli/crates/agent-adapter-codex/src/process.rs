@@ -85,6 +85,19 @@ fn find_on_path(name: &std::path::Path) -> Option<PathBuf> {
     #[cfg(not(windows))]
     let extensions: Vec<OsString> = vec![OsString::new()];
     for directory in std::env::split_paths(&path) {
+        #[cfg(windows)]
+        if name.extension().is_none() {
+            for extension in &extensions {
+                let candidate = directory.join(format!(
+                    "{}{}",
+                    name.to_string_lossy(),
+                    extension.to_string_lossy()
+                ));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
         let direct = directory.join(name);
         if direct.is_file() {
             return Some(direct);
@@ -121,7 +134,19 @@ impl Default for CodexAdapterConfig {
     fn default() -> Self {
         Self {
             executable: PathBuf::from("codex"),
-            app_server_args: vec!["app-server".into()],
+            app_server_args: vec![
+                "app-server".into(),
+                "--disable".into(),
+                "hooks".into(),
+                "--disable".into(),
+                "plugins".into(),
+                "--disable".into(),
+                "apps".into(),
+                "--disable".into(),
+                "shell_snapshot".into(),
+                "-c".into(),
+                "notify=[]".into(),
+            ],
             version_args: vec!["--version".into()],
             doctor_args: vec!["doctor".into()],
             working_directory: None,
@@ -149,6 +174,7 @@ pub struct CodexAdapter {
     sessions: Arc<Mutex<HashMap<String, Option<String>>>>,
     executable_identity: Option<ExecutableIdentity>,
     auth_blocked: Arc<AtomicBool>,
+    default_model: Option<String>,
 }
 
 impl CodexAdapter {
@@ -161,6 +187,7 @@ impl CodexAdapter {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             executable_identity: None,
             auth_blocked: Arc::new(AtomicBool::new(false)),
+            default_model: None,
         }
     }
 
@@ -241,10 +268,11 @@ impl AgentRuntimeAdapter for CodexAdapter {
                 operation: "codex_version",
             });
         }
-        run_doctor_probe(&self.config)?;
+        run_diagnostic_doctor_probe(&self.config);
         self.ensure_connection()?;
         self.request("account/read", json!({"refreshToken":false}))?;
-        self.request("model/list", json!({"limit":1}))?;
+        let models = self.request("model/list", json!({"limit":1}))?;
+        self.default_model = parse_default_model(&models);
         self.negotiated.complete(RuntimeCapabilities {
             interactive_chat: true,
             native_resume: true,
@@ -346,7 +374,11 @@ impl AgentRuntimeAdapter for CodexAdapter {
                 details: "working directory must exist".into(),
             })?;
         let mut params = json!({"cwd":cwd,"approvalPolicy":"on-request","sandbox":"workspace-write","ephemeral":false});
-        if let Some(model) = options.get("model").and_then(Value::as_str) {
+        if let Some(model) = options
+            .get("model")
+            .and_then(Value::as_str)
+            .or(self.default_model.as_deref())
+        {
             if model.is_empty() {
                 return Err(AdapterError::InvalidRequest {
                     details: "model is empty".into(),
@@ -1282,6 +1314,10 @@ fn run_doctor_probe(config: &CodexAdapterConfig) -> Result<(), AdapterError> {
     run_version_probe(&doctor).map(|_| ())
 }
 
+fn run_diagnostic_doctor_probe(config: &CodexAdapterConfig) {
+    let _ = run_doctor_probe(config);
+}
+
 fn read_bounded_output(reader: impl Read) -> Result<Vec<u8>, AdapterError> {
     let mut output = Vec::new();
     reader
@@ -1307,6 +1343,26 @@ fn parse_version(input: &str) -> Option<(u64, u64, u64)> {
             .ok()
     });
     Some((parts.next()??, parts.next()??, parts.next()??))
+}
+
+fn parse_default_model(models: &Value) -> Option<String> {
+    models
+        .get("data")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|model| model.get("isDefault").and_then(Value::as_bool) == Some(true))
+        .or_else(|| models.get("data").and_then(Value::as_array)?.first())?
+        .get("id")
+        .or_else(|| {
+            models
+                .get("data")
+                .and_then(Value::as_array)?
+                .first()?
+                .get("model")
+        })
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 fn protocol_json(error: serde_json::Error) -> AdapterError {
@@ -1594,11 +1650,101 @@ fn resume_suspended_process(child: &Child) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn version_parser_accepts_pinned_codex_shape() {
         assert_eq!(parse_version("codex-cli 0.139.0"), Some((0, 139, 0)));
         assert_eq!(parse_version("not-a-version"), None);
+    }
+
+    #[test]
+    fn model_list_default_is_used_to_override_stale_user_config_defaults() {
+        let models = json!({
+            "data": [
+                {"id": "too-old", "isDefault": false},
+                {"id": "gpt-5.5", "isDefault": true}
+            ]
+        });
+
+        assert_eq!(parse_default_model(&models), Some("gpt-5.5".into()));
+    }
+
+    #[test]
+    fn default_app_server_args_disable_user_hooks_and_plugins() {
+        let args = CodexAdapterConfig::default()
+            .app_server_args
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(args[0], "app-server");
+        assert!(args.windows(2).any(|pair| pair == ["--disable", "hooks"]));
+        assert!(args.windows(2).any(|pair| pair == ["--disable", "plugins"]));
+        assert!(args.windows(2).any(|pair| pair == ["--disable", "apps"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--disable", "shell_snapshot"])
+        );
+        assert!(args.windows(2).any(|pair| pair == ["-c", "notify=[]"]));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_resolution_prefers_executable_extension_over_extensionless_shim() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-codex-path-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("codex"), b"not executable").unwrap();
+        std::fs::write(root.join("codex.exe"), b"preferred").unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_pathext = std::env::var_os("PATHEXT");
+        unsafe {
+            std::env::set_var("PATH", &root);
+            std::env::set_var("PATHEXT", ".EXE;.CMD");
+        }
+
+        let resolved = find_on_path(std::path::Path::new("codex")).unwrap();
+
+        if let Some(old_path) = old_path {
+            unsafe { std::env::set_var("PATH", old_path) };
+        } else {
+            unsafe { std::env::remove_var("PATH") };
+        }
+        if let Some(old_pathext) = old_pathext {
+            unsafe { std::env::set_var("PATHEXT", old_pathext) };
+        } else {
+            unsafe { std::env::remove_var("PATHEXT") };
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            resolved
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_lowercase(),
+            "codex.exe"
+        );
+    }
+
+    #[test]
+    fn doctor_probe_is_diagnostic_and_never_blocks_runtime_probe() {
+        let config = CodexAdapterConfig {
+            executable: PathBuf::from("definitely-missing-codex-doctor-fixture"),
+            doctor_args: vec!["doctor".into()],
+            ..CodexAdapterConfig::default()
+        };
+
+        run_diagnostic_doctor_probe(&config);
     }
 
     #[cfg(windows)]

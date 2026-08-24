@@ -227,7 +227,11 @@ impl CodexEventProjector {
             }
             "warning" | "configWarning" | "deprecationNotice" | "thread/compacted" => self.event(RuntimeEventKind::LogRecord, RateClass::R2, turn, json!({"source":"codex","level":"warning","message":redact_diagnostic(string_at(params, &["/message"]).unwrap_or(method))}), None)?,
             "item/reasoning/summaryPartAdded" | "account/updated" => return Ok(ProjectedFrame::Ignored),
-            "mcpServer/startupStatus/updated" | "thread/status/changed" | "account/rateLimits/updated" | "rawResponseItem/completed" => self.event(RuntimeEventKind::Vendor, RateClass::R1, turn, json!({}), Some(json!({"method":method,"params":sanitize_json(params)})))?,
+            "mcpServer/startupStatus/updated"
+            | "thread/status/changed"
+            | "account/rateLimits/updated"
+            | "rawResponseItem/completed"
+            | "remoteControl/status/changed" => self.event(RuntimeEventKind::Vendor, RateClass::R1, turn, json!({}), Some(json!({"method":method,"params":sanitize_json(params)})))?,
             _ => return Err(AdapterError::Protocol{code:None,method:Some(method.into()),details:format!("unsupported_notification: {method}")}),
         };
         Ok(ProjectedFrame::Event(event))
@@ -241,7 +245,7 @@ impl CodexEventProjector {
             .unwrap_or("unknown");
         if matches!(
             item_type,
-            "agentMessage" | "reasoning" | "plan" | "fileChange"
+            "userMessage" | "agentMessage" | "reasoning" | "plan" | "fileChange"
         ) {
             return Ok(ProjectedFrame::Ignored);
         }
@@ -277,7 +281,10 @@ impl CodexEventProjector {
                 RuntimeEventKind::ToolCallCompleted,
                 json!({"tool_id":string_at(item, &["/id","/callId"]).unwrap_or("codex-tool"),"result":sanitize_json(item),"is_error":item.get("status").and_then(Value::as_str).is_some_and(|v| matches!(v,"failed"|"error")),"exit_code":item.get("exitCode").cloned()}),
             )
-        } else if item_type == "fileChange" {
+        } else if matches!(
+            item_type,
+            "userMessage" | "reasoning" | "plan" | "fileChange"
+        ) {
             return Ok(ProjectedFrame::Ignored);
         } else {
             return Err(AdapterError::Protocol {
