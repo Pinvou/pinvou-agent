@@ -399,34 +399,13 @@ impl Backend for ControllerTuiBackend {
 
     fn runtime_list(&self, operation_token: u64) -> Result<RuntimeList, BackendError> {
         let operation = self.control_operation(operation_token)?;
-        let connection_id = operation.connection_id;
-        let response =
-            self.control(operation_token, connection_id, ControllerWire::runtime_list)?;
+        let response = self.control(
+            operation_token,
+            operation.connection_id,
+            ControllerWire::runtime_list,
+        )?;
         let payload = require_response(response, "runtime.list")?;
-        let listed = map_runtime_list(&payload)?;
-        let mut runtimes = Vec::with_capacity(listed.runtimes.len());
-        for candidate in listed.runtimes {
-            match self
-                .detect(operation_token, connection_id, &candidate.id)
-                .and_then(|value| map_runtime_status(&value, Some(&candidate.id)))
-            {
-                Ok(detected) => {
-                    let mut status =
-                        RuntimeStatus::new(detected.id, candidate.display_name, detected.available);
-                    status.capability_summary =
-                        detected.capability_summary.or(candidate.capability_summary);
-                    runtimes.push(status);
-                }
-                Err(error) if error.kind() == BackendErrorKind::Cancelled => return Err(error),
-                Err(_) => {
-                    runtimes.push(
-                        RuntimeStatus::new(candidate.id, candidate.display_name, false)
-                            .with_capability_summary("detection unavailable"),
-                    );
-                }
-            }
-        }
-        Ok(RuntimeList::new(listed.active_runtime, runtimes))
+        map_runtime_list(&payload)
     }
 
     fn stream_turn(
@@ -1017,7 +996,6 @@ mod tests {
     enum FakePlan {
         Frames(Vec<IpcMessage>),
         Blocked(Arc<(Mutex<bool>, Condvar)>),
-        ConnectError(StableExitCode, &'static str),
     }
 
     impl FakeConnector {
@@ -1107,9 +1085,6 @@ mod tests {
     impl ConnectionFactory for FakeConnector {
         fn connect(&self) -> Result<Connected, DistributedError> {
             let plan = self.plans.lock().unwrap().pop_front().unwrap();
-            if let FakePlan::ConnectError(code, message) = plan {
-                return Err(DistributedError::new(code, message));
-            }
             let output = Arc::new(Mutex::new(Vec::new()));
             self.requests.lock().unwrap().push(Vec::new());
             let input = match &plan {
@@ -1124,7 +1099,6 @@ mod tests {
                     FakeInput::Frames(Cursor::new(bytes))
                 }
                 FakePlan::Blocked(state) => FakeInput::Blocked(Arc::clone(state)),
-                FakePlan::ConnectError(..) => unreachable!(),
             };
             Ok(Connected {
                 io: Box::new(RecordingIo {
@@ -1134,7 +1108,6 @@ mod tests {
                 cancel: Arc::new(FakeCancel(match plan {
                     FakePlan::Frames(_) => None,
                     FakePlan::Blocked(state) => Some(state),
-                    FakePlan::ConnectError(..) => unreachable!(),
                 })),
             })
         }
@@ -1457,23 +1430,18 @@ mod tests {
 
     #[test]
     fn runtime_list_maps_controller_payload_without_hard_coding_runtime_ids() {
-        let subject = backend(FakeConnector::with([
-            FakePlan::Frames(vec![response(
-                1,
-                json!({
-                    "current":"custom-agent",
-                    "runtimes":[{"id":"custom-agent","label":"Custom Agent","available":true}]
-                }),
-            )]),
-            FakePlan::Frames(vec![response(
-                1,
-                json!({
-                    "runtime":"custom-agent",
-                    "status":"available",
+        let subject = backend(FakeConnector::with([FakePlan::Frames(vec![response(
+            1,
+            json!({
+                "current":"custom-agent",
+                "runtimes":[{
+                    "id":"custom-agent",
+                    "label":"Custom Agent",
+                    "available":true,
                     "capabilities":{"interactive_chat":true,"tool_approval":false}
-                }),
-            )]),
-        ]));
+                }]
+            }),
+        )])]));
         let list = subject.runtime_list(7).unwrap();
         assert_eq!(list.active_runtime.as_deref(), Some("custom-agent"));
         assert_eq!(list.runtimes[0].id, "custom-agent");
@@ -1482,6 +1450,27 @@ mod tests {
             list.runtimes[0].capability_summary.as_deref(),
             Some("interactive_chat")
         );
+    }
+
+    #[test]
+    fn runtime_list_uses_controller_snapshot_without_deep_detection() {
+        let connector = FakeConnector::with([FakePlan::Frames(vec![response(
+            1,
+            json!({
+                "current":"codex",
+                "runtimes":[
+                    {"id":"echo","label":"Stage 1 Echo","available":true},
+                    {"id":"codex","label":"Codex App Server","available":true}
+                ]
+            }),
+        )])]);
+        let subject = backend(connector.clone());
+
+        let list = subject.runtime_list(75).unwrap();
+
+        assert_eq!(list.active_runtime.as_deref(), Some("codex"));
+        assert_eq!(list.runtimes.len(), 2);
+        assert_eq!(connector.methods(), ["runtime.list"]);
     }
 
     #[derive(Clone, Copy)]
@@ -1733,56 +1722,33 @@ mod tests {
     }
 
     #[test]
-    fn runtime_list_keeps_good_candidates_when_one_detect_fails() {
-        let subject = backend(FakeConnector::with([
-            FakePlan::Frames(vec![response(
-                1,
-                json!({
-                    "current":"good",
-                    "runtimes":[
-                        {"id":"bad","label":"Bad","available":true},
-                        {"id":"good","label":"Good","available":true}
-                    ]
-                }),
-            )]),
-            FakePlan::ConnectError(
-                StableExitCode::ControllerUnavailable,
-                "credential=private-value",
-            ),
-            FakePlan::Frames(vec![response(
-                1,
-                json!({"runtime":"good","status":"available","capabilities":{"interactive_chat":true}}),
-            )]),
-        ]));
+    fn runtime_list_preserves_controller_candidate_availability() {
+        let subject = backend(FakeConnector::with([FakePlan::Frames(vec![response(
+            1,
+            json!({
+                "current":"good",
+                "runtimes":[
+                    {"id":"bad","label":"Bad","available":false},
+                    {"id":"good","label":"Good","available":true}
+                ]
+            }),
+        )])]));
         let list = subject.runtime_list(13).unwrap();
         assert_eq!(list.runtimes.len(), 2);
         assert!(!list.runtimes[0].available);
-        assert_eq!(
-            list.runtimes[0].capability_summary.as_deref(),
-            Some("detection unavailable")
-        );
         assert!(list.runtimes[1].available);
     }
 
     #[test]
-    fn runtime_list_does_not_downgrade_local_detach_to_candidate_unavailable() {
+    fn runtime_list_detach_returns_cancelled() {
         let blocked = Arc::new((Mutex::new(false), Condvar::new()));
-        let connector = FakeConnector::with([
-            FakePlan::Frames(vec![response(
-                1,
-                json!({
-                    "current":"codex",
-                    "runtimes":[{"id":"codex","label":"Codex","available":true}]
-                }),
-            )]),
-            FakePlan::Blocked(blocked),
-        ]);
+        let connector = FakeConnector::with([FakePlan::Blocked(blocked)]);
         let subject = Arc::new(backend(connector.clone()));
         let worker = {
             let subject = Arc::clone(&subject);
             std::thread::spawn(move || subject.runtime_list(74))
         };
-        connector.wait_until_connection_count(2);
+        connector.wait_until_connection_count(1);
         subject.detach_controls().unwrap();
         assert_eq!(
             worker.join().unwrap().unwrap_err().kind(),
