@@ -731,10 +731,8 @@ mod tests {
             let new_dir = mcp_catalog::package_mcp_dir(id);
             std::fs::create_dir_all(&new_dir).unwrap();
             assert!(migrate_mcp_json_paths().unwrap());
-            let mcp: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(&mcp_path).unwrap(),
-            )
-            .unwrap();
+            let mcp: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
             let command = mcp["servers"][id]["command"].as_str().unwrap();
             assert!(
                 command.starts_with(&*new_dir.to_string_lossy()),

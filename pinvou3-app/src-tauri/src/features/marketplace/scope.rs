@@ -90,7 +90,11 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
 /// 误写入的带前缀 id；本文件按裸包 id 匹配，读者在此统一归一）。返回是否剥出过前缀。
 fn strip_skill_prefixes(file: &mut DisabledBundlesFile) -> bool {
     let mut stripped = false;
-    for ids in file.scopes.values_mut().chain(file.hidden_scopes.values_mut()) {
+    for ids in file
+        .scopes
+        .values_mut()
+        .chain(file.hidden_scopes.values_mut())
+    {
         for id in ids.iter_mut() {
             if let Some(s) = id.strip_prefix("skill:") {
                 *id = s.to_string();
@@ -615,10 +619,7 @@ mod tests {
     #[test]
     fn load_normalizes_stale_skill_id_after_claim_flip() {
         with_temp_home(|| {
-            save_disabled_bundles_for(
-                ConnectorScope::Plain,
-                &["government-writing".to_string()],
-            );
+            save_disabled_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()]);
             save_hidden_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()]);
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),

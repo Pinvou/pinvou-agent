@@ -464,7 +464,10 @@ impl SkillMarketplaceManager {
                 continue;
             }
             if let Err(e) = std::fs::remove_dir_all(&dir) {
-                log::warn!("[skill-marketplace] 清扫重复技能副本失败（{}）: {e}", dir.display());
+                log::warn!(
+                    "[skill-marketplace] 清扫重复技能副本失败（{}）: {e}",
+                    dir.display()
+                );
                 continue;
             }
             if let Some(skills_parent) = dir.parent() {
@@ -616,11 +619,7 @@ impl SkillMarketplaceManager {
 
     /// 技能是否有安装登记：记录 id = 目录名（上传/同名预置），或预置 id 与
     /// 技能名异名（如 tencent-docs-skill ↔ tencent-docs）时按预置 id 命中。
-    fn has_install_record(
-        &self,
-        records: &[super::store::BundleRecord],
-        skill_name: &str,
-    ) -> bool {
+    fn has_install_record(&self, records: &[super::store::BundleRecord], skill_name: &str) -> bool {
         records.iter().any(|r| r.id == skill_name)
             || self
                 .preset_by_skill_name(skill_name)
@@ -1639,10 +1638,18 @@ mod tests {
         // dup-skill 同样错位，且正确位置已有副本
         let dup_stray = tmp.join("bundles/wrong-pkg/skills/dup-skill");
         std::fs::create_dir_all(&dup_stray).unwrap();
-        std::fs::write(dup_stray.join("SKILL.md"), "---\nname: dup-skill\n---\nstray").unwrap();
+        std::fs::write(
+            dup_stray.join("SKILL.md"),
+            "---\nname: dup-skill\n---\nstray",
+        )
+        .unwrap();
         let dup_right = tmp.join("bundles/dup-skill/skills/dup-skill");
         std::fs::create_dir_all(&dup_right).unwrap();
-        std::fs::write(dup_right.join("SKILL.md"), "---\nname: dup-skill\n---\nright").unwrap();
+        std::fs::write(
+            dup_right.join("SKILL.md"),
+            "---\nname: dup-skill\n---\nright",
+        )
+        .unwrap();
         // 正确位置副本需有登记（生产语义：已装技能必有记录），否则它自身即孤儿
         let store =
             crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
@@ -1714,18 +1721,28 @@ mod tests {
         // 内置释放目录：残旧（无标记/无记录/非内嵌）→ 删；内嵌集内 → 留；带标记 → 留
         let stale_builtin = tmp.join("bundle/skills/old-thing");
         std::fs::create_dir_all(&stale_builtin).unwrap();
-        std::fs::write(stale_builtin.join("SKILL.md"), "---\nname: old-thing\n---\n").unwrap();
+        std::fs::write(
+            stale_builtin.join("SKILL.md"),
+            "---\nname: old-thing\n---\n",
+        )
+        .unwrap();
         let embedded = tmp.join("bundle/skills/visual-design");
         std::fs::create_dir_all(&embedded).unwrap();
         std::fs::write(embedded.join("SKILL.md"), "---\nname: visual-design\n---\n").unwrap();
         let marked = tmp.join("bundle/skills/marked-thing");
         std::fs::create_dir_all(&marked).unwrap();
         std::fs::write(marked.join("SKILL.md"), "---\nname: marked-thing\n---\n").unwrap();
-        std::fs::write(marked.join(".installed-from"), "pinvou3-marketplace:marked-thing").unwrap();
+        std::fs::write(
+            marked.join(".installed-from"),
+            "pinvou3-marketplace:marked-thing",
+        )
+        .unwrap();
 
         let report = mgr.self_heal_skills(&["visual-design"]);
         assert!(!orphan.exists(), "孤儿副本应删除");
-        assert!(report.removed_orphan_dirs.contains(&"orphan-skill/orphan-skill".to_string()));
+        assert!(report
+            .removed_orphan_dirs
+            .contains(&"orphan-skill/orphan-skill".to_string()));
         assert!(recorded.exists(), "有记录副本应保留");
         assert!(preset_dir.exists(), "预置名副本应保留（可重释放）");
         assert!(cli_dir.exists(), "CLI 静态所有副本应保留");
