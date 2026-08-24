@@ -110,9 +110,27 @@ fn no_arguments_select_the_tui_while_help_remains_explicit() {
 }
 
 #[test]
+fn json_output_requires_an_explicit_subcommand_before_any_tui_work() {
+    let error = parse_args(["pinvou", "--output", "json"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert_eq!(
+        error.to_string(),
+        "JSON output requires an explicit subcommand"
+    );
+
+    assert_eq!(
+        parse_args(["pinvou", "--output", "human"])
+            .unwrap()
+            .command(),
+        &CliCommand::Tui
+    );
+}
+
+#[test]
 fn an_explicit_tui_subcommand_is_not_part_of_the_public_cli() {
     let error = parse_args(["pinvou", "tui"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert_eq!(error.to_string(), "unknown command: tui");
 }
 
 #[test]

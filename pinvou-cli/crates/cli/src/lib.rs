@@ -277,6 +277,11 @@ where
     }
     #[cfg(feature = "distributed")]
     if values.is_empty() {
+        if output == OutputMode::Json {
+            return Err(CliError::usage(
+                "JSON output requires an explicit subcommand",
+            ));
+        }
         return Ok(ParsedCli {
             command: CliCommand::Tui,
             output,
@@ -302,7 +307,10 @@ where
         });
     }
     if values.first().map(String::as_str) != Some("benchmark") {
-        return Err(CliError::usage("usage: pinvou benchmark <command>"));
+        return Err(CliError::usage(format!(
+            "unknown command: {}",
+            values.first().map(String::as_str).unwrap_or_default()
+        )));
     }
     let command = match values.get(1).map(String::as_str) {
         Some("list") if values.len() == 2 => BenchmarkCommand::List,
