@@ -374,12 +374,15 @@ where
         return Err(error.with_cleanup(cleanup_warnings));
     }
 
+    const INITIALIZATION_OPERATION_TOKEN: u64 = 0;
     let initialization_backend = backend.clone();
     let initialization_sender = high_sender.clone();
+    let initialization_lease = backend.begin_control(INITIALIZATION_OPERATION_TOKEN);
     thread::spawn(move || {
         let result = guarded_backend_call(|| {
+            initialization_lease?;
             let workspace = initialization_backend.workspace()?;
-            let runtimes = initialization_backend.runtime_list()?;
+            let runtimes = initialization_backend.runtime_list(INITIALIZATION_OPERATION_TOKEN)?;
             Ok((workspace, runtimes))
         });
         let _ = initialization_sender.blocking_send(HighPriorityEvent::Initialized(result));
@@ -984,9 +987,11 @@ fn start_stream_worker<B: Backend>(
     prompt: String,
     operation_token: OperationToken,
 ) {
+    let lease = backend.begin_stream(operation_token.as_u64());
     thread::spawn(move || {
         let event_sender = runtime_sender.clone();
         let result = catch_unwind(AssertUnwindSafe(|| {
+            lease?;
             backend.stream_turn(
                 operation_token.as_u64(),
                 prompt,
@@ -1018,6 +1023,25 @@ fn start_control_effect<B: Backend>(
     sender: mpsc::Sender<HighPriorityEvent>,
     effect: Effect,
 ) {
+    let operation_token = match &effect {
+        Effect::ResolveApproval {
+            operation_token, ..
+        }
+        | Effect::ResolveInput {
+            operation_token, ..
+        }
+        | Effect::Interrupt {
+            operation_token, ..
+        }
+        | Effect::LoadRuntimeList { operation_token }
+        | Effect::SwitchRuntime {
+            operation_token, ..
+        }
+        | Effect::StartTurn {
+            operation_token, ..
+        } => operation_token.as_u64(),
+    };
+    let lease = backend.begin_control(operation_token);
     thread::spawn(move || {
         let action = match effect {
             Effect::ResolveApproval {
@@ -1027,7 +1051,11 @@ fn start_control_effect<B: Backend>(
                 accepted,
             } => {
                 let call_id = approval_id.clone();
-                let result = guarded_backend_call(|| backend.resolve_approval(call_id, accepted));
+                let result = lease.clone().and_then(|_| {
+                    guarded_backend_call(|| {
+                        backend.resolve_approval(operation_token.as_u64(), call_id, accepted)
+                    })
+                });
                 Action::ApprovalResolutionCompleted {
                     turn_id,
                     approval_id,
@@ -1042,7 +1070,11 @@ fn start_control_effect<B: Backend>(
                 value,
             } => {
                 let call_id = input_id.clone();
-                let result = guarded_backend_call(|| backend.resolve_input(call_id, value));
+                let result = lease.clone().and_then(|_| {
+                    guarded_backend_call(|| {
+                        backend.resolve_input(operation_token.as_u64(), call_id, value)
+                    })
+                });
                 Action::InputResolutionCompleted {
                     turn_id,
                     input_id,
@@ -1055,7 +1087,9 @@ fn start_control_effect<B: Backend>(
                 operation_token,
             } => {
                 let call_turn = turn_id.clone();
-                let result = guarded_backend_call(|| backend.interrupt(call_turn));
+                let result = lease.clone().and_then(|_| {
+                    guarded_backend_call(|| backend.interrupt(operation_token.as_u64(), call_turn))
+                });
                 Action::InterruptCompleted {
                     turn_id,
                     operation_token,
@@ -1063,7 +1097,9 @@ fn start_control_effect<B: Backend>(
                 }
             }
             Effect::LoadRuntimeList { operation_token } => {
-                let result = guarded_backend_call(|| backend.runtime_list());
+                let result = lease.clone().and_then(|_| {
+                    guarded_backend_call(|| backend.runtime_list(operation_token.as_u64()))
+                });
                 Action::RuntimeListLoaded {
                     operation_token,
                     result,
@@ -1073,7 +1109,11 @@ fn start_control_effect<B: Backend>(
                 runtime,
                 operation_token,
             } => {
-                let result = guarded_backend_call(|| backend.switch_runtime(runtime));
+                let result = lease.clone().and_then(|_| {
+                    guarded_backend_call(|| {
+                        backend.switch_runtime(operation_token.as_u64(), runtime)
+                    })
+                });
                 Action::RuntimeSwitched {
                     operation_token,
                     result,

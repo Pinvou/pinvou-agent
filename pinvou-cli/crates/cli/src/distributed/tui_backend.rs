@@ -25,7 +25,7 @@ use pinvou_tui::backend::{
 };
 use serde_json::{Value, json};
 
-use super::{ControllerWire, DistributedError};
+use super::{ControllerWire, DistributedError, ensure_controller};
 
 trait ReadWrite: Read + Write + Send {}
 impl<T: Read + Write + Send> ReadWrite for T {}
@@ -46,6 +46,18 @@ trait ConnectionFactory: Send + Sync {
     fn connect(&self) -> Result<Connected, DistributedError>;
 }
 
+trait ControllerBootstrap: Send + Sync {
+    fn ensure(&self) -> Result<(), DistributedError>;
+}
+
+struct ProductionBootstrap;
+
+impl ControllerBootstrap for ProductionBootstrap {
+    fn ensure(&self) -> Result<(), DistributedError> {
+        ensure_controller().map(|_| ())
+    }
+}
+
 struct LocalConnectionFactory {
     endpoint: LocalEndpoint,
 }
@@ -59,41 +71,65 @@ impl ConnectionFactory for LocalConnectionFactory {
 #[derive(Default)]
 struct InFlight {
     next_connection_id: AtomicU64,
-    streams: Mutex<HashMap<u64, RegisteredCancel>>,
-    controls: Mutex<HashMap<u64, Arc<dyn CancelHandle>>>,
+    streams: Mutex<HashMap<u64, LeaseEntry>>,
+    controls: Mutex<HashMap<u64, LeaseEntry>>,
 }
 
-struct RegisteredCancel {
+struct LeaseEntry {
     connection_id: u64,
-    cancel: Arc<dyn CancelHandle>,
+    cancelled: bool,
+    cancel: Option<Arc<dyn CancelHandle>>,
 }
 
+#[derive(Clone, Copy)]
 enum RegistrationKind {
-    Stream { operation_token: u64 },
+    Stream,
     Control,
 }
 
 struct RegistrationGuard {
     in_flight: Arc<InFlight>,
     kind: RegistrationKind,
+    operation_token: u64,
     connection_id: u64,
+}
+
+struct ControlOperationGuard {
+    in_flight: Arc<InFlight>,
+    operation_token: u64,
+    connection_id: u64,
+}
+
+impl Drop for ControlOperationGuard {
+    fn drop(&mut self) {
+        if let Ok(mut controls) = self.in_flight.controls.lock()
+            && controls
+                .get(&self.operation_token)
+                .is_some_and(|entry| entry.connection_id == self.connection_id)
+        {
+            controls.remove(&self.operation_token);
+        }
+    }
 }
 
 impl Drop for RegistrationGuard {
     fn drop(&mut self) {
         match self.kind {
-            RegistrationKind::Stream { operation_token } => {
+            RegistrationKind::Stream => {
                 if let Ok(mut streams) = self.in_flight.streams.lock()
                     && streams
-                        .get(&operation_token)
+                        .get(&self.operation_token)
                         .is_some_and(|entry| entry.connection_id == self.connection_id)
                 {
-                    streams.remove(&operation_token);
+                    streams.remove(&self.operation_token);
                 }
             }
             RegistrationKind::Control => {
-                if let Ok(mut controls) = self.in_flight.controls.lock() {
-                    controls.remove(&self.connection_id);
+                if let Ok(mut controls) = self.in_flight.controls.lock()
+                    && let Some(entry) = controls.get_mut(&self.operation_token)
+                    && entry.connection_id == self.connection_id
+                {
+                    entry.cancel = None;
                 }
             }
         }
@@ -110,15 +146,28 @@ pub struct ControllerTuiBackend {
 impl ControllerTuiBackend {
     pub fn discover(workspace: impl AsRef<Path>) -> Result<Self, BackendError> {
         let paths = ControllerPaths::discover().map_err(|error| {
-            BackendError::new(BackendErrorKind::ControllerUnavailable, error.to_string())
-                .with_exit_code(error.exit_code())
+            BackendError::new(
+                BackendErrorKind::ControllerUnavailable,
+                "Controller paths are unavailable",
+            )
+            .with_exit_code(error.exit_code())
         })?;
-        Self::with_connector(
+        Self::with_connector_and_bootstrap(
             workspace.as_ref().to_path_buf(),
             Arc::new(LocalConnectionFactory {
                 endpoint: paths.endpoint().clone(),
             }),
+            Arc::new(ProductionBootstrap),
         )
+    }
+
+    fn with_connector_and_bootstrap(
+        workspace: PathBuf,
+        connector: Arc<dyn ConnectionFactory>,
+        bootstrap: Arc<dyn ControllerBootstrap>,
+    ) -> Result<Self, BackendError> {
+        bootstrap.ensure().map_err(map_distributed)?;
+        Self::with_connector(workspace, connector)
     }
 
     fn with_connector(
@@ -136,61 +185,203 @@ impl ControllerTuiBackend {
     }
 
     fn open_stream(&self, operation_token: u64) -> Result<OpenedConnection, BackendError> {
-        let connected = self.connector.connect().map_err(map_distributed)?;
-        let connection_id = self
-            .in_flight
-            .next_connection_id
-            .fetch_add(1, Ordering::Relaxed);
-        let cancel = Arc::clone(&connected.cancel);
-        self.in_flight.streams.lock().map_err(lock_error)?.insert(
-            operation_token,
-            RegisteredCancel {
-                connection_id,
-                cancel: Arc::clone(&cancel),
-            },
-        );
+        let connection_id = self.claim_stream(operation_token)?;
         let guard = RegistrationGuard {
             in_flight: Arc::clone(&self.in_flight),
-            kind: RegistrationKind::Stream { operation_token },
+            kind: RegistrationKind::Stream,
+            operation_token,
             connection_id,
         };
+        self.ensure_lease_active(operation_token, connection_id, RegistrationKind::Stream)?;
+        let connected = self.connector.connect().map_err(map_distributed)?;
+        let cancel = Arc::clone(&connected.cancel);
+        self.attach_cancel(
+            operation_token,
+            connection_id,
+            &cancel,
+            RegistrationKind::Stream,
+        )?;
         let wire = authenticate(connected.io).map_err(|error| map_with_cancel(error, &*cancel))?;
         Ok((wire, cancel, guard))
     }
 
-    fn open_control(&self) -> Result<OpenedConnection, BackendError> {
-        let connected = self.connector.connect().map_err(map_distributed)?;
-        let connection_id = self
-            .in_flight
-            .next_connection_id
-            .fetch_add(1, Ordering::Relaxed);
-        let cancel = Arc::clone(&connected.cancel);
-        self.in_flight
-            .controls
-            .lock()
-            .map_err(lock_error)?
-            .insert(connection_id, Arc::clone(&cancel));
+    fn open_control(
+        &self,
+        operation_token: u64,
+        connection_id: u64,
+    ) -> Result<OpenedConnection, BackendError> {
         let guard = RegistrationGuard {
             in_flight: Arc::clone(&self.in_flight),
             kind: RegistrationKind::Control,
+            operation_token,
             connection_id,
         };
+        self.ensure_lease_active(operation_token, connection_id, RegistrationKind::Control)?;
+        let connected = self.connector.connect().map_err(map_distributed)?;
+        let cancel = Arc::clone(&connected.cancel);
+        self.attach_cancel(
+            operation_token,
+            connection_id,
+            &cancel,
+            RegistrationKind::Control,
+        )?;
         let wire = authenticate(connected.io).map_err(|error| map_with_cancel(error, &*cancel))?;
         Ok((wire, cancel, guard))
     }
 
     fn control<T>(
         &self,
+        operation_token: u64,
+        connection_id: u64,
         operation: impl FnOnce(&mut TuiWire) -> Result<T, DistributedError>,
     ) -> Result<T, BackendError> {
-        let (mut wire, cancel, _guard) = self.open_control()?;
+        let (mut wire, cancel, _guard) = self.open_control(operation_token, connection_id)?;
         operation(&mut wire).map_err(|error| map_with_cancel(error, &*cancel))
     }
 
-    fn detect(&self, runtime: &str) -> Result<Value, BackendError> {
-        let response = self.control(|wire| wire.runtime_detect(Some(runtime)))?;
+    fn detect(
+        &self,
+        operation_token: u64,
+        connection_id: u64,
+        runtime: &str,
+    ) -> Result<Value, BackendError> {
+        let response = self.control(operation_token, connection_id, |wire| {
+            wire.runtime_detect(Some(runtime))
+        })?;
         require_response(response, "runtime.detect")
     }
+
+    fn new_connection_id(&self) -> u64 {
+        self.in_flight
+            .next_connection_id
+            .fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn begin_lease(&self, operation_token: u64, stream: bool) -> Result<(), BackendError> {
+        let connection_id = self.new_connection_id();
+        let mut leases = if stream {
+            self.in_flight.streams.lock().map_err(lock_error)?
+        } else {
+            self.in_flight.controls.lock().map_err(lock_error)?
+        };
+        if leases.contains_key(&operation_token) {
+            return Err(BackendError::new(
+                BackendErrorKind::Operation,
+                "operation token is already active",
+            ));
+        }
+        leases.insert(
+            operation_token,
+            LeaseEntry {
+                connection_id,
+                cancelled: false,
+                cancel: None,
+            },
+        );
+        Ok(())
+    }
+
+    fn claim_stream(&self, operation_token: u64) -> Result<u64, BackendError> {
+        claim_lease(&self.in_flight, &self.in_flight.streams, operation_token)
+    }
+
+    fn claim_control(&self, operation_token: u64) -> Result<u64, BackendError> {
+        claim_lease(&self.in_flight, &self.in_flight.controls, operation_token)
+    }
+
+    fn control_operation(
+        &self,
+        operation_token: u64,
+    ) -> Result<ControlOperationGuard, BackendError> {
+        let connection_id = self.claim_control(operation_token)?;
+        Ok(ControlOperationGuard {
+            in_flight: Arc::clone(&self.in_flight),
+            operation_token,
+            connection_id,
+        })
+    }
+
+    fn attach_cancel(
+        &self,
+        operation_token: u64,
+        connection_id: u64,
+        cancel: &Arc<dyn CancelHandle>,
+        kind: RegistrationKind,
+    ) -> Result<(), BackendError> {
+        let mut leases = match kind {
+            RegistrationKind::Stream => self.in_flight.streams.lock().map_err(lock_error)?,
+            RegistrationKind::Control => self.in_flight.controls.lock().map_err(lock_error)?,
+        };
+        let entry = leases
+            .get_mut(&operation_token)
+            .filter(|entry| entry.connection_id == connection_id)
+            .ok_or_else(cancelled_error)?;
+        if entry.cancelled {
+            cancel.cancel();
+            return Err(cancelled_error());
+        }
+        entry.cancel = Some(Arc::clone(cancel));
+        Ok(())
+    }
+
+    fn ensure_lease_active(
+        &self,
+        operation_token: u64,
+        connection_id: u64,
+        kind: RegistrationKind,
+    ) -> Result<(), BackendError> {
+        let leases = match kind {
+            RegistrationKind::Stream => self.in_flight.streams.lock().map_err(lock_error)?,
+            RegistrationKind::Control => self.in_flight.controls.lock().map_err(lock_error)?,
+        };
+        match leases.get(&operation_token) {
+            Some(entry) if entry.connection_id == connection_id && !entry.cancelled => Ok(()),
+            _ => Err(cancelled_error()),
+        }
+    }
+}
+
+fn claim_lease(
+    in_flight: &InFlight,
+    leases: &Mutex<HashMap<u64, LeaseEntry>>,
+    operation_token: u64,
+) -> Result<u64, BackendError> {
+    let mut leases = leases.lock().map_err(lock_error)?;
+    let connection_id = match leases.get(&operation_token) {
+        Some(entry) if entry.cancelled => {
+            leases.remove(&operation_token);
+            return Err(cancelled_error());
+        }
+        Some(entry) => entry.connection_id,
+        None => {
+            let connection_id = in_flight.next_connection_id.fetch_add(1, Ordering::Relaxed);
+            leases.insert(
+                operation_token,
+                LeaseEntry {
+                    connection_id,
+                    cancelled: false,
+                    cancel: None,
+                },
+            );
+            connection_id
+        }
+    };
+    Ok(connection_id)
+}
+
+fn cancelled_error() -> BackendError {
+    BackendError::new(
+        BackendErrorKind::Cancelled,
+        "local Controller operation was detached",
+    )
+    .with_exit_code(StableExitCode::Cancelled)
+}
+
+fn is_attachment_scoped(kind: RuntimeEventKind) -> bool {
+    matches!(
+        kind,
+        RuntimeEventKind::AttachmentStarted | RuntimeEventKind::AttachmentEnded
+    )
 }
 
 impl Backend for ControllerTuiBackend {
@@ -198,18 +389,42 @@ impl Backend for ControllerTuiBackend {
         Ok(self.workspace.clone())
     }
 
-    fn runtime_list(&self) -> Result<RuntimeList, BackendError> {
-        let response = self.control(ControllerWire::runtime_list)?;
+    fn begin_stream(&self, operation_token: u64) -> Result<(), BackendError> {
+        self.begin_lease(operation_token, true)
+    }
+
+    fn begin_control(&self, operation_token: u64) -> Result<(), BackendError> {
+        self.begin_lease(operation_token, false)
+    }
+
+    fn runtime_list(&self, operation_token: u64) -> Result<RuntimeList, BackendError> {
+        let operation = self.control_operation(operation_token)?;
+        let connection_id = operation.connection_id;
+        let response =
+            self.control(operation_token, connection_id, ControllerWire::runtime_list)?;
         let payload = require_response(response, "runtime.list")?;
         let listed = map_runtime_list(&payload)?;
         let mut runtimes = Vec::with_capacity(listed.runtimes.len());
         for candidate in listed.runtimes {
-            let detected = map_runtime_status(&self.detect(&candidate.id)?, Some(&candidate.id))?;
-            let mut status =
-                RuntimeStatus::new(detected.id, candidate.display_name, detected.available);
-            status.capability_summary =
-                detected.capability_summary.or(candidate.capability_summary);
-            runtimes.push(status);
+            match self
+                .detect(operation_token, connection_id, &candidate.id)
+                .and_then(|value| map_runtime_status(&value, Some(&candidate.id)))
+            {
+                Ok(detected) => {
+                    let mut status =
+                        RuntimeStatus::new(detected.id, candidate.display_name, detected.available);
+                    status.capability_summary =
+                        detected.capability_summary.or(candidate.capability_summary);
+                    runtimes.push(status);
+                }
+                Err(error) if error.kind() == BackendErrorKind::Cancelled => return Err(error),
+                Err(_) => {
+                    runtimes.push(
+                        RuntimeStatus::new(candidate.id, candidate.display_name, false)
+                            .with_capability_summary("detection unavailable"),
+                    );
+                }
+            }
         }
         Ok(RuntimeList::new(listed.active_runtime, runtimes))
     }
@@ -233,26 +448,31 @@ impl Backend for ControllerTuiBackend {
             }
             let event = RuntimeEventEnvelope::from_value(message.payload().clone())
                 .map_err(|_| protocol_error("controller returned a malformed runtime event"))?;
-            if event.event_kind() == RuntimeEventKind::TurnStarted {
-                let turn_id = event
-                    .turn_id()
-                    .ok_or_else(|| protocol_error("turn.started has no turn id"))?;
-                if active_turn.replace(turn_id.to_owned()).is_some() {
+            match (active_turn.as_deref(), event.turn_id()) {
+                (None, Some(turn_id)) if event.event_kind() == RuntimeEventKind::TurnStarted => {
+                    active_turn = Some(turn_id.to_owned());
+                }
+                (None, None) if is_attachment_scoped(event.event_kind()) => {}
+                (Some(expected), Some(actual)) if expected == actual => {
+                    if event.event_kind() == RuntimeEventKind::TurnStarted {
+                        return Err(protocol_error(
+                            "controller started another turn on the same stream",
+                        ));
+                    }
+                }
+                (Some(_), None) if is_attachment_scoped(event.event_kind()) => {}
+                (None, _) => {
                     return Err(protocol_error(
-                        "controller started another turn on the same stream",
+                        "controller returned a turn event before turn.started",
+                    ));
+                }
+                (Some(_), _) => {
+                    return Err(protocol_error(
+                        "controller returned an event for another turn",
                     ));
                 }
             }
             let terminal = event.event_kind() == RuntimeEventKind::TurnEnded;
-            if terminal
-                && active_turn
-                    .as_deref()
-                    .is_none_or(|turn_id| event.turn_id().is_none_or(|ended| ended != turn_id))
-            {
-                return Err(protocol_error(
-                    "controller returned turn.ended for another turn",
-                ));
-            }
             if let Err(error) = emit(event) {
                 cancel.cancel();
                 return Err(error);
@@ -267,13 +487,17 @@ impl Backend for ControllerTuiBackend {
     }
 
     fn detach_stream(&self, operation_token: u64) -> Result<(), BackendError> {
-        let cancel = self
-            .in_flight
-            .streams
-            .lock()
-            .map_err(lock_error)?
-            .get(&operation_token)
-            .map(|entry| Arc::clone(&entry.cancel));
+        let mut streams = self.in_flight.streams.lock().map_err(lock_error)?;
+        let entry = streams
+            .entry(operation_token)
+            .or_insert_with(|| LeaseEntry {
+                connection_id: self.new_connection_id(),
+                cancelled: true,
+                cancel: None,
+            });
+        entry.cancelled = true;
+        let cancel = entry.cancel.clone();
+        drop(streams);
         if let Some(cancel) = cancel {
             cancel.cancel();
         }
@@ -281,65 +505,100 @@ impl Backend for ControllerTuiBackend {
     }
 
     fn detach_controls(&self) -> Result<(), BackendError> {
-        let cancellations = self
-            .in_flight
-            .controls
-            .lock()
-            .map_err(lock_error)?
-            .values()
-            .cloned()
+        let mut controls = self.in_flight.controls.lock().map_err(lock_error)?;
+        let cancellations = controls
+            .values_mut()
+            .filter_map(|entry| {
+                entry.cancelled = true;
+                entry.cancel.clone()
+            })
             .collect::<Vec<_>>();
+        drop(controls);
         for cancel in cancellations {
             cancel.cancel();
         }
         Ok(())
     }
 
-    fn resolve_approval(&self, approval_id: String, accepted: bool) -> Result<(), BackendError> {
-        self.control(|wire| wire.resolve_approval(&approval_id, accepted))
-            .and_then(|message| require_response(message, "approval.resolve"))?;
+    fn resolve_approval(
+        &self,
+        operation_token: u64,
+        approval_id: String,
+        accepted: bool,
+    ) -> Result<(), BackendError> {
+        let operation = self.control_operation(operation_token)?;
+        self.control(operation_token, operation.connection_id, |wire| {
+            wire.resolve_approval(&approval_id, accepted)
+        })
+        .and_then(|message| require_response(message, "approval.resolve"))?;
         Ok(())
     }
 
-    fn resolve_input(&self, input_id: String, value: String) -> Result<(), BackendError> {
-        self.control(|wire| wire.resolve_input(&input_id, &value))
-            .and_then(|message| require_response(message, "input.resolve"))?;
+    fn resolve_input(
+        &self,
+        operation_token: u64,
+        input_id: String,
+        value: String,
+    ) -> Result<(), BackendError> {
+        let operation = self.control_operation(operation_token)?;
+        self.control(operation_token, operation.connection_id, |wire| {
+            wire.resolve_input(&input_id, &value)
+        })
+        .and_then(|message| require_response(message, "input.resolve"))?;
         Ok(())
     }
 
-    fn interrupt(&self, turn_id: String) -> Result<(), BackendError> {
-        self.control(|wire| wire.interrupt_turn(&turn_id))
-            .and_then(|message| require_response(message, "turn.interrupt"))?;
+    fn interrupt(&self, operation_token: u64, turn_id: String) -> Result<(), BackendError> {
+        let operation = self.control_operation(operation_token)?;
+        self.control(operation_token, operation.connection_id, |wire| {
+            wire.interrupt_turn(&turn_id)
+        })
+        .and_then(|message| require_response(message, "turn.interrupt"))?;
         Ok(())
     }
 
-    fn switch_runtime(&self, runtime: String) -> Result<RuntimeStatus, BackendError> {
-        let initial = self.detect(&runtime)?;
+    fn switch_runtime(
+        &self,
+        operation_token: u64,
+        runtime: String,
+    ) -> Result<RuntimeStatus, BackendError> {
+        let operation = self.control_operation(operation_token)?;
+        let connection_id = operation.connection_id;
+        let initial = self.detect(operation_token, connection_id, &runtime)?;
         let initial_status = map_runtime_status(&initial, Some(&runtime))?;
         if !initial_status.available {
             return Err(map_status_error(&initial));
         }
 
         let prepared = self
-            .control(|wire| wire.runtime_switch_prepare(&runtime))
+            .control(operation_token, connection_id, |wire| {
+                wire.runtime_switch_prepare(&runtime)
+            })
             .and_then(|message| require_response(message, "runtime.switch.prepare"))?;
         validate_prepare(&prepared, &runtime)?;
         let token = prepared["switch_token"].as_str().unwrap().to_owned();
         let committed = self
-            .control(|wire| wire.runtime_switch_commit(&runtime, &token))
+            .control(operation_token, connection_id, |wire| {
+                wire.runtime_switch_commit(&runtime, &token)
+            })
             .and_then(|message| require_response(message, "runtime.switch.commit"))?;
-        if committed.get("runtime").and_then(Value::as_str) != Some(runtime.as_str())
+        if committed.get("status").and_then(Value::as_str) != Some("ok")
+            || committed.get("runtime").and_then(Value::as_str) != Some(runtime.as_str())
             || committed.get("switch_token").and_then(Value::as_str) != Some(token.as_str())
         {
             return Err(protocol_error(
                 "runtime switch commit response does not match prepare",
             ));
         }
-        let final_status = map_runtime_status(&self.detect(&runtime)?, Some(&runtime))?;
+        let final_value = self.detect(operation_token, connection_id, &runtime)?;
+        let final_status = map_runtime_status(&final_value, Some(&runtime))?;
         if final_status.id != runtime {
             return Err(protocol_error(
                 "runtime switch verification returned another runtime",
             ));
+        }
+        if !final_status.available {
+            return Err(map_status_error(&final_value));
         }
         Ok(final_status)
     }
@@ -518,8 +777,8 @@ fn map_distributed(error: DistributedError) -> BackendError {
         | StableExitCode::RuntimeFailed
         | StableExitCode::ResourceExhausted => BackendErrorKind::Operation,
     };
-    let raw = error.to_string();
-    BackendError::new(kind, sanitize_message(raw)).with_exit_code(code)
+    let message = safe_remote_message(kind);
+    BackendError::new(kind, message).with_exit_code(code)
 }
 
 fn map_status_error(value: &Value) -> BackendError {
@@ -540,22 +799,17 @@ fn map_status_error(value: &Value) -> BackendError {
         }
         _ => BackendErrorKind::Operation,
     };
-    let message = value
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("runtime is not available");
-    BackendError::new(kind, sanitize_message(message.to_owned())).with_exit_code(code)
+    BackendError::new(kind, safe_remote_message(kind)).with_exit_code(code)
 }
 
-fn sanitize_message(raw: String) -> String {
-    let lower = raw.to_ascii_lowercase();
-    if ["token", "secret", "password", "bearer"]
-        .iter()
-        .any(|needle| lower.contains(needle))
-    {
-        "controller request failed".to_owned()
-    } else {
-        raw
+fn safe_remote_message(kind: BackendErrorKind) -> &'static str {
+    match kind {
+        BackendErrorKind::ControllerUnavailable => "Controller is unavailable",
+        BackendErrorKind::AuthBlocked => "Runtime authentication is required",
+        BackendErrorKind::Cancelled => "Operation was cancelled",
+        BackendErrorKind::Protocol => "Controller protocol error",
+        BackendErrorKind::Operation => "Runtime operation failed",
+        BackendErrorKind::WorkerPanic | BackendErrorKind::Timeout => "Backend operation failed",
     }
 }
 
@@ -644,7 +898,7 @@ fn connect_local(endpoint: &LocalEndpoint) -> Result<Connected, DistributedError
                 if cancelled != 0 || std::time::Instant::now() >= deadline {
                     break;
                 }
-                std::thread::yield_now();
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
         fn is_cancelled(&self) -> bool {
@@ -763,6 +1017,7 @@ mod tests {
     enum FakePlan {
         Frames(Vec<IpcMessage>),
         Blocked(Arc<(Mutex<bool>, Condvar)>),
+        ConnectError(StableExitCode, &'static str),
     }
 
     impl FakeConnector {
@@ -781,6 +1036,18 @@ mod tests {
                 .flat_map(|requests| requests.iter())
                 .filter_map(|request| request.method().map(str::to_owned))
                 .collect()
+        }
+
+        fn wait_until_connection_count(&self, expected: usize) {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while self.requests.lock().unwrap().len() < expected {
+                assert!(Instant::now() < deadline, "fake connection was not opened");
+                std::thread::yield_now();
+            }
+        }
+
+        fn wait_until_connected(&self) {
+            self.wait_until_connection_count(1);
         }
     }
 
@@ -840,6 +1107,9 @@ mod tests {
     impl ConnectionFactory for FakeConnector {
         fn connect(&self) -> Result<Connected, DistributedError> {
             let plan = self.plans.lock().unwrap().pop_front().unwrap();
+            if let FakePlan::ConnectError(code, message) = plan {
+                return Err(DistributedError::new(code, message));
+            }
             let output = Arc::new(Mutex::new(Vec::new()));
             self.requests.lock().unwrap().push(Vec::new());
             let input = match &plan {
@@ -854,6 +1124,7 @@ mod tests {
                     FakeInput::Frames(Cursor::new(bytes))
                 }
                 FakePlan::Blocked(state) => FakeInput::Blocked(Arc::clone(state)),
+                FakePlan::ConnectError(..) => unreachable!(),
             };
             Ok(Connected {
                 io: Box::new(RecordingIo {
@@ -863,6 +1134,7 @@ mod tests {
                 cancel: Arc::new(FakeCancel(match plan {
                     FakePlan::Frames(_) => None,
                     FakePlan::Blocked(state) => Some(state),
+                    FakePlan::ConnectError(..) => unreachable!(),
                 })),
             })
         }
@@ -924,7 +1196,9 @@ mod tests {
         payload: serde_json::Value,
     ) -> IpcMessage {
         let (stream_id, rate_class) = match kind {
-            "turn.started" | "approval.requested" | "turn.ended" => ("control", "R0"),
+            "turn.started" | "approval.requested" | "input.requested" | "turn.ended" => {
+                ("control", "R0")
+            }
             _ => ("main", "R1"),
         };
         let event = RuntimeEventEnvelope::from_value(json!({
@@ -1030,6 +1304,45 @@ mod tests {
     }
 
     #[test]
+    fn stream_rejects_every_turn_scoped_event_for_another_turn_before_emit() {
+        let cases = [
+            (
+                "text.delta",
+                json!({"role":"assistant","content":"x","merged_count":1}),
+            ),
+            (
+                "tool.call.started",
+                json!({"tool_id":"t","name":"shell","args_json":{}}),
+            ),
+            (
+                "approval.requested",
+                json!({"approval_id":"a","tool":"shell","summary":"run","options":["allow","deny"]}),
+            ),
+            ("input.requested", json!({"input_id":"i","prompt":"value?"})),
+        ];
+        for (kind, payload) in cases {
+            let subject = backend(FakeConnector::with([FakePlan::Frames(vec![
+                event(1, "turn.started", json!({"user_input_ref":"prompt"})),
+                event_for_turn(2, "turn-b", kind, payload),
+            ])]));
+            let emitted = Arc::new(Mutex::new(Vec::new()));
+            let seen = Arc::clone(&emitted);
+            let error = subject
+                .stream_turn(
+                    8,
+                    "hello".into(),
+                    Box::new(move |event| {
+                        seen.lock().unwrap().push(event.kind().to_owned());
+                        Ok(())
+                    }),
+                )
+                .unwrap_err();
+            assert_eq!(error.kind(), BackendErrorKind::Protocol);
+            assert_eq!(*emitted.lock().unwrap(), ["turn.started"]);
+        }
+    }
+
+    #[test]
     fn every_control_uses_an_independent_authenticated_connection() {
         let connector = FakeConnector::with([
             FakePlan::Frames(vec![response(1, json!({"status":"ok"}))]),
@@ -1037,11 +1350,13 @@ mod tests {
             FakePlan::Frames(vec![response(1, json!({"status":"ok"}))]),
         ]);
         let subject = backend(connector.clone());
-        subject.resolve_approval("approval-a".into(), true).unwrap();
         subject
-            .resolve_input("input-a".into(), "answer".into())
+            .resolve_approval(1, "approval-a".into(), true)
             .unwrap();
-        subject.interrupt("turn-a".into()).unwrap();
+        subject
+            .resolve_input(2, "input-a".into(), "answer".into())
+            .unwrap();
+        subject.interrupt(3, "turn-a".into()).unwrap();
         assert_eq!(
             connector.methods(),
             ["approval.resolve", "input.resolve", "turn.interrupt"]
@@ -1077,7 +1392,7 @@ mod tests {
             )]),
         ]);
         let subject = backend(connector.clone());
-        let status = subject.switch_runtime("codex".into()).unwrap();
+        let status = subject.switch_runtime(4, "codex".into()).unwrap();
         assert_eq!(status.id, "codex");
         assert!(status.available);
         assert_eq!(
@@ -1100,18 +1415,15 @@ mod tests {
     #[test]
     fn detach_stream_wakes_a_blocked_read_quickly_and_is_idempotent() {
         let blocked = Arc::new((Mutex::new(false), Condvar::new()));
-        let subject = Arc::new(backend(FakeConnector::with([FakePlan::Blocked(
-            Arc::clone(&blocked),
-        )])));
+        let connector = FakeConnector::with([FakePlan::Blocked(Arc::clone(&blocked))]);
+        let subject = Arc::new(backend(connector.clone()));
         let worker = {
             let subject = Arc::clone(&subject);
             std::thread::spawn(move || {
                 subject.stream_turn(91, "hello".into(), Box::new(|_| Ok(())))
             })
         };
-        while subject.in_flight.streams.lock().unwrap().is_empty() {
-            std::thread::yield_now();
-        }
+        connector.wait_until_connected();
         let started = Instant::now();
         subject.detach_stream(91).unwrap();
         subject.detach_stream(91).unwrap();
@@ -1129,20 +1441,18 @@ mod tests {
             FakePlan::Blocked(Arc::clone(&blocked)),
             FakePlan::Frames(vec![response(1, json!({"status":"ok"}))]),
         ]);
-        let subject = Arc::new(backend(connector));
+        let subject = Arc::new(backend(connector.clone()));
         let worker = {
             let subject = Arc::clone(&subject);
-            std::thread::spawn(move || subject.resolve_input("input-a".into(), "answer".into()))
+            std::thread::spawn(move || subject.resolve_input(5, "input-a".into(), "answer".into()))
         };
-        while subject.in_flight.controls.lock().unwrap().is_empty() {
-            std::thread::yield_now();
-        }
+        connector.wait_until_connected();
         subject.detach_controls().unwrap();
         assert_eq!(
             worker.join().unwrap().unwrap_err().kind(),
             BackendErrorKind::Cancelled
         );
-        subject.interrupt("turn-b".into()).unwrap();
+        subject.interrupt(6, "turn-b".into()).unwrap();
     }
 
     #[test]
@@ -1164,7 +1474,7 @@ mod tests {
                 }),
             )]),
         ]));
-        let list = subject.runtime_list().unwrap();
+        let list = subject.runtime_list(7).unwrap();
         assert_eq!(list.active_runtime.as_deref(), Some("custom-agent"));
         assert_eq!(list.runtimes[0].id, "custom-agent");
         assert_eq!(list.runtimes[0].display_name, "Custom Agent");
@@ -1193,28 +1503,95 @@ mod tests {
             BlockedControl::RuntimeSwitch,
         ] {
             let blocked = Arc::new((Mutex::new(false), Condvar::new()));
-            let subject = Arc::new(backend(FakeConnector::with([FakePlan::Blocked(blocked)])));
+            let connector = FakeConnector::with([FakePlan::Blocked(blocked)]);
+            let subject = Arc::new(backend(connector.clone()));
             let worker = {
                 let subject = Arc::clone(&subject);
                 std::thread::spawn(move || match kind {
-                    BlockedControl::Approval => subject.resolve_approval("a".into(), true),
-                    BlockedControl::Input => subject.resolve_input("i".into(), "v".into()),
-                    BlockedControl::Interrupt => subject.interrupt("t".into()),
-                    BlockedControl::RuntimeList => subject.runtime_list().map(|_| ()),
+                    BlockedControl::Approval => subject.resolve_approval(8, "a".into(), true),
+                    BlockedControl::Input => subject.resolve_input(8, "i".into(), "v".into()),
+                    BlockedControl::Interrupt => subject.interrupt(8, "t".into()),
+                    BlockedControl::RuntimeList => subject.runtime_list(8).map(|_| ()),
                     BlockedControl::RuntimeSwitch => {
-                        subject.switch_runtime("codex".into()).map(|_| ())
+                        subject.switch_runtime(8, "codex".into()).map(|_| ())
                     }
                 })
             };
-            while subject.in_flight.controls.lock().unwrap().is_empty() {
-                std::thread::yield_now();
-            }
+            connector.wait_until_connected();
             subject.detach_controls().unwrap();
             assert_eq!(
                 worker.join().unwrap().unwrap_err().kind(),
                 BackendErrorKind::Cancelled
             );
         }
+    }
+
+    #[test]
+    fn detach_before_worker_start_cancels_announced_stream_without_connecting() {
+        let subject = Arc::new(backend(FakeConnector::default()));
+        subject.begin_stream(70).unwrap();
+        subject.detach_stream(70).unwrap();
+        let worker = {
+            let subject = Arc::clone(&subject);
+            std::thread::spawn(move || {
+                subject.stream_turn(70, "hello".into(), Box::new(|_| Ok(())))
+            })
+        };
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().kind(),
+            BackendErrorKind::Cancelled
+        );
+    }
+
+    #[test]
+    fn detach_before_worker_start_cancels_all_announced_control_kinds_without_connecting() {
+        for (index, kind) in [
+            BlockedControl::Approval,
+            BlockedControl::Input,
+            BlockedControl::Interrupt,
+            BlockedControl::RuntimeList,
+            BlockedControl::RuntimeSwitch,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let token = 80 + index as u64;
+            let subject = Arc::new(backend(FakeConnector::default()));
+            subject.begin_control(token).unwrap();
+            subject.detach_controls().unwrap();
+            let worker = {
+                let subject = Arc::clone(&subject);
+                std::thread::spawn(move || match kind {
+                    BlockedControl::Approval => subject.resolve_approval(token, "a".into(), true),
+                    BlockedControl::Input => subject.resolve_input(token, "i".into(), "v".into()),
+                    BlockedControl::Interrupt => subject.interrupt(token, "t".into()),
+                    BlockedControl::RuntimeList => subject.runtime_list(token).map(|_| ()),
+                    BlockedControl::RuntimeSwitch => {
+                        subject.switch_runtime(token, "codex".into()).map(|_| ())
+                    }
+                })
+            };
+            assert_eq!(
+                worker.join().unwrap().unwrap_err().kind(),
+                BackendErrorKind::Cancelled
+            );
+        }
+    }
+
+    #[test]
+    fn detached_old_control_token_does_not_cancel_a_new_token() {
+        let subject = backend(FakeConnector::with([FakePlan::Frames(vec![response(
+            1,
+            json!({"status":"ok"}),
+        )])]));
+        subject.begin_control(90).unwrap();
+        subject.detach_controls().unwrap();
+        assert_eq!(
+            subject.interrupt(90, "old".into()).unwrap_err().kind(),
+            BackendErrorKind::Cancelled
+        );
+        subject.begin_control(91).unwrap();
+        subject.interrupt(91, "new".into()).unwrap();
     }
 
     #[test]
@@ -1248,14 +1625,14 @@ mod tests {
         ));
         assert_eq!(auth.kind(), BackendErrorKind::AuthBlocked);
         assert_eq!(auth.exit_code(), Some(StableExitCode::BlockedAuth));
-        assert_eq!(auth.safe_message(), "sign in required");
+        assert_eq!(auth.safe_message(), "Runtime authentication is required");
 
         let secret = map_distributed(DistributedError::new(
             StableExitCode::RuntimeFailed,
             "invalid bearer secret-token",
         ));
         assert_eq!(secret.kind(), BackendErrorKind::Operation);
-        assert_eq!(secret.safe_message(), "controller request failed");
+        assert_eq!(secret.safe_message(), "Runtime operation failed");
     }
 
     #[test]
@@ -1270,10 +1647,10 @@ mod tests {
                 "message":"sign in required"
             }),
         )])]));
-        let error = subject.switch_runtime("codex".into()).unwrap_err();
+        let error = subject.switch_runtime(9, "codex".into()).unwrap_err();
         assert_eq!(error.kind(), BackendErrorKind::AuthBlocked);
         assert_eq!(error.exit_code(), Some(StableExitCode::BlockedAuth));
-        assert_eq!(error.safe_message(), "sign in required");
+        assert_eq!(error.safe_message(), "Runtime authentication is required");
     }
 
     #[test]
@@ -1296,12 +1673,207 @@ mod tests {
             )]),
         ]);
         let subject = backend(connector.clone());
-        let error = subject.switch_runtime("codex".into()).unwrap_err();
+        let error = subject.switch_runtime(10, "codex".into()).unwrap_err();
         assert_eq!(error.kind(), BackendErrorKind::Protocol);
         assert_eq!(
             connector.methods(),
             ["runtime.detect", "runtime.switch.prepare"]
         );
+    }
+
+    #[test]
+    fn runtime_switch_requires_successful_commit_and_available_final_detect() {
+        let prepare = || {
+            response(
+                1,
+                json!({
+                    "runtime":"codex","status":"ready","switch_token":"switch-1","requires_compression":false,
+                    "context":{"strategy":"none","reason":"clean","portable_checkpoint":false},
+                    "tools":{"policy":"portable_or_replay_only","active_tool_calls":0,"blocking_missing_tools":[]}
+                }),
+            )
+        };
+        let detect = || response(1, json!({"runtime":"codex","status":"available"}));
+
+        let failed_commit = backend(FakeConnector::with([
+            FakePlan::Frames(vec![detect()]),
+            FakePlan::Frames(vec![prepare()]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"runtime":"codex","status":"failed","switch_token":"switch-1"}),
+            )]),
+        ]));
+        assert_eq!(
+            failed_commit
+                .switch_runtime(11, "codex".into())
+                .unwrap_err()
+                .kind(),
+            BackendErrorKind::Protocol
+        );
+
+        let unavailable_final = backend(FakeConnector::with([
+            FakePlan::Frames(vec![detect()]),
+            FakePlan::Frames(vec![prepare()]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"runtime":"codex","status":"ok","switch_token":"switch-1"}),
+            )]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"runtime":"codex","status":"blocked_auth","exit_code":4}),
+            )]),
+        ]));
+        assert_eq!(
+            unavailable_final
+                .switch_runtime(12, "codex".into())
+                .unwrap_err()
+                .kind(),
+            BackendErrorKind::AuthBlocked
+        );
+    }
+
+    #[test]
+    fn runtime_list_keeps_good_candidates_when_one_detect_fails() {
+        let subject = backend(FakeConnector::with([
+            FakePlan::Frames(vec![response(
+                1,
+                json!({
+                    "current":"good",
+                    "runtimes":[
+                        {"id":"bad","label":"Bad","available":true},
+                        {"id":"good","label":"Good","available":true}
+                    ]
+                }),
+            )]),
+            FakePlan::ConnectError(
+                StableExitCode::ControllerUnavailable,
+                "credential=private-value",
+            ),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"runtime":"good","status":"available","capabilities":{"interactive_chat":true}}),
+            )]),
+        ]));
+        let list = subject.runtime_list(13).unwrap();
+        assert_eq!(list.runtimes.len(), 2);
+        assert!(!list.runtimes[0].available);
+        assert_eq!(
+            list.runtimes[0].capability_summary.as_deref(),
+            Some("detection unavailable")
+        );
+        assert!(list.runtimes[1].available);
+    }
+
+    #[test]
+    fn runtime_list_does_not_downgrade_local_detach_to_candidate_unavailable() {
+        let blocked = Arc::new((Mutex::new(false), Condvar::new()));
+        let connector = FakeConnector::with([
+            FakePlan::Frames(vec![response(
+                1,
+                json!({
+                    "current":"codex",
+                    "runtimes":[{"id":"codex","label":"Codex","available":true}]
+                }),
+            )]),
+            FakePlan::Blocked(blocked),
+        ]);
+        let subject = Arc::new(backend(connector.clone()));
+        let worker = {
+            let subject = Arc::clone(&subject);
+            std::thread::spawn(move || subject.runtime_list(74))
+        };
+        connector.wait_until_connection_count(2);
+        subject.detach_controls().unwrap();
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().kind(),
+            BackendErrorKind::Cancelled
+        );
+    }
+
+    #[test]
+    fn remote_errors_never_expose_untrusted_message_content() {
+        for message in [
+            "api_key=abc",
+            "Authorization: Bearer abc",
+            "cookie=session",
+            "credential=abc",
+            "private_key=abc",
+            "session token abc",
+            "value-without-a-label-9f82ac",
+        ] {
+            let error = map_distributed(DistributedError::new(
+                StableExitCode::RuntimeFailed,
+                message,
+            ));
+            assert_eq!(error.safe_message(), "Runtime operation failed");
+            assert!(!error.safe_message().contains("abc"));
+            assert!(!error.safe_message().contains("9f82ac"));
+        }
+        assert_eq!(
+            protocol_error("local tokenizer state is invalid").safe_message(),
+            "local tokenizer state is invalid"
+        );
+    }
+
+    #[derive(Default)]
+    struct FakeBootstrap(AtomicU64);
+
+    impl ControllerBootstrap for FakeBootstrap {
+        fn ensure(&self) -> Result<(), DistributedError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn construction_bootstraps_controller_before_exposing_backend() {
+        let bootstrap = Arc::new(FakeBootstrap::default());
+        let subject = ControllerTuiBackend::with_connector_and_bootstrap(
+            std::env::current_dir().unwrap(),
+            Arc::new(FakeConnector::default()),
+            bootstrap.clone(),
+        )
+        .unwrap();
+        assert_eq!(bootstrap.0.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            subject.workspace().unwrap(),
+            std::env::current_dir().unwrap().canonicalize().unwrap()
+        );
+    }
+
+    struct FailingBootstrap(StableExitCode);
+
+    impl ControllerBootstrap for FailingBootstrap {
+        fn ensure(&self) -> Result<(), DistributedError> {
+            Err(DistributedError::new(self.0, "untrusted startup detail"))
+        }
+    }
+
+    #[test]
+    fn bootstrap_failures_keep_typed_safe_error_categories() {
+        for (code, expected_kind, expected_message) in [
+            (
+                StableExitCode::ControllerUnavailable,
+                BackendErrorKind::ControllerUnavailable,
+                "Controller is unavailable",
+            ),
+            (
+                StableExitCode::BlockedAuth,
+                BackendErrorKind::AuthBlocked,
+                "Runtime authentication is required",
+            ),
+        ] {
+            let error = ControllerTuiBackend::with_connector_and_bootstrap(
+                std::env::current_dir().unwrap(),
+                Arc::new(FakeConnector::default()),
+                Arc::new(FailingBootstrap(code)),
+            )
+            .err()
+            .unwrap();
+            assert_eq!(error.kind(), expected_kind);
+            assert_eq!(error.exit_code(), Some(code));
+            assert_eq!(error.safe_message(), expected_message);
+        }
     }
 
     #[cfg(windows)]
@@ -1366,7 +1938,7 @@ mod tests {
         );
         let worker = {
             let subject = Arc::clone(&subject);
-            std::thread::spawn(move || subject.runtime_list())
+            std::thread::spawn(move || subject.runtime_list(14))
         };
         connected_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         while subject.in_flight.controls.lock().unwrap().is_empty() {

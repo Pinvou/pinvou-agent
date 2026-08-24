@@ -93,7 +93,15 @@ pub type EventEmitter = Box<dyn FnMut(RuntimeEventEnvelope) -> Result<(), Backen
 /// Narrow TUI-owned boundary implemented by a Controller adapter.
 pub trait Backend: Send + Sync + 'static {
     fn workspace(&self) -> Result<PathBuf, BackendError>;
-    fn runtime_list(&self) -> Result<RuntimeList, BackendError>;
+    /// Announces a stream lease synchronously before its OS worker is spawned.
+    fn begin_stream(&self, _operation_token: u64) -> Result<(), BackendError> {
+        Ok(())
+    }
+    /// Announces a control lease synchronously before its OS worker is spawned.
+    fn begin_control(&self, _operation_token: u64) -> Result<(), BackendError> {
+        Ok(())
+    }
+    fn runtime_list(&self, operation_token: u64) -> Result<RuntimeList, BackendError>;
     /// Streams one turn. `operation_token` identifies the local subscription, not a runtime turn.
     fn stream_turn(
         &self,
@@ -112,8 +120,22 @@ pub trait Backend: Send + Sync + 'static {
     /// Implementations must be idempotent and prompt. A remote decision that was already sent is
     /// not rolled back; this only releases local request sockets/subscriptions during TUI exit.
     fn detach_controls(&self) -> Result<(), BackendError>;
-    fn resolve_approval(&self, approval_id: String, accepted: bool) -> Result<(), BackendError>;
-    fn resolve_input(&self, input_id: String, value: String) -> Result<(), BackendError>;
-    fn interrupt(&self, turn_id: String) -> Result<(), BackendError>;
-    fn switch_runtime(&self, runtime: String) -> Result<RuntimeStatus, BackendError>;
+    fn resolve_approval(
+        &self,
+        operation_token: u64,
+        approval_id: String,
+        accepted: bool,
+    ) -> Result<(), BackendError>;
+    fn resolve_input(
+        &self,
+        operation_token: u64,
+        input_id: String,
+        value: String,
+    ) -> Result<(), BackendError>;
+    fn interrupt(&self, operation_token: u64, turn_id: String) -> Result<(), BackendError>;
+    fn switch_runtime(
+        &self,
+        operation_token: u64,
+        runtime: String,
+    ) -> Result<RuntimeStatus, BackendError>;
 }

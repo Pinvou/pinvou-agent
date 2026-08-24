@@ -237,7 +237,7 @@ impl Backend for FakeBackend {
         Ok(PathBuf::from("workspace"))
     }
 
-    fn runtime_list(&self) -> Result<RuntimeList, BackendError> {
+    fn runtime_list(&self, _operation_token: u64) -> Result<RuntimeList, BackendError> {
         let call = {
             let (calls, wake) = &*self.calls;
             let mut calls = calls.lock().unwrap();
@@ -394,7 +394,12 @@ impl Backend for FakeBackend {
         Ok(())
     }
 
-    fn resolve_approval(&self, id: String, accepted: bool) -> Result<(), BackendError> {
+    fn resolve_approval(
+        &self,
+        _operation_token: u64,
+        id: String,
+        accepted: bool,
+    ) -> Result<(), BackendError> {
         self.block_control(ControlKind::Approval)?;
         let (calls, wake) = &*self.calls;
         calls.lock().unwrap().approvals.push((id, accepted));
@@ -402,7 +407,12 @@ impl Backend for FakeBackend {
         Ok(())
     }
 
-    fn resolve_input(&self, id: String, value: String) -> Result<(), BackendError> {
+    fn resolve_input(
+        &self,
+        _operation_token: u64,
+        id: String,
+        value: String,
+    ) -> Result<(), BackendError> {
         self.block_control(ControlKind::Input)?;
         let (calls, wake) = &*self.calls;
         calls.lock().unwrap().inputs.push((id, value));
@@ -410,7 +420,7 @@ impl Backend for FakeBackend {
         Ok(())
     }
 
-    fn interrupt(&self, turn_id: String) -> Result<(), BackendError> {
+    fn interrupt(&self, _operation_token: u64, turn_id: String) -> Result<(), BackendError> {
         self.calls.0.lock().unwrap().interrupts.push(turn_id);
         self.block_control(ControlKind::Interrupt)?;
         Ok(())
@@ -452,7 +462,11 @@ impl Backend for FakeBackend {
         }
     }
 
-    fn switch_runtime(&self, runtime: String) -> Result<RuntimeStatus, BackendError> {
+    fn switch_runtime(
+        &self,
+        _operation_token: u64,
+        runtime: String,
+    ) -> Result<RuntimeStatus, BackendError> {
         self.block_control(ControlKind::Switch)?;
         self.calls.0.lock().unwrap().switches.push(runtime.clone());
         Ok(RuntimeStatus::new(

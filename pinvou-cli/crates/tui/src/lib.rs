@@ -308,7 +308,7 @@ mod tests {
                 Ok(PathBuf::from("workspace"))
             }
 
-            fn runtime_list(&self) -> Result<RuntimeList, BackendError> {
+            fn runtime_list(&self, _operation_token: u64) -> Result<RuntimeList, BackendError> {
                 Ok(RuntimeList::new(
                     Some("codex".into()),
                     vec![runtime("codex")],
@@ -334,28 +334,42 @@ mod tests {
 
             fn resolve_approval(
                 &self,
+                _operation_token: u64,
                 _approval_id: String,
                 _accepted: bool,
             ) -> Result<(), BackendError> {
                 Ok(())
             }
 
-            fn resolve_input(&self, _input_id: String, _value: String) -> Result<(), BackendError> {
+            fn resolve_input(
+                &self,
+                _operation_token: u64,
+                _input_id: String,
+                _value: String,
+            ) -> Result<(), BackendError> {
                 Ok(())
             }
 
-            fn interrupt(&self, _turn_id: String) -> Result<(), BackendError> {
+            fn interrupt(
+                &self,
+                _operation_token: u64,
+                _turn_id: String,
+            ) -> Result<(), BackendError> {
                 Ok(())
             }
 
-            fn switch_runtime(&self, runtime: String) -> Result<RuntimeStatus, BackendError> {
+            fn switch_runtime(
+                &self,
+                _operation_token: u64,
+                runtime: String,
+            ) -> Result<RuntimeStatus, BackendError> {
                 Ok(RuntimeStatus::new(runtime.clone(), runtime, true))
             }
         }
 
         let backend: Box<dyn Backend> = Box::new(StubBackend);
         assert_eq!(backend.workspace().unwrap(), PathBuf::from("workspace"));
-        assert_eq!(backend.runtime_list().unwrap().runtimes.len(), 1);
+        assert_eq!(backend.runtime_list(1).unwrap().runtimes.len(), 1);
         assert!(
             backend
                 .stream_turn(1, "hello".into(), Box::new(|_| Ok(())))
