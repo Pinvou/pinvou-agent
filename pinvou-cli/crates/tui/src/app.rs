@@ -10,14 +10,11 @@ use std::{
         mpsc as std_mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use tokio::{
-    sync::{mpsc, oneshot},
-    task::JoinHandle,
-};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     action::{Action, ApprovalDecision, Effect},
@@ -108,12 +105,40 @@ pub enum AppError {
     Input(String),
     #[error("render failed: {0}")]
     Render(String),
+    #[error("{cause}; cleanup warnings: {cleanup_warnings:?}")]
+    Cleanup {
+        cause: Box<AppError>,
+        cleanup_warnings: Vec<String>,
+    },
+}
+
+impl AppError {
+    pub fn cleanup_warnings(&self) -> &[String] {
+        match self {
+            Self::Cleanup {
+                cleanup_warnings, ..
+            } => cleanup_warnings,
+            _ => &[],
+        }
+    }
+
+    fn with_cleanup(self, cleanup_warnings: Vec<String>) -> Self {
+        if cleanup_warnings.is_empty() {
+            self
+        } else {
+            Self::Cleanup {
+                cause: Box::new(self),
+                cleanup_warnings,
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct RunResult {
     pub model: Model,
     pub detached: bool,
+    pub cleanup_warnings: Vec<String>,
 }
 
 enum HighPriorityEvent {
@@ -234,8 +259,13 @@ where
             }
             Selected::High(Some(HighPriorityEvent::Input(Err(error)))) => {
                 stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
-                detach_active_stream(&backend, active_stream_token(&model), &mut runtime_receiver);
-                return Err(error);
+                let cleanup_warnings = cleanup_backend(
+                    &backend,
+                    active_stream_token(&model),
+                    &mut high_receiver,
+                    &mut runtime_receiver,
+                );
+                return Err(error.with_cleanup(cleanup_warnings));
             }
             Selected::High(Some(HighPriorityEvent::Control(action))) => update(&mut model, *action),
             Selected::High(None) => {
@@ -267,8 +297,13 @@ where
 
         if let Err(error) = renderer.draw(&model) {
             stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
-            detach_active_stream(&backend, active_stream_token(&model), &mut runtime_receiver);
-            return Err(error);
+            let cleanup_warnings = cleanup_backend(
+                &backend,
+                active_stream_token(&model),
+                &mut high_receiver,
+                &mut runtime_receiver,
+            );
+            return Err(error.with_cleanup(cleanup_warnings));
         }
         dispatch_effects(
             backend.clone(),
@@ -279,10 +314,21 @@ where
     }
 
     stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
-    if detached {
-        detach_active_stream(&backend, active_stream_token(&model), &mut runtime_receiver);
-    }
-    Ok(RunResult { model, detached })
+    let cleanup_warnings = if detached {
+        cleanup_backend(
+            &backend,
+            active_stream_token(&model),
+            &mut high_receiver,
+            &mut runtime_receiver,
+        )
+    } else {
+        Vec::new()
+    };
+    Ok(RunResult {
+        model,
+        detached,
+        cleanup_warnings,
+    })
 }
 
 async fn stop_input_worker(
@@ -298,11 +344,11 @@ async fn stop_input_worker(
 }
 
 async fn initialize<B: Backend>(backend: Arc<B>) -> Result<(PathBuf, RuntimeList), BackendError> {
-    join_backend(tokio::task::spawn_blocking(move || {
+    run_os_call(move || {
         let workspace = backend.workspace()?;
         let runtimes = backend.runtime_list()?;
         Ok((workspace, runtimes))
-    }))
+    })
     .await
 }
 
@@ -512,7 +558,7 @@ fn start_stream_worker<B: Backend>(
         }))
         .unwrap_or_else(|_| {
             Err(BackendError::new(
-                BackendErrorKind::Operation,
+                BackendErrorKind::WorkerPanic,
                 "backend stream worker panicked",
             ))
         });
@@ -528,7 +574,7 @@ fn start_control_effect<B: Backend>(
     sender: mpsc::Sender<HighPriorityEvent>,
     effect: Effect,
 ) {
-    tokio::spawn(async move {
+    thread::spawn(move || {
         let action = match effect {
             Effect::ResolveApproval {
                 turn_id,
@@ -537,10 +583,7 @@ fn start_control_effect<B: Backend>(
                 accepted,
             } => {
                 let call_id = approval_id.clone();
-                let result = join_backend(tokio::task::spawn_blocking(move || {
-                    backend.resolve_approval(call_id, accepted)
-                }))
-                .await;
+                let result = guarded_backend_call(|| backend.resolve_approval(call_id, accepted));
                 Action::ApprovalResolutionCompleted {
                     turn_id,
                     approval_id,
@@ -555,10 +598,7 @@ fn start_control_effect<B: Backend>(
                 value,
             } => {
                 let call_id = input_id.clone();
-                let result = join_backend(tokio::task::spawn_blocking(move || {
-                    backend.resolve_input(call_id, value)
-                }))
-                .await;
+                let result = guarded_backend_call(|| backend.resolve_input(call_id, value));
                 Action::InputResolutionCompleted {
                     turn_id,
                     input_id,
@@ -571,10 +611,7 @@ fn start_control_effect<B: Backend>(
                 operation_token,
             } => {
                 let call_turn = turn_id.clone();
-                let result = join_backend(tokio::task::spawn_blocking(move || {
-                    backend.interrupt(call_turn)
-                }))
-                .await;
+                let result = guarded_backend_call(|| backend.interrupt(call_turn));
                 Action::InterruptCompleted {
                     turn_id,
                     operation_token,
@@ -582,8 +619,7 @@ fn start_control_effect<B: Backend>(
                 }
             }
             Effect::LoadRuntimeList { operation_token } => {
-                let result =
-                    join_backend(tokio::task::spawn_blocking(move || backend.runtime_list())).await;
+                let result = guarded_backend_call(|| backend.runtime_list());
                 Action::RuntimeListLoaded {
                     operation_token,
                     result,
@@ -593,10 +629,7 @@ fn start_control_effect<B: Backend>(
                 runtime,
                 operation_token,
             } => {
-                let result = join_backend(tokio::task::spawn_blocking(move || {
-                    backend.switch_runtime(runtime)
-                }))
-                .await;
+                let result = guarded_backend_call(|| backend.switch_runtime(runtime));
                 Action::RuntimeSwitched {
                     operation_token,
                     result,
@@ -604,20 +637,34 @@ fn start_control_effect<B: Backend>(
             }
             Effect::StartTurn { .. } => return,
         };
-        let _ = sender
-            .send(HighPriorityEvent::Control(Box::new(action)))
-            .await;
+        let _ = sender.blocking_send(HighPriorityEvent::Control(Box::new(action)));
     });
 }
 
-async fn join_backend<T>(task: JoinHandle<Result<T, BackendError>>) -> Result<T, BackendError> {
-    match task.await {
-        Ok(result) => result,
-        Err(error) => Err(BackendError::new(
-            BackendErrorKind::Operation,
-            format!("backend task failed: {error}"),
-        )),
-    }
+fn guarded_backend_call<T>(
+    call: impl FnOnce() -> Result<T, BackendError>,
+) -> Result<T, BackendError> {
+    catch_unwind(AssertUnwindSafe(call)).unwrap_or_else(|_| {
+        Err(BackendError::new(
+            BackendErrorKind::WorkerPanic,
+            "backend worker panicked",
+        ))
+    })
+}
+
+async fn run_os_call<T: Send + 'static>(
+    call: impl FnOnce() -> Result<T, BackendError> + Send + 'static,
+) -> Result<T, BackendError> {
+    let (sender, receiver) = oneshot::channel();
+    thread::spawn(move || {
+        let _ = sender.send(guarded_backend_call(call));
+    });
+    receiver.await.unwrap_or_else(|_| {
+        Err(BackendError::new(
+            BackendErrorKind::WorkerPanic,
+            "backend worker ended without a result",
+        ))
+    })
 }
 
 fn active_stream_token(model: &Model) -> Option<OperationToken> {
@@ -630,21 +677,51 @@ fn active_stream_token(model: &Model) -> Option<OperationToken> {
     }
 }
 
-fn detach_active_stream<B: Backend>(
+fn cleanup_backend<B: Backend>(
     backend: &Arc<B>,
     operation_token: Option<OperationToken>,
+    high_receiver: &mut mpsc::Receiver<HighPriorityEvent>,
     runtime_receiver: &mut mpsc::Receiver<RuntimeStreamEvent>,
-) {
+) -> Vec<String> {
+    high_receiver.close();
     runtime_receiver.close();
-    let Some(operation_token) = operation_token else {
-        return;
-    };
+    let (completed, waiting) = std_mpsc::channel();
+    let mut pending = Vec::new();
+    if let Some(operation_token) = operation_token {
+        pending.push("detach_stream");
+        let backend = backend.clone();
+        let completed = completed.clone();
+        thread::spawn(move || {
+            let result = guarded_backend_call(|| backend.detach_stream(operation_token.as_u64()));
+            let _ = completed.send(("detach_stream", result));
+        });
+    }
+    pending.push("detach_controls");
     let backend = backend.clone();
-    let (completed, waiting) = std_mpsc::sync_channel(1);
     thread::spawn(move || {
-        let _ = completed.send(backend.detach_stream(operation_token.as_u64()));
+        let result = guarded_backend_call(|| backend.detach_controls());
+        let _ = completed.send(("detach_controls", result));
     });
-    let _ = waiting.recv_timeout(DETACH_WAIT);
+
+    let deadline = Instant::now() + DETACH_WAIT;
+    let mut warnings = Vec::new();
+    while !pending.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match waiting.recv_timeout(remaining) {
+            Ok((operation, Ok(()))) => pending.retain(|pending| *pending != operation),
+            Ok((operation, Err(error))) => {
+                pending.retain(|pending| *pending != operation);
+                warnings.push(format!("{operation}: {}", error.safe_message()));
+            }
+            Err(_) => break,
+        }
+    }
+    warnings.extend(
+        pending
+            .into_iter()
+            .map(|operation| format!("{operation}: cleanup timed out")),
+    );
+    warnings
 }
 
 fn channel_closed() -> BackendError {
@@ -654,6 +731,7 @@ fn channel_closed() -> BackendError {
 pub trait TerminalEventSource: Send + 'static {
     /// Must return no later than `timeout`, so reader shutdown remains bounded.
     fn poll(&mut self, timeout: Duration) -> io::Result<bool>;
+    /// After `poll` returns true, this must promptly return the ready event.
     fn read(&mut self) -> io::Result<Event>;
 }
 

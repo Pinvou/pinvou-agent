@@ -18,6 +18,15 @@ use pinvou_tui::{
 };
 use serde_json::{Value, json};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ControlKind {
+    Approval,
+    Input,
+    RuntimeList,
+    Switch,
+    Interrupt,
+}
+
 #[derive(Debug, Default)]
 struct Calls {
     prompts: Vec<String>,
@@ -33,6 +42,8 @@ struct Calls {
     failure_returned: bool,
     stream_completed: usize,
     detaches: Vec<u64>,
+    control_detaches: usize,
+    control_started: Vec<ControlKind>,
 }
 
 #[derive(Clone, Copy)]
@@ -51,6 +62,12 @@ struct FakeBackend {
     plan: StreamPlan,
     fail_runtime_reload: bool,
     fail_initial_runtime_list: bool,
+    blocked_control: Option<ControlKind>,
+    panic_control: Option<ControlKind>,
+    detach_stream_error: bool,
+    detach_controls_error: bool,
+    detach_stream_delay: Option<Duration>,
+    detach_controls_delay: Option<Duration>,
 }
 
 impl FakeBackend {
@@ -62,6 +79,12 @@ impl FakeBackend {
             plan: StreamPlan::ApprovalThenHold,
             fail_runtime_reload: false,
             fail_initial_runtime_list: false,
+            blocked_control: None,
+            panic_control: None,
+            detach_stream_error: false,
+            detach_controls_error: false,
+            detach_stream_delay: None,
+            detach_controls_delay: None,
         }
     }
 
@@ -84,6 +107,59 @@ impl FakeBackend {
             fail_initial_runtime_list: true,
             ..Self::new()
         }
+    }
+
+    fn with_blocked_control(plan: StreamPlan, control: ControlKind) -> Self {
+        Self {
+            plan,
+            blocked_control: Some(control),
+            ..Self::new()
+        }
+    }
+
+    fn with_cleanup_behavior(
+        plan: StreamPlan,
+        stream_error: bool,
+        controls_error: bool,
+        stream_delay: Option<Duration>,
+        controls_delay: Option<Duration>,
+    ) -> Self {
+        Self {
+            plan,
+            detach_stream_error: stream_error,
+            detach_controls_error: controls_error,
+            detach_stream_delay: stream_delay,
+            detach_controls_delay: controls_delay,
+            ..Self::new()
+        }
+    }
+
+    fn with_panicking_control(control: ControlKind) -> Self {
+        Self {
+            panic_control: Some(control),
+            ..Self::new()
+        }
+    }
+
+    fn block_control(&self, control: ControlKind) -> Result<(), BackendError> {
+        if self.panic_control == Some(control) {
+            self.calls.0.lock().unwrap().control_started.push(control);
+            panic!("scripted control panic");
+        }
+        if self.blocked_control != Some(control) {
+            return Ok(());
+        }
+        let (calls, wake) = &*self.calls;
+        let mut calls = calls.lock().unwrap();
+        calls.control_started.push(control);
+        wake.notify_all();
+        while calls.control_detaches == 0 {
+            calls = wake.wait(calls).unwrap();
+        }
+        Err(BackendError::new(
+            BackendErrorKind::Cancelled,
+            "control detached",
+        ))
     }
 
     fn calls(&self) -> std::sync::MutexGuard<'_, Calls> {
@@ -130,6 +206,9 @@ impl Backend for FakeBackend {
                 BackendErrorKind::ControllerUnavailable,
                 "initial probe failed",
             ));
+        }
+        if call > 1 {
+            self.block_control(ControlKind::RuntimeList)?;
         }
         Ok(RuntimeList::new(
             Some("codex".into()),
@@ -252,6 +331,7 @@ impl Backend for FakeBackend {
     }
 
     fn resolve_approval(&self, id: String, accepted: bool) -> Result<(), BackendError> {
+        self.block_control(ControlKind::Approval)?;
         let (calls, wake) = &*self.calls;
         calls.lock().unwrap().approvals.push((id, accepted));
         wake.notify_all();
@@ -259,6 +339,7 @@ impl Backend for FakeBackend {
     }
 
     fn resolve_input(&self, id: String, value: String) -> Result<(), BackendError> {
+        self.block_control(ControlKind::Input)?;
         let (calls, wake) = &*self.calls;
         calls.lock().unwrap().inputs.push((id, value));
         wake.notify_all();
@@ -267,19 +348,48 @@ impl Backend for FakeBackend {
 
     fn interrupt(&self, turn_id: String) -> Result<(), BackendError> {
         self.calls.0.lock().unwrap().interrupts.push(turn_id);
+        self.block_control(ControlKind::Interrupt)?;
         Ok(())
     }
 
     fn detach_stream(&self, operation_token: u64) -> Result<(), BackendError> {
+        if let Some(delay) = self.detach_stream_delay {
+            std::thread::sleep(delay);
+        }
         let (calls, wake) = &*self.calls;
         let mut calls = calls.lock().unwrap();
         calls.detaches.push(operation_token);
         calls.stream_gate += 1;
         wake.notify_all();
-        Ok(())
+        if self.detach_stream_error {
+            Err(BackendError::new(
+                BackendErrorKind::Operation,
+                "stream cleanup failed",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn detach_controls(&self) -> Result<(), BackendError> {
+        if let Some(delay) = self.detach_controls_delay {
+            std::thread::sleep(delay);
+        }
+        let (calls, wake) = &*self.calls;
+        calls.lock().unwrap().control_detaches += 1;
+        wake.notify_all();
+        if self.detach_controls_error {
+            Err(BackendError::new(
+                BackendErrorKind::Operation,
+                "control cleanup failed",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     fn switch_runtime(&self, runtime: String) -> Result<RuntimeStatus, BackendError> {
+        self.block_control(ControlKind::Switch)?;
         self.calls.0.lock().unwrap().switches.push(runtime.clone());
         Ok(RuntimeStatus::new(
             runtime.clone(),
@@ -718,6 +828,169 @@ fn approval_wait_ctrl_c_detaches_without_runtime_interrupt() {
     assert_eq!(backend.calls().stream_completed, 1);
 }
 
+#[test]
+fn every_blocked_control_effect_detaches_without_delaying_runtime_drop() {
+    for control in [
+        ControlKind::Approval,
+        ControlKind::Input,
+        ControlKind::RuntimeList,
+        ControlKind::Switch,
+        ControlKind::Interrupt,
+    ] {
+        let plan = match control {
+            ControlKind::Input => StreamPlan::ApprovalThenInput,
+            ControlKind::Interrupt => StreamPlan::Hold,
+            _ => StreamPlan::ApprovalThenHold,
+        };
+        let backend = FakeBackend::with_blocked_control(plan, control);
+        let mut steps = Vec::new();
+        match control {
+            ControlKind::Approval => {
+                steps.extend(text("approval"));
+                steps.push(key(Key::Enter));
+                steps.push(wait_for({
+                    let backend = backend.clone();
+                    move || backend.calls().approval_emitted
+                }));
+                steps.push(Step::Delay(Duration::from_millis(10)));
+                steps.push(key(Key::Char('1')));
+            }
+            ControlKind::Input => {
+                steps.extend(text("input"));
+                steps.push(key(Key::Enter));
+                steps.push(wait_for({
+                    let backend = backend.clone();
+                    move || backend.calls().approval_emitted
+                }));
+                steps.push(Step::Delay(Duration::from_millis(10)));
+                steps.push(key(Key::Char('1')));
+                steps.push(wait_for({
+                    let backend = backend.clone();
+                    move || backend.calls().input_emitted
+                }));
+                steps.push(Step::Delay(Duration::from_millis(10)));
+                steps.push(Step::Input(InputEvent::Paste("answer".into())));
+                steps.push(key(Key::Enter));
+            }
+            ControlKind::RuntimeList => {
+                steps.push(Step::Input(InputEvent::Key(KeyInput::ctrl(Key::Char('r')))));
+            }
+            ControlKind::Switch => {
+                steps.push(Step::Input(InputEvent::Key(KeyInput::ctrl(Key::Char('r')))));
+                steps.push(wait_for({
+                    let backend = backend.clone();
+                    move || backend.calls().runtime_list_calls >= 2
+                }));
+                steps.push(Step::Delay(Duration::from_millis(10)));
+                steps.push(key(Key::Down));
+                steps.push(key(Key::Enter));
+            }
+            ControlKind::Interrupt => {
+                steps.extend(text("interrupt"));
+                steps.push(key(Key::Enter));
+                steps.push(wait_for({
+                    let backend = backend.clone();
+                    move || backend.calls().stream_started == 1
+                }));
+                steps.push(Step::Delay(Duration::from_millis(10)));
+                steps.push(key(Key::Esc));
+            }
+        }
+        steps.push(wait_for({
+            let backend = backend.clone();
+            move || backend.calls().control_started.contains(&control)
+        }));
+        steps.push(Step::Input(InputEvent::Key(KeyInput::ctrl(Key::Char('c')))));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let result = runtime
+            .block_on(run_with_driver(
+                Arc::new(backend.clone()),
+                ScriptDriver::new(steps),
+            ))
+            .unwrap();
+        drop(runtime);
+        assert!(result.detached, "{control:?}");
+        assert_eq!(backend.calls().control_detaches, 1, "{control:?}");
+        assert!(started.elapsed() < Duration::from_secs(2), "{control:?}");
+        let expected_interrupts = usize::from(control == ControlKind::Interrupt);
+        assert_eq!(
+            backend.calls().interrupts.len(),
+            expected_interrupts,
+            "{control:?}"
+        );
+    }
+}
+
+#[test]
+fn cleanup_errors_are_reported_without_preventing_detach() {
+    let backend = FakeBackend::with_cleanup_behavior(StreamPlan::Hold, true, true, None, None);
+    let started = backend.clone();
+    let mut steps = text("cleanup error");
+    steps.push(key(Key::Enter));
+    steps.push(wait_for(move || started.calls().stream_started == 1));
+    steps.push(Step::Delay(Duration::from_millis(10)));
+    steps.push(Step::Input(InputEvent::Key(KeyInput::ctrl(Key::Char('c')))));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let result = runtime
+        .block_on(run_with_driver(Arc::new(backend), ScriptDriver::new(steps)))
+        .unwrap();
+    drop(runtime);
+    assert!(result.detached);
+    assert!(
+        result
+            .cleanup_warnings
+            .iter()
+            .any(|warning| warning.contains("detach_stream: stream cleanup failed"))
+    );
+    assert!(
+        result
+            .cleanup_warnings
+            .iter()
+            .any(|warning| warning.contains("detach_controls: control cleanup failed"))
+    );
+}
+
+#[test]
+fn cleanup_timeout_is_reported_and_exit_remains_bounded() {
+    let backend = FakeBackend::with_cleanup_behavior(
+        StreamPlan::Hold,
+        false,
+        false,
+        Some(Duration::from_millis(800)),
+        None,
+    );
+    let started = backend.clone();
+    let mut steps = text("cleanup timeout");
+    steps.push(key(Key::Enter));
+    steps.push(wait_for(move || started.calls().stream_started == 1));
+    steps.push(Step::Delay(Duration::from_millis(10)));
+    steps.push(Step::Input(InputEvent::Key(KeyInput::ctrl(Key::Char('c')))));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let started_at = std::time::Instant::now();
+    let result = runtime
+        .block_on(run_with_driver(Arc::new(backend), ScriptDriver::new(steps)))
+        .unwrap();
+    drop(runtime);
+    assert!(started_at.elapsed() < Duration::from_secs(2));
+    assert!(
+        result
+            .cleanup_warnings
+            .iter()
+            .any(|warning| warning == "detach_stream: cleanup timed out")
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn stream_worker_panic_becomes_typed_backend_error() {
     let backend = FakeBackend::new();
@@ -738,6 +1011,52 @@ async fn stream_worker_panic_becomes_typed_backend_error() {
             .unwrap()
             .safe_message()
             .contains("panicked")
+    );
+    assert_eq!(
+        result.model.last_backend_error.as_ref().unwrap().kind(),
+        BackendErrorKind::WorkerPanic
+    );
+    assert!(matches!(
+        result.model.connection,
+        pinvou_tui::model::ConnectionState::Failed(ref error)
+            if error.kind() == BackendErrorKind::WorkerPanic
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn control_worker_panic_marks_connection_failed_and_blocks_reuse() {
+    let backend = FakeBackend::with_panicking_control(ControlKind::Approval);
+    let approval = backend.clone();
+    let panicked = backend.clone();
+    let mut steps = text("control panic");
+    steps.push(key(Key::Enter));
+    steps.push(wait_for(move || approval.calls().approval_emitted));
+    steps.push(Step::Delay(Duration::from_millis(10)));
+    steps.push(key(Key::Char('1')));
+    steps.push(wait_for(move || {
+        panicked
+            .calls()
+            .control_started
+            .contains(&ControlKind::Approval)
+    }));
+    steps.push(Step::Delay(Duration::from_millis(10)));
+    steps.extend(text("must not send"));
+    steps.push(key(Key::Enter));
+    steps.push(Step::Input(InputEvent::Key(KeyInput::ctrl(Key::Char('c')))));
+    let result = run_script(&backend, steps).await;
+    assert!(matches!(
+        result.model.connection,
+        pinvou_tui::model::ConnectionState::Failed(ref error)
+            if error.kind() == BackendErrorKind::WorkerPanic
+    ));
+    assert_eq!(backend.calls().prompts, ["control panic"]);
+    assert!(
+        result
+            .model
+            .status_message
+            .as_deref()
+            .unwrap()
+            .contains("reinitialized")
     );
 }
 

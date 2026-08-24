@@ -49,6 +49,7 @@ pub enum BackendErrorKind {
     Cancelled,
     Protocol,
     Operation,
+    WorkerPanic,
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -105,6 +106,11 @@ pub trait Backend: Send + Sync + 'static {
     /// call, normally by closing its local IPC subscription or socket. This is lifecycle cleanup;
     /// it must never be translated into a runtime interrupt request.
     fn detach_stream(&self, operation_token: u64) -> Result<(), BackendError>;
+    /// Closes and wakes local in-flight Controller requests without issuing any runtime action.
+    ///
+    /// Implementations must be idempotent and prompt. A remote decision that was already sent is
+    /// not rolled back; this only releases local request sockets/subscriptions during TUI exit.
+    fn detach_controls(&self) -> Result<(), BackendError>;
     fn resolve_approval(&self, approval_id: String, accepted: bool) -> Result<(), BackendError>;
     fn resolve_input(&self, input_id: String, value: String) -> Result<(), BackendError>;
     fn interrupt(&self, turn_id: String) -> Result<(), BackendError>;

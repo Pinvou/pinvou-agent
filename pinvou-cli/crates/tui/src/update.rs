@@ -107,6 +107,10 @@ fn open_overlay(model: &mut Model, overlay: Overlay) {
 }
 
 fn submit_prompt(model: &mut Model, prompt: &str) -> Vec<Effect> {
+    if matches!(model.connection, crate::model::ConnectionState::Failed(_)) {
+        model.status_message = Some("backend must be reinitialized before continuing".into());
+        return Vec::new();
+    }
     if model.turn != TurnState::Idle
         || model.interaction != Interaction::None
         || model.pending_runtime_switch.is_some()
@@ -329,6 +333,10 @@ fn complete_interrupt(
 }
 
 fn load_runtime_list(model: &mut Model) -> Vec<Effect> {
+    if matches!(model.connection, crate::model::ConnectionState::Failed(_)) {
+        model.status_message = Some("backend must be reinitialized before continuing".into());
+        return Vec::new();
+    }
     if model.turn != TurnState::Idle
         || model.interaction != Interaction::None
         || model.pending_runtime_switch.is_some()
@@ -374,6 +382,10 @@ fn complete_runtime_list(
 }
 
 fn switch_runtime(model: &mut Model, runtime: String) -> Vec<Effect> {
+    if matches!(model.connection, crate::model::ConnectionState::Failed(_)) {
+        model.status_message = Some("backend must be reinitialized before continuing".into());
+        return Vec::new();
+    }
     if model.turn != TurnState::Idle || model.interaction != Interaction::None {
         model.status_message = Some("runtime cannot switch during an active turn".into());
         return Vec::new();
@@ -696,6 +708,10 @@ fn recover_turn_without_terminal(model: &mut Model) {
 }
 
 fn record_backend_error(model: &mut Model, error: BackendError) {
+    if error.kind() == crate::backend::BackendErrorKind::WorkerPanic {
+        model.connection = crate::model::ConnectionState::Failed(error.clone());
+        recover_turn_without_terminal(model);
+    }
     model.status_message = Some(error.safe_message().to_owned());
     model.diagnostic_message = None;
     model.last_backend_error = Some(error);

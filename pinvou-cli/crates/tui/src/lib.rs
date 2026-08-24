@@ -328,6 +328,10 @@ mod tests {
                 Ok(())
             }
 
+            fn detach_controls(&self) -> Result<(), BackendError> {
+                Ok(())
+            }
+
             fn resolve_approval(
                 &self,
                 _approval_id: String,
