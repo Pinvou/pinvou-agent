@@ -15,6 +15,7 @@ const MIN_HEIGHT: u16 = 16;
 const KEYMAP_IDLE: &str = "Enter send  ·  Ctrl+R runtime  ·  Ctrl+C detach/exit";
 const KEYMAP_STARTING: &str = "Starting/Waiting  ·  Ctrl+C detach";
 const KEYMAP_ACTIVE: &str = "Esc interrupt  ·  Ctrl+C detach";
+const KEYMAP_INTERRUPT_PENDING: &str = "Cancelling/Waiting  ·  Ctrl+C detach";
 const KEYMAP_APPROVAL: &str = "1 Allow once  ·  3 Deny  ·  Ctrl+C detach";
 const KEYMAP_APPROVAL_RESOLVING: &str = "Approving/Waiting  ·  Ctrl+C detach";
 const KEYMAP_INPUT: &str = "Enter submit  ·  Ctrl+C detach";
@@ -269,7 +270,13 @@ fn keymap(model: &Model) -> &'static str {
     }
     match model.turn {
         TurnState::Starting { .. } => return KEYMAP_STARTING,
-        TurnState::Streaming { .. } => return KEYMAP_ACTIVE,
+        TurnState::Streaming { .. } => {
+            return if model.pending_interrupt.is_some() {
+                KEYMAP_INTERRUPT_PENDING
+            } else {
+                KEYMAP_ACTIVE
+            };
+        }
         TurnState::Idle => {}
     }
     if model.pending_runtime_switch.is_some() {
@@ -402,7 +409,7 @@ mod tests {
         backend::RuntimeStatus,
         model::{
             ApprovalRequest, ConnectionState, InputRequest, Interaction, Model, OperationToken,
-            Overlay, PendingRuntimeSwitch, ToolState, TranscriptEntry, TurnState,
+            Overlay, PendingInterrupt, PendingRuntimeSwitch, ToolState, TranscriptEntry, TurnState,
         },
     };
 
@@ -601,6 +608,14 @@ mod tests {
         let streaming_output = screen(&streaming, 60, 16);
         assert!(streaming_output.contains("Esc interrupt"));
         assert!(streaming_output.contains("Ctrl+C detach"));
+        streaming.pending_interrupt = Some(PendingInterrupt {
+            turn_id: "turn-4".into(),
+            operation_token: OperationToken::new(5),
+        });
+        let cancelling = screen(&streaming, 60, 16);
+        assert!(cancelling.contains("Cancelling/Waiting"));
+        assert!(cancelling.contains("Ctrl+C detach"));
+        assert!(!cancelling.contains("Esc interrupt"));
         for forbidden in ["Ctrl+C interrupt", "Ctrl+L clear", "[y]", "[n]"] {
             assert!(
                 !output.contains(forbidden) && !streaming_output.contains(forbidden),

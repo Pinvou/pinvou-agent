@@ -92,7 +92,19 @@ pub type EventEmitter = Box<dyn FnMut(RuntimeEventEnvelope) -> Result<(), Backen
 pub trait Backend: Send + Sync + 'static {
     fn workspace(&self) -> Result<PathBuf, BackendError>;
     fn runtime_list(&self) -> Result<RuntimeList, BackendError>;
-    fn stream_turn(&self, prompt: String, emit: EventEmitter) -> Result<(), BackendError>;
+    /// Streams one turn. `operation_token` identifies the local subscription, not a runtime turn.
+    fn stream_turn(
+        &self,
+        operation_token: u64,
+        prompt: String,
+        emit: EventEmitter,
+    ) -> Result<(), BackendError>;
+    /// Detaches the local stream subscription without interrupting the remote runtime turn.
+    ///
+    /// Implementations must be idempotent and promptly unblock the matching `stream_turn`
+    /// call, normally by closing its local IPC subscription or socket. This is lifecycle cleanup;
+    /// it must never be translated into a runtime interrupt request.
+    fn detach_stream(&self, operation_token: u64) -> Result<(), BackendError>;
     fn resolve_approval(&self, approval_id: String, accepted: bool) -> Result<(), BackendError>;
     fn resolve_input(&self, input_id: String, value: String) -> Result<(), BackendError>;
     fn interrupt(&self, turn_id: String) -> Result<(), BackendError>;

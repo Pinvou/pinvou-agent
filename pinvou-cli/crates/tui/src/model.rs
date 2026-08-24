@@ -22,6 +22,12 @@ pub struct PendingRuntimeSwitch {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingInterrupt {
+    pub turn_id: String,
+    pub operation_token: OperationToken,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConnectionState {
     Disconnected,
     Connecting,
@@ -183,6 +189,7 @@ pub struct Model {
     pub diagnostic_message: Option<String>,
     pub last_backend_error: Option<BackendError>,
     pub pending_runtime_switch: Option<PendingRuntimeSwitch>,
+    pub pending_interrupt: Option<PendingInterrupt>,
     pub pending_runtime_list: Option<OperationToken>,
     pub runtime_candidates: Vec<RuntimeStatus>,
     pub selected_runtime: usize,
@@ -209,6 +216,7 @@ impl Model {
             diagnostic_message: None,
             last_backend_error: None,
             pending_runtime_switch: None,
+            pending_interrupt: None,
             pending_runtime_list: None,
             runtime_candidates: Vec::new(),
             selected_runtime: 0,

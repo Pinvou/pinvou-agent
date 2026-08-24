@@ -195,14 +195,14 @@ mod tests {
             TranscriptEntry::Tool { output, .. } if output == "done"
         )));
 
-        let interrupt_token = active_turn_token(&model);
-        assert_eq!(
-            update(&mut model, Action::Interrupt),
-            vec![Effect::Interrupt {
-                turn_id: "turn-1".into(),
-                operation_token: interrupt_token,
-            }]
-        );
+        let interrupt = update(&mut model, Action::Interrupt);
+        assert!(matches!(
+            interrupt.as_slice(),
+            [Effect::Interrupt { turn_id, operation_token }]
+                if turn_id == "turn-1"
+                    && model.pending_interrupt.as_ref().map(|pending| pending.operation_token)
+                        == Some(*operation_token)
+        ));
         assert!(update(&mut model, Action::RuntimeSwitch("claude".into())).is_empty());
         assert!(model.pending_runtime_switch.is_none());
 
@@ -222,6 +222,56 @@ mod tests {
         assert_eq!(model.status_message.as_deref(), Some("runtime stopped"));
         assert_eq!(model.turn, TurnState::Idle);
         assert_eq!(model.interaction, Interaction::None);
+    }
+
+    #[test]
+    fn interrupt_is_single_flight_retryable_and_cleared_by_terminal_events() {
+        let mut model = active_model();
+        let first = update(&mut model, Action::Interrupt);
+        let first_token = match first.as_slice() {
+            [
+                Effect::Interrupt {
+                    turn_id,
+                    operation_token,
+                },
+            ] if turn_id == "turn-1" => *operation_token,
+            other => panic!("unexpected interrupt effects: {other:?}"),
+        };
+        assert!(update(&mut model, Action::Interrupt).is_empty());
+
+        update(
+            &mut model,
+            Action::InterruptCompleted {
+                turn_id: "turn-1".into(),
+                operation_token: first_token,
+                result: Err(BackendError::new(
+                    BackendErrorKind::ControllerUnavailable,
+                    "cancel failed",
+                )),
+            },
+        );
+        assert!(model.pending_interrupt.is_none());
+        let retry = update(&mut model, Action::Interrupt);
+        let retry_token = match retry.as_slice() {
+            [
+                Effect::Interrupt {
+                    operation_token, ..
+                },
+            ] => *operation_token,
+            other => panic!("unexpected retry effects: {other:?}"),
+        };
+        assert_ne!(retry_token, first_token);
+
+        dispatch_current_runtime(
+            &mut model,
+            event(
+                RuntimeEventKind::TurnEnded,
+                json!({"end_reason": "interrupted"}),
+                9,
+            ),
+        );
+        assert!(model.pending_interrupt.is_none());
+        assert_eq!(model.turn, TurnState::Idle);
     }
 
     #[test]
@@ -267,9 +317,14 @@ mod tests {
 
             fn stream_turn(
                 &self,
+                _operation_token: u64,
                 _prompt: String,
                 _emit: Box<dyn FnMut(RuntimeEventEnvelope) -> Result<(), BackendError> + Send>,
             ) -> Result<(), BackendError> {
+                Ok(())
+            }
+
+            fn detach_stream(&self, _operation_token: u64) -> Result<(), BackendError> {
                 Ok(())
             }
 
@@ -299,7 +354,7 @@ mod tests {
         assert_eq!(backend.runtime_list().unwrap().runtimes.len(), 1);
         assert!(
             backend
-                .stream_turn("hello".into(), Box::new(|_| Ok(())))
+                .stream_turn(1, "hello".into(), Box::new(|_| Ok(())))
                 .is_ok()
         );
     }

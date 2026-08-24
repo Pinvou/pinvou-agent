@@ -9,9 +9,12 @@ use std::{
 
 use pinvou_protocol::{RuntimeEventEnvelope, RuntimeEventKind};
 use pinvou_tui::{
-    app::{AppError, Driver, InputEvent, Key, KeyInput, KeyKind, run_with_driver},
+    app::{
+        AppError, Driver, InputEvent, Key, KeyInput, KeyKind, Renderer, run_with_driver,
+        run_with_driver_and_renderer,
+    },
     backend::{Backend, BackendError, BackendErrorKind, EventEmitter, RuntimeList, RuntimeStatus},
-    model::{Overlay, TranscriptEntry, TurnState},
+    model::{Interaction, Overlay, TranscriptEntry, TurnState},
 };
 use serde_json::{Value, json};
 
@@ -29,6 +32,7 @@ struct Calls {
     runtime_list_calls: usize,
     failure_returned: bool,
     stream_completed: usize,
+    detaches: Vec<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -36,14 +40,17 @@ enum StreamPlan {
     ApprovalThenHold,
     ApprovalThenInput,
     Hold,
+    Flood,
 }
 
 #[derive(Clone)]
 struct FakeBackend {
     calls: Arc<(Mutex<Calls>, Condvar)>,
     fail_next_stream: Arc<Mutex<Option<BackendError>>>,
+    panic_next_stream: Arc<Mutex<bool>>,
     plan: StreamPlan,
     fail_runtime_reload: bool,
+    fail_initial_runtime_list: bool,
 }
 
 impl FakeBackend {
@@ -51,8 +58,10 @@ impl FakeBackend {
         Self {
             calls: Arc::new((Mutex::new(Calls::default()), Condvar::new())),
             fail_next_stream: Arc::new(Mutex::new(None)),
+            panic_next_stream: Arc::new(Mutex::new(false)),
             plan: StreamPlan::ApprovalThenHold,
             fail_runtime_reload: false,
+            fail_initial_runtime_list: false,
         }
     }
 
@@ -66,6 +75,13 @@ impl FakeBackend {
     fn with_failed_runtime_reload() -> Self {
         Self {
             fail_runtime_reload: true,
+            ..Self::new()
+        }
+    }
+
+    fn with_failed_initialization() -> Self {
+        Self {
+            fail_initial_runtime_list: true,
             ..Self::new()
         }
     }
@@ -86,6 +102,10 @@ impl FakeBackend {
             message,
         ));
     }
+
+    fn panic_once(&self) {
+        *self.panic_next_stream.lock().unwrap() = true;
+    }
 }
 
 impl Backend for FakeBackend {
@@ -105,6 +125,12 @@ impl Backend for FakeBackend {
                 "runtime catalog unavailable",
             ));
         }
+        if self.fail_initial_runtime_list && call == 1 {
+            return Err(BackendError::new(
+                BackendErrorKind::ControllerUnavailable,
+                "initial probe failed",
+            ));
+        }
         Ok(RuntimeList::new(
             Some("codex".into()),
             vec![
@@ -115,7 +141,12 @@ impl Backend for FakeBackend {
         ))
     }
 
-    fn stream_turn(&self, prompt: String, mut emit: EventEmitter) -> Result<(), BackendError> {
+    fn stream_turn(
+        &self,
+        _operation_token: u64,
+        prompt: String,
+        mut emit: EventEmitter,
+    ) -> Result<(), BackendError> {
         if let Some(error) = self.fail_next_stream.lock().unwrap().take() {
             self.calls.0.lock().unwrap().failure_returned = true;
             return Err(error);
@@ -126,8 +157,25 @@ impl Backend for FakeBackend {
             calls.stream_started += 1;
             calls.prompts.len()
         };
+        if std::mem::take(&mut *self.panic_next_stream.lock().unwrap()) {
+            panic!("scripted stream panic");
+        }
         emit(event(RuntimeEventKind::TurnStarted, json!({}), 1, call))?;
-        if call == 1 && !matches!(self.plan, StreamPlan::Hold) {
+        if matches!(self.plan, StreamPlan::Flood) {
+            for seq in 2..=5_001 {
+                emit(event(
+                    RuntimeEventKind::TextDelta,
+                    json!({"role":"assistant", "content":"x"}),
+                    seq,
+                    call,
+                ))?;
+            }
+            let (calls, wake) = &*self.calls;
+            let mut state = calls.lock().unwrap();
+            while state.stream_gate == 0 {
+                state = wake.wait(state).unwrap();
+            }
+        } else if call == 1 && !matches!(self.plan, StreamPlan::Hold) {
             emit(event(
                 RuntimeEventKind::TextDelta,
                 json!({"role":"assistant", "content":"first "}),
@@ -147,8 +195,15 @@ impl Backend for FakeBackend {
             let mut state = calls.lock().unwrap();
             state.approval_emitted = true;
             wake.notify_all();
-            while state.approvals.is_empty() {
+            while state.approvals.is_empty() && state.detaches.is_empty() {
                 state = wake.wait(state).unwrap();
+            }
+            if !state.detaches.is_empty() {
+                state.stream_completed += 1;
+                return Err(BackendError::new(
+                    BackendErrorKind::Cancelled,
+                    "stream detached",
+                ));
             }
             drop(state);
             if matches!(self.plan, StreamPlan::ApprovalThenInput) {
@@ -168,7 +223,7 @@ impl Backend for FakeBackend {
                 let mut state = calls.lock().unwrap();
                 state.input_emitted = true;
                 wake.notify_all();
-                while state.inputs.is_empty() {
+                while state.inputs.is_empty() && state.detaches.is_empty() {
                     state = wake.wait(state).unwrap();
                 }
             } else {
@@ -212,6 +267,15 @@ impl Backend for FakeBackend {
 
     fn interrupt(&self, turn_id: String) -> Result<(), BackendError> {
         self.calls.0.lock().unwrap().interrupts.push(turn_id);
+        Ok(())
+    }
+
+    fn detach_stream(&self, operation_token: u64) -> Result<(), BackendError> {
+        let (calls, wake) = &*self.calls;
+        let mut calls = calls.lock().unwrap();
+        calls.detaches.push(operation_token);
+        calls.stream_gate += 1;
+        wake.notify_all();
         Ok(())
     }
 
@@ -364,6 +428,7 @@ async fn escape_interrupts_stream_but_ctrl_c_only_detaches() {
     let result = run_script(&backend, steps).await;
     assert!(result.detached);
     assert_eq!(backend.calls().interrupts, ["turn-1"]);
+    assert_eq!(backend.calls().detaches.len(), 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -463,6 +528,259 @@ async fn eof_detaches_without_submitting_the_unicode_composer() {
     assert!(result.detached);
     assert_eq!(result.model.composer.input, "你好");
     assert!(backend.calls().prompts.is_empty());
+}
+
+#[derive(Clone, Default)]
+struct RecordingRenderer(Arc<Mutex<Vec<pinvou_tui::model::Model>>>);
+
+impl Renderer for RecordingRenderer {
+    fn draw(&mut self, model: &pinvou_tui::model::Model) -> Result<(), AppError> {
+        self.0.lock().unwrap().push(model.clone());
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn renderer_observes_stream_approval_resolution_and_terminal_progression() {
+    let backend = FakeBackend::new();
+    let approval = backend.clone();
+    let completed = backend.clone();
+    let renderer = RecordingRenderer::default();
+    let snapshots = renderer.0.clone();
+    let mut steps = text("render");
+    steps.push(key(Key::Enter));
+    steps.push(wait_for(move || approval.calls().approval_emitted));
+    steps.push(Step::Delay(Duration::from_millis(10)));
+    steps.push(key(Key::Char('1')));
+    steps.push(wait_for(move || completed.calls().stream_completed == 1));
+    steps.push(Step::Delay(Duration::from_millis(10)));
+    steps.push(Step::Input(InputEvent::Eof));
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        run_with_driver_and_renderer(Arc::new(backend), ScriptDriver::new(steps), renderer),
+    )
+    .await
+    .expect("rendering loop timed out")
+    .unwrap();
+    assert!(result.detached);
+    let snapshots = snapshots.lock().unwrap();
+    assert!(snapshots.first().unwrap().connection == pinvou_tui::model::ConnectionState::Connected);
+    assert!(
+        snapshots
+            .iter()
+            .any(|model| model.transcript.assistant_text() == "first ")
+    );
+    assert!(
+        snapshots
+            .iter()
+            .any(|model| matches!(model.interaction, Interaction::ApprovalPending(_)))
+    );
+    assert!(
+        snapshots
+            .iter()
+            .any(|model| matches!(model.interaction, Interaction::ApprovalResolving { .. }))
+    );
+    assert!(
+        snapshots
+            .iter()
+            .any(|model| model.transcript.assistant_text() == "first done"
+                && model.turn == TurnState::Idle)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn initialization_failure_renders_failed_connection_before_typed_error() {
+    let backend = FakeBackend::with_failed_initialization();
+    let renderer = RecordingRenderer::default();
+    let snapshots = renderer.0.clone();
+    let error =
+        run_with_driver_and_renderer(Arc::new(backend), ScriptDriver::new(Vec::new()), renderer)
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(error, AppError::Backend(ref error) if error.safe_message() == "initial probe failed")
+    );
+    let snapshots = snapshots.lock().unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert!(matches!(
+        snapshots[0].connection,
+        pinvou_tui::model::ConnectionState::Failed(_)
+    ));
+}
+
+#[test]
+fn blocked_stream_ctrl_c_detaches_and_runtime_drops_within_bound() {
+    let started_at = std::time::Instant::now();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let backend = FakeBackend::with_plan(StreamPlan::Hold);
+    let started = backend.clone();
+    let mut steps = text("blocked");
+    steps.push(key(Key::Enter));
+    steps.push(wait_for(move || started.calls().stream_started == 1));
+    steps.push(Step::Delay(Duration::from_millis(10)));
+    steps.push(Step::Input(InputEvent::Key(KeyInput::ctrl(Key::Char('c')))));
+    let result = runtime
+        .block_on(run_with_driver(
+            Arc::new(backend.clone()),
+            ScriptDriver::new(steps),
+        ))
+        .unwrap();
+    drop(runtime);
+    assert!(result.detached);
+    assert!(backend.calls().interrupts.is_empty());
+    assert_eq!(backend.calls().detaches.len(), 1);
+    assert!(started_at.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn active_stream_eof_detaches_and_runtime_drops_within_bound() {
+    let started_at = std::time::Instant::now();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let backend = FakeBackend::with_plan(StreamPlan::Hold);
+    let started = backend.clone();
+    let mut steps = text("blocked");
+    steps.push(key(Key::Enter));
+    steps.push(wait_for(move || started.calls().stream_started == 1));
+    steps.push(Step::Delay(Duration::from_millis(10)));
+    steps.push(Step::Input(InputEvent::Eof));
+    let result = runtime
+        .block_on(run_with_driver(
+            Arc::new(backend.clone()),
+            ScriptDriver::new(steps),
+        ))
+        .unwrap();
+    drop(runtime);
+    assert!(result.detached);
+    assert!(backend.calls().interrupts.is_empty());
+    assert_eq!(backend.calls().detaches.len(), 1);
+    assert!(started_at.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn runtime_flood_cannot_starve_interrupt_or_ctrl_c() {
+    let backend = FakeBackend::with_plan(StreamPlan::Flood);
+    let started = backend.clone();
+    let interrupted = backend.clone();
+    let mut steps = text("flood");
+    steps.push(key(Key::Enter));
+    steps.push(wait_for(move || started.calls().stream_started == 1));
+    steps.push(Step::Delay(Duration::from_millis(5)));
+    steps.push(key(Key::Esc));
+    steps.push(Step::Input(InputEvent::Key(KeyInput {
+        key: Key::Esc,
+        control: false,
+        kind: KeyKind::Repeat,
+    })));
+    steps.push(wait_for(move || !interrupted.calls().interrupts.is_empty()));
+    steps.push(Step::Input(InputEvent::Key(KeyInput::ctrl(Key::Char('c')))));
+    let started_at = std::time::Instant::now();
+    let result = run_script(&backend, steps).await;
+    assert!(result.detached);
+    assert_eq!(backend.calls().interrupts.len(), 1);
+    assert_eq!(backend.calls().detaches.len(), 1);
+    assert!(started_at.elapsed() < Duration::from_secs(2));
+    assert!(result.model.transcript.assistant_text().len() < 5_000);
+}
+
+#[test]
+fn approval_wait_ctrl_c_detaches_without_runtime_interrupt() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let backend = FakeBackend::new();
+    let approval = backend.clone();
+    let mut steps = text("approval wait");
+    steps.push(key(Key::Enter));
+    steps.push(wait_for(move || approval.calls().approval_emitted));
+    steps.push(Step::Delay(Duration::from_millis(10)));
+    steps.push(Step::Input(InputEvent::Key(KeyInput::ctrl(Key::Char('c')))));
+    let result = runtime
+        .block_on(run_with_driver(
+            Arc::new(backend.clone()),
+            ScriptDriver::new(steps),
+        ))
+        .unwrap();
+    drop(runtime);
+    assert!(result.detached);
+    assert!(backend.calls().interrupts.is_empty());
+    assert_eq!(backend.calls().detaches.len(), 1);
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while backend.calls().stream_completed == 0 && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(backend.calls().stream_completed, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn stream_worker_panic_becomes_typed_backend_error() {
+    let backend = FakeBackend::new();
+    backend.panic_once();
+    let started = backend.clone();
+    let mut steps = text("panic");
+    steps.push(key(Key::Enter));
+    steps.push(wait_for(move || started.calls().stream_started == 1));
+    steps.push(Step::Delay(Duration::from_millis(10)));
+    steps.push(Step::Input(InputEvent::Key(KeyInput::ctrl(Key::Char('c')))));
+    let result = run_script(&backend, steps).await;
+    assert!(matches!(result.model.turn, TurnState::Idle));
+    assert!(
+        result
+            .model
+            .last_backend_error
+            .as_ref()
+            .unwrap()
+            .safe_message()
+            .contains("panicked")
+    );
+}
+
+#[derive(Clone)]
+struct FailOnStreamingRenderer {
+    calls: Arc<Mutex<usize>>,
+}
+
+impl Renderer for FailOnStreamingRenderer {
+    fn draw(&mut self, model: &pinvou_tui::model::Model) -> Result<(), AppError> {
+        *self.calls.lock().unwrap() += 1;
+        if matches!(model.turn, TurnState::Streaming { .. }) {
+            Err(AppError::Render("draw failed".into()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn renderer_failure_detaches_active_stream_before_returning_error() {
+    let backend = FakeBackend::with_plan(StreamPlan::Hold);
+    let started = backend.clone();
+    let mut steps = text("render failure");
+    steps.push(key(Key::Enter));
+    steps.push(wait_for(move || started.calls().stream_started == 1));
+    steps.push(Step::Delay(Duration::from_millis(10)));
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        run_with_driver_and_renderer(
+            Arc::new(backend.clone()),
+            ScriptDriver::new(steps),
+            FailOnStreamingRenderer {
+                calls: Arc::new(Mutex::new(0)),
+            },
+        ),
+    )
+    .await
+    .expect("renderer failure timed out")
+    .unwrap_err();
+    assert!(matches!(error, AppError::Render(ref message) if message == "draw failed"));
+    assert_eq!(backend.calls().detaches.len(), 1);
+    assert!(backend.calls().interrupts.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]

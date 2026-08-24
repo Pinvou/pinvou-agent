@@ -6,7 +6,8 @@ use crate::{
     backend::BackendError,
     commands::{AVAILABLE_COMMANDS, SlashCommand, parse},
     model::{
-        ApprovalRequest, InputRequest, Interaction, Model, Overlay, PendingRuntimeSwitch, TurnState,
+        ApprovalRequest, InputRequest, Interaction, Model, Overlay, PendingInterrupt,
+        PendingRuntimeSwitch, TurnState,
     },
 };
 
@@ -288,16 +289,21 @@ fn complete_turn_stream(
 }
 
 fn interrupt(model: &mut Model) -> Vec<Effect> {
-    let TurnState::Streaming {
-        turn_id,
-        operation_token,
-    } = &model.turn
-    else {
+    let TurnState::Streaming { turn_id, .. } = &model.turn else {
         return Vec::new();
     };
-    vec![Effect::Interrupt {
+    if model.pending_interrupt.is_some() {
+        return Vec::new();
+    }
+    let turn_id = turn_id.clone();
+    let operation_token = model.allocate_operation_token();
+    model.pending_interrupt = Some(PendingInterrupt {
         turn_id: turn_id.clone(),
-        operation_token: *operation_token,
+        operation_token,
+    });
+    vec![Effect::Interrupt {
+        turn_id,
+        operation_token,
     }]
 }
 
@@ -308,14 +314,16 @@ fn complete_interrupt(
     result: Result<(), BackendError>,
 ) -> Vec<Effect> {
     let current = matches!(
-        &model.turn,
-        TurnState::Streaming { turn_id: active_turn, operation_token: active_token }
-            if active_turn == turn_id && *active_token == operation_token
+        &model.pending_interrupt,
+        Some(pending) if pending.turn_id == turn_id && pending.operation_token == operation_token
     );
     if !current {
         record_ignored(model, "ignored stale interrupt completion".into());
-    } else if let Err(error) = result {
-        record_backend_error(model, error);
+    } else {
+        model.pending_interrupt = None;
+        if let Err(error) = result {
+            record_backend_error(model, error);
+        }
     }
     Vec::new()
 }
@@ -684,6 +692,7 @@ fn recover_turn_without_terminal(model: &mut Model) {
     model.turn = TurnState::Idle;
     model.interaction = Interaction::None;
     model.pending_runtime_switch = None;
+    model.pending_interrupt = None;
 }
 
 fn record_backend_error(model: &mut Model, error: BackendError) {

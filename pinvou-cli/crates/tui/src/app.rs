@@ -1,14 +1,35 @@
-use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
+use std::{
+    future::Future,
+    io,
+    panic::{AssertUnwindSafe, catch_unwind},
+    path::PathBuf,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc as std_mpsc,
+    },
+    thread,
+    time::Duration,
+};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
 
 use crate::{
     action::{Action, ApprovalDecision, Effect},
     backend::{Backend, BackendError, BackendErrorKind, RuntimeList, RuntimeStatus},
-    model::{Interaction, Model, Overlay, TurnState},
+    model::{ConnectionState, Interaction, Model, OperationToken, Overlay, TurnState},
     update::update,
 };
+
+pub const CONTROL_CHANNEL_CAPACITY: usize = 64;
+pub const RUNTIME_CHANNEL_CAPACITY: usize = 256;
+const DETACH_WAIT: Duration = Duration::from_millis(500);
+const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Key {
@@ -66,27 +87,16 @@ pub trait Driver: Send + 'static {
     ) -> Pin<Box<dyn Future<Output = Result<Option<InputEvent>, AppError>> + Send + '_>>;
 }
 
-pub struct TerminalDriver {
-    receiver: mpsc::UnboundedReceiver<InputEvent>,
-    _reader: std::thread::JoinHandle<()>,
+pub trait Renderer: Send + 'static {
+    fn draw(&mut self, model: &Model) -> Result<(), AppError>;
 }
 
-impl TerminalDriver {
-    pub fn start() -> Self {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let reader = terminal_input_task(sender);
-        Self {
-            receiver,
-            _reader: reader,
-        }
-    }
-}
+#[derive(Default)]
+pub struct NoopRenderer;
 
-impl Driver for TerminalDriver {
-    fn next_event(
-        &mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<InputEvent>, AppError>> + Send + '_>> {
-        Box::pin(async move { Ok(self.receiver.recv().await) })
+impl Renderer for NoopRenderer {
+    fn draw(&mut self, _model: &Model) -> Result<(), AppError> {
+        Ok(())
     }
 }
 
@@ -96,6 +106,8 @@ pub enum AppError {
     Backend(#[from] BackendError),
     #[error("terminal input failed: {0}")]
     Input(String),
+    #[error("render failed: {0}")]
+    Render(String),
 }
 
 #[derive(Debug)]
@@ -104,69 +116,194 @@ pub struct RunResult {
     pub detached: bool,
 }
 
-enum AppEvent {
+enum HighPriorityEvent {
     Input(Result<Option<InputEvent>, AppError>),
-    Action(Box<Action>),
+    Control(Box<Action>),
 }
 
-pub async fn run_with_driver<B, D>(backend: Arc<B>, mut driver: D) -> Result<RunResult, AppError>
+enum RuntimeStreamEvent {
+    Event {
+        operation_token: OperationToken,
+        event: Box<pinvou_protocol::RuntimeEventEnvelope>,
+    },
+    Completed {
+        operation_token: OperationToken,
+        result: Result<(), BackendError>,
+    },
+}
+
+pub async fn run_with_driver<B, D>(backend: Arc<B>, driver: D) -> Result<RunResult, AppError>
 where
     B: Backend,
     D: Driver,
 {
-    let (workspace, runtimes) = initialize(backend.clone()).await?;
+    run_with_driver_and_renderer(backend, driver, NoopRenderer).await
+}
+
+pub async fn run_with_driver_and_renderer<B, D, R>(
+    backend: Arc<B>,
+    mut driver: D,
+    mut renderer: R,
+) -> Result<RunResult, AppError>
+where
+    B: Backend,
+    D: Driver,
+    R: Renderer,
+{
+    let (workspace, runtimes) = match initialize(backend.clone()).await {
+        Ok(initialized) => initialized,
+        Err(error) => {
+            let mut model = Model::new(
+                PathBuf::from("."),
+                RuntimeStatus::new("unavailable", "No runtime available", false),
+            );
+            model.connection = ConnectionState::Failed(error.clone());
+            renderer.draw(&model)?;
+            return Err(AppError::Backend(error));
+        }
+    };
     let runtime = select_initial_runtime(&runtimes);
     let mut model = Model::new(workspace, runtime);
+    model.connection = ConnectionState::Connected;
     model.runtime_candidates = runtimes.runtimes;
     model.selected_runtime = model
         .runtime_candidates
         .iter()
         .position(|candidate| candidate.id == model.runtime.id)
         .unwrap_or(0);
+    renderer.draw(&model)?;
 
-    let (events, mut incoming) = mpsc::unbounded_channel();
-    let input_sender = events.clone();
-    tokio::spawn(async move {
+    let (high_sender, mut high_receiver) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
+    let (runtime_sender, mut runtime_receiver) = mpsc::channel(RUNTIME_CHANNEL_CAPACITY);
+    let input_sender = high_sender.clone();
+    let (input_stop_sender, mut input_stop_receiver) = oneshot::channel();
+    let input_worker = tokio::spawn(async move {
         loop {
-            let result = driver.next_event().await;
+            let result = tokio::select! {
+                biased;
+                _ = &mut input_stop_receiver => break,
+                result = driver.next_event() => result,
+            };
             let stop = !matches!(result, Ok(Some(_)));
-            if input_sender.send(AppEvent::Input(result)).is_err() || stop {
+            if input_sender
+                .send(HighPriorityEvent::Input(result))
+                .await
+                .is_err()
+                || stop
+            {
                 break;
             }
         }
     });
+    let (input_finished_sender, input_finished_receiver) = oneshot::channel();
+    let input_supervisor = high_sender.clone();
+    tokio::spawn(async move {
+        if let Err(error) = input_worker.await {
+            let _ = input_supervisor
+                .send(HighPriorityEvent::Input(Err(AppError::Input(format!(
+                    "terminal input task failed: {error}"
+                )))))
+                .await;
+        }
+        let _ = input_finished_sender.send(());
+    });
+    let mut input_stop_sender = Some(input_stop_sender);
+    let mut input_finished_receiver = Some(input_finished_receiver);
 
     let mut detached = false;
     while !model.should_quit && !detached {
-        let Some(event) = incoming.recv().await else {
-            detached = true;
-            break;
+        enum Selected {
+            High(Option<HighPriorityEvent>),
+            Runtime(Option<RuntimeStreamEvent>),
+        }
+        let selected = tokio::select! {
+            biased;
+            event = high_receiver.recv() => Selected::High(event),
+            event = runtime_receiver.recv() => Selected::Runtime(event),
         };
-        match event {
-            AppEvent::Input(Ok(Some(input))) => {
+
+        let effects = match selected {
+            Selected::High(Some(HighPriorityEvent::Input(Ok(Some(input))))) => {
                 let outcome = handle_input(&mut model, input);
                 detached = outcome.detached;
-                dispatch_effects(backend.clone(), events.clone(), outcome.effects);
+                outcome.effects
             }
-            AppEvent::Input(Ok(None)) => detached = true,
-            AppEvent::Input(Err(error)) => return Err(error),
-            AppEvent::Action(action) => {
-                let effects = update(&mut model, *action);
-                dispatch_effects(backend.clone(), events.clone(), effects);
+            Selected::High(Some(HighPriorityEvent::Input(Ok(None)))) => {
+                detached = true;
+                Vec::new()
             }
+            Selected::High(Some(HighPriorityEvent::Input(Err(error)))) => {
+                stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+                detach_active_stream(&backend, active_stream_token(&model), &mut runtime_receiver);
+                return Err(error);
+            }
+            Selected::High(Some(HighPriorityEvent::Control(action))) => update(&mut model, *action),
+            Selected::High(None) => {
+                detached = true;
+                Vec::new()
+            }
+            Selected::Runtime(Some(RuntimeStreamEvent::Event {
+                operation_token,
+                event,
+            })) => update(
+                &mut model,
+                Action::Runtime {
+                    operation_token,
+                    event: *event,
+                },
+            ),
+            Selected::Runtime(Some(RuntimeStreamEvent::Completed {
+                operation_token,
+                result,
+            })) => update(
+                &mut model,
+                Action::TurnStreamCompleted {
+                    operation_token,
+                    result,
+                },
+            ),
+            Selected::Runtime(None) => Vec::new(),
+        };
+
+        if let Err(error) = renderer.draw(&model) {
+            stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+            detach_active_stream(&backend, active_stream_token(&model), &mut runtime_receiver);
+            return Err(error);
         }
+        dispatch_effects(
+            backend.clone(),
+            high_sender.clone(),
+            runtime_sender.clone(),
+            effects,
+        );
+    }
+
+    stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+    if detached {
+        detach_active_stream(&backend, active_stream_token(&model), &mut runtime_receiver);
     }
     Ok(RunResult { model, detached })
 }
 
-async fn initialize<B: Backend>(backend: Arc<B>) -> Result<(PathBuf, RuntimeList), AppError> {
+async fn stop_input_worker(
+    stop: &mut Option<oneshot::Sender<()>>,
+    finished: &mut Option<oneshot::Receiver<()>>,
+) {
+    if let Some(stop) = stop.take() {
+        let _ = stop.send(());
+    }
+    if let Some(finished) = finished.take() {
+        let _ = tokio::time::timeout(Duration::from_millis(200), finished).await;
+    }
+}
+
+async fn initialize<B: Backend>(backend: Arc<B>) -> Result<(PathBuf, RuntimeList), BackendError> {
     join_backend(tokio::task::spawn_blocking(move || {
         let workspace = backend.workspace()?;
         let runtimes = backend.runtime_list()?;
         Ok((workspace, runtimes))
     }))
     .await
-    .map_err(AppError::Backend)
 }
 
 fn select_initial_runtime(list: &RuntimeList) -> RuntimeStatus {
@@ -182,7 +319,6 @@ struct InputOutcome {
     effects: Vec<Effect>,
     detached: bool,
 }
-
 fn outcome(effects: Vec<Effect>) -> InputOutcome {
     InputOutcome {
         effects,
@@ -283,12 +419,10 @@ fn handle_key(model: &mut Model, input: KeyInput) -> InputOutcome {
         };
         return outcome(effects);
     }
-
     if model.overlay != Overlay::None && input.key == Key::Esc {
         model.overlay = Overlay::None;
         return outcome(Vec::new());
     }
-
     if matches!(model.turn, TurnState::Streaming { .. }) && input.key == Key::Esc {
         return outcome(update(model, Action::Interrupt));
     }
@@ -334,45 +468,68 @@ fn insert_text(model: &mut Model, value: &str) {
 
 fn dispatch_effects<B: Backend>(
     backend: Arc<B>,
-    sender: mpsc::UnboundedSender<AppEvent>,
+    high_sender: mpsc::Sender<HighPriorityEvent>,
+    runtime_sender: mpsc::Sender<RuntimeStreamEvent>,
     effects: Vec<Effect>,
 ) {
     for effect in effects {
-        run_effect(backend.clone(), sender.clone(), effect);
+        match effect {
+            Effect::StartTurn {
+                prompt,
+                operation_token,
+            } => start_stream_worker(
+                backend.clone(),
+                runtime_sender.clone(),
+                prompt,
+                operation_token,
+            ),
+            control => start_control_effect(backend.clone(), high_sender.clone(), control),
+        }
     }
 }
 
-fn run_effect<B: Backend>(
+fn start_stream_worker<B: Backend>(
     backend: Arc<B>,
-    sender: mpsc::UnboundedSender<AppEvent>,
+    runtime_sender: mpsc::Sender<RuntimeStreamEvent>,
+    prompt: String,
+    operation_token: OperationToken,
+) {
+    thread::spawn(move || {
+        let event_sender = runtime_sender.clone();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            backend.stream_turn(
+                operation_token.as_u64(),
+                prompt,
+                Box::new(move |event| {
+                    event_sender
+                        .blocking_send(RuntimeStreamEvent::Event {
+                            operation_token,
+                            event: Box::new(event),
+                        })
+                        .map_err(|_| channel_closed())
+                }),
+            )
+        }))
+        .unwrap_or_else(|_| {
+            Err(BackendError::new(
+                BackendErrorKind::Operation,
+                "backend stream worker panicked",
+            ))
+        });
+        let _ = runtime_sender.blocking_send(RuntimeStreamEvent::Completed {
+            operation_token,
+            result,
+        });
+    });
+}
+
+fn start_control_effect<B: Backend>(
+    backend: Arc<B>,
+    sender: mpsc::Sender<HighPriorityEvent>,
     effect: Effect,
 ) {
     tokio::spawn(async move {
         let action = match effect {
-            Effect::StartTurn {
-                prompt,
-                operation_token,
-            } => {
-                let event_sender = sender.clone();
-                let result = join_backend(tokio::task::spawn_blocking(move || {
-                    backend.stream_turn(
-                        prompt,
-                        Box::new(move |event| {
-                            event_sender
-                                .send(AppEvent::Action(Box::new(Action::Runtime {
-                                    operation_token,
-                                    event,
-                                })))
-                                .map_err(|_| channel_closed())
-                        }),
-                    )
-                }))
-                .await;
-                Action::TurnStreamCompleted {
-                    operation_token,
-                    result,
-                }
-            }
             Effect::ResolveApproval {
                 turn_id,
                 approval_id,
@@ -445,8 +602,11 @@ fn run_effect<B: Backend>(
                     result,
                 }
             }
+            Effect::StartTurn { .. } => return,
         };
-        let _ = sender.send(AppEvent::Action(Box::new(action)));
+        let _ = sender
+            .send(HighPriorityEvent::Control(Box::new(action)))
+            .await;
     });
 }
 
@@ -460,24 +620,132 @@ async fn join_backend<T>(task: JoinHandle<Result<T, BackendError>>) -> Result<T,
     }
 }
 
-fn channel_closed() -> BackendError {
-    BackendError::new(BackendErrorKind::Cancelled, "TUI event loop closed")
+fn active_stream_token(model: &Model) -> Option<OperationToken> {
+    match model.turn {
+        TurnState::Starting { operation_token }
+        | TurnState::Streaming {
+            operation_token, ..
+        } => Some(operation_token),
+        TurnState::Idle => None,
+    }
 }
 
-/// The sole production terminal reader. It translates crossterm events onto the app channel.
-pub fn terminal_input_task(
-    sender: mpsc::UnboundedSender<InputEvent>,
-) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        while let Ok(raw) = event::read() {
-            if let Some(input) = map_terminal_event(raw)
-                && sender.send(input).is_err()
-            {
-                break;
+fn detach_active_stream<B: Backend>(
+    backend: &Arc<B>,
+    operation_token: Option<OperationToken>,
+    runtime_receiver: &mut mpsc::Receiver<RuntimeStreamEvent>,
+) {
+    runtime_receiver.close();
+    let Some(operation_token) = operation_token else {
+        return;
+    };
+    let backend = backend.clone();
+    let (completed, waiting) = std_mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = completed.send(backend.detach_stream(operation_token.as_u64()));
+    });
+    let _ = waiting.recv_timeout(DETACH_WAIT);
+}
+
+fn channel_closed() -> BackendError {
+    BackendError::new(BackendErrorKind::Cancelled, "TUI runtime receiver closed")
+}
+
+pub trait TerminalEventSource: Send + 'static {
+    /// Must return no later than `timeout`, so reader shutdown remains bounded.
+    fn poll(&mut self, timeout: Duration) -> io::Result<bool>;
+    fn read(&mut self) -> io::Result<Event>;
+}
+
+struct CrosstermEventSource;
+impl TerminalEventSource for CrosstermEventSource {
+    fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
+        event::poll(timeout)
+    }
+    fn read(&mut self) -> io::Result<Event> {
+        event::read()
+    }
+}
+
+pub struct TerminalInputTask {
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+    finished: std_mpsc::Receiver<()>,
+}
+
+impl Drop for TerminalInputTask {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if self
+            .finished
+            .recv_timeout(TERMINAL_POLL_INTERVAL.saturating_mul(2))
+            .is_ok()
+            && let Some(thread) = self.thread.take()
+        {
+            let _ = thread.join();
+        }
+    }
+}
+
+pub fn terminal_input_task(sender: mpsc::Sender<InputEvent>) -> TerminalInputTask {
+    terminal_input_task_with_source(sender, CrosstermEventSource)
+}
+
+pub fn terminal_input_task_with_source<S: TerminalEventSource>(
+    sender: mpsc::Sender<InputEvent>,
+    mut source: S,
+) -> TerminalInputTask {
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let (finished_sender, finished) = std_mpsc::sync_channel(1);
+    let thread = thread::spawn(move || {
+        while !thread_stop.load(Ordering::Acquire) {
+            match source.poll(TERMINAL_POLL_INTERVAL) {
+                Ok(true) => match source.read() {
+                    Ok(raw) => {
+                        if let Some(input) = map_terminal_event(raw)
+                            && sender.blocking_send(input).is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                },
+                Ok(false) => {}
+                Err(_) => break,
             }
         }
-        let _ = sender.send(InputEvent::Eof);
-    })
+        let _ = finished_sender.send(());
+    });
+    TerminalInputTask {
+        stop,
+        thread: Some(thread),
+        finished,
+    }
+}
+
+pub struct TerminalDriver {
+    receiver: mpsc::Receiver<InputEvent>,
+    _reader: TerminalInputTask,
+}
+
+impl TerminalDriver {
+    pub fn start() -> Self {
+        let (sender, receiver) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
+        let reader = terminal_input_task(sender);
+        Self {
+            receiver,
+            _reader: reader,
+        }
+    }
+}
+
+impl Driver for TerminalDriver {
+    fn next_event(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<InputEvent>, AppError>> + Send + '_>> {
+        Box::pin(async move { Ok(self.receiver.recv().await) })
+    }
 }
 
 fn map_terminal_event(event: Event) -> Option<InputEvent> {
@@ -509,4 +777,57 @@ fn map_key(event: KeyEvent) -> Option<KeyInput> {
         control: event.modifiers.contains(KeyModifiers::CONTROL),
         kind,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+
+    use crossterm::event::Event;
+    use tokio::sync::mpsc;
+
+    use super::{TerminalEventSource, terminal_input_task_with_source};
+
+    struct PollingSource {
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl TerminalEventSource for PollingSource {
+        fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
+            self.polls.fetch_add(1, Ordering::Relaxed);
+            std::thread::sleep(timeout.min(Duration::from_millis(5)));
+            Ok(false)
+        }
+
+        fn read(&mut self) -> io::Result<Event> {
+            unreachable!("read is only called after poll returns true")
+        }
+    }
+
+    #[test]
+    fn terminal_reader_drop_stops_and_joins_before_reentry() {
+        for _ in 0..2 {
+            let polls = Arc::new(AtomicUsize::new(0));
+            let (sender, _receiver) = mpsc::channel(1);
+            let task = terminal_input_task_with_source(
+                sender,
+                PollingSource {
+                    polls: polls.clone(),
+                },
+            );
+            while polls.load(Ordering::Relaxed) == 0 {
+                std::thread::yield_now();
+            }
+            let started = Instant::now();
+            drop(task);
+            assert!(started.elapsed() < Duration::from_millis(200));
+        }
+    }
 }
