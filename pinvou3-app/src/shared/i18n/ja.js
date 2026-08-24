@@ -791,7 +791,7 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
   writingMcpConfig:'MCP 設定を書き込んでいます…', validatingApiKey:'API キーとリモートツールを確認しています…', downloadingDeps:'初回インストールでは依存関係をダウンロードします。しばらくお待ちください…',
   waitingBrowserAuth:'ブラウザーでの認証完了を待機しています。', browserOpenedWaiting:'ブラウザーを開きました。認証を待機しています…',
   operationFailedWith:e=>`操作に失敗しました：${e}`,
-  importingSkill:'プラグインパッケージをインポート中…', validatingSkillPackage:'検証・展開中', skillImported:'プラグインパッケージをインポートしました', importFailedWith:e=>`インポートに失敗しました：${e}`,
+  importingSkill:'プラグインパッケージをインポート中…', validatingSkillPackage:'検証・展開中', importFailedWith:e=>`インポートに失敗しました：${e}`,
   editDisplayTitle:name=>`「${name}」の表示情報を編集`, displayNameLabel:'表示名', displayNamePlaceholder:'空の場合はデフォルト名に戻ります',
   displayDescriptionLabel:'表示説明', displayDescriptionPlaceholder:'空の場合はデフォルトの説明に戻ります',
   editDisplayHint:'表示のみを変更し、パッケージ ID と内容は変更されません。単一スキルのパッケージでは説明を SKILL.md に同期します（空にすると元の値に戻します）。',
