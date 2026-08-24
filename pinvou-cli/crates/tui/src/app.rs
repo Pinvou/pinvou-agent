@@ -32,6 +32,20 @@ pub const PREINIT_MAX_TEXT_BYTES: usize = 16 * 1024;
 pub const DEFAULT_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
 const DETACH_WAIT: Duration = Duration::from_millis(500);
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const INITIALIZATION_OPERATION_TOKEN: u64 = 0;
+
+trait ThreadSpawner: Clone + Send + Sync + 'static {
+    fn spawn(&self, job: Box<dyn FnOnce() + Send>);
+}
+
+#[derive(Clone, Copy)]
+struct OsThreadSpawner;
+
+impl ThreadSpawner for OsThreadSpawner {
+    fn spawn(&self, job: Box<dyn FnOnce() + Send>) {
+        thread::spawn(job);
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Key {
@@ -300,14 +314,31 @@ where
 
 pub async fn run_with_driver_and_renderer_config<B, D, R>(
     backend: Arc<B>,
-    mut driver: D,
-    mut renderer: R,
+    driver: D,
+    renderer: R,
     config: AppConfig,
 ) -> Result<RunResult, AppError>
 where
     B: Backend,
     D: Driver,
     R: Renderer,
+{
+    run_with_driver_and_renderer_config_spawner(backend, driver, renderer, config, OsThreadSpawner)
+        .await
+}
+
+async fn run_with_driver_and_renderer_config_spawner<B, D, R, S>(
+    backend: Arc<B>,
+    mut driver: D,
+    mut renderer: R,
+    config: AppConfig,
+    spawner: S,
+) -> Result<RunResult, AppError>
+where
+    B: Backend,
+    D: Driver,
+    R: Renderer,
+    S: ThreadSpawner,
 {
     let mut model = Model::new(
         PathBuf::from("."),
@@ -374,19 +405,8 @@ where
         return Err(error.with_cleanup(cleanup_warnings));
     }
 
-    const INITIALIZATION_OPERATION_TOKEN: u64 = 0;
-    let initialization_backend = backend.clone();
-    let initialization_sender = high_sender.clone();
-    let initialization_lease = backend.begin_control(INITIALIZATION_OPERATION_TOKEN);
-    thread::spawn(move || {
-        let result = guarded_backend_call(|| {
-            initialization_lease?;
-            let workspace = initialization_backend.workspace()?;
-            let runtimes = initialization_backend.runtime_list(INITIALIZATION_OPERATION_TOKEN)?;
-            Ok((workspace, runtimes))
-        });
-        let _ = initialization_sender.blocking_send(HighPriorityEvent::Initialized(result));
-    });
+    let mut immediate_initialization =
+        start_initialization_worker(backend.clone(), high_sender.clone(), spawner.clone());
 
     let initialization_deadline = tokio::time::sleep(config.initialization_timeout);
     tokio::pin!(initialization_deadline);
@@ -397,11 +417,15 @@ where
             High(Option<HighPriorityEvent>),
             Timeout,
         }
-        let selected = tokio::select! {
-            biased;
-            event = urgent_receiver.recv() => InitializationSelected::Urgent(event),
-            _ = &mut initialization_deadline => InitializationSelected::Timeout,
-            event = high_receiver.recv() => InitializationSelected::High(event),
+        let selected = if let Some(event) = immediate_initialization.take() {
+            InitializationSelected::High(Some(event))
+        } else {
+            tokio::select! {
+                biased;
+                event = urgent_receiver.recv() => InitializationSelected::Urgent(event),
+                _ = &mut initialization_deadline => InitializationSelected::Timeout,
+                event = high_receiver.recv() => InitializationSelected::High(event),
+            }
         };
         buffered_inputs.note_dropped(dropped_normal_inputs.swap(0, Ordering::Relaxed), &mut model);
 
@@ -536,6 +560,14 @@ where
     for input in buffered_inputs.into_events() {
         let outcome = handle_input(&mut model, input);
         detached |= outcome.detached;
+        dispatch_effects(
+            backend.clone(),
+            high_sender.clone(),
+            runtime_sender.clone(),
+            &mut model,
+            outcome.effects,
+            spawner.clone(),
+        );
         if let Err(error) = renderer.draw(&model) {
             stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
             let cleanup_warnings = cleanup_backend(
@@ -546,12 +578,6 @@ where
             );
             return Err(error.with_cleanup(cleanup_warnings));
         }
-        dispatch_effects(
-            backend.clone(),
-            high_sender.clone(),
-            runtime_sender.clone(),
-            outcome.effects,
-        );
         if model.should_quit || detached {
             break;
         }
@@ -646,6 +672,14 @@ where
             Selected::Runtime(None) => Vec::new(),
         };
 
+        dispatch_effects(
+            backend.clone(),
+            high_sender.clone(),
+            runtime_sender.clone(),
+            &mut model,
+            effects,
+            spawner.clone(),
+        );
         if let Err(error) = renderer.draw(&model) {
             stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
             let cleanup_warnings = cleanup_backend(
@@ -656,12 +690,6 @@ where
             );
             return Err(error.with_cleanup(cleanup_warnings));
         }
-        dispatch_effects(
-            backend.clone(),
-            high_sender.clone(),
-            runtime_sender.clone(),
-            effects,
-        );
     }
 
     stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
@@ -707,6 +735,33 @@ fn mark_initialization_failed(model: &mut Model, error: &BackendError) {
     model.connection = ConnectionState::Failed(error.clone());
     model.status_message = Some(error.safe_message().to_owned());
     model.last_backend_error = Some(error.clone());
+}
+
+fn start_initialization_worker<B: Backend, S: ThreadSpawner>(
+    backend: Arc<B>,
+    sender: mpsc::Sender<HighPriorityEvent>,
+    spawner: S,
+) -> Option<HighPriorityEvent> {
+    match backend.begin_control(INITIALIZATION_OPERATION_TOKEN) {
+        Ok(()) => {
+            spawner.spawn(Box::new(move || {
+                let result = guarded_backend_call(|| {
+                    let workspace = backend.workspace()?;
+                    let runtimes = backend.runtime_list(INITIALIZATION_OPERATION_TOKEN)?;
+                    Ok((workspace, runtimes))
+                });
+                let _ = sender.blocking_send(HighPriorityEvent::Initialized(result));
+            }));
+            None
+        }
+        Err(error) => {
+            let event = HighPriorityEvent::Initialized(Err(error));
+            match sender.try_send(event) {
+                Ok(()) => None,
+                Err(error) => Some(error.into_inner()),
+            }
+        }
+    }
 }
 
 fn is_urgent_input(input: &InputEvent) -> bool {
@@ -959,39 +1014,63 @@ fn insert_text(model: &mut Model, value: &str) {
     }
 }
 
-fn dispatch_effects<B: Backend>(
+fn dispatch_effects<B: Backend, S: ThreadSpawner>(
     backend: Arc<B>,
     high_sender: mpsc::Sender<HighPriorityEvent>,
     runtime_sender: mpsc::Sender<RuntimeStreamEvent>,
+    model: &mut Model,
     effects: Vec<Effect>,
+    spawner: S,
 ) {
-    for effect in effects {
-        match effect {
+    let mut pending = VecDeque::from(effects);
+    while let Some(effect) = pending.pop_front() {
+        let immediate = match effect {
             Effect::StartTurn {
                 prompt,
                 operation_token,
-            } => start_stream_worker(
+            } => start_stream_worker_with_spawner(
                 backend.clone(),
                 runtime_sender.clone(),
                 prompt,
                 operation_token,
+                spawner.clone(),
             ),
-            control => start_control_effect(backend.clone(), high_sender.clone(), control),
+            control => start_control_effect_with_spawner(
+                backend.clone(),
+                high_sender.clone(),
+                control,
+                spawner.clone(),
+            ),
+        };
+        if let Some(action) = immediate {
+            pending.extend(update(model, action));
         }
     }
 }
 
-fn start_stream_worker<B: Backend>(
+fn start_stream_worker_with_spawner<B: Backend, S: ThreadSpawner>(
     backend: Arc<B>,
     runtime_sender: mpsc::Sender<RuntimeStreamEvent>,
     prompt: String,
     operation_token: OperationToken,
-) {
-    let lease = backend.begin_stream(operation_token.as_u64());
-    thread::spawn(move || {
+    spawner: S,
+) -> Option<Action> {
+    if let Err(error) = backend.begin_stream(operation_token.as_u64()) {
+        let completion = RuntimeStreamEvent::Completed {
+            operation_token,
+            result: Err(error.clone()),
+        };
+        return match runtime_sender.try_send(completion) {
+            Ok(()) => None,
+            Err(_) => Some(Action::TurnStreamCompleted {
+                operation_token,
+                result: Err(error),
+            }),
+        };
+    }
+    spawner.spawn(Box::new(move || {
         let event_sender = runtime_sender.clone();
         let result = catch_unwind(AssertUnwindSafe(|| {
-            lease?;
             backend.stream_turn(
                 operation_token.as_u64(),
                 prompt,
@@ -1015,14 +1094,16 @@ fn start_stream_worker<B: Backend>(
             operation_token,
             result,
         });
-    });
+    }));
+    None
 }
 
-fn start_control_effect<B: Backend>(
+fn start_control_effect_with_spawner<B: Backend, S: ThreadSpawner>(
     backend: Arc<B>,
     sender: mpsc::Sender<HighPriorityEvent>,
     effect: Effect,
-) {
+    spawner: S,
+) -> Option<Action> {
     let operation_token = match &effect {
         Effect::ResolveApproval {
             operation_token, ..
@@ -1041,8 +1122,17 @@ fn start_control_effect<B: Backend>(
             operation_token, ..
         } => operation_token.as_u64(),
     };
-    let lease = backend.begin_control(operation_token);
-    thread::spawn(move || {
+    if let Err(error) = backend.begin_control(operation_token) {
+        let action = control_failure_action(effect, error);
+        return match sender.try_send(HighPriorityEvent::Control(Box::new(action))) {
+            Ok(()) => None,
+            Err(error) => match error.into_inner() {
+                HighPriorityEvent::Control(action) => Some(*action),
+                _ => unreachable!("only a control completion is sent here"),
+            },
+        };
+    }
+    spawner.spawn(Box::new(move || {
         let action = match effect {
             Effect::ResolveApproval {
                 turn_id,
@@ -1051,10 +1141,8 @@ fn start_control_effect<B: Backend>(
                 accepted,
             } => {
                 let call_id = approval_id.clone();
-                let result = lease.clone().and_then(|_| {
-                    guarded_backend_call(|| {
-                        backend.resolve_approval(operation_token.as_u64(), call_id, accepted)
-                    })
+                let result = guarded_backend_call(|| {
+                    backend.resolve_approval(operation_token.as_u64(), call_id, accepted)
                 });
                 Action::ApprovalResolutionCompleted {
                     turn_id,
@@ -1070,10 +1158,8 @@ fn start_control_effect<B: Backend>(
                 value,
             } => {
                 let call_id = input_id.clone();
-                let result = lease.clone().and_then(|_| {
-                    guarded_backend_call(|| {
-                        backend.resolve_input(operation_token.as_u64(), call_id, value)
-                    })
+                let result = guarded_backend_call(|| {
+                    backend.resolve_input(operation_token.as_u64(), call_id, value)
                 });
                 Action::InputResolutionCompleted {
                     turn_id,
@@ -1087,9 +1173,8 @@ fn start_control_effect<B: Backend>(
                 operation_token,
             } => {
                 let call_turn = turn_id.clone();
-                let result = lease.clone().and_then(|_| {
-                    guarded_backend_call(|| backend.interrupt(operation_token.as_u64(), call_turn))
-                });
+                let result =
+                    guarded_backend_call(|| backend.interrupt(operation_token.as_u64(), call_turn));
                 Action::InterruptCompleted {
                     turn_id,
                     operation_token,
@@ -1097,9 +1182,8 @@ fn start_control_effect<B: Backend>(
                 }
             }
             Effect::LoadRuntimeList { operation_token } => {
-                let result = lease.clone().and_then(|_| {
-                    guarded_backend_call(|| backend.runtime_list(operation_token.as_u64()))
-                });
+                let result =
+                    guarded_backend_call(|| backend.runtime_list(operation_token.as_u64()));
                 Action::RuntimeListLoaded {
                     operation_token,
                     result,
@@ -1109,10 +1193,8 @@ fn start_control_effect<B: Backend>(
                 runtime,
                 operation_token,
             } => {
-                let result = lease.clone().and_then(|_| {
-                    guarded_backend_call(|| {
-                        backend.switch_runtime(operation_token.as_u64(), runtime)
-                    })
+                let result = guarded_backend_call(|| {
+                    backend.switch_runtime(operation_token.as_u64(), runtime)
                 });
                 Action::RuntimeSwitched {
                     operation_token,
@@ -1122,7 +1204,54 @@ fn start_control_effect<B: Backend>(
             Effect::StartTurn { .. } => return,
         };
         let _ = sender.blocking_send(HighPriorityEvent::Control(Box::new(action)));
-    });
+    }));
+    None
+}
+
+fn control_failure_action(effect: Effect, error: BackendError) -> Action {
+    match effect {
+        Effect::ResolveApproval {
+            turn_id,
+            approval_id,
+            operation_token,
+            ..
+        } => Action::ApprovalResolutionCompleted {
+            turn_id,
+            approval_id,
+            operation_token,
+            result: Err(error),
+        },
+        Effect::ResolveInput {
+            turn_id,
+            input_id,
+            operation_token,
+            ..
+        } => Action::InputResolutionCompleted {
+            turn_id,
+            input_id,
+            operation_token,
+            result: Err(error),
+        },
+        Effect::Interrupt {
+            turn_id,
+            operation_token,
+        } => Action::InterruptCompleted {
+            turn_id,
+            operation_token,
+            result: Err(error),
+        },
+        Effect::LoadRuntimeList { operation_token } => Action::RuntimeListLoaded {
+            operation_token,
+            result: Err(error),
+        },
+        Effect::SwitchRuntime {
+            operation_token, ..
+        } => Action::RuntimeSwitched {
+            operation_token,
+            result: Err(error),
+        },
+        Effect::StartTurn { .. } => unreachable!("stream effects use the stream runner"),
+    }
 }
 
 fn guarded_backend_call<T>(
@@ -1329,10 +1458,12 @@ fn map_key(event: KeyEvent) -> Option<KeyInput> {
 #[cfg(test)]
 mod tests {
     use std::{
+        future::Future,
         io,
         path::PathBuf,
+        pin::Pin,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
         time::{Duration, Instant},
@@ -1342,10 +1473,23 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        InputEvent, Key, KeyInput, PREINIT_MAX_EVENTS, PREINIT_MAX_TEXT_BYTES, PreInitBuffer,
-        TerminalEventSource, terminal_input_task_with_source,
+        AppConfig, AppError, Driver, HighPriorityEvent, InputEvent, Key, KeyInput,
+        PREINIT_MAX_EVENTS, PREINIT_MAX_TEXT_BYTES, PreInitBuffer, Renderer, RuntimeStreamEvent,
+        TerminalEventSource, ThreadSpawner, run_with_driver_and_renderer_config_spawner,
+        start_control_effect_with_spawner, start_initialization_worker,
+        start_stream_worker_with_spawner, terminal_input_task_with_source,
     };
-    use crate::{backend::RuntimeStatus, model::Model};
+    use crate::{
+        action::Effect,
+        backend::{
+            Backend, BackendError, BackendErrorKind, EventEmitter, RuntimeList, RuntimeStatus,
+        },
+        model::{
+            ApprovalRequest, ConnectionState, InputRequest, Interaction, Model, OperationToken,
+            Overlay, PendingInterrupt, PendingRuntimeSwitch, TurnState,
+        },
+        update::update,
+    };
 
     struct PollingSource {
         polls: Arc<AtomicUsize>,
@@ -1413,5 +1557,430 @@ mod tests {
                 .unwrap()
                 .contains("dropped 2 inputs")
         );
+    }
+
+    #[derive(Clone, Default)]
+    struct CountingThreadSpawner(Arc<AtomicUsize>);
+
+    impl ThreadSpawner for CountingThreadSpawner {
+        fn spawn(&self, _job: Box<dyn FnOnce() + Send>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct LeaseRejectingBackend {
+        method_calls: Arc<AtomicUsize>,
+    }
+
+    impl LeaseRejectingBackend {
+        fn rejected() -> BackendError {
+            BackendError::new(BackendErrorKind::ControllerUnavailable, "lease rejected")
+        }
+
+        fn called(&self) -> Result<(), BackendError> {
+            self.method_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    impl Backend for LeaseRejectingBackend {
+        fn workspace(&self) -> Result<PathBuf, BackendError> {
+            self.called()?;
+            Ok(PathBuf::from("workspace"))
+        }
+
+        fn begin_stream(&self, _operation_token: u64) -> Result<(), BackendError> {
+            Err(Self::rejected())
+        }
+
+        fn begin_control(&self, _operation_token: u64) -> Result<(), BackendError> {
+            Err(Self::rejected())
+        }
+
+        fn runtime_list(&self, _operation_token: u64) -> Result<RuntimeList, BackendError> {
+            self.called()?;
+            Ok(RuntimeList::new(None, Vec::new()))
+        }
+
+        fn stream_turn(
+            &self,
+            _operation_token: u64,
+            _prompt: String,
+            _emit: EventEmitter,
+        ) -> Result<(), BackendError> {
+            self.called()
+        }
+
+        fn detach_stream(&self, _operation_token: u64) -> Result<(), BackendError> {
+            Ok(())
+        }
+
+        fn detach_controls(&self) -> Result<(), BackendError> {
+            Ok(())
+        }
+
+        fn resolve_approval(
+            &self,
+            _operation_token: u64,
+            _approval_id: String,
+            _accepted: bool,
+        ) -> Result<(), BackendError> {
+            self.called()
+        }
+
+        fn resolve_input(
+            &self,
+            _operation_token: u64,
+            _input_id: String,
+            _value: String,
+        ) -> Result<(), BackendError> {
+            self.called()
+        }
+
+        fn interrupt(&self, _operation_token: u64, _turn_id: String) -> Result<(), BackendError> {
+            self.called()
+        }
+
+        fn switch_runtime(
+            &self,
+            _operation_token: u64,
+            _runtime: String,
+        ) -> Result<RuntimeStatus, BackendError> {
+            self.called()?;
+            Ok(RuntimeStatus::new("unused", "unused", true))
+        }
+    }
+
+    #[test]
+    fn rejected_begin_never_spawns_or_calls_stream_backend() {
+        let backend = Arc::new(LeaseRejectingBackend::default());
+        let spawner = CountingThreadSpawner::default();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let token = OperationToken::new(7);
+        start_stream_worker_with_spawner(
+            backend.clone(),
+            sender,
+            "prompt".into(),
+            token,
+            spawner.clone(),
+        );
+        assert_eq!(spawner.0.load(Ordering::Relaxed), 0);
+        assert_eq!(backend.method_calls.load(Ordering::Relaxed), 0);
+        let RuntimeStreamEvent::Completed {
+            operation_token,
+            result,
+        } = receiver.try_recv().unwrap()
+        else {
+            panic!("expected stream completion")
+        };
+        assert!(matches!(
+            &result,
+            Err(error) if operation_token == token && error.safe_message() == "lease rejected"
+        ));
+        let mut model = Model::new(
+            PathBuf::from("workspace"),
+            RuntimeStatus::new("codex", "Codex", true),
+        );
+        model.turn = TurnState::Starting {
+            operation_token: token,
+        };
+        update(
+            &mut model,
+            crate::action::Action::TurnStreamCompleted {
+                operation_token,
+                result,
+            },
+        );
+        assert_eq!(model.turn, TurnState::Idle);
+        assert!(
+            model
+                .last_backend_error
+                .as_ref()
+                .is_some_and(|error| { error.safe_message() == "lease rejected" })
+        );
+    }
+
+    #[test]
+    fn rejected_begin_never_spawns_or_calls_any_control_backend() {
+        let effects = [
+            Effect::ResolveApproval {
+                turn_id: "turn".into(),
+                approval_id: "approval".into(),
+                operation_token: OperationToken::new(1),
+                accepted: true,
+            },
+            Effect::ResolveInput {
+                turn_id: "turn".into(),
+                input_id: "input".into(),
+                operation_token: OperationToken::new(2),
+                value: "value".into(),
+            },
+            Effect::Interrupt {
+                turn_id: "turn".into(),
+                operation_token: OperationToken::new(3),
+            },
+            Effect::LoadRuntimeList {
+                operation_token: OperationToken::new(4),
+            },
+            Effect::SwitchRuntime {
+                runtime: "claude".into(),
+                operation_token: OperationToken::new(5),
+            },
+        ];
+        for effect in effects {
+            let backend = Arc::new(LeaseRejectingBackend::default());
+            let spawner = CountingThreadSpawner::default();
+            let (sender, mut receiver) = mpsc::channel(1);
+            let mut model = model_with_pending_effect(&effect);
+            start_control_effect_with_spawner(
+                backend.clone(),
+                sender,
+                effect.clone(),
+                spawner.clone(),
+            );
+            assert_eq!(spawner.0.load(Ordering::Relaxed), 0);
+            assert_eq!(backend.method_calls.load(Ordering::Relaxed), 0);
+            let HighPriorityEvent::Control(action) = receiver.try_recv().unwrap() else {
+                panic!("expected control completion")
+            };
+            assert!(action_result_is_rejected(&action));
+            update(&mut model, *action);
+            assert!(
+                model
+                    .last_backend_error
+                    .as_ref()
+                    .is_some_and(|error| { error.safe_message() == "lease rejected" })
+            );
+            assert!(effect_is_retryable_after_failure(&effect, &model));
+        }
+    }
+
+    #[test]
+    fn rejected_initialization_begin_never_spawns_or_calls_backend() {
+        let backend = Arc::new(LeaseRejectingBackend::default());
+        let spawner = CountingThreadSpawner::default();
+        let (sender, mut receiver) = mpsc::channel(1);
+        start_initialization_worker(backend.clone(), sender, spawner.clone());
+        assert_eq!(spawner.0.load(Ordering::Relaxed), 0);
+        assert_eq!(backend.method_calls.load(Ordering::Relaxed), 0);
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(HighPriorityEvent::Initialized(Err(error)))
+                if error.safe_message() == "lease rejected"
+        ));
+
+        let spawner = CountingThreadSpawner::default();
+        let (full_sender, _full_receiver) = mpsc::channel(1);
+        full_sender
+            .try_send(HighPriorityEvent::Input(Ok(None)))
+            .unwrap();
+        assert!(matches!(
+            start_initialization_worker(backend, full_sender, spawner.clone()),
+            Some(HighPriorityEvent::Initialized(Err(error)))
+                if error.safe_message() == "lease rejected"
+        ));
+        assert_eq!(spawner.0.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn rejected_begin_returns_typed_completion_when_bounded_channel_is_full() {
+        let backend = Arc::new(LeaseRejectingBackend::default());
+        let spawner = CountingThreadSpawner::default();
+        let (runtime_sender, _runtime_receiver) = mpsc::channel(1);
+        runtime_sender
+            .try_send(RuntimeStreamEvent::Completed {
+                operation_token: OperationToken::new(99),
+                result: Ok(()),
+            })
+            .unwrap();
+        assert!(matches!(
+            start_stream_worker_with_spawner(
+                backend.clone(),
+                runtime_sender,
+                "prompt".into(),
+                OperationToken::new(1),
+                spawner.clone(),
+            ),
+            Some(crate::action::Action::TurnStreamCompleted {
+                result: Err(error), ..
+            }) if error.safe_message() == "lease rejected"
+        ));
+
+        let (control_sender, _control_receiver) = mpsc::channel(1);
+        control_sender
+            .try_send(HighPriorityEvent::Input(Ok(None)))
+            .unwrap();
+        assert!(matches!(
+            start_control_effect_with_spawner(
+                backend,
+                control_sender,
+                Effect::LoadRuntimeList {
+                    operation_token: OperationToken::new(2),
+                },
+                spawner.clone(),
+            ),
+            Some(crate::action::Action::RuntimeListLoaded {
+                result: Err(error), ..
+            }) if error.safe_message() == "lease rejected"
+        ));
+        assert_eq!(spawner.0.load(Ordering::Relaxed), 0);
+    }
+
+    struct PendingDriver;
+
+    impl Driver for PendingDriver {
+        fn next_event(
+            &mut self,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<InputEvent>, AppError>> + Send + '_>>
+        {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct ConnectionRecorder(Arc<Mutex<Vec<ConnectionState>>>);
+
+    impl Renderer for ConnectionRecorder {
+        fn draw(&mut self, model: &Model) -> Result<(), AppError> {
+            self.0.lock().unwrap().push(model.connection.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejected_initialization_begin_marks_model_failed_without_spawning() {
+        let backend = Arc::new(LeaseRejectingBackend::default());
+        let spawner = CountingThreadSpawner::default();
+        let renderer = ConnectionRecorder::default();
+        let connections = renderer.0.clone();
+        let error = run_with_driver_and_renderer_config_spawner(
+            backend.clone(),
+            PendingDriver,
+            renderer,
+            AppConfig::default(),
+            spawner.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            AppError::Backend(ref error) if error.safe_message() == "lease rejected"
+        ));
+        assert_eq!(spawner.0.load(Ordering::Relaxed), 0);
+        assert_eq!(backend.method_calls.load(Ordering::Relaxed), 0);
+        assert!(matches!(
+            connections.lock().unwrap().last(),
+            Some(ConnectionState::Failed(error)) if error.safe_message() == "lease rejected"
+        ));
+    }
+
+    fn action_result_is_rejected(action: &crate::action::Action) -> bool {
+        match action {
+            crate::action::Action::ApprovalResolutionCompleted { result, .. }
+            | crate::action::Action::InputResolutionCompleted { result, .. }
+            | crate::action::Action::InterruptCompleted { result, .. } => result
+                .as_ref()
+                .is_err_and(|error| error.safe_message() == "lease rejected"),
+            crate::action::Action::RuntimeListLoaded { result, .. } => result
+                .as_ref()
+                .is_err_and(|error| error.safe_message() == "lease rejected"),
+            crate::action::Action::RuntimeSwitched { result, .. } => result
+                .as_ref()
+                .is_err_and(|error| error.safe_message() == "lease rejected"),
+            _ => false,
+        }
+    }
+
+    fn model_with_pending_effect(effect: &Effect) -> Model {
+        let mut model = Model::new(
+            PathBuf::from("workspace"),
+            RuntimeStatus::new("codex", "Codex", true),
+        );
+        match effect {
+            Effect::ResolveApproval {
+                turn_id,
+                approval_id,
+                operation_token,
+                ..
+            } => {
+                let request = ApprovalRequest {
+                    turn_id: turn_id.clone(),
+                    approval_id: approval_id.clone(),
+                    operation_token: *operation_token,
+                    tool: "shell".into(),
+                    summary: "test".into(),
+                    options: Vec::new(),
+                };
+                model.turn = TurnState::Streaming {
+                    operation_token: OperationToken::new(99),
+                    turn_id: turn_id.clone(),
+                };
+                model.interaction = Interaction::ApprovalResolving {
+                    request,
+                    decision: crate::action::ApprovalDecision::AllowOnce,
+                };
+            }
+            Effect::ResolveInput {
+                turn_id,
+                input_id,
+                operation_token,
+                value,
+            } => {
+                let request = InputRequest {
+                    turn_id: turn_id.clone(),
+                    input_id: input_id.clone(),
+                    operation_token: *operation_token,
+                    prompt: "test".into(),
+                };
+                model.turn = TurnState::Streaming {
+                    operation_token: OperationToken::new(99),
+                    turn_id: turn_id.clone(),
+                };
+                model.interaction = Interaction::InputResolving {
+                    request,
+                    value: value.clone(),
+                };
+            }
+            Effect::Interrupt {
+                turn_id,
+                operation_token,
+            } => {
+                model.pending_interrupt = Some(PendingInterrupt {
+                    turn_id: turn_id.clone(),
+                    operation_token: *operation_token,
+                });
+            }
+            Effect::LoadRuntimeList { operation_token } => {
+                model.overlay = Overlay::RuntimeList;
+                model.pending_runtime_list = Some(*operation_token);
+            }
+            Effect::SwitchRuntime {
+                runtime,
+                operation_token,
+            } => {
+                model.pending_runtime_switch = Some(PendingRuntimeSwitch {
+                    target: runtime.clone(),
+                    operation_token: *operation_token,
+                });
+            }
+            Effect::StartTurn { .. } => unreachable!(),
+        }
+        model
+    }
+
+    fn effect_is_retryable_after_failure(effect: &Effect, model: &Model) -> bool {
+        match effect {
+            Effect::ResolveApproval { .. } => {
+                matches!(model.interaction, Interaction::ApprovalPending(_))
+            }
+            Effect::ResolveInput { .. } => {
+                matches!(model.interaction, Interaction::InputPending(_))
+            }
+            Effect::Interrupt { .. } => model.pending_interrupt.is_none(),
+            Effect::LoadRuntimeList { .. } => model.pending_runtime_list.is_none(),
+            Effect::SwitchRuntime { .. } => model.pending_runtime_switch.is_none(),
+            Effect::StartTurn { .. } => false,
+        }
     }
 }
