@@ -1039,15 +1039,16 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         if (mcpId) {
           const mcpBs = bundleStates[mcpId];
           const mcpInstalled = mcpBs ? mcpBs.installed : !!toolStates[mcpId];
-          // MCP 未装但技能独立已装（历史遗留/单独安装）→ 卡也显示已装，
-          // 动作走技能级（卸载按实际物理位置删除，G3）；MCP 已装则跟随包态。
+          // 安装态：MCP 或技能任一已装即显示已装（G3：独立安装的 companion
+          // 技能可见可管）。动作始终跟随所属 MCP 包 readiness——配置字段
+          // （配置/连接按钮）只有包级 readiness 知道，技能级给不出。
           const skillBs = s.backendId ? bundleStates[s.backendId] : null;
           const skillInstalled = skillBs ? skillBs.installed : (be ? be.installed : false);
           return {
             ...s,
             installed: mcpInstalled || skillInstalled,
             updateAvailable,
-            actions: mcpInstalled ? actionsOf(mcpBs) : actionsOf(skillBs),
+            actions: actionsOf(mcpBs),
           };
         }
         const bs = s.backendId ? bundleStates[s.backendId] : null;
@@ -1074,14 +1075,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const mcpEntry = mcpId
             ? (tsToolsData.find(t => t.backendId === mcpId) || tsToolWelcomeData.find(t => t.backendId === mcpId))
             : null;
-          // 安装态/动作：MCP 已装 → 跟随所属包（统一 readiness，store 真相源）；
-          // MCP 未装但技能独立已装 → 跟随技能自身（G3：独立安装的 companion
-          // 技能可見、可卸载）；独立技能读自身 readiness；缺失回退技能后端状态位。
+          // 安装态：MCP 或技能任一已装即显示已装（G3：独立安装的 companion
+          // 技能可見、可卸载）。动作始终跟随所属 MCP 包 readiness——配置/连接
+          // 按钮依赖包级配置字段（如腾讯文档 Token），技能级 readiness 给不出。
           const mcpBs = mcpId ? bundleStates[mcpId] : null;
           const skillBs = bundleStates[x.id];
           const mcpInstalled = mcpId ? (mcpBs ? mcpBs.installed : !!toolStates[mcpId]) : false;
           const skillInstalled = skillBs ? skillBs.installed : !!x.installed;
-          const stateBs = mcpInstalled ? mcpBs : skillBs;
           return localizeSkill({
             id: 'mcp-skill-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || '',
             // 有配套 MCP(companion)的卡 = 工具包:徽标与分组归 bundle,安装态跟随 MCP
@@ -1092,7 +1092,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: mcpId ? (mcpInstalled || skillInstalled) : skillInstalled,
             updateAvailable: !!x.update_available,
-            actions: actionsOf(stateBs),          });
+            actions: mcpId ? actionsOf(mcpBs) : actionsOf(skillBs),          });
         });
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
