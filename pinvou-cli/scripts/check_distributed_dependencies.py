@@ -14,6 +14,7 @@ from pathlib import Path
 
 DEFAULT_ROOTS = (
     "pinvou-cli",
+    "pinvou-tui",
     "pinvou-controller",
     "pinvou-node",
     "pinvou-protocol",
