@@ -20,11 +20,13 @@ pub trait TerminalOps: Send {
     fn leave_alt(&mut self) -> io::Result<()>;
     fn disable_raw(&mut self) -> io::Result<()>;
 
-    fn report_restore_errors(&mut self, errors: &[String]) {
-        eprintln!(
+    fn report_restore_errors(&mut self, errors: &[String]) -> io::Result<()> {
+        let mut stderr = io::stderr().lock();
+        writeln!(
+            stderr,
             "pinvou: terminal restoration encountered errors: {}",
             errors.join("; ")
-        );
+        )
     }
 }
 
@@ -164,7 +166,7 @@ impl<O: TerminalOps> TerminalGuard<O> {
             Ok(())
         } else {
             // Reporting deliberately happens after the alternate-screen restoration attempt.
-            self.ops.report_restore_errors(&failures);
+            let _ = self.ops.report_restore_errors(&failures);
             Err(TerminalRestoreError { failures })
         }
     }
@@ -245,11 +247,16 @@ mod tests {
         fn disable_raw(&mut self) -> io::Result<()> {
             self.record("disable_raw")
         }
-        fn report_restore_errors(&mut self, errors: &[String]) {
+        fn report_restore_errors(&mut self, errors: &[String]) -> io::Result<()> {
             self.calls
                 .lock()
                 .unwrap()
                 .push(format!("report:{}", errors.join(",")));
+            if self.failures.lock().unwrap().contains("report") {
+                Err(io::Error::other("report"))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -363,5 +370,28 @@ mod tests {
             ]
         );
         assert!(calls[5].starts_with("report:"));
+    }
+
+    #[test]
+    fn reporter_failure_never_interrupts_restoration_or_panics_in_drop() {
+        let ops = RecordingOps::failing(&["show_cursor", "report"]);
+        {
+            let _guard = TerminalGuard::enter(ops.clone()).unwrap();
+        }
+        let calls = ops.calls();
+        assert_eq!(
+            &calls[..8],
+            [
+                "enable_raw",
+                "enter_alt",
+                "hide_cursor",
+                "enable_paste",
+                "disable_paste",
+                "show_cursor",
+                "leave_alt",
+                "disable_raw",
+            ]
+        );
+        assert!(calls[8].starts_with("report:"));
     }
 }
