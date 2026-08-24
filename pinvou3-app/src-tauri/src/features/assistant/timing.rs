@@ -1304,7 +1304,11 @@ mod tests {
             .iter()
             .filter(|event| event.event == "assistant_done")
             .collect();
-        assert_eq!(done_events.len(), 1, "finish on an emptied queue is a no-op");
+        assert_eq!(
+            done_events.len(),
+            1,
+            "finish on an emptied queue is a no-op"
+        );
         assert!(
             !timeline
                 .iter()
