@@ -12,6 +12,12 @@ use std::sync::Mutex;
 #[cfg(not(feature = "product-backend"))]
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(not(feature = "distributed"))]
+#[test]
+fn legacy_build_without_arguments_keeps_the_help_route() {
+    assert_eq!(parse_args(["pinvou"]).unwrap().command(), &CliCommand::Help);
+}
+
 #[cfg(not(feature = "product-backend"))]
 #[test]
 fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {

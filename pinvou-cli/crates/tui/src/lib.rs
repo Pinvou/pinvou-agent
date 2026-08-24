@@ -3,9 +3,117 @@ pub mod app;
 pub mod backend;
 pub mod commands;
 pub mod model;
+pub mod renderer;
 pub mod terminal;
 pub mod update;
 pub mod view;
+
+use std::{
+    io,
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
+};
+
+use app::{AppError, Driver, Renderer, RunResult, TerminalDriver, run_with_driver_and_renderer};
+use backend::{Backend, BackendErrorKind};
+use pinvou_protocol::StableExitCode;
+use ratatui::backend::CrosstermBackend;
+use renderer::RatatuiRenderer;
+use terminal::{CrosstermOps, TerminalGuard, TerminalOps, TerminalRestoreError};
+
+#[derive(Debug, thiserror::Error)]
+pub enum TuiRunError {
+    #[error("{0}")]
+    App(#[from] AppError),
+    #[error("terminal initialization failed: {0}")]
+    Terminal(String),
+    #[error("TUI cannot start inside an existing Tokio runtime")]
+    NestedRuntime,
+    #[error("TUI panicked")]
+    Panic,
+    #[error("{cause}; terminal cleanup warnings: {cleanup}")]
+    Cleanup {
+        cause: Box<TuiRunError>,
+        cleanup: String,
+    },
+}
+
+impl TuiRunError {
+    pub fn exit_code(&self) -> StableExitCode {
+        match self {
+            Self::App(error) => app_exit_code(error),
+            Self::Cleanup { cause, .. } => cause.exit_code(),
+            Self::Terminal(_) | Self::NestedRuntime | Self::Panic => StableExitCode::Internal,
+        }
+    }
+}
+
+fn app_exit_code(error: &AppError) -> StableExitCode {
+    match error {
+        AppError::Backend(error) => error.exit_code().unwrap_or(match error.kind() {
+            BackendErrorKind::ControllerUnavailable => StableExitCode::ControllerUnavailable,
+            BackendErrorKind::AuthBlocked => StableExitCode::BlockedAuth,
+            BackendErrorKind::Cancelled => StableExitCode::Cancelled,
+            BackendErrorKind::Protocol => StableExitCode::DataCorruption,
+            BackendErrorKind::Operation
+            | BackendErrorKind::WorkerPanic
+            | BackendErrorKind::Timeout => StableExitCode::RuntimeFailed,
+        }),
+        AppError::Cleanup { cause, .. } => app_exit_code(cause),
+        AppError::Input(_) | AppError::Render(_) => StableExitCode::Internal,
+    }
+}
+
+pub fn run<B: Backend>(backend: Arc<B>) -> Result<RunResult, TuiRunError> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err(TuiRunError::NestedRuntime);
+    }
+    let guard = TerminalGuard::enter(CrosstermOps::new(io::stdout()))
+        .map_err(|error| TuiRunError::Terminal(error.to_string()))?;
+    let renderer = RatatuiRenderer::new(CrosstermBackend::new(io::stdout()))?;
+    run_with_parts(backend, TerminalDriver::start(), renderer, guard)
+}
+
+pub fn run_with_parts<B, D, R, O>(
+    backend: Arc<B>,
+    driver: D,
+    renderer: R,
+    mut guard: TerminalGuard<O>,
+) -> Result<RunResult, TuiRunError>
+where
+    B: Backend,
+    D: Driver,
+    R: Renderer,
+    O: TerminalOps,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .map_err(|error| TuiRunError::Terminal(error.to_string()))?;
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        runtime.block_on(run_with_driver_and_renderer(backend, driver, renderer))
+    }))
+    .map_err(|_| TuiRunError::Panic)
+    .and_then(|result| result.map_err(TuiRunError::App));
+    drop(runtime);
+    combine_restore(result, guard.restore())
+}
+
+fn combine_restore(
+    result: Result<RunResult, TuiRunError>,
+    restore: Result<(), TerminalRestoreError>,
+) -> Result<RunResult, TuiRunError> {
+    match (result, restore) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(error)) => Err(TuiRunError::Terminal(format!(
+            "terminal cleanup failed: {error}"
+        ))),
+        (Err(cause), Err(error)) => Err(TuiRunError::Cleanup {
+            cause: Box::new(cause),
+            cleanup: error.to_string(),
+        }),
+    }
+}
 
 #[cfg(test)]
 mod tests {

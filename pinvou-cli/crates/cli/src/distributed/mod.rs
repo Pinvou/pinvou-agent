@@ -109,6 +109,40 @@ pub fn require_interactive_terminal(
     }
 }
 
+pub trait TerminalEnvironment {
+    fn stdin_is_terminal(&self) -> bool;
+    fn stdout_is_terminal(&self) -> bool;
+    fn run_tui(&self) -> Result<String, DistributedError>;
+}
+
+pub struct SystemTerminalEnvironment;
+
+impl TerminalEnvironment for SystemTerminalEnvironment {
+    fn stdin_is_terminal(&self) -> bool {
+        io::stdin().is_terminal()
+    }
+
+    fn stdout_is_terminal(&self) -> bool {
+        io::stdout().is_terminal()
+    }
+
+    fn run_tui(&self) -> Result<String, DistributedError> {
+        execute_tui()
+    }
+}
+
+pub(crate) fn execute_tui_with_environment(
+    environment: &dyn TerminalEnvironment,
+) -> Result<String, DistributedError> {
+    if !environment.stdin_is_terminal() || !environment.stdout_is_terminal() {
+        return Err(DistributedError::new(
+            StableExitCode::Usage,
+            "当前不是交互终端，请使用具体子命令",
+        ));
+    }
+    environment.run_tui()
+}
+
 pub fn map_error_causes(causes: impl IntoIterator<Item = ExitCause>) -> StableExitCode {
     StableExitCode::from_causal_chain(causes)
 }
@@ -534,6 +568,30 @@ pub(crate) fn execute(
             execute_runtime_switch_with_controller(&mut controller, &runtime, output)
         }
     }
+}
+
+pub(crate) fn execute_tui() -> Result<String, DistributedError> {
+    let workspace = std::env::current_dir()
+        .map_err(|_| DistributedError::controller("workspace path is unavailable"))?;
+    let backend = tui_backend::ControllerTuiBackend::discover(workspace).map_err(|error| {
+        DistributedError::new(
+            error.exit_code().unwrap_or(match error.kind() {
+                pinvou_tui::backend::BackendErrorKind::ControllerUnavailable => {
+                    StableExitCode::ControllerUnavailable
+                }
+                pinvou_tui::backend::BackendErrorKind::AuthBlocked => StableExitCode::BlockedAuth,
+                pinvou_tui::backend::BackendErrorKind::Cancelled => StableExitCode::Cancelled,
+                pinvou_tui::backend::BackendErrorKind::Protocol => StableExitCode::DataCorruption,
+                pinvou_tui::backend::BackendErrorKind::Operation
+                | pinvou_tui::backend::BackendErrorKind::WorkerPanic
+                | pinvou_tui::backend::BackendErrorKind::Timeout => StableExitCode::RuntimeFailed,
+            }),
+            error.safe_message(),
+        )
+    })?;
+    pinvou_tui::run(Arc::new(backend))
+        .map(|_| String::new())
+        .map_err(|error| DistributedError::new(error.exit_code(), error.to_string()))
 }
 
 fn execute_runtime_switch_with_controller<S: Read + Write>(

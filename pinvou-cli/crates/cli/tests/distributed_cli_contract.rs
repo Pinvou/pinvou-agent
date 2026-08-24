@@ -8,10 +8,10 @@ use std::{
 };
 
 use pinvou_cli::distributed::{
-    CHAT_TEXT_FRAME, ControllerWire, DistributedCommand, ProjectionAction, TerminalProjection,
-    map_error_causes,
+    CHAT_TEXT_FRAME, ControllerWire, DistributedCommand, ProjectionAction, TerminalEnvironment,
+    TerminalProjection, map_error_causes,
 };
-use pinvou_cli::{CliCommand, ExitCode, execute, parse_args};
+use pinvou_cli::{CliCommand, ExitCode, execute, execute_with_terminal_environment, parse_args};
 use pinvou_controller::{ControllerPaths, ControllerSession, LocalIpcListener};
 use pinvou_protocol::{
     ExitCause, IpcMessage, RuntimeEventEnvelope, StableExitCode, decode_frame, encode_frame,
@@ -88,15 +88,31 @@ fn event(kind: &str, rate: &str, stream: &str, payload: serde_json::Value) -> Ru
 }
 
 #[test]
-fn no_arguments_prints_stage_one_help_without_starting_a_daemon() {
-    let parsed = parse_args(["pinvou"]).expect("no arguments are valid in stage one");
-    assert_eq!(parsed.command(), &CliCommand::Help);
-    let outcome = execute(parsed).unwrap();
-    assert_eq!(outcome.exit_code, ExitCode::Success);
-    assert!(outcome.stdout.contains("pinvou chat [--runtime <id>]"));
-    assert!(outcome.stdout.contains("pinvou runtime detect [id]"));
-    assert!(outcome.stdout.contains("pinvou runtime list"));
-    assert!(outcome.stdout.contains("pinvou runtime switch"));
+fn no_arguments_select_the_tui_while_help_remains_explicit() {
+    let parsed = parse_args(["pinvou"]).expect("no arguments launch the TUI");
+    assert_eq!(parsed.command(), &CliCommand::Tui);
+
+    assert_eq!(
+        parse_args(["pinvou", "--help"]).unwrap().command(),
+        &CliCommand::Help
+    );
+    let help = execute(parse_args(["pinvou", "--help"]).unwrap())
+        .unwrap()
+        .stdout;
+    assert!(help.contains("pinvou                 Start the interactive TUI"));
+    assert!(help.contains("advanced compatibility diagnostic"));
+    assert!(!help.contains("pinvou tui"));
+
+    let version = execute(parse_args(["pinvou", "--version"]).unwrap())
+        .unwrap()
+        .stdout;
+    assert_eq!(version, format!("pinvou {}", env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn an_explicit_tui_subcommand_is_not_part_of_the_public_cli() {
+    let error = parse_args(["pinvou", "tui"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Usage);
 }
 
 #[test]
@@ -160,6 +176,56 @@ fn interactive_chat_rejects_non_tty_before_controller_startup() {
     assert_eq!(error.exit_code().as_i32(), 2);
     assert!(error.to_string().contains("interactive terminal"));
     assert!(pinvou_cli::distributed::require_interactive_terminal(true, true).is_ok());
+}
+
+struct RecordingTerminalEnvironment {
+    stdin_tty: bool,
+    stdout_tty: bool,
+    starts: std::sync::atomic::AtomicUsize,
+}
+
+impl TerminalEnvironment for RecordingTerminalEnvironment {
+    fn stdin_is_terminal(&self) -> bool {
+        self.stdin_tty
+    }
+
+    fn stdout_is_terminal(&self) -> bool {
+        self.stdout_tty
+    }
+
+    fn run_tui(&self) -> Result<String, pinvou_cli::distributed::DistributedError> {
+        self.starts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(String::new())
+    }
+}
+
+#[test]
+fn tui_rejects_either_non_tty_before_starting_the_controller_or_terminal() {
+    for (stdin_tty, stdout_tty) in [(false, true), (true, false), (false, false)] {
+        let environment = RecordingTerminalEnvironment {
+            stdin_tty,
+            stdout_tty,
+            starts: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let started = Instant::now();
+        let error =
+            execute_with_terminal_environment(parse_args(["pinvou"]).unwrap(), &environment)
+                .unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+        assert!(
+            error
+                .to_string()
+                .contains("当前不是交互终端，请使用具体子命令")
+        );
+        assert_eq!(
+            environment
+                .starts
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 }
 
 #[test]
@@ -482,7 +548,7 @@ fn chat_binary_projects_scripted_controller_events_over_real_ipc() {
     assert!(output.stderr.is_empty());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "runtime: none\nswitch: /runtime <id>\ninspect: /detect <id>\nYou: scripted answer\n"
+        "runtime: none\nswitch: /runtime <id>\ninspect: /detect <id>\nYou: scripted answer"
     );
 }
 
@@ -538,7 +604,7 @@ fn chat_binary_auto_starts_controller_and_real_node_for_one_turn() {
     assert!(output.stderr.is_empty());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "runtime switched to echo\nruntime: echo\nstatus: available\nauth: not_required\ninteractive_chat: yes\ntool_approval: no\nelicitation: no\nYou: real node echo\n"
+        "runtime switched to echo\nruntime: echo\nstatus: available\nauth: not_required\ninteractive_chat: yes\ntool_approval: no\nelicitation: no\nYou: real node echo"
     );
 }
 

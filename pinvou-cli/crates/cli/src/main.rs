@@ -2,7 +2,9 @@ fn main() {
     let result = pinvou_cli::parse_args(std::env::args()).and_then(pinvou_cli::execute);
     match result {
         Ok(outcome) => {
-            println!("{}", outcome.stdout);
+            if !outcome.stdout.is_empty() {
+                println!("{}", outcome.stdout);
+            }
             std::process::exit(outcome.exit_code.as_i32());
         }
         Err(error) => {

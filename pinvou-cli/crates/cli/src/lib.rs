@@ -183,6 +183,9 @@ pub enum BenchmarkCommand {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliCommand {
     Help,
+    Version,
+    #[cfg(feature = "distributed")]
+    Tui,
     Benchmark(BenchmarkCommand),
     #[cfg(feature = "distributed")]
     Distributed(distributed::DistributedCommand),
@@ -272,9 +275,22 @@ where
             index += 1;
         }
     }
+    #[cfg(feature = "distributed")]
+    if values.is_empty() {
+        return Ok(ParsedCli {
+            command: CliCommand::Tui,
+            output,
+        });
+    }
     if values.is_empty() || values.as_slice() == ["--help"] || values.as_slice() == ["-h"] {
         return Ok(ParsedCli {
             command: CliCommand::Help,
+            output,
+        });
+    }
+    if values.as_slice() == ["--version"] || values.as_slice() == ["-V"] {
+        return Ok(ParsedCli {
+            command: CliCommand::Version,
             output,
         });
     }
@@ -441,22 +457,25 @@ fn required_value(values: &[String], command: &str) -> Result<String, CliError> 
 }
 
 pub fn render_help() -> String {
-    let mut commands = vec![
+    let commands = vec![
         "Pinvou command line",
         "",
         "USAGE:",
-        "  pinvou <command>",
+        "  pinvou [command]",
         "",
         "COMMANDS:",
         "  benchmark ...          Run benchmark workflows",
-    ];
-    #[cfg(feature = "distributed")]
-    commands.extend([
-        "  pinvou chat [--runtime <id>]  Start an interactive local chat",
+        #[cfg(feature = "distributed")]
+        "  pinvou                 Start the interactive TUI",
+        #[cfg(feature = "distributed")]
+        "  pinvou chat [--runtime <id>]  advanced compatibility diagnostic",
+        #[cfg(feature = "distributed")]
         "  pinvou runtime detect [id]    Detect active or named runtime",
+        #[cfg(feature = "distributed")]
         "  pinvou runtime list           List selectable runtimes",
+        #[cfg(feature = "distributed")]
         "  pinvou runtime switch         Switch the active runtime",
-    ]);
+    ];
     commands.join("\n")
 }
 
@@ -502,26 +521,19 @@ pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
     let output = parsed.output;
     match parsed.command {
         CliCommand::Help => Ok(success(render_help())),
+        CliCommand::Version => Ok(success(format!("pinvou {}", env!("CARGO_PKG_VERSION")))),
+        #[cfg(feature = "distributed")]
+        CliCommand::Tui => {
+            distributed::execute_tui_with_environment(&distributed::SystemTerminalEnvironment)
+                .map(success)
+                .map_err(cli_error_from_distributed)
+        }
         #[cfg(feature = "distributed")]
         CliCommand::Distributed(command) => distributed::execute(command, output)
-            .map(|stdout| success(stdout))
+            .map(success)
             .map_err(|error| CliError {
                 message: error.to_string(),
-                exit_code: match error.exit_code() {
-                    pinvou_protocol::StableExitCode::Success => ExitCode::Success,
-                    pinvou_protocol::StableExitCode::Internal => ExitCode::Failed,
-                    pinvou_protocol::StableExitCode::Usage => ExitCode::Usage,
-                    pinvou_protocol::StableExitCode::ControllerUnavailable => {
-                        ExitCode::ControllerUnavailable
-                    }
-                    pinvou_protocol::StableExitCode::BlockedAuth => ExitCode::BlockedAuth,
-                    pinvou_protocol::StableExitCode::RuntimeFailed => ExitCode::RuntimeFailed,
-                    pinvou_protocol::StableExitCode::Cancelled => ExitCode::Cancelled,
-                    pinvou_protocol::StableExitCode::ResourceExhausted => {
-                        ExitCode::ResourceExhausted
-                    }
-                    pinvou_protocol::StableExitCode::DataCorruption => ExitCode::DataCorruption,
-                },
+                exit_code: distributed_exit_code(error.exit_code()),
             }),
         CliCommand::Benchmark(BenchmarkCommand::List) => Ok(success(render_list(output))),
         CliCommand::Benchmark(BenchmarkCommand::Status(run_id)) => status(&run_id, output),
@@ -552,6 +564,43 @@ pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
         CliCommand::Benchmark(BenchmarkCommand::NotAvailable(command)) => Err(CliError::usage(
             format!("benchmark command '{command}' is not_available"),
         )),
+    }
+}
+
+#[cfg(feature = "distributed")]
+pub fn execute_with_terminal_environment(
+    parsed: ParsedCli,
+    environment: &dyn distributed::TerminalEnvironment,
+) -> Result<CliOutcome, CliError> {
+    if matches!(parsed.command, CliCommand::Tui) {
+        distributed::execute_tui_with_environment(environment)
+            .map(success)
+            .map_err(cli_error_from_distributed)
+    } else {
+        execute(parsed)
+    }
+}
+
+#[cfg(feature = "distributed")]
+fn cli_error_from_distributed(error: distributed::DistributedError) -> CliError {
+    CliError {
+        message: error.to_string(),
+        exit_code: distributed_exit_code(error.exit_code()),
+    }
+}
+
+#[cfg(feature = "distributed")]
+fn distributed_exit_code(code: pinvou_protocol::StableExitCode) -> ExitCode {
+    match code {
+        pinvou_protocol::StableExitCode::Success => ExitCode::Success,
+        pinvou_protocol::StableExitCode::Internal => ExitCode::Failed,
+        pinvou_protocol::StableExitCode::Usage => ExitCode::Usage,
+        pinvou_protocol::StableExitCode::ControllerUnavailable => ExitCode::ControllerUnavailable,
+        pinvou_protocol::StableExitCode::BlockedAuth => ExitCode::BlockedAuth,
+        pinvou_protocol::StableExitCode::RuntimeFailed => ExitCode::RuntimeFailed,
+        pinvou_protocol::StableExitCode::Cancelled => ExitCode::Cancelled,
+        pinvou_protocol::StableExitCode::ResourceExhausted => ExitCode::ResourceExhausted,
+        pinvou_protocol::StableExitCode::DataCorruption => ExitCode::DataCorruption,
     }
 }
 
