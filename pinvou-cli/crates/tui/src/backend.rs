@@ -8,6 +8,7 @@ pub struct RuntimeStatus {
     pub id: String,
     pub display_name: String,
     pub available: bool,
+    pub capability_summary: Option<String>,
 }
 
 impl RuntimeStatus {
@@ -16,7 +17,13 @@ impl RuntimeStatus {
             id: id.into(),
             display_name: display_name.into(),
             available,
+            capability_summary: None,
         }
+    }
+
+    pub fn with_capability_summary(mut self, summary: impl Into<String>) -> Self {
+        self.capability_summary = Some(summary.into());
+        self
     }
 }
 

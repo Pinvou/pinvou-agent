@@ -1,6 +1,6 @@
 use pinvou_protocol::RuntimeEventEnvelope;
 
-use crate::backend::{BackendError, RuntimeStatus};
+use crate::backend::{BackendError, RuntimeList, RuntimeStatus};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApprovalDecision {
@@ -34,6 +34,16 @@ pub enum Action {
         result: Result<(), BackendError>,
     },
     Interrupt,
+    InterruptCompleted {
+        turn_id: String,
+        operation_token: crate::model::OperationToken,
+        result: Result<(), BackendError>,
+    },
+    LoadRuntimeList,
+    RuntimeListLoaded {
+        operation_token: crate::model::OperationToken,
+        result: Result<RuntimeList, BackendError>,
+    },
     RuntimeSwitch(String),
     RuntimeSwitched {
         operation_token: crate::model::OperationToken,
@@ -61,6 +71,10 @@ pub enum Effect {
     },
     Interrupt {
         turn_id: String,
+        operation_token: crate::model::OperationToken,
+    },
+    LoadRuntimeList {
+        operation_token: crate::model::OperationToken,
     },
     SwitchRuntime {
         runtime: String,

@@ -39,6 +39,16 @@ pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
             result,
         } => complete_turn_stream(model, operation_token, result),
         Action::Interrupt => interrupt(model),
+        Action::InterruptCompleted {
+            turn_id,
+            operation_token,
+            result,
+        } => complete_interrupt(model, &turn_id, operation_token, result),
+        Action::LoadRuntimeList => load_runtime_list(model),
+        Action::RuntimeListLoaded {
+            operation_token,
+            result,
+        } => complete_runtime_list(model, operation_token, result),
         Action::RuntimeSwitch(runtime) => switch_runtime(model, runtime),
         Action::RuntimeSwitched {
             operation_token,
@@ -63,10 +73,7 @@ fn submit(model: &mut Model, input: String) -> Vec<Effect> {
             );
             Vec::new()
         }
-        Ok(Some(SlashCommand::Runtime)) => {
-            open_overlay(model, Overlay::RuntimeList);
-            Vec::new()
-        }
+        Ok(Some(SlashCommand::Runtime)) => load_runtime_list(model),
         Ok(Some(SlashCommand::Exit)) => {
             model.should_quit = true;
             Vec::new()
@@ -281,12 +288,81 @@ fn complete_turn_stream(
 }
 
 fn interrupt(model: &mut Model) -> Vec<Effect> {
-    let TurnState::Streaming { turn_id, .. } = &model.turn else {
+    let TurnState::Streaming {
+        turn_id,
+        operation_token,
+    } = &model.turn
+    else {
         return Vec::new();
     };
     vec![Effect::Interrupt {
         turn_id: turn_id.clone(),
+        operation_token: *operation_token,
     }]
+}
+
+fn complete_interrupt(
+    model: &mut Model,
+    turn_id: &str,
+    operation_token: crate::model::OperationToken,
+    result: Result<(), BackendError>,
+) -> Vec<Effect> {
+    let current = matches!(
+        &model.turn,
+        TurnState::Streaming { turn_id: active_turn, operation_token: active_token }
+            if active_turn == turn_id && *active_token == operation_token
+    );
+    if !current {
+        record_ignored(model, "ignored stale interrupt completion".into());
+    } else if let Err(error) = result {
+        record_backend_error(model, error);
+    }
+    Vec::new()
+}
+
+fn load_runtime_list(model: &mut Model) -> Vec<Effect> {
+    if model.turn != TurnState::Idle
+        || model.interaction != Interaction::None
+        || model.pending_runtime_switch.is_some()
+    {
+        model.status_message =
+            Some("runtime selector cannot open during an active turn or interaction".into());
+        return Vec::new();
+    }
+    if model.pending_runtime_list.is_some() {
+        return Vec::new();
+    }
+    let operation_token = model.allocate_operation_token();
+    model.overlay = Overlay::RuntimeList;
+    model.pending_runtime_list = Some(operation_token);
+    model.status_message = Some("loading runtimes...".into());
+    vec![Effect::LoadRuntimeList { operation_token }]
+}
+
+fn complete_runtime_list(
+    model: &mut Model,
+    operation_token: crate::model::OperationToken,
+    result: Result<crate::backend::RuntimeList, BackendError>,
+) -> Vec<Effect> {
+    if model.pending_runtime_list != Some(operation_token) {
+        record_ignored(model, "ignored stale runtime list completion".into());
+        return Vec::new();
+    }
+    model.pending_runtime_list = None;
+    match result {
+        Ok(list) => {
+            model.runtime_candidates = list.runtimes;
+            model.selected_runtime = model
+                .runtime_candidates
+                .iter()
+                .position(|runtime| runtime.id == model.runtime.id)
+                .unwrap_or(0);
+            model.status_message = None;
+            model.last_backend_error = None;
+        }
+        Err(error) => record_backend_error(model, error),
+    }
+    Vec::new()
 }
 
 fn switch_runtime(model: &mut Model, runtime: String) -> Vec<Effect> {
@@ -390,10 +466,10 @@ fn project_runtime_event(
 
     match event.event_kind() {
         RuntimeEventKind::TextDelta => {
-            if payload.get("role").and_then(Value::as_str) == Some("assistant") {
-                if let Some(content) = payload.get("content").and_then(Value::as_str) {
-                    model.transcript.append_assistant(content);
-                }
+            if payload.get("role").and_then(Value::as_str) == Some("assistant")
+                && let Some(content) = payload.get("content").and_then(Value::as_str)
+            {
+                model.transcript.append_assistant(content);
             }
         }
         RuntimeEventKind::ApprovalRequested => request_approval(model, &payload),

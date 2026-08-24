@@ -1,4 +1,5 @@
 pub mod action;
+pub mod app;
 pub mod backend;
 pub mod commands;
 pub mod model;
@@ -194,10 +195,12 @@ mod tests {
             TranscriptEntry::Tool { output, .. } if output == "done"
         )));
 
+        let interrupt_token = active_turn_token(&model);
         assert_eq!(
             update(&mut model, Action::Interrupt),
             vec![Effect::Interrupt {
-                turn_id: "turn-1".into()
+                turn_id: "turn-1".into(),
+                operation_token: interrupt_token,
             }]
         );
         assert!(update(&mut model, Action::RuntimeSwitch("claude".into())).is_empty());

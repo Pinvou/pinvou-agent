@@ -170,9 +170,10 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, model: &Model) {
     let visible_height = area.height as usize;
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     let visual_height = paragraph.line_count(area.width);
-    let scroll = visual_height
+    let bottom = visual_height
         .saturating_sub(visible_height)
         .min(u16::MAX as usize) as u16;
+    let scroll = bottom.saturating_sub(model.transcript_scroll);
     frame.render_widget(paragraph.scroll((scroll, 0)), area);
 }
 
@@ -212,10 +213,15 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, model: &Model) {
         TurnState::Starting { .. } => "starting…",
         TurnState::Streaming { .. } => "working…",
     };
-    let input = if model.composer.input.is_empty() {
+    let composer = if matches!(model.interaction, Interaction::InputPending(_)) {
+        &model.input_composer
+    } else {
+        &model.composer
+    };
+    let input = if composer.input.is_empty() {
         Span::styled("Message Pinvou", Style::default().fg(Color::DarkGray))
     } else {
-        Span::raw(model.composer.input.as_str())
+        Span::raw(composer.input.as_str())
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -308,15 +314,58 @@ fn render_help_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model, command
 
 fn render_runtime_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model) {
     let width = area.width.saturating_sub(8).clamp(20, 56);
-    let height = 8.min(area.height.saturating_sub(4)).max(5);
+    let height = (model.runtime_candidates.len() as u16 + 6)
+        .min(area.height.saturating_sub(4))
+        .max(5);
     let popup = centered_rect(area, width, height);
     frame.render_widget(Clear, popup);
     let pending = model
         .pending_runtime_switch
         .as_ref()
         .map(|switch| format!("Switching to {}…", switch.target));
-    let active = format!("● {} ({})", model.runtime.display_name, model.runtime.id);
-    let mut lines = vec![Line::from(active), Line::default()];
+    let mut lines = Vec::new();
+    if model.pending_runtime_list.is_some() {
+        lines.push(Line::from("Loading runtimes…"));
+    } else if model.runtime_candidates.is_empty() {
+        lines.push(Line::from(format!(
+            "● {} ({}) · {}",
+            model.runtime.display_name,
+            model.runtime.id,
+            if model.runtime.available {
+                "available"
+            } else {
+                "unavailable"
+            }
+        )));
+    } else {
+        for (index, runtime) in model.runtime_candidates.iter().enumerate() {
+            let selected = if index == model.selected_runtime {
+                ">"
+            } else {
+                " "
+            };
+            let active = if runtime.id == model.runtime.id {
+                "●"
+            } else {
+                " "
+            };
+            let availability = if runtime.available {
+                "available"
+            } else {
+                "unavailable"
+            };
+            let capabilities = runtime
+                .capability_summary
+                .as_deref()
+                .map(|summary| format!(" · {summary}"))
+                .unwrap_or_default();
+            lines.push(Line::from(format!(
+                "{selected} {active} {} ({}) · {availability}{capabilities}",
+                runtime.display_name, runtime.id,
+            )));
+        }
+    }
+    lines.push(Line::default());
     if let Some(pending) = pending {
         lines.push(Line::from(pending));
     }
