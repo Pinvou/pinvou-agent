@@ -1,18 +1,18 @@
 # CodeWhale 0.9.0 → 0.9.5 底座升级报告
 
-> 日期：2026-08-17
-> 状态：专用编排退役已通过 `Pinvou/CodeWhale#13` 合并；公开维护分支 `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r7` 均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a`。
+> 日期：2026-08-21
+> 状态：专用编排退役已通过 `Pinvou/CodeWhale#13` 合并，逐轮工具安全扩展已通过 `Pinvou/CodeWhale#15` 合并；公开维护分支 `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r8` 均指向 `d127aed113529dc93754d044b9f352e9746f6b83`。
 
 ## 1. 结论
 
-本次从官方 `v0.9.5` tag clean re-fork，没有把旧 fork 整包 merge。r7 公开基线 `a36e6cd53` 退役专用编排协议并保留通用工具兼容后，仍需留在底座生命周期的 Pinvou 差异收敛为 4 个长期主题：
+本次从官方 `v0.9.5` tag clean re-fork，没有把旧 fork 整包 merge。r8 公开基线 `d127aed11` 退役专用编排协议、保留通用工具兼容，并发布逐轮工具安全扩展后，仍需留在底座生命周期的 Pinvou 差异收敛为 4 个长期主题：
 
 1. 宿主嵌入与路由边界
 2. 工具兼容与命令执行安全
 3. 嵌入上下文与技能来源
 4. 定时任务与运行生命周期
 
-相对官方 v0.9.5，退役后的 r7 fork 为 46 文件、`+1852/-269`；父仓代码层只需适配 `EngineConfig` 字段、窄 Fleet roster/worker 宿主入口和重算 lockfile。Pinvou 工具白名单继续在 app 层维护，直接复用 CodeWhale 原生 `allowed_tools`；工具商店和会话开关继续通过动态 `disallowed_tools` 收窄，不重建第二套底座策略。
+相对官方 v0.9.5，r8 fork 为 48 文件、`+3222/-471`；父仓代码层只需适配 `EngineConfig` 字段、窄 Fleet roster/worker 宿主入口和重算 lockfile。Pinvou 工具白名单继续在 app 层维护，直接复用 CodeWhale 原生 `allowed_tools`；工具商店和会话开关继续通过动态 `disallowed_tools` 收窄，不重建第二套底座策略。r8 新增的逐轮策略只提供宿主可配置的通用权限缝，具体 GAIA profile 与工具名单仍留在 app。
 
 ## 2. 版本基线
 
@@ -96,7 +96,7 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 | 主题 | commit | 主要职责 |
 |---|---|---|
 | T1 宿主嵌入与路由边界 | `331cb1594`、`2eceab4e1`、`a36e6cd53` | 最小 library 公开面、窄 Fleet roster/worker API、opaque route、显式 limits、runtime host API |
-| T2 工具兼容与命令执行安全 | `595adce47`、`3bbf8421e`、`a36e6cd53` | extra tools、动态禁用、File 上限、命令安全、schema 容器兼容、canonical registry 提示与 action alias 解析 |
+| T2 工具兼容与命令执行安全 | `595adce47`、`3bbf8421e`、`a36e6cd53`、`d127aed11` | extra tools、动态禁用、File 上限、命令安全、schema 容器兼容、canonical registry 提示、action alias 解析及逐轮只读/最终分发安全边界 |
 | T3 嵌入上下文与技能来源 | `5a9f52941` | static composer 密封、Skill 单根/disabled、Permissions 100 KiB 窄例外、Working Set 隔离 |
 | T4 定时任务与运行生命周期 | `fc84f7d3e` | model/conversation、历史 schema、thread/turn、misfire/no-overlap、终态清理 |
 
@@ -104,7 +104,7 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 
 ## 5. Pinvou 父仓兼容迁移
 
-- submodule 对齐公开 v0.9.5 r7 `a36e6cd533024cfe5724bae21875aea42b2ed87a`。
+- submodule 对齐公开 v0.9.5 r8 `d127aed113529dc93754d044b9f352e9746f6b83`。
 - `Cargo.lock` 对齐 v0.9.5 workspace crate 和依赖图。
 - `EngineConfig` 删除已不存在的旧 `hidden_tools` 字段引用，显式透传新增 `subagent_state_root`。
 - 会话工具隐藏继续走 `shape_disallowed_tools`，产品语义不变。
@@ -117,14 +117,14 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 
 - `cargo fmt --all -- --check`：通过。
 - `cargo check -p codewhale-tui --lib --locked`：通过。
-- `cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`：23 passed / 0 failed。
+- `cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`：34 passed / 0 failed。
 
 ### Pinvou 父仓
 
 - `cargo fmt --all -- --check`：通过。
 - `cargo check --locked`：通过。
 - `cargo test --locked --lib -- --test-threads=1`：1220 passed / 0 failed / 12 ignored；ignored 项依赖真实模型、外部工具或专用 fixture。
-- `./scripts/fork-guard.sh`：CodeWhale 23 passed；pinvou3-app 19 passed。
+- `./scripts/fork-guard.sh`：CodeWhale 34 passed；pinvou3-app 19 passed。
 - `cargo build --locked --no-default-features --features local-embed --bin pinvou3-tauri`：实际桌面二进制链接通过。
 - `python3 scripts/architecture-guard.py`：通过，无新增架构债务。
 - `npm test`、`npm run lint:ui`、`npm run build:ui`、`npm run build:web`：全部通过；仅有既有非 module script 和大 chunk warning。
@@ -148,7 +148,7 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 ## 9. 当前交付状态
 
 - CodeWhale 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`
-- CodeWhale 公开 HEAD：`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`pinvou-v0.9.5-r7`）
-- 父仓分支：`refactor/remove-sansheng-liubu`（PR #285）
-- 远端状态：`Pinvou/CodeWhale#13` 已合并；`pinvou3-clean`、`pinvou-v0.9.5-r7` 与父仓 gitlink 指向同一公开提交。
-- 下一步：完成父仓 PR #285 的 current-head 门禁并通过 Merge Queue 合并。
+- CodeWhale 公开 HEAD：`d127aed113529dc93754d044b9f352e9746f6b83`（`pinvou-v0.9.5-r8`）
+- 父仓分支：`codex/cli-gaia-benchmark`（PR #305）
+- 远端状态：`Pinvou/CodeWhale#15` 已合并；`pinvou3-clean`、`pinvou-v0.9.5-r8` 与父仓 gitlink 指向同一公开提交。
+- 下一步：完成父仓 PR #305 的 current-head 门禁并通过 Merge Queue 合并。

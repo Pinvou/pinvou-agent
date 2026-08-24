@@ -249,6 +249,27 @@ fn ordinary_session_updated_snapshot_is_persisted_authoritatively() {
 }
 
 #[test]
+fn create_empty_with_id_preserves_requested_identity() {
+    let (store, _g) = isolated_store();
+    let requested_id = "eval_requested_identity";
+
+    let session = store
+        .create_empty_with_id(
+            requested_id.to_string(),
+            "/model".into(),
+            None,
+            std::env::temp_dir(),
+        )
+        .expect("create session with requested id");
+
+    assert_eq!(session.metadata.id, requested_id);
+    assert_eq!(
+        store.load(requested_id).expect("load session").metadata.id,
+        requested_id
+    );
+}
+
+#[test]
 fn admitted_display_fallback_is_revision_guarded_for_append_and_edit() {
     let (store, _g) = isolated_store();
     let session = store
@@ -314,10 +335,28 @@ fn scheduled_session_is_isolated_but_directly_loadable() {
     let scheduled = store
         .create_scheduled_run(scheduled_profile("task-isolated"))
         .expect("create scheduled run");
+    // 崩溃残留的评测会话(eval_ 前缀,含 GAIA 私有题目)不得进入用户列表。
+    let eval_id = "eval_gaia-case-1_crash-leftover".to_string();
+    let eval_session = create_saved_session_with_id_and_mode(
+        eval_id.clone(),
+        &[],
+        "/eval-model",
+        &paths::sessions_root(),
+        0,
+        None,
+        Some("yolo"),
+    );
+    store
+        .save_session_atomic(&eval_session)
+        .expect("persist eval leftover");
 
     let listed = store.list().expect("list chats");
     assert!(listed.iter().any(|item| item.id == chat.metadata.id));
     assert!(!listed.iter().any(|item| item.id == scheduled.metadata.id));
+    #[cfg(feature = "benchmark-hooks")]
+    assert!(!listed.iter().any(|item| item.id == eval_id));
+    #[cfg(not(feature = "benchmark-hooks"))]
+    assert!(listed.iter().any(|item| item.id == eval_id));
     assert!(paths::sessions_root()
         .join(format!("{}.json", scheduled.metadata.id))
         .exists());

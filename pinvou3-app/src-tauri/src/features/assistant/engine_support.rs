@@ -30,11 +30,16 @@ pub(super) fn maybe_notify_task_completed(
     }
     let key = turn_id.unwrap_or_else(|| chrono::Utc::now().timestamp_millis().to_string());
     let notify_key = format!("{session_id}:{key}");
-    if app
+    let notification_state = app
         .try_state::<crate::platform::notifications::NotificationState>()
-        .map(|state| state.should_notify(notify_key))
-        .unwrap_or(true)
-    {
+        .map(|state| state.should_notify(notify_key));
+    #[cfg(feature = "benchmark-hooks")]
+    let should_notify = notification_state.unwrap_or_else(|| {
+        !crate::features::assistant::timing::eval_observation_enabled(session_id)
+    });
+    #[cfg(not(feature = "benchmark-hooks"))]
+    let should_notify = notification_state.unwrap_or(true);
+    if should_notify {
         crate::platform::notifications::notify_task_completed(app);
     }
 }

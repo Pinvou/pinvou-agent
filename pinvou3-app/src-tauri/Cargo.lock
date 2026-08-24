@@ -95,6 +95,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-backend-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "agent-client-protocol"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6066,6 +6075,7 @@ name = "pinvou3-tauri"
 version = "0.8.6"
 dependencies = [
  "age",
+ "agent-backend-api",
  "agent-client-protocol",
  "anyhow",
  "async-trait",

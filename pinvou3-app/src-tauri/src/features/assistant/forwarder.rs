@@ -71,6 +71,9 @@ pub(crate) fn spawn_event_forwarder(
             .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
         let mut current_turn_id: Option<String> = None;
+        #[cfg(feature = "benchmark-hooks")]
+        let mut first_delta_done: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
@@ -121,8 +124,24 @@ pub(crate) fn spawn_event_forwarder(
                     if let Some(m) = &self_metrics {
                         m.on_turn_started(&session_id);
                     }
+                    #[cfg(feature = "benchmark-hooks")]
+                    if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
+                        crate::features::assistant::timing::record_engine_turn_started(&session_id);
+                    }
                 }
                 Event::MessageDelta { content, .. } => {
+                    #[cfg(feature = "benchmark-hooks")]
+                    if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
+                        crate::features::assistant::timing::record_first_message_delta(&session_id);
+                        if let Some(turn_id) = &current_turn_id {
+                            if first_delta_done.insert(turn_id.clone()) {
+                                crate::features::assistant::timing::record_milestone(
+                                    &session_id,
+                                    "first_delta",
+                                );
+                            }
+                        }
+                    }
                     if let Some(m) = &self_metrics {
                         m.on_message_delta(&session_id, content.chars().count());
                     }
@@ -162,6 +181,15 @@ pub(crate) fn spawn_event_forwarder(
                     );
                 }
                 Event::ToolCallStarted { id, name, input } => {
+                    #[cfg(feature = "benchmark-hooks")]
+                    if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
+                        crate::features::assistant::timing::record_tool_started(&session_id, &name);
+                        crate::features::assistant::timing::record_milestone_meta(
+                            &session_id,
+                            "tool_call_started",
+                            json!({ "tool_name": &name, "tool_id": &id }),
+                        );
+                    }
                     if let Some(m) = &self_metrics {
                         m.on_tool(&session_id); // 本轮有工具 → 收尾跳过 TTFT/TPS(D2)
                     }
@@ -178,8 +206,24 @@ pub(crate) fn spawn_event_forwarder(
                     );
                 }
                 Event::ToolCallComplete { id, name, result } => {
+                    #[cfg(feature = "benchmark-hooks")]
+                    if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
+                        crate::features::assistant::timing::record_milestone_meta(
+                            &session_id,
+                            "tool_call_completed",
+                            json!({ "tool_name": &name, "tool_id": &id }),
+                        );
+                    }
                     // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
                     let (output, success, metadata) = tool_call_result_parts(result);
+                    #[cfg(feature = "benchmark-hooks")]
+                    if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
+                        crate::features::assistant::timing::record_tool_completed(
+                            &session_id,
+                            &name,
+                            success,
+                        );
+                    }
                     let background_task_id =
                         if matches!(name.as_str(), "exec_shell" | "task_shell_start" | "Bash")
                             && metadata
@@ -579,10 +623,29 @@ pub(crate) fn spawn_event_forwarder(
                     usage,
                     status,
                     error,
-                    // v0.8.49 上游新增 tool_catalog / base_url(调试/审计用),pinvou3 不消费
-                    ..
+                    tool_catalog,
+                    base_url: _,
                 } => {
+                    #[cfg(not(feature = "benchmark-hooks"))]
+                    let _ = &tool_catalog;
+                    #[cfg(feature = "benchmark-hooks")]
+                    let authorized_tool_catalog = crate::features::assistant::timing::eval_observation_enabled(&session_id)
+                        .then(|| {
+                            tool_catalog.as_ref().and_then(|catalog| {
+                                serde_json::to_vec(catalog).ok().map(|catalog_json| {
+                                    crate::features::assistant::timing::ToolCatalogSummary::from_serialized_catalog(
+                                        catalog.len(),
+                                        &catalog_json,
+                                    )
+                                })
+                            })
+                        })
+                        .flatten();
                     let shell_turn_id = current_turn_id.clone();
+                    #[cfg(feature = "benchmark-hooks")]
+                    if let Some(turn_id) = shell_turn_id.as_ref() {
+                        first_delta_done.remove(turn_id);
+                    }
                     let shell_interrupted = status == TurnOutcomeStatus::Interrupted;
                     let mut shell_cleanup_failed = false;
                     let mut terminal_status = status;
@@ -765,23 +828,41 @@ pub(crate) fn spawn_event_forwarder(
 
                     // 先完成权威时间线，再发 chat:done。前端终态事件会据此重新
                     // 读取整份时间线，补齐后台运行/页面恢复期间漏掉的本地事件。
+                    // 收尾只走 observation 版一次:tool_calls/catalog 摘要随
+                    // assistant_done 落盘;若先前再用 usage 版收尾会先 pop 掉
+                    // 队首活跃轮,排队双轮场景错配下一轮的时间线。
                     let status_text = format!("{terminal_status:?}");
+                    let timing_usage = Some(crate::features::assistant::timing::TurnUsage {
+                        input_tokens: u64::from(usage.input_tokens),
+                        output_tokens: u64::from(usage.output_tokens),
+                        cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
+                        cache_miss_tokens: u64::from(usage.prompt_cache_miss_tokens.unwrap_or(0)),
+                        cache_write_tokens: u64::from(usage.prompt_cache_write_tokens.unwrap_or(0)),
+                        reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
+                    });
+                    #[cfg(feature = "benchmark-hooks")]
+                    if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
+                        crate::features::assistant::timing::finish_turn_with_observation(
+                            &session_id,
+                            &status_text,
+                            terminal_error.as_deref(),
+                            timing_usage,
+                            authorized_tool_catalog,
+                        );
+                    } else {
+                        crate::features::assistant::timing::finish_turn_with_usage(
+                            &session_id,
+                            &status_text,
+                            terminal_error.as_deref(),
+                            timing_usage,
+                        );
+                    }
+                    #[cfg(not(feature = "benchmark-hooks"))]
                     crate::features::assistant::timing::finish_turn_with_usage(
                         &session_id,
                         &status_text,
                         terminal_error.as_deref(),
-                        Some(crate::features::assistant::timing::TurnUsage {
-                            input_tokens: u64::from(usage.input_tokens),
-                            output_tokens: u64::from(usage.output_tokens),
-                            cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
-                            cache_miss_tokens: u64::from(
-                                usage.prompt_cache_miss_tokens.unwrap_or(0),
-                            ),
-                            cache_write_tokens: u64::from(
-                                usage.prompt_cache_write_tokens.unwrap_or(0),
-                            ),
-                            reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
-                        }),
+                        timing_usage,
                     );
 
                     {

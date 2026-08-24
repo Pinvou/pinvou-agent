@@ -21,6 +21,8 @@ name: PR Check
 # - windows-rust-test:Windows 专属原语在原生 runner 执行;Ready PR/Merge Queue
 #   按 Rust 路径触发;main 每次保留下来的 push 无条件累计验证(防 pending 替换盲区)。
 # - windows-codex-runtime-test:相关 PR 在 Windows 原生准备 Node + ACP Bridge，并核对安装包资源。
+# - benchmark-contract / benchmark-test:评测代码保持 CI 隔离，仓库工作流中硬关闭；
+#   不得通过 PR 标签、路径或 Merge Queue 事件启用，避免影响主工程门禁与运行资源。
 # - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
 # - merge_group:按 base/head 的真实组合 diff 运行适用门禁，保证验证对象就是
 #   最新 main + 入队 PR；因此无冲突 PR 不需要为主线日常前进反复人工 rebase。
@@ -125,6 +127,10 @@ jobs:
       rust_dependencies: ${{ steps.filter.outputs.rust_dependencies }}
       knowledge_rust: ${{ steps.filter.outputs.knowledge_rust }}
       knowledge_dependencies: ${{ steps.filter.outputs.knowledge_dependencies }}
+      benchmark: ${{ steps.filter.outputs.benchmark }}
+      benchmark_cli: ${{ steps.filter.outputs.benchmark_cli }}
+      benchmark_headless: ${{ steps.filter.outputs.benchmark_headless }}
+      benchmark_codewhale: ${{ steps.filter.outputs.benchmark_codewhale }}
       release_contract: ${{ steps.filter.outputs.release_contract }}
       pet: ${{ steps.filter.outputs.pet }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -167,6 +173,26 @@ jobs:
               - 'pinvou-knowledge/Cargo.lock'
               - 'pinvou3-app/src-tauri/deny.toml'
               - '.github/workflows/pr-check.yml'
+            benchmark:
+              - 'pinvou-cli/**'
+              - 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/headless_bridge.rs'
+              - 'pinvou3-app/src-tauri/tests/headless_bridge_contract.rs'
+              - 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/**'
+              - 'pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs'
+              - 'pinvou3-app/src-tauri/Cargo.toml'
+              - 'pinvou3-app/src-tauri/Cargo.lock'
+              - 'CodeWhale'
+            benchmark_cli:
+              - 'pinvou-cli/**'
+            benchmark_headless:
+              - 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/headless_bridge.rs'
+              - 'pinvou3-app/src-tauri/tests/headless_bridge_contract.rs'
+              - 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/**'
+              - 'pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs'
+              - 'pinvou3-app/src-tauri/Cargo.toml'
+              - 'pinvou3-app/src-tauri/Cargo.lock'
+            benchmark_codewhale:
+              - 'CodeWhale'
             release_contract:
               - 'VERSION'
               - 'scripts/sync-version.mjs'
@@ -292,6 +318,7 @@ jobs:
           python3 scripts/architecture-guard.py --base-ref "origin/$base_ref"
 
       - name: 公开底座 gitlink 可达性
+        # r8 已发布；PR 与 merge queue 均严格要求 gitlink 对齐不可变标签。
         run: ./scripts/verify-public-submodule.sh
 
       - name: 初始化公共底座 submodule
@@ -1003,6 +1030,149 @@ jobs:
       - name: macOS Codex 与 Claude Runtime 原生打包冒烟
         run: npm --prefix pinvou3-app run test:codex-acp-macos-runtime
 
+  benchmark-contract:
+    name: benchmark-contract
+    needs: changes
+    # Benchmark CI 在本 PR 中必须保持硬关闭：不接受 label/path/event 开启。
+    # 如需验证，由维护者在隔离环境本地执行，不得占用主工程 PR/MQ 门禁。
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: 初始化公共底座 submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      - name: 装 Tauri + pinvou3 Linux 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config cmake
+
+      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 对齐 rust-toolchain.toml 锁定的工具链
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pinvou-cli
+            pinvou3-app/src-tauri
+            CodeWhale
+          shared-key: benchmark-contract
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: benchmark 核心与适配器契约测试
+        run: >-
+          cargo test --manifest-path pinvou-cli/Cargo.toml --all-features
+          -p agent-backend-api -p benchmark-core -p adapter-smoke -p adapter-gaia
+
+      - name: benchmark CLI 无 product-backend 契约测试
+        run: >-
+          cargo test --manifest-path pinvou-cli/Cargo.toml
+          -p pinvou-cli --no-default-features
+
+      # cargo check --test 会编译集成测试本身，能捕获 cfg(not(windows)) 下的 trait
+      # 签名漂移；行为回归由同 job 的 core tests 与 Merge Queue 的 Rust lib tests 覆盖。
+      - name: Linux headless benchmark 契约编译
+        run: |
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml \
+            --features benchmark-hooks --lib \
+            features::assistant::product_runtime::headless_bridge:: \
+            -- --test-threads=1
+          cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml \
+            --features benchmark-hooks --test headless_bridge_contract
+
+      - name: CodeWhale 受限工具安全回归
+        if: ${{ needs.changes.outputs.benchmark_codewhale == 'true' }}
+        run: >-
+          cargo test --manifest-path CodeWhale/Cargo.toml
+          -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
+
+  benchmark-test:
+    name: benchmark-test
+    needs: changes
+    # 完整 Benchmark 矩阵同样硬关闭；PR 标签不得绕过隔离边界。
+    if: ${{ false }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      # 同 windows-rust-test:经 RUSTC_WRAPPER 注入 rustc-stack-wrapper.exe,
+      # 只在编译期 rustc 注入 RUST_MIN_STACK=16MiB。app 工作区 dev profile 对
+      # 依赖开 O2 后,codewhale-tui 的 codegen 线程在默认栈下溢出
+      # (STATUS_STACK_OVERFLOW,CI 实证)。.exe 经 CreateProcess 直启,规避
+      # cmd 8191 字符命令行上限;必须用 ${{ github.workspace }} 绝对路径。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: 初始化公共底座 submodule
+        shell: bash
+        run: git submodule update --init --recursive -- CodeWhale
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # 编译 Windows 专用 .exe 栈 wrapper(源码 scripts/rustc-stack-wrapper.rs)。
+      # 直接调 rustc 编译、不经 cargo,故不受本 job 的 RUSTC_WRAPPER 影响。
+      - name: 编译 Windows 栈 wrapper(.exe)
+        shell: bash
+        run: rustc -O pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs -o pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pinvou-cli
+            pinvou3-app/src-tauri
+            CodeWhale
+          shared-key: benchmark-test
+
+      - name: benchmark workspace 全特性测试
+        shell: bash
+        run: cargo test --manifest-path pinvou-cli/Cargo.toml --all-features
+
+      - name: benchmark workspace 无 product-backend 测试
+        shell: bash
+        run: cargo test --manifest-path pinvou-cli/Cargo.toml --no-default-features
+
+      - name: headless benchmark 契约测试
+        shell: bash
+        run: >-
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
+          --features benchmark-hooks --test headless_bridge_contract
+
+      - name: CodeWhale 受限工具安全回归
+        shell: bash
+        run: >-
+          cargo test --manifest-path CodeWhale/Cargo.toml
+          -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
+
   required-gate:
     name: required-gate
     needs:
@@ -1018,6 +1188,7 @@ jobs:
       - rust-test
       - macos-codex-runtime-test
       - windows-codex-runtime-test
+      - benchmark-contract
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1036,6 +1207,7 @@ jobs:
           RUST_RESULT: ${{ needs.rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
+          BENCHMARK_CONTRACT_RESULT: ${{ needs.benchmark-contract.result }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
             # 队列提交由 GitHub 生成，不重复校验人工 commit message；
@@ -1058,7 +1230,8 @@ jobs:
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
-            "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
+            "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT" \
+            "benchmark-contract:$BENCHMARK_CONTRACT_RESULT"; do
             name="${item%%:*}"
             result="${item#*:}"
             case "$result" in

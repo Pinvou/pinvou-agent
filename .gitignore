@@ -1,6 +1,7 @@
 # Rust build artifacts
 CodeWhale/target/
 pinvou-knowledge/target/
+pinvou-cli/target/
 pinvou3-app/src-tauri/target/
 /target/
 debug/

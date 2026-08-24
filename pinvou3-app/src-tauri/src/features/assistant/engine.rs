@@ -430,6 +430,10 @@ fn emit_turn_started(app: &AppHandle, session_id: &str) {
     let started_payload = json!({ "session_id": session_id });
     let _ = app.emit("chat:turn_started", started_payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:turn_started", started_payload);
+    #[cfg(feature = "benchmark-hooks")]
+    if crate::features::assistant::timing::eval_observation_enabled(session_id) {
+        crate::features::assistant::timing::record_milestone(session_id, "turn_started");
+    }
 }
 
 fn emit_turn_admission(app: &AppHandle, session_id: &str, admission: TurnAdmission) {
@@ -1411,6 +1415,19 @@ impl AppEngine {
             restrict_tools,
             expert_snapshot,
         )?;
+        self.send_reserved_turn_op(op, reservation).await
+    }
+
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) async fn send_reserved_eval_message(
+        &self,
+        content: String,
+        policy: &crate::features::assistant::product_runtime::eval_tool_policy::EvalTurnPolicy,
+        reservation: TurnReservation,
+    ) -> Result<()> {
+        let op = self
+            .bridge
+            .build_eval_send_message_op(&self.session_id, content, policy)?;
         self.send_reserved_turn_op(op, reservation).await
     }
 
@@ -2647,6 +2664,7 @@ mod scheduled_turn_tests {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::Runtime,
+            turn_tool_security: None,
         }
     }
 

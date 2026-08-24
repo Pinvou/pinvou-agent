@@ -30,6 +30,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 default = ["local-embed"]
 local-embed = ["pinvou-knowledge/local-embed"]
 dev-tools = []
+benchmark-hooks = ["dep:agent-backend-api"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.1", features = [] }
@@ -52,6 +53,7 @@ tauri-plugin-notification = "2"
 # 异步 / 错误
 anyhow = "1.0"
 async-trait = "0.1" # impl 底座 ToolSpec(kb_search Agentic 工具)
+agent-backend-api = { path = "../../pinvou-cli/crates/agent-backend-api", optional = true }
 tokio = { version = "1.49", features = ["full"] }
 tokio-util = { version = "0.7.16", features = ["compat"] }
 
@@ -153,8 +155,8 @@ futures-util = "0.3"
 rand = "0.10"
 # Keep 0.22: age/codewhale-tui/hyper-util still require 0.22; a solo 0.23 bump would only add a second copy. Revisit once upstreams align.
 base64 = "0.22"
-age = { version = "=0.12.1", default-features = false }
 tempfile = "3"
+age = { version = "=0.12.1", default-features = false }
 
 # keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
 # macOS 桌伴窗口策略补丁(pet_window.rs):
