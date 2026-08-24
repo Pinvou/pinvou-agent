@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = ["product-backend"]
 product-backend = ["dep:anyhow", "dep:async-trait", "dep:pinvou-product-backend"]
-distributed = ["dep:ctrlc", "dep:pinvou-controller", "dep:pinvou-protocol"]
+distributed = ["dep:ctrlc", "dep:pinvou-controller", "dep:pinvou-protocol", "dep:pinvou-tui", "dep:windows-sys"]
 
 [dependencies]
 adapter-gaia = { path = "../adapter-gaia" }
@@ -21,7 +21,11 @@ async-trait = { workspace = true, optional = true }
 pinvou-product-backend = { path = "../pinvou-product-backend", optional = true }
 pinvou-protocol = { path = "../protocol", optional = true }
 pinvou-controller = { path = "../controller", optional = true }
+pinvou-tui = { path = "../tui", optional = true }
 ctrlc = { version = "3.4", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"], optional = true }
 
 [[bin]]
 name = "pinvou"

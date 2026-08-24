@@ -6377,7 +6377,9 @@ dependencies = [
  "pinvou-controller",
  "pinvou-product-backend",
  "pinvou-protocol",
+ "pinvou-tui",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

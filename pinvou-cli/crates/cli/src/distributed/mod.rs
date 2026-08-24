@@ -1,5 +1,7 @@
 //! Feature-gated terminal client for the stage-one Controller IPC contract.
 
+pub mod tui_backend;
+
 use std::fmt;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
