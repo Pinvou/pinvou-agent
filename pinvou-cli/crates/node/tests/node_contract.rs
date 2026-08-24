@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -768,12 +769,26 @@ impl AgentRuntimeAdapter for FakeAdapter {
     ) -> Result<RuntimeEventSubscription, AdapterError> {
         self.calls.lock().unwrap().push("subscribe".into());
         let events = if self.events.is_empty() {
-            vec![runtime_event(
-                "text.delta",
-                "R1",
-                "main",
-                serde_json::json!({"role":"assistant","content":"from-adapter","merged_count":1}),
-            )]
+            vec![
+                runtime_event(
+                    "turn.started",
+                    "R0",
+                    "control",
+                    serde_json::json!({"user_input_ref":"fake"}),
+                ),
+                runtime_event(
+                    "text.delta",
+                    "R1",
+                    "main",
+                    serde_json::json!({"role":"assistant","content":"from-adapter","merged_count":1}),
+                ),
+                runtime_event(
+                    "turn.ended",
+                    "R0",
+                    "control",
+                    serde_json::json!({"end_reason":"completed","error":null}),
+                ),
+            ]
         } else {
             std::mem::take(&mut self.events)
         };
@@ -794,6 +809,199 @@ struct LongLivedAdapter {
     receiver: Option<mpsc::Receiver<Result<RuntimeEventEnvelope, AdapterError>>>,
     keepalive: Arc<Mutex<Option<mpsc::Sender<Result<RuntimeEventEnvelope, AdapterError>>>>>,
     calls: Arc<Mutex<Vec<String>>>,
+}
+
+#[derive(Debug)]
+struct DrainTrackingAdapter {
+    receiver: Option<mpsc::Receiver<Result<RuntimeEventEnvelope, AdapterError>>>,
+    keepalive: Option<mpsc::Sender<Result<RuntimeEventEnvelope, AdapterError>>>,
+    completed_turns: Arc<AtomicUsize>,
+}
+
+impl AgentRuntimeAdapter for DrainTrackingAdapter {
+    fn probe(&mut self) -> Result<(), AdapterError> {
+        Ok(())
+    }
+    fn capabilities(&self) -> Result<RuntimeCapabilities, AdapterError> {
+        Ok(RuntimeCapabilities::default())
+    }
+    fn auth_status(&mut self) -> Result<AuthStatus, AdapterError> {
+        Ok(AuthStatus::NotRequired)
+    }
+    fn create(&mut self, _: RuntimeOperation) -> Result<RuntimeSession, AdapterError> {
+        RuntimeSession::new("drain-session")
+    }
+    fn send(&mut self, _: &RuntimeSession, command: RuntimeCommand) -> Result<(), AdapterError> {
+        if command.payload == serde_json::json!("two")
+            && self.completed_turns.load(AtomicOrdering::SeqCst) < 1
+        {
+            return Err(AdapterError::InvalidRequest {
+                details: "second turn started before first terminal was drained".into(),
+            });
+        }
+        Ok(())
+    }
+    fn subscribe_events(
+        &mut self,
+        _: &RuntimeSession,
+    ) -> Result<RuntimeEventSubscription, AdapterError> {
+        let receiver = self.receiver.take().unwrap();
+        let completed_turns = self.completed_turns.clone();
+        Ok(Box::new(receiver.into_iter().inspect(move |event| {
+            if event.as_ref().is_ok_and(|event| {
+                event.event_kind() == pinvou_protocol::RuntimeEventKind::TurnEnded
+            }) {
+                completed_turns.fetch_add(1, AtomicOrdering::SeqCst);
+            }
+        })))
+    }
+    fn close(&mut self, _: &RuntimeSession) -> Result<(), AdapterError> {
+        self.keepalive.take();
+        Ok(())
+    }
+}
+
+fn drain_tracking_session() -> NodeSession {
+    let (sender, receiver) = mpsc::channel();
+    for event in [
+        runtime_event_for_turn(
+            "turn.started",
+            "R0",
+            "control",
+            serde_json::json!({"user_input_ref":"one"}),
+            "turn-one",
+            1,
+        ),
+        runtime_event_for_turn(
+            "text.delta",
+            "R1",
+            "main",
+            serde_json::json!({"role":"assistant","content":"first","merged_count":1}),
+            "turn-one",
+            2,
+        ),
+        runtime_event_for_turn(
+            "approval.requested",
+            "R0",
+            "control",
+            serde_json::json!({"approval_id":"approval-1","tool":"shell","summary":"run","options":["approved","denied"],"timeout_ms":30000}),
+            "turn-one",
+            3,
+        ),
+        runtime_event_for_turn(
+            "turn.ended",
+            "R0",
+            "control",
+            serde_json::json!({"end_reason":"completed","error":null}),
+            "turn-one",
+            4,
+        ),
+        runtime_event_for_turn(
+            "turn.started",
+            "R0",
+            "control",
+            serde_json::json!({"user_input_ref":"two"}),
+            "turn-two",
+            5,
+        ),
+        runtime_event_for_turn(
+            "text.delta",
+            "R1",
+            "main",
+            serde_json::json!({"role":"assistant","content":"second","merged_count":1}),
+            "turn-two",
+            6,
+        ),
+        runtime_event_for_turn(
+            "turn.ended",
+            "R0",
+            "control",
+            serde_json::json!({"end_reason":"completed","error":null}),
+            "turn-two",
+            7,
+        ),
+    ] {
+        sender.send(Ok(event)).unwrap();
+    }
+    NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(AdapterRuntimeHost::new(Box::new(DrainTrackingAdapter {
+            receiver: Some(receiver),
+            keepalive: Some(sender),
+            completed_turns: Arc::new(AtomicUsize::new(0)),
+        }))),
+    )
+    .unwrap()
+}
+
+#[test]
+fn consecutive_adapter_echoes_drain_each_turn_before_starting_the_next() {
+    let session = drain_tracking_session();
+    let echo = |id, text| {
+        session
+            .handle(
+                IpcMessage::request(
+                    serde_json::json!(id),
+                    "runtime.echo",
+                    serde_json::json!({"instance_id":"node-instance","text":text}),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+    };
+    let first = RuntimeEventEnvelope::from_value(echo(120, "one").payload().clone()).unwrap();
+    let second = RuntimeEventEnvelope::from_value(echo(121, "two").payload().clone()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(first.payload().get()).unwrap()["content"],
+        "first"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(second.payload().get()).unwrap()["content"],
+        "second"
+    );
+}
+
+#[test]
+fn failed_emit_drains_the_old_turn_before_the_next_turn_starts() {
+    let session = drain_tracking_session();
+    let first = IpcMessage::request(
+        serde_json::json!(122),
+        "chat.start",
+        serde_json::json!({"instance_id":"node-instance","prompt":"one"}),
+    )
+    .unwrap();
+    let mut emitted = 0;
+    assert!(matches!(
+        session.stream_bound(first, |_| {
+            emitted += 1;
+            if emitted == 2 {
+                Err(NodeError::Io(std::io::Error::other("client disconnected")))
+            } else {
+                Ok(())
+            }
+        }),
+        Err(NodeError::Io(_))
+    ));
+
+    let second = IpcMessage::request(
+        serde_json::json!(123),
+        "chat.start",
+        serde_json::json!({"instance_id":"node-instance","prompt":"two"}),
+    )
+    .unwrap();
+    let mut kinds = Vec::new();
+    session
+        .stream_bound(second, |message| {
+            kinds.push(
+                RuntimeEventEnvelope::from_value(message.payload().clone())
+                    .unwrap()
+                    .kind()
+                    .to_owned(),
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(kinds, ["turn.started", "text.delta", "turn.ended"]);
 }
 
 impl AgentRuntimeAdapter for LongLivedAdapter {
@@ -1353,6 +1561,12 @@ fn adapter_runtime_host_skips_lifecycle_events_until_text_delta() {
             "main",
             serde_json::json!({"role":"assistant","content":"visible codex text","merged_count":1}),
         ),
+        runtime_event(
+            "turn.ended",
+            "R0",
+            "control",
+            serde_json::json!({"end_reason":"completed","error":null}),
+        ),
     ]);
     let session = NodeSession::with_runtime(
         "node-instance",
@@ -1407,6 +1621,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     [Console]::Out.WriteLine(('{"id":' + $frame.id + ',"result":{"turn":{"id":"turn-fake"}}}'))
     [Console]::Out.WriteLine('{"method":"turn/started","params":{"threadId":"thread-fake","turn":{"id":"turn-fake","status":"inProgress"}}}')
     [Console]::Out.WriteLine('{"method":"item/agentMessage/delta","params":{"threadId":"thread-fake","turnId":"turn-fake","itemId":"message-fake","delta":"fake codex says hi"}}')
+    [Console]::Out.WriteLine('{"method":"turn/completed","params":{"threadId":"thread-fake","turn":{"id":"turn-fake","status":"completed"}}}')
   }
   [Console]::Out.Flush()
 }

@@ -252,12 +252,6 @@ impl Iterator for AdapterTurnStream {
     }
 }
 
-impl Drop for AdapterTurnStream {
-    fn drop(&mut self) {
-        self.return_subscription();
-    }
-}
-
 fn ensure_adapter_session(state: &mut AdapterRuntimeState) -> Result<RuntimeSession, NodeError> {
     ensure_adapter_probe(state)?;
     if let Some(session) = &state.session {
@@ -564,16 +558,15 @@ impl NodeSession {
                     .ok_or(NodeError::InvalidMessage)?;
                 let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
                 let (runtime, _active) = self.begin_turn(seq)?;
-                let envelope = runtime
-                    .start_turn(&self.instance_id, text, seq)?
-                    .find_map(|event| match event {
-                        Ok(event) if event.event_kind() == RuntimeEventKind::TextDelta => {
-                            Some(Ok(event))
-                        }
-                        Ok(_) => None,
-                        Err(error) => Some(Err(error)),
-                    })
-                    .ok_or(NodeError::InvalidMessage)??;
+                let mut stream = runtime.start_turn(&self.instance_id, text, seq)?;
+                let mut first_delta = None;
+                for event in stream.by_ref() {
+                    let event = event?;
+                    if first_delta.is_none() && event.event_kind() == RuntimeEventKind::TextDelta {
+                        first_delta = Some(event);
+                    }
+                }
+                let envelope = first_delta.ok_or(NodeError::InvalidMessage)?;
                 return IpcMessage::event(
                     "runtime.event",
                     serde_json::to_value(envelope).map_err(|_| NodeError::InvalidMessage)?,
@@ -666,13 +659,22 @@ impl NodeSession {
             .ok_or(NodeError::InvalidMessage)?;
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let (runtime, _active) = self.begin_turn(seq)?;
-        for envelope in runtime.start_turn(&self.instance_id, prompt, seq)? {
-            let event = IpcMessage::event(
-                "runtime.event",
-                serde_json::to_value(envelope?).map_err(|_| NodeError::InvalidMessage)?,
-            )
-            .map_err(|_| NodeError::InvalidMessage)?;
-            emit(event)?;
+        let mut stream = runtime.start_turn(&self.instance_id, prompt, seq)?;
+        while let Some(envelope) = stream.next() {
+            let envelope = envelope?;
+            let delivery = serde_json::to_value(envelope)
+                .map_err(|_| NodeError::InvalidMessage)
+                .and_then(|payload| {
+                    IpcMessage::event("runtime.event", payload)
+                        .map_err(|_| NodeError::InvalidMessage)
+                })
+                .and_then(&mut emit);
+            if let Err(delivery_error) = delivery {
+                return match drain_runtime_stream(&mut stream) {
+                    Ok(()) => Err(delivery_error),
+                    Err(drain_error) => Err(drain_error),
+                };
+            }
         }
         Ok(())
     }
@@ -726,6 +728,13 @@ impl NodeSession {
         coordinator.runtime.host = host;
         Ok(())
     }
+}
+
+fn drain_runtime_stream(stream: &mut NodeRuntimeEventStream) -> Result<(), NodeError> {
+    for event in stream {
+        event?;
+    }
+    Ok(())
 }
 
 struct ActiveTurnGuard {
