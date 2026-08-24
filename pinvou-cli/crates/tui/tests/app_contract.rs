@@ -10,8 +10,9 @@ use std::{
 use pinvou_protocol::{RuntimeEventEnvelope, RuntimeEventKind};
 use pinvou_tui::{
     app::{
-        AppConfig, AppError, Driver, InputEvent, Key, KeyInput, KeyKind, Renderer, run_with_driver,
-        run_with_driver_and_renderer, run_with_driver_and_renderer_config,
+        AppConfig, AppError, Driver, InputEvent, Key, KeyInput, KeyKind, PREINIT_MAX_EVENTS,
+        PREINIT_MAX_TEXT_BYTES, Renderer, run_with_driver, run_with_driver_and_renderer,
+        run_with_driver_and_renderer_config,
     },
     backend::{Backend, BackendError, BackendErrorKind, EventEmitter, RuntimeList, RuntimeStatus},
     model::{Interaction, Overlay, TranscriptEntry, TurnState},
@@ -72,6 +73,7 @@ struct FakeBackend {
     detach_controls_error: bool,
     detach_stream_delay: Option<Duration>,
     detach_controls_delay: Option<Duration>,
+    workspace_delay: Option<Duration>,
 }
 
 impl FakeBackend {
@@ -91,6 +93,7 @@ impl FakeBackend {
             detach_controls_error: false,
             detach_stream_delay: None,
             detach_controls_delay: None,
+            workspace_delay: None,
         }
     }
 
@@ -127,6 +130,13 @@ impl FakeBackend {
         Self {
             block_workspace: true,
             detach_controls_error: true,
+            ..Self::new()
+        }
+    }
+
+    fn with_workspace_delay(delay: Duration) -> Self {
+        Self {
+            workspace_delay: Some(delay),
             ..Self::new()
         }
     }
@@ -208,6 +218,9 @@ impl FakeBackend {
 
 impl Backend for FakeBackend {
     fn workspace(&self) -> Result<PathBuf, BackendError> {
+        if let Some(delay) = self.workspace_delay {
+            std::thread::sleep(delay);
+        }
         let (calls, wake) = &*self.calls;
         let mut calls = calls.lock().unwrap();
         calls.workspace_started = true;
@@ -646,8 +659,11 @@ async fn backend_failure_is_visible_and_idle_editor_recovers() {
 #[tokio::test(flavor = "current_thread")]
 async fn editor_slash_resize_release_repeat_and_clean_exit_are_deterministic() {
     let backend = FakeBackend::new();
+    let initialized = backend.clone();
     let steps = vec![
         Step::Input(InputEvent::Resize(120, 40)),
+        wait_for(move || initialized.calls().runtime_list_calls == 1),
+        Step::Delay(Duration::from_millis(10)),
         Step::Input(InputEvent::Key(KeyInput {
             key: Key::Char('x'),
             control: false,
@@ -892,6 +908,146 @@ fn initialization_detach_preserves_cleanup_warnings() {
             .iter()
             .any(|warning| warning.contains("detach_controls: control cleanup failed"))
     );
+}
+
+#[test]
+fn preinit_input_flood_is_bounded_and_ctrl_c_remains_urgent() {
+    let started_at = std::time::Instant::now();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let backend = FakeBackend::with_blocked_initialization(true, false);
+    let initialization = backend.clone();
+    let renderer = RecordingRenderer::default();
+    let snapshots = renderer.0.clone();
+    let mut steps = vec![wait_for(move || initialization.calls().workspace_started)];
+    steps.push(Step::Input(InputEvent::Paste(
+        "界".repeat(PREINIT_MAX_TEXT_BYTES / 3 + 32),
+    )));
+    steps.extend((0..PREINIT_MAX_EVENTS + 32).map(|_| {
+        Step::Input(InputEvent::Key(KeyInput {
+            key: Key::Char('x'),
+            control: false,
+            kind: KeyKind::Repeat,
+        }))
+    }));
+    steps.push(Step::Input(InputEvent::Key(KeyInput::ctrl(Key::Char('c')))));
+
+    let result = runtime
+        .block_on(run_with_driver_and_renderer(
+            Arc::new(backend.clone()),
+            ScriptDriver::new(steps),
+            renderer,
+        ))
+        .unwrap();
+    drop(runtime);
+
+    assert!(result.detached);
+    assert!(result.model.composer.input.len() <= PREINIT_MAX_TEXT_BYTES);
+    assert!(
+        result
+            .model
+            .status_message
+            .as_deref()
+            .is_some_and(|status| status.contains("input buffer full"))
+    );
+    assert_eq!(backend.calls().control_detaches, 1);
+    assert!(backend.calls().interrupts.is_empty());
+    assert!(snapshots.lock().unwrap().iter().any(|model| {
+        model.connection == pinvou_tui::model::ConnectionState::Connecting
+            && !model.composer.input.is_empty()
+    }));
+    assert!(snapshots.lock().unwrap().iter().any(|model| {
+        model.connection == pinvou_tui::model::ConnectionState::Connecting
+            && model
+                .status_message
+                .as_deref()
+                .is_some_and(|status| status.contains("input buffer full"))
+    }));
+    assert!(started_at.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn preinit_preview_and_bounded_replay_preserve_editor_order() {
+    let backend = FakeBackend::with_workspace_delay(Duration::from_millis(50));
+    let renderer = RecordingRenderer::default();
+    let snapshots = renderer.0.clone();
+    let result = run_with_driver_and_renderer(
+        Arc::new(backend.clone()),
+        ScriptDriver::new(vec![
+            Step::Input(InputEvent::Paste("/wat".into())),
+            key(Key::Enter),
+            Step::Input(InputEvent::Paste("/exit".into())),
+            key(Key::Enter),
+            Step::Delay(Duration::from_millis(100)),
+        ]),
+        renderer,
+    )
+    .await
+    .unwrap();
+    assert!(result.model.should_quit);
+    assert!(!result.detached);
+    assert!(backend.calls().prompts.is_empty());
+    let snapshots = snapshots.lock().unwrap();
+    assert!(snapshots.iter().any(|model| {
+        model.connection == pinvou_tui::model::ConnectionState::Connecting
+            && model.composer.input == "/wat"
+    }));
+    assert_eq!(
+        result.model.status_message.as_deref(),
+        Some("unknown command: /wat")
+    );
+}
+
+struct FailOnFailedRenderer;
+
+impl Renderer for FailOnFailedRenderer {
+    fn draw(&mut self, model: &pinvou_tui::model::Model) -> Result<(), AppError> {
+        if matches!(
+            model.connection,
+            pinvou_tui::model::ConnectionState::Failed(_)
+        ) {
+            Err(AppError::Render("failed-state draw failed".into()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn initialization_timeout_returns_failed_state_render_error() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let backend = FakeBackend::with_blocked_workspace_and_cleanup_error();
+    let initialization = backend.clone();
+    let error = runtime
+        .block_on(run_with_driver_and_renderer_config(
+            Arc::new(backend.clone()),
+            ScriptDriver::new(vec![
+                wait_for(move || initialization.calls().workspace_started),
+                Step::Delay(Duration::from_secs(1)),
+            ]),
+            FailOnFailedRenderer,
+            AppConfig {
+                initialization_timeout: Duration::from_millis(50),
+            },
+        ))
+        .unwrap_err();
+    drop(runtime);
+    assert!(matches!(
+        error,
+        AppError::Cleanup {
+            ref cause,
+            ref cleanup_warnings,
+        } if matches!(cause.as_ref(), AppError::Render(message) if message == "failed-state draw failed")
+            && cleanup_warnings
+                .iter()
+                .any(|warning| warning.contains("control cleanup failed"))
+    ));
+    assert_eq!(backend.calls().control_detaches, 1);
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     future::Future,
     io,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -6,7 +7,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc as std_mpsc,
     },
     thread,
@@ -25,6 +26,9 @@ use crate::{
 
 pub const CONTROL_CHANNEL_CAPACITY: usize = 64;
 pub const RUNTIME_CHANNEL_CAPACITY: usize = 256;
+pub const URGENT_INPUT_CHANNEL_CAPACITY: usize = 8;
+pub const PREINIT_MAX_EVENTS: usize = 256;
+pub const PREINIT_MAX_TEXT_BYTES: usize = 16 * 1024;
 pub const DEFAULT_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
 const DETACH_WAIT: Duration = Duration::from_millis(500);
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -172,6 +176,107 @@ enum RuntimeStreamEvent {
     },
 }
 
+#[derive(Default)]
+struct PreInitBuffer {
+    events: VecDeque<InputEvent>,
+    text_bytes: usize,
+    dropped: usize,
+}
+
+impl PreInitBuffer {
+    fn push(&mut self, input: InputEvent, model: &mut Model) {
+        if self.events.len() == PREINIT_MAX_EVENTS {
+            self.note_dropped(1, model);
+            return;
+        }
+        let input = match input {
+            InputEvent::Paste(value) => {
+                let remaining = PREINIT_MAX_TEXT_BYTES.saturating_sub(self.text_bytes);
+                let keep = utf8_prefix_len(&value, remaining);
+                if keep < value.len() {
+                    self.note_dropped(1, model);
+                }
+                if keep == 0 {
+                    return;
+                }
+                self.text_bytes += keep;
+                InputEvent::Paste(value[..keep].to_owned())
+            }
+            InputEvent::Key(KeyInput {
+                key: Key::Char(ch),
+                control: false,
+                kind: KeyKind::Press | KeyKind::Repeat,
+            }) => {
+                if self.text_bytes + ch.len_utf8() > PREINIT_MAX_TEXT_BYTES {
+                    self.note_dropped(1, model);
+                    return;
+                }
+                self.text_bytes += ch.len_utf8();
+                InputEvent::Key(KeyInput {
+                    key: Key::Char(ch),
+                    control: false,
+                    kind: KeyKind::Press,
+                })
+            }
+            input => input,
+        };
+        self.events.push_back(input);
+        self.project_preview(model);
+    }
+
+    fn note_dropped(&mut self, count: usize, model: &mut Model) {
+        if count == 0 {
+            return;
+        }
+        self.dropped = self.dropped.saturating_add(count);
+        let message = format!("input buffer full; dropped {} inputs", self.dropped);
+        model.status_message = Some(message.clone());
+        model.diagnostic_message = Some(message);
+    }
+
+    fn project_preview(&self, model: &mut Model) {
+        model.composer.input.clear();
+        for input in &self.events {
+            match input {
+                InputEvent::Paste(value) => model.composer.input.push_str(value),
+                InputEvent::Key(KeyInput {
+                    key: Key::Char(ch),
+                    control: false,
+                    kind: KeyKind::Press | KeyKind::Repeat,
+                }) => model.composer.input.push(*ch),
+                InputEvent::Key(KeyInput {
+                    key: Key::Backspace,
+                    control: false,
+                    kind: KeyKind::Press | KeyKind::Repeat,
+                }) => {
+                    model.composer.input.pop();
+                }
+                InputEvent::Key(KeyInput {
+                    key: Key::Enter,
+                    control: false,
+                    kind: KeyKind::Press | KeyKind::Repeat,
+                }) => model.composer.input.clear(),
+                _ => {}
+            }
+        }
+    }
+
+    fn into_events(self) -> VecDeque<InputEvent> {
+        self.events
+    }
+}
+
+fn utf8_prefix_len(value: &str, max_bytes: usize) -> usize {
+    if value.len() <= max_bytes {
+        return value.len();
+    }
+    let mut end = max_bytes.min(value.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
+}
+
 pub async fn run_with_driver<B, D>(backend: Arc<B>, driver: D) -> Result<RunResult, AppError>
 where
     B: Backend,
@@ -212,7 +317,11 @@ where
 
     let (high_sender, mut high_receiver) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
     let (runtime_sender, mut runtime_receiver) = mpsc::channel(RUNTIME_CHANNEL_CAPACITY);
+    let (urgent_sender, mut urgent_receiver) = mpsc::channel(URGENT_INPUT_CHANNEL_CAPACITY);
+    let dropped_normal_inputs = Arc::new(AtomicUsize::new(0));
     let input_sender = high_sender.clone();
+    let input_urgent_sender = urgent_sender.clone();
+    let input_dropped = dropped_normal_inputs.clone();
     let (input_stop_sender, mut input_stop_receiver) = oneshot::channel();
     let input_worker = tokio::spawn(async move {
         loop {
@@ -221,25 +330,36 @@ where
                 _ = &mut input_stop_receiver => break,
                 result = driver.next_event() => result,
             };
-            let stop = !matches!(result, Ok(Some(_)));
-            if input_sender
-                .send(HighPriorityEvent::Input(result))
-                .await
-                .is_err()
-                || stop
-            {
-                break;
+            match result {
+                Ok(Some(input)) if is_urgent_input(&input) => {
+                    if input_urgent_sender.send(Ok(Some(input))).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(Some(input)) => {
+                    match input_sender.try_send(HighPriorityEvent::Input(Ok(Some(input)))) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            input_dropped.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => break,
+                    }
+                }
+                terminal @ (Ok(None) | Err(_)) => {
+                    let _ = input_urgent_sender.send(terminal).await;
+                    break;
+                }
             }
         }
     });
     let (input_finished_sender, input_finished_receiver) = oneshot::channel();
-    let input_supervisor = high_sender.clone();
+    let input_supervisor = urgent_sender.clone();
     tokio::spawn(async move {
         if let Err(error) = input_worker.await {
             let _ = input_supervisor
-                .send(HighPriorityEvent::Input(Err(AppError::Input(format!(
+                .send(Err(AppError::Input(format!(
                     "terminal input task failed: {error}"
-                )))))
+                ))))
                 .await;
         }
         let _ = input_finished_sender.send(());
@@ -267,28 +387,63 @@ where
 
     let initialization_deadline = tokio::time::sleep(config.initialization_timeout);
     tokio::pin!(initialization_deadline);
-    let mut buffered_inputs = Vec::new();
-    let mut driver_closed_after_buffer = false;
+    let mut buffered_inputs = PreInitBuffer::default();
     loop {
-        let event = tokio::select! {
+        enum InitializationSelected {
+            Urgent(Option<Result<Option<InputEvent>, AppError>>),
+            High(Option<HighPriorityEvent>),
+            Timeout,
+        }
+        let selected = tokio::select! {
             biased;
-            _ = &mut initialization_deadline => {
+            event = urgent_receiver.recv() => InitializationSelected::Urgent(event),
+            _ = &mut initialization_deadline => InitializationSelected::Timeout,
+            event = high_receiver.recv() => InitializationSelected::High(event),
+        };
+        buffered_inputs.note_dropped(dropped_normal_inputs.swap(0, Ordering::Relaxed), &mut model);
+
+        let event = match selected {
+            InitializationSelected::Timeout => {
                 let error = BackendError::new(
                     BackendErrorKind::Timeout,
                     "backend initialization timed out",
                 );
                 mark_initialization_failed(&mut model, &error);
-                let _ = renderer.draw(&model);
+                let render_result = renderer.draw(&model);
                 stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
-                let cleanup_warnings = cleanup_backend(
-                    &backend,
-                    None,
-                    &mut high_receiver,
-                    &mut runtime_receiver,
-                );
+                let cleanup_warnings =
+                    cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
+                if let Err(render_error) = render_result {
+                    return Err(render_error.with_cleanup(cleanup_warnings));
+                }
                 return Err(AppError::Backend(error).with_cleanup(cleanup_warnings));
-            },
-            event = high_receiver.recv() => event,
+            }
+            InitializationSelected::Urgent(Some(Ok(Some(_))))
+            | InitializationSelected::Urgent(Some(Ok(None)))
+            | InitializationSelected::Urgent(None) => {
+                drain_preinit_inputs(&mut high_receiver, &mut buffered_inputs, &mut model);
+                buffered_inputs
+                    .note_dropped(dropped_normal_inputs.swap(0, Ordering::Relaxed), &mut model);
+                let render_result = renderer.draw(&model);
+                stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+                let cleanup_warnings =
+                    cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
+                if let Err(error) = render_result {
+                    return Err(error.with_cleanup(cleanup_warnings));
+                }
+                return Ok(RunResult {
+                    model,
+                    detached: true,
+                    cleanup_warnings,
+                });
+            }
+            InitializationSelected::Urgent(Some(Err(error))) => {
+                stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+                let cleanup_warnings =
+                    cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
+                return Err(error.with_cleanup(cleanup_warnings));
+            }
+            InitializationSelected::High(event) => event,
         };
 
         match event {
@@ -302,6 +457,7 @@ where
                     .position(|runtime| runtime.id == model.runtime.id)
                     .unwrap_or(0);
                 model.connection = ConnectionState::Connected;
+                model.composer.input.clear();
                 if let Err(error) = renderer.draw(&model) {
                     stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
                     let cleanup_warnings =
@@ -330,13 +486,9 @@ where
                     return Err(error.with_cleanup(cleanup_warnings));
                 }
             }
-            Some(HighPriorityEvent::Input(Ok(None))) if !buffered_inputs.is_empty() => {
-                driver_closed_after_buffer = true;
-            }
             Some(HighPriorityEvent::Input(Ok(Some(InputEvent::Eof))))
             | Some(HighPriorityEvent::Input(Ok(None)))
             | None => {
-                apply_initialization_editor_preview(&mut model, &buffered_inputs);
                 stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
                 let cleanup_warnings =
                     cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
@@ -349,7 +501,6 @@ where
             Some(HighPriorityEvent::Input(Ok(Some(InputEvent::Key(key)))))
                 if key.control && key.key == Key::Char('c') && key.kind != KeyKind::Release =>
             {
-                apply_initialization_editor_preview(&mut model, &buffered_inputs);
                 stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
                 let cleanup_warnings =
                     cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
@@ -360,7 +511,7 @@ where
                 });
             }
             Some(HighPriorityEvent::Input(Ok(Some(input)))) => {
-                buffer_initialization_input(&mut model, input, &mut buffered_inputs);
+                buffered_inputs.push(input, &mut model);
                 if let Err(error) = renderer.draw(&model) {
                     stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
                     let cleanup_warnings =
@@ -379,7 +530,7 @@ where
     }
 
     let mut detached = false;
-    for input in buffered_inputs {
+    for input in buffered_inputs.into_events() {
         let outcome = handle_input(&mut model, input);
         detached |= outcome.detached;
         if let Err(error) = renderer.draw(&model) {
@@ -402,22 +553,48 @@ where
             break;
         }
     }
-    if driver_closed_after_buffer && !model.should_quit {
-        detached = true;
-    }
 
     while !model.should_quit && !detached {
         enum Selected {
+            Urgent(Option<Result<Option<InputEvent>, AppError>>),
             High(Option<HighPriorityEvent>),
             Runtime(Option<RuntimeStreamEvent>),
         }
         let selected = tokio::select! {
             biased;
+            event = urgent_receiver.recv() => Selected::Urgent(event),
             event = high_receiver.recv() => Selected::High(event),
             event = runtime_receiver.recv() => Selected::Runtime(event),
         };
 
+        note_dropped_inputs(&mut model, dropped_normal_inputs.swap(0, Ordering::Relaxed));
+
         let effects = match selected {
+            Selected::Urgent(Some(Ok(Some(input)))) => {
+                drain_normal_before_detach(&mut high_receiver, &mut model);
+                let outcome = handle_input(&mut model, input);
+                detached = outcome.detached;
+                outcome.effects
+            }
+            Selected::Urgent(Some(Ok(None))) => {
+                drain_normal_before_driver_closed(&mut high_receiver, &mut model);
+                detached = !model.should_quit;
+                Vec::new()
+            }
+            Selected::Urgent(None) => {
+                detached = true;
+                Vec::new()
+            }
+            Selected::Urgent(Some(Err(error))) => {
+                stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+                let cleanup_warnings = cleanup_backend(
+                    &backend,
+                    active_stream_token(&model),
+                    &mut high_receiver,
+                    &mut runtime_receiver,
+                );
+                return Err(error.with_cleanup(cleanup_warnings));
+            }
             Selected::High(Some(HighPriorityEvent::Input(Ok(Some(input))))) => {
                 let outcome = handle_input(&mut model, input);
                 detached = outcome.detached;
@@ -529,36 +706,101 @@ fn mark_initialization_failed(model: &mut Model, error: &BackendError) {
     model.last_backend_error = Some(error.clone());
 }
 
-fn buffer_initialization_input(
-    _model: &mut Model,
-    input: InputEvent,
-    buffered_inputs: &mut Vec<InputEvent>,
-) {
-    buffered_inputs.push(input);
+fn is_urgent_input(input: &InputEvent) -> bool {
+    matches!(input, InputEvent::Eof)
+        || matches!(
+            input,
+            InputEvent::Key(KeyInput {
+                key: Key::Char('c'),
+                control: true,
+                kind: KeyKind::Press | KeyKind::Repeat,
+            })
+        )
 }
 
-fn apply_initialization_editor_preview(model: &mut Model, buffered_inputs: &[InputEvent]) {
-    for input in buffered_inputs {
-        match input {
-            InputEvent::Paste(value) => model.composer.input.push_str(value),
-            InputEvent::Key(KeyInput {
-                key: Key::Char(ch),
-                control: false,
-                kind: KeyKind::Press | KeyKind::Repeat,
-            }) => model.composer.input.push(*ch),
-            InputEvent::Key(KeyInput {
-                key: Key::Backspace,
-                control: false,
-                kind: KeyKind::Press | KeyKind::Repeat,
-            }) => {
-                model.composer.input.pop();
+fn note_dropped_inputs(model: &mut Model, count: usize) {
+    if count > 0 {
+        let message = format!("input queue full; dropped {count} inputs");
+        model.status_message = Some(message.clone());
+        model.diagnostic_message = Some(message);
+    }
+}
+
+fn drain_preinit_inputs(
+    receiver: &mut mpsc::Receiver<HighPriorityEvent>,
+    buffered: &mut PreInitBuffer,
+    model: &mut Model,
+) {
+    while let Ok(event) = receiver.try_recv() {
+        match event {
+            HighPriorityEvent::Input(Ok(Some(InputEvent::Resize(width, height)))) => {
+                model.terminal_size = Some((width, height));
             }
-            InputEvent::Key(KeyInput {
-                kind: KeyKind::Release,
-                ..
-            })
-            | InputEvent::Resize(_, _) => {}
-            _ => break,
+            HighPriorityEvent::Input(Ok(Some(input))) => buffered.push(input, model),
+            HighPriorityEvent::Input(Ok(None) | Err(_))
+            | HighPriorityEvent::Control(_)
+            | HighPriorityEvent::Initialized(_) => {}
+        }
+    }
+}
+
+fn drain_normal_before_detach(receiver: &mut mpsc::Receiver<HighPriorityEvent>, model: &mut Model) {
+    while let Ok(event) = receiver.try_recv() {
+        match event {
+            HighPriorityEvent::Input(Ok(Some(
+                input @ (InputEvent::Paste(_)
+                | InputEvent::Resize(_, _)
+                | InputEvent::Key(KeyInput {
+                    key: Key::Char(_) | Key::Backspace,
+                    ..
+                })),
+            ))) => {
+                let _ = handle_input(model, input);
+            }
+            HighPriorityEvent::Input(Ok(Some(
+                input @ InputEvent::Key(KeyInput {
+                    key: Key::Enter, ..
+                }),
+            ))) if matches!(model.connection, ConnectionState::Failed(_)) => {
+                let _ = handle_input(model, input);
+            }
+            HighPriorityEvent::Control(action) => {
+                let _ = update(model, *action);
+            }
+            HighPriorityEvent::Input(_) | HighPriorityEvent::Initialized(_) => {}
+        }
+    }
+}
+
+fn drain_normal_before_driver_closed(
+    receiver: &mut mpsc::Receiver<HighPriorityEvent>,
+    model: &mut Model,
+) {
+    while let Ok(event) = receiver.try_recv() {
+        match event {
+            HighPriorityEvent::Input(Ok(Some(
+                input @ (InputEvent::Paste(_)
+                | InputEvent::Resize(_, _)
+                | InputEvent::Key(KeyInput {
+                    key: Key::Char(_) | Key::Backspace,
+                    ..
+                })),
+            ))) => {
+                let _ = handle_input(model, input);
+            }
+            HighPriorityEvent::Input(Ok(Some(
+                input @ InputEvent::Key(KeyInput {
+                    key: Key::Enter, ..
+                }),
+            ))) if matches!(model.connection, ConnectionState::Failed(_))
+                || model.composer.input.starts_with('/') =>
+            {
+                let _ = handle_input(model, input);
+            }
+            HighPriorityEvent::Control(action) => {
+                let _ = update(model, *action);
+            }
+            HighPriorityEvent::Input(_) | HighPriorityEvent::Initialized(_) => {}
         }
     }
 }
@@ -1048,6 +1290,7 @@ fn map_key(event: KeyEvent) -> Option<KeyInput> {
 mod tests {
     use std::{
         io,
+        path::PathBuf,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -1058,7 +1301,11 @@ mod tests {
     use crossterm::event::Event;
     use tokio::sync::mpsc;
 
-    use super::{TerminalEventSource, terminal_input_task_with_source};
+    use super::{
+        InputEvent, Key, KeyInput, PREINIT_MAX_EVENTS, PREINIT_MAX_TEXT_BYTES, PreInitBuffer,
+        TerminalEventSource, terminal_input_task_with_source,
+    };
+    use crate::{backend::RuntimeStatus, model::Model};
 
     struct PollingSource {
         polls: Arc<AtomicUsize>,
@@ -1094,5 +1341,37 @@ mod tests {
             drop(task);
             assert!(started.elapsed() < Duration::from_millis(200));
         }
+    }
+
+    #[test]
+    fn preinit_buffer_caps_events_and_utf8_text_without_retaining_overflow() {
+        let mut buffer = PreInitBuffer::default();
+        let mut model = Model::new(
+            PathBuf::from("workspace"),
+            RuntimeStatus::new("codex", "Codex", true),
+        );
+        buffer.push(
+            InputEvent::Paste("界".repeat(PREINIT_MAX_TEXT_BYTES / 3 + 2)),
+            &mut model,
+        );
+        for _ in 1..=PREINIT_MAX_EVENTS {
+            buffer.push(InputEvent::Key(KeyInput::plain(Key::Enter)), &mut model);
+        }
+
+        assert_eq!(buffer.events.len(), PREINIT_MAX_EVENTS);
+        assert!(buffer.text_bytes <= PREINIT_MAX_TEXT_BYTES);
+        assert!(matches!(
+            buffer.events.front(),
+            Some(InputEvent::Paste(value))
+                if value.len() == PREINIT_MAX_TEXT_BYTES - PREINIT_MAX_TEXT_BYTES % '界'.len_utf8()
+        ));
+        assert_eq!(buffer.dropped, 2);
+        assert!(
+            model
+                .status_message
+                .as_deref()
+                .unwrap()
+                .contains("dropped 2 inputs")
+        );
     }
 }
