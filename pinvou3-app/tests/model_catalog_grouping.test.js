@@ -78,6 +78,37 @@ test('z.ai 直连存量小写配置仍命中大写目录行 -> 预设', () => {
   // 另一迁移项 GLM-5-Turbo（旧拼写 glm-5-turbo）同样兼容。
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://api.z.ai/api/coding/paas/v4', model: 'glm-5-turbo' })), true);
 });
+test('Tencent Coding Plan catalog hits with legacy alias compatibility (official 2026-08-21 model table)', () => {
+  // Each of the three model rows hits; glm-5-0 / kimi-k-2-5 are the official
+  // parallel second spellings on the same page, registered in legacyAliases,
+  // so stored configs count as preset with either spelling.
+  const base = 'https://api.lkeap.cloud.tencent.com/coding/v3';
+  for (const model of ['tc-code-latest', 'glm-5', 'glm-5-0', 'kimi-k2.5', 'kimi-k-2-5']) {
+    assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: base, model })), true, model);
+  }
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: base, model: 'glm-5.2' })), false, 'glm-5.2 is not in the official Coding Plan model table');
+});
+test('Tencent Token Plan is a separate catalog: distinguished from Coding Plan by base_url, no cross-group match', () => {
+  // /plan/v3 general+Hy tiers hit their own group (official 2026-08-27 model
+  // table, every row and every registered parallel spelling); on Coding Plan's
+  // /coding/v3 the URL does not match, and with identical vendor+provider_kind
+  // the exact comparison keeps the model custom.
+  const planBase = 'https://api.lkeap.cloud.tencent.com/plan/v3';
+  const planModels = [
+    'tc-code-latest',
+    'glm-5.2', 'glm-5-2', 'glm-5.1', 'glm-5-1', 'glm-5', 'glm-5-0',
+    'deepseek-v4-pro-202606', 'deepseek/deepseek-v4-pro-0813', 'deepseek/deepseek-v4-pro',
+    'deepseek-v4-flash-202605', 'deepseek/deepseek-v4-flash-0731', 'deepseek/deepseek-v4-flash',
+    'minimax-m2.7', 'minimax-m-2-7',
+    'kimi-k2.5', 'kimi-k-2-5',
+    'hy3', 'hy3-preview',
+  ];
+  for (const model of planModels) {
+    assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: planBase, model })), true, model);
+  }
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: 'https://api.lkeap.cloud.tencent.com/coding/v3', model: 'glm-5.2' })), false, 'Token Plan-exclusive models must not match the Coding Plan catalog');
+  assert.strictEqual(providerLabelForModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: planBase, model: 'glm-5.2' }), t), '腾讯云 Token Plan / Tencent Cloud Token Plan');
+});
 test('catalogItemMatchesModel 精确比较+legacyAliases 兼容迁移拼写', () => {
   // SettingsView 编辑弹窗的 initialCatalogMatch/known/active 均复用此比较:
   // 存量小写 glm-5.2 必须命中 z.ai 直连目录行 GLM-5.2(经 legacyAliases),

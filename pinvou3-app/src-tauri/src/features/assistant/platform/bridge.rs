@@ -5491,6 +5491,12 @@ mod tests {
                 "openai",
                 ApiProvider::Openai,
             ),
+            (
+                "glm-5.2",
+                "https://api.lkeap.cloud.tencent.com/plan/v3/chat/completions",
+                "openai",
+                ApiProvider::Openai,
+            ),
         ];
 
         for (model, base_url, expected_provider, expected_api_provider) in cases {
