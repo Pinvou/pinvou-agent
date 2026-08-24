@@ -25,6 +25,7 @@ use crate::{
 
 pub const CONTROL_CHANNEL_CAPACITY: usize = 64;
 pub const RUNTIME_CHANNEL_CAPACITY: usize = 256;
+pub const DEFAULT_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
 const DETACH_WAIT: Duration = Duration::from_millis(500);
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -141,9 +142,23 @@ pub struct RunResult {
     pub cleanup_warnings: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct AppConfig {
+    pub initialization_timeout: Duration,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            initialization_timeout: DEFAULT_INITIALIZATION_TIMEOUT,
+        }
+    }
+}
+
 enum HighPriorityEvent {
     Input(Result<Option<InputEvent>, AppError>),
     Control(Box<Action>),
+    Initialized(Result<(PathBuf, RuntimeList), BackendError>),
 }
 
 enum RuntimeStreamEvent {
@@ -162,41 +177,38 @@ where
     B: Backend,
     D: Driver,
 {
-    run_with_driver_and_renderer(backend, driver, NoopRenderer).await
+    run_with_driver_and_renderer_config(backend, driver, NoopRenderer, AppConfig::default()).await
 }
 
 pub async fn run_with_driver_and_renderer<B, D, R>(
     backend: Arc<B>,
-    mut driver: D,
-    mut renderer: R,
+    driver: D,
+    renderer: R,
 ) -> Result<RunResult, AppError>
 where
     B: Backend,
     D: Driver,
     R: Renderer,
 {
-    let (workspace, runtimes) = match initialize(backend.clone()).await {
-        Ok(initialized) => initialized,
-        Err(error) => {
-            let mut model = Model::new(
-                PathBuf::from("."),
-                RuntimeStatus::new("unavailable", "No runtime available", false),
-            );
-            model.connection = ConnectionState::Failed(error.clone());
-            renderer.draw(&model)?;
-            return Err(AppError::Backend(error));
-        }
-    };
-    let runtime = select_initial_runtime(&runtimes);
-    let mut model = Model::new(workspace, runtime);
-    model.connection = ConnectionState::Connected;
-    model.runtime_candidates = runtimes.runtimes;
-    model.selected_runtime = model
-        .runtime_candidates
-        .iter()
-        .position(|candidate| candidate.id == model.runtime.id)
-        .unwrap_or(0);
-    renderer.draw(&model)?;
+    run_with_driver_and_renderer_config(backend, driver, renderer, AppConfig::default()).await
+}
+
+pub async fn run_with_driver_and_renderer_config<B, D, R>(
+    backend: Arc<B>,
+    mut driver: D,
+    mut renderer: R,
+    config: AppConfig,
+) -> Result<RunResult, AppError>
+where
+    B: Backend,
+    D: Driver,
+    R: Renderer,
+{
+    let mut model = Model::new(
+        PathBuf::from("."),
+        RuntimeStatus::new("initializing", "Initializing runtime", false),
+    );
+    model.connection = ConnectionState::Connecting;
 
     let (high_sender, mut high_receiver) = mpsc::channel(CONTROL_CHANNEL_CAPACITY);
     let (runtime_sender, mut runtime_receiver) = mpsc::channel(RUNTIME_CHANNEL_CAPACITY);
@@ -235,7 +247,165 @@ where
     let mut input_stop_sender = Some(input_stop_sender);
     let mut input_finished_receiver = Some(input_finished_receiver);
 
+    if let Err(error) = renderer.draw(&model) {
+        stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+        let cleanup_warnings =
+            cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
+        return Err(error.with_cleanup(cleanup_warnings));
+    }
+
+    let initialization_backend = backend.clone();
+    let initialization_sender = high_sender.clone();
+    thread::spawn(move || {
+        let result = guarded_backend_call(|| {
+            let workspace = initialization_backend.workspace()?;
+            let runtimes = initialization_backend.runtime_list()?;
+            Ok((workspace, runtimes))
+        });
+        let _ = initialization_sender.blocking_send(HighPriorityEvent::Initialized(result));
+    });
+
+    let initialization_deadline = tokio::time::sleep(config.initialization_timeout);
+    tokio::pin!(initialization_deadline);
+    let mut buffered_inputs = Vec::new();
+    let mut driver_closed_after_buffer = false;
+    loop {
+        let event = tokio::select! {
+            biased;
+            _ = &mut initialization_deadline => {
+                let error = BackendError::new(
+                    BackendErrorKind::Timeout,
+                    "backend initialization timed out",
+                );
+                mark_initialization_failed(&mut model, &error);
+                let _ = renderer.draw(&model);
+                stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+                let cleanup_warnings = cleanup_backend(
+                    &backend,
+                    None,
+                    &mut high_receiver,
+                    &mut runtime_receiver,
+                );
+                return Err(AppError::Backend(error).with_cleanup(cleanup_warnings));
+            },
+            event = high_receiver.recv() => event,
+        };
+
+        match event {
+            Some(HighPriorityEvent::Initialized(Ok((workspace, runtimes)))) => {
+                model.workspace = workspace;
+                model.runtime = select_initial_runtime(&runtimes);
+                model.runtime_candidates = runtimes.runtimes;
+                model.selected_runtime = model
+                    .runtime_candidates
+                    .iter()
+                    .position(|runtime| runtime.id == model.runtime.id)
+                    .unwrap_or(0);
+                model.connection = ConnectionState::Connected;
+                if let Err(error) = renderer.draw(&model) {
+                    stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+                    let cleanup_warnings =
+                        cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
+                    return Err(error.with_cleanup(cleanup_warnings));
+                }
+                break;
+            }
+            Some(HighPriorityEvent::Initialized(Err(error))) => {
+                mark_initialization_failed(&mut model, &error);
+                let render_result = renderer.draw(&model);
+                stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+                let cleanup_warnings =
+                    cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
+                if let Err(render_error) = render_result {
+                    return Err(render_error.with_cleanup(cleanup_warnings));
+                }
+                return Err(AppError::Backend(error).with_cleanup(cleanup_warnings));
+            }
+            Some(HighPriorityEvent::Input(Ok(Some(InputEvent::Resize(width, height))))) => {
+                model.terminal_size = Some((width, height));
+                if let Err(error) = renderer.draw(&model) {
+                    stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+                    let cleanup_warnings =
+                        cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
+                    return Err(error.with_cleanup(cleanup_warnings));
+                }
+            }
+            Some(HighPriorityEvent::Input(Ok(None))) if !buffered_inputs.is_empty() => {
+                driver_closed_after_buffer = true;
+            }
+            Some(HighPriorityEvent::Input(Ok(Some(InputEvent::Eof))))
+            | Some(HighPriorityEvent::Input(Ok(None)))
+            | None => {
+                apply_initialization_editor_preview(&mut model, &buffered_inputs);
+                stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+                let cleanup_warnings =
+                    cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
+                return Ok(RunResult {
+                    model,
+                    detached: true,
+                    cleanup_warnings,
+                });
+            }
+            Some(HighPriorityEvent::Input(Ok(Some(InputEvent::Key(key)))))
+                if key.control && key.key == Key::Char('c') && key.kind != KeyKind::Release =>
+            {
+                apply_initialization_editor_preview(&mut model, &buffered_inputs);
+                stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+                let cleanup_warnings =
+                    cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
+                return Ok(RunResult {
+                    model,
+                    detached: true,
+                    cleanup_warnings,
+                });
+            }
+            Some(HighPriorityEvent::Input(Ok(Some(input)))) => {
+                buffer_initialization_input(&mut model, input, &mut buffered_inputs);
+                if let Err(error) = renderer.draw(&model) {
+                    stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+                    let cleanup_warnings =
+                        cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
+                    return Err(error.with_cleanup(cleanup_warnings));
+                }
+            }
+            Some(HighPriorityEvent::Input(Err(error))) => {
+                stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+                let cleanup_warnings =
+                    cleanup_backend(&backend, None, &mut high_receiver, &mut runtime_receiver);
+                return Err(error.with_cleanup(cleanup_warnings));
+            }
+            Some(HighPriorityEvent::Control(_)) => {}
+        }
+    }
+
     let mut detached = false;
+    for input in buffered_inputs {
+        let outcome = handle_input(&mut model, input);
+        detached |= outcome.detached;
+        if let Err(error) = renderer.draw(&model) {
+            stop_input_worker(&mut input_stop_sender, &mut input_finished_receiver).await;
+            let cleanup_warnings = cleanup_backend(
+                &backend,
+                active_stream_token(&model),
+                &mut high_receiver,
+                &mut runtime_receiver,
+            );
+            return Err(error.with_cleanup(cleanup_warnings));
+        }
+        dispatch_effects(
+            backend.clone(),
+            high_sender.clone(),
+            runtime_sender.clone(),
+            outcome.effects,
+        );
+        if model.should_quit || detached {
+            break;
+        }
+    }
+    if driver_closed_after_buffer && !model.should_quit {
+        detached = true;
+    }
+
     while !model.should_quit && !detached {
         enum Selected {
             High(Option<HighPriorityEvent>),
@@ -268,6 +438,7 @@ where
                 return Err(error.with_cleanup(cleanup_warnings));
             }
             Selected::High(Some(HighPriorityEvent::Control(action))) => update(&mut model, *action),
+            Selected::High(Some(HighPriorityEvent::Initialized(_))) => Vec::new(),
             Selected::High(None) => {
                 detached = true;
                 Vec::new()
@@ -343,15 +514,6 @@ async fn stop_input_worker(
     }
 }
 
-async fn initialize<B: Backend>(backend: Arc<B>) -> Result<(PathBuf, RuntimeList), BackendError> {
-    run_os_call(move || {
-        let workspace = backend.workspace()?;
-        let runtimes = backend.runtime_list()?;
-        Ok((workspace, runtimes))
-    })
-    .await
-}
-
 fn select_initial_runtime(list: &RuntimeList) -> RuntimeStatus {
     list.active_runtime
         .as_ref()
@@ -359,6 +521,46 @@ fn select_initial_runtime(list: &RuntimeList) -> RuntimeStatus {
         .or_else(|| list.runtimes.iter().find(|runtime| runtime.available))
         .cloned()
         .unwrap_or_else(|| RuntimeStatus::new("unavailable", "No runtime available", false))
+}
+
+fn mark_initialization_failed(model: &mut Model, error: &BackendError) {
+    model.connection = ConnectionState::Failed(error.clone());
+    model.status_message = Some(error.safe_message().to_owned());
+    model.last_backend_error = Some(error.clone());
+}
+
+fn buffer_initialization_input(
+    _model: &mut Model,
+    input: InputEvent,
+    buffered_inputs: &mut Vec<InputEvent>,
+) {
+    buffered_inputs.push(input);
+}
+
+fn apply_initialization_editor_preview(model: &mut Model, buffered_inputs: &[InputEvent]) {
+    for input in buffered_inputs {
+        match input {
+            InputEvent::Paste(value) => model.composer.input.push_str(value),
+            InputEvent::Key(KeyInput {
+                key: Key::Char(ch),
+                control: false,
+                kind: KeyKind::Press | KeyKind::Repeat,
+            }) => model.composer.input.push(*ch),
+            InputEvent::Key(KeyInput {
+                key: Key::Backspace,
+                control: false,
+                kind: KeyKind::Press | KeyKind::Repeat,
+            }) => {
+                model.composer.input.pop();
+            }
+            InputEvent::Key(KeyInput {
+                kind: KeyKind::Release,
+                ..
+            })
+            | InputEvent::Resize(_, _) => {}
+            _ => break,
+        }
+    }
 }
 
 struct InputOutcome {
@@ -648,21 +850,6 @@ fn guarded_backend_call<T>(
         Err(BackendError::new(
             BackendErrorKind::WorkerPanic,
             "backend worker panicked",
-        ))
-    })
-}
-
-async fn run_os_call<T: Send + 'static>(
-    call: impl FnOnce() -> Result<T, BackendError> + Send + 'static,
-) -> Result<T, BackendError> {
-    let (sender, receiver) = oneshot::channel();
-    thread::spawn(move || {
-        let _ = sender.send(guarded_backend_call(call));
-    });
-    receiver.await.unwrap_or_else(|_| {
-        Err(BackendError::new(
-            BackendErrorKind::WorkerPanic,
-            "backend worker ended without a result",
         ))
     })
 }

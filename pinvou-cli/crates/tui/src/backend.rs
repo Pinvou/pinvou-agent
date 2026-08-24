@@ -50,6 +50,7 @@ pub enum BackendErrorKind {
     Protocol,
     Operation,
     WorkerPanic,
+    Timeout,
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]

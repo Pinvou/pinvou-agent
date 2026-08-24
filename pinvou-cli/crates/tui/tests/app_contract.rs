@@ -10,8 +10,8 @@ use std::{
 use pinvou_protocol::{RuntimeEventEnvelope, RuntimeEventKind};
 use pinvou_tui::{
     app::{
-        AppError, Driver, InputEvent, Key, KeyInput, KeyKind, Renderer, run_with_driver,
-        run_with_driver_and_renderer,
+        AppConfig, AppError, Driver, InputEvent, Key, KeyInput, KeyKind, Renderer, run_with_driver,
+        run_with_driver_and_renderer, run_with_driver_and_renderer_config,
     },
     backend::{Backend, BackendError, BackendErrorKind, EventEmitter, RuntimeList, RuntimeStatus},
     model::{Interaction, Overlay, TranscriptEntry, TurnState},
@@ -44,6 +44,8 @@ struct Calls {
     detaches: Vec<u64>,
     control_detaches: usize,
     control_started: Vec<ControlKind>,
+    workspace_started: bool,
+    initial_runtime_list_started: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -62,6 +64,8 @@ struct FakeBackend {
     plan: StreamPlan,
     fail_runtime_reload: bool,
     fail_initial_runtime_list: bool,
+    block_workspace: bool,
+    block_initial_runtime_list: bool,
     blocked_control: Option<ControlKind>,
     panic_control: Option<ControlKind>,
     detach_stream_error: bool,
@@ -79,6 +83,8 @@ impl FakeBackend {
             plan: StreamPlan::ApprovalThenHold,
             fail_runtime_reload: false,
             fail_initial_runtime_list: false,
+            block_workspace: false,
+            block_initial_runtime_list: false,
             blocked_control: None,
             panic_control: None,
             detach_stream_error: false,
@@ -105,6 +111,22 @@ impl FakeBackend {
     fn with_failed_initialization() -> Self {
         Self {
             fail_initial_runtime_list: true,
+            ..Self::new()
+        }
+    }
+
+    fn with_blocked_initialization(block_workspace: bool, block_runtime_list: bool) -> Self {
+        Self {
+            block_workspace,
+            block_initial_runtime_list: block_runtime_list,
+            ..Self::new()
+        }
+    }
+
+    fn with_blocked_workspace_and_cleanup_error() -> Self {
+        Self {
+            block_workspace: true,
+            detach_controls_error: true,
             ..Self::new()
         }
     }
@@ -186,15 +208,44 @@ impl FakeBackend {
 
 impl Backend for FakeBackend {
     fn workspace(&self) -> Result<PathBuf, BackendError> {
+        let (calls, wake) = &*self.calls;
+        let mut calls = calls.lock().unwrap();
+        calls.workspace_started = true;
+        wake.notify_all();
+        if self.block_workspace {
+            while calls.control_detaches == 0 {
+                calls = wake.wait(calls).unwrap();
+            }
+            return Err(BackendError::new(
+                BackendErrorKind::Cancelled,
+                "workspace initialization detached",
+            ));
+        }
         Ok(PathBuf::from("workspace"))
     }
 
     fn runtime_list(&self) -> Result<RuntimeList, BackendError> {
         let call = {
-            let mut calls = self.calls.0.lock().unwrap();
+            let (calls, wake) = &*self.calls;
+            let mut calls = calls.lock().unwrap();
             calls.runtime_list_calls += 1;
+            if calls.runtime_list_calls == 1 {
+                calls.initial_runtime_list_started = true;
+                wake.notify_all();
+            }
             calls.runtime_list_calls
         };
+        if self.block_initial_runtime_list && call == 1 {
+            let (calls, wake) = &*self.calls;
+            let mut calls = calls.lock().unwrap();
+            while calls.control_detaches == 0 {
+                calls = wake.wait(calls).unwrap();
+            }
+            return Err(BackendError::new(
+                BackendErrorKind::Cancelled,
+                "runtime initialization detached",
+            ));
+        }
         if self.fail_runtime_reload && call > 1 {
             return Err(BackendError::new(
                 BackendErrorKind::ControllerUnavailable,
@@ -674,7 +725,14 @@ async fn renderer_observes_stream_approval_resolution_and_terminal_progression()
     .unwrap();
     assert!(result.detached);
     let snapshots = snapshots.lock().unwrap();
-    assert!(snapshots.first().unwrap().connection == pinvou_tui::model::ConnectionState::Connected);
+    assert!(
+        snapshots.first().unwrap().connection == pinvou_tui::model::ConnectionState::Connecting
+    );
+    assert!(
+        snapshots
+            .iter()
+            .any(|model| { model.connection == pinvou_tui::model::ConnectionState::Connected })
+    );
     assert!(
         snapshots
             .iter()
@@ -701,21 +759,139 @@ async fn renderer_observes_stream_approval_resolution_and_terminal_progression()
 #[tokio::test(flavor = "current_thread")]
 async fn initialization_failure_renders_failed_connection_before_typed_error() {
     let backend = FakeBackend::with_failed_initialization();
+    let initialization = backend.clone();
     let renderer = RecordingRenderer::default();
     let snapshots = renderer.0.clone();
-    let error =
-        run_with_driver_and_renderer(Arc::new(backend), ScriptDriver::new(Vec::new()), renderer)
-            .await
-            .unwrap_err();
+    let error = run_with_driver_and_renderer(
+        Arc::new(backend),
+        ScriptDriver::new(vec![
+            wait_for(move || initialization.calls().runtime_list_calls == 1),
+            Step::Delay(Duration::from_millis(10)),
+        ]),
+        renderer,
+    )
+    .await
+    .unwrap_err();
     assert!(
         matches!(error, AppError::Backend(ref error) if error.safe_message() == "initial probe failed")
     );
     let snapshots = snapshots.lock().unwrap();
-    assert_eq!(snapshots.len(), 1);
+    assert!(snapshots.len() >= 2);
+    assert_eq!(
+        snapshots.first().unwrap().connection,
+        pinvou_tui::model::ConnectionState::Connecting
+    );
     assert!(matches!(
-        snapshots[0].connection,
+        snapshots.last().unwrap().connection,
         pinvou_tui::model::ConnectionState::Failed(_)
     ));
+}
+
+#[test]
+fn blocked_initialization_ctrl_c_and_eof_detach_before_runtime_drop() {
+    for (block_workspace, input) in [
+        (true, InputEvent::Key(KeyInput::ctrl(Key::Char('c')))),
+        (false, InputEvent::Key(KeyInput::ctrl(Key::Char('c')))),
+        (true, InputEvent::Eof),
+    ] {
+        let started_at = std::time::Instant::now();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let backend = FakeBackend::with_blocked_initialization(block_workspace, !block_workspace);
+        let initialization = backend.clone();
+        let wait = wait_for(move || {
+            let calls = initialization.calls();
+            if block_workspace {
+                calls.workspace_started
+            } else {
+                calls.initial_runtime_list_started
+            }
+        });
+        let result = runtime
+            .block_on(run_with_driver(
+                Arc::new(backend.clone()),
+                ScriptDriver::new(vec![wait, Step::Input(input)]),
+            ))
+            .unwrap();
+        drop(runtime);
+        assert!(result.detached);
+        let calls = backend.calls();
+        assert_eq!(calls.control_detaches, 1);
+        assert!(calls.detaches.is_empty());
+        assert!(calls.interrupts.is_empty());
+        assert!(started_at.elapsed() < Duration::from_secs(2));
+    }
+}
+
+#[test]
+fn initialization_deadline_fails_visibly_and_detaches_controls() {
+    let started_at = std::time::Instant::now();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let backend = FakeBackend::with_blocked_initialization(true, false);
+    let initialization = backend.clone();
+    let renderer = RecordingRenderer::default();
+    let snapshots = renderer.0.clone();
+    let error = runtime
+        .block_on(run_with_driver_and_renderer_config(
+            Arc::new(backend.clone()),
+            ScriptDriver::new(vec![
+                wait_for(move || initialization.calls().workspace_started),
+                Step::Delay(Duration::from_secs(1)),
+            ]),
+            renderer,
+            AppConfig {
+                initialization_timeout: Duration::from_millis(50),
+            },
+        ))
+        .unwrap_err();
+    drop(runtime);
+    assert!(matches!(
+        error,
+        AppError::Backend(ref error) if error.kind() == BackendErrorKind::Timeout
+    ));
+    assert_eq!(backend.calls().control_detaches, 1);
+    let snapshots = snapshots.lock().unwrap();
+    assert_eq!(
+        snapshots.first().unwrap().connection,
+        pinvou_tui::model::ConnectionState::Connecting
+    );
+    assert!(matches!(
+        snapshots.last().unwrap().connection,
+        pinvou_tui::model::ConnectionState::Failed(_)
+    ));
+    assert!(started_at.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn initialization_detach_preserves_cleanup_warnings() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let backend = FakeBackend::with_blocked_workspace_and_cleanup_error();
+    let initialization = backend.clone();
+    let result = runtime
+        .block_on(run_with_driver(
+            Arc::new(backend),
+            ScriptDriver::new(vec![
+                wait_for(move || initialization.calls().workspace_started),
+                Step::Input(InputEvent::Eof),
+            ]),
+        ))
+        .unwrap();
+    drop(runtime);
+    assert!(result.detached);
+    assert!(
+        result
+            .cleanup_warnings
+            .iter()
+            .any(|warning| warning.contains("detach_controls: control cleanup failed"))
+    );
 }
 
 #[test]
