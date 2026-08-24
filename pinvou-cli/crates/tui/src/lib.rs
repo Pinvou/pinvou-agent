@@ -68,12 +68,11 @@ mod tests {
     fn streaming_turn_approval_and_completion_are_projected_deterministically() {
         let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
 
-        assert_eq!(
-            update(&mut model, Action::Submit("hello".into())),
-            vec![Effect::StartTurn {
-                prompt: "hello".into()
-            }]
-        );
+        let start_effects = update(&mut model, Action::Submit("hello".into()));
+        assert!(matches!(
+            start_effects.as_slice(),
+            [Effect::StartTurn { prompt, .. }] if prompt == "hello"
+        ));
         update(
             &mut model,
             Action::Runtime(event(
@@ -372,12 +371,10 @@ mod tests {
                 Some("turn-1"),
             )),
         );
-        assert_eq!(
+        assert!(matches!(
             model.turn,
-            TurnState::Streaming {
-                turn_id: "turn-1".into()
-            }
-        );
+            TurnState::Streaming { ref turn_id, .. } if turn_id == "turn-1"
+        ));
 
         for foreign in [
             event_for(
@@ -432,12 +429,10 @@ mod tests {
         assert_eq!(model.transcript.assistant_text(), "");
         assert_eq!(model.interaction, Interaction::None);
         assert_eq!(model.transcript.entries().len(), 1);
-        assert_eq!(
+        assert!(matches!(
             model.turn,
-            TurnState::Streaming {
-                turn_id: "turn-1".into()
-            }
-        );
+            TurnState::Streaming { ref turn_id, .. } if turn_id == "turn-1"
+        ));
 
         update(
             &mut model,
@@ -476,7 +471,7 @@ mod tests {
                 None,
             )),
         );
-        assert_eq!(model.turn, TurnState::Starting);
+        assert!(matches!(model.turn, TurnState::Starting { .. }));
         update(
             &mut model,
             Action::Runtime(event_for(
@@ -495,12 +490,10 @@ mod tests {
                 Some("turn-2"),
             )),
         );
-        assert_eq!(
+        assert!(matches!(
             model.turn,
-            TurnState::Streaming {
-                turn_id: "turn-1".into()
-            }
-        );
+            TurnState::Streaming { ref turn_id, .. } if turn_id == "turn-1"
+        ));
         update(
             &mut model,
             Action::Runtime(event_for(
@@ -531,12 +524,10 @@ mod tests {
                 Some("turn-1"),
             )),
         );
-        assert_eq!(
+        assert!(matches!(
             model.turn,
-            TurnState::Streaming {
-                turn_id: "turn-2".into()
-            }
-        );
+            TurnState::Streaming { ref turn_id, .. } if turn_id == "turn-2"
+        ));
     }
 
     #[test]
@@ -951,6 +942,192 @@ mod tests {
         assert!(model.pending_runtime_switch.is_none());
     }
 
+    #[test]
+    fn mismatched_runtime_switch_result_is_a_protocol_error_and_never_activates() {
+        let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        update(&mut model, Action::Submit("/runtime".into()));
+        let effects = update(&mut model, Action::RuntimeSwitch("claude".into()));
+        let token = match effects.as_slice() {
+            [
+                Effect::SwitchRuntime {
+                    operation_token, ..
+                },
+            ] => *operation_token,
+            other => panic!("unexpected runtime effects: {other:?}"),
+        };
+
+        update(
+            &mut model,
+            Action::RuntimeSwitched {
+                operation_token: token,
+                result: Ok(runtime("kimi")),
+            },
+        );
+
+        assert_eq!(model.runtime.id, "codex");
+        assert!(model.pending_runtime_switch.is_none());
+        assert_eq!(model.overlay, Overlay::RuntimeList);
+        assert_eq!(
+            model.last_backend_error.as_ref().map(BackendError::kind),
+            Some(BackendErrorKind::Protocol)
+        );
+        assert!(model.status_message.as_deref().unwrap().contains("claude"));
+        let diagnostic = model.diagnostic_message.as_deref().unwrap();
+        assert!(diagnostic.contains("claude") && diagnostic.contains("kimi"));
+    }
+
+    #[test]
+    fn stream_completion_failure_recovers_starting_and_streaming_turns() {
+        let mut starting = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        let effects = update(&mut starting, Action::Submit("hello".into()));
+        let starting_token = match effects.as_slice() {
+            [
+                Effect::StartTurn {
+                    operation_token, ..
+                },
+            ] => *operation_token,
+            other => panic!("unexpected start effects: {other:?}"),
+        };
+        let pre_start_error = BackendError::new(
+            BackendErrorKind::ControllerUnavailable,
+            "controller unavailable",
+        );
+        update(
+            &mut starting,
+            Action::TurnStreamCompleted {
+                operation_token: starting_token,
+                result: Err(pre_start_error.clone()),
+            },
+        );
+        assert_eq!(starting.turn, TurnState::Idle);
+        assert_eq!(starting.interaction, Interaction::None);
+        assert_eq!(starting.last_backend_error.as_ref(), Some(&pre_start_error));
+
+        let mut streaming = active_model();
+        request_approval(&mut streaming);
+        let streaming_token = active_turn_token(&streaming);
+        let stream_error = BackendError::new(BackendErrorKind::Operation, "stream closed");
+        update(
+            &mut streaming,
+            Action::TurnStreamCompleted {
+                operation_token: streaming_token,
+                result: Err(stream_error.clone()),
+            },
+        );
+        assert_eq!(streaming.turn, TurnState::Idle);
+        assert_eq!(streaming.interaction, Interaction::None);
+        assert_eq!(streaming.last_backend_error.as_ref(), Some(&stream_error));
+    }
+
+    #[test]
+    fn successful_stream_without_terminal_event_is_a_protocol_error() {
+        let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        let effects = update(&mut model, Action::Submit("hello".into()));
+        let token = match effects.as_slice() {
+            [
+                Effect::StartTurn {
+                    operation_token, ..
+                },
+            ] => *operation_token,
+            other => panic!("unexpected start effects: {other:?}"),
+        };
+
+        update(
+            &mut model,
+            Action::TurnStreamCompleted {
+                operation_token: token,
+                result: Ok(()),
+            },
+        );
+
+        assert_eq!(model.turn, TurnState::Idle);
+        assert_eq!(
+            model.last_backend_error.as_ref().map(BackendError::kind),
+            Some(BackendErrorKind::Protocol)
+        );
+        assert!(
+            model
+                .status_message
+                .as_deref()
+                .unwrap()
+                .contains("turn.ended")
+        );
+
+        let mut streaming = active_model();
+        let token = active_turn_token(&streaming);
+        update(
+            &mut streaming,
+            Action::TurnStreamCompleted {
+                operation_token: token,
+                result: Ok(()),
+            },
+        );
+        assert_eq!(streaming.turn, TurnState::Idle);
+        assert_eq!(
+            streaming
+                .last_backend_error
+                .as_ref()
+                .map(BackendError::kind),
+            Some(BackendErrorKind::Protocol)
+        );
+    }
+
+    #[test]
+    fn terminal_event_then_stream_success_is_normal_but_old_completion_is_isolated() {
+        let mut model = active_model();
+        let completed_token = active_turn_token(&model);
+        update(
+            &mut model,
+            Action::Runtime(event(
+                RuntimeEventKind::TurnEnded,
+                json!({"end_reason": "completed"}),
+                2,
+            )),
+        );
+        update(
+            &mut model,
+            Action::TurnStreamCompleted {
+                operation_token: completed_token,
+                result: Ok(()),
+            },
+        );
+        assert_eq!(model.turn, TurnState::Idle);
+        assert!(model.last_backend_error.is_none());
+
+        let effects = update(&mut model, Action::Submit("next".into()));
+        let new_token = match effects.as_slice() {
+            [
+                Effect::StartTurn {
+                    operation_token, ..
+                },
+            ] => *operation_token,
+            other => panic!("unexpected next-turn effects: {other:?}"),
+        };
+        assert_ne!(completed_token, new_token);
+        update(
+            &mut model,
+            Action::TurnStreamCompleted {
+                operation_token: completed_token,
+                result: Err(BackendError::new(
+                    BackendErrorKind::Operation,
+                    "late old failure",
+                )),
+            },
+        );
+        assert!(matches!(
+            model.turn,
+            TurnState::Starting { operation_token } if operation_token == new_token
+        ));
+        assert!(model.last_backend_error.is_none());
+        assert!(
+            model
+                .diagnostic_message
+                .as_deref()
+                .unwrap()
+                .contains("stale")
+        );
+    }
+
     fn active_model() -> Model {
         let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
         update(&mut model, Action::Submit("hello".into()));
@@ -963,6 +1140,15 @@ mod tests {
             )),
         );
         model
+    }
+
+    fn active_turn_token(model: &Model) -> OperationToken {
+        match model.turn {
+            TurnState::Streaming {
+                operation_token, ..
+            } => operation_token,
+            ref other => panic!("expected streaming turn, got {other:?}"),
+        }
     }
 
     fn request_approval(model: &mut Model) {

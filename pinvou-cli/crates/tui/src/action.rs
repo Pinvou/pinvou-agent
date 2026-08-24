@@ -26,6 +26,10 @@ pub enum Action {
         operation_token: crate::model::OperationToken,
         result: Result<(), BackendError>,
     },
+    TurnStreamCompleted {
+        operation_token: crate::model::OperationToken,
+        result: Result<(), BackendError>,
+    },
     Interrupt,
     RuntimeSwitch(String),
     RuntimeSwitched {
@@ -38,6 +42,7 @@ pub enum Action {
 pub enum Effect {
     StartTurn {
         prompt: String,
+        operation_token: crate::model::OperationToken,
     },
     ResolveApproval {
         turn_id: String,

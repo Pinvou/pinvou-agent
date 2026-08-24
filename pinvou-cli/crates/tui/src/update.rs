@@ -31,6 +31,10 @@ pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
             operation_token,
             result,
         } => complete_input(model, &turn_id, &input_id, operation_token, result),
+        Action::TurnStreamCompleted {
+            operation_token,
+            result,
+        } => complete_turn_stream(model, operation_token, result),
         Action::Interrupt => interrupt(model),
         Action::RuntimeSwitch(runtime) => switch_runtime(model, runtime),
         Action::RuntimeSwitched {
@@ -86,8 +90,12 @@ fn submit_prompt(model: &mut Model, prompt: &str) -> Vec<Effect> {
     model.diagnostic_message = None;
     model.last_backend_error = None;
     model.pending_runtime_switch = None;
-    model.turn = TurnState::Starting;
-    vec![Effect::StartTurn { prompt }]
+    let operation_token = model.allocate_operation_token();
+    model.turn = TurnState::Starting { operation_token };
+    vec![Effect::StartTurn {
+        prompt,
+        operation_token,
+    }]
 }
 
 fn choose_approval(model: &mut Model, decision: ApprovalDecision) -> Vec<Effect> {
@@ -200,8 +208,52 @@ fn complete_input(
     Vec::new()
 }
 
+fn complete_turn_stream(
+    model: &mut Model,
+    operation_token: crate::model::OperationToken,
+    result: Result<(), BackendError>,
+) -> Vec<Effect> {
+    let active_token = match &model.turn {
+        TurnState::Starting { operation_token }
+        | TurnState::Streaming {
+            operation_token, ..
+        } => Some(*operation_token),
+        TurnState::Idle => None,
+    };
+
+    if let Some(active_token) = active_token {
+        if active_token != operation_token {
+            record_ignored(model, "ignored stale turn stream completion".into());
+            return Vec::new();
+        }
+
+        finish_turn(model);
+        match result {
+            Ok(()) => {
+                let error = BackendError::new(
+                    crate::backend::BackendErrorKind::Protocol,
+                    "turn stream completed without turn.ended",
+                )
+                .with_exit_code(pinvou_protocol::StableExitCode::RuntimeFailed);
+                record_backend_error(model, error);
+            }
+            Err(error) => record_backend_error(model, error),
+        }
+        return Vec::new();
+    }
+
+    if model.last_completed_turn_token == Some(operation_token) {
+        if result.is_err() {
+            record_ignored(model, "ignored stream failure after terminal event".into());
+        }
+    } else {
+        record_ignored(model, "ignored stale turn stream completion".into());
+    }
+    Vec::new()
+}
+
 fn interrupt(model: &mut Model) -> Vec<Effect> {
-    let TurnState::Streaming { turn_id } = &model.turn else {
+    let TurnState::Streaming { turn_id, .. } = &model.turn else {
         return Vec::new();
     };
     vec![Effect::Interrupt {
@@ -250,14 +302,29 @@ fn complete_runtime_switch(
         return Vec::new();
     }
 
+    let target = pending.target.clone();
     model.pending_runtime_switch = None;
     match result {
-        Ok(runtime) => {
+        Ok(runtime) if runtime.id == target => {
             model.runtime = runtime;
             model.overlay = Overlay::None;
             model.status_message = None;
             model.diagnostic_message = None;
             model.last_backend_error = None;
+        }
+        Ok(runtime) => {
+            model.overlay = Overlay::RuntimeList;
+            let diagnostic = format!(
+                "runtime switch expected '{}' but backend returned '{}'",
+                target, runtime.id
+            );
+            let error = BackendError::new(
+                crate::backend::BackendErrorKind::Protocol,
+                diagnostic.clone(),
+            )
+            .with_exit_code(pinvou_protocol::StableExitCode::RuntimeFailed);
+            record_backend_error(model, error);
+            model.diagnostic_message = Some(diagnostic);
         }
         Err(error) => record_backend_error(model, error),
     }
@@ -334,18 +401,22 @@ fn project_runtime_event(model: &mut Model, event: &RuntimeEventEnvelope) {
 }
 
 fn bind_turn(model: &mut Model, event: &RuntimeEventEnvelope) {
-    let TurnState::Starting = model.turn else {
-        record_ignored(
-            model,
-            format!("ignored {} without a starting turn", event.kind()),
-        );
-        return;
+    let operation_token = match &model.turn {
+        TurnState::Starting { operation_token } => *operation_token,
+        TurnState::Idle | TurnState::Streaming { .. } => {
+            record_ignored(
+                model,
+                format!("ignored {} without a starting turn", event.kind()),
+            );
+            return;
+        }
     };
     let Some(turn_id) = event.turn_id() else {
         record_ignored(model, "ignored turn.started without turn_id".into());
         return;
     };
     model.turn = TurnState::Streaming {
+        operation_token,
         turn_id: turn_id.to_owned(),
     };
     model.status_message = None;
@@ -353,7 +424,7 @@ fn bind_turn(model: &mut Model, event: &RuntimeEventEnvelope) {
 }
 
 fn belongs_to_active_turn(model: &mut Model, event: &RuntimeEventEnvelope) -> bool {
-    let TurnState::Streaming { turn_id } = &model.turn else {
+    let TurnState::Streaming { turn_id, .. } = &model.turn else {
         record_ignored(
             model,
             format!("ignored {} without an active turn", event.kind()),
@@ -480,6 +551,13 @@ fn resolve_input_from_runtime(model: &mut Model, payload: &Value) {
 }
 
 fn finish_turn(model: &mut Model) {
+    model.last_completed_turn_token = match &model.turn {
+        TurnState::Starting { operation_token }
+        | TurnState::Streaming {
+            operation_token, ..
+        } => Some(*operation_token),
+        TurnState::Idle => model.last_completed_turn_token,
+    };
     model.turn = TurnState::Idle;
     model.interaction = Interaction::None;
     model.pending_runtime_switch = None;
@@ -500,8 +578,8 @@ fn record_ignored(model: &mut Model, message: String) {
 
 fn active_turn_id(model: &Model) -> Option<String> {
     match &model.turn {
-        TurnState::Streaming { turn_id } => Some(turn_id.clone()),
-        TurnState::Idle | TurnState::Starting => None,
+        TurnState::Streaming { turn_id, .. } => Some(turn_id.clone()),
+        TurnState::Idle | TurnState::Starting { .. } => None,
     }
 }
 
