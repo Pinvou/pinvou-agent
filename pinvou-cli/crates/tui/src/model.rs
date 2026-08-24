@@ -182,7 +182,7 @@ pub struct Model {
     pub diagnostic_message: Option<String>,
     pub last_backend_error: Option<BackendError>,
     pub pending_runtime_switch: Option<PendingRuntimeSwitch>,
-    pub last_completed_turn_token: Option<OperationToken>,
+    pub last_terminal_turn_token: Option<OperationToken>,
     pub should_quit: bool,
     next_operation_token: u64,
 }
@@ -202,7 +202,7 @@ impl Model {
             diagnostic_message: None,
             last_backend_error: None,
             pending_runtime_switch: None,
-            last_completed_turn_token: None,
+            last_terminal_turn_token: None,
             should_quit: false,
             next_operation_token: 1,
         }

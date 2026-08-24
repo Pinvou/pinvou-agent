@@ -13,8 +13,11 @@ use crate::{
 pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
     match action {
         Action::Submit(input) => submit(model, input),
-        Action::Runtime(event) => {
-            project_runtime_event(model, &event);
+        Action::Runtime {
+            operation_token,
+            event,
+        } => {
+            project_runtime_event(model, operation_token, &event);
             Vec::new()
         }
         Action::ApprovalChosen(decision) => choose_approval(model, decision),
@@ -227,7 +230,7 @@ fn complete_turn_stream(
             return Vec::new();
         }
 
-        finish_turn(model);
+        recover_turn_without_terminal(model);
         match result {
             Ok(()) => {
                 let error = BackendError::new(
@@ -242,9 +245,12 @@ fn complete_turn_stream(
         return Vec::new();
     }
 
-    if model.last_completed_turn_token == Some(operation_token) {
+    if model.last_terminal_turn_token == Some(operation_token) {
         if result.is_err() {
-            record_ignored(model, "ignored stream failure after terminal event".into());
+            record_ignored(
+                model,
+                "ignored stream failure after runtime terminal".into(),
+            );
         }
     } else {
         record_ignored(model, "ignored stale turn stream completion".into());
@@ -331,7 +337,19 @@ fn complete_runtime_switch(
     Vec::new()
 }
 
-fn project_runtime_event(model: &mut Model, event: &RuntimeEventEnvelope) {
+fn project_runtime_event(
+    model: &mut Model,
+    operation_token: crate::model::OperationToken,
+    event: &RuntimeEventEnvelope,
+) {
+    if !runtime_token_is_active(model, operation_token) {
+        record_ignored(
+            model,
+            "ignored runtime event with a stale operation token".into(),
+        );
+        return;
+    }
+
     let payload = match serde_json::from_str::<Value>(event.payload().get()) {
         Ok(payload) => payload,
         Err(error) => {
@@ -551,13 +569,17 @@ fn resolve_input_from_runtime(model: &mut Model, payload: &Value) {
 }
 
 fn finish_turn(model: &mut Model) {
-    model.last_completed_turn_token = match &model.turn {
+    model.last_terminal_turn_token = match &model.turn {
         TurnState::Starting { operation_token }
         | TurnState::Streaming {
             operation_token, ..
         } => Some(*operation_token),
-        TurnState::Idle => model.last_completed_turn_token,
+        TurnState::Idle => model.last_terminal_turn_token,
     };
+    recover_turn_without_terminal(model);
+}
+
+fn recover_turn_without_terminal(model: &mut Model) {
     model.turn = TurnState::Idle;
     model.interaction = Interaction::None;
     model.pending_runtime_switch = None;
@@ -570,9 +592,19 @@ fn record_backend_error(model: &mut Model, error: BackendError) {
 }
 
 fn record_ignored(model: &mut Model, message: String) {
-    model.diagnostic_message = Some(message.clone());
-    if model.last_backend_error.is_none() {
-        model.status_message = Some(message);
+    model.diagnostic_message = Some(message);
+}
+
+fn runtime_token_is_active(model: &Model, operation_token: crate::model::OperationToken) -> bool {
+    match &model.turn {
+        TurnState::Starting {
+            operation_token: active,
+        }
+        | TurnState::Streaming {
+            operation_token: active,
+            ..
+        } => *active == operation_token,
+        TurnState::Idle => false,
     }
 }
 

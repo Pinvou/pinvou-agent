@@ -73,33 +73,33 @@ mod tests {
             start_effects.as_slice(),
             [Effect::StartTurn { prompt, .. }] if prompt == "hello"
         ));
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::TurnStarted,
                 json!({"user_input_ref": "prompt-1"}),
                 1,
-            )),
+            ),
         );
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::TextDelta,
                 json!({"role": "assistant", "content": "hel"}),
                 2,
-            )),
+            ),
         );
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::TextDelta,
                 json!({"role": "assistant", "content": "lo"}),
                 3,
-            )),
+            ),
         );
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::ApprovalRequested,
                 json!({
                     "approval_id": "approval-1",
@@ -108,7 +108,7 @@ mod tests {
                     "options": ["allow", "deny"]
                 }),
                 4,
-            )),
+            ),
         );
         assert!(matches!(
             model.interaction,
@@ -127,13 +127,13 @@ mod tests {
                 ..
             }] if approval_id == "approval-1" && turn_id == "turn-1"
         ));
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::TurnEnded,
                 json!({"end_reason": "completed"}),
                 5,
-            )),
+            ),
         );
 
         assert_eq!(model.transcript.assistant_text(), "hello");
@@ -144,37 +144,37 @@ mod tests {
     fn input_tool_error_and_runtime_actions_have_explicit_state_and_effects() {
         let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
         update(&mut model, Action::Submit("inspect".into()));
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::TurnStarted,
                 json!({"user_input_ref": "prompt-1"}),
                 1,
-            )),
+            ),
         );
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::ToolCallStarted,
                 json!({"tool_id": "tool-1", "name": "read_file"}),
                 2,
-            )),
+            ),
         );
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::ToolCallOutputDelta,
                 json!({"tool_id": "tool-1", "chunk": "done"}),
                 3,
-            )),
+            ),
         );
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::InputRequested,
                 json!({"input_id": "input-1", "prompt": "Continue?"}),
                 4,
-            )),
+            ),
         );
         assert!(matches!(model.interaction, Interaction::InputPending(_)));
         let input_effects = update(&mut model, Action::InputSubmitted("yes".into()));
@@ -201,9 +201,9 @@ mod tests {
         assert!(update(&mut model, Action::RuntimeSwitch("claude".into())).is_empty());
         assert!(model.pending_runtime_switch.is_none());
 
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::ErrorRaised,
                 json!({
                     "code": "runtime_failed",
@@ -212,7 +212,7 @@ mod tests {
                     "source": "runtime"
                 }),
                 5,
-            )),
+            ),
         );
         assert_eq!(model.status_message.as_deref(), Some("runtime stopped"));
         assert_eq!(model.turn, TurnState::Idle);
@@ -313,13 +313,13 @@ mod tests {
                 .contains("active")
         );
 
-        update(
+        dispatch_current_runtime(
             &mut starting,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::TurnStarted,
                 json!({"user_input_ref": "prompt-1"}),
                 1,
-            )),
+            ),
         );
         assert!(update(&mut starting, Action::Submit("third".into())).is_empty());
         assert_eq!(starting.transcript.entries().len(), 1);
@@ -331,13 +331,13 @@ mod tests {
         assert_eq!(starting.transcript.entries().len(), 1);
 
         let mut input = active_model();
-        update(
+        dispatch_current_runtime(
             &mut input,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::InputRequested,
                 json!({"input_id": "input-1", "prompt": "Continue?"}),
                 2,
-            )),
+            ),
         );
         let interaction = input.interaction.clone();
         assert!(update(&mut input, Action::Submit("second".into())).is_empty());
@@ -350,32 +350,39 @@ mod tests {
         let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
         update(&mut model, Action::Submit("new turn".into()));
 
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event_for(
+            event_for(
                 RuntimeEventKind::TextDelta,
                 json!({"role": "assistant", "content": "too early"}),
                 1,
                 Some("turn-1"),
-            )),
+            ),
         );
         assert_eq!(model.transcript.assistant_text(), "");
-        assert!(model.status_message.as_deref().unwrap().contains("turn"));
+        assert!(
+            model
+                .diagnostic_message
+                .as_deref()
+                .unwrap()
+                .contains("turn")
+        );
 
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event_for(
+            event_for(
                 RuntimeEventKind::TurnStarted,
                 json!({"user_input_ref": "prompt-1"}),
                 2,
                 Some("turn-1"),
-            )),
+            ),
         );
         assert!(matches!(
             model.turn,
             TurnState::Streaming { ref turn_id, .. } if turn_id == "turn-1"
         ));
 
+        let operation_token = active_turn_token(&model);
         for foreign in [
             event_for(
                 RuntimeEventKind::TextDelta,
@@ -424,7 +431,7 @@ mod tests {
                 Some("old-turn"),
             ),
         ] {
-            update(&mut model, Action::Runtime(foreign));
+            dispatch_runtime_with_token(&mut model, operation_token, foreign);
         }
         assert_eq!(model.transcript.assistant_text(), "");
         assert_eq!(model.interaction, Interaction::None);
@@ -434,14 +441,14 @@ mod tests {
             TurnState::Streaming { ref turn_id, .. } if turn_id == "turn-1"
         ));
 
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event_for(
+            event_for(
                 RuntimeEventKind::TextDelta,
                 json!({"role": "assistant", "content": "current"}),
                 9,
                 Some("turn-1"),
-            )),
+            ),
         );
         assert_eq!(model.transcript.assistant_text(), "current");
     }
@@ -449,80 +456,87 @@ mod tests {
     #[test]
     fn turn_started_is_bound_once_and_late_terminal_events_are_ignored() {
         let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
-        update(
+        dispatch_runtime_with_token(
             &mut model,
-            Action::Runtime(event_for(
+            OperationToken::new(999),
+            event_for(
                 RuntimeEventKind::TurnStarted,
                 json!({"user_input_ref": "orphan"}),
                 1,
                 Some("orphan-turn"),
-            )),
+            ),
         );
         assert_eq!(model.turn, TurnState::Idle);
-        assert!(model.status_message.as_deref().unwrap().contains("turn"));
+        assert!(
+            model
+                .diagnostic_message
+                .as_deref()
+                .unwrap()
+                .contains("token")
+        );
 
         update(&mut model, Action::Submit("hello".into()));
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event_for(
+            event_for(
                 RuntimeEventKind::TurnStarted,
                 json!({"user_input_ref": "missing-id"}),
                 2,
                 None,
-            )),
+            ),
         );
         assert!(matches!(model.turn, TurnState::Starting { .. }));
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event_for(
+            event_for(
                 RuntimeEventKind::TurnStarted,
                 json!({"user_input_ref": "prompt-1"}),
                 3,
                 Some("turn-1"),
-            )),
+            ),
         );
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event_for(
+            event_for(
                 RuntimeEventKind::TurnStarted,
                 json!({"user_input_ref": "duplicate"}),
                 4,
                 Some("turn-2"),
-            )),
+            ),
         );
         assert!(matches!(
             model.turn,
             TurnState::Streaming { ref turn_id, .. } if turn_id == "turn-1"
         ));
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event_for(
+            event_for(
                 RuntimeEventKind::TurnEnded,
                 json!({"end_reason": "completed"}),
                 5,
                 Some("turn-1"),
-            )),
+            ),
         );
         assert_eq!(model.turn, TurnState::Idle);
 
         update(&mut model, Action::Submit("next".into()));
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event_for(
+            event_for(
                 RuntimeEventKind::TurnStarted,
                 json!({"user_input_ref": "prompt-2"}),
                 6,
                 Some("turn-2"),
-            )),
+            ),
         );
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event_for(
+            event_for(
                 RuntimeEventKind::TurnEnded,
                 json!({"end_reason": "completed"}),
                 7,
                 Some("turn-1"),
-            )),
+            ),
         );
         assert!(matches!(
             model.turn,
@@ -594,13 +608,13 @@ mod tests {
             other => panic!("unexpected retry effects: {other:?}"),
         };
         assert_ne!(retry_token, approval_token);
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::ApprovalResolved,
                 json!({"approval_id": "approval-1", "outcome": "approved"}),
                 3,
-            )),
+            ),
         );
         assert_eq!(model.interaction, Interaction::None);
         update(
@@ -618,13 +632,13 @@ mod tests {
     #[test]
     fn input_resolution_preserves_request_on_failure_and_clears_on_success() {
         let mut model = active_model();
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::InputRequested,
                 json!({"input_id": "input-1", "prompt": "Continue?"}),
                 2,
-            )),
+            ),
         );
         let first_effect = update(&mut model, Action::InputSubmitted("yes".into()));
         let (input_turn, first_token) = match first_effect.as_slice() {
@@ -804,28 +818,28 @@ mod tests {
             ] => (turn_id.clone(), *operation_token),
             other => panic!("unexpected old control effects: {other:?}"),
         };
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::TurnEnded,
                 json!({"end_reason": "completed"}),
                 3,
-            )),
+            ),
         );
 
         update(&mut model, Action::Submit("second".into()));
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event_for(
+            event_for(
                 RuntimeEventKind::TurnStarted,
                 json!({"user_input_ref": "prompt-2"}),
                 4,
                 Some("turn-2"),
-            )),
+            ),
         );
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event_for(
+            event_for(
                 RuntimeEventKind::ApprovalRequested,
                 json!({
                     "approval_id": "approval-1",
@@ -835,7 +849,7 @@ mod tests {
                 }),
                 5,
                 Some("turn-2"),
-            )),
+            ),
         );
         let new_effects = update(
             &mut model,
@@ -894,14 +908,15 @@ mod tests {
             },
         );
 
-        update(
+        dispatch_runtime_with_token(
             &mut model,
-            Action::Runtime(event_for(
+            OperationToken::new(999),
+            event_for(
                 RuntimeEventKind::TurnStarted,
                 json!({"user_input_ref": "orphan"}),
                 1,
                 Some("old-turn"),
-            )),
+            ),
         );
 
         assert_eq!(model.status_message.as_deref(), Some("sign in required"));
@@ -928,13 +943,13 @@ mod tests {
             Interaction::ApprovalResolving { .. }
         ));
 
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::StreamAborted,
                 json!({"reason": "transport closed"}),
                 3,
-            )),
+            ),
         );
 
         assert_eq!(model.turn, TurnState::Idle);
@@ -1076,13 +1091,13 @@ mod tests {
     fn terminal_event_then_stream_success_is_normal_but_old_completion_is_isolated() {
         let mut model = active_model();
         let completed_token = active_turn_token(&model);
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::TurnEnded,
                 json!({"end_reason": "completed"}),
                 2,
-            )),
+            ),
         );
         update(
             &mut model,
@@ -1128,16 +1143,183 @@ mod tests {
         );
     }
 
+    #[test]
+    fn runtime_events_are_correlated_by_turn_operation_token_before_projection() {
+        let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        let effects = update(&mut model, Action::Submit("hello".into()));
+        let current_token = start_turn_token(&effects);
+        let stale_token = OperationToken::new(current_token.as_u64() + 100);
+
+        dispatch_runtime_with_token(
+            &mut model,
+            stale_token,
+            event_for(
+                RuntimeEventKind::TurnStarted,
+                json!({"user_input_ref": "stale"}),
+                1,
+                Some("same-runtime-turn-id"),
+            ),
+        );
+        assert!(matches!(
+            model.turn,
+            TurnState::Starting { operation_token } if operation_token == current_token
+        ));
+        assert!(
+            model
+                .diagnostic_message
+                .as_deref()
+                .unwrap()
+                .contains("token")
+        );
+
+        dispatch_runtime_with_token(
+            &mut model,
+            current_token,
+            event_for(
+                RuntimeEventKind::TurnStarted,
+                json!({"user_input_ref": "current"}),
+                2,
+                Some("same-runtime-turn-id"),
+            ),
+        );
+        dispatch_runtime_with_token(
+            &mut model,
+            stale_token,
+            event_for(
+                RuntimeEventKind::TextDelta,
+                json!({"role": "assistant", "content": "stale"}),
+                3,
+                Some("same-runtime-turn-id"),
+            ),
+        );
+        dispatch_runtime_with_token(
+            &mut model,
+            stale_token,
+            event_for(
+                RuntimeEventKind::TurnEnded,
+                json!({"end_reason": "completed"}),
+                4,
+                Some("same-runtime-turn-id"),
+            ),
+        );
+        assert_eq!(model.transcript.assistant_text(), "");
+        assert!(matches!(
+            model.turn,
+            TurnState::Streaming { operation_token, .. } if operation_token == current_token
+        ));
+    }
+
+    #[test]
+    fn terminal_status_survives_stream_failure_and_late_runtime_events() {
+        let mut fatal = active_model();
+        let fatal_token = active_turn_token(&fatal);
+        dispatch_runtime_with_token(
+            &mut fatal,
+            fatal_token,
+            event(
+                RuntimeEventKind::ErrorRaised,
+                json!({
+                    "code": "fatal",
+                    "message": "runtime stopped",
+                    "fatal": true,
+                    "source": "runtime"
+                }),
+                2,
+            ),
+        );
+        update(
+            &mut fatal,
+            Action::TurnStreamCompleted {
+                operation_token: fatal_token,
+                result: Err(BackendError::new(
+                    BackendErrorKind::Operation,
+                    "transport followed fatal",
+                )),
+            },
+        );
+        assert_eq!(fatal.status_message.as_deref(), Some("runtime stopped"));
+        assert!(
+            fatal
+                .diagnostic_message
+                .as_deref()
+                .unwrap()
+                .contains("terminal")
+        );
+
+        let mut aborted = active_model();
+        let aborted_token = active_turn_token(&aborted);
+        dispatch_runtime_with_token(
+            &mut aborted,
+            aborted_token,
+            event(
+                RuntimeEventKind::StreamAborted,
+                json!({"reason": "transport closed"}),
+                2,
+            ),
+        );
+        dispatch_runtime_with_token(
+            &mut aborted,
+            aborted_token,
+            event(
+                RuntimeEventKind::TextDelta,
+                json!({"role": "assistant", "content": "late"}),
+                3,
+            ),
+        );
+        assert_eq!(aborted.status_message.as_deref(), Some("transport closed"));
+        assert_eq!(aborted.transcript.assistant_text(), "");
+        assert!(
+            aborted
+                .diagnostic_message
+                .as_deref()
+                .unwrap()
+                .contains("token")
+        );
+    }
+
+    #[test]
+    fn abnormal_stream_end_is_not_recorded_as_a_runtime_terminal() {
+        let mut model = active_model();
+        let token = active_turn_token(&model);
+        let error = BackendError::new(BackendErrorKind::Operation, "stream failed");
+        update(
+            &mut model,
+            Action::TurnStreamCompleted {
+                operation_token: token,
+                result: Err(error.clone()),
+            },
+        );
+        assert_eq!(model.last_terminal_turn_token, None);
+        assert_eq!(model.status_message.as_deref(), Some("stream failed"));
+
+        update(
+            &mut model,
+            Action::TurnStreamCompleted {
+                operation_token: token,
+                result: Ok(()),
+            },
+        );
+        assert_eq!(model.last_backend_error.as_ref(), Some(&error));
+        assert_eq!(model.status_message.as_deref(), Some("stream failed"));
+        assert!(
+            model
+                .diagnostic_message
+                .as_deref()
+                .unwrap()
+                .contains("stale")
+        );
+    }
+
     fn active_model() -> Model {
         let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
         update(&mut model, Action::Submit("hello".into()));
-        update(
+        dispatch_current_runtime(
             &mut model,
-            Action::Runtime(event(
+            event(
                 RuntimeEventKind::TurnStarted,
                 json!({"user_input_ref": "prompt-1"}),
                 1,
-            )),
+            ),
         );
         model
     }
@@ -1151,10 +1333,46 @@ mod tests {
         }
     }
 
-    fn request_approval(model: &mut Model) {
+    fn start_turn_token(effects: &[Effect]) -> OperationToken {
+        match effects {
+            [
+                Effect::StartTurn {
+                    operation_token, ..
+                },
+            ] => *operation_token,
+            other => panic!("expected one start effect, got {other:?}"),
+        }
+    }
+
+    fn dispatch_runtime_with_token(
+        model: &mut Model,
+        operation_token: OperationToken,
+        event: RuntimeEventEnvelope,
+    ) {
         update(
             model,
-            Action::Runtime(event(
+            Action::Runtime {
+                operation_token,
+                event,
+            },
+        );
+    }
+
+    fn dispatch_current_runtime(model: &mut Model, event: RuntimeEventEnvelope) {
+        let operation_token = match model.turn {
+            TurnState::Starting { operation_token }
+            | TurnState::Streaming {
+                operation_token, ..
+            } => operation_token,
+            TurnState::Idle => panic!("runtime event requires an active turn operation"),
+        };
+        dispatch_runtime_with_token(model, operation_token, event);
+    }
+
+    fn request_approval(model: &mut Model) {
+        dispatch_current_runtime(
+            model,
+            event(
                 RuntimeEventKind::ApprovalRequested,
                 json!({
                     "approval_id": "approval-1",
@@ -1163,7 +1381,7 @@ mod tests {
                     "options": ["allow", "deny"]
                 }),
                 2,
-            )),
+            ),
         );
     }
 }

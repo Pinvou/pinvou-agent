@@ -11,7 +11,10 @@ pub enum ApprovalDecision {
 #[derive(Debug)]
 pub enum Action {
     Submit(String),
-    Runtime(RuntimeEventEnvelope),
+    Runtime {
+        operation_token: crate::model::OperationToken,
+        event: RuntimeEventEnvelope,
+    },
     ApprovalChosen(ApprovalDecision),
     ApprovalResolutionCompleted {
         turn_id: String,
