@@ -523,6 +523,7 @@ pub fn render_list(output: OutputMode) -> String {
 pub struct CliOutcome {
     pub exit_code: ExitCode,
     pub stdout: String,
+    pub stderr: String,
 }
 
 pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
@@ -533,7 +534,7 @@ pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
         #[cfg(feature = "distributed")]
         CliCommand::Tui => {
             distributed::execute_tui_with_environment(&distributed::SystemTerminalEnvironment)
-                .map(success)
+                .map(tui_success)
                 .map_err(cli_error_from_distributed)
         }
         #[cfg(feature = "distributed")]
@@ -582,7 +583,7 @@ pub fn execute_with_terminal_environment(
 ) -> Result<CliOutcome, CliError> {
     if matches!(parsed.command, CliCommand::Tui) {
         distributed::execute_tui_with_environment(environment)
-            .map(success)
+            .map(tui_success)
             .map_err(cli_error_from_distributed)
     } else {
         execute(parsed)
@@ -616,7 +617,31 @@ fn success(stdout: String) -> CliOutcome {
     CliOutcome {
         exit_code: ExitCode::Success,
         stdout,
+        stderr: String::new(),
     }
+}
+
+#[cfg(feature = "distributed")]
+fn tui_success(output: distributed::TuiOutput) -> CliOutcome {
+    CliOutcome {
+        exit_code: ExitCode::Success,
+        stdout: output.stdout().to_owned(),
+        stderr: output.stderr().to_owned(),
+    }
+}
+
+pub fn write_outcome(
+    outcome: &CliOutcome,
+    stdout: &mut impl std::io::Write,
+    stderr: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    if !outcome.stdout.is_empty() {
+        writeln!(stdout, "{}", outcome.stdout)?;
+    }
+    for warning in outcome.stderr.lines() {
+        writeln!(stderr, "{warning}")?;
+    }
+    Ok(())
 }
 
 #[cfg(any(test, feature = "product-backend"))]
@@ -628,6 +653,7 @@ fn finalized_outcome(stdout: String, failed: usize) -> CliOutcome {
             ExitCode::Failed
         },
         stdout,
+        stderr: String::new(),
     }
 }
 

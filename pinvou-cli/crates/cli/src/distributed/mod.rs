@@ -112,7 +112,29 @@ pub fn require_interactive_terminal(
 pub trait TerminalEnvironment {
     fn stdin_is_terminal(&self) -> bool;
     fn stdout_is_terminal(&self) -> bool;
-    fn run_tui(&self) -> Result<String, DistributedError>;
+    fn run_tui(&self) -> Result<TuiOutput, DistributedError>;
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TuiOutput {
+    stdout: String,
+    stderr: String,
+}
+
+impl TuiOutput {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+    pub fn stdout(&self) -> &str {
+        &self.stdout
+    }
+    pub fn stderr(&self) -> &str {
+        &self.stderr
+    }
+}
+
+pub trait TuiRunner {
+    fn run(&self) -> Result<pinvou_tui::app::RunResult, pinvou_tui::TuiRunError>;
 }
 
 pub struct SystemTerminalEnvironment;
@@ -126,14 +148,14 @@ impl TerminalEnvironment for SystemTerminalEnvironment {
         io::stdout().is_terminal()
     }
 
-    fn run_tui(&self) -> Result<String, DistributedError> {
+    fn run_tui(&self) -> Result<TuiOutput, DistributedError> {
         execute_tui()
     }
 }
 
 pub(crate) fn execute_tui_with_environment(
     environment: &dyn TerminalEnvironment,
-) -> Result<String, DistributedError> {
+) -> Result<TuiOutput, DistributedError> {
     if !environment.stdin_is_terminal() || !environment.stdout_is_terminal() {
         return Err(DistributedError::new(
             StableExitCode::Usage,
@@ -570,7 +592,17 @@ pub(crate) fn execute(
     }
 }
 
-pub(crate) fn execute_tui() -> Result<String, DistributedError> {
+struct ControllerTuiRunner {
+    backend: Arc<tui_backend::ControllerTuiBackend>,
+}
+
+impl TuiRunner for ControllerTuiRunner {
+    fn run(&self) -> Result<pinvou_tui::app::RunResult, pinvou_tui::TuiRunError> {
+        pinvou_tui::run(self.backend.clone())
+    }
+}
+
+pub(crate) fn execute_tui() -> Result<TuiOutput, DistributedError> {
     let workspace = std::env::current_dir()
         .map_err(|_| DistributedError::controller("workspace path is unavailable"))?;
     let backend = tui_backend::ControllerTuiBackend::discover(workspace).map_err(|error| {
@@ -589,9 +621,22 @@ pub(crate) fn execute_tui() -> Result<String, DistributedError> {
             error.safe_message(),
         )
     })?;
-    pinvou_tui::run(Arc::new(backend))
-        .map(|_| String::new())
-        .map_err(|error| DistributedError::new(error.exit_code(), error.to_string()))
+    execute_tui_with_runner(&ControllerTuiRunner {
+        backend: Arc::new(backend),
+    })
+}
+
+pub fn execute_tui_with_runner(runner: &dyn TuiRunner) -> Result<TuiOutput, DistributedError> {
+    let result = runner
+        .run()
+        .map_err(|error| DistributedError::new(error.exit_code(), error.to_string()))?;
+    const WARNING: &str = "pinvou: warning: local TUI detach/cleanup failed or timed out; remote task status may be uncertain";
+    Ok(TuiOutput {
+        stdout: String::new(),
+        stderr: std::iter::repeat_n(WARNING, result.cleanup_warnings.len())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    })
 }
 
 fn execute_runtime_switch_with_controller<S: Read + Write>(

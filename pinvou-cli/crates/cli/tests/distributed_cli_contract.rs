@@ -3,18 +3,27 @@
 use std::{
     io::Write,
     process::Command,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use pinvou_cli::distributed::{
     CHAT_TEXT_FRAME, ControllerWire, DistributedCommand, ProjectionAction, TerminalEnvironment,
-    TerminalProjection, map_error_causes,
+    TerminalProjection, TuiRunner, execute_tui_with_runner, map_error_causes,
 };
-use pinvou_cli::{CliCommand, ExitCode, execute, execute_with_terminal_environment, parse_args};
+use pinvou_cli::{
+    CliCommand, CliOutcome, ExitCode, execute, execute_with_terminal_environment, parse_args,
+    write_outcome,
+};
 use pinvou_controller::{ControllerPaths, ControllerSession, LocalIpcListener};
 use pinvou_protocol::{
     ExitCause, IpcMessage, RuntimeEventEnvelope, StableExitCode, decode_frame, encode_frame,
+};
+use pinvou_tui::{
+    app::RunResult,
+    backend::RuntimeStatus,
+    model::Model,
+    terminal::{TerminalGuard, TerminalOps},
 };
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -211,11 +220,142 @@ impl TerminalEnvironment for RecordingTerminalEnvironment {
         self.stdout_tty
     }
 
-    fn run_tui(&self) -> Result<String, pinvou_cli::distributed::DistributedError> {
+    fn run_tui(
+        &self,
+    ) -> Result<pinvou_cli::distributed::TuiOutput, pinvou_cli::distributed::DistributedError> {
         self.starts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(String::new())
+        Ok(pinvou_cli::distributed::TuiOutput::empty())
     }
+}
+
+#[derive(Clone)]
+struct OrderedTerminalOps(Arc<Mutex<Vec<&'static str>>>);
+
+impl TerminalOps for OrderedTerminalOps {
+    fn enable_raw(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().push("enable_raw");
+        Ok(())
+    }
+    fn enter_alt(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().push("enter_alt");
+        Ok(())
+    }
+    fn hide_cursor(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().push("hide_cursor");
+        Ok(())
+    }
+    fn enable_bracketed_paste(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().push("enable_paste");
+        Ok(())
+    }
+    fn disable_bracketed_paste(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().push("disable_paste");
+        Ok(())
+    }
+    fn show_cursor(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().push("show_cursor");
+        Ok(())
+    }
+    fn leave_alt(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().push("leave_alt");
+        Ok(())
+    }
+    fn disable_raw(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().push("disable_raw");
+        Ok(())
+    }
+}
+
+struct CleanupRunner {
+    order: Arc<Mutex<Vec<&'static str>>>,
+    warnings: Vec<String>,
+}
+
+impl TuiRunner for CleanupRunner {
+    fn run(&self) -> Result<RunResult, pinvou_tui::TuiRunError> {
+        let mut guard = TerminalGuard::enter(OrderedTerminalOps(self.order.clone())).unwrap();
+        guard.restore().unwrap();
+        Ok(RunResult {
+            model: Model::new(
+                std::path::PathBuf::from("workspace"),
+                RuntimeStatus::new("codex", "Codex", true),
+            ),
+            detached: true,
+            cleanup_warnings: self.warnings.clone(),
+        })
+    }
+}
+
+struct OrderedWarningSink(Arc<Mutex<Vec<&'static str>>>);
+
+impl std::io::Write for OrderedWarningSink {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes != b"\n" && !bytes.is_empty() {
+            self.0.lock().unwrap().push("warning");
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn cleanup_warnings_are_safe_stable_and_emitted_only_after_terminal_restore() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let output = execute_tui_with_runner(&CleanupRunner {
+        order: order.clone(),
+        warnings: vec!["secret token=abc".into(), "detach timeout details".into()],
+    })
+    .unwrap();
+    let expected = "pinvou: warning: local TUI detach/cleanup failed or timed out; remote task status may be uncertain";
+    assert_eq!(output.stderr(), format!("{expected}\n{expected}"));
+    assert!(!output.stderr().contains("secret"));
+    write_outcome(
+        &CliOutcome {
+            exit_code: ExitCode::Success,
+            stdout: output.stdout().into(),
+            stderr: output.stderr().into(),
+        },
+        &mut std::io::sink(),
+        &mut OrderedWarningSink(order.clone()),
+    )
+    .unwrap();
+    assert_eq!(
+        *order.lock().unwrap(),
+        [
+            "enable_raw",
+            "enter_alt",
+            "hide_cursor",
+            "enable_paste",
+            "disable_paste",
+            "show_cursor",
+            "leave_alt",
+            "disable_raw",
+            "warning",
+            "warning"
+        ]
+    );
+
+    let quiet = execute_tui_with_runner(&CleanupRunner {
+        order: Arc::new(Mutex::new(Vec::new())),
+        warnings: Vec::new(),
+    })
+    .unwrap();
+    assert!(quiet.stderr().is_empty());
+    let quiet_writes = Arc::new(Mutex::new(Vec::new()));
+    write_outcome(
+        &CliOutcome {
+            exit_code: ExitCode::Success,
+            stdout: quiet.stdout().into(),
+            stderr: quiet.stderr().into(),
+        },
+        &mut std::io::sink(),
+        &mut OrderedWarningSink(quiet_writes.clone()),
+    )
+    .unwrap();
+    assert!(quiet_writes.lock().unwrap().is_empty());
 }
 
 #[test]
