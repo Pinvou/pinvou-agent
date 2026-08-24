@@ -178,37 +178,95 @@ impl SessionPolicy {
 mod tests {
     use super::*;
 
+    /// Table-driven dual-mode assertion (merging the two former standalone
+    /// tests): locks every capability bit per mode, so a regression in any
+    /// row pinpoints exactly which field flipped. See the per-field comments.
     #[test]
-    fn code_policy_uses_code_scope_and_lacks_artifact() {
-        let policy = SessionPolicy::for_mode(SessionMode::Code);
-        assert_eq!(policy.mode(), SessionMode::Code);
-        assert!(policy.supports_multi_agent_mode());
-        // load_skill 不在模式缺席列表：其隐藏与否由组合目录空否动态决定
-        // （bridge::shape_disallowed_tools，表字段 skills_empty_hides_load_skill 驱动）。
-        assert_eq!(policy.unavailable_tools(), ["mcp_pinvou3_present_artifact"]);
-        // 设计期差量：code 不提供内置自动技能「视觉设计」（产物能力）
-        assert_eq!(policy.unavailable_builtin_skills(), ["visual-design"]);
-        // 表字段：code 空目录隐藏 load_skill、项目 skills 可选开启
-        assert!(policy.capabilities().skills_empty_hides_load_skill);
-        assert!(policy.capabilities().project_skills_opt_in);
-        // 运行行为语义方法：code = 绑项目目录 + 代码层 instructions
-        assert!(policy.binds_project());
-        assert!(policy.uses_code_instructions());
-    }
-
-    #[test]
-    fn plain_policy_uses_plain_scope_and_lacks_nothing() {
-        let policy = SessionPolicy::for_mode(SessionMode::Plain);
-        assert_eq!(policy.mode(), SessionMode::Plain);
-        assert!(policy.supports_multi_agent_mode());
-        // plain 无模式缺席工具（Git 家族已决策放开，底座能力不做用户级开关）。
-        assert!(policy.unavailable_tools().is_empty());
-        // 表字段：plain 不隐藏 load_skill、项目 skills 不参与
-        assert!(!policy.capabilities().skills_empty_hides_load_skill);
-        assert!(!policy.capabilities().project_skills_opt_in);
-        // 运行行为语义方法：plain 不绑项目目录、不用代码层 instructions
-        assert!(!policy.binds_project());
-        assert!(!policy.uses_code_instructions());
+    fn mode_policy_capability_matrix() {
+        struct Row {
+            mode: SessionMode,
+            // load_skill is not in the unavailable list: whether it is hidden
+            // is decided dynamically by whether the composed skills dir is empty
+            // (bridge::shape_disallowed_tools, driven by the
+            // skills_empty_hides_load_skill field below).
+            unavailable_tools: &'static [&'static str],
+            // Design-time delta: code does not ship the builtin auto skill
+            // "visual-design" (an artifact capability), plain has none (composed
+            // dir materialization excludes it by scope, and the composer builtin
+            // skill row is not shown either).
+            unavailable_builtin_skills: &'static [&'static str],
+            hides_load_skill_when_empty: bool,
+            project_skills_opt_in: bool,
+            binds_project: bool,
+            uses_code_instructions: bool,
+        }
+        let rows = [
+            Row {
+                mode: SessionMode::Code,
+                unavailable_tools: &["mcp_pinvou3_present_artifact"],
+                unavailable_builtin_skills: &["visual-design"],
+                hides_load_skill_when_empty: true,
+                project_skills_opt_in: true,
+                binds_project: true,
+                uses_code_instructions: true,
+            },
+            // plain has no mode-unavailable tools (the Git family was decided
+            // to be open; foundation capabilities carry no user-level switch).
+            Row {
+                mode: SessionMode::Plain,
+                unavailable_tools: &[],
+                unavailable_builtin_skills: &[],
+                hides_load_skill_when_empty: false,
+                project_skills_opt_in: false,
+                binds_project: false,
+                uses_code_instructions: false,
+            },
+        ];
+        for row in rows {
+            let policy = SessionPolicy::for_mode(row.mode);
+            assert_eq!(policy.mode(), row.mode, "{:?} mode", row.mode);
+            assert!(
+                policy.supports_multi_agent_mode(),
+                "{:?} supports_multi_agent_mode",
+                row.mode
+            );
+            assert_eq!(
+                policy.unavailable_tools(),
+                row.unavailable_tools,
+                "{:?} unavailable_tools",
+                row.mode
+            );
+            assert_eq!(
+                policy.unavailable_builtin_skills(),
+                row.unavailable_builtin_skills,
+                "{:?} unavailable_builtin_skills",
+                row.mode
+            );
+            assert_eq!(
+                policy.capabilities().skills_empty_hides_load_skill,
+                row.hides_load_skill_when_empty,
+                "{:?} skills_empty_hides_load_skill",
+                row.mode
+            );
+            assert_eq!(
+                policy.capabilities().project_skills_opt_in,
+                row.project_skills_opt_in,
+                "{:?} project_skills_opt_in",
+                row.mode
+            );
+            assert_eq!(
+                policy.binds_project(),
+                row.binds_project,
+                "{:?} binds_project",
+                row.mode
+            );
+            assert_eq!(
+                policy.uses_code_instructions(),
+                row.uses_code_instructions,
+                "{:?} uses_code_instructions",
+                row.mode
+            );
+        }
     }
 
     /// 穷尽性：每个已注册模式都必须有表项——新增模式漏填表 → 本测试失败，

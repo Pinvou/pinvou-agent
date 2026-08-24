@@ -287,9 +287,13 @@ mod tests {
     }
 
     #[test]
-    fn builtin_table_misses_text_models() {
-        // 各 preset 默认文本模型不得误判 Supported(目录级判定已移除,
-        // 仅内置已验证表决定;mimo-v2.5-pro 见 catalog_models_not_in_builtin_table_stay_unknown)。
+    fn builtin_table_misses_stay_unknown() {
+        // Unified matrix for "miss the builtin vetted table → Unknown". Since
+        // v0.9.5 the foundation model_catalog is no longer exposed, catalog-level
+        // modalities detection is gone, and there is no catalog-based upgrade path.
+        // - No preset's default text model may be misreported as Supported;
+        // - mimo-v2.5-pro / muse-spark-1.1 are outside the builtin table and
+        //   must also resolve to Unknown.
         for (preset, name) in [
             (ModelPreset::Deepseek, "deepseek-v4-pro"),
             (ModelPreset::Kimi, "kimi-k3"),
@@ -297,22 +301,6 @@ mod tests {
             (ModelPreset::Doubao, "doubao-seed-evolving"),
             (ModelPreset::Minimax, "MiniMax-M3"),
             (ModelPreset::Glm, "glm-5.2"),
-        ] {
-            let model = saved_model(preset, name);
-            assert_eq!(
-                effective_image_capability(&model),
-                EffectiveImageCapability::Unknown,
-                "{name} 不应被误判为支持图片"
-            );
-        }
-    }
-
-    #[test]
-    fn catalog_models_not_in_builtin_table_stay_unknown() {
-        // v0.9.5 起底座 model_catalog 不再公开,目录级 modalities 判定已移除
-        // (image_capability.rs 第②级为死代码)。mimo-v2.5-pro / muse-spark-1.1
-        // 不在内置已验证表内,能力判定落 Unknown——不再有「目录级升级」路径。
-        for (preset, name) in [
             (ModelPreset::Mimo, "mimo-v2.5-pro"),
             (ModelPreset::OpenaiCompatible, "muse-spark-1.1"),
         ] {
@@ -320,7 +308,7 @@ mod tests {
             assert_eq!(
                 effective_image_capability(&model),
                 EffectiveImageCapability::Unknown,
-                "{name} 不在内置已验证表,目录级判定已移除,应判 Unknown"
+                "{name} is not in the builtin vetted table; must resolve to Unknown"
             );
         }
     }

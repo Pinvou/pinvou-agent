@@ -122,30 +122,27 @@
   // 关键:在 marked.parse 【之后】做替换,而不是之前。原因:marked 给代码块/inline code 的
   // 输出本身就已经把 < 转义成 &lt;(不会有真 <script>),只有用户在正文里裸写 HTML 时才会
   // 透传出 <script>。post-process 只命中后者,不会双重转义代码块里的 `<script>` 字面量。
-  var DANGEROUS_TAGS_RE = /<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/gi;
-  function neutralizeRawDangerousTags(html) {
-    return html.replace(DANGEROUS_TAGS_RE, function (_, inner) { return "&lt;" + inner + "&gt;"; });
-  }
-  function renderMarkdown(text) {
-    if (window.PinvouMarkdownRenderer && typeof window.PinvouMarkdownRenderer.renderMarkdown === "function") {
-      return window.PinvouMarkdownRenderer.renderMarkdown(text);
-    }
-    if (!window.marked || !window.DOMPurify) return escapeHtml(text);
-    var html = neutralizeRawDangerousTags(marked.parse(text || ""));
-    return DOMPurify.sanitize(html, {
-      // 兜底:即使 neutralize 有漏网(罕见 HTML 注释/CDATA 等),DOMPurify 仍剥掉这些
-      FORBID_TAGS: ["style", "iframe", "object", "embed", "link", "meta"],
-      FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
-    });
-  }
+  // 优先委托共享渲染器 window.PinvouMarkdownRenderer（npm 版，含语法高亮）；在其尚未安装的
+  // 短暂窗口退回 vendor 全局兜底。兜底实现已收敛到 shared/markdown-bridge-fallback.js
+  // （随 index.html 以普通脚本加载，暴露 window.PinvouMarkdownBridgeFallback），消除两份逐字复制。
+  // 最末级 fallback 必须自带 escapeHtml：共享脚本未加载时 renderMarkdown 仍会被
+  // dangerouslySetInnerHTML 消费，原文返回即 fail-open。escapeHtml 作为安全原语保留在本文件
+  // （不依赖任何外部脚本），仅 marked.parse+sanitize 这段较重的兜底被抽到共享文件。
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
-  if (window.marked) {
-    marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
+  function renderMarkdown(text) {
+    if (window.PinvouMarkdownRenderer && typeof window.PinvouMarkdownRenderer.renderMarkdown === "function") {
+      return window.PinvouMarkdownRenderer.renderMarkdown(text);
+    }
+    if (window.PinvouMarkdownBridgeFallback && typeof window.PinvouMarkdownBridgeFallback.renderMarkdown === "function") {
+      return window.PinvouMarkdownBridgeFallback.renderMarkdown(text);
+    }
+    return escapeHtml(text || "");
   }
+
 
   // The pet is a separate WebView and must not own a second copy of the main
   // application state. Keep only the renderer used by its activity cards and
@@ -303,6 +300,7 @@
       status: "idle",
       relay_url: "",
       web_client_connected: false,
+      host_workspace_authorized: false,
       last_error: null,
       starting: false,
     },
@@ -488,7 +486,7 @@
       fileMediaFilterName: "Images and videos",
       kbPickFolderTitle: "Choose folders to import into the knowledge base",
       memoryWriteFailed: "Memory write failed: ", memoryIgnoreFailed: "Failed to ignore memory: ", memoryNeverFailed: "Failed to set \"never ask\": ",
-      attachNeedSession: "⚠️ Start a new chat before adding attachments", attachTooLarge: "Attachment exceeds the 20 MiB limit", attachEmptyFile: "Empty files cannot be added", attachAddCancelled: "Attachment add canceled", attachInvalidResult: "Attachment add returned no valid result",
+      attachNeedSession: "⚠️ Start a new chat before adding attachments", attachTooLarge: "Attachment exceeds the 20 MiB limit", attachEmptyFile: "Empty files cannot be added", attachAddCancelled: "Attachment add canceled", attachInvalidResult: "Attachment add returned no valid result", deviceUploadFailed: "⚠️ Upload failed: ",
       planTicketInvalid: "⚠️ The plan credential is no longer valid. Regenerate the plan before executing.",
       remoteTurnSyncing: "⚠️ This chat is still syncing a turn finished on another device. Try again shortly.",
       mountCollectionFailed: "Failed to mount collection: ",
@@ -562,7 +560,7 @@
       fileMediaFilterName: "画像と動画",
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
       memoryWriteFailed: "メモリの書き込みに失敗: ", memoryIgnoreFailed: "メモリの無視に失敗: ", memoryNeverFailed: "「今後表示しない」の設定に失敗: ",
-      attachNeedSession: "⚠️ 添付ファイルを追加する前に新しいチャットを開始してください", attachTooLarge: "添付ファイルが 20 MiB の上限を超えています", attachEmptyFile: "空のファイルは追加できません", attachAddCancelled: "添付ファイルの追加はキャンセルされました", attachInvalidResult: "添付ファイルの追加で有効な結果が返されませんでした",
+      attachNeedSession: "⚠️ 添付ファイルを追加する前に新しいチャットを開始してください", attachTooLarge: "添付ファイルが 20 MiB の上限を超えています", attachEmptyFile: "空のファイルは追加できません", attachAddCancelled: "添付ファイルの追加はキャンセルされました", attachInvalidResult: "添付ファイルの追加で有効な結果が返されませんでした", deviceUploadFailed: "⚠️ アップロードに失敗: ",
       planTicketInvalid: "⚠️ プランの資格情報が無効になりました。プランを再生成してから実行してください。",
       remoteTurnSyncing: "⚠️ このセッションは別の端末で完了したターンを同期中です。しばらくしてから再試行してください。",
       mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
@@ -636,7 +634,7 @@
       fileMediaFilterName: "图片和视频",
       kbPickFolderTitle: "选择要导入知识库的文件夹",
       memoryWriteFailed: "记忆写入失败：", memoryIgnoreFailed: "忽略记忆失败：", memoryNeverFailed: "设置不再提示失败：",
-      attachNeedSession: "⚠️ 请先新建会话再添加附件", attachTooLarge: "附件超过 20 MiB 上限", attachEmptyFile: "空文件无法添加", attachAddCancelled: "附件添加已取消", attachInvalidResult: "附件添加未返回有效结果",
+      attachNeedSession: "⚠️ 请先新建会话再添加附件", attachTooLarge: "附件超过 20 MiB 上限", attachEmptyFile: "空文件无法添加", attachAddCancelled: "附件添加已取消", attachInvalidResult: "附件添加未返回有效结果", deviceUploadFailed: "⚠️ 上传失败: ",
       planTicketInvalid: "⚠️ 方案凭证已失效，请重新生成方案后再执行",
       remoteTurnSyncing: "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试",
       mountCollectionFailed: "挂载知识集失败: ",
@@ -676,14 +674,13 @@
   var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
   var suppressNotify = false;
   function discardManagedAttachment(result) {
+    var draftUploadId = result && result.__pinvouManagedDraftAttachmentId;
+    if (draftUploadId) return invoke("cancel_draft_file_upload", { uploadId: draftUploadId })
+      .catch(function (error) { console.warn("[attachment] failed to discard draft attachment", error); });
     var sessionId = result && result.__pinvouManagedAttachmentSessionId;
     if (!sessionId || !result.path) return Promise.resolve();
-    return invoke("discard_dropped_attachment", {
-      sessionId: sessionId,
-      path: result.path,
-    }).catch(function (error) {
-      console.warn("[attachment] failed to discard managed attachment", error);
-    });
+    return invoke("discard_dropped_attachment", { sessionId: sessionId, path: result.path })
+      .catch(function (error) { console.warn("[attachment] failed to discard managed attachment", error); });
   }
   // sessionId → true:标题当前是「卡牌占位名」(加卡时自动取的),可被首条用户消息覆盖。
   // 卡牌名只在「加了卡但还没开口」时当临时标题;一旦开始对话,对话内容更能区分同卡会话。
@@ -815,7 +812,7 @@
     recordPinvouSceneForMessage: recordPinvouSceneForMessage,
     reconcileRemoteTurn: function () { return reconcileRemoteTurn.apply(null, arguments); },
     markRemoteTurn: function () { return markRemoteTurn.apply(null, arguments); },
-    clearAttachments: function () { return clearAttachments.apply(null, arguments); },
+    adoptManagedAttachments: function () { return adoptManagedAttachments.apply(null, arguments); },
     discardManagedAttachment: discardManagedAttachment,
     isScheduledRunSession: function () { return isScheduledRunSession.apply(null, arguments); },
     basename: basename,
@@ -852,7 +849,6 @@
   var isBusyFor = chatFeature.isBusyFor;
   var emitPetEvent = chatFeature.emitPetEvent;
   var doSendFor = chatFeature.doSendFor;
-  var publishRemoteUserMessage = chatFeature.publishRemoteUserMessage;
   var flushQueued = chatFeature.flushQueued;
   var sendMessageToSession = chatFeature.sendMessageToSession;
   var sendMessage = chatFeature.sendMessage;
@@ -1204,6 +1200,14 @@
               continue;
             }
           }
+          // 写入前回合归属校验（与 web 版对齐，审计 #257）：重试窗口内新回合
+          // 可能已开始（markRemoteTurn 置 busy/remoteTurnActive、重置 revision），
+          // 此时用旧终稿重建工作集会截断新回合直播流——放弃本轮对账，由新回合
+          // 自己的 done 事件重新对账。放弃条件只用 busy：不能用 remoteTurnActive
+          // （正常远端回合 done 后它恒为 true），也不能用 !remoteTerminalSeen
+          // （scheduled run 因 requiresAuthorityReconcile=false 不置 terminalSeen，
+          // 但 flushQueued 仍会走 reconcile，会误伤）。
+          if (buf.busy) return false;
           runSyncOnSession(sid, function () {
             var rawLiveChatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
             var resolvedPlanTickets = Object.create(null);
@@ -1342,7 +1346,7 @@
     var slice = {};
     for (var i = 0; i < fields.length; i++) slice[fields[i]] = state[fields[i]];
     if (typeof structuredClone === "function") {
-      try { return structuredClone(slice); } catch (_) {}
+      try { return structuredClone(slice); } catch (_) {} // safari14-ok: typeof-guarded with JSON fallback
     }
     return JSON.parse(JSON.stringify(slice));
   }
@@ -1463,79 +1467,11 @@
     }
     return Object.freeze(result);
   }
-  function cloneJson(value, fallback) {
-    try { return JSON.parse(JSON.stringify(value == null ? fallback : value)); }
-    catch (_) { return fallback; }
-  }
-  function remoteWorkingSetFor(sid) {
-    if (!sid) return null;
-    if (sid === state.activeSessionId) {
-      saveWorkingSetTo(getBuffer(sid));
-      return {
-        messages: state.messages, chatItems: state.chatItems, artifacts: state.artifacts,
-        turnTimeline: state.turnTimeline,
-        busy: state.busy, thinking: state.thinking, planSnapshot: state.planSnapshot,
-      };
-    }
-    return sessionStates[sid] || null;
-  }
-  function remoteArtifactSnapshot(artifacts) {
-    return (Array.isArray(artifacts) ? artifacts : []).map(function (a) {
-      var p = a && (a.path || a.path_tail || a.storage_path || "");
-      return {
-        id: (a && a.id) || "",
-        basename: (a && a.basename) || basename(p),
-        path: p,
-        path_tail: p,
-        kind: (a && a.kind) || "",
-        byte_size: (a && a.byte_size) || 0,
-        created_at: (a && a.created_at) || "",
-      };
-    }).filter(function (a) { return !!(a.path || a.basename); });
-  }
-  function buildRemoteLiveSnapshot(sid) {
-    var ws = remoteWorkingSetFor(sid);
-    if (!ws) return null;
-    var meta = state.sessions.find(function (s) { return s.id === sid; }) || {};
-    var msgs = cloneJson(ws.messages, []);
-    var chatItems = cloneJson(ws.chatItems, []);
-    return {
-      snapshot_source: "live",
-      session: {
-        id: sid,
-        title: meta.title || bt("newChatFallbackTitle"),
-        status: ws.busy ? "running" : "idle",
-        updated_at: meta.updated_at || "",
-        message_count: meta.message_count || msgs.length || chatItems.length || 0,
-      },
-      messages: msgs.map(function (m, idx) {
-        var blocks = Array.isArray(m.content) ? m.content : [];
-        return {
-          index: idx,
-          role: m.role,
-          content: blocks.filter(function (b) { return b && b.type === "text"; }).map(function (b) { return b.text || ""; }).join(""),
-          blocks: blocks,
-        };
-      }),
-      chat_items: chatItems,
-      artifacts: remoteArtifactSnapshot(filterSessionArtifacts(ws.artifacts, sid)),
-      busy: !!ws.busy,
-      thinking: cloneJson(ws.thinking, null),
-      plan_snapshot: cloneJson(ws.planSnapshot, null),
-    };
-  }
-  async function publishRemoteLiveSnapshot(sid) {
-    try { await ensureSessionBufferLoaded(sid); }
-    catch (err) { console.warn("remote snapshot hydrate failed", err); }
-    var snapshot = buildRemoteLiveSnapshot(sid);
-    if (!snapshot) return false;
-    await invoke("remote_control_publish_event", {
-      sessionId: sid,
-      kind: "session_snapshot",
-      payload: snapshot,
-    });
-    return true;
-  }
+  // 远端实时快照已由 transcript 事件流(chat:transcript_committed 等)承载:
+  // 旧 publishRemoteLiveSnapshot 调用的 remote_control_publish_event 命令名
+  // 在 Rust 侧从未注册("session_snapshot" 也不在任何事件白名单),属 v1
+  // 遗留死调用,已删除。
+
   var notificationQueue = [];
   var notificationDispatching = false;
   function notify() {
@@ -2097,7 +2033,6 @@
     trackArtifact: trackArtifact, untrackArtifact: untrackArtifact,
     findPresentedArtifact: findPresentedArtifact, isDeliverable: isDeliverable,
     noteArtifactChange: noteArtifactChange,
-    publishRemoteLiveSnapshot: publishRemoteLiveSnapshot,
     persistMessagesFor: persistMessagesFor,
     composePlanMarkdown: composePlanMarkdown,
     refreshHistoryList: refreshHistoryList,
@@ -2231,7 +2166,7 @@
   var confirmMemoryCandidate = memoryFeature.confirmMemoryCandidate;
   var ignoreMemoryCandidate = memoryFeature.ignoreMemoryCandidate;
   var neverMemoryCandidate = memoryFeature.neverMemoryCandidate;
-  var artifactsFeature = installBridgeFeature("artifacts", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, dialogOpen: dialogOpen, basename: basename, isDeliverable: isDeliverable, isAbsPath: isAbsPath, sessionStates: sessionStates, ensureSession: function () { return ensureSession.apply(null, arguments); }, discardManagedAttachment: discardManagedAttachment });
+  var artifactsFeature = installBridgeFeature("artifacts", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, dialogOpen: dialogOpen, basename: basename, isDeliverable: isDeliverable, isAbsPath: isAbsPath, sessionStates: sessionStates, discardManagedAttachment: discardManagedAttachment });
   var artifactInfo = artifactsFeature.artifactInfo;
   var readArtifactText = artifactsFeature.readArtifactText;
   var writeArtifactText = artifactsFeature.writeArtifactText;
@@ -2253,6 +2188,7 @@
   var clearAttachments = artifactsFeature.clearAttachments;
   var pickAndAttach = artifactsFeature.pickAndAttach;
   var uploadDeviceFiles = artifactsFeature.uploadDeviceFiles;
+  var adoptManagedAttachments = artifactsFeature.adoptManagedAttachments;
   var resolveConversationAttachment = artifactsFeature.resolveConversationAttachment;
   var openConversationAttachment = artifactsFeature.openConversationAttachment;
   var revealConversationAttachment = artifactsFeature.revealConversationAttachment;
@@ -2274,7 +2210,7 @@
   var setRemoteCollectionEnabled = personasFeature.setRemoteCollectionEnabled;
   var removeRemoteCollection = personasFeature.removeRemoteCollection;
   var syncMountedCollection = personasFeature.syncMountedCollection;
-  var updaterFeature = installBridgeFeature("updater", { state: state, notify: notify, invoke: invoke, refreshHistoryList: refreshHistoryList, listen: listen, publishRemoteLiveSnapshot: publishRemoteLiveSnapshot, getBuffer: getBuffer, bt: bt });
+  var updaterFeature = installBridgeFeature("updater", { state: state, notify: notify, invoke: invoke, refreshHistoryList: refreshHistoryList, listen: listen, getBuffer: getBuffer, bt: bt });
   var loadAppVersion = updaterFeature.loadAppVersion;
   var checkForUpdateSilently = updaterFeature.checkForUpdateSilently;
   var checkForUpdate = updaterFeature.checkForUpdate;

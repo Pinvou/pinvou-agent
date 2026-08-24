@@ -1,12 +1,14 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Palette, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
+import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
-import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/Personas.jsx';
-import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
+import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
+import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ArtifactCard, localizeTool, tsToolsData, tsToolWelcomeData } from '../tools/tool-common.jsx';
@@ -20,15 +22,17 @@ import {
   conversationItemsForMode,
   projectDeepSeekConversation,
 } from '../conversation/deepseek-conversation.js';
+import { startConversationBottomFollower } from '../conversation/conversation-scroll.js';
 import {
   captureConversationScrollPosition,
   isFetchTool,
   isNearConversationBottom,
   isSearchTool,
+  isShrinkClampedToBottom,
   restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
-import { AttachmentDropOverlay } from '../attachments/AttachmentDropOverlay.jsx';
+import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
@@ -107,6 +111,22 @@ const DESIGN_MODE_SUBTABS = [
   { key: 'data-visualization', labelKey: 'dataVisualization', Icon: BarChart2 },
   { key: 'ppt', labelKey: 'pptDesign', Icon: Presentation, disabled: true, disabledReasonKey: 'pptUnavailable' },
 ];
+
+// legacy assistant 气泡由 item.text 现算 markdown(懒语言注册后恢复高亮所必需),
+// 但 ChatBubble 未 memo 化:输入框每个按键、流式每个 delta、秒级 tick 都会全量
+// 重渲染,长会话下每次全量重跑 marked+DOMPurify。content-visibility(#275)只省
+// 浏览器合成,不省 React 渲染。item 引用稳定(bridge 会话数据),按 item 键控、
+// text+syntaxVersion 未变直接复用上次结果;版本号 bump(懒语言注册)自然失效重算。
+const legacyMarkdownCache = new WeakMap();
+function renderLegacyMarkdownCached(item, syntaxVersion) {
+  const cached = legacyMarkdownCache.get(item);
+  if (cached && cached.text === item.text && cached.version === syntaxVersion) {
+    return cached.html;
+  }
+  const html = renderMarkdown(item.text);
+  legacyMarkdownCache.set(item, { text: item.text, version: syntaxVersion, html });
+  return html;
+}
 
 function localizeSceneTabs(items, copy) {
   return items.map(item => ({
@@ -530,8 +550,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setArtifactW(w); localStorage.setItem('pinvou_artifactW', String(w));
       };
       const scrollRef = useRef(null);
+      const conversationContentRef = useRef(null);
       const autoScrollRef = useRef(true);
       const lastScrollTopRef = useRef(0);
+      const lastScrollHeightRef = useRef(0);
       const subagentPanelScrollRef = useRef(null);
       const [showScrollBottom, setShowScrollBottom] = useState(false);
       const chatRootRef = useRef(null);
@@ -588,7 +610,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
-      const attachmentDragActive = !!(bs && bs.attachmentDragActive);
       const formatAttachmentError = (error) => {
         const raw = String(error || '');
         if (/under sensitive system dir|crosses sensitive (dir|component)/i.test(raw)) {
@@ -896,10 +917,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (!el) return;
         const onScroll = () => {
           const near = isNearConversationBottom(el);
-          const movingUp = el.scrollTop < lastScrollTopRef.current - 1;
+          // A content shrink (e.g. content-visibility replacing its 600px estimate with a
+          // smaller real height) makes the browser clamp scrollTop down to the new maximum.
+          // That programmatic jump carries no user intent, so it must neither disable
+          // auto-follow (the bottom follower and streaming effect depend on it) nor
+          // re-enable it for a user who was browsing history.
+          const shrinkClamped = isShrinkClampedToBottom(el, lastScrollHeightRef.current);
+          const movingUp = el.scrollTop < lastScrollTopRef.current - 1 && !shrinkClamped;
           lastScrollTopRef.current = el.scrollTop;
+          lastScrollHeightRef.current = el.scrollHeight;
           if (movingUp) autoScrollRef.current = false;
-          else if (near) autoScrollRef.current = true;
+          else if (!shrinkClamped && near) autoScrollRef.current = true;
           const shouldShow = !autoScrollRef.current && el.scrollHeight > el.clientHeight + 4;
           setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         };
@@ -951,8 +979,29 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (el) {
           el.scrollTop = el.scrollHeight;
           lastScrollTopRef.current = el.scrollTop;
+          lastScrollHeightRef.current = el.scrollHeight;
         }
       }, [bs && bs.activeSessionId]);
+
+      // Session content can finish measuring after the active-session effect runs, especially
+      // when an inactive WebView resumes or content-visibility replaces intrinsic estimates.
+      // Keep following the bottom across those layout changes, but never override a user who
+      // deliberately scrolled up.
+      useEffect(() => {
+        const scrollElement = scrollRef.current;
+        const contentElement = conversationContentRef.current;
+        if (!scrollElement || !contentElement) return undefined;
+        return startConversationBottomFollower({
+          scrollElement,
+          contentElement,
+          isFollowing: () => autoScrollRef.current,
+          onRestored: (scrollTop) => {
+            lastScrollTopRef.current = scrollTop;
+            lastScrollHeightRef.current = scrollElement.scrollHeight;
+            setShowScrollBottom(false);
+          },
+        });
+      }, [activeSessionId, hasMessages]);
 
       // 安装工具后新建会话 → 本地显示欢迎卡片（不发 LLM query，不浪费 token）。
       // welcomeToolId 是一次性引导态,必须跟随会话身份:只有"装完工具"(justInstalledTool 非
@@ -1512,13 +1561,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       return (
         <div ref={rootRef} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
           <div ref={chatRootRef} className="flex-1 flex flex-col min-w-0 relative h-full">
-            <AttachmentDropOverlay
-              active={attachmentDragActive}
+            <ComposerAttachmentDropOverlay
+              enabled={bridge.available && (!isWeb || can('deviceFileUpload'))}
+              onFiles={files => bridge.attachments.uploadDeviceFiles(files)}
               dark={theme === 'dark'}
               variant={isWeb ? 'web' : 'desktop'}
-              releaseLabel={t.uiAttachments.dropRelease}
-              webTitle={t.uiAttachments.dropWebTitle}
-              webHint={t.uiAttachments.dropWebHint}
+              copy={t.uiAttachments}
             />
 
           {/* Top Header (浮动) */}
@@ -1583,7 +1631,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             )}
 
             {hasMessages && (
-              <div className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
+              <div ref={conversationContentRef} className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
                 {useUnifiedConversationUi ? (
                   <ConversationTimeline
                     turns={conversationProjection.turns}
@@ -2665,6 +2713,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const localizedMemoryStatus = (label) => memoryStatusLabels[label] || label;
       const assistantSelectionHostRef = useRef(null);
       const assistantSelectionTargetRef = useRef(null);
+      // 懒加载语言注册完成会 bump 版本号:legacy assistant 气泡由 item.text 现算
+      // markdown(见下),订阅版本号让注册后本组件重渲染,历史消息恢复高亮。
+      const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
+      void syntaxVersion;
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
       if (item.type === 'plan_card') return <PlanCard item={item} t={t} onPrefill={onPrefill} />;
@@ -2685,7 +2737,15 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
       if (item.type === 'assistant') {
         if (item.streaming && !item.html) return null; // 空流式气泡交给 ThinkingBubble 表示
-        const html = item.html || '';
+        // 旧会话(legacy)的 assistant 气泡由 item.text 现算 markdown:懒语言注册后
+        // (ChatBubble 顶部订阅 syntaxVersion 触发重渲染)历史消息恢复高亮——若
+        // 沿用冻结的 item.html,首次渲染时未注册的语言将永久纯文本。现算结果按
+        // item 缓存(见 renderLegacyMarkdownCached),重渲染零解析成本。流式消息仍
+        // 走 item.html(增量渲染管线);仅存 html 无 text 的旧消息无法现算,保持
+        // 原样(其语言在启动核心集内,不受懒注册影响)。
+        const html = (!item.streaming && item.text)
+          ? renderLegacyMarkdownCached(item, syntaxVersion)
+          : (item.html || '');
         const streamingDraftLabel = /scheduled-task-draft/.test(html) ? t.uiChatExtra.draftingScheduled : (t && t.cpDesigning);
         const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
         const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);

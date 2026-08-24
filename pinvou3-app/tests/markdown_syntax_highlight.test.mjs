@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,8 +8,11 @@ import { renderMarkdownMarkup } from '../src/shared/markdown-renderer.js';
 import {
   highlightCode,
   highlightDiffCode,
+  lazyAliasTable,
+  lazyLanguageNames,
   MAX_HIGHLIGHT_SOURCE_BYTES,
   normalizeSyntaxLanguage,
+  subscribeSyntaxHighlight,
   supportedSyntaxLanguages,
 } from '../src/shared/syntax-highlighter.js';
 
@@ -250,4 +254,108 @@ assert.match(
   readApp('src', 'features', 'personas', 'Personas.jsx'),
   /light-code dark-code/u,
 );
+// ---- 懒加载语言(两级注册)行为 ----
+
+// blocker 回归:与原型链同名的围栏 token(```constructor / ```__proto__ 等)
+// 之前会命中 LAZY_LANGUAGE_LOADERS 的原型属性,把 Object()/Object.prototype
+// 当 loader 调用抛 TypeError,会话区无 ErrorBoundary 导致整条消息渲染崩溃。
+// 修法:loader 表与别名反查表一律 Object.hasOwn 查找。
+for (const hostile of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+  assert.doesNotThrow(() => normalizeSyntaxLanguage(hostile), `${hostile} must not hit the prototype chain`);
+  assert.doesNotThrow(
+    () => renderMarkdownMarkup(`\`\`\`${hostile}\nplain text\n\`\`\``),
+    `${hostile} fence must not crash markdown rendering`,
+  );
+  const rendered = renderMarkdownMarkup(`\`\`\`${hostile}\nplain text\n\`\`\``);
+  assert.match(rendered, /class="hljs language-plaintext"/u, `${hostile} fence must fall back to plaintext`);
+}
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+async function waitForLazyHighlight(hint, sample, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = highlightCode(sample, hint);
+    if (result.highlighted) return result;
+    if (Date.now() > deadline) throw new Error(`timed out waiting for lazy highlight: ${hint}`);
+    await sleep(20);
+  }
+}
+
+// major 回归:懒语言别名(proto/bat/objc…)加载前未注册,修复前别名围栏
+// 永不触发动态 import、永久纯文本;现在先经别名反查表解析回 canonical 再加载。
+const protoBefore = highlightCode('syntax = "proto3";\nmessage Probe {}\n', 'proto');
+assert.equal(protoBefore.highlighted, false, 'lazy alias must fall back to plaintext before loading');
+const protoAfter = await waitForLazyHighlight('proto', 'syntax = "proto3";\nmessage Probe {}\n');
+assert.equal(protoAfter.highlighted, true, 'lazy alias must highlight after loading');
+assert.equal(protoAfter.language, 'protobuf', 'proto alias must normalize to protobuf after loading');
+assert.match(protoAfter.html, /hljs-/u);
+assert.equal(normalizeSyntaxLanguage('proto'), 'protobuf', 'proto alias must resolve to protobuf after loading');
+
+// 并发去重:同一 canonical 的多次触发(别名与 canonical 混用)只加载一次,
+// 注册完成只通知一次。
+let dedupeNotifications = 0;
+const unsubscribeDedupe = subscribeSyntaxHighlight(() => { dedupeNotifications += 1; });
+try {
+  normalizeSyntaxLanguage('bat');
+  normalizeSyntaxLanguage('bat');
+  normalizeSyntaxLanguage('dos');
+  const batch = await waitForLazyHighlight('bat', '@echo off\r\nset PROBE=1\r\n');
+  assert.equal(batch.highlighted, true, 'bat alias must highlight after dos loads');
+  assert.equal(batch.language, 'dos', 'bat alias must normalize to dos after loading');
+  assert.equal(dedupeNotifications, 1, 'concurrent triggers for one lazy language must dedupe to a single load');
+} finally {
+  unsubscribeDedupe();
+}
+
+// 订阅通知:懒语言注册完成必须 bump 版本并通知订阅者(消费方借此重算
+// useMemo 恢复高亮);退订后不再通知。
+let notified = 0;
+const unsubscribe = subscribeSyntaxHighlight(() => { notified += 1; });
+const objc = await waitForLazyHighlight('objc', '#import <Foundation/Foundation.h>\nint probe = 1;\n');
+assert.equal(objc.highlighted, true, 'objc alias must highlight after objectivec loads');
+assert.equal(objc.language, 'objectivec', 'objc alias must normalize to objectivec after loading');
+assert.equal(notified, 1, 'lazy registration must notify subscribers exactly once');
+unsubscribe();
+await waitForLazyHighlight('asm', 'mov eax, 1\nret\n');
+assert.equal(notified, 1, 'unsubscribed listener must not be called again');
+
+// hljs 内建别名(EXPLICIT_ALIASES 之外、语言模块自带 aliases):修复前反查表
+// 不含这些别名,```tex/```clj 等围栏永不触发懒加载、永久纯文本;并入
+// EXPLICIT_ALIASES 单一真相源后与自定义别名同路径恢复。
+const texBefore = highlightCode('\\documentclass{article}\n', 'tex');
+assert.equal(texBefore.highlighted, false, 'builtin alias must fall back to plaintext before loading');
+assert.equal(normalizeSyntaxLanguage('tex'), 'tex', 'builtin alias must keep its token before loading (same contract as custom aliases)');
+const texAfter = await waitForLazyHighlight('tex', '\\documentclass{article}\n');
+assert.equal(texAfter.highlighted, true, 'builtin alias tex must highlight after latex loads');
+assert.equal(texAfter.language, 'latex', 'tex alias must normalize to latex after loading');
+const cljAfter = await waitForLazyHighlight('clj', '(defn probe [x] x)\n');
+assert.equal(cljAfter.highlighted, true, 'builtin alias clj must highlight after clojure loads');
+assert.equal(cljAfter.language, 'clojure', 'clj alias must normalize to clojure after loading');
+
+// 防漂移契约:反查表(lazyAliasTable)必须覆盖安装版 highlight.js 各懒语言模块
+// 自带的全部 aliases。别名表是人工维护的,升级 highlight.js 或语言模块新增
+// 别名时(11.11.1→11.12.0 曾漏 batch/ktm/ktx 导致 ```batch 围栏永久纯文本),
+// 这里从安装版回读断言全覆盖,漂移即刻红灯。
+{
+  const require = createRequire(import.meta.url);
+  const missing = [];
+  for (const name of lazyLanguageNames) {
+    const module = require(`highlight.js/lib/languages/${name}`);
+    const definition = typeof module === 'function' ? module : module.default;
+    assert.equal(typeof definition, 'function', `installed language module missing: ${name}`);
+    // 工厂函数带 hljs 参数运行后才携带 aliases;用一个最小桩执行到能读出
+    // aliases 的程度——registerLanguage 后 hljs 会把 aliases 归档到注册表,
+    // 这里直接用一个隔离 core 实例完成同样的事,不污染生产 hljs 单例。
+    const core = require('highlight.js/lib/core');
+    core.registerLanguage(name, definition);
+    const registered = core.getLanguage(name);
+    const aliases = (registered && registered.aliases) || [];
+    assert.ok(Array.isArray(aliases), `installed language ${name} must expose aliases array`);
+    for (const alias of aliases) {
+      if (lazyAliasTable[alias] !== name) missing.push(`${name}: '${alias}'`);
+    }
+  }
+  assert.deepEqual(missing, [], `lazy alias table must cover every installed alias (missing: ${missing.join(', ')})`);
+}
+
 console.log('Markdown syntax highlighting contract: ok');

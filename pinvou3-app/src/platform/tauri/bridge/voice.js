@@ -396,7 +396,7 @@
       // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
     }
 
-    var AudioCtor = window.AudioContext || window.webkitAudioContext;
+    var AudioCtor = window.AudioContext || window.webkitAudioContext; // eslint-disable-line compat/compat -- Safari 14.0 ships webkitAudioContext; the || fallback above selects it
     setVoiceInputStatus("requesting_permission", {
       message: bt("voiceRequestingPermission"),
       stage: "permission",

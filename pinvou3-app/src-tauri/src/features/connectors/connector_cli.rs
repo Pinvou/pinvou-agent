@@ -281,6 +281,19 @@ impl ConnectorConn {
             m.entry(id).or_default().pid = pid;
         }
     }
+
+    /// 退出收割（lib.rs RunEvent::Exit 调）：杀掉所有槽位登记的长驻子进程树。
+    /// 这些 CLI 子进程（.cmd 拉起的 node）没有 kill_on_drop 兜底，宿主进程
+    /// 退出后若不显式清理会变孤儿进程继续驻留。
+    pub fn kill_all_pids(&self) {
+        if let Ok(m) = self.slots.lock() {
+            for slot in m.values() {
+                if let Some(pid) = slot.pid {
+                    kill_pid_tree(pid);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -404,25 +417,27 @@ mod tests {
         auth_domains: &["work.weixin.qq.com", "weixin.qq.com"],
     };
 
-    /// 命中白名单域、且在空白处截断(扫码 URL 常带 `&` 查询串,不能被切断)。
+    /// extract_url three-branch matrix: whitelisted domain hits truncate at
+    /// whitespace (QR-scan URLs often carry `&` query strings that must not be
+    /// cut), non-whitelisted domains do not count as this connector's URL,
+    /// and no URL yields None.
     #[test]
-    fn extract_url_picks_auth_domain_url() {
-        assert_eq!(
-            TEST_CTX.extract_url("请打开 https://work.weixin.qq.com/x?a=1&b=2 扫码"),
-            Some("https://work.weixin.qq.com/x?a=1&b=2".to_string())
-        );
-    }
-
-    /// 非白名单域不算本连接器的 URL。
-    #[test]
-    fn extract_url_rejects_non_auth_domain() {
-        assert_eq!(TEST_CTX.extract_url("https://example.com/foo"), None);
-    }
-
-    /// 没有 URL 时返回 None。
-    #[test]
-    fn extract_url_none_without_url() {
-        assert_eq!(TEST_CTX.extract_url("纯文本,没有链接"), None);
+    fn extract_url_matrix() {
+        let cases = [
+            (
+                "请打开 https://work.weixin.qq.com/x?a=1&b=2 扫码",
+                Some("https://work.weixin.qq.com/x?a=1&b=2"),
+            ),
+            ("https://example.com/foo", None),
+            ("纯文本,没有链接", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                TEST_CTX.extract_url(input),
+                expected.map(str::to_string),
+                "{input:?}"
+            );
+        }
     }
 
     struct ReadErrorThenPanic {

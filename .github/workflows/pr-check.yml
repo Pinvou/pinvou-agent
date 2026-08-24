@@ -199,7 +199,6 @@ jobs:
               - 'scripts/check-linux-glibc-floor.sh'
               - 'scripts/tests/sync-version.test.mjs'
               - 'scripts/tests/test_ci_gate_policy.py'
-              - 'scripts/tests/test_ci_trigger_routing_policy.py'
               - 'scripts/tests/test_release_arm64_policy.py'
               - 'scripts/tests/test_release_linux_floor_policy.py'
               - 'scripts/tests/test_release_manifest_probe.py'
@@ -397,6 +396,12 @@ jobs:
 
       - name: Vite build
         run: npm run build:ui
+
+      # Dist-layer compatibility audit (a marked@16-style lookbehind parse
+      # regression is caught by exactly this layer); build:ui above already
+      # produced dist/, while the contract test only covers static/inline layers.
+      - name: WebView compatibility audit (Safari 14 baseline)
+        run: npm run audit:compat
 
       - name: 前端逻辑测试 (pet 全套 + diff parser + markdown)
         run: npm test

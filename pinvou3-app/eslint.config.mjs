@@ -1,4 +1,5 @@
 import { defineConfig } from 'eslint/config';
+import compat from 'eslint-plugin-compat';
 
 const browserGlobals = Object.fromEntries([
   'Blob', 'CustomEvent', 'DOMParser', 'Event', 'FileReader', 'Image', 'TextDecoder', 'TextEncoder',
@@ -12,8 +13,7 @@ const browserGlobals = Object.fromEntries([
 export default defineConfig([
   {
     files: [
-      'src/app/main.jsx',
-      'src/app/pet-main.jsx',
+      'src/app/**/*.{js,jsx}',
       'src/components/**/*.{js,jsx}',
       'src/features/**/*.{js,jsx}',
       'src/hooks/**/*.{js,jsx}',
@@ -26,8 +26,12 @@ export default defineConfig([
       parserOptions: { ecmaFeatures: { jsx: true } },
       globals: browserGlobals,
     },
+    plugins: { compat },
     rules: {
       'no-undef': 'error',
+      // Webview compatibility gate: flags APIs outside .browserslistrc
+      // (Safari 14 / iOS 14 / Chromium 107 / Firefox 115).
+      'compat/compat': 'error',
     },
   },
 ]);

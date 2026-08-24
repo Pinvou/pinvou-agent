@@ -25,7 +25,7 @@
     var recordPinvouSceneForMessage = context.recordPinvouSceneForMessage || function () {};
     var reconcileRemoteTurn = context.reconcileRemoteTurn;
     var markRemoteTurn = context.markRemoteTurn;
-    var clearAttachments = context.clearAttachments;
+    var adoptManagedAttachments = context.adoptManagedAttachments || function () { return Promise.resolve(); };
     var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     var isScheduledRunSession = context.isScheduledRunSession;
     var basename = context.basename;
@@ -276,7 +276,6 @@
     });
     notify();
     emitPetEvent("pet:turn_start", sid);
-    publishRemoteUserMessage(sid, displayText, meta && meta.remoteClientMessageId);
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools })
       .then(function () {
         recordAuthoritySyncDiagnostic("local_turn_admitted", Object.assign({
@@ -340,14 +339,10 @@
         return false;
       });
   }
-  function publishRemoteUserMessage(sid, content, clientMessageId) {
-    if (!sid || !content) return;
-    invoke("remote_control_publish_user_message", {
-      sessionId: sid,
-      content: content,
-      clientMessageId: clientMessageId || null,
-    }).catch(function () { /* 没开远控时静默跳过 */ });
-  }
+  // 远端用户消息不再由前端单独 invoke 发布:turn admission 时 Engine 侧统一
+  // emit + 转发 chat:user_message(engine.rs emit_turn_admission),前端重复
+  // 发布会造成远端双份气泡(旧 remote_control_publish_user_message 命令名
+  // 在 Rust 侧从未注册,属 v1 遗留死调用,已删除)。
   // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 严格按 FIFO
   // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
   // 连续输入的多个独立任务合并成一个模型请求。
@@ -446,15 +441,42 @@
     }
 
     if (!state.activeSessionId) {
-      await ensureSession(); // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)
-      if (!state.activeSessionId) {
-        // 物化中止（如草稿态多智能体开关落盘失败）：把输入放回输入框，
-        // 不静默丢字；错误提示由 ensureSession 内如实给出（复核 P1）。
+      // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)。
+      // 必须用返回值判空：切走场景 ensureSession 返回 null 但 activeSessionId
+      // 非空（用户已切到别的会话），按 activeSessionId 继续会把本条消息发进
+      // 错误会话（审计 #257）。
+      var materialized = await ensureSession();
+      if (!materialized) {
+        // 物化中止（如草稿态多智能体开关落盘失败 / await 期间切走）：把输入放回
+        // 输入框，不静默丢字；错误提示由 ensureSession 内如实给出（复核 P1）。
         prefillComposer(text);
         return;
       }
     }
     var sid = state.activeSessionId;
+    function abandonPreparedAttachments() {
+      state.attachments = state.attachments.filter(function (attachment) {
+        return readyAttachments.indexOf(attachment) < 0;
+      });
+      readyAttachments.forEach(function (attachment) {
+        if (attachment && attachment.result) discardManagedAttachment(attachment.result);
+      });
+      notify();
+    }
+    try {
+      await adoptManagedAttachments(readyAttachments, sid);
+    } catch (error) {
+      if (state.activeSessionId !== sid) {
+        abandonPreparedAttachments();
+        return;
+      }
+      addSystemItem(bt("deviceUploadFailed") + String(error && error.message ? error.message : error));
+      return;
+    }
+    if (state.activeSessionId !== sid) {
+      abandonPreparedAttachments();
+      return;
+    }
     var activeTurnBuffer = getBuffer(sid);
     // 展示文本：把附件 chip 名附在用户消息末尾
     var displayText = formatAttachmentDisplayText(text, readyAttachments);
@@ -514,14 +536,20 @@
     }
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
-      if (state.activeSessionId !== sid) return;
+      if (state.activeSessionId !== sid) {
+        abandonPreparedAttachments();
+        return;
+      }
       recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
         operation: "send",
       }, authoritySyncBufferSnapshot(sid, activeTurnBuffer)));
       addAuthoritySyncNotice(bt("remoteTurnSyncing"));
       return;
     }
-    if (state.activeSessionId !== sid) return;
+    if (state.activeSessionId !== sid) {
+      abandonPreparedAttachments();
+      return;
+    }
     if (isBusyFor(sid) || state.queued.length > 0) {
       var racedQueuePreparation = consumeUiTurnState();
       queuePrepared(racedQueuePreparation);
@@ -539,8 +567,12 @@
       preparation.restrictTools,
     );
     if (!accepted) {
-      restoreUiTurnState(preparation.snapshot);
-      notify();
+      if (state.activeSessionId !== sid) {
+        abandonPreparedAttachments();
+      } else {
+        restoreUiTurnState(preparation.snapshot);
+        notify();
+      }
     } else {
       state.attachments = state.attachments.filter(function (attachment) {
         return readyAttachments.indexOf(attachment) < 0;
@@ -611,6 +643,9 @@
   // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
   // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。
   async function resolvePinvouReview(resolutions, actions) {
+    // 检阅发生的会话归属捕获：persist 挂起期间用户可能切走，修订指令必须发回
+    // 检阅会话，不得漂进当前 active 会话（审计）。
+    var reviewSid = state.activeSessionId;
     // 弹窗只一个 review(state.pinvouModal.review),直接在它上面写 resolution——不靠 pos 定位
     // (根治连续召唤 pos 重复串卡)。它和 sidecar entry.review 同引用,写它=写 sidecar。
     var isWu = !!(state.pinvouModal && state.pinvouModal.coverage); // 关窗前取,供转交标品/悟
@@ -657,7 +692,8 @@
       fill.forEach(function (a) { parts.push("- " + a.dimension + (a.suggestion ? "：" + a.suggestion : "")); });
       parts.push("（涉及外部事实的，先查证再写、标依据，别凭记忆编。）");
     }
-    if (parts.length) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
+    // 已切走则放弃发指令（修订指令属于检阅会话，漂进别的会话会误导其上下文）。
+    if (parts.length && reviewSid && state.activeSessionId === reviewSid) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
   }
 
   // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。
@@ -743,7 +779,6 @@
       isBusyFor: isBusyFor,
       emitPetEvent: emitPetEvent,
       doSendFor: doSendFor,
-      publishRemoteUserMessage: publishRemoteUserMessage,
       flushQueued: flushQueued,
       sendMessageToSession: sendMessageToSession,
       sendMessage: sendMessage,

@@ -132,6 +132,9 @@ function minimalRpcResult(command, args = {}) {
       return { vllm_online: false, max_model_len: 32768 };
     case 'get_disabled_connectors':
       return ['smoke-roundtrip'];
+    case 'web_access_list_sessions':
+    case 'web_access_list_archived_sessions':
+      return [];
     case 'web_access_create_session_and_chat':
       return {
         id: `session-smoke-${Date.now()}`,
@@ -473,7 +476,7 @@ async function main() {
   const rpcBeforeReady = desktop.messages.slice(connectedIndex + 1, capabilityReadyIndex)
     .some(message => message.type === 'rpc_request');
   const initializationRpcBetweenBarriers = desktop.messages.slice(capabilityReadyIndex + 1, stateReadyIndex)
-    .some(message => message.type === 'rpc_request' && message.command === 'list_sessions');
+    .some(message => message.type === 'rpc_request' && message.command === 'web_access_list_sessions');
   const preReplayState = await desktopPage.evaluate(id => ({
     cursor: JSON.parse(sessionStorage.getItem(`pinvou.web.cursor.${id}`) || '{}'),
     chatDeltaListenerRegistered: window.PinvouWebClient?.listeners?.has('chat:delta') === true,
@@ -1064,7 +1067,7 @@ async function main() {
   record('全程无浏览器运行时错误', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
   record('页面启动阶段确实调用了 allowlisted 桌面 RPC',
     desktop.rpcRequests.some(request => request.command === 'get_settings')
-      && desktop.rpcRequests.some(request => request.command === 'list_sessions'));
+      && desktop.rpcRequests.some(request => request.command === 'web_access_list_sessions'));
 
   console.log(`\nALL ${results.length} FULL WEBUI JOURNEYS PASS`);
 }

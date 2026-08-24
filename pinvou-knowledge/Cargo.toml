@@ -1,6 +1,6 @@
 [package]
 name = "pinvou-knowledge"
-version = "0.8.5"
+version = "0.8.6"
 description = "Pinvou 可复用知识库核心与自包含服务器"
 authors = ["pinvou"]
 license = "MIT"
@@ -40,12 +40,13 @@ server = [
 
 [dependencies]
 anyhow = "1.0"
+# Keep 0.22 to match the app: upstreams still require 0.22; a solo 0.23 bump would add a second copy. Revisit once upstreams align.
 base64 = "0.22"
 calamine = "0.36"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 encoding_rs = "0.8"
 parking_lot = "0.12"
-rand = "0.9"
+rand = "0.10"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -62,8 +63,9 @@ flate2 = { version = "1", optional = true }
 futures-util = { version = "0.3", optional = true }
 mime_guess = { version = "2", optional = true }
 mdns-sd = { version = "=0.20.3", optional = true }
-if-addrs = "=0.14.0"
-rcgen = { version = "=0.14.8", features = ["x509-parser"], optional = true }
+# 0.15 collapses with mdns-sd's transitive if-addrs into a single version (the former =0.14.0 pin forced two).
+if-addrs = "0.15"
+rcgen = { version = "=0.14.9", features = ["x509-parser"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "multipart", "stream"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"], optional = true }
 tar = { version = "0.4", optional = true }

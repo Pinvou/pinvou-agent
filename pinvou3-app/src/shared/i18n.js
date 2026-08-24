@@ -101,7 +101,7 @@ const codexZh = {
   packageManagerUpgradeHint:source=>source==='brew'?'该版本通过 Homebrew 安装，将使用对应包管理器升级，不会引入第二份安装':source==='npm'?'该版本通过 npm 安装，将使用对应包管理器升级，不会引入第二份安装':'将使用对应包管理器升级，不会引入第二份安装',
   upgrade:'升级', declineUpgrade:'暂不升级',
   officialScriptHint:agent=>`将运行 ${agent} 官方安装脚本（免管理员）`, confirmInstall:'确认安装', installing:'正在安装…',
-  manualInstallHint:agent=>`请手动安装 ${agent} CLI，完成后点击「重新检测」`,
+  manualInstallHint:agent=>`请手动安装 ${agent} CLI，完成后点击「重新检测」`, manageAgentOnDesktop:agent=>`请在目标桌面端完成 ${agent} 的安装、升级或账号授权，然后在这里重新检测`,
   waitingLogin:'等待 Codex 授权', notLoggedIn:'Codex 尚未登录',
   waitingAgentLogin:agent=>`等待 ${agent} 授权`, agentNotLoggedIn:agent=>`${agent} 尚未登录`,
   finishAgentAuth:agent=>`请在浏览器中完成 ${agent} 授权；完成后 Pinvou 会自动连接`,
@@ -203,7 +203,7 @@ const codexEn = {
   packageManagerUpgradeHint:source=>source==='brew'?'This version was installed via Homebrew and will be upgraded with the same package manager—no second copy will be installed':source==='npm'?'This version was installed via npm and will be upgraded with the same package manager—no second copy will be installed':'It will be upgraded with the corresponding package manager, without installing a second copy',
   upgrade:'Upgrade', declineUpgrade:'Not now',
   officialScriptHint:agent=>`Run the official ${agent} install script (no administrator rights required)`, confirmInstall:'Install', installing:'Installing…',
-  manualInstallHint:agent=>`Install the ${agent} CLI manually, then choose "Check again"`,
+  manualInstallHint:agent=>`Install the ${agent} CLI manually, then choose "Check again"`, manageAgentOnDesktop:agent=>`Install, upgrade, or authorize ${agent} on the target desktop, then check again here`,
   waitingLogin:'Waiting for Codex authorization', notLoggedIn:'Codex is not signed in',
   waitingAgentLogin:agent=>`Waiting for ${agent} authorization`, agentNotLoggedIn:agent=>`${agent} is not signed in`,
   finishAgentAuth:agent=>`Complete ${agent} authorization in the browser; Pinvou will connect automatically`,
@@ -305,7 +305,7 @@ const codexJa = {
   packageManagerUpgradeHint:source=>source==='brew'?'このバージョンは Homebrew でインストールされています。同じパッケージマネージャーでアップグレードするため、二重インストールにはなりません':source==='npm'?'このバージョンは npm でインストールされています。同じパッケージマネージャーでアップグレードするため、二重インストールにはなりません':'対応するパッケージマネージャーでアップグレードします。二重インストールにはなりません',
   upgrade:'アップグレード', declineUpgrade:'今はしない',
   officialScriptHint:agent=>`${agent} の公式インストールスクリプトを実行します（管理者権限は不要）`, confirmInstall:'インストール', installing:'インストール中…',
-  manualInstallHint:agent=>`${agent} CLI を手動でインストールし、「再確認」をクリックしてください`,
+  manualInstallHint:agent=>`${agent} CLI を手動でインストールし、「再確認」をクリックしてください`, manageAgentOnDesktop:agent=>`対象デスクトップで ${agent} のインストール、更新、または認証を完了してから、ここで再確認してください`,
   waitingLogin:'Codex の認証待ち', notLoggedIn:'Codex にログインしていません',
   waitingAgentLogin:agent=>`${agent} の認証待ち`, agentNotLoggedIn:agent=>`${agent} にログインしていません`,
   finishAgentAuth:agent=>`ブラウザーで ${agent} の認証を完了してください。完了後 Pinvou が自動接続します`,
@@ -518,7 +518,7 @@ const dict = {
         sysPerm: '系统权限', sudo: '高级执行权限 (Sudo)', sudoDesc: '允许助手执行环境配置等高级指令',
         versionUpdate: '版本与更新',
         uiRemote: {
-          title:'手机远程控制', desc:'在手机或电脑浏览器中打开链接，远程使用这台桌面端。', browser:'浏览器连接', stop:'停止', qrAlt:'远程控制二维码', qrHint:'手机扫码，或在电脑浏览器中复制下方链接', link:'远程控制链接', linkHint:'二维码与链接完全相同，并会在桌面端重启后继续有效；刷新二维码或停止访问会立即撤销旧二维码和链接。', generating:'正在生成远程控制链接…', notStarted:'远程控制尚未开启。', copy:'复制链接', refresh:'刷新二维码', enable:'开启访问', refreshTitle:'刷新二维码？', refreshDesc:'刷新后，旧二维码和链接立即失效；当前浏览器连接也会断开，需要扫描新二维码或复制新链接重新打开。', refreshing:'正在刷新…', updated:'远程控制状态已更新。', unavailable:'远程控制暂时不可用，请重试。',
+          title:'手机远程控制', desc:'开启后，远程链接可浏览本机文件并在所选目录运行代码 Agent，请仅分享给可信的人。', browser:'浏览器连接', stop:'停止', qrAlt:'远程控制二维码', qrHint:'手机扫码，或在电脑浏览器中复制下方链接', link:'远程控制链接', linkHint:'二维码与链接完全相同，并会在桌面端重启后继续有效；刷新二维码或停止访问会立即撤销旧二维码和链接。', generating:'正在生成远程控制链接…', notStarted:'远程控制尚未开启。', copy:'复制链接', refresh:'刷新二维码', enable:'开启访问', allowWorkspace:'允许本机目录', refreshTitle:'刷新二维码？', refreshDesc:'刷新后，旧二维码和链接立即失效；当前浏览器连接也会断开，需要扫描新二维码或复制新链接重新打开。', refreshing:'正在刷新…', updated:'远程控制状态已更新。', unavailable:'远程控制暂时不可用，请重试。',
           status:{ idle:['未开启','开启后会生成一个长期有效的远程控制链接。'], starting:['正在开启','正在创建远程控制连接。'], connecting_relay:['正在连接','正在连接云端中继，请稍候。'], waiting_web_client:['等待浏览器','在电脑或手机浏览器中粘贴下方链接即可。'], web_client_connected:['浏览器已连接','远程控制已连接这台桌面端。'], web_client_disconnected:['浏览器已断开','链接仍然有效，浏览器可随时重新连接。'], revoked:['链接已撤销','请重新开启远程控制。'], stopped:['已停止','再次打开此面板即可重新开启。'], error:['连接异常','远程控制暂时不可用，请重试。'] },
         },
         uiMonitor: { bridgeNotReady:'桥接未就绪', readFailed:'读取失败', reading:'正在读取', configError:'配置异常', unverified:'未验证', authFailed:'鉴权失败', bridgeError:'监控桥接未就绪：请确认打开的是 Tauri 应用窗口', readError:e=>`监控读取失败：${e}`, activity:'运行活动' },
@@ -880,7 +880,7 @@ const dict = {
         sysPerm: 'System Permissions', sudo: 'Sudo Access', sudoDesc: 'Allow assistant to run high-privilege commands',
         versionUpdate: 'Version & Update',
         uiRemote: {
-          title:'Mobile Remote Control', desc:'Open the link on a phone or computer to control this desktop.', browser:'Browser connection', stop:'Stop', qrAlt:'Remote control QR code', qrHint:'Scan with your phone or copy the link below', link:'Remote control link', linkHint:'The QR code and link are identical and remain valid after restart. Refreshing or stopping access revokes the old link immediately.', generating:'Generating remote control link…', notStarted:'Remote control is not enabled.', copy:'Copy Link', refresh:'Refresh QR Code', enable:'Enable Access', refreshTitle:'Refresh QR code?', refreshDesc:'The old QR code and link will become invalid immediately, and the current browser will disconnect.', refreshing:'Refreshing…', updated:'Remote control status updated.', unavailable:'Remote control is temporarily unavailable. Try again.',
+          title:'Mobile Remote Control', desc:'Once enabled, the remote link can browse local files and run a code Agent in selected folders. Share it only with people you trust.', browser:'Browser connection', stop:'Stop', qrAlt:'Remote control QR code', qrHint:'Scan with your phone or copy the link below', link:'Remote control link', linkHint:'The QR code and link are identical and remain valid after restart. Refreshing or stopping access revokes the old link immediately.', generating:'Generating remote control link…', notStarted:'Remote control is not enabled.', copy:'Copy Link', refresh:'Refresh QR Code', enable:'Enable Access', allowWorkspace:'Allow Local Folders', refreshTitle:'Refresh QR code?', refreshDesc:'The old QR code and link will become invalid immediately, and the current browser will disconnect.', refreshing:'Refreshing…', updated:'Remote control status updated.', unavailable:'Remote control is temporarily unavailable. Try again.',
           status:{ idle:['Not enabled','Enable access to create a persistent remote control link.'], starting:['Starting','Creating the remote control connection.'], connecting_relay:['Connecting','Connecting to the relay…'], waiting_web_client:['Waiting for browser','Paste the link into a browser on your phone or computer.'], web_client_connected:['Browser connected','A browser is connected to this desktop.'], web_client_disconnected:['Browser disconnected','The link remains valid and can reconnect at any time.'], revoked:['Link revoked','Enable remote control again.'], stopped:['Stopped','Open this panel to enable access again.'], error:['Connection error','Remote control is temporarily unavailable. Try again.'] },
         },
         uiMonitor: { bridgeNotReady:'Bridge not ready', readFailed:'Read failed', reading:'Loading', configError:'Configuration error', unverified:'Unverified', authFailed:'Authentication failed', bridgeError:'Monitor bridge is not ready. Open this page in the Tauri app window.', readError:e=>`Monitor read failed: ${e}`, activity:'Activity' },
@@ -1241,7 +1241,7 @@ const dict = {
         sysPerm: 'システム権限', sudo: '高度な実行権限 (Sudo)', sudoDesc: 'アシスタントによる環境設定などの高度なコマンド実行を許可',
         versionUpdate: 'バージョンと更新',
         uiRemote: {
-          title:'モバイル遠隔操作', desc:'スマートフォンまたはパソコンでリンクを開き、このデスクトップを遠隔操作します。', browser:'ブラウザー接続', stop:'停止', qrAlt:'遠隔操作 QR コード', qrHint:'スマートフォンでスキャンするか、下のリンクをコピーしてください', link:'遠隔操作リンク', linkHint:'QR コードとリンクは同一で、再起動後も有効です。更新または停止すると古いリンクは直ちに無効になります。', generating:'遠隔操作リンクを生成中…', notStarted:'遠隔操作は有効になっていません。', copy:'リンクをコピー', refresh:'QR コードを更新', enable:'アクセスを有効化', refreshTitle:'QR コードを更新しますか？', refreshDesc:'古い QR コードとリンクは直ちに無効になり、現在のブラウザー接続も切断されます。', refreshing:'更新中…', updated:'遠隔操作の状態を更新しました。', unavailable:'遠隔操作は一時的に利用できません。再試行してください。',
+          title:'モバイル遠隔操作', desc:'有効にすると、遠隔操作リンクからローカルファイルを参照し、選択したフォルダーでコード Agent を実行できます。信頼できる相手とのみ共有してください。', browser:'ブラウザー接続', stop:'停止', qrAlt:'遠隔操作 QR コード', qrHint:'スマートフォンでスキャンするか、下のリンクをコピーしてください', link:'遠隔操作リンク', linkHint:'QR コードとリンクは同一で、再起動後も有効です。更新または停止すると古いリンクは直ちに無効になります。', generating:'遠隔操作リンクを生成中…', notStarted:'遠隔操作は有効になっていません。', copy:'リンクをコピー', refresh:'QR コードを更新', enable:'アクセスを有効化', allowWorkspace:'ローカルフォルダーを許可', refreshTitle:'QR コードを更新しますか？', refreshDesc:'古い QR コードとリンクは直ちに無効になり、現在のブラウザー接続も切断されます。', refreshing:'更新中…', updated:'遠隔操作の状態を更新しました。', unavailable:'遠隔操作は一時的に利用できません。再試行してください。',
           status:{ idle:['未有効','有効にすると長期利用可能な遠隔操作リンクを作成します。'], starting:['開始中','遠隔操作接続を作成しています。'], connecting_relay:['接続中','リレーに接続しています…'], waiting_web_client:['ブラウザー待ち','スマートフォンまたはパソコンのブラウザーにリンクを貼り付けてください。'], web_client_connected:['ブラウザー接続済み','ブラウザーがこのデスクトップに接続しています。'], web_client_disconnected:['ブラウザー切断','リンクは引き続き有効で、いつでも再接続できます。'], revoked:['リンク無効','遠隔操作をもう一度有効にしてください。'], stopped:['停止済み','このパネルを開くと再度有効にできます。'], error:['接続エラー','遠隔操作は一時的に利用できません。再試行してください。'] },
         },
         uiMonitor: { bridgeNotReady:'ブリッジ未準備', readFailed:'読み込み失敗', reading:'読み込み中', configError:'設定エラー', unverified:'未確認', authFailed:'認証失敗', bridgeError:'モニターブリッジが未準備です。Tauri アプリのウィンドウで開いてください。', readError:e=>`モニターの読み込みに失敗: ${e}`, activity:'実行状況' },
@@ -1645,9 +1645,9 @@ const dict = {
       designAdjustSelected:(label, raw)=>`現在選択中の ${label} を調整：${raw}`,
     };
 
-    dict.zh.uiMainApp = { petSummon:'召唤公仔', closeNavigation:'关闭导航', superPermFailed:'无法开启高级执行权限', searchTestUnavailable:'当前环境不可测试搜索源', searchSaveFailed:'搜索配置保存失败，请重试', petSessionMissing:'目标会话不存在', petTaskStartFailed:'任务未能启动', detachedSessionMissing:'目标 Coding 会话不存在或已被删除', detachedSessionLoadFailed:'Coding 会话加载失败，请关闭窗口后重试', panelLoadFailed:err=>`面板加载失败:${err}` };
-    dict.en.uiMainApp = { petSummon:'Summon Companion', closeNavigation:'Close navigation', superPermFailed:'Unable to enable advanced execution permission', searchTestUnavailable:'Search sources cannot be tested in this environment', searchSaveFailed:'Failed to save search settings. Please try again', petSessionMissing:'Target session does not exist', petTaskStartFailed:'Task failed to start', detachedSessionMissing:'The target Coding session does not exist or was deleted', detachedSessionLoadFailed:'Failed to load the Coding session. Close this window and try again', panelLoadFailed:err=>`Panel failed to load: ${err}` };
-    dict.ja.uiMainApp = { petSummon:'コンパニオンを呼び出す', closeNavigation:'ナビゲーションを閉じる', superPermFailed:'高度な実行権限を有効にできません', searchTestUnavailable:'現在の環境では検索ソースをテストできません', searchSaveFailed:'検索設定の保存に失敗しました。もう一度お試しください', petSessionMissing:'対象のセッションが存在しません', petTaskStartFailed:'タスクを開始できませんでした', detachedSessionMissing:'対象の Coding セッションが存在しないか、削除されました', detachedSessionLoadFailed:'Coding セッションの読み込みに失敗しました。ウィンドウを閉じて再試行してください', panelLoadFailed:err=>`パネルの読み込みに失敗しました: ${err}` };
+    dict.zh.uiMainApp = { petSummon:'召唤公仔', closeNavigation:'关闭导航', superPermFailed:'无法开启高级执行权限', searchTestUnavailable:'当前环境不可测试搜索源', searchSaveFailed:'搜索配置保存失败，请重试', petSessionMissing:'目标会话不存在', petTaskStartFailed:'任务未能启动', detachedSessionMissing:'目标 Coding 会话不存在或已被删除', detachedSessionLoadFailed:'Coding 会话加载失败，请关闭窗口后重试', panelLoadFailed:err=>`面板加载失败:${err}`, viewLoadFailed:'页面加载失败，请检查网络后重试', viewReload:'重新加载' };
+    dict.en.uiMainApp = { petSummon:'Summon Companion', closeNavigation:'Close navigation', superPermFailed:'Unable to enable advanced execution permission', searchTestUnavailable:'Search sources cannot be tested in this environment', searchSaveFailed:'Failed to save search settings. Please try again', petSessionMissing:'Target session does not exist', petTaskStartFailed:'Task failed to start', detachedSessionMissing:'The target Coding session does not exist or was deleted', detachedSessionLoadFailed:'Failed to load the Coding session. Close this window and try again', panelLoadFailed:err=>`Panel failed to load: ${err}`, viewLoadFailed:'Failed to load this page. Check your network and try again', viewReload:'Reload' };
+    dict.ja.uiMainApp = { petSummon:'コンパニオンを呼び出す', closeNavigation:'ナビゲーションを閉じる', superPermFailed:'高度な実行権限を有効にできません', searchTestUnavailable:'現在の環境では検索ソースをテストできません', searchSaveFailed:'検索設定の保存に失敗しました。もう一度お試しください', petSessionMissing:'対象のセッションが存在しません', petTaskStartFailed:'タスクを開始できませんでした', detachedSessionMissing:'対象の Coding セッションが存在しないか、削除されました', detachedSessionLoadFailed:'Coding セッションの読み込みに失敗しました。ウィンドウを閉じて再試行してください', panelLoadFailed:err=>`パネルの読み込みに失敗しました: ${err}`, viewLoadFailed:'ページの読み込みに失敗しました。ネットワークを確認して再試行してください', viewReload:'再読み込み' };
 
     // tool-common.jsx(产物卡 aria/alt、diff 展开收起、天气卡、股票卡、工具商店动作按钮)。
     dict.zh.uiToolCommon = {
@@ -1865,7 +1865,7 @@ dict.zh.uiPlatformMisc = {
     cancel: '取消', chooseThisFolder: '选择此文件夹', choose: '选择',
     currentFolder: path => `当前文件夹：${path}`, selectedCount: n => `已选择 ${n} 项`,
     thisComputer: '此电脑', home: '用户目录', emptyFolder: '此目录中没有可选内容',
-    loadFailed: err => `读取失败：${err}`, alreadyOpen: '已有文件选择器正在打开',
+    loadFailed: err => `读取失败：${err}`, workspaceNotAuthorized: '请先在桌面端允许远程访问本机目录', alreadyOpen: '已有文件选择器正在打开',
   },
   // platform/web/bootstrap.js 的 invoke 拒绝错误文案,由 React 入口挂到
   // window.PinvouWebClientStrings(纯脚本无法 import ES module,bootstrap 内置中文兜底)。
@@ -1891,7 +1891,7 @@ dict.en.uiPlatformMisc = {
     cancel: 'Cancel', chooseThisFolder: 'Choose this folder', choose: 'Choose',
     currentFolder: path => `Current folder: ${path}`, selectedCount: n => `${n} selected`,
     thisComputer: 'This PC', home: 'Home', emptyFolder: 'Nothing to select in this folder',
-    loadFailed: err => `Failed to read: ${err}`, alreadyOpen: 'A file picker is already open',
+    loadFailed: err => `Failed to read: ${err}`, workspaceNotAuthorized: 'Allow remote access to local folders on the desktop first', alreadyOpen: 'A file picker is already open',
   },
   webClientErrors: {
     stateNotReady: 'Remote control state is not ready; desktop events cannot be processed yet',
@@ -1915,7 +1915,7 @@ dict.ja.uiPlatformMisc = {
     cancel: 'キャンセル', chooseThisFolder: 'このフォルダーを選択', choose: '選択',
     currentFolder: path => `現在のフォルダー：${path}`, selectedCount: n => `${n} 件選択中`,
     thisComputer: 'この PC', home: 'ホーム', emptyFolder: 'このフォルダーに選択できる項目はありません',
-    loadFailed: err => `読み込みに失敗しました：${err}`, alreadyOpen: 'ファイル選択ダイアログはすでに開いています',
+    loadFailed: err => `読み込みに失敗しました：${err}`, workspaceNotAuthorized: '先にデスクトップでローカルフォルダーへの遠隔アクセスを許可してください', alreadyOpen: 'ファイル選択ダイアログはすでに開いています',
   },
   webClientErrors: {
     stateNotReady: '遠隔操作の状態が未準備のため、デスクトップのイベントを処理できません',
@@ -2149,7 +2149,7 @@ dict.zh.uiArtifacts = {
   diChangesLog:n=>`设计变更 ${n}`, diEmpty:'空',
 };
 dict.zh.uiCodexView = { ended:'已结束', stepsFailed:'执行步骤包含失败', processing:'正在处理', codexTool:'Codex 工具' };
-Object.assign(dict.zh.uiAttachments, { uploading:pct=>`上传中 ${pct}%` });
+Object.assign(dict.zh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`, deviceUploadTooLarge:name=>`${name} 超过 20 MB 附件上限`, deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试` });
 dict.en.uiArtifacts = {
   zoomFit:'Fit window', zoomActual:'Actual size', zoomCustom:'Custom', zoomOut:'Zoom out', zoomIn:'Zoom in',
   switchArtifact:'Switch artifact', currentMtime:time=>`Last modified ${time}`,
@@ -2190,7 +2190,7 @@ dict.en.uiArtifacts = {
   diChangesLog:n=>`Design changes: ${n}`, diEmpty:'empty',
 };
 dict.en.uiCodexView = { ended:'Finished', stepsFailed:'Steps include failures', processing:'Processing', codexTool:'Codex tool' };
-Object.assign(dict.en.uiAttachments, { uploading:pct=>`Uploading ${pct}%` });
+Object.assign(dict.en.uiAttachments, { uploading:pct=>`Uploading ${pct}%`, deviceUploadTooLarge:name=>`${name} exceeds the 20 MB attachment limit`, deviceUploadEmpty:name=>`${name} is empty and cannot be attached`, deviceUploadUnavailable:'Uploading from this device is currently unavailable', deviceUploadInvalid:name=>`${name} is not a valid attachment`, deviceUploadFailed:name=>`${name} could not be uploaded. Try again.` });
 dict.ja.uiArtifacts = {
   zoomFit:'ウィンドウに合わせる', zoomActual:'実際のサイズ', zoomCustom:'カスタム', zoomOut:'キャンバスを縮小', zoomIn:'キャンバスを拡大',
   switchArtifact:'成果物を切り替え', currentMtime:time=>`現在の更新日時 ${time}`,
@@ -2231,7 +2231,7 @@ dict.ja.uiArtifacts = {
   diChangesLog:n=>`デザイン変更 ${n} 件`, diEmpty:'空',
 };
 dict.ja.uiCodexView = { ended:'終了', stepsFailed:'失敗を含む実行手順', processing:'処理中', codexTool:'Codex ツール' };
-Object.assign(dict.ja.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%` });
+Object.assign(dict.ja.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`, deviceUploadTooLarge:name=>`${name} は添付ファイル上限の 20 MB を超えています`, deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。` });
 
 // uiToolStore 词条补充（ToolStoreView / oauth-marketplace-logic）：命名空间已在 dict 主体定义，这里增量合并。
 Object.assign(dict.zh.uiToolStore, {

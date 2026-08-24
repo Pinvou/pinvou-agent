@@ -1106,6 +1106,12 @@ pub(crate) fn spawn_event_forwarder(
                 }
             }
         }
+        // 事件流中断/停止不经过 TurnComplete：清掉本轮 self_metrics 打点与 memory
+        // turn capture，否则 inflight / turn_capture_store 会按 session 永久驻留。
+        if let Some(m) = &self_metrics {
+            m.on_turn_aborted(&session_id);
+        }
+        crate::features::memory::discard_turn_capture(&session_id);
         match finish_reclaimed_lifecycle_turn(
             &turn_lifecycle,
             &app,

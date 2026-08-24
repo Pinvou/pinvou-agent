@@ -143,8 +143,10 @@ pub async fn install_update(
     Ok(())
 }
 
-/// 重启应用使新版本生效（exec 新 inode）。
+/// 重启应用使新版本生效（exec 新 inode）。restart 跳过 RunEvent::Exit，
+/// 先同步收割 ACP/连接器子进程，避免孤儿进程驻留。
 pub async fn restart_app(app: AppHandle) -> Result<(), String> {
+    crate::harvest_child_processes(&app).await;
     app.restart();
 }
 

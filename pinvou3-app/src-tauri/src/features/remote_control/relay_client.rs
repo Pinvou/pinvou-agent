@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
-use rand::Rng;
+use rand::RngExt;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio_tungstenite::{
@@ -819,6 +819,7 @@ mod tests {
             endpoint_id: "ep_1".into(),
             access_token: "browser".into(),
             desktop_secret: "desktop".into(),
+            allow_host_workspace: false,
         }
     }
 

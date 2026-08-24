@@ -114,19 +114,6 @@ fn session_title_attachment_names(store: &SessionStore, metadata: &SessionMetada
         .unwrap_or_default()
 }
 
-/// 清当前会话历史。
-///
-/// **当前 MVP 限制**：仅返回 Ok 让前端清显示；后端 EngineHandle 仍持
-/// 累积的消息历史，下次 chat 时 LLM 仍能看到之前的对话。真清需要重启
-/// app（spawn 全新 Engine）。
-///
-/// 实装路径（Phase C）：发 `Op::Shutdown` 给 engine + 在 Tauri State 上
-/// 替换 AppEngine 为新 spawn 出来的实例。
-#[tauri::command]
-pub async fn clear_session() -> Result<(), String> {
-    eprintln!("[pinvou3-app] clear_session: frontend cleared, backend session unchanged (MVP)");
-    Ok(())
-}
 // ===================== 阶段 C: 多对话历史 =====================
 
 /// 列出所有 session 元数据，按 updated_at 倒序。前端历史面板渲染用。
@@ -465,6 +452,15 @@ pub async fn delete_session(
     };
     if result.is_ok() {
         pool.forget_session(&id);
+        // 会话删除兜底：清掉进程级 store 里该 session 的打点残留，避免随会话删除
+        // 缓慢增长的自测指标泄漏（warmed_sessions 在每轮 TurnComplete 插入、从不回收）。
+        if let Some(m) = app
+            .try_state::<crate::features::monitor::MonitorState>()
+            .map(|s| s.self_metrics())
+        {
+            m.drop_session(&id);
+        }
+        crate::features::memory::discard_turn_capture(&id);
         let payload = serde_json::json!({ "id": &id });
         let _ = app.emit("session:deleted", payload.clone());
         crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
@@ -521,12 +517,6 @@ pub async fn set_session_archived(
     let action = if archived { "archived" } else { "restored" };
     emit_session_event(&app, "session:list_changed", &id, action);
     Ok(())
-}
-
-/// 取当前 active session id（前端启动时高亮历史面板用）。
-#[tauri::command]
-pub async fn get_active_session(store: State<'_, SessionStore>) -> Result<Option<String>, String> {
-    Ok(store.active_id())
 }
 
 /// 落盘普通 chat session 的 messages 数组。前端是普通 chat 的 source of truth；

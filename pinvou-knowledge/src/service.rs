@@ -1305,7 +1305,7 @@ fn random_secret(bytes: usize) -> String {
 }
 
 fn random_bytes(bytes: usize) -> Vec<u8> {
-    use rand::RngCore;
+    use rand::Rng;
     let mut value = vec![0u8; bytes];
     rand::rng().fill_bytes(&mut value);
     value

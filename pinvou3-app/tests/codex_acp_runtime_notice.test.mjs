@@ -120,10 +120,67 @@ const view = await readFile(
   new URL('../src/features/codex/CodexAcpView.jsx', import.meta.url),
   'utf8',
 );
+const notices = await readFile(
+  new URL('../src/features/codex/AcpRuntimeNotices.jsx', import.meta.url),
+  'utf8',
+);
+const runtimeStatus = await readFile(
+  new URL('../src/features/codex/runtimeStatus.js', import.meta.url),
+  'utf8',
+);
+const draftStatusEffect = view.match(
+  /useEffect\(\(\) => \{\s+\/\/ 草稿态按需读取([\s\S]*?)\n  \}, \[activeAgentId, activeId\]\);/,
+);
+assert.ok(draftStatusEffect, 'draft Agent status effect must remain explicit');
+assert.match(
+  draftStatusEffect[1],
+  /if \(activeId\) return;[\s\S]*refreshStatus\(activeAgentId\)\.catch\(showError\)/,
+  'draft Agent switches must use the cached probe while session loading owns active-session status',
+);
+assert.doesNotMatch(
+  draftStatusEffect[1],
+  /refreshStatus\(activeAgentId, true\)/,
+  'ordinary Agent switches must not force a duplicate CLI probe',
+);
 assert.match(
   view,
-  /refreshStatus\(activeAgentId, true\)\.catch\(showError\)/,
-  'switching the active agent must force a fresh CLI probe',
+  /onRefresh=\{\(\) => refreshStatus\(activeAgentId, true\)\}/,
+  'the explicit recheck action must still bypass the probe cache',
+);
+assert.match(
+  view,
+  /codeAgentsLoading=\{agents === null\}/,
+  'the selector must distinguish a loading catalog from a Codex-only catalog',
+);
+assert.match(
+  runtimeStatus,
+  /inFlight = Promise\.resolve\(\)\.then\(task\)[\s\S]*await inFlight/,
+  'runtime status polling must serialize probes and wait for the in-flight probe on stop',
+);
+assert.doesNotMatch(
+  view,
+  /setInterval\(\(\) => refreshStatus/,
+  'installation polling must not overlap slow status probes',
+);
+assert.match(
+  runtimeStatus,
+  /requestSeqRef = useRef\(\{\}\)[\s\S]*?requestSeqRef\.current\[agentId\] !== sequence/,
+  'late status responses must not overwrite the currently selected Agent',
+);
+assert.match(
+  runtimeStatus,
+  /mountedRef\.current = false[\s\S]*?if \(!mountedRef\.current\) return false/,
+  'late status responses must not update an unmounted code-mode view',
+);
+assert.match(
+  view,
+  /function selectDraftAgent\(agentId\)[\s\S]*?activeAgentIdRef\.current = agentId;[\s\S]*?setDraftAgentId\(agentId\)/,
+  'Agent selection must close the response race before React renders the new selection',
+);
+assert.match(
+  view,
+  /listenTauri\('acp:event',[\s\S]*?if \(disposed\) return;[\s\S]*?\.then\(fn => \{\s*if \(disposed\) fn\(\)/,
+  'an asynchronously registered ACP listener must not survive unmount',
 );
 assert.match(
   view,
@@ -136,22 +193,22 @@ assert.match(
   'the runtime notice must only consume the active Agent operation',
 );
 assert.match(
-  view,
+  notices,
   /copy\.cliUpdateRequired\(agentName, status\.version, status\.latest_version\)/,
   'the mandatory upgrade notice must show the target version',
 );
 assert.match(
-  view,
+  notices,
   /copy\.cliUpdateAvailable\(agentName, status\.version, status\.latest_version\)/,
   'the advisory upgrade notice must show the official latest target version',
 );
 assert.match(
-  view,
+  notices,
   /const canDeferUpgrade = status\.update_available && status\.installed && !status\.update_required/,
   'only an advisory latest-version update may be deferred',
 );
 assert.match(
-  view,
+  notices,
   /\[resetKey, status\?\.agent_id, status\?\.installed, status\?\.latest_version\]/,
   'starting a new code draft or reselecting an Agent must show the advisory again',
 );
@@ -162,15 +219,15 @@ assert.match(
   'existing sessions must suppress the optional latest-version reminder',
 );
 assert.match(
-  view,
+  notices,
   /runtimeNoticeMode\(status, declinedUpgrade \|\| suppressAdvisoryUpgrade\)/,
   'session suppression must reuse advisory-only behavior without hiding mandatory gates',
 );
 assert.doesNotMatch(
-  view,
+  notices,
   /working \|\| waitingForLogin \? copy\.waitAuth/,
   'unrelated work must not render the active Agent as logging in',
 );
-assert.doesNotMatch(view, /managed_download|managedDownload|downloadManaged/);
+assert.doesNotMatch(notices, /managed_download|managedDownload|downloadManaged/);
 
 console.log('✓ ACP runtime notice state matrix passed');

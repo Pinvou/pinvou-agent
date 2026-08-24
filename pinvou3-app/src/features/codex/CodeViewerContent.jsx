@@ -1,6 +1,11 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useSyncExternalStore } from 'react';
 import { RefreshCw } from '../../components/icons.jsx';
-import { highlightCode, highlightDiffCode } from '../../shared/syntax-highlighter.js';
+import {
+  getSyntaxHighlightVersion,
+  highlightCode,
+  highlightDiffCode,
+  subscribeSyntaxHighlight,
+} from '../../shared/syntax-highlighter.js';
 
 // 代码查看内容区：CodeViewerModal（弹窗）与 ReaderApp（独立阅读器窗口）共用，
 // 保持两处的高亮、截断、图片、错误态行为一致。字号持久化也在这里共享。
@@ -44,11 +49,13 @@ function languageHintForFile(name) {
 }
 
 export function useCodeHighlight(preview, fileName, languageHint) {
+  // 懒加载语言注册完成会 bump 版本号:加入 deps 让已打开的文件重算,恢复高亮。
+  const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
   return useMemo(() => {
     if (preview?.kind !== 'text' || typeof preview.text !== 'string') return null;
     if (languageHint === 'diff') return highlightDiffCode(preview.text);
     return highlightCode(preview.text, languageHint || languageHintForFile(preview.name || fileName));
-  }, [preview, fileName, languageHint]);
+  }, [preview, fileName, languageHint, syntaxVersion]);
 }
 
 export function CodeViewerContent({

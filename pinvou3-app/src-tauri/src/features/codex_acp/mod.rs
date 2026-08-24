@@ -4,13 +4,16 @@
 //! Codex、Claude Code 与 Kimi 的模型调用、工具循环、会话与权限协议都由各自
 //! ACP Agent 提供。
 
+mod agent_probe;
 mod attachments;
+mod auth_probe;
 mod diagnostics;
 mod events;
 mod install;
 mod introspect;
 mod latest;
 mod login;
+mod operation_gate;
 mod platform;
 mod providers;
 pub(crate) mod reader_window;
@@ -47,7 +50,9 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
+use agent_probe::{CliProbeCache, CliProbeGates, ResolvedCli};
 use anyhow::{bail, Context, Result};
+use auth_probe::{AgentAuthProbeState, CachedAuthStatus};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
@@ -60,15 +65,21 @@ use wait_timeout::ChildExt;
 use crate::features::sessions::SessionStore;
 use attachments::{prepare_codex_prompt, CodexDisplayAttachment};
 use deepseek_tui::session_manager::SessionMetadata;
-pub use events::AcpEventEnvelope;
-use events::{load_timeline, patch_acp_state, persist_acp_state, EventBridge};
+pub(crate) use events::project_acp_value_for_web;
+use events::{
+    load_timeline, load_web_timeline_page, persist_acp_state, EventBridge, WebAcpTimelineSlice,
+};
+pub use events::{
+    project_acp_elicitation_request_for_web, project_acp_permission_request_for_web,
+    AcpEventEnvelope,
+};
 use latest::LatestVersionProbe;
+use operation_gate::begin_prompt;
 pub use providers::{
     AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
 };
 use runtime::{
-    codex_version, resolve_codex_path, system_codex_incompatible, version_at_least, ResolvedCodex,
-    MIN_CODEX_VERSION,
+    codex_version, probe_codex_runtime, version_at_least, ResolvedCodex, MIN_CODEX_VERSION,
 };
 pub use store::{
     validate_codex_project_workspace, AgentBackend, CodexWorkspaceKind, SessionAgentStore,
@@ -93,6 +104,47 @@ const CLAUDE_INSTALL_SCRIPT_UNIX: &str = "https://claude.ai/install.sh";
 const CLAUDE_INSTALL_SCRIPT_WINDOWS: &str = "https://claude.ai/install.ps1";
 const KIMI_INSTALL_SCRIPT_UNIX: &str = "https://code.kimi.com/kimi-code/install.sh";
 const KIMI_INSTALL_SCRIPT_WINDOWS: &str = "https://code.kimi.com/kimi-code/install.ps1";
+
+/// ACP 空闲会话回收阈值：每个空闲会话都是一个活的 node/codex/kimi 子进程
+/// （spawn 带 kill_on_drop），池无上限、内存随会话数线性涨。空闲超过该时长
+/// 且无在跑 turn / 配置同步 / 非 active 会话时回收。回收只是回到 lazy spawn
+/// 语义（下次 get_or_spawn 重新起进程），30 分钟取偏保守值：宁可少回收也不
+/// 误杀刚要被使用的会话。
+const IDLE_EVICT_AFTER_SECS: u64 = 30 * 60;
+/// 空闲回收巡检间隔：5 分钟一轮，及时性与巡检开销的折中（与 EnginePool
+/// 空闲回收、embedder 空闲卸载的巡检节奏保持一致）。
+const REAP_INTERVAL_SECS: u64 = 5 * 60;
+
+/// 空闲回收判定（纯函数，便于单测）：busy（prompt 在途，含等待权限/问询的
+/// turn）、configuring（配置同步中）与当前 active 会话一律不回收。
+fn should_reap_idle_session(
+    busy: bool,
+    configuring: bool,
+    is_active_session: bool,
+    idle_for: Duration,
+) -> bool {
+    !busy
+        && !configuring
+        && !is_active_session
+        && idle_for >= Duration::from_secs(IDLE_EVICT_AFTER_SECS)
+}
+
+/// `evict_if_idle` 的锁内复核 + 原子移除（泛型抽出以便用裸组件确定性测试）：
+/// 在同一把 sessions 锁内按现值复核回收条件，满足才 remove 并返回；不满足
+/// （快照后到达的 send_message 已置 busy / 刷新活动，或会话正被打开）返回
+/// `None`，调用方不得回收。复核与移除原子完成，消除快照→回收的 TOCTOU。
+async fn take_session_if_still_idle<T>(
+    sessions: &Mutex<HashMap<String, T>>,
+    session_id: &str,
+    is_still_idle: impl Fn(&T) -> bool,
+) -> Option<T> {
+    let mut sessions = sessions.lock().await;
+    let entry = sessions.get(session_id)?;
+    if !is_still_idle(entry) {
+        return None;
+    }
+    sessions.remove(session_id)
+}
 
 fn backend_for_session_model(model: &str) -> Option<AgentBackend> {
     match model {
@@ -120,7 +172,14 @@ fn same_workspace(left: &Path, right: &Path) -> bool {
 }
 
 pub(super) fn codex_authenticated(codex: &Path) -> bool {
-    if nonempty_env("OPENAI_API_KEY") {
+    if [
+        "OPENAI_API_KEY",
+        "OPENAI_CODEX_ACCESS_TOKEN",
+        "CODEX_ACCESS_TOKEN",
+    ]
+    .into_iter()
+    .any(nonempty_env)
+    {
         return true;
     }
     // 第三方 Provider（中转）激活时，注入的 key 只存在于被 spawn 的 Codex 子进程
@@ -490,6 +549,14 @@ struct InstallProgressInfo {
     latest_line: Option<String>,
 }
 
+/// 轻量 ACP Agent 目录项。列表请求只回答“有哪些 Agent”，不触发 CLI、认证、
+/// npm 或 Homebrew 探测；具体运行状态由选中 Agent 的状态接口按需返回。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AcpAgentDescriptor {
+    pub agent_id: &'static str,
+    pub agent_name: &'static str,
+}
+
 #[derive(Debug, Clone, Default)]
 struct AgentLoginState {
     in_progress: bool,
@@ -589,6 +656,9 @@ struct AcpSession {
     kimi_session_id: Option<String>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     child: Mutex<Child>,
+    /// 最近一次请求/响应时刻（空闲回收巡检用）。任何直接到达该会话的请求
+    /// （发消息、改配置、状态查询复用）与 prompt 响应返回都会刷新。
+    last_activity: parking_lot::Mutex<Instant>,
 }
 
 impl AcpSession {
@@ -633,6 +703,8 @@ impl AcpSession {
             .block_task()
             .await;
         self.busy.store(false, Ordering::Release);
+        // 响应返回也算一次活动：长时间流式输出的 turn 结束后重新计空闲。
+        self.note_activity();
         match result {
             Ok(response) => {
                 // Kimi ACP 将普通 provider failure 映射成 end_turn，详细错误只写入
@@ -681,6 +753,16 @@ impl AcpSession {
 
     fn bridge_session_id(&self) -> String {
         self.bridge.pinvou_session_id().to_string()
+    }
+
+    /// 记录一次真实交互（请求到达 / 响应返回）；空闲回收据此判定空闲时长。
+    fn note_activity(&self) {
+        *self.last_activity.lock() = Instant::now();
+    }
+
+    /// 距最近一次活动的时长（保守语义：状态查询等轻量请求也算活动）。
+    fn idle_for(&self) -> Duration {
+        self.last_activity.lock().elapsed()
     }
 
     fn cancel(&self) {
@@ -804,13 +886,36 @@ pub struct AcpPool {
     runtime_errors: AgentRuntimeErrors,
     runtime_probe: Arc<parking_lot::RwLock<RuntimeProbeCache>>,
     runtime_probe_gate: Arc<Mutex<()>>,
+    runtime_probe_generation: Arc<AtomicU64>,
     cli_probe: Arc<parking_lot::RwLock<CliProbeCache>>,
     latest_version_probe: LatestVersionProbe,
+    cli_probe_gates: Arc<CliProbeGates>,
+    auth_cache: Arc<parking_lot::RwLock<HashMap<AgentBackend, CachedAuthStatus>>>,
+    auth_probe: Arc<AgentAuthProbeState>,
     bundled_adapter: Option<PathBuf>,
     bundled_claude_adapter: Option<PathBuf>,
     bundled_node: Option<PathBuf>,
     /// 第三方 Provider（中转）管理：store + 凭据 + 三写入器。
     providers: ProviderManager,
+    /// 空闲回收巡检任务句柄。放在 Arc 里由所有 pool clone 共享：pool 本身是
+    /// Clone（Tauri State 每次命令取的都是 clone），不能直接 impl Drop，否则
+    /// 任一 clone 释放都会误停巡检。pool 是进程级 managed state，巡检随进程
+    /// 退出自然终止；guard 的 Drop 清理仅作防御（见 start_idle_reaper 注释）。
+    idle_reaper: Arc<parking_lot::Mutex<Option<IdleReaperGuard>>>,
+}
+
+/// 后台巡检任务句柄：Drop 时先 cancel 再 abort，双保险停止巡检
+/// （参考 scheduled/tasks.rs ScheduledTaskState 的 Drop 清理模式）。
+struct IdleReaperGuard {
+    cancel: tokio_util::sync::CancellationToken,
+    handle: tauri::async_runtime::JoinHandle<()>,
+}
+
+impl Drop for IdleReaperGuard {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.handle.abort();
+    }
 }
 
 /// 同一 Agent 的安装/升级互斥，不同 Agent 的状态与任务彼此隔离。
@@ -883,22 +988,16 @@ struct RuntimeProbeCache {
     system_codex_incompatible: bool,
 }
 
-/// claude / kimi CLI 探测缓存：前端按秒轮询状态，不能每次都 spawn `--version`。
-/// 「重新检测」与安装完成后通过 invalidate_cli_probe 强制刷新。
-#[derive(Debug, Clone, Default)]
-struct CliProbeCache {
-    initialized: bool,
-    claude: Option<ResolvedCli>,
-    kimi: Option<ResolvedCli>,
-}
-
-#[derive(Debug, Clone)]
-struct ResolvedCli {
-    pub(super) path: PathBuf,
-    /// `--version` 原始输出；版本门禁单独校验，解析失败一律不合规。
-    pub(super) version: Option<String>,
-    /// 安装来源（"brew"/"npm"/"script"），供版本过旧时按来源分派升级。
-    pub(super) install_source: Option<&'static str>,
+fn remove_agent_paths(paths: Vec<PathBuf>) -> Result<()> {
+    for path in paths {
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("删除 {} 失败", path.display()))?;
+        } else if path.exists() {
+            std::fs::remove_file(&path).with_context(|| format!("删除 {} 失败", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 impl AcpPool {
@@ -1020,14 +1119,19 @@ impl AcpPool {
             runtime_errors: AgentRuntimeErrors::default(),
             runtime_probe: Arc::new(parking_lot::RwLock::new(RuntimeProbeCache::default())),
             runtime_probe_gate: Arc::new(Mutex::new(())),
+            runtime_probe_generation: Arc::new(AtomicU64::new(0)),
             cli_probe: Arc::new(parking_lot::RwLock::new(CliProbeCache::default())),
             latest_version_probe: LatestVersionProbe::new()?,
+            cli_probe_gates: Arc::new(CliProbeGates::default()),
+            auth_cache: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            auth_probe: Arc::new(AgentAuthProbeState::default()),
             bundled_adapter,
             bundled_claude_adapter,
             bundled_node,
             providers: ProviderManager::new(
                 crate::platform::credential_store::SystemCredentialStore::new(),
             )?,
+            idle_reaper: Arc::new(parking_lot::Mutex::new(None)),
         })
     }
 
@@ -1176,14 +1280,6 @@ impl AcpPool {
         self.status_for_async(AgentBackend::CodexAcp).await
     }
 
-    async fn agent_authenticated_async(&self, backend: AgentBackend, executable: &Path) -> bool {
-        let pool = self.clone();
-        let executable = executable.to_path_buf();
-        tokio::task::spawn_blocking(move || pool.agent_authenticated(backend, &executable))
-            .await
-            .unwrap_or(false)
-    }
-
     /// 「重新检测」入口：忽略探测缓存强制重新探测后返回最新状态，
     /// 供用户在 App 外手动安装/升级 CLI 后刷新（安装/升级成功路径
     /// 已通过 refresh_agent_cli_probe 自动失效缓存）。
@@ -1223,6 +1319,18 @@ impl AcpPool {
         Ok(self.status_for_async(backend).await)
     }
 
+    pub fn agent_catalog() -> Vec<AcpAgentDescriptor> {
+        AgentBackend::ACP_BACKENDS
+            .into_iter()
+            .filter_map(|backend| {
+                Some(AcpAgentDescriptor {
+                    agent_id: backend.agent_id()?,
+                    agent_name: backend.display_name(),
+                })
+            })
+            .collect()
+    }
+
     fn status_for(&self, backend: AgentBackend) -> CodexAcpStatus {
         let login = self
             .login_states
@@ -1231,7 +1339,8 @@ impl AcpPool {
             .cloned()
             .unwrap_or_default();
         if backend == AgentBackend::KimiAcp {
-            let kimi = self.cli_probe().kimi;
+            let kimi = self.cli_probe_for(backend);
+            let installing = self.installing_agents.read().contains(&backend);
             let kimi_path = kimi
                 .as_ref()
                 .map(|cli| cli.path.to_string_lossy().into_owned());
@@ -1246,9 +1355,10 @@ impl AcpPool {
             let cli_ready = kimi.is_some() && version_supported;
             let installed = cli_ready;
             let authenticated = !login.in_progress
+                && !installing
                 && kimi
                     .as_ref()
-                    .is_some_and(|cli| kimi_authenticated(&cli.path));
+                    .is_some_and(|cli| self.cached_agent_authenticated(backend, &cli.path));
             let mut status = CodexAcpStatus {
                 agent_id: "kimi",
                 agent_name: "Kimi",
@@ -1290,7 +1400,7 @@ impl AcpPool {
                 login_url: login.url,
                 login_code: login.code,
                 login_input_required: false,
-                installing: self.installing_agents.read().contains(&backend),
+                installing,
                 error: login.error.or_else(|| self.runtime_errors.get(backend)),
                 install_command: None,
                 install_latest_line: None,
@@ -1327,7 +1437,7 @@ impl AcpPool {
             .is_some_and(|major| major >= 20);
         let codex = probe.as_ref().and_then(|probe| probe.codex.clone());
         let claude = (backend == AgentBackend::ClaudeAcp)
-            .then(|| self.cli_probe().claude)
+            .then(|| self.cli_probe_for(backend))
             .flatten();
         let claude_supported = claude
             .as_ref()
@@ -1386,14 +1496,16 @@ impl AcpPool {
         };
         // 登录命令运行期间不要再启动同一 CLI 的 auth status。部分 CLI 会让两条
         // 命令争用凭证锁，原来的 750ms 状态轮询因此可能拖住 Tauri 的 IPC/UI。
+        let installing = self.installing_agents.read().contains(&backend);
         let authenticated = !login.in_progress
+            && !installing
             && match backend {
-                AgentBackend::CodexAcp => codex
-                    .as_ref()
-                    .is_some_and(|resolved| codex_authenticated(&resolved.path)),
+                AgentBackend::CodexAcp => codex.as_ref().is_some_and(|resolved| {
+                    self.cached_agent_authenticated(backend, &resolved.probe_path)
+                }),
                 AgentBackend::ClaudeAcp => claude
                     .as_ref()
-                    .is_some_and(|cli| claude_authenticated(&cli.path)),
+                    .is_some_and(|cli| self.cached_agent_authenticated(backend, &cli.path)),
                 AgentBackend::Deepseek | AgentBackend::KimiAcp => unreachable!(),
             };
         let mut status = CodexAcpStatus {
@@ -1467,7 +1579,7 @@ impl AcpPool {
             login_code: login.code,
             login_input_required: login.input_required,
             // 安装状态按 Agent 隔离；Claude/Kimi 的任务不会污染 Codex 状态，反之亦然。
-            installing: self.installing_agents.read().contains(&backend),
+            installing,
             error: login.error.or_else(|| self.runtime_errors.get(backend)),
             // installed=false 多为桥或 Node 缺失，不属于认证问题，不给认证类提示；
             // Claude Code 不再随包内置；仅在 CLI 缺失或低于最低版本时给 missing
@@ -1492,11 +1604,18 @@ impl AcpPool {
     }
 
     async fn refresh_runtime_probe(&self, force: bool) {
+        let observed_generation = self.runtime_probe_generation.load(Ordering::Acquire);
         if !force && self.runtime_probe.read().initialized {
             return;
         }
         let _gate = self.runtime_probe_gate.lock().await;
         if !force && self.runtime_probe.read().initialized {
+            return;
+        }
+        if force
+            && self.runtime_probe.read().initialized
+            && self.runtime_probe_generation.load(Ordering::Acquire) != observed_generation
+        {
             return;
         }
 
@@ -1508,6 +1627,7 @@ impl AcpPool {
             .and_then(|adapter| self.resolve_node(adapter));
         let system_codex = resolve_codex_cli();
         let legacy_codex = adapter.as_deref().and_then(codex_path_for_adapter);
+        let resolve_install_source = force || self.codex_upgrade_required.load(Ordering::Acquire);
         diagnostics::write(
             &operation_id,
             "probe:start",
@@ -1522,44 +1642,48 @@ impl AcpPool {
                     .unwrap_or_else(|| "none".to_string())
             ),
         );
-        // 并行探测：codex 解析（--version）、node --version、brew、系统 codex
-        // 兼容性检查各自独立 spawn_blocking——Node 版 codex 冷启动 ~9s，串行
-        // 时总耗时是各项之和（实测 ~20s），并行后取最慢一项（~9-10s）。
-        let system_codex_for_incompat = system_codex.clone();
-        let detected = {
-            let resolve_task = tokio::task::spawn_blocking(move || {
-                let codex = resolve_codex_path(system_codex.clone(), legacy_codex);
-                // 已解析（合规）或 PATH 中过旧的 codex 都判定安装来源，供升级分派。
-                let codex_install_source = codex
-                    .as_ref()
-                    .map(|resolved| resolved.path.clone())
-                    .or_else(|| system_codex.clone())
-                    .and_then(|path| detect_install_source(AgentBackend::CodexAcp, &path));
-                (codex, codex_install_source)
+        // Codex、Node 与 Homebrew 探测彼此独立，并行执行；Codex 候选探测同时
+        // 返回版本兼容性，避免为同一系统 CLI 重复执行两次 `--version`。
+        let runtime_task = tokio::task::spawn_blocking(move || {
+            let candidates = probe_codex_runtime(system_codex.clone(), legacy_codex);
+            let codex = candidates.resolved;
+            // CLI 正常可用时安装来源只做路径判断；版本过旧、服务端要求升级或
+            // 用户主动重查时才执行较重的 npm/brew 来源探测。
+            let source_path = if candidates.system_codex_incompatible {
+                system_codex.clone()
+            } else {
+                codex.as_ref().map(|resolved| resolved.path.clone())
+            };
+            let codex_install_source = source_path.as_deref().and_then(|path| {
+                if candidates.system_codex_incompatible || resolve_install_source {
+                    detect_install_source(AgentBackend::CodexAcp, path)
+                } else {
+                    path_install_source(AgentBackend::CodexAcp, path)
+                }
             });
-            let node_task = tokio::task::spawn_blocking(move || {
-                node.as_deref().and_then(installed_node_version)
-            });
-            let brew_task = tokio::task::spawn_blocking(platform::brew_available);
-            let incompatible_task = tokio::task::spawn_blocking(move || {
-                system_codex_incompatible(system_codex_for_incompat)
-            });
-            match tokio::join!(resolve_task, node_task, brew_task, incompatible_task) {
-                (
-                    Ok((codex, codex_install_source)),
-                    Ok(node_version),
-                    Ok(brew_available),
-                    Ok(system_incompatible),
-                ) => Ok(RuntimeProbeCache {
-                    initialized: true,
-                    node_version,
-                    codex,
-                    brew_available,
-                    codex_install_source,
-                    system_codex_incompatible: system_incompatible,
-                }),
-                _ => Err(()),
-            }
+            (
+                codex,
+                codex_install_source,
+                candidates.system_codex_incompatible,
+            )
+        });
+        let node_task =
+            tokio::task::spawn_blocking(move || node.as_deref().and_then(installed_node_version));
+        let brew_task = tokio::task::spawn_blocking(platform::brew_available);
+        let detected = match tokio::join!(runtime_task, node_task, brew_task) {
+            (
+                Ok((codex, codex_install_source, system_codex_incompatible)),
+                Ok(node_version),
+                Ok(brew_available),
+            ) => Ok(RuntimeProbeCache {
+                initialized: true,
+                node_version,
+                codex,
+                brew_available,
+                codex_install_source,
+                system_codex_incompatible,
+            }),
+            _ => Err(()),
         };
 
         match detected {
@@ -1605,6 +1729,7 @@ impl AcpPool {
                 };
             }
         }
+        self.runtime_probe_generation.fetch_add(1, Ordering::AcqRel);
     }
 
     /// 验证 Codex Bridge 与 CLI 已就绪；不会隐式安装或执行外部脚本。
@@ -1844,7 +1969,12 @@ impl AcpPool {
                 backend.display_name()
             );
         }
-        if let Some(path) = self.stale_official_install(backend) {
+        let pool = self.clone();
+        let stale_install =
+            tokio::task::spawn_blocking(move || pool.stale_official_install(backend))
+                .await
+                .context("检查官方安装残留任务异常退出")?;
+        if let Some(path) = stale_install {
             bail!(
                 "检测到不完整的 {} 安装残留：{} 存在但当前不可用。为避免安装出错，\
                  请先删除它后重试安装（或点击「重新检测」确认环境）",
@@ -1866,16 +1996,10 @@ impl AcpPool {
                 .codex
                 .as_ref()
                 .map(|resolved| resolved.path.clone()),
-            AgentBackend::ClaudeAcp | AgentBackend::KimiAcp => {
-                let probe = self.cli_probe();
-                let cli = match backend {
-                    AgentBackend::ClaudeAcp => probe.claude.as_ref(),
-                    AgentBackend::KimiAcp => probe.kimi.as_ref(),
-                    _ => None,
-                };
-                cli.filter(|cli| cli.version.is_some())
-                    .map(|cli| cli.path.clone())
-            }
+            AgentBackend::ClaudeAcp | AgentBackend::KimiAcp => self
+                .cli_probe_for(backend)
+                .filter(|cli| cli.version.is_some())
+                .map(|cli| cli.path.clone()),
             AgentBackend::Deepseek => None,
         };
         let targets = providers::lifecycle::official_script_paths(backend);
@@ -1895,7 +2019,9 @@ impl AcpPool {
     fn official_target_works(&self, backend: AgentBackend, target: &Path) -> bool {
         match backend {
             AgentBackend::CodexAcp => codex_version(target).is_some(),
-            AgentBackend::ClaudeAcp | AgentBackend::KimiAcp => command_version(target).is_some(),
+            AgentBackend::ClaudeAcp | AgentBackend::KimiAcp => {
+                command_version_output(target).is_some()
+            }
             AgentBackend::Deepseek => false,
         }
     }
@@ -2028,11 +2154,14 @@ impl AcpPool {
         }
     }
 
-    /// 安装/升级后按 Agent 强制重探测：codex 走 runtime probe，claude/kimi 走 CLI 缓存。
+    /// 安装/升级后按 Agent 强制重探测：Codex 走 runtime probe，Claude/Kimi
+    /// 只失效自身缓存，不让一个 Agent 的操作拖慢另一个 Agent。
     async fn refresh_agent_cli_probe(&self, backend: AgentBackend) {
+        self.invalidate_auth_cache(backend);
         match backend {
             AgentBackend::CodexAcp => self.refresh_runtime_probe(true).await,
-            _ => self.invalidate_cli_probe(),
+            AgentBackend::ClaudeAcp | AgentBackend::KimiAcp => self.invalidate_cli_probe(backend),
+            AgentBackend::Deepseek => {}
         }
     }
 
@@ -2274,6 +2403,7 @@ impl AcpPool {
             return Ok(self.status_for_async(backend).await);
         }
         self.runtime_errors.clear(backend);
+        self.invalidate_auth_cache(backend);
         let pool = self.clone();
         tokio::spawn(async move {
             let result = pool.run_agent_login(backend, executable).await;
@@ -2379,7 +2509,7 @@ impl AcpPool {
         // 保存的是生效中 Provider：配置已重写，重启该 Agent 会话使新配置生效
         // （与 switch/delete/official 同一链路；codex 的 key 在 spawn 时注入）。
         if self.providers.store().current(agent).as_deref() == Some(record.id.as_str()) {
-            self.invalidate_cli_probe();
+            self.invalidate_auth_cache(backend);
             self.restart_agent_sessions(backend).await;
         }
         Ok(record)
@@ -2396,7 +2526,7 @@ impl AcpPool {
         let was_current = self.providers.store().current(agent).as_deref() == Some(provider_id);
         self.providers.delete(agent, provider_id)?;
         if was_current {
-            self.invalidate_cli_probe();
+            self.invalidate_auth_cache(backend);
             self.restart_agent_sessions(backend).await;
         }
         Ok(self.status_for_async(backend).await)
@@ -2411,7 +2541,7 @@ impl AcpPool {
     ) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
         self.providers.switch(agent, provider_id)?;
-        self.invalidate_cli_probe();
+        self.invalidate_auth_cache(backend);
         self.restart_agent_sessions(backend).await;
         Ok(self.status_for_async(backend).await)
     }
@@ -2420,7 +2550,7 @@ impl AcpPool {
     pub async fn switch_acp_provider_official(&self, agent: &str) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
         self.providers.switch_official(agent)?;
-        self.invalidate_cli_probe();
+        self.invalidate_auth_cache(backend);
         self.restart_agent_sessions(backend).await;
         Ok(self.status_for_async(backend).await)
     }
@@ -2537,27 +2667,21 @@ impl AcpPool {
                 .read()
                 .codex_install_source
                 .map(str::to_string),
-            AgentBackend::ClaudeAcp => self
-                .cli_probe()
-                .claude
-                .as_ref()
-                .and_then(|cli| cli.install_source)
-                .map(str::to_string),
-            AgentBackend::KimiAcp => self
-                .cli_probe()
-                .kimi
-                .as_ref()
+            AgentBackend::ClaudeAcp | AgentBackend::KimiAcp => self
+                .cli_probe_for(backend)
                 .and_then(|cli| cli.install_source)
                 .map(str::to_string),
             AgentBackend::Deepseek => None,
         };
         // 卸载前自检：刷新探测后既无安装来源、官方脚本路径也无残留时，明确告知
         // 「无需卸载」，而不是静默执行空操作给用户「卸完了」的错觉。
-        if install_source.is_none()
-            && !providers::lifecycle::official_script_paths(backend)
-                .into_iter()
-                .any(|path| path.exists())
-        {
+        let official_paths = providers::lifecycle::official_script_paths(backend);
+        let has_official_residual = tokio::task::spawn_blocking(move || {
+            official_paths.into_iter().any(|path| path.exists())
+        })
+        .await
+        .context("检查 Agent 安装路径任务异常退出")?;
+        if install_source.is_none() && !has_official_residual {
             bail!("未检测到已安装的 {} CLI，无需卸载", backend.display_name());
         }
         let command = providers::lifecycle::uninstall_command(backend, install_source.as_deref());
@@ -2602,29 +2726,18 @@ impl AcpPool {
                     "uninstall:remove_paths",
                     format!("agent={agent} paths={rendered}"),
                 );
-                for path in paths {
-                    if path.is_dir() {
-                        std::fs::remove_dir_all(&path)
-                            .with_context(|| format!("删除 {} 失败", path.display()))?;
-                    } else if path.exists() {
-                        std::fs::remove_file(&path)
-                            .with_context(|| format!("删除 {} 失败", path.display()))?;
-                    }
-                }
+                tokio::task::spawn_blocking(move || remove_agent_paths(paths))
+                    .await
+                    .context("删除 Agent 文件任务异常退出")??;
             }
         }
-        self.invalidate_cli_probe();
-        if backend == AgentBackend::CodexAcp {
-            self.runtime_probe.write().initialized = false;
-        }
+        self.refresh_agent_cli_probe(backend).await;
         if cleanup {
             let agent_id = backend.agent_id().context("非 ACP 后端")?;
-            for path in providers::lifecycle::config_paths(backend) {
-                if path.exists() {
-                    std::fs::remove_dir_all(&path)
-                        .with_context(|| format!("删除配置目录 {} 失败", path.display()))?;
-                }
-            }
+            let config_paths = providers::lifecycle::config_paths(backend);
+            tokio::task::spawn_blocking(move || remove_agent_paths(config_paths))
+                .await
+                .context("删除 Agent 配置任务异常退出")??;
             for record in self.providers.store().state(agent_id).providers {
                 let _ = self.providers.delete(agent_id, &record.id);
             }
@@ -2692,10 +2805,7 @@ impl AcpPool {
         })
         .await
         .context("登出任务异常退出")??;
-        self.invalidate_cli_probe();
-        if backend == AgentBackend::CodexAcp {
-            self.runtime_probe.write().initialized = false;
-        }
+        self.invalidate_auth_cache(backend);
         Ok(self.status_for_async(backend).await)
     }
 
@@ -2775,15 +2885,6 @@ impl AcpPool {
         }
     }
 
-    fn agent_authenticated(&self, backend: AgentBackend, executable: &Path) -> bool {
-        match backend {
-            AgentBackend::CodexAcp => codex_authenticated(executable),
-            AgentBackend::ClaudeAcp => claude_authenticated(executable),
-            AgentBackend::KimiAcp => kimi_authenticated(executable),
-            AgentBackend::Deepseek => true,
-        }
-    }
-
     async fn run_agent_login(&self, backend: AgentBackend, executable: PathBuf) -> Result<()> {
         let operation_id = diagnostics::operation_id("login");
         diagnostics::write(
@@ -2858,6 +2959,7 @@ impl AcpPool {
             }
             bail!("{} 登录进程退出: {status}", backend.display_name());
         }
+        self.invalidate_auth_cache(backend);
         if !self.agent_authenticated_async(backend, &executable).await {
             if backend == AgentBackend::KimiAcp {
                 bail!("Kimi 登录授权已完成，但未获取到可用模型，请重新登录并检查账号权益或网络");
@@ -2881,18 +2983,13 @@ impl AcpPool {
         let workspace_references =
             workspace::resolve_workspace_references(&workspace, &workspace_references)?;
         let runtime = self.get_or_spawn(session_id).await?;
-        if runtime.configuring.load(Ordering::Acquire) {
-            bail!("ACP 会话配置仍在同步，请稍候再发送");
-        }
         let prepared = prepare_codex_prompt(
             &content,
             &attachments,
             &workspace_references,
             &runtime.prompt_capabilities,
         )?;
-        if runtime.busy.swap(true, Ordering::AcqRel) {
-            bail!("ACP 会话仍在生成");
-        }
+        begin_prompt(&runtime.busy, &runtime.configuring)?;
         if let Err(error) = self.session_store.touch_activity(session_id) {
             runtime.busy.store(false, Ordering::Release);
             return Err(error).context("更新 ACP 会话最近活跃时间失败");
@@ -2930,6 +3027,9 @@ impl AcpPool {
         );
         self.evict(session_id).await;
         self.codex_upgrade_required.store(true, Ordering::Release);
+        // 下一次状态读取需要补充真实安装来源以选择正确升级路径；正常首屏不为
+        // 这个低频分支预付 npm/brew 探测成本。
+        self.runtime_probe.write().initialized = false;
         self.runtime_errors.set(
             AgentBackend::CodexAcp,
             format!(
@@ -2975,6 +3075,123 @@ impl AcpPool {
         self.cancel_pending_permissions(session_id).await;
         self.cancel_pending_elicitations(session_id).await;
         if let Some(runtime) = self.sessions.lock().await.remove(session_id) {
+            runtime.shutdown().await;
+        }
+    }
+
+    /// 仅空闲回收使用的回收路径（TOCTOU 防护）：`reap_idle_sessions` 的候选
+    /// 快照与 `evict` 之间没有共享 gate，快照后到达的 `send_message` 可能已
+    /// 经 `busy.swap(true)` 把 turn 跑起来，直接 remove + `child.kill()` 会
+    /// 误杀在途 prompt。复核 + 移除由 [`take_session_if_still_idle`] 在同一把
+    /// sessions 锁内原子完成：`get_or_spawn` 复用即刷新 last_activity，任何
+    /// 快照后到达的真实请求都会把 idle_for 归零（busy 在途更直接命中），复核
+    /// 自然失败、会话原样保留，留待下一轮巡检。返回是否真正回收。删除 /
+    /// 升级等其他路径仍走 `evict`，语义不变。
+    async fn evict_if_idle(&self, session_id: &str) -> bool {
+        let active_id = self.session_store.active_id();
+        let Some(runtime) = take_session_if_still_idle(&self.sessions, session_id, |runtime| {
+            should_reap_idle_session(
+                runtime.busy.load(Ordering::Acquire),
+                runtime.configuring.load(Ordering::Acquire),
+                active_id.as_deref() == Some(session_id),
+                runtime.idle_for(),
+            )
+        })
+        .await
+        else {
+            return false;
+        };
+        self.cancel_pending_permissions(session_id).await;
+        self.cancel_pending_elicitations(session_id).await;
+        runtime.shutdown().await;
+        true
+    }
+
+    /// 启动空闲回收巡检（幂等）：每 REAP_INTERVAL_SECS 秒扫描一次，回收
+    /// 「空闲超过 IDLE_EVICT_AFTER_SECS 且无在途 prompt/配置同步且非 active」
+    /// 的会话进程。active 判定取 `SessionStore::active_id`——它由 create/
+    /// load session 命令维护，是前端当前打开会话的最可靠信号；不过前端也可能
+    /// 通过 web_access 等旁路打开同一会话，因此再多兜一层：`get_or_spawn`
+    /// 复用时会刷新 last_activity，可见即活跃，双保险下宁可保守。
+    /// 回收只是回到 lazy spawn 语义（下次 get_or_spawn 重新起进程并恢复
+    /// 会话上下文），代理侧会话状态不受影响。
+    ///
+    /// 巡检任务持有 pool clone（内部全 Arc，廉价）。pool 是 Tauri managed
+    /// state、进程级生命周期，巡检随进程退出自然终止；guard 的 Drop 清理
+    /// 仅作为防御（clone 间 Arc 循环意味着它平时不会触发，这不构成泄漏——
+    /// 常驻的只有一个每 5 分钟醒一次的轻任务）。
+    pub fn start_idle_reaper(&self) {
+        let mut slot = self.idle_reaper.lock();
+        if slot.is_some() {
+            return;
+        }
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let pool = self.clone();
+        let handle = tauri::async_runtime::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(REAP_INTERVAL_SECS));
+            // tokio::interval 首个 tick 立即到期：跳过它，统一走周期节奏。
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = task_cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                // 单轮 panic 隔离（与 EnginePool 巡检同款）：回收逻辑 panic 只
+                // 终止当轮 task，外层循环下轮照常继续，ACP 会话回收不停摆。
+                let round_pool = pool.clone();
+                let round =
+                    tauri::async_runtime::spawn(
+                        async move { round_pool.reap_idle_sessions().await },
+                    );
+                if let Err(error) = round.await {
+                    eprintln!("[codex_acp] 空闲巡检单轮失败（已隔离，下轮继续）: {error}");
+                }
+            }
+        });
+        *slot = Some(IdleReaperGuard { cancel, handle });
+    }
+
+    /// 单轮空闲回收。busy/configuring 会话（含 turn 等待权限/问询期间）与
+    /// active 会话一律保留；回收走 `evict_if_idle`：快照只是候选筛选，真正
+    /// 回收前在 sessions 锁内复核仍满足回收条件，快照后到达的 send_message
+    /// （busy.swap(true)）不会被误杀。
+    async fn reap_idle_sessions(&self) {
+        let active_id = self.session_store.active_id();
+        let candidates: Vec<String> = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .iter()
+                .filter(|(sid, runtime)| {
+                    should_reap_idle_session(
+                        runtime.busy.load(Ordering::Acquire),
+                        runtime.configuring.load(Ordering::Acquire),
+                        active_id.as_deref() == Some(sid.as_str()),
+                        runtime.idle_for(),
+                    )
+                })
+                .map(|(sid, _)| sid.clone())
+                .collect()
+        };
+        for session_id in candidates {
+            if self.evict_if_idle(&session_id).await {
+                eprintln!(
+                    "[pinvou3-app] ACP 会话 {session_id} 空闲超过 {} 秒，回收进程（下次使用时重新拉起）",
+                    IDLE_EVICT_AFTER_SECS
+                );
+            }
+        }
+    }
+
+    /// 退出收割（lib.rs RunEvent::Exit 调）：不等空闲判定，全量关停。
+    /// kill_on_drop 只在 Child drop 时生效，Tauri 退出不保证 drop managed
+    /// state，显式 shutdown 兜底防孤儿进程。
+    pub async fn shutdown_all(&self) {
+        let runtimes: Vec<Arc<AcpSession>> = {
+            let mut sessions = self.sessions.lock().await;
+            sessions.drain().map(|(_, runtime)| runtime).collect()
+        };
+        for runtime in runtimes {
             runtime.shutdown().await;
         }
     }
@@ -3041,150 +3258,33 @@ impl AcpPool {
         result
     }
 
-    fn remember_config_choice(
-        &self,
-        session_id: &str,
-        runtime: &AcpSession,
-        config_id: &str,
-        value_id: &str,
-    ) {
-        let backend = self.backend(session_id);
-        let mut errors = Vec::new();
-        if let Err(error) = self
-            .agents
-            .set_acp_config_value(session_id, config_id, value_id)
-        {
-            errors.push(format!("会话配置: {error:#}"));
-        }
-        if let Err(error) = self.config_defaults.set(backend, config_id, value_id) {
-            errors.push(format!("新会话默认值: {error:#}"));
-        }
-        if !errors.is_empty() {
-            let message = errors.join("；");
-            eprintln!(
-                "[pinvou3-app] failed to persist {} ACP config {}={}: {}",
-                backend.display_name(),
-                config_id,
-                value_id,
-                message
-            );
-            runtime.bridge.emit(
-                "config_persistence_failed",
-                json!({
-                    "configId": config_id,
-                    "valueId": value_id,
-                    "message": message,
-                }),
-            );
-        }
-    }
-
-    pub async fn set_model(&self, session_id: &str, model_id: &str) -> Result<CodexAcpSessionInfo> {
-        let runtime = self.get_or_spawn(session_id).await?;
-        runtime.set_model(model_id).await?;
-        self.remember_config_choice(session_id, &runtime, "model", model_id);
-        let info = runtime.info(
-            self.pending_permissions_for(session_id).await,
-            self.pending_elicitations_for(session_id).await,
-        );
-        patch_acp_state(session_id, json!({ "session": &info }))?;
-        Ok(info)
-    }
-
-    pub async fn set_config_option(
-        &self,
-        session_id: &str,
-        config_id: &str,
-        value_id: &str,
-    ) -> Result<CodexAcpSessionInfo> {
-        let runtime = self.get_or_spawn(session_id).await?;
-        if runtime.busy.load(Ordering::Acquire) {
-            bail!("Agent 正在处理当前任务，配置将在本轮结束后才能修改");
-        }
-        if runtime.configuring.swap(true, Ordering::AcqRel) {
-            bail!("ACP 会话已有配置正在同步");
-        }
-        if runtime.busy.load(Ordering::Acquire) {
-            runtime.configuring.store(false, Ordering::Release);
-            bail!("Codex 正在处理当前任务，配置将在本轮结束后才能修改");
-        }
-        runtime.bridge.emit(
-            "config_change_requested",
-            json!({ "configId": config_id, "valueId": value_id }),
-        );
-        let apply_result = runtime.set_config_option(config_id, value_id).await;
-        runtime.configuring.store(false, Ordering::Release);
-        if let Err(error) = apply_result {
-            runtime.bridge.emit(
-                "config_change_failed",
-                json!({
-                    "configId": config_id,
-                    "valueId": value_id,
-                    "message": format!("{error:#}"),
-                }),
-            );
-            return Err(error);
-        }
-        self.remember_config_choice(session_id, &runtime, config_id, value_id);
-        runtime.bridge.emit(
-            "config_change_applied",
-            json!({ "configId": config_id, "valueId": value_id }),
-        );
-        let info = runtime.info(
-            self.pending_permissions_for(session_id).await,
-            self.pending_elicitations_for(session_id).await,
-        );
-        patch_acp_state(session_id, json!({ "session": &info }))?;
-        Ok(info)
-    }
-
-    pub async fn set_mode(&self, session_id: &str, mode_id: &str) -> Result<CodexAcpSessionInfo> {
-        let runtime = self.get_or_spawn(session_id).await?;
-        if runtime.busy.load(Ordering::Acquire) {
-            bail!("Agent 正在处理当前任务，权限模式将在本轮结束后才能修改");
-        }
-        if runtime.configuring.swap(true, Ordering::AcqRel) {
-            bail!("ACP 会话已有配置正在同步");
-        }
-        if runtime.busy.load(Ordering::Acquire) {
-            runtime.configuring.store(false, Ordering::Release);
-            bail!("Codex 正在处理当前任务，权限模式将在本轮结束后才能修改");
-        }
-        runtime.bridge.emit(
-            "config_change_requested",
-            json!({ "configId": "mode", "valueId": mode_id }),
-        );
-        let apply_result = runtime.set_mode(mode_id).await;
-        runtime.configuring.store(false, Ordering::Release);
-        if let Err(error) = apply_result {
-            runtime.bridge.emit(
-                "config_change_failed",
-                json!({
-                    "configId": "mode",
-                    "valueId": mode_id,
-                    "message": format!("{error:#}"),
-                }),
-            );
-            return Err(error);
-        }
-        self.remember_config_choice(session_id, &runtime, "mode", mode_id);
-        runtime.bridge.emit(
-            "config_change_applied",
-            json!({ "configId": "mode", "valueId": mode_id }),
-        );
-        let info = runtime.info(
-            self.pending_permissions_for(session_id).await,
-            self.pending_elicitations_for(session_id).await,
-        );
-        patch_acp_state(session_id, json!({ "session": &info }))?;
-        Ok(info)
-    }
-
     pub fn timeline(&self, session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
         if !self.is_acp(session_id) {
             bail!("当前会话不是 ACP 会话");
         }
         load_timeline(session_id)
+    }
+
+    pub(crate) fn web_timeline_page(
+        &self,
+        session_id: &str,
+        after_seq: u64,
+        cursor: Option<u64>,
+        limit: usize,
+        max_page_bytes: usize,
+        max_event_bytes: usize,
+    ) -> Result<WebAcpTimelineSlice> {
+        if !self.is_acp(session_id) {
+            bail!("当前会话不是 ACP 会话");
+        }
+        load_web_timeline_page(
+            session_id,
+            after_seq,
+            cursor,
+            limit,
+            max_page_bytes,
+            max_event_bytes,
+        )
     }
 
     pub async fn pending_permissions_for(
@@ -3397,6 +3497,9 @@ impl AcpPool {
                 "session:reused",
                 format!("session_id={session_id}"),
             );
+            // 复用即活动：前端对可见会话的状态轮询会持续刷新空闲时钟，
+            // 这正好与「active 会话不回收」的保守语义一致。
+            runtime.note_activity();
             return Ok(runtime.clone());
         }
         // 与 spawn_session 一致走 self.backend()，让辅助索引缺失的会话在
@@ -3810,6 +3913,7 @@ impl AcpPool {
             prompt_capabilities,
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
             child: Mutex::new(child),
+            last_activity: parking_lot::Mutex::new(Instant::now()),
         })
     }
 
@@ -3841,31 +3945,6 @@ impl AcpPool {
 
     fn resolve_codex(&self, _adapter: &Path) -> Option<ResolvedCodex> {
         self.runtime_probe.read().codex.clone()
-    }
-
-    /// claude / kimi CLI 探测缓存（仿 RuntimeProbeCache）：status_for 已在
-    /// spawn_blocking 中运行，首次访问同步探测一次，之后轮询只读缓存。
-    fn cli_probe(&self) -> CliProbeCache {
-        {
-            let probe = self.cli_probe.read();
-            if probe.initialized {
-                return probe.clone();
-            }
-        }
-        let probe = CliProbeCache {
-            initialized: true,
-            claude: probe_cli(
-                AgentBackend::ClaudeAcp,
-                resolve_claude_cli(self.resolve_claude_adapter().as_deref()),
-            ),
-            kimi: probe_cli(AgentBackend::KimiAcp, resolve_kimi_path()),
-        };
-        *self.cli_probe.write() = probe.clone();
-        probe
-    }
-
-    fn invalidate_cli_probe(&self) {
-        self.cli_probe.write().initialized = false;
     }
 
     fn adapter_command(&self, adapter: &Path) -> Result<Command> {
@@ -4221,6 +4300,116 @@ mod tests {
     use super::*;
 
     #[test]
+    fn idle_reap_keeps_busy_configuring_and_active_sessions() {
+        let idle = Duration::from_secs(IDLE_EVICT_AFTER_SECS);
+        // 空闲且非 active → 回收。
+        assert!(should_reap_idle_session(false, false, false, idle));
+        assert!(should_reap_idle_session(
+            false,
+            false,
+            false,
+            idle + Duration::from_secs(1)
+        ));
+        // 在途 prompt（含等待权限/问询的 turn）绝不回收。
+        assert!(!should_reap_idle_session(true, false, false, idle));
+        // 配置同步中不回收（回收会打断在途 set_model/set_config/set_mode）。
+        assert!(!should_reap_idle_session(false, true, false, idle));
+        // 当前 active 会话不回收（保守：前端可能正在看）。
+        assert!(!should_reap_idle_session(false, false, true, idle));
+        // 未到空闲阈值不回收。
+        assert!(!should_reap_idle_session(
+            false,
+            false,
+            false,
+            idle - Duration::from_secs(1)
+        ));
+    }
+
+    /// take_session_if_still_idle 测试用的裸条目：复刻 AcpSession 参与空闲
+    /// 判定的三个状态（busy / configuring / last_activity），绕开真实
+    /// ConnectionTo / Child（测试环境无法构造）。
+    struct FakeIdleEntry {
+        busy: AtomicBool,
+        configuring: AtomicBool,
+        last_activity: parking_lot::Mutex<Instant>,
+    }
+
+    impl FakeIdleEntry {
+        fn idle_since(idle: Duration) -> Self {
+            Self {
+                busy: AtomicBool::new(false),
+                configuring: AtomicBool::new(false),
+                last_activity: parking_lot::Mutex::new(Instant::now() - idle),
+            }
+        }
+
+        /// 与 AcpPool::evict_if_idle 相同的复核闭包（非 active 会话口径）。
+        fn still_idle(&self) -> bool {
+            should_reap_idle_session(
+                self.busy.load(Ordering::Acquire),
+                self.configuring.load(Ordering::Acquire),
+                false,
+                self.last_activity.lock().elapsed(),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_reap_skips_session_with_activity_after_snapshot() {
+        // PR #318 审阅时序的确定性回归：reap 快照判空闲后、evict 的 remove +
+        // child.kill() 前，send_message 到达（get_or_spawn 复用刷新
+        // last_activity，随后 busy.swap(true) 把 turn 跑起来）。复核必须在同一
+        // 把 sessions 锁内发现活动并保留条目，否则在途 prompt 被误杀。
+        let sessions: Arc<Mutex<HashMap<String, FakeIdleEntry>>> =
+            Arc::new(Mutex::new(HashMap::from([(
+                "acp-session".to_string(),
+                FakeIdleEntry::idle_since(Duration::from_secs(IDLE_EVICT_AFTER_SECS)),
+            )])));
+
+        // send_message 持锁复用会话（get_or_spawn 窗口），reaper 在锁外排队。
+        let guard = sessions.lock().await;
+        let reaper_sessions = sessions.clone();
+        let reaper = tokio::spawn(async move {
+            take_session_if_still_idle(&reaper_sessions, "acp-session", FakeIdleEntry::still_idle)
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        // 快照后到达的真实请求：刷新活动 + 置 busy，随后释放锁。
+        let entry = guard.get("acp-session").expect("session entry");
+        *entry.last_activity.lock() = Instant::now();
+        entry.busy.store(true, Ordering::Release);
+        drop(guard);
+
+        let taken = reaper.await.expect("reaper task joins");
+        assert!(taken.is_none(), "快照后产生活动的会话必须跳过回收");
+        assert!(
+            sessions.lock().await.contains_key("acp-session"),
+            "复核不过时条目必须原样保留"
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_reap_still_takes_session_that_remained_idle() {
+        // 对照测试，防止复核过度保守：快照后无任何活动时回收照常取走条目。
+        let sessions: Mutex<HashMap<String, FakeIdleEntry>> = Mutex::new(HashMap::from([(
+            "acp-session".to_string(),
+            FakeIdleEntry::idle_since(Duration::from_secs(IDLE_EVICT_AFTER_SECS)),
+        )]));
+
+        let taken =
+            take_session_if_still_idle(&sessions, "acp-session", FakeIdleEntry::still_idle).await;
+        assert!(taken.is_some(), "保持空闲的会话必须照常回收");
+        assert!(sessions.lock().await.is_empty());
+        // 已被移除 / 从未存在的会话：取回 None，不二次回收。
+        assert!(
+            take_session_if_still_idle(&sessions, "acp-session", FakeIdleEntry::still_idle)
+                .await
+                .is_none()
+        );
+    }
+
+    #[test]
     fn code_native_workspace_info_returns_temporary_execution_workspace() {
         // 隔离目录，不触碰真实 ~/.pinvou3（评审测试建议）
         let boot_root = std::env::temp_dir().join(format!(
@@ -4294,6 +4483,28 @@ mod tests {
             code_native_workspace_info(&session_store, "code-native-proj-test", &broken).is_err()
         );
         let _ = std::fs::remove_dir_all(&boot_root);
+    }
+
+    #[test]
+    fn acp_agent_catalog_is_complete_and_stable() {
+        let catalog = AcpPool::agent_catalog();
+        assert_eq!(
+            catalog,
+            vec![
+                AcpAgentDescriptor {
+                    agent_id: "codex",
+                    agent_name: "Codex",
+                },
+                AcpAgentDescriptor {
+                    agent_id: "claude",
+                    agent_name: "Claude Code",
+                },
+                AcpAgentDescriptor {
+                    agent_id: "kimi",
+                    agent_name: "Kimi",
+                },
+            ]
+        );
     }
 
     #[test]

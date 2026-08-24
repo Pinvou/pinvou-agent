@@ -115,10 +115,22 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
     prepend_connector_path_entries(cmd, [bin]);
 }
 
+/// 退出收割用的树杀。连接器 CLI 是 npm shim(shell 脚本→node 子进程),spawn 侧
+/// 已用 `process_group(0)` 让 shim 独立成组,这里按负 pid 杀整组,否则单杀 shim
+/// 的 pid 会把 node 孙进程孤儿化(与 platform::process::kill_process_tree 同语义,
+/// 走 connector_cli_command 保持 PATH 解析一致)。若进程恰未成组(旧登记),
+/// 追加一次单 pid 兜底。
 pub fn kill_pid_tree(pid: u32) {
-    let _ = connector_cli_command("", "kill")
-        .args(["-9", &pid.to_string()])
+    let group_arg = format!("-{pid}");
+    let out = connector_cli_command("", "kill")
+        .args(["-9", group_arg.as_str()])
         .output();
+    let group_ok = out.map(|o| o.status.success()).unwrap_or(false);
+    if !group_ok {
+        let _ = connector_cli_command("", "kill")
+            .args(["-9", &pid.to_string()])
+            .output();
+    }
 }
 
 fn prepend_connector_path_entries(cmd: &mut Command, dirs: impl IntoIterator<Item = PathBuf>) {

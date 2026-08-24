@@ -10,7 +10,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -29,12 +28,13 @@ pub(super) fn pairing_info(endpoint: &ActiveEndpoint) -> WebAccessInfo {
     }
 }
 
-pub(super) fn fresh_config() -> WebAccessConfig {
+pub(super) fn fresh_config(allow_host_workspace: bool) -> WebAccessConfig {
     WebAccessConfig {
         relay_url: remote_relay_ws_url(),
         endpoint_id: format!("ep_{}", crate::features::remote_control::short_token(24)),
         access_token: crate::features::remote_control::short_token(48),
         desktop_secret: crate::features::remote_control::short_token(48),
+        allow_host_workspace,
     }
 }
 
@@ -74,7 +74,19 @@ pub(super) fn pending_revocations_path() -> PathBuf {
     paths::pinvou3_home().join("web-access-pending-revocations.json")
 }
 
-pub(super) fn acquire_process_lock(path: &Path) -> Result<File, String> {
+/// Acquire the process-ownership lock (single desktop owner for Web access).
+///
+/// Uses `fd_lock` (already in the dependency graph via codewhale-config)
+/// instead of fs2; both wrap the same OS primitive (flock on Unix,
+/// LockFileEx on Windows). On success the backing allocation is kept alive
+/// for the guard's `'static` lifetime: the ownership lock lives until process
+/// exit anyway, and dropping the guard (or the process) releases it. On the
+/// contended path the allocation is reclaimed so a failed attempt does not
+/// strand an unlocked fd for the rest of the process (fs2 closed its file
+/// there as well).
+pub(super) fn acquire_process_lock(
+    path: &Path,
+) -> Result<fd_lock::RwLockWriteGuard<'static, File>, String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("invalid Web access lock path: {}", path.display()))?;
@@ -88,13 +100,27 @@ pub(super) fn acquire_process_lock(path: &Path) -> Result<File, String> {
         .map_err(|error| format!("open {}: {error}", path.display()))?;
     platform::enforce_private_permissions(&file, path)
         .map_err(|error| format!("set private permissions on {}: {error}", path.display()))?;
-    file.try_lock_exclusive().map_err(|error| {
-        format!(
-            "Web access is already owned by another desktop process ({}): {error}",
-            path.display()
-        )
-    })?;
-    Ok(file)
+    // SAFETY: `lock` is an owned `Box::into_raw` allocation with no other
+    // references. The `&mut` below lives only for the `try_write` call unless
+    // a guard is returned; a returned guard carries it for `'static`, which
+    // is intended — the process-ownership lock is held until process exit and
+    // the allocation is deliberately never freed on that path.
+    let lock = Box::into_raw(Box::new(fd_lock::RwLock::new(file)));
+    let guard = match unsafe { &mut *lock }.try_write() {
+        Ok(guard) => guard,
+        Err(error) => {
+            // SAFETY: `try_write` failed, so no guard borrows the lock and the
+            // `&mut` above has expired. Re-taking the Box is sound; dropping
+            // it closes the fd instead of stranding it for the process
+            // lifetime.
+            unsafe { drop(Box::from_raw(lock)) };
+            return Err(format!(
+                "Web access is already owned by another desktop process ({}): {error}",
+                path.display()
+            ));
+        }
+    };
+    Ok(guard)
 }
 
 pub(super) fn rpc_ledger_path() -> PathBuf {

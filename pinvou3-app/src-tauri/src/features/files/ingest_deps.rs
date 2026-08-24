@@ -236,21 +236,36 @@ mod tests {
         assert!(arg.ends_with("profile%20dir"));
     }
 
+    /// Program paths for the four external tool commands must come from the
+    /// OS layer (.exe suffix and other platform variance); locked in one
+    /// matrix, so any tool switching to a hardcoded program name gets caught.
     #[test]
-    fn pdf_tool_command_uses_os_layer_program() {
-        let command = pdf_tool_command("pdftotext");
+    fn tool_commands_use_os_layer_programs() {
+        // pdf: pdf_tool_command resolves the same tool name via the OS-layer
+        // pdf_tool_path. Sampling follows the production callers
+        // (visual_preview uses pdftoppm; pdfinfo has no production caller).
+        for tool in ["pdftotext", "pdftoppm"] {
+            let command = pdf_tool_command(tool);
+            assert_eq!(
+                command.get_program(),
+                crate::platform::os::pdf_tool_path(tool).as_os_str(),
+                "pdf tool {tool}"
+            );
+        }
+        let archive = archive_tool_command();
         assert_eq!(
-            command.get_program(),
-            crate::platform::os::pdf_tool_path("pdftotext").as_os_str()
-        );
-    }
-
-    #[test]
-    fn archive_tool_command_uses_os_layer_program() {
-        let command = archive_tool_command();
-        assert_eq!(
-            command.get_program(),
+            archive.get_program(),
             crate::platform::os::archive_tool_path().as_os_str()
+        );
+        let pandoc = pandoc_tool_command();
+        assert_eq!(
+            pandoc.get_program(),
+            crate::platform::os::pandoc_tool_path().as_os_str()
+        );
+        let ocr = ocr_tool_command();
+        assert_eq!(
+            ocr.get_program(),
+            crate::platform::os::ocr_tool_path().as_os_str()
         );
     }
 
@@ -318,24 +333,6 @@ mod tests {
         assert!(email.apt.is_empty());
         assert!(!email.apt.contains("libemail-outlook-message-perl"));
         assert!(!email.apt.contains("msgconvert"));
-    }
-
-    #[test]
-    fn pandoc_tool_command_uses_os_layer_program() {
-        let command = pandoc_tool_command();
-        assert_eq!(
-            command.get_program(),
-            crate::platform::os::pandoc_tool_path().as_os_str()
-        );
-    }
-
-    #[test]
-    fn ocr_tool_command_uses_os_layer_program() {
-        let command = ocr_tool_command();
-        assert_eq!(
-            command.get_program(),
-            crate::platform::os::ocr_tool_path().as_os_str()
-        );
     }
 
     #[test]

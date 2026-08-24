@@ -1,28 +1,25 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
 import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, StopCircle, XCircle, Wrench, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PetPawIcon } from '../components/icons.jsx';
 import { ArchiveConfirmDialog, ArchiveToast, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
 import { AcpAgentLogo } from '../features/codex/AcpAgentLogo.jsx';
+import { CodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
-import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
+import { bridge, useBridgeState, usePlatformCapability, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { dict, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
-import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
-import { MonitorView } from '../features/monitor/MonitorView.jsx';
-import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
 import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
+import { ViewErrorBoundary } from '../shared/ViewErrorBoundary.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
-import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
-import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
@@ -36,6 +33,7 @@ import {
   tauriCommands,
   tauriEvents,
 } from '../platform/tauri/client.js';
+import { listAcpSessions } from '../features/codex/acpClient.js';
 import { revealStartupWindow } from '../platform/tauri/startup-window.js';
 
 // 定时任务创建与运行链路已恢复，展示入口并允许自动跳转。
@@ -50,13 +48,34 @@ const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
   { id: 'preview-run-4', automationId: 'preview-follow-up', taskNameKey: 'previewTaskFollowUp', sessionId: 'preview-session-4', status: 'running', scheduledFor: '2026-07-14T09:00:00+08:00', unread: false },
   { id: 'preview-run-6', automationId: 'preview-weekly-report', taskNameKey: 'previewTaskSalesWeekly', sessionId: 'preview-session-6', status: 'completed', scheduledFor: '2026-07-10T16:00:00+08:00', unread: false },
 ];
-import { ToolStoreView } from '../features/tools/ToolStoreView.jsx';
 import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
-import { CardPoolView, Lanyard, PersonaEditorModal } from '../features/personas/Personas.jsx';
-import { SearchView } from '../features/search/SearchView.jsx';
 import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
 import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
-import { DetachedShell } from './DetachedShell.jsx';
+import { Lanyard } from '../features/personas/persona-shared.jsx';
+import { VIEW_LOADERS, prefetchView } from './view-loaders.js';
+// 低频视图懒加载:VIEW_LOADERS(见 view-loaders.js)是唯一的动态 import 出口,
+// React.lazy 与 NavItem 悬停/聚焦预取共用同一工厂,保证命中同一模块缓存。
+// ChatView 与 Lanyard 启动即渲染,保持静态 import。
+const LazySettingsView = lazy(() => VIEW_LOADERS.settings().then(m => ({ default: m.SettingsView })));
+const LazyCodexAcpView = lazy(() => VIEW_LOADERS.codex().then(m => ({ default: m.CodexAcpView })));
+const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ default: m.ToolStoreView })));
+const LazyCardPoolView = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.CardPoolView })));
+const LazyScheduledTasksView = lazy(() => VIEW_LOADERS.scheduled().then(m => ({ default: m.ScheduledTasksView })));
+const LazyKnowledgeView = lazy(() => VIEW_LOADERS.knowledge().then(m => ({ default: m.KnowledgeView })));
+const LazyMonitorView = lazy(() => VIEW_LOADERS.monitor().then(m => ({ default: m.MonitorView })));
+const LazySearchView = lazy(() => VIEW_LOADERS.search().then(m => ({ default: m.SearchView })));
+const LazyPersonaEditorModal = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.PersonaEditorModal })));
+const LazyWebAccessModal = lazy(() => VIEW_LOADERS.settings().then(m => ({ default: m.WebAccessModal })));
+const LazyDetachedShell = lazy(() => import('./DetachedShell.jsx').then(m => ({ default: m.DetachedShell })));
+
+// 视图 chunk 加载占位:沿用 DetachedShell 的「…」惯例,不引入新视觉语言。
+function ViewFallback() {
+  return <div className="p-6 text-sm opacity-60" data-testid="lazy-view-fallback">…</div>;
+}
+
+// personas-i18n overlay 的 UI 语言兜底注入:实现收敛在 personas-overlay.js,
+// 与撕离窗(DetachedShell 的 useDetachedBase)共用同一模块。
+import { ensurePersonaI18nOverlay } from './personas-overlay.js';
 import { TitleBar } from './DesktopTitleBar.jsx';
 
 installGlobalMarkdownRenderer(window);
@@ -128,6 +147,21 @@ function workspaceDisplayName(path) {
             if (bridge.available && bridge.knowledge.loadKnowledgeEmbedderAfterFirstFrame) {
               bridge.knowledge.loadKnowledgeEmbedderAfterFirstFrame();
             }
+            // 首帧已呈现后空闲预取低频视图 chunk:桌宠/定时快捷方式会不经侧栏直接
+            // 跳视图(如 scheduledTaskAutoOpenId),悬停预取覆盖不到这些入口。
+            if (typeof window.requestIdleCallback === 'function') {
+              window.requestIdleCallback(() => {
+                prefetchView('scheduled');
+                prefetchView('settings');
+                prefetchView('codex');
+              }, { timeout: 4000 });
+            } else {
+              window.setTimeout(() => {
+                prefetchView('scheduled');
+                prefetchView('settings');
+                prefetchView('codex');
+              }, 1500);
+            }
           });
         });
         // 让首帧先交给 WebView 绘制，再异步校验飞书/企微实时鉴权状态。
@@ -146,11 +180,16 @@ function workspaceDisplayName(path) {
         };
       }, []);
       const [activeChat, setActiveChat] = useState(null);
-      const [currentView, setCurrentView] = useState('chat');
+      const [currentView, setCurrentViewRaw] = useState('chat');
+      // 视图切换包 startTransition:把懒加载 chunk 的等待从「紧急更新」降级为
+      // 「过渡更新」,React 19 下新挂载的独立 Suspense 边界仍会先显示 ViewFallback
+      // (已展示内容的旧边界不会被隐藏),但切换本身不被 chunk 网络阻塞、可被打断。
+      // 实际体验靠预取兜底:侧栏悬停/聚焦预取 + 首帧后空闲预取 scheduled/settings。
+      const setCurrentView = (nextView) => startTransition(() => setCurrentViewRaw(nextView));
       const [activeTheme, setActiveTheme] = useState('dark');
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
-      const codexAcpSupported = !!platformCapabilities.codexAcpSupported;
+      const codexAcpSupported = usePlatformCapability('acpCodeMode') && (isWeb || !!platformCapabilities.codexAcpSupported);
       const [codexSessions, setCodexSessions] = useState([]);
       const [codexDraftEpoch, setCodexDraftEpoch] = useState(0);
       const [activeCodexId, setActiveCodexId] = useState(() => {
@@ -176,7 +215,7 @@ function workspaceDisplayName(path) {
           setCodexSessions([]);
           return [];
         }
-        const sessions = await invokeTauri('list_codex_acp_sessions');
+        const sessions = await listAcpSessions();
         const next = Array.isArray(sessions) ? sessions : [];
         setCodexSessions(next);
         return next;
@@ -316,6 +355,14 @@ function workspaceDisplayName(path) {
           return value && dict[value] ? value : systemLanguage;
         } catch (_) { return systemLanguage; }
       });
+      // UI 语言为 en/ja 时确保 personas-i18n overlay 已加载(覆盖「系统中文 + 手动切
+      // 英/日 UI」、index.html 快速路径跳过的场景),加载完成 bump 一次让卡名重渲染。
+      const [, setPersonaI18nTick] = useState(0);
+      useEffect(() => {
+        if (language === 'en' || language === 'ja') {
+          ensurePersonaI18nOverlay(() => setPersonaI18nTick(v => v + 1));
+        }
+      }, [language]);
       const [superPerm, setSuperPerm] = useState(false);
       const defaultTaskCompletedNotif = platformCapabilities.taskCompletionNotificationsDefault !== false;
       const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultTaskCompletedNotif);
@@ -509,6 +556,13 @@ function workspaceDisplayName(path) {
       function handleOpenWebAccess() {
         if (!can('webAccessAdmin')) return;
         setWebAccessOpen(true);
+      }
+
+      // 冷路径预取:该 modal 唯一入口在聊天「存入卡牌池」,此前 cardpool chunk
+      // 可能从未加载;提前发起 import 避免打开动作撞上 chunk 冷启动/失败。
+      function handleOpenPersonaEditor(initial) {
+        prefetchView('cardpool');
+        setPersonaEditor({ initial });
       }
 
       function handleActivateSkill(name) {
@@ -1655,7 +1709,8 @@ function workspaceDisplayName(path) {
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
           className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
           style={isWeb ? {
-            ...(isCompactShell ? { position: 'fixed', inset: 0, width: '100%' } : {}),
+            // inset shorthand expanded to physical properties: Safari 14.0 (iOS 14.0 web) cannot parse the shorthand.
+            ...(isCompactShell ? { position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, width: '100%' } : {}),
             height: visualViewportHeight ? `${visualViewportHeight}px` : '100dvh',
             paddingTop: 'env(safe-area-inset-top)',
             paddingRight: 'env(safe-area-inset-right)',
@@ -1810,6 +1865,7 @@ function workspaceDisplayName(path) {
                   t={t}
                   isSidebarOpen={isSidebarOpen}
                   onClick={() => navigateFromScheduledRun('scheduled')}
+                  onPointerEnter={() => prefetchView('scheduled')} onFocus={() => prefetchView('scheduled')}
                 />
               )}
               <NavItem
@@ -1818,6 +1874,7 @@ function workspaceDisplayName(path) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('outputs')}
+                onPointerEnter={() => prefetchView('knowledge')} onFocus={() => prefetchView('knowledge')}
                 dragKind={canDetachWindows ? 'outputs' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'outputs:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('outputs', undefined, t.outputs, geom) : undefined}
               />
               <NavItem
@@ -1825,6 +1882,7 @@ function workspaceDisplayName(path) {
                 active={currentView === 'monitor'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
+                onPointerEnter={() => prefetchView('monitor')} onFocus={() => prefetchView('monitor')}
                 onClick={() => {
                   navigateFromScheduledRun('monitor', () => {
                     const liveBridge = window.TauriBridge || bridge;
@@ -1839,6 +1897,7 @@ function workspaceDisplayName(path) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('toolStore')}
+                onPointerEnter={() => prefetchView('toolStore')} onFocus={() => prefetchView('toolStore')}
                 dragKind={canDetachWindows ? 'toolstore' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('toolstore', undefined, t.toolStore, geom) : undefined}
               />
               <NavItem
@@ -1847,6 +1906,7 @@ function workspaceDisplayName(path) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))}
+                onPointerEnter={() => prefetchView('cardpool')} onFocus={() => prefetchView('cardpool')}
                 dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom) : undefined}
               />
               <NavItem
@@ -1855,6 +1915,7 @@ function workspaceDisplayName(path) {
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('knowledge')}
+                onPointerEnter={() => prefetchView('knowledge')} onFocus={() => prefetchView('knowledge')}
                 dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
@@ -2083,10 +2144,15 @@ function workspaceDisplayName(path) {
               )
             )}
 
-            {currentView === 'monitor' && <MonitorView theme={activeTheme} t={t} bs={bs} />}
+            {/* 单一常驻 Suspense 边界:React 19 下切视图时旧视图在本边界内被替换,
+                chunk 未就绪(未被预取覆盖的入口)保持旧视图不闪 fallback;失败由
+                ViewErrorBoundary 兜底(reload 重试绕开 React.lazy 的失败缓存)。 */}
+            <ViewErrorBoundary t={t}>
+              <Suspense fallback={<ViewFallback />}>
+            {currentView === 'monitor' && <LazyMonitorView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'settings' && (
               <SettingsErrorBoundary theme={activeTheme} t={t}>
-                <SettingsView
+                <LazySettingsView
                   activeTheme={activeTheme} setActiveTheme={handleSetTheme}
                   language={language} setLanguage={handleSetLanguage}
                   superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
@@ -2119,11 +2185,11 @@ function workspaceDisplayName(path) {
                 />
               </SettingsErrorBoundary>
             )}
-            {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
-            {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
+            {currentView === 'toolStore' && <LazyToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
+            {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
+            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
             {codexAcpSupported && currentView === 'codex' && (
-              <CodexAcpView
+              <LazyCodexAcpView
                 theme={activeTheme}
                 t={t}
                 sessions={codexSessions}
@@ -2141,9 +2207,9 @@ function workspaceDisplayName(path) {
             )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
-                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
+                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
               ) : (
-                <ScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} onGotoModelSettings={() => openSettingsSection('model')} />
+                <LazyScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} onGotoModelSettings={() => openSettingsSection('model')} />
               )
             )}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
@@ -2154,7 +2220,7 @@ function workspaceDisplayName(path) {
                 onOpenPicker={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))} />
             )}
             {currentView === 'search' && (
-              <SearchView
+              <LazySearchView
                 theme={activeTheme} history={allSidebarTasks} t={t} language={language}
                 archived={(bs && bs.archivedSessions) || []}
                 showArchived={searchShowArchived}
@@ -2173,19 +2239,30 @@ function workspaceDisplayName(path) {
                 onRestoreMany={handleBatchRestoreArchived}
               />
             )}
-            {currentView === 'outputs' && <KnowledgeView theme={activeTheme} t={t} mode="outputs" />}
-            {currentView === 'knowledge' && <KnowledgeView theme={activeTheme} t={t} />}
+            {currentView === 'outputs' && <LazyKnowledgeView theme={activeTheme} t={t} mode="outputs" />}
+            {currentView === 'knowledge' && <LazyKnowledgeView theme={activeTheme} t={t} />}
+              </Suspense>
+            </ViewErrorBoundary>
 
             {can('webAccessAdmin') && webAccessOpen && (
-              <WebAccessModal theme={activeTheme} bs={bs} t={t} onClose={() => setWebAccessOpen(false)} />
+              <ViewErrorBoundary t={t}>
+              <Suspense fallback={null}>
+              <LazyWebAccessModal theme={activeTheme} bs={bs} t={t} onClose={() => setWebAccessOpen(false)} />
+            </Suspense>
+            </ViewErrorBoundary>
             )}
 
-            {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
+            {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条。错误边界与
+                WebAccessModal 同款:lazy chunk 拉取失败不能卸载整个应用窗口。 */}
             {personaEditor && (
-              <PersonaEditorModal initial={personaEditor.initial} isDark={activeTheme === 'dark'} t={t}
+              <ViewErrorBoundary t={t}>
+              <Suspense fallback={null}>
+              <LazyPersonaEditorModal initial={personaEditor.initial} isDark={activeTheme === 'dark'} t={t}
                 onClose={() => setPersonaEditor(null)}
                 onSaved={(sum) => { const isEdit = personaEditor.initial && personaEditor.initial.id; setPersonaEditor(null); if (!isEdit) setSavedConfirm({ name: sum && sum.name }); }}
                 onDeleted={() => setPersonaEditor(null)} />
+              </Suspense>
+              </ViewErrorBoundary>
             )}
 
             {/* 存入成功 → iOS 确认窗:去查看我的卡牌 / 暂不 */}
@@ -2377,7 +2454,11 @@ function workspaceDisplayName(path) {
     const __q = new URLSearchParams(window.location.search);
     if (__q.get('detached') === '1') {
       window.__PINVOU_DETACHED__ = true;
-      root.render(<DetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />);
+      root.render(
+        <Suspense fallback={<div className="p-6 text-sm opacity-60">…</div>}>
+          <LazyDetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />
+        </Suspense>
+      );
     } else {
       window.__PINVOU_STARTUP__.mark('react:render_call');
       root.render(<App />);

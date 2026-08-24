@@ -123,8 +123,8 @@ assert.match(navigationSource, /dragKind = ['"]session['"]/,
   'recent items must accept the caller-owned drag kind');
 assert.match(detachedShellSource, /['"]codex-session['"]:\s*\(\{ id, theme, t, bs \}\)/,
   'DetachedShell must route Coding sessions to a dedicated fixed-session view');
-assert.match(detachedShellSource, /invokeTauri\(['"]list_codex_acp_sessions['"]\)/,
-  'detached Coding view must load its own session metadata before rendering');
+assert.match(detachedShellSource, /listAcpSessions\(\)/,
+  'detached Coding view must load its own session metadata through the platform ACP adapter');
 assert.match(detachedShellSource, /activeId=\{id\}/,
   'detached Coding view must remain bound to the requested session id');
 assert.match(detachedShellSource, /fixedSession/,

@@ -100,7 +100,7 @@
   }
   function webRequestId(prefix) {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
-      return prefix + "_" + window.crypto.randomUUID();
+      return prefix + "_" + window.crypto.randomUUID(); // safari14-ok: guarded above
     }
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
   }
@@ -114,30 +114,28 @@
   // 关键:在 marked.parse 【之后】做替换,而不是之前。原因:marked 给代码块/inline code 的
   // 输出本身就已经把 < 转义成 &lt;(不会有真 <script>),只有用户在正文里裸写 HTML 时才会
   // 透传出 <script>。post-process 只命中后者,不会双重转义代码块里的 `<script>` 字面量。
-  var DANGEROUS_TAGS_RE = /<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/gi;
-  function neutralizeRawDangerousTags(html) {
-    return html.replace(DANGEROUS_TAGS_RE, function (_, inner) { return "&lt;" + inner + "&gt;"; });
-  }
-  function renderMarkdown(text) {
-    if (window.PinvouMarkdownRenderer && typeof window.PinvouMarkdownRenderer.renderMarkdown === "function") {
-      return window.PinvouMarkdownRenderer.renderMarkdown(text);
-    }
-    if (!window.marked || !window.DOMPurify) return escapeHtml(text);
-    var html = neutralizeRawDangerousTags(marked.parse(text || ""));
-    return DOMPurify.sanitize(html, {
-      // 兜底:即使 neutralize 有漏网(罕见 HTML 注释/CDATA 等),DOMPurify 仍剥掉这些
-      FORBID_TAGS: ["style", "iframe", "object", "embed", "link", "meta"],
-      FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
-    });
-  }
+  // 优先委托共享渲染器 window.PinvouMarkdownRenderer（npm 版，含语法高亮）；在其尚未安装的
+  // 短暂窗口退回 vendor 全局兜底。兜底实现已收敛到 shared/markdown-bridge-fallback.js
+  // （随 index.html 以普通脚本加载，暴露 window.PinvouMarkdownBridgeFallback），消除两份逐字复制。
+  // 最末级 fallback 必须自带 escapeHtml：远程 Web 部署缓存错配/资源缺失导致共享脚本未加载时，
+  // renderMarkdown 仍会被 ChatView.jsx 的 dangerouslySetInnerHTML 消费，原文返回即 fail-open。
+  // 因此 escapeHtml 作为安全原语保留在本文件（不依赖任何外部脚本），仅 marked.parse+sanitize
+  // 这段较重的兜底被抽到共享文件。
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
-  if (window.marked) {
-    marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
+  function renderMarkdown(text) {
+    if (window.PinvouMarkdownRenderer && typeof window.PinvouMarkdownRenderer.renderMarkdown === "function") {
+      return window.PinvouMarkdownRenderer.renderMarkdown(text);
+    }
+    if (window.PinvouMarkdownBridgeFallback && typeof window.PinvouMarkdownBridgeFallback.renderMarkdown === "function") {
+      return window.PinvouMarkdownBridgeFallback.renderMarkdown(text);
+    }
+    return escapeHtml(text || "");
   }
+
 
   // The pet is a separate WebView and must not own a second copy of the main
   // application state. Keep only the renderer used by its activity cards and
@@ -395,6 +393,7 @@
       imageUnknown: "Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.",
       attachStillUploading: "⚠️ Attachment still uploading, try again shortly",
       deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 20 MB attachment limit`,
+      deviceUploadEmpty: name => `⚠️ ${name} is empty and cannot be attached`,
       deviceUploadFailed: "⚠️ Upload failed: ",
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
@@ -502,6 +501,7 @@
       imageUnknown: "現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。",
       attachStillUploading: "⚠️ 添付ファイルをアップロード中です。少し待ってから送信してください",
       deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 20 MB を超えています`,
+      deviceUploadEmpty: name => `⚠️ ${name} は空のため添付できません`,
       deviceUploadFailed: "⚠️ アップロードに失敗: ",
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
@@ -609,6 +609,7 @@
       imageUnknown: "当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”后重试；也可以配置视觉模型。",
       attachStillUploading: "⚠️ 附件还在上传,请稍后再发",
       deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 20 MB 上限`,
+      deviceUploadEmpty: name => `⚠️ ${name} 是空文件，无法添加`,
       deviceUploadFailed: "⚠️ 上传失败: ",
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
@@ -1276,7 +1277,7 @@
     var token = "";
     try {
       if (window.crypto && typeof window.crypto.randomUUID === "function") {
-        token = window.crypto.randomUUID().replace(/-/g, "");
+        token = window.crypto.randomUUID().replace(/-/g, ""); // safari14-ok: guarded above
       }
     } catch (_) {}
     if (!token) token = Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -1419,6 +1420,9 @@
       buf.loadedFromDisk = true;
       return;
     }
+    // 下载挂起期间后台回合可能已开始（busy 置位、直播流写入中）：此时用磁盘
+    // 快照 hydrate 会截断正在流式生成的内容，必须复检后放弃（审计）。
+    if (buf.busy || buf.remoteTurnActive) return;
     hydrateWorkingSetFromSaved(buf, saved);
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
@@ -1671,6 +1675,13 @@
               continue;
             }
           }
+          // 写入前回合归属校验（审计）：重试窗口内新回合可能已开始
+          // （markRemoteTurn 置 busy/remoteTurnActive、重置 revision），此时用
+          // 旧终稿重建工作集会截断新回合直播流——放弃本轮对账，由新回合自己的
+          // done 事件重新对账。放弃条件只用 busy：不能用 remoteTurnActive（正常
+          // 远端回合 done 后它恒为 true，会拦死所有对账），也不能用
+          // !remoteTerminalSeen（tauri 版 scheduled run 不置 terminalSeen）。
+          if (buf.busy) return false;
           runSyncOnSession(sid, function () {
             // The durable transcript already reconstructs user/assistant/tool
             // items. Preserve only presentation-side cards; otherwise a client
@@ -1796,7 +1807,7 @@
   var subscribers = [];
   function snapshotState() {
     if (typeof structuredClone === "function") {
-      try { return structuredClone(state); } catch (_) {}
+      try { return structuredClone(state); } catch (_) {} // safari14-ok: typeof-guarded with JSON fallback
     }
     return JSON.parse(JSON.stringify(state));
   }
@@ -2883,13 +2894,15 @@
         do {
           refreshHistoryQueued = false;
           try {
-            state.sessions = await invoke("list_sessions");
+            state.sessions = await invoke(IS_WEB ? "web_access_list_sessions" : "list_sessions");
           } catch (e) {
             console.warn("list_sessions failed", e);
             state.sessions = [];
           }
           try {
-            state.archivedSessions = await invoke("list_archived_sessions");
+            state.archivedSessions = await invoke(
+              IS_WEB ? "web_access_list_archived_sessions" : "list_archived_sessions",
+            );
           } catch (e) {
             state.archivedSessions = state.archivedSessions || [];
           }
@@ -2936,44 +2949,79 @@
 
   // 草稿态首次有实质内容时真正向后端创建 session 并切为 active;已有 active 直接返回。
   // 返回新 session id,创建失败返回 null。调用方:sendMessage(首条消息) / equipPersona(加卡)。
+  // 并发防护（审计）：草稿态双击发送会并发 create_session，导致两条消息分家到两个新
+  // 会话——in-flight 复用同一 promise；create_session await 期间用户切走会物化在错误
+  // 会话（导航被劫持）——物化前校验 activeSessionId 仍为空，已切走则只登记后台 buffer。
+  var ensureSessionInFlight = null;
   async function ensureSession() {
     if (state.activeSessionId) return state.activeSessionId;
-    // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
-    try {
-      var meta = await invoke(IS_WEB ? "web_access_create_session" : "create_session");
-      // create_session 等待期间用户可能已发送/清空输入，迁移当下的最新值。
-      var composerDraft = state.composerDraft || "";
-      switchActiveTo(meta.id, { fresh: true });
-      state.composerDraft = composerDraft;
-      sessionStates[meta.id].composerDraft = composerDraft;
-      getBuffer(meta.id).sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
-      await refreshHistoryList();
-      await syncModeState();
-      // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
-      // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
-      // 该会话自己的 per-session 记录，全局默认不受影响）。
-      var laneDefault = state.modeDefaults
-        && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
-      // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
-      // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
-      if (laneDefault === "plan") {
-        try {
-          var laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
-          applyAuthoritativeModeState(meta.id, laneModeState);
-        } catch (laneModeError) {
-          runSyncOnSession(meta.id, function () {
-            addSystemItem(bt("switchModeFailed") + laneModeError);
-          });
+    if (ensureSessionInFlight) return ensureSessionInFlight;
+    // 捕获导航 token：仅判 activeSessionId 覆盖不了「再进草稿」——enterDraft
+    // 只推进 token 不改 activeSessionId（仍为 null），在途 create_session 返回
+    // 后必须连同 token 一起校验，否则会劫持用户新进的草稿（三审 P1）。
+    var navToken = sessionSwitchRequestToken;
+    var p = (async function () {
+      // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
+      try {
+        var meta = await invoke(IS_WEB ? "web_access_create_session" : "create_session");
+        // create_session 等待期间用户可能已发送/清空输入，迁移当下的最新值。
+        var composerDraft = state.composerDraft || "";
+        // create_session 等待期间用户可能已退出草稿（切到既有会话或再进草稿）：
+        // 物化不得劫持 active（审计），新会话登记为后台 buffer 等下次切换，
+        // 调用方按 null 处理不发送本条消息。「切到既有会话」→ activeSessionId
+        // 非空；「再进草稿」→ activeSessionId 仍为 null 但导航 token 已前移——
+        // 两种导航都中止物化（三审 P1）。
+        if (state.activeSessionId || navToken !== sessionSwitchRequestToken) {
+          var bg = sessionStates[meta.id] = freshBuffer();
+          bg.loadedFromDisk = true;
+          bg.sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
+          return null;
         }
+        switchActiveTo(meta.id, { fresh: true });
+        state.composerDraft = composerDraft;
+        sessionStates[meta.id].composerDraft = composerDraft;
+        getBuffer(meta.id).sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
+        await refreshHistoryList();
+        await syncModeState();
+        // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
+        // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
+        // 该会话自己的 per-session 记录，全局默认不受影响）。
+        var laneDefault = state.modeDefaults
+          && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
+        // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
+        // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
+        if (laneDefault === "plan") {
+          try {
+            var laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
+            applyAuthoritativeModeState(meta.id, laneModeState);
+          } catch (laneModeError) {
+            runSyncOnSession(meta.id, function () {
+              addSystemItem(bt("switchModeFailed") + laneModeError);
+            });
+          }
+        }
+        await syncActivePersona();
+        await syncMountedCollection();
+        notify();
+        // 尾部这些 await 期间用户仍可能切走（activeSessionId 已是别的会话）或
+        // 再进草稿（activeSessionId 仍为 null 但 token 已前移）：与 create_session
+        // 窗口同一契约——导航即物化中止，返回 null 让调用方放弃，不得返回切走后
+        // 的 active 让操作漂进新会话（二审 F1、三审 P1）。返回非 null 时 active
+        // 必等于 meta.id 且无任何新导航，调用方重读 state.activeSessionId
+        // 即为目标会话。
+        return navToken === sessionSwitchRequestToken
+          && state.activeSessionId === meta.id ? meta.id : null;
+      } catch (e) {
+        addSystemItem(bt("newChatFailed") + e);
+        return null;
       }
-      await syncActivePersona();
-      await syncMountedCollection();
-      notify();
-      return state.activeSessionId;
-    } catch (e) {
-      addSystemItem(bt("newChatFailed") + e);
-      return null;
-    }
+    })();
+    ensureSessionInFlight = p;
+    p.then(
+      function () { if (ensureSessionInFlight === p) ensureSessionInFlight = null; },
+      function () { if (ensureSessionInFlight === p) ensureSessionInFlight = null; }
+    );
+    return p;
   }
 
   function reportSessionSwitchFailure(error, errorScope) {
@@ -3651,6 +3699,10 @@
       var previousRuns = state.scheduledTaskRecentRuns || [];
       var wasViewingRun = state.activeSessionId === id;
       var previousContext = state.scheduledRunContext;
+      // 归档等待期间的导航 token：失败回滚时「activeSessionId === null」不足以
+      // 证明无新导航——用户再进草稿也保持 null（enterDraft 只推进 token），
+      // 仅 token 未前移才允许把 active 拽回归档会话（三审 P1）。
+      var navToken = sessionSwitchRequestToken;
       // 与普通会话收纳同语义:保留 buffer(还能从设置页还原后重开),但要离开当前视图。
       if (wasViewingRun) saveWorkingSetTo(getBuffer(id));
       state.scheduledTaskRecentRuns = previousRuns.filter(function (run) {
@@ -3664,7 +3716,10 @@
         return true;
       } catch (e) {
         state.scheduledTaskRecentRuns = previousRuns;
-        if (wasViewingRun) {
+        // 回滚 active 仅当用户没有新导航（leaveSessionView 已置 null）：
+        // await 期间切到别的会话/再进草稿都不得劫持 active（审计、三审 P1）。
+        if (wasViewingRun && state.activeSessionId === null
+            && navToken === sessionSwitchRequestToken) {
           // active 与 scheduledRunContext 必须成对回滚,否则会落到
           // 「active 有值但 context 空」的错位态(界面回任务列表却仍持有会话)。
           state.activeSessionId = id;
@@ -3679,6 +3734,9 @@
     var s = state.sessions[idx];
     var archived = Object.assign({}, s, { archived: true, archived_at: new Date().toISOString(), pinned: false, pinned_at: null });
     var wasActive = state.activeSessionId === id;
+    // 与 scheduled 分支同源：失败回滚须以导航 token 证明「无新导航」——
+    // 归档等待期间再进草稿 activeSessionId 仍为 null（三审 P1）。
+    var navToken = sessionSwitchRequestToken;
     if (wasActive) saveWorkingSetTo(getBuffer(id));
     state.sessions.splice(idx, 1);
     state.archivedSessions = [archived].concat((state.archivedSessions || []).filter(function (x) { return x.id !== id; }));
@@ -3691,7 +3749,10 @@
     } catch (e) {
       state.sessions.splice(idx, 0, s);
       state.archivedSessions = (state.archivedSessions || []).filter(function (x) { return x.id !== id; });
-      if (wasActive) {
+      // 回滚 active 仅当用户没有新导航（leaveSessionView 已置 null）：
+      // await 期间切到别的会话/再进草稿都不得劫持 active（审计、三审 P1）。
+      if (wasActive && state.activeSessionId === null
+          && navToken === sessionSwitchRequestToken) {
         state.activeSessionId = id;
         loadWorkingSetFrom(getBuffer(id));
       }
@@ -4985,8 +5046,17 @@
     }
 
     if (!state.activeSessionId) {
-      await ensureSession(); // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)
-      if (!state.activeSessionId) return;
+      // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)。
+      // 必须用返回值判空：切走场景 ensureSession 返回 null 但 activeSessionId
+      // 非空（用户已切到别的会话），按 activeSessionId 继续会把本条消息发进
+      // 错误会话（审计 #257）。
+      var materialized = await ensureSession();
+      // 物化中止（await 期间切走）→ 把输入放回输入框，不静默丢字
+      // （与 tauri 版对齐，二审 F3；错误提示由 ensureSession 内如实给出）。
+      if (!materialized) {
+        prefillComposer(text);
+        return;
+      }
     }
     var sid = state.activeSessionId;
     var activeTurnBuffer = getBuffer(sid);
@@ -5150,6 +5220,9 @@
   // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
   // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。
   async function resolvePinvouReview(resolutions, actions) {
+    // 检阅发生的会话归属捕获：persist 挂起期间用户可能切走，修订指令必须发回
+    // 检阅会话，不得漂进当前 active 会话（与 tauri 版对齐，二审 F2）。
+    var reviewSid = state.activeSessionId;
     // 弹窗只一个 review(state.pinvouModal.review),直接在它上面写 resolution——不靠 pos 定位
     // (根治连续召唤 pos 重复串卡)。它和 sidecar entry.review 同引用,写它=写 sidecar。
     var isWu = !!(state.pinvouModal && state.pinvouModal.coverage); // 关窗前取,供转交标品/悟
@@ -5196,7 +5269,10 @@
       fill.forEach(function (a) { parts.push("- " + a.dimension + (a.suggestion ? "：" + a.suggestion : "")); });
       parts.push("（涉及外部事实的，先查证再写、标依据，别凭记忆编。）");
     }
-    if (parts.length) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
+    // 已切走则放弃发指令（修订指令属于检阅会话，漂进别的会话会误导其上下文）；
+    // reviewSid 为 null 的防御：草稿态本不该有检阅，双 null 通过会把指令发给
+    // ensureSession 新建的空会话。
+    if (parts.length && reviewSid && state.activeSessionId === reviewSid) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
   }
 
   // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。
@@ -5853,7 +5929,7 @@
       terminal_status: String(e.payload && e.payload.status || ""),
       terminal_error_present: !!(e.payload && e.payload.error),
     }, authoritySyncBufferSnapshot(sid, doneBuffer)));
-    if (doneBuffer && !doneBuffer.localTurnOwned) {
+    if (doneBuffer && !doneBuffer.localTurnOwned && !isScheduledRunSession(sid)) {
       // transcript_committed precedes chat:done. Preserve its revision when a
       // reconnecting client first materializes the turn at the terminal tail.
       markRemoteTurn(sid, doneBuffer, true, "chat_done_without_local_owner");
@@ -5921,7 +5997,7 @@
       currentStreamText = "";
       currentStreamId = 0;
     });
-    if (doneBuffer && !completedLocalTurn) {
+    if (doneBuffer && !completedLocalTurn && !isScheduledRunSession(sid)) {
       // Rust has already committed the final transcript before chat:done. Keep
       // both UIs behind a short authority barrier until that snapshot is loaded.
       var finalAssistantMessage = null;
@@ -5940,10 +6016,15 @@
       doneBuffer.remoteTerminalSeen = true;
       doneBuffer.busy = false;
       if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
-    } else if (completedLocalTurn) {
+    } else if (completedLocalTurn || isScheduledRunSession(sid)) {
       // A local turn is already authoritative in this desktop process. Saved
       // transcript verification remains best-effort and must not lock the next
-      // local message behind a cross-client synchronization state.
+      // local message behind a cross-client synchronization state. Scheduled
+      // runs skip transcript reconciliation entirely (Rust owns the durable
+      // transcript), so the same full release applies: markRemoteTurn may have
+      // armed the remote-authority gate during the streamed turn, and a stale
+      // gate would send flushQueued into reconcileRemoteTurn, whose
+      // write-ownership busy check then deadlocks the queued follow-up forever.
       doneBuffer.deferredRemoteUserEvent = null;
       doneBuffer.localTurnOwned = false;
       doneBuffer.remoteTurnActive = false;
@@ -5959,7 +6040,12 @@
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       await persistMessagesFor(sid);
-      var reconciled = completedLocalTurn ? true : await reconcileRemoteTurn(sid);
+      // Scheduled runs skip transcript reconciliation entirely, mirroring the
+      // Tauri bridge: Rust owns the durable transcript for a scheduled session,
+      // and the gate was already fully released in the synchronous tail above.
+      var reconciled = (completedLocalTurn || isScheduledRunSession(sid))
+        ? true
+        : await reconcileRemoteTurn(sid);
       if (reconciled) await persistMessagesFor(sid);
       await refreshHistoryList();
       if (!reconciled) {
@@ -6164,29 +6250,12 @@
   });
 
   // ── Monitor ──────────────────────────────────────────────────────
-  function fmtMiB(mib) {
-    if (mib == null) return "—";
-    return mib >= 1024 ? (mib / 1024).toFixed(1) + " GB" : mib + " MB";
-  }
-  function fmtKiB(kib) {
-    if (kib == null) return "—";
-    if (kib >= 1024 * 1024) return (kib / 1024 / 1024).toFixed(1) + " GB";
-    if (kib >= 1024) return (kib / 1024).toFixed(0) + " MB";
-    return kib + " KB";
-  }
-  function fmtDuration(secs) {
-    if (secs == null || secs < 0) return "—";
-    var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
-    if (h > 0) return h + "h " + m + "m";
-    if (m > 0) return m + "m " + (secs % 60) + "s";
-    return secs + "s";
-  }
-  function fmtTok(n) {
-    if (n == null) return "—";
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
-    if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
-    return String(Math.round(n));
-  }
+  var PinvouFU = window.PinvouFormatUtils || {};
+  var fmtMiB = PinvouFU.fmtMiB || function (mib) { return mib == null ? "—" : String(mib); };
+  var fmtKiB = PinvouFU.fmtKiB || function (kib) { return kib == null ? "—" : String(kib); };
+  var fmtDuration = PinvouFU.fmtDuration || function (secs) { return secs == null ? "—" : String(secs); };
+  var fmtTok = PinvouFU.fmtTok || function (n) { return n == null ? "—" : String(n); };
+
 
   function numOr0(x) { return (typeof x === "number" && isFinite(x)) ? x : 0; }
 
@@ -7903,28 +7972,6 @@
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
-  function updateAttachmentDragState(active) {
-    active = !!active;
-    if (!!state.attachmentDragActive === active) return;
-    state.attachmentDragActive = active;
-    notify();
-  }
-  // HTML5 拖放与「从此设备上传」共用 deviceFileUpload 分块通道:能力同开同关,
-  // 上传/取消/丢弃语义完全一致,拖放只是多一个入口。
-  function initAttachmentDrop() {
-    if (initAttachmentDrop.done) return;
-    initAttachmentDrop.done = true;
-    if (!window.PinvouAttachmentDropController) {
-      console.warn("[attachment] drop controller is unavailable");
-      return;
-    }
-    window.PinvouAttachmentDropController.install({
-      document: document,
-      canAccept: function () { return hasCapability("deviceFileUpload"); },
-      onActiveChange: updateAttachmentDragState,
-      onFiles: function (files) { return uploadDeviceFiles(files); }
-    });
-  }
   async function addPasteImage(filename, bytes) {
     try {
       var path = await invoke("save_paste_image", { filename: filename, bytes: bytes });
@@ -7966,62 +8013,55 @@
   // ── 浏览器本机文件上传 ──────────────────────────────────────────
   // 「从此设备上传」入口:文件按 256KB 分块经 Relay 转发(Relay 只转发不保存),
   // 桌面端最后一块落盘 + ingest 后返回与桌面文件附件相同的 WebAttachmentSummary。
-  var DEVICE_UPLOAD_CHUNK_BYTES = 256 * 1024;      // 对齐桌面 MAX_TRANSFER_CHUNK_BYTES
-  var DEVICE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;  // 对齐 file_ingest::MAX_FILE_BYTES
-  var DEVICE_UPLOAD_CANCELLED = new Error("device-upload-cancelled");
-
-  function bytesToBase64(bytes) {
-    var out = "";
-    for (var i = 0; i < bytes.length; i += 0x8000) {
-      out += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-    }
-    return btoa(out);
-  }
-
   async function uploadDeviceFile(file) {
-    if (file.size > DEVICE_UPLOAD_MAX_BYTES) {
-      addSystemItem(bt("deviceUploadTooLarge")(file.name));
-      return;
-    }
+    var uploader = window.PinvouChunkedFileUpload;
     var id = ++attachIdSeq;
-    var uploadId = "webatt_" + id + "_" + Math.random().toString(36).slice(2, 12);
+    var uploadId = uploader && typeof uploader.uploadId === "function"
+      ? uploader.uploadId("webatt")
+      : "webatt_" + id + "_" + Math.random().toString(36).slice(2, 12);
     var att = {
       id: id, uploadId: uploadId, basename: file.name,
       status: "uploading", progress: 0, result: null, error: null,
     };
     state.attachments.push(att); notify();
-    // 用户点掉 chip(removeAttachment)即取消:下一块边界停止并通知桌面释放缓冲。
-    function assertActive() {
-      if (state.attachments.indexOf(att) < 0) throw DEVICE_UPLOAD_CANCELLED;
-    }
     try {
-      var offset = 0;
-      var summary = null;
-      do {
-        var slice = file.slice(offset, Math.min(offset + DEVICE_UPLOAD_CHUNK_BYTES, file.size));
-        var bytes = new Uint8Array(await slice.arrayBuffer());
-        assertActive();
-        summary = await invoke("web_access_upload_attachment_chunk", {
-          uploadId: uploadId, fileName: file.name, offset: offset,
-          total: file.size, dataBase64: bytesToBase64(bytes),
-          commit: offset + bytes.length >= file.size,
-        });
-        offset += bytes.length;
-        att.progress = file.size ? Math.min(99, Math.round((offset / file.size) * 100)) : 99;
-        notify();
-      } while (offset < file.size);
-      assertActive();
-      if (!summary || !summary.handle) throw new Error("upload did not return an attachment handle");
+      if (!uploader || typeof uploader.uploadFile !== "function") {
+        throw new Error("chunked attachment uploader is unavailable");
+      }
+      var completed = await uploader.uploadFile({
+        file: file,
+        uploadId: uploadId,
+        isCancelled: function () { return state.attachments.indexOf(att) < 0; },
+        sendChunk: function (chunk) {
+          return invoke("web_access_upload_attachment_chunk", {
+            uploadId: chunk.uploadId,
+            fileName: chunk.fileName,
+            offset: chunk.offset,
+            total: chunk.total,
+            dataBase64: chunk.dataBase64,
+            commit: chunk.commit,
+          });
+        },
+        onProgress: function (progress) { att.progress = progress; notify(); },
+        validateResult: function (result) { return Boolean(result && result.handle); },
+        cleanup: function (upload) {
+          if (upload.result && upload.result.handle && canInvoke("web_access_discard_attachment")) {
+            return invoke("web_access_discard_attachment", { handle: upload.result.handle });
+          }
+          return invoke("web_access_abort_attachment_upload", { uploadId: upload.uploadId });
+        },
+      });
+      var summary = completed.result;
       att.status = "ready"; att.progress = 100; att.result = summary;
       att.basename = summary.basename || att.basename;
     } catch (e) {
-      if (summary && summary.handle && canInvoke("web_access_discard_attachment")) {
-        invoke("web_access_discard_attachment", { handle: summary.handle }).catch(function () {});
-      } else {
-        invoke("web_access_abort_attachment_upload", { uploadId: uploadId }).catch(function () {});
-      }
-      if (e !== DEVICE_UPLOAD_CANCELLED) {
-        att.status = "error"; att.error = String(e && e.message ? e.message : e);
+      if (!e || e.code !== "device_upload_cancelled") {
+        att.status = "error";
+        att.error = e && e.code === "device_upload_empty"
+          ? bt("deviceUploadEmpty")(file.name)
+          : e && e.code === "device_upload_too_large"
+            ? bt("deviceUploadTooLarge")(file.name)
+            : String(e && e.message ? e.message : e);
         addSystemItem(bt("deviceUploadFailed") + att.error);
       }
     }
@@ -8033,7 +8073,6 @@
     var list = Array.prototype.slice.call(files || []).filter(Boolean);
     for (var i = 0; i < list.length; i++) await uploadDeviceFile(list[i]);
   }
-  initAttachmentDrop();
 
 
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
@@ -8094,8 +8133,10 @@
   }
   async function equipPersona(personaId) {
     if (!state.activeSessionId) {
-      await ensureSession(); // 草稿态加卡 → 先物化 session(lazy session)
-      if (!state.activeSessionId) return; // 物化失败,放弃
+      // 草稿态加卡 → 先物化 session(lazy session)。用返回值判空：切走场景
+      // ensureSession 返回 null 但 activeSessionId 非空，会把卡加进新会话。
+      var materialized = await ensureSession();
+      if (!materialized) return; // 物化失败/切走,放弃
     }
     // 入口捕获触发会话：await 期间用户可能切走，UI 写入不得落进别的会话
     // （错误会话被重命名/插卡是持久化污染，不可自愈）。后端已按发起会话
@@ -8795,7 +8836,7 @@
 
     // iOS/WebKit 只允许在用户点击的同步调用栈里启动 AudioContext。Web 端先在任何
     // await 之前创建并 resume，后续依赖检测和麦克风授权完成后复用这个 context。
-    var AudioCtor = window.AudioContext || window.webkitAudioContext;
+    var AudioCtor = window.AudioContext || window.webkitAudioContext; // eslint-disable-line compat/compat -- Safari 14.0 ships webkitAudioContext; the || fallback above selects it
     var primedAudioContext = null;
     var primedAudioResume = null;
     if (IS_WEB && AudioCtor) {

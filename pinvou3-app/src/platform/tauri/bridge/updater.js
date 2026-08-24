@@ -11,7 +11,6 @@
     var invoke = context.invoke;
     var refreshHistoryList = context.refreshHistoryList;
     var listen = context.listen;
-    var publishRemoteLiveSnapshot = context.publishRemoteLiveSnapshot;
     var getBuffer = context.getBuffer;
     var bt = context.bt;
   // ── 应用内升级 ───────────────────────────────────────────────────
@@ -25,11 +24,6 @@
   listen("remote_control:status", function (e) {
     state.remoteControl = Object.assign({}, state.remoteControl, e.payload || {});
     notify();
-  });
-  listen("remote_control:snapshot_requested", function (e) {
-    var sid = e && e.payload && e.payload.session_id;
-    if (!sid) return;
-    publishRemoteLiveSnapshot(sid).catch(function () {});
   });
   listen("remote_control:session_created", function (e) {
     var s = e && e.payload && e.payload.session;

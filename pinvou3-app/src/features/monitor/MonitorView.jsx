@@ -127,7 +127,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
       .trim();
     const MonitorBrandIcon = ({ src, className = '' }) => src ? (
       <span className={`inline-flex items-center justify-center rounded-xl bg-white shadow-[0_6px_18px_rgba(15,23,42,0.12)] ring-1 ring-black/[0.05] dark:bg-white dark:ring-white/[0.08] ${className}`}>
-        <img src={src} alt="" className="w-[72%] h-[72%] object-contain" />
+        <img src={src} alt="" loading="lazy" decoding="async" className="w-[72%] h-[72%] object-contain" />
       </span>
     ) : null;
     const MonitorCard = ({ children, className = '', highlight = false }) => (

@@ -12,7 +12,9 @@ const sourceRoot = resolve(import.meta.dirname, 'src');
 const staticExtensions = new Set([
   '.avif', '.gif', '.ico', '.jpeg', '.jpg', '.png', '.svg', '.webp',
 ]);
-const staticScripts = new Set([
+// Exported for scripts/audit-compat.mjs: the verbatim-copied runtime scripts
+// keep one shared list so the compatibility audit always matches the copy set.
+export const staticRuntimeScripts = new Set([
   'features/attachments/attachment-drop-controller.js',
   'features/personas/personas-i18n.js',
   'features/updater/update-notice-logic.js',
@@ -23,11 +25,13 @@ const staticScripts = new Set([
   'platform/web/access-policy.json',
   'shared/authority-sync-diagnostics.js',
   'shared/bridge-messages.js',
-  'vendor/marked.min.js',
-  'vendor/purify.min.js',
+  'shared/chunked-file-upload.js',
+  'shared/format-utils.js',
+  'shared/legacy-polyfills.js',
+  'shared/markdown-bridge-fallback.js',
   'vendor/tailwind.js',
 ]);
-const staticScriptPrefixes = ['platform/tauri/bridge/', 'platform/web/bridge/'];
+export const staticRuntimeScriptPrefixes = ['platform/tauri/bridge/', 'platform/web/bridge/'];
 
 function assertClassicRuntimeScriptsCopied(outputRoot) {
   const indexHtml = readFileSync(join(sourceRoot, 'index.html'), 'utf8');
@@ -68,8 +72,8 @@ function copyRuntimeAssets() {
             visit(source);
             continue;
           }
-          const relative = source.slice(sourceRoot.length + 1).replaceAll('\\', '/');
-          const isRuntimeScript = staticScripts.has(relative) || staticScriptPrefixes.some(prefix => relative.startsWith(prefix));
+      const relative = source.slice(sourceRoot.length + 1).replaceAll('\\', '/');
+      const isRuntimeScript = staticRuntimeScripts.has(relative) || staticRuntimeScriptPrefixes.some(prefix => relative.startsWith(prefix));
           if (!staticExtensions.has(extname(entry.name).toLowerCase()) && !isRuntimeScript) continue;
           const containedSource = resolveContainedRuntimePath(sourceRoot, relative);
           const target = resolveContainedRuntimePath(outputRoot, relative);
@@ -79,6 +83,21 @@ function copyRuntimeAssets() {
       };
       if (existsSync(sourceRoot)) visit(sourceRoot);
       assertClassicRuntimeScriptsCopied(outputRoot);
+    },
+  };
+}
+
+function enforceAcpLazyChunk() {
+  return {
+    name: 'pinvou-enforce-acp-lazy-chunk',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const acpChunks = Object.values(bundle).filter(output => output.type === 'chunk'
+        && Object.keys(output.modules).some(moduleId => moduleId.replaceAll('\\', '/')
+          .endsWith('/features/codex/CodexAcpView.jsx')));
+      if (acpChunks.length !== 1 || acpChunks[0].isEntry || acpChunks[0].name === 'main') {
+        throw new Error('CodexAcpView must remain in one non-entry lazy chunk');
+      }
     },
   };
 }
@@ -96,10 +115,16 @@ export default defineConfig(({ mode }) => {
     port: Number(process.env.PINVOU3_UI_DEV_PORT || 1420),
     strictPort: true,
   },
-  plugins: [react(), copyRuntimeAssets()],
+  plugins: [react(), copyRuntimeAssets(), enforceAcpLazyChunk()],
   build: {
     outDir: webBuild ? '../../remote-control-relay/web/dist' : '../dist',
     emptyOutDir: true,
+    // Minimum supported WebViews: macOS 11 WKWebView is Safari 14.0 — the
+    // default "baseline-widely-available" target emits syntax it cannot parse
+    // and older macOS builds render a blank window. Keep in sync with
+    // .browserslistrc; scripts/audit-compat.mjs verifies the output.
+    target: 'safari14',
+    cssTarget: 'safari14',
     rolldownOptions: {
       input: webBuild
         ? { main: resolve(sourceRoot, 'index.html') }
