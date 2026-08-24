@@ -596,10 +596,26 @@ fn execute_chat(initial_runtime: Option<&str>) -> Result<String, DistributedErro
     }
     let stdin = io::stdin();
     let mut input = stdin.lock();
-    execute_chat_with_io(
+    let control_endpoint = ControllerPaths::discover()
+        .map_err(|_| DistributedError::controller("controller paths are unavailable"))?
+        .endpoint()
+        .clone();
+    let mut resolve_approval = |approval_id: &str, accepted: bool| {
+        connect_authenticated(&control_endpoint)?
+            .resolve_approval(approval_id, accepted)
+            .map(|_| ())
+    };
+    let mut resolve_input = |input_id: &str, value: &str| {
+        connect_authenticated(&control_endpoint)?
+            .resolve_input(input_id, value)
+            .map(|_| ())
+    };
+    execute_chat_with_io_and_control(
         &mut input,
         &mut output,
         &mut client,
+        &mut resolve_approval,
+        &mut resolve_input,
         interrupted,
         active_turn,
         assume_interactive_for_test(),
@@ -618,6 +634,7 @@ fn assume_interactive_for_test() -> bool {
     }
 }
 
+#[cfg(test)]
 fn execute_chat_with_io<R: BufRead, W: Write, S: Read + Write>(
     input: &mut R,
     output: &mut W,
@@ -626,6 +643,46 @@ fn execute_chat_with_io<R: BufRead, W: Write, S: Read + Write>(
     active_turn: Arc<Mutex<Option<String>>>,
     peek_eof_before_prompt: bool,
 ) -> Result<(), DistributedError> {
+    let mut reject_approval = |_: &str, _: bool| {
+        Err(DistributedError::controller(
+            "chat approval requires a dedicated controller connection",
+        ))
+    };
+    let mut reject_input = |_: &str, _: &str| {
+        Err(DistributedError::controller(
+            "chat input requires a dedicated controller connection",
+        ))
+    };
+    execute_chat_with_io_and_control(
+        input,
+        output,
+        client,
+        &mut reject_approval,
+        &mut reject_input,
+        interrupted,
+        active_turn,
+        peek_eof_before_prompt,
+    )
+}
+
+fn execute_chat_with_io_and_control<
+    R: BufRead,
+    W: Write,
+    S: Read + Write,
+    A: FnMut(&str, bool) -> Result<(), DistributedError>,
+    I: FnMut(&str, &str) -> Result<(), DistributedError>,
+>(
+    input: &mut R,
+    output: &mut W,
+    client: &mut ControllerWire<S>,
+    resolve_approval: &mut A,
+    resolve_input: &mut I,
+    interrupted: Arc<AtomicBool>,
+    active_turn: Arc<Mutex<Option<String>>>,
+    peek_eof_before_prompt: bool,
+) -> Result<(), DistributedError> {
+    // After chat.start yields its first event, this connection is an event stream until
+    // turn.ended. Approval and input callbacks must use independent controller connections.
     let mut prompt = String::new();
     let mut projection = TerminalProjection::new(Instant::now());
     loop {
@@ -701,7 +758,7 @@ fn execute_chat_with_io<R: BufRead, W: Write, S: Read + Write>(
                     let accepted = projection.parse_approval(&answer).ok_or_else(|| {
                         DistributedError::new(StableExitCode::Usage, "approval requires y or n")
                     })?;
-                    client.resolve_approval(&approval_id, accepted)?;
+                    resolve_approval(&approval_id, accepted)?;
                 }
                 ProjectionAction::AskInput { input_id, prompt } => {
                     write_terminal_to(output, &format!("{prompt} "))?;
@@ -709,7 +766,7 @@ fn execute_chat_with_io<R: BufRead, W: Write, S: Read + Write>(
                     input.read_line(&mut answer).map_err(|_| {
                         DistributedError::new(StableExitCode::Internal, "terminal read failed")
                     })?;
-                    client.resolve_input(&input_id, answer.trim_end())?;
+                    resolve_input(&input_id, answer.trim_end())?;
                 }
                 ProjectionAction::RuntimeError {
                     code,
@@ -1055,6 +1112,129 @@ mod tests {
             requests[0].payload()["instance_id"],
             json!("controller-instance")
         );
+    }
+
+    #[test]
+    fn chat_loop_sends_approval_over_a_dedicated_control_channel() {
+        let approval = runtime_event(
+            "turn-control",
+            1,
+            "control",
+            "R0",
+            "approval.requested",
+            json!({
+                "approval_id":"approval-1",
+                "tool":"shell",
+                "summary":"run tests",
+                "options":["approved","denied"],
+                "timeout_ms":30000
+            }),
+        );
+        let text = runtime_event(
+            "turn-control",
+            2,
+            "main",
+            "R1",
+            "text.delta",
+            json!({"role":"assistant","content":"approved","merged_count":1}),
+        );
+        let ended = runtime_event(
+            "turn-control",
+            3,
+            "control",
+            "R0",
+            "turn.ended",
+            json!({"end_reason":"completed","error":null}),
+        );
+        let stream = TestDuplex::with_responses([
+            IpcMessage::event("runtime.event", serde_json::to_value(approval).unwrap()).unwrap(),
+            IpcMessage::event("runtime.event", serde_json::to_value(text).unwrap()).unwrap(),
+            IpcMessage::event("runtime.event", serde_json::to_value(ended).unwrap()).unwrap(),
+        ]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let mut approvals = Vec::new();
+        let mut inputs = Vec::new();
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_turn = Arc::new(Mutex::new(None));
+        let mut input = std::io::Cursor::new(b"run something\ny\n".to_vec());
+        let mut output = Vec::new();
+
+        execute_chat_with_io_and_control(
+            &mut input,
+            &mut output,
+            &mut client,
+            &mut |approval_id, accepted| {
+                approvals.push((approval_id.to_owned(), accepted));
+                Ok(())
+            },
+            &mut |input_id, value| {
+                inputs.push((input_id.to_owned(), value.to_owned()));
+                Ok(())
+            },
+            interrupted,
+            active_turn,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(approvals, [("approval-1".into(), true)]);
+        assert!(inputs.is_empty());
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method(), Some("chat.start"));
+    }
+
+    #[test]
+    fn chat_loop_sends_input_over_a_dedicated_control_channel() {
+        let requested = runtime_event(
+            "turn-input",
+            1,
+            "control",
+            "R0",
+            "input.requested",
+            json!({"input_id":"input-1","prompt":"Name?","schema":{"type":"string"}}),
+        );
+        let ended = runtime_event(
+            "turn-input",
+            2,
+            "control",
+            "R0",
+            "turn.ended",
+            json!({"end_reason":"completed","error":null}),
+        );
+        let stream = TestDuplex::with_responses([
+            IpcMessage::event("runtime.event", serde_json::to_value(requested).unwrap()).unwrap(),
+            IpcMessage::event("runtime.event", serde_json::to_value(ended).unwrap()).unwrap(),
+        ]);
+        let mut client = ControllerWire::from_authenticated(stream, "controller-instance");
+        let mut approvals = Vec::new();
+        let mut inputs = Vec::new();
+        let mut input = std::io::Cursor::new(b"answer a question\nPinvou\n".to_vec());
+        let mut output = Vec::new();
+
+        execute_chat_with_io_and_control(
+            &mut input,
+            &mut output,
+            &mut client,
+            &mut |approval_id, accepted| {
+                approvals.push((approval_id.to_owned(), accepted));
+                Ok(())
+            },
+            &mut |input_id, value| {
+                inputs.push((input_id.to_owned(), value.to_owned()));
+                Ok(())
+            },
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+            true,
+        )
+        .unwrap();
+
+        assert!(approvals.is_empty());
+        assert_eq!(inputs, [("input-1".into(), "Pinvou".into())]);
+        let requests = client.into_inner().requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method(), Some("chat.start"));
     }
 
     #[test]

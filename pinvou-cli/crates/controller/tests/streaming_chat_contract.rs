@@ -7,7 +7,9 @@ use std::{
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
-use pinvou_controller::ControllerSession;
+use pinvou_controller::{
+    ControllerPaths, ControllerSession, HostPlatform, LocalEndpoint, LocalIpcListener,
+};
 use pinvou_protocol::{
     HelloClient, HelloServer, IpcMessage, RuntimeEventEnvelope, encode_frame, read_frame,
 };
@@ -70,6 +72,99 @@ fn scripted_controller_stream_requires_a_real_terminal_event() {
     .unwrap();
 
     assert!(session.stream_bound(request, |_| Ok(())).is_err());
+}
+
+#[test]
+fn approval_on_a_second_controller_connection_unblocks_the_live_event_stream() {
+    let (node_endpoint, node_server) = spawn_approval_gated_node();
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-controller-two-channel-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let paths = ControllerPaths::from_roots(
+        HostPlatform::current().unwrap(),
+        root.join("data"),
+        root.join("runtime"),
+        root.file_name().unwrap().to_str().unwrap(),
+    )
+    .unwrap();
+    paths.prepare_data_root().unwrap();
+    let endpoint = paths.endpoint().clone();
+    let mut listener = LocalIpcListener::bind(&endpoint).unwrap();
+    let session =
+        ControllerSession::with_local_node("controller-instance", node_endpoint, "node-instance")
+            .unwrap();
+    let (approval_seen_tx, approval_seen_rx) = mpsc::channel();
+    let (stream_done_tx, stream_done_rx) = mpsc::channel();
+    let stream_endpoint = endpoint.clone();
+    let stream_client = std::thread::spawn(move || {
+        let (mut stream, instance_id) = connect_controller(&stream_endpoint);
+        let request = IpcMessage::request(
+            serde_json::json!(1),
+            "chat.start",
+            serde_json::json!({"instance_id":instance_id,"prompt":"needs approval"}),
+        )
+        .unwrap();
+        stream.write_all(&encode_frame(&request).unwrap()).unwrap();
+        stream.flush().unwrap();
+
+        let started: IpcMessage = read_frame(&mut stream).unwrap();
+        assert_eq!(started.payload()["kind"], "turn.started");
+        let approval: IpcMessage = read_frame(&mut stream).unwrap();
+        assert_eq!(approval.payload()["kind"], "approval.requested");
+        approval_seen_tx.send(()).unwrap();
+        let delta: IpcMessage = read_frame(&mut stream).unwrap();
+        assert_eq!(delta.payload()["kind"], "text.delta");
+        assert_eq!(delta.payload()["payload"]["content"], "continued");
+        let ended: IpcMessage = read_frame(&mut stream).unwrap();
+        assert_eq!(ended.payload()["kind"], "turn.ended");
+        stream_done_tx.send(()).unwrap();
+    });
+    listener.serve_one(&session).unwrap();
+
+    approval_seen_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("stream connection did not receive approval.requested");
+
+    let (control_done_tx, control_done_rx) = mpsc::channel();
+    let control_endpoint = endpoint.clone();
+    let control_client = std::thread::spawn(move || {
+        let (mut stream, instance_id) = connect_controller(&control_endpoint);
+        let request = IpcMessage::request(
+            serde_json::json!(2),
+            "approval.resolve",
+            serde_json::json!({
+                "instance_id":instance_id,
+                "approval_id":"approval-1",
+                "accepted":true
+            }),
+        )
+        .unwrap();
+        stream.write_all(&encode_frame(&request).unwrap()).unwrap();
+        stream.flush().unwrap();
+        let response: IpcMessage = read_frame(&mut stream).unwrap();
+        assert_eq!(response.id(), Some(&serde_json::json!(2)));
+        assert_eq!(response.payload()["status"], "accepted");
+        control_done_tx.send(()).unwrap();
+    });
+    listener.serve_one(&session).unwrap();
+
+    control_done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("dedicated control request deadlocked");
+    stream_done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("event stream did not resume after approval");
+
+    control_client.join().unwrap();
+    stream_client.join().unwrap();
+    node_server.join().unwrap();
+    drop(listener);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 fn scripted_runtime_events() -> Vec<RuntimeEventEnvelope> {
@@ -166,7 +261,7 @@ fn spawn_scripted_node(
     let (first_observed_tx, first_observed_rx) = mpsc::channel();
     let server_endpoint = endpoint.clone();
     let server = std::thread::spawn(move || {
-        let mut stream = accept_node_connection(&server_endpoint, ready_tx);
+        let mut stream = accept_node_connection(&server_endpoint, Some(ready_tx));
         let hello: HelloClient = read_frame(&mut stream).unwrap();
         assert_eq!(hello.protocol_version(), pinvou_protocol::IPC_VERSION);
         let answer = HelloServer::new("node-instance").unwrap();
@@ -192,15 +287,185 @@ fn spawn_scripted_node(
     (endpoint, first_observed_tx, server)
 }
 
-trait TestReadWrite: Read + Write {}
-impl<T: Read + Write> TestReadWrite for T {}
+fn spawn_approval_gated_node() -> (String, std::thread::JoinHandle<()>) {
+    let endpoint = unique_endpoint();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let server_endpoint = endpoint.clone();
+    let server = std::thread::spawn(move || {
+        serve_approval_gated_node(&server_endpoint, ready_tx);
+    });
+    ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    (endpoint, server)
+}
+
+fn serve_node_hello(stream: &mut dyn TestReadWrite) {
+    let hello: HelloClient = read_frame(&mut &mut *stream).unwrap();
+    assert_eq!(hello.protocol_version(), pinvou_protocol::IPC_VERSION);
+    let answer = HelloServer::new("node-instance").unwrap();
+    stream.write_all(&encode_frame(&answer).unwrap()).unwrap();
+    stream.flush().unwrap();
+}
+
+fn send_runtime_event(stream: &mut dyn TestReadWrite, event: RuntimeEventEnvelope) {
+    let message = IpcMessage::event("runtime.event", serde_json::to_value(event).unwrap()).unwrap();
+    stream.write_all(&encode_frame(&message).unwrap()).unwrap();
+    stream.flush().unwrap();
+}
+
+fn gated_event(kind: &str, seq: u64, payload: serde_json::Value) -> RuntimeEventEnvelope {
+    let (rate_class, stream_id) = match kind {
+        "turn.started" | "approval.requested" | "turn.ended" => ("R0", "control"),
+        _ => ("R1", "main"),
+    };
+    RuntimeEventEnvelope::from_value(serde_json::json!({
+        "protocol_version":1,
+        "schema_version":1,
+        "node_id":"node-test",
+        "logical_session_id":"session-test",
+        "attachment_id":"attachment-test",
+        "work_id":null,
+        "collaborative_run_id":null,
+        "stream_id":stream_id,
+        "turn_id":"turn-gated",
+        "seq":seq,
+        "source_span":null,
+        "timestamp":"2026-08-24T00:00:00.000Z",
+        "rate_class":rate_class,
+        "kind":kind,
+        "payload":payload
+    }))
+    .unwrap()
+}
+
+fn connect_controller(endpoint: &LocalEndpoint) -> (Box<dyn TestReadWrite>, String) {
+    let mut stream = connect_test_endpoint(endpoint);
+    let hello = HelloClient::new(serde_json::json!({"client":"streaming-contract"})).unwrap();
+    stream.write_all(&encode_frame(&hello).unwrap()).unwrap();
+    stream.flush().unwrap();
+    let answer: HelloServer = read_frame(&mut stream).unwrap();
+    let instance_id = answer.instance_id().to_owned();
+    (stream, instance_id)
+}
 
 #[cfg(target_os = "linux")]
-fn accept_node_connection(endpoint: &str, ready: mpsc::Sender<()>) -> Box<dyn TestReadWrite> {
+fn serve_approval_gated_node(endpoint: &str, ready: mpsc::Sender<()>) {
     use std::os::unix::net::UnixListener;
     let path = PathBuf::from(endpoint);
     let listener = UnixListener::bind(&path).unwrap();
     ready.send(()).unwrap();
+    let mut chat: Box<dyn TestReadWrite> = Box::new(listener.accept().unwrap().0);
+    begin_approval_chat(&mut *chat);
+    let mut control: Box<dyn TestReadWrite> = Box::new(listener.accept().unwrap().0);
+    finish_approval_control(&mut *control, &mut *chat);
+    drop(listener);
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(windows)]
+fn serve_approval_gated_node(endpoint: &str, ready: mpsc::Sender<()>) {
+    let mut chat = accept_node_connection(endpoint, Some(ready));
+    begin_approval_chat(&mut *chat);
+    let mut control = accept_node_connection(endpoint, None);
+    finish_approval_control(&mut *control, &mut *chat);
+}
+
+fn begin_approval_chat(chat: &mut dyn TestReadWrite) {
+    serve_node_hello(chat);
+    let request: IpcMessage = read_frame(&mut &mut *chat).unwrap();
+    assert_eq!(request.method(), Some("chat.start"));
+    send_runtime_event(
+        chat,
+        gated_event(
+            "turn.started",
+            1,
+            serde_json::json!({"user_input_ref":"prompt"}),
+        ),
+    );
+    send_runtime_event(
+        chat,
+        gated_event(
+            "approval.requested",
+            2,
+            serde_json::json!({
+                "approval_id":"approval-1",
+                "tool":"shell",
+                "summary":"continue",
+                "options":["approved","denied"],
+                "timeout_ms":30000
+            }),
+        ),
+    );
+}
+
+fn finish_approval_control(control: &mut dyn TestReadWrite, chat: &mut dyn TestReadWrite) {
+    serve_node_hello(control);
+    let request: IpcMessage = read_frame(&mut &mut *control).unwrap();
+    assert_eq!(request.method(), Some("approval.resolve"));
+    assert_eq!(request.payload()["approval_id"], "approval-1");
+    assert_eq!(request.payload()["accepted"], true);
+    let response = IpcMessage::response(
+        request.id().unwrap().clone(),
+        serde_json::json!({"status":"accepted","approval_id":"approval-1"}),
+    )
+    .unwrap();
+    control
+        .write_all(&encode_frame(&response).unwrap())
+        .unwrap();
+    control.flush().unwrap();
+    send_runtime_event(
+        chat,
+        gated_event(
+            "text.delta",
+            3,
+            serde_json::json!({"role":"assistant","content":"continued","merged_count":1}),
+        ),
+    );
+    send_runtime_event(
+        chat,
+        gated_event(
+            "turn.ended",
+            4,
+            serde_json::json!({"end_reason":"completed","error":null}),
+        ),
+    );
+}
+
+trait TestReadWrite: Read + Write + Send {}
+impl<T: Read + Write + Send> TestReadWrite for T {}
+
+#[cfg(windows)]
+fn connect_test_endpoint(endpoint: &LocalEndpoint) -> Box<dyn TestReadWrite> {
+    let LocalEndpoint::WindowsPipe(name) = endpoint else {
+        unreachable!()
+    };
+    Box::new(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(name)
+            .unwrap(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn connect_test_endpoint(endpoint: &LocalEndpoint) -> Box<dyn TestReadWrite> {
+    let LocalEndpoint::UnixSocket(path) = endpoint else {
+        unreachable!()
+    };
+    Box::new(std::os::unix::net::UnixStream::connect(path).unwrap())
+}
+
+#[cfg(target_os = "linux")]
+fn accept_node_connection(
+    endpoint: &str,
+    ready: Option<mpsc::Sender<()>>,
+) -> Box<dyn TestReadWrite> {
+    use std::os::unix::net::UnixListener;
+    let path = PathBuf::from(endpoint);
+    let listener = UnixListener::bind(&path).unwrap();
+    if let Some(ready) = ready {
+        ready.send(()).unwrap();
+    }
     let stream = listener.accept().unwrap().0;
     drop(listener);
     let _ = std::fs::remove_file(path);
@@ -208,7 +473,10 @@ fn accept_node_connection(endpoint: &str, ready: mpsc::Sender<()>) -> Box<dyn Te
 }
 
 #[cfg(windows)]
-fn accept_node_connection(endpoint: &str, ready: mpsc::Sender<()>) -> Box<dyn TestReadWrite> {
+fn accept_node_connection(
+    endpoint: &str,
+    ready: Option<mpsc::Sender<()>>,
+) -> Box<dyn TestReadWrite> {
     use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
     use windows_sys::Win32::{
         Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE},
@@ -219,6 +487,7 @@ fn accept_node_connection(endpoint: &str, ready: mpsc::Sender<()>) -> Box<dyn Te
     };
 
     struct Pipe(HANDLE);
+    unsafe impl Send for Pipe {}
     impl Drop for Pipe {
         fn drop(&mut self) {
             unsafe { CloseHandle(self.0) };
@@ -275,7 +544,7 @@ fn accept_node_connection(endpoint: &str, ready: mpsc::Sender<()>) -> Box<dyn Te
             wide.as_ptr(),
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-            1,
+            2,
             64 * 1024,
             64 * 1024,
             0,
@@ -283,7 +552,9 @@ fn accept_node_connection(endpoint: &str, ready: mpsc::Sender<()>) -> Box<dyn Te
         )
     };
     assert_ne!(handle, INVALID_HANDLE_VALUE);
-    ready.send(()).unwrap();
+    if let Some(ready) = ready {
+        ready.send(()).unwrap();
+    }
     let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
     if connected == 0 {
         assert_eq!(
