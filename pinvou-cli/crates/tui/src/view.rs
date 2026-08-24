@@ -44,10 +44,12 @@ pub fn render(frame: &mut Frame<'_>, model: &Model) {
     render_composer(frame, regions[2], model);
     render_status(frame, regions[3], model);
 
-    match &model.overlay {
-        Overlay::None => {}
-        Overlay::Help { commands } => render_help_overlay(frame, area, model, commands),
-        Overlay::RuntimeList => render_runtime_overlay(frame, area, model),
+    if matches!(model.interaction, Interaction::None) && matches!(model.turn, TurnState::Idle) {
+        match &model.overlay {
+            Overlay::None => {}
+            Overlay::Help { commands } => render_help_overlay(frame, area, model, commands),
+            Overlay::RuntimeList => render_runtime_overlay(frame, area, model),
+        }
     }
 }
 
@@ -259,17 +261,18 @@ fn keymap(model: &Model) -> &'static str {
         Interaction::InputResolving { .. } => return KEYMAP_INPUT_RESOLVING,
         Interaction::None => {}
     }
+    match model.turn {
+        TurnState::Starting { .. } => return KEYMAP_STARTING,
+        TurnState::Streaming { .. } => return KEYMAP_ACTIVE,
+        TurnState::Idle => {}
+    }
     if model.pending_runtime_switch.is_some() {
         return KEYMAP_RUNTIME_PENDING;
     }
     if matches!(model.overlay, Overlay::RuntimeList) {
         return KEYMAP_RUNTIME;
     }
-    match model.turn {
-        TurnState::Idle => KEYMAP_IDLE,
-        TurnState::Starting { .. } => KEYMAP_STARTING,
-        TurnState::Streaming { .. } => KEYMAP_ACTIVE,
-    }
+    KEYMAP_IDLE
 }
 
 fn render_help_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model, commands: &[&str]) {
@@ -558,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn keymap_priority_is_interaction_then_runtime_then_turn() {
+    fn keymap_priority_is_interaction_then_active_turn_then_runtime() {
         let mut model = model();
         model.turn = TurnState::Streaming {
             operation_token: OperationToken::new(7),
@@ -570,9 +573,14 @@ mod tests {
             operation_token: OperationToken::new(8),
         });
         let runtime_pending = screen(&model, 100, 30);
-        assert!(runtime_pending.contains("Switching/Waiting"));
-        assert!(!runtime_pending.contains("Esc interrupt"));
+        assert!(runtime_pending.contains("Esc interrupt"));
+        assert!(!runtime_pending.contains("Switching/Waiting"));
         assert!(!runtime_pending.contains("Enter switch"));
+
+        model.turn = TurnState::Idle;
+        let idle_runtime_pending = screen(&model, 100, 30);
+        assert!(idle_runtime_pending.contains("Switching/Waiting"));
+        assert!(!idle_runtime_pending.contains("Esc interrupt"));
 
         model.interaction = Interaction::ApprovalPending(ApprovalRequest {
             turn_id: "turn-7".into(),
@@ -587,6 +595,62 @@ mod tests {
         assert!(approval.contains("3 Deny"));
         assert!(!approval.contains("Esc interrupt"));
         assert!(!approval.contains("Enter switch"));
+    }
+
+    #[test]
+    fn actionable_interactions_hide_stale_overlays_and_remain_visible() {
+        let mut approval = model();
+        approval.turn = TurnState::Streaming {
+            operation_token: OperationToken::new(10),
+            turn_id: "turn-10".into(),
+        };
+        approval.overlay = Overlay::RuntimeList;
+        approval.interaction = Interaction::ApprovalPending(ApprovalRequest {
+            turn_id: "turn-10".into(),
+            approval_id: "approval-10".into(),
+            operation_token: OperationToken::new(10),
+            tool: "shell".into(),
+            summary: "Delete generated cache?".into(),
+            options: vec!["allow".into(), "deny".into()],
+        });
+        let approval_output = screen(&approval, 100, 30);
+        assert!(approval_output.contains("Delete generated cache?"));
+        assert!(approval_output.contains("1 Allow once"));
+        assert!(approval_output.contains("3 Deny"));
+        assert!(!approval_output.contains("Switch runtime"));
+
+        let mut input = model();
+        input.turn = TurnState::Streaming {
+            operation_token: OperationToken::new(11),
+            turn_id: "turn-11".into(),
+        };
+        input.overlay = Overlay::Help {
+            commands: vec!["/help", "/runtime", "/exit", "/quit"],
+        };
+        input.interaction = Interaction::InputPending(InputRequest {
+            turn_id: "turn-11".into(),
+            input_id: "input-11".into(),
+            operation_token: OperationToken::new(11),
+            prompt: "Choose the target package".into(),
+        });
+        let input_output = screen(&input, 100, 30);
+        assert!(input_output.contains("Choose the target package"));
+        assert!(input_output.contains("Enter submit"));
+        assert!(!input_output.contains("Help · commands"));
+    }
+
+    #[test]
+    fn active_turn_hides_stale_runtime_overlay_and_keeps_interrupt_keymap() {
+        let mut model = model();
+        model.turn = TurnState::Streaming {
+            operation_token: OperationToken::new(12),
+            turn_id: "turn-12".into(),
+        };
+        model.overlay = Overlay::RuntimeList;
+        let output = screen(&model, 100, 30);
+        assert!(output.contains("Esc interrupt"));
+        assert!(!output.contains("Enter switch"));
+        assert!(!output.contains("Switch runtime"));
     }
 
     #[test]
