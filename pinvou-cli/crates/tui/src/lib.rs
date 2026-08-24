@@ -2,7 +2,9 @@ pub mod action;
 pub mod backend;
 pub mod commands;
 pub mod model;
+pub mod terminal;
 pub mod update;
+pub mod view;
 
 #[cfg(test)]
 mod tests {
