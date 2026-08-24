@@ -115,8 +115,9 @@ mod platform {
         if root_fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: root_fd 已检查非负,是上一次 libc::open 刚返回、尚未被任何对象
-        // 接管的属主 fd;from_raw_fd 把唯一所有权移交给 File,close 由其 Drop 负责。
+        // SAFETY: root_fd is verified non-negative, an owning fd just returned by
+        // libc::open and not yet adopted by any object; from_raw_fd hands sole
+        // ownership to File, whose Drop is responsible for closing it.
         let mut current = unsafe { File::from_raw_fd(root_fd) };
         for component in path.components() {
             match component {
@@ -125,9 +126,10 @@ mod platform {
                     let name = CString::new(name.as_bytes()).map_err(|_| {
                         io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL")
                     })?;
-                    // SAFETY: current 持有上一组件的存活目录 fd;name 是 CString,
-                    // 指针 NUL 结尾且生命周期覆盖调用;openat 只在调用期间读取,
-                    // 失败返回 -1 由下方统一转 io::Error。
+                    // SAFETY: current holds the live directory fd of the previous
+                    // component; name is a CString whose pointer is NUL terminated
+                    // with a lifetime covering the call; openat reads it only during
+                    // the call, and a -1 failure is converted to io::Error below.
                     let fd = unsafe {
                         libc::openat(
                             current.as_raw_fd(),
@@ -138,8 +140,9 @@ mod platform {
                     if fd < 0 {
                         return Err(io::Error::last_os_error());
                     }
-                    // SAFETY: fd 已检查非负且未被接管;from_raw_fd 唯一属主移交,
-                    // 赋值时旧 current 被 Drop 释放,无泄漏或双重 close。
+                    // SAFETY: fd is verified non-negative and not yet adopted;
+                    // from_raw_fd transfers sole ownership; assigning Drops the old
+                    // current, so there is no leak or double close.
                     current = unsafe { File::from_raw_fd(fd) };
                 }
                 Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
@@ -157,35 +160,40 @@ mod platform {
     unsafe fn errno_location() -> *mut libc::c_int {
         #[cfg(target_os = "linux")]
         {
-            // SAFETY: __errno_location 返回本线程 TLS 中 errno 的有效可写地址,
-            // 线程存活期间恒有效;调用方仅读写该单元素地址,无跨线程共享。
+            // SAFETY: __errno_location returns a valid writable address of errno in
+            // this thread's TLS, valid for the thread's lifetime; callers only read
+            // or write that single-element address, with no cross-thread sharing.
             unsafe { libc::__errno_location() }
         }
         #[cfg(target_os = "macos")]
         {
-            // SAFETY: __error 返回本线程 TLS 中 errno 的有效可写地址(darwin 的
-            // 等价实现),线程存活期间恒有效;调用方仅读写该单元素地址。
+            // SAFETY: __error returns a valid writable address of errno in this
+            // thread's TLS (the darwin equivalent), valid for the thread's lifetime;
+            // callers only read or write that single-element address.
             unsafe { libc::__error() }
         }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn directory_names(directory: &File) -> io::Result<Vec<String>> {
-        // SAFETY: directory.as_raw_fd() 是存活的目录 fd;F_DUPFD_CLOEXEC 只复制
-        // 描述符、不动原 fd 的属主,返回的新 fd 由本函数显式管理(close 或移交
-        // fdopendir),失败返回 -1。
+        // SAFETY: directory.as_raw_fd() is a live directory fd; F_DUPFD_CLOEXEC only
+        // duplicates the descriptor and leaves the original fd's ownership untouched;
+        // the returned new fd is managed explicitly by this function (close or hand
+        // over to fdopendir), and failure returns -1.
         let duplicate = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
         if duplicate < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: duplicate 已检查非负,是刚复制、尚未被接管的 fd;POSIX 约定
-        // fdopendir 成功即独占接管该 fd(closedir 负责释放),失败时 fd 仍归
-        // 调用方——两条路径下方各只处理一次。
+        // SAFETY: duplicate is verified non-negative, freshly duplicated and not yet
+        // adopted; POSIX defines fdopendir as taking exclusive ownership of the fd on
+        // success (closedir releases it), while on failure the fd still belongs to the
+        // caller - both paths below handle it exactly once.
         let stream = unsafe { libc::fdopendir(duplicate) };
         if stream.is_null() {
             let error = io::Error::last_os_error();
-            // SAFETY: fdopendir 失败未接管 duplicate,fd 仍属本函数;立即 close
-            // 恰好一次以避免泄漏,错误无进一步可恢复动作,返回值可忽略。
+            // SAFETY: fdopendir failed without adopting duplicate, so the fd still
+            // belongs to this function; close it exactly once to avoid a leak; the
+            // error has no further recovery action, so the return value is ignored.
             unsafe { libc::close(duplicate) };
             return Err(error);
         }
@@ -193,24 +201,27 @@ mod platform {
         let mut names = Vec::new();
         let mut enumeration_error = None;
         loop {
-            // SAFETY: errno_location() 返回本线程 errno 的有效可写地址;清零以便
-            // 区分 readdir 返回 NULL 是 EOF 还是出错。
+            // SAFETY: errno_location() returns a valid writable address of this
+            // thread's errno; zero it to distinguish whether readdir returning NULL
+            // means EOF or an error.
             unsafe { *errno_location() = 0 };
-            // SAFETY: stream 来自成功的 fdopendir 且本函数独占、无并发访问;
-            // 返回的 dirent 指针按 POSIX 仅在下次 readdir/closedir 前有效,
-            // 下方立即读取 d_name,不跨调用持有。
+            // SAFETY: stream comes from a successful fdopendir and is exclusively
+            // owned by this function with no concurrent access; per POSIX the
+            // returned dirent pointer is valid only until the next readdir/closedir,
+            // and d_name is read immediately below, not held across calls.
             let entry = unsafe { libc::readdir(stream) };
             if entry.is_null() {
-                // SAFETY: errno_location() 指向本线程 errno,此前已清零,非零即
-                // readdir 的真实错误码。
+                // SAFETY: errno_location() points at this thread's errno, zeroed
+                // above, so a non-zero value is readdir's real error code.
                 let errno = unsafe { *errno_location() };
                 if errno != 0 {
                     enumeration_error = Some(io::Error::from_raw_os_error(errno));
                 }
                 break;
             }
-            // SAFETY: entry 非 NULL 且尚未再次调用 readdir;内核保证 d_name 以
-            // NUL 结尾且落在数组界内,CStr::from_ptr 只读到该终止符。
+            // SAFETY: entry is non-NULL and readdir has not been called again; the
+            // kernel guarantees d_name is NUL terminated and within array bounds, and
+            // CStr::from_ptr reads only up to that terminator.
             let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
             let Ok(name) = name.to_str() else {
                 enumeration_error = Some(io::Error::new(
@@ -223,8 +234,9 @@ mod platform {
                 names.push(name.to_string());
             }
         }
-        // SAFETY: stream 是 fdopendir 交出的唯一 DIR*,closedir 恰好释放一次
-        // (连同其内部接管的 fd);此后不再访问 stream。
+        // SAFETY: stream is the sole DIR* handed over by fdopendir; closedir frees it
+        // exactly once (together with the fd it adopted internally); stream is not
+        // accessed afterwards.
         if unsafe { libc::closedir(stream) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -243,8 +255,9 @@ mod platform {
     }
 
     fn open_directory_at(parent: &File, name: &CString) -> io::Result<File> {
-        // SAFETY: parent 持有存活目录 fd;name 是 CString,NUL 结尾且生命周期
-        // 覆盖调用;O_NOFOLLOW|O_DIRECTORY 保证不跟随替换链接,失败返回 -1。
+        // SAFETY: parent holds a live directory fd; name is a CString, NUL terminated
+        // with a lifetime covering the call; O_NOFOLLOW|O_DIRECTORY guarantees no
+        // following of replacement links, and failure returns -1.
         let fd = unsafe {
             libc::openat(
                 parent.as_raw_fd(),
@@ -255,13 +268,15 @@ mod platform {
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: fd 已检查非负且未被接管;from_raw_fd 唯一属主移交给 File。
+        // SAFETY: fd is verified non-negative and not yet adopted; from_raw_fd
+        // transfers sole ownership to File.
         Ok(unsafe { File::from_raw_fd(fd) })
     }
 
     fn open_regular_file_at(parent: &File, name: &CString) -> io::Result<File> {
-        // SAFETY: parent 持有存活目录 fd;name 是 CString,NUL 结尾且生命周期
-        // 覆盖调用;O_NONBLOCK 防止打开 FIFO 阻塞,失败返回 -1。
+        // SAFETY: parent holds a live directory fd; name is a CString, NUL terminated
+        // with a lifetime covering the call; O_NONBLOCK prevents blocking when
+        // opening a FIFO, and failure returns -1.
         let fd = unsafe {
             libc::openat(
                 parent.as_raw_fd(),
@@ -272,7 +287,8 @@ mod platform {
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: fd 已检查非负且未被接管;from_raw_fd 唯一属主移交给 File。
+        // SAFETY: fd is verified non-negative and not yet adopted; from_raw_fd
+        // transfers sole ownership to File.
         Ok(unsafe { File::from_raw_fd(fd) })
     }
 
@@ -305,9 +321,10 @@ mod platform {
         // Revalidate the anchored name against the opened inode. `unlinkat`
         // never follows a replacement symlink and cannot escape `upload_dir`.
         let mut current = std::mem::MaybeUninit::<libc::stat>::uninit();
-        // SAFETY: upload_dir 持有存活目录 fd;filename_c NUL 结尾;AT_SYMLINK_NOFOLLOW
-        // 保证 lstat 语义;内核只在写入成功时初始化整个 stat,失败时 current 保持
-        // 未初始化且不被读取。
+        // SAFETY: upload_dir holds a live directory fd; filename_c is NUL terminated;
+        // AT_SYMLINK_NOFOLLOW guarantees lstat semantics; the kernel initializes the
+        // whole stat only on a successful write, and on failure current stays
+        // uninitialized and unread.
         if unsafe {
             libc::fstatat(
                 upload_dir.as_raw_fd(),
@@ -319,8 +336,9 @@ mod platform {
         {
             return Ok(false);
         }
-        // SAFETY: 上一行 fstatat 返回 0,内核已按 libc::stat 布局完整写入 current,
-        // assume_init 只读已初始化数据。
+        // SAFETY: fstatat on the previous line returned 0, so the kernel has fully
+        // written current per the libc::stat layout; assume_init only reads
+        // initialized data.
         let current = unsafe { current.assume_init() };
         if !device_numbers_match(current.st_dev, metadata.dev())
             || current.st_ino != metadata.ino()
@@ -329,15 +347,17 @@ mod platform {
         {
             return Ok(false);
         }
-        // SAFETY: upload_dir 持有存活目录 fd;filename_c NUL 结尾;flags=0 表示
-        // unlink 恰好此目录项且不跟随符号链接;上方 dev/ino/nlink/模式已复核通过。
+        // SAFETY: upload_dir holds a live directory fd; filename_c is NUL terminated;
+        // flags=0 unlinks exactly this directory entry without following symlinks;
+        // dev/ino/nlink/mode were revalidated above.
         if unsafe { libc::unlinkat(upload_dir.as_raw_fd(), filename_c.as_ptr(), 0) } != 0 {
             return Ok(false);
         }
         drop(file);
-        // SAFETY: root 持有存活目录 fd;upload_name NUL 结尾;AT_REMOVEDIR 要求
-        // 目标是目录,且此目录项的链接文件刚被 unlink、open 的句柄已 drop,空目录
-        // 检查由内核保证(非空/非目录返回 -1)。
+        // SAFETY: root holds a live directory fd; upload_name is NUL terminated;
+        // AT_REMOVEDIR requires the target to be a directory, this entry's linked
+        // file was just unlinked and the open handle dropped, and the kernel
+        // guarantees the empty-directory check (non-empty/non-directory returns -1).
         if unsafe { libc::unlinkat(root.as_raw_fd(), upload_name.as_ptr(), libc::AT_REMOVEDIR) }
             != 0
         {

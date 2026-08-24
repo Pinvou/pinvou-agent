@@ -69,9 +69,13 @@ fn ensure_release_env() {
     crate::platform::ui_cache::configure_runtime_environment();
     for (k, v) in RELEASE_ENV_DEFAULTS {
         if env::var_os(k).is_none() {
-            // SAFETY: ensure_release_env 仅由 run() 首行调用(linux 下在 tauri
-            // Builder 之前),此时进程只有主线程——无并发 env 读者(审计结论:
-            // 首个线程 spawn 在 lib.rs setup 阶段,晚于本函数)。
+            // SAFETY: ensure_release_env is only called by the first line of
+            // run() and by the headless benchmark host startup sequence
+            // (headless_bridge.rs run_headless_host, before the tokio runtime
+            // is built); at both call sites the process has only the main
+            // thread — no concurrent env readers (audit conclusion: the first
+            // thread spawn happens in the lib.rs setup phase, after this
+            // function); calls inside tests run under ENV_LOCK serialization.
             unsafe { env::set_var(k, v) };
         }
     }
@@ -105,7 +109,7 @@ fn ensure_release_env() {
             }
             dirs.extend(env::split_paths(&old));
             if let Ok(joined) = env::join_paths(dirs) {
-                // SAFETY: 同上,run() 单线程启动阶段,无并发 env 读者。
+                // SAFETY: same as above; run() single-threaded startup, no concurrent env readers.
                 unsafe { env::set_var("PATH", joined) };
             }
         }
@@ -473,6 +477,40 @@ fn spawn_orphaned_session_browser_reconciliation(app: tauri::AppHandle, store: S
     ));
 }
 
+/// Funnel for process env writes inside the single-threaded startup window
+/// (besides the release defaults of `ensure_release_env`).
+///
+/// Since edition 2024, `set_var` is unsafe and requires no concurrent env
+/// readers or writers. This function is called only from the head region of
+/// `run()` and from the headless benchmark host startup sequence
+/// (`headless_bridge.rs run_headless_host`, before the tokio runtime is
+/// built); at both call sites the process has only the main thread (the same
+/// proven window as `ensure_release_env`). From the multi-threaded phase (the
+/// Tauri setup onward) process env writes are forbidden entirely: MCP secrets
+/// travel via keyring + in-process registry through the foundation resolver
+/// hook, so the runtime no longer needs any env writes.
+///
+/// What it writes:
+/// - `PINVOU3_SESSION_ARTIFACTS`: the binary artifacts landing dir for MCP
+///   stdio subprocesses such as PPT / official-document tools (fixed to
+///   `sessions/default/artifacts/`; a stdio server cannot reliably perceive
+///   the current GUI session — concrete ownership is decided by tool events
+///   carrying `session_id` and by frontend persistence).
+/// - OS-specific startup writes (`platform::os::startup_platform_env`): on
+///   Windows, configure the ONNX Runtime dylib path and prepend LibreOffice
+///   to `PATH`; no-op on other platforms.
+pub(crate) fn startup_process_env() {
+    // SAFETY: single-threaded startup window (see the function docs); no
+    // concurrent env readers.
+    unsafe {
+        std::env::set_var(
+            "PINVOU3_SESSION_ARTIFACTS",
+            crate::platform::paths::default_session_artifacts_dir(),
+        )
+    };
+    crate::platform::os::startup_platform_env();
+}
+
 /// `iframe[srcdoc]` 在 WebKitGTK 中会作为宿主 WebView 的 `about:srcdoc` 导航
 /// 进入 Wry 的 navigation handler。这里只放行浏览器内部的两个空文档地址；
 /// 主窗口和 iframe 的任意外部来源仍走初始 origin 限制。
@@ -522,8 +560,9 @@ pub(crate) async fn prepare_app_restart(app: &tauri::AppHandle) {
 /// macOS 的 embed_plist 用 `#[no_mangle] static _EMBED_INFO_PLIST` 让重复
 /// 展开成为链接错误;GUI(`run`)与 headless 评测宿主(benchmark-hooks)必须
 /// 共用这里的单一 Context 构造,不得在别处再展开该宏。
-// generate_context! 宏展开内部含 process::exit(上下文缺失即无法启动);
-// 这是 Tauri 宏自身行为,非本仓代码路径,予以豁免。
+// The generate_context! macro expansion internally calls process::exit (a
+// missing context means the app cannot start); this is Tauri macro behavior,
+// not a code path of this repo, so it is exempted.
 #[allow(clippy::exit)]
 pub fn build_tauri_context() -> tauri::Context {
     tauri::generate_context!()
@@ -541,6 +580,7 @@ pub fn run() {
     // aws-lc-rs(FIPS 可候选、性能优于 ring),在任何 TLS 连接之前装好。
     install_rustls_provider();
     ensure_release_env();
+    startup_process_env();
     startup::init();
     startup::mark("environment:ready");
     // 必须早于 Tauri Builder/WebView 创建：避免升级后 WebKit 复用旧 index.html，
@@ -756,9 +796,11 @@ pub fn run() {
                 // store boot 失败时退化用一份临时 store（让 engine 至少能起来）；
                 // 实际使用 session 相关命令会失败,但聊天能跑
                 //
-                // 二次 boot 仍失败(如磁盘只读)时无法构造任何可用 store,engine
-                // 面上没有可用的失败路径,app 已不可用——panic 快速失败优于带病
-                // 运行,故此处保留 expect。
+                // If the second boot still fails (e.g. read-only disk), no
+                // usable store can be constructed and there is no available
+                // failure path on the engine surface — the app is unusable.
+                // Failing fast via panic beats running degraded, so expect
+                // is kept here.
                 #[allow(clippy::expect_used)]
                 || -> SessionStore {
                     SessionStore::boot_for_process_startup().expect("session store boot fallback")
@@ -1463,8 +1505,9 @@ pub fn run() {
     // Keep the historical marker so old and new startup runs remain comparable.
     startup::mark("tauri:run_enter");
     startup::mark("tauri:build:start");
-    // Tauri 模板惯用法:builder.build 失败意味着窗口/事件循环无法建立,进程
-    // 尚未进入用户会话,无降级路径可言——保留 expect 快速失败。
+    // Tauri template idiom: a builder.build failure means the window/event loop
+    // cannot be built and the process has not entered a user session; there is
+    // no degradation path — keep expect to fail fast.
     #[allow(clippy::expect_used)]
     let app = builder
         .build(context)
@@ -1800,10 +1843,10 @@ mod release_env_defaults_guard {
         fn drop(&mut self) {
             for (k, v) in &self.0 {
                 match v {
-                    // SAFETY: 持 platform::paths::tests::ENV_LOCK(见各使用点),
-                    // 测试进程内 env 写已串行化。
+                    // SAFETY: holding platform::paths::tests::ENV_LOCK (see each
+                    // use site); env writes in the test process are serialized.
                     Some(v) => unsafe { std::env::set_var(k, v) },
-                    // SAFETY: 同上,ENV_LOCK 串行化下的恢复删除。
+                    // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
                     None => unsafe { std::env::remove_var(k) },
                 }
             }
@@ -1815,7 +1858,7 @@ mod release_env_defaults_guard {
                 .filter(|k| !keep.contains(k))
                 .collect();
             for k in stale {
-                // SAFETY: 同上,ENV_LOCK 串行化下的清理删除。
+                // SAFETY: same as above; cleanup-side removal under ENV_LOCK serialization.
                 unsafe { std::env::remove_var(&k) };
             }
         }
@@ -1846,19 +1889,57 @@ mod release_env_defaults_guard {
 
         // 第二层：实际注入路径（ensure_release_env 是 run() 启动路径的 release env
         // 注入函数）。先清掉外部可能残留的 env，确保断言的是注入函数自身的行为。
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK(本测试首行),env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK (first line of this test); env writes serialized.
         unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
-        // SAFETY: 同上,ENV_LOCK 串行化。
+        // SAFETY: same as above; ENV_LOCK serialization.
         unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
         super::ensure_release_env();
         assert!(
             std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none(),
-            "ensure_release_env 不得重新注入 DEEPSEEK_MAX_OUTPUT_TOKENS（会重新钉死云端）"
+            "ensure_release_env must not re-inject DEEPSEEK_MAX_OUTPUT_TOKENS (would re-pin cloud caps)"
         );
         assert!(
             std::env::var_os("PINVOU3_MAX_OUTPUT_TOKENS").is_none(),
-            "ensure_release_env 不得重新注入 PINVOU3_MAX_OUTPUT_TOKENS（品悟上限仅经 prefs/route 携带）"
+            "ensure_release_env must not re-inject PINVOU3_MAX_OUTPUT_TOKENS (the Pinvou cap travels only via prefs/route)"
         );
         // 退出时 EnvSnapshot::drop 按快照完整还原（含 PATH / UI env / 常量表变量）。
+    }
+
+    /// `startup_process_env` is the sole injection funnel for
+    /// `PINVOU3_SESSION_ARTIFACTS` (bridge boot runs in the multi-threaded
+    /// phase and must not write the process env; see the dual assertion in
+    /// bridge.rs `forkguard_boot_env_must_not_pin_global_output_cap`).
+    /// This test locks the positive behavior: the single-threaded startup
+    /// function must write the session artifacts dir into the process env for
+    /// MCP stdio subprocesses such as PPT / official-document tools to
+    /// inherit.
+    #[test]
+    fn startup_process_env_writes_session_artifacts() {
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _snapshot = EnvSnapshot::take();
+
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-startup-env-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&root).expect("create isolated PINVOU3_HOME");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK (first line of this test); env writes serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        // SAFETY: same as above; ENV_LOCK serialization.
+        unsafe { std::env::remove_var("PINVOU3_SESSION_ARTIFACTS") };
+
+        super::startup_process_env();
+
+        let expected = crate::platform::paths::default_session_artifacts_dir();
+        assert_eq!(
+            std::env::var("PINVOU3_SESSION_ARTIFACTS").as_deref(),
+            Ok(expected.to_str().expect("isolated home path must be UTF-8")),
+            "startup_process_env must inject PINVOU3_SESSION_ARTIFACTS"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

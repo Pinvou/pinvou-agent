@@ -1566,7 +1566,10 @@ pub fn scheduled_task_chat_prompt() -> Result<String, String> {
 }
 
 #[cfg(test)]
-// 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
+// Tests borrow platform::paths::tests::ENV_LOCK (std Mutex) to serialize global env access;
+// cargo test runs test threads in parallel, but env-writing tests are mutually serialized, and
+// the lock is held across await only inside a current_thread runtime with no reentrant path,
+// so it cannot deadlock.
 #[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
@@ -1756,13 +1759,13 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         assert_eq!(scheduled_automation_root(), dir.join("automations"));
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -2016,7 +2019,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let fixture = cascade_fixture(None).await;
@@ -2087,9 +2090,9 @@ mod tests {
         fixture.task_manager.shutdown();
         drop(fixture);
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -2103,7 +2106,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         // executor 挂住 → 这条 run 真的停在 Running，reconcile 也不会把它改成终态。
@@ -2142,9 +2145,9 @@ mod tests {
         fixture.task_manager.shutdown();
         drop(fixture);
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -2189,7 +2192,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
@@ -2258,9 +2261,9 @@ mod tests {
             Some(0)
         );
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -2273,7 +2276,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
@@ -2352,9 +2355,9 @@ mod tests {
         assert_eq!(resumed.status, "active");
 
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -2367,7 +2370,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
@@ -2470,9 +2473,9 @@ mod tests {
         );
 
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -2485,7 +2488,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
@@ -2571,9 +2574,9 @@ mod tests {
         assert_eq!(state.ui_metadata.metadata_for(&created.id), (false, None));
 
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -2586,7 +2589,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("sessions");
         let create_session = |task_id: &str| {
@@ -2621,9 +2624,9 @@ mod tests {
         assert!(sessions.scheduled_session_exists(&retained_id));
 
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -2636,7 +2639,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
@@ -2724,9 +2727,9 @@ mod tests {
         assert_eq!(resumed.status, "active");
         assert!(resumed.next_run_at.is_some());
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -2840,7 +2843,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
@@ -2898,9 +2901,9 @@ mod tests {
         );
 
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -2913,7 +2916,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
@@ -2992,9 +2995,9 @@ mod tests {
         );
 
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -3007,7 +3010,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let store = SessionStore::boot().expect("open test sessions");
@@ -3104,9 +3107,9 @@ mod tests {
         );
 
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -3119,7 +3122,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let sessions = SessionStore::boot().expect("open test sessions");
@@ -3233,9 +3236,9 @@ mod tests {
         assert!(ensure_scheduled_run_is_viewable(&missing_session_run, &sessions).is_err());
 
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -3323,7 +3326,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
@@ -3391,9 +3394,9 @@ mod tests {
         assert!(resume_error.contains("Failed to resume scheduled task"));
 
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -3406,7 +3409,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let sessions = SessionStore::boot().expect("session store");
         sessions
@@ -3479,9 +3482,9 @@ mod tests {
         );
 
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(dir);

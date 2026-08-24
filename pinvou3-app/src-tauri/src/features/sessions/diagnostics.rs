@@ -417,9 +417,11 @@ fn append_entries(entries: &[Value]) -> Result<(), String> {
     append_entries_to_path(&path, entries)
 }
 
-// 上方主路径序列化失败已走 map_err 传播；此处 expect 的对象是全静态字面量
-// （无自定义 Serialize/map key），序列化不可能失败，panic 分支不可达。
-// unwrap_in_result 豁免同因：Result 返回函数内的这处 expect 有上述全量不变量。
+// Serialization failures on the main path above already propagate via map_err;
+// the value expected here consists of fully static literals (no custom
+// Serialize/map keys), so serialization cannot fail and the panic branch is
+// unreachable. The unwrap_in_result exemption holds for the same reason: this
+// expect inside a Result-returning function has the full invariant above.
 #[allow(clippy::expect_used, clippy::unwrap_in_result)]
 fn append_entries_to_path(path: &Path, entries: &[Value]) -> Result<(), String> {
     if let Some(parent) = path.parent() {

@@ -231,13 +231,14 @@ impl AgentConfigWriter for CodexConfigWriter {
             })
             .unwrap_or_default();
         if !managed_ids.is_empty() {
-            // managed_ids 刚从同一内存 config 的 model_providers 表收集而来，
-            // 理论上必能再次取到；无法取到说明数据形态异常，应报错而非 panic。
+            // managed_ids was just collected from the model_providers table of the
+            // same in-memory config, so it must be retrievable again; failure means
+            // an abnormal data shape and should error rather than panic.
             let Some(providers) = table
                 .get_mut("model_providers")
                 .and_then(Value::as_table_mut)
             else {
-                anyhow::bail!("codex config.toml 的 model_providers 表在回退时丢失");
+                anyhow::bail!("codex config.toml model_providers table vanished during rollback");
             };
             for id in managed_ids {
                 providers.remove(&id);

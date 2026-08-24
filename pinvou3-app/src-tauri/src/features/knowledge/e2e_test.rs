@@ -31,9 +31,11 @@ impl EnvVarRestore {
 impl Drop for EnvVarRestore {
     fn drop(&mut self) {
         match &self.previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
             Some(value) => unsafe { std::env::set_var(self.name, value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
             None => unsafe { std::env::remove_var(self.name) },
         }
     }
@@ -78,12 +80,14 @@ fn env_var_restore_runs_during_unwind() {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     let _restore_original = EnvVarRestore::snapshot("PINVOU3_KB_EMBED_MODEL_DIR");
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+    // serialized in-process.
     unsafe { std::env::set_var("PINVOU3_KB_EMBED_MODEL_DIR", "before-panic") };
 
     let result = std::panic::catch_unwind(|| {
         let _restore = EnvVarRestore::snapshot("PINVOU3_KB_EMBED_MODEL_DIR");
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
         unsafe { std::env::set_var("PINVOU3_KB_EMBED_MODEL_DIR", "temporary") };
         panic!("触发 unwind 以验证环境变量恢复");
     });
@@ -108,7 +112,8 @@ fn full_l0_l1_e2e() {
 
     // L1 语义检索真实跑：指向本地 bge-m3。
     let home = std::env::var("HOME").unwrap();
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+    // serialized in-process.
     unsafe {
         std::env::set_var(
             "PINVOU3_KB_EMBED_MODEL_DIR",

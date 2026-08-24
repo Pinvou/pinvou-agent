@@ -366,10 +366,27 @@ use crate::core::session_mode::SessionMode;
 /// kebab-case，落盘键与前端协议（`"plain"/"code"`）不变，下游引用零改动。
 pub type ConnectorScope = SessionMode;
 
-/// 重启后把**所有已安装工具**的 secret 从 keyring 重灌进进程 env(MCP 子进程 expand
-/// `${...}` 占位符用)。不再硬编码内置 3 个 —— 自定义/上传的带 secret 工具重启后同样生效。
-pub fn sync_mcp_secret_env_vars() -> Result<(), String> {
-    MarketplaceManager::new().sync_secret_env_vars()
+/// After a restart, rehydrate the secrets of **all installed tools** from the
+/// keyring into the in-process registry (the foundation resolver reads them on
+/// demand when expanding `${...}` placeholders in MCP subprocess env). No
+/// longer hardcoded to the three built-ins — custom/uploaded tools with
+/// secrets work after restart too.
+pub fn sync_mcp_secret_values() -> Result<(), String> {
+    MarketplaceManager::new().sync_secret_values()
+}
+
+/// Register the foundation's MCP secret resolver at boot: when the foundation
+/// expands mcp.json `${...}` placeholders / resolves `env_headers` /
+/// `bearer_token_env_var`, it consults the in-process registry (keyring as the
+/// persistent layer) instead, so the process env no longer carries runtime
+/// secret writes. The OnceLock takes effect the first time; later Errs are
+/// ignored,
+/// same contract as `install_prompt_overrides`; must be called before any
+/// engine spawn.
+pub fn install_mcp_secret_resolver() {
+    let _ = deepseek_tui::mcp::install_mcp_secret_resolver(Box::new(|name| {
+        secrets::resolve_registered_secret(name)
+    }));
 }
 
 /// 当前(plain)被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
@@ -769,13 +786,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 删该工具在 keyring 的 secret(防孤儿;此时 manifest 未删、仍可读声明)。
         // 删不掉不阻断卸载；若用户重新安装并重新填 key，会写入新的系统凭据。
         if let Some(manifest) = self.load_manifest(tool_id) {
-            // 持锁遍历:卸载的 remove_var 与安装侧写者串行化(同一把 env_write 锁)。
-            let _env_guard = crate::platform::env_write::lock();
             for (target, key) in secrets::manifest_secret_targets(&manifest) {
                 let reference = secrets::mcp_secret_reference(tool_id, &target, &key);
                 let _ = self.credential_store.delete(&reference);
-                // SAFETY: 上方已持 env_write 锁,env 写已串行化。
-                unsafe { std::env::remove_var(secrets::mcp_secret_env_var(&key)) };
+                secrets::remove_secret_value(&secrets::mcp_secret_env_var(&key));
             }
         }
         let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
@@ -1338,9 +1352,11 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             return Err("test injection: installed.json write failed".to_string());
         }
         // installed_file 由数据根 join 而来，必有父级；仍以错误返回兜底。
+        // installed_file is joined from the data root, so a parent always
+        // exists; still return an error as the fallback.
         let dir = self.installed_file.parent().ok_or_else(|| {
             format!(
-                "installed.json 缺少父目录: {}",
+                "installed.json has no parent directory: {}",
                 self.installed_file.display()
             )
         })?;
@@ -1396,7 +1412,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 }
 
 #[cfg(test)]
-// 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
+// Tests borrow platform::paths::tests::ENV_LOCK (std Mutex) to serialize global env access;
+// cargo test runs test threads in parallel, but env-writing tests are mutually serialized, and
+// the lock is held across await only inside a current_thread runtime with no reentrant path,
+// so it cannot deadlock.
 #[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
@@ -1413,38 +1432,33 @@ mod tests {
 
     /// 把 PINVOU3_HOME 指到一个干净临时目录跑闭包,跑完恢复并清理。
     /// 借 paths 的 ENV_LOCK 跟其它 mutate PINVOU3_HOME 的测试串行,避免互相覆盖。
+    /// The in-process secret registry is snapshotted-cleared-restored the
+    /// same way (secrets no longer land in the process env; the isolation
+    /// point moves from env to the registry).
     fn with_temp_home<F: FnOnce()>(f: F) {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // The test process installs the foundation resolver too (OnceLock is
+        // idempotent, same contract as the production boot): otherwise the
+        // foundation falls back to the process env when resolving
+        // placeholders, and the test outcome would depend on whether the
+        // bridge boot tests have already run (order coupling).
+        super::install_mcp_secret_resolver();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        let prev_amap = std::env::var("PINVOU3_MCP_SECRET_AMAP_KEY").ok();
-        let prev_iwencai = std::env::var("PINVOU3_MCP_SECRET_IWENCAI_API_KEY").ok();
-        let prev_qcc = std::env::var("PINVOU3_MCP_SECRET_QCC_API_KEY").ok();
-        let prev_patsnap = std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").ok();
+        let prev_secrets = secrets::snapshot_secret_values();
+        secrets::clear_secret_values_for_test();
         let dir = std::env::temp_dir().join(format!("pinvou3-mkt-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         f();
         match prev {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
-        for (key, value) in [
-            ("PINVOU3_MCP_SECRET_AMAP_KEY", prev_amap),
-            ("PINVOU3_MCP_SECRET_IWENCAI_API_KEY", prev_iwencai),
-            ("PINVOU3_MCP_SECRET_QCC_API_KEY", prev_qcc),
-            ("PINVOU3_MCP_SECRET_PATSNAP_API_KEY", prev_patsnap),
-        ] {
-            match value {
-                // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
-                Some(v) => unsafe { std::env::set_var(key, v) },
-                // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
-                None => unsafe { std::env::remove_var(key) },
-            }
-        }
+        secrets::restore_secret_values(prev_secrets);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1493,37 +1507,26 @@ mod tests {
         Fut: Future<Output = ()>,
     {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Same as with_temp_home: install the foundation resolver to avoid
+        // test order coupling.
+        super::install_mcp_secret_resolver();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        let prev_amap = std::env::var("PINVOU3_MCP_SECRET_AMAP_KEY").ok();
-        let prev_iwencai = std::env::var("PINVOU3_MCP_SECRET_IWENCAI_API_KEY").ok();
-        let prev_qcc = std::env::var("PINVOU3_MCP_SECRET_QCC_API_KEY").ok();
-        let prev_patsnap = std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").ok();
+        let prev_secrets = secrets::snapshot_secret_values();
+        secrets::clear_secret_values_for_test();
         let dir =
             std::env::temp_dir().join(format!("pinvou3-mkt-test-async-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         f().await;
         match prev {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
-        for (key, value) in [
-            ("PINVOU3_MCP_SECRET_AMAP_KEY", prev_amap),
-            ("PINVOU3_MCP_SECRET_IWENCAI_API_KEY", prev_iwencai),
-            ("PINVOU3_MCP_SECRET_QCC_API_KEY", prev_qcc),
-            ("PINVOU3_MCP_SECRET_PATSNAP_API_KEY", prev_patsnap),
-        ] {
-            match value {
-                // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
-                Some(v) => unsafe { std::env::set_var(key, v) },
-                // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
-                None => unsafe { std::env::remove_var(key) },
-            }
-        }
+        secrets::restore_secret_values(prev_secrets);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3337,7 +3340,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_secret_env_vars_restores_header_secret() {
+    fn sync_secret_values_restores_header_secret() {
         with_temp_home(|| {
             write_tool_manifest(
                 "patsnap-search",
@@ -3358,25 +3361,32 @@ mod tests {
                 .unwrap();
             let mgr = MarketplaceManager::with_store(store);
             mgr.save_installed(&["patsnap-search".to_string()]).unwrap();
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
-            unsafe { std::env::remove_var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY") };
 
-            mgr.sync_secret_env_vars().unwrap();
+            mgr.sync_secret_values().unwrap();
 
+            // The secret lands in the in-process registry (the foundation
+            // resolver reads it on demand)…
             assert_eq!(
-                std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY")
-                    .ok()
-                    .as_deref(),
+                secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").as_deref(),
                 Some(secret.as_str())
+            );
+            // …and the process env is no longer written (edition 2024 runtime
+            // env writes are eliminated).
+            assert!(
+                std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_err(),
+                "the secret must not be written to the process environment"
             );
         });
     }
 
     #[test]
     fn uninstall_patsnap_does_not_remove_other_connector_secrets() {
-        // 同时覆盖单连接器卸载契约(原 uninstall_remote_secret_header_removes_
-        // credential_and_env):卸载必须删除 server 条目、凭据引用与回灌 env;
-        // 并额外断言其他连接器(qcc)的凭据与 env 不受影响。
+        // Also covers the single-connector uninstall contract (originally
+        // uninstall_remote_secret_header_removes_credential_and_env):
+        // uninstalling must delete the server entry, the credential
+        // reference, and the registry value; and additionally asserts that
+        // another connector's (qcc) credentials and registry values are
+        // unaffected.
         with_temp_home(|| {
             write_tool_manifest(
                 "patsnap-search",
@@ -3410,9 +3420,7 @@ mod tests {
             mgr.install("qcc", &std::collections::HashMap::new())
                 .unwrap();
             assert_eq!(
-                std::env::var("PINVOU3_MCP_SECRET_QCC_API_KEY")
-                    .ok()
-                    .as_deref(),
+                secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_QCC_API_KEY").as_deref(),
                 Some(qcc_secret.as_str())
             );
 
@@ -3422,12 +3430,12 @@ mod tests {
             assert!(mcp["servers"].get("patsnap-search").is_none());
             assert!(mcp["servers"].get("qcc-company").is_some());
             assert_eq!(store.get(&patsnap_ref).unwrap(), None);
-            assert!(std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_err());
+            assert!(
+                secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_none()
+            );
             assert_eq!(store.get(&qcc_ref).unwrap(), Some(qcc_secret.clone()));
             assert_eq!(
-                std::env::var("PINVOU3_MCP_SECRET_QCC_API_KEY")
-                    .ok()
-                    .as_deref(),
+                secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_QCC_API_KEY").as_deref(),
                 Some(qcc_secret.as_str())
             );
         });
@@ -3474,7 +3482,7 @@ mod tests {
                     "PATSNAP_API_KEY"
                 ))
                 .unwrap(), None);
-            assert!(std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_err());
+            assert!(secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_none());
             assert!(!err.contains("wrong-token"));
         })
         .await;
@@ -3527,9 +3535,7 @@ mod tests {
                 Some("valid-token")
             );
             assert_eq!(
-                std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY")
-                    .ok()
-                    .as_deref(),
+                secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").as_deref(),
                 Some("valid-token")
             );
             assert!(validation.tools.contains(&"patsnap_search".to_string()));

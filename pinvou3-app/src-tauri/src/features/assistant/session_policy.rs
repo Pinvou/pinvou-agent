@@ -82,8 +82,9 @@ const MODE_TABLE: &[(SessionMode, ModeCapabilities)] = &[
 
 /// 查表（crate 内共用：SessionPolicy::capabilities 与按 scope 查表的小 helper）。
 /// 表是编译期静态的，缺项只能来自新增模式漏填——穷尽性测试会先于运行失败。
-// 表缺项仅可能由「新增 SessionMode 漏填行」引入，穷尽性测试在 CI 先行拦截；
-// 运行期到达该分支即编程错误，panic 可接受，不做静默 fallback。
+// A missing table row can only come from a newly added SessionMode without its
+// row; the exhaustiveness test blocks it in CI first. Reaching this branch at
+// runtime is a programming error, so panic is acceptable without a silent fallback.
 #[allow(clippy::expect_used)]
 fn capabilities_for(mode: SessionMode) -> ModeCapabilities {
     MODE_TABLE

@@ -1,4 +1,4 @@
-// 本文件为命令层测试,借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;跨 await 持有无竞争者,不会死锁。
+// Command-layer tests borrow platform::paths::tests::ENV_LOCK (a std Mutex) to serialize global env; cargo test runs on multiple threads, but env-writing tests are serialized by the mutex, and within a current_thread runtime holding the lock across await has no reentrant path, so it cannot deadlock.
 // architecture-guard: allow-target-cfg -- artifact 调用链回归需用 Windows 独占句柄模拟 ReplaceFileW 1177 布局
 #![allow(clippy::await_holding_lock)]
 
@@ -176,7 +176,7 @@ impl TempPinvou3Home {
         let previous = std::env::var("PINVOU3_HOME").ok();
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &root) };
         Self { root, previous }
     }
@@ -185,9 +185,9 @@ impl TempPinvou3Home {
 impl Drop for TempPinvou3Home {
     fn drop(&mut self) {
         match &self.previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&self.root);
@@ -461,9 +461,9 @@ struct TestPinvouHome {
 impl Drop for TestPinvouHome {
     fn drop(&mut self) {
         match self.previous.take() {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&self.root);
@@ -478,7 +478,7 @@ fn test_pinvou_home(tag: &str) -> TestPinvouHome {
     let previous = std::env::var("PINVOU3_HOME").ok();
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &root) };
     TestPinvouHome {
         root,
@@ -508,7 +508,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     let previous = std::env::var("PINVOU3_HOME").ok();
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &root) };
 
     // 用户关闭 visualizer（独立 disabled_skills.json，不再借道连接器文件）→
@@ -545,9 +545,9 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     );
 
     match previous {
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         None => unsafe { std::env::remove_var("PINVOU3_HOME") },
     }
     let _ = std::fs::remove_dir_all(&root);
@@ -568,7 +568,7 @@ fn mcp_install_links_companion_skills() {
     let previous = std::env::var("PINVOU3_HOME").ok();
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &root) };
 
     let mgr = crate::features::marketplace::MarketplaceManager::new();
@@ -594,9 +594,9 @@ fn mcp_install_links_companion_skills() {
     }
 
     match previous {
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         None => unsafe { std::env::remove_var("PINVOU3_HOME") },
     }
     let _ = std::fs::remove_dir_all(&root);
@@ -1214,7 +1214,7 @@ fn resolve_artifact_path_relative_joins_active_workspace() {
     let _g = crate::platform::paths::tests::ENV_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-resolve-test") };
     let store = SessionStore::boot().expect("boot");
 
@@ -1269,7 +1269,7 @@ fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
     ));
     let previous = std::env::var("PINVOU3_HOME").ok();
     let _ = std::fs::remove_dir_all(&root);
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &root) };
     let scheduled_root = root.join("scheduled");
     std::fs::create_dir_all(&root).expect("test root");
@@ -1346,9 +1346,9 @@ fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
 
     drop(store);
     match previous {
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         None => unsafe { std::env::remove_var("PINVOU3_HOME") },
     }
     let _ = std::fs::remove_dir_all(root);
@@ -1370,7 +1370,7 @@ fn scheduled_session_metadata_dispatch_supports_rename_pin_archive() {
     ));
     let previous = std::env::var("PINVOU3_HOME").ok();
     let _ = std::fs::remove_dir_all(&root);
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &root) };
     let store =
         SessionStore::boot_with_scheduled_root(root.join("scheduled")).expect("session store");
@@ -1433,9 +1433,9 @@ fn scheduled_session_metadata_dispatch_supports_rename_pin_archive() {
 
     drop(store);
     match previous {
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         None => unsafe { std::env::remove_var("PINVOU3_HOME") },
     }
     let _ = std::fs::remove_dir_all(root);
@@ -1452,7 +1452,7 @@ fn ordinary_ledger_root_behavior_is_unchanged() {
     ));
     let previous = std::env::var("PINVOU3_HOME").ok();
     let _ = std::fs::remove_dir_all(&root);
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &root) };
     let store = SessionStore::boot().expect("session store");
     let chat = store
@@ -1478,9 +1478,9 @@ fn ordinary_ledger_root_behavior_is_unchanged() {
 
     drop(store);
     match previous {
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         None => unsafe { std::env::remove_var("PINVOU3_HOME") },
     }
     let _ = std::fs::remove_dir_all(root);

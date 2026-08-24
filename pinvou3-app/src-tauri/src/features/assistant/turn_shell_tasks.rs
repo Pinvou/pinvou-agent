@@ -493,8 +493,9 @@ impl TurnShellTaskRegistry {
                     }
                 }
             }
-            // 同一把锁内上方 contains_key 已校验；此处按邻居分支习惯优雅返回，
-            // 保持“作用域缺失即拒绝注册”的语义。
+            // contains_key checked above under the same lock; return gracefully
+            // like the neighboring branch, keeping the "missing scope rejects
+            // registration" semantics.
             let Some(scope) = state.scopes.get_mut(&scope_id) else {
                 return false;
             };

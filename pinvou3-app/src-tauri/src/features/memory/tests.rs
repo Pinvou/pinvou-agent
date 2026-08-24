@@ -754,7 +754,8 @@ impl IsolatedPinvouHome {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &root) };
         Self {
             root,
@@ -813,9 +814,11 @@ fn memory_review_diagnostic_classifies_request_parse_and_apply_failures() {
 impl Drop for IsolatedPinvouHome {
     fn drop(&mut self) {
         match &self.prev {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes
+            // are serialized in-process.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes
+            // are serialized in-process.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = fs::remove_dir_all(&self.root);

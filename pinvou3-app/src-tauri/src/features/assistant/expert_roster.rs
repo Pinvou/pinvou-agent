@@ -33,7 +33,9 @@ impl ExpertRosterSnapshot {
     pub fn capture() -> Arc<Self> {
         loop {
             let before = crate::features::personas::executable_revision();
-            // 快照缓存只做加速，持锁 panic 不应拖垮会话：沿用全仓锁中毒恢复惯例。
+            // The snapshot cache only speeds things up; a panic while holding
+    // the lock must not take down sessions: follow the repo-wide lock
+    // poisoning recovery convention.
             if let Some(snapshot) = snapshot_cache()
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -50,7 +52,9 @@ impl ExpertRosterSnapshot {
                 continue;
             }
             let candidate = Arc::new(Self::from_cards(cards));
-            // 同上：写锁中毒时取回守卫继续，缓存内容整体替换无部分写入风险。
+            // Same as above: on write-lock poisoning recover the guard and
+    // continue; the cache content is replaced wholesale, so there is
+    // no partial-write risk.
             let mut cache = snapshot_cache()
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -421,7 +425,7 @@ pub fn cleanup_legacy_expert_projection(
         session_dir,
         ledger,
         dir.parent()
-            .ok_or_else(|| format!("旧专家投影目录没有父目录: {}", dir.display()))?,
+            .ok_or_else(|| format!("legacy expert projection dir has no parent: {}", dir.display()))?,
         &dir,
     ] {
         let metadata = std::fs::symlink_metadata(component).map_err(|error| {
@@ -548,7 +552,7 @@ mod tests {
             std::thread::current().id()
         ));
         let _ = std::fs::remove_dir_all(&isolated_home);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &isolated_home) };
         crate::features::personas::reload_user();
 
@@ -601,9 +605,9 @@ mod tests {
         assert!(!after_delete.fleet_config().profiles.contains_key(&role_id));
 
         match previous_home {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         crate::features::personas::reload_user();

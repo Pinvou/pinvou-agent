@@ -389,7 +389,8 @@ impl Store {
 
         let text = q.text.as_deref().map(str::trim).filter(|s| !s.is_empty());
 
-        // text 存在且 ≥3 字符走 FTS，分支内直接持有 Some 值，避免重复解包。
+        // Text present with >=3 chars goes to FTS; the branch holds the Some
+        // value directly, avoiding a repeated unwrap.
         if let Some(t) = text.filter(|t| t.chars().count() >= 3) {
             sql.push_str(
                 "SELECT f.path, f.name, f.ext, f.size, f.mtime, f.is_dir \

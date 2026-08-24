@@ -1805,7 +1805,7 @@ mod tests {
             std::process::id(),
             crate::platform::paths::tests::unique_suffix()
         ));
-        // SAFETY: 持 crate 级 ENV_LOCK(本测试首行已取锁),env 写已串行化。
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let mut initial = UserPrefs::default();
@@ -1845,9 +1845,9 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
         match old_home {
-            // SAFETY: 持 crate 级 ENV_LOCK(本测试首行已取锁),env 写已串行化。
+            // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 同上,ENV_LOCK 串行化下的恢复删除。
+            // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }

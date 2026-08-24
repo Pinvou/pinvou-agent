@@ -6,7 +6,6 @@ pub mod connector_state;
 pub mod credential_store;
 pub(crate) mod download;
 pub(crate) mod encoding;
-pub(crate) mod env_write;
 pub(crate) mod filesystem;
 pub(crate) mod hashing;
 pub(crate) mod notifications;

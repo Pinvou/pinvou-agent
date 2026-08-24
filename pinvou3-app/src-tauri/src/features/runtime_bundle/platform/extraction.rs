@@ -673,9 +673,14 @@ impl Pinvou3Bundle {
         // 条目自愈恢复(parse 失败早期返回会让坏 mcp.json 永远修不好)。
         let mut mcp = self.load_mcp_json_for_repair();
         let present_server = paths::bundle_present_artifact_server();
-        // load_mcp_json_for_repair 两条路径都返回对象骨架；异常形态以错误返回兜底。
+        // Both paths of load_mcp_json_for_repair return an object skeleton;
+        // reaching either arm below means the user hand-edited mcp.json into
+        // a valid-but-unexpected shape, so include the file path in the error.
         let Some(mcp_object) = mcp.as_object_mut() else {
-            return Err(std::io::Error::other("mcp.json 顶层不是对象"));
+            return Err(std::io::Error::other(format!(
+                "mcp.json top level is not an object: {}",
+                self.mcp_json.display()
+            )));
         };
         if mcp_object
             .get("servers")
@@ -685,7 +690,10 @@ impl Pinvou3Bundle {
             mcp_object.insert("servers".into(), serde_json::json!({}));
         }
         let Some(servers) = mcp["servers"].as_object_mut() else {
-            return Err(std::io::Error::other("mcp.json 的 servers 不是对象"));
+            return Err(std::io::Error::other(format!(
+                "mcp.json servers value is not an object: {}",
+                self.mcp_json.display()
+            )));
         };
         // 迁移:旧版 server key 是 `pinvou`(与产品名 `pinvou3` 差一个 3,模型采样必漂成
         // pinvou3 → `Failed to find MCP server: pinvou3`)。改用 `pinvou3` 对齐产品名,并删掉
@@ -1251,7 +1259,8 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = super::Pinvou3Bundle::paths();
 
         // Installed Upload record colliding with the embedded spec id "weather".
@@ -1277,7 +1286,8 @@ mod tests {
             "上传包目录不得被内嵌重释放覆盖"
         );
 
-        std::env::remove_var("PINVOU3_HOME");
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

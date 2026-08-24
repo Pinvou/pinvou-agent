@@ -32,8 +32,9 @@ pub(crate) fn configure_runtime_environment() {
     #[cfg(target_os = "windows")]
     if std::env::var_os("HOME").is_none() {
         if let Some(profile) = std::env::var_os("USERPROFILE") {
-            // SAFETY: 仅在 run() 启动序列(单线程阶段,Tauri/tokio 运行时未启动)调用,
-            // 与本文件其余 env 写同属启动收口,无并发读者。
+            // SAFETY: only called during the run() startup sequence (single-threaded
+            // phase, Tauri/tokio runtimes not started); same startup env-write
+            // collection as the other env writes here, no concurrent readers.
             unsafe { std::env::set_var("HOME", profile) };
         }
     }
@@ -42,7 +43,8 @@ pub(crate) fn configure_runtime_environment() {
     {
         for (key, value) in LINUX_UI_ENV_DEFAULTS {
             if std::env::var_os(key).is_none() {
-                // SAFETY: 仅在 run() 启动序列(单线程阶段,任何子进程/线程尚未启动)调用。
+                // SAFETY: only called during the run() startup sequence (single-threaded
+                // phase, no child process or thread started yet).
                 unsafe { std::env::set_var(key, value) };
             }
         }
@@ -52,7 +54,7 @@ pub(crate) fn configure_runtime_environment() {
         let is_arm64_nvidia =
             cfg!(target_arch = "aarch64") && Path::new("/proc/driver/nvidia/version").is_file();
         if should_force_webkit_dmabuf_shm(is_arm64_nvidia, has_override) {
-            // SAFETY: 同上,run() 启动序列单线程阶段。
+            // SAFETY: same as above, run() startup sequence single-threaded phase.
             unsafe { std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1") };
         }
     }

@@ -1754,8 +1754,8 @@ fn cosine_blob(query: &[f32], blob: &[u8]) -> Option<f32> {
         return None;
     }
     let mut score = 0.0f32;
-    for (left, chunk) in query.iter().zip(blob.chunks_exact(4)) {
-        let right = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    for (left, chunk) in query.iter().zip(blob.as_chunks::<4>().0) {
+        let right = f32::from_le_bytes(*chunk);
         score += left * right;
     }
     score.is_finite().then_some(score)

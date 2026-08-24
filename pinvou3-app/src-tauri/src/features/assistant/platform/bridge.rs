@@ -224,26 +224,25 @@ impl Pinvou3Bridge {
     /// 找到用户在桌面/文档/下载里的真实文件。配套敏感目录禁令在
     /// `bundle/instructions.md` 里引导，硬拦截后续走 deepseek-tui hook 注册。
     ///
-    /// boot 路径的 env 注入唯一收口（PR #210 守卫目标）：只写会话产物目录
-    /// `PINVOU3_SESSION_ARTIFACTS`。PPT / 公文等 MCP server 是 stdio 子进程，
-    /// 不能可靠感知当前 GUI session，故二进制办公产物固定落到
-    /// `sessions/default/artifacts/`，具体归属由带 `session_id` 的工具事件和前端
-    /// 持久化决定。
+    /// The session artifacts dir `PINVOU3_SESSION_ARTIFACTS` is NOT injected here:
+    /// boot runs in the multi-threaded phase, and process env writes are
+    /// funneled to lib.rs `startup_process_env` (the single-threaded startup
+    /// window).
     ///
     /// ⚠️ 不得在这里（或 boot 其它位置）注入 `DEEPSEEK_MAX_OUTPUT_TOKENS` /
     /// `PINVOU3_MAX_OUTPUT_TOKENS`：底座 `effective_max_output_tokens()` 优先读
     /// 前者，一旦回归会把所有模型（含云端）输出上限重新钉死 24576——正是本 PR
     /// 移除的根因。lib.rs `release_env_defaults_guard` 守 run() 的 release env 注入，
     /// 本函数 + `forkguard_boot_env_must_not_pin_global_output_cap` 守 boot 注入源头。
-    fn wire_boot_env(artifacts_dir: &std::path::Path) {
-        let _env_guard = crate::platform::env_write::lock();
-        // SAFETY: 持上方 let 绑定的 platform::env_write 锁串行化进程 env 写。boot
-        // 发生在 Tauri setup 阶段(多线程运行时已启动),与安装流程/底座子进程 env
-        // 快照可能并发,不能主张单线程;锁内仅此一次写。外部运行时(WebKit 等)的
-        // libc getenv 并发是已文档化的接受残余风险(见 platform/env_write.rs)。
-        unsafe { std::env::set_var("PINVOU3_SESSION_ARTIFACTS", artifacts_dir) };
-    }
-
+    ///
+    /// ⚠️ boot runs in the Tauri setup phase (the multi-threaded runtime is
+    /// already up), so it must NOT write the process env (edition 2024: a
+    /// runtime write is a data race against uncoordinated concurrent readers).
+    /// The `PINVOU3_SESSION_ARTIFACTS` injection (the artifacts landing dir for
+    /// MCP stdio subprocesses such as PPT / official-document tools, fixed to
+    /// `sessions/default/artifacts/`) has been moved up to lib.rs
+    /// `startup_process_env` (the single-threaded window of the run()/headless
+    /// startup sequence).
     pub fn boot() -> Result<Self> {
         // ⓪ 注入 pinvou3 版 prompt 文案到底座 prompt 合成层(base/locale/authority)。
         // 幂等(底座 OnceLock 首次生效、后续 Err 被忽略),必须早于任何 engine spawn。
@@ -251,6 +250,10 @@ impl Pinvou3Bridge {
         // dump 同样生效。
         crate::platform::startup::mark("bridge_boot:prompt_overrides:start");
         bundle::install_prompt_overrides();
+        // Register the foundation's MCP secret resolver (secrets live in the
+        // keyring + an in-process registry, no process env writes); like the
+        // prompt overrides it must run before any engine spawn.
+        marketplace::install_mcp_secret_resolver();
         crate::platform::startup::mark("bridge_boot:prompt_overrides:done");
         crate::platform::startup::mark("bridge_boot:ensure_dirs:start");
         paths::ensure_dirs()?;
@@ -266,7 +269,7 @@ impl Pinvou3Bridge {
         // rust_feature_cycles 基线为空）。幂等、内部不返回错误，不阻塞启动。
         crate::features::connectors::native_installer::migrate_legacy_cli_binaries();
         crate::platform::startup::mark("bridge_boot:mcp_secret_sync:start");
-        if let Err(err) = marketplace::sync_mcp_secret_env_vars() {
+        if let Err(err) = marketplace::sync_mcp_secret_values() {
             eprintln!("[pinvou3-app] MCP secret env sync skipped: {err}");
             crate::platform::startup::mark_with_detail(
                 "rust",
@@ -281,8 +284,6 @@ impl Pinvou3Bridge {
         if !paths::settings_path().exists() {
             prefs.save().ok();
         }
-        let artifacts = paths::default_session_artifacts_dir();
-        Self::wire_boot_env(&artifacts);
         let this = Self {
             prefs,
             bundle,
@@ -2417,7 +2418,10 @@ fn interpreters_for_script(path: &std::path::Path) -> &'static [&'static str] {
 }
 
 #[cfg(test)]
-// 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
+// Tests borrow platform::paths::tests::ENV_LOCK (std Mutex) to serialize global env access;
+// cargo test runs test threads in parallel, but env-writing tests are mutually serialized, and
+// the lock is held across await only inside a current_thread runtime with no reentrant path,
+// so it cannot deadlock.
 #[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
@@ -2450,10 +2454,10 @@ mod tests {
         fn drop(&mut self) {
             for (name, value) in &self.vars {
                 if let Some(value) = value {
-                    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
                     unsafe { std::env::set_var(name, value) };
                 } else {
-                    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
                     unsafe { std::env::remove_var(name) };
                 }
             }
@@ -2898,7 +2902,7 @@ mod tests {
             std::env::temp_dir().join(format!("pinvou3-bridge-shape-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         // 模拟已装 weather/pptx 两个连接器(code 未初始化 → 默认全禁)。
         let installed = dir.join("marketplace").join("installed.json");
@@ -2977,7 +2981,7 @@ mod tests {
             std::env::temp_dir().join(format!("pinvou3-bridge-clidny-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let mut bridge = fixture_bridge();
@@ -3094,7 +3098,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let mut bridge = fixture_bridge();
@@ -3210,7 +3214,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         // 盘上放一个带脚本的市场技能目录（SKILL.md + upload 标记 → 对已装技能
         // 集合可见，code 未初始化「默认全禁」才能覆盖它）。市场技能已迁到按包聚合
@@ -3450,11 +3454,11 @@ mod tests {
     fn vision_config_reuses_main_model_only_when_supported() {
         let (_lock, _env) =
             locked_env(&["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL"]);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_MODEL") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
         let mut bridge = fixture_bridge();
         set_active_model(
@@ -4027,13 +4031,13 @@ mod tests {
             "DEEPSEEK_PROVIDER",
             "PINVOU3_MAX_OUTPUT_TOKENS",
         ]);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("CODEWHALE_MAX_OUTPUT_TOKENS") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
 
         // A. 云端（Deepseek preset）：SavedModel.max_output_tokens=None（保存云端模型
@@ -4072,7 +4076,7 @@ mod tests {
         // C. env 残留（旧生产双保险未清干净 / 未来有人重新注入）：品悟中间层不读
         //    该 env（route 仍不声明）——但这只是中间层事实，底座最终预算链会读
         //    （见 D 段）。此处只锁"中间层不被 env 污染"，不能据此声称残留无害。
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576") };
         let cloud_limits_env = cloud.route_limits_for_model("deepseek-v4-pro");
         assert_eq!(
@@ -4093,7 +4097,7 @@ mod tests {
             output_tokens: None,
         };
         // 先回到 clean env 基准（C 段末尾已 set 24576）。
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
         let budget_clean = deepseek_tui::core::engine::context_input_budget_for_route(
             deepseek_tui::config::ApiProvider::Deepseek,
@@ -4102,7 +4106,7 @@ mod tests {
             0,
         )
         .expect("显式 256K route 必须能算出输入预算");
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576") };
         let budget_env = deepseek_tui::core::engine::context_input_budget_for_route(
             deepseek_tui::config::ApiProvider::Deepseek,
@@ -4121,23 +4125,23 @@ mod tests {
             65_536 - 24_576,
             "reservation 差应恰为底座 64K 兜底 − 本地 24K（clamp/headroom 两侧相同）"
         );
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
     }
 
     /// PR #210 守卫（第四轮评审修正 2026-08-12）：bridge boot 的 env 注入结果
     /// 不得包含输出上限 env。lib.rs `release_env_defaults_guard` 只覆盖 run() 的
     /// release env 注入路径；若未来有人在 boot 路径直接 set_var
-    /// `DEEPSEEK_MAX_OUTPUT_TOKENS`，那边的守卫抓不到——故把 boot 的 env 写入收口到
-    /// `wire_boot_env` 单一源头，并在**隔离 home 下实际执行 `Pinvou3Bridge::boot()`**
-    /// 后断言最终 env 状态：无论注入发生在 boot 哪一行，只要重新注入 24576，守卫即失败。
+    /// `DEEPSEEK_MAX_OUTPUT_TOKENS`, which that guard cannot see — so this test
+    /// actually runs `Pinvou3Bridge::boot()` under an isolated home and asserts
+    /// the final env state: no matter which boot line the injection happens
+    /// on, re-injecting 24576 fails the guard.
     ///
-    /// 第四轮评审此前指出：旧版守卫只直接调用 `wire_boot_env` helper，wire_boot_env
-    /// 不是由类型/编译器强制的唯一 env 写入口，未来若有人在 boot 其他位置直接
-    /// set_var、重建旧 helper 或调用其他 helper，该测试仍会通过。本版改为跑真实
-    /// boot：boot 在隔离临时目录下执行（bundle 解包 / settings 写入 / legacy 清扫全落
-    /// 隔离目录，不触碰真实 `~/.pinvou3` 与用户 home 文件），断言 boot 后进程 env 无
-    /// 这两个 key 且 `PINVOU3_SESSION_ARTIFACTS` 正常写入。
+    /// edition 2024 onwards, boot (Tauri setup, multi-threaded phase) must not
+    /// write the process env at all: the `PINVOU3_SESSION_ARTIFACTS` injection
+    /// has been moved up to lib.rs `startup_process_env` (the single-threaded
+    /// startup window). This test also locks that boundary: after boot the key
+    /// must still be unset.
     ///
     /// 第五轮评审修正 2026-08-13：此前只隔离 `HOME`——Windows 的 `user_home_dir()`
     /// 优先读 `USERPROFILE`、其次 `HOMEDRIVE`+`HOMEPATH`、最后才 `HOME`，只设 `HOME`
@@ -4158,10 +4162,12 @@ mod tests {
             "HOMEDRIVE",
             "HOMEPATH",
         ]);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_SESSION_ARTIFACTS") };
 
         // RAII 清理：boot 会全量解包 bundle 到隔离 home，断言/panic 时也须回收
         // （此前仅在正常结尾 remove_dir_all，中途失败会残留整份 bundle）。
@@ -4181,18 +4187,18 @@ mod tests {
         let _temp = TempDirGuard(root.clone());
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("创建隔离 home");
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &root) };
         // 三平台 user_home_dir() 来源全部隔离到 root：macOS/Linux 读 HOME；Windows
         // 优先 USERPROFILE，其次 HOMEDRIVE+HOMEPATH，最后 HOME。若不隔离 Windows 的
         // 前两项，boot 的 workspace 仍指向真实用户目录，legacy 清扫会触碰真实文件。
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("HOME", &root) };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("USERPROFILE", &root) };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("HOMEDRIVE") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("HOMEPATH") };
 
         let bridge = super::Pinvou3Bridge::boot().expect("隔离 home 下 boot 必须成功");
@@ -4205,12 +4211,12 @@ mod tests {
             std::env::var_os("PINVOU3_MAX_OUTPUT_TOKENS").is_none(),
             "boot 执行后不得注入 PINVOU3_MAX_OUTPUT_TOKENS"
         );
-        // boot 仍应写 PINVOU3_SESSION_ARTIFACTS（收口函数行为不变）。
-        let artifacts = paths::default_session_artifacts_dir();
-        assert_eq!(
-            std::env::var("PINVOU3_SESSION_ARTIFACTS").as_deref(),
-            Ok(artifacts.to_str().expect("隔离 home 路径必须是 UTF-8")),
-            "boot 仍应写 PINVOU3_SESSION_ARTIFACTS（收口函数行为不变）"
+        // boot must not write the process env (env writes are forbidden in the
+        // multi-threaded phase; PINVOU3_SESSION_ARTIFACTS is injected by lib.rs
+        // `startup_process_env` in the single-threaded startup window).
+        assert!(
+            std::env::var_os("PINVOU3_SESSION_ARTIFACTS").is_none(),
+            "boot must not write PINVOU3_SESSION_ARTIFACTS (injection is funneled to startup_process_env)"
         );
 
         // bridge 先于 TempDirGuard 回收（guard 声明更早、drop 更晚），避免删目录时
@@ -4461,7 +4467,7 @@ mod tests {
             let e = win - output - 1_024;
             let conservative = (t + R) * K_NUM / K_DEN + S + FRAMING;
             eprintln!(
-                "[云端 {model}] window={win} output={output} → T={t}  E={e}  conservative={conservative}"
+                "[cloud {model}] window={win} output={output} → T={t}  E={e}  conservative={conservative}"
             );
             assert!(
                 conservative <= e,
@@ -4773,9 +4779,9 @@ mod tests {
     fn forkguard_compaction_threshold_below_emergency_all_windows() {
         let (_lock, _env) =
             locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
         // 把 T 从 should_compact 的 raw 子集尺 → emergency 的 conservative 全量尺
         const K_NUM: usize = 3; // ÷ K_DEN == ×1.5
@@ -5035,7 +5041,7 @@ mod tests {
     #[test]
     fn allow_shell_defaults_to_true() {
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
         assert!(fixture_bridge().allow_shell());
     }
@@ -5043,7 +5049,7 @@ mod tests {
     #[test]
     fn allow_shell_uses_advanced_preference_without_env_override() {
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.allow_shell = Some(false);
@@ -5056,7 +5062,7 @@ mod tests {
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.allow_shell = Some(true);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_ALLOW_SHELL", "false") };
         assert!(!bridge.allow_shell());
     }
@@ -5145,11 +5151,11 @@ mod tests {
         use serde_json::json;
 
         let (_lock, _env) = locked_env(&["SHELL", "XDG_RUNTIME_DIR", "OPENAI_API_KEY"]);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("SHELL", "/bin/bash") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", "/run/user/4242") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("OPENAI_API_KEY", "must-not-leak") };
 
         let workspace =
@@ -5231,7 +5237,7 @@ mod tests {
         // remove_var 是无保护的 env 写,须持 crate 级 ENV_LOCK 与 allow_shell_* 组串行,
         // 否则去掉 --test-threads=1 后会与同组测试并发污染 PINVOU3_ALLOW_SHELL。
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
         let bridge = fixture_bridge();
         let op = bridge
@@ -5265,7 +5271,7 @@ mod tests {
         // 本测试既 remove_var 又经 allow_shell_for_prefs() 读 PINVOU3_ALLOW_SHELL 断言 true;
         // 不持锁时会与 allow_shell_env_overrides_prefs(临界区内 set "false")竞态 → 断言偶发失败。
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
         let bridge = fixture_bridge();
         let op = bridge
@@ -5451,11 +5457,11 @@ mod tests {
             crate::bridge::paths::tests::unique_suffix()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &root) };
 
         let public_artifacts = paths::default_session_artifacts_dir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_SESSION_ARTIFACTS", &public_artifacts) };
 
         let bridge = fixture_bridge();
@@ -5899,13 +5905,13 @@ mod tests {
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.model_preset = Some(ModelPreset::OpenaiCompatible);
         bridge.prefs.advanced.custom_model_name = Some("custom-openai-model".to_string());
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_MODEL", "env-model") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_PROVIDER", "env-provider") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_BASE_URL", "http://env:8000/v1") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
         assert_eq!(bridge.model(), "env-model");
         assert_eq!(bridge.provider(), "env-provider");
@@ -5929,7 +5935,7 @@ mod tests {
             "https://api.openai.com/v1",
             "saved-key",
         );
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
         bridge.runtime_model_credential =
             Some(RuntimeModelCredential::api_key("runtime-key").expect("runtime credential"));
@@ -5957,7 +5963,7 @@ mod tests {
             "https://api.openai.com/v1",
             "saved-key",
         );
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_API_KEY", "  ") };
         assert_eq!(bridge.api_key(), "saved-key");
     }
@@ -6076,11 +6082,11 @@ mod tests {
             "http://127.0.0.1:8000/v1",
             "",
         );
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_PROVIDER", "vllm") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_BASE_URL", "https://api.deepseek.com/") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_MODEL", "deepseek-ai/DeepSeek-V4-Pro") };
 
         assert_eq!(bridge.provider(), "deepseek");

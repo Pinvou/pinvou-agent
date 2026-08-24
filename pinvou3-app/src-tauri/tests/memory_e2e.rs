@@ -22,9 +22,11 @@ use pinvou3_lib::features::memory::{
 
 const DEFAULT_VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
 
-/// 用例间共享 PINVOU3_HOME / DEEPSEEK_* 环境变量：同 target 默认并行跑，env 互相
-/// 覆盖会竞态——进程内 std Mutex 串行化（与 lib 单测的 ENV_LOCK 同范式,不新增依赖;
-/// 集成测试进程访问不到 lib 的 cfg(test) 锁,故本文件自建一把）。
+/// Test cases share PINVOU3_HOME / DEEPSEEK_* env vars: tests in the same
+/// target run in parallel by default, and overlapping writes would race, so
+/// serialize them with an in-process std Mutex (same pattern as the lib unit
+/// tests' ENV_LOCK, no new dependency; the integration test binary cannot
+/// reach the lib's cfg(test) lock, so this file owns its own).
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct EnvGuard {
@@ -40,7 +42,8 @@ impl EnvGuard {
         if !self.saved.iter().any(|(k, _)| *k == key) {
             self.saved.push((key, std::env::var_os(key)));
         }
-        // SAFETY: 持本文件 ENV_LOCK,测试进程内 env 写已串行化。
+        // SAFETY: this file's ENV_LOCK is held; env writes are serialized in
+        // the test process.
         unsafe { std::env::set_var(key, value.into()) };
     }
 }
@@ -49,9 +52,11 @@ impl Drop for EnvGuard {
     fn drop(&mut self) {
         for (key, value) in self.saved.iter().rev() {
             match value {
-                // SAFETY: 持本文件 ENV_LOCK,测试进程内 env 写已串行化。
+                // SAFETY: this file's ENV_LOCK is held; env writes are
+                // serialized in the test process.
                 Some(value) => unsafe { std::env::set_var(key, value) },
-                // SAFETY: 持本文件 ENV_LOCK,测试进程内 env 写已串行化。
+                // SAFETY: this file's ENV_LOCK is held; env writes are
+                // serialized in the test process.
                 None => unsafe { std::env::remove_var(key) },
             }
         }

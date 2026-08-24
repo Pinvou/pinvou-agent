@@ -1085,7 +1085,9 @@ impl L1Store {
         )?;
         let mut out: Vec<ChunkHit> = Vec::new();
         for path in order {
-            // order 与 by_doc 在上方同一循环内同步构建，每个 path 必有聚合项。
+            // `order` and `by_doc` are built in the same loop above, so every
+        // path must have an aggregation entry. If that invariant ever
+        // breaks, skip the path loudly instead of silently losing recall.
             let Some((document_id, best, doc_name, ords)) = by_doc.remove(&path) else {
                 continue;
             };
@@ -1097,7 +1099,8 @@ impl L1Store {
                     want.insert(x);
                 }
             }
-            // 聚合条目至少含一个命中 ord（条目由命中创建），want 必非空。
+            // Each aggregation entry is created by at least one hit ord, so
+        // `want` cannot be empty. Guard the invariant the same way.
             let (Some(&lo), Some(&hi)) = (want.first(), want.last()) else {
                 continue;
             };

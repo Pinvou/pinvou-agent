@@ -26,8 +26,11 @@ struct X11Pointer(*mut x11::xlib::Display);
 #[cfg(target_os = "linux")]
 impl X11Pointer {
     fn new() -> Option<Self> {
-        // 纯 Wayland(无 XWayland)时 XOpenDisplay 返回 null —— 返回 None 让调用方降级。
-        // 存裸指针(Display 是 Xlib 不透明类型,不可按值持有);XCloseDisplay 在 Drop 里释放。
+        // SAFETY: passing null to XOpenDisplay connects via the DISPLAY env
+        // var, with no other pointer contract to satisfy; the returned
+        // Display* is null-checked before being stored in Self (Xlib opaque
+        // types can only be held as raw pointers). On pure Wayland (no
+        // XWayland) it returns null — return None so the caller can fall back.
         unsafe {
             let d = x11::xlib::XOpenDisplay(std::ptr::null());
             if d.is_null() { None } else { Some(Self(d)) }
@@ -38,7 +41,10 @@ impl X11Pointer {
 #[cfg(target_os = "linux")]
 impl Drop for X11Pointer {
     fn drop(&mut self) {
-        // 线程退出时关 Display,避免 X server 侧连接泄漏。
+        // SAFETY: self.0 is the Display* successfully returned by XOpenDisplay
+        // in new(), valid while the thread lives; Drop runs once and the value
+        // is unused after the close, so no double free (and no X server-side
+        // connection leak).
         unsafe {
             x11::xlib::XCloseDisplay(self.0);
         }
@@ -49,6 +55,10 @@ impl Drop for X11Pointer {
 fn poll_global_mouse(dev: &X11Pointer) -> GlobalMouse {
     use std::os::raw::{c_int, c_uint, c_ulong};
     use x11::xlib::{Button1Mask, XDefaultRootWindow, XQueryPointer};
+    // SAFETY: dev.0 is a valid, not-yet-closed Display* established by
+    // XOpenDisplay; root comes from XDefaultRootWindow on the same Display;
+    // all other arguments are writable locals on this function's stack whose
+    // lifetimes cover the XQueryPointer call.
     unsafe {
         let root = XDefaultRootWindow(dev.0);
         let mut root_return: c_ulong = 0;
@@ -170,10 +180,13 @@ mod macos_mouse {
     /// 同步读全局鼠标位置 + 左键按下态。任意线程可调,免授权。任一 CG 调用失败(罕见,
     /// 如 window server 异常)返回零值快照,轮询循环下一轮重试,不会崩溃。
     pub(super) fn poll() -> GlobalMouse {
-        // SAFETY: CGEventCreate 允许 source 传 NULL（默认事件源）；返回的 event
-        // 已判空，CGEventGetLocation 只读其内部坐标；CFRelease 对成功创建的对象
-        // 恰好释放一次；CGEventSourceButtonState 第一参数是 int32 枚举值
-        // （HID_SYSTEM_STATE），不涉及指针。三者均可在任意线程调用且免授权。
+        // SAFETY: CGEventCreate accepts NULL for source (default event
+        // source); the returned event is null-checked and CGEventGetLocation
+        // only reads its internal coordinates; CFRelease releases a
+        // successfully created object exactly once; the first parameter of
+        // CGEventSourceButtonState is an int32 enum value
+        // (HID_SYSTEM_STATE), not a pointer. All three are callable on any
+        // thread without authorization.
         unsafe {
             let event = CGEventCreate(core::ptr::null_mut());
             if event.is_null() {

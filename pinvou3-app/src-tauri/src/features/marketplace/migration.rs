@@ -7,6 +7,7 @@ use super::MarketplaceManager;
 use super::connectors::write_json_pretty;
 use super::secrets::{
     mcp_secret_env_var, mcp_secret_placeholder, mcp_secret_reference, mcp_secret_store_error,
+    store_secret_value,
 };
 use super::types::McpSecretMigrationResult;
 
@@ -204,10 +205,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 return Err(mcp_secret_store_error(spec.tool_id, spec.key, e));
             }
         };
-        let _env_guard = crate::platform::env_write::lock();
-        // SAFETY: 持上方 let 绑定的 env_write 锁串行化 env 写;本函数运行在
-        // install 的 spawn_blocking 线程或 boot 提取路径,多线程阶段。
-        unsafe { std::env::set_var(mcp_secret_env_var(spec.key), env_value) };
+        store_secret_value(mcp_secret_env_var(spec.key), env_value);
         Ok(())
     }
 }

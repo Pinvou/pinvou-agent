@@ -36,9 +36,9 @@ impl Drop for EnvRestore {
     fn drop(&mut self) {
         for (name, value) in &self.values {
             match value {
-                // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
                 Some(value) => unsafe { std::env::set_var(name, value) },
-                // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
                 None => unsafe { std::env::remove_var(name) },
             }
         }
@@ -252,7 +252,7 @@ fn fleet_config_survives_execution_ledger_split_and_keeps_native_precedence() {
     let codewhale_home = root.join("codewhale-home");
     std::fs::create_dir_all(&execution).expect("create execution root");
     std::fs::create_dir_all(&ledger).expect("create ledger root");
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
     unsafe { std::env::set_var("CODEWHALE_HOME", &codewhale_home) };
 
     let snapshot = ExpertRosterSnapshot::capture();
@@ -343,23 +343,23 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
     let pinvou_home = root.join("pinvou-home");
     let codewhale_home = root.join("codewhale-home");
     std::fs::create_dir_all(&project).expect("create project");
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
     unsafe { std::env::set_var("PINVOU3_HOME", &pinvou_home) };
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
     unsafe { std::env::set_var("CODEWHALE_HOME", &codewhale_home) };
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
     unsafe { std::env::set_var("DEEPSEEK_PROVIDER", "vllm") };
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
     unsafe { std::env::set_var("DEEPSEEK_API_KEY", "local-test-key") };
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
     unsafe { std::env::set_var("DEEPSEEK_MODEL", "qwen36_35b_256k") };
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
     unsafe { std::env::set_var("DEEPSEEK_REASONING_EFFORT", "off") };
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
     unsafe { std::env::set_var("DEEPSEEK_ALLOW_INSECURE_HTTP", "1") };
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
     unsafe { std::env::set_var("DEEPSEEK_FORCE_HTTP1", "1") };
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
     unsafe { std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "4096") };
 
     let created = crate::features::personas::create_user_persona(PersonaCard {
@@ -376,7 +376,7 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
     .expect("create probe persona");
     let profile_id = format!("exp-{}", created.id);
     let (base_url, probe, server_task) = start_spawn_probe(profile_id.clone()).await;
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
     unsafe { std::env::set_var("DEEPSEEK_BASE_URL", base_url) };
 
     let mut bridge = Pinvou3Bridge::boot_with_workspace(project.clone()).expect("boot bridge");

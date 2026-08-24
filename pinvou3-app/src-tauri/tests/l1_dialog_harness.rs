@@ -28,9 +28,11 @@ use pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge;
 
 const DEFAULT_VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
 
-/// 用例间共享 PINVOU3_HOME / DEEPSEEK_* 环境变量：同 target 默认并行跑，env 互相
-/// 覆盖会竞态——进程内 std Mutex 串行化（与 lib 单测的 ENV_LOCK 同范式,不新增依赖;
-/// 集成测试进程访问不到 lib 的 cfg(test) 锁,故本文件自建一把）。
+/// PINVOU3_HOME / DEEPSEEK_* env vars are shared across cases: tests in the same
+/// target run in parallel by default, so overlapping env writes would race --
+/// serialize them with an in-process std Mutex (same pattern as the lib unit-test
+/// ENV_LOCK, no new dependency; the integration-test process cannot reach the
+/// lib's cfg(test) lock, so this file owns its own).
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn strict_l1_enabled() -> bool {
@@ -553,7 +555,7 @@ fn ensure_runtime_env() {
 
 fn set_var_if_unset(k: &str, v: &str) {
     if std::env::var_os(k).is_none() {
-        // SAFETY: 持本文件 ENV_LOCK,测试进程内 env 写已串行化。
+        // SAFETY: this file's ENV_LOCK is held; env writes are serialized in the test process.
         unsafe { std::env::set_var(k, v) };
     }
 }

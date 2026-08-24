@@ -106,9 +106,11 @@ pub(super) fn acquire_process_lock(
     // is intended — the process-ownership lock is held until process exit and
     // the allocation is deliberately never freed on that path.
     let lock = Box::into_raw(Box::new(fd_lock::RwLock::new(file)));
-    // SAFETY: lock 是 Box::into_raw 交出的唯一属主指针，无其它引用；&mut 仅在
-    // try_write 调用期间存活，成功返回的 guard 承载该借用（有意持有到进程退出，
-    // 分配永不释放），失败路径在下方 Box::from_raw 收回。
+    // SAFETY: lock is the sole owning pointer handed out by Box::into_raw with no
+    // other references; the &mut lives only for the try_write call, a successfully
+    // returned guard carries that borrow (deliberately held until process exit,
+    // with the allocation never freed), and the failure path reclaims it via
+    // Box::from_raw below.
     let guard = match unsafe { &mut *lock }.try_write() {
         Ok(guard) => guard,
         Err(error) => {

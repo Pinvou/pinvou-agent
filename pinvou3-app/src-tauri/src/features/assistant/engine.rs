@@ -1293,8 +1293,10 @@ impl AppEngine {
         // 次专家池读取；否则专家恰好在两次构造之间变更时，首轮就会出现名册
         // 与 spawn-time route 不一致。
         let expert_snapshot = multi_agent_enabled.then(ExpertRosterSnapshot::capture);
-        // expert_snapshot 与 multi_agent_enabled 同源(上文 then 直接由该布尔驱动)，
-        // 直接按名册有无分派，避免在布尔与 Option 之间重复断言同一不变量。
+        // expert_snapshot and multi_agent_enabled share one source (the `then`
+        // above is driven directly by that boolean), so dispatch on roster
+        // presence instead of re-asserting the same invariant twice between
+        // the bool and the Option.
         let mut engine_config = match expert_snapshot.as_deref() {
             Some(snapshot) => {
                 // 多智能体面：装配专家名册和专用资源上限；工具面仍与普通会话
@@ -2912,7 +2914,7 @@ mod scheduled_turn_tests {
                 .as_nanos()
         ));
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &root) };
         let workspace = root.join("external-workspace");
         std::fs::create_dir_all(&workspace).expect("workspace");
@@ -2984,9 +2986,9 @@ mod scheduled_turn_tests {
         );
 
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(root);
@@ -2994,7 +2996,10 @@ mod scheduled_turn_tests {
 }
 
 #[cfg(test)]
-// 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
+// Tests borrow platform::paths::tests::ENV_LOCK (std Mutex) to serialize global env access;
+// cargo test runs test threads in parallel, but env-writing tests are mutually serialized, and
+// the lock is held across await only inside a current_thread runtime with no reentrant path,
+// so it cannot deadlock.
 #[allow(clippy::await_holding_lock)]
 mod live_tests {
     use super::*;
@@ -3018,9 +3023,9 @@ mod live_tests {
         fn drop(&mut self) {
             for (name, val) in &self.saved {
                 match val {
-                    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
                     Some(v) => unsafe { std::env::set_var(name, v) },
-                    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
                     None => unsafe { std::env::remove_var(name) },
                 }
             }
@@ -3049,11 +3054,11 @@ mod live_tests {
             "DEEPSEEK_FORCE_HTTP1",
             "PINVOU3_SKIP_WARMUP",
         ]);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_ALLOW_INSECURE_HTTP", "1") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_FORCE_HTTP1", "1") };
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_SKIP_WARMUP", "1") };
 
         let bridge = Pinvou3Bridge::boot().expect("boot bridge");

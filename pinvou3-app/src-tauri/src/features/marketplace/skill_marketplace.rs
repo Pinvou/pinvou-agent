@@ -379,9 +379,10 @@ impl SkillMarketplaceManager {
             .ok_or_else(|| format!("嵌入资源缺失: {}", m.source_dir))?;
 
         let dest = self.package_skill_dir(m.skill_name);
-        // bundles/<owner>/skills/<name> 由根 join 而来，必有父级；仍以错误返回兜底。
+        // bundles/<owner>/skills/<name> is joined from the root, so it always
+        // has a parent; still fall back to an error return.
         let Some(parent) = dest.parent() else {
-            return Err(format!("技能包目录缺少父级: {}", dest.display()));
+            return Err(format!("skill package dir has no parent: {}", dest.display()));
         };
         std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
         let staged = parent.join(format!("{}.tmp", m.skill_name));
@@ -733,7 +734,7 @@ impl SkillMarketplaceManager {
         // 镜像删除（预置 id 即记录 id；上传技能 id = 目录名，与 install 的登记口径一致）。
         if let Err(e) = self.bundle_store.remove(skill_id) {
             log::warn!(
-                "[skill-marketplace] bundles.json 镜像删除失败（uninstall {skill_id}）: {e}"
+                "[skill-marketplace] failed to delete bundles.json mirror entry (uninstall {skill_id}): {e}"
             );
         }
         Ok(())
@@ -849,9 +850,10 @@ impl SkillMarketplaceManager {
 
         // pass2:写出 skill_root 子树到 staged（上传技能独立成包：bundles/<name>/skills/）
         let dest = self.packages_root.join(&name).join("skills").join(&name);
-        // 同上：由根 join 而来必有父级，仍以错误返回兜底。
+        // Same as above: joined from the root, so a parent always exists;
+        // still fall back to an error return.
         let Some(parent) = dest.parent() else {
-            return Err(format!("技能包目录缺少父级: {}", dest.display()));
+            return Err(format!("skill package dir has no parent: {}", dest.display()));
         };
         std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
         let staged = parent.join(format!("{name}.tmp"));
@@ -1084,10 +1086,12 @@ impl SkillMarketplaceManager {
             report.kept.push(name.to_string());
             return false;
         }
-        // 迁移目标由根 join 而来必有父级；异常形态按「迁移失败保留旧位置」处理。
+        // The migration target is joined from the root, so it always has a
+        // parent; treat the anomalous shape as "migration failed, keep the
+        // old location".
         let Some(parent) = target.parent() else {
             log::warn!(
-                "[skill-marketplace] 迁移 {name} 失败：目标目录缺少父级（{}），保留旧位置",
+                "[skill-marketplace] failed to migrate {name}: target dir has no parent ({}), keeping the old location",
                 target.display()
             );
             report.kept.push(name.to_string());
@@ -1638,7 +1642,7 @@ mod tests {
             store
                 .get("government-writing")
                 .unwrap()
-                .expect("install 应登记")
+                .expect("install should register the skill")
                 .content_fingerprint
                 .is_some()
         );
@@ -2192,7 +2196,7 @@ mod tests {
         // install 登记的指纹应与嵌入资源指纹一致（刚装即一致 → 无更新提示）
         let store =
             crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
-        let record = store.get("visualizer").unwrap().expect("install 应登记");
+        let record = store.get("visualizer").unwrap().expect("install should register the skill");
         let embedded_fp = embedded_skill_fingerprint(mgr.preset("visualizer").unwrap());
         assert_eq!(record.content_fingerprint, embedded_fp);
         let skill_md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
@@ -2669,13 +2673,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         f();
         match prev {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&dir);

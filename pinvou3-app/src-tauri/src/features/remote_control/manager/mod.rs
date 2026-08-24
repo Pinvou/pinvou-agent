@@ -1446,7 +1446,8 @@ impl RemoteControlManager {
                 upload.data.len()
             ));
         }
-        // 上方同一借用内刚 get_mut 校验过；仍以错误返回兜底，不 panic。
+        // Presence was just verified via get_mut within the same borrow
+        // above; still return an error as a fallback instead of panicking.
         let completed = inner
             .web_session_uploads
             .remove(upload_id)
@@ -1559,9 +1560,10 @@ impl RemoteControlManager {
                 MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
             ));
         }
-        // 上方同一临界区内已校验预约存在；仍以错误返回兜底，不 panic。
+        // Reservation presence was verified in the same critical section
+        // above; still return an error as a fallback instead of panicking.
         let Some(download) = inner.web_session_downloads.get_mut(download_id) else {
-            return Err("远程控制会话下载预约不存在或已过期".into());
+            return Err("remote-control session download reservation is missing or expired".into());
         };
         download.reserved_bytes = total;
         download.total = total;

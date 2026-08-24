@@ -628,8 +628,9 @@ impl InstallOutputReaders {
         }
     }
 
-    // finish 按值消费 self，stdout/stderr 仅在构造函数置为 Some、无其他写点，
-    // take 必得 Some；因 Drop 限制无法改成移出字段的写法，panic 分支不可达。
+    // finish consumes self by value; stdout/stderr are only set to Some in the
+    // constructor with no other write site, so take must yield Some. Moving the
+    // fields out is impossible due to Drop; the panic branch is unreachable.
     #[allow(clippy::expect_used)]
     async fn finish(mut self) -> (String, String) {
         self.child_finished.store(true, Ordering::Release);

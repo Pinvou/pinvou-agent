@@ -538,7 +538,7 @@ mod tests {
                 .unwrap_or(0)
         );
         let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let _ = std::fs::create_dir_all(crate::platform::paths::pinvou3_home());
 
@@ -550,9 +550,9 @@ mod tests {
         assert!(!is_dingtalk_disabled());
 
         match previous {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&tmp);

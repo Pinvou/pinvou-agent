@@ -628,8 +628,9 @@ impl UserPrefs {
             model.normalize_route_limits();
         }
         normalized.sanitize_plaintext_api_keys();
-        // UserPrefs 为纯数据(无 map key/自定义 Serialize 失败路径)，序列化理应
-        // 不失败；仍按错误传播兜底，不 panic。
+        // UserPrefs is plain data (no map keys or custom Serialize failure
+        // paths), so serialization should never fail; still fall back to
+        // error propagation instead of panicking.
         let s = serde_json::to_string_pretty(&normalized).map_err(std::io::Error::other)?;
         // 原子写：直接 std::fs::write 在进程中断时可能留下截断文件，而 load 对
         // 损坏的 settings.json 是回退默认值——code_permission.last_mode 等持久化
@@ -1353,7 +1354,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("create temporary prefs home");
-        // SAFETY: 持 crate 级 ENV_LOCK(本测试首行已取锁),env 写已串行化。
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let mut prefs = UserPrefs::default();
@@ -1397,9 +1398,9 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
         match old_home {
-            // SAFETY: 持 crate 级 ENV_LOCK(本测试首行已取锁),env 写已串行化。
+            // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 同上,ENV_LOCK 串行化下的恢复删除。
+            // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
@@ -1876,7 +1877,7 @@ mod tests {
             "pinvou3-prefs-save-normalize-{}",
             std::process::id()
         ));
-        // SAFETY: 持 crate 级 ENV_LOCK(本测试首行已取锁),env 写已串行化。
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let prefs = UserPrefs {
@@ -1897,9 +1898,9 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
         match old_home {
-            // SAFETY: 持 crate 级 ENV_LOCK(本测试首行已取锁),env 写已串行化。
+            // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 同上,ENV_LOCK 串行化下的恢复删除。
+            // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
@@ -1915,7 +1916,7 @@ mod tests {
             std::process::id(),
             crate::platform::paths::tests::unique_suffix()
         ));
-        // SAFETY: 持 crate 级 ENV_LOCK(本测试首行已取锁),env 写已串行化。
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let mut initial = UserPrefs::default();
@@ -1963,9 +1964,9 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
         match old_home {
-            // SAFETY: 持 crate 级 ENV_LOCK(本测试首行已取锁),env 写已串行化。
+            // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 同上,ENV_LOCK 串行化下的恢复删除。
+            // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }

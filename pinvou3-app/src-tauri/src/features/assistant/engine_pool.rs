@@ -2321,7 +2321,10 @@ where
 }
 
 #[cfg(test)]
-// 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
+// Tests borrow platform::paths::tests::ENV_LOCK (std Mutex) to serialize global env access;
+// cargo test runs test threads in parallel, but env-writing tests are mutually serialized, and
+// the lock is held across await only inside a current_thread runtime with no reentrant path,
+// so it cannot deadlock.
 #[allow(clippy::await_holding_lock)]
 mod scheduled_model_tests {
     use super::{
@@ -2360,9 +2363,9 @@ mod scheduled_model_tests {
         fn drop(&mut self) {
             for (name, value) in self.0.drain(..) {
                 match value {
-                    // SAFETY: 调用方测试全程持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                    // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
                     Some(value) => unsafe { std::env::set_var(name, value) },
-                    // SAFETY: 调用方测试全程持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+                    // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
                     None => unsafe { std::env::remove_var(name) },
                 }
             }
@@ -2383,13 +2386,13 @@ mod scheduled_model_tests {
             std::process::id(),
             crate::platform::paths::tests::unique_suffix()
         ));
-        // SAFETY: 调用方测试全程持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &home) };
-        // SAFETY: 调用方测试全程持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
         unsafe { std::env::remove_var("DEEPSEEK_MODEL") };
-        // SAFETY: 调用方测试全程持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
         unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
-        // SAFETY: 调用方测试全程持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
         unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
         let bridge = Pinvou3Bridge::boot().expect("boot isolated test bridge");
         (bridge, home, restore)
@@ -2662,9 +2665,9 @@ mod scheduled_model_tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (bridge, home, _env) = isolated_eval_bridge();
-        // SAFETY: 本测试持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: this test holds platform::paths::tests::ENV_LOCK; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_MODEL", "actual-model") };
-        // SAFETY: 本测试持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: this test holds platform::paths::tests::ENV_LOCK; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_PROVIDER", "actual-provider") };
 
         let first = identity_for_saved_model(&bridge, &model("first", "raw-one"));
@@ -2675,7 +2678,7 @@ mod scheduled_model_tests {
             crate::features::assistant::eval::validate_judge_identity(&first, &second).is_err()
         );
 
-        // SAFETY: 本测试持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: this test holds platform::paths::tests::ENV_LOCK; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_MODEL") };
         let mut models = vec![model("judge", "snapshot-model")];
         let (saved, identity) = resolve_eval_model_selection_from(&bridge, &models, "judge")
@@ -2832,7 +2835,7 @@ mod scheduled_model_tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (bridge, home, _env) = isolated_eval_bridge();
-        // SAFETY: 本测试持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: this test holds platform::paths::tests::ENV_LOCK; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_MODEL", "env-wire-override") };
         let mut prefs = crate::platform::prefs::UserPrefs::default();
         prefs.advanced.saved_models = vec![model("active", "raw-saved-wire")];
@@ -3012,7 +3015,7 @@ mod scheduled_model_tests {
         ));
         let previous_home = std::env::var("PINVOU3_HOME").ok();
         let _ = std::fs::remove_dir_all(&home);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &home) };
 
         let store = SessionStore::boot().expect("session store");
@@ -3081,9 +3084,9 @@ mod scheduled_model_tests {
         drop(probe);
 
         match previous_home {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(home);
@@ -3145,7 +3148,7 @@ mod scheduled_model_tests {
         ));
         let previous_home = std::env::var("PINVOU3_HOME").ok();
         let _ = std::fs::remove_dir_all(&home);
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &home) };
 
         let store = SessionStore::boot().expect("session store");
@@ -3204,9 +3207,9 @@ mod scheduled_model_tests {
         assert!(store.load(&session_id).is_err());
 
         match previous_home {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(home);
@@ -3228,7 +3231,8 @@ mod scheduled_model_tests {
         ));
         let previous_home = std::env::var("PINVOU3_HOME").ok();
         let _ = std::fs::remove_dir_all(&home);
-        std::env::set_var("PINVOU3_HOME", &home);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
 
         let store = SessionStore::boot().expect("session store");
         let session_id = store
@@ -3253,9 +3257,12 @@ mod scheduled_model_tests {
             "delete_chat_session must clear the session's unpaired turn queue"
         );
 
-        match previous_home {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe {
+            match previous_home {
+                Some(value) => std::env::set_var("PINVOU3_HOME", value),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
         }
         let _ = std::fs::remove_dir_all(home);
     }

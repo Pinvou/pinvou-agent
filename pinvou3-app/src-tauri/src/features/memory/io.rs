@@ -435,7 +435,8 @@ fn resolve_topic_authorities<T: Clone>(
                 .ok();
             (canonical, modified, path.clone())
         });
-        // 分组由 or_default().push 构建，每组至少一条记录；防御性跳过空组。
+        // Groups are built by or_default().push, so each has at least one
+        // record; skip empty groups defensively.
         let Some((authority_path, authority)) = group.pop() else {
             continue;
         };

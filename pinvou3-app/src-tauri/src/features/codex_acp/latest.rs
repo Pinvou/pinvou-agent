@@ -181,9 +181,11 @@ impl AcpPool {
         let pool = self.clone();
         let Ok(mut status) = tokio::task::spawn_blocking(move || pool.status_for(backend)).await
         else {
-            // JoinHandle 只在阻塞任务 panic/被运行时取消时 Err：降级为直接同步
-            // 探测基线状态（跳过 latest 叠加，与离线一致），不用 panic 拖垮会话。
-            eprintln!("[acp] 状态探测任务异常退出, 降级为直接探测: {backend:?}");
+            // The JoinHandle is Err only when the blocking task panicked or
+            // the runtime cancelled it. Degraded fallback: probe the baseline
+            // status directly (skipping the latest overlay, matching the
+            // offline case) instead of letting a panic take down the session.
+            eprintln!("[acp] status probe task exited unexpectedly, falling back to a direct probe: {backend:?}");
             return self.status_for(backend);
         };
         if status.codex_available {

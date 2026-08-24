@@ -845,7 +845,8 @@ async fn create_code_native_session(
         rollback_created_code_session(&session.metadata.id, store, acp_pool);
         return Err(error);
     }
-    // 与 kind 一致地按工作目录有无分派：Some 即项目会话基线根，None 走临时目录。
+    // Dispatch on workspace presence consistently with kind: Some is the
+    // project session baseline root; None goes to the temporary directory.
     let baseline_root = match &project_workspace {
         Some(root) => root.clone(),
         None => {

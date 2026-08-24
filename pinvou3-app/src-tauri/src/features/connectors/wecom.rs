@@ -378,7 +378,7 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         );
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let _ = std::fs::create_dir_all(crate::platform::paths::pinvou3_home());
 
@@ -392,7 +392,7 @@ mod tests {
         set_wecom_disabled_flag(false).unwrap();
         assert!(!is_wecom_disabled());
 
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::remove_var("PINVOU3_HOME") };
         let _ = std::fs::remove_dir_all(&tmp);
     }

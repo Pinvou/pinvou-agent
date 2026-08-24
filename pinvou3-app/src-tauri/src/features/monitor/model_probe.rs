@@ -791,7 +791,8 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
                 "kimi-for-coding-highspeed",
                 262_144,
             ),
-            // k3-256k 已进入 r10 底座 catalog：按权威 262144，不再走后缀启发式 256000
+            // Since foundation #19 the catalog authoritatively covers k3-256k
+            // (binary 256K = 262,144).
             (ModelPreset::OpenaiCompatible, "k3-256k", 262_144),
             (ModelPreset::OpenaiCompatible, "k3", 262_144),
             // GLM：5.2 是 1M，5.1/5-turbo 是 202,752，4.7 官方 200K

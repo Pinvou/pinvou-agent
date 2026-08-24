@@ -122,10 +122,12 @@ impl AgentConfigWriter for KimiConfigWriter {
             })
             .unwrap_or_default();
         if !managed_providers.is_empty() {
-            // managed_providers 刚从同一内存 config 的 providers 表收集而来，
-            // 理论上必能再次取到；无法取到说明数据形态异常，应报错而非 panic。
+            // managed_providers was just collected from the providers table
+            // of the same in-memory config, so it must be retrievable again;
+            // if not, the data shape is abnormal and we should error out
+            // instead of panicking.
             let Some(providers) = table.get_mut("providers").and_then(Value::as_table_mut) else {
-                anyhow::bail!("kimi config.toml 的 providers 表在回退时丢失");
+                anyhow::bail!("kimi config.toml providers table lost during rollback");
             };
             for id in managed_providers {
                 providers.remove(&id);
@@ -147,9 +149,10 @@ impl AgentConfigWriter for KimiConfigWriter {
             })
             .unwrap_or_default();
         if !managed_models.is_empty() {
-            // 同上：managed_models 刚从同一内存 config 的 models 表收集而来。
+            // Same as above: managed_models was just collected from the
+            // models table of the same in-memory config.
             let Some(models) = table.get_mut("models").and_then(Value::as_table_mut) else {
-                anyhow::bail!("kimi config.toml 的 models 表在回退时丢失");
+                anyhow::bail!("kimi config.toml models table lost during rollback");
             };
             for id in managed_models {
                 models.remove(&id);

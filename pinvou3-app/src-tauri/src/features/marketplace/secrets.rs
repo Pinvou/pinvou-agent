@@ -1,9 +1,23 @@
-//! 密钥/凭证管理:MCP 工具的 secret 既不写明文也不进 `headers`(底座当字面量发送),
-//! 而是落进系统凭据库 + 进程环境变量,`mcp.json` 里只留 `${ENV}` 占位符。
+//! Secret/credential management: MCP tool secrets are neither written in
+//! plaintext nor placed in `headers` (the foundation sends that field as a
+//! literal); they live in the system credential store plus an in-process
+//! registry, and `mcp.json` keeps only `${ENV}` placeholders.
 //!
-//! 这里集中放 secret 相关的纯函数助手 + `MarketplaceManager` 上读写 secret 的方法。
+//! Placeholders are resolved on demand by the foundation's MCP secret resolver
+//! hook (`install_mcp_secret_resolver`, registered at boot) when MCP
+//! subprocess env is expanded / request headers are parsed — the process
+//! environment is no longer written at runtime: under edition 2024 a runtime
+//! `set_var` racing uncoordinated concurrent readers (the foundation's
+//! `vars_os()` child-process env snapshots, WebKit/glib libc `getenv`) is a
+//! data race, and the in-process registry is the only design that fully
+//! closes that window (with zero writers, concurrent readers have no writer
+//! to race against).
+//!
+//! Pure secret-related helpers and the secret read/write methods on
+//! `MarketplaceManager` are collected here.
 
 use std::collections::HashMap;
+use std::sync::{LazyLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::platform::credential_store::{
     CredentialError, CredentialReference, CredentialStore, redact_secret,
@@ -12,7 +26,54 @@ use crate::platform::credential_store::{
 use super::bundle;
 use super::types::ToolManifest;
 
-/// 判断 manifest 字段名是否疑似密钥(用于兼容旧 manifest.env 中以 `_API_KEY` 结尾的字段)。
+/// In-process MCP secret value registry: env var name (`PINVOU3_MCP_SECRET_*`)
+/// → plaintext value. All safe Rust; the foundation's resolver callback reads
+/// it through `resolve_registered_secret`.
+static MCP_SECRET_VALUES: LazyLock<RwLock<HashMap<String, String>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+fn secret_values_read() -> RwLockReadGuard<'static, HashMap<String, String>> {
+    MCP_SECRET_VALUES.read().unwrap_or_else(|p| p.into_inner())
+}
+
+fn secret_values_write() -> RwLockWriteGuard<'static, HashMap<String, String>> {
+    MCP_SECRET_VALUES.write().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Foundation resolver callback: look up the in-process registry by env var
+/// name; return None on a miss (the foundation then falls back to the process
+/// env, preserving the externally-manual-export compatibility path).
+pub fn resolve_registered_secret(name: &str) -> Option<String> {
+    secret_values_read().get(name).cloned()
+}
+
+/// Store a single secret value (install/resolve/migration paths).
+pub(super) fn store_secret_value(env_name: String, value: String) {
+    secret_values_write().insert(env_name, value);
+}
+
+/// Remove a single secret value (uninstall path).
+pub(super) fn remove_secret_value(env_name: &str) {
+    secret_values_write().remove(env_name);
+}
+
+#[cfg(test)]
+pub(super) fn clear_secret_values_for_test() {
+    secret_values_write().clear();
+}
+
+#[cfg(test)]
+pub(super) fn snapshot_secret_values() -> HashMap<String, String> {
+    secret_values_read().clone()
+}
+
+#[cfg(test)]
+pub(super) fn restore_secret_values(snapshot: HashMap<String, String>) {
+    *secret_values_write() = snapshot;
+}
+
+/// Whether a manifest field name looks like a secret (for compatibility with
+/// legacy manifest.env fields suffixed `_API_KEY`).
 pub(super) fn is_sensitive_key_name(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
     upper.ends_with("_API_KEY")
@@ -24,7 +85,10 @@ pub(super) fn is_sensitive_key_name(key: &str) -> bool {
         || upper == "KEY"
 }
 
-/// secret 在进程环境变量里的名字(进程级、子进程可继承)。
+/// Placeholder env var name for a secret: the shared key between mcp.json
+/// `${...}` placeholders and the in-process registry. It is no longer written
+/// to the process env — the foundation reads it from the registry through the
+/// resolver hook under this name.
 pub(super) fn mcp_secret_env_var(secret_name: &str) -> String {
     let suffix = secret_name
         .chars()
@@ -39,14 +103,16 @@ pub(super) fn mcp_secret_env_var(secret_name: &str) -> String {
     format!("PINVOU3_MCP_SECRET_{suffix}")
 }
 
-/// mcp.json 里 secret 的占位符形式(底座会展开 `${...}`)。
+/// Placeholder form of a secret in mcp.json (the foundation expands `${...}`).
 pub(super) fn mcp_secret_placeholder(secret_name: &str) -> String {
     format!("${{{}}}", mcp_secret_env_var(secret_name))
 }
 
-/// 远程 MCP 的密钥不能写进 `headers`:底座会把那个字段当作字面量发送,
-/// 不会展开 `${ENV}` 占位符。Bearer 走专用的环境变量配置;无 scheme 的
-/// 自定义 header 则使用 `env_headers`。这样密钥始终只在进程环境和凭据库中。
+/// Remote MCP secrets must not go into `headers`: the foundation sends that
+/// field as a literal and does not expand `${ENV}` placeholders. Bearer uses
+/// the dedicated env-var-name config; custom headers without a scheme use
+/// `env_headers`. This keeps secrets only in the in-process registry and the
+/// credential store.
 pub(super) fn set_remote_secret_header(
     env_headers: &mut serde_json::Map<String, serde_json::Value>,
     bearer_token_env_var: &mut Option<String>,
@@ -58,7 +124,7 @@ pub(super) fn set_remote_secret_header(
     if header.eq_ignore_ascii_case("authorization") && scheme.eq_ignore_ascii_case("bearer") {
         if let Some(existing) = bearer_token_env_var.as_deref() {
             if existing != env_var {
-                return Err("同一个远程 MCP server 不支持多个 Bearer 密钥".to_string());
+                return Err("a remote MCP server does not support multiple Bearer secrets".to_string());
             }
         }
         *bearer_token_env_var = Some(env_var);
@@ -69,7 +135,7 @@ pub(super) fn set_remote_secret_header(
         return Ok(());
     }
     Err(format!(
-        "远程 MCP 密钥 header '{header}' 的 scheme '{scheme}' 暂不支持；请使用 Bearer Authorization 或无 scheme 的自定义 header"
+        "remote MCP secret header '{header}' with scheme '{scheme}' is not supported yet; use Bearer Authorization or a custom header without a scheme"
     ))
 }
 
@@ -78,21 +144,22 @@ pub(super) fn mcp_secret_reference(tool_id: &str, target: &str, key: &str) -> Cr
 }
 
 pub(super) fn mcp_secret_missing_error(tool_id: &str, key: &str) -> String {
-    format!("MCP 工具 '{tool_id}' 缺少密钥 {key}，请重新配置后再启用该工具")
+    format!("MCP tool '{tool_id}' is missing secret {key}; reconfigure it before enabling the tool")
 }
 
 pub(super) fn mcp_secret_store_error(tool_id: &str, key: &str, error: CredentialError) -> String {
     redact_secret(&format!(
-        "MCP 工具 '{tool_id}' 的密钥 {key} 无法访问: {}",
+        "MCP tool '{tool_id}' secret {key} is inaccessible: {}",
         error.user_message()
     ))
 }
 
-/// 从 manifest 提取所有 secret 的 (keyring target, key):
-/// `secret_env`→("env",key)、`secret_headers`→("header",source_key)、
-/// `config_fields`(secret=true)→(env 或 header, key)。同一 (target,key) 去重一次。
-/// 与 install 时 `resolve_secret_placeholder` 用的 target 对齐(config_fields 的
-/// "bearer" 在 install 里落成 reference target "header")。
+/// Extract every secret's (keyring target, key) from the manifest:
+/// `secret_env`→("env",key), `secret_headers`→("header",source_key),
+/// `config_fields`(secret=true)→(env or header, key). Each (target,key) pair
+/// is deduplicated once. Targets stay aligned with `resolve_secret_placeholder`
+/// at install time (a config_fields "bearer" lands as reference target
+/// "header" there).
 pub(super) fn manifest_secret_targets(manifest: &ToolManifest) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut push = |target: &str, key: &str| {
@@ -124,18 +191,24 @@ pub(super) fn manifest_secret_targets(manifest: &ToolManifest) -> Vec<(String, S
 }
 
 // ---------------------------------------------------------------------------
-// MarketplaceManager 上的 secret 读写方法
+// Secret read/write methods on MarketplaceManager
 // ---------------------------------------------------------------------------
 
 use super::MarketplaceManager;
 
 impl<S: CredentialStore> MarketplaceManager<S> {
-    /// 重启后把**所有已安装工具**的 secret 从 keyring 重灌进进程 env(MCP 子进程 expand
-    /// `${...}` 占位符用)。不再硬编码内置 3 个 —— 自定义/上传的带 secret 工具重启后同样生效。
-    pub(super) fn sync_secret_env_vars(&self) -> Result<(), String> {
-        // 持锁遍历:整个同步过程一次性持有 env 写锁(锁内只有 env 写与已就绪
-        // 数据的读取,credential_store.get 是 keyring/文件短读,不含长 IO/await)。
-        let _env_guard = crate::platform::env_write::lock();
+    /// After a restart, rehydrate the secrets of **all installed tools** from
+    /// the keyring into the in-process registry (the foundation resolver reads
+    /// them on demand when expanding `${...}` placeholders in MCP subprocess
+    /// env). No longer hardcoded to the three built-ins — custom/uploaded
+    /// tools with secrets work after restart too.
+    pub(super) fn sync_secret_values(&self) -> Result<(), String> {
+        // One-shot rebuild: hold the registry write lock throughout (inside
+        // the lock there are only map writes and reads of already-ready data;
+        // credential_store.get is a keyring/file short read with no long IO
+        // or await).
+        let mut values = secret_values_write();
+        values.clear();
         for tool_id in self.installed_ids() {
             let Some(manifest) = self.load_manifest(&tool_id) else {
                 continue;
@@ -144,8 +217,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 let reference = mcp_secret_reference(&tool_id, &target, &key);
                 match self.credential_store.get(&reference) {
                     Ok(Some(value)) if !value.trim().is_empty() => {
-                        // SAFETY: 函数首行已持 env_write 锁,env 写已串行化。
-                        unsafe { std::env::set_var(mcp_secret_env_var(&key), value) };
+                        values.insert(mcp_secret_env_var(&key), value);
                     }
                     Ok(_) => {}
                     Err(e) => return Err(mcp_secret_store_error(&tool_id, &key, e)),
@@ -155,8 +227,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         Ok(())
     }
 
-    /// 解析单个 secret 的 `${ENV}` 占位符:优先用用户当次填入的值(并落库),
-    /// 否则取已存的凭据,再否则回退到旧 manifest.env 明文(迁移用)。三者都无 → 报缺密钥错。
+    /// Resolve a single secret's `${ENV}` placeholder: prefer the value the
+    /// user entered this time (and persist it), otherwise the stored
+    /// credential, otherwise fall back to the legacy manifest.env plaintext
+    /// (for migration). If none exist → missing-secret error.
     pub(super) fn resolve_secret_placeholder(
         &self,
         tool_id: &str,
@@ -170,17 +244,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             self.credential_store
                 .set(&reference, value)
                 .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
-            let _env_guard = crate::platform::env_write::lock();
-            // SAFETY: 持上方 let 绑定的 env_write 锁,env 写已串行化。
-            unsafe { std::env::set_var(mcp_secret_env_var(key), value) };
+            store_secret_value(mcp_secret_env_var(key), value.clone());
             return Ok(mcp_secret_placeholder(key));
         }
 
         match self.credential_store.get(&reference) {
             Ok(Some(value)) if !value.trim().is_empty() => {
-                let _env_guard = crate::platform::env_write::lock();
-                // SAFETY: 持上方 let 绑定的 env_write 锁,env 写已串行化。
-                unsafe { std::env::set_var(mcp_secret_env_var(key), value) };
+                store_secret_value(mcp_secret_env_var(key), value);
                 Ok(mcp_secret_placeholder(key))
             }
             Ok(_) => {
@@ -188,9 +258,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     self.credential_store
                         .set(&reference, value)
                         .map_err(|e| mcp_secret_store_error(tool_id, key, e))?;
-                    let _env_guard = crate::platform::env_write::lock();
-                    // SAFETY: 持上方 let 绑定的 env_write 锁,env 写已串行化。
-                    unsafe { std::env::set_var(mcp_secret_env_var(key), value) };
+                    store_secret_value(mcp_secret_env_var(key), value.clone());
                     Ok(mcp_secret_placeholder(key))
                 } else {
                     Err(mcp_secret_missing_error(tool_id, key))
@@ -207,7 +275,8 @@ mod tests {
 
     #[test]
     fn manifest_secret_targets_dedups_and_maps_bearer_to_header() {
-        // 同一 key 在 secret_env/secret_headers 与 config_fields 重复声明 → 去重一次。
+        // The same key declared in secret_env/secret_headers and config_fields
+        // → deduplicated once.
         let manifest: ToolManifest = serde_json::from_str(
             r#"{
             "id":"t","name":"T","description":"","version":"1","icon":"","category":"",
@@ -222,7 +291,7 @@ mod tests {
         )
         .unwrap();
         let targets = manifest_secret_targets(&manifest);
-        assert_eq!(targets.len(), 2, "AMAP/QCC 各去重一次");
+        assert_eq!(targets.len(), 2, "AMAP/QCC each deduplicated once");
         assert!(targets.contains(&("env".to_string(), "AMAP_KEY".to_string())));
         assert!(targets.contains(&("header".to_string(), "QCC_API_KEY".to_string())));
     }

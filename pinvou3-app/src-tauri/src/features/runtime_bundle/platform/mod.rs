@@ -142,8 +142,10 @@ pub const INSTRUCTIONS_WORK_MD: &str =
 /// Returns the three Work-layer sections: the complete `## 工作环境` section and complete
 /// `## Browser capabilities` section without trailing newlines, plus the artifact rule with
 /// its trailing newline.
-// 输入是编译期内嵌资源文件，段结构由构建产物固定，测试逐字节锁定渲染结果；
-// 若资源被误改，panic 在首次启动即暴露，运行期不存在动态输入使分支可达。
+// The input is a compile-time embedded resource whose section structure is
+// fixed by the build artifact, and tests lock the rendered output byte for
+// byte; if the resource is accidentally modified, the panic surfaces at first
+// startup, and no runtime input exists that could make this branch reachable.
 #[allow(clippy::expect_used)]
 fn work_layer_sections() -> (&'static str, &'static str, &'static str) {
     let (env_section, rest) = INSTRUCTIONS_WORK_MD
@@ -188,8 +190,10 @@ pub const INSTRUCTIONS_CODE_MD: &str =
 /// 骨架的 §工作环境 位填代码版环境段（workspace_hint 已按绑定情况渲染），
 /// 成品条位整行删除（代码会话无产出物/成品卡语义）；尾部依次拼接底座
 /// core_execution 执行循环与 ## 代码场景纪律。
-// 同 work_layer_sections：输入为编译期内嵌资源，段结构由构建产物固定，
-// 资源被误改时首次启动即 panic 暴露，不存在运行期可达路径。
+// Same as work_layer_sections: the input is a compile-time embedded resource
+// whose section structure is fixed by the build artifact; if the resource is
+// accidentally modified, the panic surfaces at first startup, and no runtime
+// path can reach this branch.
 #[allow(clippy::expect_used)]
 pub fn instructions_code_md(workspace_hint: &str) -> String {
     let (env_section, discipline) = INSTRUCTIONS_CODE_MD
@@ -778,7 +782,7 @@ mod tests {
     fn ensure_extracted_behavior() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         // 1) 首次解包：文件被写入 + VERSION 记录
@@ -1045,7 +1049,7 @@ mod tests {
     fn multiagent_depth_guard_enforces_two_level_inputs() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
         bundle.ensure_extracted().unwrap();
@@ -1112,7 +1116,7 @@ mod tests {
     fn connector_skill_cache_requires_complete_domain_sets() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
         // 连接器技能现按包聚合落盘：bundles/<pkg>/skills/<dir>（§4 新布局）。
@@ -1286,7 +1290,7 @@ mod tests {
     fn cleanup_removed_marketplace_skills_respects_upload_marker() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
         std::fs::create_dir_all(&bundle.skills_dir).unwrap();
@@ -1316,7 +1320,7 @@ mod tests {
     fn forkguard_builtin_visual_skill_uses_bundle_root_and_safe_name() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
 
@@ -1365,7 +1369,8 @@ mod tests {
     fn write_builtin_skills_releases_exactly_the_listed_dirs() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
 
         bundle.write_builtin_skills().unwrap();
@@ -1397,7 +1402,7 @@ mod tests {
     fn extract_dir_skips_python_compilation_caches() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
 
@@ -1431,7 +1436,7 @@ mod tests {
     fn cleanup_removed_marketplace_tools_removes_data_analysis() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
         let data_dir = paths::bundle_mcp_servers_dir().join("data_analysis");
@@ -1497,7 +1502,7 @@ mod tests {
     fn migrates_legacy_pinvou_server_key_to_pinvou3() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         paths::ensure_dirs().unwrap();
         let bundle = Pinvou3Bundle::paths();
@@ -1531,7 +1536,7 @@ mod tests {
     fn ensure_builtin_mcp_servers_repairs_broken_mcp_json() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         paths::ensure_dirs().unwrap();
         let bundle = Pinvou3Bundle::paths();
@@ -1559,7 +1564,7 @@ mod tests {
     fn write_if_changed_skips_rewrite_when_content_identical() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
         let target = std::path::Path::new(&tmp).join("nested").join("out.txt");
@@ -1586,7 +1591,7 @@ mod tests {
     fn cleanup_removed_marketplace_tools_fast_path_skips_uninstall() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         paths::ensure_dirs().unwrap();
         let bundle = Pinvou3Bundle::paths();
@@ -1611,7 +1616,8 @@ mod tests {
     fn cleanup_removed_marketplace_tools_fail_closed_on_unreadable_store() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         paths::ensure_dirs().unwrap();
         let bundle = Pinvou3Bundle::paths();
 
@@ -1746,7 +1752,7 @@ mod tests {
     fn dingtalk_skill_gate_extracts_and_removes_official_mono_skill() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
 
@@ -1801,7 +1807,7 @@ mod tests {
     fn wecom_skill_gate_cleans_legacy_dirs() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempdir();
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = Pinvou3Bundle::paths();
         std::fs::create_dir_all(&bundle.skills_dir).unwrap();
@@ -1860,7 +1866,7 @@ mod tests {
     }
 
     fn cleanup(dir: &str) {
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::remove_var("PINVOU3_HOME") };
         let _ = std::fs::remove_dir_all(dir);
     }

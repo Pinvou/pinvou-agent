@@ -218,7 +218,8 @@ pub(super) fn append_web_attachment_upload_chunk(
             upload.file_name
         );
     }
-    // 上方同一借用内刚 get_mut 校验过；仍以错误返回兜底，不 panic。
+    // get_mut validated this under the same borrow just above; still return an
+    // error as the fallback instead of panicking.
     let completed = inner
         .web_attachment_uploads
         .remove(upload_id)

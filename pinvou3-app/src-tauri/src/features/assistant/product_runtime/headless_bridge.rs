@@ -1046,6 +1046,7 @@ where
 {
     crate::install_rustls_provider();
     crate::ensure_release_env();
+    crate::startup_process_env();
     let async_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(16 * 1024 * 1024)

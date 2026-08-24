@@ -34,7 +34,7 @@ fn isolated_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
     unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
     let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
     // 注意：不 remove_var——锁还没 drop，下面的断言需要 PINVOU3_HOME 仍是这个值。
@@ -135,9 +135,10 @@ fn list_cache_shares_snapshot_and_invalidates_on_write() {
         !std::sync::Arc::ptr_eq(&a, &c),
         "write must invalidate the snapshot"
     );
-    assert!(c
-        .iter()
-        .any(|m| m.id == s1.metadata.id && m.title == "renamed"));
+    assert!(
+        c.iter()
+            .any(|m| m.id == s1.metadata.id && m.title == "renamed")
+    );
 
     // 删除路径同样失效
     store.delete(&s1.metadata.id).expect("delete");
@@ -163,9 +164,11 @@ fn list_cache_stale_generation_snapshot_is_never_served() {
         .set_title(&s1.metadata.id, "renamed".into())
         .expect("set title");
     let post_write = store.list_sessions_cached().expect("post-write read");
-    assert!(post_write
-        .iter()
-        .any(|m| m.id == s1.metadata.id && m.title == "renamed"));
+    assert!(
+        post_write
+            .iter()
+            .any(|m| m.id == s1.metadata.id && m.title == "renamed")
+    );
 
     // 模拟守卫失效的落地物:旧标题视图挂在过期代数上,读取不得返回它。
     let generation_now = store
@@ -533,9 +536,11 @@ fn forkguard_admitted_display_fallback_does_not_skip_unsupported_user_turn() {
             true,
         )
         .expect_err("unsupported latest user content must reject the fallback edit");
-    assert!(error
-        .to_string()
-        .contains("latest user content is not editable"));
+    assert!(
+        error
+            .to_string()
+            .contains("latest user content is not editable")
+    );
     assert_eq!(
         store.load(&session.metadata.id).unwrap().messages,
         baseline,

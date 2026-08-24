@@ -134,7 +134,9 @@ fn load_user_cards() -> Vec<PersonaCard> {
 
 /// 重新从磁盘加载用户卡（create/update/delete 后调，让 list/get 立即看到）。
 pub fn reload_user() {
-    // 卡池整体替换无部分写入，持锁 panic 不应拖垮会话：沿用全仓锁中毒恢复惯例。
+    // The card pool is replaced wholesale with no partial writes; a panic while
+    // holding the lock must not take down sessions: keep the repo-wide lock
+    // poisoning recovery convention.
     *user_lock()
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = load_user_cards();
@@ -474,7 +476,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
-        // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let mk = |id: &str, name: &str| PersonaCard {
@@ -516,9 +518,9 @@ mod tests {
 
         // cleanup
         match prev {
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
             Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: 持 platform::paths::tests::ENV_LOCK,进程内 env 写已串行化。
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         reload_user();

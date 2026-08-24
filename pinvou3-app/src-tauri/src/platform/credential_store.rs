@@ -70,7 +70,8 @@ fn key_locks() -> &'static Mutex<HashMap<(String, String), Arc<Mutex<()>>>> {
 /// 在释放 `key_locks` 自身锁的前提下被调用方持有,确保"取锁"不与"持锁"嵌套、无死锁。
 fn key_lock_for(service: &str, account: &str) -> Arc<Mutex<()>> {
     let key = (service.to_string(), account.to_string());
-    // 仅取锁句柄不改共享判定，持锁 panic 不应拖垮会话：沿用全仓锁中毒恢复惯例。
+    // Only take the lock handle; a holder panic must not take down sessions:
+    // follow the repo-wide poisoned-lock recovery convention.
     let mut locks = key_locks()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -254,7 +255,8 @@ impl SystemCredentialStore {
             "[credential_store] secrets_for lock wait start service={}",
             service
         );
-        // 缓存 miss 时重建后端并整体替换条目，无部分写入；锁中毒恢复不破坏一致性。
+        // On a cache miss the backend is rebuilt and the entry replaced as a
+        // whole, with no partial writes; poisoned-lock recovery keeps consistency.
         let mut cache = self
             .cache
             .lock()
