@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pinvou_node::{
-    AdapterRuntimeHost, NodeError, NodeInstanceLock, NodeRuntimeEventStream, NodeRuntimeHost,
-    NodeSession, NodeTransportPolicy,
+    AdapterRuntimeHost, NodeError, NodeInstanceLock, NodeLocalListener, NodeRuntimeEventStream,
+    NodeRuntimeHost, NodeSession, NodeTransportPolicy,
 };
 use pinvou_protocol::{
     HelloClient, IpcMessage, IpcMessageKind, RuntimeEventEnvelope, StableExitCode,
@@ -16,28 +16,8 @@ use pinvou_runtime_api::{
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Debug)]
-struct ScriptedRuntime {
-    events: Mutex<Option<Vec<RuntimeEventEnvelope>>>,
-}
-
-impl NodeRuntimeHost for ScriptedRuntime {
-    fn start_turn(&self, _: &str, _: &str, _: u64) -> Result<NodeRuntimeEventStream, NodeError> {
-        Ok(Box::new(
-            self.events
-                .lock()
-                .unwrap()
-                .take()
-                .unwrap()
-                .into_iter()
-                .map(Ok),
-        ))
-    }
-}
-
-#[test]
-fn node_stream_bound_emits_the_complete_runtime_event_stream_in_order() {
-    let events = [
+fn scripted_runtime_events() -> Vec<RuntimeEventEnvelope> {
+    [
         (
             "turn.started",
             serde_json::json!({"user_input_ref":"prompt"}),
@@ -64,11 +44,38 @@ fn node_stream_bound_emits_the_complete_runtime_event_stream_in_order() {
         ),
     ]
     .into_iter()
-    .map(|(kind, payload)| match kind {
-        "turn.started" | "turn.ended" => runtime_event(kind, "R0", "control", payload),
-        _ => runtime_event(kind, "R1", "main", payload),
+    .enumerate()
+    .map(|(index, (kind, payload))| match kind {
+        "turn.started" | "turn.ended" => {
+            runtime_event_with_seq(kind, "R0", "control", payload, index as u64 + 1)
+        }
+        _ => runtime_event_with_seq(kind, "R1", "main", payload, index as u64 + 1),
     })
-    .collect();
+    .collect()
+}
+
+#[derive(Debug)]
+struct ScriptedRuntime {
+    events: Mutex<Option<Vec<RuntimeEventEnvelope>>>,
+}
+
+impl NodeRuntimeHost for ScriptedRuntime {
+    fn start_turn(&self, _: &str, _: &str, _: u64) -> Result<NodeRuntimeEventStream, NodeError> {
+        Ok(Box::new(
+            self.events
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap()
+                .into_iter()
+                .map(Ok),
+        ))
+    }
+}
+
+#[test]
+fn node_stream_bound_emits_the_complete_runtime_event_stream_in_order() {
+    let events = scripted_runtime_events();
     let session = NodeSession::with_runtime(
         "node-instance",
         Arc::new(ScriptedRuntime {
@@ -107,25 +114,6 @@ fn node_stream_bound_emits_the_complete_runtime_event_stream_in_order() {
     );
 }
 
-struct ChatProcessGuard {
-    child: std::process::Child,
-    lock: PathBuf,
-    state_file: PathBuf,
-    endpoint_dir: Option<PathBuf>,
-}
-
-impl Drop for ChatProcessGuard {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.lock);
-        let _ = std::fs::remove_file(&self.state_file);
-        if let Some(endpoint_dir) = &self.endpoint_dir {
-            let _ = std::fs::remove_dir(endpoint_dir);
-        }
-    }
-}
-
 trait ChatTestStream: std::io::Read + std::io::Write {}
 impl<T: std::io::Read + std::io::Write> ChatTestStream for T {}
 
@@ -147,7 +135,6 @@ fn open_chat_endpoint(endpoint: &str) -> std::io::Result<Box<dyn ChatTestStream>
 #[test]
 fn node_local_ipc_streams_chat_start_as_runtime_events() {
     use std::io::Write as _;
-    use std::process::Stdio;
 
     let unique = format!(
         "chat-{}-{}",
@@ -164,66 +151,103 @@ fn node_local_ipc_streams_chat_start_as_runtime_events() {
         .join(format!("pinvou-node-{unique}/node.sock"))
         .display()
         .to_string();
-    let lock = std::env::temp_dir().join(format!("pinvou-node-{unique}.lock"));
-    let state_file = std::env::temp_dir().join(format!("pinvou-node-{unique}-state.json"));
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou-node"))
-        .arg("--endpoint")
-        .arg(&endpoint)
-        .arg("--instance-id")
-        .arg("chat-instance")
-        .arg("--lock-file")
-        .arg(&lock)
-        .arg("--state-file")
-        .arg(&state_file)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    #[cfg(target_os = "linux")]
-    let endpoint_dir = PathBuf::from(&endpoint).parent().map(PathBuf::from);
-    #[cfg(not(target_os = "linux"))]
-    let endpoint_dir = None;
-    let _guard = ChatProcessGuard {
-        child,
-        lock,
-        state_file,
-        endpoint_dir,
-    };
-    let mut stream = (0..80)
-        .find_map(|_| {
-            let stream = open_chat_endpoint(&endpoint).ok();
-            if stream.is_none() {
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            stream
-        })
-        .expect("node endpoint must become ready");
-    let hello = HelloClient::new(serde_json::json!({"client":"chat-contract"})).unwrap();
-    stream
-        .write_all(&pinvou_protocol::encode_frame(&hello).unwrap())
-        .unwrap();
-    let answer: pinvou_protocol::HelloServer = pinvou_protocol::read_frame(&mut stream).unwrap();
-    assert_eq!(answer.instance_id(), "chat-instance");
-    let request = IpcMessage::request(
-        serde_json::json!(104),
-        "chat.start",
-        serde_json::json!({"instance_id":"chat-instance", "prompt":"stream me"}),
+    let mut listener = NodeLocalListener::bind(&endpoint).unwrap();
+    let session = NodeSession::with_runtime(
+        "chat-instance",
+        Arc::new(ScriptedRuntime {
+            events: Mutex::new(Some(scripted_runtime_events())),
+        }),
     )
     .unwrap();
-    stream
-        .write_all(&pinvou_protocol::encode_frame(&request).unwrap())
+    let (event_tx, event_rx) = mpsc::channel();
+    let client_endpoint = endpoint.clone();
+    let client_worker = std::thread::spawn(move || {
+        let mut stream = (0..80)
+            .find_map(|_| {
+                let stream = open_chat_endpoint(&client_endpoint).ok();
+                if stream.is_none() {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                stream
+            })
+            .expect("node endpoint must become ready");
+        let hello = HelloClient::new(serde_json::json!({"client":"chat-contract"})).unwrap();
+        stream
+            .write_all(&pinvou_protocol::encode_frame(&hello).unwrap())
+            .unwrap();
+        let answer: pinvou_protocol::HelloServer =
+            pinvou_protocol::read_frame(&mut stream).unwrap();
+        assert_eq!(answer.instance_id(), "chat-instance");
+        let request = IpcMessage::request(
+            serde_json::json!(104),
+            "chat.start",
+            serde_json::json!({"instance_id":"chat-instance", "prompt":"stream me"}),
+        )
         .unwrap();
-
-    let event: IpcMessage = pinvou_protocol::read_frame(&mut stream).unwrap();
-    assert_eq!(event.kind(), IpcMessageKind::Evt);
-    assert_eq!(event.topic(), Some("runtime.event"));
-    let envelope = RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap();
-    assert_eq!(envelope.kind(), "text.delta");
+        stream
+            .write_all(&pinvou_protocol::encode_frame(&request).unwrap())
+            .unwrap();
+        for _ in 0..6 {
+            event_tx
+                .send(pinvou_protocol::read_frame::<_, IpcMessage>(&mut stream))
+                .unwrap();
+        }
+    });
+    listener.serve_one(&session).unwrap();
+    let messages = (0..6)
+        .map(|_| {
+            event_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("timed out waiting for the next runtime.event frame")
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    client_worker.join().unwrap();
+    assert!(messages.iter().all(|event| {
+        event.kind() == IpcMessageKind::Evt && event.topic() == Some("runtime.event")
+    }));
+    let envelopes = messages
+        .into_iter()
+        .map(|event| RuntimeEventEnvelope::from_value(event.payload().clone()).unwrap())
+        .collect::<Vec<_>>();
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(envelope.payload().get()).unwrap()["content"],
-        "stream me"
+        envelopes
+            .iter()
+            .map(RuntimeEventEnvelope::kind)
+            .collect::<Vec<_>>(),
+        [
+            "turn.started",
+            "text.delta",
+            "text.delta",
+            "tool.call.started",
+            "tool.call.completed",
+            "turn.ended",
+        ]
     );
+    assert_eq!(
+        envelopes
+            .iter()
+            .map(RuntimeEventEnvelope::seq)
+            .collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5, 6]
+    );
+    let payloads = envelopes
+        .iter()
+        .map(|event| serde_json::from_str::<serde_json::Value>(event.payload().get()).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(payloads[0]["user_input_ref"], "prompt");
+    assert_eq!(
+        (
+            payloads[1]["content"].as_str(),
+            payloads[2]["content"].as_str()
+        ),
+        (Some("one"), Some("two"))
+    );
+    assert_eq!(payloads[3]["tool_id"], "call-1");
+    assert_eq!(payloads[3]["name"], "read");
+    assert_eq!(payloads[4]["result"], serde_json::json!({}));
+    assert_eq!(payloads[4]["is_error"], false);
+    assert_eq!(payloads[5]["end_reason"], "completed");
 }
 
 #[test]
@@ -1025,6 +1049,16 @@ fn runtime_event(
     stream_id: &str,
     payload: serde_json::Value,
 ) -> RuntimeEventEnvelope {
+    runtime_event_with_seq(kind, rate_class, stream_id, payload, 1)
+}
+
+fn runtime_event_with_seq(
+    kind: &str,
+    rate_class: &str,
+    stream_id: &str,
+    payload: serde_json::Value,
+    seq: u64,
+) -> RuntimeEventEnvelope {
     RuntimeEventEnvelope::from_value(serde_json::json!({
         "protocol_version":pinvou_protocol::IPC_VERSION,
         "schema_version":1,
@@ -1035,7 +1069,7 @@ fn runtime_event(
         "collaborative_run_id":null,
         "stream_id":stream_id,
         "turn_id":"adapter-turn",
-        "seq":1,
+        "seq":seq,
         "source_span":null,
         "timestamp":"2026-08-21T00:00:00.000Z",
         "rate_class":rate_class,
