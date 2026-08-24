@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pinvou_node::{
     AdapterRuntimeHost, NodeError, NodeInstanceLock, NodeRuntimeEventStream, NodeRuntimeHost,
@@ -1004,6 +1004,129 @@ fn failed_emit_drains_the_old_turn_before_the_next_turn_starts() {
     assert_eq!(kinds, ["turn.started", "text.delta", "turn.ended"]);
 }
 
+#[derive(Debug)]
+struct NeverEndingAdapter {
+    receiver: Option<mpsc::Receiver<Result<RuntimeEventEnvelope, AdapterError>>>,
+    keepalive: Arc<Mutex<Option<mpsc::Sender<Result<RuntimeEventEnvelope, AdapterError>>>>>,
+    sends: Arc<AtomicUsize>,
+    interrupts: Arc<AtomicUsize>,
+    closes: Arc<AtomicUsize>,
+}
+
+impl AgentRuntimeAdapter for NeverEndingAdapter {
+    fn probe(&mut self) -> Result<(), AdapterError> {
+        Ok(())
+    }
+    fn capabilities(&self) -> Result<RuntimeCapabilities, AdapterError> {
+        Ok(RuntimeCapabilities::default())
+    }
+    fn auth_status(&mut self) -> Result<AuthStatus, AdapterError> {
+        Ok(AuthStatus::NotRequired)
+    }
+    fn create(&mut self, _: RuntimeOperation) -> Result<RuntimeSession, AdapterError> {
+        RuntimeSession::new("never-ending")
+    }
+    fn send(&mut self, _: &RuntimeSession, _: RuntimeCommand) -> Result<(), AdapterError> {
+        self.sends.fetch_add(1, AtomicOrdering::SeqCst);
+        Ok(())
+    }
+    fn interrupt(&mut self, _: &RuntimeSession) -> Result<(), AdapterError> {
+        self.interrupts.fetch_add(1, AtomicOrdering::SeqCst);
+        Ok(())
+    }
+    fn subscribe_events(
+        &mut self,
+        _: &RuntimeSession,
+    ) -> Result<RuntimeEventSubscription, AdapterError> {
+        Ok(Box::new(self.receiver.take().unwrap().into_iter()))
+    }
+    fn close(&mut self, _: &RuntimeSession) -> Result<(), AdapterError> {
+        self.closes.fetch_add(1, AtomicOrdering::SeqCst);
+        self.keepalive.lock().unwrap().take();
+        Ok(())
+    }
+}
+
+#[test]
+fn disconnected_client_times_out_cleanup_retires_adapter_and_releases_guard() {
+    let (event_tx, event_rx) = mpsc::channel();
+    event_tx
+        .send(Ok(runtime_event_for_turn(
+            "turn.started",
+            "R0",
+            "control",
+            serde_json::json!({"user_input_ref":"stuck"}),
+            "stuck-turn",
+            1,
+        )))
+        .unwrap();
+    event_tx.send(Ok(runtime_event_for_turn("approval.requested", "R0", "control", serde_json::json!({"approval_id":"approval-stuck","tool":"shell","summary":"wait","options":["approved","denied"],"timeout_ms":30000}), "stuck-turn", 2))).unwrap();
+    let keepalive = Arc::new(Mutex::new(Some(event_tx)));
+    let sends = Arc::new(AtomicUsize::new(0));
+    let interrupts = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let session = NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(AdapterRuntimeHost::with_cleanup_timeout(
+            Box::new(NeverEndingAdapter {
+                receiver: Some(event_rx),
+                keepalive: keepalive.clone(),
+                sends: sends.clone(),
+                interrupts: interrupts.clone(),
+                closes: closes.clone(),
+            }),
+            Duration::from_millis(50),
+        )),
+    )
+    .unwrap();
+    let running = session.clone();
+    let (done_tx, done_rx) = mpsc::channel();
+    let started = Instant::now();
+    let worker = std::thread::spawn(move || {
+        let request = IpcMessage::request(
+            serde_json::json!(124),
+            "chat.start",
+            serde_json::json!({"instance_id":"node-instance","prompt":"stuck"}),
+        )
+        .unwrap();
+        done_tx
+            .send(running.stream_bound(request, |message| {
+                let envelope = RuntimeEventEnvelope::from_value(message.payload().clone()).unwrap();
+                if envelope.event_kind() == pinvou_protocol::RuntimeEventKind::ApprovalRequested {
+                    Err(NodeError::Io(std::io::Error::other("client disconnected")))
+                } else {
+                    Ok(())
+                }
+            }))
+            .unwrap();
+    });
+    let result = done_rx.recv_timeout(Duration::from_secs(1));
+    if result.is_err() {
+        keepalive.lock().unwrap().take();
+    }
+    worker.join().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(matches!(result.unwrap(), Err(NodeError::Io(_))));
+    assert_eq!(interrupts.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(closes.load(AtomicOrdering::SeqCst), 1);
+
+    let retry = IpcMessage::request(
+        serde_json::json!(125),
+        "chat.start",
+        serde_json::json!({"instance_id":"node-instance","prompt":"ghost"}),
+    )
+    .unwrap();
+    assert!(session.stream_bound(retry, |_| Ok(())).is_err());
+    assert_eq!(sends.load(AtomicOrdering::SeqCst), 1);
+    let switch = IpcMessage::request(
+        serde_json::json!(126),
+        "runtime.switch",
+        serde_json::json!({"instance_id":"node-instance","runtime":"echo"}),
+    )
+    .unwrap();
+    assert_eq!(session.handle(switch).unwrap().payload()["status"], "ok");
+}
+
 impl AgentRuntimeAdapter for LongLivedAdapter {
     fn probe(&mut self) -> Result<(), AdapterError> {
         Ok(())
@@ -1199,6 +1322,7 @@ fn adapter_stream_reports_eof_before_turn_end() {
         "control",
         serde_json::json!({"user_input_ref":"truncated"}),
     )]);
+    let calls = adapter.calls();
     let session = NodeSession::with_runtime(
         "node-instance",
         Arc::new(AdapterRuntimeHost::new(Box::new(adapter))),
@@ -1215,6 +1339,29 @@ fn adapter_stream_reports_eof_before_turn_end() {
         session.stream_bound(request, |_| Ok(())),
         Err(NodeError::InvalidMessage)
     ));
+    let retry = IpcMessage::request(
+        serde_json::json!(113),
+        "chat.start",
+        serde_json::json!({"instance_id":"node-instance","prompt":"must-not-send"}),
+    )
+    .unwrap();
+    assert!(session.stream_bound(retry, |_| Ok(())).is_err());
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.starts_with("send:"))
+            .count(),
+        1
+    );
+    assert!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call == "close:adapter-session")
+    );
 }
 
 #[derive(Debug)]

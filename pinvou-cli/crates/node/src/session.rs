@@ -28,6 +28,14 @@ pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
         seq: u64,
     ) -> Result<NodeRuntimeEventStream, NodeError>;
 
+    fn cleanup_after_delivery_failure(
+        &self,
+        stream: NodeRuntimeEventStream,
+        _turn_id: Option<&str>,
+    ) {
+        drop(stream);
+    }
+
     fn detect(&self) -> Result<serde_json::Value, NodeError> {
         Ok(json!({
             "status": "available",
@@ -71,6 +79,7 @@ pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
 
 pub struct AdapterRuntimeHost {
     inner: Arc<Mutex<AdapterRuntimeState>>,
+    cleanup_timeout: std::time::Duration,
 }
 
 struct AdapterRuntimeState {
@@ -78,17 +87,27 @@ struct AdapterRuntimeState {
     probed: bool,
     session: Option<RuntimeSession>,
     subscription: Option<RuntimeEventSubscription>,
+    retired: bool,
 }
 
 impl AdapterRuntimeHost {
     pub fn new(adapter: Box<dyn AgentRuntimeAdapter>) -> Self {
+        Self::with_cleanup_timeout(adapter, std::time::Duration::from_secs(5))
+    }
+
+    pub fn with_cleanup_timeout(
+        adapter: Box<dyn AgentRuntimeAdapter>,
+        cleanup_timeout: std::time::Duration,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(AdapterRuntimeState {
                 adapter,
                 probed: false,
                 session: None,
                 subscription: None,
+                retired: false,
             })),
+            cleanup_timeout,
         }
     }
 }
@@ -153,6 +172,26 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
             turn_id: None,
             finished: false,
         }))
+    }
+
+    fn cleanup_after_delivery_failure(
+        &self,
+        mut stream: NodeRuntimeEventStream,
+        turn_id: Option<&str>,
+    ) {
+        if let Some(turn_id) = turn_id {
+            let _ = self.interrupt_turn(turn_id);
+        }
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let _ = std::thread::Builder::new()
+            .name("pinvou-node-runtime-drain".into())
+            .spawn(move || {
+                let _ = done_tx.send(drain_runtime_stream(&mut stream));
+            });
+        match done_rx.recv_timeout(self.cleanup_timeout) {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) | Err(_) => retire_adapter_state(&self.inner),
+        }
     }
 
     fn resolve_approval(
@@ -241,14 +280,30 @@ impl Iterator for AdapterTurnStream {
             Some(Err(error)) => {
                 self.finished = true;
                 self.subscription.take();
+                retire_adapter_state(&self.inner);
                 Some(Err(NodeError::from(error)))
             }
             None => {
                 self.finished = true;
                 self.subscription.take();
+                retire_adapter_state(&self.inner);
                 Some(Err(NodeError::InvalidMessage))
             }
         }
+    }
+}
+
+fn retire_adapter_state(inner: &Arc<Mutex<AdapterRuntimeState>>) {
+    let Ok(mut state) = inner.lock() else {
+        return;
+    };
+    if state.retired {
+        return;
+    }
+    state.retired = true;
+    state.subscription.take();
+    if let Some(session) = state.session.take() {
+        let _ = state.adapter.close(&session);
     }
 }
 
@@ -265,6 +320,13 @@ fn ensure_adapter_session(state: &mut AdapterRuntimeState) -> Result<RuntimeSess
 }
 
 fn ensure_adapter_probe(state: &mut AdapterRuntimeState) -> Result<(), NodeError> {
+    if state.retired {
+        return Err(NodeError::Runtime(
+            pinvou_runtime_api::AdapterError::InvalidRequest {
+                details: "adapter runtime is retired".into(),
+            },
+        ));
+    }
     if !state.probed {
         state.adapter.probe()?;
         state.probed = true;
@@ -660,8 +722,12 @@ impl NodeSession {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let (runtime, _active) = self.begin_turn(seq)?;
         let mut stream = runtime.start_turn(&self.instance_id, prompt, seq)?;
+        let mut turn_id = None;
         while let Some(envelope) = stream.next() {
             let envelope = envelope?;
+            if turn_id.is_none() {
+                turn_id = envelope.turn_id().map(str::to_owned);
+            }
             let delivery = serde_json::to_value(envelope)
                 .map_err(|_| NodeError::InvalidMessage)
                 .and_then(|payload| {
@@ -670,10 +736,8 @@ impl NodeSession {
                 })
                 .and_then(&mut emit);
             if let Err(delivery_error) = delivery {
-                return match drain_runtime_stream(&mut stream) {
-                    Ok(()) => Err(delivery_error),
-                    Err(drain_error) => Err(drain_error),
-                };
+                runtime.cleanup_after_delivery_failure(stream, turn_id.as_deref());
+                return Err(delivery_error);
             }
         }
         Ok(())
