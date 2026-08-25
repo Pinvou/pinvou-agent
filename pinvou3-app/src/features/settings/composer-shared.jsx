@@ -36,6 +36,18 @@ function pendingEnablesFor(scope) {
   }
   return entry;
 }
+// 转正（清空 pending）必须在模块级完成：受理事件可能在菜单组件已随切页卸载时
+// 到达（会话 busy 时排队的消息在用户切走后 flush、后台定向发送等），挂在组件
+// effect 里会漏清，重挂载后 pending 悬空、已进上下文的工具仍显示可关。本监听
+// 在模块加载时注册、先于任何组件监听执行；在场组件（ComposerToolMenu 内）另
+// 订阅同一事件 bump 重渲染，重渲染读到的必是已清空的 pending。
+window.addEventListener('pinvou:chat-round-committed', (event) => {
+  const committedScope = event && event.detail && event.detail.scope;
+  const pending = pendingToolEnables.get(committedScope === 'code' ? 'code' : 'plain');
+  if (!pending || (!pending.ids.size && !pending.projectSkills)) return;
+  pending.ids.clear();
+  pending.projectSkills = false;
+});
 
     // 输入框底栏:模型选择器(iOS 化;darkMode:'class' 故用 dark: 变体)。
     // 可选“显式会话态驱动”props（代码模块原生车道用）：sessionId/sessionModelId/
@@ -512,17 +524,14 @@ function pendingEnablesFor(scope) {
         window.addEventListener('pinvou:tools-changed', onChanged);
         return () => { alive = false; window.removeEventListener('pinvou:tools-changed', onChanged); };
       }, []);
-      // 新一轮对话已被后端受理 → 本 scope 未提交的「打开」转正：清空 pending，
-      // 此后这些行按「只增不减」锁死。bump 版本号触发重渲染刷新开关禁用态。
+      // 新一轮对话已被后端受理 → 本 scope 未提交的「打开」已由文件头的模块级
+      // 监听清空（组件不在场也清）。此处仅 bump 版本号触发重渲染刷新开关禁用
+      // 态；模块级监听先注册先执行，保证先清后刷。
       const [, bumpPendingVersion] = useReducer(c => c + 1, 0);
       useEffect(() => {
         const onCommitted = (event) => {
           const committedScope = event && event.detail && event.detail.scope;
           if ((committedScope === 'code' ? 'code' : 'plain') !== toolScope) return;
-          const pending = pendingToolEnables.get(toolScope);
-          if (!pending || (!pending.ids.size && !pending.projectSkills)) return;
-          pending.ids.clear();
-          pending.projectSkills = false;
           bumpPendingVersion();
         };
         window.addEventListener('pinvou:chat-round-committed', onCommitted);

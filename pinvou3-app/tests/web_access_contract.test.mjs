@@ -636,6 +636,17 @@ assert.match(composerShared, /if \(toolSwitchDisabled \|\| \(hasActiveSession &&
 assert.match(composerShared, /if \(enabled\) pending\.ids\.delete\(id\); else pending\.ids\.add\(id\);/);
 assert.match(composerShared, /window\.addEventListener\('pinvou:chat-round-committed', onCommitted\)/);
 assert.match(composerShared, /pending\.ids\.clear\(\);\s*\n\s*pending\.projectSkills = false;/);
+// 转正（清空 pending）必须在模块级监听里做，不能只在组件 effect 里：受理事件
+// 可能在菜单组件已卸载时到达（排队消息在用户切页后 flush、后台定向发送），
+// 组件级监听会漏清，重挂载后 pending 悬空、已进上下文的工具仍显示可关。
+// 模块级监听注册点还必须先于组件定义，保证清空发生在组件 bump 重渲染之前。
+const moduleListenerIdx = composerShared.indexOf(
+  "window.addEventListener('pinvou:chat-round-committed', (event)",
+);
+assert.ok(
+  moduleListenerIdx >= 0 && moduleListenerIdx < composerShared.indexOf('const ComposerToolMenu'),
+  'round-committed pending-clear listener must be registered at module level (before ComposerToolMenu), not only inside the component',
+);
 // 提交信号由发送链路在后端受理新一轮后派发：常规发送（desktop/web doSendFor）、
 // Web 首轮提交、接受计划（desktop/web acceptPlan）、编辑重跑（desktop/web
 // editLastTurn）、原生代码车道发送与接受方案，缺任一处 pending 都不会转正。
