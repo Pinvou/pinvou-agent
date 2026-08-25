@@ -1,0 +1,77 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-08-25T14:47:53+08:00",
+  "phase": null,
+  "phase_name": "Pinvou CLI TUI 产品化重设计",
+  "phase_dir": null,
+  "plan": null,
+  "task": 2,
+  "total_tasks": 6,
+  "status": "paused",
+  "completed_tasks": [
+    {
+      "id": 1,
+      "name": "打通真实 Codex runtime 连续聊天并修复后台窗口",
+      "status": "done",
+      "commit": "91f06fc5"
+    },
+    {
+      "id": 2,
+      "name": "接受 Codex 回合开始前的 vendor/log.record 初始化事件",
+      "status": "done",
+      "commit": "e4819d23"
+    },
+    {
+      "id": 3,
+      "name": "确定产品级 TUI 视觉和交互方向",
+      "status": "in_progress",
+      "progress": "已确认当前差距与 Ratatui 技术可行性；尚待决定是否打开本地浏览器视觉稿，与实际 TUI 并排对比。"
+    }
+  ],
+  "remaining_tasks": [
+    {
+      "id": 4,
+      "name": "制作并评审浏览器视觉稿与实际 TUI 的并排对比",
+      "status": "not_started"
+    },
+    {
+      "id": 5,
+      "name": "冻结等待状态、聊天流和 /agent、/mode 等弹窗交互合同",
+      "status": "not_started"
+    },
+    {
+      "id": 6,
+      "name": "形成实施计划并重构 TUI 组件体系",
+      "status": "not_started"
+    }
+  ],
+  "blockers": [],
+  "async_jobs": [],
+  "human_actions_pending": [
+    {
+      "action": "确认是否使用浏览器视觉稿，并排对比实际 TUI 与目标方案（需要打开本地 URL）",
+      "context": "当前 TUI 与此前 HTML 视觉方向偏差明显；先用可视化对齐验收标准，避免继续凭文字微调。",
+      "blocking": true
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "pinvou 默认启动正式 TUI，不要求 pinvou tui 子命令",
+      "rationale": "与既有产品设计及 Claude Code 风格的启动体验一致。",
+      "phase": null
+    },
+    {
+      "decision": "暂不因当前成品粗糙而替换 Ratatui",
+      "rationale": "OpenAI Codex CLI 同样使用 Ratatui/Crossterm，当前差距主要来自组件架构、状态表达、弹窗交互与视觉验收不足。",
+      "phase": null
+    },
+    {
+      "decision": "RuntimeEvent 在 turn.started 前允许无 turn_id 的 vendor、log.record 和 attachment 生命周期事件",
+      "rationale": "真实 Codex 会在首个回合前发出初始化事件，拒绝它们会导致 TUI 在答案到达前断开。",
+      "phase": null
+    }
+  ],
+  "uncommitted_files": [],
+  "next_action": "先询问用户：要使用浏览器视觉稿，并排对比实际 TUI 与目标方案吗？（需要打开本地 URL）",
+  "context_notes": "用户明确认为 TUI 质量决定 Pinvou CLI 成败，目标是接近 Claude Code / OpenAI Codex CLI 的成熟终端体验，而非 demo。当前测试进程已停止；tmp/ 是本机临时产物，不提交。"
+}
