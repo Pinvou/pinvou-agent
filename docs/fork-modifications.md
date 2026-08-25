@@ -173,7 +173,7 @@ CodeWhale 当前已通过：
 cargo fmt --all -- --check
 cargo check / Pinvou fork CI
 cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-37 passed / 0 failed
+41 passed / 0 failed
 ```
 
 父仓当前已通过：
@@ -181,7 +181,7 @@ cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
 ```text
 cargo fmt --all -- --check
 ./scripts/fork-guard.sh
-CodeWhale 37 passed；pinvou3-app 21 passed
+CodeWhale 41 passed；pinvou3-app 21 passed
 cargo test --lib --locked forkguard_admitted_display_fallback -- --test-threads=1
 2 passed / 0 failed
 node --test pinvou3-app/tests/scheduled_tasks_unit.test.js

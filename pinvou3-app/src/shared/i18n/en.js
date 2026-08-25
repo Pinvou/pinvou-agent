@@ -423,7 +423,7 @@ export const dictEn = {
         sidebarCollapse: 'Collapse sidebar', sidebarExpand: 'Expand sidebar',
         skillPrefill: name => `I want to use ${name} to: `,
         queuedTag: 'Queued', queuedCancel: 'Remove',
-        queueMsg: 'Queue', queueMsgTip: 'Auto-send when the current turn ends',
+        queueMsg: 'Send now', queueMsgTip: 'While generating: text injects into this turn, attachments queue up',
         interruptMsg: 'Interrupt & send', interruptMsgTip: 'Cancel current AI task and send immediately',
         attachParsing: 'Parsing…', attachFailed: 'Failed', attachProtectedLocation: 'file location is protected', attachAdd: 'Attach file',
         attachFromDevice: 'Upload from this device', attachFromHost: 'Choose from desktop instance', attachUploading: pct => `Uploading ${pct}%`,

@@ -559,8 +559,10 @@
       var steerPreparation = consumeUiTurnState();
       var steerText = steerPreparation.payloadText;
       var steerInputText = text;
-      // 清空 composer draft(对齐 sendMessage 成功路径)
-      state.composerDraft = "";
+      // 清空 composer draft(对齐 sendMessage 成功路径)。走 setComposerDraft
+      // 同步会话 buffer,切走再切回不会复活已发送文字;后台会话的 steer
+      // (远控等)不得清掉当前活跃会话的输入框。
+      if (state.activeSessionId === sid) setComposerDraft("");
       // 排队 chip 立即显示。steered=true 标记已投递引擎：flushQueued 跳过它
       // （防重复发送）。steerId 在 invoke 返回后回填;事件可能早于 invoke
       // 返回,未决事件按 session 暂存(见下方 pendingSteerEvents)。
@@ -598,11 +600,26 @@
           // steer 失败(session 不存在/引擎没起):绝不静默降级 invoke("chat")
           // ——busy 下必撞 session_turn_in_progress,文本会无痕蒸发。移除 chip、
           // 把文本恢复到输入框/草稿并提示,处置权还给用户。
-          state.queued = state.queued.filter(function (q) { return q.id !== queuedItem.id; });
+          // 队列按 sid 路由:steer 最长 25s 才结算,期间用户可能已切走会话,
+          // state.queued 已指向别会话工作集,必须按引用从目标会话队列取 chip
+          // (同 steeredQueueFor 语义),否则 chip(steered:true, steerId:null)
+          // 永久卡在后台会话队头,flushQueued 让路、该会话排队消息全部饿死。
+          var failureQueue = steeredQueueFor(sid);
+          var failureIndex = failureQueue ? failureQueue.indexOf(queuedItem) : -1;
           restoreUiTurnState(steerPreparation.snapshot);
-          if (state.activeSessionId === sid) {
+          if (failureIndex >= 0 && state.activeSessionId === sid &&
+              String(state.composerDraft || "").trim() === "") {
+            // 仅在本回调真正接管 chip 且输入框为空时回填:chip 已被 ×/⚡ 接走
+            // 时文本由那条路径处置,再回填会复活已放弃的文字或与 ⚡ 发送中的
+            // 同文重复;输入框已有新内容时覆盖会砸掉用户等待期间打的字。
+            failureQueue.splice(failureIndex, 1);
             setComposerDraft(steerInputText);
             prefillComposer(steerInputText);
+          } else if (failureIndex >= 0) {
+            // 输入框被占用或会话已切走:chip 原地降级为纯本地排队(同 ⚡ 失败
+            // 降级语义),文本保留、由 flushQueued 在轮末发送,×/⚡ 仍可用。
+            queuedItem.steered = false;
+            queuedItem.steerId = null;
           }
           addSystemItem("⚠️ " + bt("steerFailed"));
           notify();

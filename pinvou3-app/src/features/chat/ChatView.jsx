@@ -1403,13 +1403,19 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const text = constrained.text;
         // 点击瞬间即清空输入框（不等 await 返回）；失败（reserve 冲突等）时
         // 恢复文字，消息绝不静默丢失。busy 时 bridge 侧 steer 注入当前回合
-        //（带附件则本地排队），见 sendMessage。
+        //（带附件则本地排队），见 sendMessage。回填仅在输入框为空时整体恢复:
+        // sendChatMessage 内含能力安装等 await,期间用户可能已开始打下一条,
+        // 无条件覆盖会砸掉新输入——非空时退化为 prefill 追加,不打断打字。
         setInputText('');
         try {
           const accepted = await sendChatMessage(text);
-          if (!accepted) setInputText(text);
+          if (!accepted) {
+            if (inputTextRef.current === '') setInputText(text);
+            else if (text) bridge.chat.prefillComposer(text);
+          }
         } catch (error) {
-          setInputText(text);
+          if (inputTextRef.current === '') setInputText(text);
+          else if (text) bridge.chat.prefillComposer(text);
           throw error;
         }
         personalWorkbenchTemplateIdRef.current = null;
@@ -1895,7 +1901,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 副本+打断当前轮立即发这条),×=取消(steered chip 走 withdraw_steer
                 真撤回;纯排队 chip 纯本地移除)。⚡ 按 interruptSend 能力门控(web 端隐藏)。 */}
             {queued.length > 0 && (
-              <div className={`mb-2 rounded-2xl border shadow-lg backdrop-blur-xl overflow-hidden ${'border-black/[0.06] bg-white/90 dark:border-white/10 dark:bg-[#161618]/90'}`}>
+              <div className={`mb-2 rounded-2xl border shadow-lg backdrop-blur-xl overflow-hidden max-h-[40vh] overflow-y-auto ${'border-black/[0.06] bg-white/90 dark:border-white/10 dark:bg-[#161618]/90'}`}>
                 {queued.map((q, index) => (
                   <div key={q.id}
                     className={`flex items-center gap-2 px-3 py-2 text-[12px] text-[#444746] dark:text-[#C4C7C5] ${index > 0 ? 'border-t border-black/[0.06] dark:border-white/10' : ''}`}>

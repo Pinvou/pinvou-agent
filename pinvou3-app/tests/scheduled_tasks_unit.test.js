@@ -2715,8 +2715,7 @@ async function interruptQueuedFailureLeavesFlushableChip() {
   assert.strictEqual(view.queued.length, 0, "chat:done 后 flush 消费降级 chip(不再被 steered 队头阻塞)");
 }
 
-async function interruptAndSendTimeoutWhileBusyFailsWithoutSending() {
-  // P2 回归(公开 API 超时语义):cancel 返回 terminal=false 后等不到 chat:done,
+async function interruptAndSendTimeoutWhileBusyFailsWithoutSending() {  // P2 回归(公开 API 超时语义):cancel 返回 terminal=false 后等不到 chat:done,
   // 25s 兜底超时且会话仍 busy —— interruptAndSend 必须显式 reject 且不调用
   // chat(此时发送会稳定撞 session_turn_in_progress,调用方不接异常就丢消息)。
   var timeouts = [];
@@ -2768,6 +2767,109 @@ async function interruptAndSendTimeoutWhileBusyFailsWithoutSending() {
   await tick();
   var retry = await bridge.chat.interruptAndSend("chat-interrupt-timeout", "超时也要保住的一句", null, [], null, false);
   assert.strictEqual(retry, true, "turn 终态后重试同一条消息成功(消息未丢失)");
+}
+
+async function steerTimeoutDoesNotClobberFreshInput() {
+  // 回归:steer 失败恢复不得无条件覆盖输入框——invoke 最长 25s 才超时,
+  // 期间用户重新打的字必须保住。输入框非空时恢复退化为 prefill 追加。
+  var timeouts = [];
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (fn, ms) {
+      timeouts.push({ fn: fn, ms: ms });
+      return timeouts.length;
+    },
+    clearTimeout: function () {},
+  });
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-steer-clobber"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-steer-clobber" });
+  await tick();
+  harness.handlers.steer_chat = function () {
+    return new Promise(function () {}); // 永不结算
+  };
+
+  await bridge.chat.sendMessage("超时前已发出去的一句");
+  await tick();
+  await tick();
+  // 等待期间用户开始重新打字。
+  bridge.chat.setComposerDraft("等待时新打的半句");
+
+  var steerTimer = timeouts.find(function (t) { return t.ms === 25000; });
+  assert.ok(steerTimer, "steer invoke 必须有 25s 兜底超时");
+  steerTimer.fn();
+  await tick();
+  await tick();
+
+  assert.strictEqual(
+    bridge.state.getMany(['chat']).composerDraft,
+    "等待时新打的半句",
+    "超时恢复不得覆盖等待期间的新输入"
+  );
+  var view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1, "输入框非空时 chip 降级保留在排队区(文字不丢)");
+  assert.strictEqual(view.queued[0].steered, false, "降级为非 steered,不再阻塞 flushQueued");
+  // chip 已降级为纯本地排队,仍可被撤回(× 出口保持可用)。
+  bridge.chat.removeQueued(view.queued[0].id);
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0, "× 撤回降级 chip 正常移除");
+}
+
+async function steerTimeoutWhileSwitchedAwayUnblocksBackgroundQueue() {
+  // 回归:steer 在途时用户切走会话 → 超时恢复必须按 sid 路由到原会话队列,
+  // 降级悬挂 chip;否则 chip(steered:true) 永久卡在后台会话队头,flushQueued
+  // 让路,该会话排队消息全部饿死。
+  var timeouts = [];
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (fn, ms) {
+      timeouts.push({ fn: fn, ms: ms });
+      return timeouts.length;
+    },
+    clearTimeout: function () {},
+  });
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-bg-steer"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-bg-steer" });
+  await tick();
+  harness.handlers.steer_chat = function () {
+    return new Promise(function () {}); // 永不结算
+  };
+  harness.handlers.cancel_generation = function () { return { terminal: true, generation: 1 }; };
+  harness.handlers.chat = function () { return "ok"; };
+
+  await bridge.chat.sendMessage("切走前注入的一句");
+  await tick();
+  await tick();
+  // steer 在途:切到另一个会话(load_session 建新 buffer)。
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-bg-other"), true);
+  await tick();
+  assert.strictEqual(bridge.state.get("sessions").activeSessionId, "chat-bg-other");
+
+  var steerTimer = timeouts.find(function (t) { return t.ms === 25000; });
+  assert.ok(steerTimer, "steer invoke 必须有 25s 兜底超时");
+  steerTimer.fn();
+  await tick();
+  await tick();
+
+  // 原会话的后台队列:chip 必须已降级(非 steered),输入框(新会话)不被碰。
+  var other = bridge.state.getMany(['chat']);
+  assert.strictEqual(other.composerDraft, "", "恢复不得把旧会话文字写进当前活跃会话输入框");
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-bg-steer"), true);
+  await tick();
+  var view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 1, "chip 保留在原会话队列");
+  assert.strictEqual(view.queued[0].steered, false, "超时恢复后 chip 降级为非 steered");
+
+  // 降级 chip 不再挡 flushQueued:turn 终态后被正常发送,后台队列解除卡死。
+  harness.emit("chat:done", { session_id: "chat-bg-steer", generation: 1 });
+  await tick();
+  await tick();
+  view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(view.queued.length, 0, "chat:done 后 flush 消费降级 chip(后台队列不再被悬挂 chip 卡死)");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    1,
+    "降级 chip 由 flushQueued 正常发送"
+  );
 }
 
 async function transcriptFallbackRecoversAfterCompactionShrink() {
@@ -6063,6 +6165,8 @@ Promise.resolve()
   .then(steerInvokeHangTimesOutAndRestoresInput)
   .then(interruptQueuedFailureLeavesFlushableChip)
   .then(interruptAndSendTimeoutWhileBusyFailsWithoutSending)
+  .then(steerTimeoutDoesNotClobberFreshInput)
+  .then(steerTimeoutWhileSwitchedAwayUnblocksBackgroundQueue)
   .then(withdrawTooLateCommittedStillBubbles)
   .then(transcriptFallbackRecoversAfterCompactionShrink)
   .then(terminalEventWinsStaleRunningOpen)
