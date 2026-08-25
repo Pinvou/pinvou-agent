@@ -629,7 +629,27 @@ const composerShared = fs.readFileSync(path.join(root, 'src', 'features', 'setti
 assert.match(composerShared, /const canSwitchModels = can\('sessionModelSwitch'\);/);
 assert.match(composerShared, /const canMutateToolStore = can\('toolStoreMutations'\);/);
 assert.match(composerShared, /const toolSwitchDisabled = !canMutateToolStore;/);
-assert.match(composerShared, /if \(toolSwitchDisabled \|\| \(hasActiveSession && (enabled|projectSkillsEnabled)\)\) return;/);
+// 只增不减 + 未提交可撤销：会话中阻隔「关闭」，但本会话内刚打开（pending）、
+// 尚未随新一轮对话进入上下文的允许改回；新一轮被后端受理后才锁死。
+assert.match(composerShared, /if \(toolSwitchDisabled \|\| \(hasActiveSession && enabled && !pending\.ids\.has\(id\)\)\) return;/);
+assert.match(composerShared, /if \(toolSwitchDisabled \|\| \(hasActiveSession && projectSkillsEnabled && !pending\.projectSkills\)\) return;/);
+assert.match(composerShared, /if \(enabled\) pending\.ids\.delete\(id\); else pending\.ids\.add\(id\);/);
+assert.match(composerShared, /window\.addEventListener\('pinvou:chat-round-committed', onCommitted\)/);
+assert.match(composerShared, /pending\.ids\.clear\(\);\s*\n\s*pending\.projectSkills = false;/);
+// 提交信号由发送链路在后端受理新一轮后派发：常规发送（desktop/web doSendFor）、
+// Web 首轮提交、接受计划（desktop/web acceptPlan）、编辑重跑（desktop/web
+// editLastTurn）、原生代码车道发送与接受方案，缺任一处 pending 都不会转正。
+assert.match(bridge, /window\.dispatchEvent\(new CustomEvent\("pinvou:chat-round-committed", \{ detail: \{ scope: "plain" \} \}\)\)/);
+assert.ok(
+  (bridge.match(/pinvou:chat-round-committed/g) || []).length >= 7,
+  'desktop doSendFor/acceptPlan/editLastTurn and web doSendFor/first-turn/acceptPlan/editLastTurn must each dispatch the round-committed event',
+);
+assert.ok(
+  (codexView.match(/notifyChatRoundCommitted\('code'\);/g) || []).length >= 2,
+  'native code lane send and accept-plan must each commit pending enables',
+);
+const toolEvents = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-events.js'), 'utf8');
+assert.match(toolEvents, /export \{ notifyComposerToolsChanged, notifyChatRoundCommitted \};/);
 assert.match(composerShared, /bridge\.models\.switchModel\(activeSessionId, id\)/);
 assert.match(settingsView, /\{canManageModels && editingModel && \(/);
 assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
