@@ -3222,6 +3222,7 @@ mod tests {
         bridge.prefs.advanced.saved_models = vec![SavedModel {
             id: "test-model".to_string(),
             name: model.to_string(),
+            alias: None,
             preset,
             context_window_tokens: None,
             max_output_tokens: None,
@@ -3247,6 +3248,7 @@ mod tests {
         bridge.prefs.advanced.saved_models.push(SavedModel {
             id: id.to_string(),
             name: model.to_string(),
+            alias: None,
             preset: ModelPreset::OpenaiCompatible,
             context_window_tokens: None,
             max_output_tokens: None,

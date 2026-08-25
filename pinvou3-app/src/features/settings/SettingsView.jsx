@@ -607,6 +607,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       );
       const canSetUpLocalModel = can('localModelSetup');
       const [name, setName] = useState(initial.name || '');
+      const [alias, setAlias] = useState(initial.alias || '');
       const [nameTouched, setNameTouched] = useState(!initial.__new && !!initial.name);
       const [preset, setPreset] = useState(initial.preset || (localVllmSupported ? 'local_vllm' : 'deepseek'));
       const [providerKey, setProviderKey] = useState(initialProvider ? initialProvider.key : '');
@@ -875,7 +876,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const showCustomCloudKeyField = !isLocalPreset && customModel;
       const showLocalKeyField = isLocalPreset && localKeyEnabled;
       const showDisplayNameField = isLocalPreset && !initial.__new;
-      const showConfigFields = showDisplayNameField || showModelIdField || showBaseUrlField || showCustomCloudKeyField;
+      const showAliasField = !isLocalPreset;
+      const showConfigFields = showAliasField || showDisplayNameField || showModelIdField || showBaseUrlField || showCustomCloudKeyField;
       const selectedProvider = isLocalPreset ? presetProviderLabel(preset, t) : (activeProvider ? (activeProvider.configTitle || activeProvider.title) : presetProviderLabel(preset, t));
       const selectedModelLabel = model || settingsCopy.customModel;
       const modalTitle = initial.__new
@@ -923,6 +925,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         try {
           await onSave({
             id: id, name: saveName, preset: preset,
+            alias: showAliasField ? (alias.trim() || null) : null,
             context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
             max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
             // 仅当前表单模型支持档位时保存；手输 model 变为无档位模型时置 null(#209)。
@@ -1128,7 +1131,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           </>
         );
       };
-      const renderInlineField = ({ label, value, onChange, placeholder, type = 'text', trailing, readOnly = false }) => (
+      const renderInlineField = ({ label, value, onChange, placeholder, type = 'text', trailing, readOnly = false, testId }) => (
         <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
           <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{label}</label>
           <input
@@ -1137,6 +1140,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             onChange={onChange}
             readOnly={readOnly}
             placeholder={placeholder}
+            data-testid={testId}
             className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366] ${readOnly ? 'cursor-default' : ''}`}
           />
           {trailing}
@@ -1490,6 +1494,13 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
               {showConfigFields && (
                 <section>
                   <div className={formGroup}>
+                    {showAliasField && renderInlineField({
+                      label: settingsCopy.modelAlias,
+                      value: alias,
+                      onChange: e => setAlias(e.target.value),
+                      placeholder: settingsCopy.modelAliasPlaceholder,
+                      testId: 'model-form-alias',
+                    })}
                     {showDisplayNameField && renderInlineField({
                       label: t.modelDisplayName,
                       value: name,

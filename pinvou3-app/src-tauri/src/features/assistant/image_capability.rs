@@ -178,6 +178,7 @@ mod tests {
         SavedModel {
             id: "m1".to_string(),
             name: model.to_string(),
+            alias: None,
             preset,
             context_window_tokens: None,
             max_output_tokens: None,

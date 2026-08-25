@@ -208,6 +208,9 @@ pub struct SavedModel {
     pub id: String,
     /// 用户起的显示名("本地 Qwen"/"DeepSeek 线上")。
     pub name: String,
+    /// Optional user-facing label for cloud model selectors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
     /// 决定 provider 路由 + 模板,复用现有 9 预设枚举。
     pub preset: ModelPreset,
     /// 该具体部署允许的 context window；与发给服务端的 `model` wire name 解耦。
@@ -248,6 +251,14 @@ pub struct SavedModel {
 }
 
 impl SavedModel {
+    fn normalize_alias(&mut self) {
+        self.alias = self
+            .alias
+            .take()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+    }
+
     fn normalize_route_limits(&mut self) {
         self.context_window_tokens = self.context_window_tokens.filter(|tokens| *tokens > 0);
         self.max_output_tokens = self.max_output_tokens.filter(|tokens| *tokens > 0);
@@ -633,6 +644,7 @@ impl UserPrefs {
 
     pub fn normalize_saved_model_metadata(&mut self) {
         for model in &mut self.advanced.saved_models {
+            model.normalize_alias();
             model.normalize_provider_metadata();
             model.normalize_route_limits();
         }
@@ -654,6 +666,7 @@ impl UserPrefs {
     pub(crate) fn migrate_models(&mut self) {
         if !self.advanced.saved_models.is_empty() {
             for model in &mut self.advanced.saved_models {
+                model.normalize_alias();
                 model.normalize_provider_metadata();
                 model.normalize_route_limits();
             }
@@ -677,6 +690,7 @@ impl UserPrefs {
         self.advanced.saved_models.push(SavedModel {
             id: id.clone(),
             name: model.clone(),
+            alias: None,
             preset,
             context_window_tokens: None,
             max_output_tokens: None,
@@ -694,6 +708,7 @@ impl UserPrefs {
             has_secret: false,
             credential_action: None,
         });
+        self.advanced.saved_models[0].normalize_alias();
         self.advanced.saved_models[0].normalize_route_limits();
         self.advanced.saved_models[0].normalize_provider_metadata();
         self.advanced.custom_api_key = None;
@@ -944,6 +959,7 @@ impl UserPrefs {
 
     /// 增或改(按 id)一条模型。
     pub fn upsert_model(&mut self, mut m: SavedModel) {
+        m.normalize_alias();
         m.normalize_provider_metadata();
         m.normalize_route_limits();
         if let Some(existing) = self.advanced.saved_models.iter_mut().find(|x| x.id == m.id) {
@@ -969,6 +985,36 @@ mod tests {
     use crate::platform::credential_store::MemoryCredentialStore;
     use crate::platform::paths::tests::ENV_LOCK;
 
+    #[test]
+    fn saved_model_alias_is_backward_compatible_and_normalized() {
+        let legacy: SavedModel = serde_json::from_value(serde_json::json!({
+            "id": "legacy-cloud",
+            "name": "Legacy cloud",
+            "preset": "deepseek",
+            "model": "deepseek-v4-pro",
+            "base_url": "https://api.deepseek.com"
+        }))
+        .expect("deserialize legacy model without alias");
+        assert!(legacy.alias.is_none());
+
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models.clear();
+        prefs.upsert_model(SavedModel {
+            alias: Some("  Daily assistant  ".to_string()),
+            ..legacy.clone()
+        });
+        assert_eq!(
+            prefs.model_by_id("legacy-cloud").unwrap().alias.as_deref(),
+            Some("Daily assistant")
+        );
+
+        prefs.upsert_model(SavedModel {
+            alias: Some("   ".to_string()),
+            ..legacy
+        });
+        assert!(prefs.model_by_id("legacy-cloud").unwrap().alias.is_none());
+    }
+
     /// reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位：
     /// 非法值置 None（避免被底座静默回退成 Max），合法别名规范化为对应档位
     /// （对齐 `as_setting()`，避免 wire 层 `apply_reasoning_effort` 静默丢弃）。
@@ -977,6 +1023,7 @@ mod tests {
         let base = SavedModel {
             id: "m1".into(),
             name: "m1".into(),
+            alias: None,
             preset: ModelPreset::OpenaiCompatible,
             context_window_tokens: None,
             max_output_tokens: None,
@@ -1081,6 +1128,7 @@ mod tests {
         prefs.upsert_model(SavedModel {
             id: "glm-coding".into(),
             name: "GLM-5-Turbo".into(),
+            alias: None,
             preset: ModelPreset::OpenaiCompatible,
             context_window_tokens: None,
             max_output_tokens: None,
@@ -1119,6 +1167,7 @@ mod tests {
         prefs.upsert_model(SavedModel {
             id: "glm-api".into(),
             name: "GLM API".into(),
+            alias: None,
             preset: ModelPreset::Glm,
             context_window_tokens: None,
             max_output_tokens: None,
@@ -1162,6 +1211,7 @@ mod tests {
         prefs.upsert_model(SavedModel {
             id: "minimax-api".into(),
             name: "MiniMax".into(),
+            alias: None,
             preset: ModelPreset::Minimax,
             context_window_tokens: None,
             max_output_tokens: None,
@@ -1200,6 +1250,7 @@ mod tests {
         prefs.advanced.saved_models.push(SavedModel {
             id: "minimax-api".into(),
             name: "MiniMax".into(),
+            alias: None,
             preset: ModelPreset::Minimax,
             context_window_tokens: None,
             max_output_tokens: None,
@@ -1248,6 +1299,7 @@ mod tests {
         prefs.upsert_model(SavedModel {
             id: "m2".into(),
             name: "Kimi".into(),
+            alias: None,
             preset: ModelPreset::Kimi,
             context_window_tokens: None,
             max_output_tokens: None,

@@ -933,6 +933,8 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
 });
 
 dictEn.uiSettingsDetail.customCodingPlanDesc = 'Enter a Coding Plan model ID manually';
+dictEn.uiSettingsDetail.modelAlias = 'Alias';
+dictEn.uiSettingsDetail.modelAliasPlaceholder = 'Optional, e.g. Daily assistant';
 
 dictEn.uiSettingsDetail.customModelTitles = {
   glm:'Custom GLM model', qwen:'Custom Qwen model',

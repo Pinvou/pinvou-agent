@@ -936,6 +936,8 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, {
 });
 
 dictJa.uiSettingsDetail.customCodingPlanDesc = 'Coding Plan モデル ID を手動入力';
+dictJa.uiSettingsDetail.modelAlias = '別名';
+dictJa.uiSettingsDetail.modelAliasPlaceholder = '任意（例：日常アシスタント）';
 
 dictJa.uiSettingsDetail.customModelTitles = {
   glm:'カスタム GLM モデル', qwen:'カスタム Qwen モデル',

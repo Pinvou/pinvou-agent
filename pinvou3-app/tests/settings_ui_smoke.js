@@ -875,6 +875,7 @@ async function modalWidth(page, headingText) {
       noAdvancedCollapse: !text.includes('高级设置'),
       noServiceUrlField: !text.includes('服务地址'),
       hasModelPicker: text.includes('模型') && text.includes('deepseek-v4-pro'),
+      hasOptionalAlias: text.includes('别名') && !!document.querySelector('[data-testid="model-form-alias"]'),
       saveDisabled: !!save && save.disabled,
       hasSingleKeyInput: document.querySelectorAll('input[placeholder="输入 API Key"]').length === 1,
     };
@@ -883,10 +884,13 @@ async function modalWidth(page, headingText) {
     && addModelBeforeKey.noAdvancedCollapse
     && addModelBeforeKey.noServiceUrlField
     && addModelBeforeKey.hasModelPicker
+    && addModelBeforeKey.hasOptionalAlias
     && addModelBeforeKey.saveDisabled
     && addModelBeforeKey.hasSingleKeyInput;
   rec('⑥.6 添加预置云模型表单精简且 API Key 前禁用保存', addModelBeforeKeyPass, JSON.stringify({ cloudPickerWidth, ...addModelBeforeKey }));
   const apiInput = await page.$('input[placeholder="输入 API Key"]');
+  const aliasInput = await page.$('[data-testid="model-form-alias"]');
+  await aliasInput.type('Daily assistant');
   await apiInput.type('sk-model-test');
   await sleep(150);
   await clickExact(page, '保存');
@@ -899,6 +903,7 @@ async function modalWidth(page, headingText) {
     savedModel
       && savedModel.model === 'deepseek-v4-pro'
       && savedModel.name === 'deepseek-v4-pro'
+      && savedModel.alias === 'Daily assistant'
       && savedModel.api_key === 'sk-model-test',
     JSON.stringify(savedModel));
 
