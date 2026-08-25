@@ -297,7 +297,8 @@ impl ProductChatRuntime for EnginePoolRuntime {
     }
 
     async fn cancel(&self, session_id: &str) {
-        self.pool.cancel(session_id).await;
+        // 评测/headless 的取消即停止语义：不保留未注入 steer（StopDropInbox）。
+        self.pool.cancel(session_id, false).await;
     }
 
     async fn close(&self, session_id: &str) {

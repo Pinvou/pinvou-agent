@@ -1900,11 +1900,14 @@ impl EnginePool {
     /// 停止（false）时清空并发 SteerDropped，前端移除 chip 并提示——
     /// 防止「UI 里消息消失、引擎里还活着」的悬挂。
     pub async fn cancel(&self, session_id: &str, keep_inbox: bool) -> CancelOutcome {
-        // keepInbox 开关必须先于 cancel_current 生效：turn loop 在取消检查点
-        // 读它决定 steer 处置（Release/Acquire 保证可见性）。
-        if let Some(engine) = self.handle_for(session_id).await {
-            engine.handle.set_steer_keep_inbox(keep_inbox);
-        }
+        // r10 底座：steer 处置（InterruptKeepInbox/StopDropInbox）与 cancel
+        // token 由 cancel_with_mode 原子发布，不再需要先于 cancel 单独设置
+        // keepInbox 开关（旧两步写法在并发 cancel 下有处置串扰窗口）。
+        let steer_mode = if keep_inbox {
+            deepseek_tui::core::engine::CancelMode::InterruptKeepInbox
+        } else {
+            deepseek_tui::core::engine::CancelMode::StopDropInbox
+        };
         // 两阶段 generation 守护见 cancel_turn_with_gates：cancel 请求绑定发起
         // 时刻的轮次 epoch，并发请求中排队较晚的 C2 在 turn_lock 释放后若发现
         // 目标轮已结束（新轮已 reserve），整体 no-op，不误取消新轮。
@@ -1928,7 +1931,7 @@ impl EnginePool {
             // （早于下一轮 SendMessage）；通道满（容量 32）时放弃，由阶段二
             // 及 mismatch 补发路径持锁 await 保证送达（reviewer 点 9 + G1）。
             |engine| {
-                engine.cancel_current();
+                engine.cancel_current_with_mode(steer_mode);
                 let _ = engine.handle.try_send(Op::CancelSubAgents);
             },
             // cascade_cancel：阶段二持 turn_lock 时 await 发送级联取消，保证在

@@ -1020,6 +1020,7 @@ impl TurnLifecycle {
             TurnOutcomeStatus::Interrupted,
             None,
             false,
+            false,
         );
         true
     }
@@ -1047,6 +1048,7 @@ impl TurnLifecycle {
             target,
             TurnOutcomeStatus::Interrupted,
             None,
+            false,
             false,
         );
         true
@@ -1572,6 +1574,15 @@ impl AppEngine {
     /// 同步触发 cancel_token，engine turn loop 会立即跳出并发 TurnComplete 事件。
     pub fn cancel_current(&self) {
         self.handle.cancel();
+    }
+
+    /// 取消当前轮并原子发布未注入 steer 的处置（r10 底座 `cancel_with_mode`）：
+    /// `InterruptKeepInbox` = 打断（⚡），未注入 steer 保留给下一轮；
+    /// `StopDropInbox` = 停止（⏹），未注入 steer 清空并逐条发 `SteerDropped`。
+    /// 处置与 cancel token 在同一句柄操作内发布，不存在旧两步写法的竞态窗口。
+    pub fn cancel_current_with_mode(&self, mode: deepseek_tui::core::engine::CancelMode) {
+        self.handle
+            .cancel_with_mode(deepseek_tui::core::engine::CancelReason::User, mode);
     }
 
     async fn send_turn_op(&self, op: Op) -> Result<()> {
