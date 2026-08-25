@@ -2706,8 +2706,8 @@ function workspaceDisplayName(path) {
       if (!isWeb) return null;
       try {
         const value = window.localStorage.getItem('pinvou.web.language');
-        return value && (value === 'zh' || value === 'en' || value === 'ja') ? value : null;
-      } catch (_) { return null; }
+        return value && ['zh', 'en', 'ja'].includes(value) ? value : null;
+      } catch { return null; }
     })();
     ensureLanguage(__storedLang || __initialLang).catch(() => {}).then(function () {
       if (__q.get('detached') === '1') {

@@ -316,7 +316,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     }
     const range = sel.getRangeAt(0);
     // WebKit 的 DOMRectList 没有 Symbol.iterator（IDL 无 iterable<>），展开会抛 TypeError，必须用 Array.from。
-    // eslint-disable-next-line prefer-spread, unicorn/prefer-spread -- DOMRectList 在 Safari/WKWebView 任意版本不可迭代
+    // eslint-disable-next-line unicorn/prefer-spread -- DOMRectList 在 Safari/WKWebView 任意版本不可迭代
     const rects = Array.from(range.getClientRects()).filter((r) => r.width || r.height);
     const rect = rects[rects.length - 1] || range.getBoundingClientRect();
     if (!rect || (!rect.width && !rect.height)) {

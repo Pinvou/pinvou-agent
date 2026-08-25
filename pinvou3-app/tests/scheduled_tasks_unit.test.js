@@ -3226,9 +3226,9 @@ async function editLastTurnBlockedWhileAuthorityReconcilePending() {
 // Tool results also use role="user" in state.messages. Editing the last turn
 // must cut at the genuine prompt and remove its complete tool round-trip.
 async function editLastTurnCutsAtRealUserMessageBeforeToolResult(bridgeKind) {
-  var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
-  var bridge = harness.bridge;
-  var sessionId = "chat-edit-tool-result-" + bridgeKind;
+  const harness = createBridgeHarness(null, { bridgeKind });
+  const bridge = harness.bridge;
+  const sessionId = "chat-edit-tool-result-" + bridgeKind;
   harness.handlers.load_session = function () {
     return {
       metadata: { id: sessionId, title: "Edit with tool result", message_count: 4 },
@@ -3243,25 +3243,25 @@ async function editLastTurnCutsAtRealUserMessageBeforeToolResult(bridgeKind) {
   };
 
   assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
-  var before = bridge.state.get("chat").messages;
+  const before = bridge.state.get("chat").messages;
   assert.strictEqual(before.length, 4, "seeded transcript must include the tool round-trip");
 
   await bridge.interaction.editLastTurn("edited question");
-  var after = bridge.state.get("chat").messages;
+  const after = bridge.state.get("chat").messages;
   assert.deepStrictEqual(
     after,
     [{ role: "user", content: [{ type: "text", text: "edited question" }] }],
     "edit must cut the whole last turn including the trailing tool_result"
   );
-  var editCalls = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; });
+  const editCalls = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; });
   assert.strictEqual(editCalls.length, 1, "edit_last_turn must be invoked exactly once");
 }
 
 async function rejectedEditRestoresAuthoritativeTranscript(bridgeKind) {
-  var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
-  var bridge = harness.bridge;
-  var sessionId = "chat-edit-rejected-" + bridgeKind;
-  var durable = {
+  const harness = createBridgeHarness(null, { bridgeKind });
+  const bridge = harness.bridge;
+  const sessionId = "chat-edit-rejected-" + bridgeKind;
+  const durable = {
     metadata: { id: sessionId, title: "Rejected edit", message_count: 3 },
     messages: [
       { role: "user", content: [{ type: "text", text: "older editable prompt" }] },
@@ -3289,9 +3289,9 @@ async function rejectedEditRestoresAuthoritativeTranscript(bridgeKind) {
     error: "Cannot edit the latest user content",
     operation_rejected: true,
   });
-  for (var reconcileTick = 0; reconcileTick < 12; reconcileTick++) await tick();
+  for (let reconcileTick = 0; reconcileTick < 12; reconcileTick++) await tick();
 
-  var state = bridge.state.get("chat");
+  const state = bridge.state.get("chat");
   assert.deepStrictEqual(
     JSON.parse(JSON.stringify(state.messages)),
     durable.messages,

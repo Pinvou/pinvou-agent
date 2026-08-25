@@ -7813,7 +7813,7 @@
     if (!sid) return;
     try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) {
       const compactErr = String(e || "");
-      addSystemItemFor(sid, bt("compactFail") + ": " + (compactErr.indexOf("session_engine_not_running") >= 0 ? bt("compactInactive") : compactErr));
+      addSystemItemFor(sid, bt("compactFail") + ": " + (compactErr.includes("session_engine_not_running") ? bt("compactInactive") : compactErr));
     }
   }
 

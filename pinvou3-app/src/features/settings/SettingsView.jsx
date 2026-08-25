@@ -2050,7 +2050,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         // Alias gating is preset-only, matching the form, selector labels, and
         // Rust `normalize_alias`; `isLocal`'s extra loopback check applies to
         // icon/tag/scope only, so a loopback custom endpoint keeps its alias here.
-        const alias = m.preset !== 'local_vllm' ? String(m.alias || '').trim() : '';
+        const alias = m.preset === 'local_vllm' ? '' : String(m.alias || '').trim();
         const title = alias || m.model || m.name;
         return (
           <div key={m.id} className={`min-h-[60px] grid grid-cols-[24px_32px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]`}>

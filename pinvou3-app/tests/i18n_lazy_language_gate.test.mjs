@@ -69,7 +69,7 @@ test('失败分支:源码注入桩 loader 验证 false + 清挂起 + 可重试',
   );
   source = source.replace(
     "import { dictZh } from './i18n/zh.js';",
-    `import { dictZh } from '${enUrl.replace('/en.js', '/zh.js')}';`,
+    () => `import { dictZh } from '${enUrl.replace('/en.js', '/zh.js')}';`,
   );
   let attempts = 0;
   globalThis.__stubEn = async () => {
@@ -93,7 +93,7 @@ test('失败分支:源码注入桩 loader 验证 false + 清挂起 + 可重试',
   let slowAttempts = 0;
   globalThis.__stubEn = async () => {
     slowAttempts += 1;
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
     throw new Error('slow stub failure');
   };
   const dedupUrl = 'data:text/javascript;charset=utf-8,' + encodeURIComponent(source + '\n// dedup-case');
@@ -127,7 +127,7 @@ test('切换乱序:后发起的较新选择胜出,慢的旧请求不得覆盖', 
   const switchTo = createLatestLanguageGate(ensure);
   switchTo('ja', () => applied.push('ja'));
   switchTo('en', () => applied.push('en'));
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await new Promise((resolve) => { setTimeout(resolve, 100); });
   assert.deepEqual(applied, ['en'], '只应落地较新的 en 选择,慢的旧 ja continuation 必须被拦下');
 });
 
@@ -142,14 +142,14 @@ test('切换门:成功落地恰一次;装载失败不落地且可重试', async 
   };
   const switchTo = createLatestLanguageGate(ensure);
   switchTo('ja', () => applied.push('ja-fail'));
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
   assert.deepEqual(applied, [], '装载失败(false)不得落地');
   // 失败后重试(无更新选择在途)应正常落地;顺序发起的选择各自落地。
   switchTo('ja', () => applied.push('ja-retry'));
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
   assert.deepEqual(applied, ['ja-retry'], '失败清挂起后重试应落地');
   switchTo('zh', () => applied.push('zh'));
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
   assert.deepEqual(applied, ['ja-retry', 'zh'], '顺序发起的选择按发起顺序落地');
 });
 
@@ -158,6 +158,6 @@ test('切换门:ensure 抛异常不得炸出未处理 rejection', async () => {
   const applied = [];
   const switchTo = createLatestLanguageGate(() => Promise.reject(new Error('boom')));
   switchTo('en', () => applied.push('en'));
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
   assert.deepEqual(applied, [], '拒绝的装载不得落地');
 });

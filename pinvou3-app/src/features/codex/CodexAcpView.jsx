@@ -2053,7 +2053,7 @@ export function CodexAcpView({
 
   async function uploadDeviceFiles(files, sessionId = attachmentKey) {
     // 调用方会传入 FileList（input.files）；WebKit 的 FileList 没有 Symbol.iterator，展开会抛 TypeError。
-    // eslint-disable-next-line prefer-spread, unicorn/prefer-spread -- FileList 在 Safari/WKWebView 任意版本不可迭代
+    // eslint-disable-next-line unicorn/prefer-spread -- FileList 在 Safari/WKWebView 任意版本不可迭代
     const selected = Array.from(files || []).filter(Boolean);
     for (const file of selected) {
       const id = `codex-attachment-${++attachmentIdRef.current}`;
@@ -2187,7 +2187,7 @@ export function CodexAcpView({
 
   function handlePaste(event) {
     // WebKit 的 DataTransferItemList 没有 Symbol.iterator，展开会抛 TypeError，必须用 Array.from。
-    // eslint-disable-next-line prefer-spread, unicorn/prefer-spread -- DataTransferItemList 在 Safari/WKWebView 任意版本不可迭代
+    // eslint-disable-next-line unicorn/prefer-spread -- DataTransferItemList 在 Safari/WKWebView 任意版本不可迭代
     const items = Array.from(event.clipboardData && event.clipboardData.items || []);
     const images = items.filter(item => item.type && item.type.startsWith('image/'));
     if (!images.length) return;
@@ -2215,7 +2215,6 @@ export function CodexAcpView({
           showError(err);
         }
       };
-      // eslint-disable-next-line unicorn/prefer-blob-reading-methods -- ES2021/Safari 14 地板不支持 Blob#arrayBuffer
       reader.readAsArrayBuffer(file);
     });
   }

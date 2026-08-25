@@ -6,7 +6,7 @@ import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
-import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
+import { AppIcon, DEPT_ORDER, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
@@ -1605,7 +1605,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       function handlePaste(e) {
         if (isWeb) return;
         // WebKit 的 DataTransferItemList 没有 Symbol.iterator，for...of/展开会抛 TypeError，必须用 Array.from。
-        // eslint-disable-next-line prefer-spread, unicorn/prefer-spread -- DataTransferItemList 在 Safari/WKWebView 任意版本不可迭代
+        // eslint-disable-next-line unicorn/prefer-spread -- DataTransferItemList 在 Safari/WKWebView 任意版本不可迭代
         const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
         for (const it of items) {
           if (!(it.type && it.type.indexOf('image/') === 0)) {
@@ -1621,7 +1621,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             const ext = (file.type.split('/')[1] || 'png');
             if (bridge.available) bridge.attachments.addPasteImage(`paste-${Date.now()}.${ext}`, bytes);
           };
-          reader.readAsArrayBuffer(file); // eslint-disable-line unicorn/prefer-blob-reading-methods -- FileReader 流程与进度回调配套,改造需重测拖拽链路
+          reader.readAsArrayBuffer(file);
         }
       }
 
