@@ -82,7 +82,7 @@ fn send_native_notification(app: &AppHandle) -> Result<(), String> {
 fn send_notify_send() -> Result<(), String> {
     use std::process::Command;
 
-    crate::platform::os::posix::spawn_detached_and_reap(
+    crate::platform::os::spawn_detached_and_reap(
         Command::new("notify-send")
             .arg(TASK_COMPLETED_TITLE)
             .arg(TASK_COMPLETED_BODY),
