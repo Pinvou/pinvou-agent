@@ -2017,7 +2017,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         const isReadonly = isReadonlyModel(m);
         const codingPlan = isCodingPlanModel(m);
         const providerLabel = providerLabelForModel(m, t);
-        const title = m.model || m.name;
+        const alias = isLocal ? '' : String(m.alias || '').trim();
+        const title = alias || m.model || m.name;
         return (
           <div key={m.id} className={`min-h-[60px] grid grid-cols-[24px_32px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]`}>
             <button onClick={() => !isActive && onSetActiveModel(m.id)} className="shrink-0" title={t.setActiveModel}>

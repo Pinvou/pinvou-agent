@@ -161,6 +161,11 @@ test('cloud model alias takes precedence in the main label', () => {
 test('blank model alias falls back to the existing label', () => {
   assert.strictEqual(selectorMainLabel(mk({ alias: '   ', model: 'meta-llama/llama-4-scout' }), t), 'meta-llama/llama-4-scout');
 });
+test('local model alias is ignored by selector labels', () => {
+  const local = mk({ alias: 'Must not render', name: '我的模型', preset: 'local_vllm', model: 'qwen36_35b_256k' });
+  assert.strictEqual(selectorMainLabel(local, t), '我的模型');
+  assert.strictEqual(selectorSubLabel(local, t), 'qwen36_35b_256k');
+});
 test('本地已命名 -> 用 name', () => {
   assert.strictEqual(selectorMainLabel(mk({ name: '我的模型', preset: 'local_vllm', model: 'qwen36_35b_256k' }), t), '我的模型');
 });

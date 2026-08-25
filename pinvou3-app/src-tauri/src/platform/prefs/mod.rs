@@ -252,6 +252,10 @@ pub struct SavedModel {
 
 impl SavedModel {
     fn normalize_alias(&mut self) {
+        if self.preset == ModelPreset::LocalVllm {
+            self.alias = None;
+            return;
+        }
         self.alias = self
             .alias
             .take()
@@ -580,12 +584,19 @@ impl UserPrefs {
                 .custom_base_url
                 .as_deref()
                 .is_some_and(|url| migrated_minimax_base_url(url).is_some());
+        let local_model_alias_changed = prefs
+            .advanced
+            .saved_models
+            .iter()
+            .any(|model| model.preset == ModelPreset::LocalVllm && model.alias.is_some());
         prefs.migrate_models();
         prefs.normalize_saved_model_metadata();
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
-        let normalization_changed =
-            minimax_endpoint_changed || migration.settings_sanitized || memory_policy_changed;
+        let normalization_changed = minimax_endpoint_changed
+            || local_model_alias_changed
+            || migration.settings_sanitized
+            || memory_policy_changed;
         if should_persist_normalization(
             allow_normalization_persist,
             persist_normalized,
@@ -1013,6 +1024,78 @@ mod tests {
             ..legacy
         });
         assert!(prefs.model_by_id("legacy-cloud").unwrap().alias.is_none());
+    }
+
+    #[test]
+    fn local_model_alias_is_cleared_by_upsert_and_normalization() {
+        let local = SavedModel {
+            id: "local-model".into(),
+            name: "Local model".into(),
+            alias: Some("Must not persist".into()),
+            preset: ModelPreset::LocalVllm,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "qwen36_35b_256k".into(),
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        };
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models.clear();
+
+        prefs.upsert_model(local);
+        assert!(prefs.model_by_id("local-model").unwrap().alias.is_none());
+
+        prefs.advanced.saved_models[0].alias = Some("Legacy local alias".into());
+        prefs.normalize_saved_model_metadata();
+        assert!(prefs.model_by_id("local-model").unwrap().alias.is_none());
+        assert!(!serde_json::to_string(&prefs).unwrap().contains("alias"));
+    }
+
+    #[test]
+    fn load_clears_and_persists_legacy_local_model_alias() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let temporary_home = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-local-alias-migration-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&temporary_home);
+        std::fs::create_dir_all(&temporary_home).expect("create temporary prefs home");
+        unsafe { std::env::set_var("PINVOU3_HOME", &temporary_home) };
+
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        prefs.advanced.saved_models[0].alias = Some("Legacy local alias".into());
+        let settings_path = super::super::paths::settings_path();
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs"),
+        )
+        .expect("write legacy prefs");
+
+        let loaded = UserPrefs::load();
+        assert!(loaded.active_model().unwrap().alias.is_none());
+        let persisted = std::fs::read_to_string(&settings_path).expect("read normalized prefs");
+        assert!(!persisted.contains("Legacy local alias"));
+
+        let _ = std::fs::remove_dir_all(&temporary_home);
+        match old_home {
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
     }
 
     /// reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位：

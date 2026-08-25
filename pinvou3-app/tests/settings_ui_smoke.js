@@ -906,6 +906,20 @@ async function modalWidth(page, headingText) {
       && savedModel.alias === 'Daily assistant'
       && savedModel.api_key === 'sk-model-test',
     JSON.stringify(savedModel));
+  const savedAliasInventory = await page.evaluate(() => {
+    const title = [...document.querySelectorAll('span')]
+      .find(node => (node.textContent || '').trim() === 'Daily assistant');
+    const row = title && title.closest('.grid');
+    const text = row ? row.innerText : '';
+    return {
+      aliasVisible: !!title,
+      providerVisible: text.includes('DeepSeek'),
+      wireModelVisible: text.includes('deepseek-v4-pro'),
+    };
+  });
+  rec('⑦.1 保存别名后模型列表立即以别名为标题并保留服务商与模型 ID',
+    Object.values(savedAliasInventory).every(Boolean),
+    JSON.stringify(savedAliasInventory));
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');
