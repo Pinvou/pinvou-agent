@@ -2,7 +2,7 @@
 
 > **当前版本: r2** (2026-05-18 起生效)。改版规则见 §6。
 >
-> 用法:L1 跑完 → 用户对话框跟 Claude 说 "评一下 `target/l1-runs/<ts>`" → Claude 按本文件 rubric 评分写报告 → `target/l1-judge/<ts>-report.md`。
+> 用法:L1 跑完 → 用户对话框跟 Claude 说 "评一下 `target/l1-runs/<ts>`" → Claude 按本文件 rubric 评分写报告 → `target/l1-judge/<ts>-r<N>-report.md`。
 >
 > **跟 L1 cargo test PASS/FAIL 完全解耦**。L1 是行为契约(文件落盘/耗时上限,judge 看不见的硬指标),judge 是答案质量评估,两件事。
 >
@@ -14,14 +14,14 @@
 
 ```
 target/l1-runs/<ts>/<scenario>.md     ← harness 自动落档 (record_transcript)
-target/l1-judge/<ts>-report.md        ← Claude 评分后写这里
+target/l1-judge/<ts>-r<N>-report.md   ← Claude 评分后写这里
 ```
 
 `<ts>` 是 unix epoch seconds,同一次 `cargo test --ignored` 跑下的所有 scenario 共享一个 `<ts>` 目录。
 
 ---
 
-## 2. 评分 rubric (4 维 × 1-5 分)
+## 2. 评分 rubric (6 维 × 1-5 分)
 
 ### 维度 1:准确性 (Accuracy)
 
@@ -141,10 +141,12 @@ ls target/l1-runs/<ts>/
 
 ### Step 4: 写报告到 `target/l1-judge/<ts>-r<N>-report.md`
 
-`<N>` 是当前 rubric 版本号(本文档顶部"当前版本"),比如 `1779074272-r1-report.md`。
+`<N>` 是当前 rubric 版本号(本文档顶部"当前版本"),比如 `1779074272-r2-report.md`。
 `mkdir -p target/l1-judge/` 若不存在。按 §4 模板。
 
 ### Step 5: append 离群点到 `process.md` (闭环防丢失)
+
+(`process.md` 位于仓库根,是评审者本地维护的工作文件,不入库。)
 
 任一 scenario 任一维度 ≤3 → 把改进建议 append 到 `process.md` 末尾的固定区:
 
@@ -202,7 +204,7 @@ ls target/l1-runs/<ts>/
 - **工具使用 N/A**: 任务本身不需要工具
 
 ### batch_create_7_files — 4.75
-...(每 scenario 4 项 + 一句话理由)
+...(每 scenario 各评分维度一行 + 一句话理由;subagent scenario 含全部 6 维)
 
 ## 离群点
 
@@ -272,12 +274,14 @@ ls target/l1-runs/<ts>/
 
 ### 何时 bump 版本
 
-- 加新维度(从 4 维 → 5 维)
+- 加新维度(如 r2 在 r1 的 4 维上加了 2 维)
 - 改 1-5 分的判别标准(扣分门槛/示例变化)
 - 加新扣分条款(像 r1 的 blocklist 工具 ≤2 分)
 - **不需要 bump**:错别字、补充说明、报告模板调整
 
 ### Baseline 命名约定
+
+(`docs/l1-baselines/` 为评审者本地维护的工作文件,不入库。)
 
 ```
 docs/l1-baselines/v<app_ver>-r<rubric_ver>/

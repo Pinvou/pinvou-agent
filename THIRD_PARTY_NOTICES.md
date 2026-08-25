@@ -7,7 +7,7 @@ Their original licenses remain in effect.
 
 | Component | Version or baseline | Included form | License | Upstream |
 |---|---|---|---|---|
-| CodeWhale | `pinvou-v0.9.0-r4` | Public Git submodule and linked Rust crates | MIT | https://github.com/Pinvou/CodeWhale |
+| CodeWhale | `pinvou-v0.9.5-r8` | Public Git submodule and linked Rust crates | MIT | https://github.com/Pinvou/CodeWhale |
 | DingTalk Workspace CLI (`dws`) and skills | 1.0.58 | Apache-2.0 skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | Apache-2.0 | https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli |
 | Lark CLI and skills | 1.0.87 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/larksuite/cli |
 | WeCom CLI and skills | 1.1.0 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/WecomTeam/wecom-cli |
@@ -45,7 +45,9 @@ next to their resources under `pinvou3-app/src-tauri/resources/`.
 The exact connector URLs and SHA-256 checksums are recorded in the per-platform
 `connectors.lock.json` manifests under
 `pinvou3-app/src-tauri/resources/platforms/<os>/<arch>/bundle/connectors/`
-(linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64), and are
+(real path segments: `linux/aarch64`, `linux/x86_64`, `macos/aarch64`,
+`macos/x86_64`, `windows/x86_64`; the lock files' `platform` fields use the
+compact `linux-arm64`-style names), and are
 fetched on first use by the app itself; `scripts/fetch-connectors.sh` is the CI/reviewer helper that materializes the same artifacts for verification.
 
 ## Package dependencies and SBOM

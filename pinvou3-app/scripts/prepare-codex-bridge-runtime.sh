@@ -212,7 +212,7 @@ npm_ci_for_target() {
 
 npm_ci_for_target "$ACP_ROOT" "$NODE_OS" "$NODE_CPU"
 
-# Bridge 通过 CODEX_PATH 启动系统或托管 Codex，通过 CLAUDE_CODE_EXECUTABLE / PATH
+# Bridge 通过 CODEX_PATH 启动系统 Codex，通过 CLAUDE_CODE_EXECUTABLE / PATH
 # 中的 claude 启动系统 Claude Code（与 Kimi 一致），均不随包携带平台原生二进制
 #（单个 claude 二进制解压后约 245MB，universal 双架构会让 dmg 多出约 140MB）。
 rm -rf $DD "$ACP_ROOT/node_modules/@openai"/codex-*
