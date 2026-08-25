@@ -18,6 +18,10 @@ copyFileSync(
   path.join(root, 'src', 'features', 'codex', 'code-permission-state.js'),
   path.join(temp, 'codex', 'code-permission-state.js'),
 );
+copyFileSync(
+  path.join(root, 'src', 'features', 'codex', 'native-session-handoff.js'),
+  path.join(temp, 'codex', 'native-session-handoff.js'),
+);
 
 try {
   const {
@@ -26,6 +30,11 @@ try {
     needsYoloConfirmation,
     resolveNativeModeValue,
   } = await import(`${pathToFileURL(path.join(temp, 'codex', 'code-permission-state.js')).href}?t=${Date.now()}`);
+  const {
+    canApplyNativeControlsRefresh,
+    finalizePreparedSessionCreation,
+    resolveNativeModelId,
+  } = await import(`${pathToFileURL(path.join(temp, 'codex', 'native-session-handoff.js')).href}?t=${Date.now()}`);
 
   // ── 全局默认 mode 解析 ─────────────────────────────────────────
   assert.equal(CODE_MODE_FALLBACK, 'plan', '兜底必须是只读方向 Plan');
@@ -72,10 +81,99 @@ try {
   }), 'plan');
 
   // ── CodexAcpView.jsx 接线契约 ──────────────────────────────────
+  // A staged model must remain visible throughout delayed activation. A late control
+  // response from the previous request cannot replace the authoritative new-session value.
+  let controls = { sessionId: 'old-session', modelId: 'model-b' };
+  const handoff = { sessionId: 'new-session', modelId: 'model-a' };
+  assert.equal(resolveNativeModelId({
+    activeId: null,
+    controlsSessionId: controls.sessionId,
+    controlsModelId: controls.modelId,
+    draftModelId: 'model-a',
+    handoffModelId: null,
+  }), 'model-a');
+  assert.equal(resolveNativeModelId({
+    activeId: handoff.sessionId,
+    controlsSessionId: controls.sessionId,
+    controlsModelId: controls.modelId,
+    draftModelId: null,
+    handoffModelId: handoff.modelId,
+  }), 'model-a');
+
+  const applyRefresh = ({ requestId, latestRequestId, sessionId, modelId }) => {
+    if (!canApplyNativeControlsRefresh({
+      requestId,
+      latestRequestId,
+      sessionId,
+      activeId: handoff.sessionId,
+    })) return false;
+    controls = { sessionId, modelId };
+    return true;
+  };
+  assert.equal(applyRefresh({
+    requestId: 2,
+    latestRequestId: 2,
+    sessionId: handoff.sessionId,
+    modelId: 'model-a',
+  }), true);
+  assert.equal(applyRefresh({
+    requestId: 1,
+    latestRequestId: 2,
+    sessionId: handoff.sessionId,
+    modelId: null,
+  }), false);
+  assert.equal(resolveNativeModelId({
+    activeId: handoff.sessionId,
+    controlsSessionId: controls.sessionId,
+    controlsModelId: controls.modelId,
+    draftModelId: null,
+    handoffModelId: handoff.modelId,
+  }), 'model-a');
+
+  // Preparation can fail after the backend session exists. Activate and load that same
+  // session before rethrowing so the restored composer retries there, not in a duplicate.
+  {
+    const preparationError = new Error('model persistence failed');
+    const calls = [];
+    let activeSessionId = null;
+    await assert.rejects(
+      finalizePreparedSessionCreation({
+        sessionId: 'new-session',
+        prepareSession: async sessionId => {
+          calls.push(`prepare:${sessionId}`);
+          throw preparationError;
+        },
+        shouldActivate: () => {
+          calls.push('should-activate');
+          return true;
+        },
+        activateSession: sessionId => {
+          calls.push(`activate:${sessionId}`);
+          activeSessionId = sessionId;
+        },
+        loadSession: async sessionId => {
+          calls.push(`load:${sessionId}`);
+          return null;
+        },
+        loadInactiveSessionInfo: null,
+      }),
+      error => error === preparationError,
+    );
+    assert.equal(activeSessionId, 'new-session');
+    assert.deepEqual(calls, [
+      'prepare:new-session',
+      'should-activate',
+      'activate:new-session',
+      'load:new-session',
+    ]);
+  }
+
   const view = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
   assert.match(view, /invoke\('get_code_permission_prefs'\)/, '启动/切换拉取全局 code 权限偏好');
   assert.match(view, /invoke\('confirm_code_yolo'\)/, '确认卡【确认】写全局标志');
   assert.match(view, /resolveNativeModeValue\(/, 'chip 展示值经纯逻辑解析');
+  assert.match(view, /resolveNativeModelId\(/, 'native model display must use the tested handoff resolver');
+  assert.match(view, /finalizePreparedSessionCreation\(/, 'native session creation must use the tested preparation lifecycle');
   assert.match(view, /data-testid="native-yolo-confirm"/, 'yolo 确认卡渲染');
   assert.match(view, /needsYoloConfirmation\(prefs\)/, '切 yolo 前过确认门');
   assert.doesNotMatch(view, /mountedId: null, mode: 'yolo'/, '不再写死 yolo 初始 mode');

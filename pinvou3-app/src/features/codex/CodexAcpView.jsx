@@ -61,6 +61,11 @@ import {
   resolveNativeModeValue,
 } from './code-permission-state.js';
 import {
+  canApplyNativeControlsRefresh,
+  finalizePreparedSessionCreation,
+  resolveNativeModelId,
+} from './native-session-handoff.js';
+import {
   ConversationActivityIndicator,
   ConversationMarkdown,
   ConversationTurn,
@@ -1234,11 +1239,13 @@ export function CodexAcpView({
   });
   const nativeModelChoices = visibleUserModels((bs && bs.savedModels) || [])
     .map(model => ({ value: model.id, name: selectorMainLabel(model, t) || model.id }));
-  const nativeSessionModelId = activeId
-    ? (nativeControlsSessionRef.current === activeId
-      ? nativeControls.modelId
-      : (nativeDraftControlsHandoff?.modelId || null))
-    : (nativeDraftControls.modelId || null);
+  const nativeSessionModelId = resolveNativeModelId({
+    activeId,
+    controlsSessionId: nativeControlsSessionRef.current,
+    controlsModelId: nativeControls.modelId,
+    draftModelId: nativeDraftControls.modelId,
+    handoffModelId: nativeDraftControlsHandoff?.modelId,
+  });
   const nativeMountedId = activeId
     ? (nativeControlsSessionRef.current === activeId
       ? nativeControls.mountedId
@@ -1469,7 +1476,12 @@ export function CodexAcpView({
       multiAgentAvailable: Boolean(modeState && modeState.multi_agent_available),
     };
     // 请求期间可能切换会话；旧响应不得覆盖新会话的模型/模式/多智能体展示。
-    if (requestId !== nativeControlsRequestRef.current || sessionId !== activeIdRef.current) {
+    if (!canApplyNativeControlsRefresh({
+      requestId,
+      latestRequestId: nativeControlsRequestRef.current,
+      sessionId,
+      activeId: activeIdRef.current,
+    })) {
       return controls;
     }
     setNativeControls(controls);
@@ -1857,20 +1869,22 @@ export function CodexAcpView({
       current === requestedWorkspaceHandle ? null : current
     ));
     await refreshSessions();
-    // Native first-send controls must exist before the session is exposed and loaded.
-    // Otherwise loadSession observes the unbound default, and its local state update can
-    // race the later model write while the parent is still committing activeId.
-    if (prepareSession) await prepareSession(metadata.id);
-    if (!shouldActivate()) {
-      const info = requestedAgentId === 'pinvou'
+    // Persist native controls before the first load. If persistence fails after the
+    // backend session exists, still activate and load it before surfacing the error;
+    // the restored composer can then retry in that session instead of creating another.
+    return finalizePreparedSessionCreation({
+      sessionId: metadata.id,
+      prepareSession,
+      shouldActivate,
+      activateSession: sessionId => {
+        skipNextActiveLoadRef.current = sessionId;
+        if (onActiveSessionChange) onActiveSessionChange(sessionId);
+      },
+      loadSession,
+      loadInactiveSessionInfo: requestedAgentId === 'pinvou'
         ? null
-        : await getAcpSessionInfo(metadata.id);
-      return { id: metadata.id, info, activated: false };
-    }
-    skipNextActiveLoadRef.current = metadata.id;
-    if (onActiveSessionChange) onActiveSessionChange(metadata.id);
-    const info = await loadSession(metadata.id);
-    return { id: metadata.id, info, activated: true };
+        : getAcpSessionInfo,
+    });
   }
 
   function beginDraft(

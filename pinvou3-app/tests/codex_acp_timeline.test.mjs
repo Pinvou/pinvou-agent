@@ -733,8 +733,9 @@ try {
   const nativeDraftApplyStart = codexView.indexOf('async function persistNativeDraftControls(');
   const nativeDraftMultiAgent = codexView.indexOf("invoke('set_multi_agent_mode'", nativeDraftApplyStart);
   const nativeCreateStart = codexView.indexOf('async function createSession({');
-  const nativeCreatePrepare = codexView.indexOf('if (prepareSession) await prepareSession(metadata.id)', nativeCreateStart);
-  const nativeCreateLoad = codexView.indexOf('const info = await loadSession(metadata.id)', nativeCreateStart);
+  const nativeCreateFinalize = codexView.indexOf('return finalizePreparedSessionCreation({', nativeCreateStart);
+  const nativeCreatePrepare = codexView.indexOf('prepareSession,', nativeCreateFinalize);
+  const nativeCreateLoad = codexView.indexOf('loadSession,', nativeCreateFinalize);
   const nativeSendCreate = codexView.indexOf('const created = await createSession({', codexView.indexOf('async function sendNative'));
   const nativeSendPrepare = codexView.indexOf('prepareSession: async sessionId => {', nativeSendCreate);
   const nativeSendApply = codexView.indexOf('const prepared = await persistNativeDraftControls(', nativeSendPrepare);
@@ -742,7 +743,8 @@ try {
   assert.ok(codexView.includes('nativeDraftControls')
     && nativeDraftApplyStart >= 0
     && nativeDraftMultiAgent > nativeDraftApplyStart
-    && nativeCreatePrepare > nativeCreateStart
+    && nativeCreateFinalize > nativeCreateStart
+    && nativeCreatePrepare > nativeCreateFinalize
     && nativeCreatePrepare < nativeCreateLoad
     && nativeSendCreate >= 0
     && nativeSendPrepare > nativeSendCreate
@@ -751,13 +753,15 @@ try {
   'draft-state control selections, including multi-agent mode, must be persisted before the first session load and cleared only after handoff');
   assert.ok(
     codexView.includes('nativeDraftControlsHandoffRef.current?.sessionId === activeId')
-      && codexView.includes('nativeDraftControlsHandoff?.modelId || null')
+      && codexView.includes('handoffModelId: nativeDraftControlsHandoff?.modelId')
       && nativeSendApply < codexView.indexOf("await invoke('chat'", nativeSendApply),
     'a newly created native session must retain its selected model during the activation handoff and before its first turn',
   );
   assert.ok(codexView.includes('nativeControlsSessionRef.current === activeId'),
   'session control state must be scoped to its owning session to avoid cross-session flashes');
-  assert.ok(/refreshNativeControls\(sessionId\)[\s\S]{0,1200}requestId !== nativeControlsRequestRef\.current \|\| sessionId !== activeIdRef\.current[\s\S]{0,100}return controls/.test(codexView),
+  assert.ok(codexView.includes('canApplyNativeControlsRefresh({')
+    && codexView.includes('latestRequestId: nativeControlsRequestRef.current')
+    && codexView.includes('activeId: activeIdRef.current'),
   'an async control refresh from the previous native session must not overwrite the newly selected session');
   assert.ok(chatView.includes("from './composer-controls.jsx'")
     && !chatView.includes('const ComposerKbSelector = ')
