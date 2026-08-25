@@ -4,18 +4,18 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-25 · v0.9.5 r9 四主题公开基线）
+## 0. 当前状态（2026-08-25 · v0.9.5 r10 四主题公开基线）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `07d183e35` |
-| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r9` |
-| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r9` 与父仓 gitlink 均指向 `07d183e350ce4a1ed4f91bdfa1875c996e710d2b`；`r1` 至 `r9` 保持不可变 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `feb8761ae` |
+| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r10` |
+| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r10` 与父仓 gitlink 均指向 `feb8761aeda31749f3d54c6e1f8ef460540567a1`；`r1` 至 `r10` 保持不可变 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r9 公开基线 `55 files changed, +5329/-758`；净增 4571 行 |
-| 守护 | r9 为 37 条 CodeWhale `forkguard_*` 行为测试 + 2 条通用工具兼容回归 + 父仓指纹/行为测试 |
+| drift | r10 公开基线 `64 files changed, +5612/-702`；净增 4910 行 |
+| 守护 | r10 为 41 条 CodeWhale `forkguard_*` 行为测试 + 2 条通用工具兼容回归 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配，以及拒绝编辑的终态/权威历史对账 |
 
 ### r9 对话插入与编辑边界（已发布）
@@ -24,6 +24,10 @@
 - CodeWhale PR #17 以 `07d183e350ce4a1ed4f91bdfa1875c996e710d2b` 发布权威编辑目标分类。`EditLastTurnTarget` 区分可编辑文本、不支持的最新用户内容和缺失目标；工具结果、内部运行时信封及非权威来源不能充当编辑点，真实但不支持的最新用户内容也不能被跳过后回退到更早文本。
 - 编辑预检失败使用稳定的 `edit_last_turn_*` 非恢复错误码，并发送单一 `TurnComplete(Failed)`。父仓据此跳过乐观落盘兜底、在 `chat:done.operation_rejected` 后重新读取权威历史，保证 Tauri 与 Web 都恢复到未修改的耐久会话。
 - r9 相对 r8 增加 `18 files changed, +1998/-178`。增加量主要是跨中断 steer 所有权、Shell 终止和历史来源分类的状态/并发回归；这些语义必须位于 Engine 生命周期内，不能由 app 复制。后续以通用宿主 API 形式优先向上游贡献。
+
+### r10 固定采样路由 compaction 修复（已发布）
+
+- CodeWhale PR #19 以 `feb8761aeda31749f3d54c6e1f8ef460540567a1` 发布：DeepSeek 官方 v4 与 Kimi Code 会员编码路由的采样参数被固定（temperature 仅允许 1），compaction 等辅助调用硬编码 temperature 0.3 在这些路由必现 400——聊天正常、一压缩就失败。修复在出站侧按精确路由剥离非 1 采样值（Chat 方言 `build_chat_wire_body` seam 与 Responses 方言 `build_responses_body_for_provider`），中转网关、旧代模型与其他 provider 的 wire 契约不动；compaction 后的上下文统计同步按压缩后实际值上报。
 
 ### r8 逐轮评测工具安全扩展（已发布）
 
@@ -54,19 +58,6 @@
 - 保留宿主取消所有运行中子智能体的窄操作，以及通用完成事件的 `failed` 终态；桌面停止/回收仍不会遗留后台子任务。
 - 新增 `forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，锁定批量取消和重复取消行为。
 - 修复退役后两处通用兼容回归：MCP registry 提示恢复 canonical `Bash(action="run")` / `Web(action="fetch")`，Custom SubAgent allowlist 的旧 action alias 继续解析到已注册的 canonical family。
-
-### 进行中：会话 steer 与确定性取消（CodeWhale#16 / pinvou-agent#308）
-
-- **状态**：评审修复（opaque steer_id、停止语义、清场覆盖、kill 收敛）已完成，待 CodeWhale#16 合并发布；发布后本节并入 T1/T2 主题、公开基线 head 与 drift。
-- **T1（宿主嵌入与路由边界）新增**：
-  - 会话 steer（mid-turn 注入）底座原语：`SteerMessage { id, content }` 经 steer channel 入队，`EngineHandle::steer` 入队时生成并返回 opaque `steer_id`；`Event::SteerCommitted` / `Event::SteerDropped` 携带 `steer_id` 供宿主关联排队占位消息，不使用内容哈希（非 ASCII 内容跨语言哈希无法实现一致）。
-  - `steer_keep_inbox` 开关（宿主 cancel 前设置）：打断（true）未注入 steer 跨轮 park，由下一轮 step 边界注入；停止（false）在全部 Interrupted 出口统一 settle——`pending_steers` 与 steer channel 残留逐条发 `SteerDropped`。
-  - `Op::SyncSession` 与 `Op::Shutdown` 销毁前清场并逐条发 `SteerDropped`，杜绝跨会话注入；`Drop for Engine` 以 `try_send` best-effort 兜底，覆盖宿主 evict/reclaim 直接丢弃引擎的路径。
-  - steer 撤回：`EngineHandle::withdraw_steer`（fire-and-forget）把 id 记入引擎共享撤回集合；所有收集/注入点过滤被撤回 id 并恰好发一条 `SteerDropped`，被撤回 steer 永不注入 transcript；撤回标记跨轮存活，`SyncSession`/`Shutdown` 清场时一并清除。宿主 UI 排队占位的 ✕ 由此在注入前真正生效。
-- **T2（工具兼容与命令执行安全）新增**：
-  - cancel 杀进程范围收敛：`ShellManager::kill_running_turn_foreground` 只杀本轮前台（`spawned_as_foreground` 且无 `owner_agent`）shell 进程组；用户转后台的任务与子智能体 background shell 不再被任何取消源连带 kill。
-- **守护**：13 条新行为测试——`engine_handle_steer_returns_unique_incrementing_ids`、`keep_inbox_true_cancel_parks_steer_and_next_turn_commits_it`、`keep_inbox_false_cancel_drops_parked_and_channel_steers`、`steer_enqueued_before_turn_is_committed_at_step_boundary`、`pending_steer_is_committed_at_no_tool_turn_end`、`pending_steer_is_committed_after_tool_execution`、`sync_session_drops_all_queued_steers_with_events`、`engine_drop_reports_unconsumed_steers_best_effort`、`withdrawn_channel_steer_is_dropped_not_injected_on_next_turn`、`withdrawn_pending_steer_is_dropped_not_injected`、`withdrawing_committed_steer_is_a_noop`、`withdraw_after_interrupt_park_prevents_reinjection`、`withdraw_leaves_other_steers_unaffected`（`core/engine/tests.rs`），`kill_running_turn_foreground_scopes_to_this_turns_unowned_foreground_shells`（`tools/shell/tests.rs`）；指纹见 `scripts/fork-guard.sh` T1/T2 steer 条目。
-- **上游策略**：该能力按上游中性实现（英文注释、无 Pinvou 私有语境），后续按 §5 规则从 upstream main 建净分支回馈；回馈合入前以本登记为准。
 
 ### 软上限评估
 
@@ -197,10 +188,10 @@ node --test pinvou3-app/tests/scheduled_tasks_unit.test.js
 PASS
 python3 scripts/architecture-guard.py
 ./scripts/verify-public-submodule.sh
-pinvou-v0.9.5-r9 -> 07d183e350ce4a1ed4f91bdfa1875c996e710d2b
+pinvou-v0.9.5-r10 -> feb8761aeda31749f3d54c6e1f8ef460540567a1
 ```
 
-完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。环境相关忽略/基线失败按实际验证披露；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r9` 与父仓 gitlink 一致。
+完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。环境相关忽略/基线失败按实际验证披露；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r10` 与父仓 gitlink 一致。
 
 ## 5. 后续修改规则
 

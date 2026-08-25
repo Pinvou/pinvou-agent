@@ -9,13 +9,13 @@
 | Item | Value |
 |---|---|
 | Upstream | `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `07d183e35` (`pinvou-v0.9.5-r9`) |
-| Merged fixes | `Pinvou/CodeWhale#9`, `#11`, `#12`, `#13`, `#15`, `#16`, and `#17` are merged |
-| Published status | `pinvou3-clean`, `pinvou-v0.9.5-r9`, and the parent gitlink resolve to `07d183e350ce4a1ed4f91bdfa1875c996e710d2b`; `r1` through `r9` remain immutable historical tags |
+| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `feb8761ae` (`pinvou-v0.9.5-r10`) |
+| Merged fixes | `Pinvou/CodeWhale#9`, `#11`, `#12`, `#13`, `#15`, `#16`, `#17`, and `#19` are merged |
+| Published status | `pinvou3-clean`, `pinvou-v0.9.5-r10`, and the parent gitlink resolve to `feb8761aeda31749f3d54c6e1f8ef460540567a1`; `r1` through `r10` remain immutable historical tags |
 | Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| Drift | Published r9 baseline: 55 files, `+5329/-758` |
+| Drift | Published r10 baseline: 64 files, `+5612/-702` |
 | Organization | Four current long-lived topics; PR #13 removes the product-specific orchestration topic |
-| Guard inventory | Published r9 has 37 CodeWhale `forkguard_*` tests, plus two generic tool-compatibility regressions and parent fingerprints/behavior tests |
+| Guard inventory | Published r10 has 41 CodeWhale `forkguard_*` tests, plus two generic tool-compatibility regressions and parent fingerprints/behavior tests |
 
 ### r9 conversation insertion and edit boundaries (published)
 
@@ -23,6 +23,10 @@
 - CodeWhale PR #17 was published as `07d183e350ce4a1ed4f91bdfa1875c996e710d2b`. `EditLastTurnTarget` distinguishes editable text, unsupported latest user content, and a missing target. Tool results, internal runtime envelopes, and non-authoritative provenance cannot become edit points; genuine unsupported latest user content also cannot be skipped in favor of older text.
 - Edit preflight rejection uses stable nonrecoverable `edit_last_turn_*` codes and one authoritative `TurnComplete(Failed)`. The parent suppresses optimistic fallback persistence and uses `chat:done.operation_rejected` to hydrate the unchanged durable transcript in both Tauri and Web clients.
 - r9 adds 18 files and `+1998/-178` over r8. The retained volume is the concurrency/state coverage for cross-interrupt steer ownership, Shell termination, and provenance-aware history classification; these invariants belong in the Engine lifecycle and are prioritized for upstreaming as generic host APIs.
+
+### r10 fixed-sampling-route compaction fix (published)
+
+- CodeWhale PR #19 was published as `feb8761aeda31749f3d54c6e1f8ef460540567a1`. DeepSeek official v4 and the Kimi Code member coding routes pin sampling (temperature must be 1), so compaction’s hardcoded temperature 0.3 always failed with HTTP 400 on those routes—chat worked but any compaction attempt blew up. The fix strips non-1 sampling values at the exact-route egress seam (Chat dialect `build_chat_wire_body`, Responses dialect `build_responses_body_for_provider`); relay gateways, older models, and other providers keep their wire contract. Post-compaction context accounting is now reported from the actual compacted state.
 
 ### r8 per-turn evaluation security extension (published)
 
@@ -36,19 +40,6 @@ CodeWhale PR #15 combined candidate `1eca6103a` with security follow-ups `169c24
 - Revision reconciliation remains fail-closed only for genuine cross-client turns. A local `chat:done` immediately releases the next send, readback failures cannot block ordinary local chat, and cross-client pending notices are deduplicated per session.
 - Two CodeWhale tests, two parent `forkguard_*` tests, and Tauri/Web frontend behavior coverage protect side-effect-free runtime reads, observable and idempotent explicit recovery, safe secondary Store opening, durable startup recovery, and consecutive sends after local completion.
 - The fix is included in the published head, drift figures, and immutable tag `pinvou-v0.9.5-r5`; CodeWhale required checks and parent automation pass.
-
-## In flight: session steer and deterministic cancel (CodeWhale#16 / pinvou-agent#308)
-
-- **Status**: review fixes (opaque steer id, stop semantics, teardown coverage, scoped kill) are complete, pending the CodeWhale#16 merge and release. Once published, this section folds into topics T1/T2, the public baseline head, and the drift figures.
-- **T1 (host embedding and routing boundary) additions**:
-  - Session steer (mid-turn injection) primitives: `SteerMessage { id, content }` travels the steer channel; `EngineHandle::steer` assigns and returns an opaque `steer_id` at enqueue time; `Event::SteerCommitted` / `Event::SteerDropped` carry `steer_id` so the host can correlate its queued placeholder message — no content hash (a cross-language hash over non-ASCII content cannot be made consistent).
-  - `steer_keep_inbox` switch (set by the host before cancel): interrupt (true) parks unconsumed steers for the next turn's step boundary; stop (false) settles at every Interrupted exit — both `pending_steers` and steer-channel residue emit one `SteerDropped` each.
-  - `Op::SyncSession` and `Op::Shutdown` drain queued steers with per-message `SteerDropped` events, preventing cross-session injection; `Drop for Engine` is a best-effort `try_send` backstop for host evict/reclaim paths that drop the engine directly.
-  - Steer withdrawal: `EngineHandle::withdraw_steer` (fire-and-forget) records the id in a shared withdrawn set; every collection/injection point filters withdrawn ids and emits exactly one `SteerDropped`, so a withdrawn steer is never injected into the transcript. Marks survive across turns and are cleared on `SyncSession`/`Shutdown`. This makes the host UI's queued-placeholder ✕ effective until the moment of injection.
-- **T2 (tool compatibility and command-execution safety) addition**:
-  - Cancel-time process kills are scoped: `ShellManager::kill_running_turn_foreground` kills only this turn's foreground (`spawned_as_foreground`, no `owner_agent`) shell process groups; user-backgrounded tasks and sub-agent background shells survive any cancel source.
-- **Guards**: thirteen new behavior tests — `engine_handle_steer_returns_unique_incrementing_ids`, `keep_inbox_true_cancel_parks_steer_and_next_turn_commits_it`, `keep_inbox_false_cancel_drops_parked_and_channel_steers`, `steer_enqueued_before_turn_is_committed_at_step_boundary`, `pending_steer_is_committed_at_no_tool_turn_end`, `pending_steer_is_committed_after_tool_execution`, `sync_session_drops_all_queued_steers_with_events`, `engine_drop_reports_unconsumed_steers_best_effort`, `withdrawn_channel_steer_is_dropped_not_injected_on_next_turn`, `withdrawn_pending_steer_is_dropped_not_injected`, `withdrawing_committed_steer_is_a_noop`, `withdraw_after_interrupt_park_prevents_reinjection`, `withdraw_leaves_other_steers_unaffected` (`core/engine/tests.rs`), and `kill_running_turn_foreground_scopes_to_this_turns_unowned_foreground_shells` (`tools/shell/tests.rs`); fingerprints are the T1/T2 steer entries in `scripts/fork-guard.sh`.
-- **Upstream policy**: the capability is implemented upstream-neutrally (English comments, no Pinvou-private context) and should later be contributed from a clean branch off upstream main per the standing rules; this register is authoritative until that lands.
 
 ## Topics
 
@@ -71,7 +62,7 @@ Pinvou's product tool allowlist, connector state, UI, workspace selection, bundl
 ## Verification
 
 - CodeWhale format and locked library check pass.
-- All 37 CodeWhale `forkguard_*` tests pass for the published r9 baseline.
+- All 41 CodeWhale `forkguard_*` tests pass for the published r10 baseline.
 - Parent `./scripts/fork-guard.sh` passes with 21 app forkguard tests; both admitted-display edit-target regressions pass separately.
 - The Tauri/Web scheduled-task unit harness, architecture guard, version check, CI-policy tests, and strict public-submodule verifier pass.
 - Full product results are recorded in `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`.

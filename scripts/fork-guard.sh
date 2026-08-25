@@ -17,21 +17,21 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r9 公开四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r10 公开基线拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
   expected_commits="$PUBLISHED_COMMITS"
-  green "  ✓ CodeWhale gitlink 指向 r9 四主题公开基线 $PUBLISHED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向 r10 公开基线 $PUBLISHED_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r9 公开 head $PUBLISHED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r10 公开 head $PUBLISHED_HEAD"
   fail=1
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
-  green "  ✓ r9 公开基线继承官方 v0.9.5"
+  green "  ✓ r10 公开基线继承官方 v0.9.5"
 else
-  red "  ✗ r9 公开基线未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
+  red "  ✗ r10 公开基线未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
   fail=1
 fi
 
@@ -39,7 +39,7 @@ commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev
 if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
   green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r9 合法拓扑应为 ${expected_commits:-13}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r10 合法拓扑应为 ${expected_commits:-14}"
   fail=1
 fi
 
