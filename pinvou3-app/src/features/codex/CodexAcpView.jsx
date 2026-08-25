@@ -2650,6 +2650,10 @@ export function CodexAcpView({
           acpSendOperationTracker.switchSession(targetId);
           operation = beginAcpSendOperation(targetId);
         }
+        // Activation invalidates the draft-scoped operation token. Report preparation
+        // failures only after rebinding to the created session so the visible error path
+        // remains current and the user's message is restored for retry in this session.
+        if (created.preparationError) throw created.preparationError;
         // prepareSession has already persisted the draft controls before loadSession,
         // and the authoritative load now owns the displayed values. Clear only after
         // that handoff completes so the selected model label remains stable.

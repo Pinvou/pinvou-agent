@@ -22,6 +22,10 @@ copyFileSync(
   path.join(root, 'src', 'features', 'codex', 'native-session-handoff.js'),
   path.join(temp, 'codex', 'native-session-handoff.js'),
 );
+copyFileSync(
+  path.join(root, 'src', 'features', 'codex', 'acp-session-operation.js'),
+  path.join(temp, 'codex', 'acp-session-operation.js'),
+);
 
 try {
   const {
@@ -35,6 +39,9 @@ try {
     finalizePreparedSessionCreation,
     resolveNativeModelId,
   } = await import(`${pathToFileURL(path.join(temp, 'codex', 'native-session-handoff.js')).href}?t=${Date.now()}`);
+  const { createAcpSessionOperationTracker } = await import(
+    `${pathToFileURL(path.join(temp, 'codex', 'acp-session-operation.js')).href}?t=${Date.now()}`
+  );
 
   // ── 全局默认 mode 解析 ─────────────────────────────────────────
   assert.equal(CODE_MODE_FALLBACK, 'plan', '兜底必须是只读方向 Plan');
@@ -130,36 +137,50 @@ try {
     handoffModelId: handoff.modelId,
   }), 'model-a');
 
-  // Preparation can fail after the backend session exists. Activate and load that same
-  // session before rethrowing so the restored composer retries there, not in a duplicate.
+  // Preparation can fail after the backend session exists. This exercises the integration
+  // between creation and the real operation tracker: activation invalidates the draft token,
+  // then sendNative-style rebinding makes the visible error path current again.
   {
     const preparationError = new Error('model persistence failed');
     const calls = [];
+    const visibleErrors = [];
+    const tracker = createAcpSessionOperationTracker('draft');
+    let operation = tracker.begin('draft', 'send');
     let activeSessionId = null;
-    await assert.rejects(
-      finalizePreparedSessionCreation({
-        sessionId: 'new-session',
-        prepareSession: async sessionId => {
-          calls.push(`prepare:${sessionId}`);
-          throw preparationError;
-        },
-        shouldActivate: () => {
-          calls.push('should-activate');
-          return true;
-        },
-        activateSession: sessionId => {
-          calls.push(`activate:${sessionId}`);
-          activeSessionId = sessionId;
-        },
-        loadSession: async sessionId => {
-          calls.push(`load:${sessionId}`);
-          return null;
-        },
-        loadInactiveSessionInfo: null,
-      }),
-      error => error === preparationError,
-    );
+    const created = await finalizePreparedSessionCreation({
+      sessionId: 'new-session',
+      prepareSession: async sessionId => {
+        calls.push(`prepare:${sessionId}`);
+        throw preparationError;
+      },
+      shouldActivate: () => {
+        calls.push('should-activate');
+        return tracker.isCurrent(operation);
+      },
+      activateSession: sessionId => {
+        calls.push(`activate:${sessionId}`);
+        activeSessionId = sessionId;
+        tracker.switchSession(sessionId);
+      },
+      loadSession: async sessionId => {
+        calls.push(`load:${sessionId}`);
+        return null;
+      },
+      loadInactiveSessionInfo: null,
+    });
+    assert.equal(tracker.isCurrent(operation), false, 'activation invalidates the draft operation');
+    if (created.activated && activeSessionId === created.id) {
+      tracker.switchSession(created.id);
+      operation = tracker.begin(created.id, 'send');
+    }
+    try {
+      if (created.preparationError) throw created.preparationError;
+    } catch (err) {
+      if (tracker.isCurrent(operation)) visibleErrors.push(err);
+    }
     assert.equal(activeSessionId, 'new-session');
+    assert.equal(operation.sessionId, 'new-session');
+    assert.deepEqual(visibleErrors, [preparationError]);
     assert.deepEqual(calls, [
       'prepare:new-session',
       'should-activate',
@@ -174,6 +195,11 @@ try {
   assert.match(view, /resolveNativeModeValue\(/, 'chip 展示值经纯逻辑解析');
   assert.match(view, /resolveNativeModelId\(/, 'native model display must use the tested handoff resolver');
   assert.match(view, /finalizePreparedSessionCreation\(/, 'native session creation must use the tested preparation lifecycle');
+  assert.match(
+    view,
+    /operation = beginAcpSendOperation\(targetId\);[\s\S]{0,500}if \(created\.preparationError\) throw created\.preparationError;/,
+    'native preparation errors must surface only after the send operation is rebound',
+  );
   assert.match(view, /data-testid="native-yolo-confirm"/, 'yolo 确认卡渲染');
   assert.match(view, /needsYoloConfirmation\(prefs\)/, '切 yolo 前过确认门');
   assert.doesNotMatch(view, /mountedId: null, mode: 'yolo'/, '不再写死 yolo 初始 mode');

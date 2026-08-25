@@ -45,7 +45,7 @@ export async function finalizePreparedSessionCreation({
   activateSession(sessionId);
   const info = await loadSession(sessionId);
   // Preparation can partially persist controls before failing. Loading the created
-  // session first preserves that state and gives a retry a stable session target.
-  if (preparationError) throw preparationError;
-  return { id: sessionId, info, activated: true };
+  // session first preserves that state and gives a retry a stable session target. Return
+  // the error so the caller can rebind session-scoped operation state before reporting it.
+  return { id: sessionId, info, activated: true, preparationError };
 }
