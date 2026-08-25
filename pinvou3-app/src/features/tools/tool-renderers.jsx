@@ -506,7 +506,9 @@ const ToolOutput = ({ item, t }) => {
             for (const k of Object.keys(obj)) {
               if (k.includes(keyword)) return Number(obj[k]);
             }
-            return null; // 未命中返回 null;StockQuoteCard 侧 isNaN(null) 为 false,但 null.toFixed 走 '--' 由 fmt 兜底
+            // 未命中保持 undefined:StockQuoteCard 的 fmt/isNaN 兜底与 >= 0 判定
+            // 都依赖 undefined 语义,null 会让 null.toFixed 崩溃、null>=0 判涨。
+            return undefined; // eslint-disable-line unicorn/no-useless-undefined -- 消费方依赖 undefined 兜底语义
           };
           const mapped = {
             name: d['股票简称'] || '--',

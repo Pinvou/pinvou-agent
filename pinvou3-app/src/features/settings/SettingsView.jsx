@@ -656,9 +656,11 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [keyRevealError, setKeyRevealError] = useState('');
       const [testing, setTesting] = useState(false);
       const [testResult, setTestResult] = useState(null);
-      // 旧版 detect 结果位:写入方(handleDetect)已随本地检测重构移除,JSX 读取位待清理。
-      // biome-ignore lint/correctness/noUnusedVariables: 历史状态位,只读保留,写入方已随本地检测重构移除
-      const [detectResult, setDetectResult] = useState(null); // eslint-disable-line no-unused-vars,sonarjs/no-unused-vars,sonarjs/no-dead-store -- 历史状态位,只读保留
+      // 旧版 detect 流程状态位:handleDetect 本体保留(见 tests/settings_ui_smoke.js 的
+      // 源文本守卫,锁定"仅自动填充已显式加载模型"安全不变量),当前无 UI 调用方。
+      const [detecting, setDetecting] = useState(false);
+      // 旧版 detect 结果位:写入方为下方保留的 handleDetect,JSX 读取位待清理。
+      const [detectResult, setDetectResult] = useState(null);
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
       // 图片输入能力三档(pinvou/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
@@ -839,6 +841,52 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(modelId || ''));
         setApiKey('');
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
+      }
+      // 旧版本地模型 detect 流程。当前 UI 入口已切换为 handleLocalDetect(目录页"检测"
+      // 按钮),但 tests/settings_ui_smoke.js 通过源文本守卫锁定本函数的安全不变量:
+      // 唯一在线实例也只自动填充"已显式加载"的模型(JIT 载入可能是几十 GB),未知
+      // 加载状态不得视为已加载。函数本体按守卫契约原样保留,不随 lint 清理删除。
+      // biome-ignore lint/correctness/noUnusedVariables: 源文本守卫(tests/settings_ui_smoke.js)锁定安全不变量,保留原文
+      async function handleDetect() { // eslint-disable-line no-unused-vars,sonarjs/no-unused-vars -- 源文本守卫锁定安全不变量,保留原文
+        if (!canSetUpLocalModel || !bridge.available || detecting) return;
+        // macOS/Windows 后端无 discover_local_vllm / detect_local_vllm_setup 命令(已 cfg linux),
+        // 此处非 Linux 直接返回,避免 invoke 不存在的命令 reject 报错。
+        if (!bridge.available || detecting) return;
+        if (!localVllmSupported) return;
+        setDetecting(true); setDetectResult(null); setTestResult(null); setOfferSetup(false); setBootstrapHere(false);
+        try {
+          const result = await bridge.vllm.discoverLocalVllm({
+            currentBaseUrl: baseUrl.trim() || null,
+            savedBaseUrl: initial.base_url || null,
+          });
+          const online = ((result && result.candidates) || []).filter(c => c.status !== 'offline');
+          setDetectResult({ candidates: online });
+          // 唯一可用实例直接填充——但只自动填充"已加载"的模型。Ollama/LM Studio
+          // 的列表接口返回全部已下载模型，JIT 机制下选未加载模型 = 首次推理时
+          // 静默载入内存（可能是几十 GB），必须交给用户显式选择。
+          if (online.length === 1) {
+            const c = online[0];
+            const entries = Array.isArray(c.models) && c.models.length
+              ? c.models.map(m => (typeof m === 'string' ? { id: m, loaded: null } : m))
+              : (c.model ? [{ id: c.model, loaded: null }] : []);
+            const loadedEntry = entries.find(e => e && e.id && e.loaded === true);
+            if (loadedEntry) applyCandidate({ base_url: c.base_url, model: loadedEntry.id });
+          }
+          else if (online.length === 0) {
+            // 没探到运行中的实例:看本机是否有预装大模型,有则提示一键启用(走同一 bootstrap)。
+            const setup = await bridge.vllm.detectLocalVllmSetup();
+            const canStart = setup && setup.has_packages &&
+              (setup.engine_state ? ['stopped', 'failed'].includes(setup.engine_state) : !setup.vllm_online);
+            if (canStart) setOfferSetup(true);
+            if (setup && setup.engine_state === 'starting') {
+              setDetectResult({ candidates: [], engineState: 'starting' });
+            }
+          }
+        } catch (e) {
+          setDetectResult({ error: String(e) });
+        } finally {
+          setDetecting(false);
+        }
       }
       function vllmStatusLabel(status) {
         if (status === 'busy') return t.vllmDetectBusy;

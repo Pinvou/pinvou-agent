@@ -12,7 +12,8 @@ const rgbToHex = (value, fallback = '#000000') => {
 };
 
 const pxNumber = (value) => {
-  const n = Number(String(value || '').replace('px', ''));
+  // eslint-disable-next-line unicorn/prefer-number-coercion -- parseFloat 可解析带 px 单位后缀的值,Number() 会得到 NaN
+  const n = Number.parseFloat(String(value || '').replace('px', ''));
   return Number.isFinite(n) ? Math.round(n) : 0;
 };
 
@@ -22,7 +23,8 @@ const cssValue = (style, key, fallback = '') => {
 };
 
 const normalizeNumber = (value, unit = 'px') => {
-  const n = Number(String(value || '').replace(unit, ''));
+  // eslint-disable-next-line unicorn/prefer-number-coercion -- parseFloat 可解析带单位后缀的值,Number() 会得到 NaN
+  const n = Number.parseFloat(String(value || '').replace(unit, ''));
   if (!Number.isFinite(n)) return '';
   return String(Math.round(n * 100) / 100);
 };

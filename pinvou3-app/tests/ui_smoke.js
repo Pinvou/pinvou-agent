@@ -76,7 +76,7 @@ function injectSource() {
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell-history',content:'history output'}]},
       {role:'assistant',content:[{type:'tool_use',id:'t-mcp',name:'mcp_pptx_make_pptx',input:{title:'季度报告'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]},
-      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060json\\n{"name":"Reviewer\\\'s Agent","body":"hidden-prompt","description":"It\\\'s a highlighted JSON card"}\\n\\u0060\\u0060\\u0060'}]}
+      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060json\\n{"name":"Reviewer\\\'s Agent","body":"hidden-prompt","description":"It\\\'s a highlighted JSON card"}\\n\\u0060\\u0060\\u0060'}]},
       {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060card-question\\n{"question":"继续执行？","options":["继续","取消"]}\\n\\u0060\\u0060\\u0060'}]}]}};
     function invoke(cmd,args){
       window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});

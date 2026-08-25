@@ -144,7 +144,7 @@
     "madge": "^8.0.0",
     "oxlint": "^1.79.0",
     "puppeteer-core": "^25.8.0",
-    "typescript": "^6.0.3",
+    "typescript": "^5.9.3",
     "vite": "^8.2.2"
   },
   "dependencies": {
@@ -155,5 +155,10 @@
     "react-dom": "^19.2.8",
     "turndown": "^7.2.4",
     "turndown-plugin-gfm": "^1.0.2"
+  },
+  "overrides": {
+    "eslint-plugin-react": {
+      "eslint": "$eslint"
+    }
   }
 }

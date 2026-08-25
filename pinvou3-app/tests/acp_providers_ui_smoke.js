@@ -456,7 +456,11 @@ async function clickSettingsSection(page, label) {
     const el = document.querySelector('[data-testid="acp-providers-effective"]');
     if (!el) return false;
     const values = [...el.querySelectorAll('.font-mono')].map(span => (span.textContent || '').trim());
-    return values.includes('gpt-5.2') && values.includes('https://api.example.com/v1');
+    // CodeQL js/incomplete-url-substring-sanitization 会把 includes(url) 视为前缀/子串
+    // 包含检查;some(===) 的精确等值写法不触发(与 b27788bbb 处置 ui_smoke 同源)。
+    return values.includes('gpt-5.2')
+      // eslint-disable-next-line unicorn/prefer-includes -- 精确等值断言,规避 CodeQL 误报
+      && values.some(value => value === 'https://api.example.com/v1');
   }));
   rec('⑨.2 env 覆盖时徽标降格', await page.evaluate(() => {
     const section = document.querySelector('[data-testid="acp-providers-section"]');
@@ -467,7 +471,9 @@ async function clickSettingsSection(page, label) {
     if (!el) return false;
     // URL 明文可见；凭据只显示「已设置」掩码，值不得出现
     const values = [...el.querySelectorAll('.font-mono')].map(span => (span.textContent || '').trim());
-    return values.includes('https://env-override.example.com')
+    // some(===) 精确等值写法不触发 CodeQL 的 URL 子串检查误报(见上方 ⑨.1 注释)。
+    // eslint-disable-next-line unicorn/prefer-includes -- 精确等值断言,规避 CodeQL 误报
+    return values.some(value => value === 'https://env-override.example.com')
       && (el.textContent || '').includes('已设置（值已隐藏）');
   }));
 

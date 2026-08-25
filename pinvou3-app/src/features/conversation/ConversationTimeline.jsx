@@ -123,9 +123,11 @@ function localizedSemanticLabel(value, copy) {
 }
 
 export function ConversationMarkdown({ text, className = '', onOpenExternal, onOpenResource }) {
-  // 懒加载语言注册完成会 bump 版本号:该订阅触发重渲染,使 useMemo 下方按 text 重算,恢复高亮。
-  useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
-  const html = useMemo(() => renderMarkdown(text), [text]);
+  // 懒加载语言注册完成会 bump 版本号;版本号必须留在 useMemo deps 里
+  // (syntax-highlighter.js 契约),否则注册完成后已渲染的代码保持纯文本。
+  const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- syntaxVersion 是版本号,变化即需重算恢复高亮
+  const html = useMemo(() => renderMarkdown(text), [text, syntaxVersion]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
     if (!anchor) return;

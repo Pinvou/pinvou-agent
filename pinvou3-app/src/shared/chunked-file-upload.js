@@ -19,6 +19,12 @@
     return error;
   }
 
+  // 鸭子类型入参可能不是真 File(测试桩/宿主注入),防御负值与非法 size,
+  // 避免负 size 跳过分块循环直达成功路径。
+  function isValidUploadSize(size) {
+    return typeof size === "number" && Number.isSafeInteger(size) && size >= 0;
+  }
+
   function bytesToBase64(bytes) {
     let binary = "";
     for (let offset = 0; offset < bytes.length; offset += 0x8000) {
@@ -30,7 +36,7 @@
 
   async function uploadFile(options) {
     const file = options && options.file;
-    if (!file || !Number.isSafeInteger(file.size)) {
+    if (!file || !isValidUploadSize(file.size)) {
       const invalid = new Error("invalid device attachment");
       invalid.code = "device_upload_invalid";
       throw invalid;

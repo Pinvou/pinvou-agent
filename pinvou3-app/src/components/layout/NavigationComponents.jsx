@@ -278,7 +278,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
             <span>{t.cpDelete}</span>
           </button>
           {(onOpenFolder || onArchive) && (
-            <div className="my-1 h-px bg-black/10 dark:border-white/10" />
+            <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
           )}
           {onOpenFolder && (
             <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onOpenFolder(chat.id); }}>
