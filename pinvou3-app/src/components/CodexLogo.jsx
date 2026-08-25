@@ -1,8 +1,9 @@
 import openaiIcon from '../brand-icons/openai.svg';
 
-// 有 title 时作为图片暴露(role="img" + aria-label,掩码图无法内嵌 <title>);
-// 无 title 时视为装饰性图形,对辅助技术隐藏。拆成两个分支让 role 与
-// aria-label 静态可判定,避免条件 role 触发 useAriaPropsSupportedByRole。
+// With a title, expose as an image (role="img" + aria-label; a masked image
+// cannot embed <title>); without one, treat as decorative and hide from
+// assistive tech. Two branches keep role and aria-label statically analyzable,
+// avoiding a conditional role that would trip useAriaPropsSupportedByRole.
 export function CodexLogo({ className = 'h-4 w-4', title }) {
   const maskStyle = {
     WebkitMaskImage: `url("${openaiIcon}")`,

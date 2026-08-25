@@ -6,7 +6,7 @@ import { bridge } from '../../hooks/useBridge.js';
 // 界面语言 → BCP 47 locale，用于时钟等本地化格式化
 const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
 
-const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-unused-vars -- theme 为既有 props 契约保留
+const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-unused-vars -- theme kept for the existing props contract
       const HOLD_MS = 850;
       const [fillPct, setFillPct] = useState(0);
       const [phase, setPhase] = useState('idle');  // idle | holding | done
@@ -75,7 +75,7 @@ const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-u
         >
           <span
             className="absolute left-0 top-0 bottom-0 z-0 bg-[#fce7ea] dark:bg-[rgba(220,47,68,0.24)]"
-            style={{ width: fillPct + '%', transition: activeRef.current ? 'none' : 'width .22s ease' }} // eslint-disable-line react-hooks/refs -- 长按动画期间读 activeRef 关闭 CSS 过渡;rAF 已驱动重绘,读取时机安全
+            style={{ width: fillPct + '%', transition: activeRef.current ? 'none' : 'width .22s ease' }} // eslint-disable-line react-hooks/refs -- read activeRef to disable the CSS transition during the long-press animation; rAF already drives repaint, so the read timing is safe
           ></span>
           <span className="relative z-[1] inline-flex items-center gap-1.5">
             <RotateCcw size={15} style={{ animation: phase === 'done' ? 'tsSpinner .5s ease' : 'none' }} />
@@ -295,7 +295,7 @@ const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-u
       );
     };
 
-    /* eslint-disable sonarjs/cognitive-complexity -- 监控仪表盘单视图,指标众多拆分收益低;legacy view; tracked separately */
+    /* eslint-disable sonarjs/cognitive-complexity -- monitoring dashboard is a single view with many metrics, splitting has low payoff;legacy view; tracked separately */
     const MonitorView = ({ theme, t, bs }) => {
       const isDark = theme === 'dark';
       const fmt = bs && bs.monitor && bs.monitor._fmt;
@@ -388,7 +388,7 @@ const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-u
           return m ? Number(m[0]) : null;
         };
         const genNow = fmt && fmt.vllmRaw && typeof fmt.vllmRaw.gen === 'number' ? fmt.vllmRaw.gen : null;
-        setHistory(prev => { // eslint-disable-line react-hooks/set-state-in-effect -- 轮询值变化时把采样点追加进环形历史,函数式更新无级联
+        setHistory(prev => { // eslint-disable-line react-hooks/set-state-in-effect -- append the sample to the ring history when polled values change; functional update, no cascading
           const push = (arr, value) => value == null ? arr : [...arr, value].slice(-20);
           // 运行活动:本轮询周期实际生成的 token 增量(counter 倒退 = 清除统计/后端重启,按 0)。
           // 清除动画期间(clearOverride)不采样,避免一帧一个 0 把历史冲掉。
@@ -411,7 +411,7 @@ const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-u
           Object.assign(getMonitorHistoryStore(), next);
           return next;
         });
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- fmt 为轮询镜像,采样值已在依赖里;加 fmt 会在每次轮询对象更换时重复采样
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- fmt mirrors the polling object and the sampled values are already in deps; adding fmt would re-sample on every poll object change
       }, [vllmMaxLen, vllmQueue, vllmTtft, vllmTps, vllmKv, clearOverride, updatedAt]);
       useEffect(() => {
         const timer = setInterval(() => setClockNow(new Date()), 1000);
@@ -457,12 +457,12 @@ const ClearStatsHold = ({ _theme, t, onClear }) => { // eslint-disable-line no-u
       const processorIcon = monitorProcessorIcon(computeDeviceName);
       const modelIcon = monitorModelIcon(vllmModel);
       const tokenPair = monitorTokenPair(clearOverride ? clearOverride.tokTotal : vllmTokTotal);
-      const ctxNum = typeof vllmMaxLen === 'number' ? vllmMaxLen : Number.parseFloat(String(vllmMaxLen || '').replaceAll(/[^\d.]/g, '')); // eslint-disable-line unicorn/prefer-number-coercion -- ctx 文本(如 "131072" / "128K")剥单位后宽松取数
+      const ctxNum = typeof vllmMaxLen === 'number' ? vllmMaxLen : Number.parseFloat(String(vllmMaxLen || '').replaceAll(/[^\d.]/g, '')); // eslint-disable-line unicorn/prefer-number-coercion -- lenient numeric parse of ctx text (e.g. "131072" / "128K") after stripping units
       const ctxValue = Number.isFinite(ctxNum) ? Math.round(ctxNum / 1000) : String(vllmMaxLen || '—');
       const ctxUnit = Number.isFinite(ctxNum) ? 'K' : '';
       const queueText = String(vllmQueue || '—').replaceAll(/\s+/g, '');
-      const ttftText = String(clearOverride ? clearOverride.ttft : vllmTtft).replace(/\s*s$/i, ''); // eslint-disable-line sonarjs/super-linear-regex -- 行级短文本剥单位后缀
-      const tpsText = String(clearOverride ? clearOverride.tps : vllmTps).replace(/\s*tok\/s$/i, ''); // eslint-disable-line sonarjs/super-linear-regex -- 行级短文本剥单位后缀
+      const ttftText = String(clearOverride ? clearOverride.ttft : vllmTtft).replace(/\s*s$/i, ''); // eslint-disable-line sonarjs/super-linear-regex -- strip the unit suffix from short line-level text
+      const tpsText = String(clearOverride ? clearOverride.tps : vllmTps).replace(/\s*tok\/s$/i, ''); // eslint-disable-line sonarjs/super-linear-regex -- strip the unit suffix from short line-level text
       const kvText = String(clearOverride ? clearOverride.kv : vllmKv).replace('%', '');
       const statusText = vllmOnline ? t.available
         : (vllmHealthStatus === 'missing_api_key' ? t.uiMonitor.unverified

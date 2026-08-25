@@ -3,9 +3,9 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  */
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
-  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["monitor"] = function (context) {
     const state = context.state;
@@ -83,7 +83,7 @@
 
   function clearMonitorBaseline() {
     monitorBaseline = null;
-    try { localStorage.removeItem(MONITOR_BASELINE_KEY); } catch { /* localStorage 不可用时忽略 */ }
+    try { localStorage.removeItem(MONITOR_BASELINE_KEY); } catch { /* ignore when localStorage is unavailable */ }
   }
 
   // 把当前 counter 快照存为基准点 → 监控页「后 4 项」从此刻起重新计。
@@ -105,7 +105,7 @@
       pc_queries: numOr0(v.prefix_cache_queries),
       at: Date.now(),  // 记录清除时刻，供「统计自 HH:MM 起」状态文字
     };
-    try { localStorage.setItem(MONITOR_BASELINE_KEY, JSON.stringify(monitorBaseline)); } catch { /* localStorage 不可用时忽略 */ }
+    try { localStorage.setItem(MONITOR_BASELINE_KEY, JSON.stringify(monitorBaseline)); } catch { /* ignore when localStorage is unavailable */ }
     pollMonitor();  // 立即刷新显示，无需等下一个轮询周期
     return true;
   }
@@ -114,7 +114,7 @@
     let waiting = state.queued ? state.queued.length : 0;
     const busyMap = {};
     for (const id in sessionStates) {
-      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already the safe form
       if (!Object.prototype.hasOwnProperty.call(sessionStates, id)) continue;
       if (id === state.activeSessionId) continue;
       const buf = sessionStates[id] || {};

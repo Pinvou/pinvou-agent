@@ -1,8 +1,8 @@
 (function () {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
 
-  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["chat-events"] = function (context) {
     const state = context.state;
@@ -986,7 +986,7 @@
   // 桌面前端监听的 DOM CustomEvent 'pinvou:tools-changed'(tool-events.js / 类似入口),
   // 让 chip 上的工具开关计数立即同步。
   listen("remote_control:tools_changed", function () {
-    try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch { /* DOM 事件分发失败仅影响计数刷新 */ }
+    try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch { /* DOM event dispatch failure only affects the count refresh */ }
   });
 
   // 远程 mobile 挂载/摘挂 KB → Rust emit remote_control:kb_mount_changed → 这里同步

@@ -76,7 +76,7 @@ const buffer = {
 let rejectChat = true;
 const context = {
   state,
-  // eslint-disable-next-line no-unused-vars -- 桩函数保留完整调用签名
+  // eslint-disable-next-line no-unused-vars -- stub keeps the full call signature
   invoke(command) {
     return rejectChat ? Promise.reject(new Error('当前模型不可用')) : Promise.resolve();
   },

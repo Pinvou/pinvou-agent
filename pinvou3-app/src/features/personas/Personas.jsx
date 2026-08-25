@@ -34,18 +34,18 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
         if (bridge.available && bridge.personas.readPersonaBody) {
           bridge.personas.readPersonaBody(card.id).then(b=>setBody(b||'')).catch(()=>setBody(t.cpBodyLoadFailed));
         } else {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- 无后端读取通道时同步落空正文
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the body when there is no backend read channel
           setBody('');
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 弹层挂载时按 card.id 拉取一次正文;body 拉取成功后的状态不属于触发条件
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch the body once by card.id when the popover mounts; post-fetch body state is not a trigger condition
       }, []);
       const cd = personaText(card, t);
       return (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗右上角关闭按钮承担
-        // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the dialog's top-right close button
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
         <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:p-6" style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)', fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div ref={panelRef} onClick={(e)=>e.stopPropagation()}
             className="w-full h-[88vh] md:h-auto md:max-h-[84vh] md:max-w-[560px] flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] text-[#000] dark:text-[#fff]">
             {/* 顶部:头像 + 名称/部门 + 关闭 */}
@@ -93,7 +93,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
         if (isEdit && !init.body && bridge.available && bridge.personas.readPersonaBody) {
           bridge.personas.readPersonaBody(init.id).then(function (b) { setBody(b || ''); }).catch(function () {});
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 编辑器挂载时按 init.id 拉一次完整正文;body 状态不属于触发条件
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch the full body once by init.id when the editor mounts; body state is not a trigger condition
       }, []);
       async function save() {
         if (!name.trim()) { setErr(t.cpErrName); return; }
@@ -107,12 +107,12 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
         } catch (e) { setErr(t.cpErrSave(e)); setSaving(false); }
       }
       return (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由导航栏取消按钮承担
-        // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the nav-bar cancel button
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
         <div className="fixed inset-0 z-[60] flex items-end md:items-center justify-center md:p-4"
           style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div onClick={(e)=>e.stopPropagation()} className="w-full h-[90vh] md:h-auto md:max-h-[85vh] md:max-w-md flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] text-[#000] dark:text-[#fff]">
             {/* 导航栏 */}
             <div className="flex justify-between items-center px-4 h-14 shrink-0 border-b border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
@@ -177,8 +177,8 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
         { src:'avatars/banner-4.svg', ...face(4) },
       ];
       return (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: 整条 banner 可点为鼠标快捷方式,键盘路径由「开始造卡」真实按钮承担
-        // biome-ignore lint/a11y/noStaticElementInteractions: 推广 banner 点击热区,非独立交互控件
+        // biome-ignore lint/a11y/useKeyWithClickEvents: the whole banner is clickable as a mouse shortcut; the keyboard path is handled by the real start-card button
+        // biome-ignore lint/a11y/noStaticElementInteractions: promo banner click hotspot, not a standalone interactive control
         <div onClick={onStart} className="relative w-full overflow-hidden cursor-pointer select-none flex items-stretch"
           style={{ height:200, borderRadius:20, background:'linear-gradient(135deg, #EEEDFE 0%, #E6F1FB 50%, #E1F5EE 100%)',
             boxShadow: isDark // isDark dynamic-value: 保留 (multi-stop boxShadow)
@@ -231,12 +231,12 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
       const [editor, setEditor] = useState(null); // null | { initial }
       const [chooser, setChooser] = useState(false); // 造卡方式选择(AI/手动)
       const [myOnly, setMyOnly] = useState(!!initialMyOnly); // 「我的卡牌」facet(从存入确认窗"去查看"进来则默认开)
-      // biome-ignore lint/correctness/noUnusedVariables: 删除确认状态只在事件流里写入(遗留占位),列表行未读取
-      const [confirmDelId, setConfirmDelId] = useState(null); // eslint-disable-line no-unused-vars, sonarjs/no-unused-vars, sonarjs/no-dead-store -- 删除确认状态只在事件流里写入(遗留占位),列表行未读取
+      // biome-ignore lint/correctness/noUnusedVariables: delete-confirmation state is only written in the event flow (legacy placeholder); list rows never read it
+      const [confirmDelId, setConfirmDelId] = useState(null); // eslint-disable-line no-unused-vars, sonarjs/no-unused-vars, sonarjs/no-dead-store -- delete-confirmation state is only written in the event flow (legacy placeholder); list rows never read it
 
       useEffect(() => { if (bridge.available) bridge.personas.loadPersonas(); }, []);
       useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 筛选条件变化时同步重置可见数量,一次性镜像
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the visible count on filter changes; a one-off mirror
         setVisible(60);
       }, [query, activeDept, myOnly]);
       useEffect(() => { if (!toast) { return; } const id = setTimeout(() => setToast(null), 2400); return () => clearTimeout(id); }, [toast]);
@@ -259,7 +259,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
       function editCard(card, e){ if(e) { e.stopPropagation(); } setEditor({ initial: card }); }
       function doDelete(card, e){ if(e) { e.stopPropagation(); } setConfirmDelId(null);
         Promise.resolve(bridge.personas.deletePersona(card.id)).then(function(){ setToast(t.cpToastDeleted(card.name)); }).catch(function(){ setToast(t.cpToastDelFailed); }); }
-      // 卡面 3D 悬浮效果(onMove/onLeave)与 resetFacets 快捷重置当前视图未接线,保留原实现于 git 历史
+      // The card 3D hover effect (onMove/onLeave) and the resetFacets quick view reset are not wired up; the original implementation remains in git history
       function equip(card, e){ if(e) { e.stopPropagation(); }
         if (active && active.id===card.id) { bridge.personas.unequipPersona(); setToast(t.cpToastUnequipped(personaText(card, t).name)); }
         else { Promise.resolve(bridge.personas.equipPersona(card.id)).then(s => { if (s) setToast(t.cpToastEquipped(targetTitle || t.cpCurrentChat, personaText(s, t).name)); }); } }
@@ -347,8 +347,8 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
                     <div className="grid gap-x-8 gap-y-0" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
                       {shown.map(c => { const isEmpowered = active && active.id === c.id; const isUser = c.source === 'user'; const cd = personaText(c, t);
                         return (
-                          // biome-ignore lint/a11y/useKeyWithClickEvents: 卡片行点击为快捷方式,键盘路径由行内操作按钮承担
-                          // biome-ignore lint/a11y/noStaticElementInteractions: 卡片行点击热区,非独立交互控件
+                          // biome-ignore lint/a11y/useKeyWithClickEvents: card-row click is a shortcut; the keyboard path is handled by the in-row action buttons
+                          // biome-ignore lint/a11y/noStaticElementInteractions: card-row click hotspot, not a standalone interactive control
                           <div key={c.id} onClick={(e) => openDetail(c, e)} onContextMenu={(e) => openCtx(c, e)}
                             className="group py-4 flex flex-col gap-2.5 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
                             <div className="flex items-center gap-4">
@@ -386,8 +386,8 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
 
           {/* 右键菜单（自制卡 编辑/删除，macOS 风） */}
           {ctx ? (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘路径由菜单内真实按钮承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 右键菜单定位容器,菜单项为真实按钮
+            // biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; the keyboard path is handled by the real buttons inside the menu
+            // biome-ignore lint/a11y/noStaticElementInteractions: context-menu positioning container; menu items are real buttons
             <div className="fixed z-[100] min-w-[128px] rounded-[10px] overflow-hidden border text-[14px] bg-[#fff] dark:bg-[#2C2C2E] border-[rgba(0,0,0,.08)] dark:border-[#38383A]"
               style={{ left: Math.min(ctx.x, (typeof window === 'undefined' ? 9999 : window.innerWidth) - 150), top: Math.min(ctx.y, (typeof window === 'undefined' ? 9999 : window.innerHeight) - 100), boxShadow: '0 10px 40px rgba(0,0,0,.25)' }}
               onClick={(e) => e.stopPropagation()}>
@@ -413,11 +413,11 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
 
           {/* 造卡方式选择(iOS action sheet) —— portal 到 body,跳出卡池 z-10 上下文,蒙层才能盖住侧边栏 */}
           {chooser ? createPortal((
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由面板内真实按钮承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the real buttons inside the panel
+            // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
             <div className="fixed inset-0 z-[70] flex items-end md:items-center justify-center md:p-4" style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)' }} onClick={()=>setChooser(false)}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
               <div onClick={(e)=>e.stopPropagation()} className="w-full md:max-w-sm flex flex-col gap-2 p-3 md:p-0">
                 <div className="rounded-[14px] overflow-hidden bg-[#fff] dark:bg-[#1C1C1E]">
                   <button type="button" onClick={()=>{ setChooser(false); if (onAICreate) onAICreate(); }} className="w-full flex items-center gap-3 px-4 py-4 text-left border-b border-[rgba(198,198,200,.5)] dark:border-[#38383A]">

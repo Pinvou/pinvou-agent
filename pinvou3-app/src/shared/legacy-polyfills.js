@@ -1,5 +1,5 @@
 // Baseline polyfills for Safari 14.0 (WKWebView of the first macOS 11 release).
-/* eslint-disable unicorn/no-this-outside-of-class, unicorn/no-useless-undefined, unicorn/prefer-number-properties, no-empty -- polyfill 实现体:this 是原型方法接收者,isFinite/undefined 正是被垫底的 API */
+/* eslint-disable unicorn/no-this-outside-of-class, unicorn/no-useless-undefined, unicorn/prefer-number-properties, no-empty -- polyfill implementation body: this is the prototype-method receiver; isFinite/undefined are exactly the APIs being polyfilled */
 // Loaded synchronously as a classic script before tailwind.js in every window
 // entry (index/pet/reader): this covers both the vendored Tailwind runtime
 // (postcss uses .at() internally) and every module chunk that runs after it
@@ -7,7 +7,7 @@
 // Everything is feature-detected: zero overhead on modern engines, which keep
 // the native implementations.
 (function () {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   'use strict';
 
   function define(owner, name, value) {
@@ -19,7 +19,7 @@
 
   function toInteger(value) {
     const n = Number(value);
-    // biome-ignore lint/suspicious/noGlobalIsFinite: 垫片实现体,垫的正是全局 isFinite,见文件头注释
+    // biome-ignore lint/suspicious/noGlobalIsFinite: shim implementation body; the global isFinite is exactly what is being polyfilled, see the file-header comment
     if (!isFinite(n)) return 0;
     return n < 0 ? Math.ceil(n) : Math.floor(n);
   }
@@ -43,7 +43,7 @@
   // Object.hasOwn — Safari 15.4+
   define(Object, 'hasOwn', function hasOwn(object, key) {
     if (object == null) throw new TypeError('Object.hasOwn called on non-object');
-    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor; Object.hasOwn is unavailable and this call is already the safe form
     return Object.prototype.hasOwnProperty.call(new Object(object), key);
   });
 })();

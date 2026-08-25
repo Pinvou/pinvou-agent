@@ -123,10 +123,10 @@ function localizedSemanticLabel(value, copy) {
 }
 
 export function ConversationMarkdown({ text, className = '', onOpenExternal, onOpenResource }) {
-  // 懒加载语言注册完成会 bump 版本号;版本号必须留在 useMemo deps 里
-  // (syntax-highlighter.js 契约),否则注册完成后已渲染的代码保持纯文本。
+  // lazy language registration bumps the version when it completes; the version must stay in the useMemo deps
+  // (syntax-highlighter.js contract), otherwise already-rendered code stays plain text after registration completes.
   const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- syntaxVersion 是版本号,变化即需重算恢复高亮
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- syntaxVersion is a version counter; any change requires recomputing to restore highlighting
   const html = useMemo(() => renderMarkdown(text), [text, syntaxVersion]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
@@ -142,8 +142,8 @@ export function ConversationMarkdown({ text, className = '', onOpenExternal, onO
     }
   };
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: 链接拦截层,键盘路径由渲染出的 <a> 自身聚焦承担
-    // biome-ignore lint/a11y/noStaticElementInteractions: 静态富文本容器,onClick 仅拦截链接走外部打开
+    // biome-ignore lint/a11y/useKeyWithClickEvents: link-interception layer; the keyboard path is covered by the rendered <a>'s own focus
+    // biome-ignore lint/a11y/noStaticElementInteractions: static rich-text container; onClick only intercepts links to open them externally
     <div
       className={`codex-markdown conversation-markdown text-[15px] leading-7 ${className}`}
       onClick={openLink}
@@ -192,8 +192,8 @@ export function ConversationActivityIndicator({
   copy,
 }) {
   const c = conversationCopy(copy);
-  // elapsedMs 对 now=0 取 Date.now();渲染期间读取当前时间只为显示已耗时,不参与状态派生。
-  // eslint-disable-next-line react-hooks/purity -- 已耗时为随时间自然漂移的展示值,由上层轮询 now 驱动重渲染
+  // elapsedMs falls back to Date.now() when now=0; reading the current time during render only displays elapsed time and does not feed state derivation.
+  // eslint-disable-next-line react-hooks/purity -- elapsed time is a display value that naturally drifts over time; re-rendering is driven by the parent's polling of now
   const nowMs = now || Date.now();
   if (!turn || turn.status !== 'running') return null;
   const waitingPermission = turn.waitingPermission
@@ -356,7 +356,7 @@ function SearchToolItem({ item, now, onOpenExternal, copy }) {
             <div className="mt-2 divide-y divide-black/[0.05] dark:divide-white/[0.06]">
               {details.results.slice(0, 5).map((result, index) => {
                 let domain = '';
-                try { domain = new URL(result.url).hostname.replace(/^www\./, ''); } catch { /* 非法 URL 不展示域名 */ }
+                try { domain = new URL(result.url).hostname.replace(/^www\./, ''); } catch { /* invalid URL: don't show the domain */ }
                 return (
                   <button
                     key={result.url}

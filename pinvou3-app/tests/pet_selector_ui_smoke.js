@@ -453,7 +453,7 @@ async function main() {
   }
 }
 
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 main().catch((error) => {
   console.error('FAIL:', error && error.stack ? error.stack : error);
   process.exit(1);

@@ -1,4 +1,4 @@
-/* eslint-disable sonarjs/super-linear-regex, unicorn/prefer-number-is-safe-integer, sonarjs/cognitive-complexity, import-x/namespace -- 围栏解析算法既有实现,正则行为经测试钉死 */
+/* eslint-disable sonarjs/super-linear-regex, unicorn/prefer-number-is-safe-integer, sonarjs/cognitive-complexity, import-x/namespace -- existing fence-parsing algorithm; regex behavior pinned by tests */
 import { Marked } from 'marked';
 
 export const MARKDOWN_OPTIONS = Object.freeze({

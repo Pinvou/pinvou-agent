@@ -5,7 +5,7 @@
  * 浏览器预览时（无 window.__TAURI__）自动降级。
  */
 (function () {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic script; strict mode is part of the payload
   "use strict";
 
   if (!window.PinvouPlatform || (window.PinvouPlatform.kind !== "web" && window.PinvouPlatform.isWeb !== true)) return;
@@ -103,7 +103,7 @@
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
       return prefix + "_" + window.crypto.randomUUID(); // safari14-ok: guarded above
     }
-    // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:仅生成请求去重 ID,碰撞可安全重试
+    // eslint-disable-next-line sonarjs/pseudo-random -- not security-sensitive: only generates request dedup IDs; collisions are safely retryable
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
   }
 
@@ -742,7 +742,7 @@
       if (diagnostics && typeof diagnostics.record === "function") {
         diagnostics.record(event, details || {});
       }
-    } catch { /* 诊断上报失败需静默降级 */ }
+    } catch { /* diagnostics reporting failure must degrade silently */ }
   }
   function authoritySyncBufferSnapshot(sid, buf) {
     return {
@@ -872,7 +872,7 @@
       if (remote.length) {
         try {
           window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
-        } catch { /* localStorage 写失败时退回远端数据即可 */ }
+        } catch { /* on localStorage write failure, fall back to remote data */ }
         return remote;
       }
       if (cached.length) {
@@ -1266,7 +1266,7 @@
   function decodeBase64Bytes(encoded) {
     const binary = window.atob(String(encoded || ""));
     const bytes = new Uint8Array(binary.length);
-// binary 是 atob 产出的单字节 Latin-1 字符串,charCode 即字节值;codePointAt 在此等价但无增益。
+// binary is a single-byte Latin-1 string produced by atob; charCode is the byte value. codePointAt is equivalent here but gains nothing.
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i); // eslint-disable-line unicorn/prefer-code-point
     return bytes;
   }
@@ -1275,7 +1275,7 @@
     const chunkSize = 0x8000;
     for (let offset = 0; offset < bytes.length; offset += chunkSize) {
       const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
-      // chunk 只含 0-255 字节值,fromCharCode/fromCodePoint 等价;保留 apply 分块热路径。
+      // chunk only holds 0-255 byte values; fromCharCode/fromCodePoint are equivalent. Keep the apply-chunked hot path.
       binary += String.fromCharCode.apply(null, chunk); // eslint-disable-line unicorn/prefer-code-point
     }
     return window.btoa(binary);
@@ -1309,7 +1309,7 @@
       } else {
         window.sessionStorage.removeItem(SESSION_DOWNLOAD_LEASES_KEY);
       }
-    } catch { /* 存储不可用时租约仅留内存态 */ }
+    } catch { /* when storage is unavailable the lease stays in memory only */ }
   }
   function rememberSessionDownloadLease(downloadId, sid) {
     const entries = readSessionDownloadLeases().filter(function (entry) {
@@ -1378,8 +1378,8 @@
       if (window.crypto && typeof window.crypto.randomUUID === "function") {
         token = window.crypto.randomUUID().replaceAll('-', ""); // safari14-ok: guarded above
       }
-    } catch { /* UUID 生成异常时走下方兜底 */ }
-    // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:下载 ID 去重,失败可安全重试
+    } catch { /* on UUID generation failure, fall through to the fallback below */ }
+    // eslint-disable-next-line sonarjs/pseudo-random -- not security-sensitive: download ID dedup; failures are safely retryable
     if (!token) token = Date.now().toString(36) + Math.random().toString(36).slice(2);
     return "download_web_" + token;
   }
@@ -1664,7 +1664,7 @@
     if (buf) buf.artifacts = arts;
     else state.artifacts = arts;
     try {
-      try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch { /* 落盘失败不阻断会话切换 */ }
+      try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch { /* persistence failure must not block session switching */ }
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         const firstUser = msgs.find(function (m) { return m.role === "user"; });
         // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
@@ -1918,7 +1918,7 @@
   let subscribers = [];
   function snapshotState() {
     if (typeof structuredClone === "function") {
-      try { return structuredClone(state); } catch { /* 静默回退 JSON */ } // safari14-ok: typeof-guarded with JSON fallback
+      try { return structuredClone(state); } catch { /* silently fall back to JSON */ } // safari14-ok: typeof-guarded with JSON fallback
     }
     return JSON.parse(JSON.stringify(state));
   }
@@ -1954,7 +1954,7 @@
       const prototype = Object.getPrototypeOf(value);
       const isPlainObject = prototype === null || (
         Object.getPrototypeOf(prototype) === null &&
-        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor: Object.hasOwn is unavailable; this call is already the safe form
         Object.prototype.hasOwnProperty.call(prototype, "constructor") &&
         prototype.constructor && prototype.constructor.name === "Object"
       );
@@ -1990,7 +1990,7 @@
         : null;
       const previousKeys = previousObject ? Object.keys(previousObject) : [];
       const sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
-        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor: Object.hasOwn is unavailable; this call is already the safe form
         return Object.prototype.hasOwnProperty.call(previousObject, key);
       });
       let nextObject = sameShape ? null : {};
@@ -2069,7 +2069,7 @@
         SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY,
         JSON.stringify(scheduledTaskTemplateSources)
       );
-    } catch { /* localStorage 不可用时忽略 */ }
+    } catch { /* ignore when localStorage is unavailable */ }
   }
 
   function rememberScheduledTaskTemplateSource(taskId, templateId) {
@@ -2079,7 +2079,7 @@
   }
 
   function forgetScheduledTaskTemplateSource(taskId) {
-    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor: Object.hasOwn is unavailable; this call is already the safe form
     if (!taskId || !Object.prototype.hasOwnProperty.call(scheduledTaskTemplateSources, taskId)) return;
     delete scheduledTaskTemplateSources[taskId];
     persistScheduledTaskTemplateSources();
@@ -2238,7 +2238,7 @@
     return true;
   }
 
-  // eslint-disable-next-line sonarjs/no-invariant-returns -- 回显归一化后的 id 是刻意的 API 约定
+  // eslint-disable-next-line sonarjs/no-invariant-returns -- echoing back the normalized id is a deliberate API contract
   function selectScheduledTask(id) {
     const nextId = typeof id === "string" && id.trim() ? id.trim() : null;
     if (state.selectedScheduledTaskId === nextId) return nextId;
@@ -2282,12 +2282,12 @@
   }
 
   function parseLooseJsonObject(text) {
-    try { return JSON.parse(text); } catch { /* 非法 JSON 由调用方回退原文 */ }
-    try { return JSON.parse(String(text || "").replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* 非法 JSON 由调用方回退原文 */ }
+    try { return JSON.parse(text); } catch { /* invalid JSON: the caller falls back to the raw text */ }
+    try { return JSON.parse(String(text || "").replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* invalid JSON: the caller falls back to the raw text */ }
     const balanced = extractBalancedJsonObject(String(text || ""));
     if (!balanced) return null;
-    try { return JSON.parse(balanced); } catch { /* 非法 JSON 由调用方回退原文 */ }
-    try { return JSON.parse(balanced.replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* 非法 JSON 由调用方回退原文 */ }
+    try { return JSON.parse(balanced); } catch { /* invalid JSON: the caller falls back to the raw text */ }
+    try { return JSON.parse(balanced.replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* invalid JSON: the caller falls back to the raw text */ }
     return null;
   }
 
@@ -2325,7 +2325,7 @@
     let fallback = null;
     const re = /```([^\n`]*)\n([\s\S]*?)```/g;
     let match;
-    // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
+    // biome-ignore lint/suspicious/noAssignInExpressions: the assignment is the loop condition; refactoring would hurt readability
     while ((match = re.exec(text))) {
       const label = String(match[1] || "").trim().toLowerCase();
       const raw = String(match[2] || "").trim();
@@ -2721,7 +2721,7 @@
     const source = input || {};
     const backendInput = { mode: "yolo" };
     SCHEDULED_TASK_WRITABLE_FIELDS.forEach(function (field) {
-      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor: Object.hasOwn is unavailable; this call is already the safe form
       if (Object.prototype.hasOwnProperty.call(source, field)) backendInput[field] = source[field];
     });
     return backendInput;
@@ -3228,17 +3228,17 @@
     if (message && message.role === "user") {
       const resultIds = blocks.filter(function (block) {
         return block && block.type === "tool_result" && block.tool_use_id;
-      }).map(function (block) { return block.tool_use_id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // 键归一化需字典序,显式声明语义
+      }).map(function (block) { return block.tool_use_id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // key normalization needs lexicographic order; declare the semantics explicitly
       if (resultIds.length) return "user:tool_results:" + resultIds.join("|");
       return "user:text:" + userMessageDisplayText(blocks, hideInternalEnvelope);
     }
     if (message && message.role === "assistant") {
       const toolIds = blocks.filter(function (block) {
         return block && block.type === "tool_use" && block.id;
-      }).map(function (block) { return block.id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // 键归一化需字典序,显式声明语义
+      }).map(function (block) { return block.id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // key normalization needs lexicographic order; declare the semantics explicitly
       if (toolIds.length) return "assistant:tool_uses:" + toolIds.join("|");
       blocks = blocks.filter(function (block) { return !block || block.type !== "thinking"; });
-      try { return "assistant:" + JSON.stringify(blocks); } catch { /* 序列化失败按原文落盘 */ }
+      try { return "assistant:" + JSON.stringify(blocks); } catch { /* on serialization failure, persist the raw text */ }
     }
     try { return JSON.stringify(message); } catch { return String(message); }
   }
@@ -3467,7 +3467,7 @@
           resolve: null,
           timer: null,
         };
-        // await 在 async 函数 return 中冗余;Promise 直接透传语义一致。
+        // await is redundant in an async function return; passing the Promise through has identical semantics.
         return new Promise(function (resolve) {
           capabilityRetry.resolve = resolve;
           capabilityRetry.timer = setTimeout(function () {
@@ -4314,12 +4314,12 @@
   // terminal control sequences and state omissions explicitly instead of
   // pretending the visible tail is the complete log.
   function normalizeTerminalTail(text) {
-    // 终端控制序列本身即协议内容(OSC/CSI/DEL),按原样匹配:eslint-disable-line 注释见下。
+    // terminal control sequences are protocol content themselves (OSC/CSI/DEL); match them verbatim. See the eslint-disable-line comments below.
     const value = String(text || "")
-      // biome-ignore lint/suspicious/noControlCharactersInRegex: 协议分隔符:ESC/BEL/ST 是终端协议字节,与同行 eslint 注释同理
-      .replaceAll(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "") // eslint-disable-line no-control-regex, sonarjs/no-control-regex -- OSC 终止符(BEL/ST)与 ESC 是终端协议字节
-      // biome-ignore lint/suspicious/noControlCharactersInRegex: 协议分隔符:CSI 序列按终端协议定义
-      .replaceAll(/\x1B\[[0-?]*[ -/]*[@-~]/g, ""); // eslint-disable-line no-control-regex -- CSI 序列按协议定义
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: protocol delimiters: ESC/BEL/ST are terminal protocol bytes, same rationale as the eslint comment on the same line
+      .replaceAll(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "") // eslint-disable-line no-control-regex, sonarjs/no-control-regex -- OSC terminator (BEL/ST) and ESC are terminal protocol bytes
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: protocol delimiters: CSI sequences follow the terminal protocol definition
+      .replaceAll(/\x1B\[[0-?]*[ -/]*[@-~]/g, ""); // eslint-disable-line no-control-regex -- CSI sequences follow the protocol definition
     const out = [];
     value.split("\n").forEach(function (line) {
       // After splitting on LF, a normal Windows CRLF line still ends in CR.
@@ -4329,8 +4329,8 @@
       const overwriteAt = visible.lastIndexOf("\r");
       if (overwriteAt >= 0) visible = visible.slice(overwriteAt + 1);
       while (visible.includes("\x08")) {
-        // biome-ignore lint/suspicious/noControlCharactersInRegex: 协议分隔符:退格符是终端协议字节
-        visible = visible.replaceAll(/[^\x08]\x08/g, "").replace(/^\x08+/, ""); // eslint-disable-line no-control-regex, sonarjs/no-control-regex -- 退格符是终端协议字节
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: protocol delimiters: backspace is a terminal protocol byte
+        visible = visible.replaceAll(/[^\x08]\x08/g, "").replace(/^\x08+/, ""); // eslint-disable-line no-control-regex, sonarjs/no-control-regex -- backspace is a terminal protocol byte
       }
       out.push(visible);
     });
@@ -4639,7 +4639,7 @@
       });
       if (added) {
         notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* 落盘失败不阻断前端更新 */ }
+        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* persistence failure must not block frontend updates */ }
       }
     } catch { /* workspace 不存在(新 session)等,忽略 */ }
   }
@@ -4662,10 +4662,10 @@
       });
     });
     String(args.patch || "").split(/\r?\n/).forEach(function (line) {
-      // eslint-disable-next-line sonarjs/super-linear-regex -- 输入按行拆分且行长由补丁头限定,回溯上界可忽略
+      // eslint-disable-next-line sonarjs/super-linear-regex -- input is split by line and line length is bounded by the patch header, so the backtracking upper bound is negligible
       const custom = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/.exec(line);
       if (custom) { pushArtifactPath(paths, custom[1]); return; }
-      // eslint-disable-next-line sonarjs/super-linear-regex -- 输入按行拆分且行长由补丁头限定,回溯上界可忽略
+      // eslint-disable-next-line sonarjs/super-linear-regex -- input is split by line and line length is bounded by the patch header, so the backtracking upper bound is negligible
       const unified = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
       if (unified && unified[1] !== "/dev/null") pushArtifactPath(paths, unified[1]);
     });
@@ -5836,7 +5836,7 @@
         try {
           const inner = JSON.parse(obj.content[0].text);
           if (inner && typeof inner === "object") return inner;
-        } catch { /* 内层不是 JSON 时按外层对象使用 */ }
+        } catch { /* when the inner value is not JSON, use the outer object as-is */ }
       }
       return obj;
     } catch {
@@ -6466,7 +6466,7 @@
 
   function clearMonitorBaseline() {
     monitorBaseline = null;
-    try { localStorage.removeItem(MONITOR_BASELINE_KEY); } catch { /* localStorage 不可用时忽略 */ }
+    try { localStorage.removeItem(MONITOR_BASELINE_KEY); } catch { /* ignore when localStorage is unavailable */ }
   }
 
   // 把当前 counter 快照存为基准点 → 监控页「后 4 项」从此刻起重新计。
@@ -6488,7 +6488,7 @@
       pc_queries: numOr0(v.prefix_cache_queries),
       at: Date.now(),  // 记录清除时刻，供「统计自 HH:MM 起」状态文字
     };
-    try { localStorage.setItem(MONITOR_BASELINE_KEY, JSON.stringify(monitorBaseline)); } catch { /* localStorage 不可用时忽略 */ }
+    try { localStorage.setItem(MONITOR_BASELINE_KEY, JSON.stringify(monitorBaseline)); } catch { /* ignore when localStorage is unavailable */ }
     pollMonitor();  // 立即刷新显示，无需等下一个轮询周期
     return true;
   }
@@ -6497,7 +6497,7 @@
     let waiting = state.queued ? state.queued.length : 0;
     const busyMap = {};
     for (const id in sessionStates) {
-      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor: Object.hasOwn is unavailable; this call is already the safe form
       if (!Object.prototype.hasOwnProperty.call(sessionStates, id)) continue;
       if (id === state.activeSessionId) continue;
       const buf = sessionStates[id] || {};
@@ -6919,7 +6919,7 @@
       modelId = results[0];
       config = results[1];
     } catch {
-      // 读取失败时按未配置处理(下方统一提交 null)。
+      // on read failure, treat as unconfigured (null is submitted uniformly below).
     }
     // ChatView effect 可能并发加载相邻两个会话；只提交仍为当前会话的结果。
     if ((state.activeSessionId || null) !== requestedSessionId) return;
@@ -6968,7 +6968,7 @@
       return { ok: state.superPermEnabled === target, enabled: state.superPermEnabled };
     } catch (e) {
       addSystemItem("⚠️ " + e);
-      try { state.superPermEnabled = !!(await invoke("get_super_permission_status")); } catch { /* 查询失败按未开启处理 */ }
+      try { state.superPermEnabled = !!(await invoke("get_super_permission_status")); } catch { /* on query failure, treat as not enabled */ }
       notify();
       return { ok: false, enabled: state.superPermEnabled, error: String(e) };
     }
@@ -7180,7 +7180,7 @@
       const status = sourceStates[source];
       if (status && status.available === false) {
         const key = stateKey || source;
-        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor: Object.hasOwn is unavailable; this call is already the safe form
         return Object.prototype.hasOwnProperty.call(previous, key) ? previous[key] : fallback;
       }
       return value;
@@ -7580,7 +7580,7 @@
       try {
         const currentMode = await invoke("get_mode_state", { sessionId: sid });
         applyAuthoritativeModeState(sid, currentMode);
-      } catch { /* 状态回读失败不掩盖原始错误 */ }
+      } catch { /* status re-read failure must not mask the original error */ }
       addSystemItemFor(sid, bt("acceptPlanFailed") + e);
     }
     notify();
@@ -7622,7 +7622,7 @@
         try {
           const currentMode = await invoke("get_mode_state", { sessionId: sid });
           applyAuthoritativeModeState(sid, currentMode);
-        } catch { /* 状态回读失败不掩盖原始错误 */ }
+        } catch { /* status re-read failure must not mask the original error */ }
       }
       addSystemItemFor(sid, bt("discardPlanFailed") + e);
     }
@@ -7716,7 +7716,7 @@
   async function cancelUserInput(itemId, toolCallId) {
     const sid = state.activeSessionId;
     if (!sid) return;
-    try { await invoke("cancel_user_input", { toolCallId, sessionId: sid }); } catch { /* 取消失败时等待后端超时回收 */ }
+    try { await invoke("cancel_user_input", { toolCallId, sessionId: sid }); } catch { /* on cancel failure, wait for the backend timeout to reclaim it */ }
     patchItemByIdFor(sid, itemId, { resolved: true, cardState: "cancelled" });
     notify();
   }
@@ -7918,10 +7918,10 @@
           const bn = basename(path);
           const resolved = (ws || []).find(function (p) { return basename(p) === bn; });
           if (resolved) path = resolved;
-        } catch { /* 解析失败保留原路径 */ }
+        } catch { /* on parse failure, keep the original path */ }
       }
       let info = null;
-      try { info = await artifactInfo(path, x.sessionId); } catch { /* 信息缺失按无详情降级 */ }
+      try { info = await artifactInfo(path, x.sessionId); } catch { /* missing info degrades to no-details */ }
       const ext = (String(path).split(".").pop() || "").toLowerCase();
       return {
         name: x.name || basename(path),
@@ -8012,7 +8012,7 @@
       const encoded = String(part.data_base64 || part.dataBase64 || "");
       const binary = atob(encoded);
       const bytes = new Uint8Array(binary.length);
-// binary 是 atob 产出的单字节 Latin-1 字符串,charCode 即字节值;codePointAt 在此等价但无增益。
+// binary is a single-byte Latin-1 string produced by atob; charCode is the byte value. codePointAt is equivalent here but gains nothing.
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i); // eslint-disable-line unicorn/prefer-code-point
       if (!bytes.length && !part.eof) throw new Error(bt("artifactNoProgress"));
       if (bytes.length > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES - offset) {
@@ -8091,7 +8091,7 @@
       const encoded = String(part.data_base64 || part.dataBase64 || "");
       const binary = atob(encoded);
       const bytes = new Uint8Array(binary.length);
-// binary 是 atob 产出的单字节 Latin-1 字符串,charCode 即字节值;codePointAt 在此等价但无增益。
+// binary is a single-byte Latin-1 string produced by atob; charCode is the byte value. codePointAt is equivalent here but gains nothing.
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i); // eslint-disable-line unicorn/prefer-code-point
       if (!bytes.length && !part.eof) throw new Error(bt("attachNoProgress"));
       if (offset + bytes.length > expectedSize) {
@@ -8195,7 +8195,7 @@
     const id = ++attachIdSeq;
     const uploadId = uploader && typeof uploader.uploadId === "function"
       ? uploader.uploadId("webatt")
-      // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:附件上传临时 ID,序号前缀已保证唯一
+      // eslint-disable-next-line sonarjs/pseudo-random -- not security-sensitive: temporary attachment upload ID; the sequence prefix already guarantees uniqueness
       : "webatt_" + id + "_" + Math.random().toString(36).slice(2, 12);
     const att = {
       id, uploadId, basename: file.name,
@@ -8333,7 +8333,7 @@
       if (m && (isDefaultChatTitle(m.title) || personaPlaceholderTitles[sid])) {
         const newTitle = personaName(card);
         if (newTitle) {
-          try { await invoke("rename_session", { id: sid, title: newTitle }); } catch { /* 改名失败不影响本地展示 */ }
+          try { await invoke("rename_session", { id: sid, title: newTitle }); } catch { /* rename failure does not affect local display */ }
           if (sid !== state.activeSessionId) return card; // rename 挂起期间切走:放弃后续 UI 写入(审计补充)
           m.title = newTitle;
           personaPlaceholderTitles[sid] = true;
@@ -8546,7 +8546,7 @@
   async function loadAppVersion() {
     try {
       state.appVersion = await invoke("get_app_version");
-    } catch { /* 版本读取失败留空即可 */ }
+    } catch { /* version read failure: leaving it empty is fine */ }
   }
   // 启动静默检查: 失败全吞(网络差/更新源挂了不打扰用户)。结果不管新旧都存——
   // available 驱动红点,current_version 给设置页显示当前版本用。
@@ -8756,7 +8756,7 @@
     fn.call(console, "[voice-input]", event);
   }
 
-  // 语音流程的错误载体:Error 实例 + category/stage 附加字段,供 normalizeVoiceError 分类。
+  // error carrier for the voice flow: an Error instance plus category/stage extra fields, classified by normalizeVoiceError.
   function voiceFlowError(category, stage, message) {
     const error = new Error(message);
     error.category = category;
@@ -8806,7 +8806,7 @@
 
   function stopMediaTracks(stream) {
     if (!stream) return;
-    stream.getTracks().forEach(function (track) { try { track.stop(); } catch { /* 已停止的轨道无需处理 */ } });
+    stream.getTracks().forEach(function (track) { try { track.stop(); } catch { /* already-stopped tracks need no handling */ } });
   }
 
   function cleanupVoiceInputSession(session) {
@@ -8815,10 +8815,10 @@
     // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
     // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
     // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
-    try { if (session.processor) session.processor.onaudioprocess = null; } catch { /* 释放失败仅影响本页音频 */ }
-    try { if (session.processor) session.processor.disconnect(); } catch { /* 释放失败仅影响本页音频 */ }
-    try { if (session.source) session.source.disconnect(); } catch { /* 释放失败仅影响本页音频 */ }
-    try { if (session.zeroGain) session.zeroGain.disconnect(); } catch { /* 释放失败仅影响本页音频 */ }
+    try { if (session.processor) session.processor.onaudioprocess = null; } catch { /* release failure only affects this page's audio */ }
+    try { if (session.processor) session.processor.disconnect(); } catch { /* release failure only affects this page's audio */ }
+    try { if (session.source) session.source.disconnect(); } catch { /* release failure only affects this page's audio */ }
+    try { if (session.zeroGain) session.zeroGain.disconnect(); } catch { /* release failure only affects this page's audio */ }
     stopMediaTracks(session.stream);
     session.processor = null;
     session.source = null;
@@ -8829,7 +8829,7 @@
     const ctx = session.audioContext;
     session.audioContext = null;
     if (ctx && ctx.state !== "closed") {
-      setTimeout(function () { try { ctx.close().catch(function () {}); } catch { /* 音频上下文已关闭 */ } }, 0);
+      setTimeout(function () { try { ctx.close().catch(function () {}); } catch { /* audio context already closed */ } }, 0);
     }
   }
 
@@ -8865,7 +8865,7 @@
     const buffer = new ArrayBuffer(44 + dataSize);
     const view = new DataView(buffer);
     function writeString(offset, value) {
-// WAV 头只写 ASCII,charCode 即目标字节值;fromCodePoint/codePointAt 在此无增益。
+// the WAV header only writes ASCII; charCode is the target byte value. fromCodePoint/codePointAt gain nothing here.
       for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); // eslint-disable-line unicorn/prefer-code-point
     }
     writeString(0, "RIFF");

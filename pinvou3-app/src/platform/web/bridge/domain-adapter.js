@@ -3,7 +3,7 @@
  * the desktop UI. The legacy flat object stays private to this platform layer.
  */
 (function () {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic script; strict mode is the payload
   "use strict";
 
   const platform = window.PinvouPlatform;
@@ -33,7 +33,7 @@
 
   function clone(value) {
     if (typeof structuredClone === "function") {
-      try { return structuredClone(value); } catch { /* 静默回退 JSON */ } // safari14-ok: typeof-guarded with JSON fallback
+      try { return structuredClone(value); } catch { /* silently fall back to JSON */ } // safari14-ok: typeof-guarded with JSON fallback
     }
     return JSON.parse(JSON.stringify(value));
   }

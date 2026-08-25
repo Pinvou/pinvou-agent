@@ -7,7 +7,7 @@
  * additionally redacts content-like fields before anything leaves the client.
  */
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
 
   const COMMAND = "record_authority_sync_diagnostics";
@@ -71,8 +71,8 @@
       if (root.crypto && typeof root.crypto.randomUUID === "function") {
         return prefix + "_" + root.crypto.randomUUID(); // safari14-ok: guarded above
       }
-    } catch { /* UUID 生成异常时走下方兜底 */ }
-    // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:诊断去重 ID,时间戳前缀已保证基本唯一
+    } catch { /* fall through to the fallback below when UUID generation fails */ }
+    // eslint-disable-next-line sonarjs/pseudo-random -- not security-sensitive: diagnostics dedupe ID; the timestamp prefix already ensures basic uniqueness
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
   }
 
@@ -80,9 +80,9 @@
 
   function isSensitiveKey(key) {
     const normalized = String(key || "").toLowerCase().replaceAll('-', "_");
-    // eslint-disable-next-line sonarjs/regex-complexity -- 脱敏字段白名单刻意全量枚举,拆分会降低可审计性
+    // eslint-disable-next-line sonarjs/regex-complexity -- the redaction field whitelist is deliberately exhaustive; splitting it would reduce auditability
     return /^(access_token|api_key|authorization|body|content|cookie|credential|credentials|cwd|directory|error|file_path|id_token|local_path|message|output|password|path|prompt|refresh_token|request|response|secret|text|token|user_input)$/.test(normalized) ||
-      // eslint-disable-next-line sonarjs/regex-complexity -- 脱敏后缀黑名单刻意全量枚举,拆分会降低可审计性
+      // eslint-disable-next-line sonarjs/regex-complexity -- the redaction suffix blacklist is deliberately exhaustive; splitting it would reduce auditability
       /(_access_token|_api_key|_authorization|_body|_content|_cookie|_credential|_credentials|_directory|_error|_file_path|_id_token|_local_path|_message|_output|_password|_path|_prompt|_refresh_token|_request|_response|_secret|_user_input)$/.test(normalized);
   }
 
@@ -178,7 +178,7 @@
     let state = null;
     try {
       if (typeof platform.getConnectionState === "function") state = platform.getConnectionState();
-    } catch { /* 连接态读取失败按未知处理 */ }
+    } catch { /* treat connection-state read failure as unknown */ }
     return {
       platform_kind: platform.kind || (root.__TAURI__ ? "desktop" : "unknown"),
       browser_online: !root.navigator || root.navigator.onLine !== false,
@@ -204,7 +204,7 @@
       if (!root.localStorage) return;
       if (queue.length) root.localStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
       else root.localStorage.removeItem(STORAGE_KEY);
-    } catch { /* localStorage 不可用时队列仅留内存 */ }
+    } catch { /* keep the queue in memory only when localStorage is unavailable */ }
   }
 
   function invokeFunction() {

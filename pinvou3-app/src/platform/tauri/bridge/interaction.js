@@ -1,8 +1,8 @@
 (function () {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
 
-  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.interaction = function (context) {
     const state = context.state;
@@ -55,7 +55,7 @@
       return { ok: state.superPermEnabled === target, enabled: state.superPermEnabled };
     } catch (e) {
       addSystemItem("⚠️ " + e);
-      try { state.superPermEnabled = !!(await invoke("get_super_permission_status")); } catch { /* 查询失败按未开启处理 */ }
+      try { state.superPermEnabled = !!(await invoke("get_super_permission_status")); } catch { /* treat query failure as not enabled */ }
       notify();
       return { ok: false, enabled: state.superPermEnabled, error: String(e) };
     }
@@ -263,7 +263,7 @@
       try {
         const currentMode = await invoke("get_mode_state", { sessionId: sid });
         applyAuthoritativeModeState(sid, currentMode);
-      } catch { /* 状态回读失败不掩盖原始错误 */ }
+      } catch { /* status re-read failure must not mask the original error */ }
       addSystemItemFor(sid, bt("acceptPlanFailed") + e);
     }
     notify();
@@ -304,7 +304,7 @@
         try {
           const currentMode = await invoke("get_mode_state", { sessionId: sid });
           applyAuthoritativeModeState(sid, currentMode);
-        } catch { /* 状态回读失败不掩盖原始错误 */ }
+        } catch { /* status re-read failure must not mask the original error */ }
       }
       addSystemItemFor(sid, bt("discardPlanFailed") + e);
     }
@@ -459,7 +459,7 @@
   async function cancelUserInput(itemId, toolCallId) {
     const sid = state.activeSessionId;
     if (!sid) return;
-    try { await invoke("cancel_user_input", { toolCallId, sessionId: sid }); } catch { /* 取消失败时等待后端超时回收 */ }
+    try { await invoke("cancel_user_input", { toolCallId, sessionId: sid }); } catch { /* on cancel failure, wait for backend timeout cleanup */ }
     patchItemByIdFor(sid, itemId, { resolved: true, cardState: "cancelled" });
     notify();
   }

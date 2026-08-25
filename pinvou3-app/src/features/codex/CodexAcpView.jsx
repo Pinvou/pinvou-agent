@@ -137,7 +137,7 @@ const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection';
 const CODE_AGENT_IDS = ['pinvou', 'codex', 'claude', 'kimi'];
 
 function workspaceName(path, unknownDirectory) {
-  // eslint-disable-next-line sonarjs/super-linear-regex -- 尾部 [\\/]+ 剥离路径分隔符,字符类单一,回溯线性
+  // eslint-disable-next-line sonarjs/super-linear-regex -- trailing [\\/]+ strips path separators; single char class, so backtracking is linear
   const normalized = String(path || '').replace(/[\\/]+$/, '');
   if (!normalized) return unknownDirectory;
   return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
@@ -691,8 +691,8 @@ const NATIVE_CHAT_EVENTS = [
 
 function isFreeTextPlaceholderOption(option) {
   const label = String(option?.label || '').trim();
-  // 括号内为排除定界符后的自由文本,量词不嵌套于自身字符类,回溯为线性
-  // eslint-disable-next-line no-useless-escape -- \( \) 在字符类内保持转义以明确「字面括号」语义,与 [^()（）] 呼应
+  // the parens hold free text excluding delimiters; the quantifier is not nested in its own char class, so backtracking is linear
+  // eslint-disable-next-line no-useless-escape -- keep \( \) escaped inside the char class to mark them as literal parens, echoing the negated paren class
   return /^(?:其他|其它|other)(?:\s*[\(（][^()（）]*[\)）])?$/i.test(label);
 }
 
@@ -983,7 +983,7 @@ function Turn({
   );
 }
 
-// eslint-disable-next-line sonarjs/cognitive-complexity -- ACP 代码主视图:会话/事件/草稿/附件/滚动等生命周期共用一组 ref+state,重构风险高
+// eslint-disable-next-line sonarjs/cognitive-complexity -- ACP code main view: session/event/draft/attachment/scroll lifecycles share one set of ref+state; refactoring is high-risk
 export function CodexAcpView({
   theme,
   t,
@@ -1229,7 +1229,7 @@ export function CodexAcpView({
   const nativeProjection = useMemo(
     () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId) : null),
     // nativeLaneTick 是 lane 内容变化的版本号（lane 本体是可变对象，靠 tick 触发重投影）。
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick 是 lane 可变对象的版本号,必须留在 deps 触发重投影
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the version counter of the mutable lane object; it must stay in deps to trigger re-projection
     [isNativeAgent, activeNativeLane, activeId, nativeLaneTick],
   );
   const visibleTurns = isNativeAgent
@@ -1318,7 +1318,7 @@ export function CodexAcpView({
     }
   }, [subagentPanel, workspaceOpen]);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换会话时同步收起子代理面板,一次性镜像
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously collapse the subagent panel on session switch; one-shot mirror
     setSubagentPanel(null);
   }, [activeId]);
   useEffect(() => {
@@ -1524,7 +1524,7 @@ export function CodexAcpView({
 
   // 启动时拉一次全局 code 权限偏好（草稿态默认 mode + yolo 确认门）。
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 挂载时拉取一次全局权限偏好;后续由切换/确认路径就地刷新
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch global permission prefs once on mount; afterwards refreshed in place by switch/confirm paths
     refreshCodePermPrefs();
     // 仅挂载拉取一次；后续由切换/确认路径就地刷新。
   }, []);
@@ -1540,7 +1540,7 @@ export function CodexAcpView({
   }
 
   async function persistNativeDraftControls(sessionId, staged) {
-    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor: Object.hasOwn is unavailable; this call is already the safe form
     const hasMultiAgentSelection = Object.prototype.hasOwnProperty.call(staged, 'multiAgent');
     const hasStaged = staged.modelId || staged.mountedId != null || staged.mode || hasMultiAgentSelection;
     if (!hasStaged) return false;
@@ -1732,10 +1732,10 @@ export function CodexAcpView({
     }
   }
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- agent 切换边沿同步写入该 agent 的 Provider 视图缓存
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously write this agent's Provider view cache on the agent switch edge
     if (activeAgentId) refreshProviders(activeAgentId);
     // activeAgentId 变化时刷新一次即可；切换/回退后由调用方显式刷新。
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按 agent 切换边沿刷新;refreshProviders 引用变化不应重复拉取
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh only on the agent switch edge; refreshProviders reference changes must not retrigger fetching
   }, [activeAgentId]);
   const activeProvidersView = providersViews[activeAgentId] || null;
   // Kimi 中转激活时（会话覆盖 > 全局当前 Provider），模型列表只保留受管
@@ -2052,8 +2052,8 @@ export function CodexAcpView({
   }
 
   async function uploadDeviceFiles(files, sessionId = attachmentKey) {
-    // 调用方会传入 FileList（input.files）；WebKit 的 FileList 没有 Symbol.iterator，展开会抛 TypeError。
-    // eslint-disable-next-line unicorn/prefer-spread -- FileList 在 Safari/WKWebView 任意版本不可迭代
+    // callers pass a FileList (input.files); WebKit's FileList has no Symbol.iterator, so spreading throws TypeError.
+    // eslint-disable-next-line unicorn/prefer-spread -- FileList is not iterable on any Safari/WKWebView version
     const selected = Array.from(files || []).filter(Boolean);
     for (const file of selected) {
       const id = `codex-attachment-${++attachmentIdRef.current}`;
@@ -2186,8 +2186,8 @@ export function CodexAcpView({
   }, []);
 
   function handlePaste(event) {
-    // WebKit 的 DataTransferItemList 没有 Symbol.iterator，展开会抛 TypeError，必须用 Array.from。
-    // eslint-disable-next-line unicorn/prefer-spread -- DataTransferItemList 在 Safari/WKWebView 任意版本不可迭代
+    // WebKit's DataTransferItemList has no Symbol.iterator; spreading throws TypeError, so Array.from is required.
+    // eslint-disable-next-line unicorn/prefer-spread -- DataTransferItemList is not iterable on any Safari/WKWebView version
     const items = Array.from(event.clipboardData && event.clipboardData.items || []);
     const images = items.filter(item => item.type && item.type.startsWith('image/'));
     if (!images.length) return;
@@ -2200,7 +2200,7 @@ export function CodexAcpView({
         uploadDeviceFiles([file]).catch(showError);
         return;
       }
-      // Safari 14 无 Blob#arrayBuffer,粘贴图片的桥接通道保留 FileReader 读取
+      // Safari 14 has no Blob#arrayBuffer; the paste-image bridge path keeps FileReader-based reading
       const reader = new FileReader();
       reader.onload = async () => {
         const bytes = [...new Uint8Array(reader.result)];
@@ -2268,7 +2268,7 @@ export function CodexAcpView({
       disposed = true;
       if (unlisten) unlisten();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ACP 事件订阅只挂载一次;依赖刷新函数会反复解绑/重订
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ACP event subscription mounts once; depending on refresh functions would repeatedly unbind/resubscribe
   }, []);
 
   useEffect(() => () => {
@@ -2290,7 +2290,7 @@ export function CodexAcpView({
         console.warn('[acp] restore authoritative session after reconnect failed', error);
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 远程重连回调:只挂载订阅,依赖刷新函数会反复解绑/重订
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- remote reconnect callback: subscription mounts only once; depending on refresh functions would repeatedly unbind/resubscribe
   }), []);
 
   // 原生（品悟）会话的 engine 事件：按 session 推进对应 lane，仅当前会话 bump 渲染；
@@ -2318,7 +2318,7 @@ export function CodexAcpView({
       disposed = true;
       unlisteners.forEach(fn => { fn(); });
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 原生事件订阅只挂载一次;依赖刷新函数会反复解绑/重订
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- native event subscription mounts once; depending on refresh functions would repeatedly unbind/resubscribe
   }, []);
 
   useEffect(() => {
@@ -2326,20 +2326,20 @@ export function CodexAcpView({
     // 避免切换时并发执行两次 CLI/认证探测。外部安装变化由“重新检测”强制刷新。
     // 原生（品悟）会话没有 ACP 状态机，跳过 get_acp_agent_status（后端会拒绝非 ACP agent）。
     if (activeAgentId === 'pinvou') {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- 原生会话无 ACP 状态机,同步清空状态展示
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- native sessions have no ACP state machine; synchronously clear the status display
       setStatus(null);
       return;
     }
     if (activeId) return;
     refreshStatus(activeAgentId).catch(showError);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按 agent/会话切换边沿探测;refreshStatus/showError 引用变化不应重复探测
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- probe only on agent/session switch edges; refreshStatus/showError reference changes must not retrigger probing
   }, [activeAgentId, activeId]);
 
   useEffect(() => {
     const latest = events[events.length - 1];
     if (!isAcpAuthenticationFailure(latest)) return;
     refreshStatus(activeAgentId).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按事件序列边沿重查认证;refreshStatus 引用变化不应重复探测
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-check auth only on the event-sequence edge; refreshStatus reference changes must not retrigger probing
   }, [events.length, activeAgentId]);
 
   // 一次性模型探针：切换/删除 Provider（或恢复官方）后设置页会写探针标记。
@@ -2369,7 +2369,7 @@ export function CodexAcpView({
       sessionLoadRequestRef.current += 1;
       if (preserveDraftWorkspaceRef.current) preserveDraftWorkspaceRef.current = false;
       else setDraftWorkspacePath(null);
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- 回草稿时同步复位事件/待办/会话信息,一次性镜像
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset events/pending/session info when returning to draft; one-shot mirror
       setEvents([]);
       setPending([]);
       setPendingElicitations([]);
@@ -2383,14 +2383,14 @@ export function CodexAcpView({
       return;
     }
     loadSession(activeId).catch(showError);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按会话切换边沿加载;loadSession/showError 引用变化不应重复加载
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load only on the session switch edge; loadSession/showError reference changes must not retrigger loading
   }, [activeId]);
 
   useEffect(() => {
     if (draftEpochRef.current === draftEpoch) return;
     draftEpochRef.current = draftEpoch;
     beginDraft(null, { clearComposer: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按草稿纪元边沿重置;beginDraft 引用变化不应重复清空草稿
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only on the draft-epoch edge; beginDraft reference changes must not re-clear the draft
   }, [draftEpoch]);
 
   useEffect(() => {
@@ -2406,11 +2406,11 @@ export function CodexAcpView({
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按登录中状态边沿轮询;refreshStatus 引用变化不应重启轮询链
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- poll only on the login-in-progress edge; refreshStatus reference changes must not restart the poll chain
   }, [activeAgentId, activeStatus?.login_in_progress]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 立即给出已耗时基线,再由定时器每秒推进
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- set the elapsed-time baseline immediately, then advance it every second via timer
     setNow(Date.now());
     if (!busy) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -2419,7 +2419,7 @@ export function CodexAcpView({
 
   // 切会话/回草稿时关掉记忆弹层（徽标内容按新会话 lane 自动切换）。
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换会话时同步收起记忆弹层,一次性镜像
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the memory popover on session switch; one-shot mirror
     setMemoryOpen(false);
   }, [activeId]);
 
@@ -2456,7 +2456,7 @@ export function CodexAcpView({
   useEffect(() => {
     autoScrollRef.current = true;
     lastScrollTopRef.current = 0;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换会话重置滚动基准时同步隐藏回底按钮
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously hide the scroll-to-bottom button when a session switch resets the scroll baseline
     setShowScrollBottom(false);
     const frame = window.requestAnimationFrame(() => {
       const element = scroller.current;

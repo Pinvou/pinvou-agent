@@ -177,7 +177,7 @@ initializeClaudeBridge()
   .then(() => {
     console.log("Windows Codex + Claude ACP Bridge existing-Node runtime: ok");
   })
-  // eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+  // eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
   .catch((error) => {
     console.error(error);
     process.exitCode = 1;

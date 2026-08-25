@@ -190,7 +190,7 @@ const openChatExternalUrl = (url) => {
   invokeTauri('open_user_external_url', { url }).catch(() => {});
 };
 
-// eslint-disable-next-line no-unused-vars -- theme 由调用方统一注入,保留契约位
+// eslint-disable-next-line no-unused-vars -- theme is injected uniformly by the caller; keep the contract slot
 const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const [hovered, setHovered] = useState(null);
       // 组合包化的本地能力(pptx)已无商店连接器卡,欢迎卡数据回退 tsToolWelcomeData
@@ -463,7 +463,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       );
     };
 
-    // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy 主视图:会话/模式/产物状态高度内聚,拆分重构另行跟踪
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy main view: session/mode/artifact state is highly cohesive; split refactor tracked separately
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
@@ -661,7 +661,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const workSubtab = pinvouModeState.workSubtab;
       const designSubtab = pinvouModeState.designSubtab;
       const designScopeKey = createDesignChangeScopeKey(activeSessionId, activeArtifactPath);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- designChanges 为作用域映射派生值,handleApplyDesignChange 依赖其引用以读取最新设计修改,包 useMemo 无行为收益
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- designChanges is derived from the scope map; handleApplyDesignChange depends on its reference to read the latest design edits, so wrapping in useMemo has no behavioral benefit
       const designChanges = designChangesByScope[designScopeKey] || [];
       const visibleDesignChanges = uniqueDesignChanges(designChanges);
       const reduceCurrentDesignChanges = useCallback((action) => {
@@ -705,7 +705,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         pinvouModeScopeRef.current = nextScope;
         pinvouModeStateRef.current = restored;
         setPinvouModeState(restored);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:仅按会话与消息数变化重估迁移,补全 chatItems 会随流式每条 delta 重跑
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: re-evaluate migration only on session/message-count changes; adding chatItems would rerun on every streaming delta
       }, [activeSessionId, chatItems.length]);
       // 把当前工作区 lane（work/design）同步给 bridge：草稿态 mode 的全局默认
       // 按 lane 三分（工作/设计/代码各记各的），lane 是纯前端概念，bridge
@@ -716,7 +716,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         }
       }, [pinvouMode]);
       useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 设计作用域切换时同步复位本地选中元素
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the locally selected element when the design scope switches
         setSelectedDesignElement(null);
         updatePinvouModeState({ type: 'set-selected-design-element', elementId: undefined });
       }, [designScopeKey, updatePinvouModeState]);
@@ -852,7 +852,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         const element = payload && payload.element;
         const changes = Array.isArray(payload && payload.changes) ? payload.changes : [];
         if (!element || !changes.length) return;
-        // eslint-disable-next-line sonarjs/pseudo-random -- Math.random 仅生成本地设计修改分组 id,无安全或公平性用途
+        // eslint-disable-next-line sonarjs/pseudo-random -- Math.random only generates local design-edit group ids; no security or fairness use
         const groupId = `design-group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const groupLabel = payload.groupLabel || chatViewCopy.designEditGroup;
         changes.forEach((item) => {
@@ -929,11 +929,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const [conversationNow, setConversationNow] = useState(Date.now());
       useEffect(() => {
         if (!busy || !useUnifiedConversationUi) return;
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 建 ticker 前先同步一次时钟基准,busy 起始即刻显示已耗时
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the clock baseline once before creating the ticker so elapsed time shows as soon as busy starts
         setConversationNow(Date.now());
         const timer = window.setInterval(() => setConversationNow(Date.now()), 1000);
         return () => window.clearInterval(timer);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:仅在思考阶段起点(startedAt)变化时重启秒级 ticker
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: restart the per-second ticker only when the thinking-phase start (startedAt) changes
       }, [busy, useUnifiedConversationUi, bs && bs.thinking && bs.thinking.startedAt]);
 
       // 外部入口可预填输入框并把焦点移到末尾。
@@ -948,7 +948,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           }, 80);
           if (onPrefillConsumed) onPrefillConsumed();
         }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:仅在 prefill 变化时预填,setInputText 为稳定回调,补 onPrefillConsumed 会重复触发消费
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: prefill only when prefill changes; setInputText is a stable callback, adding onPrefillConsumed would retrigger consumption
       }, [prefill]);
 
       // 用户向上翻历史时暂停流式自动贴底；回到底部或发送新消息后恢复。
@@ -989,7 +989,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         const el = scrollRef.current;
         if (!el) return;
         const lastItem = chatItems[chatItems.length - 1];
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 无消息时同步复位回底按钮
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the back-to-bottom button when there are no messages
         if (!lastItem) { autoScrollRef.current = true; setShowScrollBottom(false); return; }
         if (autoScrollRef.current || lastItem.type === 'user') {
           el.scrollTop = el.scrollHeight;
@@ -999,12 +999,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           const shouldShow = el.scrollHeight > el.clientHeight + 4;
           setShowScrollBottom(v => v === shouldShow ? v : shouldShow);
         }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:按末条消息特征窄依赖,补全整个 chatItems 会随引用变化频繁重滚
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: narrow dep on the last message's traits; adding the whole chatItems would rescroll on every reference change
       }, [
         chatItems.length,
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 末条消息 html 是有意的复杂表达式窄依赖
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- the last message's html is an intentionally narrow complex-expression dep
         chatItems[chatItems.length - 1]?.html,
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 流式输出长度是有意的条件表达式窄依赖
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- streaming output length is an intentionally narrow conditional-expression dep
         chatItems[chatItems.length - 1]?.state === 'running'
           ? chatItems[chatItems.length - 1]?.output?.length
           : 0,
@@ -1019,14 +1019,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         const el = scrollRef.current;
         autoScrollRef.current = true;
         lastScrollTopRef.current = 0;
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换会话时同步复位回底按钮状态
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset back-to-bottom button state on session switch
         setShowScrollBottom(false);
         if (el) {
           el.scrollTop = el.scrollHeight;
           lastScrollTopRef.current = el.scrollTop;
           lastScrollHeightRef.current = el.scrollHeight;
         }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:以复杂表达式精确依赖会话 id
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: precisely depend on the session id via a complex expression
       }, [bs && bs.activeSessionId]);
 
       // Session content can finish measuring after the active-session effect runs, especially
@@ -1073,17 +1073,17 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         const saved = window.__PINVOU_DESIGN_AI_STATE__;
         if (!saved || (!saved.text && !saved.lastPrompt && saved.status === 'idle')) return;
         if (!designAiState.text && !designAiState.lastPrompt && designAiState.status === 'idle') {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- 全屏打开时把 window 上的设计 AI 快照镜像回本地 state
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- mirror the design AI snapshot on window back into local state when fullscreen opens
           setDesignAiState(saved);
         }
       }, [artifactsFullscreen, designAiState.text, designAiState.lastPrompt, designAiState.status]);
       useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 会话关闭时同步收起产物面板并退出全屏
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously collapse the artifact panel and exit fullscreen when the session closes
         if (!activeSessionId) setArtifactsOpen(false);
         if (!activeSessionId) setArtifactsFullscreen(false);
       }, [activeSessionId]);
       useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 产物面板不可见时同步退出全屏态
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously exit fullscreen when the artifact panel is not visible
         if (!artifactsVisible) setArtifactsFullscreen(false);
       }, [artifactsVisible]);
       const closeArtifactsPanel = useCallback(() => {
@@ -1095,7 +1095,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // null=关闭；agentId 为空进列表页。selectionRequestId 让“详情→返回列表→
       // 再点同一张主对话卡”也成为一次新选择，不能只靠相同 agentId 的 prop 变化。
       const [subagentPanel, setSubagentPanel] = useState(null);
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换会话时同步关闭子智能体面板
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the sub-agent panel on session switch
       useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
       const rememberScrollBeforeSubagentPanelChange = useCallback(() => {
         subagentPanelScrollRef.current = captureConversationScrollPosition(
@@ -1137,7 +1137,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         return () => window.removeEventListener('pinvou:open-subagent', onOpen);
       }, [activeSessionId, closeArtifactsPanel, rememberScrollBeforeSubagentPanelChange]);
       useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 产物面板与子智能体面板互斥,打开一侧同步关闭另一侧
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- artifact panel and sub-agent panel are mutually exclusive; opening one synchronously closes the other
         if (artifactsVisible) setSubagentPanel(null);
       }, [artifactsVisible]);
       const handlePreviewArtifact = useCallback((artifact) => {
@@ -1166,7 +1166,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           ? bridge.chat.getComposerDraft()
           : ((bs && bs.composerDraft) || '');
         setInputText(restored);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:仅按会话与草稿纪元恢复,补全 bs 会在每次后端快照变更时重读草稿,覆盖正在输入的内容
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: restore only on session and draft epoch; adding bs would reread the draft on every backend snapshot change, overwriting in-progress input
       }, [activeSessionId, draftEpoch, setInputText]);
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
       const voiceActive = ['requesting_permission', 'recording', 'transcribing'].includes(voiceInput.status);
@@ -1184,7 +1184,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
       const canFloatingSend = canSend && !voiceActive && !sceneCapabilityPreparing;
       const canClearInput = hasDraftText && !voiceActive;
-      // eslint-disable-next-line sonarjs/cognitive-complexity -- 场景能力预检与发送编排内聚于单个回调,拆分重构另行跟踪
+      // eslint-disable-next-line sonarjs/cognitive-complexity -- scene-capability preflight and send orchestration are cohesive in a single callback; split refactor tracked separately
       const sendChatMessage = useCallback(async (text) => {
         if (!bridge.available) return false;
         const outgoing = String(text || '').trim();
@@ -1255,14 +1255,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         const raw = String(text || '').trim();
         if (!raw) return;
         const elementLabel = selectedDesignElement
-          // eslint-disable-next-line sonarjs/no-nested-template-literals -- 内联拼接类名首段,等价于先提取局部变量,保持既有结构
+          // eslint-disable-next-line sonarjs/no-nested-template-literals -- inline-concatenate the first class-name segment, equivalent to extracting a local variable; keeps the existing structure
           ? `${selectedDesignElement.tagName || chatViewCopy.designElementFallback}${selectedDesignElement.className ? `.${String(selectedDesignElement.className).trim().split(/\s+/)[0]}` : ''}`
           : '';
         const scopedText = selectedDesignElement
           ? chatViewCopy.designAdjustSelected(elementLabel || chatViewCopy.designElementFallback, raw)
           : raw;
         sendChatMessage(scopedText);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:chatViewCopy 仅参与文案拼接,补全只会高频重建回调
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: chatViewCopy only participates in copy concatenation; adding it would just rebuild the callback frequently
       }, [selectedDesignElement, sendChatMessage]);
       const [deviceMode, setDeviceMode] = useState(() => {
         const w = typeof window === 'undefined' ? 1280 : window.innerWidth;
@@ -1306,7 +1306,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       useEffect(() => {
         const sessionKey = `${activeSessionId || 'draft'}:${draftEpoch}`;
         if (justInstalledTool) {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- 装完工具后一次性落地欢迎卡状态
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot apply of the welcome-card state after tool install
           setWelcomeToolId(justInstalledTool);
           welcomeSessionKeyRef.current = sessionKey;
           if (setJustInstalledTool) setJustInstalledTool(null);
@@ -1318,7 +1318,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         // 本 effect → 这次走 else 把刚显示的欢迎卡又清空(表现为"装完工具欢迎卡一闪即消失")。
         // 依赖 activeSessionId(切会话)+ draftEpoch(每次点「新建对话」自增):后者保证即便已在草稿态
         // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:setJustInstalledTool 为父级一次性指令回调,补全会在父组件重渲染时重复触发清空
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: setJustInstalledTool is a parent one-shot directive callback; adding it would retrigger clearing on parent rerenders
       }, [justInstalledTool, activeSessionId, draftEpoch]);
 
       useEffect(() => {
@@ -1364,7 +1364,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             finishFloatingVoiceDrag(drag, pointerId);
             try {
               if (target && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
-            } catch { /* 指针捕获失败可忽略 */ }
+            } catch { /* pointer capture failure is ignorable */ }
           }
           voiceDragRef.current = null;
         };
@@ -1376,7 +1376,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           setFloatingVoicePos(pos => pos ? clampFloatingVoicePos(pos.x, pos.y) : pos);
         });
         return () => cancelAnimationFrame(raf);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:拖动期间 floatingVoicePos 每帧变化,补全会让 rAF 夹取逐帧重建,位置改写已用函数式更新在回调内完成
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: floatingVoicePos changes every frame while dragging; adding it would rebuild the rAF clamp per frame, and position writes already use functional updates inside the callback
       }, [tabletVoiceMode, hasDraftText, hasReadyAttachment, deviceMode.w, deviceMode.h]);
 
       // chip 显示当前会话绑定的模型:切会话/草稿时刷新 currentSessionModelId
@@ -1394,7 +1394,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       useEffect(() => {
         if (!hasImageAttachment || isScheduledSession || !bridge.available
           || !bridge.models || typeof bridge.models.getImageInputCapability !== 'function') {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- 前置条件不满足时同步清空图片路由提示
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the image-routing hint when preconditions are unmet
           setImageInputInfo(null);
           return;
         }
@@ -1404,7 +1404,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           // 查询失败(如凭据未备/旧后端无此命令)按无警告处理,绝不误报。
           .catch(() => { if (!cancelled) setImageInputInfo(null); });
         return () => { cancelled = true; };
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:以复杂表达式精确依赖已保存模型列表
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: precisely depend on the saved model list via a complex expression
       }, [hasImageAttachment, isScheduledSession, activeSessionId, sessionModelKey, bs && bs.savedModels]);
       const imageInputWarning = imageInputInfo && imageInputInfo.image_mode === 'unsupported'
         ? (imageInputInfo.capability === 'unknown' ? t.uiAttachments.imageUnknown : t.uiAttachments.imageUnsupported)
@@ -1491,7 +1491,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (releaseCapture) {
           try {
             if (target && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
-          } catch { /* 指针捕获失败可忽略 */ }
+          } catch { /* pointer capture failure is ignorable */ }
         }
         drag.target = null;
         return true;
@@ -1553,7 +1553,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         drag.target = target;
         voiceDragRef.current = drag;
         setFloatingVoicePressed(true);
-        try { target.setPointerCapture(e.pointerId); } catch { /* 指针捕获失败可忽略 */ }
+        try { target.setPointerCapture(e.pointerId); } catch { /* pointer capture failure is ignorable */ }
       }
 
       function handleFloatingVoicePointerMove(e) {
@@ -1604,8 +1604,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
 
       function handlePaste(e) {
         if (isWeb) return;
-        // WebKit 的 DataTransferItemList 没有 Symbol.iterator，for...of/展开会抛 TypeError，必须用 Array.from。
-        // eslint-disable-next-line unicorn/prefer-spread -- DataTransferItemList 在 Safari/WKWebView 任意版本不可迭代
+        // WebKit's DataTransferItemList has no Symbol.iterator; for...of/spread throws TypeError, so Array.from is required.
+        // eslint-disable-next-line unicorn/prefer-spread -- DataTransferItemList is not iterable on any Safari/WKWebView version
         const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
         for (const it of items) {
           if (!(it.type && it.type.indexOf('image/') === 0)) {
@@ -1988,12 +1988,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               const needEngine = missing.includes('engine') || missing.includes('runtime');
               const modelSizeText = (su.status && su.status.engine && needModel && !needFfmpeg) ? chatCopy.sizeModelOnly : chatCopy.sizeFull;
               return (
-                // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担
-                // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+                // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the dialog's cancel button
+                // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
                 <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45"
                   onClick={() => { if (!su.installing) bridge.voice.closeVoiceAsrSetup(); }}>
-                  {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-                  {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+                  {/* biome-ignore lint/a11y/useKeyWithClickEvents: click bubble-stop layer; keyboard events need no bubbling handling */}
+                  {/* biome-ignore lint/a11y/noStaticElementInteractions: click bubble-stop layer; non-interactive container */}
                   <div className={`w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 ${'bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]'}`}
                     onClick={e => e.stopPropagation()}>
                     <h3 className="text-[16px] font-semibold mb-2">
@@ -2199,9 +2199,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
 
           {artifactsVisible && isWide && !artifactsFullscreen && (
             <>
-              {/* biome-ignore lint/a11y/useSemanticElements: 拖拽分隔条需要 div 语义 */}
-              {/* biome-ignore lint/a11y/useFocusableInteractive: 拖拽分隔条依赖鼠标拖拽,div 语义见上 */}
-              {/* biome-ignore lint/a11y/useAriaPropsForRole: aria-orientation 对可拖拽 div 分隔条是既有语义标注 */}
+              {/* biome-ignore lint/a11y/useSemanticElements: drag splitter requires div semantics */}
+              {/* biome-ignore lint/a11y/useFocusableInteractive: drag splitter relies on mouse dragging; div semantics as above */}
+              {/* biome-ignore lint/a11y/useAriaPropsForRole: aria-orientation is the established semantic annotation for a draggable div splitter */}
               <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
                 className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${'bg-black/10 hover:bg-[#0B57D0]/50 dark:bg-white/10 dark:hover:bg-[#A8C7FA]/60'}`} />
               <div
@@ -2290,7 +2290,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     // ==========================================
     // Chat Bubble (message rendering)
     // ==========================================
-    // eslint-disable-next-line no-unused-vars -- theme 由调用方统一注入,保留契约位
+    // eslint-disable-next-line no-unused-vars -- theme is injected uniformly by the caller; keep the contract slot
 const SelectionCopyButton = ({ hostRef, targetRef, _theme, t }) => {
       const [selCopy, setSelCopy] = useState({ visible: false, copied: false, text: '', x: 0, y: 0 });
       const hideTimerRef = useRef(null);
@@ -2395,7 +2395,7 @@ const SelectionCopyButton = ({ hostRef, targetRef, _theme, t }) => {
       );
     };
 
-    // eslint-disable-next-line no-unused-vars -- theme 由调用方统一注入,保留契约位
+    // eslint-disable-next-line no-unused-vars -- theme is injected uniformly by the caller; keep the contract slot
 const TextareaContextMenu = ({ inputRef, setValue, _theme, t }) => {
       const [menu, setMenu] = useState({ visible: false, x: 0, y: 0, canCopy: false });
 
@@ -2422,7 +2422,7 @@ const TextareaContextMenu = ({ inputRef, setValue, _theme, t }) => {
         setValue(next);
         requestAnimationFrame(function () {
           el.focus();
-          try { el.setSelectionRange(cursor, cursor); } catch { /* 光标定位失败可忽略 */ }
+          try { el.setSelectionRange(cursor, cursor); } catch { /* cursor positioning failure is ignorable */ }
         });
       }, [inputRef, setValue]);
 
@@ -2499,7 +2499,7 @@ const TextareaContextMenu = ({ inputRef, setValue, _theme, t }) => {
 
       if (!menu.visible) return null;
       return createPortal((
-        // biome-ignore lint/a11y/noStaticElementInteractions: 右键菜单定位容器,preventDefault 防失焦,菜单项为真实按钮
+        // biome-ignore lint/a11y/noStaticElementInteractions: context-menu positioning container; preventDefault avoids blur; menu items are real buttons
         <div
           data-textarea-context-menu="true"
           className={`w-[136px] overflow-hidden rounded-[12px] py-1 shadow-xl backdrop-blur border ${
@@ -2521,7 +2521,7 @@ const TextareaContextMenu = ({ inputRef, setValue, _theme, t }) => {
       ), document.body);
     };
 
-    // eslint-disable-next-line no-unused-vars -- theme 由调用方统一注入,保留契约位
+    // eslint-disable-next-line no-unused-vars -- theme is injected uniformly by the caller; keep the contract slot
 const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant }) => {
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
@@ -2547,7 +2547,7 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
         return (
           <div className="flex justify-end min-w-0 max-w-full">
             <div className="max-w-[85%] w-full min-w-0">
-              {/* biome-ignore lint/a11y/noAutofocus: 进入消息编辑态立即聚焦编辑框,焦点即编辑意图 */}
+              {/* biome-ignore lint/a11y/noAutofocus: focus the editor immediately on entering message-edit mode; focus is the edit intent */}
               <textarea autoFocus value={val} onChange={e => setVal(e.target.value)}
                 rows={Math.min(6, Math.max(1, val.split('\n').length))}
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
@@ -2625,7 +2625,7 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
                     'bg-black text-white dark:bg-black/35'
                   }`}
                 >
-                  {/* eslint-disable-next-line react-hooks/static-components -- SceneIcon 取自场景元数据中的既有图标组件,非渲染期新建有状态组件 */}
+                  {/* eslint-disable-next-line react-hooks/static-components -- SceneIcon is an existing icon component from scene metadata, not a stateful component created during render */}
                   {SceneIcon && <SceneIcon size={14} className="shrink-0" />}
                   <span>{sceneDisplay.label}</span>
                 </span>
@@ -2677,16 +2677,16 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
 
     // 思考指示器：Braille 转圈 + 思考中/调用工具 + 计时（每阶段切换重置）
     const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    // eslint-disable-next-line no-unused-vars -- theme 由调用方统一注入,保留契约位
+    // eslint-disable-next-line no-unused-vars -- theme is injected uniformly by the caller; keep the contract slot
 const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
       const [frame, setFrame] = useState(0);
       const [elapsed, setElapsed] = useState(0);
       const phase = thinking ? thinking.phase : 'thinking';
       const toolName = thinking ? thinking.toolName : '';
-      // eslint-disable-next-line react-hooks/purity -- 后端未携带 startedAt 时以当前时间兜底,是该思考指示器的既有行为
+      // eslint-disable-next-line react-hooks/purity -- falling back to the current time when the backend omits startedAt is this thinking indicator's established behavior
       const startedAt = (thinking && thinking.startedAt) || Date.now();
       useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 阶段切换时同步复位动画帧与计时
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the animation frame and timer on phase switch
         setFrame(0); setElapsed(0);
         const id = setInterval(() => {
           setFrame(f => (f + 1) % BRAILLE.length);
@@ -2740,7 +2740,7 @@ const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
       if (!html || !html.includes('{')) return { draft: null, html };
       const re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g;
       let m; let chosen = null; let chosenDraft = null;
-      // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
+      // biome-ignore lint/suspicious/noAssignInExpressions: assignment doubles as the loop condition; refactoring hurts readability
       while ((m = re.exec(html))) {
         const raw = highlightedCodeText(m[3]).trim();
         if (raw.charAt(0) !== '{') continue;
@@ -2758,7 +2758,7 @@ const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
       if (!html || !html.includes('{')) return { draft: null, html };
       const re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g;
       let m; let chosen = null; let chosenDraft = null;
-      // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
+      // biome-ignore lint/suspicious/noAssignInExpressions: assignment doubles as the loop condition; refactoring hurts readability
       while ((m = re.exec(html))) {
         const raw = highlightedCodeText(m[3]).trim();
         if (raw.charAt(0) !== '{') continue;
@@ -2776,7 +2776,7 @@ const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
       if (!html || !/card-question/i.test(html)) return { q: null, html };
       const re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g;
       let m;
-      // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
+      // biome-ignore lint/suspicious/noAssignInExpressions: assignment doubles as the loop condition; refactoring hurts readability
       while ((m = re.exec(html))) {
         if (!/card-question/i.test(m[1] + m[2])) continue;
         const raw = highlightedCodeText(m[3]).trim();
@@ -2791,7 +2791,7 @@ const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
     }
     // 点选项时实际发送的回答:取"短标签 —— 说明"里的短标签;没分隔符就发整句。
     function optionAnswer(opt) {
-      // eslint-disable-next-line sonarjs/super-linear-regex -- 分隔符交替按先长后短排列,输入为短选项文本,回溯有界且为有意写法
+      // eslint-disable-next-line sonarjs/super-linear-regex -- separator alternation is ordered longest-first; input is short option text, so backtracking is bounded and intentional
       const s = String(opt).split(/\s*(?:——|—|::|:|：|\(|（)/)[0].trim();
       return s || String(opt).trim();
     }
@@ -2804,7 +2804,7 @@ const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '…') + '</div>';
     }
 
-    // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy 气泡按消息类型分派渲染,拆分重构另行跟踪
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bubble dispatches rendering by message type; split refactor tracked separately
     const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
@@ -2866,8 +2866,8 @@ const ThinkingBubble = ({ thinking, _theme, t, isLocal }) => {
         return (
           <div className="flex justify-start">
             <div ref={assistantSelectionHostRef} className={`relative ${cq.q ? 'w-full' : 'max-w-[95%]'} light-code dark-code`}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 链接拦截层,键盘路径由渲染出的 <a> 自身聚焦承担 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 静态富文本容器,onClick 仅拦截链接走外部浏览器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: link-intercept layer; keyboard path handled by the rendered <a>'s own focus */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: static rich-text container; onClick only intercepts links to open the external browser */}
               <div
                 ref={assistantSelectionTargetRef}
                 className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${'text-[#1F1F1F] dark:text-[#E3E3E3]'}`}

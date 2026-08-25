@@ -219,14 +219,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // ToolStoreView 随左栏切换会卸载；连接是长流程（装 CLI ~40s + 扫码），进度/监听/秒表
     // 若放组件 useState，一离开工具商店就全丢 → 回来按钮又变“连接”。故挂在模块级单例，
     // 活在组件生命周期之外；组件只订阅它做镜像渲染。
-    /* eslint-disable unicorn/no-this-outside-of-class -- 模块级连接 store 单例,对象字面量方法用 this 引用自身;改为 class 会平移同等复杂度 */
+    /* eslint-disable unicorn/no-this-outside-of-class -- module-level connection store singleton; object-literal methods reference itself via this, and converting to a class would just move the same complexity */
     const feishuConn = {
       flow: null,
       tick: null,
       listenersReady: false,
       subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
-      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* 静默:单个订阅者异常不影响其余广播 */ } }); },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* silent: one failing subscriber must not affect the rest of the broadcast */ } }); },
       startTick() {
         this.stopTick();
         this.tick = setInterval(() => this.setFlow(f => {
@@ -238,7 +238,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
-    /* eslint-enable unicorn/no-this-outside-of-class -- 模块级连接 store 单例 */
+    /* eslint-enable unicorn/no-this-outside-of-class -- module-level connection store singleton */
     // 后端连接事件只注册一次（幂等，跨 ToolStoreView 多次挂载不重复注册）。
     function ensureFeishuListeners(copy = {}) {
       if (feishuConn.listenersReady) return;
@@ -288,11 +288,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     }
 
     // ── 企业微信连接流程 · 跨视图持久 store(镜像 feishuConn;企微纯扫码单段）──
-    /* eslint-disable unicorn/no-this-outside-of-class -- 同 feishuConn:模块级单例,方法用 this 引用自身 */
+    /* eslint-disable unicorn/no-this-outside-of-class -- same as feishuConn: module-level singleton whose methods reference itself via this */
     const wecomConn = {
       flow: null, tick: null, listenersReady: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
-      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* 静默:单个订阅者异常不影响其余广播 */ } }); },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* silent: one failing subscriber must not affect the rest of the broadcast */ } }); },
       startTick() {
         this.stopTick();
         this.tick = setInterval(() => this.setFlow(f => {
@@ -304,7 +304,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
-    /* eslint-enable unicorn/no-this-outside-of-class -- 同 feishuConn */
+    /* eslint-enable unicorn/no-this-outside-of-class -- same as feishuConn */
     function ensureWecomListeners(copy = {}) {
       if (wecomConn.listenersReady) return;
       const connFailed = copy.connFailed;
@@ -335,11 +335,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     }
 
     // ── 钉钉连接流程 · 跨视图持久 store(镜像企微;纯扫码单段）──
-    /* eslint-disable unicorn/no-this-outside-of-class -- 同 feishuConn:模块级单例,方法用 this 引用自身 */
+    /* eslint-disable unicorn/no-this-outside-of-class -- same as feishuConn: module-level singleton whose methods reference itself via this */
     const dingtalkConn = {
       flow: null, tick: null, listenersReady: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
-      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* 静默:单个订阅者异常不影响其余广播 */ } }); },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* silent: one failing subscriber must not affect the rest of the broadcast */ } }); },
       startTick() {
         this.stopTick();
         this.tick = setInterval(() => this.setFlow(f => {
@@ -351,7 +351,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
-    /* eslint-enable unicorn/no-this-outside-of-class -- 同 feishuConn */
+    /* eslint-enable unicorn/no-this-outside-of-class -- same as feishuConn */
     function ensureDingtalkListeners(copy = {}) {
       if (dingtalkConn.listenersReady) return;
       const connFailed = copy.connFailed;
@@ -387,11 +387,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     }
 
     // ── 腾讯会议连接流程 · 跨视图持久 store(镜像钉钉;纯 OAuth 扫码单段）──
-    /* eslint-disable unicorn/no-this-outside-of-class -- 同 feishuConn:模块级单例,方法用 this 引用自身 */
+    /* eslint-disable unicorn/no-this-outside-of-class -- same as feishuConn: module-level singleton whose methods reference itself via this */
     const tmeetConn = {
       flow: null, tick: null, listenersReady: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
-      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* 静默:单个订阅者异常不影响其余广播 */ } }); },
+      setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* silent: one failing subscriber must not affect the rest of the broadcast */ } }); },
       startTick() {
         this.stopTick();
         this.tick = setInterval(() => this.setFlow(f => {
@@ -403,7 +403,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
     };
-    /* eslint-enable unicorn/no-this-outside-of-class -- 同 feishuConn */
+    /* eslint-enable unicorn/no-this-outside-of-class -- same as feishuConn */
     function ensureTmeetListeners(copy = {}) {
       if (tmeetConn.listenersReady) return;
       const connFailed = copy.connFailed;
@@ -449,7 +449,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     }
 
     // iOS 风格弹窗（安装/卸载后提示需新建会话生效）
-    const TsAlert = ({ alert, _theme, onDismiss, onNewChat, onCancelLoading, copy }) => { // eslint-disable-line no-unused-vars -- theme 为既有 props 契约保留
+    const TsAlert = ({ alert, _theme, onDismiss, onNewChat, onCancelLoading, copy }) => { // eslint-disable-line no-unused-vars -- theme is kept for the existing props contract
       if (!alert.visible && !alert.loading) return null;
       return (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
@@ -526,10 +526,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     };
 
     // API Key 配置弹窗（需要 config_fields 的工具安装前弹出）
-    // eslint-disable-next-line no-unused-vars -- theme 为既有 props 契约保留
+    // eslint-disable-next-line no-unused-vars -- theme is kept for the existing props contract
     const TsConfigDialog = ({ config, _theme, onConfirm, onCancel, copy }) => {
       if (!config) return null;
-      const [values, setValues] = useState({}); // eslint-disable-line react-hooks/rules-of-hooks -- config 为 null 时组件返回 null 且不渲染其他 Hook;同一实例 config 只能从 null→对象单向变化,Hook 数量恒定
+      const [values, setValues] = useState({}); // eslint-disable-line react-hooks/rules-of-hooks -- when config is null the component returns null before any other hook; for one instance config only goes null→object, so the hook count is stable
       const fields = config.fields || [];
       // required:false 的字段可留空；required:true 字段必须填写后才能连接。
       const canSubmit = fields.every(f => f.required === false || (values[f.key] || '').trim().length > 0);
@@ -568,7 +568,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               {/* 所有输入框紧挨着 */}
               {fields.map((field) => (
                 <div key={field.key} className="text-left mb-3">
-                  {/* biome-ignore lint/a11y/noLabelWithoutControl: 字段名与输入框为兄弟布局,label 无 htmlFor 关联,改 span 会偏离既有结构 */}
+                  {/* biome-ignore lint/a11y/noLabelWithoutControl: field name and input are siblings; the label has no htmlFor target, and switching to span would diverge from the existing structure */}
                   <label className={`text-[13px] font-medium mb-1.5 block text-slate-600 dark:text-slate-300`}>
                     {field.label}
                   </label>
@@ -614,7 +614,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     };
 
     // Obsidian 连接前探测引导卡：未安装 → 引导下载；没库 / 库丢失 → 引导建库/重开
-    const TsObsidianGuide = ({ guide, _theme, onCancel, onDownload, onRetry, allowDownload = true, copy }) => { // eslint-disable-line no-unused-vars -- theme 为既有 props 契约保留
+    const TsObsidianGuide = ({ guide, _theme, onCancel, onDownload, onRetry, allowDownload = true, copy }) => { // eslint-disable-line no-unused-vars -- theme is kept for the existing props contract
       if (!guide) return null;
       const COPY = copy.obsidianGuide;
       const c = COPY[guide.state] || COPY.not_installed;
@@ -639,7 +639,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       );
     };
 
-    /* eslint-disable sonarjs/cognitive-complexity -- 工具商店主视图(列表/详情/安装/OAuth 多流程);legacy view; tracked separately */
+    /* eslint-disable sonarjs/cognitive-complexity -- tool store main view (list/detail/install/OAuth flows);legacy view; tracked separately */
     const ToolStoreView = ({ theme, t, onNewChat }) => {
       const storeCopy = t.uiToolStore;
       const detailCopy = t.uiToolDetails;
@@ -680,7 +680,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           onActiveChange: setDropActive,
           onFiles: handleZipDrop,
         });
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 拖放监听只挂载一次;canMutateToolStore/handleZipDrop 经 canAccept/onFiles 闭包按调用时求值
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- drag-drop listener mounts once; canMutateToolStore/handleZipDrop are evaluated at call time through the canAccept/onFiles closures
       }, []);
       const [alert, setAlert] = useState({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
       const oauthRequestRef = useRef({});
@@ -721,7 +721,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       };
       useEffect(() => {
         if (managingVisibility) loadHiddenByMode();
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在进入编辑态那一刻拉取;loadHiddenByMode 为组件内闭包
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch only at the moment edit mode is entered; loadHiddenByMode is an in-component closure
       }, [managingVisibility]);
       // 勾选/取消某工具在某模式的可见性：checked = 可见。
       const toggleModeVisibility = (id, mode, checked) => {
@@ -869,7 +869,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         setFeishuFlow(feishuConn.flow); // (重)挂载即水合当前进度
         return unsub;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 订阅只随 externalAuthAvailable 挂卸;文案快照由回调按需读取,重订阅无必要
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
       }, [externalAuthAvailable]);
 
       // 订阅企业微信 store(镜像飞书):镜像进渲染 + 完成/失败收尾
@@ -894,7 +894,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         setWecomFlow(wecomConn.flow);
         return unsub;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 订阅只随 externalAuthAvailable 挂卸;文案快照由回调按需读取,重订阅无必要
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
       }, [externalAuthAvailable]);
 
       // 订阅钉钉 store(镜像企微):镜像进渲染 + 完成/失败收尾
@@ -919,7 +919,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         setDingtalkFlow(dingtalkConn.flow);
         return unsub;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 订阅只随 externalAuthAvailable 挂卸;文案快照由回调按需读取,重订阅无必要
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
       }, [externalAuthAvailable]);
 
       // 订阅腾讯会议 store(镜像钉钉):镜像进渲染 + 完成/失败收尾
@@ -944,7 +944,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         setTmeetFlow(tmeetConn.flow);
         return unsub;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 订阅只随 externalAuthAvailable 挂卸;文案快照由回调按需读取,重订阅无必要
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
       }, [externalAuthAvailable]);
 
       // 企微连接编排事件:后端推进度,前端驱动 UI。
@@ -971,8 +971,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setWecomQr(null); setBusyId(null);
           setAlert({ visible: true, loading: false, title: storeCopy.connectFailed(storeCopy.toolNames.wecom), subtitle: String(p.message || '').slice(0, 240), isError: true });
         }).then(u => { unlisten.push(u); });
-        return () => { unlisten.forEach(u => { try { u(); } catch { /* 静默:卸载时监听可能已失效 */ } }); };
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 订阅只随 externalAuthAvailable 挂卸;文案快照由回调按需读取,重订阅无必要
+        return () => { unlisten.forEach(u => { try { u(); } catch { /* silent: listeners may already be stale at unmount */ } }); };
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
       }, [externalAuthAvailable]);
 
       // 合并后端安装状态到 mock 数据(飞书/企微/钉钉的 installed = 已连接)
@@ -1148,7 +1148,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const sectionOrder = groupBy === 'type' ? [...TOOL_BUSINESS_GROUPS, 'skill'] : TOOL_TYPE_GROUPS;
       const sectionLabelOf = groupBy === 'type' ? catLabel : typeLabel;
       // 二级筛选 chips:第一项恒为「全部」,其余只展示当前列表里有内容的组。
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- groupChips 每次渲染新建,作为下方 effect 依赖是既有契约;改 useMemo 会改变列表渲染行为
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- groupChips is rebuilt on every render; using it as the dep of the effect below is the existing contract, and useMemo would change list render behavior
       const groupChips = [{ id: 'all', label: catLabel('all') },
         ...(groupBy === 'type' ? TOOL_TYPE_GROUPS : TOOL_BUSINESS_GROUPS)
           .map(id => ({ id, label: groupBy === 'type' ? typeLabel(id) : catLabel(id) }))
@@ -1794,7 +1794,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // Obsidian：连接前先探测本机状态——没装/没库就引导，不默默装个用不了的连接器
           if (backendId === 'obsidian') {
             let st = null;
-            try { st = await invokeTauri('detect_obsidian'); } catch { /* 静默:未安装视为探测失败 */ }
+            try { st = await invokeTauri('detect_obsidian'); } catch { /* silent: treat not-installed as a probe failure */ }
             if (st && st.state && st.state !== 'ok') { setObsidianGuide({ backendId, name, ...st }); return; }
             return doInstall(backendId, {});
           }
@@ -1878,7 +1878,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             onDownload={() => invokeTauri('open_external_url', { url: 'https://obsidian.md/' }).catch(() => {})}
             onRetry={async () => {
               let st = null;
-              try { st = await invokeTauri('detect_obsidian'); } catch { /* 静默:未安装视为探测失败 */ }
+              try { st = await invokeTauri('detect_obsidian'); } catch { /* silent: treat not-installed as a probe failure */ }
               if (st && st.state === 'ok') { const bid = obsidianGuide.backendId; setObsidianGuide(null); doInstall(bid, {}); }
               else setObsidianGuide(g => g ? { ...g, ...st } : g);
             }}
@@ -1886,11 +1886,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           {/* 预置技能更新二次确认:覆盖为商店最新版本,本地修改会丢失(WebView2 下
               window.confirm 不弹,应用内自绘,风格对齐 TsAlert) */}
           {updateConfirm && createPortal((
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消/确认按钮承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel/confirm buttons
+            // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
             <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setUpdateConfirm(null)}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
               <div className="w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]" onClick={e => e.stopPropagation()}>
                 <div className="px-6 pt-6 pb-5 text-center">
                   <div className="text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white">{storeCopy.updateSkillTitle(updateConfirm.name)}</div>
@@ -1911,11 +1911,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           {wecomQr && (() => {
             const cancel = () => { invokeTauri('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
             return createPortal((
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消控件承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel control
+            // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
             <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', WebkitBackdropFilter: 'blur(8px)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
               <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[440px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
                 <h3 className="text-[19px] font-bold text-slate-900 dark:text-white mb-4">{storeCopy.connectTitle(storeCopy.toolNames.wecom)}</h3>
                 {/* 文案精简(方案A):扫码指引交给内嵌页自己说，这里不重复。直接内嵌企微登录页
@@ -2069,8 +2069,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           )}
                           <div className={sectioned ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : 'contents'}>
                             {section.items.map((tool) => (
-                              // biome-ignore lint/a11y/useKeyWithClickEvents: 列表行点击为快捷方式,键盘路径由行内真实按钮承担
-                              // biome-ignore lint/a11y/noStaticElementInteractions: 列表行点击热区,非独立交互控件
+                              // biome-ignore lint/a11y/useKeyWithClickEvents: row click is a shortcut; the keyboard path is covered by the row's real buttons
+                              // biome-ignore lint/a11y/noStaticElementInteractions: row click hot zone, not a standalone interactive control
                               <div
                                 key={`list-${tool.id}`}
                                 onClick={() => setSelectedTool(tool)}
@@ -2100,8 +2100,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                     // 管理可见性编辑态：卡片出现每个模式的勾选框，勾选 = 可见。
                                     if (managingVisibility) {
                                       return (
-                                        // biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘路径由勾选框自身承担
-                                        // biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器
+                                        // biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; the keyboard path is covered by the checkbox itself
+                                        // biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container
                                         <div className="flex flex-col items-start gap-1" onClick={(e) => e.stopPropagation()}>
                                           {[{ key: 'plain', label: storeCopy.modePlain }, { key: 'code', label: storeCopy.modeCode }].map((m) => {
                                             // 无 backendId 的卡（占位卡/内置 s5）不参与可见性配置：禁用勾选；
@@ -2162,14 +2162,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
           {/* 插件指南弹窗：拖入安装说明 + 插件包介绍 + 规范文档下载 */}
           {showGuide && createPortal((
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗头部关闭按钮承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog header close button
+            // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
             <div
               className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
               onClick={() => setShowGuide(false)}
             >
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
               <div
                 className="relative w-full max-w-2xl bg-white dark:bg-[#1C1C1E] rounded-[28px] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border border-slate-200/50 dark:border-white/10"
                 onClick={(e) => e.stopPropagation()}
@@ -2214,14 +2214,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           {/* Detail modal — portal 到 body：否则被主内容区 backdrop-blur 祖先造的包含块困住，
               fixed inset-0 只盖住右侧内容区、盖不到左侧栏。portal 后蒙层铺满整个视口。 */}
           {selectedTool && createPortal((
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗头部关闭按钮承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog header close button
+            // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
             <div
               className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
               onClick={() => setSelectedTool(null)}
             >
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
               <div
                 className="ts-modal-in relative w-full max-w-2xl bg-white dark:bg-[#1C1C1E] rounded-[32px] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border border-slate-200/50 dark:border-white/10"
                 onClick={(e) => e.stopPropagation()}
@@ -2332,4 +2332,4 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // ==========================================
 
 export { FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, tmeetConn, ensureTmeetListeners, TsAlert, TsConfigDialog, TsObsidianGuide, ToolStoreView };
-/* eslint-enable sonarjs/cognitive-complexity -- 工具商店主视图;legacy view */
+/* eslint-enable sonarjs/cognitive-complexity -- tool store main view;legacy view */

@@ -118,7 +118,7 @@ const sleep = ms => new Promise(r => { setTimeout(r, ms); });
   const failed = results.filter(r => !r.pass).length;
   console.log(failed ? `\n❌ ${failed}/${results.length} FAILED` : `\n✅ ALL ${results.length} PASS`);
   process.exit(failed ? 1 : 0);
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 })().catch(e => {
   try { fs.rmSync(PROFILE, { recursive: true, force: true }); } catch { /* profile dir already gone */ }
   console.error('FATAL', e.stack || e);

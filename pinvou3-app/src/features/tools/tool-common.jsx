@@ -17,7 +17,7 @@ const AcFmtIcon = FileTypeIcon;
     const AcArrowUpRight = ({ className }) => <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>;
     const AcFolder = ({ className }) => <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>;
 
-    const ArtifactCard = ({ item, _theme, t, isLatest }) => { // eslint-disable-line no-unused-vars -- theme 为既有 props 契约保留,调用方仍传入
+    const ArtifactCard = ({ item, _theme, t, isLatest }) => { // eslint-disable-line no-unused-vars -- theme is kept for the existing props contract; callers still pass it
       const path = item.path || '';
       const canOpenArtifact = !isWeb || can('artifactDownload');
       const kind = _artifactKind(path);
@@ -31,7 +31,7 @@ const AcFmtIcon = FileTypeIcon;
       const [coverUrl, setCoverUrl] = useState(null);
       useEffect(() => {
         let alive = true;
-        setCoverUrl(null); // eslint-disable-line react-hooks/set-state-in-effect -- path/kind 变化时同步清空旧封面,避免显示上一个产物的缩略图
+        setCoverUrl(null); // eslint-disable-line react-hooks/set-state-in-effect -- clear the stale cover when path/kind changes so the previous artifact's thumbnail is never shown
         if (kind === 'pptx' && bridge.available && bridge.artifacts.readArtifactThumbnail && path) {
           bridge.artifacts.readArtifactThumbnail(path).then((u) => { if (alive && u) setCoverUrl(u); }).catch(() => {});
         }
@@ -45,8 +45,8 @@ const AcFmtIcon = FileTypeIcon;
 
             {/* 封面区域 */}
             {hasCover ? (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: 封面点击为鼠标快捷方式,键盘路径由标题行打开按钮(aria-label=open)承担
-              // biome-ignore lint/a11y/noStaticElementInteractions: 封面点击热区扩展层,非独立交互控件
+              // biome-ignore lint/a11y/useKeyWithClickEvents: cover click is a mouse shortcut; the keyboard path is the title-row open button (aria-label=open)
+              // biome-ignore lint/a11y/noStaticElementInteractions: cover click hit-area extension layer, not a standalone interactive control
               <div className={`relative group/cover rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/[0.02] dark:border-white/[0.02] ${canOpenArtifact ? 'cursor-pointer' : ''}`} onClick={canOpenArtifact ? open : undefined}>
                 <div className="w-full aspect-[16/9] relative">
                   <img src={coverUrl} alt={tc(t).coverAlt} className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover/cover:scale-[1.02]" />
@@ -67,8 +67,8 @@ const AcFmtIcon = FileTypeIcon;
             )}
 
             {/* 标题与打开按钮区 */}
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: 标题行点击为鼠标快捷方式,键盘路径由行内打开按钮承担 */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: 标题行点击热区扩展层,非独立交互控件 */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: title-row click is a mouse shortcut; the keyboard path is the inline open button */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: title-row click hit-area extension layer, not a standalone interactive control */}
             <div onClick={canOpenArtifact ? open : undefined} className={`px-3 pt-4 pb-5 flex justify-between items-center gap-4 group/header ${canOpenArtifact ? 'cursor-pointer' : ''}`}>
               <h2 className="text-[20px] font-semibold tracking-tight text-[#111] dark:text-[#eee] leading-snug truncate group-hover/header:text-[#007AFF] transition-colors">
                 {title}
@@ -127,12 +127,12 @@ const AcFmtIcon = FileTypeIcon;
 
     const toolBasename = (p) => {
       if (typeof p !== 'string' || !p) return '';
-      const parts = p.replace(/\/+$/, '').split('/'); // eslint-disable-line sonarjs/super-linear-regex -- 尾斜杠规范化,输入为路径,长度有限
+      const parts = p.replace(/\/+$/, '').split('/'); // eslint-disable-line sonarjs/super-linear-regex -- trailing-slash normalization; input is a path of bounded length
       return parts[parts.length - 1] || p;
     };
 
     // A 档摘要：只从结构化 args 提“动作对象”（文件名/命令/模式），稳且免费，不 parse output。
-    // eslint-disable-next-line sonarjs/cognitive-complexity -- 逐工具 switch 摘要映射,按工具拆分收益低;legacy view; tracked separately
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- per-tool switch summary mapping; splitting by tool has low payoff; legacy view; tracked separately
     const toolSummary = (name, args, t) => {
       if (!args || typeof args !== 'object') return '';
       switch (name) {
@@ -170,8 +170,8 @@ const AcFmtIcon = FileTypeIcon;
               if (Array.isArray(args[key])) args[key].forEach(change => { add(change?.path); });
             }
             String(args.patch || '').split(/\r?\n/).forEach(line => {
-              const match = line.match(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/) // eslint-disable-line sonarjs/super-linear-regex -- 行级单行匹配,回溯范围受限于单行长度
-                || line.match(/^\+\+\+\s+(?:b\/)?(.+?)\s*$/); // eslint-disable-line sonarjs/super-linear-regex -- 行级单行匹配,回溯范围受限于单行长度
+              const match = line.match(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/) // eslint-disable-line sonarjs/super-linear-regex -- single-line match on one line; backtracking is bounded by the line length
+                || line.match(/^\+\+\+\s+(?:b\/)?(.+?)\s*$/); // eslint-disable-line sonarjs/super-linear-regex -- single-line match on one line; backtracking is bounded by the line length
               if (match && match[1] !== '/dev/null') add(match[1]);
             });
             return paths.join(', ');
@@ -208,7 +208,7 @@ const AcFmtIcon = FileTypeIcon;
     const parseReceipt = (text) => {
       const fields = {};
       String(text).split('\n').forEach((line) => {
-        const m = line.match(/^\s*([a-z_]+):\s*(.*)$/); // eslint-disable-line sonarjs/super-linear-regex -- 行级单行匹配,回溯范围受限于单行长度
+        const m = line.match(/^\s*([a-z_]+):\s*(.*)$/); // eslint-disable-line sonarjs/super-linear-regex -- single-line match on one line; backtracking is bounded by the line length
         if (m) fields[m[1]] = m[2];
       });
       return fields;
@@ -625,11 +625,18 @@ const AcFmtIcon = FileTypeIcon;
     const isStockQuoteTool = (name) => name === 'mcp_iwencai_hithink_market_query';
     const StockQuoteCard = ({ data, t }) => {
       const T = tc(t);
-      const price = typeof data.price === 'string' ? Number(data.price) : data.price;
-      const changePercent = typeof data.changePercent === 'string' ? Number(data.changePercent) : data.changePercent;
-      const open = typeof data.open === 'string' ? Number(data.open) : data.open;
-      const high = typeof data.high === 'string' ? Number(data.high) : data.high;
-      const low = typeof data.low === 'string' ? Number(data.low) : data.low;
+      // Market fields may carry unit suffixes; keep the permissive parseFloat here,
+      // consistent with the mapping in tool-renderers.jsx.
+      // eslint-disable-next-line unicorn/prefer-number-coercion -- unit-suffixed market values
+      const price = typeof data.price === 'string' ? Number.parseFloat(data.price) : data.price;
+      // eslint-disable-next-line unicorn/prefer-number-coercion -- unit-suffixed market values
+      const changePercent = typeof data.changePercent === 'string' ? Number.parseFloat(data.changePercent) : data.changePercent;
+      // eslint-disable-next-line unicorn/prefer-number-coercion -- unit-suffixed market values
+      const open = typeof data.open === 'string' ? Number.parseFloat(data.open) : data.open;
+      // eslint-disable-next-line unicorn/prefer-number-coercion -- unit-suffixed market values
+      const high = typeof data.high === 'string' ? Number.parseFloat(data.high) : data.high;
+      // eslint-disable-next-line unicorn/prefer-number-coercion -- unit-suffixed market values
+      const low = typeof data.low === 'string' ? Number.parseFloat(data.low) : data.low;
       const isPositive = changePercent >= 0;
       const mainColor = isPositive ? 'text-[#eb4335]' : 'text-[#34a853]';
       const bgGradient = isPositive
@@ -639,7 +646,7 @@ const AcFmtIcon = FileTypeIcon;
         ? 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
         : 'bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400';
       const TrendIcon = isPositive ? TrendingUp : TrendingDown;
-      // v 可能是 undefined（缺字段）：Number.isNaN(undefined) 为 false，会穿透到 toFixed 抛 TypeError，必须同时挡 null/undefined。
+      // v can be undefined (missing field): Number.isNaN(undefined) is false, so it would pass through to toFixed and throw a TypeError; both null/undefined must be blocked.
       const fmt = (v) => v == null || Number.isNaN(v) ? '--' : v.toFixed(2);
       return (
         <div className={`w-full max-w-md rounded-[24px] shadow-xl overflow-hidden border transition-all bg-white border-slate-100 shadow-slate-200/50 dark:bg-[#1C1C1E] dark:border-white/10 dark:shadow-none`}>
@@ -733,7 +740,7 @@ const AcFmtIcon = FileTypeIcon;
       return TOOL_BUSINESS_GROUPS.includes(tool.category) ? tool.category : 'life';
     };
 
-    // eslint-disable-next-line sonarjs/cognitive-complexity -- 工具卡动作按钮多分支渲染;legacy view; tracked separately
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- tool-card action buttons render many branches; legacy view; tracked separately
     const TsActionBtn = ({ tool, busy, onAction, onUpdate, size = 'sm', t }) => {
       const T = tc(t);
       const isLg = size === 'lg';

@@ -56,7 +56,7 @@ const PROVIDER_SECTION_CACHE = new Map();
 // 缓存（结束态保留供重开查看，安装结束不再自动收起）。
 const INSTALL_LOG_CACHE = { log: null, phase: null };
 
-/* eslint-disable sonarjs/cognitive-complexity -- 三 Agent 标签页 + 安装/导入导出/删除流程的复合视图;legacy view; tracked separately */
+/* eslint-disable sonarjs/cognitive-complexity -- composite view of three Agent tabs plus the install/import-export/delete flows;legacy view; tracked separately */
 export function ProvidersSection({ t }) {
   const copy = t.uiAcpProviders;
   const [activeAgent, setActiveAgent] = useState('codex');
@@ -197,7 +197,7 @@ export function ProvidersSection({ t }) {
   // loadAgent 按 agent 加载并写缓存，仅当该 agent 仍是当前标签页时更新展示；
   // 进入页面即三路并行加载（见下方 effect），切标签页全部读缓存秒开。
   const activeAgentRef = useRef(activeAgent);
-  activeAgentRef.current = activeAgent; // eslint-disable-line react-hooks/refs -- 渲染期同步镜像最新 activeAgent,供异步回调判断"仍是当前标签页"
+  activeAgentRef.current = activeAgent; // eslint-disable-line react-hooks/refs -- synchronously mirror the latest activeAgent during render so async callbacks can tell "still the current tab"
   const loadAgent = useCallback(async (agent, recheck = false, quiet = false) => {
     if (!quiet && agent === activeAgentRef.current) setLoading(true);
     try {
@@ -236,7 +236,7 @@ export function ProvidersSection({ t }) {
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换标签页同步落缓存/清空,秒开不闪加载态
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously hydrate from cache/clear on tab switch; instant open without flashing a loading state
     setError('');
     // 进入页面/切换标签页：三个 Agent 并行加载。当前标签页有缓存先展示，
     // 其余后台静默刷新；无缓存的标签页照常显示加载态。
@@ -288,7 +288,7 @@ export function ProvidersSection({ t }) {
         if (payload.agent !== activeAgentRef.current) return;
         if (payload.kind === 'command') {
           setInstallPhase('installing');
-          applyInstallLog({ agent: payload.agent, command: payload.value }); // eslint-disable-line react-hooks/immutability -- applyInstallLog 在下方声明;事件回调执行时闭包已就绪
+          applyInstallLog({ agent: payload.agent, command: payload.value }); // eslint-disable-line react-hooks/immutability -- applyInstallLog is declared below; the closure is ready by the time event callbacks run
         } else if (payload.value) {
           applyInstallLog({ agent: payload.agent, line: payload.value });
         }
@@ -308,7 +308,7 @@ export function ProvidersSection({ t }) {
   useEffect(() => {
     const cachedLog = INSTALL_LOG_CACHE.log;
     if (cachedLog && cachedLog.agent === activeAgent && INSTALL_LOG_CACHE.phase) {
-      setInstallPhase(INSTALL_LOG_CACHE.phase); // eslint-disable-line react-hooks/set-state-in-effect -- 重开面板同步恢复缓存的安装阶段
+      setInstallPhase(INSTALL_LOG_CACHE.phase); // eslint-disable-line react-hooks/set-state-in-effect -- synchronously restore the cached install phase when the panel reopens
       return;
     }
     if (status && status.installing && status.install_command) {
@@ -941,11 +941,11 @@ export function ProvidersSection({ t }) {
 
       {/* 删除确认 */}
       {deleteConfirm && (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担
-        // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the cancel button inside the dialog
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setDeleteConfirm(null)}>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div onClick={event => event.stopPropagation()} className={`w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
             <h3 className="text-[16px] font-semibold">{copy.deleteTitle}</h3>
             <p className="mt-2 text-[13px] leading-relaxed opacity-75">{copy.deleteDesc(deleteConfirm.name)}</p>
@@ -959,11 +959,11 @@ export function ProvidersSection({ t }) {
 
       {/* 卸载确认 */}
       {uninstallConfirm && (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担
-        // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the cancel button inside the dialog
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setUninstallConfirm(null)}>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div onClick={event => event.stopPropagation()} className={`w-[min(420px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
             <h3 className="text-[16px] font-semibold">{copy.uninstallTitle.replace('{agent}', () => copy[`agent${activeAgent[0].toUpperCase()}${activeAgent.slice(1)}`])}</h3>
             <p className="mt-2 text-[13px] leading-relaxed opacity-75">{copy.uninstallDesc}</p>
@@ -992,11 +992,11 @@ export function ProvidersSection({ t }) {
 
       {/* 导出（含明文 key 警告） */}
       {exportOpen && (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内关闭/取消按钮承担
-        // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the close/cancel buttons inside the dialog
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setExportOpen(false)}>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
             <div className="flex items-start gap-2">
               <AlertTriangle size={17} className="mt-0.5 shrink-0 text-amber-500" />
@@ -1031,11 +1031,11 @@ export function ProvidersSection({ t }) {
 
       {/* 导入 */}
       {importOpen && (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内关闭/取消按钮承担
-        // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the close/cancel buttons inside the dialog
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setImportOpen(false)}>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
             <h3 className="text-[15px] font-semibold">{copy.import}</h3>
             {/* 导入同样可能含明文 key：来源信任警示（复审低危 6） */}

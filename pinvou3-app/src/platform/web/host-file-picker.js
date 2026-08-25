@@ -1,6 +1,6 @@
 /** Remote desktop-host file picker used by the browser WebUI. */
 (function () {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic script; strict mode is the payload
   "use strict";
 
   if (!window.PinvouPlatform || window.PinvouPlatform.kind !== "web") return;

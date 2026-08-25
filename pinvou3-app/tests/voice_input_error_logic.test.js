@@ -135,7 +135,7 @@ vm.runInContext(
   );
 
   console.log("voice_input_error_logic: ok");
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 })().catch((error) => {
   console.error(error);
   process.exit(1);

@@ -1,8 +1,8 @@
 (function () {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
 
-  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statement would diverge from the artifact
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["artifact-tracker"] = function (context) {
     const state = context.state;
@@ -141,7 +141,7 @@
       });
       if (added) {
         notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* 落盘失败不阻断前端更新 */ }
+        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* disk-write failure must not block the frontend update */ }
       }
     } catch { /* workspace 不存在(新 session)等,忽略 */ }
   }
@@ -152,10 +152,10 @@
   }
   function extractPatchHeaderPaths(patch, paths) {
     String(patch || "").split(/\r?\n/).forEach(function (line) {
-      // eslint-disable-next-line sonarjs/super-linear-regex -- 输入按行拆分且行长由补丁头限定,回溯上界可忽略
+      // eslint-disable-next-line sonarjs/super-linear-regex -- input is split by line and line length is bounded by the patch header; backtracking is negligible
       const custom = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/.exec(line);
       if (custom) { pushArtifactPath(paths, custom[1]); return; }
-      // eslint-disable-next-line sonarjs/super-linear-regex -- 输入按行拆分且行长由补丁头限定,回溯上界可忽略
+      // eslint-disable-next-line sonarjs/super-linear-regex -- input is split by line and line length is bounded by the patch header; backtracking is negligible
       const unified = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
       if (unified && unified[1] !== "/dev/null") pushArtifactPath(paths, unified[1]);
     });
@@ -213,7 +213,7 @@
         try {
           const inner = JSON.parse(obj.content[0].text);
           if (inner && typeof inner === "object") return inner;
-        } catch { /* 内层不是 JSON 时按外层对象使用 */ }
+        } catch { /* use the outer object when the inner value is not JSON */ }
       }
       return obj;
     } catch {

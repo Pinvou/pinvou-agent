@@ -34,7 +34,7 @@ export function buildArtifactPreviewDocument(html) {
     'document.addEventListener("submit",function(e){e.preventDefault();},true);',
     '})();',
   ].join('');
-  // \u003c 转义保持源码中不出现字面 "</script>",避免被内联进 HTML 时截断。
+  // \u003c escape keeps the literal "</script>" out of the source so it is not truncated when inlined into HTML.
   return '<script>' + bootstrap + '\u003C/script>'
     + '<style>html,body{background:#15171a;margin:0;}</style>'
     + String(html || '');

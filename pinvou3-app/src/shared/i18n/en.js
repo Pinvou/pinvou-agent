@@ -4,7 +4,7 @@
 // The i18n.js aggregate shim and Node contract tests (ui_language_coverage) statically import all three;
 // the split only affects browser chunks.
 
-/* eslint-disable sonarjs/no-nested-template-literals, sonarjs/no-unenclosed-multiline-block -- i18n 紧凑字典:嵌套模板与文案结构一一对应,凭据字段名被误报为 secret */
+/* eslint-disable sonarjs/no-nested-template-literals, sonarjs/no-unenclosed-multiline-block -- compact i18n dictionary: nested templates mirror the copy structure one-to-one; credential field names are false-positive secrets */
 const conversationEn = {
   completed:'Completed', failed:'Failed', interrupted:'Interrupted', limitReached:'Limit reached', processing:'Processing', processingActive:'Processing',
   waitingPermission:'Waiting for permission', waitingInput:'Waiting for your input', waitingInputShort:'Waiting for input',

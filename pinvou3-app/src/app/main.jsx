@@ -120,13 +120,13 @@ function workspaceDisplayName(path) {
   return parts[parts.length - 1] || String(path || '');
 }
 
-    // 应用根组件:聚合桥接状态、路由与全部侧栏/弹层 UI。体量与复杂度是历史演进
-    // 的结果,拆分需要独立重构任务(涉及百余个闭包 handler 与测试契约),此处
-    // 仅做 lint 修复,不改变行为。
-    // eslint-disable-next-line sonarjs/cognitive-complexity -- App 根组件体量所至;行为保持优先,拆分需专项重构
+    // App root component: aggregates bridge state, routing, and all sidebar/overlay UI. Size and complexity are historical
+    // evolution; splitting requires a dedicated refactor task (involving a hundred-plus closure handlers and test contracts);
+    // only lint fixes here, no behavior change.
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- due to the App root component's size; behavior preservation takes priority, split needs a dedicated refactor
     const App = () => {
       if (!appFirstRenderMarked) {
-        // 一次性启动打点标记:模块级布尔,首渲染置位,与组件状态无关(无需触发重渲染)。
+        // One-shot startup marker: module-level boolean set on first render, unrelated to component state (no rerender needed).
         appFirstRenderMarked = true;
         window.__PINVOU_STARTUP__.mark('react:app_render_start');
       }
@@ -241,9 +241,9 @@ function workspaceDisplayName(path) {
       }, []);
       useEffect(() => {
         if (!codexAcpSupported || !isTauriAvailable()) {
-          // 桥接能力变化时清空代码会话镜像,避免残留已不可达会话;
-          // 同步 setState 保证本轮渲染即生效。
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- 能力关闭时同步清空镜像,防止渲染残留不可达会话
+          // Clear the code-session mirror when bridge capabilities change to avoid stale unreachable sessions;
+          // the synchronous setState guarantees it takes effect in this render pass.
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the mirror when the capability is disabled, preventing renders of unreachable sessions
           setCodexSessions([]);
           return;
         }
@@ -320,8 +320,8 @@ function workspaceDisplayName(path) {
         };
       }, [codexAcpSupported, refreshCodexSessions]);
       // 供全局事件监听器读取最新视图状态（监听器只注册一次，不能闭包旧值）。
-      // latest-ref 渲染期镜像:事件回调(提交后触发)读取最新值,是 React 官方
-      // 认可的 escape hatch;改为 effect 写回会引入提交前后的短暂旧值窗口。
+      // latest-ref render-time mirror: event callbacks (fired post-commit) read the latest value, an officially
+      // sanctioned React escape hatch; writing back via an effect would introduce a brief stale-value window around commit.
       const activeChatRef = useRef(activeChat);
       activeChatRef.current = activeChat;
       const currentViewRef = useRef(currentView);
@@ -393,7 +393,7 @@ function workspaceDisplayName(path) {
       // 模型配置（动态适配）——草稿模式，确认后才保存
       // 默认预设平台感知:macOS/Windows 无本地 vLLM(后端命令已 cfg 掉),默认 DeepSeek;
       // Linux 保持 local_vllm(麒麟环境默认有本地大模型)。与 bridge prefs::ModelPreset::default() 对齐。
-      // 仅保留 setter:草稿值当前由设置页内部管理,此处只在启动引导时回填一次。
+      // Keep only the setter: draft values are currently managed inside the settings page; here we backfill once during startup bootstrap.
       const [, setModelPreset] = useState(() => defaultModelPresetForCapabilities(platformCapabilities));
       const [, setCustomModelName] = useState('');
       const [, setCustomBaseUrl] = useState('');
@@ -552,7 +552,7 @@ function workspaceDisplayName(path) {
 
       // 兜底 zh:词典 chunk 装载失败时按 zh 渲染而非白屏(与 PetWindow/ReaderApp 同口径)。
       const t = dict[language] || dict.zh;
-      // 桌宠回复消费循环(一次性挂载)读取当前语言错误文案的 latest-ref 镜像。
+      // The desk-pet reply consumption loop (mounted once) reads a latest-ref mirror of current-language error copy.
       const petI18nTextRef = useRef(null);
       petI18nTextRef.current = t.uiMainApp;
       // 静态 HTML 的 <title>/<html lang> 与非模块脚本(远程文件选择器、web bootstrap)拿不到语言上下文,
@@ -583,8 +583,8 @@ function workspaceDisplayName(path) {
       }
 
       // Sync from bridge state
-      // 一次性引导:桥接 settings 首次到位时回填搜索配置草稿基线,此后走草稿模式
-      // (确认后才保存),避免 effect 把未保存的本地修改覆盖回 disk 旧值。
+      // One-shot bootstrap: backfill the search-config draft baseline when bridge settings first arrive, then use draft mode
+      // (saved only on confirm) so the effect never overwrites unsaved local edits with old on-disk values.
       const initSearchConfigFromSettings = (settings) => {
         const search = settings.search || {};
         const credentials = search.credentials || {};
@@ -614,8 +614,8 @@ function workspaceDisplayName(path) {
         savedSearchConfigRef.current = saved;
         searchConfigInitRef.current = true;
       };
-      // 一次性引导:回填模型配置草稿基线。custom_* 为 null 时用 PRESET_DEFAULTS 填成
-      // 真实值——输入框显示当前生效配置,而不是灰色 placeholder 冒充。
+      // One-shot bootstrap: backfill the model-config draft baseline. When custom_* is null, fill real values from
+      // PRESET_DEFAULTS — inputs show the effective config instead of a gray placeholder masquerading as one.
       const initModelConfigFromSettings = (settings, effectiveModelConfig) => {
         const adv = settings.advanced || {};
         const effective = effectiveModelConfig || {};
@@ -636,7 +636,7 @@ function workspaceDisplayName(path) {
         savedModelConfigRef.current = saved;
         modelConfigInitRef.current = true;
       };
-      // 一次性引导:恢复落盘的 UI 语言/主题与通知偏好(桌面端);Web 端语言走本地存储。
+      // One-shot bootstrap: restore persisted UI language/theme and notification prefs (desktop); on Web the language uses local storage.
       const initUiPrefsFromSettings = (settings) => {
         if (isWeb) {
           bootedLanguageRef.current = language;
@@ -660,7 +660,7 @@ function workspaceDisplayName(path) {
         // 真实 session(非 null)时才强制切回 chat 视图——草稿态/删会话不该把用户从
         // monitor/settings 拽走。
         if (bs.activeSessionId !== activeChat) {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- activeChat 是 bridge 状态的本地镜像,须随 bridge 推送同步
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- activeChat is a local mirror of bridge state and must sync with bridge pushes
           setActiveChat(bs.activeSessionId);
           if (bs.activeSessionId && currentView !== 'codex' && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled') {
             // An external session switch (web remote control, etc.) that materializes
@@ -689,9 +689,9 @@ function workspaceDisplayName(path) {
         if (!searchConfigInitRef.current && bs.settings) initSearchConfigFromSettings(bs.settings);
         // 模型配置：只在第一次从后端加载初始值，后续走草稿模式（确认后才保存），
         if (!modelConfigInitRef.current && bs.settings) initModelConfigFromSettings(bs.settings, bs.effectiveModelConfig);
-        // effect 订阅 bridge 快照 bs;一次性引导/init 标记由内部 ref 挡住重复执行,
-        // 其余依赖(activeChat/currentView/language 等)是渲染态读数,纳入会导致
-        // 每次 UI 变化都重跑整个同步逻辑。
+        // The effect subscribes to the bridge snapshot bs; one-shot bootstrap/init flags are guarded by internal refs,
+        // and the remaining deps (activeChat/currentView/language, etc.) are render-state reads — including them would
+        // rerun the whole sync logic on every UI change.
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [bs]);
 
@@ -1089,8 +1089,8 @@ function workspaceDisplayName(path) {
             sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)))
         : [];
 
-      // latest-ref 镜像:桌宠快照广播 effect 只订阅 bs.sessions/sessionBusy/language,
-      // 快照内容(id/title/working)通过 ref 取最新值,减少 effect 重订阅。
+      // latest-ref mirror: the pet-snapshot broadcast effect only subscribes to bs.sessions/sessionBusy/language,
+      // while snapshot contents (id/title/working) are read via refs to reduce effect resubscription.
       petSnapshotRef.current = chatHistory.map(chat => ({
         id: chat.id,
         title: chat.title,
@@ -1319,7 +1319,7 @@ function workspaceDisplayName(path) {
         }).catch(() => {});
         return () => {
           disposed = true;
-          unlisteners.forEach((fn) => { try { fn(); } catch { /* 卸载监听失败可忽略 */ } });
+          unlisteners.forEach((fn) => { try { fn(); } catch { /* listener teardown failure is ignorable */ } });
         };
       }, []);
 
@@ -1427,7 +1427,7 @@ function workspaceDisplayName(path) {
         return () => {
           disposed = true;
           window.removeEventListener('focus', consumePetNavigation);
-          unlisteners.forEach(fn => { try { fn(); } catch { /* 卸载监听失败可忽略 */ } });
+          unlisteners.forEach(fn => { try { fn(); } catch { /* listener teardown failure is ignorable */ } });
         };
       }, []);
 
@@ -1440,7 +1440,7 @@ function workspaceDisplayName(path) {
         let rerun = false;
         let unlisten = null;
         const emitToPet = (name, payload) => emitPetEvent(ev, name, payload);
-        // 消费循环只在挂载时注册一次;错误文案需跟随当前 UI 语言,经 latest-ref 读取。
+        // The consumption loop registers once on mount; error copy must follow the current UI language, read via latest-ref.
         const petTextRef = petI18nTextRef;
         const petSessionMissingText = () => (petTextRef.current && petTextRef.current.petSessionMissing) || '';
         const petTaskStartFailedText = () => (petTextRef.current && petTextRef.current.petTaskStartFailed) || '';
@@ -1453,8 +1453,8 @@ function workspaceDisplayName(path) {
           consuming = true;
           try {
             if (typeof bridge.lifecycle.init === 'function') await bridge.lifecycle.init();
-            // disposed 只在本 effect 的清理函数里翻转,循环内不可变;
-            // 每轮请求后由 continue/return 分支决定是否退出。
+            // disposed is only flipped in this effect's cleanup, immutable inside the loop;
+            // continue/return branches after each request decide whether to exit.
             for (;;) {
               if (disposed) break;
               const request = await core.invoke('take_pet_reply');
@@ -1516,8 +1516,8 @@ function workspaceDisplayName(path) {
           else unlisten = fn;
         }).catch(() => {});
         void consume();
-        // effect 刻意只在挂载时注册一次桌宠回复消费循环;错误文案经 ref 读取当前语言,
-        // 避免语言切换反复重挂事件监听。
+        // The effect intentionally registers the pet-reply consumption loop once on mount; error copy reads the current language via ref,
+        // avoiding repeated listener reattachment on language switches.
         return () => {
           disposed = true;
           if (unlisten) unlisten();
@@ -1660,7 +1660,7 @@ function workspaceDisplayName(path) {
       function handleSetTheme(th) {
         setActiveTheme(th);
         if (isWeb) {
-          try { window.localStorage.setItem('pinvou.web.theme', th); } catch { /* WebView 禁用 storage 时静默降级 */ }
+          try { window.localStorage.setItem('pinvou.web.theme', th); } catch { /* silently degrade when WebView disables storage */ }
           return;
         }
         if (bridge.available) {
@@ -1735,7 +1735,7 @@ function workspaceDisplayName(path) {
         switchToLanguage(lang, () => {
           setLanguage(lang);
           if (isWeb) {
-            try { window.localStorage.setItem('pinvou.web.language', lang); } catch { /* WebView 禁用 storage 时静默降级 */ }
+            try { window.localStorage.setItem('pinvou.web.language', lang); } catch { /* silently degrade when WebView disables storage */ }
             return;
           }
           if (isTauriAvailable()) {
@@ -2501,11 +2501,11 @@ function workspaceDisplayName(path) {
 
             {/* 存入成功 → iOS 确认窗:去查看我的卡牌 / 暂不 */}
             {savedConfirm && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由卡内真实按钮承担
-              // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+              // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the card
+              // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
               <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,.4)' }} onClick={() => setSavedConfirm(null)}>
-                {/* biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由卡内真实按钮承担 */}
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器 */}
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the card */}
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
                 <div onClick={(e) => e.stopPropagation()} className="w-[270px] rounded-[14px] overflow-hidden text-center"
                   style={{ background: activeTheme === 'dark' ? 'rgba(44,44,46,.95)' : 'rgba(250,250,250,.95)', backdropFilter:'blur(20px)', WebkitBackdropFilter:'blur(20px)', fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
                   <div className="px-4 pt-5 pb-4">
@@ -2547,12 +2547,12 @@ function workspaceDisplayName(path) {
 
             {/* MegaCube(GB10) 本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
             {can('localModelSetup') && bs && bs.vllmSetup && bs.vllmSetup.eligible && !bs.vllmSetupDismissed && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内真实按钮承担
-              // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+              // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the dialog
+              // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
               <div className="fixed inset-0 z-[56] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
                    onClick={() => { if (!bs.vllmBootstrapping) bridge.vllm.dismissVllmSetup(); }}>
-                {/* biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内真实按钮承担 */}
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器 */}
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the dialog */}
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
                 <div className="w-full max-w-[440px] rounded-2xl p-6 ts-modal-in" onClick={(e) => e.stopPropagation()}
                      style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
                   <div className="flex items-center gap-2 mb-3">
@@ -2611,16 +2611,16 @@ function workspaceDisplayName(path) {
 
             {/* Pinvou 检阅弹窗(品/悟) —— 居中弹窗 + 毛玻璃背景(虚化身后 app);全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
             {bs && bs.pinvouModal && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由右上角关闭按钮承担(下方真实 button)
-              // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+              // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the top-right close button (a real button below)
+              // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
               <div className="fixed inset-0 z-[55] flex items-center justify-center p-6"
                    style={{ background: activeTheme === 'dark' ? 'rgba(0,0,0,.45)' : 'rgba(255,255,255,.35)', backdropFilter: 'blur(20px) saturate(140%)', WebkitBackdropFilter: 'blur(20px) saturate(140%)' }}
                    onClick={() => { if (!bs.pinvouModal.loading) bridge.interaction.dismissPinvouReview(); }}>
                 {/* loading 期间禁止背景点击关窗:召唤(直连 vLLM,5-30s)仍在后台跑、守卫仍 held,
                     点背景误关会表现为"闪一下没反应、要等一会才能再点"。锁住后 spinner 全程可见,
                     出结果/错误后才可点背景关。 */}
-                {/* biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由右上角关闭按钮承担(下方真实 button) */}
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器 */}
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the top-right close button (a real button below) */}
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
                 <div className="relative w-full max-w-[720px] overflow-hidden bg-white dark:bg-[#1C1C1E] rounded-[20px] shadow-[0_20px_60px_rgba(0,0,0,0.28)] ts-modal-in"
                      onClick={(e) => e.stopPropagation()}
                      style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
@@ -2722,4 +2722,3 @@ function workspaceDisplayName(path) {
         root.render(<App />);
       }
     });
-

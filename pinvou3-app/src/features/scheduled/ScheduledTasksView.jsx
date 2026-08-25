@@ -164,7 +164,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
 
       useLayoutEffect(() => {
         if (!open) return;
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 打开时同步定位下拉菜单位置,必须同帧完成避免闪烁
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- position the dropdown synchronously on open; must complete in the same frame to avoid flicker
         updateMenuPosition();
         const closeOutside = (event) => {
           if (
@@ -189,11 +189,11 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           window.removeEventListener('resize', updateOnViewportChange);
           window.removeEventListener('scroll', updateOnViewportChange, true);
         };
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 既有结构:仅在 open 变化时重挂监听,回调闭包保持挂载时快照
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- legacy structure: reattach the listener only when open changes; the callback closure keeps its mount-time snapshot
       }, [open]);
 
       const effectiveMenuStyle = open && typeof document !== 'undefined'
-        // eslint-disable-next-line react-hooks/refs -- 首帧无缓存样式时同步计算定位,读取 DOM 几何而非可变 state
+        // eslint-disable-next-line react-hooks/refs -- compute positioning synchronously on the first frame when no cached style exists; reads DOM geometry, not mutable state
         ? (menuStyle || calculateMenuPosition())
         : null;
       const menu = open && effectiveMenuStyle && typeof document !== 'undefined' ? createPortal(
@@ -266,7 +266,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         const el = listRef.current;
         if (el) el.scrollTop = Math.max(0, values.indexOf(value)) * WHEEL_ITEM_H;
         return () => clearTimeout(settleRef.current);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 值变化时仅重新对齐滚动位置,values 列表在会话内固定
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- realign the scroll position only when values change; the values list is fixed within a session
       }, [value]);
       function settle() {
         const el = listRef.current;
@@ -377,7 +377,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       ) : null;
       return (
         <span ref={rootRef} className="relative justify-self-end">
-          {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: 只读 input 承载 listbox 弹层触发语义,aria-haspopup/expanded 为既有契约 */}
+          {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: the read-only input carries the listbox popup trigger semantics; aria-haspopup/expanded is an existing contract */}
           <input readOnly data-testid={testId} value={valid ? value : ''} placeholder={placeholder} aria-label={ariaLabel}
             aria-haspopup="listbox" aria-expanded={open}
             onClick={() => {
@@ -575,10 +575,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         saveTimerRef.current = null;
         pendingPatchRef.current = {};
         editTaskIdRef.current = detail && detail.id || null;
-        setDetailForm(taskForm(detail)); // eslint-disable-line react-hooks/set-state-in-effect -- 选中任务变化时整体重置编辑态(run-once 语义),改为派生 state 会破坏草稿保存时序
+        setDetailForm(taskForm(detail)); // eslint-disable-line react-hooks/set-state-in-effect -- reset the whole edit state when the selected task changes (run-once semantics); deriving state instead would break draft-save ordering
         setScheduleRepeatIntent(null);
         setSaveState('idle');
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖数组刻意只跟踪选中 id,避免 detail 对象引用触发重复重置
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- deps intentionally track only the selected id, so detail object references don't trigger repeated resets
       }, [effectiveSelectedId, detail && detail.id]);
 
       useEffect(() => {
@@ -591,7 +591,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           saveChainRef.current.catch(() => {}).then(() => {
             const patch = pendingPatchRef.current;
             const invalid = ['name', 'prompt', 'rrule'].some(key =>
-              // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+              // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor; Object.hasOwn is unavailable, and this call is already the safe form
               Object.prototype.hasOwnProperty.call(patch, key) && !String(patch[key] || '').trim()
             );
             if (!taskId || invalid || !Object.keys(patch).length || !bridge || !bridge.scheduled.updateScheduledTask) return null;
@@ -619,7 +619,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             const restored = {...pendingPatchRef.current};
             const failureIsCurrent = Object.keys(payload).some(key => latestFieldSequenceRef.current[key] === sequence);
             Object.keys(payload).forEach(key => {
-              // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+              // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor; Object.hasOwn is unavailable, and this call is already the safe form
               if (latestFieldSequenceRef.current[key] === sequence && !Object.prototype.hasOwnProperty.call(restored, key)) {
                 restored[key] = payload[key];
               }
@@ -638,7 +638,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         saveTimerRef.current = null;
         const patch = pendingPatchRef.current;
         const hasBlankRequiredField = ['name', 'prompt', 'rrule'].some(key =>
-          // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+          // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor; Object.hasOwn is unavailable, and this call is already the safe form
           Object.prototype.hasOwnProperty.call(patch, key) && !String(patch[key] || '').trim()
         );
         if (hasBlankRequiredField) {
@@ -751,7 +751,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         if (!name || !prompt) return;
         if (previewMode) {
           const created = {
-            id: `preview-created-${Date.now()}`, // eslint-disable-line react-hooks/purity -- 预览模式生成本地临时 id,无需确定性
+            id: `preview-created-${Date.now()}`, // eslint-disable-line react-hooks/purity -- preview mode generates a local temporary id; no determinism needed
             templateId: createForm.templateId || null,
             name,
             status: createForm.paused ? 'paused' : 'active',
@@ -786,7 +786,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           if (bridge.scheduled.selectScheduledTask) bridge.scheduled.selectScheduledTask(null);
           setCreateForm(null);
           setCreateScheduleRepeatIntent(null);
-        } catch { /* 静默:桥接失败已在 UI 层呈现 */ }
+        } catch { /* silent: bridge failures are already surfaced at the UI layer */ }
       }
 
       function requestDeleteTask(e, task) {
@@ -808,7 +808,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         try {
           await bridge.scheduled.deleteScheduledTask(id);
           setDeleteConfirmTask(null);
-        } catch { /* 静默:桥接失败已在 UI 层呈现 */ }
+        } catch { /* silent: bridge failures are already surfaced at the UI layer */ }
       }
 
       async function toggleTaskPaused(task) {
@@ -825,7 +825,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           if (!(await flushBeforeAction())) return;
           if (task.status === 'active' && bridge.scheduled.pauseScheduledTask) await bridge.scheduled.pauseScheduledTask(task.id);
           if (task.status !== 'active' && bridge.scheduled.resumeScheduledTask) await bridge.scheduled.resumeScheduledTask(task.id);
-        } catch { /* 静默:桥接失败已在 UI 层呈现 */ }
+        } catch { /* silent: bridge failures are already surfaced at the UI layer */ }
       }
 
       async function toggleTask(e, task) {
@@ -842,7 +842,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           if (!(await flushBeforeAction())) return;
           const started = await bridge.scheduled.startScheduledTaskChat();
           if (started && onOpenChat) onOpenChat();
-        } catch { /* 静默:桥接失败已在 UI 层呈现 */ }
+        } catch { /* silent: bridge failures are already surfaced at the UI layer */ }
       }
 
       async function runTaskNow(id) {
@@ -851,7 +851,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         try {
           if (!(await flushBeforeAction())) return;
           await bridge.scheduled.runScheduledTaskNow(id);
-        } catch { /* 静默:桥接失败已在 UI 层呈现 */ }
+        } catch { /* silent: bridge failures are already surfaced at the UI layer */ }
       }
 
       async function saveDetailAndClose() {
@@ -867,7 +867,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           if (!(await flushBeforeAction())) return;
           const opened = await bridge.scheduled.openScheduledRunChat(run, detail || selected);
           if (!opened) return;
-        } catch { /* 静默:桥接失败已在 UI 层呈现 */ }
+        } catch { /* silent: bridge failures are already surfaced at the UI layer */ }
       }
 
       function parseScheduleFields(rrule) {
@@ -1409,7 +1409,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                   disabled={!!busyAction || !detailFormIsValid}
                   onClick={() => runTaskNow(selected.id)}
                   className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${canOpenTaskFolder
-                    ? `border-b ${iosSeparator}` : ''} ${pressedRow}` /* eslint-disable-line sonarjs/no-nested-template-literals -- 条件边框与按压态组合,拆出变量会割裂 className 就地拼接 */}>
+                    ? `border-b ${iosSeparator}` : ''} ${pressedRow}` /* eslint-disable-line sonarjs/no-nested-template-literals -- conditional border and pressed-state composition; extracting a variable would split the in-place className concatenation */}>
                   <span className={`font-medium ${bodyText}`}>{scheduledCopy.runNow}</span>
                   <ChevronRight className={`h-4 w-4 shrink-0 text-[#3C3C43]/30 dark:text-[#EBEBF5]/30`} />
                 </button>
@@ -1534,14 +1534,14 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             </div>
           </div>
 
-          {/* eslint-disable-next-line react-hooks/refs -- 既有结构:详情对话框为渲染期函数调用,内部按需读取 refs */}
+          {/* eslint-disable-next-line react-hooks/refs -- legacy structure: the detail dialog is a render-time function call that reads refs on demand internally */}
           {DetailTaskDialog()}
           {CreateTaskDialog()}
 
           {deleteTarget && renderModal(
             <div className="fixed inset-0 z-[300] flex items-center justify-center px-4">
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; the keyboard path is covered by the dialog's cancel button */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
               <div className="absolute inset-0 bg-black/28 backdrop-blur-[1px]" onClick={(event) => cancelDeleteTask(event)} />
               <div
                 role="alertdialog"

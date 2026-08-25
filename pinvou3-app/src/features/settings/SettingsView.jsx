@@ -36,7 +36,7 @@ function visibleSortedModels(models) {
     .filter(model => model && model.id)];
 }
 
-const SCard = React.forwardRef( // eslint-disable-line react/display-name -- forwardRef 展示组件,显示名无调试需求
+const SCard = React.forwardRef( // eslint-disable-line react/display-name -- forwardRef display component; no display-name debugging need
   ({ title, titleAdornment, children, id, style }, ref) => (
       <section ref={ref} id={id} style={style} className={`rounded-[24px] p-6 bg-[#F0F4F9] dark:bg-[#1E1F20]`}>
         <h2 className="text-[18px] font-medium mb-6 flex items-center gap-2">
@@ -92,7 +92,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       </div>
     );
 
-      // eslint-disable-next-line sonarjs/cognitive-complexity -- 设置页聚合表单分支多,拆分需单独设计;先以豁免记账
+      // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
     const MemorySettingsCard = ({ bs, memoryEnabled, onMemoryEnabledChange, t }) => {
       const copy = t.uiSettingsView;
       const detailCopy = t.uiSettingsDetail;
@@ -165,16 +165,16 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       useEffect(() => {
         if (!bridge.available || !bridge.memory.loadMemoryOverview) return;
         bridge.memory.loadMemoryOverview();
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:补全会引发重复请求或轮询循环
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: completing it would cause duplicate requests or polling loops
       }, [bs && bs.activeSessionId]);
       useEffect(() => {
-        setDraft({ // eslint-disable-line react-hooks/set-state-in-effect -- 身份字段变化时同步回显草稿,受控镜像
+        setDraft({ // eslint-disable-line react-hooks/set-state-in-effect -- sync draft echo when identity fields change; controlled mirror
           call_name: identity.call_name || '',
           assistant_alias: identity.assistant_alias || '',
         });
       }, [identity.call_name, identity.assistant_alias]);
       useEffect(() => {
-        setMenuFor(null); // eslint-disable-line react-hooks/set-state-in-effect -- 切 tab/关弹窗同步清理菜单与搜索
+        setMenuFor(null); // eslint-disable-line react-hooks/set-state-in-effect -- clear menu and search when switching tabs or closing the modal
         setQuery('');
       }, [tab, open]);
 
@@ -273,8 +273,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
               </button>
             </div>
             {menuFor === rowKey && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘路径由菜单内真实按钮承担
-              // biome-ignore lint/a11y/noStaticElementInteractions: 菜单定位容器,菜单项为真实按钮
+              // biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard path handled by the real buttons inside the menu
+              // biome-ignore lint/a11y/noStaticElementInteractions: menu positioning container; menu items are real buttons
               <div onClick={(e) => e.stopPropagation()} className={`absolute right-4 top-12 z-10 min-w-[118px] rounded-xl border ${border} bg-white text-[#1F1F1F] dark:bg-[#24262B] dark:text-[#E8EAED] shadow-2xl overflow-hidden`}>
                 <button type="button" onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-black/[0.04] dark:hover:bg-white/[0.07]`}><Edit2 size={14} />{detailCopy.edit}</button>
                 {(item.kind === 'current_focus' || item.kind === 'recent_activity') && (
@@ -323,8 +323,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
 
           {open && (
             <div className="fixed inset-0 z-[80] flex items-center justify-center px-4 py-6">
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗头部关闭按钮承担 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the modal header close button */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
               <div className="absolute inset-0 bg-black/55" onClick={() => setOpen(false)} />
               <div className={`relative w-full max-w-[980px] max-h-[88vh] overflow-hidden rounded-[22px] border ${border} ${panelBg} shadow-2xl`}>
                 <div className={`flex items-center justify-between gap-4 px-6 py-4 border-b ${border}`}>
@@ -344,7 +344,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                         <button type="button"
                           key={key}
                           onClick={() => setTab(key)}
-      // eslint-disable-next-line sonarjs/no-nested-template-literals -- 嵌套模板与 i18n 文案结构一一对应,展平损害可读性
+      // eslint-disable-next-line sonarjs/no-nested-template-literals -- nested templates map 1:1 to the i18n copy structure; flattening hurts readability
                           className={`w-full flex items-center gap-2 text-left px-3 py-2 rounded-full border text-[13px] transition-colors ${tab === key ? selectedTab : `border-transparent hover:bg-black/[0.04] dark:hover:bg-white/[0.06]`}`}
                         >
                           <TabIcon size={15} className="shrink-0" />
@@ -354,8 +354,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                       ))}
                     </div>
                   </div>
-                  {/* biome-ignore lint/a11y/useKeyWithClickEvents: 空白点击收起菜单,键盘路径由菜单项与触发按钮承担 */}
-                  {/* biome-ignore lint/a11y/noStaticElementInteractions: 空白点击收起区域,非交互容器 */}
+                  {/* biome-ignore lint/a11y/useKeyWithClickEvents: blank-area click collapses the menu; keyboard path handled by the menu items and trigger button */}
+                  {/* biome-ignore lint/a11y/noStaticElementInteractions: blank-area click-to-collapse region; non-interactive container */}
                   <div className="p-5 overflow-auto" onClick={() => setMenuFor(null)}>
                     {!memoryEnabled && (
                       <div className={`mb-4 rounded-2xl border px-4 py-3 bg-white border-[#DDE3EA] dark:bg-white/[0.04] dark:border-white/[0.08]`}>
@@ -409,8 +409,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
 
           {editing && (
             <div className="fixed inset-0 z-[90] flex items-center justify-center px-4">
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗取消按钮承担 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the modal cancel button */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
               <div className="absolute inset-0 bg-black/60" onClick={() => setEditing(null)} />
               <div className={`relative w-full max-w-[560px] rounded-[18px] border ${border} ${panelBg} p-5 shadow-2xl`}>
                 <div className="flex items-center justify-between gap-3 mb-4">
@@ -438,7 +438,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       );
     };
 
-      // eslint-disable-next-line sonarjs/cognitive-complexity -- 设置页聚合表单分支多,拆分需单独设计;先以豁免记账
+      // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
     const ProviderIcon = ({ preset, vendor, providerKind, model, compact = false }) => {
       const modelId = String(model || '').toLowerCase();
       if (preset === 'local_vllm' && modelId.includes('qwen')) {
@@ -503,7 +503,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         try {
           await bridge.remoteControl.refreshRemoteControlQr(null);
           setRefreshConfirmOpen(false);
-        } catch { /* 忽略关闭失败 */ } finally {
+        } catch { /* ignore close failure */ } finally {
           setActionBusy(false);
         }
       }
@@ -523,18 +523,18 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         if (!bridge.available) return;
         setActionBusy(true);
         try { await bridge.remoteControl.startRemoteControl({ allowHostWorkspace: true }); }
-        catch { /* 启动失败由提示条呈现 */ }
+        catch { /* start failure surfaced by the banner */ }
         finally { setActionBusy(false); }
       }
 
       if (!canManageWebAccess) return null;
 
       return (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗关闭按钮承担
-        // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+        // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the modal close button
+        // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={onClose}>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
           <div onClick={e => e.stopPropagation()} className={`relative w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]`}>
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
@@ -593,11 +593,11 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                   className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50">{remoteCopy.enable}</button>}
             </div>
             {refreshConfirmOpen && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担
-              // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+              // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
+              // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
               <div className="absolute inset-0 z-10 flex items-center justify-center p-4 rounded-[22px] bg-black/55" onClick={() => !actionBusy && setRefreshConfirmOpen(false)}>
-                {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
                 <div onClick={e => e.stopPropagation()} className={`w-full max-w-[330px] rounded-[18px] p-5 shadow-2xl bg-white dark:bg-[#2A2B2D]`}>
                   <div className="text-[16px] font-semibold">{remoteCopy.refreshTitle}</div>
                   <div className={`text-[13px] leading-relaxed mt-2 text-[#5F6368] dark:text-[#B7BBC0]`}>{remoteCopy.refreshDesc}</div>
@@ -614,7 +614,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
     };
 
     // 添加/编辑模型模态弹窗。
-      // eslint-disable-next-line sonarjs/cognitive-complexity -- 设置页聚合表单分支多,拆分需单独设计;先以豁免记账
+      // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
     const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = [] }) => {
       const settingsCopy = t.uiSettingsDetail;
       const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
@@ -656,10 +656,10 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [keyRevealError, setKeyRevealError] = useState('');
       const [testing, setTesting] = useState(false);
       const [testResult, setTestResult] = useState(null);
-      // 旧版 detect 流程状态位:handleDetect 本体保留(见 tests/settings_ui_smoke.js 的
-      // 源文本守卫,锁定"仅自动填充已显式加载模型"安全不变量),当前无 UI 调用方。
+      // Legacy detect flow state flag: handleDetect itself is kept (see the source-text
+      // guard in tests/settings_ui_smoke.js, which locks the "only auto-fill explicitly loaded models" safety invariant); no current UI caller.
       const [detecting, setDetecting] = useState(false);
-      // 旧版 detect 结果位:写入方为下方保留的 handleDetect,JSX 读取位待清理。
+      // Legacy detect result slot: written by the retained handleDetect below; the JSX reader is pending cleanup.
       const [detectResult, setDetectResult] = useState(null);
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
@@ -690,7 +690,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       // 测试图片能力(设计 §7.3):仅主动点击触发;表单关键值变化后上一次结果不再可信,清除。
       const [imageTesting, setImageTesting] = useState(false);
       const [imageTestResult, setImageTestResult] = useState(null); // { status, verified, summary } | null
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:后端快照落地后镜像到本地 state,避免首帧闪烁
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker
       useEffect(() => { setImageTestResult(null); }, [model, baseUrl, apiKey, preset]);
       // 本机预装大模型「再入口」:检测无运行实例但有预装时,提示启用;走同一 bootstrap。
       const [offerSetup, setOfferSetup] = useState(false);   // 检测到预装,显示启用提示
@@ -708,7 +708,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const isCodingPlan = providerKind === PROVIDER_KIND_CODING_PLAN || (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN);
       // 当前表单模型可切换的思考深度档位（底座不支持的模型为空 = 不提供切换）。
       const reasoningEffortTiers = reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || [];
-      // eslint-disable-next-line sonarjs/cognitive-complexity -- 设置页聚合表单分支多,拆分需单独设计;先以豁免记账
+      // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
       function normalizeConnectionTestResult(value, isCodingPlanProvider) {
         if (value && typeof value === 'object' && !Array.isArray(value)) {
           const code = String(value.code || (value.ok ? 'ok' : 'unknown'));
@@ -842,12 +842,14 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         setApiKey('');
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
       }
-      // 旧版本地模型 detect 流程。当前 UI 入口已切换为 handleLocalDetect(目录页"检测"
-      // 按钮),但 tests/settings_ui_smoke.js 通过源文本守卫锁定本函数的安全不变量:
-      // 唯一在线实例也只自动填充"已显式加载"的模型(JIT 载入可能是几十 GB),未知
-      // 加载状态不得视为已加载。函数本体按守卫契约原样保留,不随 lint 清理删除。
-      // biome-ignore lint/correctness/noUnusedVariables: 源文本守卫(tests/settings_ui_smoke.js)锁定安全不变量,保留原文
-      async function handleDetect() { // eslint-disable-line no-unused-vars,sonarjs/no-unused-vars -- 源文本守卫锁定安全不变量,保留原文
+      // Legacy local-model detect flow. The current UI entry point has switched to
+      // handleLocalDetect (the catalog page "Detect" button), but tests/settings_ui_smoke.js
+      // locks this function's safety invariant via a source-text guard: even a single online
+      // instance may only auto-fill "explicitly loaded" models (JIT loading can be tens of GB);
+      // unknown load state must not be treated as loaded. The function body is kept verbatim
+      // per the guard contract and is not removed by lint cleanup.
+      // biome-ignore lint/correctness/noUnusedVariables: source-text guard (tests/settings_ui_smoke.js) locks a safety invariant; keep verbatim
+      async function handleDetect() { // eslint-disable-line no-unused-vars,sonarjs/no-unused-vars -- source-text guard locks a safety invariant; keep verbatim
         if (!canSetUpLocalModel || !bridge.available || detecting) return;
         // macOS/Windows 后端无 discover_local_vllm / detect_local_vllm_setup 命令(已 cfg linux),
         // 此处非 Linux 直接返回,避免 invoke 不存在的命令 reject 报错。
@@ -930,7 +932,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       // (pinvou 档,内置已验证能力表兜底);需要确证时用表单内「测试图片能力」。
       async function doSave() {
         if (!canSave || savingModel) return;
-      // eslint-disable-next-line react-hooks/purity, sonarjs/pseudo-random -- id 生成用 Date.now/Math.random 是既有行为,仅创建时执行一次
+      // eslint-disable-next-line react-hooks/purity, sonarjs/pseudo-random -- id generation via Date.now/Math.random is existing behavior, runs only once at creation
         const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
         const contextTokens = Number(contextWindow);
         const outputTokens = Number(maxOutput);
@@ -1007,7 +1009,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         }
       }
       function makeModelId() {
-      // eslint-disable-next-line react-hooks/purity, sonarjs/pseudo-random -- id 生成用 Date.now/Math.random 是既有行为,仅创建时执行一次
+      // eslint-disable-next-line react-hooks/purity, sonarjs/pseudo-random -- id generation via Date.now/Math.random is existing behavior, runs only once at creation
         return 'm_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
       }
       function localCandidateRows(result) {
@@ -1153,7 +1155,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       };
       const renderInlineField = ({ label, value, onChange, placeholder, type = 'text', trailing, readOnly = false, testId }) => (
         <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
-          {/* biome-ignore lint/a11y/noLabelWithoutControl: 字段名与输入框为兄弟布局,label 无 htmlFor 关联,改 span 会偏离既有结构 */}
+          {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
           <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{label}</label>
           <input
             type={type}
@@ -1357,7 +1359,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           )}
         </>
       );
-      // eslint-disable-next-line sonarjs/cognitive-complexity -- 设置页聚合表单分支多,拆分需单独设计;先以豁免记账
+      // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
       const renderImageInputSection = () => {
         const capabilityLabel = (imageCapabilityOptions.find(option => option.key === imageCapability) || imageCapabilityOptions[0]).label;
         const visionLabel = (visionOptions.find(option => option.key === visionModelId) || visionOptions[0]).label;
@@ -1432,7 +1434,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       if (initial.__new && pickerOpen) {
         return (
           <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150">
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理,取消按钮在弹窗头部 */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling; cancel button in the modal header */}
             <div data-testid="model-form-dialog" role="dialog" aria-modal="true"
               onClick={e => e.stopPropagation()}
               className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
@@ -1463,13 +1465,13 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       }
       return (
         <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150">
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理,取消按钮在弹窗头部 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling; cancel button in the modal header */}
           <div data-testid="model-form-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}
             className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
             <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${formDivider}`}>
               <div>
                 <h2 className="text-[20px] leading-6 font-semibold">{modalTitle}</h2>
-      {/* eslint-disable-next-line sonarjs/no-nested-template-literals -- 嵌套模板与 i18n 文案结构一一对应,展平损害可读性 */}
+      {/* eslint-disable-next-line sonarjs/no-nested-template-literals -- nested templates map 1:1 to the i18n copy structure; flattening hurts readability */}
                 <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{isLocalPreset ? selectedModelLabel : `${isCodingPlan ? `Coding Plan · ${settingsCopy.toolCalling}` : selectedProvider + ' · ' + selectedModelLabel}`}</p>
               </div>
               <button type="button" data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
@@ -1508,7 +1510,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                 <section>
                   <div className={formGroup}>
                     <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
-                      {/* biome-ignore lint/a11y/noLabelWithoutControl: 字段名与输入框为兄弟布局,label 无 htmlFor 关联,改 span 会偏离既有结构 */}
+                      {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
                       <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
                       <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
                         placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
@@ -1539,7 +1541,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     {showModelIdField && !showProviderModelField && renderInlineField({ label: isLocalPreset ? settingsCopy.localModelId : settingsCopy.modelId, value: model, onChange: e => handleModelIdChange(e.target.value), placeholder: isLocalPreset ? '' : settingsCopy.modelIdPlaceholder })}
                     {showCustomCloudKeyField && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
-                        {/* biome-ignore lint/a11y/noLabelWithoutControl: 字段名与输入框为兄弟布局,label 无 htmlFor 关联,改 span 会偏离既有结构 */}
+                        {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
                         <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
                         <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
                           placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
@@ -1550,7 +1552,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => handleBaseUrlChange(e.target.value) })}
                     {isLocalPreset && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
-                        {/* biome-ignore lint/a11y/noLabelWithoutControl: 字段名与开关按钮为兄弟布局,开关自带 aria-pressed */}
+                        {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and toggle button are siblings; the toggle carries aria-pressed itself */}
                         <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.apiKeyRequired}</label>
                         <button type="button" onClick={() => setLocalKeyEnabled(v => !v)}
                           className={`ml-auto h-8 min-w-[52px] rounded-full px-1 flex items-center transition-colors ${localKeyEnabled ? 'bg-[#007AFF]' : ('bg-[#D1D1D6] dark:bg-[#3A3A3C]')}`}
@@ -1561,7 +1563,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     )}
                     {showLocalKeyField && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
-                        {/* biome-ignore lint/a11y/noLabelWithoutControl: 字段名与输入框为兄弟布局,label 无 htmlFor 关联,改 span 会偏离既有结构 */}
+                        {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
                         <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
                         <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
                           placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
@@ -1698,7 +1700,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       );
     };
 
-    // eslint-disable-next-line no-unused-vars, sonarjs/cognitive-complexity -- 契约位参数保留;设置页聚合表单分支多,拆分需单独设计
+    // eslint-disable-next-line no-unused-vars, sonarjs/cognitive-complexity -- contract slot parameters kept; the settings page aggregates many form branches, splitting needs a dedicated design
     const SettingsView = ({ activeTheme, setActiveTheme, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = ['bing'], onAddSearchProvider, onDeleteSearchProvider, _searchApiKey, setSearchApiKey, _searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, _searchNeedsRestart, _languageNeedsRestart, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const settingsCopy = t.uiSettingsDetail;
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
@@ -1753,7 +1755,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       }, [canUpdateApp, updateFocusTick]);
       useEffect(() => {
         if (initialSection === 'providers') {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:后端快照落地后镜像到本地 state,避免首帧闪烁
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker
           setActiveSection('model');
           setModelTab('acp');
         } else if (initialSection) {
@@ -1854,7 +1856,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           cancelled = true;
           window.clearTimeout(timerId);
         };
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:补全会引发重复请求或轮询循环
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: completing it would cause duplicate requests or polling loops
       }, []);
       const IOSSection = ({ title, children, footer }) => (
         <section className="mb-6">
@@ -1984,7 +1986,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         if (activeSection === 'memory' && memoryEnabled && bridge.available && bridge.memory.loadMemoryOverview) bridge.memory.loadMemoryOverview();
       }, [activeSection, memoryEnabled]);
       useEffect(() => {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:后端快照落地后镜像到本地 state,避免首帧闪烁
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker
         if (updateFocusTick) setActiveSection('update');
       }, [updateFocusTick]);
       const [memoryEditor, setMemoryEditor] = useState(null);
@@ -2265,7 +2267,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           )}
         </>
       );
-      // eslint-disable-next-line sonarjs/cognitive-complexity -- 设置页聚合表单分支多,拆分需单独设计;先以豁免记账
+      // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
       const renderUpdate = () => {
         const upd = bs && bs.updateInfo;
         const currentVersion = (bs && bs.appVersion) || (upd && upd.current_version) || '—';
@@ -2417,11 +2419,11 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           setShowSearchKey(false);
         }, [provider]);
         return (
-          // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗右上角关闭按钮承担
-          // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+          // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the close button at the modal top-right
+          // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onClose}>
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
             <div onClick={e => e.stopPropagation()}
               className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
               <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
@@ -2435,10 +2437,10 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                 <section>
                   <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
                     <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>
-                    {/* biome-ignore lint/a11y/noLabelWithoutControl: 字段名与输入框为兄弟布局,label 无 htmlFor 关联,改 span 会偏离既有结构 */}
+                    {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
                     <label className="shrink-0 text-[14px] leading-5">API Key</label>
                     <input type="text" value={draftKey} onChange={e => setDraftKey(e.target.value)}
-                      // biome-ignore lint/a11y/noAutofocus: 编辑搜索源弹窗打开即聚焦密钥输入框,焦点即输入意图
+                      // biome-ignore lint/a11y/noAutofocus: the edit-search-source modal focuses the key input on open; focus is the input intent
                       autoFocus
                       placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
                       style={showSearchKey ? undefined : { WebkitTextSecurity: 'disc' }}
@@ -2511,8 +2513,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         </div>
       );
       return (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由设置窗内关闭按钮承担
-        // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+        // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the close button inside the settings window
+        // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
         <div
           className="fixed inset-0 z-[80] flex items-center justify-center px-3 py-3 sm:px-5 sm:py-5 bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
           onClick={(event) => {
@@ -2521,8 +2523,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             }
           }}
         >
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
           <div
             data-testid="settings-dialog"
             style={{ width: 'min(920px, calc(100vw - 24px))', height: 'min(620px, calc(100vh - 24px))' }}
@@ -2538,22 +2540,22 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             >
               <div className={`mb-4 px-1 text-[12px] font-semibold max-sm:hidden text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.common}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
-                {/* eslint-disable-next-line react-hooks/static-components -- 渲染期创建组件是既有结构 */}
+                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
                 <SectionButton id="general" icon={<Sparkles size={17} />} label={t.uiSettings.general} />
-                {/* eslint-disable-next-line react-hooks/static-components -- 渲染期创建组件是既有结构 */}
+                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
                 <SectionButton id="model" icon={<Cpu size={17} />} label={t.uiSettings.model} />
-                {/* eslint-disable-next-line react-hooks/static-components -- 渲染期创建组件是既有结构 */}
+                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
                 <SectionButton id="search" icon={<Search size={17} />} label={t.uiSettings.search} />
-                {/* eslint-disable-next-line react-hooks/static-components -- 渲染期创建组件是既有结构 */}
+                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
                 {memorySettingsVisible && <SectionButton id="memory" icon={<Database size={17} />} label={t.uiSettings.memory} />}
               </div>
               <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.system}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
-                {/* eslint-disable-next-line react-hooks/static-components -- 渲染期创建组件是既有结构 */}
+                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
                 {canUseSuperPermission && <SectionButton id="permissions" icon={<Wrench size={17} />} label={t.uiSettings.permissions} />}
-                {/* eslint-disable-next-line react-hooks/static-components -- 渲染期创建组件是既有结构 */}
+                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
                 {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label={t.uiSettings.update} dot={hasUpdate} />}
-                {/* eslint-disable-next-line react-hooks/static-components -- 渲染期创建组件是既有结构 */}
+                {/* eslint-disable-next-line react-hooks/static-components -- creating components during render is the existing structure */}
                 <SectionButton id="help" icon={<MessageSquare size={17} />} label={t.uiSettings.help} />
               </div>
             </aside>
@@ -2578,16 +2580,16 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
               // 保存/错误提示由弹窗内部控制关闭(保存失败保持打开展示行内错误)。
               onSave={async m => onSaveModel(m)} />
           )}
-          {/* eslint-disable-next-line react-hooks/static-components -- 就地定义的确认弹窗是既有结构 */}
+          {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined confirm modal is the existing structure */}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} />}
-          {/* eslint-disable-next-line react-hooks/static-components -- 就地定义的确认弹窗是既有结构 */}
+          {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined confirm modal is the existing structure */}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} />}
           {searchPickerOpen && (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
+            // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
             <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={() => setSearchPickerOpen(false)}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
               <div onClick={e => e.stopPropagation()}
                 className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
                 <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
@@ -2623,14 +2625,14 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
               </div>
             </div>
           )}
-          {/* eslint-disable-next-line react-hooks/static-components -- 就地定义弹窗是既有结构 */}
+          {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined modal is the existing structure */}
           {editingSearch && <SearchSourceModal provider={editingSearch} isNew={pendingSearchProvider === editingSearch} onClose={() => { setEditingSearch(null); setPendingSearchProvider(null); }} />}
           {memoryEditor && (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗右上角关闭按钮承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the close button at the modal top-right
+            // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
             <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4" onClick={() => { if (!memorySaving) setMemoryEditor(null); }}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
               <div onClick={e => e.stopPropagation()} className={`w-full max-w-[500px] rounded-[24px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
                 <div className={`px-6 py-4 flex items-start justify-between border-b border-black/[0.12] dark:border-white/[0.12]`}>
                   <div>
@@ -2640,7 +2642,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                   <button type="button" onClick={() => setMemoryEditor(null)} disabled={memorySaving} className={`h-10 w-10 rounded-full flex items-center justify-center bg-[#E5E5EA] dark:bg-white/[0.08] disabled:opacity-40`}><X size={20} /></button>
                 </div>
                 <div className="px-6 py-5">
-                  {/* biome-ignore lint/a11y/noLabelWithoutControl: label 实际包裹输入控件(三元分支内 textarea/input),静态分析看不到 */}
+                  {/* biome-ignore lint/a11y/noLabelWithoutControl: the label actually wraps the input control (textarea/input inside a ternary branch); static analysis cannot see it */}
                   <label className="block">
                     <span className={`block px-1 mb-2 text-[13px] font-semibold text-[#8A8A8E] dark:text-[#98989D]`}>{memoryEditor.label}</span>
                     {memoryEditor.multiline ? (
@@ -2668,14 +2670,14 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
               </div>
             </div>
           )}
-          {/* eslint-disable-next-line react-hooks/static-components -- 就地定义弹窗是既有结构 */}
+          {/* eslint-disable-next-line react-hooks/static-components -- in-place-defined modal is the existing structure */}
           {restartDialog && <RestartDialog type={restartDialog} />}
           {feedbackOpen && (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内关闭按钮承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal close button
+            // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
             <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={closeFeedback}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
               <div
                 onClick={e => e.stopPropagation()}
                 data-feedback-dialog="true"
@@ -2692,7 +2694,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                   <section>
                     <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
                       <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
-                        {/* biome-ignore lint/a11y/noLabelWithoutControl: 字段名与分段选择器(自定义组件)为兄弟布局 */}
+                        {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and segmented picker (custom component) are siblings */}
                         <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{t.feedbackType}</label>
                         <SSegmented value={feedbackDraft.type} onChange={type => setFeedbackDraft(prev => ({ ...prev, type }))} options={feedbackTypes} />
                       </div>
@@ -2701,7 +2703,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                   <section>
                     <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b border-black/[0.10] dark:border-white/[0.10]`}>
-                        {/* biome-ignore lint/a11y/noLabelWithoutControl: 字段名与输入框为兄弟布局,label 无 htmlFor 关联,改 span 会偏离既有结构 */}
+                        {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
                         <label className="shrink-0 text-[14px] leading-5">{t.feedbackSubject}</label>
                         <input value={feedbackDraft.title} maxLength={120} onChange={e => setFeedbackDraft(prev => ({ ...prev, title: e.target.value }))}
                         placeholder={t.feedbackSubjectPh}

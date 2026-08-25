@@ -47,7 +47,7 @@ function clampPanelWidth(width, rootWidth) {
 
 function savedPanelWidth() {
   try {
-    // eslint-disable-next-line unicorn/prefer-number-coercion -- 需要整数语义:解析失败/非整数宽度应回退默认值,Number() 会接受小数
+    // eslint-disable-next-line unicorn/prefer-number-coercion -- integer semantics required: parse failure or non-integer width must fall back to the default; Number() would accept decimals
     const value = Number.parseInt(localStorage.getItem(PANEL_WIDTH_KEY) || '', 10);
     return Number.isFinite(value) && value >= PANEL_MIN_WIDTH ? value : PANEL_DEFAULT_WIDTH;
   } catch {
@@ -118,7 +118,7 @@ function CompactToolRow({ item, conversationCopy }) {
   );
 }
 
-// eslint-disable-next-line sonarjs/cognitive-complexity -- 列表/详情双态面板:轮询复位、祖先展开与窗口步进共享同一组会话生命周期状态,拆分会割裂联动
+// eslint-disable-next-line sonarjs/cognitive-complexity -- list/detail dual-state panel: poll reset, ancestor expansion, and window stepping share the same session lifecycle state; splitting would sever their coordination
 export function SubagentTranscriptPanel({
   sessionId,
   initialAgentId,
@@ -134,7 +134,7 @@ export function SubagentTranscriptPanel({
 
   const [selectedAgentId, setSelectedAgentId] = useState(initialAgentId || null);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 外部选定代理变化时同步镜像一次,避免展示过期详情
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mirror once when the externally selected agent changes, to avoid showing stale details
     setSelectedAgentId(initialAgentId || null);
   }, [sessionId, initialAgentId, selectionRequestId]);
 
@@ -143,7 +143,7 @@ export function SubagentTranscriptPanel({
   const [listReadFailed, setListReadFailed] = useState(false);
   const [listWake, setListWake] = useState(0);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 换会话时同步复位列表态,一次性镜像
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset list state on session switch; one-shot mirror
     setAgents(null);
     setListReadFailed(false);
   }, [sessionId]);
@@ -191,14 +191,14 @@ export function SubagentTranscriptPanel({
   const roleOrdinals = useMemo(() => subagentRoleOrdinals(agents || []), [agents]);
   const [expandedAgentIds, setExpandedAgentIds] = useState(() => new Set());
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 换会话时同步清空展开集,一次性镜像
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the expansion set on session switch; one-shot mirror
     setExpandedAgentIds(new Set());
   }, [sessionId]);
   useEffect(() => {
     if (!selectedAgentId || !Array.isArray(agents)) return;
     const ancestors = subagentAncestorIds(agents, selectedAgentId);
     if (!ancestors.length) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 选定代理后同步展开其祖先链,保证目标行可见
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously expand the ancestor chain after selecting an agent so the target row stays visible
     setExpandedAgentIds((current) => {
       if (ancestors.every(id => current.has(id))) return current;
       return new Set([...current, ...ancestors]);
@@ -230,11 +230,11 @@ export function SubagentTranscriptPanel({
   const transcriptUnavailable = !!(agent && agent.has_transcript === false);
   const terminalWithoutTranscript = agentDone && transcriptUnavailable;
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换代理时同步重置可见窗口步长
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the visible window step when switching agents
     setVisibleTranscriptItems(TRANSCRIPT_WINDOW_STEP);
   }, [sessionId, selectedAgentId]);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换代理时同步清空旧记录并复位读取态
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear old records and reset read state when switching agents
     setMessages(null);
     setTranscriptReadFailed(false);
     transcriptCursorRef.current = null;
@@ -401,10 +401,10 @@ export function SubagentTranscriptPanel({
       className="flex relative max-w-[88vw] min-w-0 shrink-0 border-l border-black/[0.06] dark:border-white/[0.07] bg-white/92 dark:bg-[#17181A]/96 backdrop-blur-xl flex-col"
       data-testid="subagent-transcript-panel"
     >
-      {/* biome-ignore lint/a11y/useFocusableInteractive: 拖拽分隔条依赖鼠标拖拽,div 语义 */}
-      {/* biome-ignore lint/a11y/useSemanticElements: 拖拽分隔条需要 div 语义 */}
+      {/* biome-ignore lint/a11y/useFocusableInteractive: drag divider relies on mouse dragging; div semantics */}
+      {/* biome-ignore lint/a11y/useSemanticElements: drag divider requires div semantics */}
       <div
-        // biome-ignore lint/a11y/useAriaPropsForRole: 拖拽分隔条非焦点控件,valuenow 语义不适用
+        // biome-ignore lint/a11y/useAriaPropsForRole: drag divider is not a focusable control; valuenow semantics do not apply
         role="separator"
         aria-label={copy.panelResize}
         aria-orientation="vertical"

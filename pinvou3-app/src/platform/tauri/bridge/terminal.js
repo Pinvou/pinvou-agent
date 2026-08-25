@@ -1,8 +1,8 @@
 /** Shell polling and terminal output normalization for bridge tool cards. */
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
-  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statement would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.terminal = function (context) {
     const state = context.state;
@@ -244,7 +244,7 @@
     parserState.pendingAnsi = pending.length <= MAX_PENDING_TERMINAL_SEQUENCE_CHARS ? pending : "";
   }
 
-  // eslint-disable-next-line sonarjs/cognitive-complexity -- 状态机逐字节解析终端序列;重构需独立回归,暂保持
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- state machine parses terminal sequences byte by byte; refactoring needs its own regression pass, kept as-is for now
   function stripTerminalSequences(text, parserState) {
     const input = String((parserState.pendingAnsi || "") + (text || ""));
     parserState.pendingAnsi = "";
@@ -264,7 +264,7 @@
         let csiEnd = i + 2;
         let malformedCsi = false;
         while (csiEnd < input.length) {
-          // ANSI 序列按字节扫描,charCode 即协议字节值;codePointAt 在此无增益。
+          // ANSI sequences are scanned bytewise; charCode is the protocol byte value, codePointAt adds nothing here.
           const csiCode = input.charCodeAt(csiEnd); // eslint-disable-line unicorn/prefer-code-point
           if (csiCode >= 0x40 && csiCode <= 0x7e) break;
           if (csiCode < 0x20 || csiCode > 0x3f) {
@@ -281,7 +281,7 @@
           rememberPendingTerminalSequence(parserState, input, i);
           break;
         }
-        i = csiEnd; // eslint-disable-line sonarjs/updated-loop-counter -- 跳过整个 CSI 序列的游标前移
+        i = csiEnd; // eslint-disable-line sonarjs/updated-loop-counter -- cursor advance skipping the entire CSI sequence
         continue;
       }
 
@@ -305,7 +305,7 @@
           rememberPendingTerminalSequence(parserState, input, i);
           break;
         }
-        i = stringEnd; // eslint-disable-line sonarjs/updated-loop-counter -- 跳过整个 OSC/DCS 序列的游标前移
+        i = stringEnd; // eslint-disable-line sonarjs/updated-loop-counter -- cursor advance skipping the entire OSC/DCS sequence
         continue;
       }
 
@@ -313,7 +313,7 @@
       // bytes followed by a final byte.
       let escapeEnd = i + 1;
       while (escapeEnd < input.length) {
-        // ANSI 序列按字节扫描,charCode 即协议字节值;codePointAt 在此无增益。
+        // ANSI sequences are scanned bytewise; charCode is the protocol byte value, codePointAt adds nothing here.
         const escapeCode = input.charCodeAt(escapeEnd); // eslint-disable-line unicorn/prefer-code-point
         if (escapeCode < 0x20 || escapeCode > 0x2f) break;
         escapeEnd += 1;
@@ -322,9 +322,9 @@
         rememberPendingTerminalSequence(parserState, input, i);
         break;
       }
-      // ANSI 序列按字节扫描,charCode 即协议字节值;codePointAt 在此无增益。
+      // ANSI sequences are scanned bytewise; charCode is the protocol byte value, codePointAt adds nothing here.
       const finalCode = input.charCodeAt(escapeEnd); // eslint-disable-line unicorn/prefer-code-point
-      // eslint-disable-next-line sonarjs/updated-loop-counter -- 跳过整个转义序列的游标前移
+      // eslint-disable-next-line sonarjs/updated-loop-counter -- cursor advance skipping the entire escape sequence
       if (finalCode >= 0x30 && finalCode <= 0x7e) i = escapeEnd;
     }
     return clean;

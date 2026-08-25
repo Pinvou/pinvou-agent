@@ -3,9 +3,9 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  */
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
-  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statement would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["voice"] = function (context) {
     const state = context.state;
@@ -86,12 +86,12 @@
 
   function stopMediaTracks(stream) {
     if (!stream) return;
-    stream.getTracks().forEach(function (track) { try { track.stop(); } catch { /* 已停止的轨道无需处理 */ } });
+    stream.getTracks().forEach(function (track) { try { track.stop(); } catch { /* already-stopped tracks need no handling */ } });
   }
 
-  // 语音流程的错误载体:Error 实例 + category/stage 附加字段,供 normalizeVoiceError 分类。
-  // (原实现抛裸对象字面量,违反 no-throw-literal;此处收拢为 Error 工厂,
-  // normalizeVoiceError 的分类字段 category/stage/message 语义不变。)
+  // error carrier for the voice flow: an Error instance with extra category/stage fields for normalizeVoiceError classification.
+  // (the original threw a bare object literal, violating no-throw-literal; consolidated here into an Error factory,
+  // keeping the semantics of normalizeVoiceError's category/stage/message classification fields unchanged.)
   function voiceFlowError(category, stage, message) {
     const error = new Error(message);
     error.category = category;
@@ -107,15 +107,15 @@
     if (session.cancelPermissionRequest) {
       const cancelPermissionRequest = session.cancelPermissionRequest;
       session.cancelPermissionRequest = null;
-      try { cancelPermissionRequest(); } catch { /* 取消回调异常不阻断清理 */ }
+      try { cancelPermissionRequest(); } catch { /* a cancel-callback error must not block cleanup */ }
     }
     // 先摘掉音频回调：webkit2gtk 的 WebAudio 是 GStreamer 后端，ScriptProcessorNode 的
     // onaudioprocess 跑在音频线程，若在 disconnect/close 期间再触发一次、访问已释放的
     // 缓冲，会让 WebProcess 段错误（表现为「识别出文字后 app 崩溃」）。务必先置 null。
-    try { if (session.processor) session.processor.onaudioprocess = null; } catch { /* 释放失败仅影响本页音频 */ }
-    try { if (session.processor) session.processor.disconnect(); } catch { /* 释放失败仅影响本页音频 */ }
-    try { if (session.source) session.source.disconnect(); } catch { /* 释放失败仅影响本页音频 */ }
-    try { if (session.zeroGain) session.zeroGain.disconnect(); } catch { /* 释放失败仅影响本页音频 */ }
+    try { if (session.processor) session.processor.onaudioprocess = null; } catch { /* release failure only affects this page's audio */ }
+    try { if (session.processor) session.processor.disconnect(); } catch { /* release failure only affects this page's audio */ }
+    try { if (session.source) session.source.disconnect(); } catch { /* release failure only affects this page's audio */ }
+    try { if (session.zeroGain) session.zeroGain.disconnect(); } catch { /* release failure only affects this page's audio */ }
     stopMediaTracks(session.stream);
     session.processor = null;
     session.source = null;
@@ -126,7 +126,7 @@
     const ctx = session.audioContext;
     session.audioContext = null;
     if (ctx && ctx.state !== "closed") {
-      setTimeout(function () { try { ctx.close().catch(function () {}); } catch { /* 音频上下文已关闭 */ } }, 0);
+      setTimeout(function () { try { ctx.close().catch(function () {}); } catch { /* audio context already closed */ } }, 0);
     }
   }
 
@@ -209,7 +209,7 @@
     const buffer = new ArrayBuffer(44 + dataSize);
     const view = new DataView(buffer);
     function writeString(offset, value) {
-      // WAV 头只写 ASCII,charCode 即目标字节值;fromCodePoint/codePointAt 在此无增益。
+      // WAV header writes ASCII only; charCode is the target byte value, fromCodePoint/codePointAt add nothing here.
       for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); // eslint-disable-line unicorn/prefer-code-point
     }
     writeString(0, "RIFF");

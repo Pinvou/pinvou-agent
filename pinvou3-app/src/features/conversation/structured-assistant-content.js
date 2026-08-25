@@ -8,7 +8,7 @@ export function normalizeAssistantMessageText(value) {
   while (lines.length && /^[ \t]*$/.test(lines[lines.length - 1])) lines.pop();
   let normalized = lines.join('\n');
   if (!/^(?: {4}|\t)/.test(normalized)) normalized = normalized.replace(/^[ \t]+/, '');
-  // eslint-disable-next-line sonarjs/super-linear-regex -- 行尾空白剥离,[ \t]+ 为单字符类量词,无交替回溯
+  // eslint-disable-next-line sonarjs/super-linear-regex -- trailing-whitespace strip; [ \t]+ is a single-char-class quantifier with no alternating backtracking
   return normalized.replace(/[ \t]+$/, '');
 }
 
@@ -37,12 +37,12 @@ export function extractBalancedJson(value) {
 
 export function parseJsonChain(value) {
   const source = String(value || '');
-  try { return JSON.parse(source); } catch { /* 逐级降级解析 */ }
-  try { return JSON.parse(source.replaceAll(/,(\s*[}\]])/g, '$1')); } catch { /* 尾逗号剔除后再试 */ }
+  try { return JSON.parse(source); } catch { /* fall through to degraded parsing */ }
+  try { return JSON.parse(source.replaceAll(/,(\s*[}\]])/g, '$1')); } catch { /* retry after stripping trailing commas */ }
   const balanced = extractBalancedJson(source);
   if (balanced) {
-    try { return JSON.parse(balanced); } catch { /* 截取平衡段后再试 */ }
-    try { return JSON.parse(balanced.replaceAll(/,(\s*[}\]])/g, '$1')); } catch { /* 平衡段 + 尾逗号剔除 */ }
+    try { return JSON.parse(balanced); } catch { /* retry with the balanced slice */ }
+    try { return JSON.parse(balanced.replaceAll(/,(\s*[}\]])/g, '$1')); } catch { /* balanced slice + trailing-comma strip */ }
   }
   return null;
 }

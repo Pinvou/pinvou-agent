@@ -161,7 +161,7 @@ function openSubagentTranscript(agentId, sessionId) {
   }));
 }
 
-// eslint-disable-next-line sonarjs/cognitive-complexity -- 专家卡状态判定多来源(实时事件/ledger/兜底)分支密集;legacy view; tracked separately
+// eslint-disable-next-line sonarjs/cognitive-complexity -- expert card status derives from many sources (realtime events/ledger/fallback) with dense branches;legacy view; tracked separately
 function expertStatusPresentation({ summary, failedSpawn = false, itemState, copy }) {
   const blocked = !!(summary && summary.done && !summary.failed && summary.blocked);
   const statusToken = String(summary?.status || '').toLowerCase();
@@ -232,7 +232,7 @@ const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
   const [childrenExpanded, setChildrenExpanded] = useState(false);
   const [expandedChildIds, setExpandedChildIds] = useState(() => new Set());
   useEffect(() => {
-    setChildrenExpanded(false); // eslint-disable-line react-hooks/set-state-in-effect -- agentId 切换即另一张卡,同步重置展开态
+    setChildrenExpanded(false); // eslint-disable-line react-hooks/set-state-in-effect -- an agentId switch means a different card; synchronously reset the expansion state
     setExpandedChildIds(new Set());
   }, [agentId]);
   useEffect(() => {
@@ -262,7 +262,7 @@ const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
       if (!detail || detail.sessionId !== sessionId || !Array.isArray(detail.agents)) return;
       setLedger(detail.agents);
     };
-    setLedger(expertLedgerSnapshots.get(sessionId)?.agents || []); // eslint-disable-line react-hooks/set-state-in-effect -- 挂载时同步 seed 已缓存的 ledger 快照,避免先渲染空树
+    setLedger(expertLedgerSnapshots.get(sessionId)?.agents || []); // eslint-disable-line react-hooks/set-state-in-effect -- synchronously seed the cached ledger snapshot on mount, avoiding an initial empty-tree render
     window.addEventListener('pinvou:subagent-update', onUpdate);
     window.addEventListener('pinvou:subagent-ledger-update', onLedgerUpdate);
     const unwatch = watchExpertCard(sessionId, agentId);
@@ -477,7 +477,7 @@ const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
   );
 };
 
-// eslint-disable-next-line sonarjs/cognitive-complexity -- 逐工具输出视图路由,按工具拆分收益低;legacy view; tracked separately
+// eslint-disable-next-line sonarjs/cognitive-complexity -- per-tool output view routing; splitting by tool has low payoff;legacy view; tracked separately
 const ToolOutput = ({ item, t }) => {
       const out = item.output;
       if (item.success === false) return <OutputError text={out} />;
@@ -504,16 +504,18 @@ const ToolOutput = ({ item, t }) => {
           const d = w.datas[0];
           const findVal = (obj, keyword) => {
             for (const k of Object.keys(obj)) {
-              if (k.includes(keyword)) return Number(obj[k]);
+              // eslint-disable-next-line unicorn/prefer-number-coercion -- market fields may carry unit suffixes; keep the permissive parseFloat, same as 最新价 below
+              if (k.includes(keyword)) return Number.parseFloat(obj[k]);
             }
-            // 未命中保持 undefined:StockQuoteCard 的 fmt/isNaN 兜底与 >= 0 判定
-            // 都依赖 undefined 语义,null 会让 null.toFixed 崩溃、null>=0 判涨。
-            return undefined; // eslint-disable-line unicorn/no-useless-undefined -- 消费方依赖 undefined 兜底语义
+            // A miss must stay undefined: StockQuoteCard's fmt/isNaN fallback and
+            // >= 0 gain/loss test both rely on undefined semantics — null would
+            // crash null.toFixed and null >= 0 would read as a gain.
+            return undefined; // eslint-disable-line unicorn/no-useless-undefined -- the consumer depends on undefined fallback semantics
           };
           const mapped = {
             name: d['股票简称'] || '--',
             code: (d['股票代码'] || '').replace(/\.\w+$/, ''),
-            price: Number.parseFloat(d['最新价']), // eslint-disable-line unicorn/prefer-number-coercion -- 行情字段可能带单位字符,保留 parseFloat 宽松解析
+            price: Number.parseFloat(d['最新价']), // eslint-disable-line unicorn/prefer-number-coercion -- quote fields may carry unit characters; keep parseFloat's lenient parsing
             changePercent: findVal(d, '涨跌幅'),
             open: findVal(d, '开盘价'),
             high: findVal(d, '最高价'),
@@ -550,7 +552,7 @@ const ToolOutput = ({ item, t }) => {
       return <OutputPre text={out} />;
     };
 
-    // eslint-disable-next-line sonarjs/cognitive-complexity -- 工具卡渲染含大量内联分支;legacy view; tracked separately
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- tool card rendering contains many inline branches;legacy view; tracked separately
     const ToolCard = ({ item, t, variant = 'legacy', sessionId }) => {
       // 委派实例不走通用工具卡：专家卡是多智能体的第一公民展示（ADR-0006）。
       // 提前返回发生在本组件任何 Hook 之前，且 item.name 对一个实例终生不变，
@@ -560,21 +562,21 @@ const ToolOutput = ({ item, t }) => {
       }
       const isTimeline = variant === 'timeline';
       const isRunning = item.state === 'running';
-      // eslint-disable-next-line react-hooks/rules-of-hooks -- 早退分支对实例终生不变(见上方注释),每实例 Hook 数量恒定
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- the early-return branch is constant for an instance's lifetime (see the comment above); the per-instance Hook count is stable
       const [cancelling, setCancelling] = useState(false);
-      // eslint-disable-next-line react-hooks/rules-of-hooks -- 同上
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- same as above
       const [shellCancelError, setShellCancelError] = useState('');
       // 有可视化卡片的工具(天气/股票)完成后直接展开,不折叠
       const hasCard = (isWeatherTool(item.name) || isStockQuoteTool(item.name)) && item.state === 'done';
       const hasLiveShellOutput = isShellExecutionTool(item.name)
         && isRunning
         && (item.liveOutput || item.output != null);
-      // eslint-disable-next-line react-hooks/rules-of-hooks -- 同上
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- same as above
       const [expanded, setExpanded] = useState(!isTimeline && hasCard);
-      // eslint-disable-next-line react-hooks/rules-of-hooks -- 同上
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- same as above
       useEffect(() => {
         if (!isTimeline && hasCard) {
-          setExpanded(true); // eslint-disable-line react-hooks/set-state-in-effect -- 天气/股票卡片完成时展开一次,幂等
+          setExpanded(true); // eslint-disable-line react-hooks/set-state-in-effect -- expand once when the weather/stock card completes; idempotent
         }
       }, [hasCard, isTimeline]);
       const displayExpanded = hasLiveShellOutput || expanded;
@@ -652,7 +654,7 @@ const ToolOutput = ({ item, t }) => {
               isFailed ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'
             } bg-white/45 dark:bg-white/[0.015]`}
           >
-            {/* biome-ignore lint/a11y/useSemanticElements: 工具卡折叠头承载多子元素布局,button 会破坏既有样式 */}
+            {/* biome-ignore lint/a11y/useSemanticElements: the tool card collapse header hosts a multi-child layout; a button would break existing styles */}
             <div
               role="button"
               tabIndex={0}
@@ -689,7 +691,7 @@ const ToolOutput = ({ item, t }) => {
         const iconColor = isDone ? mutedColor : statusColor;
         return (
           <div className={expanded ? `rounded-[12px] overflow-hidden border border-black/5 dark:border-white/5` : ''}>
-            {/* biome-ignore lint/a11y/useSemanticElements: 工具卡折叠头承载多子元素布局,button 会破坏既有样式 */}
+            {/* biome-ignore lint/a11y/useSemanticElements: the tool card collapse header hosts a multi-child layout; a button would break existing styles */}
             <div
               role="button"
               tabIndex={0}
@@ -715,7 +717,7 @@ const ToolOutput = ({ item, t }) => {
       // 有产出类：保留醒目卡片，标题行带摘要。
       return (
         <div className={`rounded-[16px] overflow-hidden border bg-[#F0F4F9] border-black/5 dark:bg-[#1E1F20] dark:border-white/5`}>
-          {/* biome-ignore lint/a11y/useSemanticElements: 工具卡折叠头承载多子元素布局,button 会破坏既有样式 */}
+          {/* biome-ignore lint/a11y/useSemanticElements: the tool card collapse header hosts a multi-child layout; a button would break existing styles */}
           <div
             role="button"
             tabIndex={0}

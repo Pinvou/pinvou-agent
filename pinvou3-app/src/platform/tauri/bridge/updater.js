@@ -3,9 +3,9 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  */
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
-  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["updater"] = function (context) {
     const state = context.state;
@@ -46,7 +46,7 @@
   async function loadAppVersion() {
     try {
       state.appVersion = await invoke("get_app_version");
-    } catch { /* 版本读取失败留空即可 */ }
+    } catch { /* leaving the version empty on read failure is fine */ }
   }
   // 启动静默检查: 失败全吞(网络差/更新源挂了不打扰用户)。结果不管新旧都存——
   // available 驱动红点,current_version 给设置页显示当前版本用。

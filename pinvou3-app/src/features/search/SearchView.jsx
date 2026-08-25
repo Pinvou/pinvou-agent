@@ -15,7 +15,7 @@ import { sessionRoute } from '../../shared/session-management.js';
 // (在线:置顶/重命名/收纳/删除;已收纳:恢复/永久删除,按对话自身更新时间分组)。
 // 无搜索词:右侧显示所选日期的对话;有搜索词:右侧按日期分组显示全部匹配项,
 // 左侧只保留有匹配的日期,点击日期平滑滚动到右侧对应分组。
-// eslint-disable-next-line sonarjs/cognitive-complexity -- 会话管理页:筛选/排序/分组/批量选择为一套内聚管线,拆分会引入大量透传状态
+// eslint-disable-next-line sonarjs/cognitive-complexity -- session management page: filter/sort/group/batch-select form one cohesive pipeline; splitting it would introduce a lot of pass-through state
 export const SearchView = ({ theme, history, t, language, archived = [], showArchived: showArchivedProp, onShowArchivedConsumed, onSelect, onOpenCodex, onOpenScheduledRun, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onArchiveMany, onDeleteMany, onRestoreArchived, onRestoreMany }) => {
   const [query, setQuery] = useState('');
   const [selectedDate, setSelectedDate] = useState(null);
@@ -35,11 +35,11 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
   // 收纳 toast「前往查看」的一次性信号:展开「已收纳」面板后立刻消费,避免下次进页又自动打开
   useEffect(() => {
     if (showArchivedProp) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- 一次性信号:收到后立即镜像并消费,避免重复展开
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot signal: mirror and consume it immediately on receipt to avoid repeated expansion
       setShowArchived(true);
       onShowArchivedConsumed && onShowArchivedConsumed();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按一次性信号 prop 触发;补充回调依赖会重复消费信号
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- trigger only on the one-shot signal prop; adding the callback dep would consume the signal repeatedly
   }, [showArchivedProp]);
 
   const archivedList = archived || [];
@@ -173,7 +173,7 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
     if (batchMode) {
       const selected = selectedIds.has(chat.id);
       return (
-        // biome-ignore lint/a11y/useSemanticElements: 批选行含自绘圆点复选样式,button 会破坏既有布局
+        // biome-ignore lint/a11y/useSemanticElements: the batch-select row uses a custom-drawn dot checkbox style; a button would break the existing layout
         <div
           key={chat.id}
           role="button"
@@ -464,8 +464,8 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                 {t.searchSelectedCount(selectedIds.size)}
               </span>
               {batchDeleteConfirming ? (
-                // biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理
-                // biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器
+                // biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events don't need bubbling here
+                // biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container
                 <span className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
                   <span className="text-[13px] whitespace-nowrap text-[#C5221F] dark:text-[#F28B82]">{t.riDelQ}</span>
                   <button

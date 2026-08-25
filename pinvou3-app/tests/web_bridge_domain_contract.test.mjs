@@ -85,9 +85,9 @@ vm.runInContext(read('bridge/domain-adapter.js'), context, { filename: 'platform
 const api = windowObject.TauriBridge;
 const expectedApi = expectedWebBridgeApi();
 
-assert.deepEqual(Object.keys(api).sort(), ['available', ...Object.keys(expectedApi)].sort()); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+assert.deepEqual(Object.keys(api).sort(), ['available', ...Object.keys(expectedApi)].sort()); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
 for (const [domain, methods] of Object.entries(expectedApi)) {
-  assert.deepEqual(Object.keys(api[domain]).sort(), [...methods].sort(), `${domain} Web API surface changed`); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  assert.deepEqual(Object.keys(api[domain]).sort(), [...methods].sort(), `${domain} Web API surface changed`); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
 }
 assert.equal(api.getState, undefined, 'Web flat compatibility facade must stay private');
 assert.equal(api.sendMessage, undefined, 'Web flat command facade must stay private');
@@ -186,7 +186,7 @@ unsubscribeDomainReentrantSecond();
 const membershipFirst = [];
 const membershipSecond = [];
 const membershipAdded = [];
-// eslint-disable-next-line prefer-const -- 第 200 行重赋值
+// eslint-disable-next-line prefer-const -- reassigned at line 200
 let unsubscribeMembershipSecond;
 let unsubscribeMembershipAdded = () => {};
 const unsubscribeMembershipFirst = flat.subscribe(snapshot => {

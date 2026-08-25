@@ -1,8 +1,8 @@
 /** Scheduled-task state and Tauri command adapters. */
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
-  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statement would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.scheduled = function (context) {
     const state = context.state;
@@ -47,7 +47,7 @@
         SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY,
         JSON.stringify(scheduledTaskTemplateSources)
       );
-    } catch { /* localStorage 不可用时忽略 */ }
+    } catch { /* ignore when localStorage is unavailable */ }
   }
 
   function rememberScheduledTaskTemplateSource(taskId, templateId) {
@@ -57,7 +57,7 @@
   }
 
   function forgetScheduledTaskTemplateSource(taskId) {
-    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor; Object.hasOwn is unavailable, and this call is already the safe form
     if (!taskId || !Object.prototype.hasOwnProperty.call(scheduledTaskTemplateSources, taskId)) return;
     delete scheduledTaskTemplateSources[taskId];
     persistScheduledTaskTemplateSources();
@@ -216,7 +216,7 @@
     return true;
   }
 
-  // eslint-disable-next-line sonarjs/no-invariant-returns -- 回显归一化后的 id 是刻意的 API 约定
+  // eslint-disable-next-line sonarjs/no-invariant-returns -- echoing the normalized id is an intentional API contract
   function selectScheduledTask(id) {
     const nextId = typeof id === "string" && id.trim() ? id.trim() : null;
     if (state.selectedScheduledTaskId === nextId) return nextId;
@@ -260,12 +260,12 @@
   }
 
   function parseLooseJsonObject(text) {
-    try { return JSON.parse(text); } catch { /* 非法 JSON 由调用方回退原文 */ }
-    try { return JSON.parse(String(text || "").replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* 非法 JSON 由调用方回退原文 */ }
+    try { return JSON.parse(text); } catch { /* invalid JSON: the caller falls back to the raw text */ }
+    try { return JSON.parse(String(text || "").replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* invalid JSON: the caller falls back to the raw text */ }
     const balanced = extractBalancedJsonObject(String(text || ""));
     if (!balanced) return null;
-    try { return JSON.parse(balanced); } catch { /* 非法 JSON 由调用方回退原文 */ }
-    try { return JSON.parse(balanced.replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* 非法 JSON 由调用方回退原文 */ }
+    try { return JSON.parse(balanced); } catch { /* invalid JSON: the caller falls back to the raw text */ }
+    try { return JSON.parse(balanced.replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* invalid JSON: the caller falls back to the raw text */ }
     return null;
   }
 
@@ -308,7 +308,7 @@
     let fallback = null;
     const re = /```([^\n`]*)\n([\s\S]*?)```/g;
     let match;
-    // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
+    // biome-ignore lint/suspicious/noAssignInExpressions: the assignment doubles as the loop condition; refactoring would hurt readability
     while ((match = re.exec(text))) {
       const label = String(match[1] || "").trim().toLowerCase();
       const raw = String(match[2] || "").trim();
@@ -704,7 +704,7 @@
     const source = input || {};
     const backendInput = { mode: "yolo" };
     SCHEDULED_TASK_WRITABLE_FIELDS.forEach(function (field) {
-      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor; Object.hasOwn is unavailable, and this call is already the safe form
       if (Object.prototype.hasOwnProperty.call(source, field)) backendInput[field] = source[field];
     });
     return backendInput;

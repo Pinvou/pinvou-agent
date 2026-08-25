@@ -49,14 +49,15 @@ function languageHintForFile(name) {
 }
 
 export function useCodeHighlight(preview, fileName, languageHint) {
-  // 懒加载语言注册完成会 bump 版本号;版本号必须留在 useMemo deps 里
-  // (syntax-highlighter.js 契约),否则注册完成后已渲染的代码保持纯文本。
+  // Lazy language registration bumps the version when done; the version must
+  // stay in the useMemo deps (syntax-highlighter.js contract), otherwise code
+  // rendered before registration completes stays plain text.
   const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
   return useMemo(() => {
     if (preview?.kind !== 'text' || typeof preview.text !== 'string') return null;
     if (languageHint === 'diff') return highlightDiffCode(preview.text);
     return highlightCode(preview.text, languageHint || languageHintForFile(preview.name || fileName));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- syntaxVersion 是版本号,变化即需重算恢复高亮
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- syntaxVersion is a version counter; any change requires recomputing to restore highlighting
   }, [preview, fileName, languageHint, syntaxVersion]);
 }
 

@@ -233,10 +233,10 @@ function collectSearchResults(rawOutput) {
   // web_search: title 紧邻 url；同花顺新闻 MCP: url 后夹带 id/uid 等字段再到 title。
   let match;
   const titleThenUrl = /"title"\s*:\s*"([^"\n]{1,500})"\s*,\s*"url"\s*:\s*"([^"\n]{1,2000})"/g;
-  // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
+  // biome-ignore lint/suspicious/noAssignInExpressions: assignment doubles as the loop condition; refactoring hurts readability
   while ((match = titleThenUrl.exec(text))) add(match[1], match[2]);
   const urlThenTitle = /"url"\s*:\s*"(https?:[^"\n]{1,2000})"[\s\S]{0,700}?"title"\s*:\s*"([^"\n]{1,500})"/g;
-  // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
+  // biome-ignore lint/suspicious/noAssignInExpressions: assignment doubles as the loop condition; refactoring hurts readability
   while ((match = urlThenTitle.exec(text))) add(match[2], match[1]);
   return results;
 }
@@ -288,7 +288,7 @@ export function fetchToolDetails(tool) {
       : JSON.stringify(rawOutputValue, null, 2);
   let payload = rawOutputValue && typeof rawOutputValue === 'object' ? rawOutputValue : null;
   if (!payload && rawOutput) {
-    try { payload = JSON.parse(rawOutput); } catch { /* 非 JSON 输出则按文本处理 */ }
+    try { payload = JSON.parse(rawOutput); } catch { /* non-JSON output is treated as text */ }
   }
   payload = payload && typeof payload === 'object' ? payload : {};
   const url = String(payload.url || rawInput.url || '').trim();
@@ -299,7 +299,7 @@ export function fetchToolDetails(tool) {
     hostname = parsed.hostname.replace(/^www\./, '');
     const path = parsed.pathname === '/' ? '' : parsed.pathname;
     target = path.length > 36 ? `${hostname}${path.slice(0, 36)}…` : `${hostname}${path}`;
-  } catch { /* 非法 URL 直接展示原文 */ }
+  } catch { /* invalid URL: show the original text as-is */ }
   const statusValue = payload.status;
   const status = statusValue == null || statusValue === '' ? null : Number(statusValue);
   const content = typeof payload.content === 'string' ? payload.content : '';

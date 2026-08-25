@@ -1,5 +1,5 @@
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: 本文件经 index.html 以经典脚本(非 ESM)加载,函数级严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: loaded by index.html as a classic script (non-ESM); function-level strict mode is the payload
   "use strict";
 
   function hasFiles(event) {

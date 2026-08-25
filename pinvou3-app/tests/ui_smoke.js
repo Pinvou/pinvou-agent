@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/* eslint-disable no-useless-escape -- 消息载荷中的转义序列是数据 */
 /**
  * pinvou3 前端 UI 冒烟回归测试 — headless chromium + mock TauriBridge,加载真 src/index.html。
  * 覆盖易回归的前端通路:
@@ -76,7 +75,7 @@ function injectSource() {
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell-history',content:'history output'}]},
       {role:'assistant',content:[{type:'tool_use',id:'t-mcp',name:'mcp_pptx_make_pptx',input:{title:'季度报告'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]},
-      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060json\\n{"name":"Reviewer\\\'s Agent","body":"hidden-prompt","description":"It\\\'s a highlighted JSON card"}\\n\\u0060\\u0060\\u0060'}]},
+      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060json\\n{"name":"Reviewer\\'s Agent","body":"hidden-prompt","description":"It\\'s a highlighted JSON card"}\\n\\u0060\\u0060\\u0060'}]},
       {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060card-question\\n{"question":"继续执行？","options":["继续","取消"]}\\n\\u0060\\u0060\\u0060'}]}]}};
     function invoke(cmd,args){
       window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});
@@ -1870,5 +1869,5 @@ async function expand(page) {
   const failed = results.filter(r => !r.pass).length;
   console.log(failed ? `\n❌ ${failed}/${results.length} FAILED` : `\n✅ ALL ${results.length} PASS`);
   process.exit(failed ? 1 : 0);
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- existing async main() structure of the smoke script
 })().catch(e => { console.error('FATAL', e.message); process.exit(1); });

@@ -323,7 +323,7 @@ async function openScheduledNav(page) {
   return true;
 }
 
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 (async () => {
   const { server, url } = await startUiTestServer();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-scheduled-tasks-'));

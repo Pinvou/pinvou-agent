@@ -5,7 +5,7 @@
  * 浏览器预览时（无 window.__TAURI__）自动降级。
  */
 (function () {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
 
   // Browser transport owns its own replay and persistence semantics.
@@ -396,7 +396,7 @@
       if (diagnostics && typeof diagnostics.record === "function") {
         diagnostics.record(event, details || {});
       }
-    } catch { /* 诊断上报失败需静默降级 */ }
+    } catch { /* diagnostics reporting failure must degrade silently */ }
   }
   function authoritySyncBufferSnapshot(sid, buf) {
     return {
@@ -738,7 +738,7 @@
       if (remote.length) {
         try {
           window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
-        } catch { /* localStorage 写失败时退回远端数据即可 */ }
+        } catch { /* fall back to the remote data when the localStorage write fails */ }
         return remote;
       }
       if (cached.length) {
@@ -1064,7 +1064,7 @@
     if (buf) buf.artifacts = arts;
     else state.artifacts = arts;
     try {
-      try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch { /* 落盘失败不阻断会话切换 */ }
+      try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch { /* disk-write failure must not block session switching */ }
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         const firstUser = msgs.find(function (m) { return m.role === "user"; });
         // 自动标题复用展示层过滤（与 web 侧一致）：内部信封/子智能体交接不参与
@@ -1311,7 +1311,7 @@
   }
 
   // ── Pub/Sub ──────────────────────────────────────────────────────
-  // let(非 const):unsubscribe 通过整体替换数组移除订阅者。
+  // let (not const): unsubscribe removes a subscriber by replacing the whole array.
   let subscribers = [];
   const STATE_SLICE_FIELDS = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
@@ -1337,7 +1337,7 @@
     const slice = {};
     for (let i = 0; i < fields.length; i++) slice[fields[i]] = state[fields[i]];
     if (typeof structuredClone === "function") {
-      try { return structuredClone(slice); } catch { /* 静默回退 JSON */ } // safari14-ok: typeof-guarded with JSON fallback
+      try { return structuredClone(slice); } catch { /* silent JSON fallback */ } // safari14-ok: typeof-guarded with JSON fallback
     }
     return JSON.parse(JSON.stringify(slice));
   }
@@ -1383,7 +1383,7 @@
       const prototype = Object.getPrototypeOf(value);
       const isPlainObject = prototype === null || (
         Object.getPrototypeOf(prototype) === null &&
-        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor; Object.hasOwn is unavailable and this call is already the safe form
         Object.prototype.hasOwnProperty.call(prototype, "constructor") &&
         prototype.constructor && prototype.constructor.name === "Object"
       );
@@ -1419,7 +1419,7 @@
         : null;
       const previousKeys = previousObject ? Object.keys(previousObject) : [];
       const sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
-        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor; Object.hasOwn is unavailable and this call is already the safe form
         return Object.prototype.hasOwnProperty.call(previousObject, key);
       });
       let nextObject = sameShape ? null : {};

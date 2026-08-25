@@ -81,7 +81,7 @@ function injectSource() {
   })();`;
 }
 
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 (async () => {
   const { url } = await startUiTestServer();
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new',
@@ -93,7 +93,7 @@ function injectSource() {
   page.on('pageerror', error => console.error('PAGEERROR:', String(error)));
   await page.evaluateOnNewDocument(injectSource());
   await page.goto(url + '?detached=1&kind=session&id=detached-session-42', { waitUntil: 'networkidle0' });
-  await new Promise(r => { setTimeout(r, 1500); }); // 等 babel 编译 + 首渲染
+  await new Promise(r => { setTimeout(r, 1500); }); // wait for babel compile + first render
 
   const detachedFlag = await page.evaluate(() => window.__PINVOU_DETACHED__ === true);
   const text = await page.evaluate(() => document.body.innerText || '');

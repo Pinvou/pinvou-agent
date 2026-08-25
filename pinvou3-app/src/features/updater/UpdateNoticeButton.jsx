@@ -17,7 +17,7 @@ export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
 
   const updateVersionKey = logic && updateInfo ? logic.versionKey(updateInfo) : '';
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 新版本到达时复位「已关闭」,让新卡片重新可见
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset "dismissed" when a new version arrives so the new card becomes visible again
     setClosed(false);
   }, [updateVersionKey]);
 

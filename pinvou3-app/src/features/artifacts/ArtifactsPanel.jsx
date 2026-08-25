@@ -61,7 +61,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
-    // eslint-disable-next-line sonarjs/cognitive-complexity -- 预览/设计工作台一体面板:状态机分支均对应一种预览 kind 或设计运行时事件,拆分会割裂 pv/sel 联动
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- unified preview/design workbench panel: every state-machine branch maps to a preview kind or a design runtime event; splitting would sever the pv/sel linkage
     const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = [], onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
       const uiA = t.uiArtifacts;
       const showDesignWorkbench = isFullscreen && designMode;
@@ -90,7 +90,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const designRuntimeScriptRef = useRef(null);
       const designAiTimerRef = useRef(null);
       const designChangesRef = useRef(designChanges);
-      // eslint-disable-next-line react-hooks/refs -- latest-ref 同步:仅在回调/事件里读取(发布设计变更),渲染输出不依赖它
+      // eslint-disable-next-line react-hooks/refs -- latest-ref sync: read only in callbacks/events (publishing design changes); render output does not depend on it
       designChangesRef.current = designChanges;
 
       function setDesignStatus(status, error) {
@@ -174,7 +174,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
 
       useEffect(() => {
         if (designAiStatus !== 'sending' && designAiStatus !== 'running') return;
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 立即给出已耗时基线,再由定时器每秒推进
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- set the elapsed-time baseline immediately, then let the timer advance it every second
         setDesignAiNow(Date.now());
         const timer = window.setInterval(() => setDesignAiNow(Date.now()), 1000);
         return () => window.clearInterval(timer);
@@ -243,7 +243,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           return;
         }
         injectDesignRuntime(designFrameRef.current);
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅需在预览文档身份变化时重注入;依赖注入函数本身会破坏该触发时机
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- re-inject only when the preview document identity changes; depending on the inject function itself would break that trigger timing
       }, [designMode, tab, pv.kind, pv.text, pv.visual && pv.visual.html]);
 
       useEffect(() => {
@@ -259,7 +259,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         } else if (designCommand.kind === 'clear') {
           postDesignCommand({ type: DESIGN_MESSAGE_TYPES.CLEAR_CHANGES });
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按命令序号触发一次;designCommand 对象/回调每次渲染都是新引用
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- trigger once per command sequence number; the designCommand object/callback is a new reference on every render
       }, [designMode, designCommand && designCommand.seq]);
 
       useEffect(() => {
@@ -286,7 +286,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           window.removeEventListener('message', onMessage);
           destroyDesignRuntime();
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 事件监听只需挂载一次;回调经 ref/参数透传,加入依赖会反复解绑重放设计变更
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- the event listener only needs to mount once; callbacks are forwarded via ref/params, and adding them as deps would repeatedly rebind and replay design changes
       }, [onDesignElementSelected, onDesignRuntimeStatus, onDesignMutation]);
 
       async function flushMarkdownPreview() {
@@ -313,7 +313,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           setInfos(m);
         })();
         return () => { cancelled = true; };
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 以 pathsKey 作为 artifacts 的稳定摘要;直接依赖 artifacts 数组会因引用变化重复拉取
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- pathsKey is a stable digest of artifacts; depending on the artifacts array directly would refetch on every reference change
       }, [pathsKey, activeSessionId]);
 
       // 切 session(artifacts 整批换了)→ 选中文件已不在新列表 → 清预览、退回列表。
@@ -327,7 +327,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             sameArtifactPath(change.path, sel.path)
           ) {
             if (hasDirtyMarkdownPreview()) {
-              // eslint-disable-next-line react-hooks/set-state-in-effect -- 外部删除但本地有未保存编辑:同步标记拦截,避免脏数据被覆盖
+              // eslint-disable-next-line react-hooks/set-state-in-effect -- deleted externally while local unsaved edits exist: synchronously flag the interception so dirty data is not overwritten
               setExternalUpdateBlocked('removed');
               setTab('preview');
               return;
@@ -345,7 +345,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           })();
           return () => { cancelled = true; };
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 以 pathsKey 摘要触发;依赖 flush/hasDirty 等闭包函数会改变触发频率
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- trigger on the pathsKey digest; depending on closure functions like flush/hasDirty would change the trigger frequency
       }, [pathsKey]);
 
       async function preview(a, options = {}) {
@@ -379,7 +379,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           }
         })();
         return () => { cancelled = true; };
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅按选中路径 + loading 边沿触发一次加载;artifacts 等无关依赖会重复拉取
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on the selected-path + loading edge only; unrelated deps like artifacts would trigger duplicate fetches
       }, [sel && sel.path, pv.loading]);
 
       useEffect(() => {
@@ -391,14 +391,14 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         const target = preferred || (sel ? null : fallback);
         if (!target) return;
         if (sel && sameArtifactPath(sel.path, target.path)) return;
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 进入面板时自动选中最新的 artifact,属于一次性同步外部列表到本地选中态
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- auto-select the newest artifact when entering the panel; a one-off sync of the external list into local selection state
         preview(target, { skipFlush: !sel });
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 自动选中只需在候选集合/选中路径变化边沿评估;依赖 preview 函数会反复触发
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- auto-select only needs evaluating on candidate-set/selected-path change edges; depending on the preview function would retrigger it repeatedly
       }, [preferredArtifactPath, pathsKey, activeSessionId, sel && sel.path, pv.loading]);
 
       const selectedArtifactPath = sel && sel.path;
       useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换选中/页签时同步收起菜单,无级联渲染风险
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously collapse the menu on selection/tab switch; no cascading render risk
         setArtifactMenuOpen(false);
       }, [selectedArtifactPath, tab]);
 
@@ -428,7 +428,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!changeMatchesSession(change, bs)) return;
         if (!sameArtifactPath(change.path, sel.path)) return;
         if (['sending', 'running', 'refreshing'].includes(designAiStatus)) {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- 磁盘变更到达时同步翻转 AI 状态,避免状态指示滞留
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously flip the AI state when a disk change arrives, avoiding a stale status indicator
           setDesignAiStatePatch({ status: 'updated', startedAt: 0 });
           resetDesignAiStatusSoon();
         }
@@ -451,12 +451,12 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           if (sel) await preview(sel);
         })();
         return () => { cancelled = true; };
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按 artifactChange.seq 边沿触发;其他依赖会在每次渲染重复评估预览刷新
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- trigger only on the artifactChange.seq edge; other deps would re-evaluate the preview refresh on every render
       }, [bs?.artifactChange?.seq]);
 
       useEffect(() => {
         if (designAiStatus === 'sending' && bs && bs.busy) {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- busy 边沿同步推进 AI 状态机 sending→running
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously advance the AI state machine sending→running on the busy edge
           setDesignAiStatePatch((current) => ({ status: 'running', startedAt: current.startedAt || Date.now() }));
         }
         if ((designAiStatus === 'sending' || designAiStatus === 'running') && bs && !bs.busy) {
@@ -469,7 +469,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             if (designAiPendingPath) resetDesignAiStatusSoon(2600);
           }, 3500);
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- 状态机按 busy/status 边沿驱动;补充函数依赖会导致定时器被反复重建
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- the state machine is driven by busy/status edges; adding function deps would rebuild the timer repeatedly
       }, [bs && bs.busy, designAiStatus, designAiPendingPath]);
 
       useEffect(() => () => {
@@ -536,7 +536,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                   const itemInfo = infos[a.path];
                   const active = sel && sameArtifactPath(sel.path, a.path);
                   return (
-                    // biome-ignore lint/a11y/useFocusableInteractive: 菜单项容器,键盘路径由内层真实按钮(artifact-switcher-item)承担
+                    // biome-ignore lint/a11y/useFocusableInteractive: menu-item container; the keyboard path is handled by the inner real button (artifact-switcher-item)
                     <div
                       key={a.path}
                       role="menuitem"
@@ -676,8 +676,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
 
       return (
         <div className={isWide ? "relative w-full h-full" : "absolute inset-0 z-30 flex justify-end pointer-events-auto"}>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由标题栏关闭按钮(artifact-close)承担 */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the title-bar close button (artifact-close) */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container */}
           {!isWide && <div className="absolute inset-0 bg-black/40" onClick={handleClose}></div>}
           <div className={`relative h-full flex flex-col bg-white dark:bg-[#1E1F20] ${isWide ? 'w-full border-l border-black/10 dark:border-white/10' : 'w-[680px] max-w-[88vw] shadow-2xl animate-in slide-in-from-right duration-200'}`}>
             {/* header + tabs */}
@@ -725,7 +725,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                   ) : artifacts.map((a) => {
                     const info = infos[a.path];
                     return (
-                      // biome-ignore lint/a11y/useSemanticElements: 列表行含多处嵌套布局与行内按钮,button 会破坏既有样式
+                      // biome-ignore lint/a11y/useSemanticElements: the list row has multiple nested layouts and inline buttons; a button would break existing styles
                       <div key={a.path} role="button" tabIndex={0} onClick={() => preview(a)}
                         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); preview(a); } }}
                         className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer

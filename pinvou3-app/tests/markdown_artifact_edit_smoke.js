@@ -509,7 +509,7 @@ async function rec(results, name, pass, detail) {
   const failed = results.filter((r) => !r.pass).length;
   console.log(failed ? `\\n${failed}/${results.length} FAILED` : `\\nALL ${results.length} PASS`);
   process.exit(failed ? 1 : 0);
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 })().catch((e) => {
   console.error('FATAL', e && e.stack ? e.stack : e);
   process.exit(1);

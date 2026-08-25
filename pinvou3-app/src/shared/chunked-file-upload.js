@@ -1,5 +1,5 @@
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
 
   const CHUNK_BYTES = 256 * 1024;
@@ -9,7 +9,7 @@
     if (root.crypto && typeof root.crypto.randomUUID === "function") {
       return prefix + "_" + root.crypto.randomUUID(); // safari14-ok: guarded above
     }
-    // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:上传去重 ID,时间戳前缀已保证基本唯一
+    // eslint-disable-next-line sonarjs/pseudo-random -- not security-sensitive: upload dedupe ID; the timestamp prefix already ensures basic uniqueness
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 12);
   }
 
@@ -19,8 +19,8 @@
     return error;
   }
 
-  // 鸭子类型入参可能不是真 File(测试桩/宿主注入),防御负值与非法 size,
-  // 避免负 size 跳过分块循环直达成功路径。
+  // The duck-typed argument may not be a real File (test stub/host-injected); guard against negative
+  // or invalid size so a negative size cannot skip the chunk loop straight into the success path.
   function isValidUploadSize(size) {
     return typeof size === "number" && Number.isSafeInteger(size) && size >= 0;
   }
@@ -28,7 +28,7 @@
   function bytesToBase64(bytes) {
     let binary = "";
     for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-      // 分块只含 0-255 字节值,fromCharCode/fromCodePoint 等价;保留 apply 分块热路径。
+      // Chunks only contain byte values 0-255, so fromCharCode/fromCodePoint are equivalent; keep the apply chunked hot path.
       binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + 0x8000)); // eslint-disable-line unicorn/prefer-code-point
     }
     return root.btoa(binary);
@@ -101,7 +101,7 @@
             result,
             commitAcknowledged,
           });
-        } catch { /* 清理失败不得掩盖原始上传错误 */ }
+        } catch { /* cleanup failure must not mask the original upload error */ }
       }
       throw error;
     }

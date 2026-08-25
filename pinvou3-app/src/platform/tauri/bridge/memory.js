@@ -3,9 +3,9 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  */
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
-  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["memory"] = function (context) {
     const state = context.state;
@@ -119,7 +119,7 @@
       const status = sourceStates[source];
       if (status && status.available === false) {
         const key = stateKey || source;
-        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already the safe form
         return Object.prototype.hasOwnProperty.call(previous, key) ? previous[key] : fallback;
       }
       return value;
@@ -270,7 +270,7 @@
   }
   async function deleteMemoryPreference(id) {
     if (!id || !invoke) return false;
-    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(审计补充)
+    const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel (audit follow-up)
     try {
       const res = await invoke("delete_memory_preference", { id, sessionId: state.activeSessionId });
       if (sid === state.activeSessionId) {
@@ -290,7 +290,7 @@
   }
   async function updateMemoryItem(kind, id, patch) {
     if (!id || !invoke) return null;
-    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(审计补充)
+    const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel (audit follow-up)
     try {
       const command = kind === "preference" ? "update_memory_preference"
         : kind === "work_context" ? "update_work_context_memory"
@@ -319,7 +319,7 @@
   }
   async function deleteMemoryItem(kind, id) {
     if (!id || !invoke) return false;
-    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(审计补充)
+    const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel (audit follow-up)
     try {
       const command = kind === "preference" ? "delete_memory_preference"
         : kind === "work_context" ? "delete_work_context_memory"
@@ -348,7 +348,7 @@
   }
   async function archiveRecentWorkMemory(id) {
     if (!id || !invoke) return false;
-    const sid = state.activeSessionId; // 同 saveMemoryProfilePatch：切走后不写 B 的面板(审计补充)
+    const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel (audit follow-up)
     try {
       const res = await invoke("archive_recent_work_memory", { id, sessionId: state.activeSessionId });
       if (sid === state.activeSessionId) {
@@ -368,7 +368,7 @@
   }
   async function confirmMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
-    const sid = state.activeSessionId; // 入口捕获：候选卡 patch 与面板写入都定向回发起会话(审计补充)
+    const sid = state.activeSessionId; // captured at entry: both the candidate-card patch and panel writes route back to the originating session (audit follow-up)
     try {
       const result = await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
       if (sid === state.activeSessionId) {
@@ -387,7 +387,7 @@
   }
   async function ignoreMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
-    const sid = state.activeSessionId; // 同 confirmMemoryCandidate：定向回发起会话(审计补充)
+    const sid = state.activeSessionId; // same as confirmMemoryCandidate: route back to the originating session (audit follow-up)
     try {
       const result = await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
       if (sid === state.activeSessionId) {
@@ -404,7 +404,7 @@
   }
   async function neverMemoryCandidate(memoryId, chatItemId) {
     if (!memoryId) return;
-    const sid = state.activeSessionId; // 同 confirmMemoryCandidate：定向回发起会话(审计补充)
+    const sid = state.activeSessionId; // same as confirmMemoryCandidate: route back to the originating session (audit follow-up)
     try {
       const result = await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
       if (sid === state.activeSessionId) {

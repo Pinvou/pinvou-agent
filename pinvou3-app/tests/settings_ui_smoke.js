@@ -1329,7 +1329,7 @@ async function modalWidth(page, headingText) {
   await clickExact(page, '取消');
   await sleep(150);
 
-  const modelsBeforeSearchSave = await page.evaluate(() => window.__SETTINGS_TEST__.models().map(model => model.id).sort()); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  const modelsBeforeSearchSave = await page.evaluate(() => window.__SETTINGS_TEST__.models().map(model => model.id).sort()); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
   const savesBeforePick = await callCount(page, 'save_search_settings_and_restart');
   await clickExact(page, '添加搜索源');
   await sleep(250);
@@ -1369,7 +1369,7 @@ async function modalWidth(page, headingText) {
   rec('⑫ 确认重启后写入搜索源和凭据草稿', searchSaved && searchSaved.provider === 'bocha' && searchSaved.enabled.includes('bocha') && searchSaved.bochaAction === 'replace' && searchSaved.bochaKey === 'bocha-key', JSON.stringify(searchSaved));
 
   await clickSettingsSection(page, '搜索');
-  const modelsAfterSearchSave = await page.evaluate(() => window.__SETTINGS_TEST__.models().map(model => model.id).sort()); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  const modelsAfterSearchSave = await page.evaluate(() => window.__SETTINGS_TEST__.models().map(model => model.id).sort()); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
   rec('新增模型后保存搜索配置不会清空模型', JSON.stringify(modelsAfterSearchSave) === JSON.stringify(modelsBeforeSearchSave), JSON.stringify({ modelsBeforeSearchSave, modelsAfterSearchSave }));
   const savesBeforeDeleteLater = await callCount(page, 'update_search_settings');
   const restartsBeforeDeleteLater = await callCount(page, 'save_search_settings_and_restart');
@@ -1550,7 +1550,7 @@ async function modalWidth(page, headingText) {
   const failed = results.filter(result => !result.pass).length;
   console.log(failed ? `\n❌ ${failed}/${results.length} FAILED` : `\n✅ ALL ${results.length} PASS`);
   process.exit(failed ? 1 : 0);
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 })().catch(error => {
   console.error('FATAL', error.stack || error.message);
   process.exit(1);

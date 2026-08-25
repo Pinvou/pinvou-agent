@@ -86,7 +86,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       // 不是状态上升沿；点击关闭或弹层关闭时清掉标记，避免误续播。
       const [multiAgentRevealing, setMultiAgentRevealing] = useState(false);
       useEffect(() => {
-        if (!open) setMultiAgentRevealing(false); // eslint-disable-line react-hooks/set-state-in-effect -- 弹层关闭时清除揭幕标记,防止重开误续播
+        if (!open) setMultiAgentRevealing(false); // eslint-disable-line react-hooks/set-state-in-effect -- clear the reveal flag when the popup closes so reopening doesn't wrongly resume playback
       }, [open]);
       async function toggleMultiAgent() {
         if (multiAgentBusy || busy) return;
@@ -305,17 +305,17 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
               : nextBox
           ));
           if (onScaleChange) onScaleChange(scale);
-        } catch { /* 未就绪/跨域，忽略 */ }
+        } catch { /* not ready/cross-origin; ignore */ }
       };
-      useEffect(() => { setReady(false); setBox(null); naturalRef.current = null; }, [html]); // eslint-disable-line react-hooks/set-state-in-effect -- html 切换即另一产物,同步清空测量态
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- measure 是组件内闭包,仅在 zoom 参数变化时重测
+      useEffect(() => { setReady(false); setBox(null); naturalRef.current = null; }, [html]); // eslint-disable-line react-hooks/set-state-in-effect -- an html switch means a different artifact; synchronously clear measurement state
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- measure is an in-component closure; re-measure only when the zoom parameters change
       useEffect(() => { measure(); }, [zoomMode, customScale]);
       useEffect(() => {
         if (!wrapRef.current || typeof ResizeObserver === 'undefined') return;
         const ro = new ResizeObserver(() => measure());
         ro.observe(wrapRef.current);
         return () => ro.disconnect();
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- measure 是组件内闭包,仅在 zoom 参数变化时重建 observer
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- measure is an in-component closure; rebuild the observer only when the zoom parameters change
       }, [zoomMode, customScale]);
       const applyWheelZoom = deltaY => {
         const base = box ? box.scale : customScale;
@@ -346,7 +346,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         };
         doc.addEventListener('wheel', handleFrameWheel, { passive: false, capture: true });
         return () => doc.removeEventListener('wheel', handleFrameWheel, { capture: true });
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- applyWheelZoom 为组件内闭包;box && box.scale 复合表达式故意的,box 为空时不重挂
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- applyWheelZoom is an in-component closure; the box && box.scale compound expression is intentional so nothing is reattached while box is null
       }, [managedZoom, ready, box && box.scale, customScale, onCustomScaleChange]);
       useEffect(() => {
         const handlePreviewMessage = event => {
@@ -418,8 +418,8 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
           </button>
           {open && (
             <>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击空白收起弹层,键盘路径由触发按钮(aria-expanded)承担 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击空白收起层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click empty area to collapse the popup; the keyboard path is covered by the trigger button (aria-expanded) */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-empty-area collapse layer; non-interactive container */}
               <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
               <div className="absolute bottom-full left-0 mb-2 z-50 w-64 bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 <div className="px-3 py-2 text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t.composerModeTitle}</div>
@@ -525,10 +525,10 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         let alive = true;
         const isAlive = () => alive;
         const onChanged = () => refreshToolsMenu(isAlive);
-        refreshToolsMenu(isAlive); // eslint-disable-line react-hooks/set-state-in-effect -- 挂载时拉取工具菜单;refreshToolsMenu 为异步函数,setState 在 await 之后
+        refreshToolsMenu(isAlive); // eslint-disable-line react-hooks/set-state-in-effect -- fetch the tools menu on mount; refreshToolsMenu is async and its setState happens after the await
         window.addEventListener('pinvou:tools-changed', onChanged);
         return () => { alive = false; window.removeEventListener('pinvou:tools-changed', onChanged); };
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载时拉一次;refreshToolsMenu 是组件内闭包,工具变更靠事件刷新
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch once on mount; refreshToolsMenu is an in-component closure and tool changes refresh via events
       }, []);
       // 新一轮对话已被后端受理 → 本 scope 未提交的「打开」已由文件头的模块级
       // 监听清空（组件不在场也清）。此处仅 bump 版本号触发重渲染刷新开关禁用
@@ -730,11 +730,11 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
                 </button>
           </ComposerPopover>
           {projectSkillsHelp && createPortal(
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗右上角关闭按钮承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; the keyboard path is covered by the dialog's top-right close button
+            // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
             <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={() => setProjectSkillsHelp(false)}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events don't need bubbling here */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
               <div onClick={e => e.stopPropagation()} className="relative w-full max-w-[380px] rounded-[22px] shadow-2xl p-5 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
                 <div className="flex items-start justify-between gap-3 mb-4">
                   <div className="text-[16px] font-semibold">{t.composerProjectSkillsHelpTitle}</div>

@@ -205,7 +205,7 @@ function buildDesignRuntimeScript() {
     }
 
     function px(value) {
-      // eslint-disable-next-line unicorn/prefer-number-coercion -- parseFloat 可解析带 px 单位后缀的值,Number() 会得到 NaN
+      // eslint-disable-next-line unicorn/prefer-number-coercion -- parseFloat parses values with a px unit suffix; Number() would yield NaN
       const parsed = Number.parseFloat(String(value || ''));
       return Number.isFinite(parsed) ? parsed : 0;
     }
@@ -321,7 +321,7 @@ function buildDesignRuntimeScript() {
       const tag = element.tagName.toLowerCase();
       if (/^(script|style|html|body|iframe|img|svg|canvas|input|textarea|select)$/.test(tag)) return false;
       if (/^(span|p|a|button|label|strong|em|b|i|small|h1|h2|h3|h4|h5|h6)$/.test(tag)) return true;
-      // eslint-disable-next-line unicorn/prefer-dom-node-text-content -- innerText 取渲染后文本(<br>/块级换行),textContent 仅为游离节点兜底
+      // eslint-disable-next-line unicorn/prefer-dom-node-text-content -- innerText takes the rendered text (<br>/block line breaks); textContent is only the fallback for detached nodes
       const text = String(element.innerText || element.textContent || '').trim();
       if (!text || text.length > 160) return false;
       return element.children.length <= 1;
@@ -350,7 +350,7 @@ function buildDesignRuntimeScript() {
         tagName: element.tagName.toLowerCase(),
         className: element.className && typeof element.className === 'string' ? element.className : '',
         breadcrumbs: breadcrumbs(element),
-        // eslint-disable-next-line unicorn/prefer-dom-node-text-content -- innerText 取渲染后文本(<br>/块级换行),textContent 仅为游离节点兜底
+        // eslint-disable-next-line unicorn/prefer-dom-node-text-content -- innerText takes the rendered text (<br>/block line breaks); textContent is only the fallback for detached nodes
         text: String(element.innerText || element.textContent || '').trim().slice(0, 240),
         rect: {
           x: Math.round(rect.x),
@@ -374,7 +374,7 @@ function buildDesignRuntimeScript() {
       if (type === 'text' && bucket.text == null) {
         bucket.text = hasOriginalValue ? String(originalValue == null ? '' : originalValue) : (element.textContent || '');
       }
-      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor; Object.hasOwn is unavailable and this call is already the safe form
       if (type === 'style' && property && !Object.prototype.hasOwnProperty.call(bucket.styles, property)) {
         bucket.styles[property] = hasOriginalValue
           ? String(originalValue == null ? '' : originalValue)
@@ -388,7 +388,7 @@ function buildDesignRuntimeScript() {
       const type = payload && payload.changeType;
       const property = payload && payload.property;
       const value = payload && payload.value;
-      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor; Object.hasOwn is unavailable and this call is already the safe form
       const hasOriginalValue = !!(payload && Object.prototype.hasOwnProperty.call(payload, 'oldValue'));
       const originalValue = payload && payload.oldValue;
       try {

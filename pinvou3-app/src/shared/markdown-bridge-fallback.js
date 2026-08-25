@@ -12,7 +12,7 @@
  * 仅在共享渲染器尚未安装时才调用本文件的 vendor 全局兜底；本文件不再重复该委托。
  */
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
 
   // 抹平裸 <script>/<style>/<iframe> 等危险标签：在 marked.parse 【之后】做替换而非之前，
@@ -44,5 +44,5 @@
   }
 
   root.PinvouMarkdownBridgeFallback = Object.freeze({ renderMarkdown });
-// eslint-disable-next-line unicorn/no-this-outside-of-class -- UMD root 引用
+// eslint-disable-next-line unicorn/no-this-outside-of-class -- UMD root reference
 })(typeof window === "undefined" ? this : window);

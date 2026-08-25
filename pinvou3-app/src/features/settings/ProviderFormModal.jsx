@@ -259,7 +259,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
     }
     let contextWindowPayload = null;
     if (agent !== 'claude' && String(contextWindow || '').trim()) {
-      const parsed = Number.parseInt(String(contextWindow).trim(), 10); // eslint-disable-line unicorn/prefer-number-coercion -- 保持 parseInt 宽松解析语义
+      const parsed = Number.parseInt(String(contextWindow).trim(), 10); // eslint-disable-line unicorn/prefer-number-coercion -- keep parseInt's lenient parsing semantics
       if (!Number.isFinite(parsed) || parsed <= 0) {
         setError(copy.contextWindowInvalid);
         return;
@@ -323,7 +323,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
   const inputClass = `w-full h-10 rounded-xl px-3 text-[13px] outline-none transition-colors bg-[#F0F4F9] text-[#1F1F1F] border border-black/[0.06] focus:border-[#0B57D0]/50 dark:bg-white/[0.06] dark:text-[#E8EAED] dark:border-white/[0.09] dark:focus:border-[#64B5F6]/50`;
 
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由表单右上角关闭按钮承担
+    // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path is the form's top-right close button
     <div
       data-testid="acp-provider-form-dialog"
       role="dialog"
@@ -331,8 +331,8 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
       className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
       onClick={onClose}
     >
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: click propagation stop layer; keyboard events need no bubbling here */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: click propagation stop layer, not an interactive container */}
       <div
         onClick={event => event.stopPropagation()}
         className={`relative w-[min(480px,calc(100vw-24px))] max-h-[calc(100vh-48px)] overflow-y-auto custom-scrollbar rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}
@@ -447,7 +447,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
             <span className="block text-[12px] font-medium opacity-70 mb-1.5">{copy.modelSlotsTitle}</span>
             <div className="space-y-2">
               {CLAUDE_MODEL_SLOT_IDS.map(slot => (
-                // biome-ignore lint/a11y/noLabelWithoutControl: 槽位名仅为行内布局文本,输入控件为自定义组件自带 aria
+                // biome-ignore lint/a11y/noLabelWithoutControl: the slot name is inline layout text only; the input is a custom component with its own aria
                 <label key={slot} className="flex items-center gap-2">
                   <span className="w-20 shrink-0 text-[12px] opacity-60">{copy[`slot_${slot}`]}</span>
                   <span className="flex-1">
@@ -477,7 +477,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
               data-testid="acp-provider-context-window"
               className={`${inputClass} mt-1.5 font-mono`}
               value={contextWindow}
-              onChange={event => setContextWindow(event.target.value.replaceAll(/[^0-9]/g, ''))} // eslint-disable-line sonarjs/concise-regex -- [^0-9] 保持字面量写法不换成 \D,可读性优先
+              onChange={event => setContextWindow(event.target.value.replaceAll(/[^0-9]/g, ''))} // eslint-disable-line sonarjs/concise-regex -- keep [^0-9] literal instead of \D; readability first
               placeholder={copy.contextWindowPlaceholder}
               inputMode="numeric"
               spellCheck={false}
@@ -533,8 +533,8 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
             自绘弹窗无此限制）：新建/无密钥编辑 + 空 key、编辑清空已存密钥。
             z-[120] 压在整个表单弹窗（z-[110]）之上；背景点击只关确认层 */}
         {confirmStep && (
-          // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由确认层内真实按钮承担
-          // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+          // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path is the real buttons inside the confirm layer
+          // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, not an interactive container
           <div
             data-testid="acp-provider-form-confirm"
             className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
@@ -543,8 +543,8 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
               setConfirmStep(null);
             }}
           >
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: click propagation stop layer; keyboard events need no bubbling here */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: click propagation stop layer, not an interactive container */}
             <div
               onClick={event => event.stopPropagation()}
               className="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"

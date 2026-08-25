@@ -71,7 +71,7 @@ function parsedModeStoreFromRaw(raw) {
       draft: persistedPinvouModeState(parsed.draft),
       sessions: normalizedSessions,
       sessionOrder: Array.isArray(parsed.sessionOrder)
-        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already the safe form
         ? parsed.sessionOrder.filter((key) => Object.prototype.hasOwnProperty.call(normalizedSessions, key))
         : Object.keys(normalizedSessions),
     };
@@ -138,7 +138,7 @@ function loadPinvouModeState(storage, scopeKey = DEFAULT_PINVOU_MODE_SCOPE) {
       hasStoredModeState(target) ? store.draft : (readLegacyDraftState(target) || store.draft),
     );
   }
-  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already the safe form
   if (Object.prototype.hasOwnProperty.call(store.sessions, scopeKey)) {
     return createPinvouModeState(store.sessions[scopeKey]);
   }
@@ -150,7 +150,7 @@ function hasPinvouModeState(storage, scopeKey) {
   if (!scopeKey || scopeKey === DEFAULT_PINVOU_MODE_SCOPE) return false;
   const target = storage || (typeof window === 'undefined' ? null : window.localStorage);
   const store = readModeStore(target);
-  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already the safe form
   return Object.prototype.hasOwnProperty.call(store.sessions, scopeKey);
 }
 

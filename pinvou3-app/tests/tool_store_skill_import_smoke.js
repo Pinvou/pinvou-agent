@@ -92,7 +92,7 @@ function injectSource() {
 const sleep = ms => new Promise(r => { setTimeout(r, ms); });
 let failures = 0;
 const rec = (name, ok, debug) => { console.log(`${ok ? '✅' : '❌'} ${name}${ok ? '' : (debug ? ' :: ' + debug : '')}`); if (!ok) failures++; };
-// eslint-disable-next-line no-unused-vars -- 测试桩/后置赋值保留
+// eslint-disable-next-line no-unused-vars -- test stub; assigned later, kept intentionally
 async function clickExact(page, text) {
   return page.evaluate((t) => {
     const els = [...document.querySelectorAll('button,span,div,a')].filter(el => (el.textContent || '').trim() === t);
@@ -193,5 +193,5 @@ async function clickExact(page, text) {
   }
   console.log(failures ? `\n❌ ${failures} FAIL` : '\n✅ ALL PASS');
   process.exit(failures ? 1 : 0);
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- existing async main() structure of the smoke script
 })().catch(e => { console.error(e); process.exit(1); });

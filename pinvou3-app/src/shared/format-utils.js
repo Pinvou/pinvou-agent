@@ -6,7 +6,7 @@
  * 由两处统一引用 window.PinvouFormatUtils。
  */
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
 
   function fmtMiB(mib) {
@@ -39,5 +39,5 @@
     fmtDuration,
     fmtTok,
   });
-// eslint-disable-next-line unicorn/no-this-outside-of-class -- UMD root 引用
+// eslint-disable-next-line unicorn/no-this-outside-of-class -- UMD root reference
 })(typeof window === "undefined" ? this : window);

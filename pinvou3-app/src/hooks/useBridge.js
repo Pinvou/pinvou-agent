@@ -15,8 +15,8 @@ function useBridgeState(domains) {
     if (!bridge.available) return;
     bridge.lifecycle.init().catch(e => console.warn('[TauriBridge] init failed', e));
     return bridge.state.subscribeMany(domains, setBridgeState);
-    // 调用方都以内联数组字面量传 domains,依赖其标识会每渲染重订阅;
-    // domainKey 是语义依赖,domains 在每次 effect 运行时取最新值。
+    // Callers pass domains as inline array literals, so depending on its identity would resubscribe on every render;
+    // domainKey is the semantic dependency; domains is read fresh on each effect run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [domainKey]);
   return bridgeState;

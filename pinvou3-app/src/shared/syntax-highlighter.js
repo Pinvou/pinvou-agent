@@ -1,5 +1,5 @@
 import hljs from 'highlight.js/lib/core';
-/* eslint-disable sonarjs/regex-complexity, sonarjs/super-linear-regex -- 高亮 token 正则是既有测试钉死的行为 */
+/* eslint-disable sonarjs/regex-complexity, sonarjs/super-linear-regex -- highlight token regexes are behavior pinned by existing tests */
 import bash from 'highlight.js/lib/languages/bash';
 import c from 'highlight.js/lib/languages/c';
 import cpp from 'highlight.js/lib/languages/cpp';

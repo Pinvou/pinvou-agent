@@ -26,9 +26,10 @@ export const TitleBar = ({ t, sidebarOpen = true }) => {
         .then((decorated) => { if (!cancelled) setNativeControls(decorated === true); })
         .catch(() => { if (!cancelled) setNativeControls(false); });
     } else {
-      // 一次性探测外部系统(窗口 decorations)并回写本地镜像,非 props 派生,
-      // 无法在渲染期推导;保持同步 setState 以避免多渲染一帧错误三键。
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- 探测无 Tauri 窗口时的同步 fail-safe 回退,仅在挂载时执行一次
+      // One-shot probe of the external system (window decorations) mirrored into
+      // local state; not props-derived and not derivable during render. Keep the
+      // setState synchronous to avoid rendering the wrong three buttons for a frame.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous fail-safe fallback when no Tauri window is detected; runs once on mount
       setNativeControls(false);
     }
     return () => { cancelled = true; };
@@ -44,7 +45,7 @@ export const TitleBar = ({ t, sidebarOpen = true }) => {
       <div className="flex items-center h-full">
         <button type="button" onClick={() => appWindow && appWindow.minimize()} title={t.winMin}
           className={`h-full w-12 flex items-center justify-center transition-colors ${hoverBg}`}>
-          {/* 装饰性图标:按钮自身已有 title 作为可访问名称,SVG 对辅助技术隐藏 */}
+          {/* Decorative icon: the button's own title is the accessible name; hide the SVG from assistive tech */}
           <svg aria-hidden="true" width="11" height="11" viewBox="0 0 11 11"><rect x="1" y="5" width="9" height="1" fill="currentColor"/></svg>
         </button>
         <button type="button" onClick={() => appWindow && appWindow.toggleMaximize()} title={t.winMax}

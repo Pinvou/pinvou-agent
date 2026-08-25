@@ -42,7 +42,7 @@ function injectSource(){return `(function(){
     dialog:{open:async()=>null}
   };
 })();`;}
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 (async()=>{
   const {url:INDEX}=await startUiTestServer();
   const browser=await puppeteer.launch({executablePath:CHROME,headless:'new',userDataDir:PROFILE,args:['--no-sandbox']});
@@ -71,7 +71,7 @@ function injectSource(){return `(function(){
     const sx=box.x+20, sy=box.y+box.h/2;       // 行左侧(图标处)
     await page.mouse.move(sx,sy);
     await page.mouse.down();
-    await new Promise(r=> { setTimeout(r,480); });    // 长按 > 350ms,期间不动
+    await new Promise(r=> { setTimeout(r,480); });    // long-press > 350ms without moving
     const calls=await page.evaluate(()=>window.__CALLS__.filter(c=>c.cmd==='begin_detach_drag'));
     await page.mouse.up();
     if(!calls.some(c=>c.args&&c.args.kind==='monitor')){console.error('FAIL: 长按未以 kind=monitor 调 begin_detach_drag，实际:',JSON.stringify(calls));ok=false;}

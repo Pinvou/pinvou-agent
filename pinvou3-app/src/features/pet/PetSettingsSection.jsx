@@ -24,7 +24,7 @@ function PreviewSprite({ atlasUrl }) {
   const sequence = useMemo(() => buildPreviewSequence(), []);
   const [frameIndex, setFrameIndex] = useState(0);
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换图集时同步重置预览帧,一次性镜像
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the preview frame when the atlas changes; one-shot mirror
   useEffect(() => setFrameIndex(0), [atlasUrl]);
   useEffect(() => {
     const frame = sequence.frames[frameIndex] || sequence.frames[0];
@@ -141,16 +141,16 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
     PET_IDS.forEach((id) => {
       if (!assets[id]) loadPetCover(id);
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在区域出现时按需补载缺失封面;依赖 assets 会造成加载-入库-再触发的循环
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only backfill missing covers when the section appears; depending on assets would cause a load-store-retrigger loop
   }, [enabled]);
 
   // 当前选中宠的图集随区域出现预载(它随时会被桌宠窗口使用);其余宠 hover 才载。
   // 不把 entry 纳入依赖:图集失败会写新 entry,重跑会变成失败-重试死循环;
   // 主路径靠 ensurePetAtlas 在 !entry 时也照常发起(见下)来保证生效。
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/immutability -- ensurePetAtlas 声明在 effect 之后,仅为预载入口;运行时调用时已初始化
+    // eslint-disable-next-line react-hooks/immutability -- ensurePetAtlas is declared after the effect as a preload entry only; it is initialized by the time it runs
     if (enabled && currentId) ensurePetAtlas(currentId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 纳入 ensurePetAtlas/assets 会因图集失败写入而重触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- including ensurePetAtlas/assets would retrigger via the atlas-failure write
   }, [enabled, currentId]);
 
   const pendingSelectRef = useRef(null);
@@ -207,7 +207,7 @@ export default function PetSettingsSection({ enabled, selectedPetId, t, onSelect
 
   return (
     <div className="mt-4">
-      {/* biome-ignore lint/a11y/useSemanticElements: 卡片横滑轨道(region 地标语义保留给读屏),section 元素无横滑语义 */}
+      {/* biome-ignore lint/a11y/useSemanticElements: horizontal card swipe track (the region landmark semantics are kept for screen readers); the section element has no swipe semantics */}
       <div
         id="pet-selector-panel"
         role="region"

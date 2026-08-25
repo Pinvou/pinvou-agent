@@ -12,7 +12,7 @@ const rgbToHex = (value, fallback = '#000000') => {
 };
 
 const pxNumber = (value) => {
-  // eslint-disable-next-line unicorn/prefer-number-coercion -- parseFloat 可解析带 px 单位后缀的值,Number() 会得到 NaN
+  // eslint-disable-next-line unicorn/prefer-number-coercion -- parseFloat parses values with a px unit suffix; Number() would yield NaN
   const n = Number.parseFloat(String(value || '').replace('px', ''));
   return Number.isFinite(n) ? Math.round(n) : 0;
 };
@@ -23,7 +23,7 @@ const cssValue = (style, key, fallback = '') => {
 };
 
 const normalizeNumber = (value, unit = 'px') => {
-  // eslint-disable-next-line unicorn/prefer-number-coercion -- parseFloat 可解析带单位后缀的值,Number() 会得到 NaN
+  // eslint-disable-next-line unicorn/prefer-number-coercion -- parseFloat parses values with a unit suffix; Number() would yield NaN
   const n = Number.parseFloat(String(value || '').replace(unit, ''));
   if (!Number.isFinite(n)) return '';
   return String(Math.round(n * 100) / 100);
@@ -119,14 +119,14 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = [], onApplyChange,
   const selectedElementId = selectedElement && selectedElement.id;
   useEffect(() => {
     const next = selectedElement ? selectedElement.text || '' : '';
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 选中元素切换时同步文本草稿,一次性镜像外部选择状态
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the text draft when the selected element changes; one-shot mirror of external selection state
     setTextDraft(next);
     committedTextRef.current = next;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按元素 id 边沿重置;依赖整个 selectedElement 会在无关字段变化时覆盖用户草稿
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only on element-id edges; depending on the whole selectedElement would overwrite the user draft on unrelated field changes
   }, [selectedElementId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换元素/字体时同步收起弹层,无级联渲染风险
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- collapse the popovers when element/font changes; no cascading render risk
     setFontMenuOpen(false);
     setColorMenu(null);
     setDetailsOpen(false);

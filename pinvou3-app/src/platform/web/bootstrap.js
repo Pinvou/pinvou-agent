@@ -1,6 +1,6 @@
 /** Browser-side Tauri compatibility layer for the shared Full WebUI. */
 (function () {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
 
   const WEB_CAPABILITIES = {
@@ -115,7 +115,7 @@
     if (window.crypto && typeof window.crypto.getRandomValues === "function") {
       window.crypto.getRandomValues(bytes);
     } else {
-      // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:randomUUID/getRandomValues 均不可用时的请求 ID 兜底
+      // eslint-disable-next-line sonarjs/pseudo-random -- not security-sensitive: request ID fallback when neither randomUUID nor getRandomValues is available
       for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
     }
     return `${prefix}_${Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")}`;
@@ -150,8 +150,8 @@
       this.negotiatedEvents = new Set();
       this.webAllowedCommands = new Set();
       this.webAllowedEvents = new Set();
-      // allowedCommands/allowedEvents 在策略/能力协商完成后才赋值;先声明为 null(与原
-      // 动态挂载的 undefined 同为 falsy,612 行的存在性检查语义不变)。
+      // allowedCommands/allowedEvents are only assigned after policy/capability negotiation; declared null first
+      // (same falsy as the previously dynamic undefined; the existence check at line 612 is unchanged).
       this.allowedCommands = null;
       this.allowedEvents = null;
       this.pendingListenerRegistrations = 0;
@@ -178,7 +178,7 @@
       this.cursorKey = endpointId ? `pinvou.web.cursor.${endpointId}` : "";
       let cursor = {};
       if (this.cursorKey) {
-        try { cursor = JSON.parse(sessionStorage.getItem(this.cursorKey) || "{}"); } catch { /* 损坏的游标按空态处理 */ }
+        try { cursor = JSON.parse(sessionStorage.getItem(this.cursorKey) || "{}"); } catch { /* treat a corrupted cursor as empty */ }
       }
       this.streamEpoch = typeof cursor.stream_epoch === "string" ? cursor.stream_epoch : "";
       this.lastSeq = Number.isFinite(Number(cursor.after_seq)) ? Number(cursor.after_seq) : 0;
@@ -196,7 +196,7 @@
       this.connectionState = detail;
       window.dispatchEvent(new CustomEvent("pinvou:web-connection", { detail }));
       this.connectionListeners.forEach((listener) => {
-        try { listener(detail); } catch { /* 单个监听器异常不阻断广播 */ }
+        try { listener(detail); } catch { /* a failing listener must not block the broadcast */ }
       });
     }
 
@@ -234,7 +234,7 @@
       if (this.closedPermanently || this.reconnectTimer) return;
       this.setConnection("connecting", message);
       const base = Math.min(10_000, 500 * (2 ** Math.min(this.reconnectAttempt, 5)));
-      // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:重连退避抖动(±20%),仅影响重试节奏
+      // eslint-disable-next-line sonarjs/pseudo-random -- not security-sensitive: reconnect backoff jitter (±20%); only affects retry pacing
       const delay = Math.round(base * (0.8 + Math.random() * 0.4));
       this.reconnectAttempt += 1;
       this.reconnectTimer = window.setTimeout(() => {
@@ -326,7 +326,7 @@
             // user's stable link.
             this.desktopOnline = false;
             this.setConnection("desktop_offline", "等待桌面端重新连接…");
-            try { this.socket && this.socket.close(); } catch { /* 套接字已关闭 */ }
+            try { this.socket && this.socket.close(); } catch { /* socket already closed */ }
           } else {
             this.setConnection("error", message.message || "远程控制连接异常。");
           }
@@ -346,7 +346,7 @@
       this.negotiatedEvents.clear();
       if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
-      try { this.socket && this.socket.close(); } catch { /* 套接字已关闭 */ }
+      try { this.socket && this.socket.close(); } catch { /* socket already closed */ }
       this.socket = null;
       const error = new Error(message);
       this.pending.forEach((entry) => {
@@ -367,7 +367,7 @@
           stream_epoch: this.streamEpoch,
           after_seq: this.lastSeq,
         }));
-      } catch { /* sessionStorage 不可用时游标仅留内存 */ }
+      } catch { /* keep the cursor in memory only when sessionStorage is unavailable */ }
     }
 
     handleRemoteEvent(message, sourceSocket = this.socket) {

@@ -200,5 +200,5 @@ async function clickChip(page, text) {
   }
   console.log(failures ? `\n❌ ${failures} FAIL` : '\n✅ ALL PASS');
   process.exit(failures ? 1 : 0);
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 })().catch(e => { console.error(e); process.exit(1); });

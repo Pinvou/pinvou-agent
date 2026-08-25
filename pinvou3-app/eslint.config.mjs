@@ -153,7 +153,7 @@ export default defineConfig([
       'unicorn/no-unnecessary-string-trim': 'error',
       'unicorn/no-useless-coercion': 'error',
       'unicorn/no-unnecessary-global-this': 'error',
-      // autofix 产出 blob.text()/blob.arrayBuffer()（Safari 14.0.1+，略超 14.0.0 下限）且 audit-compat 不覆盖这两个成员 API，关闭。
+      // Autofix yields blob.text()/blob.arrayBuffer() (Safari 14.0.1+, slightly above the 14.0.0 floor) and audit-compat does not cover these two member APIs; disabled.
       'unicorn/prefer-blob-reading-methods': 'off',
       'unicorn/prefer-dom-node-append': 'error',
       'unicorn/prefer-dom-node-remove': 'error',

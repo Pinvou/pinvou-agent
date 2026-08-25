@@ -299,7 +299,7 @@ assert.ok(
     !/data-testid="scheduled-detail-menu-popover"/.test(indexHtml) &&
     !/data-testid="scheduled-detail-toggle"/.test(indexHtml) &&
     /flex shrink-0 flex-wrap items-center justify-between/.test(indexHtml) &&
-    /data-testid="scheduled-run-now"[\s\S]{0,640}scheduledCopy\.runNow/.test(indexHtml) &&
+    /data-testid="scheduled-run-now"[\s\S]{0,720}scheduledCopy\.runNow/.test(indexHtml) &&
     /data-testid="scheduled-open-folder"[\s\S]{0,520}scheduledCopy\.openFolder/.test(indexHtml) &&
     !/data-testid="scheduled-detail-cancel"/.test(indexHtml) &&
     /data-testid="scheduled-detail-save"[\s\S]{0,320}scheduledCopy\.save/.test(indexHtml) &&
@@ -954,7 +954,7 @@ async function mismatchedEchoedDownloadIdCancelsBothLeases() {
 
   assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), false);
   assert.ok(requestedId && requestedId !== echoedId);
-  assert.deepStrictEqual(cancelled.sort(), [requestedId, echoedId].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  assert.deepStrictEqual(cancelled.sort(), [requestedId, echoedId].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of a string array is exactly the assertion's expectation
     "a protocol mismatch must release both the requested and desktop-echoed leases");
   assert.strictEqual(sharedStorage["pinvou.web_session_download_leases.v1"], undefined);
 }
@@ -1069,7 +1069,7 @@ async function reentrantSubscriptionNotificationsStayOrdered() {
   const membershipFirst = [];
   const membershipSecond = [];
   const membershipAdded = [];
-  // eslint-disable-next-line prefer-const -- 测试桩/后置赋值保留
+  // eslint-disable-next-line prefer-const -- kept for the test stub / post-declaration assignment
   let unsubscribeMembershipSecond;
   let unsubscribeAdded = function () {};
   const unsubscribeMembershipFirst = membershipBridge.state.subscribe("chat", function (snapshot) {
@@ -2640,7 +2640,7 @@ async function remoteInterruptedTurnKeepsItsDisplayPosition() {
     base_transcript_revision: "remote-2",
   });
   await harness.emit("chat:turn_started", { session_id: sessionId });
-  durableMessages = [...durableMessages, 
+  durableMessages = [...durableMessages,
     { role: "user", content: [{ type: "text", text: "remote question" }] },
   ];
   await harness.emit("chat:delta", {
@@ -4811,109 +4811,6 @@ async function scheduledCreateListRefreshBehavior() {
 // main.jsx 只按 scheduledRunContext 的真值决定渲染 ChatView 还是 ScheduledTasksView,
 // 而 ChatView 内部还要求 sessionId===activeSessionId 才渲染返回按钮 —— 只清
 // activeSessionId 会卡在「定时路由下的空白页且没有返回按钮」。
-// eslint-disable-next-line no-unused-vars -- 测试桩/后置赋值保留
-async function sessionSwitchCriticalPathBehavior() {
-  const harness = createBridgeHarness();
-  const bridge = harness.bridge;
-  const load = deferred();
-  const personaEvents = deferred();
-  const reviews = deferred();
-  const mode = deferred();
-  const persona = deferred();
-  const collection = deferred();
-  const memory = deferred();
-  harness.handlers.load_session = function () { return load.promise; };
-  harness.handlers.get_session_persona_events = function () { return personaEvents.promise; };
-  harness.handlers.get_session_pinvou_reviews = function () { return reviews.promise; };
-  harness.handlers.get_mode_state = function () { return mode.promise; };
-  harness.handlers.get_active_persona = function () { return persona.promise; };
-  harness.handlers.session_mounted_collection = function () { return collection.promise; };
-  harness.handlers.get_memory_overview = function () { return memory.promise; };
-
-  const switching = bridge.sessions.switchToSession("chat-fast-path");
-  await tick();
-  assert.ok(
-    ["load_session", "get_session_persona_events", "get_session_pinvou_reviews"].every(function (command) {
-      return harness.calls.some(function (call) { return call.cmd === command; });
-    }),
-    "transcript, persona events and review records must start in parallel"
-  );
-  load.resolve({
-    metadata: { id: "chat-fast-path", title: "Fast path" },
-    messages: [{ role: "user", content: [{ type: "text", text: "render me first" }] }],
-    artifacts: [],
-  });
-  personaEvents.resolve([]);
-  reviews.resolve([]);
-  let switchingSettled = false;
-  switching.then(function () { switchingSettled = true; });
-  await tick();
-  await tick();
-  assert.strictEqual(bridge.state.get('sessions').activeSessionId, "chat-fast-path");
-  assert.ok(JSON.stringify(bridge.state.get('chat').chatItems).includes("render me first"));
-  assert.strictEqual(switchingSettled, false, "the bridge may finish its guarded state sync after publishing the transcript");
-  assert.strictEqual(
-    bridge.state.get('memory').memory.loading,
-    true,
-    "presentation-only RPCs must not block the first rendered Session snapshot"
-  );
-
-  mode.resolve({ mode: "plan" });
-  persona.resolve({ id: "persona-fast" });
-  collection.resolve("collection-fast");
-  memory.resolve({ profile: { summary: "fast" }, preferences: [] });
-  assert.strictEqual(await switching, true, "the guarded switch completes after parallel presentation state settles");
-  await tick();
-  await tick();
-  const completed = bridge.state.getMany(['sessions', 'chat', 'knowledge', 'personas', 'memory']);
-  assert.strictEqual(completed.modeState.mode, "plan");
-  assert.strictEqual(completed.activePersona.id, "persona-fast");
-  assert.strictEqual(completed.mountedCollection, "collection-fast");
-  assert.strictEqual(completed.memory.loading, false);
-
-  const staleMode = deferred();
-  const stalePersona = deferred();
-  const staleCollection = deferred();
-  const staleMemory = deferred();
-  harness.handlers.load_session = function (args) {
-    return { metadata: { id: args.id, title: args.id }, messages: [], artifacts: [] };
-  };
-  harness.handlers.get_session_persona_events = function () { return []; };
-  harness.handlers.get_session_pinvou_reviews = function () { return []; };
-  harness.handlers.get_mode_state = function (args) {
-    return args.sessionId === "chat-stale" ? staleMode.promise : { mode: "agent" };
-  };
-  harness.handlers.get_active_persona = function (args) {
-    return args.sessionId === "chat-stale" ? stalePersona.promise : { id: "persona-current" };
-  };
-  harness.handlers.session_mounted_collection = function (args) {
-    return args.sessionId === "chat-stale" ? staleCollection.promise : "collection-current";
-  };
-  harness.handlers.get_memory_overview = function (args) {
-    return args.sessionId === "chat-stale" ? staleMemory.promise : { profile: { summary: "current" } };
-  };
-  const staleSwitch = bridge.sessions.switchToSession("chat-stale");
-  await tick();
-  await tick();
-  assert.strictEqual(bridge.state.get('sessions').activeSessionId, "chat-stale");
-  assert.strictEqual(await bridge.sessions.switchToSession("chat-current"), true);
-  await tick();
-  await tick();
-  staleMode.resolve({ mode: "plan" });
-  stalePersona.resolve({ id: "persona-stale" });
-  staleCollection.resolve("collection-stale");
-  staleMemory.resolve({ profile: { summary: "stale" } });
-  assert.strictEqual(await staleSwitch, false, "a superseded switch must report that it did not finish committing");
-  await tick();
-  await tick();
-  const current = bridge.state.getMany(['sessions', 'chat', 'knowledge', 'personas', 'memory']);
-  assert.strictEqual(current.activeSessionId, "chat-current");
-  assert.strictEqual(current.modeState.mode, "agent");
-  assert.strictEqual(current.activePersona.id, "persona-current");
-  assert.strictEqual(current.mountedCollection, "collection-current");
-  assert.strictEqual(current.memory.profile.summary, "current");
-}
-
 async function scheduledRunViewExitBehavior() {
   const task = { id: "automation-exit", name: "Exit task" };
   const run = {
@@ -5142,7 +5039,6 @@ async function presentationReconciliationUsesStableEventIdentity() {
   );
 }
 
-// eslint-disable-next-line no-unused-vars -- 测试桩/后置赋值保留
 async function remoteSessionDeletionConvergesPresentationState() {
   const harness = createBridgeHarness();
   const deletedId = "chat-deleted-remotely";
@@ -5566,8 +5462,9 @@ Promise.resolve()
   .then(scheduledSessionPersistenceBehavior)
   .then(scheduledDraftModelBehavior)
   .then(scheduledTaskWriteSanitizationBehavior)
+  .then(remoteSessionDeletionConvergesPresentationState)
   .then(function () { console.log('PASS scheduled tasks unit'); })
-  // eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+  // eslint-disable-next-line unicorn/prefer-top-level-await -- the smoke script already has an async main() structure
   .catch(function (error) {
     console.error(error && error.stack || error);
     process.exitCode = 1;

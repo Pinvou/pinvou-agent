@@ -40,7 +40,7 @@ function useAnchoredPosition(open, triggerRef, active) {
     };
     position();
     window.addEventListener('resize', position);
-    // visualViewport 在桌面 Safari 14+/iOS 上存在;不存在时跳过监听,行为不变
+    // visualViewport exists on desktop Safari 14+/iOS; skip the listener when absent, behavior unchanged
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', position);
       window.visualViewport.addEventListener('scroll', position);
@@ -64,8 +64,9 @@ function useAnchoredPosition(open, triggerRef, active) {
 function useOutsidePointerClose(open, onClose, insideRefs) {
   const onCloseRef = useRef(onClose);
   const insideRefsRef = useRef(insideRefs);
-  // latest-ref 同步:在 effect 中写回而不是渲染期写回,避免渲染期访问 ref;
-  // 消费方(pointerdown 捕获监听)只在提交后触发,行为不变。
+  // latest-ref sync: write back in an effect, not during render, to avoid
+  // render-time ref access; the consumer (pointerdown capture listener) only
+  // fires after commit, so behavior is unchanged.
   useEffect(() => {
     onCloseRef.current = onClose;
     insideRefsRef.current = insideRefs;
@@ -98,10 +99,12 @@ const ComposerPopover = ({ open, onClose, triggerRef, compact, desktopClassName,
   }
   return createPortal(
     <>
-      {/* 透明外点关闭层:仅吸收指针点击以关闭弹层;键盘路径由触发按钮(再次
-          激活可切换关闭)与面板内的真实 <button type="button"> 菜单项承担,故非交互元素。 */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: 纯指针外点关闭层,键盘路径由触发按钮与面板内按钮承担 */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: 纯指针外点关闭层,非交互容器 */}
+      {/* Transparent outside-click dismiss layer: only absorbs pointer clicks to
+          close the popover; the keyboard path is handled by the trigger button
+          (re-activating toggles it closed) and the real <button type="button">
+          menu items inside the panel, so this is a non-interactive element. */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: pointer-only outside-click dismiss layer; keyboard path handled by the trigger button and panel buttons */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-only outside-click dismiss layer, non-interactive container */}
       <div className="fixed inset-0 z-40" onClick={onClose}></div>
       <div {...menuProps} style={style || { position: 'fixed', visibility: 'hidden' }} className={`fixed ${POPOVER_SURFACE}`}>
         {children}

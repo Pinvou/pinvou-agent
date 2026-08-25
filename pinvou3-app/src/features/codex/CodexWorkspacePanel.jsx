@@ -36,7 +36,7 @@ function clampWorkspaceWidth(width, rootWidth) {
 
 function savedWorkspaceWidth() {
   try {
-    // eslint-disable-next-line unicorn/prefer-number-coercion -- 宽度需整数语义:非整数/解析失败回退默认值
+    // eslint-disable-next-line unicorn/prefer-number-coercion -- width needs integer semantics: non-integer or parse failure falls back to the default
     const value = Number.parseInt(localStorage.getItem(WORKSPACE_WIDTH_KEY) || '', 10);
     return Number.isFinite(value) && value >= WORKSPACE_MIN_WIDTH
       ? value
@@ -341,7 +341,7 @@ export function CodexWorkspacePanel({
   useEffect(() => {
     // 工作区切换：作废在途预览响应（见 showFile 的序号校验）。
     previewRequestRef.current += 1;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换工作区时同步复位整套面板状态,一次性镜像
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the whole panel state on workspace switch; one-shot mirror
     setEntriesByDirectory({});
     setExpanded(new Set());
     setQuery('');
@@ -357,7 +357,7 @@ export function CodexWorkspacePanel({
     } else if (onChangeCount) {
       onChangeCount(0);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只按工作区/会话切换边沿复位并重载;依赖加载函数会反复触发全量刷新
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset and reload only on workspace/session switch edges; depending on the load functions would repeatedly trigger full refreshes
   }, [sessionId, browsePath]);
 
   useEffect(() => {
@@ -372,7 +372,7 @@ export function CodexWorkspacePanel({
       }
     }, 350);
     return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 防抖重载:按刷新令牌/可见性/展开集合触发;依赖加载函数会反复重建定时器
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debounced reload: triggered by refresh token/visibility/expansion set; depending on the load functions would repeatedly rebuild the timer
   }, [refreshToken, sessionId, visible, tab, expanded]);
 
   useEffect(() => {
@@ -388,12 +388,12 @@ export function CodexWorkspacePanel({
       if (sessionId && tab === 'changes') loadChanges();
     }, 2000);
     return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 轮询订阅:按可见性/页签/展开集合配置;依赖加载函数会反复重建定时器
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- polling subscription: configured by visibility/tab/expansion set; depending on the load functions would repeatedly rebuild the timer
   }, [visible, browsable, tab, sessionId, browsePath, expanded]);
 
   useEffect(() => {
     if (!browsable || !query.trim()) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- 清空搜索词时同步复位结果与搜索态,一次性镜像
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset results and search state when the query is cleared; one-shot mirror
       setSearchResults([]);
       setSearching(false);
       return;
@@ -414,7 +414,7 @@ export function CodexWorkspacePanel({
       }
     }, 250);
     return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 搜索防抖:只按查询词/范围触发;依赖加载函数会反复重建定时器
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- search debounce: triggered only by query/scope; depending on the load functions would repeatedly rebuild the timer
   }, [query, sessionId, browsePath]);
 
   async function toggleDirectory(entry) {
@@ -501,10 +501,10 @@ export function CodexWorkspacePanel({
       style={{ width: `${panelWidth}px` }}
       className={`${visible ? 'flex' : 'hidden'} relative max-w-[88vw] min-w-0 shrink-0 border-l border-black/[0.06] dark:border-white/[0.07] bg-white/92 dark:bg-[#17181A]/96 backdrop-blur-xl flex-col`}
     >
-      {/* biome-ignore lint/a11y/useFocusableInteractive: 拖拽分隔条依赖鼠标拖拽,div 语义 */}
-      {/* biome-ignore lint/a11y/useSemanticElements: 拖拽分隔条需要 div 语义 */}
+      {/* biome-ignore lint/a11y/useFocusableInteractive: drag divider relies on mouse dragging; div semantics */}
+      {/* biome-ignore lint/a11y/useSemanticElements: drag divider requires div semantics */}
       <div
-        // biome-ignore lint/a11y/useAriaPropsForRole: 拖拽分隔条非焦点控件,valuenow 语义不适用
+        // biome-ignore lint/a11y/useAriaPropsForRole: drag divider is not a focusable control; valuenow semantics do not apply
         role="separator"
         aria-label={copy.resize}
         aria-orientation="vertical"

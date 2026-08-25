@@ -67,7 +67,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
   );
 }
 
-      // eslint-disable-next-line sonarjs/cognitive-complexity -- KnowledgeView 单文件聚合了知识库/产出物两个子视图,拆分需单独设计;复杂度先以豁免记账
+      // eslint-disable-next-line sonarjs/cognitive-complexity -- KnowledgeView aggregates the knowledge-base and outputs sub-views in one file; splitting needs a dedicated design; complexity tracked via this suppression for now
     const KnowledgeView = ({ theme, t, mode }) => {
       // mode='outputs' 时作为一级「产出物」视图独立渲染:固定 output 段,隐藏段切换,显示自己的标题。
       const outputsOnly = mode === 'outputs';
@@ -247,9 +247,9 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         }
         setOutputsLoaded(true);
         kbCache.outputsLoaded = true;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       }, []);
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
       useEffect(() => { if (sub === 'output') refreshOutputs(); }, [sub, refreshOutputs]);
       useEffect(() => {
         if (sub !== 'output') return;
@@ -259,7 +259,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       }, [sub, refreshOutputs]);
       const outputArtifactKey = ((bs && bs.artifacts) || []).map((a) => `${a.path || ''}:${a.basename || ''}`).join('|');
       useEffect(() => {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
         if (sub === 'output') refreshOutputs();
       }, [sub, outputArtifactKey, refreshOutputs]);
       const filteredOutputs = React.useMemo(() => {
@@ -394,13 +394,13 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           }).then((next) => { if (alive) setPv(next); });
           }, 80);
           return () => { alive = false; clearTimeout(timer); };
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
         }, [cacheKey, visible, o.path, o.category, ext, outputSessionId, runQueuedPreview, rememberOutPreview]);
 
         const htmlPreviewDoc = (html) => '<style>html,body{overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
         const officePreviewDoc = (html) => '<style>html,body{background:#fff!important;margin:0;color:#111!important;overflow:hidden!important;}*{animation-duration:.001s!important;scrollbar-width:none!important;}*::-webkit-scrollbar{display:none!important;}</style>' + (html || '');
         const shell = (children) => (
-          // biome-ignore lint/a11y/noStaticElementInteractions: 条件 role=button + onKeyDown 已在下方,静态分析看不到动态 role
+          // biome-ignore lint/a11y/noStaticElementInteractions: conditional role=button + onKeyDown are below; static analysis cannot see the dynamic role
           <div ref={boxRef} onClick={onOpen} role={onOpen ? 'button' : undefined} tabIndex={onOpen ? 0 : undefined}
             onKeyDown={(e) => { if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
             className={`h-[164px] m-2 rounded-[15px] overflow-hidden relative bg-[#111216] ring-1 ring-white/[0.045] ${onOpen ? 'cursor-pointer' : ''}`}>
@@ -500,20 +500,20 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         kbCache.types = ty || kbCache.types;
         kbCache.loaded = true;
         setLoaded(true);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       }, []);
       useEffect(() => {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
         if (!outputsOnly) refreshL0();
       }, [outputsOnly, refreshL0]);
       useEffect(() => {
         if (outputsOnly || !scan || !scan.running) return;
         // 扫描中:既刷统计(类型卡数字增长),也增量重查文件表——文件随扫描逐渐冒出来,
         // 不再"顶部扫描中却下面说没有文件"。cat/query 进依赖,让闭包取当前筛选/搜索值。
-      // eslint-disable-next-line react-hooks/immutability -- 声明前访问是同模块函数引用,运行时已初始化
+      // eslint-disable-next-line react-hooks/immutability -- pre-declaration access is a same-module function reference, already initialized at runtime
         const id = setInterval(() => { refreshL0(); runSearch(cat, query); }, 1500);
         return () => clearInterval(id);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       }, [outputsOnly, scan ? scan.running : false, cat, query]);
 
       const runSearch = async (catKey, text) => {
@@ -524,14 +524,14 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         catch { setResults([]); }
         setSearched(true);
       };
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       useEffect(() => { if (sub === 'files') runSearch(cat, query); }, [cat, sub]);
 
-      const startScan = async () => { try { setScan(await inv('kb_start_scan', { roots: null })); } catch { /* 静默降级 */ } };
+      const startScan = async () => { try { setScan(await inv('kb_start_scan', { roots: null })); } catch { /* silently degrade */ } };
       useEffect(() => {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
         if (!outputsOnly && scan && !scan.running && scan.phase === 'done') { refreshL0(); runSearch(cat, query); }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       }, [outputsOnly, scan ? scan.running : false]);
 
       const scanning = !!(scan && scan.running);
@@ -547,9 +547,9 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       useEffect(() => {
         if (sub !== 'files' || !loaded || scanning || total === 0) return;
         const last = scan && scan.finishedAt ? scan.finishedAt : 0;
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
         if (Math.floor(Date.now() / 1000) - last > AUTOSCAN_COOLDOWN) startScan();
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       }, [loaded, sub]);
 
       // ================= 知识库 (L1) =================
@@ -592,24 +592,24 @@ function ModelProgressIndicator({ downloading, percent, label }) {
       const [kbModel, setKbModel] = useState(kbCache.model); // embedding 模型部署状态(null=未知)
       const [kbCat, setKbCat] = useState('all'); // 知识库分类筛选 tab
 
-      const loadDocs = async (cid) => { try { setDocs(await inv('kb_documents', { collectionId: cid, limit: 0 }) || []); } catch { /* 静默降级 */ } };
+      const loadDocs = async (cid) => { try { setDocs(await inv('kb_documents', { collectionId: cid, limit: 0 }) || []); } catch { /* silently degrade */ } };
       const loadColls = useCallback(async () => {
         try {
           const c = await inv('kb_collection_list') || [];
           setColls(c);
           setActiveColl((current) => (current ? c.find((item) => item.id === current.id) || null : null));
           kbCache.colls = c;
-        } catch { /* 静默降级 */ }
-        try { const d = await inv('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = d; } catch { /* 静默降级 */ }
-        try { const ei = await inv('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch { /* 静默降级 */ }
-        try { const m = await inv('kb_model_status'); setKbModel(m); kbCache.model = m; } catch { /* 静默降级 */ }
-        try { replaceIndexState(await inv('kb_index_status')); } catch { /* 静默降级 */ }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
+        } catch { /* silently degrade */ }
+        try { const d = await inv('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = d; } catch { /* silently degrade */ }
+        try { const ei = await inv('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch { /* silently degrade */ }
+        try { const m = await inv('kb_model_status'); setKbModel(m); kbCache.model = m; } catch { /* silently degrade */ }
+        try { replaceIndexState(await inv('kb_index_status')); } catch { /* silently degrade */ }
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       }, [replaceIndexState]);
       // 本地文件与本地知识库两个分区依赖本机知识集数据；远程分区自行加载服务器数据。
       // 一级「产出物」只读产出物索引，不应触发任何知识库查询。
       useEffect(() => {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
         if (!outputsOnly && (sub === 'files' || sub === 'kb')) loadColls();
       }, [outputsOnly, sub, loadColls]);
 
@@ -649,11 +649,11 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           const st = await bridge.knowledge.downloadKbModel(repair);
           if (st) { setKbModel(st); kbCache.model = st; }
           loadColls(); // 模型就绪后刷新语义徽标/列表
-        } catch { /* 静默降级 */ }
+        } catch { /* silently degrade */ }
       };
       // 用户恰好在首帧后台加载期间进入知识库时，模型就绪后刷新语义状态徽标。
       useEffect(() => {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- effect 内同步 setState 是有意为之:读取后端快照后立即镜像到本地 state,避免首帧闪烁
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
         if (!outputsOnly && kbm.startupReady) loadColls();
       }, [outputsOnly, kbm.startupReady, loadColls]);
 
@@ -664,10 +664,10 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           try {
             const s = await inv('kb_index_status'); replaceIndexState(s);
             if (!s.running) { loadColls(); if (activeColl) loadDocs(activeColl.id); }
-          } catch { /* 静默降级 */ }
+          } catch { /* silently degrade */ }
         }, 1000);
         return () => clearInterval(id);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖列表经人工核对:此 effect 仅需所列依赖,补全会引发重复请求/轮询循环
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       }, [indexing, replaceIndexState]);
 
       const resumeImport = async () => {
@@ -678,7 +678,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           replaceIndexState(await inv('kb_index_resume', { jobId: idx.jobId }));
         } catch (e) {
           setImportError(`${t.kbResumeImportFailed}: ${String((e && e.message) || e)}`);
-          try { replaceIndexState(await inv('kb_index_status')); } catch { /* 静默降级 */ }
+          try { replaceIndexState(await inv('kb_index_status')); } catch { /* silently degrade */ }
         }
       };
       const cancelImport = async () => {
@@ -691,7 +691,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           loadColls();
         } catch (e) {
           setImportError(`${t.kbCancelImportFailed}: ${String((e && e.message) || e)}`);
-          try { replaceIndexState(await inv('kb_index_status')); } catch { /* 静默降级 */ }
+          try { replaceIndexState(await inv('kb_index_status')); } catch { /* silently degrade */ }
         }
       };
       const retryImportFile = async (itemId) => {
@@ -702,7 +702,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           replaceIndexState(await inv('kb_index_retry_file', { jobId: idx.jobId, itemId }));
         } catch (e) {
           setImportError(`${t.kbRetryImportFailed}: ${String((e && e.message) || e)}`);
-          try { replaceIndexState(await inv('kb_index_status')); } catch { /* 静默降级 */ }
+          try { replaceIndexState(await inv('kb_index_status')); } catch { /* silently degrade */ }
         }
       };
       const loadMoreFailedFiles = async () => {
@@ -760,11 +760,11 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           } else {
             await inv('kb_collection_create', { name, category, description: null });
           }
-        } catch { /* 静默降级 */ }
+        } catch { /* silently degrade */ }
         setNewColl(null); loadColls();
       };
       const deleteColl = async (id) => {
-        try { await inv('kb_collection_delete', { id }); } catch { /* 静默降级 */ }
+        try { await inv('kb_collection_delete', { id }); } catch { /* silently degrade */ }
         if (activeColl && activeColl.id === id) setActiveColl(null);
         loadColls();
       };
@@ -807,7 +807,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         let paths;
         try { paths = await picker(); } catch { paths = []; }
         if (!paths || !paths.length) return;
-        try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: cid, paths })); } catch { /* 静默降级 */ }
+        try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: cid, paths })); } catch { /* silently degrade */ }
       };
       // 知识库页底部入口：选文件/文件夹 → 单知识集直接加；多个/无则走「加入知识库」浮层选择。
       const dzPick = async (kind) => {
@@ -817,7 +817,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
         let paths;
         try { paths = await picker(); } catch { paths = []; }
         if (!paths || !paths.length) return;
-        if (colls.length === 1) { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch { /* 静默降级 */ } }
+        if (colls.length === 1) { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch { /* silently degrade */ } }
         else { setAddToKb(paths); }
       };
       // 「+ 添加 ▾」下拉菜单：文件 / 文件夹。portal 到 body 以免被 overflow-y-auto 裁剪。
@@ -965,8 +965,8 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                               <span className="text-center">{t.kbOutColActions}</span>
                             </div>
                             {sortedResults.map((f) => { const e = extOf(f); return (
-                              // biome-ignore lint/a11y/useKeyWithClickEvents: 列表行点击为快捷方式,键盘路径由行内操作按钮承担
-                              // biome-ignore lint/a11y/noStaticElementInteractions: 列表行点击热区,非独立交互控件
+                              // biome-ignore lint/a11y/useKeyWithClickEvents: list-row click is a shortcut; keyboard path handled by the in-row action buttons
+                              // biome-ignore lint/a11y/noStaticElementInteractions: list-row click hot zone; not a standalone interactive control
                               <div key={f.path} onClick={() => setOutputPreview({ path: f.path, sessionId: null })}
                                 className="group py-4 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
                                   <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_100px_132px_132px] items-center gap-4">
@@ -1159,8 +1159,8 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                               {activeOutputs.map((o) => {
                                 const meta = outCatMeta(o.category);
                                 return (
-                                  // biome-ignore lint/a11y/useKeyWithClickEvents: 列表行点击为快捷方式,键盘路径由行内操作按钮承担
-                                  // biome-ignore lint/a11y/noStaticElementInteractions: 列表行点击热区,非独立交互控件
+                                  // biome-ignore lint/a11y/useKeyWithClickEvents: list-row click is a shortcut; keyboard path handled by the in-row action buttons
+                                  // biome-ignore lint/a11y/noStaticElementInteractions: list-row click hot zone; not a standalone interactive control
                                   <div key={o.path} onClick={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })}
                                     className="group py-4 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
                                     <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4">
@@ -1323,7 +1323,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
 
                 {/* 语义检索状态 */}
                 <div className="flex items-center gap-2 mb-5 text-[12px]">
-      {/* eslint-disable-next-line sonarjs/no-nested-template-literals -- 嵌套模板与 i18n 结构一一对应,展平反而损害可读性 */}
+      {/* eslint-disable-next-line sonarjs/no-nested-template-literals -- nested templates map 1:1 to the i18n structure; flattening hurts readability */}
                   <span className={`px-3 py-1 rounded-full ${embedInfo && embedInfo.enabled ? 'bg-[#e6f6ec] text-[#18a957] dark:bg-[#13361f] dark:text-[#7DD3A8]' : `${card} ${muted}`}`}>
                     {embedInfo && embedInfo.enabled ? `${t.kbEmbedOn}（${embedInfo.model}）` : t.kbEmbedOff}
                   </span>
@@ -1382,9 +1382,9 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                           ))}
                         </div>
                         {(
-                          // eslint-disable-next-line react-hooks/refs -- 分页游标在此处只读且与渲染同帧计算,保持现状避免额外 state
+                          // eslint-disable-next-line react-hooks/refs -- the pagination cursor is read-only here and computed in the same frame as render; keep as-is to avoid extra state
                           (failedPaginationRef.current.jobId === idx.jobId && failedPaginationRef.current.initialized)
-                          // eslint-disable-next-line react-hooks/refs -- 同上,nextOffset 与渲染同帧读取
+                          // eslint-disable-next-line react-hooks/refs -- same as above; nextOffset is read in the same frame as render
                           ? failedPaginationRef.current.nextOffset != null
                           : idx.failedFiles.length < idx.failed) && (
                           <button type="button" onClick={loadMoreFailedFiles} disabled={failedFilesLoading}
@@ -1408,7 +1408,7 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                       <div className="flex items-center gap-2 flex-wrap mb-4">
                         {cats.map((ct) => (
                           <button type="button" key={ct} onClick={() => setKbCat(ct)}
-      // eslint-disable-next-line sonarjs/no-nested-template-literals -- 嵌套模板与 i18n 结构一一对应,展平反而损害可读性
+      // eslint-disable-next-line sonarjs/no-nested-template-literals -- nested templates map 1:1 to the i18n structure; flattening hurts readability
                             className={`px-4 py-1.5 rounded-full text-[13px] font-medium transition-colors ${kbCat === ct ? accent : `${card} ${muted}`}`}>
                             {ct === 'all' ? t.kbCatAll : ct}
                           </button>
@@ -1424,8 +1424,8 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                         const prog = (idx && idx.running && idx.collectionId === c.id && idx.total > 0) ? Math.round((idx.done / idx.total) * 100) : null;
                         const isIdx = c.status === 'indexing' || prog != null;
                         return (
-                        // biome-ignore lint/a11y/useKeyWithClickEvents: 知识集卡片点击为快捷方式,键盘路径由卡片内操作按钮承担
-                        // biome-ignore lint/a11y/noStaticElementInteractions: 知识集卡片点击热区,非独立交互控件
+                        // biome-ignore lint/a11y/useKeyWithClickEvents: collection-card click is a shortcut; keyboard path handled by the in-card action buttons
+                        // biome-ignore lint/a11y/noStaticElementInteractions: collection-card click hot zone; not a standalone interactive control
                         <div key={c.id} onClick={() => openColl(c)} className={`p-4 rounded-2xl cursor-pointer transition-all ${panel} ${panelHover}`}
                           style={activeColl && activeColl.id === c.id ? { borderColor: collColor(c), boxShadow: `${isDark ? '' : '0 1px 2px rgba(24,24,40,.04), '}0 0 0 2px ${collColor(c)}55` } : panelShadow}>{/* isDark dynamic-value: 保留 (boxShadow 含运行时 collColor) */}
                           <div className="flex items-start gap-3">
@@ -1513,9 +1513,9 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                 )}
 
                 {/* 加入知识库入口：点击选文件/文件夹(单知识集直接加，多个弹选择) */}
-                {/* biome-ignore lint/a11y/useKeyWithClickEvents: 入口点击为快捷方式,键盘路径由工具栏加入按钮(openAddMenu 'coll')承担 */}
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: 入口点击热区,非独立交互控件 */}
-                <div onClick={(e) => { if (indexing || !canPickHostFiles) return; e.stopPropagation(); openAddMenu('dz', e.currentTarget); }} // eslint-disable-line sonarjs/no-unenclosed-multiline-block -- 单行块是该文件既有风格,批量换行会淹没 diff
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: entry click is a shortcut; keyboard path handled by the toolbar add button (openAddMenu 'coll') */}
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: entry click hot zone; not a standalone interactive control */}
+                <div onClick={(e) => { if (indexing || !canPickHostFiles) return; e.stopPropagation(); openAddMenu('dz', e.currentTarget); }} // eslint-disable-line sonarjs/no-unenclosed-multiline-block -- single-line blocks are this file's existing style; bulk re-wrapping would flood the diff
                   className={`mt-5 flex items-center justify-center gap-2 px-4 py-5 rounded-2xl border border-dashed transition-colors ${(indexing || !canPickHostFiles) ? 'cursor-default opacity-60' : 'cursor-pointer'} border-[#d4d8e2] hover:border-[#0B57D0] text-[#444746] dark:border-[#444746] dark:hover:border-[#A8C7FA] dark:text-[#C4C7C5]`}>
                   <Plus size={16} className="text-[#0B57D0] dark:text-[#A8C7FA]" />
                   <span className="text-[13px]">{t.kbAddToKb}</span>
@@ -1528,11 +1528,11 @@ function ModelProgressIndicator({ downloading, percent, label }) {
 
           {/* 删除知识集 二次确认(删库连同所有文档+索引,不可恢复) */}
           {delColl && (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
+            // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setDelColl(null)}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
               <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
                 <div className={`flex items-center gap-2 text-[16px] font-bold mb-2 ${ink}`}>
                   <AlertTriangle size={18} style={{ color: '#d63a3a' }} />
@@ -1549,10 +1549,10 @@ function ModelProgressIndicator({ downloading, percent, label }) {
 
           {/* 从本地知识库移除文档：只删除索引，不触碰磁盘原文件。 */}
           {confirmDoc && (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
+            // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
             <div data-testid="kb-remove-document-confirm" className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setConfirmDoc(null)}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
               <div role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()} className="w-[400px] rounded-2xl bg-white p-6 dark:bg-[#1E1F20]">
                 <div className={`mb-2 flex items-center gap-2 text-[16px] font-bold ${ink}`}>
                   <AlertTriangle size={18} style={{ color: '#d63a3a' }} />
@@ -1569,14 +1569,14 @@ function ModelProgressIndicator({ downloading, percent, label }) {
 
           {/* 新建知识集 modal */}
           {newColl && (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内取消按钮承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
+            // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setNewColl(null)}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
               <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
                 <div className={`text-[17px] font-bold mb-4 ${ink}`}>{newColl.id ? t.kbEditColl : t.kbNewColl}</div>
-                {/* biome-ignore lint/a11y/noAutofocus: 新建知识集弹窗打开即聚焦名称输入框,焦点即输入意图 */}
+                {/* biome-ignore lint/a11y/noAutofocus: the new-collection modal focuses the name input on open; focus is the input intent */}
                 <input autoFocus value={newColl.name} placeholder={t.kbCollNamePh} onChange={(e) => setNewColl({ ...newColl, name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter' && !isImeComposing(e)) createColl(); }}
                   className={`w-full px-4 py-2.5 rounded-xl mb-3 text-[14px] outline-none bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
                 <input value={newColl.category} placeholder={t.kbCollCatPh} onChange={(e) => setNewColl({ ...newColl, category: e.target.value })}
@@ -1591,11 +1591,11 @@ function ModelProgressIndicator({ downloading, percent, label }) {
 
           {/* 加入知识库 浮层 */}
           {addToKb && (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由弹窗内关闭控件承担
-            // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal close control
+            // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setAddToKb(null)}>
-              {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击冒泡止步层,键盘事件无需冒泡处理 */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击冒泡止步层,非交互容器 */}
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
               <div onClick={(e) => e.stopPropagation()} className={`w-[380px] rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
                 <div className={`text-[16px] font-bold mb-1 ${ink}`}>{t.kbAddToKb}</div>
                 <div className={`text-[12px] mb-4 truncate ${muted}`}>{Array.isArray(addToKb) ? `${addToKb.length} ${t.kbDocs}` : addToKb}</div>
@@ -1604,12 +1604,12 @@ function ModelProgressIndicator({ downloading, percent, label }) {
                 ) : (
                   <div className="flex flex-col gap-1 mb-4 max-h-[240px] overflow-y-auto">
                     {colls.map((c) => (
-                      <button type="button" key={c.id} onClick={async () => { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch { /* 静默降级 */ } setAddToKb(null); if (!outputsOnly) setSub('kb'); }}
+                      <button type="button" key={c.id} onClick={async () => { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch { /* silently degrade */ } setAddToKb(null); if (!outputsOnly) setSub('kb'); }}
                         className={`text-left px-4 py-2.5 rounded-xl text-[14px] ${card} ${iconHover} ${ink}`}>{c.name}</button>
                     ))}
                   </div>
                 )}
-      {/* eslint-disable-next-line sonarjs/no-unenclosed-multiline-block -- 单行块是该文件既有风格,批量换行会淹没 diff */}
+      {/* eslint-disable-next-line sonarjs/no-unenclosed-multiline-block -- single-line blocks are this file's existing style; bulk re-wrapping would flood the diff */}
                 <button type="button" onClick={() => { setAddToKb(null); if (!outputsOnly) setSub('kb'); setNewColl({ name: '', category: '' }); }} className={`w-full px-4 py-2.5 rounded-xl text-[13px] font-medium ${soft}`}>+ {t.kbNewColl}</button>
               </div>
             </div>

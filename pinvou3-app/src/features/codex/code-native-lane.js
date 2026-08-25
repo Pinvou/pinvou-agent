@@ -207,7 +207,7 @@ export function removeLocalUserMessage(lane, id) {
 
 /// chat:* 事件 → lane 状态。payload 一律带 session_id（后端 forwarder 打 tag）。
 /// 返回是否有可视变化；无变化时 React 侧不必 bump 渲染。
-// eslint-disable-next-line sonarjs/cognitive-complexity -- chat:* 事件分派:每种事件对应一种 lane 状态迁移,switch 分支即事件契约
+// eslint-disable-next-line sonarjs/cognitive-complexity -- chat:* event dispatch: each event maps to one lane state transition; the switch branches are the event contract
 export function applyNativeChatEvent(lane, name, payload) {
   const p = payload || {};
   switch (name) {
@@ -548,7 +548,7 @@ function messageText(blocks) {
 /// 方案卡降级语义与 work 冷启动对齐：只还原**只读历史卡**（planId 为空、不可批准）——
 /// 后端没有按会话查询待批方案快照的接口（mode_state 只有 pending_plan_id，work 侧也不读），
 /// 待批方案跨 remount 不再可点批准，用户让 AI 重出方案即可。
-// eslint-disable-next-line sonarjs/cognitive-complexity -- 会话消息水合:按持久化形态逐类还原,拆分会丢失配对状态语义
+// eslint-disable-next-line sonarjs/cognitive-complexity -- session message hydration: restore each persisted shape by category; splitting would lose paired-state semantics
 export function hydrateNativeLane(lane, saved, timelineEvents = []) {
   // 同窗口切回正在跑的会话时，lane 已被 chat:* 事件推进过：磁盘快照（只落已提交
   // 内容）会滞后于实时状态，hydration 后保留 busy，由后续事件继续推进；冷启动

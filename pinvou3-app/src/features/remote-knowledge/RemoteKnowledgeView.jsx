@@ -91,7 +91,7 @@ function OverlayDialog({
   children,
 }) {
   const dialog = (
-    // biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,键盘路径由弹窗右上角关闭按钮承担
+    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer; the keyboard path is handled by the dialog's top-right close button
     <div
       className="fixed inset-0 z-[80] flex items-center justify-center bg-[#17181b]/35 p-4 backdrop-blur-[2px] animate-in fade-in duration-150 motion-reduce:animate-none"
       onMouseDown={() => { if (!closeDisabled) onClose(); }}
@@ -121,7 +121,7 @@ function OverlayDialog({
   return typeof document === 'undefined' ? dialog : createPortal(dialog, document.body);
 }
 
-// eslint-disable-next-line sonarjs/cognitive-complexity -- 视图主体聚合连接/集合/文档/成员多条数据流,拆分会破坏既有结构
+// eslint-disable-next-line sonarjs/cognitive-complexity -- the main view aggregates the connection/collection/document/member data flows; splitting would break the existing structure
 function RemoteKnowledgeView({ t, embedded = false }) {
   const [connections, setConnections] = useState([]);
   const [connectionsLoaded, setConnectionsLoaded] = useState(false);
@@ -296,7 +296,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     };
   }, []);
 
-  /* eslint-disable react-hooks/immutability, react-hooks/exhaustive-deps -- 既有结构:下载轮询仅在下载态翻转时重建,补充 loadConnections 会造成循环重建 */
+  /* eslint-disable react-hooks/immutability, react-hooks/exhaustive-deps -- existing structure: download polling is only rebuilt when download state flips; adding loadConnections would cause cyclic rebuilds */
   useEffect(() => {
     if (!showOwnerPanel || !ownerModelStatus?.downloading || !selectedServerId) return;
     const serverId = selectedServerId;
@@ -392,7 +392,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     setNotice(null);
   }, [resetDocumentPaging]);
 
-  // eslint-disable-next-line react-hooks/preserve-manual-memoization -- 既有结构:请求序号 ref 防竞态写法无法被编译器保留,保持手动 memo
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization -- existing structure: the request-sequence ref race guard cannot be preserved by the compiler; keep manual memo
   const loadConnections = useCallback(async () => {
     if (!isTauriAvailable()) return;
     const requestId = ++connectionsRequestRef.current;
@@ -416,7 +416,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     }
   }, []);
 
-  // eslint-disable-next-line react-hooks/preserve-manual-memoization -- 既有结构:飞行中 ref 防重入写法无法被编译器保留,保持手动 memo
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization -- existing structure: the in-flight ref re-entry guard cannot be preserved by the compiler; keep manual memo
   const refreshPendingJoins = useCallback(async () => {
     if (!isTauriAvailable() || pendingRefreshInFlightRef.current) return;
     pendingRefreshInFlightRef.current = true;
@@ -545,7 +545,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     }
   }), [loadCollections, loadConnections, loadDocuments, loadHostStatus, run]);
 
-  /* eslint-disable react-hooks/set-state-in-effect -- 既有结构:挂载/轮询同步外部桥接数据到 state,run-once 语义,重构为派生 state 风险大 */
+  /* eslint-disable react-hooks/set-state-in-effect -- existing structure: mount/polling syncs external bridge data into state with run-once semantics; refactoring to derived state is risky */
   useEffect(() => { loadConnections(); }, [loadConnections]);
   useEffect(() => { loadHostStatus(); }, [loadHostStatus]);
   useEffect(() => {
@@ -582,7 +582,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     };
   }, [isOwner, selectedServerId]);
   /* eslint-enable react-hooks/set-state-in-effect */
-  /* eslint-disable react-hooks/set-state-in-effect -- 既有结构:选中集合/服务器变化时同步拉取列表并收敛回收站开关,run-once 语义 */
+  /* eslint-disable react-hooks/set-state-in-effect -- existing structure: on selected collection/server change, synchronously fetch lists and converge the recycle-bin toggle; run-once semantics */
   useEffect(() => { loadCollections(selectedServerId); }, [loadCollections, selectedServerId]);
   useEffect(() => { loadDocuments(selectedServerId, selectedCollectionId, true); }, [loadDocuments, selectedCollectionId, selectedServerId]);
   useEffect(() => {
@@ -1171,7 +1171,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     setShowUploadDialog(true);
   }
 
-  // eslint-disable-next-line sonarjs/cognitive-complexity -- 上传队列状态机含轮询/重试/失败分类,拆分会破坏既有结构
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- the upload-queue state machine includes polling/retry/failure classification; splitting would break the existing structure
   async function startUpload() {
     const retryable = item => item.status === 'queued' || item.status === 'failed';
     const pending = item => item.status === 'pending_index' || item.status === 'duplicate_pending';
@@ -1953,7 +1953,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                     </section>
                     <div className="flex items-center gap-3" aria-hidden="true"><span className="h-px flex-1 bg-[#e3e7ee] dark:bg-white/10" /><span className={`text-[11px] ${muted}`}>{t.remoteKbManualConnect}</span><span className="h-px flex-1 bg-[#e3e7ee] dark:bg-white/10" /></div>
                     <input
-                      // biome-ignore lint/a11y/noAutofocus: 弹窗打开即聚焦邀请码输入框,焦点即输入意图
+                      // biome-ignore lint/a11y/noAutofocus: focus the invite-code input as soon as the dialog opens; focus is the input intent
                       autoFocus
                       data-testid="remote-invitation"
                       className={field}
@@ -2066,9 +2066,9 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                         <button data-testid="remote-copy-share" type="button" className={iconButton} title={t.remoteKbCopy} aria-label={t.remoteKbCopy} onClick={() => copyWithFeedback(shareLink, t.remoteKbLinkCopied)}><Copy size={15} /></button>
                       </div>
                     )}
-                    {!!ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).length && ( // eslint-disable-line react-hooks/purity -- 过期时间相对当前时刻计算,列表仅在面板打开期间渲染
+                    {!!ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).length && ( // eslint-disable-line react-hooks/purity -- expiry is computed relative to the current time; the list only renders while the panel is open
                       <div className="mt-3 space-y-2">
-                        {ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).map(item => ( // eslint-disable-line react-hooks/purity -- 同上,按当前时刻过滤已过期分享
+                        {ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).map(item => ( // eslint-disable-line react-hooks/purity -- same as above; filter expired shares against the current time
                           <div key={item.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-[#F7F9FC] px-3 py-2.5 dark:bg-white/[0.04]">
                             <Link size={14} className="text-[#0B57D0] dark:text-[#A8C7FA]" />
                             <span className={`min-w-[180px] flex-1 truncate text-[12.5px] ${muted}`}>{new Date(item.expiresAt * 1000).toLocaleString()}</span>
@@ -2222,7 +2222,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
             closeDisabled={isBusy('restore-host')}
           >
             <p className={`truncate rounded-xl bg-[#F7F9FC] px-3.5 py-3 text-[12px] dark:bg-white/[0.04] ${muted}`} title={restoreSource}>{restoreSource}</p>
-            {/* biome-ignore lint/a11y/noAutofocus: 弹窗打开即聚焦恢复码输入框,焦点即输入意图 */}
+            {/* biome-ignore lint/a11y/noAutofocus: focus the recovery-code input as soon as the dialog opens; focus is the input intent */}
             <textarea autoFocus className={`${field} mt-3 h-24 resize-none py-3 font-mono text-[11px]`} value={restoreCode} onChange={event => setRestoreCode(event.target.value)} placeholder={t.remoteKbRecoveryPlaceholder} />
             <p className={`mt-2 text-[11px] leading-5 ${muted}`}>{restoreCode.trim() ? t.remoteKbMigrationMode : t.remoteKbSameHostMode}</p>
             <div className="mt-5 flex justify-end gap-2">
@@ -2243,7 +2243,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
             closeLabel={t.remoteKbClose}
             closeDisabled={isBusy('create-collection')}
           >
-            {/* biome-ignore lint/a11y/noAutofocus: 弹窗打开即聚焦集合名输入框,焦点即输入意图 */}
+            {/* biome-ignore lint/a11y/noAutofocus: focus the collection-name input as soon as the dialog opens; focus is the input intent */}
             <input autoFocus className={field} value={newCollectionName}
               onChange={event => setNewCollectionName(event.target.value)}
               onKeyDown={event => { if (event.key === 'Enter') createCollection(); }}
@@ -2269,7 +2269,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
           >
             {localCollections.length ? (
               <select
-                // biome-ignore lint/a11y/noAutofocus: 弹窗打开即聚焦集合选择框,焦点即选择意图
+                // biome-ignore lint/a11y/noAutofocus: focus the collection selector as soon as the dialog opens; focus is the selection intent
                 autoFocus
                 className={field}
                 value={publishCollectionId}
@@ -2367,7 +2367,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
           >
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <button
-                // biome-ignore lint/a11y/noAutofocus: 确认弹窗默认聚焦取消按钮,防误触危险操作的既有保护
+                // biome-ignore lint/a11y/noAutofocus: confirmation dialog focuses the cancel button by default; existing protection against accidental dangerous actions
                 autoFocus
                 type="button"
                 data-testid={`${confirmation.testId || 'remote-action-confirm'}-cancel`}
@@ -2379,7 +2379,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
               <button
                 type="button"
                 data-testid={`${confirmation.testId || 'remote-action-confirm'}-submit`}
-                className={`${confirmation.dangerous /* eslint-disable-line sonarjs/no-nested-template-literals -- 危险态在基础样式上叠加红色边框,保持就地拼接 */ ? `${danger} border border-[#d63a3a]/25 bg-[#d63a3a]/[0.06]` : primary} w-full sm:w-auto`}
+                className={`${confirmation.dangerous /* eslint-disable-line sonarjs/no-nested-template-literals -- the dangerous state layers a red border over the base styles; keep the in-place concatenation */ ? `${danger} border border-[#d63a3a]/25 bg-[#d63a3a]/[0.06]` : primary} w-full sm:w-auto`}
                 onClick={() => finishConfirmation(true)}
               >
                 {confirmation.confirmLabel}

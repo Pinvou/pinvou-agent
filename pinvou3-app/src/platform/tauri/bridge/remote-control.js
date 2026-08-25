@@ -2,9 +2,9 @@
  * Persistent Web access administration for the desktop Tauri bridge.
  */
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim copy of a classic-script artifact; strict mode is part of the payload
   "use strict";
-  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting the statement would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["remote-control"] = function (context) {
     const state = context.state;
@@ -20,8 +20,8 @@
         if (root.crypto && typeof root.crypto.randomUUID === "function") {
           return "webview_" + root.crypto.randomUUID().replaceAll('-', "_"); // safari14-ok: guarded above
         }
-      } catch { /* UUID 生成异常时走下方兜底 */ }
-      // eslint-disable-next-line sonarjs/pseudo-random -- 非安全用途:webview 去重 ID,时间戳前缀已保证基本唯一
+      } catch { /* fall through to the fallback below when UUID generation throws */ }
+      // eslint-disable-next-line sonarjs/pseudo-random -- non-security use: webview dedup ID; the timestamp prefix already guarantees basic uniqueness
       return "webview_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
     })();
 
@@ -41,7 +41,7 @@
     }
 
     function eventPayload(event) {
-      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 下限,Object.hasOwn 不可用,本调用已是安全形态
+      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor; Object.hasOwn is unavailable, and this call is already the safe form
       return event && Object.prototype.hasOwnProperty.call(event, "payload") ? event.payload : (event || {});
     }
 
@@ -253,7 +253,7 @@
       return invoke("web_access_relay_settings");
     }
 
-    // eslint-disable-next-line sonarjs/no-invariant-returns -- 两个分支都回显 info 是刻意的 API 约定
+    // eslint-disable-next-line sonarjs/no-invariant-returns -- echoing info from both branches is an intentional API contract
     async function setWebRelayAddress(address) {
       const seq = ++webAccessIntentSeq;
       const info = await invoke("web_access_set_relay", { address });
@@ -262,7 +262,7 @@
       return info;
     }
 
-    // eslint-disable-next-line sonarjs/no-invariant-returns -- 两个分支都回显 info 是刻意的 API 约定
+    // eslint-disable-next-line sonarjs/no-invariant-returns -- echoing info from both branches is an intentional API contract
     async function resetWebRelayAddress() {
       const seq = ++webAccessIntentSeq;
       const info = await invoke("web_access_reset_relay");

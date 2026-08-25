@@ -3,7 +3,7 @@
 // の parity アサーションが強制)。
 // i18n.js 集約 shim と Node 契約テスト(ui_language_coverage)は三言語を静的 import。分割はブラウザー chunk のみに影響。
 
-/* eslint-disable sonarjs/no-nested-template-literals, sonarjs/no-unenclosed-multiline-block, sonarjs/no-hardcoded-secrets -- i18n 紧凑字典:嵌套模板与文案结构一一对应,凭据字段名被误报为 secret */
+/* eslint-disable sonarjs/no-nested-template-literals, sonarjs/no-unenclosed-multiline-block, sonarjs/no-hardcoded-secrets -- compact i18n dictionary: nested templates mirror the copy structure one-to-one; credential field names are false-positive secrets */
 import { dictEn } from './en.js';
 
 const conversationJa = {

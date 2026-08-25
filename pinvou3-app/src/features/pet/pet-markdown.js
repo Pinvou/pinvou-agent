@@ -1,5 +1,5 @@
 import DOMPurify from 'dompurify';
-// eslint-disable-next-line import-x/namespace -- marked v14 的 ESM 源码使用 ES2022 类字段,无法按本配置的 ES2021 地板解析(与 src/shared/markdown-renderer.js 同况);运行时经打包器处理无影响
+// eslint-disable-next-line import-x/namespace -- marked v14's ESM source uses ES2022 class fields, unparseable at this config's ES2021 floor (same as src/shared/markdown-renderer.js); the runtime bundler handles it, no impact
 import { marked } from 'marked';
 
 const DANGEROUS_TAGS_RE = /<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/gi;

@@ -50,7 +50,7 @@ async function ensureLegacyHtmlConverter() {
           let fenceSize = 3;
           const fenceInCodeRegex = new RegExp(`^${fenceChar}{3,}`, 'gm');
           let match;
-          // biome-ignore lint/suspicious/noAssignInExpressions: 赋值即循环条件,重构损害可读性
+          // biome-ignore lint/suspicious/noAssignInExpressions: the assignment is the loop condition; refactoring would hurt readability
           while ((match = fenceInCodeRegex.exec(code.textContent))) {
             if (match[0].length >= fenceSize) fenceSize = match[0].length + 1;
           }

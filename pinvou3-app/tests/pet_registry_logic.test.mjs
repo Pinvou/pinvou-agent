@@ -14,7 +14,7 @@ const importLine = "import manifest from './pet-manifest.json';";
 assert.equal(registrySource.includes(importLine), true, 'registry must import the manifest SSOT');
 const executableSource = registrySource.replace(
   importLine,
-  // eslint-disable-next-line unicorn/no-unsafe-string-replacement -- 替换值为受控字面量
+  // eslint-disable-next-line unicorn/no-unsafe-string-replacement -- replacement value is a controlled literal
   `const manifest = ${JSON.stringify(manifest)};`,
 );
 const dir = mkdtempSync(join(tmpdir(), 'pinvou3-pet-registry-'));
@@ -48,17 +48,17 @@ try {
   assert.equal(resolvePet('missing'), PET_REGISTRY.lingling);
   assert.equal(resolvePet(), PET_REGISTRY.lingling);
 
-  const manifestIds = manifest.map((pet) => pet.id).sort(); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
-  const loaderIds = Object.keys(PET_LOADERS).sort(); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  const manifestIds = manifest.map((pet) => pet.id).sort(); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
+  const loaderIds = Object.keys(PET_LOADERS).sort(); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
   assert.deepEqual(loaderIds, manifestIds);
-  assert.deepEqual(Object.keys(PET_REGISTRY).sort(), manifestIds); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  assert.deepEqual(Object.keys(PET_REGISTRY).sort(), manifestIds); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
   assert.deepEqual(
     Object.keys(PET_REGISTRY),
     ['lingling', 'langlang', 'ace-taffy'],
     'registry iteration order drives the visible card order',
   );
   for (const id of loaderIds) {
-    assert.deepEqual(Object.keys(PET_LOADERS[id]).sort(), ['atlas', 'cover']); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+    assert.deepEqual(Object.keys(PET_LOADERS[id]).sort(), ['atlas', 'cover']); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
     assert.equal(typeof PET_LOADERS[id].cover, 'function');
     assert.equal(typeof PET_LOADERS[id].atlas, 'function');
   }

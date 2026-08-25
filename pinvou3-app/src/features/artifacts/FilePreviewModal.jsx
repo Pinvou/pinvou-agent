@@ -5,7 +5,7 @@ import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../share
 import { OFFICE_HTML_STYLE } from './ArtifactsPanel.jsx';
 import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
 
-// eslint-disable-next-line sonarjs/cognitive-complexity -- 单文件预览:分支一一对应一种 kind(md/json/image/visual/错误态),拆分需透传 5+ 个加载中间态
+// eslint-disable-next-line sonarjs/cognitive-complexity -- single-file preview: each branch maps to one kind (md/json/image/visual/error state); splitting would thread 5+ intermediate loading states through
 const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
   const [preview, setPreview] = useState({ loading: true });
   // md 预览一次性 innerHTML:懒语言注册完成后 bump 版本号,重新计算恢复高亮。
@@ -66,9 +66,9 @@ const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
 
   return (
     <div className="absolute inset-0 z-[60] flex items-center justify-center pointer-events-auto">
-      {/* 模态背景点击关闭层;键盘路径由标题栏 ✕ 关闭按钮(下方真实 <button type="button">)承担。 */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: 背景点击关闭层,键盘路径由标题栏关闭按钮承担 */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: 背景点击关闭层,非交互容器 */}
+      {/* Modal backdrop click-to-close layer; the keyboard path is handled by the title-bar ✕ close button (the real <button type="button"> below). */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path handled by the title-bar close button */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container */}
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div className="relative w-[860px] max-w-[92vw] h-[82vh] flex flex-col rounded-[16px] shadow-2xl overflow-hidden bg-white dark:bg-[#1E1F20]">
         <div className="flex items-center justify-between px-4 py-3 border-b border-black/10 dark:border-white/10">

@@ -47,8 +47,8 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
         return () => window.removeEventListener('keydown', onKey);
       }, [onCancel]);
       return (
-        // 遮罩点击关闭;键盘路径:Escape(下方 effect 监听)与弹窗内真实「取消」按钮。
-        // biome-ignore lint/a11y/noStaticElementInteractions: 遮罩点击关闭层,键盘路径由 Escape 监听与取消按钮承担
+        // Backdrop click-to-close; keyboard path: Escape (effect listener below) and the real "Cancel" button inside the dialog.
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer; the keyboard path is handled by the Escape listener and the cancel button
         <div
           role="presentation"
           className="fixed inset-0 z-[200] flex items-center justify-center p-4"
@@ -60,7 +60,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           }}
           onClick={onCancel}
         >
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 弹窗体仅阻止冒泡以免误触遮罩关闭,自身非交互控件 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog body only stops bubbling to avoid accidentally triggering backdrop close; not an interactive control itself */}
           <div
             role="dialog"
             aria-modal="true"
@@ -111,8 +111,8 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
         return () => window.removeEventListener('keydown', onKey);
       }, [onCancel]);
       return (
-        // 遮罩点击关闭;键盘路径:Escape(下方 effect 监听)与弹窗内真实「取消」按钮。
-        // biome-ignore lint/a11y/noStaticElementInteractions: 遮罩点击关闭层,键盘路径由 Escape 监听与取消按钮承担
+        // Backdrop click-to-close; keyboard path: Escape (effect listener below) and the real "Cancel" button inside the dialog.
+        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer; the keyboard path is handled by the Escape listener and the cancel button
         <div
           role="presentation"
           className="fixed inset-0 z-[200] flex items-center justify-center p-4"
@@ -124,7 +124,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           }}
           onClick={onCancel}
         >
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 弹窗体仅阻止冒泡以免误触遮罩关闭,自身非交互控件 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog body only stops bubbling to avoid accidentally triggering backdrop close; not an interactive control itself */}
           <div
             role="alertdialog"
             aria-modal="true"
@@ -195,7 +195,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
     };
 
     // 近期会话项：支持重命名(内联编辑) + 删除(内联二次确认)
-    // 行内样式拆成纯函数:拖拽降透明度;persona 目标行运行时拼高亮色(与 isDark 相关,无法走静态 dark: 变体)。
+    // Inline styles are extracted into pure functions: dragging lowers opacity; the persona target row builds its highlight color at runtime (isDark-dependent, cannot use static dark: variants).
     const recentItemRowStyle = (dragging, personaTarget, isDark) => {
       if (dragging) return { opacity: 0.4 };
       if (!personaTarget) return null;
@@ -298,7 +298,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
       if (editing) {
         return (
           <div className="flex h-11 items-center px-1.5">
-            {/* biome-ignore lint/a11y/noAutofocus: 点击「重命名」即进入内联编辑,焦点必须立即落在输入框(载荷行为) */}
+            {/* biome-ignore lint/a11y/noAutofocus: clicking "Rename" enters inline editing, so focus must land on the input immediately (payload behavior) */}
             <input autoFocus value={val}
               onChange={e => setVal(e.target.value)}
               onClick={e => e.stopPropagation()}
@@ -308,9 +308,9 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           </div>
         );
       }
-      // 键盘路径:会话行本身可用 Enter/Space 选中(此前仅可点击,补齐真实键盘可达性)。
-      // 仅在焦点落在行自身时生效,避免内部按钮(置顶/更多)的 Enter 冒泡误触选中;
-      // 拖拽为纯指针交互(useLongPressDrag),键盘路径无需 guardClick。
+      // Keyboard path: the session row itself can be selected with Enter/Space (previously click-only; this adds real keyboard reachability).
+      // Only effective when focus is on the row itself, so Enter bubbling from inner buttons (pin/more) does not accidentally trigger selection;
+      // Dragging is pure pointer interaction (useLongPressDrag); the keyboard path needs no guardClick.
       const selectChatOnKey = (e) => {
         if (e.target !== e.currentTarget) return;
         if ((e.key === 'Enter' || e.key === ' ') && !isImeComposing(e)) {
@@ -319,8 +319,8 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
         }
       };
       return (
-        // 行内嵌套置顶/更多等真实按钮,转为 <button type="button"> 会构成非法嵌套交互元素,故用 role="button" 容器模式。
-        // biome-ignore lint/a11y/useSemanticElements: 行内嵌套真实按钮,无法转为 <button type="button">(非法嵌套),用容器 role 承载
+        // Real buttons like pin/more are nested inline; converting to <button type="button"> would create illegally nested interactive elements, so a role="button" container pattern is used.
+        // biome-ignore lint/a11y/useSemanticElements: real buttons are nested inline and cannot become <button type="button"> (illegal nesting); a container role carries interactivity
         <div role="button" tabIndex={0} onKeyDown={selectChatOnKey}
           onClick={sessionDragKind ? drag.guardClick(selectChat) : selectChat}
           {...dragProps}
@@ -357,8 +357,8 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
               style={{ background: '#0B57D0' }} />
           )}
           {confirming ? (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: 容器仅阻止冒泡以免误触会话行选中,自身非交互控件
-            // biome-ignore lint/a11y/noStaticElementInteractions: 容器仅阻止冒泡,非交互容器
+            // biome-ignore lint/a11y/useKeyWithClickEvents: container only stops bubbling to avoid accidentally triggering session-row selection; not an interactive control itself
+            // biome-ignore lint/a11y/noStaticElementInteractions: container only stops bubbling; a non-interactive container
             <div className="flex items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
               <span className="text-[11px] mr-0.5 text-[#C5221F] dark:text-[#F28B82]">{t.riDelQ}</span>
               <button type="button" title={t.riDelConfirm} onClick={(e) => { e.stopPropagation(); onDelete(chat.id); }}

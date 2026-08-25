@@ -456,10 +456,10 @@ async function clickSettingsSection(page, label) {
     const el = document.querySelector('[data-testid="acp-providers-effective"]');
     if (!el) return false;
     const values = [...el.querySelectorAll('.font-mono')].map(span => (span.textContent || '').trim());
-    // CodeQL js/incomplete-url-substring-sanitization 会把 includes(url) 视为前缀/子串
-    // 包含检查;some(===) 的精确等值写法不触发(与 b27788bbb 处置 ui_smoke 同源)。
+    // CodeQL js/incomplete-url-substring-sanitization treats includes(url) as a prefix/substring
+    // containment check; the some(===) exact-equality form does not trigger it (same fix as b27788bbb for ui_smoke).
     return values.includes('gpt-5.2')
-      // eslint-disable-next-line unicorn/prefer-includes -- 精确等值断言,规避 CodeQL 误报
+      // eslint-disable-next-line unicorn/prefer-includes -- exact-equality assertion; avoids a CodeQL false positive
       && values.some(value => value === 'https://api.example.com/v1');
   }));
   rec('⑨.2 env 覆盖时徽标降格', await page.evaluate(() => {
@@ -471,8 +471,8 @@ async function clickSettingsSection(page, label) {
     if (!el) return false;
     // URL 明文可见；凭据只显示「已设置」掩码，值不得出现
     const values = [...el.querySelectorAll('.font-mono')].map(span => (span.textContent || '').trim());
-    // some(===) 精确等值写法不触发 CodeQL 的 URL 子串检查误报(见上方 ⑨.1 注释)。
-    // eslint-disable-next-line unicorn/prefer-includes -- 精确等值断言,规避 CodeQL 误报
+    // The some(===) exact-equality form does not trip CodeQL's URL substring check (see the ⑨.1 comment above).
+    // eslint-disable-next-line unicorn/prefer-includes -- exact-equality assertion; avoids a CodeQL false positive
     return values.some(value => value === 'https://env-override.example.com')
       && (el.textContent || '').includes('已设置（值已隐藏）');
   }));
@@ -547,7 +547,7 @@ async function clickSettingsSection(page, label) {
   }
   console.log('ACP providers UI smoke passed');
   process.exit(0);
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- the smoke script already has an async main() structure
 })().catch(async error => {
   console.error('ACP providers UI smoke crashed:', error);
   process.exit(1);

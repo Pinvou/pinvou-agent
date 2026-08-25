@@ -14,7 +14,7 @@ import { invokeTauri, isTauriAvailable } from '../../platform/tauri/client.js';
 
 const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
 
-/* eslint-disable sonarjs/cognitive-complexity -- 挂载态归一/显式车道分支密集;legacy view; tracked separately */
+/* eslint-disable sonarjs/cognitive-complexity -- dense mounted-state normalization / explicit-lane branches; legacy view; tracked separately */
 const ComposerKbSelector = ({
   t,
   bs,
@@ -93,12 +93,12 @@ const ComposerKbSelector = ({
     try { const m = await bridge.knowledge.kbModelStatus(); setModelStatus(m || { installed: true }); }
     catch { setModelStatus({ installed: true }); }
   };
-  useEffect(() => { refreshModelStatus(); }, []); // eslint-disable-line react-hooks/set-state-in-effect -- 挂载时异步拉取 KB 模型状态,setState 均在 await 之后
+  useEffect(() => { refreshModelStatus(); }, []); // eslint-disable-line react-hooks/set-state-in-effect -- fetches KB model status async on mount; all setState calls happen after await
   // 首帧后台加载/下载完成后由 bridge 推送真实进程态，免重开菜单。
   const modelSetup = (bs && bs.kbModelSetup) || {};
   const setupStatus = modelSetup.status || null;
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- bridge 推送的真实进程态落库,首帧同步一次
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- commit the real process state pushed by bridge, synced once on the first frame
     if (setupStatus) setModelStatus(setupStatus);
     else if (modelSetup.startupReady === true) {
       setModelStatus(status => Object.assign({}, status || { installed: true }, { ready: true, loading: false }));
@@ -107,8 +107,8 @@ const ComposerKbSelector = ({
   // 已挂载但还没列表 → 拉一次用于显示名字。
   const mountedKey = mountedEntries.map(entry => `${entry.key}:${entry.enabled}`).join('|');
   useEffect(() => {
-    if (mountedEntries.length > 0 && collections === null) loadList(); // eslint-disable-line react-hooks/set-state-in-effect -- 已挂载但列表未加载时异步补拉,setState 在 await 之后
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在挂载集合(mountedKey)变化时补拉;loadList/collections 读取实时闭包,加入依赖会造成重复拉取
+    if (mountedEntries.length > 0 && collections === null) loadList(); // eslint-disable-line react-hooks/set-state-in-effect -- backfills the list async when mounted but not yet loaded; setState happens after await
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only backfill when the mounted set (mountedKey) changes; loadList/collections read the live closure, so adding them as deps would cause duplicate fetches
   }, [mountedKey]);
 
   const mountedNames = mountedEntries.map(entry => {
@@ -265,7 +265,7 @@ const ComposerKbSelector = ({
     </div>
   );
 };
-/* eslint-enable sonarjs/cognitive-complexity -- 挂载态归一/显式车道分支密集;legacy view; tracked separately */
+/* eslint-enable sonarjs/cognitive-complexity -- dense mounted-state normalization / explicit-lane branches; legacy view; tracked separately */
 
 // [plan/yolo] composer 模式 chip:默认 Yolo,下拉手切 Plan。进 Plan=只读调研
 // (底座 ReadOnly+只读工具集),调 update_plan 出方案卡决策。切换逻辑搬自旧 ModeHeader。

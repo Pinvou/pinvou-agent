@@ -125,7 +125,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     setAiInputOpen(false);
     setAiInstruction('');
     applyMarkdownToDom(text);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅按 artifact 路径边沿整体重置;同路径下 initialText 变化不应清掉用户编辑
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset wholesale only on artifact path edges; initialText changes under the same path must not wipe user edits
   }, [artifact?.path, applyMarkdownToDom]);
 
   // 输入是高频事件,turndown 未就绪时不做 DOM→Markdown 投影(编辑暂存于 DOM,
@@ -173,7 +173,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     const promise = (async () => {
       await bridge.artifacts.writeArtifactText(artifact.path, content);
       let info = initialInfo || null;
-      try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch { /* 元信息拉取失败则沿用 initialInfo */ }
+      try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch { /* fall back to initialInfo if metadata fetch fails */ }
       lastSavedRef.current = content;
       setSaveState('saved');
       // 保存成功即草稿==已保存:立即补一次懒语言重放。刚保存的内容若含首次
@@ -209,7 +209,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     try {
       const text = await bridge.artifacts.readArtifactText(artifact.path);
       let info = initialInfo || null;
-      try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch { /* 元信息拉取失败则沿用 initialInfo */ }
+      try { info = await bridge.artifacts.artifactInfo(artifact.path); } catch { /* fall back to initialInfo if metadata fetch fails */ }
       latestDraftRef.current = text || '';
       lastSavedRef.current = text || '';
       setDraft(text || '');
@@ -315,8 +315,8 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
       return;
     }
     const range = sel.getRangeAt(0);
-    // WebKit 的 DOMRectList 没有 Symbol.iterator（IDL 无 iterable<>），展开会抛 TypeError，必须用 Array.from。
-    // eslint-disable-next-line unicorn/prefer-spread -- DOMRectList 在 Safari/WKWebView 任意版本不可迭代
+    // WebKit's DOMRectList has no Symbol.iterator (no iterable<> in the IDL); spreading throws TypeError, so Array.from is required.
+    // eslint-disable-next-line unicorn/prefer-spread -- DOMRectList is not iterable on any Safari/WKWebView version
     const rects = Array.from(range.getClientRects()).filter((r) => r.width || r.height);
     const rect = rects[rects.length - 1] || range.getBoundingClientRect();
     if (!rect || (!rect.width && !rect.height)) {
@@ -400,7 +400,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
         </div>
       ) : null}
 
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: contentEditable 富文本编辑区,原生可聚焦可键入,事件为编辑器内部机制 */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: contentEditable rich-text editing area, natively focusable and typeable; events are editor-internal machinery */}
       <div
         ref={editableRef}
         contentEditable

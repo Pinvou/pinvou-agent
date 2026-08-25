@@ -423,7 +423,7 @@ assert.match(actions, /data-testid="assistant-message-export"/);
 assert.match(actions, /data-testid="assistant-message-share"/);
 assert.match(actions, /data-testid="assistant-export-md"/);
 assert.match(actions, /data-testid="assistant-export-html"/);
-// eslint-disable-next-line no-unused-vars -- 桩函数保留完整调用签名
+// eslint-disable-next-line no-unused-vars -- stub keeps the full call signature
 for (const target of ['wechat', 'wecom', 'feishu', 'dingtalk', 'qq']) {
   assert.match(actions, new RegExp(`assistant-share-\\$\\{target\\}`));
 }

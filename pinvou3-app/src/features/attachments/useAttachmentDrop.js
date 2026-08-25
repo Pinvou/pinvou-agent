@@ -10,12 +10,12 @@ import { useEffect, useRef, useState } from 'react';
 export function useAttachmentDrop({ enabled = true, onFiles }) {
   const [active, setActive] = useState(false);
   const onFilesRef = useRef(onFiles);
-  // eslint-disable-next-line react-hooks/refs -- latest-ref 同步:仅在拖放回调里读取,渲染输出不依赖它
+  // eslint-disable-next-line react-hooks/refs -- latest-ref sync: read only inside drop callbacks; render output does not depend on it
   onFilesRef.current = onFiles;
 
   useEffect(() => {
     if (!enabled || typeof window === 'undefined' || typeof document === 'undefined') {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- enabled 变 false 时同步复位拖拽高亮,一次性镜像
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the drag highlight when enabled flips to false; one-shot mirror
       setActive(false);
       return;
     }

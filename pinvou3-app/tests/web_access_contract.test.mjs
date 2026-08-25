@@ -34,7 +34,7 @@ const desktopBridgeSources = [
   fs.readFileSync(path.join(bridgeRoot, 'bridge.js'), 'utf8'),
   ...fs.readdirSync(path.join(bridgeRoot, 'bridge'))
     .filter(name => name.endsWith('.js'))
-    .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+    .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
     .map(name => fs.readFileSync(path.join(bridgeRoot, 'bridge', name), 'utf8')),
 ];
 const bridge = [
@@ -50,7 +50,7 @@ const hostFilePicker = fs.readFileSync(
 const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
 const commands = fs.readdirSync(commandsRoot)
   .filter(name => name.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
   .map(name => fs.readFileSync(path.join(commandsRoot, name), 'utf8'))
   .join('\n');
 const remoteControlCommands = fs.readFileSync(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
@@ -64,7 +64,7 @@ const remoteControlManagerRoot = path.join(
 );
 const remoteControlManager = fs.readdirSync(remoteControlManagerRoot)
   .filter(name => name.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
   .map(name => fs.readFileSync(path.join(remoteControlManagerRoot, name), 'utf8'))
   .join('\n');
 const remoteControlPlatformRoot = path.join(
@@ -77,7 +77,7 @@ const remoteControlPlatformRoot = path.join(
 );
 const remoteControlPlatform = fs.readdirSync(remoteControlPlatformRoot)
   .filter(name => name.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
   .map(name => fs.readFileSync(path.join(remoteControlPlatformRoot, name), 'utf8'))
   .join('\n');
 const settingsView = fs.readFileSync(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
@@ -674,8 +674,8 @@ assert.match(knowledgeView, /const cacheKey = `\$\{outputSessionId \|\| ''\}\|\$
 assert.ok((knowledgeView.match(/o\.path, outputSessionId/g) || []).length >= 5,
   'output previews must authorize every Web artifact read with the owning session');
 assert.match(knowledgeView, /<FilePreviewModal path=\{outputPreview\.path\} sessionId=\{outputPreview\.sessionId\}/);
-// 注：main 上 LocalFilePreview 内的 isWeb fallback 守卫位于死代码（无调用点），已随死代码删除；
-// 活路径 OutputLivePreview 的 Web 保护即上面断言的 session 授权读取（o.path, outputSessionId）。
+// Note: on main, the isWeb fallback guard inside LocalFilePreview sat in dead code (no call sites) and was removed along with it;
+// the live-path Web guard for OutputLivePreview is the session-authorized read asserted above (o.path, outputSessionId).
 assert.match(settingsView, /const canPickHostFiles = can\('hostFilePicker'\);/);
 assert.match(toolCommon, /const canOpenArtifact = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(connectionStatus, /incompatible_desktop/);

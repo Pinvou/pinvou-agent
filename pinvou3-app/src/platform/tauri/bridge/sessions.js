@@ -1,8 +1,8 @@
 /** Session working sets, switching, hydration, and lifecycle operations. */
 (function (root) {
-  // biome-ignore lint/suspicious/noRedundantUseStrict: classic script 直拷产物,严格模式是载荷
+  // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
   "use strict";
-  // biome-ignore lint/suspicious/noAssignInExpressions: 直拷载荷的注册表引导,拆分语句会偏离产物原貌
+  // biome-ignore lint/suspicious/noAssignInExpressions: registry bootstrap of the verbatim payload; splitting statements would diverge from the artifact
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.sessions = function (context) {
     const state = context.state;
@@ -691,17 +691,17 @@
     if (message && message.role === "user") {
       const resultIds = blocks.filter(function (block) {
         return block && block.type === "tool_result" && block.tool_use_id;
-      }).map(function (block) { return block.tool_use_id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // 键归一化需字典序,显式声明语义
+      }).map(function (block) { return block.tool_use_id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // key normalization needs lexicographic order; declare the semantics explicitly
       if (resultIds.length) return "user:tool_results:" + resultIds.join("|");
       return "user:text:" + userMessageDisplayText(blocks, hideInternalEnvelope);
     }
     if (message && message.role === "assistant") {
       const toolIds = blocks.filter(function (block) {
         return block && block.type === "tool_use" && block.id;
-      }).map(function (block) { return block.id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // 键归一化需字典序,显式声明语义
+      }).map(function (block) { return block.id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // key normalization needs lexicographic order; declare the semantics explicitly
       if (toolIds.length) return "assistant:tool_uses:" + toolIds.join("|");
       blocks = blocks.filter(function (block) { return !block || block.type !== "thinking"; });
-      try { return "assistant:" + JSON.stringify(blocks); } catch { /* 序列化失败按原文落盘 */ }
+      try { return "assistant:" + JSON.stringify(blocks); } catch { /* persist the raw text on serialization failure */ }
     }
     try { return JSON.stringify(message); } catch { return String(message); }
   }
@@ -917,9 +917,9 @@
     let pinvouReviews = [];
     const pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
     let turnTimeline = [];
-    try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch { /* 可选数据,缺省为空 */ }
-    try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch { /* 可选数据,缺省为空 */ }
-    try { turnTimeline = await invoke("get_session_timeline", { sessionId: id }) || []; } catch { /* 可选数据,缺省为空 */ }
+    try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
+    try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
+    try { turnTimeline = await invoke("get_session_timeline", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
     if (requestToken !== sessionSwitchRequestToken) return false;
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。

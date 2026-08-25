@@ -394,6 +394,20 @@ jobs:
       - name: ESLint (含 pet 缺失项,现已全覆盖)
         run: npm run lint:ui
 
+      # 静态分析栈的零欠账门禁(tests/scripts 的 ESLint、oxlint、Biome、knip)
+      # 与 lint:ui 同属一个 job,复用同一份 node_modules,避免重复装依赖。
+      - name: ESLint (tests/scripts/eslint.config.mjs)
+        run: npm run lint:node
+
+      - name: oxlint (快速预检)
+        run: npm run lint:ox
+
+      - name: Biome lint
+        run: npm run lint:biome
+
+      - name: knip (未使用文件/导出)
+        run: npm run lint:knip
+
       - name: Vite build
         run: npm run build:ui
 

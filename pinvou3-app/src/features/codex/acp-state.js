@@ -178,7 +178,7 @@ export function presentTurnItems(items) {
  * 把不可变 ACP event log 投影成 Codex 的 Thread → Turn → Item 模型。
  * 原始 event log 仍是事实源；tool update 只更新同一个 tool_call_id。
  */
-// eslint-disable-next-line sonarjs/cognitive-complexity -- 事件日志→Turn/Item 投影:单遍归并多种 ACP 事件形态,拆分会重复遍历
+// eslint-disable-next-line sonarjs/cognitive-complexity -- event log to Turn/Item projection: single-pass merge of many ACP event shapes; splitting would repeat the traversal
 export function projectAcpTimeline(input) {
   const seen = new Set();
   const events = [...(input || [])]

@@ -10,7 +10,7 @@ function setupHintText(copy, hint) {
   return copy.setupHints?.[hint] || '';
 }
 
-// eslint-disable-next-line sonarjs/cognitive-complexity -- 运行时通知按 noticeMode 分派四种互斥形态(检查/安装/登录/错误),分支即文案矩阵
+// eslint-disable-next-line sonarjs/cognitive-complexity -- runtime notices dispatch four mutually exclusive shapes by noticeMode (check/install/login/error); the branches are the copy matrix
 export function RuntimeNotice({
   status,
   working,
@@ -29,11 +29,11 @@ export function RuntimeNotice({
   const [authorizationCode, setAuthorizationCode] = useState('');
   const [declinedUpgrade, setDeclinedUpgrade] = useState(false);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 登录流程重启时同步清空授权码输入,一次性镜像
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the auth-code input when the login flow restarts; one-shot mirror
     setAuthorizationCode('');
   }, [status?.agent_id, status?.login_in_progress]);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 版本/重置键变化时同步复位「暂不升级」,一次性镜像
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the "skip upgrade" state when the version/reset key changes; one-shot mirror
     setDeclinedUpgrade(false);
   }, [resetKey, status?.agent_id, status?.installed, status?.latest_version]);
   const noticeMode = runtimeNoticeMode(status, declinedUpgrade || suppressAdvisoryUpgrade);

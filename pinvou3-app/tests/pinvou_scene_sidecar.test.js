@@ -99,7 +99,7 @@ function rec(name, pass, detail = '') {
   console.log(`${pass ? '✅' : '❌'} ${name}${detail ? '  ' + detail : ''}`);
 }
 
-// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
+// eslint-disable-next-line unicorn/prefer-top-level-await -- smoke script keeps its existing async main() structure
 (async () => {
   {
     const { feature, state, invokes, sceneEvents } = createFeature();

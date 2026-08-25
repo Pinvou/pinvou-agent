@@ -49,14 +49,14 @@ const MobileTabBar = ({ tabs }) => {
 
 const MobileMoreSheet = ({ title, items, onClose }) => {
   return createPortal(
-    // 底部面板:外层点击 backdrop 关闭;键盘路径由面板内真实 <button type="button"> 项承担
-    // (mobileNavigate 导航即关闭面板,见 main.jsx 的 setMobileMoreOpen(false))。
-    // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop 点击关闭层,键盘路径由面板内按钮承担
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop 点击关闭层,非交互容器
+    // Bottom sheet: outer backdrop click closes it; the keyboard path is the real <button type="button"> items inside the panel
+    // (mobileNavigate closes the panel on navigation; see setMobileMoreOpen(false) in main.jsx).
+    // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path handled by the buttons inside the panel
+    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, not an interactive container
     <div data-testid="mobile-more-sheet" className="fixed inset-0 z-[70] flex flex-col justify-end" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40" />
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: 面板体仅阻止冒泡以免误触 backdrop 关闭,自身非交互控件 */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: 面板体仅阻止冒泡,非交互容器 */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: panel body only stops propagation to avoid accidental backdrop close; not interactive itself */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: panel body only stops propagation; not an interactive container */}
       <div onClick={e => e.stopPropagation()}
         className="relative rounded-t-[20px] px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
         <div className="mx-auto mb-3 h-1 w-9 rounded-full bg-black/15 dark:bg-white/20" />

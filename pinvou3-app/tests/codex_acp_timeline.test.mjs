@@ -188,7 +188,7 @@ try {
       toolCallId: 'command-1',
       status: 'completed',
       rawOutput: {
-        // eslint-disable-next-line no-useless-escape -- 转义是模拟终端输出的数据载荷
+        // eslint-disable-next-line no-useless-escape -- the escapes are the data payload simulating terminal output
         formatted_output: '\u001b[31mUnknown JSON field: \"baseRefOid\"\u001b[0m\n'
           + '\u001b]8;;https://example.com\u0007worktree /workspace/pinvou3\u001b]8;;\u0007\n',
         exit_code: 0,
@@ -207,7 +207,7 @@ try {
   assert.ok(command.output.includes('Unknown JSON field'));
   assert.equal(
     command.output,
-    // eslint-disable-next-line no-useless-escape -- 转义是模拟终端输出的数据载荷
+    // eslint-disable-next-line no-useless-escape -- the escapes are the data payload simulating terminal output
     'Unknown JSON field: \"baseRefOid\"\nworktree /workspace/pinvou3\n',
     'command output must not render ANSI colors or OSC hyperlinks as garbage',
   );
