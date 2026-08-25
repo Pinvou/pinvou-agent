@@ -250,6 +250,15 @@ impl SessionStore {
         if removed_hidden {
             self.save_hidden_sessions();
         }
+
+        // 进程级 turn 状态 map（timing/pending_user_input）的键随会话 id 累
+        // 积，由 app 组合根注册的删除钩子清理（见 SessionPurgedHook；这里不
+        // 能直接依赖 assistant feature）。否则残留的未配对 turn 队列会随 app
+        // 生命周期无界增长，迟到的 finish 还会在已删会话目录外重建孤儿
+        // timing sidecar。
+        for id in ids {
+            self.notify_session_purged(id);
+        }
     }
 
     pub(crate) fn purge_all_scheduled_side_maps(&self) {

@@ -163,6 +163,9 @@ pub struct SessionStore {
     /// `list_cache` 的代数计数:每次失效自增,回填前比对——miss 期间发生过写
     /// 的扫描结果不得回填(陈旧快照复活会驻留到下一次写)。见 store.rs。
     pub(crate) list_cache_generation: Arc<AtomicU64>,
+    /// 会话删除钩子（依赖倒置）：见 [`SessionPurgedHook`]。None = 无人注册
+    /// （测试/启动早期），删除照常、仅进程级状态无人跟进。
+    session_purged_hooks: Arc<RwLock<Vec<SessionPurgedHook>>>,
 }
 
 /// 原生代码会话(品悟 Engine)的执行根解析器:绑定了项目目录的原生代码会话
@@ -178,6 +181,12 @@ pub type ExecutionRootResolver = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sy
 /// ACP 会话在其 store 里恒为 plain（`bind_*` 时显式重置），故本判定命中即
 /// "品悟原生 code 会话"，不会误伤 ACP 会话自己的权限模式。
 pub type CodeSessionPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// 会话删除钩子：保留策略/定时清理在 sessions feature 深层直接删除会话时
+/// 通知进程级状态持有者（timing/pending_user_input 等）同步清键。与
+/// `ExecutionRootResolver` 同样的注入理由——`sessions` 不能反向依赖
+/// `assistant`（架构守卫的 feature 依赖方向），由 app 组合根注册。
+pub type SessionPurgedHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// 一个会话的两个根:
 /// - `execution`:Engine cwd / shell 执行目录。绑了项目目录的原生代码会话 = 项目

@@ -281,18 +281,15 @@ pub(crate) async fn codex_acp_prompt_with_attachments(
         message.as_str()
     };
     super::sessions::apply_default_session_title(&store, &session_id, title_source)?;
-    crate::features::assistant::timing::start_turn(&session_id);
+    // start_turn 必须在 send_message 的 busy 准入成功之后：ACP 无原生链路的
+    // reserve/terminal_closing 闸门，若在准入前入队，并发的第二次提交失败时
+    // send_error 收尾会把队列整段清掉，吞掉在飞轮的终态记点。
     acp_pool
         .send_message(&session_id, message, attachments, workspace_references)
         .await
-        .map_err(|error| {
-            crate::features::assistant::timing::finish_turn(
-                &session_id,
-                "send_error",
-                Some(&format!("{error:#}")),
-            );
-            format!("ACP Agent send failed: {error:#}")
-        })
+        .map_err(|error| format!("ACP Agent send failed: {error:#}"))?;
+    let _turn_id = crate::features::assistant::timing::start_turn(&session_id);
+    Ok(())
 }
 
 // 会话内浏览走 session_id（解析会话工作区并校验可用性）；

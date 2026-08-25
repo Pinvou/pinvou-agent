@@ -1034,6 +1034,25 @@ mod visual_cache_tests {
     }
 
     #[test]
+    fn pipe_in_filename_parses_key_on_last_separator() {
+        // 文件名可含 `|`：键解析必须按最后一个分隔符右切（rsplit_once）。
+        // 左切分会把 `/tmp/a|b.pdf|1` 解析成 `/tmp/a`，让同前缀的无关文件
+        // （`/tmp/a|c.pdf`）互相误逐出对方的条目。
+        let mut state = fresh_state();
+        visual_cache_insert(&mut state, "/tmp/a|b.pdf|1".into(), result_with(8));
+        visual_cache_insert(&mut state, "/tmp/a|c.pdf|1".into(), result_with(8));
+        assert_eq!(state.len(), 2, "文件名含 | 的两个不同文件必须共存");
+        assert!(state.contains_key("/tmp/a|b.pdf|1"));
+        assert!(state.contains_key("/tmp/a|c.pdf|1"));
+        // 同名文件（含 |）新 mtime 仍应让位旧条目。
+        visual_cache_insert(&mut state, "/tmp/a|b.pdf|2".into(), result_with(8));
+        assert_eq!(state.len(), 2, "同名含 | 文件按路径让位，不影响邻居");
+        assert!(!state.contains_key("/tmp/a|b.pdf|1"));
+        assert!(state.contains_key("/tmp/a|b.pdf|2"));
+        assert!(state.contains_key("/tmp/a|c.pdf|1"));
+    }
+
+    #[test]
     fn entry_cap_evicts_oldest_touched() {
         let mut state = fresh_state();
         for i in 0..=MAX_VISUAL_CACHE_ENTRIES as u64 {

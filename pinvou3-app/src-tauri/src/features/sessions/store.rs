@@ -28,6 +28,7 @@ use super::scheduled::ChatEngineState;
 use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
 use super::validators::{generate_session_id, persisted_system_prompt, validate_session_id};
 use super::CodeSessionPredicate;
+use super::SessionPurgedHook;
 use crate::core::mode_state::SerializableMode;
 use crate::platform::prefs::UserPrefs;
 use std::collections::HashSet;
@@ -175,6 +176,7 @@ impl SessionStore {
             session_mode_states: Arc::new(RwLock::new(HashMap::new())),
             code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),
             mode_defaults: Arc::new(RwLock::new(prefs_snapshot.mode_defaults)),
+            session_purged_hooks: Arc::new(RwLock::new(Vec::new())),
         };
         store.load_scheduled_profiles()?;
         store.reconcile_scheduled_profiles_locked()?;
@@ -353,6 +355,21 @@ impl SessionStore {
     pub fn set_code_session_predicate(&self, predicate: CodeSessionPredicate) {
         *self.code_session_predicate.write() = Some(predicate);
         self.reconcile_code_default_modes();
+    }
+
+    /// 注册会话删除钩子（依赖倒置，见 [`SessionPurgedHook`]）。app 组合根在
+    /// pool 就绪后注册 timing/pending_user_input 清理；store clone 共享同一
+    /// Arc，注入即时生效。
+    pub fn register_session_purged_hook(&self, hook: SessionPurgedHook) {
+        self.session_purged_hooks.write().push(hook);
+    }
+
+    /// 会话从 store 删除（含保留策略/定时清理等无 app handle 的深层路径）后
+    /// 通知全部注册方。失败静默（钩子方自负责幂等），不得阻塞删除主流程。
+    pub(crate) fn notify_session_purged(&self, id: &str) {
+        for hook in self.session_purged_hooks.read().iter() {
+            hook(id);
+        }
     }
 
     pub(crate) fn reconcile_code_default_modes(&self) {

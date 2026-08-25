@@ -12,6 +12,7 @@
       var entries = [];
       var sent = 0;
       var flushInFlight = false;
+      var inflightTail = null;
       var flushTimer = null;
       var longTaskCount = 0;
       var resourceCount = 0;
@@ -28,7 +29,9 @@
         // visibility/error 等监听器在启动后仍会持续打点，而 web 端 invoke 不可用、
         // 桌面端启动批次早已上报。保留最近 64 条防止数组随交互无界增长（启动
         // 关键阶段通常在 40 条以内，截断只影响极端后期的重复 visibilitychange）。
-        // sent 游标同步前移：被丢弃的恰是已上报的最旧条目。
+        // sent 游标同步前移补偿截断；sent ≥ dropped 时丢弃的确实是已上报条目，
+        // web 端 sent 恒 0，丢弃的是本就无从上报的条目。在途批次混入被删条目的
+        // 场景由 flush 回调按批次末条身份重定位兜底（见 relocateSent）。
         if (entries.length > 64) {
           var dropped = entries.length - 64;
           entries.splice(0, dropped);
@@ -59,13 +62,28 @@
         }, delay || 0);
       }
 
+      // flush 回调不能直接 sent += batch.length：截断可能已把批次里的条目从数组
+      // 删除，按计数推进会把这些已删条目计入游标，让后到的真实条目被
+      // sent >= entries.length 短路误判为已上报而永不发送。按批次末条的身份
+      // 重定位：找到即推进到它之后；整批被删则归零重发（Rust 端逐行 append、
+      // 2MiB 轮转，重复上报无害）。
+      function relocateSent() {
+        if (inflightTail == null) return 0;
+        for (var i = entries.length - 1; i >= 0; i--) {
+          if (entries[i] === inflightTail) return i + 1;
+        }
+        return 0;
+      }
+
       function flush() {
         var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
         if (!invoke || flushInFlight || sent >= entries.length) return;
         var batch = entries.slice(sent);
         flushInFlight = true;
+        inflightTail = batch[batch.length - 1];
         invoke("report_frontend_startup", { entries: batch }).then(function () {
-          sent += batch.length;
+          sent = relocateSent();
+          inflightTail = null;
           flushInFlight = false;
           if (sent < entries.length) scheduleFlush(0);
         }).catch(function () {

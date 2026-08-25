@@ -2429,6 +2429,28 @@ fn retention_purge_also_updates_multi_agent_flags() {
     );
 }
 
+#[test]
+fn retention_purge_notifies_session_purged_hooks() {
+    let (store, _guard) = isolated_store();
+    let chat = store
+        .create_new("m".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    let id = chat.metadata.id.clone();
+
+    // 依赖倒置：sessions feature 深层的保留策略删除经钩子通知进程级状态持有
+    // 者（timing/pending_user_input 由组合根注册），未注册时删除照常。
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = seen.clone();
+    store.register_session_purged_hook(std::sync::Arc::new(move |sid: &str| {
+        recorder.lock().unwrap().push(sid.to_string());
+    }));
+
+    store.purge_session_side_maps(&[id.clone()]);
+
+    let notified = seen.lock().unwrap().clone();
+    assert_eq!(notified, vec![id], "删除钩子必须收到被清会话 id");
+}
+
 // ===================== code 会话权限模式（两层持久化 + 默认值解析）=====================
 
 /// 注入一个简易 code 会话判定：列表内的 id 视为品悟原生 code 会话。
