@@ -133,3 +133,11 @@ TUI 为 Session、Model、Permissions 增加独立 overlay state、请求 token�
 - 会话退出重开后历史、终态、工具结果和 cursor 一致，已完成工具不重放。
 - 任一 prepare/commit、Runtime 或磁盘失败都保持旧会话/Attachment/配置有效。
 - 用户无需退出 TUI 或使用诊断 CLI 完成上述流程。
+
+## 11. 2026-08-25 实施状态
+
+本轮已落地 Runtime API、Codex Adapter、Node、Controller 持久化、TUI Backend 和终端交互纵向链路。无参数 `pinvou` 仍直接进入 TUI；无既有选择记录时默认 Runtime 为 Codex。TUI 已提供 `/resume`、`/model`、`/permissions`，其中 `full_access` 必须二次确认，权限页显示 Runtime 报告的 `enforced`、`partial` 或 `unsupported` 控制强度及 residual guards。
+
+已通过 Runtime API、Codex Adapter、Node、Controller、TUI 状态机和真实 Windows PTY 定向测试；PTY 已验证三个命令打开真实 overlay、Escape 返回输入以及退出后恢复终端。正式 distributed 构建产物位于 `D:\pinvou-cargo-target-session-model-permissions\debug\pinvou.exe`，resolved dependency boundary 通过。
+
+当前不能将本阶段标记为完整 live 闭环：尚未执行会产生真实模型调用的 Codex 多轮/工具/退出重开验收；严格 Clippy 被本阶段外既有 `seglog`、`benchmark-core`、Windows IPC/lock 告警阻断；stage1 zero-diff 相对 `origin/main` 的 merge-base 会包含当前长期分支上既有 Desktop、CodeWhale 与文档差异。后续还需收口：Controller 控制合约补齐全部 model/permission prepare/commit 的真实 Node 测试；把 capability evidence version 显式纳入 token 失效判定；native resume 增加 Attachment 指纹校验和显式 checkpoint fallback；解决 Node 已切换 Attachment、Controller 随后落盘失败时的跨进程补偿；初始化真正应用 Workspace Runtime 偏好并向 TUI 说明失效记忆的回退；按事务边界把 `ControllerSession` 内的 session/model/permission 控制服务渐进拆出。未完成前不得宣称所有完成标准已满足。

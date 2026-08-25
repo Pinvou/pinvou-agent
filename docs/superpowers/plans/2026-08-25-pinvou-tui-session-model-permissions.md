@@ -134,10 +134,10 @@ Expected: PASS。
 
 - [ ] 写失败测试覆盖 `session.list`、`session.resume.prepare/commit`、`model.list/switch.prepare/commit`、`permissions.inspect/switch.prepare/commit`。
 - [ ] token 绑定 Controller instance nonce、Logical Session、Attachment epoch、目标值和 capability evidence version；重启、重复提交或任一字段变化都拒绝。
-- [ ] `chat.start` 在转发每个 Node event 前先追加 Logical Session WAL；terminal event 后更新 metadata/snapshot 与 Workspace 最近会话索引。
-- [ ] resume commit 顺序：读 snapshot → 补放 cursor 后事件 → 校验 Attachment → Node native resume → 成功后切换活动会话；失败保持原会话。
-- [ ] model/permission commit 只允许 idle；成功后更新 Attachment epoch 和 Workspace Preferences，失败保持旧状态。
-- [ ] 运行 Controller 合约：
+- [x] `chat.start` 在转发每个 Node event 前先追加 Logical Session WAL；terminal event 后更新 metadata/snapshot 与 Workspace 最近会话索引。
+- [ ] resume commit 顺序：读 snapshot → 补放 cursor 后事件 → 校验 Attachment → Node native resume → 成功后切换活动会话；失败保持原会话。（epoch 已校验；Attachment 指纹与显式 checkpoint fallback 待补。）
+- [ ] model/permission commit 只允许 idle；成功后更新 Attachment epoch 和 Workspace Preferences，失败保持旧状态。（idle 与成功路径已完成；Node 切换成功后 Controller 落盘失败的跨进程补偿待补。）
+- [x] 运行 Controller 合约：
 
 ```powershell
 D:\RustNdk\.rustup\toolchains\1.97.1-x86_64-pc-windows-msvc\bin\cargo.exe test --manifest-path pinvou-cli/Cargo.toml --offline -p pinvou-controller --test controller_contract
@@ -154,11 +154,11 @@ Expected: PASS。
 - Modify: `pinvou-cli/crates/cli/src/distributed/mod.rs`
 - Test: `pinvou-cli/crates/cli/tests/distributed_cli_contract.rs`
 
-- [ ] 在 TUI-owned port 定义 `SessionList`、`ModelList`、`PermissionStatus` 和三种 switch/resume 结果，不让 TUI 依赖 Controller crate。
-- [ ] Backend 方法对外仍是一次语义操作；CLI Adapter 内部完成 prepare 后立即 commit，并校验两阶段响应关联。
-- [ ] `stream_turn` 附带活动 Logical Session；Controller 重连不得自动重发非幂等操作。
-- [ ] 测试 IPC 方法序列、超时、prepare 成功但 commit 失败、过期 token，断言安全错误且旧状态不变。
-- [ ] 运行：
+- [x] 在 TUI-owned port 定义 `SessionList`、`ModelList`、`PermissionStatus` 和三种 switch/resume 结果，不让 TUI 依赖 Controller crate。
+- [x] Backend 方法对外仍是一次语义操作；CLI Adapter 内部完成 prepare 后立即 commit，并校验两阶段响应关联。
+- [x] `stream_turn` 附带活动 Logical Session；Controller 重连不得自动重发非幂等操作。
+- [x] 测试 IPC 方法序列、超时、prepare 成功但 commit 失败、过期 token，断言安全错误且旧状态不变。
+- [x] 运行：
 
 ```powershell
 D:\RustNdk\.rustup\toolchains\1.97.1-x86_64-pc-windows-msvc\bin\cargo.exe test --manifest-path pinvou-cli/Cargo.toml --offline -p pinvou-cli --test distributed_cli_contract
@@ -175,12 +175,12 @@ Expected: PASS。
 - Modify: `pinvou-cli/crates/tui/src/update.rs`
 - Test: `pinvou-cli/crates/tui/tests/app_contract.rs`
 
-- [ ] 把命令表扩展为 `/resume`、`/model`、`/permissions`，删除“这些命令必须未知”的旧断言。
-- [ ] 为三个 overlay 分别保存候选列表、选中项、搜索文本、operation token、loading/error；任一时刻只允许一个 overlay。
-- [ ] 流式回合、审批或输入请求期间拒绝打开/提交切换；Escape 只取消 overlay，Enter 才提交。
-- [ ] resume 成功后一次性替换 transcript、active session、runtime、model、permission 与 cursor；失败完整保留旧 Model。
-- [ ] `full_access` 增加二次确认状态；partial/unsupported 必须直接显示，不允许以成功颜色渲染。
-- [ ] 运行纯状态机测试：
+- [x] 把命令表扩展为 `/resume`、`/model`、`/permissions`，删除“这些命令必须未知”的旧断言。
+- [x] 为三个 overlay 分别保存候选列表、选中项、搜索文本、operation token、loading/error；任一时刻只允许一个 overlay。
+- [x] 流式回合、审批或输入请求期间拒绝打开/提交切换；Escape 只取消 overlay，Enter 才提交。
+- [x] resume 成功后一次性替换 transcript、active session、runtime、model、permission 与 cursor；失败完整保留旧 Model。
+- [x] `full_access` 增加二次确认状态；partial/unsupported 必须直接显示，不允许以成功颜色渲染。
+- [x] 运行纯状态机测试：
 
 ```powershell
 D:\RustNdk\.rustup\toolchains\1.97.1-x86_64-pc-windows-msvc\bin\cargo.exe test --manifest-path pinvou-cli/Cargo.toml --offline -p pinvou-tui --test app_contract
@@ -197,11 +197,11 @@ Expected: PASS。
 - Modify: `pinvou-cli/crates/tui/tests/production_contract.rs`
 - Test: `pinvou-cli/crates/cli/tests/tui_pty_contract.rs`
 
-- [ ] 渲染 Claude Code 风格单列 overlay：标题、筛选框、候选、当前/默认/unsupported 标记和底部按键提示。
-- [ ] `/resume` 支持普通字符搜索、Backspace、Up/Down、Enter、Escape；另两个 overlay 支持 Up/Down、Enter、Escape。
-- [ ] 后台调用沿用有界 channel 与 control lease；退出时 detach 本地请求，不中止远端回合、不隐式提交切换。
-- [ ] PTY 测试验证三个命令可打开真实 overlay、取消后输入恢复、退出后 Raw Mode/备用屏幕恢复。
-- [ ] 运行：
+- [x] 渲染 Claude Code 风格单列 overlay：标题、筛选框、候选、当前/默认/unsupported 标记和底部按键提示。
+- [x] `/resume` 支持普通字符搜索、Backspace、Up/Down、Enter、Escape；另两个 overlay 支持 Up/Down、Enter、Escape。
+- [x] 后台调用沿用有界 channel 与 control lease；退出时 detach 本地请求，不中止远端回合、不隐式提交切换。
+- [x] PTY 测试验证三个命令可打开真实 overlay、取消后输入恢复、退出后 Raw Mode/备用屏幕恢复。
+- [x] 运行：
 
 ```powershell
 D:\RustNdk\.rustup\toolchains\1.97.1-x86_64-pc-windows-msvc\bin\cargo.exe test --manifest-path pinvou-cli/Cargo.toml --offline -p pinvou-tui --test production_contract
@@ -231,8 +231,8 @@ python pinvou-cli/scripts/check_stage1_zero_diff.py
 ```
 
 - [ ] 构建一次正式 CLI 后做真实 Windows PTY 验收：`pinvou` 启动 TUI；聊天两轮；`/model` 切换；`/permissions` 依次验证 request 与 full_access 风险确认；执行一个只读工具；退出；重开；`/resume` 恢复同一会话；确认已完成工具不重放。
-- [ ] 若付费/登录环境不可用，只把该项如实标记为未验证，不用 fake backend 代替真实验收。
-- [ ] 更新设计状态、README 命令说明和已知限制；检查 `git diff --check`，只提交范围内文件。
+- [x] 若付费/登录环境不可用，只把该项如实标记为未验证，不用 fake backend 代替真实验收。
+- [x] 更新设计状态、README 命令说明和已知限制；检查 `git diff --check`，只提交范围内文件。（仓库当前无 `pinvou-cli/README.md`，状态与命令记录在设计文档。）
 
 ---
 
