@@ -763,6 +763,10 @@ try {
     && codexView.includes('latestRequestId: nativeControlsRequestRef.current')
     && codexView.includes('activeId: activeIdRef.current'),
   'an async control refresh from the previous native session must not overwrite the newly selected session');
+  assert.ok(codexView.includes('claimNativeControlsRefreshId({')
+    && codexView.indexOf('claimNativeControlsRefreshId({')
+      < codexView.indexOf('canApplyNativeControlsRefresh({'),
+  'a refresh aimed at a stale session must not claim a sequence number and supersede the active session refresh');
   assert.ok(chatView.includes("from './composer-controls.jsx'")
     && !chatView.includes('const ComposerKbSelector = ')
     && !chatView.includes('const ComposerModeChip = ')

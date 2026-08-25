@@ -12,6 +12,18 @@ export function resolveNativeModelId({
   return draftModelId || null;
 }
 
+// Issues the sequence number for a control refresh. A refresh aimed at a session
+// other than the active one is certain to be dropped by canApplyNativeControlsRefresh,
+// so it must not consume a sequence number: otherwise a late request for a stale
+// session (e.g. fired after an awaited control mutation) would supersede the active
+// session's in-flight authoritative refresh, leaving its controls stuck on fallback
+// values with no replacement request.
+export function claimNativeControlsRefreshId({ sessionId, activeId, latestRequestId }) {
+  if (sessionId !== activeId) return { requestId: 0, latestRequestId };
+  const requestId = latestRequestId + 1;
+  return { requestId, latestRequestId: requestId };
+}
+
 export function canApplyNativeControlsRefresh({
   requestId,
   latestRequestId,

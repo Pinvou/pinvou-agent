@@ -62,6 +62,7 @@ import {
 } from './code-permission-state.js';
 import {
   canApplyNativeControlsRefresh,
+  claimNativeControlsRefreshId,
   finalizePreparedSessionCreation,
   resolveNativeModelId,
 } from './native-session-handoff.js';
@@ -1199,7 +1200,9 @@ export function CodexAcpView({
   // refreshNativeControls 请求序号：快速切会话时多个 get_* invoke 并发在途，
   // 后发起的请求应胜出。没有它，先发起的慢响应会晚返回并把控件值/归属 ref 覆盖
   // 成旧会话——mode chip 随即显示全局 fallback 而非新会话实测值（串台/陈旧覆盖，
-  // 与聊天页 modeState epoch 修复同款竞态）。
+  // 与聊天页 modeState epoch 修复同款竞态）。序号只对发起时仍归属当前会话的请求
+  // 发放（claimNativeControlsRefreshId）：已切走的陈旧请求反正会被归属检查丢弃，
+  // 占用序号反而会把当前会话在途的权威刷新顶成过期且无人补发。
   const nativeControlsRequestRef = useRef(0);
   // code 会话权限模式全局偏好（{ last_mode, yolo_confirmed }，null=未拉到）：
   // 驱动草稿态/刷新途中的默认 mode 展示，以及首次切 yolo 的一次性确认门。
@@ -1460,8 +1463,15 @@ export function CodexAcpView({
 
   /// 拉取原生会话的模型/知识库/模式状态（全部 per-session 命令，显式 sessionId）。
   async function refreshNativeControls(sessionId) {
-    const requestId = nativeControlsRequestRef.current + 1;
-    nativeControlsRequestRef.current = requestId;
+    // 发起时已不归属当前会话的刷新注定被提交前的归属检查丢弃，不得占用序号——
+    // 否则它会把当前会话在途的权威刷新顶成过期且无人补发（跨会话抢占）。
+    const claimed = claimNativeControlsRefreshId({
+      sessionId,
+      activeId: activeIdRef.current,
+      latestRequestId: nativeControlsRequestRef.current,
+    });
+    nativeControlsRequestRef.current = claimed.latestRequestId;
+    const requestId = claimed.requestId;
     const [modelId, mountedId, modeState] = await Promise.all([
       invoke('get_session_model_id', { sessionId }).catch(() => null),
       invoke('session_mounted_collection', { sessionId }).catch(() => null),

@@ -36,6 +36,7 @@ try {
   } = await import(`${pathToFileURL(path.join(temp, 'codex', 'code-permission-state.js')).href}?t=${Date.now()}`);
   const {
     canApplyNativeControlsRefresh,
+    claimNativeControlsRefreshId,
     finalizePreparedSessionCreation,
     resolveNativeModelId,
   } = await import(`${pathToFileURL(path.join(temp, 'codex', 'native-session-handoff.js')).href}?t=${Date.now()}`);
@@ -137,7 +138,34 @@ try {
     handoffModelId: handoff.modelId,
   }), 'model-a');
 
-  // Preparation can fail after the backend session exists. This exercises the integration
+  // ── 请求序号发放：陈旧会话的刷新不得占用序号 ─────────────────────
+  // 发起时已不归属当前会话的刷新注定被归属检查丢弃；若它占用序号，会把当前会话
+  // 在途的权威刷新顶成过期且无人补发，控件卡死在全局兜底（跨会话抢占回归）。
+  {
+    let latest = 0;
+    // 当前会话 B 的权威刷新正常领取序号。
+    let claim = claimNativeControlsRefreshId({ sessionId: 'B', activeId: 'B', latestRequestId: latest });
+    latest = claim.latestRequestId;
+    assert.equal(claim.requestId, 1);
+    // 用户在 accept_plan 在途期间从 A 切到 B；A 的陈旧刷新晚发起，不得顶掉序号。
+    const stale = claimNativeControlsRefreshId({ sessionId: 'A', activeId: 'B', latestRequestId: latest });
+    assert.equal(stale.requestId, 0, 'stale-session refresh must not claim a sequence number');
+    assert.equal(stale.latestRequestId, 1, 'stale-session refresh must not supersede the active request');
+    // B 的在途刷新返回后仍可提交；陈旧请求提交时被拒绝。
+    assert.equal(canApplyNativeControlsRefresh({
+      requestId: 1, latestRequestId: stale.latestRequestId, sessionId: 'B', activeId: 'B',
+    }), true);
+    assert.equal(canApplyNativeControlsRefresh({
+      requestId: stale.requestId, latestRequestId: stale.latestRequestId, sessionId: 'A', activeId: 'B',
+    }), false);
+    // 同会话内仍保持后发胜出：B 再次刷新领取新序号，旧响应被丢弃。
+    claim = claimNativeControlsRefreshId({ sessionId: 'B', activeId: 'B', latestRequestId: stale.latestRequestId });
+    assert.equal(claim.requestId, 2);
+    assert.equal(canApplyNativeControlsRefresh({
+      requestId: 1, latestRequestId: claim.latestRequestId, sessionId: 'B', activeId: 'B',
+    }), false);
+  }
+
   // between creation and the real operation tracker: activation invalidates the draft token,
   // then sendNative-style rebinding makes the visible error path current again.
   {
