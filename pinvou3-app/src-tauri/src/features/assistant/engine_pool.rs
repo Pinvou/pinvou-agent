@@ -290,6 +290,11 @@ where
     evict_locked().await;
     store.delete(session_id)?;
     forget();
+    // timing 是同 feature 的进程级状态，可直接清键（无依赖倒置问题）。
+    // 这条覆盖不经 app 组合根、SessionPurgedHook 未注册的路径（eval 拆除、
+    // 测试）：未配对 turn 队列的键随会话 id 驻留会随 GAIA 这类建删循环
+    // 无界增长。与 store.delete 触发的钩子清理幂等重叠，无重复副作用。
+    crate::features::assistant::timing::clear_session(session_id);
     Ok(())
 }
 
@@ -3155,6 +3160,53 @@ mod scheduled_model_tests {
         assert!(!fake_engine_present.load(Ordering::Acquire));
         assert!(forgotten.load(Ordering::Acquire));
         assert!(store.load(&session_id).is_err());
+
+        match previous_home {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// 回归：eval 拆除路径（`ProductChatRuntime::close` / `delete_eval_session`）
+    /// 复用 delete_chat_session，但 submit 已 `timing::start_turn`；删除必须清掉
+    /// ACTIVE_TURNS 里该会话的未配对队列键，否则 GAIA 单 pass ~165 个建删循环
+    /// 会让进程级 map 无界增长。
+    #[tokio::test]
+    async fn chat_delete_clears_queued_turn_timing_state() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-chat-delete-timing-{}",
+            std::process::id()
+        ));
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&home);
+        std::env::set_var("PINVOU3_HOME", &home);
+
+        let store = SessionStore::boot().expect("session store");
+        let session_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("chat session")
+            .metadata
+            .id;
+        // eval submit 路径先 start_turn；提交失败/中断时该键驻留，由删除兜底。
+        crate::features::assistant::timing::start_turn(&session_id);
+        assert!(
+            crate::features::assistant::timing::has_queued_active_turn(&session_id),
+            "precondition: turn 已入队"
+        );
+
+        let locks = SessionTurnLocks::default();
+        delete_chat_session_with_gate(&locks, &store, &session_id, || async {}, || {})
+            .await
+            .expect("delete chat");
+
+        assert!(
+            !crate::features::assistant::timing::has_queued_active_turn(&session_id),
+            "delete_chat_session 必须清空该会话的未配对 turn 队列"
+        );
 
         match previous_home {
             Some(value) => std::env::set_var("PINVOU3_HOME", value),

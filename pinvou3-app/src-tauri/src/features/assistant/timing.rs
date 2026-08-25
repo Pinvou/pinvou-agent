@@ -178,6 +178,15 @@ pub fn clear_session(session_id: &str) {
     }
 }
 
+/// 测试探针：该 session 是否仍有未配对 turn 队列条目（删除路径回归断言用）。
+#[cfg(test)]
+pub(crate) fn has_queued_active_turn(session_id: &str) -> bool {
+    active_turns()
+        .lock()
+        .map(|map| map.contains_key(session_id))
+        .unwrap_or(false)
+}
+
 /// 旧调用点(无 usage):落盘不带 usage 字段,reader API 反序列化为 None。
 /// 保留是为了不强迫所有调用点同步升级(commands.rs:200 的 send_error 兜底等)。
 pub fn finish_turn(session_id: &str, status: &str, error: Option<&str>) {
@@ -1259,7 +1268,7 @@ mod tests {
     /// 的 turn,更早条目是"未提交即取消"残留的陈旧轮——终态落在 second 上,
     /// 整队清除后陈旧的 first 不产生终态事件,后续收尾为 no-op。
     #[test]
-    fn queued_second_turn_survives_single_observation_finish() {
+    fn single_observation_finish_tail_pops_latest_turn_and_clears_queue() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-timing-queued-{}",
