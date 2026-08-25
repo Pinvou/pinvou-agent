@@ -142,17 +142,31 @@ fn parse_lmstudio_v0_models(v: &serde_json::Value) -> Option<Vec<OpenAiModelInfo
     (!models.is_empty()).then_some(models)
 }
 
+/// 探测请求的鉴权头：与真实推理请求同源的 Bearer key（本地 vLLM `--api-key`
+/// 等鉴权端点的 `/v1/models` 也会 401，不带凭据探测会把鉴权端点误判成
+/// Generic）。`None`/空白不带鉴权头（默认无鉴权的 Ollama/LM Studio 不受影响，
+/// 无鉴权服务会忽略 Bearer 头）。
+fn apply_bearer(req: reqwest::RequestBuilder, bearer: Option<&str>) -> reqwest::RequestBuilder {
+    match bearer.map(str::trim).filter(|key| !key.is_empty()) {
+        Some(key) => req.bearer_auth(key),
+        None => req,
+    }
+}
+
 /// 探测 Ollama：区分"已加载"（/api/ps）与"仅下载未加载"（/api/tags）。
 /// 两个接口都是只读列表，不会触发加载；绝不能用推理请求探测。
-pub async fn probe_ollama_models(base_url: &str) -> Option<OpenAiModelsProbe> {
+/// `bearer` 语义见 [`apply_bearer`]。
+pub async fn probe_ollama_models(
+    base_url: &str,
+    bearer: Option<&str>,
+) -> Option<OpenAiModelsProbe> {
     let host = strip_v1_suffix(base_url)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
         .ok()?;
     // 已加载集合：失败按空集（全部未加载），不影响已下载列表。
-    let loaded_names = match client
-        .get(format!("{host}/api/ps"))
+    let loaded_names = match apply_bearer(client.get(format!("{host}/api/ps")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
@@ -165,8 +179,7 @@ pub async fn probe_ollama_models(base_url: &str) -> Option<OpenAiModelsProbe> {
         Err(_) => Default::default(),
     };
     // 已下载列表：/api/tags 是必需项，失败则整个候选离线。
-    let resp = client
-        .get(format!("{host}/api/tags"))
+    let resp = apply_bearer(client.get(format!("{host}/api/tags")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
@@ -190,7 +203,7 @@ pub async fn probe_ollama_models(base_url: &str) -> Option<OpenAiModelsProbe> {
 /// 探测 LM Studio：优先原生 `/api/v0/models`（带 loaded 状态），
 /// 旧版本没有该接口时回退 `/v1/models`（loaded 未知）。
 pub async fn probe_lmstudio_models(base_url: &str) -> Option<OpenAiModelsProbe> {
-    if let Some(probe) = probe_lmstudio_v0_only(base_url).await {
+    if let Some(probe) = probe_lmstudio_v0_only(base_url, None).await {
         return Some(probe);
     }
     probe_openai_models(base_url).await
@@ -249,20 +262,26 @@ pub enum LocalServerKind {
 /// 探测本地推理服务类型。只应在本地端点（`base_url_uses_local_or_private`）上
 /// 调用；判定顺序按特征端点互斥性排列：Ollama（`/api/tags`）→ LM Studio
 /// （`/api/v0/models`）→ vLLM（`/v1/models` 的 `owned_by`）→ 通用。探测失败
-/// （服务未启动/超时）返回 `Generic`，调用方保持既有 openai wire route，不因
-/// 探测失败改变行为。
+/// （服务未启动/超时/鉴权 401）返回 `Generic`，调用方保持既有 openai wire
+/// route，不因探测失败改变行为。
+///
+/// `bearer` 是与该端点真实推理请求同源的凭据（见 [`apply_bearer`]）：鉴权端点
+/// （vLLM `--api-key`）不带凭据探测必然 401 误判 Generic，丢失默认关思考与
+/// 真实档位。无鉴权端点传 `None` 即可。
 ///
 /// 结果按 base_url 缓存 `PROBE_CACHE_TTL`：探测最坏 ~12-15s 串行（挂起端点），
-/// 多会话/多入口重复探测会放大开销；TTL 内命中直接返回缓存值。并发未命中
-/// 经 in-flight 注册表共享同一次探测（首个调用执行、其余等待广播），不再
-/// 各自串行重付。失败结果（`Generic`）不写入长缓存：服务可能只是未启动，
-/// 下次调用应立即重探，避免 60s 内起服务仍被钉死在 Generic 错路由。
-pub async fn probe_local_server_kind(base_url: &str) -> LocalServerKind {
+/// 多会话/多入口重复探测会放大开销；TTL 内命中直接返回缓存值。缓存/in-flight
+/// 的 key 只含 base_url、绝不包含凭据：正识别（Ollama/vLLM/LM Studio）必然以
+/// 鉴权成功为前提，结果与具体凭据无关，按 URL 合并即安全；失败结果（Generic）
+/// 不写入长缓存——服务可能只是未启动（或换了 key），下次调用应立即重探，避免
+/// 60s 内仍被钉死在 Generic 错路由。并发未命中经 in-flight 注册表共享同一次
+/// 探测（首个调用执行、其余等待广播），不再各自串行重付。
+pub async fn probe_local_server_kind(base_url: &str, bearer: Option<&str>) -> LocalServerKind {
     let key = base_url.trim_end_matches('/').to_string();
     if let Some(kind) = probe_kind_cache_get(&key) {
         return kind;
     }
-    let kind = probe_kind_inflight(&key).await;
+    let kind = probe_kind_inflight(&key, bearer).await;
     if kind != LocalServerKind::Generic {
         probe_kind_cache_put(&key, kind);
     }
@@ -314,7 +333,7 @@ impl Drop for InflightRegistration {
     }
 }
 
-async fn probe_kind_inflight(base_url: &str) -> LocalServerKind {
+async fn probe_kind_inflight(base_url: &str, bearer: Option<&str>) -> LocalServerKind {
     /// 注册结果：要么成为首个执行者，要么订阅在途探测的完成信号。
     enum Inflight {
         First(Arc<tokio::sync::watch::Sender<Option<LocalServerKind>>>),
@@ -325,7 +344,7 @@ async fn probe_kind_inflight(base_url: &str) -> LocalServerKind {
     let entry = {
         let Ok(mut guard) = registry.lock() else {
             // 注册表锁不可用（中毒）：降级为无合并直探。
-            return probe_local_server_kind_uncached(base_url).await;
+            return probe_local_server_kind_uncached(base_url, bearer).await;
         };
         // upgrade 失败 = 陈旧 Weak（此前被取消的探测残留）：按无在途处理，
         // 用新注册覆盖。
@@ -346,7 +365,7 @@ async fn probe_kind_inflight(base_url: &str) -> LocalServerKind {
                 key: base_url.to_string(),
                 sender: Some(Arc::clone(&sender)),
             };
-            let kind = probe_local_server_kind_uncached(base_url).await;
+            let kind = probe_local_server_kind_uncached(base_url, bearer).await;
             // 正常完成：交出 sender，守卫 Drop 不再重复清理。
             registration.sender = None;
             let _ = sender.send(Some(kind));
@@ -360,20 +379,30 @@ async fn probe_kind_inflight(base_url: &str) -> LocalServerKind {
             }
             kind
         }
-        // 并发调用方：等待首个调用方广播结果。
-        Inflight::Wait(mut rx) => {
+        // 并发调用方：等待首个调用方广播结果。共享结果有凭据边界：正识别
+        // （Vllm/Ollama/LmStudio）以探测请求鉴权成功为前提，是关于服务端
+        // 类型本身的结论，与调用方凭据无关，可直接复用；Generic 只说明
+        // 首个调用方的凭据上下文内各特征端点均不可达（如鉴权 vLLM 对无/
+        // 错凭据一律 401），对持不同凭据的等待方不成立——必须用自身凭据
+        // 重新直探，避免「无凭据 First 广播 Generic、正确凭据 Waiter 被
+        // 误分类」的串扰（见混合凭据并发回归测试）。
+        Inflight::Wait(mut rx) => loop {
             // 订阅时结果可能已广播（send 先于 subscribe）：先查当前值。
-            if let Some(kind) = *rx.borrow_and_update() {
-                return kind;
+            // 先拷贝再匹配，避免 borrow 守卫的临时值跨 await 违反 Send。
+            let current = *rx.borrow_and_update();
+            if let Some(kind) = current {
+                return match kind {
+                    LocalServerKind::Generic => {
+                        probe_local_server_kind_uncached(base_url, bearer).await
+                    }
+                    positive => positive,
+                };
             }
-            while rx.changed().await.is_ok() {
-                if let Some(kind) = *rx.borrow_and_update() {
-                    return kind;
-                }
+            if rx.changed().await.is_err() {
+                // 广播方被取消/异常丢弃：通道关闭（changed() Err），降级直探兜底。
+                return probe_local_server_kind_uncached(base_url, bearer).await;
             }
-            // 广播方被取消/异常丢弃：通道关闭（changed() Err），降级直探兜底。
-            probe_local_server_kind_uncached(base_url).await
-        }
+        },
     }
 }
 
@@ -410,19 +439,20 @@ pub(crate) fn clear_probe_kind_cache() {
 }
 
 /// 无缓存的实际探测（TTL 缓存命中时直接返回，见 `probe_local_server_kind`）。
-async fn probe_local_server_kind_uncached(base_url: &str) -> LocalServerKind {
+/// `bearer` 语义见 [`apply_bearer`]。
+async fn probe_local_server_kind_uncached(base_url: &str, bearer: Option<&str>) -> LocalServerKind {
     // Ollama 特征端点 /api/tags 存在且模型列表非空（probe_ollama_models 内部要求）。
-    if probe_ollama_models(base_url).await.is_some() {
+    if probe_ollama_models(base_url, bearer).await.is_some() {
         return LocalServerKind::Ollama;
     }
     // LM Studio 原生端点 /api/v0/models 存在且形状认识。注意不能复用
     // probe_lmstudio_models：它失败时回退 /v1/models，而 /v1/models 是通用端点
     // （Ollama/通用服务也有），会把非 LM Studio 误判成 LM Studio。
-    if probe_lmstudio_v0_only(base_url).await.is_some() {
+    if probe_lmstudio_v0_only(base_url, bearer).await.is_some() {
         return LocalServerKind::LmStudio;
     }
     // vLLM：/v1/models 响应中模型 `owned_by == "vllm"`（vLLM 标准实现字段）。
-    if probe_vllm_owned(base_url).await {
+    if probe_vllm_owned(base_url, bearer).await {
         return LocalServerKind::Vllm;
     }
     LocalServerKind::Generic
@@ -433,14 +463,14 @@ async fn probe_local_server_kind_uncached(base_url: &str) -> LocalServerKind {
 /// 既是 `probe_lmstudio_models` 的 v0 前置，也是本地服务判别探测的前置：
 /// 判别场景必须用它而非 `probe_lmstudio_models`（后者回退 `/v1/models`，而
 /// `/v1/models` 是通用端点，Ollama/通用服务也有，会把非 LM Studio 误判）。
-async fn probe_lmstudio_v0_only(base_url: &str) -> Option<OpenAiModelsProbe> {
+/// `bearer` 语义见 [`apply_bearer`]。
+async fn probe_lmstudio_v0_only(base_url: &str, bearer: Option<&str>) -> Option<OpenAiModelsProbe> {
     let host = strip_v1_suffix(base_url)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
         .ok()?;
-    let resp = client
-        .get(format!("{host}/api/v0/models"))
+    let resp = apply_bearer(client.get(format!("{host}/api/v0/models")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
@@ -455,25 +485,24 @@ async fn probe_lmstudio_v0_only(base_url: &str) -> Option<OpenAiModelsProbe> {
 /// `features::monitor::probe_vllm_model_info` 一致：upstream 带 `/v1` 直接拼
 /// `/models`，不带则补 `/v1/models`。失败/非 2xx/解析失败返回 `None`，调用方
 /// 按探测失败处理。共享给 `probe_vllm_owned` 与 monitor 的 vLLM served-name
-/// 探测，避免 `/v1/models` 的 URL 拼装口径在两处漂移。
-pub(crate) async fn fetch_v1_models(base_url: &str) -> Option<serde_json::Value> {
-    // 共享连接池（对齐 monitor 的 shared_probe_client，#339 对象复用）：
-    // /v1/models 是 monitor、settings 与运行时探测的高频路径。
-    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
-    let client = CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .timeout(Duration::from_secs(3))
-                .build()
-                .ok()
-        })
-        .as_ref()?;
+/// 探测，避免 `/v1/models` 的 URL 拼装口径在两处漂移。`bearer` 语义见
+/// [`apply_bearer`]：鉴权 vLLM 的 `/v1/models` 不带凭据会 401。
+pub(crate) async fn fetch_v1_models(
+    base_url: &str,
+    bearer: Option<&str>,
+) -> Option<serde_json::Value> {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    else {
+        return None;
+    };
     let url = if base_url.trim_end_matches('/').ends_with("/v1") {
         format!("{}/models", base_url.trim_end_matches('/'))
     } else {
         format!("{}/v1/models", base_url.trim_end_matches('/'))
     };
-    let Ok(resp) = client.get(url).send().await else {
+    let Ok(resp) = apply_bearer(client.get(url), bearer).send().await else {
         return None;
     };
     if !resp.status().is_success() {
@@ -483,8 +512,8 @@ pub(crate) async fn fetch_v1_models(base_url: &str) -> Option<serde_json::Value>
 }
 
 /// 探测 vLLM：`/v1/models` 响应中任一模型 `owned_by == "vllm"`（vLLM 标准实现）。
-async fn probe_vllm_owned(base_url: &str) -> bool {
-    let Some(v) = fetch_v1_models(base_url).await else {
+async fn probe_vllm_owned(base_url: &str, bearer: Option<&str>) -> bool {
+    let Some(v) = fetch_v1_models(base_url, bearer).await else {
         return false;
     };
     v.get("data")
@@ -775,10 +804,21 @@ mod tests {
     }
 
     async fn spawn_probe_server(routes: Vec<(&'static str, &'static str)>) -> MockProbeServer {
+        spawn_auth_probe_server(routes, None).await
+    }
+
+    /// 同 [`spawn_probe_server`]，但 `required_bearer` 存在时所有 200 路由都
+    /// 要求 `Authorization: Bearer <required_bearer>`（否则 401），模拟
+    /// vLLM `--api-key` 鉴权端点。
+    async fn spawn_auth_probe_server(
+        routes: Vec<(&'static str, &'static str)>,
+        required_bearer: Option<&'static str>,
+    ) -> MockProbeServer {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let required_bearer = required_bearer.map(str::to_string);
         let task = tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
@@ -797,7 +837,19 @@ mod tests {
                     .next()
                     .and_then(|l| l.split_whitespace().nth(1))
                     .unwrap_or("/");
+                // 头名大小写不敏感解析（hyper HTTP/1.1 序列化为小写 authorization）。
+                let authorization = req.lines().find_map(|l| {
+                    let (name, value) = l.split_once(':')?;
+                    if !name.trim().eq_ignore_ascii_case("authorization") {
+                        return None;
+                    }
+                    value.trim().strip_prefix("Bearer ").map(str::trim)
+                });
+                let unauthorized = required_bearer
+                    .as_deref()
+                    .is_some_and(|expected| authorization != Some(expected));
                 let (status, body) = match routes.iter().find(|(p, _)| path.starts_with(p)) {
+                    Some((_, b)) if unauthorized => (401, r#"{"error":"unauthorized"}"#),
                     Some((_, b)) => (200, *b),
                     None => (404, r#"{"error":"not found"}"#),
                 };
@@ -827,7 +879,7 @@ mod tests {
         )])
         .await;
         assert_eq!(
-            probe_local_server_kind(&server.url).await,
+            probe_local_server_kind(&server.url, None).await,
             LocalServerKind::Ollama
         );
     }
@@ -843,7 +895,7 @@ mod tests {
         )])
         .await;
         assert_eq!(
-            probe_local_server_kind(&server.url).await,
+            probe_local_server_kind(&server.url, None).await,
             LocalServerKind::LmStudio
         );
     }
@@ -859,7 +911,7 @@ mod tests {
         )])
         .await;
         assert_eq!(
-            probe_local_server_kind(&server.url).await,
+            probe_local_server_kind(&server.url, None).await,
             LocalServerKind::Vllm
         );
     }
@@ -870,9 +922,72 @@ mod tests {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
         let server = spawn_probe_server(vec![]).await;
         assert_eq!(
-            probe_local_server_kind(&server.url).await,
+            probe_local_server_kind(&server.url, None).await,
             LocalServerKind::Generic
         );
+    }
+
+    /// 鉴权端点探测（六审 P1 回归）：vLLM `--api-key` 的 `/v1/models` 不带凭据
+    /// 401。带与推理同源的 key 探测 → 正确识别 vllm；不带 key → 401 落
+    /// generic。正识别结果按 base_url 缓存且凭据不进缓存 key（正识别必然以
+    /// 鉴权成功为前提，结果与具体凭据无关；缓存/日志不落密钥）。
+    #[tokio::test]
+    async fn probe_local_kind_sends_bearer_for_authenticated_vllm() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        clear_probe_kind_cache();
+        let server = spawn_auth_probe_server(
+            vec![(
+                "/v1/models",
+                r#"{"object":"list","data":[{"id":"qwen3.6-35b","owned_by":"vllm"}]}"#,
+            )],
+            Some("sk-local-secret"),
+        )
+        .await;
+        // 带正确 key：识别 vllm。
+        assert_eq!(
+            probe_local_server_kind(&server.url, Some("sk-local-secret")).await,
+            LocalServerKind::Vllm
+        );
+        // 无 key（修复前的行为）：401 → generic，鉴权端点被误判。
+        clear_probe_kind_cache();
+        assert_eq!(
+            probe_local_server_kind(&server.url, None).await,
+            LocalServerKind::Generic
+        );
+        // 错误 key 同样 401 → generic（探测失败语义，不误识别）。
+        clear_probe_kind_cache();
+        assert_eq!(
+            probe_local_server_kind(&server.url, Some("sk-wrong-key")).await,
+            LocalServerKind::Generic
+        );
+        // 凭据不进缓存 key：正识别后同 URL 的无 key 调用命中 TTL 缓存直接
+        // 返回 vllm，不再发请求（正识别以鉴权成功为前提，结果与凭据无关）。
+        clear_probe_kind_cache();
+        assert_eq!(
+            probe_local_server_kind(&server.url, Some("sk-local-secret")).await,
+            LocalServerKind::Vllm
+        );
+        assert_eq!(
+            probe_local_server_kind(&server.url, None).await,
+            LocalServerKind::Vllm
+        );
+        clear_probe_kind_cache();
+    }
+
+    /// 空白 bearer 视同无凭据（apply_bearer trim 后过滤）：无鉴权服务不受
+    /// 空白 key 影响，正常识别 Ollama。
+    #[tokio::test]
+    async fn probe_local_kind_blank_bearer_is_treated_as_unauthenticated() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        clear_probe_kind_cache();
+        // 无鉴权 Ollama：空白 key 与 None 等价，正常识别。
+        let open_server =
+            spawn_probe_server(vec![("/api/tags", r#"{"models":[{"name":"qwen3:8b"}]}"#)]).await;
+        assert_eq!(
+            probe_local_server_kind(&open_server.url, Some("   ")).await,
+            LocalServerKind::Ollama
+        );
+        clear_probe_kind_cache();
     }
 
     /// fetch_v1_models 的 URL 拼接：不带 /v1 后缀的 base_url 补 /v1/models；
@@ -882,15 +997,17 @@ mod tests {
         let server = spawn_probe_server(vec![("/v1/models", r#"{"data":[]}"#)]).await;
         let base = server.url.trim_end_matches("/v1").to_string();
         assert!(
-            fetch_v1_models(&base).await.is_some(),
+            fetch_v1_models(&base, None).await.is_some(),
             "无 /v1 后缀应补 /v1/models"
         );
         assert!(
-            fetch_v1_models(&server.url).await.is_some(),
+            fetch_v1_models(&server.url, None).await.is_some(),
             "带 /v1 后缀应拼 /models"
         );
         assert!(
-            fetch_v1_models(&format!("{base}/v1/")).await.is_some(),
+            fetch_v1_models(&format!("{base}/v1/"), None)
+                .await
+                .is_some(),
             "带 /v1/ 尾斜杠同样命中"
         );
     }
@@ -904,10 +1021,10 @@ mod tests {
         clear_probe_kind_cache();
         let server =
             spawn_probe_server(vec![("/api/tags", r#"{"models":[{"name":"qwen3:8b"}]}"#)]).await;
-        let first = probe_local_server_kind(&server.url).await;
+        let first = probe_local_server_kind(&server.url, None).await;
         assert_eq!(first, LocalServerKind::Ollama);
         // 第二次调用命中缓存，不再访问已关闭的 server。
-        let second = probe_local_server_kind(&server.url).await;
+        let second = probe_local_server_kind(&server.url, None).await;
         assert_eq!(second, LocalServerKind::Ollama);
         clear_probe_kind_cache();
     }
@@ -922,7 +1039,7 @@ mod tests {
         let server = spawn_probe_server(vec![]).await;
         let base = server.url.clone();
         assert_eq!(
-            probe_local_server_kind(&base).await,
+            probe_local_server_kind(&base, None).await,
             LocalServerKind::Generic
         );
         // 换成响应 /api/tags 的 server（同端口不可行，用第二个 server 验证
@@ -991,9 +1108,9 @@ mod tests {
         let mut joins = Vec::new();
         for _ in 0..8 {
             let u = url.clone();
-            joins.push(tokio::spawn(
-                async move { probe_local_server_kind(&u).await },
-            ));
+            joins.push(tokio::spawn(async move {
+                probe_local_server_kind(&u, None).await
+            }));
         }
         for j in joins {
             assert_eq!(j.await.unwrap(), LocalServerKind::Ollama);
@@ -1057,7 +1174,7 @@ mod tests {
 
         // 1. 首个探测进入 in-flight 注册（注册后停在 HTTP await 上）。
         let first_url = url.clone();
-        let first = tokio::spawn(async move { probe_local_server_kind(&first_url).await });
+        let first = tokio::spawn(async move { probe_local_server_kind(&first_url, None).await });
         let registry = PROBE_KIND_INFLIGHT.get_or_init(Default::default);
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while !registry.lock().unwrap().contains_key(&key) {
@@ -1070,7 +1187,7 @@ mod tests {
 
         // 2. 并发等待方订阅在途探测。
         let waiter_url = key.clone();
-        let waiter = tokio::spawn(async move { probe_local_server_kind(&waiter_url).await });
+        let waiter = tokio::spawn(async move { probe_local_server_kind(&waiter_url, None).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // 3. abort 首个探测（模拟 spawn 任务被取消）；await 句柄确保 future
@@ -1092,7 +1209,7 @@ mod tests {
         let next_url = key.clone();
         let next_kind = tokio::time::timeout(
             Duration::from_secs(5),
-            tokio::spawn(async move { probe_local_server_kind(&next_url).await }),
+            tokio::spawn(async move { probe_local_server_kind(&next_url, None).await }),
         )
         .await
         .expect("abort 首探后，后续调用方应在限期内完成（注册表无残留）")
@@ -1104,6 +1221,134 @@ mod tests {
             !registry.lock().unwrap().contains_key(&key),
             "abort 后注册表不应残留毒化条目"
         );
+        task.abort();
+        clear_probe_kind_cache();
+    }
+
+    /// 混合凭据并发回归：无凭据的 First 广播 Generic 后，持正确凭据、订阅
+    /// 同一在途探测的等待方不得原样接收（修复前直接复用广播值被误判
+    /// Generic——鉴权端点对正确 key 本可识别），必须用自身凭据重新直探。
+    ///
+    /// mock server 行为：未持正确凭据的 /api/* 请求先挂起（保证 First 停留
+    /// 在途、等待方先完成订阅），放行后按未授权回落；持正确凭据的
+    /// /api/tags 立即返回 Ollama 模型列表。
+    #[tokio::test]
+    async fn probe_kind_inflight_waiter_reprobes_generic_broadcast_from_other_credentials() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        clear_probe_kind_cache();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        const GOOD_KEY: &str = "sk-correct";
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+        let good_key_for_task = GOOD_KEY.to_string();
+        let task = tokio::spawn(async move {
+            let good_key = good_key_for_task;
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut gate = gate_rx.clone();
+                let good_key = good_key.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let Ok(n) = stream.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let path = req
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    // 头名大小写不敏感解析（hyper HTTP/1.1 序列化为小写 authorization）。
+                    let authorized = req.lines().find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        if !name.trim().eq_ignore_ascii_case("authorization") {
+                            return None;
+                        }
+                        value.trim().strip_prefix("Bearer ").map(str::trim)
+                    }) == Some(good_key.as_str());
+                    if !authorized {
+                        // 无/错凭据：挂起等待放行，让 First 停留在在途探测上；
+                        // 放行后仍按未授权处理 → First 走完全部端点落 Generic。
+                        if !*gate.borrow_and_update() {
+                            let _ = gate.changed().await;
+                        }
+                    }
+                    let authorized_tags_hit = authorized && path.starts_with("/api/tags");
+                    let body = if authorized_tags_hit {
+                        r#"{"models":[{"name":"qwen3:8b"}]}"#
+                    } else {
+                        r#"{"error":"not found"}"#
+                    };
+                    let status = if authorized_tags_hit {
+                        "200 OK"
+                    } else {
+                        "404 Not Found"
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        let url = format!("http://{addr}/v1");
+        let key = url.trim_end_matches('/').to_string();
+
+        // 1. 无凭据调用方成为 First 并停在挂起的 HTTP 请求上。
+        let first_url = url.clone();
+        let first = tokio::spawn(async move { probe_local_server_kind(&first_url, None).await });
+        let registry = PROBE_KIND_INFLIGHT.get_or_init(Default::default);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !registry.lock().unwrap().contains_key(&key) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "首个探测应在限期内完成 in-flight 注册"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // 2. 正确凭据调用方订阅同一在途探测。
+        let waiter_url = key.clone();
+        let waiter_key = GOOD_KEY.to_string();
+        let waiter =
+            tokio::spawn(
+                async move { probe_local_server_kind(&waiter_url, Some(&waiter_key)).await },
+            );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // 3. 放行：First 的请求解除挂起并以未授权身份全端点失败。
+        gate_tx.send(true).unwrap();
+        let first_kind = tokio::time::timeout(Duration::from_secs(5), first)
+            .await
+            .expect("First 应在放行后限期完成")
+            .unwrap();
+        assert_eq!(
+            first_kind,
+            LocalServerKind::Generic,
+            "无凭据 First 应全端点失败回落 Generic"
+        );
+
+        // 4. 回归点：等待方不得照单全收 First 的 Generic，应用自身凭据重探。
+        let waiter_kind = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("等待方应在限期内完成重探")
+            .unwrap();
+        assert_eq!(
+            waiter_kind,
+            LocalServerKind::Ollama,
+            "持正确凭据的等待方应用自身凭据重探出真实类型，而不是接收无凭据 First 广播的 Generic"
+        );
+
         task.abort();
         clear_probe_kind_cache();
     }

@@ -6981,12 +6981,19 @@
   async function testImageInputCapability(model, baseUrl, apiKey, modelId) {
     return invoke("test_image_input_capability", { model, baseUrl, apiKey, modelId: modelId || null });
   }
-  async function probeLocalServerKind(baseUrl) {
+  async function probeLocalServerKind(baseUrl, apiKey, modelId) {
     // 本地/内网 OpenAI 兼容端点的服务类型探测（vllm/ollama/lmstudio/generic）。
     // Rust 侧按 base_url TTL 缓存；命令失败（web 白名单不含该命令/老版本桌面）
     // 在这里 reject，由消费方 catch 降级为「未知」——吞错伪造成 generic 会让 UI
     // 误报「该端点不支持思考档位调节」（localProbeTiersForKind('generic') 为 null）。
-    return await invoke("probe_local_server_kind", { baseUrl: baseUrl });
+    // apiKey/modelId 与 testModelConnection 同口径：表单新填 key 优先，否则读
+    // 已保存凭据——鉴权 vLLM（--api-key）的 /v1/models 会 401，不带凭据探测
+    // 会把鉴权端点误判成 generic。
+    return invoke("probe_local_server_kind", {
+      baseUrl,
+      apiKey: apiKey || null,
+      modelId: modelId || null,
+    });
   }
   async function testSearchProvider(provider, apiKey) {
     return invoke("test_search_provider", { provider, apiKey: apiKey || null });

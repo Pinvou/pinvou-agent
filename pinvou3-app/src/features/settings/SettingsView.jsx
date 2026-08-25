@@ -16,7 +16,7 @@ import {
   catalogImageCapableForModel,
   groupModelsForSelector,
   selectorMainLabel,
-  reasoningEffortTiersForModel, reasoningEffortForModelSwitch, defaultReasoningEffortForModel, normalizeStoredReasoningEffort,
+  reasoningEffortTiersForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort,
   localProbeTiersForKind, baseUrlUsesLocalOrPrivate,
 } from './model-catalog.js';
 import { CommunityPanel } from './CommunityPanel.jsx';
@@ -716,21 +716,31 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [probedKind, setProbedKind] = useState(null);
       const [probePending, setProbePending] = useState(false);
       const isLocalCompatible = preset === 'openai_compatible' && baseUrlUsesLocalOrPrivate(baseUrl.trim());
+      const probeSupported = bridge.available && !!bridge.models && typeof bridge.models.probeLocalServerKind === 'function';
       useEffect(() => {
         if (!isLocalCompatible) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- leaving the local-compatible state must synchronously clear the probe window so stale tiers never render one commit
           setProbedKind(null);
           setProbePending(false);
           return;
         }
         let cancelled = false;
+        // debounce 窗口期内即进入 pending（六审 P2）：从调度探测起就不提供
+        // 档位（localProbeTiersForKind(null) 的默认四档是探测不可达时的兜底，
+        // 不能在「探测即将到来」的窗口期暴露，否则用户可能在结果未知前选/
+        // 存一个误导档位）。探测不可达（桥不支持/失败）由 then/catch 置回
+        // null + pending=false 落默认四档。
+        setProbePending(true);
+        setProbedKind(null);
         // debounce：base_url 是原始输入 state，不 debounce 时逐键触发探测
         // （Rust 侧缓存 key 含端口/路径，每个中间态都是新 key、各自串行
         // 探测最坏 ~12s）。停键 400ms 后才发起一次。
         const timer = setTimeout(() => {
-          setProbePending(true);
-          setProbedKind(null);
-          if (bridge.available && bridge.models && bridge.models.probeLocalServerKind) {
-            bridge.models.probeLocalServerKind(baseUrl.trim())
+          if (probeSupported) {
+            // 凭据与 handleTest 同源：表单新填 key 优先，否则用已存模型 id 让
+            // Rust 读已保存凭据——鉴权 vLLM（--api-key）探测不带 key 会 401
+            // 误判 generic，误报「不支持思考档位调节」。
+            bridge.models.probeLocalServerKind(baseUrl.trim(), apiKey.trim(), initial.__new ? null : initial.id)
               .then((kind) => { if (!cancelled) setProbedKind(kind); })
               // 探测调用本身失败（命令被拒/版本不支持）≠ 探测出 generic：
               // 置回 null 走 localProbeTiersForKind 的默认四档，不误报「不支持」。
@@ -743,7 +753,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           }
         }, 400);
         return () => { cancelled = true; clearTimeout(timer); };
-      }, [isLocalCompatible, baseUrl]);
+      }, [isLocalCompatible, baseUrl, apiKey, initial.id, initial.__new, probeSupported]);
       const reasoningEffortTiers = isLocalCompatible
         ? (probePending ? [] : (localProbeTiersForKind(probedKind) || []))
         : (reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || []);

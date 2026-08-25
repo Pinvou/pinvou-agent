@@ -65,6 +65,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       multiAgentEnabled: multiAgentEnabledProp,
       multiAgentAvailable: multiAgentAvailableProp,
       onToggleMultiAgent,
+      // eslint-disable-next-line sonarjs/cognitive-complexity -- the composer selector aggregates model/menu/multi-agent branches; splitting needs a dedicated design like the SettingsView suppression
     }) => {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
@@ -113,9 +114,12 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const [currentProbePending, setCurrentProbePending] = useState(false);
       // 本地/私网 openai_compatible 端点：探测服务类型，按探测结果下发真实档位
       // （vllm→四档、ollama→off/high、lmstudio/generic→不支持提示）。
-      const isLocalCompatible = current && current.preset === 'openai_compatible' && baseUrlUsesLocalOrPrivate(current.base_url || '');
+      const currentBaseUrl = current ? (current.base_url || '') : '';
+      const currentModelId = current ? current.id : null;
+      const isLocalCompatible = !!current && current.preset === 'openai_compatible' && baseUrlUsesLocalOrPrivate(currentBaseUrl);
       useEffect(() => {
         if (!isLocalCompatible) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- leaving the local-compatible state must synchronously clear the probe window so stale tiers never render one commit
           setCurrentProbedKind(null);
           setCurrentProbePending(false);
           return;
@@ -124,7 +128,10 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         setCurrentProbePending(true);
         setCurrentProbedKind(null);
         if (bridge.available && bridge.models && bridge.models.probeLocalServerKind) {
-          bridge.models.probeLocalServerKind(current.base_url)
+          // 凭据来源：已保存模型的凭据引用（Rust 按 model_id 读取）——鉴权
+          // vLLM（--api-key）的 /v1/models 会 401，不带凭据探测会把鉴权端点
+          // 误判成 generic，误报「不支持思考档位调节」。
+          bridge.models.probeLocalServerKind(currentBaseUrl, '', currentModelId)
             .then((kind) => { if (!cancelled) setCurrentProbedKind(kind); })
             // 探测调用本身失败（命令被拒/版本不支持）≠ 探测出 generic：
             // 置回 null 走 localProbeTiersForKind 的默认四档，不误报「不支持」。
@@ -136,7 +143,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
           if (!cancelled) setCurrentProbePending(false);
         }
         return () => { cancelled = true; };
-      }, [isLocalCompatible, current && current.base_url]);
+      }, [isLocalCompatible, currentBaseUrl, currentModelId]);
       const reasoningEffortTiers = isLocalCompatible
         ? (currentProbePending ? [] : (localProbeTiersForKind(currentProbedKind) || []))
         : (current ? (reasoningEffortTiersForModel(current) || []) : []);

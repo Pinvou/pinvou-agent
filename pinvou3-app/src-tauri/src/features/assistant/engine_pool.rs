@@ -987,10 +987,18 @@ impl EnginePool {
         bridge.runtime_model_credential = prepared.credential.clone();
         // 本地端点（OpenAI 兼容 preset 指向本机/内网服务）：探测服务类型
         // （Ollama / vLLM / LM Studio / 通用），让思考控制走对应底座 wire 协议。
-        // 探测失败（服务未启动/超时）判定为通用，保持既有 openai wire route。
+        // 探测失败（服务未启动/超时/鉴权失败）判定为通用，保持既有 openai wire
+        // route。探测请求带与真实推理同源的凭据（bridge.api_key()）：鉴权
+        // vLLM（--api-key）的 /v1/models 不带凭据会 401，被误判成通用端点后
+        // 丢失默认关思考与 vLLM 档位（推理本身仍能用配置 key 成功）。
         if bridge.provider() == "openai" && base_url_uses_local_or_private(&bridge.base_url()) {
+            let api_key = bridge.api_key();
             bridge.probed_local_kind = Some(
-                crate::core::model_endpoint::probe_local_server_kind(&bridge.base_url()).await,
+                crate::core::model_endpoint::probe_local_server_kind(
+                    &bridge.base_url(),
+                    Some(api_key.as_str()),
+                )
+                .await,
             );
         }
         // 本地 vLLM:发请求的 model 名以 vLLM 实际 served name 为准(探测 /v1/models),
@@ -998,8 +1006,14 @@ impl EnginePool {
         // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。OpenAI 兼容端点
         // 探测出 vLLM 时同样享受 served name 跟随（provider() 已映射为 "vllm"）。
         if bridge.provider() == "vllm" {
-            let (served, max_len) =
-                crate::features::monitor::probe_vllm_model_info(&bridge.base_url()).await;
+            // served-name 探测同样带与推理同源的凭据（鉴权 vLLM 的 /v1/models
+            // 会 401，探测失败回退配置模型名）。
+            let api_key = bridge.api_key();
+            let (served, max_len) = crate::features::monitor::probe_vllm_model_info(
+                &bridge.base_url(),
+                Some(api_key.as_str()),
+            )
+            .await;
             if let Some(served) = served.filter(|_| !pins_scheduled_model) {
                 if let Some(mut model) = bridge.effective_model_owned() {
                     if model.model != served {

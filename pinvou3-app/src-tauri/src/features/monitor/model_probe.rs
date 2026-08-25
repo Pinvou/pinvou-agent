@@ -593,10 +593,15 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
 /// (上下文窗口)。名字用于发请求(免写死名字与 `--served-model-name` 不一致的
 /// model_not_found);窗口用于填 `active_route_limits.context_tokens`,让压缩阈值按真实
 /// 窗口推导(见 docs/context-compaction-设计.md)。探测失败(vLLM 没起/超时)返回
-/// `(None, None)`,调用方 fallback 配置值 + 名字 hint 老路。
-pub async fn probe_vllm_model_info(base_url: &str) -> (Option<String>, Option<u32>) {
+/// `(None, None)`,调用方 fallback 配置值 + 名字 hint 老路。`bearer` 语义见
+/// `core::model_endpoint::apply_bearer`:鉴权 vLLM(`--api-key`)的 `/v1/models`
+/// 不带凭据会 401,应传与真实推理同源的 key。
+pub async fn probe_vllm_model_info(
+    base_url: &str,
+    bearer: Option<&str>,
+) -> (Option<String>, Option<u32>) {
     // HTTP 层与 URL 拼装复用 core 的共享探测（避免 /v1/models 口径漂移）。
-    match crate::core::model_endpoint::fetch_v1_models(base_url).await {
+    match crate::core::model_endpoint::fetch_v1_models(base_url, bearer).await {
         Some(v) => parse_models_response(v).unwrap_or((None, None)),
         None => (None, None),
     }
@@ -642,7 +647,7 @@ mod tests {
     async fn live_probe_returns_window() {
         let base = std::env::var("PINVOU3_LIVE_VLLM")
             .unwrap_or_else(|_| "http://127.0.0.1:8000/v1".to_string());
-        let (name, window) = probe_vllm_model_info(&base).await;
+        let (name, window) = probe_vllm_model_info(&base, None).await;
         eprintln!("live probe @ {base}: name={name:?} max_model_len={window:?}");
         let window = window.expect("真机 vLLM 必须探测到 max_model_len(客户 bug 的核心修复)");
         assert!(

@@ -831,20 +831,22 @@ function isExactMinimaxChatBaseUrl(baseUrl) {
 // vendor 在已知列表 → 返回其 provider（可能为 null = 底座无档位）；
 // vendor 未知（如用户给本地服务填了自定义 vendor）→ 返回 undefined，落到 preset 兜底
 // （与 Rust provider() 的 vendor→preset 回退一致）。
+// 哨兵：未知 vendor（调用方以此区分「已知但无档位(null)」与「未知→preset 兜底」）。
+const VENDOR_UNHANDLED = Symbol('vendor-unhandled');
 function vendorReasoningProvider(vendor, model) {
   if (vendor === 'deepseek') return 'deepseek';
-  if (vendor === 'kimi' || vendor === 'moonshot') return 'moonshot';
-  if (vendor === 'glm' || vendor === 'zai' || vendor === 'zhipu') return 'zai';
+  if (['kimi', 'moonshot'].includes(vendor)) return 'moonshot';
+  if (['glm', 'zai', 'zhipu'].includes(vendor)) return 'zai';
   if (vendor === 'minimax') return 'minimax';
-  if (vendor === 'mimo' || vendor === 'xiaomi' || vendor === 'xiaomi-mimo') return 'xiaomi-mimo';
+  if (['mimo', 'xiaomi', 'xiaomi-mimo'].includes(vendor)) return 'xiaomi-mimo';
   if (vendor === 'doubao' || vendor === 'volcengine') return 'volcengine';
   if (vendor === 'anthropic' || vendor === 'claude') return 'anthropic';
   if (vendor === 'xai' || vendor === 'grok') return null; // 底座空操作，不提供切换
   if (vendor === 'openai') return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
-  if (vendor === 'qwen' || vendor === 'tencent' || vendor === 'gemini' || vendor === 'google') {
+  if (['qwen', 'tencent', 'gemini', 'google'].includes(vendor)) {
     return null; // 底座无档位
   }
-  return undefined; // 未知 vendor → preset 兜底
+  return VENDOR_UNHANDLED; // 未知 vendor → preset 兜底
 }
 
 // 对齐 Rust bridge.rs `base_url_uses_loopback`：localhost / 127.0.0.0/8 /
@@ -855,12 +857,13 @@ function vendorReasoningProvider(vendor, model) {
 function baseUrlUsesLoopback(baseUrl) {
   if (!baseUrl) return false;
   try {
+    // eslint-disable-next-line unicorn/prefer-string-replace-all -- strips at most one trailing dot; replaceAll with a global regex is equivalent but the rule mis-fires on the anchored pattern
     const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
     if (host.toLowerCase() === 'localhost') return true;
     if (host.includes(':')) return isIpv6Loopback(host);
     const octets = host.split('.').map(Number);
     return octets.length === 4
-      && octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)
+      && octets.every((n) => Number.isSafeInteger(n) && n >= 0 && n <= 255)
       && octets[0] === 127;
   } catch {
     return false;
@@ -878,6 +881,7 @@ function baseUrlUsesLocalOrPrivate(baseUrl) {
   if (baseUrlUsesLoopback(baseUrl)) return true;
   if (!baseUrl) return false;
   try {
+    // eslint-disable-next-line unicorn/prefer-string-replace-all -- strips at most one trailing dot; replaceAll with a global regex is equivalent but the rule mis-fires on the anchored pattern
     const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
     const lower = host.toLowerCase();
     if (lower === 'host.docker.internal'
@@ -885,7 +889,7 @@ function baseUrlUsesLocalOrPrivate(baseUrl) {
       || lower === 'host.orbstack.internal'
       || lower.endsWith('.docker.internal')) return true;
     const octets = host.split('.').map(Number);
-    if (octets.length !== 4 || !octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) {
+    if (octets.length !== 4 || octets.some((n) => !(Number.isSafeInteger(n) && n >= 0 && n <= 255))) {
       return false;
     }
     return octets[0] === 10
@@ -902,7 +906,8 @@ function baseUrlUsesLocalOrPrivate(baseUrl) {
 // 等带前导零的合法写法同样命中。
 function isIpv6Loopback(host) {
   const expanded = expandIpv6(host);
-  return expanded === '0000:0000:0000:0000:0000:0000:0000:0001';
+  const IPV6_LOOPBACK_EXPANDED = '0000:0000:0000:0000:0000:0000:0000:0001'; // eslint-disable-line sonarjs/no-hardcoded-ip -- exact expanded ::1 form is the defined loopback value being compared against, not a routable hard-coded address
+  return expanded === IPV6_LOOPBACK_EXPANDED;
 }
 
 // 把 IPv6 地址展开为完整 8 组小写十六进制；`::` 按 RFC 4291 用零组补齐。
@@ -913,7 +918,7 @@ function expandIpv6(host) {
     const l = left ? left.split(':') : [];
     const r = right ? right.split(':') : [];
     if (l.length + r.length >= 8) return null;
-    const zeros = new Array(8 - l.length - r.length).fill('0');
+    const zeros = Array.from({ length: 8 - l.length - r.length }, () => '0');
     return [...l, ...zeros, ...r]
       .map((g) => g.padStart(4, '0').toLowerCase())
       .join(':');
@@ -934,7 +939,7 @@ function reasoningProviderForModel(model) {
   if (preset === 'local_vllm') return 'vllm';
   if (vendor) {
     const provider = vendorReasoningProvider(vendor, model);
-    if (provider !== undefined) return provider;
+    if (provider !== VENDOR_UNHANDLED) return provider;
     // 未知 vendor：继续走 preset 兜底（与 Rust provider() 的 vendor→preset 回退一致）。
   }
   switch (preset) {

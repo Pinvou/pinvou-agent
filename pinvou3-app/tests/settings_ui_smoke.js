@@ -863,6 +863,55 @@ async function modalWidth(page, headingText) {
   await clickExact(page, '取消');
   await sleep(200);
 
+  // 探测窗口期与凭据透传（PR #218 六审）：openai_compatible + 本地/私网地址 →
+  // 思考深度从「调度探测起」就进入 pending（不暴露 localProbeTiersForKind(null)
+  // 的默认四档，防止用户在端点类型未知前选/存误导档位）；debounce 后发出的
+  // probe_local_server_kind 必须携带表单 apiKey/modelId（鉴权 vLLM 的 /v1/models
+  // 不带凭据会 401 误判 generic）。
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(250);
+  const baseUrlInput = await page.evaluateHandle(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const label = dialog && [...dialog.querySelectorAll('label,span')].find(node => (node.textContent || '').trim() === 'API 地址');
+    const row = label && label.closest('div');
+    return row && row.querySelector('input');
+  });
+  await baseUrlInput.type('http://127.0.0.1:8000/v1', { delay: 20 });
+  // < 400ms 的 debounce 窗口期内：必须显示 pending 文案且不提供任何档位按钮
+  //（修复前 probePending 只在 timer 回调里置位，窗口期回落默认四档）。
+  const probeWindow = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const text = dialog ? dialog.innerText : '';
+    const effortRow = [...(dialog ? dialog.querySelectorAll('span') : [])].find(node => (node.textContent || '').trim() === '思考深度');
+    const buttons = effortRow && effortRow.parentElement ? [...effortRow.parentElement.querySelectorAll('button')].map(node => (node.textContent || '').trim()) : [];
+    return {
+      pendingShown: text.includes('正在探测服务类型'),
+      noTiersDuringWindow: buttons.length === 0,
+    };
+  });
+  rec('⑥.5c 本地兼容端点探测窗口期立即进入 pending，不暴露默认四档',
+    probeWindow.pendingShown && probeWindow.noTiersDuringWindow,
+    JSON.stringify(probeWindow));
+  // debounce（400ms）落定后：探测命令必须发出且携带凭据参数（空表单 key →
+  // apiKey:null + 编辑态模型 id；新建态 modelId:null，由 Rust 读已存凭据兜底）。
+  await sleep(700);
+  const probeCall = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'probe_local_server_kind');
+    return call && call.args;
+  });
+  rec('⑥.5d 探测命令携带凭据参数（apiKey/modelId），鉴权端点不再误判 generic',
+    !!probeCall
+      && probeCall.baseUrl === 'http://127.0.0.1:8000/v1'
+      && 'apiKey' in probeCall
+      && 'modelId' in probeCall,
+    JSON.stringify(probeCall));
+  await clickExact(page, '取消');
+  await sleep(200);
+
   await clickExact(page, '添加模型');
   await sleep(300);
   const cloudPickerWidth = await modalWidth(page, '添加模型');

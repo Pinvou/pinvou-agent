@@ -447,10 +447,14 @@ async fn request_llm_memory_review(
     let provider = bridge.memory_provider();
     let preset = bridge.memory_model_preset();
     let model_name = if provider == "vllm" {
-        crate::features::monitor::probe_vllm_model_info(&base_url)
-            .await
-            .0
-            .unwrap_or_else(|| bridge.memory_model())
+        // served-name 探测带与推理同源的 key：鉴权 vLLM 的 /v1/models 会 401。
+        crate::features::monitor::probe_vllm_model_info(
+            &base_url,
+            Some(bridge.memory_api_key().as_str()),
+        )
+        .await
+        .0
+        .unwrap_or_else(|| bridge.memory_model())
     } else {
         bridge.memory_model()
     };

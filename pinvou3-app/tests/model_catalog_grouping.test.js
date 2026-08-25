@@ -454,14 +454,14 @@ test('baseUrlUsesLocalOrPrivate 覆盖 loopback/RFC1918/Docker 宿主别名', ()
 
 test('localProbeTiersForKind 按探测结果映射真实档位', () => {
   // vllm → 四档；ollama → think 开关两档（避免 low/medium/high 归一误导）
-  assert.deepStrictEqual(Array.from(localProbeTiersForKind('vllm')), ['off', 'low', 'medium', 'high']);
-  assert.deepStrictEqual(Array.from(localProbeTiersForKind('ollama')), ['off', 'high']);
+  assert.deepStrictEqual([...localProbeTiersForKind('vllm')], ['off', 'low', 'medium', 'high']);
+  assert.deepStrictEqual([...localProbeTiersForKind('ollama')], ['off', 'high']);
   // lmstudio/generic 底座空操作 → null（前端显示不支持提示）
   assert.strictEqual(localProbeTiersForKind('lmstudio'), null);
   assert.strictEqual(localProbeTiersForKind('generic'), null);
   // 未探测/未知 → 默认四档（前端探测完成前不误报不支持）
-  assert.deepStrictEqual(Array.from(localProbeTiersForKind(null)), ['off', 'low', 'medium', 'high']);
-  assert.deepStrictEqual(Array.from(localProbeTiersForKind('unknown')), ['off', 'low', 'medium', 'high']);
+  assert.deepStrictEqual([...localProbeTiersForKind(null)], ['off', 'low', 'medium', 'high']);
+  assert.deepStrictEqual([...localProbeTiersForKind('unknown')], ['off', 'low', 'medium', 'high']);
 });
 
 test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型→high，不支持→null', () => {

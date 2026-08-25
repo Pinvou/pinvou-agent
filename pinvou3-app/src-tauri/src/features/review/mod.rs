@@ -512,7 +512,8 @@ async fn model_review(
     let provider = bridge.provider();
     let preset = review_model_preset(bridge);
     let model_name = if provider == "vllm" {
-        crate::features::monitor::probe_vllm_model_info(&base_url)
+        // served-name 探测带与推理同源的 key：鉴权 vLLM 的 /v1/models 会 401。
+        crate::features::monitor::probe_vllm_model_info(&base_url, Some(bridge.api_key().as_str()))
             .await
             .0
             .unwrap_or_else(|| bridge.model())

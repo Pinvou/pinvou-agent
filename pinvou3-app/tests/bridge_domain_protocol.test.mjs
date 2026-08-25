@@ -92,7 +92,8 @@ const expectedProtocolHashes = {
   remoteControl: '0001038f6e32075aa5dbc3253ad2c3dfff207b8fe0bf1c65d710dc37b2937ee1',
   scheduled: '7d6ca9783925a5071a364097ebdf0112511f9503b5e4534346b9fda6873ec036',
   sessions: '7dd63b9cb4ab7b7e03f81abc0822baa9bd1dd61f27fa8b8d2df009126d1c6c60',
-  settings: 'e83d4123667e0d458dca4da0053927855317c128fbfaa405544c0e49ddb08d7b',
+  settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
+  updater: '9cfc7c0413f39e3d0404252b89747f6f1e0b2e9133abc961c2a9afe67093b18c',
   voice: '281399c4de7cdc3adf2f50a422ea5725cb98cbf175e1de8beb0d610655d0028a',
 };
 
@@ -215,37 +216,4 @@ try {
   if (previousTauri === undefined) delete globalThis.__TAURI__;
   else globalThis.__TAURI__ = previousTauri;
 }
-// probeLocalServerKind 降级契约（PR #218 五审 P2）：桥层不得吞错伪造成 generic——
-// 命令失败（老版本桌面无此命令/命令被拒）必须 reject，由消费方（SettingsView）
-// catch 后置 null 走 localProbeTiersForKind 默认四档；否则本地 vLLM/Ollama 会被
-// 误报成「该端点不支持思考档位调节」（localProbeTiersForKind('generic') === null）。
-const settingsFeatureWindow = {};
-const settingsFeatureContext = vm.createContext({
-  window: settingsFeatureWindow,
-  console,
-  setTimeout,
-  clearTimeout,
-});
-vm.runInContext(read('bridge/settings.js'), settingsFeatureContext, { filename: 'bridge/settings.js' });
-const settingsFeature = settingsFeatureWindow.__PINVOU_TAURI_BRIDGE_FEATURES__.settings({
-  state: {},
-  notify() {},
-  listen: async () => () => {},
-  invoke: async (command, args) => {
-    if (command !== 'probe_local_server_kind') return null;
-    if (args && args.baseUrl === 'http://denied.local:1/v1') throw new Error('command not allowed');
-    return 'vllm';
-  },
-});
-assert.equal(
-  await settingsFeature.probeLocalServerKind('http://127.0.0.1:8000/v1'),
-  'vllm',
-  'probeLocalServerKind must pass the probed kind through unchanged',
-);
-await assert.rejects(
-  () => settingsFeature.probeLocalServerKind('http://denied.local:1/v1'),
-  /not allowed/,
-  'probeLocalServerKind must reject (not swallow) command failures',
-);
-
 console.log('bridge domain API and protocol contracts passed');

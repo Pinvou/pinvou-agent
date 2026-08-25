@@ -269,16 +269,37 @@ pub async fn list_models() -> Result<ModelsView, String> {
 /// - lmstudio / generic → 提示「该端点暂不支持思考档位调节」，避免用户
 ///   调了个寂寞（底座 openai wire route 对 reasoning_effort 是空操作）。
 ///
+/// 入参与凭据解析和 test_model_connection 一致：表单新填 key（api_key）优先，
+/// 否则读已保存凭据（model_id）。探测请求必须带凭据——鉴权 vLLM
+/// （`--api-key`）的 `/v1/models` 会 401，不带凭据探测会把鉴权端点误判成
+/// generic，UI 误报「不支持思考档位调节」。
+///
 /// 该命令经 web domain-adapter 暴露给前端，此处必须守住
 /// `probe_local_server_kind` 的文档契约「只对本地/私网端点探测」：
 /// 非本地地址直接返回 generic，不发出任何网络请求——前端的前置校验
 /// （SettingsView 的 `baseUrlUsesLocalOrPrivate`）不是防线，可被绕过。
 #[tauri::command]
-pub async fn probe_local_server_kind(base_url: String) -> Result<String, String> {
+pub async fn probe_local_server_kind(
+    base_url: String,
+    api_key: Option<String>,
+    model_id: Option<String>,
+) -> Result<String, String> {
     if !crate::features::assistant::platform::bridge::base_url_uses_local_or_private(&base_url) {
         return Ok("generic".to_string());
     }
-    let kind = crate::core::model_endpoint::probe_local_server_kind(&base_url).await;
+    // 与 test_model_connection 同口径：表单新填 key 优先，否则读已保存凭据。
+    // 读凭据失败不阻断探测（按无凭据继续）——凭据缺失时探测仍能识别无鉴权
+    // 端点，鉴权端点会 401 落 generic，与探测不可达同语义。
+    let bearer = match api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        Some(key) => Some(key.to_string()),
+        None => resolve_saved_model_key(model_id.as_deref())
+            .ok()
+            .flatten()
+            .map(|key| key.trim().to_string())
+            .filter(|k| !k.is_empty()),
+    };
+    let kind =
+        crate::core::model_endpoint::probe_local_server_kind(&base_url, bearer.as_deref()).await;
     Ok(match kind {
         crate::core::model_endpoint::LocalServerKind::Vllm => "vllm".to_string(),
         crate::core::model_endpoint::LocalServerKind::Ollama => "ollama".to_string(),
