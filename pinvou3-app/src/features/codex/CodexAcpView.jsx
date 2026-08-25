@@ -61,6 +61,12 @@ import {
   resolveNativeModeValue,
 } from './code-permission-state.js';
 import {
+  canApplyNativeControlsRefresh,
+  claimNativeControlsRefreshId,
+  finalizePreparedSessionCreation,
+  resolveNativeModelId,
+} from './native-session-handoff.js';
+import {
   ConversationActivityIndicator,
   ConversationMarkdown,
   ConversationTurn,
@@ -1080,9 +1086,13 @@ export function CodexAcpView({
   const draftEpochRef = useRef(draftEpoch);
   const activeIdRef = useRef(activeId);
   const lastActiveSessionIdRef = useRef(activeId);
-  activeIdRef.current = activeId;
   if (activeId) lastActiveSessionIdRef.current = activeId;
   useLayoutEffect(() => {
+    // loadSession may optimistically point this ref at a just-created session before
+    // the parent commits activeId. Do not overwrite that handoff from an intermediate
+    // render carrying the old prop; layout effects still update ordinary session switches
+    // before async responses can commit.
+    activeIdRef.current = activeId;
     acpConfigOperationTracker.switchSession(activeId);
     acpSendOperationTracker.switchSession(activeId || DRAFT_ATTACHMENT_KEY);
   }, [acpConfigOperationTracker, acpSendOperationTracker, activeId]);
@@ -1181,12 +1191,19 @@ export function CodexAcpView({
     multiAgentAvailable: false,
   });
   const [nativeDraftControls, setNativeDraftControls] = useState({});
+  // First-send session creation persists draft controls before activation. Keep the
+  // staged values associated with that exact session until its authoritative load
+  // completes so the selector never falls back to a different global model in between.
+  const nativeDraftControlsHandoffRef = useRef(null);
   // nativeControls 的会话归属：切会话后、refresh 返回前不展示上一会话的控件值。
   const nativeControlsSessionRef = useRef(null);
   // refreshNativeControls 请求序号：快速切会话时多个 get_* invoke 并发在途，
   // 后发起的请求应胜出。没有它，先发起的慢响应会晚返回并把控件值/归属 ref 覆盖
   // 成旧会话——mode chip 随即显示全局 fallback 而非新会话实测值（串台/陈旧覆盖，
-  // 与聊天页 modeState epoch 修复同款竞态）。
+  // 与聊天页 modeState epoch 修复同款竞态）。序号只对发起时仍归属当前会话的请求
+  // 发放（claimNativeControlsRefreshId）：已切走的陈旧请求反正会被归属检查丢弃，
+  // 占用序号反而会把当前会话在途的权威刷新顶成过期且无人补发。
+  const nativeControlsRequestRef = useRef(0);
   // code 会话权限模式全局偏好（{ last_mode, yolo_confirmed }，null=未拉到）：
   // 驱动草稿态/刷新途中的默认 mode 展示，以及首次切 yolo 的一次性确认门。
   const [codePermPrefs, setCodePermPrefs] = useState(null);
@@ -1212,23 +1229,35 @@ export function CodexAcpView({
     .find(turn => turn.status === 'running') || null;
   // 原生车道底栏控件的展示值（归属保护：refresh 返回前按默认/暂存显示；
   // 默认 = 全局 code_last_mode，从未用过 code 模式 → Plan 只读）。
+  const nativeDraftControlsHandoff = nativeDraftControlsHandoffRef.current?.sessionId === activeId
+    ? nativeDraftControlsHandoffRef.current.controls
+    : null;
   const nativeModeValue = resolveNativeModeValue({
     activeId,
     controlsSessionId: nativeControlsSessionRef.current,
     controlsMode: nativeControls.mode,
     draftMode: nativeDraftControls.mode,
+    handoffMode: nativeDraftControlsHandoff?.mode,
     prefs: codePermPrefs,
   });
   const nativeModelChoices = visibleUserModels((bs && bs.savedModels) || [])
     .map(model => ({ value: model.id, name: selectorMainLabel(model, t) || model.id }));
-  const nativeSessionModelId = activeId
-    ? (nativeControlsSessionRef.current === activeId ? nativeControls.modelId : null)
-    : (nativeDraftControls.modelId || null);
+  const nativeSessionModelId = resolveNativeModelId({
+    activeId,
+    controlsSessionId: nativeControlsSessionRef.current,
+    controlsModelId: nativeControls.modelId,
+    draftModelId: nativeDraftControls.modelId,
+    handoffModelId: nativeDraftControlsHandoff?.modelId,
+  });
   const nativeMountedId = activeId
-    ? (nativeControlsSessionRef.current === activeId ? nativeControls.mountedId : null)
+    ? (nativeControlsSessionRef.current === activeId
+      ? nativeControls.mountedId
+      : (nativeDraftControlsHandoff?.mountedId ?? null))
     : (nativeDraftControls.mountedId ?? null);
   const nativeMultiAgentSelected = activeId
-    ? (nativeControlsSessionRef.current === activeId && Boolean(nativeControls.multiAgent))
+    ? (nativeControlsSessionRef.current === activeId
+      ? Boolean(nativeControls.multiAgent)
+      : Boolean(nativeDraftControlsHandoff?.multiAgent))
     : Boolean(nativeDraftControls.multiAgent);
   // Existing sessions use the backend SessionPolicy result. A Pinvou draft is
   // known to become a native Code session, so it may stage the same control
@@ -1434,6 +1463,15 @@ export function CodexAcpView({
 
   /// 拉取原生会话的模型/知识库/模式状态（全部 per-session 命令，显式 sessionId）。
   async function refreshNativeControls(sessionId) {
+    // 发起时已不归属当前会话的刷新注定被提交前的归属检查丢弃，不得占用序号——
+    // 否则它会把当前会话在途的权威刷新顶成过期且无人补发（跨会话抢占）。
+    const claimed = claimNativeControlsRefreshId({
+      sessionId,
+      activeId: activeIdRef.current,
+      latestRequestId: nativeControlsRequestRef.current,
+    });
+    nativeControlsRequestRef.current = claimed.latestRequestId;
+    const requestId = claimed.requestId;
     const [modelId, mountedId, modeState] = await Promise.all([
       invoke('get_session_model_id', { sessionId }).catch(() => null),
       invoke('session_mounted_collection', { sessionId }).catch(() => null),
@@ -1448,7 +1486,14 @@ export function CodexAcpView({
       multiAgentAvailable: Boolean(modeState && modeState.multi_agent_available),
     };
     // 请求期间可能切换会话；旧响应不得覆盖新会话的模型/模式/多智能体展示。
-    if (sessionId !== activeIdRef.current) return controls;
+    if (!canApplyNativeControlsRefresh({
+      requestId,
+      latestRequestId: nativeControlsRequestRef.current,
+      sessionId,
+      activeId: activeIdRef.current,
+    })) {
+      return controls;
+    }
     setNativeControls(controls);
     nativeControlsSessionRef.current = sessionId;
     return controls;
@@ -1471,10 +1516,17 @@ export function CodexAcpView({
   /// 草稿态暂存的控件选择在新会话上应用；失败报错不静默（逐个应用，多智能体最后）。
   /// 任一步失败即整体失败：清空暂存并上抛，由 sendNative 外层 catch 兜住（会话已创建，
   /// 保留半份暂存会在下次创建会话时把过期的部分选择悄悄应用，形成孤儿暂存）。
-  async function applyNativeDraftControls(sessionId, staged) {
+  function clearNativeDraftControls(staged) {
+    setNativeDraftControls(current => current === staged ? {} : current);
+    if (nativeDraftControlsHandoffRef.current?.controls === staged) {
+      nativeDraftControlsHandoffRef.current = null;
+    }
+  }
+
+  async function persistNativeDraftControls(sessionId, staged) {
     const hasMultiAgentSelection = Object.prototype.hasOwnProperty.call(staged, 'multiAgent');
     const hasStaged = staged.modelId || staged.mountedId != null || staged.mode || hasMultiAgentSelection;
-    if (!hasStaged) return;
+    if (!hasStaged) return false;
     try {
       if (staged.modelId) {
         await invoke('set_session_model', { sessionId, modelId: staged.modelId });
@@ -1495,19 +1547,13 @@ export function CodexAcpView({
           enabled: Boolean(staged.multiAgent),
         });
       }
-      setNativeDraftControls(current => current === staged ? {} : current);
     } catch (err) {
       // 会话已经创建且部分配置可能已生效：清空暂存避免未来复用过期选择，
       // 错误继续上抛，由 sendNative 的 catch 提示用户并恢复输入框文本。
-      setNativeDraftControls(current => current === staged ? {} : current);
+      clearNativeDraftControls(staged);
       throw err;
     }
-    // 暂存落地后必须再刷新一次实测值：会话物化时 effect 触发的
-    // refreshNativeControls 通常在暂存应用链（mode 排最后）落地前就带着
-    // 后端默认值返回了，chip 停在旧 mode（如 plan），要重进对话才刷新。
-    // 此处以应用后的实测值收口；refreshNativeControls 的请求序号保证在途
-    // 旧读返回时被丢弃，不会反向覆盖。
-    await refreshNativeControls(sessionId);
+    return true;
   }
 
   /// 切模型：set_session_model 会 evict 该会话 engine，lane busy 时由控件禁用兜底。
@@ -1815,7 +1861,7 @@ export function CodexAcpView({
     }
   }
 
-  async function createSession({ shouldActivate = () => true } = {}) {
+  async function createSession({ shouldActivate = () => true, prepareSession = null } = {}) {
     const requestedWorkspacePath = draftWorkspacePath;
     const requestedWorkspaceHandle = draftWorkspaceHandle;
     const requestedAgentId = draftAgentId;
@@ -1833,16 +1879,22 @@ export function CodexAcpView({
       current === requestedWorkspaceHandle ? null : current
     ));
     await refreshSessions();
-    if (!shouldActivate()) {
-      const info = requestedAgentId === 'pinvou'
+    // Persist native controls before the first load. If persistence fails after the
+    // backend session exists, still activate and load it before surfacing the error;
+    // the restored composer can then retry in that session instead of creating another.
+    return finalizePreparedSessionCreation({
+      sessionId: metadata.id,
+      prepareSession,
+      shouldActivate,
+      activateSession: sessionId => {
+        skipNextActiveLoadRef.current = sessionId;
+        if (onActiveSessionChange) onActiveSessionChange(sessionId);
+      },
+      loadSession,
+      loadInactiveSessionInfo: requestedAgentId === 'pinvou'
         ? null
-        : await getAcpSessionInfo(metadata.id);
-      return { id: metadata.id, info, activated: false };
-    }
-    skipNextActiveLoadRef.current = metadata.id;
-    if (onActiveSessionChange) onActiveSessionChange(metadata.id);
-    const info = await loadSession(metadata.id);
-    return { id: metadata.id, info, activated: true };
+        : getAcpSessionInfo,
+    });
   }
 
   function beginDraft(
@@ -2582,6 +2634,7 @@ export function CodexAcpView({
     const workspaceReferencesAtSend = workspaceReferences;
     const nativeDraftControlsAtSend = nativeDraftControls;
     let targetId = activeId;
+    const materializingDraft = !targetId;
     let operation = beginAcpSendOperation(targetId);
     if (!operation) return;
     setError('');
@@ -2589,18 +2642,32 @@ export function CodexAcpView({
       if (!targetId) {
         const created = await createSession({
           shouldActivate: () => canApplyAcpSendOperation(operation),
+          prepareSession: async sessionId => {
+            const prepared = await persistNativeDraftControls(
+              sessionId,
+              nativeDraftControlsAtSend,
+            );
+            if (prepared) {
+              nativeDraftControlsHandoffRef.current = {
+                sessionId,
+                controls: nativeDraftControlsAtSend,
+              };
+            }
+          },
         });
         targetId = created.id;
         if (created.activated && activeIdRef.current === targetId) {
           acpSendOperationTracker.switchSession(targetId);
           operation = beginAcpSendOperation(targetId);
         }
-        // 草稿态暂存的模型/知识库/模式/多智能体选择先落到新会话（失败会显式报错）。
-        await applyNativeDraftControls(targetId, nativeDraftControlsAtSend);
-        // createSession 内的首次 load 发生在草稿控件落盘之前；若用户在草稿态
-        // 开启了多智能体，那次 load 读到的是旧的 false。首条消息发送前必须
-        // 再读一次后端权威状态，保证输入框开关及时反映刚落盘的会话配置。
-        await refreshNativeControls(targetId);
+        // Activation invalidates the draft-scoped operation token. Report preparation
+        // failures only after rebinding to the created session so the visible error path
+        // remains current and the user's message is restored for retry in this session.
+        if (created.preparationError) throw created.preparationError;
+        // prepareSession has already persisted the draft controls before loadSession,
+        // and the authoritative load now owns the displayed values. Clear only after
+        // that handoff completes so the selected model label remains stable.
+        clearNativeDraftControls(nativeDraftControlsAtSend);
         setAttachmentDrafts(current => transferAcpDraftItems(
           current,
           DRAFT_ATTACHMENT_KEY,
@@ -2655,6 +2722,7 @@ export function CodexAcpView({
         reference => reference,
       ));
     } catch (err) {
+      if (materializingDraft) clearNativeDraftControls(nativeDraftControlsAtSend);
       if (canApplyAcpSendOperation(operation)) {
         showError(err);
         setDraft(message);
