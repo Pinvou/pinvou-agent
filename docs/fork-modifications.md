@@ -4,19 +4,25 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-25 · v0.9.5 r10 四主题公开基线）
+## 0. 当前状态（2026-08-25 · v0.9.5 r10 公开基线与 r11 候选）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `feb8761ae` |
-| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r10` |
-| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r10` 与父仓 gitlink 均指向 `feb8761aeda31749f3d54c6e1f8ef460540567a1`；`r1` 至 `r10` 保持不可变 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `feb8761ae`（`pinvou-v0.9.5-r10`）；r11 候选 `22ec868291922aa133197dd9736a0da31ae18329` 位于 #24 |
+| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19` 已合并；#24 必须先于本父仓 PR 合入 |
+| 发布状态 | `pinvou3-clean` 与 `pinvou-v0.9.5-r10` 指向 `feb8761aeda31749f3d54c6e1f8ef460540567a1`；本 Draft 指向 r11 候选并等待 #24 与固定标签 `pinvou-v0.9.5-r11`；`r1` 至 `r10` 保持不可变 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r10 公开基线 `64 files changed, +5612/-702`；净增 4910 行 |
-| 守护 | r10 为 41 条 CodeWhale `forkguard_*` 行为测试 + 2 条通用工具兼容回归 + 父仓指纹/行为测试 |
-| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账，以及压缩后用量即时刷新与持久化回填 |
+| drift | r11 候选 `66 files changed, +6363/-794`；净增 5569 行 |
+| 守护 | r11 候选为 42 条 CodeWhale `forkguard_*` 行为测试 + 2 条通用工具兼容回归 + 父仓指纹/行为测试 |
+| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账，以及由父仓 PR #322 提供的 r10 压缩用量适配 |
+
+### r11 Windows Shell 解码（待发布）
+
+- `Pinvou/CodeWhale#24` 在已发布 r10 上携带候选 `22ec868291922aa133197dd9736a0da31ae18329`。严格 UTF-8 优先，跨 pipe read 保存不完整序列，仅在确认 UTF-8 非法后使用 Windows ACP；同步输出、限长快照、后台增量、tail 与 detached reader 共用状态化语义。
+- completion evidence 使用稳定 cutoff 且不丢弃 cutoff 前字节；Windows 专用 ACP 映射保持跨平台测试，同时不会在非 Windows library `-D dead_code` 构建中失败。通用修复由 `Hmbown/CodeWhale#5602` 跟踪，lint follow-up 与上游 `0a85b13ba` 同口径。
+- 父仓 PR #348（父仓 PR #322 的 r10 适配已合入）等待 #24、固定标签 `pinvou-v0.9.5-r11`、gitlink/tag 精确对齐和公开 submodule 校验通过，之后才能离开 Draft。
 
 ### r10 固定采样与压缩用量边界（已发布）
 
@@ -96,7 +102,7 @@
 
 ### T2：工具兼容与命令执行安全
 
-- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`Pinvou/CodeWhale#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`Pinvou/CodeWhale#15`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`Pinvou/CodeWhale#16` 的 Shell 取消边界）。
+- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`Pinvou/CodeWhale#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`Pinvou/CodeWhale#15`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`Pinvou/CodeWhale#16` 的 Shell 取消边界）、候选 `22ec868291922aa133197dd9736a0da31ae18329`（`Pinvou/CodeWhale#24`）。
 - **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/ops.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
 - **内容**：
   - `EngineConfig.extra_tools` 让宿主工具在 Plan、Agent、Yolo 等 turn registry 中一致注册。
@@ -110,9 +116,10 @@
   - 当前工具面不恢复已退役的独立追加文件工具，也没有改动 `request_user_input`。
   - r8 在 catalog 与最终 dispatch 共用 exact allowlist；显式受限轮次可清空 trusted roots，并禁止 MCP 初始化、控制面 shell、动态工具和子 Agent。控制面限制保持到下一条消息出队，受限排队续轮（goal self-continuation）、编辑重放与 MCP reload 同样拒绝；轮后子智能体完成和后台 Shell 唤醒延迟到显式新消息安装替代权限。Hook 默认关闭；受限审计保留 event 与 tool_name 等非私有身份字段，输入/输出/路径固定脱敏；`None` 保持现有 GUI 行为。
   - 父仓 GAIA 集成在同一逐轮策略上显式启用 read-only dispatch：catalog 改用只读 `File` action schema，规划与最终执行前均再次拒绝写动作；`Bash` 同步投影为 `ShellPolicy::ReadOnly`，复用直接 argv 加固路径，不能只依赖 approval。
-- **上游计划**：逐轮权限、可信根覆盖、只读 action 投影和最终 dispatch 门禁是通用嵌入能力。当前 fork 版本已随 r8 发布；后续从最新 `Hmbown/CodeWhale` main 提交独立上游 PR。Pinvou profile 名称与 GAIA 工具名单继续留在 app；上游接收后删除 fork 对应实现和本地指纹。
+  - r11 候选为 Shell stdout/stderr 保存跨 poll 解码状态，仅在 UTF-8 确认非法后使用 Windows ACP，并以稳定 cutoff 生成 completion evidence；非 Windows 构建对仅测试使用的 ACP 映射显式允许 dead code。
+- **上游计划**：逐轮权限、可信根覆盖、只读 action 投影和最终 dispatch 门禁是通用嵌入能力；Shell 解码修复由 `Hmbown/CodeWhale#5602` 跟踪。Pinvou profile 名称与 GAIA 工具名单继续留在 app；上游发布包含这些能力的维护基线后删除对应 fork 实现和本地指纹。
 - **边界**：不包含 Skill 来源、Automation 或产品角色协议。
-- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、registry prompt、Custom allowlist alias、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`、`forkguard_read_only_turn_rejects_write_action_at_final_dispatch`、`forkguard_restricted_agent_uses_read_only_file_schema`、`forkguard_queued_control_op_keeps_restricted_turn_authority`、`forkguard_queued_goal_continuation_and_mcp_reload_keeps_restricted_turn_authority`、`forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message`、`forkguard_restricted_agent_uses_hardened_read_only_shell_context`、`forkguard_restricted_turn_defers_idle_shell_wake_until_new_message`、`forkguard_restricted_turn_hooks_require_explicit_host_opt_in`、`forkguard_restricted_tool_audit_redacts_private_sentinel`。
+- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、`forkguard_shell_output_decoder_preserves_utf8_across_poll_boundaries`、registry prompt、Custom allowlist alias、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`、`forkguard_read_only_turn_rejects_write_action_at_final_dispatch`、`forkguard_restricted_agent_uses_read_only_file_schema`、`forkguard_queued_control_op_keeps_restricted_turn_authority`、`forkguard_queued_goal_continuation_and_mcp_reload_keeps_restricted_turn_authority`、`forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message`、`forkguard_restricted_agent_uses_hardened_read_only_shell_context`、`forkguard_restricted_turn_defers_idle_shell_wake_until_new_message`、`forkguard_restricted_turn_hooks_require_explicit_host_opt_in`、`forkguard_restricted_tool_audit_redacts_private_sentinel`。
 
 ### T3：嵌入上下文与技能来源
 
@@ -176,27 +183,23 @@ CodeWhale 当前已通过：
 
 ```text
 cargo fmt --all -- --check
-cargo check / Pinvou fork CI
+cargo metadata --locked --no-deps
 cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-41 passed / 0 failed
+42 passed / 0 failed
 ```
 
 父仓当前已通过：
 
 ```text
-cargo fmt --all -- --check
-./scripts/fork-guard.sh
-CodeWhale 41 passed；pinvou3-app 21 passed
-cargo test --lib --locked forkguard_admitted_display_fallback -- --test-threads=1
-2 passed / 0 failed
-node --test pinvou3-app/tests/scheduled_tasks_unit.test.js
-PASS
+cargo check --locked
+./scripts/fork-guard.sh --fast
+候选拓扑与指纹通过
 python3 scripts/architecture-guard.py
 ./scripts/verify-public-submodule.sh
-pinvou-v0.9.5-r10 -> feb8761aeda31749f3d54c6e1f8ef460540567a1
+在 pinvou-v0.9.5-r11 发布前按设计 fail-closed
 ```
 
-完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。环境相关忽略/基线失败按实际验证披露；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r10` 与父仓 gitlink 一致。
+完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。候选 `22ec868291922aa133197dd9736a0da31ae18329` 的解码模块 9/9、6 条新增 Shell 生命周期回归和 42 条 `forkguard_*` 均通过；如果 #24 最终合并 SHA 不同，必须重跑并重新对齐 gitlink、指纹和双语登记。`scripts/verify-public-submodule.sh` 锁定尚未发布的不可变标签 `pinvou-v0.9.5-r11`，因此当前应 fail-closed。
 
 ## 5. 后续修改规则
 

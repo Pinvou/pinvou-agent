@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="feb8761aeda31749f3d54c6e1f8ef460540567a1"
-PUBLISHED_COMMITS=14
+EXPECTED_HEAD="22ec868291922aa133197dd9736a0da31ae18329"
+EXPECTED_COMMITS=15
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -17,21 +17,21 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r10 公开四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r11 候选四主题基线拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
-if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
-  expected_commits="$PUBLISHED_COMMITS"
-  green "  ✓ CodeWhale gitlink 指向 r10 四主题公开基线 $PUBLISHED_HEAD"
+if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
+  expected_commits="$EXPECTED_COMMITS"
+  green "  ✓ CodeWhale gitlink 指向 r11 四主题候选 $EXPECTED_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r10 公开 head $PUBLISHED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，应为 r11 候选 $EXPECTED_HEAD"
   fail=1
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
-  green "  ✓ r10 公开基线继承官方 v0.9.5"
+  green "  ✓ r11 候选继承官方 v0.9.5"
 else
-  red "  ✗ r10 公开基线未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
+  red "  ✗ r11 候选未继承官方 v0.9.5 $EXPECTED_UPSTREAM"
   fail=1
 fi
 
@@ -39,7 +39,7 @@ commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev
 if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
   green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r10 合法拓扑应为 ${expected_commits:-14}"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r11 候选拓扑应为 ${expected_commits:-15}"
   fail=1
 fi
 
@@ -87,6 +87,8 @@ fingerprints=(
   "T2|stuck 告警留在 tool result          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_stuck_guard_warning_is_embedded_in_tool_result_content"
   "T2|stuck 续轮保持 provider 角色合法    |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_stuck_guard_tool_warning_preserves_provider_role_sequence"
   "T2|错误降级提示保持 provider 角色合法  |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_tool_error_degradation_preserves_provider_role_sequence"
+  "T2|Windows Shell 输出跨读取稳定解码    |CodeWhale/crates/tui/src/tools/shell/output.rs|fn forkguard_shell_output_decoder_preserves_utf8_across_poll_boundaries"
+  "T2|非 Windows ACP 映射保持 lint-clean |CodeWhale/crates/tui/src/tools/shell/output.rs|#[cfg_attr(not(windows), allow(dead_code))]"
   "T2|Registry 提示使用 canonical 工具面 |CodeWhale/crates/tui/src/core/engine/tests.rs|fn registry_first_policy_is_in_the_initial_prompt_only_when_mcp_is_enabled"
   "T2|旧 action alias 解析为 canonical   |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn custom_child_allowlist_omitting_load_skill_fails_closed"
 
