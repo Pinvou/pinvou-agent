@@ -53,6 +53,11 @@ try {
     activeId: 's2', controlsSessionId: 's1', controlsMode: 'plan', draftMode: null,
     prefs: { last_mode: 'yolo', yolo_confirmed: true },
   }), 'yolo');
+  // 首发物化中的新会话使用与该会话绑定的 handoff，不能闪成全局默认。
+  assert.equal(resolveNativeModeValue({
+    activeId: 's2', controlsSessionId: null, controlsMode: 'plan', draftMode: null,
+    handoffMode: 'yolo', prefs: null,
+  }), 'yolo');
   // 草稿态：无暂存 → 全局默认（首次 Plan / 跟随 last_mode）；有暂存 → 暂存优先。
   assert.equal(resolveNativeModeValue({
     activeId: null, controlsSessionId: null, controlsMode: 'plan', draftMode: null, prefs: null,

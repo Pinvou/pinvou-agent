@@ -28,9 +28,17 @@ export function needsYoloConfirmation(prefs) {
 
 /// 底栏 mode chip 的展示值：会话控件已按 sessionId 归属刷新 → 用会话实测值；
 /// 刷新途中 / 草稿态 → 全局默认（draft 有用户暂存选择时优先暂存）。
-export function resolveNativeModeValue({ activeId, controlsSessionId, controlsMode, draftMode, prefs }) {
+export function resolveNativeModeValue({
+  activeId,
+  controlsSessionId,
+  controlsMode,
+  draftMode,
+  handoffMode,
+  prefs,
+}) {
   const fallback = nativeModeFallback(prefs);
   if (activeId && controlsSessionId === activeId && controlsMode) return controlsMode;
+  if (activeId && handoffMode) return handoffMode;
   if (activeId) return fallback;
   return draftMode || fallback;
 }

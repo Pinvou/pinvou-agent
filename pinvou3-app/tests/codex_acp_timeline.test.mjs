@@ -730,27 +730,34 @@ try {
     && !codexView.includes('bridge.interaction.')
     && !codexView.includes('bridge.chat.'),
   'the code lane must never call bridge chat-active-bound methods for composer controls');
-  const nativeDraftApplyStart = codexView.indexOf('async function applyNativeDraftControls(sessionId, staged)');
+  const nativeDraftApplyStart = codexView.indexOf('async function persistNativeDraftControls(');
   const nativeDraftMultiAgent = codexView.indexOf("invoke('set_multi_agent_mode'", nativeDraftApplyStart);
-  const nativeDraftClear = codexView.indexOf('setNativeDraftControls(current => current === staged ? {} : current)', nativeDraftMultiAgent);
+  const nativeCreateStart = codexView.indexOf('async function createSession({');
+  const nativeCreatePrepare = codexView.indexOf('if (prepareSession) await prepareSession(metadata.id)', nativeCreateStart);
+  const nativeCreateLoad = codexView.indexOf('const info = await loadSession(metadata.id)', nativeCreateStart);
   const nativeSendCreate = codexView.indexOf('const created = await createSession({', codexView.indexOf('async function sendNative'));
-  const nativeSendApply = codexView.indexOf('await applyNativeDraftControls(targetId, nativeDraftControlsAtSend)', nativeSendCreate);
+  const nativeSendPrepare = codexView.indexOf('prepareSession: async sessionId => {', nativeSendCreate);
+  const nativeSendApply = codexView.indexOf('const prepared = await persistNativeDraftControls(', nativeSendPrepare);
+  const nativeSendClear = codexView.indexOf('clearNativeDraftControls(nativeDraftControlsAtSend)', nativeSendApply);
   assert.ok(codexView.includes('nativeDraftControls')
     && nativeDraftApplyStart >= 0
     && nativeDraftMultiAgent > nativeDraftApplyStart
-    && nativeDraftClear > nativeDraftMultiAgent
+    && nativeCreatePrepare > nativeCreateStart
+    && nativeCreatePrepare < nativeCreateLoad
     && nativeSendCreate >= 0
-    && nativeSendApply > nativeSendCreate,
-  'draft-state control selections, including multi-agent mode, must be applied after session creation and before first send');
+    && nativeSendPrepare > nativeSendCreate
+    && nativeSendApply > nativeSendPrepare
+    && nativeSendClear > nativeSendApply,
+  'draft-state control selections, including multi-agent mode, must be persisted before the first session load and cleared only after handoff');
   assert.ok(
-    nativeSendApply < codexView.indexOf('await refreshNativeControls(targetId)', nativeSendApply)
-      && codexView.indexOf('await refreshNativeControls(targetId)', nativeSendApply)
-        < codexView.indexOf("await invoke('chat'", nativeSendApply),
-    'a newly created native session must refresh authoritative multi-agent state after applying draft controls and before its first turn',
+    codexView.includes('nativeDraftControlsHandoffRef.current?.sessionId === activeId')
+      && codexView.includes('nativeDraftControlsHandoff?.modelId || null')
+      && nativeSendApply < codexView.indexOf("await invoke('chat'", nativeSendApply),
+    'a newly created native session must retain its selected model during the activation handoff and before its first turn',
   );
   assert.ok(codexView.includes('nativeControlsSessionRef.current === activeId'),
   'session control state must be scoped to its owning session to avoid cross-session flashes');
-  assert.ok(/refreshNativeControls\(sessionId\)[\s\S]{0,900}sessionId !== activeIdRef\.current[\s\S]{0,100}return controls/.test(codexView),
+  assert.ok(/refreshNativeControls\(sessionId\)[\s\S]{0,1200}requestId !== nativeControlsRequestRef\.current \|\| sessionId !== activeIdRef\.current[\s\S]{0,100}return controls/.test(codexView),
   'an async control refresh from the previous native session must not overwrite the newly selected session');
   assert.ok(chatView.includes("from './composer-controls.jsx'")
     && !chatView.includes('const ComposerKbSelector = ')
