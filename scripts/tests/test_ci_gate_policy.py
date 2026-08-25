@@ -96,7 +96,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("--allow-registered-candidate", verifier_gate)
         self.assertNotIn("LOCAL_SECURITY_HEAD", verifier)
         self.assertIn('[[ "$tag_target" != "$gitlink" ]]', verifier)
-        self.assertIn('PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r9"', verifier)
+        self.assertIn('PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r10"', verifier)
         self.assertIn("unknown argument", verifier)
 
     def test_pr_modes_and_stacked_pr_triggers_are_explicit(self):

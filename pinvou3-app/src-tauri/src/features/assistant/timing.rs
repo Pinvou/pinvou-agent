@@ -136,8 +136,8 @@ fn append_event(session_id: &str, entry: serde_json::Value) {
 /// - `cache_write_tokens`:`cache_creation_input_tokens`,按 cache-write 计费
 ///   (具体费率由 provider 决定)。
 /// - `reasoning_tokens`:推理 token。
-/// - `context_window`:本轮生效路由的上下文窗口（`bridge.usage_context_window()`），
-///   供代码页 hydration 回填用量 chip 的分母；老事件缺失时按 0 读取（降级为不显示占比）。
+/// - `context_window`: context window for the active route. Hydration uses it as the usage
+///   denominator; legacy events default to zero and omit the percentage.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct TurnUsage {
     pub input_tokens: u64,
@@ -176,11 +176,11 @@ pub fn finish_turn(session_id: &str, status: &str, error: Option<&str>) {
     finish_turn_with_usage(session_id, status, error, None);
 }
 
-/// 压缩完成后的上下文占用快照（非 turn 语义，不配对 user_start）。
+/// Records post-compaction context usage without creating a turn.
 ///
-/// 手动/自动压缩不走 chat 命令的 start_turn，TurnComplete 又只带 zero usage，
-/// 导致"压缩后切出再进会话"时 hydration 只能回填到压缩前的旧值。本函数把压缩后的
-/// 保守估算写进 timing sidecar，hydration 取最后一条带 usage 的事件即可拿到新值。
+/// Manual and automatic compaction do not call `start_turn`, and `TurnComplete` carries zero
+/// usage for this path. The standalone snapshot lets hydration restore the compacted estimate
+/// without changing turn statistics.
 pub fn record_context_snapshot(session_id: &str, input_tokens: u64, context_window: u64) {
     if input_tokens == 0 {
         return;
@@ -486,9 +486,8 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
         return None;
     }
     let event = v.get("event")?.as_str()?;
-    // context_snapshot：压缩完成后写入的上下文占用快照（非 turn 语义）。
-    // compute_stats 按 (user_start, assistant_done) 同 turn_id 配对统计，
-    // 该事件无配对 user_start，不会污染 turn 计数与 token 汇总。
+    // A context snapshot has no paired user_start. compute_stats only aggregates paired
+    // (user_start, assistant_done) records, so snapshots cannot affect turn totals.
     let is_base_event = matches!(event, "user_start" | "assistant_done" | "context_snapshot");
     #[cfg(any(feature = "benchmark-hooks", test))]
     let is_observation_event = matches!(
@@ -776,7 +775,7 @@ mod tests {
             }),
         );
         record_context_snapshot(sid, 120, 64_000);
-        // 0 值快照无意义，不落盘
+        // A zero-valued snapshot carries no useful state and is not persisted.
         record_context_snapshot(sid, 0, 64_000);
 
         let timeline = read_timeline(sid).unwrap();
@@ -789,7 +788,7 @@ mod tests {
         assert_eq!(usage.input_tokens, 120);
         assert_eq!(usage.context_window, 64_000);
 
-        // 快照无配对 user_start：不影响 turn 计数与 token 汇总
+        // The unpaired snapshot must not affect turn or token totals.
         let stats = compute_stats(sid).unwrap();
         assert_eq!(stats.turn_count, 1);
         assert_eq!(stats.total_input_tokens, 1000);

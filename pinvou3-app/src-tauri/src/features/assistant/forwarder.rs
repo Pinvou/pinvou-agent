@@ -1053,8 +1053,8 @@ pub(crate) fn spawn_event_forwarder(
                         "message": message,
                         "messages_before": messages_before,
                         "messages_after": messages_after,
-                        // 压缩后上下文占用的保守估算：代码页用量 chip 立即刷新的数据源
-                        //（下一个真实 chat:usage 到来前不至于一直显示压缩前的旧值）。
+                        // Conservative post-compaction context estimate for refreshing the
+                        // usage chip before the next authoritative chat:usage event.
                         "post_tokens": post_input_tokens,
                     });
                     let _ = app.emit("chat:compaction", payload.clone());
@@ -1063,9 +1063,9 @@ pub(crate) fn spawn_event_forwarder(
                         "chat:compaction",
                         payload,
                     );
-                    // 压缩不经过 chat 命令的 start_turn，TurnComplete 又只带 zero
-                    // usage：把压缩后估算快照进 timing sidecar，hydration 才能回填
-                    // 新值（否则切出再进会话，用量 chip 回退到压缩前的旧数字）。
+                    // Compaction does not call start_turn, and its TurnComplete carries zero
+                    // usage. Persist this estimate separately so hydration does not restore
+                    // the stale pre-compaction value.
                     if let Some(tokens) = post_input_tokens.filter(|tokens| *tokens > 0) {
                         crate::features::assistant::timing::record_context_snapshot(
                             &session_id,

@@ -368,8 +368,8 @@ export function applyNativeChatEvent(lane, name, payload) {
     case 'chat:usage': {
       const input = Number(p.input_tokens || 0);
       if (input <= 0) return false;
-      // payload 带 context_window（forwarder 按当前 route 计算）：写入 max 供
-      // 用量 chip 算占比/进度条；缺失时保留旧值（hydration 回填 max 恒 0）。
+      // The forwarder resolves context_window for the active route. Preserve the previous
+      // value when legacy or partial payloads omit it.
       const max = Number(p.context_window || 0);
       lane.tokens = { input, max: max > 0 ? max : lane.tokens.max };
       return true;
@@ -429,8 +429,8 @@ export function applyNativeChatEvent(lane, name, payload) {
       // 压缩事件渲染为系统提示项；三语文案在渲染层按 compactPhase 组装。
       const phase = String(p.phase || 'done');
       lane.compacting = phase === 'start';
-      // 完成事件带压缩后上下文占用的保守估算：立即刷新用量 chip，
-      // 否则要等下一轮真实 chat:usage，期间一直显示压缩前的旧值。
+      // Refresh from the conservative post-compaction estimate instead of showing the old
+      // value until the next authoritative chat:usage event.
       const postTokens = Number(p.post_tokens || 0);
       if (phase === 'done' && postTokens > 0) {
         lane.tokens = { input: postTokens, max: lane.tokens.max };
@@ -688,15 +688,14 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     }
   }
   lane.timeline = Array.isArray(timelineEvents) ? [...timelineEvents] : [];
-  // lane.tokens 平时只由 live chat:usage 写入；lane 随组件卸载销毁后，从 timing
-  // 时间线回填最后一个带用量的事件（assistant_done 为真实 turn；context_snapshot
-  // 为压缩完成快照），否则切出再进 chip 会消失或回退到压缩前的旧值。
+  // Restore the newest usage-bearing turn or compaction snapshot after the mutable lane is
+  // recreated. Without this, remounting hides the chip or restores pre-compaction usage.
   const lastUsage = [...lane.timeline].reverse().find(event => (
     event && (event.event === 'assistant_done' || event.event === 'context_snapshot')
       && Number(event.usage && event.usage.input_tokens) > 0
   ));
   if (lastUsage) {
-    // context_window 随 usage 一同落盘（老事件没有 → max 保持 0，占比/进度条降级不显示）。
+    // Legacy events omit context_window, leaving the percentage unavailable.
     const max = Number(lastUsage.usage.context_window || 0);
     lane.tokens = { input: Number(lastUsage.usage.input_tokens), max: max > 0 ? max : lane.tokens.max };
   }

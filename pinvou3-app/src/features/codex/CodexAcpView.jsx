@@ -1172,8 +1172,8 @@ export function CodexAcpView({
     ? nativeLanesRef.current.get(activeId) || null
     : null;
   // 原生车道的用量/压缩/记忆展示数据：直接读 lane（可变对象，靠 nativeLaneTick 重渲染）。
-  // chat:usage 的 context_window 已写入 tokens.max；hydration 回填只有 input 没有 max，
-  // 占比/进度条在 max>0 时才显示，否则降级为纯已用 token。
+  // Live usage and hydration both restore context_window when available. Legacy timeline
+  // records have no maximum, so the chip falls back to an input-token count only.
   const nativeTokensInput = isNativeAgent && activeNativeLane ? Number(activeNativeLane.tokens.input || 0) : 0;
   const nativeTokensMax = isNativeAgent && activeNativeLane ? Number(activeNativeLane.tokens.max || 0) : 0;
   const nativeCtxPct = nativeTokensMax > 0 ? Math.min(100, Math.round((nativeTokensInput / nativeTokensMax) * 100)) : null;
@@ -2807,7 +2807,11 @@ export function CodexAcpView({
     try {
       await invoke('compact_now', { sessionId: sid });
     } catch (err) {
-      appendNativeSystemItem(lane, `${codexCopy.compactFail}: ${String(err && err.message ? err.message : err || '')}`);
+      const rawError = String(err && err.message ? err.message : err || '');
+      const detail = rawError.includes('session_engine_not_running')
+        ? codexCopy.nativeCompactInactive
+        : rawError;
+      appendNativeSystemItem(lane, `${codexCopy.compactFail}: ${detail}`);
       setNativeLaneTick(tick => tick + 1);
     }
   }
@@ -3588,9 +3592,8 @@ export function CodexAcpView({
                         onUnmount={unmountNativeKb}
                       />
                       {activeId && nativeTokensInput > 0 && (
-                        // 用量 chip 兼手动压缩入口（compact_now 的后端注释语义即"用户点 token
-                        // 进度条 → 立即压缩"）：框内按占比填色做迷你进度条；文案只留 token 数，
-                        // 描述与占比放 hover tooltip。
+                        // The usage chip is also the manual-compaction action. Its background
+                        // shows the percentage while the tooltip carries the full description.
                         <button
                           type="button"
                           data-testid="native-usage-chip"
