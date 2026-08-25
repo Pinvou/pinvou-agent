@@ -1076,9 +1076,33 @@ mod tests {
         std::fs::create_dir_all(&temporary_home).expect("create temporary prefs home");
         unsafe { std::env::set_var("PINVOU3_HOME", &temporary_home) };
 
+        // Fixture must pin LocalVllm explicitly: `ModelPreset::default()` is
+        // platform-aware (Linux=LocalVllm, macOS/Windows=Deepseek), so relying
+        // on `migrate_models()`'s default model makes this test red on
+        // non-Linux while passing the ubuntu-only `rust-test` gate.
         let mut prefs = UserPrefs::default();
-        prefs.migrate_models();
-        prefs.advanced.saved_models[0].alias = Some("Legacy local alias".into());
+        prefs.advanced.saved_models.push(SavedModel {
+            id: "local-model".into(),
+            name: "Local model".into(),
+            alias: Some("Legacy local alias".into()),
+            preset: ModelPreset::LocalVllm,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "qwen36_35b_256k".into(),
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.advanced.active_model_id = Some("local-model".into());
         let settings_path = super::super::paths::settings_path();
         std::fs::write(
             &settings_path,

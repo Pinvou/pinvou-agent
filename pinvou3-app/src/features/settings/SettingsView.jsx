@@ -15,6 +15,7 @@ import {
   normalizedProviderBaseUrl, findCloudProviderForModel, providerLabelForModel, isCodingPlanModel, catalogItemMatchesModel,
   catalogImageCapableForModel,
   groupModelsForSelector,
+  selectorMainLabel,
   reasoningEffortTiersForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort,
 } from './model-catalog.js';
 import { ProvidersSection } from './ProvidersSection.jsx';
@@ -1287,7 +1288,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       // 历史探测误判残留,不应隐藏,如 kimi-for-coding)。
       const visionCandidates = (models || []).filter(item => item && item.id && item.id !== initial.id);
       const visionOptions = [{ key: '', label: settingsCopy.visionModelNone }]
-        .concat(visionCandidates.map(item => ({ key: item.id, label: item.name || item.model })));
+        .concat(visionCandidates.map(item => ({ key: item.id, label: selectorMainLabel(item, t) || item.model })));
       const renderPickerRow = ({ testId, label, value, options, currentKey, open, onToggle, onChoose, probingKey, probeError }) => (
         <>
           <button
@@ -2017,7 +2018,10 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         const isReadonly = isReadonlyModel(m);
         const codingPlan = isCodingPlanModel(m);
         const providerLabel = providerLabelForModel(m, t);
-        const alias = isLocal ? '' : String(m.alias || '').trim();
+        // Alias gating is preset-only, matching the form, selector labels, and
+        // Rust `normalize_alias`; `isLocal`'s extra loopback check applies to
+        // icon/tag/scope only, so a loopback custom endpoint keeps its alias here.
+        const alias = m.preset !== 'local_vllm' ? String(m.alias || '').trim() : '';
         const title = alias || m.model || m.name;
         return (
           <div key={m.id} className={`min-h-[60px] grid grid-cols-[24px_32px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]`}>
