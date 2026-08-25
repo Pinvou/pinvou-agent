@@ -59,6 +59,7 @@ impl SessionStore {
         let mut chat_count = 0usize;
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;
+        let mut snapshot_dirty = false;
         for metadata in sessions {
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
@@ -72,6 +73,12 @@ impl SessionStore {
                     Ok(()) => deleted_ids.push(metadata.id),
                     Err(error) if error.kind() == ErrorKind::NotFound => {}
                     Err(error) => {
+                        // 上游 delete_session 先删 JSON 再清目录:即使最终返回
+                        // Err,会话 JSON 也可能已从盘上消失(部分失败)。凡发起
+                        // 过删除即视为快照过期,不能只认 Ok 分支——否则幽灵条目
+                        // 会驻留到下一次任意写。id 不进 deleted_ids(side maps
+                        // 只对确认完全删除的会话清)。
+                        snapshot_dirty = true;
                         if delete_error.is_none() {
                             delete_error = Some(
                                 anyhow::anyhow!(error)
@@ -82,8 +89,9 @@ impl SessionStore {
                 }
             }
         }
-        if !deleted_ids.is_empty() {
-            // 保留策略删掉的会话使列表快照过期
+        if !deleted_ids.is_empty() || snapshot_dirty {
+            // 保留策略删掉的会话使列表快照过期;部分失败(JSON 已删、Err 提前
+            // 冒泡)同样过期——不能只认 Ok 分支,否则幽灵条目驻留到下一次任意写。
             self.invalidate_list_cache();
         }
         self.purge_session_side_maps(&deleted_ids);
@@ -541,6 +549,9 @@ impl SessionStore {
             );
         }
 
+        // 同 store.delete:上游先删 JSON 再清目录,Err 也可能已变更盘面,
+        // 按「已发起删除即失效」处理(Err 提前 return 不得跳过失效)。
+        self.invalidate_list_cache();
         match self.manager.delete_session(id) {
             Ok(()) => {}
             Err(err) if err.kind() == ErrorKind::NotFound => {}

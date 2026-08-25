@@ -182,6 +182,49 @@ fn list_cache_stale_generation_snapshot_is_never_served() {
 }
 
 #[test]
+fn list_cache_invalidated_when_delete_partially_fails() {
+    // 部分失败回归:上游 delete_session 先 remove_file(JSON) 再 remove_dir_all
+    // (会话目录)。把 sessions/<id>/ 路径放一个普通文件,让 remove_dir_all 确定性
+    // 报 ENOTDIR——JSON 已从盘上消失但 delete 返回 Err。此时列表快照必须已经
+    // 失效:若只在 Ok 分支失效,幽灵条目会驻留缓存直到下一次任意写。
+    let (store, _g) = isolated_store();
+    let s1 = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    // 预热缓存:此刻快照包含该会话。
+    let before = store.list_sessions_cached().expect("warm cache");
+    assert!(before.iter().any(|m| m.id == s1.metadata.id));
+
+    // 构造部分失败:sessions/<id> 处放普通文件,remove_dir_all 报 ENOTDIR。
+    let session_dir = store.manager.sessions_dir().join(&s1.metadata.id);
+    std::fs::create_dir_all(&session_dir).expect("create session dir");
+    let blocker = session_dir.with_extension("json.blocker");
+    std::fs::write(&blocker, b"not a dir").expect("write blocker");
+    // 把整个 sessions/<id> 目录替换为同名普通文件:remove_dir_all 必失败。
+    std::fs::remove_dir_all(&session_dir).expect("clear dir");
+    std::fs::write(&session_dir, b"plain file at dir path").expect("block dir path");
+
+    let result = store.delete(&s1.metadata.id);
+    let err = result.expect_err("delete must surface the ENOTDIR error");
+    assert!(
+        err.to_string().contains(&s1.metadata.id) || err.to_string().contains("delete_session"),
+        "unexpected error shape: {err:#}"
+    );
+    // 会话 JSON 已被上游删除:盘面与缓存必须一致——幽灵不得驻留。
+    let after = store
+        .list_sessions_cached()
+        .expect("read after partial failure");
+    assert!(
+        !after.iter().any(|m| m.id == s1.metadata.id),
+        "phantom entry must not survive a partially-failed delete"
+    );
+    // 复原环境:blocker 文件不碍事,但普通文件占用的 <id> 路径留着会让后续
+    // 测试的目录假设失效,显式清掉。
+    let _ = std::fs::remove_file(&session_dir);
+    let _ = std::fs::remove_file(&blocker);
+}
+
+#[test]
 fn session_roots_plain_session_shares_private_root() {
     let (store, _g) = isolated_store();
     let s = store

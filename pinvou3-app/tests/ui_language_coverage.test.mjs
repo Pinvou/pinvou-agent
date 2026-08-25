@@ -87,6 +87,34 @@ for (const language of ['zh', 'en', 'ja']) {
   }
 }
 
+// 三语 key parity:zh 是全集基准,en 必须覆盖 zh 的每个叶子 key(ja 经 en
+// spread 兜底,同样断言)。en/ja 历史上比 zh 多出的 settings 相关键属基线
+// 固有(zh 侧由 UI 层默认值兜底),故只断言方向性覆盖而非严格相等——漏 key
+// 的 en 用户会渲染 undefined,ja 也随 en 一起漏。
+{
+  const leafPaths = (obj, prefix = '') => {
+    const out = [];
+    for (const key of Object.keys(obj)) {
+      const value = obj[key];
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (value && typeof value === 'object' && !Array.isArray(value)) out.push(...leafPaths(value, path));
+      else out.push(path);
+    }
+    return out;
+  };
+  const zhKeys = leafPaths(dict.zh);
+  assert.ok(zhKeys.length > 2000, `zh leaf key count looks wrong: ${zhKeys.length}`);
+  for (const language of ['en', 'ja']) {
+    const known = new Set(leafPaths(dict[language]));
+    const missing = zhKeys.filter((key) => !known.has(key));
+    assert.deepEqual(
+      missing,
+      [],
+      `${language} dictionary misses zh keys (renders undefined): ${missing.slice(0, 10).join(', ')}`,
+    );
+  }
+}
+
 const main = source('app/main.jsx');
 assert.match(main, /emit\(['"]ui:language_changed['"], \{ language: lang \}\)/);
 const viewLoaders = source('app/view-loaders.js');

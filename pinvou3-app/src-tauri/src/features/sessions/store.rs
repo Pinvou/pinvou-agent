@@ -267,6 +267,10 @@ impl SessionStore {
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
         }
+        // 上游 delete_session 先删会话 JSON 再清目录:目录清理失败时 JSON 已
+        // 不在盘上但错误会向上传播——按「已发起删除即可能变更盘面」失效快照,
+        // 不能等走到 match 之后的统一失效(Err 提前 return 会跳过它)。
+        self.invalidate_list_cache();
         match self.manager.delete_session(id) {
             Ok(()) => {}
             Err(err) if err.kind() == ErrorKind::NotFound => {

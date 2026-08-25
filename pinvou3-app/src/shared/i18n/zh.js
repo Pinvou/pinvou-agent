@@ -1,6 +1,6 @@
-// 中文 UI 词典。zh 全量内嵌:启动即用,不经 ensureLanguage。与 en/ja 的 key 集合
-// 由 tests/ui_language_coverage.test.mjs 强制一致。
-// 维护约定:三语 key 集合保持一致;新增 key 三处同步;ja 以 en 兜底(i18n/ja.js 内 spread)。
+// 中文 UI 词典。zh 全量内嵌:启动即用,不经 ensureLanguage。en/ja 对 zh 全部
+// 叶子 key 的覆盖由 tests/ui_language_coverage.test.mjs 强制(parity 断言)。
+// 维护约定:新增 key 三处同步;ja 以 en 兜底(i18n/ja.js 内 spread)。
 // i18n.js 聚合 shim 与 Node 契约测试(ui_language_coverage)静态 import 全部三语,拆分仅影响浏览器 chunk。
 
 const conversationZh = {
@@ -533,31 +533,6 @@ Object.assign(dictZh.uiToolDetails.tools, {
 
 Object.assign(dictZh.uiCodexWorkspace, { showRawErrors:true, operationFailed:'工作区操作失败，请重试' });
 
-
-// UI 语言 ↔ 后端 UserPrefs language(BCP 47 tag)映射。加语言时三处同步:
-// 这里 / dict / Rust prefs.rs Language 枚举
-const LANG_TO_TAG = { zh: 'zh-Hans', en: 'en', ja: 'ja' };
-const TAG_TO_LANG = { 'zh-Hans': 'zh', 'en': 'en', 'ja': 'ja' };
-function languageFromLocaleTags(localeTags, fallback = 'en') {
-  const locales = Array.isArray(localeTags) ? localeTags : [localeTags];
-  const locale = locales.find((value) => typeof value === 'string' && value.trim());
-  if (!locale) return fallback;
-  const primary = locale.trim().split(/[-_.@:]/, 1)[0].toLowerCase();
-  if (primary === 'zh') return 'zh';
-  if (primary === 'ja') return 'ja';
-  if (primary === 'en') return 'en';
-  // 当前只提供中、英、日；系统首选语言不受支持时使用英文。
-  return 'en';
-}
-// 首帧系统语言探测:主窗口与各辅助窗口(桌宠/阅读器/分离窗口)在落盘
-// settings 到达前共用;之后仍以 get_settings/bs.settings 的显式配置为准。
-function initialSystemLanguage() {
-  if (typeof navigator === 'undefined') return 'en';
-  return languageFromLocaleTags(
-    navigator.languages?.length ? navigator.languages : navigator.language,
-  );
-}
-const SEARCH_KEY_PROVIDERS = ['metaso', 'bocha', 'baidu', 'tavily'];
 
 /* ==========================================
    TauriBridge hook

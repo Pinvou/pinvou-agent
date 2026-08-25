@@ -2295,8 +2295,9 @@
     }
     startupMark("bridge:monitor_polling_deferred", "starts when monitor view becomes active");
     // 启动加载各自写互不重叠的状态片、彼此无数据依赖(每个 loader 自吞 invoke
-    // 错误并落兜底值),串行 await 只会把 9-10 个 IPC 往返叠进首屏延迟——并行
-    // 后往返宽度收敛为 1。分离会话绑定与 enterDraft 必须等本组完成后再走。
+    // 错误并落兜底值),串行 await 只会把 8 个 loader 的 IPC 往返叠进首屏延迟
+    // (refreshHistoryList 含 2 次 invoke,实际 9 次往返)——并行后往返宽度收敛
+    // 为 1。分离会话绑定与 enterDraft 必须等本组完成后再走。
     var needsSessionRuntime = !isDetachedWindow || detachedWindowKind === "session";
     var parallelLoads = [
       startupAwait("bridge:load_platform_capabilities", loadPlatformCapabilities),

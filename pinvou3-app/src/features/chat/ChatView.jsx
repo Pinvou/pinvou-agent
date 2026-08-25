@@ -50,7 +50,10 @@ const CHAT_PANEL_LOADERS = Object.freeze({
 });
 const LazyArtifactsPanel = React.lazy(() => CHAT_PANEL_LOADERS.artifacts().then((m) => ({ default: m.ArtifactsPanel })));
 const LazySubagentTranscriptPanel = React.lazy(() => CHAT_PANEL_LOADERS.subagent().then((m) => ({ default: m.SubagentTranscriptPanel })));
-const prefetchChatPanel = (key) => { CHAT_PANEL_LOADERS[key]().catch(() => {}); };
+const prefetchChatPanel = (key) => {
+  const loader = CHAT_PANEL_LOADERS[key];
+  if (loader) loader().catch(() => {});
+};
 // 面板槽位级挂起 fallback:与 LazyCodexAcpView 同款容器,懒 chunk 解析的
 // 微任务窗口内占住面板位置,避免挂起冒泡到应用级边界把整视图闪断成 fallback。
 function PanelSuspense({ children }) {
@@ -2125,7 +2128,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               className="fixed left-0 right-0 bottom-0 z-[1000] pointer-events-auto"
               style={{ top: can('desktopChrome') ? '36px' : 0 }}
               data-testid="artifact-fullscreen-panel">
-              <ViewErrorBoundary t={t}>
+              <ViewErrorBoundary t={t} variant="panel">
               <PanelSuspense>
               <LazyArtifactsPanel
                 bs={bs}
@@ -2165,7 +2168,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 ref={artColRef}
                 className="shrink-0 h-full relative"
                 style={{ width: artifactW + 'px' }}>
-                <ViewErrorBoundary t={t}>
+                <ViewErrorBoundary t={t} variant="panel">
                 <PanelSuspense>
                 <LazyArtifactsPanel
                   bs={bs}
@@ -2197,7 +2200,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             </>
           )}
           {artifactsVisible && !isWide && !artifactsFullscreen && (
-            <ViewErrorBoundary t={t}>
+            <ViewErrorBoundary t={t} variant="panel">
             <PanelSuspense>
             <LazyArtifactsPanel
               bs={bs}
@@ -2227,7 +2230,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             </ViewErrorBoundary>
           )}
           {subagentPanel && (
-            <ViewErrorBoundary t={t}>
+            <ViewErrorBoundary t={t} variant="panel">
             <PanelSuspense>
             <LazySubagentTranscriptPanel
               sessionId={activeSessionId}

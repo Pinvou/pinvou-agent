@@ -1,8 +1,9 @@
 // UI 词典核心:zh 全量内嵌(启动即用),en/ja 按语言惰性 chunk(见 i18n/ 目录)。
 // 浏览器入口在首帧前 ensureLanguage(<初始语言>);切换语言先 ensureLanguage 再改状态。
 // Node 契约测试与需要三语全量的场合 import './i18n-all.js'(聚合 shim,静态引全三语)。
-// 维护约定:三语 key 集合保持一致(测试 ui_language_coverage 断言);ja 以 en 兜底
-// (i18n/ja.js 内 spread);settings 详情文案已并入各语言文件(原 settings-i18n.js)。
+// 维护约定:en/ja 覆盖 zh 的全部叶子 key(parity 断言在 ui_language_coverage;en/ja
+// 比 zh 多出的 settings 相关键是历史遗留);ja 以 en 兜底(i18n/ja.js 内 spread);
+// settings 详情文案已并入各语言文件(原 settings-i18n.js)。
 import { dictZh } from './i18n/zh.js';
 
 const dict = { zh: dictZh };
