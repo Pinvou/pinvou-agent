@@ -112,3 +112,52 @@ test('en/ja 惰性 chunk 在浏览器口径下不进首屏(静态扫描 i18n.js 
   const staticImport = source.match(/^import\s+[^'"]*['"][^'"]*i18n\/(en|ja)\.js['"]/m);
   assert.equal(staticImport, null, 'i18n.js 不得静态 import en/ja(会钉进共享 chunk)');
 });
+
+// 语言切换「最新选择胜出」门的乱序回归:ja chunk 静态依赖 en chunk,先选 ja
+// 再选 en 时较新的 en 请求可能先完成(共享依赖先行就位),慢的旧 ja continuation
+// 若无守卫会覆盖状态/持久化/广播,回退到用户未选择的语言(同步时代是最后
+// 选择胜出,惰性化后必须保持该语义)。
+test('切换乱序:后发起的较新选择胜出,慢的旧请求不得覆盖', async () => {
+  const { createLatestLanguageGate } = await freshGate();
+  const applied = [];
+  // 受控装载时钟:en 快(5ms)、ja 慢(30ms),模拟真实依赖顺序。
+  const ensure = (lang) => new Promise((resolve) => {
+    setTimeout(() => resolve(true), lang === 'ja' ? 30 : 5);
+  });
+  const switchTo = createLatestLanguageGate(ensure);
+  switchTo('ja', () => applied.push('ja'));
+  switchTo('en', () => applied.push('en'));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual(applied, ['en'], '只应落地较新的 en 选择,慢的旧 ja continuation 必须被拦下');
+});
+
+test('切换门:成功落地恰一次;装载失败不落地且可重试', async () => {
+  const { createLatestLanguageGate } = await freshGate();
+  const applied = [];
+  let jaAttempts = 0;
+  const ensure = (lang) => {
+    if (lang !== 'ja') return Promise.resolve(true);
+    jaAttempts += 1;
+    return jaAttempts === 1 ? Promise.resolve(false) : Promise.resolve(true);
+  };
+  const switchTo = createLatestLanguageGate(ensure);
+  switchTo('ja', () => applied.push('ja-fail'));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(applied, [], '装载失败(false)不得落地');
+  // 失败后重试(无更新选择在途)应正常落地;顺序发起的选择各自落地。
+  switchTo('ja', () => applied.push('ja-retry'));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(applied, ['ja-retry'], '失败清挂起后重试应落地');
+  switchTo('zh', () => applied.push('zh'));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(applied, ['ja-retry', 'zh'], '顺序发起的选择按发起顺序落地');
+});
+
+test('切换门:ensure 抛异常不得炸出未处理 rejection', async () => {
+  const { createLatestLanguageGate } = await freshGate();
+  const applied = [];
+  const switchTo = createLatestLanguageGate(() => Promise.reject(new Error('boom')));
+  switchTo('en', () => applied.push('en'));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(applied, [], '拒绝的装载不得落地');
+});

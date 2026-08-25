@@ -72,6 +72,23 @@ export function ensureLanguage(lang) {
   return pending;
 }
 
+// 语言切换「最新选择胜出」门:切换是先装载后落地状态(见 ensureLanguage 注释),
+// 而 ja chunk 静态依赖 en chunk,先选 ja 再选 en 时较新的 en 请求可能先完成
+// (共享依赖先行就位),慢的旧 ja continuation 会覆盖状态/持久化/广播,回退到
+// 用户未选择的语言。序号守卫保证只有发起时的最新选择允许落地;ensure 参数
+// 仅供测试注入受控装载,生产路径恒为 ensureLanguage。
+export function createLatestLanguageGate(ensure = ensureLanguage) {
+  let seq = 0;
+  return function switchToLatest(lang, apply) {
+    const ticket = ++seq;
+    ensure(lang)
+      .then((ok) => {
+        if (ok && ticket === seq) apply();
+      })
+      .catch(() => {});
+  };
+}
+
 if (typeof window !== 'undefined') window.__PINVOU_SHARED_I18N__ = dict;
 
 export { dict, LANG_TO_TAG, TAG_TO_LANG, languageFromLocaleTags, initialSystemLanguage, SEARCH_KEY_PROVIDERS };

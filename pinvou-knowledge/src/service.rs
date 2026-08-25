@@ -42,7 +42,7 @@ const JOIN_REQUEST_PER_SOURCE_LIMIT: usize = 6;
 const JOIN_REQUEST_GLOBAL_LIMIT: usize = 300;
 const JOIN_CLAIM_PER_SOURCE_LIMIT: usize = 120;
 const JOIN_CLAIM_GLOBAL_LIMIT: usize = 2_000;
-const MAX_SEARCH_COLLECTIONS: usize = 200;
+pub(crate) const MAX_SEARCH_COLLECTIONS: usize = 200;
 const DEFAULT_SHARE_HOURS: u64 = 24;
 const MAX_SHARE_HOURS: u64 = 7 * 24;
 const JOIN_REQUEST_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
@@ -1142,11 +1142,25 @@ impl KnowledgeService {
         }
     }
 
-    pub fn search(&self, request: SearchRequest) -> Result<Vec<SearchHit>, String> {
+    /// 廉价请求校验(不依赖模型就绪):Ok(Some(空结果))= 无需模型即可应答,
+    /// Ok(None)= 校验通过、需要 embedding;Err= 400。server 的 search handler
+    /// 在模型装载门之前调用,保证空查询/无效请求不触发 568MB 冷装载,也不因
+    /// 装载不可用把本应 200/400 的应答变成 503(对齐 boot 同步装载时代行为)。
+    pub fn precheck_search(request: &SearchRequest) -> Result<Option<Vec<SearchHit>>, String> {
         if request.collection_ids.len() > MAX_SEARCH_COLLECTIONS {
             return Err(format!(
                 "单次检索最多选择 {MAX_SEARCH_COLLECTIONS} 个知识集"
             ));
+        }
+        if request.query.trim().is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        Ok(None)
+    }
+
+    pub fn search(&self, request: SearchRequest) -> Result<Vec<SearchHit>, String> {
+        if let Some(hits) = Self::precheck_search(&request)? {
+            return Ok(hits);
         }
         let query = request.query.trim();
         if query.is_empty() {

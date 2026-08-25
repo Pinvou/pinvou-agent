@@ -11,7 +11,7 @@ import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layou
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, usePlatformCapability, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
-import { DEFAULT_CHAT_TITLES, dict, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
+import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
@@ -360,6 +360,8 @@ function workspaceDisplayName(path) {
           return value && dict[value] ? value : systemLanguage;
         } catch (_) { return systemLanguage; }
       });
+      // 语言切换统一走该门(handleSetLanguage):装载完成乱序时只落地最新选择。
+      const switchToLanguage = useRef(createLatestLanguageGate()).current;
       // UI 语言为 en/ja 时确保 personas-i18n overlay 已加载(覆盖「系统中文 + 手动切
       // 英/日 UI」、index.html 快速路径跳过的场景),加载完成 bump 一次让卡名重渲染。
       const [, setPersonaI18nTick] = useState(0);
@@ -1555,8 +1557,9 @@ function workspaceDisplayName(path) {
         // en/ja 是惰性词典 chunk:先装载再切状态/广播,辅助窗口(桌宠/阅读器)
         // 收到 ui:language_changed 时词典必须已在本窗就位(各入口首帧引导只保证
         // 初始语言)。装载失败(资源损坏)保持原语言,不产生半翻译界面。
-        ensureLanguage(lang).then((ok) => {
-          if (!ok) return;
+        // 经「最新选择胜出」门落地:ja chunk 静态依赖 en chunk,先选 ja 再选
+        // en 时旧 ja 请求可能后完成并覆盖新选择(见 createLatestLanguageGate)。
+        switchToLanguage(lang, () => {
           setLanguage(lang);
           if (isWeb) {
             try { window.localStorage.setItem('pinvou.web.language', lang); } catch (_) {}
@@ -1568,7 +1571,7 @@ function workspaceDisplayName(path) {
           if (bridge.available) {
             bridge.settings.saveSettings({ language: LANG_TO_TAG[lang] || 'zh-Hans' });
           }
-        }).catch(() => {});
+        });
       }
 
       function handleSetMemoryEnabled(enabled) {
