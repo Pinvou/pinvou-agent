@@ -199,6 +199,15 @@ pub(super) fn append_web_attachment_upload_chunk(
         if actual != expected {
             return Err("远程控制附件完整性校验失败，上传内容在传输中损坏".into());
         }
+    } else if commit {
+        // None can mean an older WebUI (acceptable), but also a modern one on
+        // an insecure origin where Web Crypto is unavailable — exactly the
+        // remote scenario the digest protects. Surface the downgrade in the
+        // desktop log instead of silently skipping verification.
+        log::warn!(
+            "[remote_control] web attachment upload {} committed without an integrity digest (older WebUI or Web Crypto unavailable)",
+            upload.file_name
+        );
     }
     let completed = inner
         .web_attachment_uploads

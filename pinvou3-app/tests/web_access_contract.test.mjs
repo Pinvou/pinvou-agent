@@ -438,7 +438,7 @@ assert.match(hostFilePicker, /issueWorkspaceHandle:\s*true/,
   'the one-shot host capability must be minted on confirm');
 assert.match(hostFilePicker, /issueWorkspaceHandle:\s*false/,
   'directory browsing must not mint one-shot workspace handles');
-assert.match(hostFilePicker, /(?:var|const|let) confirmedPath = currentPath;[\s\S]{0,600}finish\(\{ path: confirmedPath, workspaceHandle: handle \}\);/,
+assert.match(hostFilePicker, /(?:var|const|let) confirmedPath = currentPath;[\s\S]{0,1000}finish\(\{ path: confirmedPath, workspaceHandle: handle \}\);/,
   'workspace selection must finish with the click-time path and the handle minted for it');
 assert.doesNotMatch(hostFilePicker, /currentWorkspaceHandle/,
   'browsing never carries a workspace handle, so no stale-handle fallback path may remain');
@@ -447,6 +447,16 @@ assert.match(hostFilePicker, /localizedPickerError/,
 assert.match(hostFilePicker,
   /(?:var|const|let) confirmedGeneration = loadGeneration;[\s\S]{0,900}if \(disposed \|\| confirmedGeneration !== loadGeneration\) return;/,
   'a late confirm-mint failure must not touch the UI after the picker closed or a newer listing rendered');
+assert.match(hostFilePicker,
+  /\.then\(function \(listing\) \{[\s\S]{0,600}if \(disposed \|\| confirmedGeneration !== loadGeneration\) return;[\s\S]{0,200}finish\(\{ path: confirmedPath, workspaceHandle: handle \}\);/,
+  'a late confirm-mint success must not close the picker on a directory the user already navigated away from');
+assert.match(hostFilePicker, /mintInFlight = true;/,
+  'the confirm handler must mark the mint as in flight before its RPC');
+assert.match(hostFilePicker,
+  /confirm\.disabled = mintInFlight \|\| \(directoryMode \? !currentPath : count === 0\);/,
+  'navigation must not re-enable the confirm button while a mint is still in flight');
+assert.match(hostFilePicker, /(?:var|const|let) generation = \+\+loadGeneration;\s*\n\s*mintInFlight = false;/,
+  'navigation must supersede any in-flight mint instead of racing a second one');
 assert.match(remoteControlManager,
   /HOST_WORKSPACE_NOT_AUTHORIZED:\s*&str\s*=\s*"host_workspace_not_authorized"[\s\S]*?Err\(HOST_WORKSPACE_NOT_AUTHORIZED\.to_string\(\)\)/,
   'the desktop and browser must share the stable host-workspace authorization error code');

@@ -81,6 +81,7 @@
       let showingRoots = false;
       let disposed = false;
       let loadGeneration = 0;
+      let mintInFlight = false;
       const initialPath = options.defaultPath || null;
       let initialPathPending = Boolean(initialPath);
 
@@ -146,7 +147,7 @@
         selectionLabel.textContent = directoryMode
           ? (currentPath ? labels.currentFolder(currentPath) : "")
           : (count ? labels.selectedCount(count) : "");
-        confirm.disabled = directoryMode ? !currentPath : count === 0;
+        confirm.disabled = mintInFlight || (directoryMode ? !currentPath : count === 0);
       }
 
       function chooseEntry(entry, row) {
@@ -220,6 +221,10 @@
       function showRoots() {
         if (!rootEntries.length) return;
         loadGeneration += 1;
+        // Navigation supersedes any confirm-mint still in flight; its late
+        // callbacks are ignored via the generation guard, and the confirm
+        // button must become usable again for the newly shown location.
+        mintInFlight = false;
         showingRoots = true;
         currentPath = null;
         parentPath = null;
@@ -253,6 +258,7 @@
 
       function load(path) {
         const generation = ++loadGeneration;
+        mintInFlight = false;
         showingRoots = false;
         rootsButton.disabled = rootEntries.length === 0;
         up.disabled = true;
@@ -299,11 +305,17 @@
           // the handle minted for the confirmed directory.
           const confirmedPath = currentPath;
           const confirmedGeneration = loadGeneration;
+          mintInFlight = true;
           confirm.disabled = true;
           client.invoke("web_access_list_host_files", {
             path: confirmedPath,
             issueWorkspaceHandle: true,
           }).then(function (listing) {
+            // A mint that settles after the user navigated away must not
+            // close the picker on the stale directory; navigation already
+            // reset the in-flight state, and the abandoned one-shot handle
+            // is reclaimed by its TTL.
+            if (disposed || confirmedGeneration !== loadGeneration) return;
             const handle = listing
               && (listing.workspace_handle || listing.workspaceHandle) || null;
             if (!handle) throw new Error("workspace handle missing");
@@ -313,6 +325,7 @@
             // listing rendered must not touch the current UI (finish() keeps
             // its own disposed guard on the success path).
             if (disposed || confirmedGeneration !== loadGeneration) return;
+            mintInFlight = false;
             confirm.disabled = false;
             body.replaceChildren(element("div", "pinvou-host-picker-error",
               labels.loadFailed(localizedPickerError(error))));

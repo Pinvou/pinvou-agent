@@ -834,6 +834,32 @@ try {
     assert.equal(Array.isArray(Object.getPrototypeOf(content)), false, 'content 保持无原型对象，不得被 __proto__ 赋值改原型');
   }
 
+  // ── M-E journal 探针语义锁定：transport 级（endpoint 活跃）而非订阅者级 ──
+  // #336 把 acp:event 的 projection+journal 门控从「有浏览器订阅者」改为
+  // 「远程端点活跃」：断线窗口（端点在、浏览器暂离）事件仍须进 journal，
+  // 重连 replay 才能补齐；反之把语义改回订阅者级会静默重开断线窗口丢事件。
+  // 锁定三处：manager 探针只看 endpoint；事件侧投影门控走 transport 探针；
+  // AppEventBus 的接线不回退到 subscriber 语义。
+  {
+    const managerMod = readFileSync(
+      path.join(root, 'src-tauri', 'src', 'features', 'remote_control', 'manager', 'mod.rs'),
+      'utf8',
+    );
+    const eventsRs = readFileSync(
+      path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'events.rs'),
+      'utf8',
+    );
+    const libRs = readFileSync(path.join(root, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+    assert.match(managerMod, /pub\(crate\) fn has_active_web_transport\(&self\) -> bool \{\s*self\.inner\.lock\(\)\.endpoint\.is_some\(\)/,
+      'the journal gate must be endpoint-activeness (endpoint.is_some), not a live subscriber');
+    assert.match(eventsRs, /has_active_app_event_transport\(&self\.app\)/,
+      'the ACP projection gate must consult the transport probe');
+    assert.doesNotMatch(eventsRs, /has_active_app_event_subscriber/,
+      'the ACP event path must not regress to subscriber-based journal gating');
+    assert.match(libRs, /has_active_web_transport\(\)/,
+      'the AppEventBus transport probe must stay wired to the remote-control endpoint');
+  }
+
   console.log('codex_acp_timeline: ok');
 } finally {
   rmSync(temp, { recursive: true, force: true });

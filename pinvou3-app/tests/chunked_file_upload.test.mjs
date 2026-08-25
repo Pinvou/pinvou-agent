@@ -139,6 +139,25 @@ await assert.rejects(
     validateResult: () => true,
   });
   assert.ok(degraded.every(chunk => chunk.sha256 === undefined));
+
+  // The unchecked downgrade must stay observable: insecure origins (remote
+  // HTTP access) lose crypto.subtle exactly where corruption is most likely,
+  // so a silent skip would hide the protection gap. A context without a
+  // console (older embedders) must not crash either.
+  const warns = [];
+  const warnWindow = {
+    btoa: windowObject.btoa,
+    console: { warn: (...args) => warns.push(args.join(' ')) },
+  };
+  vm.runInNewContext(source, { window: warnWindow }, { filename: 'chunked-file-upload.js' });
+  await warnWindow.PinvouChunkedFileUpload.uploadFile({
+    file: fileOfSize(10, 'nohash.txt'),
+    uploadId: 'upload_nohash',
+    async sendChunk(chunk) { return chunk.commit ? { handle: 'ok' } : null; },
+    validateResult: () => true,
+  });
+  assert.equal(warns.length, 1, 'the crypto-unavailable downgrade must log one warning');
+  assert.match(warns[0], /integrity unavailable/);
 }
 
 console.log('chunked file upload tests passed');

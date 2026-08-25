@@ -33,21 +33,32 @@
     return hex;
   }
 
+  // crypto.subtle is undefined on insecure origins (e.g. plain-HTTP remote
+  // access) — exactly where transfer corruption is most likely. The unchecked
+  // downgrade stays safe, but it must not be invisible.
+  function warnUncheckedUpload(reason) {
+    if (root.console && typeof root.console.warn === "function") {
+      root.console.warn("device upload integrity unavailable (" + reason + "); transfer proceeds unchecked");
+    }
+  }
+
   // Web Crypto has no incremental digest, so the whole file (bounded by
   // MAX_FILE_BYTES) is hashed once before the first chunk is sent. The hash
   // rides the final chunk and the desktop re-verifies the assembled bytes.
   async function fileSha256Hex(file) {
     const subtle = root.crypto && root.crypto.subtle;
     if (!subtle || typeof subtle.digest !== "function" || typeof file.arrayBuffer !== "function") {
+      warnUncheckedUpload("web crypto unavailable in this context");
       return null;
     }
     try {
       const buffer = await file.arrayBuffer();
       const digest = await subtle.digest("SHA-256", buffer);
       return toHex(new Uint8Array(digest));
-    } catch (_) {
+    } catch (error) {
       // A hash we cannot compute locally degrades to an unchecked transfer;
       // the desktop side still verifies whatever digest does arrive.
+      warnUncheckedUpload("digest failed: " + (error && error.message ? error.message : error));
       return null;
     }
   }

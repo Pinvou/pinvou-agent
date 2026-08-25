@@ -57,7 +57,7 @@ const codexEn = {
   connectedSuffix:'connected', notReadySuffix:'not ready',
   notSet:'Not set', choiceTitle:'The Agent needs your choice', submit:'Submit', cancel:'Cancel', submitted:'Submitted', canceled:'Canceled', inputExpired:'This input request has expired',
   checking:'Checking ACP Agents…', bridgeUnavailable:'Codex ACP Bridge unavailable',
-  viewLoading:'Loading code mode…', viewLoadFailed:'Failed to load code mode, possibly due to unstable network connection.', viewRetry:'Retry',
+  viewLoading:'Loading code mode…', viewLoadFailed:'Failed to load code mode, possibly due to an unstable network connection.', viewRetry:'Retry',
   bridgeRepair:'Repair or reinstall Pinvou. In development, run npm run prepare:codex-bridge.',
   cliMissing:agent=>`${agent} CLI not detected`, cliOutdated:(version,minVersion)=>`Detected old version ${version} (requires ≥ ${minVersion})`,
   cliUpdateAvailable:(agent,version,latest)=>`${agent} is ${version || 'unknown'}; the latest official version is ${latest || 'unknown'}. Upgrading is recommended`,
