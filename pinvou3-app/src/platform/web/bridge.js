@@ -3968,8 +3968,12 @@
     // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
     // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
     const byId = Object.create(null);
-    ans.forEach(function (a) { if (a && a.id != null) byId[a.id] = byId[a.id] || [];
-        byId[a.id].push(a); });
+    ans.forEach(function (a) {
+      if (a && a.id != null) {
+        byId[a.id] = byId[a.id] || [];
+        byId[a.id].push(a);
+      }
+    });
     const out = [];
     for (let qi = 0; qi < questions.length; qi++) {
       const q = questions[qi];
@@ -7682,8 +7686,12 @@
       // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
       // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
       const byId = Object.create(null);
-      answers.forEach(function (a) { if (a && a.id != null) byId[a.id] = byId[a.id] || [];
-        byId[a.id].push(a); });
+      answers.forEach(function (a) {
+        if (a && a.id != null) {
+          byId[a.id] = byId[a.id] || [];
+          byId[a.id].push(a);
+        }
+      });
       const summary = questions.map(function (q, qi) {
         const list = byId[q.id];
         if (!list || !list.length) return null;

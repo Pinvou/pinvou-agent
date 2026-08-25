@@ -890,7 +890,7 @@ const ToolOutput = ({ item, t }) => {
             {activeCount > 0 && (
               <button type="button" onClick={onResolve}
                 className="px-4 py-2 rounded-full text-[14px] font-semibold text-white active:scale-[0.97] transition-transform"
-                style={{ background: role.accentHex }}>
+                style={{ background: roleLabel.accentHex }}>
                 {t.pvHandToAi(activeCount)}
               </button>
             )}

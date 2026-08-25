@@ -1604,10 +1604,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
 
       function handlePaste(e) {
         if (isWeb) return;
-        const items = (e.clipboardData && e.clipboardData.items) || [];
+        // WebKit 的 DataTransferItemList 没有 Symbol.iterator，for...of/展开会抛 TypeError，必须用 Array.from。
+        // eslint-disable-next-line prefer-spread, unicorn/prefer-spread -- DataTransferItemList 在 Safari/WKWebView 任意版本不可迭代
+        const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
         for (const it of items) {
           if (!(it.type && it.type.indexOf('image/') === 0)) {
-          	continue;
+            continue;
           }
 
           const file = it.getAsFile();
@@ -2420,7 +2422,7 @@ const TextareaContextMenu = ({ inputRef, setValue, _theme, t }) => {
         setValue(next);
         requestAnimationFrame(function () {
           el.focus();
-          try { el.setSelectionRange(cursor, cursor); } catch { /* 指针捕获失败可忽略 */ }
+          try { el.setSelectionRange(cursor, cursor); } catch { /* 光标定位失败可忽略 */ }
         });
       }, [inputRef, setValue]);
 

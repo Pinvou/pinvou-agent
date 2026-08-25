@@ -26,7 +26,7 @@ assert.match(bridgeImplementation, /await ensureSessionBufferLoaded\(sid\)/);
 assert.match(bridgeImplementation, /if \(isBusyFor\(sid\)\)/);
 assert.match(bridgeImplementation, /runSyncOnSession\(sid/);
 assert.match(bridgeImplementation, /doSendFor\(sid, content, content, \[\]/);
-assert.match(bridge, /(?:sendMessageToSession\s*:\s*)?sendMessageToSession/);
+assert.match(bridge, /sendMessageToSession\s*:\s*sendMessageToSession|sendMessageToSession(?=\s*[,}])/);
 assert.match(main, /listen\(['"]pet:reply_pending['"]/);
 assert.match(main, /invoke\(['"]take_pet_reply['"]\)/);
 assert.match(main, /bridge\.chat\.sendMessageToSession\(sid, text\)/);

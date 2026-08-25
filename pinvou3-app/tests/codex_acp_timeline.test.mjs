@@ -206,7 +206,6 @@ try {
   assert.equal(commandTurn.failedOperationCount, 0);
   assert.ok(command.output.includes('Unknown JSON field'));
   assert.equal(
-     
     command.output,
     // eslint-disable-next-line no-useless-escape -- 转义是模拟终端输出的数据载荷
     'Unknown JSON field: \"baseRefOid\"\nworktree /workspace/pinvou3\n',
@@ -786,8 +785,10 @@ try {
     && composerControls.includes('export { COMPOSER_ICON_BUTTON_CLASS, ComposerKbSelector, ComposerModeChip }'),
   'ChatView must consume the extracted composer controls module');
   assert.ok(composerControls.includes('mountedIdProp !== undefined')
-    && (composerControls.includes('modeProp != null') || composerControls.includes('modeProp == null'))
-    && (composerControls.includes('busyProp !== undefined') || composerControls.includes('busyProp === undefined'))
+    && composerControls.includes('modeProp == null ?')
+    && composerControls.includes(': { mode: modeProp }')
+    && composerControls.includes('busyProp === undefined ?')
+    && composerControls.includes(': busyProp')
     && composerControls.includes('isTauriAvailable() && !explicitMountState')
     && composerControls.includes("if (collection.source === 'remote') {")
     && composerControls.includes('if (onMount) { onMount(collection.id); return; }')

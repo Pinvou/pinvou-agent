@@ -5570,4 +5570,5 @@ Promise.resolve()
   // eslint-disable-next-line unicorn/prefer-top-level-await -- smoke 脚本既有 async main() 结构
   .catch(function (error) {
     console.error(error && error.stack || error);
-    process.exitCode = 1;  });
+    process.exitCode = 1;
+  });

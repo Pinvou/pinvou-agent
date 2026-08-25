@@ -58,7 +58,7 @@ async function prepareSceneCapabilities(meta, invoke) {
 
   for (const toolId of requirements.tools) {
     if (isInstalled(tools, toolId)) {
-    	continue;
+      continue;
     }
 
     await invoke('install_marketplace_tool', { toolId });
@@ -69,7 +69,7 @@ async function prepareSceneCapabilities(meta, invoke) {
 
   for (const skillId of requirements.skills) {
     if (isInstalled(skills, skillId)) {
-    	continue;
+      continue;
     }
 
     await invoke('install_marketplace_skill', { skillId });

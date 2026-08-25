@@ -191,7 +191,7 @@ export function syncSessionTitles(state, sessions) {
   let changed = false;
   for (const sid of state.sessions.keys()) {
     if (next.has(sid)) {
-    	continue;
+      continue;
     }
 
     changed = state.sessions.delete(sid) || changed;
@@ -224,7 +224,7 @@ function pruneExpired(state, now) {
   if (state.pendingRemoval && state.pendingRemoval.size) {
     for (const [sid, markedAt] of state.pendingRemoval) {
       if (now - markedAt < SNAPSHOT_REMOVAL_GRACE_MS) {
-      	continue;
+        continue;
       }
 
       state.sessions.delete(sid);

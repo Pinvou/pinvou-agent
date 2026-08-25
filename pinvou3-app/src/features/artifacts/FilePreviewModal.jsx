@@ -58,7 +58,7 @@ const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
   const labels = t.artifactPreview;
   const canOpen = !isWeb || can('artifactDownload');
   const open = () => bridge.artifacts.openArtifactExternal?.(path, sessionId);
-  // 懒语言注册完成后重算 md 预览(其余 kind 与语法无关,syntaxVersion 变化只会
+  // 懒语言注册完成后重算 md 预览(其余 kind 与语法无关,重算只会
   // 重新生成相同字符串,代价可忽略)。
   const mdHtml = preview.kind === 'md'
     ? bridge.rendering.renderMarkdown(preview.text || '')

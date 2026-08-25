@@ -229,7 +229,7 @@ test('同 provider 多个目录内自定义模型主标签仍各不相同', () =
 
 // ── 思考深度档位（reasoning effort）──
 test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位', () => {
-  // vm 上下文数组与宿主 realm 不同，deepStrictEqual 会因原型不同误报，用 Array.from 归一
+  // vm 上下文数组与宿主 realm 不同，deepStrictEqual 会因原型不同误报，展开为宿主数组归一
   const tiers = model => [...reasoningEffortTiersForModel(model) || []];
   const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
   assert.deepStrictEqual(tiers(deepseek), ['off', 'low', 'high', 'max']);

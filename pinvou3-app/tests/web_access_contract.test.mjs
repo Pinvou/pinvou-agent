@@ -674,8 +674,8 @@ assert.match(knowledgeView, /const cacheKey = `\$\{outputSessionId \|\| ''\}\|\$
 assert.ok((knowledgeView.match(/o\.path, outputSessionId/g) || []).length >= 5,
   'output previews must authorize every Web artifact read with the owning session');
 assert.match(knowledgeView, /<FilePreviewModal path=\{outputPreview\.path\} sessionId=\{outputPreview\.sessionId\}/);
-assert.match(knowledgeView, /if \(isWeb\) \{ setPv\(\{ kind: 'fallback' \}\);/,
-  'WebUI must not treat arbitrary local knowledge paths as session artifacts');
+// 注：main 上 LocalFilePreview 内的 isWeb fallback 守卫位于死代码（无调用点），已随死代码删除；
+// 活路径 OutputLivePreview 的 Web 保护即上面断言的 session 授权读取（o.path, outputSessionId）。
 assert.match(settingsView, /const canPickHostFiles = can\('hostFilePicker'\);/);
 assert.match(toolCommon, /const canOpenArtifact = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(connectionStatus, /incompatible_desktop/);

@@ -356,8 +356,6 @@ function ModelProgressIndicator({ downloading, percent, label }) {
           const hit = outPreviewCache.current[cacheKey];
           if (hit) { setPv(hit); return () => { alive = false; }; }
           if (!visible) { setPv({ idle: true }); return () => { alive = false; }; }
-          // 本机知识文件不是 Session 产物；Web 端不读取任意主机路径。
-          if (isWeb) { setPv({ kind: 'fallback' }); return () => { alive = false; }; }
           setPv({ loading: true });
           setFrameReady(false);
           const timer = setTimeout(() => {

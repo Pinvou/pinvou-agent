@@ -477,7 +477,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
               data-testid="acp-provider-context-window"
               className={`${inputClass} mt-1.5 font-mono`}
               value={contextWindow}
-              onChange={event => setContextWindow(event.target.value.replaceAll(/[^0-9]/g, ''))} // eslint-disable-line sonarjs/concise-regex -- 字面量数字过滤,可读性优先
+              onChange={event => setContextWindow(event.target.value.replaceAll(/[^0-9]/g, ''))} // eslint-disable-line sonarjs/concise-regex -- [^0-9] 保持字面量写法不换成 \D,可读性优先
               placeholder={copy.contextWindowPlaceholder}
               inputMode="numeric"
               spellCheck={false}

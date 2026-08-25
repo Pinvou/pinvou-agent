@@ -14,6 +14,9 @@
 //     no-array-sort / no-array-reverse (→ toSorted/toReversed),
 //     prefer-array-last-methods / prefer-at (→ .at()), and prefer-await
 //     (top-level await is unparseable at the Safari 14 baseline).
+//     prefer-blob-reading-methods (→ blob.text()/arrayBuffer(), Safari 14.0.1+)
+//     is off as well, and prefer-spread is disabled per-site where the operand
+//     is a WebKit non-iterable DOM list (DOMRectList/FileList/DataTransferItemList).
 import { defineConfig } from 'eslint/config';
 import js from '@eslint/js';
 import globals from 'globals';
@@ -150,7 +153,8 @@ export default defineConfig([
       'unicorn/no-unnecessary-string-trim': 'error',
       'unicorn/no-useless-coercion': 'error',
       'unicorn/no-unnecessary-global-this': 'error',
-      'unicorn/prefer-blob-reading-methods': 'error',
+      // autofix 产出 blob.text()/blob.arrayBuffer()（Safari 14.0.1+，略超 14.0.0 下限）且 audit-compat 不覆盖这两个成员 API，关闭。
+      'unicorn/prefer-blob-reading-methods': 'off',
       'unicorn/prefer-dom-node-append': 'error',
       'unicorn/prefer-dom-node-remove': 'error',
       'unicorn/prefer-dom-node-text-content': 'error',

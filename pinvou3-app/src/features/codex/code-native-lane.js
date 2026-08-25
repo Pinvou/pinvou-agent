@@ -177,7 +177,7 @@ function finalizeReasoning(lane) {
   const completedAt = Date.now();
   for (const item of lane.items) {
     if (!(item && item.type === 'reasoning' && item.streaming)) {
-    	continue;
+      continue;
     }
 
     item.streaming = false;
@@ -690,7 +690,7 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
   // 未被 tool_result 回填的工具卡按失败收尾，避免历史里残留"执行中"。
   for (const item of lane.items) {
     if (!(item && item.type === 'tool' && item.state !== 'done')) {
-    	continue;
+      continue;
     }
 
     item.state = 'done';
