@@ -960,12 +960,14 @@
   // generation 匹配(P0-B):chat:done payload 带后端轮次身份(generation),
   // 只对目标轮 resolve —— 迟到的旧轮终态、其他轮的终态都不会提前解锁等待。
   // 旧后端(无 generation 字段)时退化为按 sid 匹配的旧行为。
+  // 返回值：true = 确实观察到目标轮终态（chat:done / busy 清除）；false =
+  // 兜底超时。调用方据此前置区分「可以安全 reserve」与「取消 unwind 未完结」。
   function waitForChatDone(sid, generation, timeoutMs) {
     return new Promise(function (resolve) {
       var timer = null;
       var resolved = false;
       var unlisten = null;
-      function done() {
+      function done(observed) {
         if (resolved) return;
         resolved = true;
         if (timer) { clearTimeout(timer); timer = null; }
@@ -973,7 +975,7 @@
           try { unlisten(); } catch (_) {}
           unlisten = null;
         }
-        resolve();
+        resolve(observed === true);
       }
       // 通过 TAURI.event.listen 直接订阅 webview 事件,匹配 sid 后 resolve。
       // Tauri 2 的 listen 返回 Promise<UnlistenFn>,on 收到事件即回调。
@@ -987,7 +989,7 @@
               Number(payloadGeneration) !== Number(generation)) {
             return;
           }
-          done();
+          done(true);
         });
         if (p && typeof p.then === "function") {
           p.then(function (un) {
@@ -1002,14 +1004,14 @@
         var deadline = Date.now() + timeoutMs;
         var poll = function () {
           if (resolved) return;
-          if (!isBusyFor(sid)) { done(); return; }
-          if (Date.now() >= deadline) { done(); return; }
+          if (!isBusyFor(sid)) { done(true); return; }
+          if (Date.now() >= deadline) { done(false); return; }
           setTimeout(poll, 50);
         };
         poll();
       }
       timer = setTimeout(function () {
-        done();
+        done(false);
       }, timeoutMs);
     });
   }
@@ -1039,8 +1041,19 @@
         var generation = outcome && outcome.generation;
         if (!terminal) {
           // 事件驱动等待（P0-B）：后端保证 chat:done 到达时 reserve 闸门已重开，
-          // 不再需要固定 sleep 补窗口。超时仅作最后兜底，走下方失败恢复路径。
-          await waitForChatDone(sid, generation, 25000);
+          // 不再需要固定 sleep 补窗口。超时仅作最后兜底。
+          var observed = await waitForChatDone(sid, generation, 25000);
+          if (!observed && isBusyFor(sid)) {
+            // 25s 兜底超时且会话仍 busy：取消 unwind 未完结，此时 doSendFor
+            // 会稳定撞 session_turn_in_progress。bridge.chat.interruptAndSend
+            // 是公开 API（远控/其他宿主），调用方可能不接异常——这里显式
+            // 失败、不尝试发送，消息由调用方恢复（UI 的 ⚡/chip 路径均有
+            // catch 恢复），绝不静默丢消息。会话已不 busy（监听器错过事件
+            // 但 turn 实际结束）时继续走发送。
+            throw new Error(
+              "interrupt-and-send: cancel did not reach terminal within 25s and session is still busy; message not sent"
+            );
+          }
         }
       }
       // 2) 不整体清空 queue：打断只放弃当前轮进度，保留用户排队中的其他消息
@@ -1062,8 +1075,9 @@
   // 非 busy(队列残留未被 flushQueued 消费)时直接发送、不 cancel。
   // steered chip 先撤回引擎里那份(withdraw_steer),防止它后续在步骤边界
   // 注入造成重复发送。失败时把消息按原位恢复到排队区(不是输入框)并提示
-  // ——恢复的 chip 保持 steered/steerId 原样:撤回已发出,引擎随后会发
-  // steer_dropped(撤回生效)或 steer_committed(撤回太迟)来结算它。
+  // ——恢复的 chip 降级为非 steered:撤回已发出,引擎只在下一轮 drain 时才
+  // 结算,保持 steered 会让 flushQueued 让路且下一轮永远不来(排队区卡死);
+  // 引擎侧残留由迟到的 steer_committed 补气泡,去重已有处理。
   async function interruptAndSendQueued(sid, queuedId) {
     var queueOf = function () {
       return sid === state.activeSessionId

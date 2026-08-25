@@ -2715,6 +2715,61 @@ async function interruptQueuedFailureLeavesFlushableChip() {
   assert.strictEqual(view.queued.length, 0, "chat:done 后 flush 消费降级 chip(不再被 steered 队头阻塞)");
 }
 
+async function interruptAndSendTimeoutWhileBusyFailsWithoutSending() {
+  // P2 回归(公开 API 超时语义):cancel 返回 terminal=false 后等不到 chat:done,
+  // 25s 兜底超时且会话仍 busy —— interruptAndSend 必须显式 reject 且不调用
+  // chat(此时发送会稳定撞 session_turn_in_progress,调用方不接异常就丢消息)。
+  var timeouts = [];
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (fn, ms) {
+      timeouts.push({ fn: fn, ms: ms });
+      return timeouts.length;
+    },
+    clearTimeout: function () {},
+  });
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-interrupt-timeout"), true);
+  harness.emit("chat:turn_started", { session_id: "chat-interrupt-timeout" });
+  await tick();
+  harness.handlers.cancel_generation = function () { return { terminal: false, generation: 7 }; };
+  harness.handlers.chat = function () { return "ok"; };
+
+  var outcome = null;
+  var p = bridge.chat
+    .interruptAndSend("chat-interrupt-timeout", "超时也要保住的一句", null, [], null, false)
+    .then(function () { outcome = "sent"; }, function (e) { outcome = e; });
+  await tick();
+  await tick();
+  await tick();
+
+  var waitTimer = timeouts.find(function (t) { return t.ms === 25000; });
+  assert.ok(waitTimer, "waitForChatDone 必须有 25s 兜底超时");
+  waitTimer.fn();
+  await p;
+  // 注意:bridge 跑在 vm 上下文里,抛出的 Error 是另一个 realm 的实例,
+  // 不能用 instanceof 判定。
+  assert.ok(
+    outcome && typeof outcome.message === "string",
+    "超时仍 busy 必须显式失败,不能静默发送"
+  );
+  assert.ok(
+    /still busy|not sent/.test(String(outcome && outcome.message)),
+    "错误信息说明取消未完结、消息未发送"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
+    0,
+    "超时仍 busy 时不得尝试 doSendFor(会撞 session_turn_in_progress)"
+  );
+
+  // 会话最终结束(取消 unwind 完成)后,调用方可以安全重试同一条消息。
+  harness.emit("chat:done", { session_id: "chat-interrupt-timeout", generation: 7 });
+  await tick();
+  await tick();
+  var retry = await bridge.chat.interruptAndSend("chat-interrupt-timeout", "超时也要保住的一句", null, [], null, false);
+  assert.strictEqual(retry, true, "turn 终态后重试同一条消息成功(消息未丢失)");
+}
+
 async function transcriptFallbackRecoversAfterCompactionShrink() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -6007,6 +6062,7 @@ Promise.resolve()
   .then(interruptQueuedWhileIdleSendsWithoutCancel)
   .then(steerInvokeHangTimesOutAndRestoresInput)
   .then(interruptQueuedFailureLeavesFlushableChip)
+  .then(interruptAndSendTimeoutWhileBusyFailsWithoutSending)
   .then(withdrawTooLateCommittedStillBubbles)
   .then(transcriptFallbackRecoversAfterCompactionShrink)
   .then(terminalEventWinsStaleRunningOpen)
