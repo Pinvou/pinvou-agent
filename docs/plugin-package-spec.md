@@ -252,9 +252,9 @@ metadata:                       # 可选
 
 | 用途 | 规则 |
 |---|---|
-| 包 `id`（`plugin.json.id`） | `[a-z0-9-_]{1,64}`，小写 |
-| MCP `id`（`ToolManifest.id`）与 `components.mcp_servers[].id` | `[a-zA-Z0-9_-]{1,64}`（建议小写；导入强制两侧一致，包 id 才强制小写字符集） |
-| 技能 `name`（`SKILL.md`）与 `components.skills[].id` | `[a-zA-Z0-9_-]{1,64}`（允许大小写；两者必须一致，导入仅校验一致性） |
+| 包 `id`（`plugin.json.id`） | `[a-z0-9-_]{1,64}`，小写；导入强制（`is_safe_component_id`）。无 `plugin.json` 的裸包按回退识别取 id，改走 `is_safe_skill_name`（`[a-zA-Z0-9_-]{1,64}`，允许大小写） |
+| MCP `id`（`ToolManifest.id`）与 `components.mcp_servers[].id` | 规范要求 `[a-zA-Z0-9_-]{1,64}`（建议小写）。**导入侧实际只强制**：两侧 id 一致、组件 `dir` 精确为 `mcp`；组件 id 字符集暂不校验（已知缺口，单独跟踪） |
+| 技能 `name`（`SKILL.md`）与 `components.skills[].id` | 规范要求 `[a-zA-Z0-9_-]{1,64}`（允许大小写）且两者一致。**导入侧实际只强制**（清单路径）：组件 `dir` 精确为 `skills/<id>` 且其中存在 `SKILL.md`；frontmatter 不解析，name 与声明 id 的一致性及字符集均暂不校验（已知缺口，单独跟踪）。裸技能回退路径（无 `plugin.json`）取 frontmatter `name` 并校验字符集 |
 
 禁止 `.`、`..`、路径分隔符；与已下线内置名冲突会拒收。
 
@@ -265,9 +265,9 @@ metadata:                       # 可选
 导入时统一预检，任一不过即拒收、不留半安装态：
 
 1. 路径穿越（`enclosed_name()` + 写出前二次断言）。
-2. symlink / hardlink（`unix_mode` 高 4 位 = `0o120000`）。
+2. symlink（`unix_mode` 文件类型位 `mode & 0o170000 == 0o120000` 即 S_IFLNK；zip 中 hardlink 表现为普通文件副本，无独立类型位，不在此拦截）。
 3. 体积：解压累计 ≤ 200 MiB；zip 头声明与实际解压大小不符（伪造头/zip bomb）拒收。
-4. 名字安全（§10）。
+4. 名字安全（§10；清单路径仅包 id 强制字符集，组件 id 校验缺口见 §10 表）。
 5. 组件声明与实际一致：
    - 声明的 `dir` 必须存在；skill 目录必须有 `SKILL.md`；
    - MCP 组件 `dir` 必须精确为 `mcp`（其他值拒收），且组件 `id` 与 `mcp/manifest.json` 的 `id` 交叉一致；
