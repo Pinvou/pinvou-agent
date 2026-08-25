@@ -11,7 +11,7 @@ use crate::platform::paths::tests::ENV_LOCK;
 use crate::platform::prefs::UserPrefs;
 use anyhow::Result;
 use chrono::Utc;
-use deepseek_tui::models::{ContentBlock, Message, SystemPrompt};
+use deepseek_tui::models::{ContentBlock, ImageUrlContent, Message, SystemPrompt};
 use deepseek_tui::session_manager::create_saved_session_with_id_and_mode;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -450,6 +450,82 @@ fn admitted_display_fallback_is_revision_guarded_for_append_and_edit() {
             assistant_text("answer"),
             user_text("edited second")
         ]
+    );
+}
+
+#[test]
+fn forkguard_admitted_display_fallback_edit_cuts_before_trailing_tool_result() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    // Tool results are also persisted with role="user". The edit cut must
+    // land on the genuine prompt and remove its complete tool round-trip.
+    let tool_result = Message {
+        role: "user".into(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "call_1".into(),
+            content: "tool output".into(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    };
+    let baseline = vec![
+        user_text("first"),
+        assistant_tool_use("call_1"),
+        tool_result,
+        assistant_text("final answer"),
+    ];
+    store
+        .update_messages(&session.metadata.id, baseline.clone())
+        .unwrap();
+    let revision = transcript_revision(&baseline).unwrap();
+
+    let edited = store
+        .persist_admitted_chat_display(&session.metadata.id, &revision, user_text("edited"), true)
+        .unwrap();
+    assert_eq!(edited.messages, vec![user_text("edited")]);
+}
+
+#[test]
+fn forkguard_admitted_display_fallback_does_not_skip_unsupported_user_turn() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    let image_only = Message {
+        role: "user".into(),
+        content: vec![ContentBlock::ImageUrl {
+            image_url: ImageUrlContent {
+                url: "data:image/png;base64,AAAA".into(),
+            },
+        }],
+    };
+    let baseline = vec![
+        user_text("older editable prompt"),
+        assistant_text("older response"),
+        image_only,
+    ];
+    store
+        .update_messages(&session.metadata.id, baseline.clone())
+        .unwrap();
+    let revision = transcript_revision(&baseline).unwrap();
+
+    let error = store
+        .persist_admitted_chat_display(
+            &session.metadata.id,
+            &revision,
+            user_text("must not replace the older prompt"),
+            true,
+        )
+        .expect_err("unsupported latest user content must reject the fallback edit");
+    assert!(error
+        .to_string()
+        .contains("latest user content is not editable"));
+    assert_eq!(
+        store.load(&session.metadata.id).unwrap().messages,
+        baseline,
+        "a rejected fallback must leave the durable transcript unchanged"
     );
 }
 

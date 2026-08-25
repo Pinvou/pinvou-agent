@@ -65,6 +65,10 @@ pub(crate) fn spawn_event_forwarder(
         let mut latest_chat_engine_state: Option<ChatEngineState> = None;
         let mut chat_persistence_error: Option<String> = None;
         let mut active_transcript_seen = false;
+        // A typed preflight rejection completes the admitted lifecycle without
+        // changing engine history. Preserve that distinction through
+        // `chat:done` so the UI rolls back its optimistic edit.
+        let mut active_operation_rejected = false;
         // app 侧自测推理指标累加器(TTFT/生成速度/累计tokens/KV)。try_state:headless
         // harness / 测试可能没 manage MonitorState,拿不到就整块跳过,不 panic。
         let self_metrics = app
@@ -98,6 +102,7 @@ pub(crate) fn spawn_event_forwarder(
                         approve_handle.cancel();
                     }
                     active_transcript_seen = false;
+                    active_operation_rejected = false;
                     chat_persistence_error = None;
                     current_turn_id = Some(turn_id.clone());
                     if let Err(error) = turn_shell_tasks.bind_or_prepare_turn(&turn_id).await {
@@ -647,6 +652,7 @@ pub(crate) fn spawn_event_forwarder(
                         first_delta_done.remove(turn_id);
                     }
                     let shell_interrupted = status == TurnOutcomeStatus::Interrupted;
+                    let operation_rejected = std::mem::take(&mut active_operation_rejected);
                     let mut shell_cleanup_failed = false;
                     let mut terminal_status = status;
                     let mut terminal_error = error;
@@ -687,7 +693,11 @@ pub(crate) fn spawn_event_forwarder(
                             });
                         }
                     } else {
-                        let terminal_save = if active_transcript_seen {
+                        let terminal_save = if operation_rejected {
+                            // Rejection must win over both an engine snapshot
+                            // and the optimistic admission fallback.
+                            None
+                        } else if active_transcript_seen {
                             latest_chat_engine_state.clone().map(|state| {
                                 let store_for_save = store.clone();
                                 let session_for_save = session_id.clone();
@@ -746,6 +756,12 @@ pub(crate) fn spawn_event_forwarder(
                             });
                         }
                     }
+                    // TurnComplete closes the snapshot ownership window. Edit
+                    // preflight rejection has no TurnStarted, so retaining a
+                    // prior turn's state here could otherwise make that later
+                    // rejection repersist a stale snapshot.
+                    active_transcript_seen = false;
+                    latest_chat_engine_state = None;
                     // Keep the shell scope cancellable throughout persistence.
                     // Final cleanup runs before terminal admission is claimed;
                     // Engine reclaim can therefore still win an await race and
@@ -907,6 +923,7 @@ pub(crate) fn spawn_event_forwarder(
                             terminal_status,
                             terminal_error.clone(),
                             shell_cleanup_failed,
+                            operation_rejected,
                         );
                         turn_lifecycle.finish_terminal_emission();
 
@@ -1051,6 +1068,12 @@ pub(crate) fn spawn_event_forwarder(
                     );
                 }
                 Event::Error { envelope, .. } => {
+                    // Edit preflight failures are non-terminal advisories until
+                    // the paired TurnComplete, but their typed code tells the
+                    // terminal path not to persist the optimistic fallback.
+                    if !envelope.recoverable && envelope.code.starts_with("edit_last_turn_") {
+                        active_operation_rejected = true;
+                    }
                     // 可恢复错误(如 SSE idle timeout、瞬态工具失败)turn 不会结束——
                     // 引擎会 retry / 继续跑后续步骤。绝不能发 chat:done,否则前端
                     // setBusy(false) 把"思考中"指示器掐掉,而引擎还在干活,看着像卡死
@@ -1120,6 +1143,7 @@ pub(crate) fn spawn_event_forwarder(
             TurnOutcomeStatus::Failed,
             Some(stopped_error.clone()),
             shell_cleanup_failed,
+            active_operation_rejected,
         )
         .await
         {

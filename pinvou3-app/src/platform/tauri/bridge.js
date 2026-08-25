@@ -2118,6 +2118,7 @@
     reconcileRemoteTurn: reconcileRemoteTurn,
     isBusyFor: isBusyFor,
     markRemoteTurn: markRemoteTurn,
+    userMessageDisplayText: userMessageDisplayText,
     recordAuthoritySyncDiagnostic: recordAuthoritySyncDiagnostic,
     authoritySyncBufferSnapshot: authoritySyncBufferSnapshot,
     get currentStreamText() { return currentStreamText; },

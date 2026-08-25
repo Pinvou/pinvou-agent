@@ -791,6 +791,9 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     chat: {
       sendMessage: function (text, meta) { return rawBridge.sendMessage(text, meta); },
     },
+    interaction: {
+      editLastTurn: function (text) { return rawBridge.editLastTurn(text); },
+    },
     scheduled: {
       openScheduledRunChat: function (run, task) { return rawBridge.openScheduledRunChat(run, task); },
     },
@@ -3219,6 +3222,83 @@ async function editLastTurnBlockedWhileAuthorityReconcilePending() {
   );
 }
 
+// Tool results also use role="user" in state.messages. Editing the last turn
+// must cut at the genuine prompt and remove its complete tool round-trip.
+async function editLastTurnCutsAtRealUserMessageBeforeToolResult(bridgeKind) {
+  var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+  var bridge = harness.bridge;
+  var sessionId = "chat-edit-tool-result-" + bridgeKind;
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: sessionId, title: "Edit with tool result", message_count: 4 },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "original question" }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "Bash", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "tool output" }] },
+        { role: "assistant", content: [{ type: "text", text: "final answer" }] },
+      ],
+      artifacts: [],
+    };
+  };
+
+  assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
+  var before = bridge.state.get("chat").messages;
+  assert.strictEqual(before.length, 4, "seeded transcript must include the tool round-trip");
+
+  await bridge.interaction.editLastTurn("edited question");
+  var after = bridge.state.get("chat").messages;
+  assert.deepStrictEqual(
+    after,
+    [{ role: "user", content: [{ type: "text", text: "edited question" }] }],
+    "edit must cut the whole last turn including the trailing tool_result"
+  );
+  var editCalls = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; });
+  assert.strictEqual(editCalls.length, 1, "edit_last_turn must be invoked exactly once");
+}
+
+async function rejectedEditRestoresAuthoritativeTranscript(bridgeKind) {
+  var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+  var bridge = harness.bridge;
+  var sessionId = "chat-edit-rejected-" + bridgeKind;
+  var durable = {
+    metadata: { id: sessionId, title: "Rejected edit", message_count: 3 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "older editable prompt" }] },
+      { role: "assistant", content: [{ type: "text", text: "older response" }] },
+      { role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-before-rejected-edit",
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
+  await bridge.interaction.editLastTurn("must not replace the older prompt");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(bridge.state.get("chat").messages)),
+    [{ role: "user", content: [{ type: "text", text: "must not replace the older prompt" }] }],
+    "the edit remains optimistic until the engine publishes its terminal decision"
+  );
+
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Failed",
+    error: "Cannot edit the latest user content",
+    operation_rejected: true,
+  });
+  for (var reconcileTick = 0; reconcileTick < 12; reconcileTick++) await tick();
+
+  var state = bridge.state.get("chat");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(state.messages)),
+    durable.messages,
+    "a rejected edit must hydrate the unchanged durable transcript"
+  );
+  assert.strictEqual(state.busy, false, "a rejected edit must release the busy state");
+}
+
 async function remoteAcceptPlanConvergesAcrossClients() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -5455,6 +5535,10 @@ Promise.resolve()
   .then(completedTurnFallsBackWhenSnapshotLacksRevision)
   .then(completedTurnAdoptsRevisionBumpDuringRetry)
   .then(editLastTurnBlockedWhileAuthorityReconcilePending)
+  .then(function () { return editLastTurnCutsAtRealUserMessageBeforeToolResult("tauri"); })
+  .then(function () { return editLastTurnCutsAtRealUserMessageBeforeToolResult("web"); })
+  .then(function () { return rejectedEditRestoresAuthoritativeTranscript("tauri"); })
+  .then(function () { return rejectedEditRestoresAuthoritativeTranscript("web"); })
   .then(remoteAcceptPlanConvergesAcrossClients)
   .then(activePlanSurvivesUnrelatedTerminalHydrate)
   .then(activePlanHydrateMigratesTicketWithoutDuplicate)

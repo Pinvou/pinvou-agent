@@ -5920,11 +5920,15 @@
       return;
     }
     var doneBuffer = sid ? getBuffer(sid) : null;
+    // Match the Tauri client: rejected optimistic edits must hydrate the
+    // unchanged authoritative transcript before another local turn starts.
+    var operationRejected = !!(e.payload && e.payload.operation_rejected);
     var completedLocalTurn = !!(
-      doneBuffer && doneBuffer.localTurnOwned && !isScheduledRunSession(sid)
+      doneBuffer && doneBuffer.localTurnOwned && !isScheduledRunSession(sid) && !operationRejected
     );
     recordAuthoritySyncDiagnostic("chat_done_classified", Object.assign({
       completed_local_turn: completedLocalTurn,
+      operation_rejected: operationRejected,
       requires_authority_reconcile: !isScheduledRunSession(sid),
       terminal_status: String(e.payload && e.payload.status || ""),
       terminal_error_present: !!(e.payload && e.payload.error),
@@ -7589,10 +7593,13 @@
       editBuffer.remoteTerminalSeen = false;
       editBuffer.remoteCommittedRevision = "";
     }
-    // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
+    // Remove the latest displayable user turn and everything after it, then
+    // append the replacement. Tool results and internal runtime envelopes also
+    // use role="user", so a bare role scan would cut at the wrong boundary.
     var cut = -1;
     for (var i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === "user") { cut = i; break; }
+      var editCandidate = state.messages[i];
+      if (editCandidate.role === "user" && userMessageDisplayText(editCandidate.content)) { cut = i; break; }
     }
     if (cut >= 0) state.messages.splice(cut);
     state.messages.push({ role: "user", content: [{ type: "text", text: newText }] });
