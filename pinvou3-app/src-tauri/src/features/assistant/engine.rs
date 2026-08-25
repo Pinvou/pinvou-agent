@@ -380,6 +380,7 @@ pub(crate) fn emit_chat_terminal(
     status: TurnOutcomeStatus,
     error: Option<String>,
     shell_cleanup_failed: bool,
+    operation_rejected: bool,
 ) {
     // turn 终态兜底清空挂起的输入请求（取消/中断时可能没有对应 tool_end）。
     crate::features::assistant::pending_user_input::clear_session(session_id);
@@ -388,6 +389,7 @@ pub(crate) fn emit_chat_terminal(
         "status": format!("{status:?}"),
         "error": error,
         "shell_cleanup_failed": shell_cleanup_failed,
+        "operation_rejected": operation_rejected,
     });
     crate::features::sessions::diagnostics::record_backend(
         "chat_done_emitting",
@@ -396,6 +398,7 @@ pub(crate) fn emit_chat_terminal(
             "terminal_status": format!("{status:?}"),
             "terminal_error_present": error.is_some(),
             "shell_cleanup_failed": shell_cleanup_failed,
+            "operation_rejected": operation_rejected,
         }),
     );
     let _ = app.emit("chat:done", payload.clone());
@@ -971,7 +974,14 @@ impl TurnLifecycle {
         if !self.claim_unsubmitted_terminal() {
             return false;
         }
-        emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None, false);
+        emit_chat_terminal(
+            app,
+            session_id,
+            TurnOutcomeStatus::Interrupted,
+            None,
+            false,
+            false,
+        );
         self.finish_terminal_emission();
         true
     }
@@ -988,7 +998,14 @@ impl TurnLifecycle {
         if !self.claim_unsubmitted_terminal_for_epoch(target) {
             return false;
         }
-        emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None, false);
+        emit_chat_terminal(
+            app,
+            session_id,
+            TurnOutcomeStatus::Interrupted,
+            None,
+            false,
+            false,
+        );
         self.finish_terminal_emission();
         true
     }
@@ -1119,11 +1136,12 @@ async fn finish_reclaimed_lifecycle_turn(
     status: TurnOutcomeStatus,
     error: Option<String>,
     shell_cleanup_failed: bool,
+    operation_rejected: bool,
 ) -> Option<EmittedTerminal> {
     let transition = lifecycle.claim_reclaimed_with_admission(app, session_id)?;
     let mut terminal_status = status;
     let mut terminal_error = error;
-    if let Some(fallback) = transition.fallback {
+    if let Some(fallback) = transition.fallback.filter(|_| !operation_rejected) {
         let store_for_save = store.clone();
         let session_for_save = session_id.to_string();
         let saved = tokio::task::spawn_blocking(move || {
@@ -1181,6 +1199,7 @@ async fn finish_reclaimed_lifecycle_turn(
         terminal_status,
         terminal_error,
         shell_cleanup_failed,
+        operation_rejected,
     );
     lifecycle.finish_terminal_emission();
     Some(transition.terminal)
@@ -1593,6 +1612,7 @@ impl AppEngine {
             TurnOutcomeStatus::Interrupted,
             None,
             shell_cleanup_failed,
+            false,
         )
         .await
         {

@@ -492,9 +492,9 @@
       currentStreamText: context.currentStreamText,
       currentStreamId: context.currentStreamId,
     };
-    // 删除末尾最近的真实用户消息及之后所有，push 新 user，重渲染。
-    // 工具结果与内部运行时信封同样以 role="user" 存储，裸 role 扫描会把
-    // 截断点落在 tool_result 上；用展示口径(userMessageDisplayText 非空)判定。
+    // Remove the latest displayable user turn and everything after it, then
+    // append the replacement. Tool results and internal runtime envelopes also
+    // use role="user", so a bare role scan would cut at the wrong boundary.
     var cut = -1;
     for (var i = state.messages.length - 1; i >= 0; i--) {
       var candidate = state.messages[i];

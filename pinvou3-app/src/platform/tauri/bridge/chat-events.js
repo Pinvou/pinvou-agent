@@ -726,11 +726,15 @@
     });
     var doneBuffer = sid ? getBuffer(sid) : null;
     var requiresAuthorityReconcile = !isScheduledRunSession(sid);
+    // A rejected local edit never became authoritative in Rust. Reclassify it
+    // as a reconciliation case so hydration rolls back the optimistic cut.
+    var operationRejected = !!(e.payload && e.payload.operation_rejected);
     var completedLocalTurn = !!(
-      requiresAuthorityReconcile && doneBuffer && doneBuffer.localTurnOwned
+      requiresAuthorityReconcile && doneBuffer && doneBuffer.localTurnOwned && !operationRejected
     );
     recordAuthoritySyncDiagnostic("chat_done_classified", Object.assign({
       completed_local_turn: completedLocalTurn,
+      operation_rejected: operationRejected,
       requires_authority_reconcile: requiresAuthorityReconcile,
       terminal_status: String(e.payload && e.payload.status || ""),
       terminal_error_present: !!(e.payload && e.payload.error),

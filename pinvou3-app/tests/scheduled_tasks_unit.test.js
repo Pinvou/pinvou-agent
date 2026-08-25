@@ -3222,8 +3222,8 @@ async function editLastTurnBlockedWhileAuthorityReconcilePending() {
   );
 }
 
-// 工具结果同样以 role="user" 进入 state.messages:编辑上一轮必须砍在最早的
-// 真实用户消息上(整轮含 tool_result 一起移除),与底座 is_user_turn_prompt 同口径。
+// Tool results also use role="user" in state.messages. Editing the last turn
+// must cut at the genuine prompt and remove its complete tool round-trip.
 async function editLastTurnCutsAtRealUserMessageBeforeToolResult(bridgeKind) {
   var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
   var bridge = harness.bridge;
@@ -3254,6 +3254,49 @@ async function editLastTurnCutsAtRealUserMessageBeforeToolResult(bridgeKind) {
   );
   var editCalls = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; });
   assert.strictEqual(editCalls.length, 1, "edit_last_turn must be invoked exactly once");
+}
+
+async function rejectedEditRestoresAuthoritativeTranscript(bridgeKind) {
+  var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+  var bridge = harness.bridge;
+  var sessionId = "chat-edit-rejected-" + bridgeKind;
+  var durable = {
+    metadata: { id: sessionId, title: "Rejected edit", message_count: 3 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "older editable prompt" }] },
+      { role: "assistant", content: [{ type: "text", text: "older response" }] },
+      { role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-before-rejected-edit",
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
+  await bridge.interaction.editLastTurn("must not replace the older prompt");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(bridge.state.get("chat").messages)),
+    [{ role: "user", content: [{ type: "text", text: "must not replace the older prompt" }] }],
+    "the edit remains optimistic until the engine publishes its terminal decision"
+  );
+
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Failed",
+    error: "Cannot edit the latest user content",
+    operation_rejected: true,
+  });
+  for (var reconcileTick = 0; reconcileTick < 12; reconcileTick++) await tick();
+
+  var state = bridge.state.get("chat");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(state.messages)),
+    durable.messages,
+    "a rejected edit must hydrate the unchanged durable transcript"
+  );
+  assert.strictEqual(state.busy, false, "a rejected edit must release the busy state");
 }
 
 async function remoteAcceptPlanConvergesAcrossClients() {
@@ -5494,6 +5537,8 @@ Promise.resolve()
   .then(editLastTurnBlockedWhileAuthorityReconcilePending)
   .then(function () { return editLastTurnCutsAtRealUserMessageBeforeToolResult("tauri"); })
   .then(function () { return editLastTurnCutsAtRealUserMessageBeforeToolResult("web"); })
+  .then(function () { return rejectedEditRestoresAuthoritativeTranscript("tauri"); })
+  .then(function () { return rejectedEditRestoresAuthoritativeTranscript("web"); })
   .then(remoteAcceptPlanConvergesAcrossClients)
   .then(activePlanSurvivesUnrelatedTerminalHydrate)
   .then(activePlanHydrateMigratesTicketWithoutDuplicate)

@@ -585,15 +585,23 @@ impl SessionStore {
             return Ok(session);
         }
         if edit_last {
-            // Same predicate as the engine's EditLastTurn: tool results and
-            // runtime-owned internal envelopes also persist with role "user",
-            // so the cut must land on a genuine user prompt.
-            if let Some(index) = session
-                .messages
-                .iter()
-                .rposition(deepseek_tui::is_user_turn_prompt)
-            {
-                session.messages.truncate(index);
+            // Use the engine's authoritative target selection. Unsupported
+            // user content is a real boundary and must not fall through to an
+            // older editable prompt.
+            match deepseek_tui::edit_last_turn_target(&session.messages) {
+                deepseek_tui::EditLastTurnTarget::Editable(index) => {
+                    session.messages.truncate(index);
+                }
+                deepseek_tui::EditLastTurnTarget::Unsupported => {
+                    anyhow::bail!(
+                        "cannot persist edit fallback: latest user content is not editable"
+                    );
+                }
+                deepseek_tui::EditLastTurnTarget::Missing => {
+                    anyhow::bail!(
+                        "cannot persist edit fallback: session has no user prompt to replace"
+                    );
+                }
             }
         }
         session.messages.push(display_message);
