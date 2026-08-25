@@ -20,6 +20,10 @@ use std::path::PathBuf;
 /// （不像 tokio 的 kill_on_drop），父进程也不自动 reap；每次 open/xdg-open
 /// 都会留一个 zombie 直到父进程退出。这里起一个 detached 收割线程 `wait()`，
 /// 打开文件/发通知类命令通常毫秒级退出，线程随即结束，常驻成本可忽略。
+/// 例外是 agent 登录拉起浏览器（`codex_acp::open_agent_login_url`）：
+/// firefox/chrome 的首个实例本身就是长驻浏览器进程，收割线程会停驻在
+/// `wait()` 里直到浏览器退出——每个长驻实例占一个 parked 线程，成本仍可
+/// 接受；只是线程创建失败的同步回退会阻塞同样久（见下），仍优于僵尸累积。
 /// 收割线程创建失败（线程数/内存受限的极端场景）时在调用线程同步 `wait()`：
 /// 命令已成功启动，此时慢命令的极端卡顿优于僵尸累积 + 误报打开失败。
 pub fn spawn_detached_and_reap(command: &mut std::process::Command) -> std::io::Result<()> {
@@ -109,10 +113,11 @@ mod tests {
 
     #[test]
     fn spawn_detached_and_reap_reaps_true_command() {
-        // `/usr/bin/true` 毫秒级退出：验证 spawn 成功且收割线程不 panic。
+        // `true`（PATH 查找，通常解析为 /bin/true）毫秒级退出：验证 spawn
+        // 成功且收割线程不 panic。
         // 僵尸是否复排除非查 proc 表不可见，这里至少锁定接口契约（Ok + 不死锁）。
         let mut command = std::process::Command::new("true");
-        spawn_detached_and_reap(&mut command).expect("spawn /usr/bin/true");
+        spawn_detached_and_reap(&mut command).expect("spawn true");
         // 给收割线程一点时间完成 wait，测试本身无阻塞断言。
         std::thread::sleep(std::time::Duration::from_millis(50));
     }

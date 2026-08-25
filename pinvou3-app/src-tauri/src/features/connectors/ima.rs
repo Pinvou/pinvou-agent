@@ -130,8 +130,13 @@ async fn request_ima(
     // 进程级共享客户端：每次调用新建 Client 会重建 TLS 配置/连接池，
     // 对同一 host（ima.qq.com）完全浪费 keep-alive/h2 复用。超时语义移到
     // per-request（reqwest::RequestBuilder::timeout）保持 30s 不变。
-    // 构建失败（TLS/系统配置不可用）保持逐调用错误传播——Client::default()
-    // 在同类失败上同样 panic，不是可用的回退。
+    // OnceLock 口径注意两点：
+    // 1. reqwest 默认启用系统代理检测，代理配置在首次构建时快照、进程生命
+    //    周期内不再重读——会话中途改系统代理需重启应用才生效。
+    // 2. 构建失败（TLS/系统配置不可用）的 Err 同样被进程级缓存，不做逐调用
+    //    重试（同类失败重试无意义，Client::default() 在同类失败上直接 panic，
+    //    不是可用的回退）。请求级错误（连接受拒/超时）不受缓存影响，仍逐调用
+    //    传播。
     static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
         std::sync::OnceLock::new();
     let client = CLIENT

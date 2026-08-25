@@ -42,7 +42,10 @@ const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
 /// **陈旧边界**:`Ok(None)`("已知不存在")会缓存整个进程生命周期;若运行期间用户经"钥匙串
 /// 访问"App 或其它进程新增了该 item,本应用在重启前仍读到 `None`(设置页误显示"未配置")。
 /// 这是进程级内存缓存的固有边界,正常改 keychain 的路径走应用 UI(经 `set`/`delete` 同步
-/// 更新缓存),故影响有限。
+/// 更新缓存),故影响有限。对称的代价:`delete` 成功后不再保留 `None` 占位(动态 key 场景
+/// 防无界累积),删除后的首次 `get` 会重新触达 keyring 后端一次——macOS ad-hoc 下可能
+/// 因此多弹一次授权窗;这是用"每次删除后至多一次后端访问"换缓存正确性,不影响 #175
+/// 的"使用期间不反复弹窗"目标。
 static VALUE_CACHE: OnceLock<Mutex<HashMap<(String, String), Option<String>>>> = OnceLock::new();
 
 fn value_cache() -> &'static Mutex<HashMap<(String, String), Option<String>>> {
