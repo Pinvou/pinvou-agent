@@ -532,6 +532,12 @@ fn visual_cache_insert(
     key: String,
     result: VisualResult,
 ) {
+    // 单条即超字节预算的结果直接不缓存：否则插入后淘汰循环会先把整库
+    // （含无关热条目）清空、最后连它自己也逐出，等于一次大结果抹掉全缓存。
+    // 调用方拿到的响应在插入前已 clone，跳过缓存不影响本次返回。
+    if visual_result_bytes(&result) > MAX_VISUAL_CACHE_BYTES {
+        return;
+    }
     let path = visual_cache_path(&key).to_string();
     state.retain(|k, _| visual_cache_path(k) != path);
     let touched = visual_cache_next_tick();
@@ -661,9 +667,11 @@ fn open_with_libreoffice(path: &std::path::Path) -> Result<(), String> {
         return Err(crate::platform::os::libreoffice_missing_message().into());
     }
 
-    std::process::Command::new(&program)
-        .arg(crate::platform::os::external_application_path(path))
-        .spawn()
+    // spawn 后 drop Child 不回收子进程（Unix 僵尸），统一走点火即忘 +
+    // 收割的平台接口（soffice 首实例可能长驻，收割线程会停驻到其退出）。
+    let mut command = std::process::Command::new(&program);
+    command.arg(crate::platform::os::external_application_path(path));
+    crate::platform::os::spawn_detached_and_reap(&mut command)
         .map_err(|e| format!("LibreOffice 打开失败: {e}"))?;
     Ok(())
 }
@@ -1079,5 +1087,27 @@ mod visual_cache_tests {
             "累计字节应回落到预算内"
         );
         assert!(state.len() >= 1, "至少保留最新一条");
+    }
+
+    #[test]
+    fn over_budget_single_entry_is_skipped_and_keeps_warm_entries() {
+        // 单条结果即超字节预算：不得入库，更不得在淘汰循环里把整库
+        // （含无关热条目）一起抹掉。
+        let mut state = fresh_state();
+        visual_cache_insert(&mut state, "/a/small.pdf|1".into(), result_with(8));
+        visual_cache_insert(
+            &mut state,
+            "/a/huge.pdf|1".into(),
+            result_with(MAX_VISUAL_CACHE_BYTES + 1),
+        );
+        assert_eq!(state.len(), 1);
+        assert!(
+            state.contains_key("/a/small.pdf|1"),
+            "超预算插入不得清掉已有热条目"
+        );
+        assert!(
+            !state.contains_key("/a/huge.pdf|1"),
+            "单条超字节预算的结果不缓存"
+        );
     }
 }
