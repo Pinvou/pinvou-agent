@@ -16,6 +16,12 @@
  * tauri 侧经 sessions.js factory 注入（同 session_nav_race.test.mjs），
  * web 侧整桥 vm 装载（同 session_nav_race_web.test.mjs）驱动公开 API
  * switchToSession/setComposerDraft/deleteSession 走生产路径。
+ *
+ * 复审追加：
+ * - fresh 物化（ensureSession/persona 加卡）的空 buffer 必须标
+ *   loadedFromDisk，否则带草稿切回时落慢路径被 freshBuffer() 顶替丢草稿；
+ * - personaPlaceholderTitles 是会话元数据，容量淘汰保留、真实删除才清理；
+ * - 超过 64K 字符上限的草稿不入暂存侧表，淘汰后重建 buffer 草稿为空。
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -157,7 +163,7 @@ test('tauri 淘汰保护谓词：busy / queued / remote 不回收', () => {
   assert.equal(Object.keys(sessionStates).length, 32);
 });
 
-test('ta purgeSessionBuffer：真实会话删除作废暂存草稿，不回流同 id 重建 buffer', () => {
+test('tauri purgeSessionBuffer：真实会话删除作废暂存草稿，不回流同 id 重建 buffer', () => {
   const { api, state, sessionStates, purgeLog } = loadTauriSessionsFeature();
   for (let i = 1; i <= 33; i++) {
     api.switchActiveTo(`s${i}`, null);
@@ -190,6 +196,91 @@ test('tauri 暂存草稿侧表有界（256）：远超上限的淘汰逐出最�
   assert.equal(api.getBuffer('s1').composerDraft, '', '最早的暂存草稿被侧表上限逐出');
   assert.equal(api.getBuffer('s257').composerDraft, 'draft-257',
     '近期暂存草稿仍在侧表内（侧表非无限，但容量远大于 buffer 上限）');
+});
+
+// ── 复审 BLOCKER：fresh 物化空 buffer 的草稿丢失回归（tauri）─────────
+
+test('tauri fresh 物化空会话带草稿：切走再切回经 switchToSession 不丢草稿', async () => {
+  const { api, state, sessionStates } = loadTauriSessionsFeature({
+    invoke(name, args) {
+      // persona 加卡物化的会话在磁盘上是零消息空会话。
+      if (name === 'load_session') {
+        return Promise.resolve({
+          metadata: { id: args.id, message_count: 0 },
+          messages: [],
+          artifacts: [],
+        });
+      }
+      return Promise.resolve({});
+    },
+  });
+  // persona 加卡物化：switchActiveTo(id, {fresh:true}) 建空 buffer（无 messages）。
+  api.switchActiveTo('persona-1', { fresh: true });
+  state.composerDraft = 'persona-draft'; // 用户输入未发送草稿
+  // 切走：saveWorkingSetTo 把草稿快照进 persona-1 的后台 buffer。
+  api.switchActiveTo('other', null);
+  assert.equal(sessionStates['persona-1'].composerDraft, 'persona-draft', '前置：草稿已快照进 buffer');
+  // 切回：fresh 物化的空 buffer 已标 loadedFromDisk → 快路径命中、草稿保留。
+  // 回归前 buffer 未标，门控拒绝后落慢路径，sessionStates[id] 被
+  // freshBuffer() 顶替且不经侧表暂存，草稿被静默丢弃。
+  assert.equal(await api.switchToSession('persona-1'), true);
+  assert.equal(state.composerDraft, 'persona-draft',
+    'fresh 物化空会话的未发送草稿不得在切回时丢失');
+  assert.equal(sessionStates['persona-1'].loadedFromDisk, true,
+    'fresh 物化的空 buffer 必须标 loadedFromDisk（快路径门控依据）');
+});
+
+// ── 复审：personaPlaceholderTitles 只随真实删除清理 ──────────────────
+
+test('tauri LRU 容量淘汰保留 personaPlaceholderTitles，真实删除才清理', () => {
+  const personaPlaceholderTitles = {};
+  const { api, state } = loadTauriSessionsFeature({ personaPlaceholderTitles });
+  api.switchActiveTo('s1', null);
+  personaPlaceholderTitles.s1 = true; // 加卡占位标题标记
+  state.composerDraft = 'd1';
+  for (let i = 2; i <= 33; i++) {
+    api.switchActiveTo(`s${i}`, null);
+    state.composerDraft = `d${i}`;
+  }
+  assert.equal(personaPlaceholderTitles.s1, true,
+    '容量淘汰不得删除占位标题标记（重水化路径不会恢复它）');
+
+  api.purgeSessionBuffer('s1');
+  assert.equal(personaPlaceholderTitles.s1, undefined,
+    '真实会话删除必须清理占位标题标记');
+});
+
+test('web personaPlaceholderTitles 只在真实删除时清理（源码契约）', () => {
+  const webBridge = read('bridge.js');
+  const bodyOf = signature => {
+    const start = webBridge.indexOf(signature);
+    assert.ok(start > 0, `${signature} 必须存在`);
+    const end = webBridge.indexOf('\n  function ', start + 1);
+    return webBridge.slice(start, end > 0 ? end : undefined);
+  };
+  assert.ok(!/delete personaPlaceholderTitles/.test(bodyOf('function pruneSessionBuffers')),
+    '全会话 LRU 淘汰不得清理 personaPlaceholderTitles');
+  assert.ok(!/delete personaPlaceholderTitles/.test(bodyOf('function pruneScheduledSessionBuffers')),
+    'scheduled LRU 淘汰不得清理 personaPlaceholderTitles');
+  assert.ok(/delete personaPlaceholderTitles\[id\]/.test(bodyOf('function purgeSessionBuffer')),
+    '真实会话删除（purgeSessionBuffer）必须清理 personaPlaceholderTitles');
+});
+
+// ── 复审：64K 草稿字符上限 ────────────────────────────────────────────
+
+test('tauri 超长草稿（>64K）不入暂存侧表：淘汰后重建 buffer 草稿为空', () => {
+  const { api, state, sessionStates } = loadTauriSessionsFeature();
+  api.switchActiveTo('s1', null);
+  // transport 级写入可绕过 Composer 的输入上限，产生超长草稿。
+  state.composerDraft = 'x'.repeat(65537);
+  for (let i = 2; i <= 33; i++) {
+    api.switchActiveTo(`s${i}`, null);
+    state.composerDraft = `d${i}`;
+  }
+  assert.equal(sessionStates.s2.composerDraft, 'd2', '存活 buffer 的小草稿不受影响');
+  // s1 已被淘汰；超长草稿未入侧表，重建 buffer 不回填。
+  assert.equal(api.getBuffer('s1').composerDraft, '',
+    '超过 64K 字符上限的草稿不随淘汰暂存，重建后为空');
 });
 
 // ── P2：scene 缓存键语义（源码契约 + tauri hook reason）────────────
@@ -332,6 +423,20 @@ test('web 34 会话 LRU：淘汰 s1 后重访问，草稿经侧表回填且走�
   assert.equal(loadsAfter, 2, 's1 被淘汰后重访问必须重新水化（重对象确已释放）');
   assert.equal(rt.flat.getComposerDraft(), 'web-unsent-draft',
     '淘汰时的未发送草稿必须经侧表恢复');
+});
+
+test('web 超长草稿（>64K）不入暂存侧表：淘汰重水化后草稿为空', async () => {
+  const rt = bootWebBridge();
+  assert.equal(await rt.flat.switchToSession('s1'), true);
+  // transport 级 setter 可绕过 Composer 的输入上限，产生超长草稿。
+  rt.flat.setComposerDraft('x'.repeat(65537));
+  for (let i = 2; i <= 34; i++) {
+    assert.equal(await rt.flat.switchToSession(`s${i}`), true);
+  }
+  // s1 已被容量淘汰；切回重新水化后超长草稿不得回填。
+  assert.equal(await rt.flat.switchToSession('s1'), true);
+  assert.equal(rt.flat.getComposerDraft(), '',
+    '超过 64K 字符上限的草稿不随淘汰暂存，重水化后为空');
 });
 
 // ── P2（web）：保存失败 + 淘汰 + 重水化 ────────────────────────────

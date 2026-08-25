@@ -52,15 +52,16 @@
     // 全会话缓冲上限：sessionStates 每条持有完整 messages+chatItems(含渲染
     // html)+artifacts（重会话 1-4MB/条），曾只对 scheduled 会话做 64 条 LRU——
     // 普通会话切过即永久驻留。上限取 32：典型用户活跃切换集中在个位数会话，
-    // 96×1-4MB 最坏数百 MB 且 >20 的命中率趋近于零；被淘汰会话重访问走
-    // load_session 磁盘重水化（ensureSessionBufferLoaded/switchTo 已支持），
-    // 代价仅一次重载。
+    // 32×1-4MB 最坏约 32-128MB，超出 32 条的冷门会话命中率趋近于零；被淘汰
+    // 会话重访问走 load_session 磁盘重水化（ensureSessionBufferLoaded/switchTo
+    // 已支持），代价仅一次重载。
     var MAX_SESSION_BUFFERS = 32;
     // composerDraft 等不可重水化的轻量草稿不随 buffer 淘汰丢弃：磁盘 transcript
     // 只含已提交内容，淘汰前先转移到这张侧表，buffer 重建时回填。侧表只存
-    // 短字符串（超长草稿不入表，维持淘汰即丢弃的旧行为——外部 transport 调
-    // 用可绕过 Composer 的输入上限）且条数上限远大于 buffer 上限，重对象仍
-    // 随淘汰照常释放。
+    // 短字符串且条数上限远大于 buffer 上限，重对象仍随淘汰照常释放。超过
+    // MAX_EVICTED_SESSION_DRAFT_CHARS 的超长草稿不入表、随淘汰丢弃——普通
+    // 会话此前从不被淘汰，这是全会话 LRU 新引入的丢弃面（外部 transport
+    // 调用可绕过 Composer 的输入上限产生超长草稿）。
     var MAX_EVICTED_SESSION_DRAFTS = 256;
     var MAX_EVICTED_SESSION_DRAFT_CHARS = 65536;
     var sessionBufferTouchClock = 0;
@@ -150,7 +151,9 @@
       stashEvictedSessionDraft(id, buf);
       delete sessionStates[id];
       delete turnUsageDirty[id];
-      delete personaPlaceholderTitles[id];
+      // personaPlaceholderTitles 是轻量会话元数据(占位标题可被自动标题覆盖
+      // 的标记),重水化路径不会恢复它;容量淘汰必须保留,仅真实会话删除
+      // (purgeSessionBuffer)才清理。
       pruneScheduledRunSessionOwner(id);
       if (onSessionBufferPurged) onSessionBufferPurged(id, "evict");
       overflow -= 1;
@@ -183,7 +186,8 @@
       stashEvictedSessionDraft(id, buf);
       delete sessionStates[id];
       delete turnUsageDirty[id];
-      delete personaPlaceholderTitles[id];
+      // personaPlaceholderTitles 标记随淘汰保留(见 scheduled 淘汰处说明),
+      // 仅 purgeSessionBuffer(真实删除)清理。
       if (onSessionBufferPurged) onSessionBufferPurged(id, "evict");
       overflow -= 1;
     }
@@ -469,7 +473,13 @@
     var buf = sessionStates[id];
     if (!buf || (opts && opts.fresh)) {
       buf = sessionStates[id] = freshBuffer();
-      if (!opts || !opts.fresh) restoreEvictedSessionDraft(id, buf);
+      // fresh 用于本端刚物化的新会话:空 buffer 即权威视图,必须标
+      // loadedFromDisk——否则 switchToSessionInternal 的快路径门控会把它当
+      // 事件重建的残缺 buffer 落到慢路径,freshBuffer() 顶替时不经侧表暂存,
+      // buffer 里的未发送草稿被静默丢弃(web 桥同款门控)。fresh 不回填侧表
+      // 草稿:同 id 复用场景不得复活旧暂存。
+      if (opts && opts.fresh) buf.loadedFromDisk = true;
+      else restoreEvictedSessionDraft(id, buf);
     }
     touchSessionBuffer(id, buf, id.indexOf("sched-") === 0);
     loadWorkingSetFrom(buf);

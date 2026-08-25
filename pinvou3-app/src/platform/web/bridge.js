@@ -773,14 +773,16 @@
   var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
   // 全会话缓冲上限：sessionStates 每条持有完整 messages+chatItems（重会话
   // 1-4MB/条），曾只对 scheduled 会话做 64 条 LRU——普通会话切过即永久驻留。
-  // 上限取 32：典型用户活跃切换集中在个位数，96×1-4MB 最坏数百 MB 且高水位
-  // 命中率趋近于零；被淘汰会话重访问走 load_session 磁盘重水化，代价仅一次重载。
+  // 上限取 32：典型用户活跃切换集中在个位数，32×1-4MB 最坏约 32-128MB，
+  // 超出上限的冷门会话命中率趋近于零；被淘汰会话重访问走 load_session 磁盘
+  // 重水化，代价仅一次重载。
   var MAX_SESSION_BUFFERS = 32;
   // composerDraft 等不可重水化的轻量草稿不随 buffer 淘汰丢弃（web 桥不落盘
   // 草稿，磁盘 transcript 只含已提交内容）：淘汰前先转移到这张侧表，buffer
-  // 重建时回填。侧表只存短字符串（超长草稿不入表，维持淘汰即丢弃的旧行为
-  // ——外部 transport 调用可绕过 Composer 的输入上限）且条数上限远大于
-  // buffer 上限，重对象仍随淘汰照常释放。
+  // 重建时回填。侧表只存短字符串且条数上限远大于 buffer 上限，重对象仍随
+  // 淘汰照常释放。超过 MAX_EVICTED_SESSION_DRAFT_CHARS 的超长草稿不入表、
+  // 随淘汰丢弃——普通会话此前从不被淘汰，这是全会话 LRU 新引入的丢弃面
+  // （外部 transport 调用可绕过 Composer 的输入上限产生超长草稿）。
   var MAX_EVICTED_SESSION_DRAFTS = 256;
   var MAX_EVICTED_SESSION_DRAFT_CHARS = 65536;
   var evictedSessionDrafts = Object.create(null);
@@ -966,7 +968,9 @@
       stashEvictedSessionDraft(id, buf);
       delete sessionStates[id];
       delete turnUsageDirty[id];
-      delete personaPlaceholderTitles[id];
+      // personaPlaceholderTitles 是轻量会话元数据（占位标题可被自动标题覆盖
+      // 的标记），重水化路径不会恢复它；容量淘汰必须保留，仅真实会话删除
+      // （purgeSessionBuffer）才清理。
       // scene 事件的 localStorage 缓存是 sidecar 保存失败/离线时的唯一恢复
       // 副本（savePinvouSceneEventsForSession 的后端失败被有意吞掉，
       // syncPinvouSceneEventsForSession 靠它兜底重放），容量淘汰不得删键；
@@ -1003,7 +1007,8 @@
       stashEvictedSessionDraft(id, buf);
       delete sessionStates[id];
       delete turnUsageDirty[id];
-      delete personaPlaceholderTitles[id];
+      // personaPlaceholderTitles 标记随淘汰保留（见 scheduled 淘汰处说明），
+      // 仅 purgeSessionBuffer（真实删除）清理。
       // scene 缓存键在容量淘汰时保留（唯一离线恢复副本），见上方 scheduled
       // 淘汰处的说明；仅 purgeSessionBuffer（真实会话删除）清理。
       overflow -= 1;
@@ -4012,10 +4017,11 @@
   function rerenderFromMessages(opts) {
     state.chatItems = [];
     itemIdSeq = 0;
-    // 历史 tool_use 的元数据(含 write/patch 的大 args)只服务本次重放期间的
-    // tool_result 回填;实时事件路径插删均衡,但历史写入从不清理,残留会随
-    // 工作集存进 buffer 长期驻留。durable 重放开始即清空(非 live 注水时
-    // 实时条目不存在);重放会为 messages 内的历史 tool_use 重建所需条目。
+    // 重放会把每条历史 tool_use 的元数据(含 write/patch 的大 args)重新加入
+    // toolMeta 供 tool_result 回填,回填后并不删除——残留随工作集存进 buffer
+    // 驻留,内存由 32 条全会话 LRU 上限兜底。durable 重放开始即清空(非
+    // live 注水时),收回的只是中断回合留下的孤儿条目(实时事件路径本身
+    // 插删均衡);随后重放为 messages 内的历史 tool_use 重建所需条目。
     if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     var pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];

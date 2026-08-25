@@ -1730,10 +1730,11 @@
   function rerenderFromMessages(opts) {
     state.chatItems = [];
     itemIdSeq = 0;
-    // 历史 tool_use 的元数据(含 write/patch 的大 args)只服务本次重放期间的
-    // tool_result 回填;实时事件路径插删均衡,但历史写入从不清理,残留会随
-    // 工作集存进 buffer 长期驻留。durable 重放开始即清空(非 live 注水时
-    // 实时条目不存在);重放会为 messages 内的历史 tool_use 重建所需条目。
+    // 重放会把每条历史 tool_use 的元数据(含 write/patch 的大 args)重新加入
+    // toolMeta 供 tool_result 回填,回填后并不删除——残留随工作集存进 buffer
+    // 驻留,内存由 32 条全会话 LRU 上限兜底。durable 重放开始即清空(非
+    // live 注水时),收回的只是中断回合留下的孤儿条目(实时事件路径本身
+    // 插删均衡);随后重放为 messages 内的历史 tool_use 重建所需条目。
     if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     var pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
