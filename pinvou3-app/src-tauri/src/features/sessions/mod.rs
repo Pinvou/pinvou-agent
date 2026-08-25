@@ -182,10 +182,10 @@ pub type ExecutionRootResolver = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sy
 /// "品悟原生 code 会话"，不会误伤 ACP 会话自己的权限模式。
 pub type CodeSessionPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// 会话删除钩子：保留策略/定时清理在 sessions feature 深层直接删除会话时
-/// 通知进程级状态持有者（timing/pending_user_input 等）同步清键。与
-/// `ExecutionRootResolver` 同样的注入理由——`sessions` 不能反向依赖
-/// `assistant`（架构守卫的 feature 依赖方向），由 app 组合根注册。
+/// 会话删除钩子：[`SessionStore::delete`] 及保留策略/定时清理等 sessions
+/// feature 深层删除路径触发，通知进程级状态持有者（timing/pending_user_input
+/// 等）同步清键。与 `ExecutionRootResolver` 同样的注入理由——`sessions` 不能
+/// 反向依赖 `assistant`（架构守卫的 feature 依赖方向），由 app 组合根注册。
 pub type SessionPurgedHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// 一个会话的两个根:

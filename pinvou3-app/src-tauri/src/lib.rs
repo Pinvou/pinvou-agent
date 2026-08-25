@@ -451,16 +451,28 @@ pub fn run() {
                         let agents = code_session_agents.clone();
                         move |session_id: &str| agents.is_code_session(session_id)
                     }));
-                    // 保留策略/定时清理在 sessions feature 深层直接删会话（无 app
-                    // handle）：进程级 turn 状态 map 的清键经删除钩子在此接线，
-                    // 与 delete_session 命令的清理同口径（依赖倒置，见
+                    // SessionStore::delete 与保留策略/定时清理等深层删除路径（无
+                    // app handle）统一经删除钩子清进程级 per-session 键，与
+                    // delete_session 命令的清理同口径（依赖倒置，见
                     // SessionPurgedHook——sessions 不能反向依赖 assistant）。
+                    // MonitorState 在 setup 后段才 manage，钩子在删除时才执行，
+                    // try_state 读时已在位；未 manage（极早期删除）则跳过该项。
+                    let app_for_purge_hook = handle.clone();
                     store_for_engine
-                        .register_session_purged_hook(std::sync::Arc::new(|session_id: &str| {
+                        .register_session_purged_hook(std::sync::Arc::new(move |session_id: &str| {
                             crate::features::assistant::timing::clear_session(session_id);
                             crate::features::assistant::pending_user_input::clear_session(
                                 session_id,
                             );
+                            crate::features::memory::discard_turn_capture(session_id);
+                            // 自测指标按 session 键累积（warmed_sessions 在每轮
+                            // TurnComplete 插入、从不回收），随删除一并清键。
+                            if let Some(metrics) = app_for_purge_hook
+                                .try_state::<crate::features::monitor::MonitorState>()
+                                .map(|state| state.self_metrics())
+                            {
+                                metrics.drop_session(session_id);
+                            }
                         }));
                     // 远程端正式支持代码会话之前，先过滤原生代码会话事件（与 Engine
                     // bridge 共用同一份 SessionAgentStore 判定）。

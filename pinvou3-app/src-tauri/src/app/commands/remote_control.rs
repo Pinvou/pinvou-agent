@@ -666,10 +666,9 @@ pub async fn web_access_create_session_and_chat(
             .delete(&session_id)
             .map_err(|rollback_error| format!("rollback Session {session_id}: {rollback_error:#}"));
         pool.forget_session(&session_id);
-        // chat 已跑过（可能 start_turn 过）：与 delete_session 同口径清理
-        // timing 队列与 pending user input，避免回滚会话的残留键驻留。
-        crate::features::assistant::timing::clear_session(&session_id);
-        crate::features::assistant::pending_user_input::clear_session(&session_id);
+        // chat 已跑过（可能 start_turn 过）：timing 队列/pending user input 等
+        // 进程级残留键由 store.delete 触发的 SessionPurgedHook 统一清理，
+        // 与 delete_session 命令同口径。
         return match rollback {
             Ok(()) => Err(error),
             Err(rollback_error) => Err(format!("{error}; {rollback_error}")),

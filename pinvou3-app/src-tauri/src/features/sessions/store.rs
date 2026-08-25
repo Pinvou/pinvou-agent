@@ -337,6 +337,10 @@ impl SessionStore {
         if removed_hidden {
             self.save_hidden_sessions();
         }
+        // 钩子在所有 store 侧 map 锁释放后触发（与 retention.rs 保留路径
+        // 同口径）：回调进程级清理时持锁会引入锁序风险。钩子方只做幂等的
+        // keyed removal；未注册（测试/启动早期）时删除照常完成。
+        self.notify_session_purged(id);
         Ok(())
     }
 
@@ -364,8 +368,9 @@ impl SessionStore {
         self.session_purged_hooks.write().push(hook);
     }
 
-    /// 会话从 store 删除（含保留策略/定时清理等无 app handle 的深层路径）后
-    /// 通知全部注册方。失败静默（钩子方自负责幂等），不得阻塞删除主流程。
+    /// 会话从 store 删除（[`SessionStore::delete`] 及保留策略/定时清理等无
+    /// app handle 的深层路径）后通知全部注册方。失败静默（钩子方自负责幂等），
+    /// 不得阻塞删除主流程；调用方必须在 store 侧锁全部释放后触发。
     pub(crate) fn notify_session_purged(&self, id: &str) {
         for hook in self.session_purged_hooks.read().iter() {
             hook(id);
