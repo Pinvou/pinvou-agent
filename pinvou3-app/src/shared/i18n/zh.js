@@ -787,7 +787,7 @@ dictZh.uiArtifacts = {
 
 dictZh.uiCodexView = { ended:'已结束', stepsFailed:'执行步骤包含失败', processing:'正在处理', codexTool:'Codex 工具' };
 
-Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`, deviceUploadTooLarge:name=>`${name} 超过 20 MB 附件上限`, deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试` });
+Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`, deviceUploadTooLarge:name=>`${name} 超过 20 MB 附件上限`, deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试`, deviceUploadDigestInvalid:'附件完整性校验值无效，请重试', deviceUploadIntegrityMismatch:'附件内容在传输中损坏，请重新上传' });
 
 
 // uiToolStore 词条补充（ToolStoreView / oauth-marketplace-logic）：命名空间已在 dict 主体定义，这里增量合并。

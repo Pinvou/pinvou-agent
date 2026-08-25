@@ -35,6 +35,7 @@ try {
     appendAcpEvent,
     buildElicitationContent,
     commandExecutionDetails,
+    createAcpEventSeqTracker,
     mergeAcpTimelineSnapshot,
     projectAcpTimeline,
     resolveAcpSessionControls,
@@ -241,6 +242,28 @@ try {
 
   assert.equal(appendAcpEvent(events, events[0]).length, events.length, 'duplicate seq must be ignored');
   assert.equal(appendAcpEvent(events.slice(0, 2), events[2]).length, 3);
+
+  // 看门狗跳过停滞前序后,Web 直播流出现 envelope-seq 空洞:跟踪器必须报告
+  // 'gap' 让视图层重取权威时间线;重连回放(旧 seq 重复投递)与会话隔离不得误报。
+  const seqTracker = createAcpEventSeqTracker();
+  assert.equal(seqTracker.note('session-1', 0), 'ignored', 'non-positive seq carries no ordering signal');
+  assert.equal(seqTracker.note('', 3), 'ignored', 'a missing session id carries no ordering signal');
+  assert.equal(seqTracker.note('session-1', 1), 'ok', 'first observed envelope sets the baseline');
+  assert.equal(seqTracker.note('session-1', 2), 'ok', 'in-order successor is not a gap');
+  assert.equal(
+    seqTracker.note('session-1', 5),
+    'gap',
+    'a live event after a skipped predecessor (seq 3/4 never delivered) must be flagged',
+  );
+  assert.equal(seqTracker.note('session-1', 6), 'ok', 'stream stays continuous after the gap');
+  assert.equal(seqTracker.note('session-1', 6), 'duplicate', 'reconnect replay must not retrigger a resync');
+  assert.equal(seqTracker.note('session-1', 4), 'duplicate', 'late replayed predecessors stay ignored');
+  assert.equal(seqTracker.note('session-2', 9), 'ok', 'other sessions track an independent baseline');
+  seqTracker.rebase('session-2', 12);
+  assert.equal(seqTracker.note('session-2', 13), 'ok', 'snapshot rebase advances the baseline without a gap');
+  seqTracker.rebase('session-1', 2);
+  assert.equal(seqTracker.note('session-1', 7), 'ok', 'rebase never regresses a live-advanced baseline');
+
   const liveAfterSnapshot = event(14, 'agent_message_chunk', {
     update: { content: { type: 'text', text: '重连期间到达' } },
   });

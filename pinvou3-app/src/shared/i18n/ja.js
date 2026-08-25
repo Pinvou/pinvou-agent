@@ -762,7 +762,7 @@ dictJa.uiArtifacts = {
 
 dictJa.uiCodexView = { ended:'終了', stepsFailed:'失敗を含む実行手順', processing:'処理中', codexTool:'Codex ツール' };
 
-Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`, deviceUploadTooLarge:name=>`${name} は添付ファイル上限の 20 MB を超えています`, deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。` });
+Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`, deviceUploadTooLarge:name=>`${name} は添付ファイル上限の 20 MB を超えています`, deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。`, deviceUploadDigestInvalid:'添付ファイルの整合性ダイジェストが無効です。もう一度お試しください', deviceUploadIntegrityMismatch:'添付ファイルの内容が転送中に破損しました。再度アップロードしてください' });
 
 Object.assign(dictJa.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },

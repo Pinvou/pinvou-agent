@@ -382,6 +382,31 @@ export function appendAcpEvent(events, incoming) {
   return [...(events || []), incoming].sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
 }
 
+// 服务端 OrderedWebDelivery 看门狗在停滞前序超时后跳过空洞,Web 直播流因此
+// 可能出现 envelope-seq 跳号(桌面原生链路在同一有序单元内落盘+广播,无损
+// 有序,不受影响)。该跟踪器按会话记录直播已见的最大 seq:发现跳号即报告
+// 'gap',由视图层防抖触发权威时间线重取,把缺失的 permission/终态事件补回;
+// 重连回放与重复投递按 'duplicate' 忽略。
+export function createAcpEventSeqTracker() {
+  const lastSeqBySession = new Map();
+  return {
+    note(sessionId, seq) {
+      const value = Number(seq) || 0;
+      if (!sessionId || value <= 0) return 'ignored';
+      const last = lastSeqBySession.get(sessionId) || 0;
+      if (value <= last) return 'duplicate';
+      lastSeqBySession.set(sessionId, value);
+      return last > 0 && value > last + 1 ? 'gap' : 'ok';
+    },
+    // 快照合并后以已知最大 seq 为基线;直播已推进到的更高 seq 不回退。
+    rebase(sessionId, seq) {
+      const value = Number(seq) || 0;
+      if (!sessionId || value <= 0) return;
+      if (value > (lastSeqBySession.get(sessionId) || 0)) lastSeqBySession.set(sessionId, value);
+    },
+  };
+}
+
 export function mergeAcpTimelineSnapshot(snapshot, current, sessionId) {
   return (current || [])
     .filter(event => event?.sessionId === sessionId)

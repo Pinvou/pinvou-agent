@@ -6,6 +6,8 @@ const CONTROLLED_CLIENT_ERRORS = new Set([
   'web_acp_command_unavailable',
   'web_acp_session_required',
   'web_acp_timeline_response_invalid',
+  'web_attachment_digest_invalid',
+  'web_attachment_integrity_mismatch',
   'web_workspace_authorization_invalid',
   'web_workspace_authorization_required',
   'web_workspace_picker_unavailable',

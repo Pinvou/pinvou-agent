@@ -759,7 +759,7 @@ dictEn.uiArtifacts = {
 
 dictEn.uiCodexView = { ended:'Finished', stepsFailed:'Steps include failures', processing:'Processing', codexTool:'Codex tool' };
 
-Object.assign(dictEn.uiAttachments, { uploading:pct=>`Uploading ${pct}%`, deviceUploadTooLarge:name=>`${name} exceeds the 20 MB attachment limit`, deviceUploadEmpty:name=>`${name} is empty and cannot be attached`, deviceUploadUnavailable:'Uploading from this device is currently unavailable', deviceUploadInvalid:name=>`${name} is not a valid attachment`, deviceUploadFailed:name=>`${name} could not be uploaded. Try again.` });
+Object.assign(dictEn.uiAttachments, { uploading:pct=>`Uploading ${pct}%`, deviceUploadTooLarge:name=>`${name} exceeds the 20 MB attachment limit`, deviceUploadEmpty:name=>`${name} is empty and cannot be attached`, deviceUploadUnavailable:'Uploading from this device is currently unavailable', deviceUploadInvalid:name=>`${name} is not a valid attachment`, deviceUploadFailed:name=>`${name} could not be uploaded. Try again.`, deviceUploadDigestInvalid:'The attachment integrity digest was invalid. Try again', deviceUploadIntegrityMismatch:'The attachment content was corrupted in transit. Upload it again' });
 
 Object.assign(dictEn.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },

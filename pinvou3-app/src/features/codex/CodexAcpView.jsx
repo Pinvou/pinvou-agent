@@ -39,6 +39,7 @@ import { ComposerPopover, useOutsidePointerClose } from '../../components/Compos
 import {
   appendAcpEvent,
   buildElicitationContent,
+  createAcpEventSeqTracker,
   mergeAcpTimelineSnapshot,
   updateAcpAttachmentDraft,
   commandExecutionDetails,
@@ -1095,6 +1096,9 @@ export function CodexAcpView({
   const cancelledAttachmentIdsRef = useRef(new Set());
   const skipNextActiveLoadRef = useRef(null);
   const sessionLoadRequestRef = useRef(0);
+  const acpEventSeqTrackerRef = useRef(null);
+  if (!acpEventSeqTrackerRef.current) acpEventSeqTrackerRef.current = createAcpEventSeqTracker();
+  const acpGapResyncTimerRef = useRef(null);
   const preserveDraftWorkspaceRef = useRef(false);
   const draftEpochRef = useRef(draftEpoch);
   const activeIdRef = useRef(activeId);
@@ -1863,6 +1867,7 @@ export function CodexAcpView({
       ]);
       if (sessionLoadRequestRef.current !== requestId) return null;
       setEvents(current => mergeAcpTimelineSnapshot(timeline, current, id));
+      rebaseAcpEventSeqTracker(id, timeline);
       setPending(permissions || []);
       setPendingElicitations(elicitations || []);
       const runtime = await refreshStatus(activeAgentIdRef.current);
@@ -1880,6 +1885,42 @@ export function CodexAcpView({
     } finally {
       if (sessionLoadRequestRef.current === requestId) setSessionLoading(false);
     }
+  }
+
+  // 快照合并后把直播 seq 基线推进到快照最大 seq(只升不降),避免重取后
+  // 把已按序到达的直播事件误判为断档。
+  function rebaseAcpEventSeqTracker(sessionId, timeline) {
+    const maxSeq = (timeline || []).reduce((max, event) => Math.max(max, Number(event?.seq) || 0), 0);
+    acpEventSeqTrackerRef.current.rebase(sessionId, maxSeq);
+  }
+
+  // Web 直播流 envelope-seq 断档自愈:看门狗跳过停滞前序后,缺失的
+  // permission/终态信封不会在连接内补发。检测到跳号后防抖重取权威时间线与
+  // 挂起状态并合并(merge 对乱序/重复到达幂等),不动加载 spinner、不取消
+  // 在途的会话切换加载。
+  async function resyncAcpSessionAfterGap(sessionId) {
+    const [timeline, permissions, elicitations] = await Promise.all([
+      loadAcpTimeline(sessionId),
+      loadAcpPendingPermissions(sessionId),
+      loadAcpPendingElicitations(sessionId),
+    ]);
+    if (activeIdRef.current !== sessionId) return;
+    setEvents(current => mergeAcpTimelineSnapshot(timeline, current, sessionId));
+    rebaseAcpEventSeqTracker(sessionId, timeline);
+    setPending(permissions || []);
+    setPendingElicitations(elicitations || []);
+  }
+
+  function scheduleAcpGapResync(sessionId) {
+    if (acpGapResyncTimerRef.current) clearTimeout(acpGapResyncTimerRef.current);
+    acpGapResyncTimerRef.current = setTimeout(() => {
+      acpGapResyncTimerRef.current = null;
+      if (activeIdRef.current !== sessionId) return;
+      console.warn(`[acp] live event sequence gap detected for ${sessionId}; resyncing from the authoritative timeline`);
+      resyncAcpSessionAfterGap(sessionId).catch(error => {
+        console.warn('[acp] timeline resync after event sequence gap failed', error);
+      });
+    }, 800);
   }
 
   async function createSession({ shouldActivate = () => true, prepareSession = null } = {}) {
@@ -2094,6 +2135,9 @@ export function CodexAcpView({
         )),
         onError: err => {
           if (err?.code === 'device_upload_cancelled') return;
+          // 桌面端的完整性失败经 Relay 以稳定 wire code 到达 message
+          // (transfer.rs),映射为当前语言文案而不是透传原始错误。
+          const uploadErrorText = String(err?.message || '');
           const displayError = err?.code === 'device_upload_too_large'
             ? t.uiAttachments.deviceUploadTooLarge(file.name)
             : err?.code === 'device_upload_empty'
@@ -2102,7 +2146,11 @@ export function CodexAcpView({
                 ? t.uiAttachments.deviceUploadUnavailable
                 : err?.code === 'device_upload_invalid'
                   ? t.uiAttachments.deviceUploadInvalid(file.name)
-                  : t.uiAttachments.deviceUploadFailed(file.name);
+                  : uploadErrorText === 'web_attachment_digest_invalid'
+                    ? t.uiAttachments.deviceUploadDigestInvalid
+                    : uploadErrorText === 'web_attachment_integrity_mismatch'
+                      ? t.uiAttachments.deviceUploadIntegrityMismatch
+                      : t.uiAttachments.deviceUploadFailed(file.name);
           setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
             ...attachment, status: 'error', error: displayError,
           })));
@@ -2230,6 +2278,12 @@ export function CodexAcpView({
     listenTauri('acp:event', message => {
       if (disposed) return;
       const incoming = message.payload;
+      // 直播 seq 连续性检查先于合并:看门狗跳过停滞前序后,后续事件照常到达,
+      // 仅靠 appendAcpEvent 会静默留下空洞;检测到跳号则防抖重取权威时间线自愈。
+      if (incoming && acpEventSeqTrackerRef.current.note(incoming.sessionId, incoming.seq) === 'gap'
+          && incoming.sessionId === activeIdRef.current) {
+        scheduleAcpGapResync(incoming.sessionId);
+      }
       setEvents(current => incoming && incoming.sessionId === activeIdRef.current ? appendAcpEvent(current, incoming) : current);
       if (incoming && incoming.sessionId === activeIdRef.current) {
         const type = incoming.event && incoming.event.type;
@@ -2268,6 +2322,10 @@ export function CodexAcpView({
     });
     return () => {
       disposed = true;
+      if (acpGapResyncTimerRef.current) {
+        clearTimeout(acpGapResyncTimerRef.current);
+        acpGapResyncTimerRef.current = null;
+      }
       if (unlisten) unlisten();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ACP event subscription mounts once; depending on refresh functions would repeatedly unbind/resubscribe

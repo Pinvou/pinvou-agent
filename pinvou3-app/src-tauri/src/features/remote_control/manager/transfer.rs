@@ -92,6 +92,12 @@ pub(super) fn finish_web_attachment_reservation_inner(
     Ok(())
 }
 
+/// Stable wire codes for the upload integrity failures. The Web clients map
+/// them to localized zh/en/ja copy (pinned by web_access_contract.test.mjs);
+/// they must stay machine-stable, not translated.
+pub(crate) const WEB_ATTACHMENT_DIGEST_INVALID: &str = "web_attachment_digest_invalid";
+pub(crate) const WEB_ATTACHMENT_INTEGRITY_MISMATCH: &str = "web_attachment_integrity_mismatch";
+
 pub(super) fn append_web_attachment_upload_chunk(
     inner: &mut Inner,
     upload_id: &str,
@@ -188,16 +194,19 @@ pub(super) fn append_web_attachment_upload_chunk(
     if let Some(expected) = sha256 {
         // In-memory assembled bytes (bounded by MAX_FILE_BYTES), hashed under
         // the manager lock at commit only; the desktop staging stack reuses
-        // the same digest-format rule via platform::encoding.
+        // the same digest-format rule via platform::encoding. Both failures
+        // return stable wire codes (pinned by web_access_contract.test.mjs)
+        // that the Web clients map to localized zh/en/ja copy; raw,
+        // single-language text must never cross the Relay.
         let Some(expected) = crate::platform::encoding::normalize_sha256_hex(expected) else {
-            return Err("远程控制附件完整性校验值无效".into());
+            return Err(WEB_ATTACHMENT_DIGEST_INVALID.to_string());
         };
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(&upload.data);
         let actual = crate::platform::encoding::hex_lower(&hasher.finalize());
         if actual != expected {
-            return Err("远程控制附件完整性校验失败，上传内容在传输中损坏".into());
+            return Err(WEB_ATTACHMENT_INTEGRITY_MISMATCH.to_string());
         }
     } else if commit {
         // None can mean an older WebUI (acceptable), but also a modern one on

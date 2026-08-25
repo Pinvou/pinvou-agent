@@ -710,10 +710,10 @@ impl OrderedWebDelivery {
             if remaining.is_zero() {
                 // A producer that dies between sequence allocation and
                 // delivery must not block the session pipeline forever.
-                // The skipped envelope leaves a seq hole in the live stream
-                // (the browser has no envelope-seq gap detection); it is
-                // healed only by the next reconnect or session reopen,
-                // which refetches the durable timeline.
+                // The skipped envelope leaves a seq hole in the live stream;
+                // the Web client's envelope-seq gap detection heals it with a
+                // debounced authoritative timeline resync, and the next
+                // reconnect or session reopen refetches it as well.
                 eprintln!(
                     "[acp] Web event delivery for sequence {seq} timed out waiting for sequence {}; skipping the gap",
                     last_seq.saturating_add(1)

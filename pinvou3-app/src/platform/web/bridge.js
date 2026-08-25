@@ -395,6 +395,8 @@
       deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 20 MB attachment limit`,
       deviceUploadEmpty: name => `⚠️ ${name} is empty and cannot be attached`,
       deviceUploadFailed: "⚠️ Upload failed: ",
+      deviceUploadDigestInvalid: "the attachment integrity digest was invalid. Try again.",
+      deviceUploadIntegrityMismatch: "the attachment content was corrupted in transit. Upload it again.",
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
@@ -504,6 +506,8 @@
       deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 20 MB を超えています`,
       deviceUploadEmpty: name => `⚠️ ${name} は空のため添付できません`,
       deviceUploadFailed: "⚠️ アップロードに失敗: ",
+      deviceUploadDigestInvalid: "添付ファイルの整合性ダイジェストが無効です。もう一度お試しください。",
+      deviceUploadIntegrityMismatch: "添付ファイルの内容が転送中に破損しました。再度アップロードしてください。",
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
@@ -613,6 +617,8 @@
       deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 20 MB 上限`,
       deviceUploadEmpty: name => `⚠️ ${name} 是空文件，无法添加`,
       deviceUploadFailed: "⚠️ 上传失败: ",
+      deviceUploadDigestInvalid: "附件完整性校验值无效，请重试",
+      deviceUploadIntegrityMismatch: "附件内容在传输中损坏，请重新上传",
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
@@ -8247,11 +8253,18 @@
     } catch (e) {
       if (!e || e.code !== "device_upload_cancelled") {
         att.status = "error";
+        // 桌面端完整性失败回稳定 wire code(transfer.rs),按当前语言映射;
+        // 其余错误沿用原文(既有行为,翻译收敛另行跟进)。
+        const rawUploadError = String(e && e.message ? e.message : e);
         att.error = e && e.code === "device_upload_empty"
           ? bt("deviceUploadEmpty")(file.name)
           : e && e.code === "device_upload_too_large"
             ? bt("deviceUploadTooLarge")(file.name)
-            : String(e && e.message ? e.message : e);
+            : rawUploadError === "web_attachment_digest_invalid"
+              ? bt("deviceUploadDigestInvalid")
+              : rawUploadError === "web_attachment_integrity_mismatch"
+                ? bt("deviceUploadIntegrityMismatch")
+                : rawUploadError;
         addSystemItem(bt("deviceUploadFailed") + att.error);
       }
     }

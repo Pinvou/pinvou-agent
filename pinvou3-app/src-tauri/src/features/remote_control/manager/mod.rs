@@ -3059,7 +3059,11 @@ mod tests {
             Some(&"b".repeat(64)),
         )
         .expect_err("digest mismatch must abort the commit");
-        assert!(error.contains("完整性校验失败"));
+        assert_eq!(
+            error,
+            transfer::WEB_ATTACHMENT_INTEGRITY_MISMATCH,
+            "the mismatch failure must surface as a stable wire code for localized client copy"
+        );
 
         // Malformed digests are rejected before hashing and keep the upload
         // resumable (the entry is not consumed).
@@ -3085,7 +3089,11 @@ mod tests {
             Some("not-hex"),
         )
         .expect_err("malformed digest must be rejected");
-        assert!(error.contains("校验值无效"));
+        assert_eq!(
+            error,
+            transfer::WEB_ATTACHMENT_DIGEST_INVALID,
+            "the malformed-digest failure must surface as a stable wire code for localized client copy"
+        );
     }
 
     #[test]
