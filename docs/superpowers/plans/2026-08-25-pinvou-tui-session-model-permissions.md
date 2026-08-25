@@ -64,15 +64,15 @@ Expected: PASS。
 - Test: `pinvou-cli/crates/agent-adapter-codex/tests/adapter_contract.rs`
 - Modify: `pinvou-cli/crates/agent-adapter-codex/tests/schema/used-methods.json`
 
-- [ ] 写黑盒失败测试，脚本化 app-server 响应 `thread/list`、`thread/read`、`model/list`，断言 Adapter 返回统一描述且不泄漏未知原始字段。
-- [ ] `create`、`resume` 与 `send` 从 `RuntimeOperation.options` 读取经过验证的 `model_id` 和 `approval_profile`，统一映射：
+- [x] 写黑盒测试，脚本化 app-server 响应 `thread/list`、`thread/read`、`model/list`，断言 Adapter 返回统一描述且不泄漏未知原始字段。
+- [x] `create`、`resume` 与 `send` 从 `RuntimeOperation.options` 读取经过验证的 `model_id` 和 `approval_profile`，统一映射：
   - `request` → `approvalPolicy=on-request` + `workspaceWrite`；
   - `assisted` → `approvalPolicy=on-failure`（Runtime 不支持时返回 partial，而非静默提升）；
   - `full_access` → `approvalPolicy=never` + `danger-full-access`，仅接受显式确认标记。
-- [ ] `list_sessions` 只列当前 cwd 对应 Workspace 的 Codex threads；`read_session` 规范化用户、助手、工具和终态，不执行任何工具。
-- [ ] `list_models` 支持分页直到 `nextCursor` 为空，返回稳定 ID、显示名、默认/可用标志。
-- [ ] 将探测得到的模型与权限能力写入 capability evidence；未知 Codex 版本返回 partial/unsupported。
-- [ ] 运行 Adapter 合约测试：
+- [x] `list_sessions` 只列当前 cwd 对应 Workspace 的 Codex threads；`read_session` 规范化允许字段，不执行任何工具。
+- [x] `list_models` 支持分页直到 `nextCursor` 为空，返回稳定 ID、显示名、默认/可用标志。
+- [x] 将探测得到的模型与权限能力写入 capability evidence；未知 Codex 版本返回 unsupported，三档权限如实标为 partial。
+- [x] 运行 Adapter 合约测试：
 
 ```powershell
 D:\RustNdk\.rustup\toolchains\1.97.1-x86_64-pc-windows-msvc\bin\cargo.exe test --manifest-path pinvou-cli/Cargo.toml --offline -p pinvou-agent-adapter-codex --test adapter_contract

@@ -123,6 +123,26 @@ fn method_not_found_downgrades_the_negotiated_snapshot() {
 }
 
 #[test]
+fn method_not_found_downgrades_new_runtime_discovery_capabilities() {
+    let mut state = NegotiatedCapabilities::default();
+    state.complete(RuntimeCapabilities {
+        session_listing: true,
+        model_catalog: true,
+        permission_profiles: true,
+        ..RuntimeCapabilities::default()
+    });
+
+    state.method_not_found("list_sessions").unwrap();
+    state.method_not_found("list_models").unwrap();
+    state.method_not_found("inspect_permissions").unwrap();
+
+    let snapshot = state.snapshot().unwrap();
+    assert!(!snapshot.session_listing);
+    assert!(!snapshot.model_catalog);
+    assert!(!snapshot.permission_profiles);
+}
+
+#[test]
 fn new_capability_evidence_is_backward_compatible() {
     let capabilities: RuntimeCapabilities = serde_json::from_value(serde_json::json!({
         "interactive_chat": true

@@ -15,8 +15,10 @@ use std::{
 
 use pinvou_protocol::RuntimeEventEnvelope;
 use pinvou_runtime_api::{
-    AdapterError, AgentRuntimeAdapter, AuthStatus, NegotiatedCapabilities, RuntimeCapabilities,
-    RuntimeCommand, RuntimeEventSubscription, RuntimeOperation, RuntimeSession,
+    AdapterError, AgentRuntimeAdapter, ApprovalProfile, AuthStatus, ControlStrength,
+    LogicalSessionId, ModelCatalog, ModelDescriptor, ModelId, NegotiatedCapabilities,
+    PermissionCapability, RuntimeCapabilities, RuntimeCommand, RuntimeEventSubscription,
+    RuntimeOperation, RuntimeSession, SessionDescriptor, SessionSnapshot, SessionStatus,
 };
 use serde_json::{Value, json};
 
@@ -26,6 +28,97 @@ use crate::{
 };
 
 static ATTACHMENT_NONCE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug)]
+struct CodexPolicy {
+    approval_policy: &'static str,
+    sandbox: &'static str,
+}
+
+#[derive(Clone, Debug)]
+struct CodexSessionSettings {
+    model: Option<String>,
+    policy: CodexPolicy,
+}
+
+impl Default for CodexSessionSettings {
+    fn default() -> Self {
+        Self {
+            model: None,
+            policy: codex_policy_for_profile(ApprovalProfile::Request, false)
+                .expect("request profile is always valid"),
+        }
+    }
+}
+
+fn codex_policy_for_profile(
+    profile: ApprovalProfile,
+    full_access_confirmed: bool,
+) -> Result<CodexPolicy, AdapterError> {
+    match profile {
+        ApprovalProfile::Request => Ok(CodexPolicy {
+            approval_policy: "on-request",
+            sandbox: "workspace-write",
+        }),
+        ApprovalProfile::Assisted => Ok(CodexPolicy {
+            approval_policy: "on-failure",
+            sandbox: "workspace-write",
+        }),
+        ApprovalProfile::FullAccess if full_access_confirmed => Ok(CodexPolicy {
+            approval_policy: "never",
+            sandbox: "danger-full-access",
+        }),
+        ApprovalProfile::FullAccess => Err(AdapterError::InvalidRequest {
+            details: "full access requires explicit confirmation".into(),
+        }),
+    }
+}
+
+fn parse_session_settings(
+    options: &Value,
+    default_model: Option<&str>,
+) -> Result<CodexSessionSettings, AdapterError> {
+    let profile = options
+        .get("approval_profile")
+        .cloned()
+        .map(serde_json::from_value::<ApprovalProfile>)
+        .transpose()
+        .map_err(|_| AdapterError::InvalidRequest {
+            details: "approval profile is invalid".into(),
+        })?
+        .unwrap_or(ApprovalProfile::Request);
+    let model = options
+        .get("model_id")
+        .or_else(|| options.get("model"))
+        .and_then(Value::as_str)
+        .or(default_model)
+        .map(str::to_owned);
+    if model
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(AdapterError::InvalidRequest {
+            details: "model is empty".into(),
+        });
+    }
+    Ok(CodexSessionSettings {
+        model,
+        policy: codex_policy_for_profile(
+            profile,
+            options
+                .get("full_access_confirmed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        )?,
+    })
+}
+
+fn sandbox_policy(sandbox: &str) -> Value {
+    match sandbox {
+        "danger-full-access" => json!({"type":"dangerFullAccess"}),
+        _ => json!({"type":"workspaceWrite","networkAccess":false}),
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ExecutableIdentity {
@@ -172,6 +265,7 @@ pub struct CodexAdapter {
     connection: Option<Connection>,
     event_rx: Option<mpsc::Receiver<Result<RuntimeEventEnvelope, AdapterError>>>,
     sessions: Arc<Mutex<HashMap<String, Option<String>>>>,
+    session_settings: HashMap<String, CodexSessionSettings>,
     executable_identity: Option<ExecutableIdentity>,
     auth_blocked: Arc<AtomicBool>,
     default_model: Option<String>,
@@ -185,6 +279,7 @@ impl CodexAdapter {
             connection: None,
             event_rx: None,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            session_settings: HashMap::new(),
             executable_identity: None,
             auth_blocked: Arc::new(AtomicBool::new(false)),
             default_model: None,
@@ -223,6 +318,9 @@ impl CodexAdapter {
         ) {
             let operation = match method {
                 "thread/resume" => Some("resume"),
+                "thread/list" => Some("list_sessions"),
+                "thread/read" => Some("read_session"),
+                "model/list" => Some("list_models"),
                 "thread/inject_items" => Some("import_context"),
                 "turn/steer" => Some("steer"),
                 _ => None,
@@ -282,6 +380,10 @@ impl AgentRuntimeAdapter for CodexAdapter {
             steering: false,
             image_input: false,
             file_reference: false,
+            session_listing: true,
+            model_catalog: true,
+            model_switching: true,
+            permission_profiles: true,
             session_modes: vec!["interactive".into()],
             config_options: vec!["model".into(), "effort".into()],
             auth_flows: vec![
@@ -351,14 +453,17 @@ impl AgentRuntimeAdapter for CodexAdapter {
                 .ok_or_else(|| AdapterError::InvalidRequest {
                     details: "create options must be an object".into(),
                 })?;
-        if options
-            .keys()
-            .any(|key| !matches!(key.as_str(), "cwd" | "model"))
-        {
+        if options.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "cwd" | "model" | "model_id" | "approval_profile" | "full_access_confirmed"
+            )
+        }) {
             return Err(AdapterError::InvalidRequest {
-                details: "create accepts only cwd and model".into(),
+                details: "create received an unknown option".into(),
             });
         }
+        let settings = parse_session_settings(&operation.options, self.default_model.as_deref())?;
         let cwd = options
             .get("cwd")
             .and_then(Value::as_str)
@@ -373,17 +478,8 @@ impl AgentRuntimeAdapter for CodexAdapter {
             .map_err(|_| AdapterError::InvalidRequest {
                 details: "working directory must exist".into(),
             })?;
-        let mut params = json!({"cwd":cwd,"approvalPolicy":"on-request","sandbox":"workspace-write","ephemeral":false});
-        if let Some(model) = options
-            .get("model")
-            .and_then(Value::as_str)
-            .or(self.default_model.as_deref())
-        {
-            if model.is_empty() {
-                return Err(AdapterError::InvalidRequest {
-                    details: "model is empty".into(),
-                });
-            }
+        let mut params = json!({"cwd":cwd,"approvalPolicy":settings.policy.approval_policy,"sandbox":settings.policy.sandbox,"ephemeral":false});
+        if let Some(model) = settings.model.as_deref() {
             params["model"] = json!(model);
         }
         let result = self.request("thread/start", params)?;
@@ -398,17 +494,28 @@ impl AgentRuntimeAdapter for CodexAdapter {
             .to_owned();
         let session = RuntimeSession::new(id.clone())?;
         self.sessions.lock().map_err(lock_error)?.insert(id, None);
+        self.session_settings
+            .insert(session.as_str().to_owned(), settings);
         Ok(session)
     }
 
     fn resume(&mut self, operation: RuntimeOperation) -> Result<RuntimeSession, AdapterError> {
+        let settings = parse_session_settings(&operation.options, self.default_model.as_deref())?;
         let thread_id = operation
             .options
             .get("thread_id")
             .and_then(Value::as_str)
             .unwrap_or(&operation.operation_id)
             .to_owned();
-        let result = self.request("thread/resume", json!({"threadId":thread_id}))?;
+        let mut params = json!({
+            "threadId": thread_id,
+            "approvalPolicy": settings.policy.approval_policy,
+            "sandbox": settings.policy.sandbox,
+        });
+        if let Some(model) = settings.model.as_deref() {
+            params["model"] = json!(model);
+        }
+        let result = self.request("thread/resume", params)?;
         let id = result
             .pointer("/thread/id")
             .and_then(Value::as_str)
@@ -416,7 +523,102 @@ impl AgentRuntimeAdapter for CodexAdapter {
             .to_owned();
         let session = RuntimeSession::new(id.clone())?;
         self.sessions.lock().map_err(lock_error)?.insert(id, None);
+        self.session_settings
+            .insert(session.as_str().to_owned(), settings);
         Ok(session)
+    }
+
+    fn list_sessions(
+        &mut self,
+        operation: RuntimeOperation,
+    ) -> Result<Vec<SessionDescriptor>, AdapterError> {
+        let workspace = operation
+            .options
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .or_else(|| self.config.working_directory.clone())
+            .or_else(|| std::env::current_dir().ok())
+            .ok_or_else(|| AdapterError::InvalidRequest {
+                details: "working directory is unavailable".into(),
+            })?;
+        let mut cursor: Option<String> = None;
+        let mut descriptors = Vec::new();
+        loop {
+            let page = self.request(
+                "thread/list",
+                json!({"cwd":workspace,"cursor":cursor,"limit":100,"sortKey":"updated_at","sortDirection":"desc"}),
+            )?;
+            descriptors.extend(parse_session_descriptors(&page, &workspace)?);
+            cursor = next_cursor(&page)?;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(descriptors)
+    }
+
+    fn read_session(
+        &mut self,
+        operation: RuntimeOperation,
+    ) -> Result<SessionSnapshot, AdapterError> {
+        let thread_id = operation
+            .options
+            .get("thread_id")
+            .and_then(Value::as_str)
+            .unwrap_or(&operation.operation_id);
+        if thread_id.trim().is_empty() {
+            return Err(AdapterError::InvalidRequest {
+                details: "thread id is empty".into(),
+            });
+        }
+        let response = self.request(
+            "thread/read",
+            json!({"threadId":thread_id,"includeTurns":true}),
+        )?;
+        parse_session_snapshot(&response)
+    }
+
+    fn list_models(&mut self, operation: RuntimeOperation) -> Result<ModelCatalog, AdapterError> {
+        let current = operation
+            .options
+            .get("current_model")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let mut cursor: Option<String> = None;
+        let mut data = Vec::new();
+        loop {
+            let page = self.request("model/list", json!({"cursor":cursor,"limit":100}))?;
+            let page_models = page
+                .get("data")
+                .and_then(Value::as_array)
+                .ok_or_else(|| protocol_shape("model/list", "missing model data"))?;
+            data.extend(page_models.iter().cloned());
+            cursor = next_cursor(&page)?;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        parse_model_catalog(&json!({"data":data}), current.as_deref())
+    }
+
+    fn inspect_permissions(
+        &mut self,
+        _: RuntimeOperation,
+    ) -> Result<PermissionCapability, AdapterError> {
+        self.capabilities()?;
+        Ok(PermissionCapability {
+            supported_profiles: vec![
+                ApprovalProfile::Request,
+                ApprovalProfile::Assisted,
+                ApprovalProfile::FullAccess,
+            ],
+            control_strength: ControlStrength::Partial,
+            native_mode: Some("approvalPolicy+sandbox".into()),
+            sandbox: Some("runtime-enforced".into()),
+            residual_guards: vec!["os-policy".into(), "enterprise-policy".into()],
+            evidence_version: "codex-app-server-0.139".into(),
+        })
     }
 
     fn import_context(
@@ -445,10 +647,21 @@ impl AgentRuntimeAdapter for CodexAdapter {
             .ok_or_else(|| AdapterError::InvalidRequest {
                 details: "Codex text command must be a string".into(),
             })?;
-        let result = self.request(
-            "turn/start",
-            json!({"threadId":session.as_str(),"input":[{"type":"text","text":text}],"approvalPolicy":"on-request","sandboxPolicy":{"type":"workspaceWrite","networkAccess":false}}),
-        )?;
+        let settings = self
+            .session_settings
+            .get(session.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let mut params = json!({
+            "threadId":session.as_str(),
+            "input":[{"type":"text","text":text}],
+            "approvalPolicy":settings.policy.approval_policy,
+            "sandboxPolicy":sandbox_policy(settings.policy.sandbox),
+        });
+        if let Some(model) = settings.model {
+            params["model"] = json!(model);
+        }
+        let result = self.request("turn/start", params)?;
         let turn = result
             .pointer("/turn/id")
             .and_then(Value::as_str)
@@ -554,6 +767,7 @@ impl AgentRuntimeAdapter for CodexAdapter {
     }
 
     fn close(&mut self, session: &RuntimeSession) -> Result<(), AdapterError> {
+        self.session_settings.remove(session.as_str());
         self.sessions
             .lock()
             .map_err(lock_error)?
@@ -1365,6 +1579,178 @@ fn parse_default_model(models: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn parse_model_catalog(
+    response: &Value,
+    current_model: Option<&str>,
+) -> Result<ModelCatalog, AdapterError> {
+    let data = response
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| protocol_shape("model/list", "missing model data"))?;
+    let models = data
+        .iter()
+        .map(|model| {
+            let id = model
+                .get("id")
+                .or_else(|| model.get("model"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| protocol_shape("model/list", "model id is missing"))?;
+            let display_name = model
+                .get("displayName")
+                .and_then(Value::as_str)
+                .or_else(|| model.get("model").and_then(Value::as_str))
+                .unwrap_or(id);
+            ModelDescriptor::new(
+                id,
+                display_name,
+                !model
+                    .get("hidden")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                model
+                    .get("isDefault")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let current_model = current_model.map(ModelId::new).transpose()?;
+    ModelCatalog::new("codex", current_model, models)
+}
+
+fn parse_session_descriptors(
+    response: &Value,
+    workspace: &std::path::Path,
+) -> Result<Vec<SessionDescriptor>, AdapterError> {
+    let data = response
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| protocol_shape("thread/list", "missing thread data"))?;
+    data.iter()
+        .filter(|thread| {
+            thread
+                .get("cwd")
+                .and_then(Value::as_str)
+                .is_some_and(|cwd| paths_match(cwd, workspace))
+        })
+        .map(parse_session_descriptor)
+        .collect()
+}
+
+fn parse_session_descriptor(thread: &Value) -> Result<SessionDescriptor, AdapterError> {
+    let id = thread
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| protocol_shape("thread", "thread id is missing"))?;
+    let title = thread
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| thread.get("preview").and_then(Value::as_str))
+        .unwrap_or("Untitled session")
+        .to_owned();
+    let last_active_at = thread
+        .get("updatedAt")
+        .map(value_as_text)
+        .unwrap_or_default();
+    let status = match thread
+        .pointer("/status/type")
+        .or_else(|| thread.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+    {
+        "active" => SessionStatus::Active,
+        "idle" | "completed" => SessionStatus::Completed,
+        "systemError" | "failed" => SessionStatus::Failed,
+        "interrupted" => SessionStatus::Interrupted,
+        _ => SessionStatus::Unknown,
+    };
+    Ok(SessionDescriptor {
+        id: LogicalSessionId::new(id)?,
+        title,
+        last_active_at,
+        runtime_id: "codex".into(),
+        model_id: thread
+            .get("model")
+            .and_then(Value::as_str)
+            .map(ModelId::new)
+            .transpose()?,
+        status,
+        native_session_id: Some(id.to_owned()),
+    })
+}
+
+fn parse_session_snapshot(response: &Value) -> Result<SessionSnapshot, AdapterError> {
+    let thread = response.get("thread").unwrap_or(response);
+    let descriptor = parse_session_descriptor(thread)?;
+    let normalized_events = thread
+        .get("turns")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|turn| {
+            let turn_id = turn.get("id").cloned().unwrap_or(Value::Null);
+            let turn_status = turn.get("status").cloned().unwrap_or(Value::Null);
+            turn.get("items")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(move |item| {
+                    json!({
+                        "turn_id": turn_id,
+                        "turn_status": turn_status,
+                        "type": item.get("type").cloned().unwrap_or(Value::Null),
+                        "id": item.get("id").cloned().unwrap_or(Value::Null),
+                        "status": item.get("status").cloned().unwrap_or(Value::Null),
+                        "content": item.get("content").cloned().unwrap_or(Value::Null),
+                        "text": item.get("text").cloned().unwrap_or(Value::Null),
+                        "output": item.get("aggregatedOutput").cloned().unwrap_or(Value::Null),
+                    })
+                })
+        })
+        .collect();
+    Ok(SessionSnapshot {
+        descriptor,
+        cursor: 0,
+        normalized_events,
+    })
+}
+
+fn next_cursor(response: &Value) -> Result<Option<String>, AdapterError> {
+    match response.get("nextCursor") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(cursor)) if !cursor.is_empty() => Ok(Some(cursor.clone())),
+        _ => Err(protocol_shape("pagination", "next cursor is invalid")),
+    }
+}
+
+fn paths_match(candidate: &str, expected: &std::path::Path) -> bool {
+    let normalize = |value: &str| {
+        let value = value.replace('\\', "/").trim_end_matches('/').to_owned();
+        if cfg!(windows) {
+            value.to_ascii_lowercase()
+        } else {
+            value
+        }
+    };
+    normalize(candidate) == normalize(&expected.to_string_lossy())
+}
+
+fn value_as_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn protocol_shape(method: &str, details: &str) -> AdapterError {
+    AdapterError::Protocol {
+        code: None,
+        method: Some(method.into()),
+        details: details.into(),
+    }
+}
+
 fn protocol_json(error: serde_json::Error) -> AdapterError {
     AdapterError::Protocol {
         code: None,
@@ -1673,6 +2059,80 @@ mod tests {
     }
 
     #[test]
+    fn model_catalog_parser_preserves_runtime_models_and_current_selection() {
+        let models = json!({
+            "data": [
+                {"id": "gpt-5.5", "displayName": "GPT-5.5", "isDefault": false},
+                {"id": "gpt-5.6", "displayName": "GPT-5.6", "isDefault": true}
+            ]
+        });
+
+        let catalog = parse_model_catalog(&models, Some("gpt-5.5")).unwrap();
+
+        assert_eq!(catalog.runtime_id, "codex");
+        assert_eq!(catalog.current_model.unwrap().as_str(), "gpt-5.5");
+        assert_eq!(catalog.models.len(), 2);
+        assert_eq!(catalog.models[1].display_name, "GPT-5.6");
+        assert!(catalog.models[1].is_default);
+    }
+
+    #[test]
+    fn session_list_parser_filters_other_workspaces() {
+        let workspace = PathBuf::from("D:/workspace/current");
+        let threads = json!({
+            "data": [
+                {"id":"thread-1","preview":"First task","updatedAt":"2026-08-25T10:00:00Z","cwd":"D:/workspace/current","status":"completed","model":"gpt-5.6"},
+                {"id":"thread-2","preview":"Other task","updatedAt":"2026-08-25T11:00:00Z","cwd":"D:/workspace/other","status":"active"}
+            ]
+        });
+
+        let sessions = parse_session_descriptors(&threads, &workspace).unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id.as_str(), "thread-1");
+        assert_eq!(sessions[0].title, "First task");
+        assert_eq!(sessions[0].native_session_id.as_deref(), Some("thread-1"));
+    }
+
+    #[test]
+    fn permission_profiles_map_without_silent_privilege_escalation() {
+        let request = codex_policy_for_profile(ApprovalProfile::Request, false).unwrap();
+        assert_eq!(request.approval_policy, "on-request");
+        assert_eq!(request.sandbox, "workspace-write");
+
+        let assisted = codex_policy_for_profile(ApprovalProfile::Assisted, false).unwrap();
+        assert_eq!(assisted.approval_policy, "on-failure");
+        assert_eq!(assisted.sandbox, "workspace-write");
+
+        assert!(codex_policy_for_profile(ApprovalProfile::FullAccess, false).is_err());
+        let full = codex_policy_for_profile(ApprovalProfile::FullAccess, true).unwrap();
+        assert_eq!(full.approval_policy, "never");
+        assert_eq!(full.sandbox, "danger-full-access");
+    }
+
+    #[test]
+    fn closing_session_forgets_its_model_and_permission_settings() {
+        let mut adapter = CodexAdapter::default();
+        let session = RuntimeSession::new("thread-close").unwrap();
+        adapter
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(session.as_str().into(), None);
+        adapter.session_settings.insert(
+            session.as_str().into(),
+            CodexSessionSettings {
+                model: Some("gpt-5.6".into()),
+                policy: codex_policy_for_profile(ApprovalProfile::Request, false).unwrap(),
+            },
+        );
+
+        adapter.close(&session).unwrap();
+
+        assert!(!adapter.session_settings.contains_key(session.as_str()));
+    }
+
+    #[test]
     fn default_app_server_args_disable_user_hooks_and_plugins() {
         let args = CodexAdapterConfig::default()
             .app_server_args
@@ -1788,6 +2248,88 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
             .unwrap();
         assert_eq!(account["requiresOpenaiAuth"], false);
         connection.close().unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn adapter_exposes_real_codex_session_model_and_permission_operations() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-codex-discovery-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let cwd = root
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace('\'', "''");
+        let script = format!(
+            r#"
+$cwd = '{cwd}'
+while (($line = [Console]::In.ReadLine()) -ne $null) {{
+  $frame = $line | ConvertFrom-Json
+  if ($frame.method -eq 'initialize') {{
+    $result = @{{ userAgent = 'fixture/0.139' }}
+  }} elseif ($frame.method -eq 'model/list') {{
+    $result = @{{ data = @(@{{ id='gpt-5.6'; model='gpt-5.6'; displayName='GPT-5.6'; hidden=$false; isDefault=$true }}); nextCursor=$null }}
+  }} elseif ($frame.method -eq 'thread/list') {{
+    $result = @{{ data = @(@{{ id='thread-1'; preview='Saved task'; updatedAt=1770000000; cwd=$cwd; status=@{{type='idle'}}; turns=@(); modelProvider='openai'; cliVersion='0.139.0'; createdAt=1760000000; ephemeral=$false; sessionId='session-tree'; source='cli' }}); nextCursor=$null }}
+  }} elseif ($frame.method -eq 'thread/read') {{
+    $result = @{{ thread = @{{ id='thread-1'; preview='Saved task'; updatedAt=1770000000; cwd=$cwd; status=@{{type='idle'}}; turns=@(@{{id='turn-1';status='completed';items=@(@{{type='agentMessage';id='item-1';text='done'}})}}); modelProvider='openai'; cliVersion='0.139.0'; createdAt=1760000000; ephemeral=$false; sessionId='session-tree'; source='cli' }} }}
+  }} else {{ continue }}
+  [Console]::Out.WriteLine((@{{id=$frame.id;result=$result}} | ConvertTo-Json -Compress -Depth 12))
+  [Console]::Out.Flush()
+}}
+"#
+        );
+        let config = CodexAdapterConfig {
+            executable: PathBuf::from("powershell.exe"),
+            app_server_args: vec![
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                script.into(),
+            ],
+            working_directory: Some(root.clone()),
+            handshake_timeout: Duration::from_secs(5),
+            request_timeout: Duration::from_secs(5),
+            ..CodexAdapterConfig::default()
+        };
+        let mut adapter = CodexAdapter::new(config);
+        adapter.negotiated.complete(RuntimeCapabilities {
+            session_listing: true,
+            model_catalog: true,
+            model_switching: true,
+            permission_profiles: true,
+            ..RuntimeCapabilities::default()
+        });
+
+        let models = adapter
+            .list_models(
+                RuntimeOperation::new("models", json!({"current_model":"gpt-5.6"})).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(models.models[0].id.as_str(), "gpt-5.6");
+        let sessions = adapter
+            .list_sessions(RuntimeOperation::new("sessions", json!({"cwd":root})).unwrap())
+            .unwrap();
+        assert_eq!(sessions[0].native_session_id.as_deref(), Some("thread-1"));
+        let snapshot = adapter
+            .read_session(RuntimeOperation::new("thread-1", json!({})).unwrap())
+            .unwrap();
+        assert_eq!(snapshot.normalized_events[0]["text"], "done");
+        let permission = adapter
+            .inspect_permissions(RuntimeOperation::new("permissions", json!({})).unwrap())
+            .unwrap();
+        assert_eq!(permission.control_strength, ControlStrength::Partial);
+
+        drop(adapter);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]

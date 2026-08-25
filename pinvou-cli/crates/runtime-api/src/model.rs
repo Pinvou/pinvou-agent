@@ -194,6 +194,9 @@ impl NegotiatedCapabilities {
             "approve" => value.tool_approval = false,
             "respond_input" => value.elicitation = false,
             "steer" => value.steering = false,
+            "list_sessions" | "read_session" => value.session_listing = false,
+            "list_models" => value.model_catalog = false,
+            "inspect_permissions" => value.permission_profiles = false,
             _ => {
                 return Err(AdapterError::Protocol {
                     code: Some(-32601),
