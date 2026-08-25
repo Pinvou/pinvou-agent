@@ -164,10 +164,16 @@ try {
     assert.equal(canApplyNativeControlsRefresh({
       requestId: 1, latestRequestId: claim.latestRequestId, sessionId: 'B', activeId: 'B',
     }), false);
+    // 序号虽是最新，但会话不归属当前：归属检查必须独立承重，不能只靠序号差异。
+    assert.equal(canApplyNativeControlsRefresh({
+      requestId: 3, latestRequestId: 3, sessionId: 'A', activeId: 'B',
+    }), false, 'a current sequence number must not let a stale session commit');
   }
 
-  // between creation and the real operation tracker: activation invalidates the draft token,
-  // then sendNative-style rebinding makes the visible error path current again.
+  // Preparation can fail after the backend session exists. This exercises the
+  // integration between creation and the real operation tracker: activation
+  // invalidates the draft token, then sendNative-style rebinding makes the
+  // visible error path current again.
   {
     const preparationError = new Error('model persistence failed');
     const calls = [];
@@ -217,6 +223,56 @@ try {
     ]);
   }
 
+  // ── finalize 非激活分支与异常传播 ─────────────────────────────────
+  {
+    const calls = [];
+    const created = await finalizePreparedSessionCreation({
+      sessionId: 's9',
+      prepareSession: async () => { calls.push('prepare'); },
+      shouldActivate: () => { calls.push('should-activate'); return false; },
+      activateSession: () => { throw new Error('must not activate'); },
+      loadSession: async () => { throw new Error('must not load'); },
+      loadInactiveSessionInfo: async id => { calls.push(`info:${id}`); return { id }; },
+    });
+    assert.deepEqual(created, { id: 's9', info: { id: 's9' }, activated: false });
+    assert.deepEqual(calls, ['prepare', 'should-activate', 'info:s9'],
+      'non-activation must not activate or load, only fetch inactive info');
+    const prepErr = new Error('prepare failed before activation check');
+    await assert.rejects(finalizePreparedSessionCreation({
+      sessionId: 's9',
+      prepareSession: async () => { throw prepErr; },
+      shouldActivate: () => false,
+      activateSession: () => {},
+      loadSession: async () => null,
+      loadInactiveSessionInfo: null,
+    }), prepErr, 'prepare failure with no activation must throw directly');
+    const loadErr = new Error('load failed after activation');
+    await assert.rejects(finalizePreparedSessionCreation({
+      sessionId: 's9',
+      prepareSession: null,
+      shouldActivate: () => true,
+      activateSession: () => {},
+      loadSession: async () => { throw loadErr; },
+      loadInactiveSessionInfo: null,
+    }), loadErr, 'load failures must propagate to the caller');
+  }
+
+  // ── 权威控件 vs handoff 优先级（用不同值区分分支） ────────────────
+  // 权威刷新按归属提交后，即使残留 handoff 也必须用实测值；无 handoff 且
+  // 控件归属过期时显示空，绝不显示上一会话的值。
+  assert.equal(resolveNativeModelId({
+    activeId: 's1', controlsSessionId: 's1', controlsModelId: 'model-b',
+    draftModelId: null, handoffModelId: 'model-a',
+  }), 'model-b', 'session-owned authoritative model must beat the stale handoff');
+  assert.equal(resolveNativeModelId({
+    activeId: 's1', controlsSessionId: 'old', controlsModelId: 'model-b',
+    draftModelId: null, handoffModelId: null,
+  }), null, 'no handoff + stale controls must show null, never the previous session model');
+  assert.equal(resolveNativeModeValue({
+    activeId: 's1', controlsSessionId: 's1', controlsMode: 'plan',
+    draftMode: null, handoffMode: 'yolo', prefs: null,
+  }), 'plan', 'session-owned authoritative mode must beat the stale handoff');
+
   const view = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
   assert.match(view, /invoke\('get_code_permission_prefs'\)/, '启动/切换拉取全局 code 权限偏好');
   assert.match(view, /invoke\('confirm_code_yolo'\)/, '确认卡【确认】写全局标志');
@@ -225,8 +281,29 @@ try {
   assert.match(view, /finalizePreparedSessionCreation\(/, 'native session creation must use the tested preparation lifecycle');
   assert.match(
     view,
-    /operation = beginAcpSendOperation\(targetId\);[\s\S]{0,500}if \(created\.preparationError\) throw created\.preparationError;/,
+    /operation = beginAcpSendOperation\(targetId\);[\s\S]{0,800}if \(created\.preparationError\) throw created\.preparationError;/,
     'native preparation errors must surface only after the send operation is rebound',
+  );
+  // activeIdRef 只允许在 layout effect 内重指：渲染期赋值会被携带旧 prop 的中间
+  // 渲染打回旧值，吞掉 loadSession 的乐观交接（首发标签闪回全局兜底的根因之一）。
+  assert.equal((view.match(/activeIdRef\.current = activeId;/g) || []).length, 1,
+    'activeIdRef must be assigned from the prop exactly once');
+  assert.ok(
+    view.indexOf('activeIdRef.current = activeId;') > view.indexOf('useLayoutEffect(() => {')
+      && view.indexOf('activeIdRef.current = activeId;') < view.indexOf('acpConfigOperationTracker.switchSession'),
+    'activeIdRef must only be re-pointed inside the layout effect so optimistic handoffs survive intermediate renders',
+  );
+  const clearNativeDraft = view.indexOf('function clearNativeDraftControls(staged)');
+  assert.ok(
+    clearNativeDraft >= 0
+      && view.indexOf('setNativeDraftControls(current => current === staged ? {} : current)', clearNativeDraft) > clearNativeDraft
+      && view.indexOf('nativeDraftControlsHandoffRef.current = null;', clearNativeDraft) > clearNativeDraft,
+    'clearing draft controls must stay identity-guarded and must drop the matching handoff',
+  );
+  assert.ok(
+    view.includes(': (nativeDraftControlsHandoff?.mountedId ?? null)')
+      && view.includes(': Boolean(nativeDraftControlsHandoff?.multiAgent)'),
+    'knowledge and multi-agent display must keep the same activation handoff as model/mode',
   );
   assert.match(view, /data-testid="native-yolo-confirm"/, 'yolo 确认卡渲染');
   assert.match(view, /needsYoloConfirmation\(prefs\)/, '切 yolo 前过确认门');

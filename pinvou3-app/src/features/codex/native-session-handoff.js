@@ -1,4 +1,7 @@
-// Pure state and lifecycle helpers for materializing a native Code draft into a session.
+// Pure helpers for the native Code session lifecycle: display resolution for the
+// draft→session activation handoff, issue/commit gating for native control
+// refreshes across session switches, and the creation pipeline that persists
+// draft controls before a new session is exposed and loaded.
 
 export function resolveNativeModelId({
   activeId,
