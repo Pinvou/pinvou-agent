@@ -1883,9 +1883,11 @@ mod tests {
 
         let report = mgr.self_heal_skills(&["visual-design"]);
         assert!(!orphan.exists(), "孤儿副本应删除");
-        assert!(report
-            .removed_orphan_dirs
-            .contains(&"orphan-skill/orphan-skill".to_string()));
+        assert!(
+            report
+                .removed_orphan_dirs
+                .contains(&"orphan-skill/orphan-skill".to_string())
+        );
         assert!(recorded.exists(), "有记录副本应保留");
         assert!(preset_dir.exists(), "预置名副本应保留（可重释放）");
         assert!(cli_dir.exists(), "CLI 静态所有副本应保留");
