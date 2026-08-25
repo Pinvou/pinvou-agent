@@ -72,7 +72,7 @@ class BenchmarkIsolationPolicyTests(unittest.TestCase):
             timing,
         )
         self.assertIn(
-            'let is_base_event = matches!(event, "user_start" | "assistant_done");',
+            'let is_base_event = matches!(event, "user_start" | "assistant_done" | "context_snapshot");',
             timing,
         )
         self.assertIn(

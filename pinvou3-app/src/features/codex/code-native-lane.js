@@ -368,7 +368,10 @@ export function applyNativeChatEvent(lane, name, payload) {
     case 'chat:usage': {
       const input = Number(p.input_tokens || 0);
       if (input <= 0) return false;
-      lane.tokens = { input, max: lane.tokens.max };
+      // The forwarder resolves context_window for the active route. Preserve the previous
+      // value when legacy or partial payloads omit it.
+      const max = Number(p.context_window || 0);
+      lane.tokens = { input, max: max > 0 ? max : lane.tokens.max };
       return true;
     }
     case 'chat:user_input_required': {
@@ -426,6 +429,12 @@ export function applyNativeChatEvent(lane, name, payload) {
       // 压缩事件渲染为系统提示项；三语文案在渲染层按 compactPhase 组装。
       const phase = String(p.phase || 'done');
       lane.compacting = phase === 'start';
+      // Refresh from the conservative post-compaction estimate instead of showing the old
+      // value until the next authoritative chat:usage event.
+      const postTokens = Number(p.post_tokens || 0);
+      if (phase === 'done' && postTokens > 0) {
+        lane.tokens = { input: postTokens, max: lane.tokens.max };
+      }
       lane.items.push({
         id: nextId(lane),
         type: 'system',
@@ -679,6 +688,20 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     }
   }
   lane.timeline = Array.isArray(timelineEvents) ? [...timelineEvents] : [];
+  // Restore the newest usage-bearing turn or compaction snapshot after the mutable lane is
+  // recreated. Without this, remounting hides the chip or restores pre-compaction usage.
+  const lastUsage = [...lane.timeline].reverse().find(event => (
+    event && (event.event === 'assistant_done' || event.event === 'context_snapshot')
+      && Number(event.usage && event.usage.input_tokens) > 0
+  ));
+  // A live chat:usage event can land while loadSession is still awaiting the timeline;
+  // it is newer than the on-disk snapshot, so hydration must not roll the chip back.
+  const hasLiveUsage = Number(lane.tokens && lane.tokens.input) > 0;
+  if (lastUsage && !hasLiveUsage) {
+    // Legacy events omit context_window, leaving the percentage unavailable.
+    const max = Number(lastUsage.usage.context_window || 0);
+    lane.tokens = { input: Number(lastUsage.usage.input_tokens), max: max > 0 ? max : lane.tokens.max };
+  }
   lane.busy = hadLiveTurn;
   if (!lane.busy) lane.thinking = null;
   lane.hydrated = true;

@@ -4,19 +4,26 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-25 · v0.9.5 r9 四主题公开基线）
+## 0. 当前状态（2026-08-25 · v0.9.5 r10 四主题公开基线）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `07d183e35` |
-| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r9` |
-| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r9` 与父仓 gitlink 均指向 `07d183e350ce4a1ed4f91bdfa1875c996e710d2b`；`r1` 至 `r9` 保持不可变 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `feb8761ae` |
+| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r10` |
+| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r10` 与父仓 gitlink 均指向 `feb8761aeda31749f3d54c6e1f8ef460540567a1`；`r1` 至 `r10` 保持不可变 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r9 公开基线 `55 files changed, +5329/-758`；净增 4571 行 |
-| 守护 | r9 为 37 条 CodeWhale `forkguard_*` 行为测试 + 2 条通用工具兼容回归 + 父仓指纹/行为测试 |
-| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配，以及拒绝编辑的终态/权威历史对账 |
+| drift | r10 公开基线 `64 files changed, +5612/-702`；净增 4910 行 |
+| 守护 | r10 为 41 条 CodeWhale `forkguard_*` 行为测试 + 2 条通用工具兼容回归 + 父仓指纹/行为测试 |
+| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账，以及压缩后用量即时刷新与持久化回填 |
+
+### r10 固定采样与压缩用量边界（已发布）
+
+- CodeWhale PR #19 以 `feb8761aeda31749f3d54c6e1f8ef460540567a1` 发布。Kimi Code 会员路由仅对精确会员模型名单（`k3`、`k3-256k`、`kimi-for-coding`、`kimi-for-coding-highspeed`）剥离非 1 的固定采样字段；DeepSeek 仅对精确 `deepseek-v4-flash` Responses 路径保留兼容 shim，Chat 方言继续透传官方 0..=2 采样契约。
+- K3 与 K3-256K 复用现有会员路由、reasoning dialect 和模型元数据入口；`k3-256k` 固定为 262,144 token 上下文，避免通用名称提示误解析成 256,000，裸 `k3` 仍独占现有 1M entitlement 路径。
+- `CompactionCompleted.post_input_tokens` 使用引擎 canonical 估算覆盖压缩后的完整请求输入（system prompt 与合并摘要均包含）。父仓把该值即时写入用量 chip，并作为非 turn 的 `context_snapshot` 持久化，重新进入会话不会回退到压缩前数值。
+- r10 相对 r9 增加 `17 files changed, +370/-31`；新增 4 条 `forkguard_*` 回归，总数从 37 增至 41。改动归入既有 T1 路由/宿主事件边界，没有增加长期 fork 主题。
 
 ### r9 对话插入与编辑边界（已发布）
 
@@ -69,8 +76,8 @@
 
 ### T1：宿主嵌入与路由边界
 
-- **commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`Pinvou/CodeWhale#11`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`Pinvou/CodeWhale#16`）、`07d183e350ce4a1ed4f91bdfa1875c996e710d2b`（`Pinvou/CodeWhale#17`）。
-- **公开规模**：r8 前置规模为 10 文件、`+394/-31`；r9 的可靠插入与编辑边界增量按上节整体登记。
+- **commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`Pinvou/CodeWhale#11`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`Pinvou/CodeWhale#16`）、`07d183e350ce4a1ed4f91bdfa1875c996e710d2b`（`Pinvou/CodeWhale#17`）、`feb8761aeda31749f3d54c6e1f8ef460540567a1`（`Pinvou/CodeWhale#19`）。
+- **公开规模**：r8 前置规模为 10 文件、`+394/-31`；r9 的可靠插入与编辑边界、r10 的固定采样与压缩用量边界增量按上节整体登记。
 - **核心文件**：`crates/tui/src/lib.rs`、`core/{engine,events,ops}.rs`、`core/engine/{handle,turn_loop}.rs`、`runtime_handoff.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`、`session_manager.rs`。
 - **内容**：
   - 在 v0.9.5 原生 library target 上只公开 Pinvou 实际使用的模块和宿主类型，不恢复旧的全量 bin facade。
@@ -82,8 +89,10 @@
   - 提供通用的宿主批量取消操作和失败终态标记，供会话停止与 Engine 回收安全收敛后台子智能体。
   - 为 steer 提供可关联 id、提交/丢弃事件和跨中断 keep-inbox 所有权，停止路径显式丢弃未提交输入，避免消息在 UI 与 Engine 之间静默消失或跨会话泄漏。
   - `Op::EditLastTurn` 与宿主落盘兜底共用 `edit_last_turn_target`：工具结果与内部运行时信封同样以 `role = "user"` 持久化，裸 role 扫描会把截断落在 tool result 上；真实但不支持的最新用户内容必须拒绝，不能跳到更早文本。拒绝路径发送类型化错误与失败终态，不调用 provider，也不改变历史。
+  - 固定采样路由剥离显式非 1 的 `temperature`（否则 400 "only 1 is allowed"）：Kimi Code 会员路由按会员模型名单精确匹配（`k3` / `k3-256k` / `kimi-for-coding` / `kimi-for-coding-highspeed`，Chat 方言 seam）；DeepSeek 侧仅在 Responses 方言对精确 `deepseek-v4-flash` 保留兼容 shim，Chat 方言按官方文档的 0..=2 契约透传（v4-pro 走 Chat 线，实测不受限）。网关与其他模型契约不动。修复 code 页手动压缩在 Kimi Code 路由必现 400。
+  - `CompactionCompleted` 事件新增 `post_input_tokens`：压缩完成后完整请求的输入 token 保守估算（复用引擎 canonical 估算，含 system prompt 与压缩摘要），供宿主在压缩完成后立即刷新用量展示；TUI 与 runtime thread 持久化路径不消费。
 - **边界**：不实现 Pinvou 产品工具策略或专用编排完成语义。
-- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`、`forkguard_is_user_turn_prompt_separates_prompts_from_tool_results_and_envelopes`、`forkguard_edit_last_turn_cuts_at_user_prompt_before_tool_results`、`forkguard_edit_last_turn_without_user_prompt_errors_and_sends_nothing`，steer 生命周期/Shell 终止回归，以及父仓启动恢复、resolved-route、取消级联、compaction 合约、落盘编辑分类和双端拒绝回滚测试。
+- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`、`forkguard_is_user_turn_prompt_separates_prompts_from_tool_results_and_envelopes`、`forkguard_edit_last_turn_cuts_at_user_prompt_before_tool_results`、`forkguard_edit_last_turn_without_user_prompt_errors_and_sends_nothing`、`forkguard_kimi_code_coding_plan_strips_non_one_temperature`、`forkguard_deepseek_v4_chat_preserves_documented_temperature`、`forkguard_deepseek_v4_flash_responses_drops_non_one_temperature`、`forkguard_compaction_completed_reports_complete_post_input_tokens`，steer 生命周期/Shell 终止回归，以及父仓启动恢复、resolved-route、取消级联、compaction 合约、落盘编辑分类和双端拒绝回滚测试。
 
 ### T2：工具兼容与命令执行安全
 
@@ -169,7 +178,7 @@ CodeWhale 当前已通过：
 cargo fmt --all -- --check
 cargo check / Pinvou fork CI
 cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-37 passed / 0 failed
+41 passed / 0 failed
 ```
 
 父仓当前已通过：
@@ -177,17 +186,17 @@ cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
 ```text
 cargo fmt --all -- --check
 ./scripts/fork-guard.sh
-CodeWhale 37 passed；pinvou3-app 21 passed
+CodeWhale 41 passed；pinvou3-app 21 passed
 cargo test --lib --locked forkguard_admitted_display_fallback -- --test-threads=1
 2 passed / 0 failed
 node --test pinvou3-app/tests/scheduled_tasks_unit.test.js
 PASS
 python3 scripts/architecture-guard.py
 ./scripts/verify-public-submodule.sh
-pinvou-v0.9.5-r9 -> 07d183e350ce4a1ed4f91bdfa1875c996e710d2b
+pinvou-v0.9.5-r10 -> feb8761aeda31749f3d54c6e1f8ef460540567a1
 ```
 
-完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。环境相关忽略/基线失败按实际验证披露；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r9` 与父仓 gitlink 一致。
+完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。环境相关忽略/基线失败按实际验证披露；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r10` 与父仓 gitlink 一致。
 
 ## 5. 后续修改规则
 

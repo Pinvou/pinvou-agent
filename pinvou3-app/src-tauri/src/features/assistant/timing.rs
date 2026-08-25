@@ -136,6 +136,8 @@ fn append_event(session_id: &str, entry: serde_json::Value) {
 /// - `cache_write_tokens`:`cache_creation_input_tokens`,按 cache-write 计费
 ///   (具体费率由 provider 决定)。
 /// - `reasoning_tokens`:推理 token。
+/// - `context_window`: context window for the active route. Hydration uses it as the usage
+///   denominator; legacy events default to zero and omit the percentage.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct TurnUsage {
     pub input_tokens: u64,
@@ -144,6 +146,8 @@ pub struct TurnUsage {
     pub cache_miss_tokens: u64,
     pub cache_write_tokens: u64,
     pub reasoning_tokens: u64,
+    #[serde(default)]
+    pub context_window: u64,
 }
 
 pub fn start_turn(session_id: &str) -> String {
@@ -170,6 +174,31 @@ pub fn start_turn(session_id: &str) -> String {
 /// 保留是为了不强迫所有调用点同步升级(commands.rs:200 的 send_error 兜底等)。
 pub fn finish_turn(session_id: &str, status: &str, error: Option<&str>) {
     finish_turn_with_usage(session_id, status, error, None);
+}
+
+/// Records post-compaction context usage without creating a turn.
+///
+/// Manual and automatic compaction do not call `start_turn`, and `TurnComplete` carries zero
+/// usage for this path. The standalone snapshot lets hydration restore the compacted estimate
+/// without changing turn statistics.
+pub fn record_context_snapshot(session_id: &str, input_tokens: u64, context_window: u64) {
+    if input_tokens == 0 {
+        return;
+    }
+    append_event(
+        session_id,
+        json!({
+            "event": "context_snapshot",
+            "session_id": session_id,
+            "turn_id": format!("context-snapshot-{}", now_ms()),
+            "timestamp": now_ms(),
+            "ts": Utc::now().to_rfc3339(),
+            "usage": {
+                "input_tokens": input_tokens,
+                "context_window": context_window,
+            },
+        }),
+    );
 }
 
 /// 收尾本轮并把 usage 落进 `assistant_done` 事件。
@@ -278,6 +307,7 @@ fn finish_turn_internal(
             "cache_miss_tokens": u.cache_miss_tokens,
             "cache_write_tokens": u.cache_write_tokens,
             "reasoning_tokens": u.reasoning_tokens,
+            "context_window": u.context_window,
         });
     }
     #[cfg(any(feature = "benchmark-hooks", test))]
@@ -382,12 +412,12 @@ pub fn record_milestone_meta(session_id: &str, milestone: &str, meta: serde_json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineEvent {
     pub turn_id: String,
-    pub event: String,            // "user_start" | "assistant_done"
-    pub timestamp: i64,           // ms epoch
-    pub ts: String,               // RFC3339
-    pub status: Option<String>,   // assistant_done only
-    pub error: Option<String>,    // assistant_done only
-    pub usage: Option<TurnUsage>, // assistant_done only(老事件为 None)
+    pub event: String,  // "user_start" | "assistant_done" | "context_snapshot"
+    pub timestamp: i64, // ms epoch
+    pub ts: String,     // RFC3339
+    pub status: Option<String>, // assistant_done only
+    pub error: Option<String>, // assistant_done only
+    pub usage: Option<TurnUsage>, // assistant_done / context_snapshot(老事件为 None)
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub tool_name: Option<String>,
     #[cfg(any(feature = "benchmark-hooks", test))]
@@ -456,7 +486,9 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
         return None;
     }
     let event = v.get("event")?.as_str()?;
-    let is_base_event = matches!(event, "user_start" | "assistant_done");
+    // A context snapshot has no paired user_start. compute_stats only aggregates paired
+    // (user_start, assistant_done) records, so snapshots cannot affect turn totals.
+    let is_base_event = matches!(event, "user_start" | "assistant_done" | "context_snapshot");
     #[cfg(any(feature = "benchmark-hooks", test))]
     let is_observation_event = matches!(
         event,
@@ -499,6 +531,10 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
                 .unwrap_or(0),
             reasoning_tokens: u
                 .get("reasoning_tokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0),
+            context_window: u
+                .get("context_window")
                 .and_then(|x| x.as_u64())
                 .unwrap_or(0),
         });
@@ -668,6 +704,94 @@ mod tests {
         assert_eq!(done["turn_id"].as_str(), Some(turn_id.as_str()));
         // 老路径(无 usage):事件里不应有 usage 字段
         assert!(done.get("usage").is_none() || done["usage"].is_null());
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn finish_turn_with_usage_records_usage_field() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-usage-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let sid = "session-usage";
+        start_turn(sid);
+        finish_turn_with_usage(
+            sid,
+            "Completed",
+            None,
+            Some(TurnUsage {
+                input_tokens: 1200,
+                output_tokens: 350,
+                cache_hit_tokens: 800,
+                cache_miss_tokens: 400,
+                ..Default::default()
+            }),
+        );
+
+        let timeline = read_timeline(sid).unwrap();
+        assert_eq!(timeline.len(), 2);
+        let done = timeline
+            .iter()
+            .find(|e| e.event == "assistant_done")
+            .expect("has assistant_done");
+        let u = done.usage.expect("usage recorded");
+        assert_eq!(u.input_tokens, 1200);
+        assert_eq!(u.output_tokens, 350);
+        assert_eq!(u.cache_hit_tokens, 800);
+        assert_eq!(u.cache_miss_tokens, 400);
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn context_snapshot_roundtrips_without_polluting_stats() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-snapshot-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let sid = "session-snapshot";
+        start_turn(sid);
+        finish_turn_with_usage(
+            sid,
+            "Completed",
+            None,
+            Some(TurnUsage {
+                input_tokens: 1000,
+                context_window: 64_000,
+                ..Default::default()
+            }),
+        );
+        record_context_snapshot(sid, 120, 64_000);
+        // A zero-valued snapshot carries no useful state and is not persisted.
+        record_context_snapshot(sid, 0, 64_000);
+
+        let timeline = read_timeline(sid).unwrap();
+        let snapshots: Vec<_> = timeline
+            .iter()
+            .filter(|e| e.event == "context_snapshot")
+            .collect();
+        assert_eq!(snapshots.len(), 1);
+        let usage = snapshots[0].usage.expect("snapshot usage recorded");
+        assert_eq!(usage.input_tokens, 120);
+        assert_eq!(usage.context_window, 64_000);
+
+        // The unpaired snapshot must not affect turn or token totals.
+        let stats = compute_stats(sid).unwrap();
+        assert_eq!(stats.turn_count, 1);
+        assert_eq!(stats.total_input_tokens, 1000);
 
         let _ = std::fs::remove_dir_all(tmp);
     }
@@ -1010,6 +1134,7 @@ mod tests {
                 cache_miss_tokens: 20,
                 cache_write_tokens: 80,
                 reasoning_tokens: 500,
+                context_window: 128_000,
             }),
         );
 
@@ -1026,6 +1151,7 @@ mod tests {
         assert_eq!(u.cache_miss_tokens, 20);
         assert_eq!(u.cache_write_tokens, 80);
         assert_eq!(u.reasoning_tokens, 500);
+        assert_eq!(u.context_window, 128_000);
 
         let stats = compute_stats(sid).unwrap();
         assert_eq!(stats.total_cache_write_tokens, 80);

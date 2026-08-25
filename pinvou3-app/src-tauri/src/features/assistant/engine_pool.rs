@@ -2012,11 +2012,13 @@ impl EnginePool {
             .await
     }
 
-    /// 手动压缩指定 session 上下文。engine 没起则 no-op(无上下文可压)。
+    /// Manually compacts one session. Engines are spawned lazily, so a session
+    /// that has not sent a message since restart has no context to compact.
     pub async fn compact_now(&self, session_id: &str) -> Result<()> {
-        if let Some(engine) = self.handle_for(session_id).await {
-            engine.compact_now().await?;
-        }
+        let Some(engine) = self.handle_for(session_id).await else {
+            anyhow::bail!("session_engine_not_running");
+        };
+        engine.compact_now().await?;
         Ok(())
     }
 

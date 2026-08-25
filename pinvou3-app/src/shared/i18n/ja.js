@@ -46,7 +46,8 @@ const codexJa = {
   temporarySessionDesc:'Pinvou が管理する隔離ディレクトリを使用', recentProjects:'最近のプロジェクト',
   nativeBlockedNotice:'危険なコマンドをブロックしました（未実行）',
   compactStart:'コンテキストを圧縮中', compactDone:'コンテキストを圧縮しました', compactFail:'コンテキストの圧縮に失敗しました',
-  nativeCompactTitle:'クリックでコンテキストを今すぐ圧縮し、セッションの記憶領域を空けます',
+  nativeCompactInactive:'セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください',
+  nativeUsageTitle:(used,pct)=>`コンテキスト使用量：${used}${pct == null ? '' : `（${pct}%）`}。クリックで今すぐ圧縮し、セッションの記憶領域を空けます`,
   nativeMemory:'メモリ', nativeMemoryTitle:'このセッションで有効なメモリ',
   // ネイティブレーンの Plan 承認カード：状態/失敗文案は bridge BT テーブルと同文。
   nativePlanApproved:'✅ 承認済み', nativePlanDiscarded:'🚪 プランを破棄',
