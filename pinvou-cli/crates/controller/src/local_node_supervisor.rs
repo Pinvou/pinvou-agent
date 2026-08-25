@@ -389,10 +389,15 @@ impl Drop for ProcessChild {
 #[cfg(windows)]
 fn configure_child_group(command: &mut Command) {
     use std::os::windows::process::CommandExt;
-    command.creation_flags(
-        windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP
-            | windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
-    );
+    command.creation_flags(windows_child_creation_flags());
+}
+
+#[cfg(windows)]
+const fn windows_child_creation_flags() -> u32 {
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+    };
+    CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_SUSPENDED
 }
 #[cfg(target_os = "linux")]
 fn configure_child_group(command: &mut Command) {
@@ -746,6 +751,13 @@ mod windows_process_tree_tests {
         Foundation::{CloseHandle, WAIT_OBJECT_0},
         System::Threading::{OpenProcess, WaitForSingleObject},
     };
+
+    #[test]
+    fn supervised_node_is_created_without_a_console_window() {
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+        assert_ne!(windows_child_creation_flags() & CREATE_NO_WINDOW, 0);
+    }
 
     #[test]
     fn job_termination_cleans_a_real_grandchild_even_after_the_leader_exits() {

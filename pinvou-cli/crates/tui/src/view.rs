@@ -30,17 +30,24 @@ pub fn render(frame: &mut Frame<'_>, model: &Model) {
         return;
     }
 
+    let welcome_height = if model.transcript.entries().is_empty() {
+        6
+    } else {
+        0
+    };
     let regions = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(welcome_height),
             Constraint::Min(5),
-            Constraint::Length(3),
-            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(2),
         ])
         .split(area);
 
-    render_context(frame, regions[0], model);
+    if welcome_height > 0 {
+        render_welcome(frame, regions[0], model);
+    }
     render_transcript(frame, regions[1], model);
     render_composer(frame, regions[2], model);
     render_status(frame, regions[3], model);
@@ -77,7 +84,7 @@ fn render_too_small(frame: &mut Frame<'_>, area: Rect) {
     }
 }
 
-fn render_context(frame: &mut Frame<'_>, area: Rect, model: &Model) {
+fn render_welcome(frame: &mut Frame<'_>, area: Rect, model: &Model) {
     let connection = match &model.connection {
         ConnectionState::Disconnected => "disconnected",
         ConnectionState::Connecting => "connecting",
@@ -94,19 +101,15 @@ fn render_context(frame: &mut Frame<'_>, area: Rect, model: &Model) {
         Span::raw("  ·  multi-runtime coding agent"),
     ]);
     let model_name = model.model_id.as_deref().unwrap_or("model: auto");
-    let context = Line::from(format!(
-        "{}  ·  {}  ·  {}  ·  {}  ·  {connection}",
-        model.workspace.display(),
+    let context = Line::from(format!("  {}", model.workspace.display()));
+    let runtime = Line::from(format!(
+        "  {}  ·  {}  ·  {}  ·  {connection}",
         model.runtime.display_name,
         model_name,
         model.permission_profile.as_str()
     ));
     frame.render_widget(
-        Paragraph::new(vec![title, context]).block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        ),
+        Paragraph::new(vec![title, Line::default(), context, runtime]),
         area,
     );
 }
@@ -115,10 +118,8 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, model: &Model) {
     let mut lines = Vec::new();
     for entry in model.transcript.entries() {
         match entry {
-            TranscriptEntry::User(text) => push_plain(&mut lines, "You", text, Color::Green),
-            TranscriptEntry::Assistant(text) => {
-                push_plain(&mut lines, "Assistant", text, Color::Cyan)
-            }
+            TranscriptEntry::User(text) => push_flow(&mut lines, "❯", text, Color::Green),
+            TranscriptEntry::Assistant(text) => push_flow(&mut lines, "●", text, Color::Cyan),
             TranscriptEntry::Tool {
                 name,
                 output,
@@ -130,10 +131,10 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, model: &Model) {
                     ToolState::Completed => "done",
                     ToolState::Failed => "failed",
                 };
-                push_card(
+                push_flow(
                     &mut lines,
-                    &format!("Tool · {name} · {state}"),
-                    output,
+                    "●",
+                    &format!("Tool · {name} · {state}\n{output}"),
                     Color::Blue,
                 );
             }
@@ -185,19 +186,21 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, model: &Model) {
     frame.render_widget(paragraph.scroll((scroll, 0)), area);
 }
 
-fn push_plain(lines: &mut Vec<Line<'static>>, role: &'static str, text: &str, color: Color) {
+fn push_flow(lines: &mut Vec<Line<'static>>, marker: &'static str, text: &str, color: Color) {
     if !lines.is_empty() {
         lines.push(Line::default());
     }
-    lines.push(Line::from(Span::styled(
-        format!("  {role}"),
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    )));
-    for line in text.lines() {
+    let mut text_lines = text.lines();
+    let first = text_lines.next().unwrap_or_default();
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {marker} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(first.to_owned()),
+    ]));
+    for line in text_lines {
         lines.push(Line::from(format!("    {line}")));
-    }
-    if text.is_empty() {
-        lines.push(Line::from("    "));
     }
 }
 
@@ -216,11 +219,6 @@ fn push_card(lines: &mut Vec<Line<'static>>, title: &str, content: &str, color: 
 }
 
 fn render_composer(frame: &mut Frame<'_>, area: Rect, model: &Model) {
-    let turn = match model.turn {
-        TurnState::Idle => "ready",
-        TurnState::Starting { .. } => "starting…",
-        TurnState::Streaming { .. } => "working…",
-    };
     let composer = if matches!(model.interaction, Interaction::InputPending(_)) {
         &model.input_composer
     } else {
@@ -232,21 +230,34 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, model: &Model) {
         Span::raw(composer.input.as_str())
     };
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(Color::Cyan)),
-            input,
-        ]))
-        .block(
-            Block::default()
-                .title(turn)
-                .borders(Borders::TOP)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        ),
+        Paragraph::new(vec![
+            Line::default(),
+            Line::from(vec![
+                Span::styled("❯ ", Style::default().fg(Color::Cyan)),
+                input,
+            ]),
+        ]),
         area,
     );
 }
 
 fn render_status(frame: &mut Frame<'_>, area: Rect, model: &Model) {
+    let connection = match &model.connection {
+        ConnectionState::Disconnected => "disconnected",
+        ConnectionState::Connecting => "connecting",
+        ConnectionState::Connected => "connected",
+        ConnectionState::Failed(_) => "failed",
+    };
+    let model_name = model.model_id.as_deref().unwrap_or("auto");
+    let context = Line::from(Span::styled(
+        format!(
+            "{}  ·  {}  ·  {}  ·  {connection}",
+            model.runtime.display_name,
+            model_name,
+            model.permission_profile.as_str()
+        ),
+        Style::default().fg(Color::DarkGray),
+    ));
     let mut spans = Vec::new();
     if let Some(status) = model.status_message.as_deref() {
         spans.push(Span::styled(
@@ -263,8 +274,8 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, model: &Model) {
         keymap(model),
         Style::default().fg(Color::DarkGray),
     ));
-    let line = Line::from(spans);
-    frame.render_widget(Paragraph::new(line), area);
+    let keymap = Line::from(spans);
+    frame.render_widget(Paragraph::new(vec![context, keymap]), area);
 }
 
 fn keymap(model: &Model) -> &'static str {
@@ -583,18 +594,16 @@ mod tests {
     }
 
     #[test]
-    fn standard_view_has_four_regions_and_plain_transcript_rows() {
+    fn active_chat_is_a_continuous_claude_code_style_flow() {
         let output = screen(&model(), 100, 30);
         for expected in [
-            "Pinvou Agent",
-            "D:/work/pinvou",
-            "OpenAI Codex",
-            "connected",
-            "You",
-            "Assistant",
+            "❯ Explain the change",
+            "● I updated the runtime stream.",
             "Explain the change",
             "I updated the runtime stream.",
             "Message Pinvou",
+            "OpenAI Codex",
+            "connected",
             "Enter send",
             "Ctrl+R runtime",
             "Ctrl+C detach/exit",
@@ -602,13 +611,40 @@ mod tests {
             assert!(output.contains(expected), "missing {expected:?}\n{output}");
         }
         assert!(
-            !output.contains("┌─ You"),
-            "plain messages must not use heavy cards"
+            !output.contains("Pinvou Agent"),
+            "welcome must not remain pinned once chatting"
         );
         assert!(
-            !output.contains("┌─ Assistant"),
-            "plain messages must not use heavy cards"
+            !output.contains("  You"),
+            "user messages use the prompt glyph, not a role heading"
         );
+        assert!(
+            !output.contains("Assistant"),
+            "assistant messages use a flow glyph, not a role heading"
+        );
+        assert!(
+            !output.contains("multi-runtime coding agent"),
+            "chat view must not keep a dashboard banner"
+        );
+    }
+
+    #[test]
+    fn empty_chat_shows_the_welcome_context_once() {
+        let mut empty = Model::new(
+            PathBuf::from("D:/work/pinvou"),
+            RuntimeStatus::new("codex", "OpenAI Codex", true),
+        );
+        empty.connection = ConnectionState::Connected;
+        let output = screen(&empty, 100, 30);
+        for expected in [
+            "Pinvou Agent",
+            "D:/work/pinvou",
+            "OpenAI Codex",
+            "connected",
+            "Message Pinvou",
+        ] {
+            assert!(output.contains(expected), "missing {expected:?}\n{output}");
+        }
     }
 
     #[test]
@@ -680,6 +716,10 @@ mod tests {
         let tool_output = screen(&tool, 100, 30);
         assert!(tool_output.contains("Tool · shell"));
         assert!(tool_output.contains("cargo test: ok"));
+        assert!(
+            !tool_output.contains("╭─ Tool"),
+            "routine tool activity belongs in the continuous flow"
+        );
         assert!(matches!(
             tool.transcript.entries().last(),
             Some(TranscriptEntry::Tool {
@@ -876,7 +916,7 @@ mod tests {
             if width < 60 || height < 16 {
                 assert!(output.contains("Ctrl+C") || width < 6 || height < 2);
             } else {
-                assert!(output.contains("Pinvou Agent"));
+                assert!(output.contains("Message Pinvou"));
             }
         }
     }
