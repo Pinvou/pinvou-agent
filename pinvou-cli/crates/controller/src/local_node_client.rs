@@ -59,7 +59,26 @@ impl LocalNodeClient {
         if prompt.is_empty() {
             return Err(ControllerError::InvalidMessage);
         }
-        self.send_request("chat.start", serde_json::json!({"prompt":prompt}))?;
+        self.stream_chat_with_context(prompt, serde_json::json!({}), &mut emit)
+    }
+
+    pub fn stream_chat_with_context<F>(
+        &mut self,
+        prompt: &str,
+        mut context: serde_json::Value,
+        mut emit: F,
+    ) -> Result<(), ControllerError>
+    where
+        F: FnMut(IpcMessage) -> Result<(), ControllerError>,
+    {
+        if prompt.is_empty() {
+            return Err(ControllerError::InvalidMessage);
+        }
+        context
+            .as_object_mut()
+            .ok_or(ControllerError::InvalidMessage)?
+            .insert("prompt".into(), serde_json::json!(prompt));
+        self.send_request("chat.start", context)?;
         let mut active_turn_id = None;
         loop {
             let message: IpcMessage =
@@ -91,6 +110,53 @@ impl LocalNodeClient {
                 return Ok(());
             }
         }
+    }
+
+    pub fn session_list(&mut self, cwd: &std::path::Path) -> Result<IpcMessage, ControllerError> {
+        self.request("session.list", serde_json::json!({"cwd":cwd}))
+    }
+
+    pub fn session_read(&mut self, thread_id: &str) -> Result<IpcMessage, ControllerError> {
+        if thread_id.is_empty() {
+            return Err(ControllerError::InvalidMessage);
+        }
+        self.request("session.read", serde_json::json!({"thread_id":thread_id}))
+    }
+
+    pub fn session_resume(
+        &mut self,
+        thread_id: &str,
+        model_id: Option<&str>,
+        approval_profile: &str,
+        full_access_confirmed: bool,
+    ) -> Result<IpcMessage, ControllerError> {
+        if thread_id.is_empty() || approval_profile.is_empty() {
+            return Err(ControllerError::InvalidMessage);
+        }
+        let mut payload = serde_json::json!({
+            "thread_id":thread_id,
+            "approval_profile":approval_profile,
+            "full_access_confirmed":full_access_confirmed
+        });
+        if let Some(model_id) = model_id {
+            payload["model_id"] = serde_json::json!(model_id);
+        }
+        self.request("session.resume", payload)
+    }
+
+    pub fn model_list(
+        &mut self,
+        current_model: Option<&str>,
+    ) -> Result<IpcMessage, ControllerError> {
+        let mut payload = serde_json::json!({});
+        if let Some(current_model) = current_model {
+            payload["current_model"] = serde_json::json!(current_model);
+        }
+        self.request("model.list", payload)
+    }
+
+    pub fn permissions_inspect(&mut self) -> Result<IpcMessage, ControllerError> {
+        self.request("permissions.inspect", serde_json::json!({}))
     }
 
     pub fn runtime_list(&mut self) -> Result<IpcMessage, ControllerError> {

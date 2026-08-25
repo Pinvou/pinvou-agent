@@ -100,7 +100,14 @@ fn run_controller() -> Result<(), ControllerError> {
         other => other,
     })?;
     let node_supervisor = Arc::new(Mutex::new(node_supervisor));
-    let session = ControllerSession::with_local_node(instance_id, node_endpoint, node_instance_id)?;
+    let workspace = std::env::current_dir()?;
+    let session = ControllerSession::with_local_node_and_storage(
+        instance_id,
+        node_endpoint,
+        node_instance_id,
+        paths.data_root(),
+        workspace,
+    )?;
     let mut listener = LocalIpcListener::bind(paths.endpoint())
         .map_err(controller_context("bind controller IPC"))?;
     {
@@ -181,7 +188,14 @@ fn run_controller_once_with_local_node_for_test() -> Result<(), ControllerError>
         },
         other => other,
     })?;
-    let session = ControllerSession::with_local_node(instance_id, node_endpoint, node_instance_id)?;
+    let workspace = std::env::current_dir()?;
+    let session = ControllerSession::with_local_node_and_storage(
+        instance_id,
+        node_endpoint,
+        node_instance_id,
+        paths.data_root(),
+        workspace,
+    )?;
     let mut listener = LocalIpcListener::bind(paths.endpoint())
         .map_err(controller_context("bind controller IPC"))?;
     let result = listener.serve_one_blocking(&session);

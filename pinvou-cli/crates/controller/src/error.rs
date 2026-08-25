@@ -13,6 +13,8 @@ pub enum ControllerError {
     PathUnavailable,
     #[error("controller local I/O failed: {0}")]
     Io(#[from] std::io::Error),
+    #[error("controller session storage failed: {0}")]
+    Storage(#[from] crate::SessionStoreError),
     #[error("controller request is unsupported")]
     UnsupportedRequest,
     #[error("controller IPC message is invalid")]
@@ -36,7 +38,7 @@ impl ControllerError {
             Self::UnsupportedRequest | Self::InvalidMessage => StableExitCode::RuntimeFailed,
             Self::Usage => StableExitCode::Usage,
             Self::NodeRestartExhausted => StableExitCode::RuntimeFailed,
-            Self::UnsupportedPlatform | Self::PathUnavailable | Self::Io(_) => {
+            Self::UnsupportedPlatform | Self::PathUnavailable | Self::Io(_) | Self::Storage(_) => {
                 StableExitCode::Internal
             }
             Self::IoContext { .. } => StableExitCode::Internal,

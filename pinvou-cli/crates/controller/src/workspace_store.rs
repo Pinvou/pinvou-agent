@@ -79,14 +79,18 @@ impl WorkspaceStore {
     }
 
     fn preference_path(&self, workspace: &Path) -> Result<PathBuf, SessionStoreError> {
+        Ok(self
+            .root
+            .join(self.workspace_key(workspace)?)
+            .join("preferences.json"))
+    }
+
+    pub fn workspace_key(&self, workspace: &Path) -> Result<String, SessionStoreError> {
         let workspace = workspace.canonicalize()?;
         let mut normalized = workspace.to_string_lossy().replace('\\', "/");
         if cfg!(windows) {
             normalized.make_ascii_lowercase();
         }
-        Ok(self
-            .root
-            .join(stable_key(normalized.as_bytes()))
-            .join("preferences.json"))
+        Ok(stable_key(normalized.as_bytes()))
     }
 }

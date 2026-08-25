@@ -8,7 +8,7 @@ use std::{
 use std::path::PathBuf;
 
 use pinvou_controller::{
-    ControllerPaths, ControllerSession, HostPlatform, LocalEndpoint, LocalIpcListener,
+    ControllerPaths, ControllerSession, HostPlatform, LocalEndpoint, LocalIpcListener, SessionStore,
 };
 use pinvou_protocol::{
     HelloClient, HelloServer, IpcMessage, RuntimeEventEnvelope, encode_frame, read_frame,
@@ -51,6 +51,64 @@ fn controller_stream_bound_forwards_the_complete_node_event_stream_in_order() {
     assert_eq!(received, expected);
     assert_eq!(received.last().unwrap()["kind"], "turn.ended");
     server.join().unwrap();
+}
+
+#[test]
+fn persistent_controller_appends_each_event_before_exposing_it() {
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-controller-persistent-stream-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let events = scripted_runtime_events();
+    let event_count = events.len();
+    let (endpoint, server) = spawn_persistent_scripted_node(events);
+    let session = ControllerSession::with_local_node_and_storage(
+        "controller-instance",
+        endpoint,
+        "node-instance",
+        &root,
+        &workspace,
+    )
+    .unwrap();
+    let request = IpcMessage::request(
+        serde_json::json!(43),
+        "chat.start",
+        serde_json::json!({
+            "instance_id": "controller-instance",
+            "prompt": "persist everything"
+        }),
+    )
+    .unwrap();
+    let mut exposed = 0_u64;
+
+    session
+        .stream_bound(request, |_| {
+            exposed += 1;
+            let store = SessionStore::open(&root).unwrap();
+            let descriptor = store.list().into_iter().next().unwrap();
+            let restored = store.restore(&descriptor.id).unwrap();
+            assert_eq!(restored.cursor, exposed);
+            Ok(())
+        })
+        .unwrap();
+
+    assert_eq!(exposed as usize, event_count);
+    let store = SessionStore::open(&root).unwrap();
+    let descriptor = store.list().into_iter().next().unwrap();
+    let metadata = store.metadata(&descriptor.id).unwrap();
+    assert_eq!(metadata.snapshot_cursor as usize, event_count);
+    assert_eq!(
+        store.restore(&descriptor.id).unwrap().cursor as usize,
+        event_count
+    );
+    server.join().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(debug_assertions)]
@@ -285,6 +343,63 @@ fn spawn_scripted_node(
     });
     ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     (endpoint, first_observed_tx, server)
+}
+
+fn spawn_persistent_scripted_node(
+    events: Vec<RuntimeEventEnvelope>,
+) -> (String, std::thread::JoinHandle<()>) {
+    let endpoint = unique_endpoint();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let server_endpoint = endpoint.clone();
+    let server = std::thread::spawn(move || {
+        let mut discovery = accept_node_connection(&server_endpoint, Some(ready_tx));
+        serve_node_hello(&mut *discovery);
+        let runtime_list: IpcMessage = read_frame(&mut discovery).unwrap();
+        assert_eq!(runtime_list.method(), Some("runtime.list"));
+        let response = IpcMessage::response(
+            runtime_list.id().unwrap().clone(),
+            serde_json::json!({"current":"codex","runtimes":[]}),
+        )
+        .unwrap();
+        discovery
+            .write_all(&encode_frame(&response).unwrap())
+            .unwrap();
+        discovery.flush().unwrap();
+        let model_list: IpcMessage = read_frame(&mut discovery).unwrap();
+        assert_eq!(model_list.method(), Some("model.list"));
+        let response = IpcMessage::response(
+            model_list.id().unwrap().clone(),
+            serde_json::json!({
+                "catalog": {
+                    "runtime_id":"codex",
+                    "models":[{
+                        "id":"gpt-5.6",
+                        "display_name":"GPT-5.6",
+                        "is_default":true,
+                        "available":true
+                    }],
+                    "current_model":"gpt-5.6"
+                }
+            }),
+        )
+        .unwrap();
+        discovery
+            .write_all(&encode_frame(&response).unwrap())
+            .unwrap();
+        discovery.flush().unwrap();
+        drop(discovery);
+
+        let mut chat = accept_node_connection(&server_endpoint, None);
+        serve_node_hello(&mut *chat);
+        let request: IpcMessage = read_frame(&mut chat).unwrap();
+        assert_eq!(request.method(), Some("chat.start"));
+        assert_eq!(request.payload()["model_id"], "gpt-5.6");
+        for event in events {
+            send_runtime_event(&mut *chat, event);
+        }
+    });
+    ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    (endpoint, server)
 }
 
 fn spawn_approval_gated_node() -> (String, std::thread::JoinHandle<()>) {

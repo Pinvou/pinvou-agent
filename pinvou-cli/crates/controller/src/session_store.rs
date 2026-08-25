@@ -36,6 +36,8 @@ pub struct StoredSessionMetadata {
     pub descriptor: SessionDescriptor,
     pub attachment_epoch: u64,
     pub snapshot_cursor: u64,
+    #[serde(default)]
+    pub workspace_key: Option<String>,
 }
 
 impl StoredSessionMetadata {
@@ -45,6 +47,21 @@ impl StoredSessionMetadata {
             descriptor,
             attachment_epoch,
             snapshot_cursor: 0,
+            workspace_key: None,
+        }
+    }
+
+    pub fn for_workspace(
+        descriptor: SessionDescriptor,
+        attachment_epoch: u64,
+        workspace_key: String,
+    ) -> Self {
+        Self {
+            schema_version: SESSION_SCHEMA_VERSION,
+            descriptor,
+            attachment_epoch,
+            snapshot_cursor: 0,
+            workspace_key: Some(workspace_key),
         }
     }
 }
@@ -215,6 +232,46 @@ impl SessionStore {
             .collect::<Vec<_>>();
         sessions.sort_by(|left, right| right.last_active_at.cmp(&left.last_active_at));
         sessions
+    }
+
+    pub fn list_for_workspace(&self, workspace_key: &str) -> Vec<SessionDescriptor> {
+        let mut sessions = self
+            .sessions
+            .values()
+            .filter(|state| state.metadata.workspace_key.as_deref() == Some(workspace_key))
+            .map(|state| state.metadata.descriptor.clone())
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| right.last_active_at.cmp(&left.last_active_at));
+        sessions
+    }
+
+    pub fn update_metadata(
+        &mut self,
+        metadata: StoredSessionMetadata,
+    ) -> Result<(), SessionStoreError> {
+        validate_metadata(&metadata)?;
+        let state = self
+            .sessions
+            .get_mut(metadata.descriptor.id.as_str())
+            .ok_or(SessionStoreError::NotFound)?;
+        if metadata.snapshot_cursor != state.snapshot.cursor {
+            return Err(SessionStoreError::Corrupt(
+                "metadata cursor disagrees with snapshot",
+            ));
+        }
+        atomic_write_json(&state.directory.join("metadata.json"), &metadata)?;
+        state.metadata = metadata;
+        Ok(())
+    }
+
+    pub fn metadata(
+        &self,
+        session_id: &LogicalSessionId,
+    ) -> Result<StoredSessionMetadata, SessionStoreError> {
+        self.sessions
+            .get(session_id.as_str())
+            .map(|state| state.metadata.clone())
+            .ok_or(SessionStoreError::NotFound)
     }
 }
 
