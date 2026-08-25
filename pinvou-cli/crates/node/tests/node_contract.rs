@@ -11,8 +11,10 @@ use pinvou_protocol::{
     HelloClient, IpcMessage, IpcMessageKind, RuntimeEventEnvelope, StableExitCode,
 };
 use pinvou_runtime_api::{
-    AdapterError, AgentRuntimeAdapter, AuthStatus, RuntimeCapabilities, RuntimeCommand,
-    RuntimeEventSubscription, RuntimeOperation, RuntimeSession,
+    AdapterError, AgentRuntimeAdapter, ApprovalProfile, AuthStatus, ControlStrength,
+    LogicalSessionId, ModelCatalog, ModelDescriptor, ModelId, PermissionCapability,
+    RuntimeCapabilities, RuntimeCommand, RuntimeEventSubscription, RuntimeOperation,
+    RuntimeSession, SessionDescriptor, SessionSnapshot, SessionStatus,
 };
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -753,11 +755,82 @@ impl AgentRuntimeAdapter for FakeAdapter {
     }
 
     fn create(&mut self, operation: RuntimeOperation) -> Result<RuntimeSession, AdapterError> {
+        self.calls.lock().unwrap().push(format!(
+            "create:{}:{}",
+            operation.operation_id, operation.options
+        ));
+        RuntimeSession::new("adapter-session")
+    }
+
+    fn resume(&mut self, operation: RuntimeOperation) -> Result<RuntimeSession, AdapterError> {
+        self.calls.lock().unwrap().push(format!(
+            "resume:{}:{}",
+            operation.operation_id, operation.options
+        ));
+        RuntimeSession::new("resumed-session")
+    }
+
+    fn list_sessions(
+        &mut self,
+        operation: RuntimeOperation,
+    ) -> Result<Vec<SessionDescriptor>, AdapterError> {
         self.calls
             .lock()
             .unwrap()
-            .push(format!("create:{}", operation.operation_id));
-        RuntimeSession::new("adapter-session")
+            .push(format!("list_sessions:{}", operation.options));
+        Ok(vec![SessionDescriptor {
+            id: LogicalSessionId::new("logical-1").unwrap(),
+            title: "Saved task".into(),
+            last_active_at: "2026-08-25T10:00:00Z".into(),
+            runtime_id: "codex".into(),
+            model_id: Some(ModelId::new("gpt-5.6").unwrap()),
+            status: SessionStatus::Completed,
+            native_session_id: Some("thread-1".into()),
+        }])
+    }
+
+    fn read_session(&mut self, _: RuntimeOperation) -> Result<SessionSnapshot, AdapterError> {
+        self.calls.lock().unwrap().push("read_session".into());
+        Ok(SessionSnapshot {
+            descriptor: SessionDescriptor {
+                id: LogicalSessionId::new("logical-1").unwrap(),
+                title: "Saved task".into(),
+                last_active_at: "2026-08-25T10:00:00Z".into(),
+                runtime_id: "codex".into(),
+                model_id: Some(ModelId::new("gpt-5.6").unwrap()),
+                status: SessionStatus::Completed,
+                native_session_id: Some("thread-1".into()),
+            },
+            cursor: 3,
+            normalized_events: vec![serde_json::json!({"text":"done"})],
+        })
+    }
+
+    fn list_models(&mut self, _: RuntimeOperation) -> Result<ModelCatalog, AdapterError> {
+        self.calls.lock().unwrap().push("list_models".into());
+        ModelCatalog::new(
+            "codex",
+            Some(ModelId::new("gpt-5.6").unwrap()),
+            vec![ModelDescriptor::new("gpt-5.6", "GPT-5.6", true, true).unwrap()],
+        )
+    }
+
+    fn inspect_permissions(
+        &mut self,
+        _: RuntimeOperation,
+    ) -> Result<PermissionCapability, AdapterError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push("inspect_permissions".into());
+        Ok(PermissionCapability {
+            supported_profiles: vec![ApprovalProfile::Request],
+            control_strength: ControlStrength::Partial,
+            native_mode: Some("on-request".into()),
+            sandbox: Some("workspace-write".into()),
+            residual_guards: vec![],
+            evidence_version: "fixture-v1".into(),
+        })
     }
 
     fn send(
@@ -1799,7 +1872,7 @@ fn adapter_runtime_host_drives_probe_create_send_events_and_control_methods() {
         calls.lock().unwrap().as_slice(),
         [
             "probe",
-            "create:node-runtime",
+            "create:node-runtime:{}",
             "send:adapter-session:hello-adapter",
             "subscribe",
             "approve:adapter-session:approval-a:accept",
@@ -1808,6 +1881,146 @@ fn adapter_runtime_host_drives_probe_create_send_events_and_control_methods() {
             "close:adapter-session",
         ]
     );
+}
+
+#[test]
+fn adapter_runtime_host_exposes_session_model_and_permission_operations() {
+    let adapter = FakeAdapter::default();
+    let calls = adapter.calls();
+    let session = NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(AdapterRuntimeHost::new(Box::new(adapter))),
+    )
+    .unwrap();
+
+    let response = session
+        .handle(
+            IpcMessage::request(
+                serde_json::json!(1),
+                "session.list",
+                serde_json::json!({"instance_id":"node-instance","cwd":"D:/workspace"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(response.payload()["sessions"][0]["title"], "Saved task");
+
+    let response = session
+        .handle(
+            IpcMessage::request(
+                serde_json::json!(2),
+                "session.read",
+                serde_json::json!({"instance_id":"node-instance","thread_id":"thread-1"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(response.payload()["snapshot"]["cursor"], 3);
+
+    let response = session
+        .handle(
+            IpcMessage::request(
+                serde_json::json!(3),
+                "model.list",
+                serde_json::json!({"instance_id":"node-instance","current_model":"gpt-5.6"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(response.payload()["catalog"]["models"][0]["id"], "gpt-5.6");
+
+    let response = session
+        .handle(
+            IpcMessage::request(
+                serde_json::json!(4),
+                "permissions.inspect",
+                serde_json::json!({"instance_id":"node-instance"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        response.payload()["permissions"]["control_strength"],
+        "partial"
+    );
+
+    let response = session
+        .handle(
+            IpcMessage::request(
+                serde_json::json!(5),
+                "session.resume",
+                serde_json::json!({
+                    "instance_id":"node-instance",
+                    "thread_id":"thread-1",
+                    "model_id":"gpt-5.6",
+                    "approval_profile":"request"
+                }),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(response.payload()["attachment_id"], "resumed-session");
+    assert_eq!(response.payload()["attachment_epoch"], 1);
+
+    let stale = IpcMessage::request(
+        serde_json::json!(6),
+        "chat.start",
+        serde_json::json!({
+            "instance_id":"node-instance",
+            "prompt":"stale",
+            "attachment_epoch":0,
+            "model_id":"gpt-5.6",
+            "approval_profile":"request"
+        }),
+    )
+    .unwrap();
+    assert!(matches!(
+        session.stream_bound(stale, |_| Ok(())),
+        Err(NodeError::InvalidMessage)
+    ));
+
+    let calls = calls.lock().unwrap();
+    assert!(calls.iter().any(|call| call.starts_with("list_sessions:")));
+    assert!(calls.iter().any(|call| call == "read_session"));
+    assert!(calls.iter().any(|call| call == "list_models"));
+    assert!(calls.iter().any(|call| call == "inspect_permissions"));
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.starts_with("resume:thread-1:"))
+    );
+}
+
+#[test]
+fn initial_chat_passes_model_and_permissions_to_adapter_creation() {
+    let adapter = FakeAdapter::default();
+    let calls = adapter.calls();
+    let session = NodeSession::with_runtime(
+        "node-instance",
+        Arc::new(AdapterRuntimeHost::new(Box::new(adapter))),
+    )
+    .unwrap();
+    let request = IpcMessage::request(
+        serde_json::json!(1),
+        "chat.start",
+        serde_json::json!({
+            "instance_id":"node-instance",
+            "prompt":"hello",
+            "model_id":"gpt-5.6",
+            "approval_profile":"request",
+            "attachment_epoch":1
+        }),
+    )
+    .unwrap();
+
+    session.stream_bound(request, |_| Ok(())).unwrap();
+
+    let calls = calls.lock().unwrap();
+    assert!(calls.iter().any(|call| {
+        call.starts_with("create:node-runtime:")
+            && call.contains("\"model_id\":\"gpt-5.6\"")
+            && call.contains("\"approval_profile\":\"request\"")
+    }));
 }
 
 #[test]

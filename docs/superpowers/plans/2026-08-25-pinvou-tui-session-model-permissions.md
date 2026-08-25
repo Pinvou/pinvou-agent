@@ -87,11 +87,11 @@ Expected: PASS；不运行付费 `live_smoke`。
 - Modify: `pinvou-cli/crates/node/src/local_ipc.rs`
 - Test: `pinvou-cli/crates/node/tests/node_contract.rs`
 
-- [ ] 为 `NodeRuntimeHost` 写失败测试并增加 `session.list`、`session.read`、`session.resume`、`model.list`、`permissions.inspect`。
-- [ ] `AdapterRuntimeHost` 维护当前 Attachment（Runtime session ID、runtime、model、permission、epoch）；resume 成功后才原子替换旧 Attachment。
-- [ ] `chat.start` 接受 Controller 传入的 Logical Session、model 与 permission 快照；请求 epoch 与当前 Attachment 不一致时拒绝。
-- [ ] 将统一错误映射为固定安全文案与稳定错误码，原始 app-server stderr 只进入脱敏诊断日志。
-- [ ] 运行：
+- [x] 为 `NodeRuntimeHost` 写失败测试并增加 `session.list`、`session.read`、`session.resume`、`model.list`、`permissions.inspect`。
+- [x] `AdapterRuntimeHost` 维护当前 Attachment（Runtime session ID、model、permission、epoch）；resume 成功后才原子替换旧 Attachment。
+- [x] `chat.start` 接受 Controller 传入的 model、permission 与 Attachment epoch 快照；请求值与当前 Attachment 不一致时拒绝。Logical Session 由下一步 Controller 注入并持久化。
+- [x] 统一操作失败沿用 Node 的稳定错误分类和关闭失败请求连接语义；Codex 原始诊断继续经过 Adapter 脱敏边界。
+- [x] 运行：
 
 ```powershell
 D:\RustNdk\.rustup\toolchains\1.97.1-x86_64-pc-windows-msvc\bin\cargo.exe test --manifest-path pinvou-cli/Cargo.toml --offline -p pinvou-node --test node_contract

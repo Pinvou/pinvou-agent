@@ -3,7 +3,8 @@ use pinvou_protocol::{
     HelloClient, HelloServer, IpcMessage, IpcMessageKind, RuntimeEventEnvelope, RuntimeEventKind,
 };
 use pinvou_runtime_api::{
-    AgentRuntimeAdapter, RuntimeCommand, RuntimeEventSubscription, RuntimeOperation, RuntimeSession,
+    AgentRuntimeAdapter, ModelCatalog, PermissionCapability, RuntimeCommand,
+    RuntimeEventSubscription, RuntimeOperation, RuntimeSession, SessionDescriptor, SessionSnapshot,
 };
 use serde_json::json;
 use std::{
@@ -32,6 +33,17 @@ pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
         seq: u64,
     ) -> Result<NodeRuntimeEventStream, NodeError>;
 
+    fn start_turn_with_context(
+        &self,
+        node_id: &str,
+        prompt: &str,
+        seq: u64,
+        payload: &serde_json::Value,
+    ) -> Result<NodeRuntimeEventStream, NodeError> {
+        self.validate_turn_context(payload)?;
+        self.start_turn(node_id, prompt, seq)
+    }
+
     fn cleanup_after_delivery_failure(
         &self,
         stream: NodeRuntimeEventStream,
@@ -58,6 +70,36 @@ pub trait NodeRuntimeHost: Send + Sync + std::fmt::Debug {
                 "auth_flows": []
             }
         }))
+    }
+
+    fn list_sessions(
+        &self,
+        _options: serde_json::Value,
+    ) -> Result<Vec<SessionDescriptor>, NodeError> {
+        Err(NodeError::UnsupportedRequest)
+    }
+
+    fn read_session(&self, _options: serde_json::Value) -> Result<SessionSnapshot, NodeError> {
+        Err(NodeError::UnsupportedRequest)
+    }
+
+    fn resume_session(&self, _options: serde_json::Value) -> Result<serde_json::Value, NodeError> {
+        Err(NodeError::UnsupportedRequest)
+    }
+
+    fn list_models(&self, _options: serde_json::Value) -> Result<ModelCatalog, NodeError> {
+        Err(NodeError::UnsupportedRequest)
+    }
+
+    fn inspect_permissions(
+        &self,
+        _options: serde_json::Value,
+    ) -> Result<PermissionCapability, NodeError> {
+        Err(NodeError::UnsupportedRequest)
+    }
+
+    fn validate_turn_context(&self, _payload: &serde_json::Value) -> Result<(), NodeError> {
+        Ok(())
     }
 
     fn resolve_approval(
@@ -91,6 +133,9 @@ struct AdapterRuntimeState {
     adapter: Box<dyn AgentRuntimeAdapter>,
     probed: bool,
     session: Option<RuntimeSession>,
+    attachment_epoch: u64,
+    model_id: Option<String>,
+    approval_profile: String,
     subscription: Option<RuntimeEventSubscription>,
     closed: bool,
 }
@@ -109,6 +154,9 @@ impl AdapterRuntimeHost {
                 adapter,
                 probed: false,
                 session: None,
+                attachment_epoch: 0,
+                model_id: None,
+                approval_profile: "request".into(),
                 subscription: None,
                 closed: false,
             })),
@@ -160,25 +208,103 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
         prompt: &str,
         _: u64,
     ) -> Result<NodeRuntimeEventStream, NodeError> {
-        ensure_adapter_available(&self.retired)?;
-        let mut inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
-        ensure_adapter_available(&self.retired)?;
-        let session = ensure_adapter_session(&mut inner)?;
-        inner
+        self.start_adapter_turn(prompt, &json!({}))
+    }
+
+    fn start_turn_with_context(
+        &self,
+        _: &str,
+        prompt: &str,
+        _: u64,
+        payload: &serde_json::Value,
+    ) -> Result<NodeRuntimeEventStream, NodeError> {
+        self.start_adapter_turn(prompt, payload)
+    }
+
+    fn list_sessions(
+        &self,
+        options: serde_json::Value,
+    ) -> Result<Vec<SessionDescriptor>, NodeError> {
+        let mut inner = self.lock_available_state()?;
+        ensure_adapter_probe(&mut inner)?;
+        Ok(inner
             .adapter
-            .send(&session, RuntimeCommand::text(prompt)?)?;
-        let events = match inner.subscription.take() {
-            Some(events) => events,
-            None => inner.adapter.subscribe_events(&session)?,
-        };
-        drop(inner);
-        Ok(Box::new(AdapterTurnStream {
-            inner: Arc::clone(&self.inner),
-            retired: Arc::clone(&self.retired),
-            subscription: Some(events),
-            turn_id: None,
-            finished: false,
+            .list_sessions(RuntimeOperation::new("session-list", options)?)?)
+    }
+
+    fn read_session(&self, options: serde_json::Value) -> Result<SessionSnapshot, NodeError> {
+        let operation_id = options
+            .get("thread_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or(NodeError::InvalidMessage)?;
+        let mut inner = self.lock_available_state()?;
+        ensure_adapter_probe(&mut inner)?;
+        Ok(inner
+            .adapter
+            .read_session(RuntimeOperation::new(operation_id, options.clone())?)?)
+    }
+
+    fn resume_session(&self, options: serde_json::Value) -> Result<serde_json::Value, NodeError> {
+        let operation_id = options
+            .get("thread_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or(NodeError::InvalidMessage)?
+            .to_owned();
+        let mut inner = self.lock_available_state()?;
+        ensure_adapter_probe(&mut inner)?;
+        let resumed = inner
+            .adapter
+            .resume(RuntimeOperation::new(operation_id, options.clone())?)?;
+        let previous = inner.session.clone();
+        inner.session = Some(resumed.clone());
+        inner.attachment_epoch = inner.attachment_epoch.wrapping_add(1).max(1);
+        inner.model_id = options
+            .get("model_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        inner.approval_profile = options
+            .get("approval_profile")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("request")
+            .to_owned();
+        if let Some(previous) = previous.as_ref()
+            && previous != &resumed
+        {
+            let _ = inner.adapter.close(previous);
+        }
+        Ok(json!({
+            "status":"ok",
+            "attachment_id":resumed.as_str(),
+            "attachment_epoch":inner.attachment_epoch,
+            "model_id":options.get("model_id").cloned().unwrap_or(serde_json::Value::Null),
+            "approval_profile":options.get("approval_profile").cloned().unwrap_or_else(||json!("request"))
         }))
+    }
+
+    fn list_models(&self, options: serde_json::Value) -> Result<ModelCatalog, NodeError> {
+        let mut inner = self.lock_available_state()?;
+        ensure_adapter_probe(&mut inner)?;
+        Ok(inner
+            .adapter
+            .list_models(RuntimeOperation::new("model-list", options)?)?)
+    }
+
+    fn inspect_permissions(
+        &self,
+        options: serde_json::Value,
+    ) -> Result<PermissionCapability, NodeError> {
+        let mut inner = self.lock_available_state()?;
+        ensure_adapter_probe(&mut inner)?;
+        Ok(inner
+            .adapter
+            .inspect_permissions(RuntimeOperation::new("permissions-inspect", options)?)?)
+    }
+
+    fn validate_turn_context(&self, payload: &serde_json::Value) -> Result<(), NodeError> {
+        let inner = self.lock_available_state()?;
+        validate_attachment_context(&inner, payload, false)
     }
 
     fn cleanup_after_delivery_failure(
@@ -254,6 +380,113 @@ impl NodeRuntimeHost for AdapterRuntimeHost {
         inner.adapter.interrupt(&session)?;
         Ok(json!({"status":"ok", "method":"turn.interrupt", "turn_id":turn_id}))
     }
+}
+
+impl AdapterRuntimeHost {
+    fn lock_available_state(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, AdapterRuntimeState>, NodeError> {
+        ensure_adapter_available(&self.retired)?;
+        let inner = self.inner.lock().map_err(|_| NodeError::InvalidMessage)?;
+        ensure_adapter_available(&self.retired)?;
+        Ok(inner)
+    }
+
+    fn start_adapter_turn(
+        &self,
+        prompt: &str,
+        payload: &serde_json::Value,
+    ) -> Result<NodeRuntimeEventStream, NodeError> {
+        let mut inner = self.lock_available_state()?;
+        ensure_adapter_probe(&mut inner)?;
+        let session = if let Some(session) = inner.session.clone() {
+            validate_attachment_context(&inner, payload, false)?;
+            session
+        } else {
+            validate_attachment_context(&inner, payload, true)?;
+            let options = attachment_options(payload);
+            let session = inner
+                .adapter
+                .create(RuntimeOperation::new("node-runtime", options)?)?;
+            inner.session = Some(session.clone());
+            inner.attachment_epoch = 1;
+            inner.model_id = payload
+                .get("model_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            inner.approval_profile = payload
+                .get("approval_profile")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("request")
+                .to_owned();
+            session
+        };
+        inner
+            .adapter
+            .send(&session, RuntimeCommand::text(prompt)?)?;
+        let events = match inner.subscription.take() {
+            Some(events) => events,
+            None => inner.adapter.subscribe_events(&session)?,
+        };
+        drop(inner);
+        Ok(Box::new(AdapterTurnStream {
+            inner: Arc::clone(&self.inner),
+            retired: Arc::clone(&self.retired),
+            subscription: Some(events),
+            turn_id: None,
+            finished: false,
+        }))
+    }
+}
+
+fn attachment_options(payload: &serde_json::Value) -> serde_json::Value {
+    let mut options = serde_json::Map::new();
+    for key in [
+        "cwd",
+        "model_id",
+        "approval_profile",
+        "full_access_confirmed",
+    ] {
+        if let Some(value) = payload.get(key) {
+            options.insert(key.into(), value.clone());
+        }
+    }
+    serde_json::Value::Object(options)
+}
+
+fn validate_attachment_context(
+    state: &AdapterRuntimeState,
+    payload: &serde_json::Value,
+    allow_initial_attachment: bool,
+) -> Result<(), NodeError> {
+    if let Some(expected_epoch) = payload
+        .get("attachment_epoch")
+        .and_then(serde_json::Value::as_u64)
+    {
+        let actual_epoch = if allow_initial_attachment && state.session.is_none() {
+            1
+        } else {
+            state.attachment_epoch
+        };
+        if actual_epoch != expected_epoch {
+            return Err(NodeError::InvalidMessage);
+        }
+    }
+    if !allow_initial_attachment {
+        if payload.get("model_id").and_then(serde_json::Value::as_str) != state.model_id.as_deref()
+            && payload.get("model_id").is_some()
+        {
+            return Err(NodeError::InvalidMessage);
+        }
+        if let Some(profile) = payload
+            .get("approval_profile")
+            .and_then(serde_json::Value::as_str)
+            && profile != state.approval_profile
+        {
+            return Err(NodeError::InvalidMessage);
+        }
+    }
+    Ok(())
 }
 
 struct AdapterTurnStream {
@@ -390,6 +623,7 @@ fn ensure_adapter_session(state: &mut AdapterRuntimeState) -> Result<RuntimeSess
         .adapter
         .create(RuntimeOperation::new("node-runtime", json!({}))?)?;
     state.session = Some(session.clone());
+    state.attachment_epoch = state.attachment_epoch.wrapping_add(1).max(1);
     Ok(session)
 }
 
@@ -679,6 +913,27 @@ impl NodeSession {
                 }
                 json!({"status":"ok", "runtime":runtime, "switch_token":switch_token})
             }
+            Some("session.list") => {
+                let host = self.current_runtime_host()?;
+                json!({"sessions":host.list_sessions(request.payload().clone())?})
+            }
+            Some("session.read") => {
+                let host = self.current_runtime_host()?;
+                json!({"snapshot":host.read_session(request.payload().clone())?})
+            }
+            Some("session.resume") => {
+                self.ensure_idle()?;
+                self.current_runtime_host()?
+                    .resume_session(request.payload().clone())?
+            }
+            Some("model.list") => {
+                let host = self.current_runtime_host()?;
+                json!({"catalog":host.list_models(request.payload().clone())?})
+            }
+            Some("permissions.inspect") => {
+                let host = self.current_runtime_host()?;
+                json!({"permissions":host.inspect_permissions(request.payload().clone())?})
+            }
             Some("runtime.echo") => {
                 let text = request
                     .payload()
@@ -786,7 +1041,8 @@ impl NodeSession {
             .filter(|value| !value.is_empty())
             .ok_or(NodeError::InvalidMessage)?;
         let (runtime, _active, seq) = self.begin_turn()?;
-        let mut stream = runtime.start_turn(&self.instance_id, prompt, seq)?;
+        let mut stream =
+            runtime.start_turn_with_context(&self.instance_id, prompt, seq, request.payload())?;
         let mut turn_id = None;
         while let Some(envelope) = stream.next() {
             let envelope = envelope?;
@@ -840,6 +1096,20 @@ impl NodeSession {
             },
             seq,
         ))
+    }
+
+    fn ensure_idle(&self) -> Result<(), NodeError> {
+        if self
+            .coordinator
+            .lock()
+            .map_err(|_| NodeError::InvalidMessage)?
+            .active_turn
+            .is_some()
+        {
+            Err(NodeError::RuntimeBusy)
+        } else {
+            Ok(())
+        }
     }
 
     fn commit_runtime_switch(&self, runtime: &str) -> Result<(), NodeError> {
