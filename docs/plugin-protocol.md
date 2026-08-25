@@ -407,7 +407,7 @@ workflows 非空                              → Workflow
 |---|---|---|---|
 | 包级下载 | 商店输入 URL / 远程分发 | `import_plugin_package_from_url` → 下载 → 复用 §10 管线 | ⏳ 未实现（草案） |
 | 组件级远程资源 | `plugin.json` 声明 `source:"remote"` | 安装时 AssetManager 下载并验 SHA-256 | ⏳（仅内置 CLI 走该管线；plugin.json 声明式触发为草案）|
-| 依赖级下载 | `dependencies.pip` / `runtimes` | 现有 pip / runtime 管线（§4，软声明） | ✅ |
+| 依赖级下载 | `dependencies.pip` / `runtimes` | 现有 pip / runtime 管线（§4，软声明） | ⏳（pip 管线现仅消费 `mcp/manifest.json` 的 `pip_dependencies`；`plugin.json` 的 `dependencies` 键未消费，见 §10） |
 
 ### 14.2 包级下载（商店 URL 导入）
 

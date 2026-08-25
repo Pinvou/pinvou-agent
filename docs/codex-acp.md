@@ -149,9 +149,8 @@ Linux 发布脚本会自动准备 Bridge。单独执行 Tauri 构建前也可手
 入口也会自动准备该目录。
 生成物由 `.gitignore` 排除，不进入源码仓库；Bridge 不包含 Codex CLI。正式包不依赖
 系统 Node/npm 来运行 ACP Bridge；系统 Codex 缺失时由应用经用户确认运行 OpenAI 官方
-安装脚本。旧版升级按来源分流：npm 来源经用户确认用 `npm install -g
-@openai/codex@latest`、brew 来源用 `brew upgrade --cask codex`，其余来源按官方脚本
-升级（详见 `multi-agent-acp.md` 的 CLI 探测与安装矩阵）。
+安装脚本。旧版升级按来源分流（npm / brew cask / 官方脚本），具体命令矩阵见
+`multi-agent-acp.md` 的「CLI 探测与安装」。
 
 ## 边界
 

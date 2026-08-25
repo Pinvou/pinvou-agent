@@ -253,7 +253,7 @@ metadata:                       # 可选
 | 用途 | 规则 |
 |---|---|
 | 包 `id`（`plugin.json.id`） | `[a-z0-9-_]{1,64}`，小写 |
-| MCP `id`（`ToolManifest.id`）与 `components.mcp_servers[].id` | `[a-z0-9-_]{1,64}`，小写 |
+| MCP `id`（`ToolManifest.id`）与 `components.mcp_servers[].id` | `[a-zA-Z0-9_-]{1,64}`（建议小写；导入强制两侧一致，包 id 才强制小写字符集） |
 | 技能 `name`（`SKILL.md`）与 `components.skills[].id` | `[a-zA-Z0-9_-]{1,64}`（允许大小写；两者必须一致，导入仅校验一致性） |
 
 禁止 `.`、`..`、路径分隔符；与已下线内置名冲突会拒收。
