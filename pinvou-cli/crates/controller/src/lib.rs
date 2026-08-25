@@ -9,9 +9,11 @@ mod local_node_supervisor;
 mod logging;
 mod paths;
 mod session;
+mod session_store;
 mod wal;
 #[cfg(windows)]
 mod windows_security;
+mod workspace_store;
 
 #[cfg(debug_assertions)]
 pub use daemon::run_controller_once_for_test;
@@ -27,7 +29,9 @@ pub use local_node_supervisor::{
 pub use logging::RollingLog;
 pub use paths::{ControllerPaths, HostPlatform, LocalEndpoint};
 pub use session::ControllerSession;
+pub use session_store::{SessionStore, SessionStoreError, StoredSessionMetadata};
 pub use wal::{BatchAck, ControllerWal, IngestOutcome, WalError};
+pub use workspace_store::{WorkspacePreferences, WorkspaceStore};
 
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 

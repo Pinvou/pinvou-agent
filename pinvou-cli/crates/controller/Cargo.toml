@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 pinvou-protocol = { path = "../protocol" }
+pinvou-runtime-api = { path = "../runtime-api" }
 pinvou-seglog = { path = "../seglog" }
 serde.workspace = true
 serde_json = "1"

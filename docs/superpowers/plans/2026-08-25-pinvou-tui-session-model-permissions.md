@@ -109,12 +109,12 @@ Expected: PASS。
 - Modify: `pinvou-cli/crates/controller/src/wal.rs`
 - Test: `pinvou-cli/crates/controller/tests/session_store_contract.rs`
 
-- [ ] 先写临时数据根测试：创建会话、追加事件、生成 snapshot、重开 store，并断言 cursor 后事件只应用一次。
-- [ ] 保存版本化 `metadata.json`、`snapshot.json`、`events.seglog`；metadata/snapshot 使用同目录临时文件、flush 后原子替换。
-- [ ] Workspace key 使用规范化绝对路径的不可逆 hash；preferences 保存 runtime、`model_by_runtime`、approval profile，但不保存凭据或原始 Workspace 路径到索引名。
-- [ ] 对损坏 JSON、sequence 缺口、重复 sequence、未知 schema 返回可分类错误；不得猜测恢复成功。
-- [ ] 保证落盘顺序为 WAL durable → metadata/snapshot 替换 → 返回成功。
-- [ ] 运行：
+- [x] 先写临时数据根测试：创建会话、追加事件、生成 snapshot、重开 store，并断言 cursor 后事件只应用一次。
+- [x] 保存版本化 `metadata.json`、`snapshot.json`、`events.seglog`；metadata/snapshot 使用同目录临时文件、flush 后原子替换。
+- [x] Workspace key 使用规范化绝对路径的不可逆目录 hash；preferences 保存 runtime、`model_by_runtime`、approval profile，但不保存凭据或原始 Workspace 路径到索引名。
+- [x] 对损坏 JSON、sequence 缺口、重复 sequence、未知 schema 返回可分类错误；不得猜测恢复成功。
+- [x] 保证落盘顺序为 WAL durable → metadata/snapshot 替换 → 返回成功。
+- [x] 运行：
 
 ```powershell
 D:\RustNdk\.rustup\toolchains\1.97.1-x86_64-pc-windows-msvc\bin\cargo.exe test --manifest-path pinvou-cli/Cargo.toml --offline -p pinvou-controller --test session_store_contract
