@@ -125,7 +125,7 @@ mod tests {
     use crate::{
         action::{Action, ApprovalDecision, Effect},
         backend::{Backend, BackendError, BackendErrorKind, RuntimeList, RuntimeStatus},
-        commands::{CommandError, SlashCommand, parse},
+        commands::{SlashCommand, parse},
         model::{Interaction, Model, OperationToken, Overlay, TranscriptEntry, TurnState},
         update::update,
     };
@@ -383,18 +383,24 @@ mod tests {
     }
 
     #[test]
-    fn slash_commands_drive_overlays_and_exit_without_advertising_future_commands() {
+    fn slash_commands_advertise_session_model_and_permission_controls() {
         let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
 
         update(&mut model, Action::Submit("/help".into()));
         let Overlay::Help { ref commands } = model.overlay else {
             panic!("help overlay expected");
         };
-        assert_eq!(commands, &["/help", "/runtime", "/exit", "/quit"]);
-        assert!(
-            !commands
-                .iter()
-                .any(|command| matches!(*command, "/resume" | "/model" | "/permissions"))
+        assert_eq!(
+            commands,
+            &[
+                "/help",
+                "/runtime",
+                "/resume",
+                "/model",
+                "/permissions",
+                "/exit",
+                "/quit"
+            ]
         );
 
         update(&mut model, Action::Submit("/runtime".into()));
@@ -404,7 +410,159 @@ mod tests {
 
         assert_eq!(parse("plain text"), Ok(None));
         assert_eq!(parse(" /exit "), Ok(Some(SlashCommand::Exit)));
-        assert_eq!(parse("/model"), Err(CommandError::Unknown("/model".into())));
+        assert_eq!(parse("/resume"), Ok(Some(SlashCommand::Resume)));
+        assert_eq!(parse("/model"), Ok(Some(SlashCommand::Model)));
+        assert_eq!(parse("/permissions"), Ok(Some(SlashCommand::Permissions)));
+    }
+
+    #[test]
+    fn session_model_and_permission_commands_drive_idle_only_effects() {
+        use crate::backend::{
+            ModelCandidate, ModelList, PermissionControlStrength, PermissionMode, PermissionStatus,
+            SessionCandidate, SessionList,
+        };
+
+        let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        let resume = update(&mut model, Action::Submit("/resume".into()));
+        let resume_token = match resume.as_slice() {
+            [
+                Effect::LoadSessionList {
+                    operation_token,
+                    query,
+                },
+            ] if query.is_empty() => *operation_token,
+            other => panic!("unexpected resume effects: {other:?}"),
+        };
+        update(
+            &mut model,
+            Action::SessionListLoaded {
+                operation_token: resume_token,
+                result: Ok(SessionList {
+                    sessions: vec![SessionCandidate {
+                        id: "logical-1".into(),
+                        title: "Saved task".into(),
+                        last_active_at: "2026-08-25T10:00:00Z".into(),
+                        runtime_id: "codex".into(),
+                        model_id: Some("gpt-5.6".into()),
+                        status: "completed".into(),
+                    }],
+                }),
+            },
+        );
+        assert_eq!(model.session_candidates[0].id, "logical-1");
+
+        model.overlay = Overlay::None;
+        let models = update(&mut model, Action::Submit("/model".into()));
+        let model_token = match models.as_slice() {
+            [Effect::LoadModelList { operation_token }] => *operation_token,
+            other => panic!("unexpected model effects: {other:?}"),
+        };
+        update(
+            &mut model,
+            Action::ModelListLoaded {
+                operation_token: model_token,
+                result: Ok(ModelList {
+                    runtime_id: "codex".into(),
+                    current_model: Some("gpt-5.6".into()),
+                    models: vec![ModelCandidate {
+                        id: "gpt-5.6".into(),
+                        display_name: "GPT-5.6".into(),
+                        is_default: true,
+                        available: true,
+                    }],
+                }),
+            },
+        );
+        assert_eq!(model.model_id.as_deref(), Some("gpt-5.6"));
+
+        model.overlay = Overlay::None;
+        let permissions = update(&mut model, Action::Submit("/permissions".into()));
+        let permission_token = match permissions.as_slice() {
+            [Effect::LoadPermissions { operation_token }] => *operation_token,
+            other => panic!("unexpected permission effects: {other:?}"),
+        };
+        update(
+            &mut model,
+            Action::PermissionsLoaded {
+                operation_token: permission_token,
+                result: Ok(PermissionStatus {
+                    current_profile: PermissionMode::Request,
+                    supported_profiles: vec![PermissionMode::Request, PermissionMode::Assisted],
+                    control_strength: PermissionControlStrength::Partial,
+                    native_mode: Some("on-request".into()),
+                    sandbox: Some("workspace-write".into()),
+                    residual_guards: vec!["os-policy".into()],
+                    evidence_version: "codex-0.139".into(),
+                }),
+            },
+        );
+        assert_eq!(model.permission_profile, PermissionMode::Request);
+        assert_eq!(model.overlay, Overlay::PermissionList);
+    }
+
+    #[test]
+    fn full_access_requires_confirmation_and_failed_resume_preserves_transcript() {
+        use crate::backend::PermissionMode;
+
+        let mut model = Model::new(PathBuf::from("workspace"), runtime("codex"));
+        update(&mut model, Action::Submit("keep this".into()));
+        let token = start_turn_token(&[Effect::StartTurn {
+            prompt: "keep this".into(),
+            operation_token: OperationToken::new(1),
+        }]);
+        update(
+            &mut model,
+            Action::TurnStreamCompleted {
+                operation_token: token,
+                result: Err(BackendError::new(BackendErrorKind::Operation, "stopped")),
+            },
+        );
+        let before = model.transcript.clone();
+        let resume = update(&mut model, Action::ResumeSession("logical-1".into()));
+        let resume_token = match resume.as_slice() {
+            [
+                Effect::ResumeSession {
+                    operation_token, ..
+                },
+            ] => *operation_token,
+            other => panic!("unexpected resume effects: {other:?}"),
+        };
+        update(
+            &mut model,
+            Action::SessionResumed {
+                operation_token: resume_token,
+                result: Err(BackendError::new(
+                    BackendErrorKind::Operation,
+                    "resume failed",
+                )),
+            },
+        );
+        assert_eq!(model.transcript, before);
+
+        let first = update(
+            &mut model,
+            Action::PermissionSwitch {
+                profile: PermissionMode::FullAccess,
+                full_access_confirmed: false,
+            },
+        );
+        assert!(first.is_empty());
+        assert_eq!(model.overlay, Overlay::FullAccessConfirmation);
+        let confirmed = update(
+            &mut model,
+            Action::PermissionSwitch {
+                profile: PermissionMode::FullAccess,
+                full_access_confirmed: true,
+            },
+        );
+        assert!(matches!(
+            confirmed.as_slice(),
+            [Effect::SwitchPermissions {
+                profile: PermissionMode::FullAccess,
+                full_access_confirmed: true,
+                ..
+            }]
+        ));
     }
 
     #[test]

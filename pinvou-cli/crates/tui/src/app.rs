@@ -967,6 +967,132 @@ fn handle_key(model: &mut Model, input: KeyInput) -> InputOutcome {
         };
         return outcome(effects);
     }
+    if model.overlay == Overlay::ResumeList {
+        let matching = model
+            .session_candidates
+            .iter()
+            .filter(|session| {
+                let query = model.session_query.to_ascii_lowercase();
+                query.is_empty()
+                    || session.title.to_ascii_lowercase().contains(&query)
+                    || session.id.to_ascii_lowercase().contains(&query)
+            })
+            .map(|session| session.id.clone())
+            .collect::<Vec<_>>();
+        let effects = match input.key {
+            Key::Esc => {
+                model.overlay = Overlay::None;
+                Vec::new()
+            }
+            Key::Up => {
+                model.selected_session = model.selected_session.saturating_sub(1);
+                Vec::new()
+            }
+            Key::Down => {
+                if model.selected_session + 1 < matching.len() {
+                    model.selected_session += 1;
+                }
+                Vec::new()
+            }
+            Key::Backspace => {
+                model.session_query.pop();
+                model.selected_session = 0;
+                Vec::new()
+            }
+            Key::Char(ch) if !input.control => {
+                model.session_query.push(ch);
+                model.selected_session = 0;
+                Vec::new()
+            }
+            Key::Enter if model.pending_session_list.is_none() => matching
+                .get(model.selected_session)
+                .cloned()
+                .map_or_else(Vec::new, |id| update(model, Action::ResumeSession(id))),
+            _ => Vec::new(),
+        };
+        return outcome(effects);
+    }
+    if model.overlay == Overlay::ModelList {
+        let effects = match input.key {
+            Key::Esc => {
+                model.overlay = Overlay::None;
+                Vec::new()
+            }
+            Key::Up => {
+                model.selected_model = model.selected_model.saturating_sub(1);
+                Vec::new()
+            }
+            Key::Down => {
+                if model.selected_model + 1 < model.model_candidates.len() {
+                    model.selected_model += 1;
+                }
+                Vec::new()
+            }
+            Key::Enter if model.pending_model_list.is_none() => model
+                .model_candidates
+                .get(model.selected_model)
+                .filter(|candidate| candidate.available)
+                .map(|candidate| candidate.id.clone())
+                .map_or_else(Vec::new, |id| update(model, Action::ModelSwitch(id))),
+            _ => Vec::new(),
+        };
+        return outcome(effects);
+    }
+    if model.overlay == Overlay::PermissionList {
+        let profiles = model
+            .permission_status
+            .as_ref()
+            .map(|status| status.supported_profiles.clone())
+            .unwrap_or_default();
+        let effects = match input.key {
+            Key::Esc => {
+                model.overlay = Overlay::None;
+                Vec::new()
+            }
+            Key::Up => {
+                model.selected_permission = model.selected_permission.saturating_sub(1);
+                Vec::new()
+            }
+            Key::Down => {
+                if model.selected_permission + 1 < profiles.len() {
+                    model.selected_permission += 1;
+                }
+                Vec::new()
+            }
+            Key::Enter if model.pending_permissions.is_none() => profiles
+                .get(model.selected_permission)
+                .copied()
+                .map_or_else(Vec::new, |profile| {
+                    update(
+                        model,
+                        Action::PermissionSwitch {
+                            profile,
+                            full_access_confirmed: false,
+                        },
+                    )
+                }),
+            _ => Vec::new(),
+        };
+        return outcome(effects);
+    }
+    if model.overlay == Overlay::FullAccessConfirmation {
+        let effects = match input.key {
+            Key::Esc => {
+                model.overlay = Overlay::PermissionList;
+                model.status_message = None;
+                Vec::new()
+            }
+            Key::Enter => update(
+                model,
+                Action::PermissionSwitch {
+                    profile: crate::backend::PermissionMode::FullAccess,
+                    full_access_confirmed: true,
+                },
+            ),
+            _ => Vec::new(),
+        };
+        return outcome(effects);
+    }
     if model.overlay != Overlay::None && input.key == Key::Esc {
         model.overlay = Overlay::None;
         return outcome(Vec::new());
@@ -1118,6 +1244,20 @@ fn start_control_effect_with_spawner<B: Backend, S: ThreadSpawner>(
         | Effect::SwitchRuntime {
             operation_token, ..
         }
+        | Effect::LoadSessionList {
+            operation_token, ..
+        }
+        | Effect::ResumeSession {
+            operation_token, ..
+        }
+        | Effect::LoadModelList { operation_token }
+        | Effect::SwitchModel {
+            operation_token, ..
+        }
+        | Effect::LoadPermissions { operation_token }
+        | Effect::SwitchPermissions {
+            operation_token, ..
+        }
         | Effect::StartTurn {
             operation_token, ..
         } => operation_token.as_u64(),
@@ -1201,6 +1341,55 @@ fn start_control_effect_with_spawner<B: Backend, S: ThreadSpawner>(
                     result,
                 }
             }
+            Effect::LoadSessionList {
+                operation_token,
+                query,
+            } => Action::SessionListLoaded {
+                operation_token,
+                result: guarded_backend_call(|| {
+                    backend.session_list(operation_token.as_u64(), Some(query))
+                }),
+            },
+            Effect::ResumeSession {
+                operation_token,
+                session_id,
+            } => Action::SessionResumed {
+                operation_token,
+                result: guarded_backend_call(|| {
+                    backend.resume_session(operation_token.as_u64(), session_id)
+                }),
+            },
+            Effect::LoadModelList { operation_token } => Action::ModelListLoaded {
+                operation_token,
+                result: guarded_backend_call(|| backend.model_list(operation_token.as_u64())),
+            },
+            Effect::SwitchModel {
+                operation_token,
+                model_id,
+            } => Action::ModelSwitched {
+                operation_token,
+                result: guarded_backend_call(|| {
+                    backend.switch_model(operation_token.as_u64(), model_id)
+                }),
+            },
+            Effect::LoadPermissions { operation_token } => Action::PermissionsLoaded {
+                operation_token,
+                result: guarded_backend_call(|| backend.permissions(operation_token.as_u64())),
+            },
+            Effect::SwitchPermissions {
+                operation_token,
+                profile,
+                full_access_confirmed,
+            } => Action::PermissionSwitched {
+                operation_token,
+                result: guarded_backend_call(|| {
+                    backend.switch_permissions(
+                        operation_token.as_u64(),
+                        profile,
+                        full_access_confirmed,
+                    )
+                }),
+            },
             Effect::StartTurn { .. } => return,
         };
         let _ = sender.blocking_send(HighPriorityEvent::Control(Box::new(action)));
@@ -1247,6 +1436,38 @@ fn control_failure_action(effect: Effect, error: BackendError) -> Action {
         Effect::SwitchRuntime {
             operation_token, ..
         } => Action::RuntimeSwitched {
+            operation_token,
+            result: Err(error),
+        },
+        Effect::LoadSessionList {
+            operation_token, ..
+        } => Action::SessionListLoaded {
+            operation_token,
+            result: Err(error),
+        },
+        Effect::ResumeSession {
+            operation_token, ..
+        } => Action::SessionResumed {
+            operation_token,
+            result: Err(error),
+        },
+        Effect::LoadModelList { operation_token } => Action::ModelListLoaded {
+            operation_token,
+            result: Err(error),
+        },
+        Effect::SwitchModel {
+            operation_token, ..
+        } => Action::ModelSwitched {
+            operation_token,
+            result: Err(error),
+        },
+        Effect::LoadPermissions { operation_token } => Action::PermissionsLoaded {
+            operation_token,
+            result: Err(error),
+        },
+        Effect::SwitchPermissions {
+            operation_token, ..
+        } => Action::PermissionSwitched {
             operation_token,
             result: Err(error),
         },
@@ -1965,6 +2186,7 @@ mod tests {
                 });
             }
             Effect::StartTurn { .. } => unreachable!(),
+            _ => unreachable!("effect is not part of this focused fixture"),
         }
         model
     }
@@ -1981,6 +2203,7 @@ mod tests {
             Effect::LoadRuntimeList { .. } => model.pending_runtime_list.is_none(),
             Effect::SwitchRuntime { .. } => model.pending_runtime_switch.is_none(),
             Effect::StartTurn { .. } => false,
+            _ => unreachable!("effect is not part of this focused fixture"),
         }
     }
 }

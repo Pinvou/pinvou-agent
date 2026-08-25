@@ -802,6 +802,10 @@ fn map_resume_result(payload: &Value) -> Result<ResumeResult, BackendError> {
             .get("attachment_epoch")
             .and_then(Value::as_u64)
             .ok_or_else(|| protocol_error("session resume has no attachment epoch"))?,
+        cursor: snapshot
+            .get("cursor")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| protocol_error("session snapshot has no cursor"))?,
         events,
     })
 }
@@ -1850,6 +1854,29 @@ mod tests {
                 "permissions.switch.prepare",
                 "permissions.switch.commit"
             ]
+        );
+    }
+
+    #[test]
+    fn model_switch_rejects_a_commit_that_does_not_match_prepare() {
+        let connector = FakeConnector::with([
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"status":"ready","model_id":"gpt-5.5","switch_token":"controller:9"}),
+            )]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"status":"ok","model_id":"another-model","attachment_epoch":7}),
+            )]),
+        ]);
+        let subject = backend(connector.clone());
+
+        let error = subject.switch_model(26, "gpt-5.5".into()).unwrap_err();
+
+        assert_eq!(error.kind(), BackendErrorKind::Protocol);
+        assert_eq!(
+            connector.methods(),
+            ["model.switch.prepare", "model.switch.commit"]
         );
     }
 

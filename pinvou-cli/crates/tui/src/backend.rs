@@ -55,6 +55,7 @@ pub struct ResumeResult {
     pub model_id: Option<String>,
     pub permission_profile: PermissionMode,
     pub attachment_epoch: u64,
+    pub cursor: u64,
     pub events: Vec<RuntimeEventEnvelope>,
 }
 

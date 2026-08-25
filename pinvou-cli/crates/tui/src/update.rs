@@ -7,7 +7,7 @@ use crate::{
     commands::{AVAILABLE_COMMANDS, SlashCommand, parse},
     model::{
         ApprovalRequest, InputRequest, Interaction, Model, Overlay, PendingInterrupt,
-        PendingRuntimeSwitch, TurnState,
+        PendingPermissionSwitch, PendingRuntimeSwitch, PendingSelection, Transcript, TurnState,
     },
 };
 
@@ -55,6 +55,39 @@ pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
             operation_token,
             result,
         } => complete_runtime_switch(model, operation_token, result),
+        Action::LoadSessionList { query } => load_session_list(model, query),
+        Action::SessionListLoaded {
+            operation_token,
+            result,
+        } => complete_session_list(model, operation_token, result),
+        Action::ResumeSession(session_id) => resume_session(model, session_id),
+        Action::SessionResumed {
+            operation_token,
+            result,
+        } => complete_resume(model, operation_token, result),
+        Action::LoadModelList => load_model_list(model),
+        Action::ModelListLoaded {
+            operation_token,
+            result,
+        } => complete_model_list(model, operation_token, result),
+        Action::ModelSwitch(model_id) => switch_model(model, model_id),
+        Action::ModelSwitched {
+            operation_token,
+            result,
+        } => complete_model_switch(model, operation_token, result),
+        Action::LoadPermissions => load_permissions(model),
+        Action::PermissionsLoaded {
+            operation_token,
+            result,
+        } => complete_permissions(model, operation_token, result),
+        Action::PermissionSwitch {
+            profile,
+            full_access_confirmed,
+        } => switch_permissions(model, profile, full_access_confirmed),
+        Action::PermissionSwitched {
+            operation_token,
+            result,
+        } => complete_permission_switch(model, operation_token, result),
     }
 }
 
@@ -75,11 +108,23 @@ fn submit(model: &mut Model, input: String) -> Vec<Effect> {
             Vec::new()
         }
         Ok(Some(SlashCommand::Runtime)) => load_runtime_list(model),
+        Ok(Some(SlashCommand::Resume)) => load_session_list(model, String::new()),
+        Ok(Some(SlashCommand::Model)) => load_model_list(model),
+        Ok(Some(SlashCommand::Permissions)) => load_permissions(model),
         Ok(Some(SlashCommand::Exit)) => {
             model.should_quit = true;
             Vec::new()
         }
-        Ok(None) if model.overlay == Overlay::RuntimeList => {
+        Ok(None)
+            if matches!(
+                model.overlay,
+                Overlay::RuntimeList
+                    | Overlay::ResumeList
+                    | Overlay::ModelList
+                    | Overlay::PermissionList
+                    | Overlay::FullAccessConfirmation
+            ) =>
+        {
             model.status_message =
                 Some("choose a runtime or close the runtime selector before submitting".into());
             Vec::new()
@@ -95,7 +140,7 @@ fn submit(model: &mut Model, input: String) -> Vec<Effect> {
 fn open_overlay(model: &mut Model, overlay: Overlay) {
     if model.turn != TurnState::Idle
         || model.interaction != Interaction::None
-        || model.pending_runtime_switch.is_some()
+        || has_pending_selection(model)
     {
         model.status_message =
             Some("overlay cannot open during an active turn or interaction".into());
@@ -113,7 +158,7 @@ fn submit_prompt(model: &mut Model, prompt: &str) -> Vec<Effect> {
     }
     if model.turn != TurnState::Idle
         || model.interaction != Interaction::None
-        || model.pending_runtime_switch.is_some()
+        || has_pending_selection(model)
     {
         model.status_message = Some("an active turn or interaction must finish first".into());
         return Vec::new();
@@ -453,6 +498,348 @@ fn complete_runtime_switch(
         Err(error) => record_backend_error(model, error),
     }
     Vec::new()
+}
+
+fn has_pending_selection(model: &Model) -> bool {
+    model.pending_runtime_switch.is_some()
+        || model.pending_resume.is_some()
+        || model.pending_model_switch.is_some()
+        || model.pending_permission_switch.is_some()
+}
+
+fn selector_available(model: &mut Model, name: &str) -> bool {
+    if matches!(model.connection, crate::model::ConnectionState::Failed(_)) {
+        model.status_message = Some("backend must be reinitialized before continuing".into());
+        return false;
+    }
+    if model.turn != TurnState::Idle
+        || model.interaction != Interaction::None
+        || has_pending_selection(model)
+    {
+        model.status_message = Some(format!(
+            "{name} cannot open during an active turn or interaction"
+        ));
+        return false;
+    }
+    true
+}
+
+fn load_session_list(model: &mut Model, query: String) -> Vec<Effect> {
+    if !selector_available(model, "session selector") || model.pending_session_list.is_some() {
+        return Vec::new();
+    }
+    let operation_token = model.allocate_operation_token();
+    model.overlay = Overlay::ResumeList;
+    model.session_query = query.clone();
+    model.pending_session_list = Some(operation_token);
+    model.status_message = Some("loading sessions...".into());
+    vec![Effect::LoadSessionList {
+        operation_token,
+        query,
+    }]
+}
+
+fn complete_session_list(
+    model: &mut Model,
+    operation_token: crate::model::OperationToken,
+    result: Result<crate::backend::SessionList, BackendError>,
+) -> Vec<Effect> {
+    if model.pending_session_list != Some(operation_token) {
+        record_ignored(model, "ignored stale session list completion".into());
+        return Vec::new();
+    }
+    model.pending_session_list = None;
+    match result {
+        Ok(list) => {
+            model.session_candidates = list.sessions;
+            model.selected_session = 0;
+            model.status_message = None;
+            model.last_backend_error = None;
+        }
+        Err(error) => record_backend_error(model, error),
+    }
+    Vec::new()
+}
+
+fn resume_session(model: &mut Model, session_id: String) -> Vec<Effect> {
+    if !selector_available(model, "session resume") {
+        return Vec::new();
+    }
+    let operation_token = model.allocate_operation_token();
+    model.pending_resume = Some(PendingSelection {
+        target: session_id.clone(),
+        operation_token,
+    });
+    model.status_message = Some("resuming session...".into());
+    vec![Effect::ResumeSession {
+        operation_token,
+        session_id,
+    }]
+}
+
+fn complete_resume(
+    model: &mut Model,
+    operation_token: crate::model::OperationToken,
+    result: Result<crate::backend::ResumeResult, BackendError>,
+) -> Vec<Effect> {
+    let Some(pending) = &model.pending_resume else {
+        record_ignored(
+            model,
+            "ignored resume completion without pending operation".into(),
+        );
+        return Vec::new();
+    };
+    if pending.operation_token != operation_token {
+        record_ignored(model, "ignored stale resume completion".into());
+        return Vec::new();
+    }
+    let target = pending.target.clone();
+    model.pending_resume = None;
+    match result {
+        Ok(resumed) if resumed.session_id == target => {
+            model.transcript = transcript_from_events(&resumed.events);
+            model.active_session = Some(resumed.session_id);
+            model.session_cursor = resumed.cursor;
+            model.runtime = crate::backend::RuntimeStatus::new(
+                resumed.runtime_id.clone(),
+                resumed.runtime_id,
+                true,
+            );
+            model.model_id = resumed.model_id;
+            model.permission_profile = resumed.permission_profile;
+            model.overlay = Overlay::None;
+            model.status_message = None;
+            model.last_backend_error = None;
+        }
+        Ok(_) => record_backend_error(
+            model,
+            BackendError::new(
+                crate::backend::BackendErrorKind::Protocol,
+                "session resume response does not match selection",
+            ),
+        ),
+        Err(error) => record_backend_error(model, error),
+    }
+    Vec::new()
+}
+
+fn load_model_list(model: &mut Model) -> Vec<Effect> {
+    if !selector_available(model, "model selector") || model.pending_model_list.is_some() {
+        return Vec::new();
+    }
+    let operation_token = model.allocate_operation_token();
+    model.overlay = Overlay::ModelList;
+    model.pending_model_list = Some(operation_token);
+    model.status_message = Some("loading models...".into());
+    vec![Effect::LoadModelList { operation_token }]
+}
+
+fn complete_model_list(
+    model: &mut Model,
+    operation_token: crate::model::OperationToken,
+    result: Result<crate::backend::ModelList, BackendError>,
+) -> Vec<Effect> {
+    if model.pending_model_list != Some(operation_token) {
+        record_ignored(model, "ignored stale model list completion".into());
+        return Vec::new();
+    }
+    model.pending_model_list = None;
+    match result {
+        Ok(list) => {
+            model.model_id = list.current_model;
+            model.model_candidates = list.models;
+            model.selected_model = model
+                .model_candidates
+                .iter()
+                .position(|candidate| Some(candidate.id.as_str()) == model.model_id.as_deref())
+                .unwrap_or(0);
+            model.status_message = None;
+            model.last_backend_error = None;
+        }
+        Err(error) => record_backend_error(model, error),
+    }
+    Vec::new()
+}
+
+fn switch_model(model: &mut Model, model_id: String) -> Vec<Effect> {
+    if !selector_available(model, "model switch") {
+        return Vec::new();
+    }
+    let operation_token = model.allocate_operation_token();
+    model.pending_model_switch = Some(PendingSelection {
+        target: model_id.clone(),
+        operation_token,
+    });
+    model.status_message = Some("switching model...".into());
+    vec![Effect::SwitchModel {
+        operation_token,
+        model_id,
+    }]
+}
+
+fn complete_model_switch(
+    model: &mut Model,
+    operation_token: crate::model::OperationToken,
+    result: Result<(), BackendError>,
+) -> Vec<Effect> {
+    let Some(pending) = &model.pending_model_switch else {
+        record_ignored(model, "ignored model switch completion".into());
+        return Vec::new();
+    };
+    if pending.operation_token != operation_token {
+        record_ignored(model, "ignored stale model switch completion".into());
+        return Vec::new();
+    }
+    let target = pending.target.clone();
+    model.pending_model_switch = None;
+    match result {
+        Ok(()) => {
+            model.model_id = Some(target);
+            model.overlay = Overlay::None;
+            model.status_message = None;
+            model.last_backend_error = None;
+        }
+        Err(error) => record_backend_error(model, error),
+    }
+    Vec::new()
+}
+
+fn load_permissions(model: &mut Model) -> Vec<Effect> {
+    if !selector_available(model, "permission selector") || model.pending_permissions.is_some() {
+        return Vec::new();
+    }
+    let operation_token = model.allocate_operation_token();
+    model.overlay = Overlay::PermissionList;
+    model.pending_permissions = Some(operation_token);
+    model.status_message = Some("loading permissions...".into());
+    vec![Effect::LoadPermissions { operation_token }]
+}
+
+fn complete_permissions(
+    model: &mut Model,
+    operation_token: crate::model::OperationToken,
+    result: Result<crate::backend::PermissionStatus, BackendError>,
+) -> Vec<Effect> {
+    if model.pending_permissions != Some(operation_token) {
+        record_ignored(model, "ignored stale permission completion".into());
+        return Vec::new();
+    }
+    model.pending_permissions = None;
+    match result {
+        Ok(status) => {
+            model.permission_profile = status.current_profile;
+            model.selected_permission = status
+                .supported_profiles
+                .iter()
+                .position(|profile| *profile == status.current_profile)
+                .unwrap_or(0);
+            model.permission_status = Some(status);
+            model.status_message = None;
+            model.last_backend_error = None;
+        }
+        Err(error) => record_backend_error(model, error),
+    }
+    Vec::new()
+}
+
+fn switch_permissions(
+    model: &mut Model,
+    profile: crate::backend::PermissionMode,
+    full_access_confirmed: bool,
+) -> Vec<Effect> {
+    if profile == crate::backend::PermissionMode::FullAccess && !full_access_confirmed {
+        model.overlay = Overlay::FullAccessConfirmation;
+        model.status_message = Some("full access requires explicit confirmation".into());
+        return Vec::new();
+    }
+    if !selector_available(model, "permission switch") {
+        return Vec::new();
+    }
+    let operation_token = model.allocate_operation_token();
+    model.pending_permission_switch = Some(PendingPermissionSwitch {
+        target: profile,
+        operation_token,
+    });
+    model.status_message = Some("switching permissions...".into());
+    vec![Effect::SwitchPermissions {
+        operation_token,
+        profile,
+        full_access_confirmed,
+    }]
+}
+
+fn complete_permission_switch(
+    model: &mut Model,
+    operation_token: crate::model::OperationToken,
+    result: Result<(), BackendError>,
+) -> Vec<Effect> {
+    let Some(pending) = &model.pending_permission_switch else {
+        record_ignored(model, "ignored permission switch completion".into());
+        return Vec::new();
+    };
+    if pending.operation_token != operation_token {
+        record_ignored(model, "ignored stale permission switch completion".into());
+        return Vec::new();
+    }
+    let target = pending.target;
+    model.pending_permission_switch = None;
+    match result {
+        Ok(()) => {
+            model.permission_profile = target;
+            model.overlay = Overlay::None;
+            model.status_message = None;
+            model.last_backend_error = None;
+        }
+        Err(error) => record_backend_error(model, error),
+    }
+    Vec::new()
+}
+
+fn transcript_from_events(events: &[RuntimeEventEnvelope]) -> Transcript {
+    let mut transcript = Transcript::default();
+    for event in events {
+        let Ok(payload) = serde_json::from_str::<Value>(event.payload().get()) else {
+            continue;
+        };
+        match event.event_kind() {
+            RuntimeEventKind::TextDelta
+                if payload.get("role").and_then(Value::as_str) == Some("assistant") =>
+            {
+                if let Some(content) = payload.get("content").and_then(Value::as_str) {
+                    transcript.append_assistant(content);
+                }
+            }
+            RuntimeEventKind::ToolCallStarted => {
+                if let (Some(tool_id), Some(name)) = (
+                    payload.get("tool_id").and_then(Value::as_str),
+                    payload.get("name").and_then(Value::as_str),
+                ) {
+                    transcript.start_tool(tool_id.to_owned(), name.to_owned());
+                }
+            }
+            RuntimeEventKind::ToolCallOutputDelta => {
+                if let (Some(tool_id), Some(chunk)) = (
+                    payload.get("tool_id").and_then(Value::as_str),
+                    payload.get("chunk").and_then(Value::as_str),
+                ) {
+                    transcript.append_tool_output(tool_id, chunk);
+                }
+            }
+            RuntimeEventKind::ToolCallCompleted => {
+                if let Some(tool_id) = payload.get("tool_id").and_then(Value::as_str) {
+                    transcript.complete_tool(
+                        tool_id,
+                        payload
+                            .get("is_error")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    transcript
 }
 
 fn project_runtime_event(

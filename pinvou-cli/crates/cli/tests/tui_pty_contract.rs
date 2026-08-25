@@ -163,6 +163,31 @@ fn no_arguments_enter_and_restore_a_real_pseudoterminal() {
             }
         }
     }
+    for (command, title) in [
+        (b"/resume\r".as_slice(), b"Resume session".as_slice()),
+        (b"/model\r".as_slice(), b"Switch model".as_slice()),
+        (b"/permissions\r".as_slice(), b"Permissions".as_slice()),
+    ] {
+        writer.write_all(command).unwrap();
+        writer.flush().unwrap();
+        let start = output.len();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !contains(&output[start..], title) {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                panic!(
+                    "pinvou TUI did not render {:?}; output={:?}",
+                    String::from_utf8_lossy(title),
+                    String::from_utf8_lossy(&output)
+                );
+            }
+            if let Ok(chunk) = reader.recv_timeout(Duration::from_millis(50)) {
+                output.extend_from_slice(&chunk);
+            }
+        }
+        writer.write_all(b"\x1b").unwrap();
+        writer.flush().unwrap();
+    }
     writer.write_all(&[3]).unwrap();
     writer.flush().unwrap();
 

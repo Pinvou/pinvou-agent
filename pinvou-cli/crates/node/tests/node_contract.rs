@@ -290,6 +290,21 @@ fn node_runtime_switch_persists_the_selected_runtime_for_restart() {
 }
 
 #[test]
+fn production_state_defaults_to_codex_when_no_runtime_was_selected() {
+    let state_file = temp_state_file("runtime-default");
+    let session = NodeSession::with_state_file("node-instance", state_file.clone()).unwrap();
+    let list = IpcMessage::request(
+        serde_json::json!(33),
+        "runtime.list",
+        serde_json::json!({"instance_id":"node-instance"}),
+    )
+    .unwrap();
+
+    assert_eq!(session.handle(list).unwrap().payload()["current"], "codex");
+    assert!(!state_file.exists());
+}
+
+#[test]
 fn node_runtime_switch_replaces_the_active_runtime_host() {
     let session = NodeSession::with_runtime("node-instance", Arc::new(PrefixRuntime)).unwrap();
     let before = IpcMessage::request(

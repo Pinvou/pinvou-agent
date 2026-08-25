@@ -1164,7 +1164,7 @@ fn load_runtime_selection(state_file: &Path) -> Result<String, NodeError> {
                 .ok_or(NodeError::InvalidMessage)?;
             Ok(runtime.to_owned())
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("echo".to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("codex".to_owned()),
         Err(error) => Err(error.into()),
     }
 }

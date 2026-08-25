@@ -50,6 +50,10 @@ pub fn render(frame: &mut Frame<'_>, model: &Model) {
             Overlay::None => {}
             Overlay::Help { commands } => render_help_overlay(frame, area, model, commands),
             Overlay::RuntimeList => render_runtime_overlay(frame, area, model),
+            Overlay::ResumeList => render_session_overlay(frame, area, model),
+            Overlay::ModelList => render_model_overlay(frame, area, model),
+            Overlay::PermissionList => render_permission_overlay(frame, area, model),
+            Overlay::FullAccessConfirmation => render_full_access_confirmation(frame, area),
         }
     }
 }
@@ -89,10 +93,13 @@ fn render_context(frame: &mut Frame<'_>, area: Rect, model: &Model) {
         ),
         Span::raw("  ·  multi-runtime coding agent"),
     ]);
+    let model_name = model.model_id.as_deref().unwrap_or("model: auto");
     let context = Line::from(format!(
-        "{}  ·  {}  ·  {connection}",
+        "{}  ·  {}  ·  {}  ·  {}  ·  {connection}",
         model.workspace.display(),
-        model.runtime.display_name
+        model.runtime.display_name,
+        model_name,
+        model.permission_profile.as_str()
     ));
     frame.render_widget(
         Paragraph::new(vec![title, context]).block(
@@ -381,6 +388,148 @@ fn render_runtime_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model) {
         Paragraph::new(lines).block(
             Block::default()
                 .title("Switch runtime")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
+}
+
+fn render_session_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model) {
+    let query = model.session_query.to_ascii_lowercase();
+    let candidates = model
+        .session_candidates
+        .iter()
+        .filter(|session| {
+            query.is_empty()
+                || session.title.to_ascii_lowercase().contains(&query)
+                || session.id.to_ascii_lowercase().contains(&query)
+        })
+        .collect::<Vec<_>>();
+    let mut lines = vec![Line::from(format!("Search: {}_", model.session_query))];
+    if model.pending_session_list.is_some() {
+        lines.push(Line::from("Loading sessions…"));
+    } else if candidates.is_empty() {
+        lines.push(Line::from("No matching sessions"));
+    } else {
+        lines.extend(candidates.iter().enumerate().map(|(index, session)| {
+            let selected = if index == model.selected_session {
+                ">"
+            } else {
+                " "
+            };
+            Line::from(format!(
+                "{selected} {} · {} · {} · {}",
+                session.title, session.runtime_id, session.status, session.last_active_at
+            ))
+        }));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(
+        "Type to filter · ↑/↓ select · Enter resume · Esc close",
+    ));
+    render_list_popup(frame, area, "Resume session", lines);
+}
+
+fn render_model_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model) {
+    let mut lines = Vec::new();
+    if model.pending_model_list.is_some() {
+        lines.push(Line::from("Loading models…"));
+    } else {
+        lines.extend(
+            model
+                .model_candidates
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| {
+                    let selected = if index == model.selected_model {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    let current = if Some(candidate.id.as_str()) == model.model_id.as_deref() {
+                        "current"
+                    } else if candidate.is_default {
+                        "default"
+                    } else {
+                        ""
+                    };
+                    let availability = if candidate.available {
+                        ""
+                    } else {
+                        "unsupported"
+                    };
+                    Line::from(format!(
+                        "{selected} {} ({}) · {} {}",
+                        candidate.display_name, candidate.id, current, availability
+                    ))
+                }),
+        );
+    }
+    lines.push(Line::default());
+    lines.push(Line::from("↑/↓ select · Enter switch · Esc close"));
+    render_list_popup(frame, area, "Switch model", lines);
+}
+
+fn render_permission_overlay(frame: &mut Frame<'_>, area: Rect, model: &Model) {
+    let mut lines = Vec::new();
+    if model.pending_permissions.is_some() {
+        lines.push(Line::from("Loading permission modes…"));
+    } else if let Some(status) = &model.permission_status {
+        lines.push(Line::from(format!(
+            "Control: {:?} · evidence {}",
+            status.control_strength, status.evidence_version
+        )));
+        for (index, profile) in status.supported_profiles.iter().enumerate() {
+            let selected = if index == model.selected_permission {
+                ">"
+            } else {
+                " "
+            };
+            let current = if *profile == model.permission_profile {
+                "current"
+            } else {
+                ""
+            };
+            lines.push(Line::from(format!(
+                "{selected} {} · {current}",
+                profile.as_str()
+            )));
+        }
+        for guard in &status.residual_guards {
+            lines.push(Line::from(format!("  residual guard: {guard}")));
+        }
+    }
+    lines.push(Line::default());
+    lines.push(Line::from("↑/↓ select · Enter switch · Esc close"));
+    render_list_popup(frame, area, "Permissions", lines);
+}
+
+fn render_full_access_confirmation(frame: &mut Frame<'_>, area: Rect) {
+    render_list_popup(
+        frame,
+        area,
+        "Confirm full access",
+        vec![
+            Line::from("Full access disables routine approval and sandbox restrictions."),
+            Line::from("Only continue in a workspace you trust."),
+            Line::default(),
+            Line::from("Enter confirm · Esc cancel"),
+        ],
+    );
+}
+
+fn render_list_popup(frame: &mut Frame<'_>, area: Rect, title: &str, lines: Vec<Line<'_>>) {
+    let width = area.width.saturating_sub(8).clamp(32, 76);
+    let height = (lines.len() as u16 + 2)
+        .min(area.height.saturating_sub(4))
+        .max(5);
+    let popup = centered_rect(area, width, height);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .title(title)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan)),
         ),

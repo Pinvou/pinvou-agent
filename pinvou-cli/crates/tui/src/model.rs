@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use crate::backend::{BackendError, RuntimeStatus};
+use crate::backend::{
+    BackendError, ModelCandidate, PermissionMode, PermissionStatus, RuntimeStatus, SessionCandidate,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct OperationToken(u64);
@@ -18,6 +20,18 @@ impl OperationToken {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PendingRuntimeSwitch {
     pub target: String,
+    pub operation_token: OperationToken,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingSelection {
+    pub target: String,
+    pub operation_token: OperationToken,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingPermissionSwitch {
+    pub target: PermissionMode,
     pub operation_token: OperationToken,
 }
 
@@ -172,6 +186,10 @@ pub enum Overlay {
     None,
     Help { commands: Vec<&'static str> },
     RuntimeList,
+    ResumeList,
+    ModelList,
+    PermissionList,
+    FullAccessConfirmation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -193,6 +211,23 @@ pub struct Model {
     pub pending_runtime_list: Option<OperationToken>,
     pub runtime_candidates: Vec<RuntimeStatus>,
     pub selected_runtime: usize,
+    pub active_session: Option<String>,
+    pub session_cursor: u64,
+    pub model_id: Option<String>,
+    pub permission_profile: PermissionMode,
+    pub permission_status: Option<PermissionStatus>,
+    pub session_candidates: Vec<SessionCandidate>,
+    pub selected_session: usize,
+    pub session_query: String,
+    pub pending_session_list: Option<OperationToken>,
+    pub pending_resume: Option<PendingSelection>,
+    pub model_candidates: Vec<ModelCandidate>,
+    pub selected_model: usize,
+    pub pending_model_list: Option<OperationToken>,
+    pub pending_model_switch: Option<PendingSelection>,
+    pub selected_permission: usize,
+    pub pending_permissions: Option<OperationToken>,
+    pub pending_permission_switch: Option<PendingPermissionSwitch>,
     pub transcript_scroll: u16,
     pub terminal_size: Option<(u16, u16)>,
     pub last_terminal_turn_token: Option<OperationToken>,
@@ -220,6 +255,23 @@ impl Model {
             pending_runtime_list: None,
             runtime_candidates: Vec::new(),
             selected_runtime: 0,
+            active_session: None,
+            session_cursor: 0,
+            model_id: None,
+            permission_profile: PermissionMode::Request,
+            permission_status: None,
+            session_candidates: Vec::new(),
+            selected_session: 0,
+            session_query: String::new(),
+            pending_session_list: None,
+            pending_resume: None,
+            model_candidates: Vec::new(),
+            selected_model: 0,
+            pending_model_list: None,
+            pending_model_switch: None,
+            selected_permission: 0,
+            pending_permissions: None,
+            pending_permission_switch: None,
             transcript_scroll: 0,
             terminal_size: None,
             last_terminal_turn_token: None,
