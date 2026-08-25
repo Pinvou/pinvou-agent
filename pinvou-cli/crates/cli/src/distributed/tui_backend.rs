@@ -21,7 +21,9 @@ use pinvou_protocol::{
     StableExitCode, encode_frame, read_frame,
 };
 use pinvou_tui::backend::{
-    Backend, BackendError, BackendErrorKind, EventEmitter, RuntimeList, RuntimeStatus,
+    Backend, BackendError, BackendErrorKind, EventEmitter, ModelCandidate, ModelList,
+    PermissionControlStrength, PermissionMode, PermissionStatus, ResumeResult, RuntimeList,
+    RuntimeStatus, SessionCandidate, SessionList,
 };
 use serde_json::{Value, json};
 
@@ -408,6 +410,132 @@ impl Backend for ControllerTuiBackend {
         map_runtime_list(&payload)
     }
 
+    fn session_list(
+        &self,
+        operation_token: u64,
+        query: Option<String>,
+    ) -> Result<SessionList, BackendError> {
+        let operation = self.control_operation(operation_token)?;
+        let response = self.control(operation_token, operation.connection_id, |wire| {
+            wire.session_list(query.as_deref())
+        })?;
+        map_session_list(&require_response(response, "session.list")?)
+    }
+
+    fn resume_session(
+        &self,
+        operation_token: u64,
+        session_id: String,
+    ) -> Result<ResumeResult, BackendError> {
+        let operation = self.control_operation(operation_token)?;
+        let connection_id = operation.connection_id;
+        let prepared = self
+            .control(operation_token, connection_id, |wire| {
+                wire.session_resume_prepare(&session_id)
+            })
+            .and_then(|message| require_response(message, "session.resume.prepare"))?;
+        if prepared.get("status").and_then(Value::as_str) != Some("ready")
+            || prepared.get("session_id").and_then(Value::as_str) != Some(session_id.as_str())
+        {
+            return Err(protocol_error("session resume prepare response is invalid"));
+        }
+        let token = required_token(&prepared, "resume_token")?;
+        let committed = self
+            .control(operation_token, connection_id, |wire| {
+                wire.session_resume_commit(&token)
+            })
+            .and_then(|message| require_response(message, "session.resume.commit"))?;
+        if committed.get("status").and_then(Value::as_str) != Some("ok")
+            || committed.get("session_id").and_then(Value::as_str) != Some(session_id.as_str())
+        {
+            return Err(protocol_error(
+                "session resume commit response does not match prepare",
+            ));
+        }
+        map_resume_result(&committed)
+    }
+
+    fn model_list(&self, operation_token: u64) -> Result<ModelList, BackendError> {
+        let operation = self.control_operation(operation_token)?;
+        let response = self.control(operation_token, operation.connection_id, |wire| {
+            wire.model_list()
+        })?;
+        map_model_list(&require_response(response, "model.list")?)
+    }
+
+    fn switch_model(&self, operation_token: u64, model_id: String) -> Result<(), BackendError> {
+        let operation = self.control_operation(operation_token)?;
+        let connection_id = operation.connection_id;
+        let prepared = self
+            .control(operation_token, connection_id, |wire| {
+                wire.model_switch_prepare(&model_id)
+            })
+            .and_then(|message| require_response(message, "model.switch.prepare"))?;
+        if prepared.get("status").and_then(Value::as_str) != Some("ready")
+            || prepared.get("model_id").and_then(Value::as_str) != Some(model_id.as_str())
+        {
+            return Err(protocol_error("model switch prepare response is invalid"));
+        }
+        let token = required_token(&prepared, "switch_token")?;
+        let committed = self
+            .control(operation_token, connection_id, |wire| {
+                wire.model_switch_commit(&token)
+            })
+            .and_then(|message| require_response(message, "model.switch.commit"))?;
+        if committed.get("status").and_then(Value::as_str) != Some("ok")
+            || committed.get("model_id").and_then(Value::as_str) != Some(model_id.as_str())
+        {
+            return Err(protocol_error(
+                "model switch commit response does not match prepare",
+            ));
+        }
+        Ok(())
+    }
+
+    fn permissions(&self, operation_token: u64) -> Result<PermissionStatus, BackendError> {
+        let operation = self.control_operation(operation_token)?;
+        let response = self.control(operation_token, operation.connection_id, |wire| {
+            wire.permissions_inspect()
+        })?;
+        map_permission_status(&require_response(response, "permissions.inspect")?)
+    }
+
+    fn switch_permissions(
+        &self,
+        operation_token: u64,
+        profile: PermissionMode,
+        full_access_confirmed: bool,
+    ) -> Result<(), BackendError> {
+        let operation = self.control_operation(operation_token)?;
+        let connection_id = operation.connection_id;
+        let prepared = self
+            .control(operation_token, connection_id, |wire| {
+                wire.permissions_switch_prepare(profile.as_str(), full_access_confirmed)
+            })
+            .and_then(|message| require_response(message, "permissions.switch.prepare"))?;
+        if prepared.get("status").and_then(Value::as_str) != Some("ready")
+            || prepared.get("profile").and_then(Value::as_str) != Some(profile.as_str())
+        {
+            return Err(protocol_error(
+                "permission switch prepare response is invalid",
+            ));
+        }
+        let token = required_token(&prepared, "switch_token")?;
+        let committed = self
+            .control(operation_token, connection_id, |wire| {
+                wire.permissions_switch_commit(&token)
+            })
+            .and_then(|message| require_response(message, "permissions.switch.commit"))?;
+        if committed.get("status").and_then(Value::as_str) != Some("ok")
+            || committed.get("profile").and_then(Value::as_str) != Some(profile.as_str())
+        {
+            return Err(protocol_error(
+                "permission switch commit response does not match prepare",
+            ));
+        }
+        Ok(())
+    }
+
     fn stream_turn(
         &self,
         operation_token: u64,
@@ -622,6 +750,166 @@ fn map_runtime_list(payload: &Value) -> Result<RuntimeList, BackendError> {
         .map(|value| map_runtime_status(value, None))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(RuntimeList::new(active, runtimes))
+}
+
+fn map_session_list(payload: &Value) -> Result<SessionList, BackendError> {
+    let sessions = payload
+        .get("sessions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| protocol_error("session.list has no sessions array"))?
+        .iter()
+        .map(|session| {
+            Ok(SessionCandidate {
+                id: required_string(session, "id", "session has no id")?,
+                title: required_string(session, "title", "session has no title")?,
+                last_active_at: required_string(
+                    session,
+                    "last_active_at",
+                    "session has no activity timestamp",
+                )?,
+                runtime_id: required_string(session, "runtime_id", "session has no runtime")?,
+                model_id: optional_string(session, "model_id")?,
+                status: required_string(session, "status", "session has no status")?,
+            })
+        })
+        .collect::<Result<Vec<_>, BackendError>>()?;
+    Ok(SessionList { sessions })
+}
+
+fn map_resume_result(payload: &Value) -> Result<ResumeResult, BackendError> {
+    let snapshot = payload
+        .get("snapshot")
+        .ok_or_else(|| protocol_error("session resume has no snapshot"))?;
+    let events = snapshot
+        .get("normalized_events")
+        .and_then(Value::as_array)
+        .ok_or_else(|| protocol_error("session snapshot has no normalized events"))?
+        .iter()
+        .cloned()
+        .map(|event| {
+            RuntimeEventEnvelope::from_value(event)
+                .map_err(|_| protocol_error("session snapshot contains a malformed event"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ResumeResult {
+        session_id: required_string(payload, "session_id", "session resume has no id")?,
+        runtime_id: required_string(payload, "runtime", "session resume has no runtime")?,
+        model_id: optional_string(payload, "model_id")?,
+        permission_profile: parse_permission_mode(
+            payload.get("approval_profile").and_then(Value::as_str),
+        )?,
+        attachment_epoch: payload
+            .get("attachment_epoch")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| protocol_error("session resume has no attachment epoch"))?,
+        events,
+    })
+}
+
+fn map_model_list(payload: &Value) -> Result<ModelList, BackendError> {
+    let catalog = payload
+        .get("catalog")
+        .ok_or_else(|| protocol_error("model.list has no catalog"))?;
+    let models = catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| protocol_error("model catalog has no models array"))?
+        .iter()
+        .map(|model| {
+            Ok(ModelCandidate {
+                id: required_string(model, "id", "model has no id")?,
+                display_name: required_string(model, "display_name", "model has no display name")?,
+                is_default: model
+                    .get("is_default")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| protocol_error("model has no default flag"))?,
+                available: model
+                    .get("available")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| protocol_error("model has no availability flag"))?,
+            })
+        })
+        .collect::<Result<Vec<_>, BackendError>>()?;
+    Ok(ModelList {
+        runtime_id: required_string(catalog, "runtime_id", "model catalog has no runtime")?,
+        current_model: optional_string(catalog, "current_model")?,
+        models,
+    })
+}
+
+fn map_permission_status(payload: &Value) -> Result<PermissionStatus, BackendError> {
+    let permissions = payload
+        .get("permissions")
+        .ok_or_else(|| protocol_error("permissions.inspect has no capability"))?;
+    let supported_profiles = permissions
+        .get("supported_profiles")
+        .and_then(Value::as_array)
+        .ok_or_else(|| protocol_error("permission capability has no profiles"))?
+        .iter()
+        .map(|profile| parse_permission_mode(profile.as_str()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let control_strength = match permissions.get("control_strength").and_then(Value::as_str) {
+        Some("enforced") => PermissionControlStrength::Enforced,
+        Some("partial") => PermissionControlStrength::Partial,
+        Some("unsupported") => PermissionControlStrength::Unsupported,
+        _ => return Err(protocol_error("permission control strength is invalid")),
+    };
+    Ok(PermissionStatus {
+        current_profile: parse_permission_mode(
+            payload.get("current_profile").and_then(Value::as_str),
+        )?,
+        supported_profiles,
+        control_strength,
+        native_mode: optional_string(permissions, "native_mode")?,
+        sandbox: optional_string(permissions, "sandbox")?,
+        residual_guards: permissions
+            .get("residual_guards")
+            .and_then(Value::as_array)
+            .ok_or_else(|| protocol_error("permission capability has no residual guards"))?
+            .iter()
+            .map(|guard| {
+                guard
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| protocol_error("permission residual guard is invalid"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        evidence_version: required_string(
+            permissions,
+            "evidence_version",
+            "permission capability has no evidence version",
+        )?,
+    })
+}
+
+fn required_token(payload: &Value, field: &str) -> Result<String, BackendError> {
+    required_string(payload, field, "controller prepare response has no token")
+}
+
+fn required_string(payload: &Value, field: &str, message: &str) -> Result<String, BackendError> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| protocol_error(message))
+}
+
+fn optional_string(payload: &Value, field: &str) -> Result<Option<String>, BackendError> {
+    match payload.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value.clone())),
+        _ => Err(protocol_error(format!("{field} is invalid"))),
+    }
+}
+
+fn parse_permission_mode(value: Option<&str>) -> Result<PermissionMode, BackendError> {
+    match value {
+        Some("request") => Ok(PermissionMode::Request),
+        Some("assisted") => Ok(PermissionMode::Assisted),
+        Some("full_access") => Ok(PermissionMode::FullAccess),
+        _ => Err(protocol_error("permission profile is invalid")),
+    }
 }
 
 fn map_runtime_status(
@@ -1449,6 +1737,119 @@ mod tests {
         assert_eq!(
             list.runtimes[0].capability_summary.as_deref(),
             Some("interactive_chat")
+        );
+    }
+
+    #[test]
+    fn session_model_and_permission_operations_are_single_tui_semantic_calls() {
+        let connector = FakeConnector::with([
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"sessions":[{
+                    "id":"logical-1",
+                    "title":"Saved task",
+                    "last_active_at":"2026-08-25T10:00:00Z",
+                    "runtime_id":"codex",
+                    "model_id":"gpt-5.6",
+                    "status":"completed",
+                    "native_session_id":"thread-1"
+                }]}),
+            )]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"status":"ready","session_id":"logical-1","attachment_epoch":3,"resume_token":"controller:1"}),
+            )]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({
+                    "status":"ok",
+                    "session_id":"logical-1",
+                    "snapshot":{
+                        "descriptor":{
+                            "id":"logical-1",
+                            "title":"Saved task",
+                            "last_active_at":"2026-08-25T10:00:00Z",
+                            "runtime_id":"codex",
+                            "model_id":"gpt-5.6",
+                            "status":"completed",
+                            "native_session_id":"thread-1"
+                        },
+                        "cursor":0,
+                        "normalized_events":[]
+                    },
+                    "runtime":"codex",
+                    "model_id":"gpt-5.6",
+                    "approval_profile":"request",
+                    "attachment_epoch":4
+                }),
+            )]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"catalog":{
+                    "runtime_id":"codex",
+                    "current_model":"gpt-5.6",
+                    "models":[{"id":"gpt-5.6","display_name":"GPT-5.6","is_default":true,"available":true}]
+                }}),
+            )]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"status":"ready","model_id":"gpt-5.5","switch_token":"controller:2"}),
+            )]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"status":"ok","model_id":"gpt-5.5","attachment_epoch":5}),
+            )]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({
+                    "permissions":{
+                        "supported_profiles":["request","assisted","full_access"],
+                        "control_strength":"partial",
+                        "native_mode":"on-request",
+                        "sandbox":"workspace-write",
+                        "residual_guards":["os-policy"],
+                        "evidence_version":"codex-0.139"
+                    },
+                    "current_profile":"request"
+                }),
+            )]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"status":"ready","profile":"assisted","switch_token":"controller:3"}),
+            )]),
+            FakePlan::Frames(vec![response(
+                1,
+                json!({"status":"ok","profile":"assisted","attachment_epoch":6}),
+            )]),
+        ]);
+        let subject = backend(connector.clone());
+
+        let sessions = subject.session_list(20, Some("saved".into())).unwrap();
+        assert_eq!(sessions.sessions[0].id, "logical-1");
+        let resumed = subject.resume_session(21, "logical-1".into()).unwrap();
+        assert_eq!(resumed.runtime_id, "codex");
+        let models = subject.model_list(22).unwrap();
+        assert_eq!(models.current_model.as_deref(), Some("gpt-5.6"));
+        subject.switch_model(23, "gpt-5.5".into()).unwrap();
+        let permissions = subject.permissions(24).unwrap();
+        assert_eq!(permissions.current_profile, PermissionMode::Request);
+        subject
+            .switch_permissions(25, PermissionMode::Assisted, false)
+            .unwrap();
+
+        assert_eq!(
+            connector.methods(),
+            [
+                "session.list",
+                "session.resume.prepare",
+                "session.resume.commit",
+                "model.list",
+                "model.switch.prepare",
+                "model.switch.commit",
+                "permissions.inspect",
+                "permissions.switch.prepare",
+                "permissions.switch.commit"
+            ]
         );
     }
 

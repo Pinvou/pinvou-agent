@@ -33,6 +33,81 @@ pub struct RuntimeList {
     pub runtimes: Vec<RuntimeStatus>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionCandidate {
+    pub id: String,
+    pub title: String,
+    pub last_active_at: String,
+    pub runtime_id: String,
+    pub model_id: Option<String>,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionList {
+    pub sessions: Vec<SessionCandidate>,
+}
+
+#[derive(Debug)]
+pub struct ResumeResult {
+    pub session_id: String,
+    pub runtime_id: String,
+    pub model_id: Option<String>,
+    pub permission_profile: PermissionMode,
+    pub attachment_epoch: u64,
+    pub events: Vec<RuntimeEventEnvelope>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelCandidate {
+    pub id: String,
+    pub display_name: String,
+    pub is_default: bool,
+    pub available: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelList {
+    pub runtime_id: String,
+    pub current_model: Option<String>,
+    pub models: Vec<ModelCandidate>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PermissionMode {
+    Request,
+    Assisted,
+    FullAccess,
+}
+
+impl PermissionMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Assisted => "assisted",
+            Self::FullAccess => "full_access",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PermissionControlStrength {
+    Enforced,
+    Partial,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PermissionStatus {
+    pub current_profile: PermissionMode,
+    pub supported_profiles: Vec<PermissionMode>,
+    pub control_strength: PermissionControlStrength,
+    pub native_mode: Option<String>,
+    pub sandbox: Option<String>,
+    pub residual_guards: Vec<String>,
+    pub evidence_version: String,
+}
+
 impl RuntimeList {
     pub fn new(active_runtime: Option<String>, runtimes: Vec<RuntimeStatus>) -> Self {
         Self {
@@ -102,6 +177,37 @@ pub trait Backend: Send + Sync + 'static {
         Ok(())
     }
     fn runtime_list(&self, operation_token: u64) -> Result<RuntimeList, BackendError>;
+    fn session_list(
+        &self,
+        _operation_token: u64,
+        _query: Option<String>,
+    ) -> Result<SessionList, BackendError> {
+        Err(unsupported_backend_operation("session listing"))
+    }
+    fn resume_session(
+        &self,
+        _operation_token: u64,
+        _session_id: String,
+    ) -> Result<ResumeResult, BackendError> {
+        Err(unsupported_backend_operation("session resume"))
+    }
+    fn model_list(&self, _operation_token: u64) -> Result<ModelList, BackendError> {
+        Err(unsupported_backend_operation("model listing"))
+    }
+    fn switch_model(&self, _operation_token: u64, _model_id: String) -> Result<(), BackendError> {
+        Err(unsupported_backend_operation("model switching"))
+    }
+    fn permissions(&self, _operation_token: u64) -> Result<PermissionStatus, BackendError> {
+        Err(unsupported_backend_operation("permission inspection"))
+    }
+    fn switch_permissions(
+        &self,
+        _operation_token: u64,
+        _profile: PermissionMode,
+        _full_access_confirmed: bool,
+    ) -> Result<(), BackendError> {
+        Err(unsupported_backend_operation("permission switching"))
+    }
     /// Streams one turn. `operation_token` identifies the local subscription, not a runtime turn.
     fn stream_turn(
         &self,
@@ -138,4 +244,11 @@ pub trait Backend: Send + Sync + 'static {
         operation_token: u64,
         runtime: String,
     ) -> Result<RuntimeStatus, BackendError>;
+}
+
+fn unsupported_backend_operation(operation: &str) -> BackendError {
+    BackendError::new(
+        BackendErrorKind::Operation,
+        format!("{operation} is unavailable for this backend"),
+    )
 }

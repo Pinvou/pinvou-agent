@@ -350,6 +350,62 @@ impl<S: Read + Write> ControllerWire<S> {
     pub fn runtime_list(&mut self) -> Result<IpcMessage, DistributedError> {
         self.request("runtime.list", json!({}))
     }
+    pub fn session_list(&mut self, query: Option<&str>) -> Result<IpcMessage, DistributedError> {
+        let mut payload = json!({});
+        if let Some(query) = query.filter(|query| !query.is_empty()) {
+            payload["query"] = json!(query);
+        }
+        self.request("session.list", payload)
+    }
+    pub fn session_resume_prepare(
+        &mut self,
+        session_id: &str,
+    ) -> Result<IpcMessage, DistributedError> {
+        self.request("session.resume.prepare", json!({"session_id":session_id}))
+    }
+    pub fn session_resume_commit(
+        &mut self,
+        resume_token: &str,
+    ) -> Result<IpcMessage, DistributedError> {
+        self.request(
+            "session.resume.commit",
+            json!({"resume_token":resume_token}),
+        )
+    }
+    pub fn model_list(&mut self) -> Result<IpcMessage, DistributedError> {
+        self.request("model.list", json!({}))
+    }
+    pub fn model_switch_prepare(&mut self, model_id: &str) -> Result<IpcMessage, DistributedError> {
+        self.request("model.switch.prepare", json!({"model_id":model_id}))
+    }
+    pub fn model_switch_commit(
+        &mut self,
+        switch_token: &str,
+    ) -> Result<IpcMessage, DistributedError> {
+        self.request("model.switch.commit", json!({"switch_token":switch_token}))
+    }
+    pub fn permissions_inspect(&mut self) -> Result<IpcMessage, DistributedError> {
+        self.request("permissions.inspect", json!({}))
+    }
+    pub fn permissions_switch_prepare(
+        &mut self,
+        profile: &str,
+        full_access_confirmed: bool,
+    ) -> Result<IpcMessage, DistributedError> {
+        self.request(
+            "permissions.switch.prepare",
+            json!({"profile":profile,"full_access_confirmed":full_access_confirmed}),
+        )
+    }
+    pub fn permissions_switch_commit(
+        &mut self,
+        switch_token: &str,
+    ) -> Result<IpcMessage, DistributedError> {
+        self.request(
+            "permissions.switch.commit",
+            json!({"switch_token":switch_token}),
+        )
+    }
     pub fn runtime_switch(&mut self, runtime: &str) -> Result<IpcMessage, DistributedError> {
         self.request("runtime.switch", json!({"runtime": runtime}))
     }
