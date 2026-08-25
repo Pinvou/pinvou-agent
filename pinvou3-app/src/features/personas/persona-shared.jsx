@@ -61,8 +61,8 @@ export const AppIcon = ({ card, cls = 'w-14 h-14 rounded-[14px]', fb = 26 }) => 
             <div style={{ width:2, height:52, background: isDark?'linear-gradient(#3a3a3c,#5a5a5e)':'linear-gradient(#d1d1d6,#aeaeb2)' }}></div>
             <div className="w-2.5 h-2.5 rounded-full -mt-1 mb-2 bg-[#e8e8ed] dark:bg-[#1c1c1e] border-2 border-[#c7c7cc] dark:border-[#48484a]"></div>
             {/* 卡片 */}
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: 挂绳卡点击为鼠标快捷方式,键盘路径待卡池弹层内控件承担 */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: 挂绳卡点击热区,非独立交互控件 */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: lanyard-card click is a mouse shortcut; the keyboard path is served by controls inside the card-pool popover */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: lanyard-card click hot zone; not a standalone interactive control */}
             <div onClick={onOpenPicker} title={t.cpLanyardSwap}
               className="relative rounded-[14px] p-3 w-[150px] cursor-pointer transition-transform hover:-translate-y-0.5 bg-[#fff] dark:bg-[#1C1C1E] border border-[rgba(0,0,0,.06)] dark:border-[#2c2c2e]"
               style={{ boxShadow:'0 8px 24px -8px rgba(0,0,0,.3)' }}>

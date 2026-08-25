@@ -160,7 +160,7 @@ try {
   const langGroup = submits[0].find((g) => g.questionId === 'q-lang');
   const skillGroup = submits[0].find((g) => g.questionId === 'q-skill');
   assert(langGroup && langGroup.answers.some((a) => a.label === 'Python'), '单选答案 Python 提交', submits);
-  const skillLabels = skillGroup ? skillGroup.answers.map((a) => a.label).sort() : []; // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  const skillLabels = skillGroup ? skillGroup.answers.map((a) => a.label).sort() : []; // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
   assert(JSON.stringify(skillLabels) === JSON.stringify(['后端', '运维']), '多选答案 后端+运维 提交', submits);
 
   // 锁定卡渲染 initialAnswers 选中态（resolved 卡高亮恢复）。

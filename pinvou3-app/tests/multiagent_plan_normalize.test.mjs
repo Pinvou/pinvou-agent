@@ -231,12 +231,12 @@ function loadFeature(invokeImpl) {
 test('桥不再维护运行状态机，只暴露发起与只读投影', () => {
   const { api, listeners } = loadFeature();
   assert.deepEqual(
-    Object.keys(api).sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+    Object.keys(api).sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
     ['listSubagentTranscripts', 'readSubagentTranscript'],
     '台账/审批/运行列表与 startRun 独立入口的 API 已随 ADR-0006 退役',
   );
   assert.deepEqual(
-    Object.keys(listeners).sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+    Object.keys(listeners).sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
     ['multiagent:agent_complete', 'multiagent:agent_progress'],
     '只监听子智能体进展/完成，不重建运行状态机',
   );
@@ -458,7 +458,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   const sessionsSource = fs
     .readdirSync(sessionsDir)
     .filter((f) => f.endsWith('.rs'))
-    .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+    .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
     .map((f) => fs.readFileSync(path.join(sessionsDir, f), 'utf8'))
     .join('\n');
   assert.match(
@@ -727,7 +727,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const managerSource = fs
     .readdirSync(managerDir)
     .filter((f) => f.endsWith('.rs'))
-    .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+    .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
     .map((f) => fs.readFileSync(path.join(managerDir, f), 'utf8'))
     .join('\n');
   assert.match(

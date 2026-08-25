@@ -140,9 +140,9 @@ const context = vm.createContext({
 vm.runInContext(read('bridge.js'), context, { filename: 'bridge.js' });
 
 const api = windowObject.TauriBridge;
-assert.deepEqual(Object.keys(api).sort(), ['available', ...Object.keys(desktopBridgeApi)].sort()); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+assert.deepEqual(Object.keys(api).sort(), ['available', ...Object.keys(desktopBridgeApi)].sort()); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 for (const [domain, methods] of Object.entries(desktopBridgeApi)) {
-  assert.deepEqual(Object.keys(api[domain]).sort(), methods.sort(), `${domain} API surface changed`); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  assert.deepEqual(Object.keys(api[domain]).sort(), methods.sort(), `${domain} API surface changed`); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 }
 assert.equal(api.sendMessage, undefined, 'flat compatibility facade must not return');
 assert.equal(api.getState, undefined, 'flat state facade must not return');

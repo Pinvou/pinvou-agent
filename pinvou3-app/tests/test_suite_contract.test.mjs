@@ -24,7 +24,7 @@ const platformRuntimeSmokes = new Set([
 
 const javascriptFiles = fs.readdirSync(testsRoot)
   .filter((name) => /\.(?:js|mjs)$/u.test(name))
-  .sort(); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  .sort(); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 const nodeTests = javascriptFiles.filter((name) => /\.test\.(?:js|mjs)$/u.test(name));
 const browserSmokes = javascriptFiles.filter((name) => /_smoke\.(?:js|mjs)$/u.test(name));
 

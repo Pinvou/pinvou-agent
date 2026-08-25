@@ -504,7 +504,7 @@ const ToolOutput = ({ item, t }) => {
           const d = w.datas[0];
           const findVal = (obj, keyword) => {
             for (const k of Object.keys(obj)) {
-              // eslint-disable-next-line unicorn/prefer-number-coercion -- market fields may carry unit suffixes; keep the permissive parseFloat, same as 最新价 below
+              // eslint-disable-next-line unicorn/prefer-number-coercion -- market fields may carry unit suffixes; keep the permissive parseFloat like the price field below
               if (k.includes(keyword)) return Number.parseFloat(obj[k]);
             }
             // A miss must stay undefined: StockQuoteCard's fmt/isNaN fallback and

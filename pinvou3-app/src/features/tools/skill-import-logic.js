@@ -27,7 +27,7 @@ export function fileToBase64(file) {
     let binary = '';
     const stride = 0x8000;
     for (let offset = 0; offset < bytes.length; offset += stride) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + stride)); // eslint-disable-line unicorn/prefer-code-point -- 按字节(0-255)拼接 binary string 供 btoa,fromCharCode 与 Rust 侧 encodeBase64Bytes 同构
+      binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + stride)); // eslint-disable-line unicorn/prefer-code-point -- assembles a byte (0-255) binary string for btoa; fromCharCode mirrors the Rust-side encodeBase64Bytes
     }
     return btoa(binary);
   });

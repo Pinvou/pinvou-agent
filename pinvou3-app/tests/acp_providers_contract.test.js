@@ -19,7 +19,7 @@ const PROVIDERS = path.join(TAU, 'features', 'codex_acp', 'providers');
 const MOD = fs
   .readdirSync(path.join(TAU, 'features', 'codex_acp'))
   .filter((f) => f.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
   .map((f) => fs.readFileSync(path.join(TAU, 'features', 'codex_acp', f), 'utf8'))
   .join('\n');
 const PROVIDERS_MOD = fs.readFileSync(path.join(PROVIDERS, 'mod.rs'), 'utf8');

@@ -90,7 +90,7 @@ test('diagnostics allow-list metadata and drop privacy-sensitive fields', async 
   ]) {
     assert.equal(serialized.includes(secret), false, `diagnostic leaked ${secret}`);
   }
-  assert.deepEqual(Object.keys(attempt).sort(), ['connection', 'details', 'event', 'event_id']); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  assert.deepEqual(Object.keys(attempt).sort(), ['connection', 'details', 'event', 'event_id']); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
   assert.ok(calls.every(call => call.command === 'record_authority_sync_diagnostics'));
 });
 
@@ -215,7 +215,7 @@ test('frontend allowlists stay in lockstep between JS and Rust', () => {
   const rustEvents = rust.match(/const FRONTEND_EVENTS: &\[&str\] = &\[([\s\S]*?)\];/);
   assert.ok(rustEvents, 'FRONTEND_EVENTS not found in Rust source');
   const rustEventSet = new Set([...rustEvents[1].matchAll(/"([^"]+)"/g)].map(e => e[1]));
-  assert.deepEqual([...jsSet('ALLOWED_EVENTS')].sort(), [...rustEventSet].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  assert.deepEqual([...jsSet('ALLOWED_EVENTS')].sort(), [...rustEventSet].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
     'frontend event allowlists drifted between JS and Rust');
 
   // Detail fields: every key JS may emit must be recognized by Rust normalization.
@@ -224,14 +224,14 @@ test('frontend allowlists stay in lockstep between JS and Rust', () => {
     ...jsSet('NUMBER_FIELDS'), ...jsSet('BOOLEAN_FIELDS'),
     ...jsEnums.keys(), 'transport', 'cause', 'saved_roles',
   ]);
-  assert.deepEqual([...jsFieldUnion].sort(), [...rustFields].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  assert.deepEqual([...jsFieldUnion].sort(), [...rustFields].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
     'frontend detail-field allowlists drifted between JS and Rust');
 
   // Enum values: JS accepts exactly the values Rust re-validates.
   for (const [field, jsValues] of jsEnums) {
     const rustValues = rustEnums.get(field);
     assert.ok(rustValues, `Rust normalization is missing enum field "${field}"`);
-    assert.deepEqual([...jsValues].sort(), [...rustValues].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+    assert.deepEqual([...jsValues].sort(), [...rustValues].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
       `enum values for "${field}" drifted between JS and Rust`);
   }
 
@@ -257,7 +257,7 @@ test('frontend allowlists stay in lockstep between JS and Rust', () => {
     ['connection_status', new Set(jsAlternations[2].split('|'))],
   ]);
   for (const [field, jsValues] of jsConnection) {
-    assert.deepEqual([...jsValues].sort(), [...rustConnection.get(field)].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+    assert.deepEqual([...jsValues].sort(), [...rustConnection.get(field)].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
       `connection field "${field}" drifted between JS and Rust`);
   }
 

@@ -3,7 +3,6 @@
   "ignorePatterns": [
     "dist/**",
     "src/vendor/**",
-    "src/types/**",
     "src/**/*.d.ts",
     "src-tauri/**",
     "node_modules/**"

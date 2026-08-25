@@ -59,7 +59,7 @@ function parseNames(line) {
       if (Array.isArray(names) && names.every(name => typeof name === 'string')) {
         return names.filter(Boolean);
       }
-    } catch { /* 非 JSON 行走旧格式回退 */ }
+    } catch { /* non-JSON lines fall back to the legacy format */ }
   }
   // Compatibility for transcripts written before JSON attachment markers.
   return line

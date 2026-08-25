@@ -494,7 +494,7 @@ const CLOUD_MODEL_PROVIDERS = MODEL_CATALOG.cloud;
 function normalizeEndpointUrl(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
-  return raw.replace(/\/+$/, ''); // eslint-disable-line sonarjs/super-linear-regex -- 尾斜杠规范化,输入为用户填写的 URL,长度有限
+  return raw.replace(/\/+$/, ''); // eslint-disable-line sonarjs/super-linear-regex -- trailing-slash normalization; input is a user-entered URL of bounded length
 }
 function normalizeOpenAiBaseUrl(value) {
   const trimmed = normalizeEndpointUrl(value);
@@ -729,7 +729,7 @@ function hasOpenaiDateSnapshotSuffix(lower, prefix) {
 function isOfficialDeepseekBaseUrl(baseUrl) {
   const normalized = String(baseUrl || '')
     .trim()
-    .replace(/\/+$/, '') // eslint-disable-line sonarjs/super-linear-regex -- 尾斜杠规范化,输入为用户填写的 URL,长度有限
+    .replace(/\/+$/, '') // eslint-disable-line sonarjs/super-linear-regex -- trailing-slash normalization; input is a user-entered URL of bounded length
     .replace(/\/beta$/, '')
     .replace(/\/v1$/, '')
     .toLowerCase();

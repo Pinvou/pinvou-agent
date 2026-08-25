@@ -147,7 +147,7 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
       const value = await responseText();
       copied = await copyClipboardText(value);
     } catch {
-      copied = false; // 复制失败:落到 failed 反馈分支
+      copied = false; // copy failure: fall through to the failed feedback branch
     }
     setFeedback(null);
     setCopyStatus(copied ? 'copied' : 'failed');
@@ -249,7 +249,7 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
       let opened = false;
       try {
         opened = await openAssistantShareTarget(target);
-      } catch { /* 打开外部目标失败则回退网页打开 */ }
+      } catch { /* if launching the external target fails, fall back to opening in the browser */ }
       showFeedback(opened ? copy.shareCopiedOpen(appLabel) : copy.shareCopiedWeb(appLabel));
     } catch {
       showFeedback(copy.shareFailed, true);
@@ -354,12 +354,12 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
                 <Share2 size={16} className="shrink-0" />
                 <span className="min-w-0"><span className="block font-medium">{copy.shareSystem}</span><span className="block truncate text-[11px] text-[#747775] dark:text-[#9AA0A6]">{copy.shareSystemHint}</span></span>
               </button>
-              {/* biome-ignore lint/a11y/useSemanticElements: 菜单视觉分隔线,hr 会改变既有菜单样式约定 */}
-              {/* biome-ignore lint/a11y/useAriaPropsForRole: 菜单视觉分隔线,valuenow 语义不适用 */}
-              {/* biome-ignore lint/a11y/useFocusableInteractive: 菜单视觉分隔线,非焦点控件 */}
+              {/* biome-ignore lint/a11y/useSemanticElements: visual menu divider; hr would break the established menu styling */}
+              {/* biome-ignore lint/a11y/useAriaPropsForRole: visual menu divider; valuenow semantics do not apply */}
+              {/* biome-ignore lint/a11y/useFocusableInteractive: visual menu divider; not a focusable control */}
               <div role="separator" className="mx-3 my-1 border-t border-black/[0.08] dark:border-white/10" />
               <div id={`${menuIds.share}-apps-label`} role="presentation" className="px-3 pb-1 pt-1 text-[11px] font-medium text-[#747775] dark:text-[#9AA0A6]">{copy.shareApps}</div>
-              {/* biome-ignore lint/a11y/useSemanticElements: 分组标签容器承载既有布局样式,fieldset 无此承载 */}
+              {/* biome-ignore lint/a11y/useSemanticElements: the group-label container carries the established layout styles; fieldset cannot */}
               <div role="group" aria-labelledby={`${menuIds.share}-apps-label`}>
                 {SHARE_TARGETS.map((target, index) => (
                   <button ref={element => { menuItemsRef.current[index + 1] = element; }} key={target} type="button" role="menuitem" aria-label={copy.shareTargets[target]} data-testid={`assistant-share-${target}`} className={`${menuItemClass} !min-h-9 !py-1.5`} onClick={() => handleAppShare(target)}>

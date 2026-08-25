@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "files": {
-    "includes": ["src/**/*.js", "src/**/*.jsx", "!src/vendor/**", "!src/types/**"]
+    "includes": ["src/**/*.js", "src/**/*.jsx", "!src/vendor/**"]
   },
   "linter": {
     "enabled": true,

@@ -59,7 +59,7 @@ export function ConversationAttachmentBubble({
     try {
       const path = await bridge.attachments.resolveConversationAttachment(reference);
       await copyText(path);
-    } catch { /* 解析/复制失败则静默,不弹错 */ }
+    } catch { /* silently ignore parse/copy failures; no error toast */ }
   };
   const revealAttachment = () => {
     closeMenu();

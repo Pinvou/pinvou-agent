@@ -26,7 +26,7 @@ assert.equal(isPendingAcpAttachment({ status: 'ready' }), false);
     { id: 'uploading-1', status: 'uploading' },
     { id: 'ready-1', status: 'ready' },
   ], cancelledIds);
-  assert.deepEqual([...cancelledIds].sort(), ['parsing-1', 'uploading-1']); // eslint-disable-line unicorn/require-array-sort-compare -- 字符串数组字典序即断言预期
+  assert.deepEqual([...cancelledIds].sort(), ['parsing-1', 'uploading-1']); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 }
 
 {
