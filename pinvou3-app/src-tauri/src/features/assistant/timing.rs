@@ -412,12 +412,12 @@ pub fn record_milestone_meta(session_id: &str, milestone: &str, meta: serde_json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineEvent {
     pub turn_id: String,
-    pub event: String,            // "user_start" | "assistant_done"
-    pub timestamp: i64,           // ms epoch
-    pub ts: String,               // RFC3339
-    pub status: Option<String>,   // assistant_done only
-    pub error: Option<String>,    // assistant_done only
-    pub usage: Option<TurnUsage>, // assistant_done only(老事件为 None)
+    pub event: String,  // "user_start" | "assistant_done" | "context_snapshot"
+    pub timestamp: i64, // ms epoch
+    pub ts: String,     // RFC3339
+    pub status: Option<String>, // assistant_done only
+    pub error: Option<String>, // assistant_done only
+    pub usage: Option<TurnUsage>, // assistant_done / context_snapshot(老事件为 None)
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub tool_name: Option<String>,
     #[cfg(any(feature = "benchmark-hooks", test))]
@@ -1151,6 +1151,7 @@ mod tests {
         assert_eq!(u.cache_miss_tokens, 20);
         assert_eq!(u.cache_write_tokens, 80);
         assert_eq!(u.reasoning_tokens, 500);
+        assert_eq!(u.context_window, 128_000);
 
         let stats = compute_stats(sid).unwrap();
         assert_eq!(stats.total_cache_write_tokens, 80);

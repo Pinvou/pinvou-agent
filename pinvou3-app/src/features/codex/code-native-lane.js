@@ -694,7 +694,10 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     event && (event.event === 'assistant_done' || event.event === 'context_snapshot')
       && Number(event.usage && event.usage.input_tokens) > 0
   ));
-  if (lastUsage) {
+  // A live chat:usage event can land while loadSession is still awaiting the timeline;
+  // it is newer than the on-disk snapshot, so hydration must not roll the chip back.
+  const hasLiveUsage = Number(lane.tokens && lane.tokens.input) > 0;
+  if (lastUsage && !hasLiveUsage) {
     // Legacy events omit context_window, leaving the percentage unavailable.
     const max = Number(lastUsage.usage.context_window || 0);
     lane.tokens = { input: Number(lastUsage.usage.input_tokens), max: max > 0 ? max : lane.tokens.max };

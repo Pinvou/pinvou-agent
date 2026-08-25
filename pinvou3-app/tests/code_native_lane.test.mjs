@@ -192,6 +192,14 @@ try {
   assert.equal(lane4.busy, false, '无 live 痕迹时 hydration 不恢复 busy');
   assert.equal(lane4.tokens.input, 4, 'hydration restores the latest context snapshot');
   assert.equal(lane4.tokens.max, 64000, 'hydration restores the context-window denominator');
+  // A live chat:usage that landed before hydration finished is newer than the on-disk
+  // snapshot; hydration must not roll it back.
+  const lane4live = createNativeLane();
+  applyNativeChatEvent(lane4live, 'chat:usage', { session_id: 's4live', input_tokens: 5000, context_window: 64000 });
+  hydrateNativeLane(lane4live, { messages: [] }, [
+    { turn_id: 't1', event: 'assistant_done', timestamp: 2000, status: 'Completed', usage: { input_tokens: 10, context_window: 64000 } },
+  ]);
+  assert.equal(lane4live.tokens.input, 5000, 'hydration keeps live usage over the stale snapshot');
   const hydrated = projectNativeLane(lane4, 's4');
   assert.equal(hydrated.turns.length, 1);
   assert.equal(hydrated.turns[0].status, 'Completed', 'timeline 事件驱动回合状态');
