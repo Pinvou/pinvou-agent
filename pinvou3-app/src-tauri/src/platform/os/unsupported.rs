@@ -30,6 +30,10 @@ pub fn command_exists(_command: &str) -> bool {
     false
 }
 
+/// Windows-only (ORT_DYLIB_PATH / LibreOffice PATH prepend); this platform
+/// has no startup-window platform env writes, so this is a no-op.
+pub fn startup_platform_env() {}
+
 pub fn pandoc_tool_path() -> PathBuf {
     PathBuf::from("pandoc")
 }

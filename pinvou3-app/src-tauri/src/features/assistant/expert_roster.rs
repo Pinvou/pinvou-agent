@@ -34,8 +34,8 @@ impl ExpertRosterSnapshot {
         loop {
             let before = crate::features::personas::executable_revision();
             // The snapshot cache only speeds things up; a panic while holding
-    // the lock must not take down sessions: follow the repo-wide lock
-    // poisoning recovery convention.
+            // the lock must not take down sessions: follow the repo-wide lock
+            // poisoning recovery convention.
             if let Some(snapshot) = snapshot_cache()
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -53,8 +53,8 @@ impl ExpertRosterSnapshot {
             }
             let candidate = Arc::new(Self::from_cards(cards));
             // Same as above: on write-lock poisoning recover the guard and
-    // continue; the cache content is replaced wholesale, so there is
-    // no partial-write risk.
+            // continue; the cache content is replaced wholesale, so there is
+            // no partial-write risk.
             let mut cache = snapshot_cache()
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -424,8 +424,12 @@ pub fn cleanup_legacy_expert_projection(
     for component in [
         session_dir,
         ledger,
-        dir.parent()
-            .ok_or_else(|| format!("legacy expert projection dir has no parent: {}", dir.display()))?,
+        dir.parent().ok_or_else(|| {
+            format!(
+                "legacy expert projection dir has no parent: {}",
+                dir.display()
+            )
+        })?,
         &dir,
     ] {
         let metadata = std::fs::symlink_metadata(component).map_err(|error| {

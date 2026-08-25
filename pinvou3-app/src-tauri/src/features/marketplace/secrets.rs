@@ -124,7 +124,9 @@ pub(super) fn set_remote_secret_header(
     if header.eq_ignore_ascii_case("authorization") && scheme.eq_ignore_ascii_case("bearer") {
         if let Some(existing) = bearer_token_env_var.as_deref() {
             if existing != env_var {
-                return Err("a remote MCP server does not support multiple Bearer secrets".to_string());
+                return Err(
+                    "a remote MCP server does not support multiple Bearer secrets".to_string(),
+                );
             }
         }
         *bearer_token_env_var = Some(env_var);

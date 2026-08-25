@@ -382,7 +382,10 @@ impl SkillMarketplaceManager {
         // bundles/<owner>/skills/<name> is joined from the root, so it always
         // has a parent; still fall back to an error return.
         let Some(parent) = dest.parent() else {
-            return Err(format!("skill package dir has no parent: {}", dest.display()));
+            return Err(format!(
+                "skill package dir has no parent: {}",
+                dest.display()
+            ));
         };
         std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
         let staged = parent.join(format!("{}.tmp", m.skill_name));
@@ -853,7 +856,10 @@ impl SkillMarketplaceManager {
         // Same as above: joined from the root, so a parent always exists;
         // still fall back to an error return.
         let Some(parent) = dest.parent() else {
-            return Err(format!("skill package dir has no parent: {}", dest.display()));
+            return Err(format!(
+                "skill package dir has no parent: {}",
+                dest.display()
+            ));
         };
         std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
         let staged = parent.join(format!("{name}.tmp"));
@@ -2198,7 +2204,10 @@ mod tests {
         // install 登记的指纹应与嵌入资源指纹一致（刚装即一致 → 无更新提示）
         let store =
             crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
-        let record = store.get("visualizer").unwrap().expect("install should register the skill");
+        let record = store
+            .get("visualizer")
+            .unwrap()
+            .expect("install should register the skill");
         let embedded_fp = embedded_skill_fingerprint(mgr.preset("visualizer").unwrap());
         assert_eq!(record.content_fingerprint, embedded_fp);
         let skill_md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();

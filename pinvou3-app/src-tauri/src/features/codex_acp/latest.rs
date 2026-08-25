@@ -185,7 +185,9 @@ impl AcpPool {
             // the runtime cancelled it. Degraded fallback: probe the baseline
             // status directly (skipping the latest overlay, matching the
             // offline case) instead of letting a panic take down the session.
-            eprintln!("[acp] status probe task exited unexpectedly, falling back to a direct probe: {backend:?}");
+            eprintln!(
+                "[acp] status probe task exited unexpectedly, falling back to a direct probe: {backend:?}"
+            );
             return self.status_for(backend);
         };
         if status.codex_available {

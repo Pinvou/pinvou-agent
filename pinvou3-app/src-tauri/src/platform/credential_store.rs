@@ -36,7 +36,7 @@ const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
 /// converges on the next `delete`, so mutual exclusion never breaks.
 ///
 /// **安全权衡**:缓存值为明文 secret,仅在进程内存(不落盘),与本 crate 内其他明文 secret
-/// 在内存中的驻留(如 bridge 注入给引擎的 api_key、marketplace 重灌进进程 env 的 mcp
+/// 在内存中的驻留(如 bridge 注入给引擎的 api_key、marketplace 经进程内注册表下发的 mcp
 /// secret)同等敏感等级,均仅驻留进程内存、不落盘。Keychain 仍是单一真相源:`set`/`delete`
 /// 同步更新缓存;环境变量路径不经过此缓存。仅 `Ok` 结果缓存(含 `Ok(None)`),`Err` 不缓存,
 /// 允许临时性 Keychain 故障(或用户在授权弹窗上点"拒绝")后下次重试自愈。

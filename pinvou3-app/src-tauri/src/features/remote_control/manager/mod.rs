@@ -1275,7 +1275,8 @@ impl RemoteControlManager {
         );
         let mut results = Vec::with_capacity(handles.len());
         for handle in handles {
-            // 上方同一临界区内已 contains_key 校验过；仍以错误返回兜底，不 panic。
+            // Already validated via contains_key in the critical section above;
+            // still return an error as a fallback instead of panicking.
             let Some(cached) = inner.web_attachments.get_mut(handle) else {
                 return Err(format!("远程控制附件句柄不存在或已过期：{handle}"));
             };
