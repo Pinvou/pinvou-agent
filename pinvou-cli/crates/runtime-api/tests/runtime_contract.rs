@@ -1,6 +1,8 @@
 use pinvou_runtime_api::{
-    AdapterError, AgentRuntimeAdapter, AuthStatus, NegotiatedCapabilities, RuntimeCapabilities,
-    RuntimeCommand, RuntimeEventSubscription, RuntimeSession,
+    AdapterError, AgentRuntimeAdapter, ApprovalProfile, AuthStatus, ControlStrength,
+    LogicalSessionId, ModelCatalog, ModelDescriptor, ModelId, NegotiatedCapabilities,
+    PermissionCapability, RuntimeCapabilities, RuntimeCommand, RuntimeEventSubscription,
+    RuntimeOperation, RuntimeSession, SessionDescriptor, SessionSnapshot, SessionStatus,
 };
 
 struct UnsupportedAdapter {
@@ -38,7 +40,7 @@ fn seam_is_versioned_and_unsupported_operations_fail_explicitly() {
         probed: false,
         capabilities: RuntimeCapabilities::default(),
     };
-    assert_eq!(adapter.interface_version(), 1);
+    assert_eq!(adapter.interface_version(), 2);
     assert_eq!(adapter.capabilities(), Err(AdapterError::NotProbed));
     adapter.probe().unwrap();
     assert_eq!(
@@ -118,4 +120,105 @@ fn method_not_found_downgrades_the_negotiated_snapshot() {
     });
     state.method_not_found("steer").unwrap();
     assert!(!state.snapshot().unwrap().steering);
+}
+
+#[test]
+fn new_capability_evidence_is_backward_compatible() {
+    let capabilities: RuntimeCapabilities = serde_json::from_value(serde_json::json!({
+        "interactive_chat": true
+    }))
+    .unwrap();
+
+    assert!(capabilities.interactive_chat);
+    assert!(!capabilities.session_listing);
+    assert!(!capabilities.model_catalog);
+    assert!(!capabilities.model_switching);
+    assert!(!capabilities.permission_profiles);
+}
+
+#[test]
+fn session_snapshot_round_trips_with_stable_snake_case_fields() {
+    let descriptor = SessionDescriptor {
+        id: LogicalSessionId::new("session-1").unwrap(),
+        title: "First task".into(),
+        last_active_at: "2026-08-25T10:00:00Z".into(),
+        runtime_id: "codex".into(),
+        model_id: Some(ModelId::new("gpt-5.6").unwrap()),
+        status: SessionStatus::Completed,
+        native_session_id: Some("thread-1".into()),
+    };
+    let snapshot = SessionSnapshot {
+        descriptor,
+        cursor: 7,
+        normalized_events: vec![serde_json::json!({"kind":"message_completed"})],
+    };
+
+    let value = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(value["descriptor"]["status"], "completed");
+    assert_eq!(value["descriptor"]["native_session_id"], "thread-1");
+    assert_eq!(value["cursor"], 7);
+    assert_eq!(
+        serde_json::from_value::<SessionSnapshot>(value).unwrap(),
+        snapshot
+    );
+}
+
+#[test]
+fn model_catalog_rejects_invalid_default_or_current_model() {
+    let models = vec![
+        ModelDescriptor::new("gpt-5.6", "GPT-5.6", true, true).unwrap(),
+        ModelDescriptor::new("gpt-5.5", "GPT-5.5", true, true).unwrap(),
+    ];
+    assert!(ModelCatalog::new("codex", None, models).is_err());
+
+    let models = vec![ModelDescriptor::new("gpt-5.6", "GPT-5.6", true, false).unwrap()];
+    assert!(ModelCatalog::new("codex", Some(ModelId::new("missing").unwrap()), models).is_err());
+}
+
+#[test]
+fn permission_capability_uses_stable_product_profiles() {
+    let capability = PermissionCapability {
+        supported_profiles: vec![ApprovalProfile::Request, ApprovalProfile::Assisted],
+        control_strength: ControlStrength::Partial,
+        native_mode: Some("on-request".into()),
+        sandbox: Some("workspace-write".into()),
+        residual_guards: vec!["os-policy".into()],
+        evidence_version: "codex-app-server-v2".into(),
+    };
+
+    let value = serde_json::to_value(&capability).unwrap();
+    assert_eq!(value["supported_profiles"][0], "request");
+    assert_eq!(value["control_strength"], "partial");
+    assert_eq!(
+        serde_json::from_value::<PermissionCapability>(value).unwrap(),
+        capability
+    );
+}
+
+#[test]
+fn new_adapter_operations_default_to_explicit_unsupported_errors() {
+    let mut adapter = UnsupportedAdapter {
+        probed: true,
+        capabilities: RuntimeCapabilities::default(),
+    };
+    let operation = || RuntimeOperation::new("operation-1", serde_json::json!({})).unwrap();
+
+    assert!(
+        matches!(adapter.list_sessions(operation()), Err(AdapterError::Unsupported { operation }) if operation == "list_sessions")
+    );
+    assert!(
+        matches!(adapter.read_session(operation()), Err(AdapterError::Unsupported { operation }) if operation == "read_session")
+    );
+    assert!(
+        matches!(adapter.list_models(operation()), Err(AdapterError::Unsupported { operation }) if operation == "list_models")
+    );
+    assert!(
+        matches!(adapter.inspect_permissions(operation()), Err(AdapterError::Unsupported { operation }) if operation == "inspect_permissions")
+    );
+}
+
+#[test]
+fn public_identifiers_reject_empty_values() {
+    assert!(LogicalSessionId::new("").is_err());
+    assert!(ModelId::new("").is_err());
 }

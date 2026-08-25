@@ -7,8 +7,9 @@ mod model;
 pub use adapter::{AgentRuntimeAdapter, RuntimeEventSubscription};
 pub use error::AdapterError;
 pub use model::{
-    AuthStatus, NegotiatedCapabilities, RuntimeCapabilities, RuntimeCommand, RuntimeOperation,
-    RuntimeSession,
+    ApprovalProfile, AuthStatus, ControlStrength, LogicalSessionId, ModelCatalog, ModelDescriptor,
+    ModelId, NegotiatedCapabilities, PermissionCapability, RuntimeCapabilities, RuntimeCommand,
+    RuntimeOperation, RuntimeSession, SessionDescriptor, SessionSnapshot, SessionStatus,
 };
 
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");

@@ -1,10 +1,11 @@
 use pinvou_protocol::RuntimeEventEnvelope;
 
 use crate::{
-    AdapterError, AuthStatus, RuntimeCapabilities, RuntimeCommand, RuntimeOperation, RuntimeSession,
+    AdapterError, AuthStatus, ModelCatalog, PermissionCapability, RuntimeCapabilities,
+    RuntimeCommand, RuntimeOperation, RuntimeSession, SessionDescriptor, SessionSnapshot,
 };
 
-pub const RUNTIME_ADAPTER_INTERFACE_VERSION: u16 = 1;
+pub const RUNTIME_ADAPTER_INTERFACE_VERSION: u16 = 2;
 pub type RuntimeEventSubscription =
     Box<dyn Iterator<Item = Result<RuntimeEventEnvelope, AdapterError>> + Send>;
 
@@ -24,6 +25,24 @@ pub trait AgentRuntimeAdapter: Send {
     }
     fn resume(&mut self, _: RuntimeOperation) -> Result<RuntimeSession, AdapterError> {
         Err(AdapterError::unsupported("resume"))
+    }
+    fn list_sessions(
+        &mut self,
+        _: RuntimeOperation,
+    ) -> Result<Vec<SessionDescriptor>, AdapterError> {
+        Err(AdapterError::unsupported("list_sessions"))
+    }
+    fn read_session(&mut self, _: RuntimeOperation) -> Result<SessionSnapshot, AdapterError> {
+        Err(AdapterError::unsupported("read_session"))
+    }
+    fn list_models(&mut self, _: RuntimeOperation) -> Result<ModelCatalog, AdapterError> {
+        Err(AdapterError::unsupported("list_models"))
+    }
+    fn inspect_permissions(
+        &mut self,
+        _: RuntimeOperation,
+    ) -> Result<PermissionCapability, AdapterError> {
+        Err(AdapterError::unsupported("inspect_permissions"))
     }
     fn import_context(
         &mut self,

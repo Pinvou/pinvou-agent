@@ -32,10 +32,10 @@
 - Modify: `pinvou-cli/crates/runtime-api/src/lib.rs`
 - Test: `pinvou-cli/crates/runtime-api/tests/runtime_contract.rs`
 
-- [ ] 先写序列化和不变量失败测试，覆盖 `SessionDescriptor`、`SessionSnapshot`、`ModelCatalog`、`ApprovalProfile`、`PermissionCapability` 与稳定 snake_case JSON。
-- [ ] 为 `LogicalSessionId`、`ModelId`、prepare token 增加非空校验；`ModelCatalog` 必须恰有零或一个默认项，当前项必须存在于可用目录。
-- [ ] 给 `RuntimeCapabilities` 增加 `session_listing`、`model_catalog`、`model_switching`、`permission_profiles` 证据字段，同时保持旧 JSON 缺字段可反序列化。
-- [ ] 扩展 `AgentRuntimeAdapter`：
+- [x] 先写序列化和不变量失败测试，覆盖 `SessionDescriptor`、`SessionSnapshot`、`ModelCatalog`、`ApprovalProfile`、`PermissionCapability` 与稳定 snake_case JSON。
+- [x] 为 `LogicalSessionId`、`ModelId` 增加非空校验；prepare token 在 Controller 任务中实现；`ModelCatalog` 必须恰有零或一个默认项，当前项必须存在于可用目录。
+- [x] 给 `RuntimeCapabilities` 增加 `session_listing`、`model_catalog`、`model_switching`、`permission_profiles` 证据字段，同时保持旧 JSON 缺字段可反序列化。
+- [x] 扩展 `AgentRuntimeAdapter`：
 
 ```rust
 fn list_sessions(&mut self, operation: RuntimeOperation) -> Result<Vec<SessionDescriptor>, AdapterError>;
@@ -46,7 +46,7 @@ fn inspect_permissions(&mut self, operation: RuntimeOperation) -> Result<Permiss
 
 默认实现必须返回 `AdapterError::unsupported`，避免破坏其他 Adapter。
 
-- [ ] 运行：
+- [x] 运行：
 
 ```powershell
 $env:PATH='D:\RustNdk\.rustup\toolchains\1.97.1-x86_64-pc-windows-msvc\bin;'+$env:PATH
