@@ -589,6 +589,9 @@ function workspaceDisplayName(path) {
         if (bs.activeSessionId !== activeChat) {
           setActiveChat(bs.activeSessionId);
           if (bs.activeSessionId && currentView !== 'codex' && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled') {
+            // 外部会话切换(web 遥控等)物化出普通 chat 视图时必须退出 code 模式,
+            // 否则 code 边栏与「新对话」建 codex 草稿的行为残留到普通会话上。
+            setCodeModeOn(false);
             setCurrentView('chat');
           }
         }
@@ -596,6 +599,8 @@ function workspaceDisplayName(path) {
         if (bs.composerPrefill && bs.composerPrefill.id && bs.composerPrefill.id !== composerPrefillSeenRef.current) {
           composerPrefillSeenRef.current = bs.composerPrefill.id;
           setChatPrefill(bs.composerPrefill.text || '');
+          // prefill 落普通聊天输入框:同上,物化 chat 视图前退出 code 模式。
+          setCodeModeOn(false);
           setCurrentView('chat');
         }
         if (SCHEDULED_TASKS_ENTRY_ENABLED && bs.scheduledTaskAutoOpenId && bs.scheduledTaskAutoOpenId !== scheduledTaskAutoOpenSeenRef.current) {
@@ -679,6 +684,7 @@ function workspaceDisplayName(path) {
       // HMR/旧前端状态可能仍停在已下线入口；立即回到仍可访问的视图。
       useEffect(() => {
         if (!SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled') {
+          setCodeModeOn(false);
           setCurrentView('chat');
         }
       }, [currentView]);
@@ -1146,6 +1152,9 @@ function workspaceDisplayName(path) {
 
       async function handleOpenScheduledRunShortcut(run) {
         if (!run || !run.sessionId) return;
+        // 定时任务会话是普通聊天:fallback 与成功打开两条分支都落 scheduled 视图,
+        // 统一在入口处退出 code 模式,否则普通会话套着 code 边栏(只剩 code 会话列表)。
+        setCodeModeOn(false);
         if (!bridge.available || !bridge.scheduled.openScheduledRunChat) {
           setCurrentView('scheduled');
           closeMobileSidebar();
@@ -1348,6 +1357,7 @@ function workspaceDisplayName(path) {
                 emitToPet('pet:scheduled_notice_open_failed', { run_id: runId }).catch(() => {});
                 return;
               }
+              setCodeModeOn(false);
               setActiveChat(sessionId);
               setCurrentView('scheduled');
               emitToPet('pet:scheduled_notice_opened', { run_id: runId }).catch(() => {});
@@ -1355,6 +1365,7 @@ function workspaceDisplayName(path) {
             }
             const sid = request.session_id || request.sessionId;
             if (!sid) {
+              setCodeModeOn(false);
               setCurrentView('chat');
               setPetFocusComposerTick(value => value + 1);
               return;
@@ -1362,6 +1373,7 @@ function workspaceDisplayName(path) {
             if (!bridge.available) return;
             const sessionExists = petSnapshotRef.current.some((session) => String(session.id) === String(sid));
             if (!sessionExists) {
+              setCodeModeOn(false);
               setCurrentView('chat');
               setPetFocusComposerTick(value => value + 1);
               emitToPet('pet:session_unavailable', { session_id: sid }).catch(() => {});
