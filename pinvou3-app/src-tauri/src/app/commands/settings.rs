@@ -1735,6 +1735,7 @@ mod tests {
         let active = SavedModel {
             id: "saved-active".to_string(),
             name: "active".to_string(),
+            alias: None,
             preset: Default::default(),
             context_window_tokens: None,
             max_output_tokens: None,

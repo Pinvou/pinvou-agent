@@ -102,7 +102,7 @@ Use **Codex, Claude Code, or Kimi** through [ACP](docs/multi-agent-acp.md) in th
 
 ## 🤖 Model Access
 
-Pinvou Agent works with **local vLLM** and any **OpenAI-compatible API**. Save multiple model configurations in the app and switch between them per session. Built-in templates cover local vLLM, DeepSeek, Kimi, Qwen, Doubao, MiniMax, Zhipu (GLM), MiMo, OpenAI, Anthropic, Gemini, and xAI — or fill in any custom compatible endpoint.
+Pinvou Agent works with **local vLLM** and any **OpenAI-compatible API**. Save multiple model configurations in the app, give cloud configurations optional display aliases, and switch between them per session without changing the model identifier sent to the provider. Built-in templates cover local vLLM, DeepSeek, Kimi, Qwen, Doubao, MiniMax, Zhipu (GLM), MiMo, OpenAI, Anthropic, Gemini, and xAI — or fill in any custom compatible endpoint.
 
 Local vLLM example:
 

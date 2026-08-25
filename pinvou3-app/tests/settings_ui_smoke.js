@@ -875,6 +875,7 @@ async function modalWidth(page, headingText) {
       noAdvancedCollapse: !text.includes('高级设置'),
       noServiceUrlField: !text.includes('服务地址'),
       hasModelPicker: text.includes('模型') && text.includes('deepseek-v4-pro'),
+      hasOptionalAlias: text.includes('别名') && !!document.querySelector('[data-testid="model-form-alias"]'),
       saveDisabled: !!save && save.disabled,
       hasSingleKeyInput: document.querySelectorAll('input[placeholder="输入 API Key"]').length === 1,
     };
@@ -883,10 +884,13 @@ async function modalWidth(page, headingText) {
     && addModelBeforeKey.noAdvancedCollapse
     && addModelBeforeKey.noServiceUrlField
     && addModelBeforeKey.hasModelPicker
+    && addModelBeforeKey.hasOptionalAlias
     && addModelBeforeKey.saveDisabled
     && addModelBeforeKey.hasSingleKeyInput;
   rec('⑥.6 添加预置云模型表单精简且 API Key 前禁用保存', addModelBeforeKeyPass, JSON.stringify({ cloudPickerWidth, ...addModelBeforeKey }));
   const apiInput = await page.$('input[placeholder="输入 API Key"]');
+  const aliasInput = await page.$('[data-testid="model-form-alias"]');
+  await aliasInput.type('Daily assistant');
   await apiInput.type('sk-model-test');
   await sleep(150);
   await clickExact(page, '保存');
@@ -899,8 +903,23 @@ async function modalWidth(page, headingText) {
     savedModel
       && savedModel.model === 'deepseek-v4-pro'
       && savedModel.name === 'deepseek-v4-pro'
+      && savedModel.alias === 'Daily assistant'
       && savedModel.api_key === 'sk-model-test',
     JSON.stringify(savedModel));
+  const savedAliasInventory = await page.evaluate(() => {
+    const title = [...document.querySelectorAll('span')]
+      .find(node => (node.textContent || '').trim() === 'Daily assistant');
+    const row = title && title.closest('.grid');
+    const text = row ? row.innerText : '';
+    return {
+      aliasVisible: !!title,
+      providerVisible: text.includes('DeepSeek'),
+      wireModelVisible: text.includes('deepseek-v4-pro'),
+    };
+  });
+  rec('⑦.1 保存别名后模型列表立即以别名为标题并保留服务商与模型 ID',
+    Object.values(savedAliasInventory).every(Boolean),
+    JSON.stringify(savedAliasInventory));
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');

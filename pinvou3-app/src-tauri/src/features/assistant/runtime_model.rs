@@ -120,6 +120,7 @@ mod tests {
         SavedModel {
             id: "model-1".to_string(),
             name: "Model 1".to_string(),
+            alias: None,
             preset: ModelPreset::OpenaiCompatible,
             context_window_tokens: None,
             max_output_tokens: None,
