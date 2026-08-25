@@ -11,7 +11,7 @@ import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layou
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, usePlatformCapability, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
-import { dict, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
+import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
@@ -40,8 +40,12 @@ import { revealStartupWindow } from '../platform/tauri/startup-window.js';
 const SCHEDULED_TASKS_ENTRY_ENABLED = true;
 
 // 后端默认会话标题哨兵集合(bridge 按当前语言生成三语兜底标题,并据此判断是否自动改名)——
-// 显示层把任意一种哨兵标题映射成当前语言的「新对话」文案。
-const DEFAULT_CHAT_TITLES = new Set(Object.values(dict).map(d => d && d.newChat).filter(Boolean));
+// 显示层把任意一种哨兵标题映射成当前语言的「新对话」文案。哨兵是跨语言的后端
+// 契约而非当前 UI 文案,直接使用 shared/i18n.js 的静态集合,与词典装载进度无关
+// (zh 主用户不会装载 en/ja chunk,不能从 dict 派生)。
+function isDefaultChatTitle(title) {
+  return DEFAULT_CHAT_TITLES.has(title);
+}
 // Static regression anchor: SCHEDULED_TASKS_ENTRY_ENABLED && (<NavItem icon={<Clock size={18} />} label={t.scheduledPlans} unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))} />)
 const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
   { id: 'preview-run-1', automationId: 'preview-daily-brief', taskNameKey: 'previewTaskDailyBrief', sessionId: 'preview-session-1', status: 'completed', scheduledFor: '2026-07-14T08:00:00+08:00', unread: true },
@@ -352,9 +356,12 @@ function workspaceDisplayName(path) {
         if (!isWeb) return systemLanguage;
         try {
           const value = window.localStorage.getItem('pinvou.web.language');
+          // 首帧引导(文件尾 ensureLanguage)已保证 localStorage 选中的语言词典就位
           return value && dict[value] ? value : systemLanguage;
         } catch (_) { return systemLanguage; }
       });
+      // 语言切换统一走该门(handleSetLanguage):装载完成乱序时只落地最新选择。
+      const switchToLanguage = useRef(createLatestLanguageGate()).current;
       // UI 语言为 en/ja 时确保 personas-i18n overlay 已加载(覆盖「系统中文 + 手动切
       // 英/日 UI」、index.html 快速路径跳过的场景),加载完成 bump 一次让卡名重渲染。
       const [, setPersonaI18nTick] = useState(0);
@@ -537,7 +544,8 @@ function workspaceDisplayName(path) {
         return () => { if (un) un(); };
       }, []);
 
-      const t = dict[language];
+      // 兜底 zh:词典 chunk 装载失败时按 zh 渲染而非白屏(与 PetWindow/ReaderApp 同口径)。
+      const t = dict[language] || dict.zh;
       // 静态 HTML 的 <title>/<html lang> 与非模块脚本(远程文件选择器、web bootstrap)拿不到语言上下文,
       // 在此按当前语言同步,并把选择器/bootstrap 错误文案暴露给 platform/web/ 下的脚本。
       // 桌宠窗口标题由 PetWindow 自行同步(主包不做桌宠检测,见 pet_bootstrap_isolation 测试)。
@@ -598,7 +606,8 @@ function workspaceDisplayName(path) {
             bootedLanguageRef.current = language;
           } else {
             const lang = TAG_TO_LANG[bs.settings.language];
-            if (lang && lang !== language) setLanguage(lang);
+            // 落盘语言可能尚未装载(en/ja 惰性 chunk);ensure 后再切,失败停在系统语言
+            if (lang && lang !== language) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
             // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
             bootedLanguageRef.current = lang || language;
             // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
@@ -737,13 +746,13 @@ function workspaceDisplayName(path) {
       // Build chat history from sessions
       const sessionBusy = (bs && bs.sessionBusy) || {};
       const chatHistory = bs && bs.sessions ? bs.sessions.map(s => {
-        const isPlaceholder = !s.title || DEFAULT_CHAT_TITLES.has(s.title);
+        const isPlaceholder = !s.title || isDefaultChatTitle(s.title);
         const titlePresentation = isPlaceholder
           ? { text: t.newChat, attachments: [] }
           : sessionTitlePresentation(s.title, s.title_attachment_names);
         return {
           id: s.id,
-          // 后端默认标题是三语哨兵之一(见 DEFAULT_CHAT_TITLES;bridge 以此判断是否自动改名)——显示层映射成当前语言
+          // 后端默认标题是三语哨兵之一(见 isDefaultChatTitle;bridge 以此判断是否自动改名)——显示层映射成当前语言
           title: sessionTitlePlainText(titlePresentation),
           titleContent: titlePresentation.attachments.length
             ? <SessionAttachmentTitle presentation={titlePresentation} />
@@ -760,7 +769,7 @@ function workspaceDisplayName(path) {
       }) : [];
       const codexHistory = codexSessions.map(session => ({
         id: session.id,
-        title: (!session.title || DEFAULT_CHAT_TITLES.has(session.title))
+        title: (!session.title || isDefaultChatTitle(session.title))
           ? t.newChat
           : session.title,
         subtitle: session.workspace_kind === 'project'
@@ -802,7 +811,7 @@ function workspaceDisplayName(path) {
           // 定时运行会话不进 bs.sessions(list_sessions 隔离 sched-*),标题/置顶
           // 状态由后端 run DTO 直接携带。
           const rawTitle = run.sessionTitle || '';
-          const title = (!rawTitle || DEFAULT_CHAT_TITLES.has(rawTitle))
+          const title = (!rawTitle || isDefaultChatTitle(rawTitle))
             ? (run.taskName || t.scheduledPlans)
             : rawTitle;
           return {
@@ -835,7 +844,7 @@ function workspaceDisplayName(path) {
 
       function decorateScheduledRunChat(chat, run) {
         if (!run) return chat;
-        const title = (!chat.title || DEFAULT_CHAT_TITLES.has(chat.title))
+        const title = (!chat.title || isDefaultChatTitle(chat.title))
           ? (run.taskName || t.scheduledPlans)
           : chat.title;
         return Object.assign({}, chat, {
@@ -1545,17 +1554,24 @@ function workspaceDisplayName(path) {
       }
 
       function handleSetLanguage(lang) {
-        setLanguage(lang);
-        if (isWeb) {
-          try { window.localStorage.setItem('pinvou.web.language', lang); } catch (_) {}
-          return;
-        }
-        if (isTauriAvailable()) {
-          tauriEvents.emit('ui:language_changed', { language: lang }).catch(() => {});
-        }
-        if (bridge.available) {
-          bridge.settings.saveSettings({ language: LANG_TO_TAG[lang] || 'zh-Hans' });
-        }
+        // en/ja 是惰性词典 chunk:先装载再切状态/广播,辅助窗口(桌宠/阅读器)
+        // 收到 ui:language_changed 时词典必须已在本窗就位(各入口首帧引导只保证
+        // 初始语言)。装载失败(资源损坏)保持原语言,不产生半翻译界面。
+        // 经「最新选择胜出」门落地:ja chunk 静态依赖 en chunk,先选 ja 再选
+        // en 时旧 ja 请求可能后完成并覆盖新选择(见 createLatestLanguageGate)。
+        switchToLanguage(lang, () => {
+          setLanguage(lang);
+          if (isWeb) {
+            try { window.localStorage.setItem('pinvou.web.language', lang); } catch (_) {}
+            return;
+          }
+          if (isTauriAvailable()) {
+            tauriEvents.emit('ui:language_changed', { language: lang }).catch(() => {});
+          }
+          if (bridge.available) {
+            bridge.settings.saveSettings({ language: LANG_TO_TAG[lang] || 'zh-Hans' });
+          }
+        });
       }
 
       function handleSetMemoryEnabled(enabled) {
@@ -2452,14 +2468,27 @@ function workspaceDisplayName(path) {
     const root = createRoot(document.getElementById('root'));
     window.__PINVOU_STARTUP__.mark('react:create_root_done');
     const __q = new URLSearchParams(window.location.search);
-    if (__q.get('detached') === '1') {
-      window.__PINVOU_DETACHED__ = true;
-      root.render(
-        <Suspense fallback={<div className="p-6 text-sm opacity-60">…</div>}>
-          <LazyDetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />
-        </Suspense>
-      );
-    } else {
-      window.__PINVOU_STARTUP__.mark('react:render_call');
-      root.render(<App />);
-    }
+    // 首帧语言引导:zh 词典内嵌(Promise 已 resolve,仅一个微任务),en/ja 系统
+    // 用户先取惰性词典 chunk 再首渲染,保证 t = dict[language] 首帧即有效。
+    // 装载失败(资源损坏)按 zh 兜底渲染,不空白。
+    const __initialLang = initialSystemLanguage();
+    const __storedLang = (() => {
+      if (!isWeb) return null;
+      try {
+        const value = window.localStorage.getItem('pinvou.web.language');
+        return value && (value === 'zh' || value === 'en' || value === 'ja') ? value : null;
+      } catch (_) { return null; }
+    })();
+    ensureLanguage(__storedLang || __initialLang).catch(() => {}).then(function () {
+      if (__q.get('detached') === '1') {
+        window.__PINVOU_DETACHED__ = true;
+        root.render(
+          <Suspense fallback={<div className="p-6 text-sm opacity-60">…</div>}>
+            <LazyDetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />
+          </Suspense>
+        );
+      } else {
+        window.__PINVOU_STARTUP__.mark('react:render_call');
+        root.render(<App />);
+      }
+    });

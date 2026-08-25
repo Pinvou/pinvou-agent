@@ -19,6 +19,12 @@ use crate::tls::TlsIdentity;
 use crate::{chunk_text, Embedder, MAX_UPLOAD_BYTES, MAX_VECTOR_DIMENSIONS};
 
 pub const MODEL_NAME: &str = "bge-m3";
+
+/// 模型装载失败后的负缓存窗口:窗口内的后续调用直接复用缓存错误,防止损坏/
+/// 缺失的模型被并发调用逐个重读 568MB ONNX;窗口过后恢复按需重试。管理员
+/// download_model 成功会立即使 ready() 为真,经由闸门顶部的 ready() 短路,
+/// 不受本窗口拖延。
+const MODEL_LOAD_FAILURE_TTL: Duration = Duration::from_secs(30);
 const CHUNK_CHARS: usize = 600;
 const CHUNK_OVERLAP: usize = 90;
 const EMBED_BATCH: usize = 32;
@@ -36,7 +42,7 @@ const JOIN_REQUEST_PER_SOURCE_LIMIT: usize = 6;
 const JOIN_REQUEST_GLOBAL_LIMIT: usize = 300;
 const JOIN_CLAIM_PER_SOURCE_LIMIT: usize = 120;
 const JOIN_CLAIM_GLOBAL_LIMIT: usize = 2_000;
-const MAX_SEARCH_COLLECTIONS: usize = 200;
+pub(crate) const MAX_SEARCH_COLLECTIONS: usize = 200;
 const DEFAULT_SHARE_HOURS: u64 = 24;
 const MAX_SHARE_HOURS: u64 = 7 * 24;
 const JOIN_REQUEST_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
@@ -58,10 +64,22 @@ pub struct KnowledgeService {
     embedder: RwLock<Option<Arc<Embedder>>>,
     model_error: RwLock<Option<String>>,
     model_downloading: AtomicBool,
+    /// 首次用到(检索/索引/宿主触发)时的模型装载门:Pending 等待单次装载,
+    /// Loaded 已就绪,Failed(时刻) 在负缓存窗口内复用错误、窗口过后重试。
+    /// boot 不再同步加载 568MB ONNX,服务秒级起监听,模型按需进内存。
+    model_load_state: tokio::sync::Mutex<ModelLoadState>,
     join_request_rate: Mutex<AttemptRate>,
     join_claim_rate: Mutex<AttemptRate>,
     indexing: tokio::sync::Mutex<()>,
     search_slots: Arc<tokio::sync::Semaphore>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModelLoadState {
+    Pending,
+    Loaded,
+    /// 装载失败 + 失败时刻(负缓存窗口见 MODEL_LOAD_FAILURE_TTL)。
+    Failed(Instant),
 }
 
 #[derive(Default)]
@@ -169,12 +187,16 @@ impl KnowledgeService {
             embedder: RwLock::new(None),
             model_error: RwLock::new(None),
             model_downloading: AtomicBool::new(false),
+            model_load_state: tokio::sync::Mutex::new(ModelLoadState::Pending),
             join_request_rate: Mutex::new(AttemptRate::default()),
             join_claim_rate: Mutex::new(AttemptRate::default()),
             indexing: tokio::sync::Mutex::new(()),
             search_slots: Arc::new(tokio::sync::Semaphore::new(search_parallelism())),
         });
         service.purge_expired_trash_at(chrono::Utc::now().timestamp())?;
+        // 模型懒装载(服务秒级起监听,568MB ONNX 首次用到才进内存):
+        // boot 只做跨进程锁内的目录恢复探测,把结果记进 model_error 供状态接口
+        // 反馈;真正装载走 ensure_model_loaded(检索/索引/宿主触发)。
         // 桌面端可能正在向同一 bind-mounted 目录部署模型。服务启动不能在
         // 目录替换空窗中先判定完整、随后读取到另一代或已被移动的文件。
         match crate::try_lock_knowledge_model_install(&service.model_dir) {
@@ -184,10 +206,12 @@ impl KnowledgeService {
                         if let Some(warning) = warning {
                             eprintln!("[knowledge] {warning}");
                         }
-                        if service.model_directory_complete() {
-                            if let Err(error) = service.load_model_unlocked() {
-                                *service.model_error.write() = Some(error);
-                            }
+                        if !service.model_directory_complete() {
+                            // 目录不完整不是错误:下载完成前全文检索/共享照常工作,
+                            // info.model_present=false 会如实告知挂载方。
+                            eprintln!(
+                                "[knowledge] model directory incomplete; embedding loads after download"
+                            );
                         }
                     }
                     Err(error) => *service.model_error.write() = Some(error),
@@ -262,6 +286,7 @@ impl KnowledgeService {
             tls_ca: self.tls.ca_encoded.clone(),
             initialized: self.initialized(),
             ready: self.ready(),
+            model_present: self.model_directory_complete(),
             model: MODEL_NAME.to_string(),
         })
     }
@@ -866,14 +891,18 @@ impl KnowledgeService {
             document.already_exists = true;
             return Ok(document);
         }
-        if self.ready() {
-            // A successful upload means the managed source is durable. Index in the
-            // background so a slow parser/model cannot make the client time out and
-            // retry an upload that the server already committed.
+        // A successful upload means the managed source is durable. Index in the
+        // background so a slow parser/model cannot make the client time out and
+        // retry an upload that the server already committed. With lazy model load
+        // the upload is a first-use trigger: ensure the model, then index (failure
+        // leaves the document pending, same as the old not-ready path).
+        {
             let background = Arc::clone(self);
             let document_id = document.id;
             tokio::spawn(async move {
-                let _ = background.index_document(document_id).await;
+                if background.ensure_model_loaded().await.is_ok() {
+                    let _ = background.index_document(document_id).await;
+                }
             });
         }
         self.store
@@ -889,9 +918,9 @@ impl KnowledgeService {
         filename: &str,
         bytes: Vec<u8>,
     ) -> Result<Document, String> {
-        if !self.ready() {
-            return Err("embedding 模型未就绪，不能更新文档".to_string());
-        }
+        // 与上传同口径:替换文档重建索引也依赖嵌入向量,懒装载语义下它是
+        // 首用触发点,先 ensure 再进索引重建。
+        self.ensure_model_loaded().await?;
         if bytes.is_empty() || bytes.len() > MAX_UPLOAD_BYTES {
             return Err(format!(
                 "文件必须小于 {} MiB",
@@ -1102,21 +1131,36 @@ impl KnowledgeService {
     }
 
     fn requeue_pending_indexing(self: &Arc<Self>) {
-        if self.ready() {
-            let service = Arc::clone(self);
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                runtime.spawn(async move {
-                    let _ = service.index_pending_documents().await;
-                });
-            }
+        // 恢复的文档需要重索引。懒装载语义下 pending 索引本身就是首用触发点,
+        // 与上传同口径直接消化积压(index_pending_documents 空积压先短路,
+        // 不会因恢复操作平白触发模型装载)。
+        let service = Arc::clone(self);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = service.index_pending_documents().await;
+            });
         }
     }
 
-    pub fn search(&self, request: SearchRequest) -> Result<Vec<SearchHit>, String> {
+    /// 廉价请求校验(不依赖模型就绪):Ok(Some(空结果))= 无需模型即可应答,
+    /// Ok(None)= 校验通过、需要 embedding;Err= 400。server 的 search handler
+    /// 在模型装载门之前调用,保证空查询/无效请求不触发 568MB 冷装载,也不因
+    /// 装载不可用把本应 200/400 的应答变成 503(对齐 boot 同步装载时代行为)。
+    pub fn precheck_search(request: &SearchRequest) -> Result<Option<Vec<SearchHit>>, String> {
         if request.collection_ids.len() > MAX_SEARCH_COLLECTIONS {
             return Err(format!(
                 "单次检索最多选择 {MAX_SEARCH_COLLECTIONS} 个知识集"
             ));
+        }
+        if request.query.trim().is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        Ok(None)
+    }
+
+    pub fn search(&self, request: SearchRequest) -> Result<Vec<SearchHit>, String> {
+        if let Some(hits) = Self::precheck_search(&request)? {
+            return Ok(hits);
         }
         let query = request.query.trim();
         if query.is_empty() {
@@ -1214,6 +1258,65 @@ impl KnowledgeService {
         Ok(())
     }
 
+    /// 首次用到时装载模型(boot 已不再同步加载)。并发调用在状态锁上排队,
+    /// 单次装载成功/失败对所有人可见;失败进入负缓存窗口(见
+    /// MODEL_LOAD_FAILURE_TTL),窗口内复用缓存错误,窗口过后重试。
+    /// 568MB ONNX 读盘+会话构造在内部 spawn_blocking 执行,任意执行器上下文
+    /// (async handler / tokio task)都可以直接 await 本方法。
+    pub async fn ensure_model_loaded(self: &Arc<Self>) -> Result<(), String> {
+        if self.ready() {
+            return Ok(());
+        }
+        let mut state = self.model_load_state.lock().await;
+        match *state {
+            ModelLoadState::Loaded => return Ok(()),
+            ModelLoadState::Pending => {
+                if self.ready() {
+                    *state = ModelLoadState::Loaded;
+                    return Ok(());
+                }
+            }
+            ModelLoadState::Failed(failed_at) => {
+                if self.ready() {
+                    *state = ModelLoadState::Loaded;
+                    return Ok(());
+                }
+                if failed_at.elapsed() < MODEL_LOAD_FAILURE_TTL {
+                    // 负缓存窗口:直接复用缓存错误,不重读盘。排在一次失败装载
+                    // 后面的并发调用在这里短路,避免逐个重读 568MB。
+                    let cached = self
+                        .model_error
+                        .read()
+                        .clone()
+                        .unwrap_or_else(|| "embedding 模型装载失败".to_string());
+                    return Err(cached);
+                }
+            }
+        }
+        // 窗口过后的 Failed -> 重试;Pending -> 首次装载。装载期间持锁,其余
+        // 调用者排队,排到时经上面的分支短路,不会重复读盘。
+        *state = ModelLoadState::Pending;
+        let service = Arc::clone(self);
+        let result = tokio::task::spawn_blocking(move || service.load_model()).await;
+        match result {
+            Ok(Ok(())) => {
+                *state = ModelLoadState::Loaded;
+                Ok(())
+            }
+            Ok(Err(error)) => {
+                *state = ModelLoadState::Failed(Instant::now());
+                *self.model_error.write() = Some(error.clone());
+                Err(error)
+            }
+            Err(join_error) => {
+                let error = format!("模型装载任务异常结束：{join_error}");
+                *state = ModelLoadState::Failed(Instant::now());
+                *self.model_error.write() = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
     pub async fn load_model_and_index_pending(self: &Arc<Self>) -> Result<(), String> {
         self.load_model()?;
         self.index_pending_documents().await
@@ -1224,6 +1327,12 @@ impl KnowledgeService {
             .store
             .pending_document_ids()
             .map_err(|error| error.to_string())?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        // 有待索引文档时模型必然被需要:首请求触发装载,避免「下载完成但
+        // 一直没人检索」导致 pending 永不消化。
+        self.ensure_model_loaded().await?;
         for id in pending {
             let _ = self.index_document(id).await;
         }
@@ -1475,6 +1584,113 @@ mod tests {
         ] {
             assert!(!is_private_share_endpoint(endpoint), "{endpoint}");
         }
+    }
+
+    #[test]
+    fn boot_does_not_load_model_and_first_use_reports_failure() {
+        // 懒装载契约:boot 只探测目录,不加载模型;首次 ensure 在无模型目录时
+        // 返回错误(可重试),且不阻止服务结构本身可用。
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        assert!(!service.ready(), "boot must not load the embedding model");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let error = rt
+            .block_on(async { service.ensure_model_loaded().await })
+            .unwrap_err();
+        assert!(!error.is_empty());
+        assert!(!service.ready());
+        // 失败进入负缓存窗口:窗口内的后续调用复用缓存错误(不重跑装载);
+        // 窗口过期的真实重试契约由下方
+        // model_load_failure_uses_negative_cache_then_retries_after_window 覆盖。
+        let cached = rt.block_on(async { service.ensure_model_loaded().await });
+        assert!(cached.is_err(), "negative cache still reports the failure");
+    }
+
+    #[tokio::test]
+    async fn model_load_failure_uses_negative_cache_then_retries_after_window() {
+        // 负缓存+重试契约:失败后的窗口内,并发/后续调用复用缓存错误,不重读
+        // 568MB;窗口过期后真正重跑装载。用跨进程安装锁制造可区分的失败:
+        // 第一次失败=锁被占(BUSY);窗口内重试仍返回同一缓存错误;把失败
+        // 时刻回拨到窗口过期并释放锁之后重试,真实重跑会越过安装锁、在
+        // 垃圾 stub 的 ONNX 解析处失败——错误不再是 BUSY。若实现为 Failed
+        // 永久锁死(或缓存永不放行),最后一条断言会把它判死。
+        let root = tempfile::tempdir().unwrap();
+        let model_dir = root.path().join("models").join(MODEL_NAME);
+        let service = KnowledgeService::boot(root.path().join("data"), Some(model_dir.clone()))
+            .unwrap()
+            .service;
+        std::fs::create_dir_all(&model_dir).unwrap();
+        for (name, contents) in [
+            ("model.onnx", b"not-a-real-onnx".as_slice()),
+            ("tokenizer.json", b"{}".as_slice()),
+            ("config.json", b"{}".as_slice()),
+            ("special_tokens_map.json", b"{}".as_slice()),
+            ("tokenizer_config.json", b"{}".as_slice()),
+        ] {
+            std::fs::write(model_dir.join(name), contents).unwrap();
+        }
+
+        {
+            let _install_lock = crate::try_lock_knowledge_model_install(&model_dir).unwrap();
+            let first = service.ensure_model_loaded().await.unwrap_err();
+            assert_eq!(first, crate::KNOWLEDGE_MODEL_INSTALL_BUSY);
+            let cached = service.ensure_model_loaded().await.unwrap_err();
+            assert_eq!(cached, crate::KNOWLEDGE_MODEL_INSTALL_BUSY);
+            assert_eq!(
+                service.model_error().as_deref(),
+                Some(crate::KNOWLEDGE_MODEL_INSTALL_BUSY)
+            );
+        } // 安装锁释放
+
+        // 回拨失败时刻到负缓存窗口之外,模拟窗口过期。
+        *service.model_load_state.lock().await = ModelLoadState::Failed(
+            Instant::now() - MODEL_LOAD_FAILURE_TTL - Duration::from_secs(1),
+        );
+        let retried = service.ensure_model_loaded().await.unwrap_err();
+        assert_ne!(
+            retried,
+            crate::KNOWLEDGE_MODEL_INSTALL_BUSY,
+            "expired window must re-run the load; a latched or never-expiring cached failure would keep returning BUSY"
+        );
+        assert_eq!(service.model_error().as_deref(), Some(retried.as_str()));
+    }
+
+    #[test]
+    fn server_info_reports_model_present_from_disk_not_memory() {
+        // 挂载门契约:model_present 反映模型目录是否在盘,与 ready(已进内存)
+        // 解耦——host 重启后、首次检索前,present=true 且 ready=false,
+        // 挂载校验据此放行,首次检索按需装载。
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let info = service.server_info().unwrap();
+        assert!(!info.ready);
+        assert!(
+            !info.model_present,
+            "empty model dir must report model_present=false"
+        );
+
+        // 放一个假的完整模型目录:present 应翻转,ready 仍为 false(未装载)。
+        let model_dir = root.path().join("models").join(MODEL_NAME);
+        std::fs::create_dir_all(&model_dir).unwrap();
+        for file in [
+            "model.onnx",
+            "tokenizer.json",
+            "config.json",
+            "special_tokens_map.json",
+            "tokenizer_config.json",
+        ] {
+            std::fs::write(model_dir.join(file), b"stub").unwrap();
+        }
+        let info = service.server_info().unwrap();
+        assert!(!info.ready, "disk presence alone must not load the model");
+        assert!(info.model_present);
     }
 
     #[test]

@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -43,9 +44,10 @@ impl SessionStore {
     /// snapshot API and must never infer a crash from a dangling `tool_use`.
     fn recover_interrupted_tool_histories_locked(&self) -> Result<usize> {
         let sessions = self
-            .manager
-            .list_sessions()
-            .context("list sessions for tool history recovery")?;
+            .list_sessions_cached()
+            .context("list sessions for tool history recovery")?
+            .as_ref()
+            .clone();
         let mut recovered = 0usize;
         for metadata in sessions {
             let recovery = match self.manager.recover_session_for_resume(&metadata.id) {
@@ -163,6 +165,8 @@ impl SessionStore {
             active: Arc::new(RwLock::new(None)),
             mode_states: Arc::new(RwLock::new(HashMap::new())),
             multi_agent_flags_io: Arc::new(Mutex::new(())),
+            list_cache: Arc::new(RwLock::new(None)),
+            list_cache_generation: Arc::new(AtomicU64::new(0)),
             session_models: Arc::new(RwLock::new(HashMap::new())),
             pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -177,11 +181,52 @@ impl SessionStore {
         Ok(store)
     }
 
+    /// 上游 `manager.list_sessions()` 的缓存读取:首访全目录扫描后缓存
+    /// `Arc<Vec<SessionMetadata>>`,后续 list 共享同一快照。失效点在 App 侧
+    /// 唯一写路径(`save_session_atomic`/`delete`),所以缓存与盘面一致的
+    /// 前提是「所有会话 JSON 都经 SessionStore 写入」——当前属实(save/
+    /// set_title/touch_activity/create_new 全走 save_session_atomic)。
+    /// 返回 `Arc` 让调用方(如 AcpPool 启动扫描)零拷贝消费。
+    ///
+    /// 回填带代数守卫:miss 扫描期间若发生写(失效自增了代数),该扫描结果
+    /// 丢弃重扫——否则写前启动的慢扫描会用旧目录视图覆盖写后快照,陈旧
+    /// 列表(如重命名后的标题)会驻留到下一次任意写才恢复。并发 miss 的
+    /// 重复扫描良性(幂等读),不值得再加装载互斥。
+    pub(crate) fn list_sessions_cached(&self) -> std::io::Result<Arc<Vec<SessionMetadata>>> {
+        let generation_now = self.list_cache_generation.load(Ordering::Acquire);
+        loop {
+            if let Some((generation, cached)) = self.list_cache.read().clone() {
+                if generation == generation_now {
+                    return Ok(cached);
+                }
+                // 过期代数条目:等待的写方尚未清槽或守卫失效时被落地,击穿
+                // 重扫,不能把写前视图当有效快照返回。
+            }
+            let generation_at_scan = self.list_cache_generation.load(Ordering::Acquire);
+            let fresh = Arc::new(self.manager.list_sessions()?);
+            let mut slot = self.list_cache.write();
+            if self.list_cache_generation.load(Ordering::Acquire) == generation_at_scan {
+                // 扫描期间无写:安全回填。写锁保证只有一个 miss 竞争者落地,
+                // 后到者走到顶部已能命中(或带着更新的代数再扫一轮)。
+                *slot = Some((generation_at_scan, Arc::clone(&fresh)));
+                return Ok(fresh);
+            }
+            // 扫描期间发生过写:丢弃本次结果,重扫。连续写活跃时最多重扫
+            // 到写间歇,与无缓存时的每 list 现扫同阶,不会活锁。
+        }
+    }
+
+    pub(crate) fn invalidate_list_cache(&self) {
+        *self.list_cache.write() = None;
+        self.list_cache_generation.fetch_add(1, Ordering::AcqRel);
+    }
+
     pub fn list(&self) -> Result<Vec<SessionMetadata>> {
         let mut out = self
-            .manager
-            .list_sessions()
-            .context("list_sessions failed")?;
+            .list_sessions_cached()
+            .context("list_sessions failed")?
+            .as_ref()
+            .clone();
         // Scheduled conversations share the durable store so detail/history can
         // load them normally, but remain owned by the Scheduled Tasks surface.
         // 多智能体是普通会话的持久开关，不是独立会话类型；这里只隔离定时
@@ -222,6 +267,10 @@ impl SessionStore {
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
         }
+        // 上游 delete_session 先删会话 JSON 再清目录:目录清理失败时 JSON 已
+        // 不在盘上但错误会向上传播——按「已发起删除即可能变更盘面」失效快照,
+        // 不能等走到 match 之后的统一失效(Err 提前 return 会跳过它)。
+        self.invalidate_list_cache();
         match self.manager.delete_session(id) {
             Ok(()) => {}
             Err(err) if err.kind() == ErrorKind::NotFound => {
@@ -242,6 +291,8 @@ impl SessionStore {
             }
             Err(err) => return Err(err).with_context(|| format!("delete_session({id})")),
         }
+        // 删除已落盘,列表快照过期
+        self.invalidate_list_cache();
         // 如果删的是 active session，清理 active 标记
         let mut active = self.active.write();
         if active.as_deref() == Some(id) {

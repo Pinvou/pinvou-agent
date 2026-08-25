@@ -98,6 +98,133 @@ fn task_workspace(store: &SessionStore, task_id: &str) -> PathBuf {
 }
 
 #[test]
+fn list_cache_shares_snapshot_and_invalidates_on_write() {
+    let (store, _g) = isolated_store();
+    let s1 = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    // 两次读取共享同一 Arc 快照(不重复全目录扫描)
+    let a = store.list_sessions_cached().expect("first cached read");
+    let b = store.list_sessions_cached().expect("second cached read");
+    assert!(
+        std::sync::Arc::ptr_eq(&a, &b),
+        "cached reads must share one snapshot"
+    );
+    assert!(a.iter().any(|m| m.id == s1.metadata.id));
+
+    // 写路径(set_title 走 save_session_atomic)使快照失效,新标题可见
+    store
+        .set_title(&s1.metadata.id, "renamed".into())
+        .expect("set title");
+    let c = store.list_sessions_cached().expect("read after write");
+    assert!(
+        !std::sync::Arc::ptr_eq(&a, &c),
+        "write must invalidate the snapshot"
+    );
+    assert!(c
+        .iter()
+        .any(|m| m.id == s1.metadata.id && m.title == "renamed"));
+
+    // 删除路径同样失效
+    store.delete(&s1.metadata.id).expect("delete");
+    let d = store.list_sessions_cached().expect("read after delete");
+    assert!(!d.iter().any(|m| m.id == s1.metadata.id));
+}
+
+#[test]
+fn list_cache_stale_generation_snapshot_is_never_served() {
+    // 竞态回归(list_sessions_cached 的回填守卫):线程 A miss 后扫描目录,
+    // 扫描期间线程 B 写盘失效;A 的回填必须被代数比对拒绝,否则陈旧快照
+    // 会覆盖 B 触发的重扫并驻留到下一次写。交错无法在单线程测试里真实
+    // 还原,改为锁定守卫的可观察契约:过期代数的快照(模拟守卫失效时被
+    // 落地的写前扫描产物)对读取路径不可达——命中检查只信「当前代数+
+    // 条目代数一致」的元组。
+    let (store, _g) = isolated_store();
+    let s1 = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+
+    // 写后读:失效→reconcile 重扫回填同链路,必须看到新标题。
+    store
+        .set_title(&s1.metadata.id, "renamed".into())
+        .expect("set title");
+    let post_write = store.list_sessions_cached().expect("post-write read");
+    assert!(post_write
+        .iter()
+        .any(|m| m.id == s1.metadata.id && m.title == "renamed"));
+
+    // 模拟守卫失效的落地物:旧标题视图挂在过期代数上,读取不得返回它。
+    let generation_now = store
+        .list_cache_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    let mut poisoned = Vec::clone(&post_write);
+    for m in poisoned.iter_mut() {
+        if m.id == s1.metadata.id {
+            m.title = "OLD-STALE".into();
+        }
+    }
+    *store.list_cache.write() = Some((
+        generation_now.wrapping_sub(1),
+        std::sync::Arc::new(poisoned),
+    ));
+    let after = store
+        .list_sessions_cached()
+        .expect("read after poisoned injection");
+    let title = after
+        .iter()
+        .find(|m| m.id == s1.metadata.id)
+        .map(|m| m.title.clone());
+    assert_ne!(
+        title.as_deref(),
+        Some("OLD-STALE"),
+        "a stale-generation snapshot must never be served"
+    );
+}
+
+#[test]
+fn list_cache_invalidated_when_delete_partially_fails() {
+    // 部分失败回归:上游 delete_session 先 remove_file(JSON) 再 remove_dir_all
+    // (会话目录)。把 sessions/<id>/ 路径放一个普通文件,让 remove_dir_all 确定性
+    // 报 ENOTDIR——JSON 已从盘上消失但 delete 返回 Err。此时列表快照必须已经
+    // 失效:若只在 Ok 分支失效,幽灵条目会驻留缓存直到下一次任意写。
+    let (store, _g) = isolated_store();
+    let s1 = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    // 预热缓存:此刻快照包含该会话。
+    let before = store.list_sessions_cached().expect("warm cache");
+    assert!(before.iter().any(|m| m.id == s1.metadata.id));
+
+    // 构造部分失败:sessions/<id> 处放普通文件,remove_dir_all 报 ENOTDIR。
+    let session_dir = store.manager.sessions_dir().join(&s1.metadata.id);
+    std::fs::create_dir_all(&session_dir).expect("create session dir");
+    let blocker = session_dir.with_extension("json.blocker");
+    std::fs::write(&blocker, b"not a dir").expect("write blocker");
+    // 把整个 sessions/<id> 目录替换为同名普通文件:remove_dir_all 必失败。
+    std::fs::remove_dir_all(&session_dir).expect("clear dir");
+    std::fs::write(&session_dir, b"plain file at dir path").expect("block dir path");
+
+    let result = store.delete(&s1.metadata.id);
+    let err = result.expect_err("delete must surface the ENOTDIR error");
+    assert!(
+        err.to_string().contains(&s1.metadata.id) || err.to_string().contains("delete_session"),
+        "unexpected error shape: {err:#}"
+    );
+    // 会话 JSON 已被上游删除:盘面与缓存必须一致——幽灵不得驻留。
+    let after = store
+        .list_sessions_cached()
+        .expect("read after partial failure");
+    assert!(
+        !after.iter().any(|m| m.id == s1.metadata.id),
+        "phantom entry must not survive a partially-failed delete"
+    );
+    // 复原环境:blocker 文件不碍事,但普通文件占用的 <id> 路径留着会让后续
+    // 测试的目录假设失效,显式清掉。
+    let _ = std::fs::remove_file(&session_dir);
+    let _ = std::fs::remove_file(&blocker);
+}
+
+#[test]
 fn session_roots_plain_session_shares_private_root() {
     let (store, _g) = isolated_store();
     let s = store
@@ -921,6 +1048,15 @@ fn scheduled_creation_rolls_back_when_profile_write_fails() {
     .expect("store");
     std::fs::create_dir_all(&profile_path).expect("make profile path a directory");
 
+    // 种子会话用于构造完整字段的幽灵元数据(改 id/title),其落盘本身 bump 一次
+    // 代数;随后记录调用前代数。
+    let seed = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("seed session");
+    let generation_before = store
+        .list_cache_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+
     let err = store
         .create_scheduled_run(scheduled_profile("task-rollback"))
         .expect_err("profile write must fail");
@@ -931,8 +1067,28 @@ fn scheduled_creation_rolls_back_when_profile_write_fails() {
             .manager
             .list_sessions()
             .expect("session list")
-            .is_empty(),
+            .iter()
+            .all(|m| !m.id.starts_with("sched-")),
         "the SavedSession must be removed when profile persistence fails"
+    );
+    // 回滚删除也必须失效列表缓存:并发读者恰在 save 失效与回滚删除之间重扫,
+    // 会以「save 失效后的代数」(= 调用前代数 + 1,save_session_atomic 恰好
+    // bump 一次)回填含 sched-*.json 的快照。注入该幽灵条目:若回滚路径不
+    // 失效(修复前),该代数仍是当前代,幽灵会被永久供应;回滚失效后该代数
+    // 已过期,读取触发重扫,幽灵不可见。
+    let mut phantom = seed.metadata.clone();
+    phantom.id = "sched-phantom".into();
+    phantom.title = "Scheduled run".into();
+    *store.list_cache.write() = Some((
+        generation_before.wrapping_add(1),
+        std::sync::Arc::new(vec![phantom]),
+    ));
+    let cached = store
+        .list_sessions_cached()
+        .expect("cached list after rollback");
+    assert!(
+        !cached.iter().any(|m| m.id.starts_with("sched-")),
+        "rollback invalidation must prevent a phantom scheduled session from surviving in the cache"
     );
     assert!(store.scheduled_profiles.read().is_empty());
     let _ = std::fs::remove_dir_all(root);

@@ -49,7 +49,7 @@ const memoryCommandSource = read('src-tauri', 'src', 'app', 'commands', 'memory.
 const interactionCommandSource = read('src-tauri', 'src', 'app', 'commands', 'interaction.rs');
 const interactionBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'interaction.js');
 const settingsSource = read('src', 'features', 'settings', 'composer-shared.jsx');
-const i18nSource = read('src', 'shared', 'i18n.js');
+const i18nSource = ['zh', 'en', 'ja'].map((l) => read('src', 'shared', 'i18n', `${l}.js`)).join('\n'); // 拆分后三语在 i18n/ 目录
 const poolSource = read('src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs');
 // wave3 起多智能体状态注释随 SessionModeState 迁至 sessions 特性域
 // （core/mode_state.rs 只剩跨层协议类型），契约断言跟随定义位置。
@@ -1113,7 +1113,9 @@ test('失败派工不绑定冲突方，成功重派只绑定自身', () => {
 
 test('ChatView 监听打开事件并为工作会话挂载只读面板，旧运行条带已退役', () => {
   assert.match(chatViewSource, /pinvou:open-subagent/);
-  assert.match(chatViewSource, /<SubagentTranscriptPanel/);
+  // 面板已懒加载:ChatView 挂 Lazy 包装 + 打开事件预取,实体在 SubagentTranscriptPanel.jsx
+  assert.match(chatViewSource, /<LazySubagentTranscriptPanel/);
+  assert.match(chatViewSource, /import\('..\/multiagent\/SubagentTranscriptPanel\.jsx'\)/);
   assert.match(chatViewSource, /captureConversationScrollPosition\(/);
   assert.match(chatViewSource, /restoreConversationScrollPosition\(/);
   assert.match(

@@ -2286,7 +2286,6 @@
     if (initPromise) return initPromise;
     initPromise = (async function () {
     startupMark("bridge:init_start");
-    await startupAwait("bridge:load_platform_capabilities", loadPlatformCapabilities);
     // Populate the global Scheduled unread summary without requiring the user
     // to visit the Scheduled page first. This stays off the startup critical path.
     if (!isDetachedWindow) {
@@ -2295,12 +2294,24 @@
       });
     }
     startupMark("bridge:monitor_polling_deferred", "starts when monitor view becomes active");
-    await startupAwait("bridge:load_settings", loadSettings);
-    await startupAwait("bridge:load_selected_pet", loadSelectedPet);
-    await startupAwait("bridge:load_effective_model", loadEffectiveModelConfig);
-    await startupAwait("bridge:load_app_version", loadAppVersion);
-    await startupAwait("bridge:load_models", loadModels);
-    await startupAwait("bridge:refresh_history", refreshHistoryList);
+    // 启动加载各自写互不重叠的状态片、彼此无数据依赖(每个 loader 自吞 invoke
+    // 错误并落兜底值),串行 await 只会把 8 个 loader 的 IPC 往返叠进首屏延迟
+    // (refreshHistoryList 含 2 次 invoke,实际 9 次往返)——并行后往返宽度收敛
+    // 为 1。分离会话绑定与 enterDraft 必须等本组完成后再走。
+    var needsSessionRuntime = !isDetachedWindow || detachedWindowKind === "session";
+    var parallelLoads = [
+      startupAwait("bridge:load_platform_capabilities", loadPlatformCapabilities),
+      startupAwait("bridge:load_settings", loadSettings),
+      startupAwait("bridge:load_selected_pet", loadSelectedPet),
+      startupAwait("bridge:load_effective_model", loadEffectiveModelConfig),
+      startupAwait("bridge:load_app_version", loadAppVersion),
+      startupAwait("bridge:load_models", loadModels),
+      startupAwait("bridge:refresh_history", refreshHistoryList)
+    ];
+    if (needsSessionRuntime) {
+      parallelLoads.push(startupAwait("bridge:refresh_super_permission", refreshSuperPerm));
+    }
+    await Promise.all(parallelLoads);
     // 分离会话必须在同一初始化链内绑定目标 id。此前 DetachedShell 的独立 effect
     // 会与这里的 enterDraft() 并发，慢初始化时已加载的原会话会被重置成空白草稿。
     if (isDetachedWindow && detachedWindowKind === "session" && detachedWindowSessionId) {
@@ -2311,9 +2322,7 @@
       enterDraft(); // 主窗口及非会话分离视图使用本窗口自己的空白工作集
       startupMark("bridge:draft_entered");
     }
-    var needsSessionRuntime = !isDetachedWindow || detachedWindowKind === "session";
     if (needsSessionRuntime) {
-      await startupAwait("bridge:refresh_super_permission", refreshSuperPerm);
       // lane 全局默认（work/design/code）是草稿态 mode chip 的事实源，启动即拉取。
       startupAwait("bridge:refresh_mode_defaults", refreshModeDefaults);
     }

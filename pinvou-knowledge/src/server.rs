@@ -710,8 +710,26 @@ async fn search(
     Json(request): Json<SearchRequest>,
 ) -> ApiResult<Json<Vec<SearchHit>>> {
     require_access(&service, &headers, false)?;
+    // 廉价校验先于装载门:空查询直接 200 []、超量知识集选择 400,不触发
+    // 568MB 冷装载,也不因模型不可用把应答变成 503(与 boot 同步装载时代的
+    // 行为一致)。
+    // 廉价校验先于装载门:空查询直接 200 []、超量知识集选择 400,不触发
+    // 568MB 冷装载,也不因模型不可用把应答变成 503(与 boot 同步装载时代的
+    // 行为一致)。
+    if let Some(hits) =
+        KnowledgeService::precheck_search(&request).map_err(ApiError::bad_request)?
+    {
+        return Ok(Json(hits));
+    }
+    // 首个检索请求触发模型装载(boot 不再同步加载 568MB ONNX)。装载必须
+    // 在获取并发 slot 之前:568MB 冷读可能超过 slot 的 10s 超时,若先占 slot,
+    // 排队第 5 个起的请求会在装载完成前拿到 503。先 ensure 则所有并发请求
+    // 都在装载门上排队,装载完成后才竞争检索 slot。
     if !service.ready() {
-        return Err(ApiError::unavailable("embedding 模型未就绪"));
+        service
+            .ensure_model_loaded()
+            .await
+            .map_err(ApiError::unavailable)?;
     }
     let permit = service
         .acquire_search_slot()
@@ -956,6 +974,62 @@ mod tests {
         assert_eq!(collections.status(), StatusCode::UNAUTHORIZED);
         let body = collections.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("访问令牌"));
+    }
+
+    // 懒装载时代的廉价校验回归:空查询/超量知识集选择必须在模型装载门之前
+    // 应答(200 [] / 400),冷服务(模型未装载且 model_dir 无模型文件)不得
+    // 触发 568MB 冷读,也不得把本应 200/400 的请求变成 503。boot 同步装载
+    // 时代这些请求从未碰到装载路径,本测试钉住该行为不被装载门回归。
+    #[tokio::test]
+    async fn cold_search_validates_request_before_model_load() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        assert!(!service.ready(), "空 tempdir 引导后模型不应就绪");
+        let owner_token = "host-owner-token-that-is-long-enough-0002";
+        service
+            .ensure_host_owner("Host PINVOU", owner_token)
+            .unwrap();
+        let app = router(service.clone());
+
+        let mut empty = json_request(
+            Method::POST,
+            "/api/v1/search",
+            &SearchRequest {
+                collection_ids: vec![],
+                query: "   ".to_string(),
+                limit: 10,
+            },
+        );
+        add_bearer(&mut empty, owner_token);
+        let response = app.clone().oneshot(empty).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let hits: Vec<SearchHit> = decode_body(response).await;
+        assert!(hits.is_empty());
+        assert!(
+            !service.ready() && service.model_error().is_none(),
+            "空查询不得触发模型装载或留下失败负缓存"
+        );
+
+        let mut oversized = json_request(
+            Method::POST,
+            "/api/v1/search",
+            &SearchRequest {
+                collection_ids: (0..=crate::service::MAX_SEARCH_COLLECTIONS as i64).collect(),
+                query: "query".to_string(),
+                limit: 10,
+            },
+        );
+        add_bearer(&mut oversized, owner_token);
+        let response = app.oneshot(oversized).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("知识集"));
+        assert!(
+            !service.ready() && service.model_error().is_none(),
+            "无效请求不得触发模型装载"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

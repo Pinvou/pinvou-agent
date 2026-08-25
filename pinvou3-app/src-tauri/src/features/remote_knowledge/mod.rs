@@ -809,6 +809,7 @@ impl RemoteKnowledgeService {
                     tls_ca: pending.tls_ca.clone(),
                     initialized: true,
                     ready: false,
+                    model_present: false,
                     model: String::new(),
                 },
                 token: device_token,

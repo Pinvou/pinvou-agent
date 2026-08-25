@@ -45,17 +45,21 @@ impl SessionStore {
         let payload = serde_json::to_vec_pretty(session).context("serialize saved session")?;
         deepseek_tui::utils::write_atomic(&path, &payload)
             .with_context(|| format!("write session {}", path.display()))?;
+        // 会话 JSON 落盘后列表快照即过期(标题/更新时间/新会话都可能变)
+        self.invalidate_list_cache();
         Ok(path)
     }
 
     pub(crate) fn enforce_session_retention_locked(&self) -> Result<()> {
         let sessions = self
-            .manager
-            .list_sessions()
-            .context("list sessions for retention")?;
+            .list_sessions_cached()
+            .context("list sessions for retention")?
+            .as_ref()
+            .clone();
         let mut chat_count = 0usize;
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;
+        let mut snapshot_dirty = false;
         for metadata in sessions {
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
@@ -69,6 +73,12 @@ impl SessionStore {
                     Ok(()) => deleted_ids.push(metadata.id),
                     Err(error) if error.kind() == ErrorKind::NotFound => {}
                     Err(error) => {
+                        // 上游 delete_session 先删 JSON 再清目录:即使最终返回
+                        // Err,会话 JSON 也可能已从盘上消失(部分失败)。凡发起
+                        // 过删除即视为快照过期,不能只认 Ok 分支——否则幽灵条目
+                        // 会驻留到下一次任意写。id 不进 deleted_ids(side maps
+                        // 只对确认完全删除的会话清)。
+                        snapshot_dirty = true;
                         if delete_error.is_none() {
                             delete_error = Some(
                                 anyhow::anyhow!(error)
@@ -78,6 +88,11 @@ impl SessionStore {
                     }
                 }
             }
+        }
+        if !deleted_ids.is_empty() || snapshot_dirty {
+            // 保留策略删掉的会话使列表快照过期;部分失败(JSON 已删、Err 提前
+            // 冒泡)同样过期——不能只认 Ok 分支,否则幽灵条目驻留到下一次任意写。
+            self.invalidate_list_cache();
         }
         self.purge_session_side_maps(&deleted_ids);
         let reconcile_error = self.reconcile_scheduled_profiles_locked().err();
@@ -368,9 +383,10 @@ impl SessionStore {
 
     pub fn list_scheduled(&self) -> Result<Vec<SessionMetadata>> {
         let mut out = self
-            .manager
-            .list_sessions()
-            .context("list_sessions failed")?;
+            .list_sessions_cached()
+            .context("list_sessions failed")?
+            .as_ref()
+            .clone();
         out.retain(|metadata| metadata.id.starts_with("sched-"));
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
@@ -505,7 +521,12 @@ impl SessionStore {
             .insert(id.clone(), profile.clone());
         if let Err(err) = self.save_scheduled_profiles() {
             self.scheduled_profiles.write().remove(&id);
-            if let Err(rollback_error) = self.manager.delete_session(&id) {
+            let rollback = self.manager.delete_session(&id);
+            // 回滚删除本身也是一次落盘变更:失效列表缓存,防止并发读者恰在
+            // save 失效与回滚删除之间重扫到 sched-*.json 并以当时的代数回填,
+            // 让已被回滚的幽灵会话滞留在缓存里。
+            self.invalidate_list_cache();
+            if let Err(rollback_error) = rollback {
                 return Err(anyhow::anyhow!(
                     "save scheduled session profile: {err:#}; rollback scheduled session {id} also failed: {rollback_error}"
                 ));
@@ -528,11 +549,15 @@ impl SessionStore {
             );
         }
 
+        // 同 store.delete:上游先删 JSON 再清目录,Err 也可能已变更盘面,
+        // 按「已发起删除即失效」处理(Err 提前 return 不得跳过失效)。
+        self.invalidate_list_cache();
         match self.manager.delete_session(id) {
             Ok(()) => {}
             Err(err) if err.kind() == ErrorKind::NotFound => {}
             Err(err) => return Err(err).with_context(|| format!("delete scheduled session {id}")),
         }
+        self.invalidate_list_cache();
         self.remove_scheduled_runtime_dir(id)?;
 
         self.scheduled_profiles.write().remove(id);

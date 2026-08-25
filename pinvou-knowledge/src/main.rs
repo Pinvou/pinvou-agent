@@ -171,7 +171,9 @@ async fn main() -> anyhow::Result<()> {
             let _ = background.backfill_vector_signature_index().await;
         });
     }
-    if service.ready() {
+    // 模型已懒到首请求:boot 后 pending 非空才触发装载(空 pending 直接短路),
+    // 「下载完成但一直无人检索」的场景也能自动消化积压索引。
+    {
         let background = service.clone();
         tokio::spawn(async move {
             let _ = background.index_pending_documents().await;
