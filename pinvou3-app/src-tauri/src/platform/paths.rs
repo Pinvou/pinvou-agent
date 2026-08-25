@@ -29,6 +29,11 @@ pub fn settings_path() -> PathBuf {
     pinvou3_home().join("settings.json")
 }
 
+/// `~/.pinvou3/eval/` —— 产品模式与官方兼容模式的评测报告目录。
+pub fn eval_reports_dir() -> PathBuf {
+    pinvou3_home().join("eval")
+}
+
 /// `~/.pinvou3/logs/memory-review.log` —— 对话记忆复盘诊断日志。
 /// 只记录阶段、分类和计数，不记录对话原文或记忆正文。
 pub fn memory_review_log() -> PathBuf {
@@ -44,6 +49,12 @@ pub fn bundle_instructions() -> PathBuf {
 pub fn bundle_skills_dir() -> PathBuf {
     bundle_root().join("skills")
 }
+/// `~/.pinvou3/bundles/` —— 按包聚合的包目录根（marketplace-unification §4：
+/// 一个包 = 一个目录 = 一个属主）。市场技能落 `bundles/<pkg-id>/skills/<name>/`；
+/// 内置释放技能（visual-design 等，非市场包）仍住 `bundle/skills/`。
+pub fn bundles_root() -> PathBuf {
+    pinvou3_home().join("bundles")
+}
 pub fn bundle_mcp_json() -> PathBuf {
     bundle_root().join("mcp.json")
 }
@@ -51,15 +62,35 @@ pub fn bundle_mcp_json() -> PathBuf {
 pub fn bundle_mcp_servers_dir() -> PathBuf {
     bundle_root().join("mcp-servers")
 }
+
 pub fn managed_connectors_dir() -> PathBuf {
     pinvou3_home().join("connectors")
 }
+/// 旧版（无版本）CLI 布局：`connectors/<platform>/bin/`。Phase 2 第四刀起新装
+/// 落 `assets/cli/<name>/<version>/`，本入口保留给存量迁移与 spawn 回退解析。
 pub fn managed_connector_bin_dir() -> Option<PathBuf> {
     managed_connector_bin_dir_for(std::env::consts::OS, std::env::consts::ARCH)
 }
 pub fn managed_connector_bin_dir_for(os: &str, arch: &str) -> Option<PathBuf> {
     connector_platform_dir(os, arch)
         .map(|platform| managed_connectors_dir().join(platform).join("bin"))
+}
+
+/// `~/.pinvou3/assets/` —— 版本化外部资产库（marketplace-unification §4：
+/// 包只引用不拥有，生命周期由 lock 表驱动）。
+pub fn assets_root() -> PathBuf {
+    pinvou3_home().join("assets")
+}
+
+/// `~/.pinvou3/assets/cli/<name>/<version>/` —— CLI 二进制按 lock 表钉住的版本落位，
+/// 升级 = 新版本目录就位，不再原地覆盖。
+pub fn assets_cli_dir(name: &str, version: &str) -> PathBuf {
+    assets_root().join("cli").join(name).join(version)
+}
+
+/// `~/.pinvou3/assets/.staging/` —— 下载/解包暂存（收编退役的 `cache/connectors/`）。
+pub fn assets_staging_dir() -> PathBuf {
+    assets_root().join(".staging")
 }
 
 /// 支持按需下载安装连接器 CLI 的平台目录名。目录名同时用于选择编译期锁文件，
@@ -125,6 +156,7 @@ fn bundled_connector_runtime_paths_for(
 pub fn bundle_present_artifact_server() -> PathBuf {
     bundle_mcp_servers_dir().join("present_artifact_server.py")
 }
+/// bundle 版本号文件（`~/.pinvou3/bundle/VERSION`）绝对路径。
 pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
 }
@@ -417,6 +449,20 @@ pub(crate) mod tests {
         );
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+    }
+
+    #[test]
+    fn eval_reports_are_scoped_under_pinvou_home() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let previous = std::env::var_os("PINVOU3_HOME");
+        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-eval-paths");
+
+        assert_eq!(eval_reports_dir(), pinvou3_home().join("eval"));
+
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
             None => std::env::remove_var("PINVOU3_HOME"),
         }
     }

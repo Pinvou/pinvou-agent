@@ -20,6 +20,7 @@ try {
   const {
     ACTIVITY_PRIORITY,
     ACTIVITY_TTL_MS,
+    SNAPSHOT_REMOVAL_GRACE_MS,
     applyActivitySnapshot,
     applyEvent,
     createPetState,
@@ -202,15 +203,60 @@ try {
   );
   assert.deepEqual(deriveActivities(completedViewFirst, now + 3), []);
 
-  // 权威 false 快照立即收尾，不依赖 2 秒后再来第二张快照。
+  // 权威 false 快照经宽限期收尾：先标记待删，宽限期后仍无事件才真正删卡，
+  // 给事件流(chat:done / turn_end)留出到达窗口，避免多会话并发时的误删闪现。
   const ghost = createPetState();
   applyEvent(ghost, 'pet:turn_start', { session_id: 's3' }, now);
   assert.equal(
     applyActivitySnapshot(ghost, [{ id: 's3', working: false }], 1, now + 1),
     true,
-    'a not-working snapshot must remove a running ghost immediately',
+    'a not-working snapshot must mark a running ghost for removal',
   );
-  assert.deepEqual(deriveActivities(ghost, now + 2), []);
+  assert.deepEqual(
+    deriveActivities(ghost, now + 2).map((item) => item.status),
+    ['running'],
+    'the ghost card must survive the grace window in case terminal events are in flight',
+  );
+  assert.deepEqual(
+    deriveActivities(ghost, now + SNAPSHOT_REMOVAL_GRACE_MS + 1),
+    [],
+    'a ghost with no terminal events must be removed after the grace period',
+  );
+
+  // 竞态场景(多会话并发):快照说 working:false 后,终态事件在宽限期内到达
+  // → 卡保留为完成状态,而不是被快照删掉再被事件重建(后者会驱动窗口收起
+  // 又展开,即用户看到的"桌宠闪现")。
+  const raceGrace = createPetState();
+  applyEvent(raceGrace, 'pet:turn_start', { session_id: 's-race' }, now);
+  assert.equal(
+    applyActivitySnapshot(raceGrace, [{ id: 's-race', working: false }], 1, now + 1),
+    true,
+    'a not-working snapshot must mark the running card for removal',
+  );
+  applyEvent(raceGrace, 'chat:done', { session_id: 's-race', status: 'Completed' }, now + 2);
+  assert.deepEqual(
+    deriveActivities(raceGrace, now + 3).map((item) => item.status),
+    ['review'],
+    'a terminal event inside the grace window must keep the card as completed',
+  );
+  // 收尾后即使快照重复说 working:false,完成卡也保留(不是 running)。
+  applyActivitySnapshot(raceGrace, [{ id: 's-race', working: false }], 2, now + 4);
+  assert.deepEqual(
+    deriveActivities(raceGrace, now + 5).map((item) => item.status),
+    ['review'],
+    'a not-working snapshot must not remove a completed card',
+  );
+
+  // 反向竞态:快照误说 working:false 但会话仍在流式 → delta 事件取消待删标记。
+  const live = createPetState();
+  applyEvent(live, 'pet:turn_start', { session_id: 's-live' }, now);
+  applyActivitySnapshot(live, [{ id: 's-live', working: false }], 1, now + 1);
+  applyEvent(live, 'chat:delta', { session_id: 's-live', text: '仍在输出' }, now + 2);
+  assert.deepEqual(
+    deriveActivities(live, now + 3).map((item) => item.status),
+    ['running'],
+    'a delta inside the grace window must cancel the pending removal',
+  );
 
   // 乱序快照不得让已完成的会话倒退回 working。
   applyActivitySnapshot(ghost, [{ id: 's3', working: false }], 3, now + 3);
@@ -219,7 +265,11 @@ try {
     false,
     'an older snapshot must be ignored',
   );
-  assert.deepEqual(deriveActivities(ghost, now + 5), []);
+  assert.deepEqual(
+    deriveActivities(ghost, now + SNAPSHOT_REMOVAL_GRACE_MS + 4),
+    [],
+    'older snapshot must not resurrect the removed ghost',
+  );
 
   // 真实新回合(pet:turn_start)清除已读标记,后续对话不受影响。
   const nextTurn = createPetState();

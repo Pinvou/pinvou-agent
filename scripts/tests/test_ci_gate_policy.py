@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -12,6 +13,7 @@ REQUIRED_WORKFLOWS = (
     ROOT / ".github/workflows/dependency-review.yml",
     PR_WORKFLOW,
 )
+PUBLIC_SUBMODULE_VERIFIER = ROOT / "scripts/verify-public-submodule.sh"
 
 
 def _extract_quoted_paths(block):
@@ -84,6 +86,18 @@ class CiGatePolicyTests(unittest.TestCase):
             '"release-contract-test:$RELEASE_CONTRACT_RESULT"',
             required_gate,
         )
+
+    def test_pr_submodule_verifier_strictly_matches_the_published_tag(self):
+        verifier = PUBLIC_SUBMODULE_VERIFIER.read_text(encoding="utf-8")
+        verifier_gate = self.pr_workflow.split(
+            "- name: 公开底座 gitlink 可达性", maxsplit=1
+        )[1].split("- name: 初始化公共底座 submodule", maxsplit=1)[0]
+        self.assertIn("./scripts/verify-public-submodule.sh", verifier_gate)
+        self.assertNotIn("--allow-registered-candidate", verifier_gate)
+        self.assertNotIn("LOCAL_SECURITY_HEAD", verifier)
+        self.assertIn('[[ "$tag_target" != "$gitlink" ]]', verifier)
+        self.assertIn('PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r8"', verifier)
+        self.assertIn("unknown argument", verifier)
 
     def test_pr_modes_and_stacked_pr_triggers_are_explicit(self):
         trigger = self.pr_workflow.split("\non:", maxsplit=1)[1].split(
@@ -192,6 +206,90 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1]
         self.assertIn("- knowledge-rust", required_gate)
         self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
+
+    def test_benchmark_jobs_are_hard_disabled_and_cannot_be_enabled_by_label(self):
+        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+            "\n  fast-gate:", maxsplit=1
+        )[0]
+        self.assertIn("benchmark:", changes)
+        self.assertIn("benchmark_cli:", changes)
+        self.assertIn("benchmark_headless:", changes)
+        self.assertIn("benchmark_codewhale:", changes)
+        self.assertIn("- 'pinvou-cli/**'", changes)
+        self.assertIn(
+            "- 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/headless_bridge.rs'",
+            changes,
+        )
+
+        contract = self.pr_workflow.split("\n  benchmark-contract:", maxsplit=1)[1].split(
+            "\n  benchmark-test:", maxsplit=1
+        )[0]
+        contract_header = contract.split("\n    runs-on:", maxsplit=1)[0]
+        self.assertIn("if: ${{ false }}", contract_header)
+        self.assertNotIn("ci:full-benchmark", contract_header)
+        self.assertNotIn("github.event_name", contract_header)
+        self.assertNotIn("needs.changes.outputs.benchmark == 'true'", contract_header)
+        self.assertIn("runs-on: ubuntu-latest", contract)
+        self.assertIn(
+            "RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper",
+            contract,
+        )
+        self.assertIn(
+            "cargo test --manifest-path pinvou-cli/Cargo.toml --all-features", contract
+        )
+        for package in (
+            "agent-backend-api",
+            "benchmark-core",
+            "adapter-smoke",
+            "adapter-gaia",
+        ):
+            self.assertIn(f"-p {package}", contract)
+        self.assertIn(
+            "-p pinvou-cli --no-default-features", contract
+        )
+        self.assertIn(
+            "cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml", contract
+        )
+        self.assertIn("--features benchmark-hooks --test headless_bridge_contract", contract)
+        self.assertIn("--features benchmark-hooks --lib", contract)
+        self.assertIn(
+            "features::assistant::product_runtime::headless_bridge::", contract
+        )
+        self.assertIn("-- --test-threads=1", contract)
+        self.assertIn("needs.changes.outputs.benchmark_codewhale == 'true'", contract)
+
+        benchmark = self.pr_workflow.split("\n  benchmark-test:", maxsplit=1)[1].split(
+            "\n  required-gate:", maxsplit=1
+        )[0]
+        benchmark_header = benchmark.split("\n    runs-on:", maxsplit=1)[0]
+        self.assertIn("cargo test --manifest-path pinvou-cli/Cargo.toml --all-features", benchmark)
+        self.assertIn(
+            "cargo test --manifest-path pinvou-cli/Cargo.toml --no-default-features", benchmark
+        )
+        self.assertIn("--features benchmark-hooks", benchmark)
+        self.assertIn("cargo test --manifest-path CodeWhale/Cargo.toml", benchmark)
+        self.assertIn("-p codewhale-tui --lib --locked forkguard_", benchmark)
+        self.assertIn("            CodeWhale", benchmark)
+        self.assertIn("if: ${{ false }}", benchmark_header)
+        self.assertNotIn("ci:full-benchmark", benchmark_header)
+        self.assertNotIn("github.event_name", benchmark_header)
+        self.assertNotIn("github.event_name == 'merge_group'", benchmark)
+        self.assertNotIn("github.event_name == 'push'", benchmark)
+        self.assertNotIn("needs.changes.outputs.benchmark", benchmark_header)
+        self.assertNotIn("\n        if:", benchmark)
+
+        benchmark_filter = changes.split("benchmark:", 1)[1].split(
+            "release_contract:", 1
+        )[0]
+        self.assertNotIn(".github/workflows/pr-check.yml", benchmark_filter)
+
+        required_gate = self.pr_workflow.split("\n  required-gate:", maxsplit=1)[1]
+        self.assertIn("- benchmark-contract", required_gate)
+        self.assertIn("BENCHMARK_CONTRACT_RESULT", required_gate)
+        self.assertIn('"benchmark-contract:$BENCHMARK_CONTRACT_RESULT"', required_gate)
+        self.assertNotIn("- benchmark-test", required_gate)
+        self.assertNotIn("BENCHMARK_TEST_RESULT", required_gate)
+        self.assertNotIn('"benchmark-test:$BENCHMARK_TEST_RESULT"', required_gate)
 
     def test_rust_modes_preserve_fast_drafts_and_final_queue_validation(self):
         self.assertIn("merge_group:", self.pr_workflow)
@@ -380,6 +478,55 @@ class CiGatePolicyTests(unittest.TestCase):
                 _is_covered_by_trigger(entry, trigger_paths),
                 f"bundle_chain 路径不被 on.push.paths 覆盖(死条目): {entry}",
             )
+
+    def test_pure_frontend_changes_do_not_trigger_macos_rust_build(self):
+        # Pure-frontend paths must not enter the mac-build trigger set (avoids
+        # needless native builds); but package.json/package-lock.json changes
+        # must trigger (the lockfile affects the build).
+        # Folded in from scripts/tests/test_ci_trigger_routing_policy.py to
+        # remove the duplicated parsing of the same mac-build.yml trigger
+        # block across two files.
+        trigger = MAC_WORKFLOW.read_text(encoding="utf-8").split("\non:", maxsplit=1)[
+            1
+        ].split("\npermissions:", maxsplit=1)[0]
+
+        self.assertIn("'pinvou3-app/src-tauri/**'", trigger)
+        self.assertNotIn("'pinvou3-app/src/**'", trigger)
+        self.assertIn("'pinvou3-app/package.json'", trigger)
+        self.assertIn("'pinvou3-app/package-lock.json'", trigger)
+
+    def test_wrapper_smoke_routes_merge_groups_before_platform_matrix(self):
+        # rustc-wrapper-smoke must first pass the paths-filter gate before
+        # entering the three-platform matrix, so wrapper-unrelated PRs do not
+        # run the full three-platform smoke.
+        # Folded in from scripts/tests/test_ci_trigger_routing_policy.py.
+        workflow = (
+            ROOT / ".github/workflows/rustc-wrapper-smoke.yml"
+        ).read_text(encoding="utf-8")
+        trigger = workflow.split("\non:", maxsplit=1)[1].split(
+            "\npermissions:", maxsplit=1
+        )[0]
+        pull_request = trigger.split("\n  pull_request:", maxsplit=1)[1].split(
+            "\n  merge_group:", maxsplit=1
+        )[0]
+        push = trigger.split("\n  push:", maxsplit=1)[1]
+        changes = workflow.split("\n  changes:", maxsplit=1)[1].split(
+            "\n  smoke:", maxsplit=1
+        )[0]
+        smoke = workflow.split("\n  smoke:", maxsplit=1)[1]
+
+        self.assertIn("merge_group:", trigger)
+        self.assertIn("push:", trigger)
+        self.assertIn("paths:", trigger)
+        workflow_path = "'.github/workflows/rustc-wrapper-smoke.yml'"
+        self.assertIn(workflow_path, pull_request)
+        self.assertIn(workflow_path, push)
+        self.assertIn(workflow_path, changes)
+        self.assertIn("uses: dorny/paths-filter@v4", changes)
+        self.assertIn("wrapper: ${{ steps.filter.outputs.wrapper }}", changes)
+        self.assertIn("needs: changes", smoke)
+        self.assertIn("if: ${{ needs.changes.outputs.wrapper == 'true' }}", smoke)
+        self.assertIn("os: [macos-15, ubuntu-latest, windows-latest]", smoke)
 
 
 if __name__ == "__main__":

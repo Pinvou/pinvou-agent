@@ -1,11 +1,11 @@
 mod persistence;
 mod rpc;
 mod transfer;
+mod workspace_grants;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,6 @@ use super::protocol::{
     WebAccessConfig, WebAccessInfo, WebAccessStatus, WebAccessStatusKind, PROTOCOL_VERSION,
 };
 use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
-use crate::platform::paths;
 
 // Host filesystem browsing (`list_host_files` / `read_artifact_chunk` /
 // `ArtifactChunk` / `HostFileListing`) lives in `super::file_access`, extracted
@@ -62,10 +61,16 @@ use rpc::{
 use transfer::{
     append_web_attachment_upload_chunk, clear_web_attachments, discard_web_attachment_upload,
     ensure_web_session_download_capacity, finish_web_attachment_reservation_inner,
-    prune_expired_web_session_transfers, remove_web_attachment_upload_dir,
-    request_web_attachment_discard,
+    is_owned_session_download_id, open_web_session_downloads_base,
+    prune_expired_web_session_transfers, read_web_session_download_chunk,
+    remove_web_attachment_upload_dir, request_web_attachment_discard,
+    sweep_stale_web_session_downloads, take_web_session_download,
 };
 pub(crate) use transfer::{sweep_stale_web_attachment_uploads, web_attachment_uploads_base};
+use workspace_grants::{
+    require_host_workspace_authorization, WebWorkspaceGrantReservation, WebWorkspaceGrantStore,
+    WebWorkspaceIdentity,
+};
 
 // 正式安装包默认连接生产 Relay；本地联调由 run-dev.sh 显式覆盖到隔离的
 // remote-test 端点。用户保存的自定义 Relay 设置仍具有最高优先级。
@@ -149,6 +154,7 @@ const MAX_PENDING_REVOCATIONS_FILE_BYTES: usize = 256 * 1024;
 const MAX_WEB_SESSION_UPLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const WEB_SESSION_TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
+const WEB_SESSION_TRANSFER_REAPER_INTERVAL: Duration = Duration::from_secs(60);
 
 /// 从事件 payload 提取会话 id（不同事件用不同字段名）。
 fn event_session_id(payload: &Value) -> Option<&str> {
@@ -174,6 +180,7 @@ fn should_filter_code_session_event(
 }
 
 const RUST_FORWARDED_EVENTS: &[&str] = &[
+    "acp:event",
     "artifact:disk",
     "chat:compaction",
     "chat:delta",
@@ -216,7 +223,9 @@ struct Inner {
     /// Held for the remainder of this desktop process after Web access is
     /// first touched. This makes the persistent endpoint and RPC ledger a
     /// single-process authority even if two app instances are launched.
-    process_lock: Option<File>,
+    /// The guard keeps the fd-lock write lock held; see
+    /// `persistence::acquire_process_lock` for the `'static` lifetime story.
+    process_lock: Option<fd_lock::RwLockWriteGuard<'static, File>>,
     endpoint: Option<ActiveEndpoint>,
     idle_status: WebAccessStatusKind,
     idle_error: Option<String>,
@@ -231,6 +240,7 @@ struct Inner {
     web_attachment_bytes: usize,
     web_attachment_uploads: HashMap<String, WebAttachmentUpload>,
     web_attachment_upload_order: VecDeque<String>,
+    web_workspace_grants: WebWorkspaceGrantStore,
     web_session_uploads: HashMap<String, WebSessionUpload>,
     web_session_upload_order: VecDeque<String>,
     web_session_downloads: HashMap<String, WebSessionDownload>,
@@ -258,6 +268,7 @@ impl Default for Inner {
             web_attachment_bytes: 0,
             web_attachment_uploads: HashMap::new(),
             web_attachment_upload_order: VecDeque::new(),
+            web_workspace_grants: WebWorkspaceGrantStore::default(),
             web_session_uploads: HashMap::new(),
             web_session_upload_order: VecDeque::new(),
             web_session_downloads: HashMap::new(),
@@ -289,7 +300,8 @@ struct WebAttachmentUpload {
 #[derive(Debug)]
 struct WebSessionDownload {
     session_id: String,
-    path: PathBuf,
+    reservation_id: String,
+    file: File,
     reserved_bytes: usize,
     total: usize,
     ready: bool,
@@ -300,20 +312,23 @@ pub struct WebSessionDownloadReservation {
     manager: RemoteControlManager,
     download_id: String,
     session_id: String,
-    path: PathBuf,
+    reservation_id: String,
+    writer: File,
     committed: bool,
 }
 
 impl WebSessionDownloadReservation {
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn try_clone_writer(&self) -> Result<File, String> {
+        self.writer
+            .try_clone()
+            .map_err(|error| format!("clone serialized Session download handle: {error}"))
     }
 
     pub fn commit(mut self) -> Result<String, String> {
         let result = self.manager.commit_web_session_download(
             &self.download_id,
             &self.session_id,
-            &self.path,
+            &self.reservation_id,
         );
         if result.is_ok() {
             self.committed = true;
@@ -326,7 +341,7 @@ impl Drop for WebSessionDownloadReservation {
     fn drop(&mut self) {
         if !self.committed {
             self.manager
-                .remove_web_session_download(&self.download_id, Some(&self.path));
+                .remove_web_session_download(&self.download_id, Some(&self.reservation_id));
         }
     }
 }
@@ -740,19 +755,20 @@ impl RemoteControlManager {
                 (AccessPolicy::default(), Some(error))
             }
         };
-        Self {
+        let manager = Self {
             app,
             inner: Arc::new(Mutex::new(Inner::default())),
             lifecycle: Arc::new(Mutex::new(())),
             policy: Arc::new(policy),
             policy_error,
-        }
+        };
+        manager.start_web_session_transfer_reaper();
+        manager
     }
 
     /// Resume the persistent endpoint after all authoritative application
     /// state (notably `EnginePool`) has been managed by Tauri.
     pub fn resume(&self) -> Result<bool, String> {
-        std::thread::spawn(sweep_stale_web_attachment_uploads);
         let _lifecycle = self.lifecycle.lock();
         self.ensure_policy()?;
         self.ensure_process_ownership()?;
@@ -771,27 +787,48 @@ impl RemoteControlManager {
 
     /// Enable WebUI access. Repeated calls return the same persistent endpoint
     /// instead of creating session-scoped rooms.
-    pub fn start(&self) -> Result<WebAccessInfo, String> {
+    pub fn start(&self, allow_host_workspace: bool) -> Result<WebAccessInfo, String> {
         let _lifecycle = self.lifecycle.lock();
         self.ensure_policy()?;
         self.ensure_process_ownership()?;
         self.replay_pending_revocations()?;
-        if let Some(endpoint) = self.inner.lock().endpoint.clone() {
-            return Ok(pairing_info(&endpoint));
+        let active_endpoint_id = self
+            .inner
+            .lock()
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.config.endpoint_id.clone());
+        let (mut config, is_new) = match load_config()? {
+            Some(config) => {
+                validate_config(&config)?;
+                (config, false)
+            }
+            None if active_endpoint_id.is_some() => {
+                return Err("Web access endpoint configuration is missing".to_string());
+            }
+            None => (fresh_config(false), true),
+        };
+        if active_endpoint_id
+            .as_ref()
+            .is_some_and(|endpoint_id| endpoint_id != &config.endpoint_id)
+        {
+            return Err("Web access endpoint configuration changed".to_string());
+        }
+        let authorization_changed = allow_host_workspace && !config.allow_host_workspace;
+        config.allow_host_workspace |= allow_host_workspace;
+        if is_new || authorization_changed {
+            persist_config(&config)?;
+        }
+        if active_endpoint_id.is_some() {
+            let mut inner = self.inner.lock();
+            let endpoint = inner
+                .endpoint
+                .as_mut()
+                .ok_or_else(|| "Web access endpoint stopped while enabling access".to_string())?;
+            endpoint.config.allow_host_workspace = config.allow_host_workspace;
+            return Ok(pairing_info(endpoint));
         }
 
-        let config = match load_config()? {
-            Some(config) => {
-                let config = apply_runtime_relay_override(config);
-                validate_config(&config)?;
-                config
-            }
-            None => {
-                let config = fresh_config();
-                persist_config(&config)?;
-                config
-            }
-        };
         self.activate(apply_runtime_relay_override(config))?;
         let inner = self.inner.lock();
         let endpoint = inner
@@ -819,7 +856,10 @@ impl RemoteControlManager {
         if let Some(previous) = previous_config.as_ref() {
             queue_pending_revocation(previous)?;
         }
-        let config = fresh_config();
+        let allow_host_workspace = previous_config
+            .as_ref()
+            .is_some_and(|config| config.allow_host_workspace);
+        let config = fresh_config(allow_host_workspace);
         // The old credentials are already durably queued above. If this write
         // fails, the queue entry still matches the current config and replay
         // deliberately leaves the still-active endpoint alone.
@@ -832,6 +872,7 @@ impl RemoteControlManager {
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
             inner.stream.reset();
+            inner.web_workspace_grants.clear();
             inner.endpoint.take()
         };
         if let Some(previous) = previous {
@@ -908,6 +949,7 @@ impl RemoteControlManager {
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
+            inner.web_workspace_grants.clear();
             inner.rpc_ledger = RpcLedger::default();
             inner.stream.reset();
             inner.idle_status = WebAccessStatusKind::Stopped;
@@ -930,7 +972,23 @@ impl RemoteControlManager {
         }
         let lock = acquire_process_lock(&process_lock_path())?;
         inner.process_lock = Some(lock);
+        drop(inner);
+        // Run only after acquiring the single-process authority. A second app
+        // instance must never delete snapshots owned by the active process.
+        sweep_stale_web_attachment_uploads();
+        sweep_stale_web_session_downloads();
         Ok(())
+    }
+
+    fn start_web_session_transfer_reaper(&self) {
+        let inner = Arc::downgrade(&self.inner);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(WEB_SESSION_TRANSFER_REAPER_INTERVAL);
+            let Some(inner) = inner.upgrade() else {
+                break;
+            };
+            prune_expired_web_session_transfers(&mut inner.lock());
+        });
     }
 
     /// Start independent retry workers for every retired endpoint. A queue
@@ -995,6 +1053,96 @@ impl RemoteControlManager {
             }
         }
         self.inner.lock().pending_revocations_in_flight.remove(&key);
+    }
+
+    /// Mint a short-lived capability for a directory that the host-file
+    /// picker has already listed through `validate_browsable_path`. The
+    /// browser may display the host path, but code-session creation receives
+    /// only this opaque, endpoint-bound, one-shot handle.
+    pub fn issue_web_workspace_grant(&self, raw_path: &str) -> Result<String, String> {
+        let authorized_endpoint_id = {
+            let inner = self.inner.lock();
+            let endpoint = inner
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| "Web access endpoint is not active".to_string())?;
+            require_host_workspace_authorization(endpoint.config.allow_host_workspace)?;
+            endpoint.config.endpoint_id.clone()
+        };
+        let path = crate::features::files::file_ingest::validate_browsable_path(raw_path)?;
+        if !path.is_dir() {
+            return Err(format!(
+                "Web code workspace must be a directory: {}",
+                path.display()
+            ));
+        }
+        let identity = WebWorkspaceIdentity::capture(&path)?;
+        let mut inner = self.inner.lock();
+        let endpoint = inner
+            .endpoint
+            .as_ref()
+            .ok_or_else(|| "Web access endpoint is not active".to_string())?;
+        require_host_workspace_authorization(endpoint.config.allow_host_workspace)?;
+        if endpoint.config.endpoint_id != authorized_endpoint_id {
+            return Err("Web access endpoint changed while authorizing workspace".to_string());
+        }
+        let endpoint_id = endpoint.config.endpoint_id.clone();
+        let handle = loop {
+            let candidate = format!(
+                "workspace_{}",
+                crate::features::remote_control::short_token(32)
+            );
+            if !inner.web_workspace_grants.contains(&candidate) {
+                break candidate;
+            }
+        };
+        inner.web_workspace_grants.issue(
+            handle.clone(),
+            endpoint_id,
+            path,
+            identity,
+            Instant::now(),
+        );
+        Ok(handle)
+    }
+
+    /// Atomically reserve a workspace capability while Session creation runs.
+    /// Invalid, expired, cross-endpoint, and concurrent replays still consume
+    /// or fail the one-shot handle. Only the original reservation can be
+    /// restored after a failed creation, for the same endpoint and TTL.
+    pub(crate) fn reserve_web_workspace_grant(
+        &self,
+        handle: &str,
+    ) -> Result<WebWorkspaceGrantReservation, String> {
+        let mut inner = self.inner.lock();
+        let endpoint_id = inner
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.config.endpoint_id.clone())
+            .ok_or_else(|| "Web access endpoint is not active".to_string())?;
+        let reservation =
+            inner
+                .web_workspace_grants
+                .reserve(handle, &endpoint_id, Instant::now())?;
+        drop(inner);
+        reservation.revalidate()
+    }
+
+    pub(crate) fn restore_web_workspace_grant(
+        &self,
+        reservation: WebWorkspaceGrantReservation,
+    ) -> bool {
+        let mut inner = self.inner.lock();
+        let Some(endpoint_id) = inner
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.config.endpoint_id.clone())
+        else {
+            return false;
+        };
+        inner
+            .web_workspace_grants
+            .restore(reservation, &endpoint_id, Instant::now())
     }
 
     /// Keep parsed attachment contents on the desktop. The browser receives
@@ -1306,6 +1454,7 @@ impl RemoteControlManager {
     pub fn begin_web_session_download(
         &self,
         session_id: &str,
+        requested_download_id: Option<&str>,
         reserved_bytes: usize,
     ) -> Result<WebSessionDownloadReservation, String> {
         if reserved_bytes > MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES {
@@ -1314,17 +1463,33 @@ impl RemoteControlManager {
                 MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
             ));
         }
-        let download_id = format!(
-            "download_{}",
-            crate::features::remote_control::short_token(32)
-        );
-        let download_dir = paths::pinvou3_home().join("web-session-downloads");
-        std::fs::create_dir_all(&download_dir)
-            .map_err(|error| format!("创建远程控制会话下载目录失败：{error}"))?;
-        let path = download_dir.join(format!("{download_id}.json"));
+        let download_id = match requested_download_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            Some(download_id) if is_owned_session_download_id(download_id) => {
+                download_id.to_string()
+            }
+            Some(_) => return Err("invalid requested Session download id".into()),
+            None => format!(
+                "download_{}",
+                crate::features::remote_control::short_token(32)
+            ),
+        };
+        let download_dir = open_web_session_downloads_base()?;
         let mut inner = self.inner.lock();
         prune_expired_web_session_transfers(&mut inner);
+        if inner.web_session_downloads.contains_key(&download_id) {
+            return Err("requested Session download id is already active".into());
+        }
         ensure_web_session_download_capacity(&inner, reserved_bytes)?;
+        let file = download_dir
+            .create_delete_on_close_file(&format!("{download_id}.json"))
+            .map_err(|error| format!("create serialized Session download: {error}"))?;
+        let writer = file
+            .try_clone()
+            .map_err(|error| format!("clone serialized Session download handle: {error}"))?;
+        let reservation_id = crate::features::remote_control::short_token(24);
         inner
             .web_session_download_order
             .push_back(download_id.clone());
@@ -1332,7 +1497,8 @@ impl RemoteControlManager {
             download_id.clone(),
             WebSessionDownload {
                 session_id: session_id.to_string(),
-                path: path.clone(),
+                reservation_id: reservation_id.clone(),
+                file,
                 reserved_bytes,
                 total: 0,
                 ready: false,
@@ -1343,7 +1509,8 @@ impl RemoteControlManager {
             manager: self.clone(),
             download_id,
             session_id: session_id.to_string(),
-            path,
+            reservation_id,
+            writer,
             committed: false,
         })
     }
@@ -1352,9 +1519,20 @@ impl RemoteControlManager {
         &self,
         download_id: &str,
         session_id: &str,
-        path: &Path,
+        reservation_id: &str,
     ) -> Result<(), String> {
-        let total = std::fs::metadata(path)
+        let mut inner = self.inner.lock();
+        prune_expired_web_session_transfers(&mut inner);
+        let reserved = inner
+            .web_session_downloads
+            .get(download_id)
+            .ok_or_else(|| "远程控制会话下载预留已过期".to_string())?;
+        if reserved.session_id != session_id || reserved.reservation_id != reservation_id {
+            return Err("远程控制会话下载预留已变化".into());
+        }
+        let total = reserved
+            .file
+            .metadata()
             .map_err(|error| format!("检查远程控制会话下载数据失败：{error}"))?
             .len();
         let total = usize::try_from(total).map_err(|_| "远程控制会话下载数据过大".to_string())?;
@@ -1363,16 +1541,6 @@ impl RemoteControlManager {
                 "会话数据超过远程控制 {} MiB 上限",
                 MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES / (1024 * 1024)
             ));
-        }
-
-        let mut inner = self.inner.lock();
-        prune_expired_web_session_transfers(&mut inner);
-        let reserved = inner
-            .web_session_downloads
-            .get(download_id)
-            .ok_or_else(|| "远程控制会话下载预留已过期".to_string())?;
-        if reserved.session_id != session_id || reserved.path != path {
-            return Err("远程控制会话下载预留已变化".into());
         }
         let other_bytes = inner
             .web_session_downloads
@@ -1397,14 +1565,19 @@ impl RemoteControlManager {
         Ok(())
     }
 
-    fn remove_web_session_download(&self, download_id: &str, expected_path: Option<&Path>) {
-        let removed = {
+    fn remove_web_session_download(
+        &self,
+        download_id: &str,
+        expected_reservation_id: Option<&str>,
+    ) {
+        let _removed = {
             let mut inner = self.inner.lock();
             let matches = inner
                 .web_session_downloads
                 .get(download_id)
                 .is_some_and(|download| {
-                    expected_path.is_none_or(|path| download.path.as_path() == path)
+                    expected_reservation_id
+                        .is_none_or(|reservation_id| download.reservation_id == reservation_id)
                 });
             if matches {
                 inner
@@ -1415,14 +1588,33 @@ impl RemoteControlManager {
                 None
             }
         };
-        if let Some(path) = removed
-            .map(|download| download.path)
-            .or_else(|| expected_path.map(Path::to_path_buf))
-        {
-            // The reservation path is unique. Removing it even when the map
-            // entry was concurrently cleared closes the cancellation/crash
-            // race where Windows could not unlink an open writer earlier.
-            let _ = std::fs::remove_file(path);
+    }
+
+    /// Release an incomplete browser Session download explicitly. The opaque
+    /// token remains bound to its Session so one browser context cannot cancel
+    /// another Session's transfer even if it supplies a mismatched id.
+    pub fn cancel_web_session_download(
+        &self,
+        download_id: &str,
+        session_id: &str,
+    ) -> Result<bool, String> {
+        let removed = {
+            let mut inner = self.inner.lock();
+            take_web_session_download(&mut inner, download_id, session_id)?
+        };
+        if let Some(download) = removed {
+            crate::features::sessions::diagnostics::record_backend(
+                "web_session_download_cancelled",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "download_id": download_id,
+                    "total_bytes": download.total,
+                    "ready": download.ready,
+                }),
+            );
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
@@ -1433,45 +1625,13 @@ impl RemoteControlManager {
         offset: usize,
         limit: usize,
     ) -> Result<WebSessionDownloadChunk, String> {
-        let mut inner = self.inner.lock();
-        prune_expired_web_session_transfers(&mut inner);
-        let download = inner
-            .web_session_downloads
-            .get_mut(download_id)
-            .ok_or_else(|| "远程控制会话下载不存在或已过期".to_string())?;
-        if download.session_id != session_id {
-            return Err("远程控制会话下载属于另一个会话".into());
-        }
-        if !download.ready {
-            return Err("远程控制会话下载仍在准备中".into());
-        }
-        if offset > download.total {
-            return Err(format!(
-                "Session offset {offset} exceeds payload size {}",
-                download.total
-            ));
-        }
-        let total = download.total;
-        let end = offset.saturating_add(limit).min(total);
-        let path = download.path.clone();
-        let mut file =
-            File::open(&path).map_err(|error| format!("打开远程控制会话下载失败：{error}"))?;
-        file.seek(SeekFrom::Start(offset as u64))
-            .map_err(|error| format!("定位远程控制会话下载失败：{error}"))?;
-        let mut data = vec![0_u8; end.saturating_sub(offset)];
-        file.read_exact(&mut data)
-            .map_err(|error| format!("读取远程控制会话下载失败：{error}"))?;
-        drop(file);
-        download.last_touched = Instant::now();
-        let eof = end == total;
-        if eof {
-            inner.web_session_downloads.remove(download_id);
-            inner
-                .web_session_download_order
-                .retain(|id| id != download_id);
-            let _ = std::fs::remove_file(path);
-        }
-        Ok(WebSessionDownloadChunk { total, data, eof })
+        read_web_session_download_chunk(
+            &mut self.inner.lock(),
+            download_id,
+            session_id,
+            offset,
+            limit,
+        )
     }
 
     pub fn status(&self) -> WebAccessStatus {
@@ -1485,6 +1645,7 @@ impl RemoteControlManager {
                 status: endpoint.status,
                 relay_url: endpoint.config.relay_url.clone(),
                 web_client_connected: endpoint.web_client_connected,
+                host_workspace_authorized: endpoint.config.allow_host_workspace,
                 last_error: endpoint.last_error.clone(),
             }
         } else {
@@ -1496,6 +1657,7 @@ impl RemoteControlManager {
                 status: inner.idle_status,
                 relay_url: remote_relay_ws_url(),
                 web_client_connected: false,
+                host_workspace_authorized: false,
                 last_error: inner
                     .idle_error
                     .clone()
@@ -1508,6 +1670,17 @@ impl RemoteControlManager {
         if let Err(error) = self.publish_event_inner(event, payload, EventSource::Rust) {
             eprintln!("[web-access] forward {event} failed: {error}");
         }
+    }
+
+    /// Cheap, read-only projection gate for optional event transports.
+    /// Delivery revalidates the same state in `publish_event_inner`.
+    pub(crate) fn has_active_subscription(&self, event: &str) -> bool {
+        let inner = self.inner.lock();
+        let web_client_connected = inner
+            .endpoint
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.web_client_connected);
+        has_active_event_subscription(web_client_connected, &inner.subscriptions, event)
     }
 
     pub fn publish_frontend_event(&self, event: &str, payload: Value) -> Result<(), String> {
@@ -1919,6 +2092,7 @@ impl RemoteControlManager {
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
             inner.stream.reset();
+            inner.web_workspace_grants.clear();
             inner.idle_status = WebAccessStatusKind::Revoked;
             inner.idle_error = None;
             revoked
@@ -1957,6 +2131,7 @@ impl RemoteControlManager {
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
+            inner.web_workspace_grants.clear();
         }
         self.emit_status();
     }
@@ -2713,6 +2888,14 @@ impl RemoteControlManager {
     }
 }
 
+fn has_active_event_subscription(
+    web_client_connected: bool,
+    subscriptions: &HashSet<String>,
+    event: &str,
+) -> bool {
+    web_client_connected && is_event_subscribed(subscriptions, event)
+}
+
 #[cfg(test)]
 mod tests {
     use super::persistence::{
@@ -2732,6 +2915,16 @@ mod tests {
 
         assert!(is_event_subscribed(&subscriptions, "session:deleted"));
         assert!(!is_event_subscribed(&subscriptions, "session:list_changed"));
+        assert!(!has_active_event_subscription(
+            false,
+            &subscriptions,
+            "session:deleted"
+        ));
+        assert!(has_active_event_subscription(
+            true,
+            &subscriptions,
+            "session:deleted"
+        ));
     }
 
     #[test]
@@ -3172,6 +3365,21 @@ mod tests {
             "web_access_bridge_ready",
             "web_access_rpc_begin",
             "web_access_rpc_respond",
+            "codex_acp_prompt",
+            "get_codex_acp_timeline",
+            "get_codex_acp_session_info",
+            "get_codex_acp_pending_permissions",
+            "get_codex_acp_pending_elicitations",
+            "list_acp_agents",
+            "get_acp_agent_status",
+            "set_codex_acp_model",
+            "set_codex_acp_mode",
+            "set_codex_acp_config_option",
+            "install_acp_agent",
+            "login_acp_agent",
+            "switch_acp_agent_account",
+            "open_acp_agent_login_url",
+            "submit_acp_agent_login_code",
         ] {
             assert!(
                 !policy.commands.contains(command),
@@ -3188,19 +3396,37 @@ mod tests {
             "web_access_update_settings",
             "web_access_create_session",
             "web_access_create_session_and_chat",
+            "web_access_list_sessions",
+            "web_access_list_archived_sessions",
             "web_access_chat",
+            "web_access_cancel_codex_acp",
             "web_access_ingest_file",
             "web_access_upload_attachment_chunk",
             "web_access_abort_attachment_upload",
             "web_access_discard_attachment",
             "web_access_read_conversation_attachment_chunk",
+            "web_access_cancel_session_download",
             "web_access_load_session_chunk",
+            "web_access_codex_acp_prompt",
+            "web_access_get_codex_acp_timeline",
+            "web_access_get_codex_acp_session_info",
+            "web_access_get_codex_acp_pending_permissions",
+            "web_access_get_codex_acp_pending_elicitations",
+            "web_access_get_codex_workspace_changes",
+            "web_access_get_codex_workspace_diff",
+            "web_access_list_acp_agents",
+            "web_access_get_acp_agent_status",
+            "web_access_set_codex_acp_model",
+            "web_access_set_codex_acp_mode",
+            "web_access_set_codex_acp_config_option",
         ] {
             assert!(
                 policy.commands.contains(command),
                 "{command} must be Web-scoped"
             );
         }
+        assert!(!policy.commands.contains("list_sessions"));
+        assert!(!policy.commands.contains("list_archived_sessions"));
         assert!(
             !policy
                 .commands
@@ -3215,6 +3441,8 @@ mod tests {
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_delta"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_done"));
         assert!(policy.events.contains("chat:user_message"));
+        assert!(policy.events.contains("acp:event"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"acp:event"));
         assert!(policy.events.contains("chat:plan_resolved"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:plan_resolved"));
         assert!(policy.events.contains("chat:transcript_committed"));
@@ -3253,6 +3481,7 @@ mod tests {
             endpoint_id: "ep_123456".into(),
             access_token: "a".repeat(24),
             desktop_secret: "d".repeat(24),
+            allow_host_workspace: false,
         };
         validate_config(&valid).expect("valid Web access config");
 
@@ -3461,13 +3690,19 @@ mod tests {
     #[test]
     fn native_active_session_fallbacks_are_not_valid_web_scopes() {
         for command in [
+            "cancel_codex_acp",
             "cancel_generation",
             "compact_now",
             "edit_last_turn",
             "get_session_pinvou_scene_events",
             "get_session_timeline",
+            "get_codex_workspace_changes",
+            "get_codex_workspace_diff",
             "save_session_pinvou_scene_events",
             "web_access_chat",
+            "web_access_cancel_codex_acp",
+            "web_access_get_codex_workspace_changes",
+            "web_access_get_codex_workspace_diff",
         ] {
             assert_eq!(
                 web_session_scope(command),
@@ -3481,6 +3716,7 @@ mod tests {
     fn session_scoped_commands_use_the_central_validator() {
         let scoped_commands = [
             ("get_session_timeline", "sessionId"),
+            ("web_access_cancel_session_download", "id"),
             ("web_access_load_session_chunk", "id"),
             ("web_access_artifact_info", "sessionId"),
             ("web_access_read_artifact_chunk", "sessionId"),
@@ -3584,6 +3820,7 @@ mod tests {
         for command in [
             "get_session_timeline",
             "get_mode_state",
+            "web_access_cancel_session_download",
             "web_access_load_session_chunk",
         ] {
             assert!(
@@ -3782,6 +4019,7 @@ mod tests {
             endpoint_id: "ep_test".into(),
             access_token: "a+b/c".into(),
             desktop_secret: "never-in-url".into(),
+            allow_host_workspace: false,
         };
         let link = public_url(&config);
         assert!(link.contains("#endpoint=ep_test&token=a%2Bb%2Fc"));
@@ -3822,6 +4060,7 @@ mod tests {
             endpoint_id: pending.endpoint_id,
             access_token: "browser-token-01234567890123456789".into(),
             desktop_secret: pending.desktop_secret,
+            allow_host_workspace: false,
         }
     }
 
@@ -3931,7 +4170,8 @@ mod tests {
                 id.to_string(),
                 WebSessionDownload {
                     session_id: format!("session_{id}"),
-                    path: PathBuf::from(format!("{id}.json")),
+                    reservation_id: format!("reservation_{id}"),
+                    file: tempfile::tempfile().unwrap(),
                     reserved_bytes,
                     total: reserved_bytes,
                     ready: true,
@@ -3965,6 +4205,45 @@ mod tests {
             .extend([download("large", MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES - 1)]);
         assert!(ensure_web_session_download_capacity(&by_bytes, 2).is_err());
         assert!(by_bytes.web_session_downloads.contains_key("large"));
+    }
+
+    #[test]
+    fn cancelled_session_download_releases_only_the_matching_lease() {
+        let mut inner = Inner::default();
+        inner.web_session_download_order =
+            VecDeque::from(["download_keep".to_string(), "download_cancel".to_string()]);
+        for (download_id, session_id) in [
+            ("download_keep", "session_keep"),
+            ("download_cancel", "session_cancel"),
+        ] {
+            inner.web_session_downloads.insert(
+                download_id.to_string(),
+                WebSessionDownload {
+                    session_id: session_id.to_string(),
+                    reservation_id: format!("reservation_{download_id}"),
+                    file: tempfile::tempfile().unwrap(),
+                    reserved_bytes: 1,
+                    total: 1,
+                    ready: true,
+                    last_touched: Instant::now(),
+                },
+            );
+        }
+
+        assert!(take_web_session_download(&mut inner, "download_cancel", "session_other").is_err());
+        assert!(inner.web_session_downloads.contains_key("download_cancel"));
+
+        let removed =
+            take_web_session_download(&mut inner, "download_cancel", "session_cancel").unwrap();
+        assert!(removed.is_some());
+        assert!(!inner.web_session_downloads.contains_key("download_cancel"));
+        assert!(inner.web_session_downloads.contains_key("download_keep"));
+        assert_eq!(inner.web_session_download_order, ["download_keep"]);
+        assert!(
+            take_web_session_download(&mut inner, "download_cancel", "session_cancel")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -33,7 +33,8 @@ export const PET_REGISTRY = Object.freeze(Object.fromEntries(
 ));
 
 export function normalizePetId(id) {
-  return typeof id === 'string' && Object.hasOwn(PET_REGISTRY, id)
+  // hasOwnProperty.call instead of Object.hasOwn: Safari 14 (WKWebView) lacks the latter.
+  return typeof id === 'string' && Object.prototype.hasOwnProperty.call(PET_REGISTRY, id)
     ? id
     : DEFAULT_PET_ID;
 }

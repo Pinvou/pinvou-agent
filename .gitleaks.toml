@@ -6,7 +6,7 @@ description = "Pinned upstream connector documentation uses synthetic IDs and to
 targetRules = ["generic-api-key"]
 paths = [
   '''^pinvou3-app/src-tauri/resources/common/bundle/dingtalk-skills/dws/references/products/doc(?:/doc-info)?\.md$''',
-  '''^pinvou3-app/src-tauri/resources/common/bundle/skills/lark-im/references/lark-im-reactions\.md$''',
+  '''^pinvou3-app/src-tauri/resources/common/bundle/lark-skills/lark-im/references/lark-im-reactions\.md$''',
 ]
 
 [[allowlists]]

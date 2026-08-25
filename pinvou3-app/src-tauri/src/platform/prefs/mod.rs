@@ -148,27 +148,26 @@ pub use model::{
 };
 
 /// 用户对某条 [`SavedModel`] 图片输入能力的显式覆盖(模型设置页「图片输入能力」,
-/// 设计 §6.3/§7.3)。`Auto` = 走能力解析链(模型目录→内置已验证表→Unknown);
+/// 设计 §6.3/§7.3)。`Pinvou` = 走能力解析链(内置已验证表→Unknown);
 /// `Enabled`/`Disabled` 直接钉死,供本地自定义模型人工确认用。
 ///
-/// 反序列化手写兜底:未知档位值落 `Auto` 而非报错。没有这一层,单个未知值
+/// 反序列化手写兜底:未知档位值落 `Pinvou` 而非报错。没有这一层,单个未知值
 /// (未来版本新增枚举后降级运行/手工编辑)会让整份 `UserPrefs` 反序列化失败,
 /// `load` 整体回退默认值,此后任意一次设置写入都会把用户的全部模型条目与
-/// 凭据引用不可逆覆盖。落 `Auto` 后写回即规范化为 `"auto"`。不能改用
+/// 凭据引用不可逆覆盖。落 `Pinvou` 后写回即规范化为 `"pinvou"`。不能改用
 /// `#[serde(other)]`:它要求挂在最后一个变体上,而"未知=Disabled"语义危险,
 /// 新增兜底变体又会破坏穷举 match 且无法序列化。
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageCapabilityOverride {
-    /// 自动探测(默认;旧 settings.json 无该字段反序列化即落这里,无感迁移)。
-    /// 保存时触发连接 + 识图探测,按结果回填 `Pinvou`/`Enabled`/`Disabled`。
+    /// pinvou 决策(默认):按内置已验证能力表判断,不探测(原「自动判断」语义)。
+    /// 旧 settings.json 无该字段、或残留已下线的 `"auto"`(保存时检测)档,
+    /// 反序列化即落这里,无感迁移。
     #[default]
-    Auto,
-    /// pinvou 决策:按内置已验证能力表判断,不探测(即原「自动判断」语义)。
     Pinvou,
-    /// 探测/用户确认该模型支持图片输入(「能」)。
+    /// 用户确认该模型支持图片输入(「能」)。
     Enabled,
-    /// 探测/用户确认该模型不支持图片输入(「不能」)。
+    /// 用户确认该模型不支持图片输入(「不能」)。
     Disabled,
 }
 
@@ -181,20 +180,20 @@ impl<'de> Deserialize<'de> for ImageCapabilityOverride {
         impl serde::de::Visitor<'_> for Visitor {
             type Value = ImageCapabilityOverride;
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("image capability override (auto/pinvou/enabled/disabled)")
+                formatter.write_str("image capability override (pinvou/enabled/disabled)")
             }
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
             where
                 E: serde::de::Error,
             {
                 match value {
-                    "auto" => Ok(ImageCapabilityOverride::Auto),
-                    "pinvou" => Ok(ImageCapabilityOverride::Pinvou),
+                    // "auto" 是已下线的「保存时检测」档,残留值按 pinvou 决策迁移。
+                    "pinvou" | "auto" => Ok(ImageCapabilityOverride::Pinvou),
                     "enabled" => Ok(ImageCapabilityOverride::Enabled),
                     "disabled" => Ok(ImageCapabilityOverride::Disabled),
-                    // 未知值兜底:见枚举头注释。走 Auto 而非 Disabled——
+                    // 未知值兜底:见枚举头注释。走 Pinvou 而非 Disabled——
                     // "判不出"绝不能冒充"确认不支持"。
-                    _ => Ok(ImageCapabilityOverride::Auto),
+                    _ => Ok(ImageCapabilityOverride::Pinvou),
                 }
             }
         }
@@ -229,7 +228,7 @@ pub struct SavedModel {
     pub vendor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_mode: Option<String>,
-    /// 图片输入能力覆盖(设计 §6.3):Auto 走能力解析链;Enabled/Disabled 强制。
+    /// 图片输入能力覆盖(设计 §6.3):Pinvou 走能力解析链;Enabled/Disabled 强制。
     #[serde(default)]
     pub image_capability_override: ImageCapabilityOverride,
     /// 视觉兜底模型引用(设计 §9.3):指向另一条 SavedModel 的 `id`,复用其
@@ -1289,7 +1288,7 @@ mod tests {
     #[test]
     fn saved_model_image_fields_default_for_legacy_json() {
         // 旧 settings.json 没有 image_capability_override / vision_model_id:
-        // serde default 保证无感迁移 → Auto / None(设计 §6.3,阶段 C)。
+        // serde default 保证无感迁移 → Pinvou / None(设计 §6.3,阶段 C)。
         let legacy = r#"{
             "id": "m1",
             "name": "DeepSeek 线上",
@@ -1300,11 +1299,11 @@ mod tests {
         let model: SavedModel = serde_json::from_str(legacy).expect("legacy SavedModel json");
         assert_eq!(
             model.image_capability_override,
-            ImageCapabilityOverride::Auto
+            ImageCapabilityOverride::Pinvou
         );
         assert!(model.vision_model_id.is_none());
 
-        // 显式值能序列化往返;Auto/None 时字段不写入(保持 settings.json 干净)。
+        // 显式值能序列化往返;vision_model_id 为 None 时不写入(保持 settings.json 干净)。
         let mut overridden = model.clone();
         overridden.image_capability_override = ImageCapabilityOverride::Enabled;
         overridden.vision_model_id = Some("vision-1".into());
@@ -1321,8 +1320,8 @@ mod tests {
     }
 
     #[test]
-    fn saved_model_image_capability_unknown_value_falls_back_to_auto() {
-        // 未知档位值(未来版本新增枚举后降级运行/手工编辑)必须落 Auto,
+    fn saved_model_image_capability_unknown_value_falls_back_to_pinvou() {
+        // 未知档位值(未来版本新增枚举后降级运行/手工编辑)必须落 Pinvou,
         // 而不是让整份 UserPrefs 反序列化失败——后者会让 `load` 整体回退
         // 默认值,此后任意一次设置写入把用户的全部模型条目与凭据引用覆盖。
         let future = r#"{
@@ -1336,7 +1335,25 @@ mod tests {
         let model: SavedModel = serde_json::from_str(future).expect("unknown override value");
         assert_eq!(
             model.image_capability_override,
-            ImageCapabilityOverride::Auto
+            ImageCapabilityOverride::Pinvou
+        );
+    }
+
+    #[test]
+    fn saved_model_image_capability_legacy_auto_migrates_to_pinvou() {
+        // 已下线的「保存时检测」(auto)档:残留 settings.json 按 pinvou 决策迁移。
+        let legacy = r#"{
+            "id": "m1",
+            "name": "DeepSeek 线上",
+            "preset": "deepseek",
+            "model": "deepseek-v4-pro",
+            "base_url": "https://api.deepseek.com",
+            "image_capability_override": "auto"
+        }"#;
+        let model: SavedModel = serde_json::from_str(legacy).expect("legacy auto override");
+        assert_eq!(
+            model.image_capability_override,
+            ImageCapabilityOverride::Pinvou
         );
     }
 

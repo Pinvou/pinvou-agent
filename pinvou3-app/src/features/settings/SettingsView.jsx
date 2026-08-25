@@ -1,15 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Users, Video, Wrench, X, Zap } from '../../components/icons.jsx';
-import { ComposerPopover } from '../../components/ComposerPopover.jsx';
+import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Trash2, User, Video, Wrench, X } from '../../components/icons.jsx';
+import { Toggle } from '../../components/Toggle.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge, isLocalModel } from '../../hooks/useBridge.js';
-import { visibleUserModels } from '../../shared/model-options.js';
 import { can, isWeb } from '../../shared/platform.js';
-import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
-import { notifyComposerToolsChanged } from '../tools/tool-events.js';
 import qwenIcon from '../../brand-icons/qwen.svg';
 import {
   MODEL_PRESET_DEFS, PROVIDER_KIND_CODING_PLAN, PROVIDER_KIND_OFFICIAL_API, PROVIDER_KIND_CUSTOM,
@@ -17,18 +13,21 @@ import {
   BRAND_ICON_BY_PRESET, BRAND_ICON_BY_VENDOR,
   presetOptionsI18n, presetProviderLabel,
   normalizedProviderBaseUrl, findCloudProviderForModel, providerLabelForModel, isCodingPlanModel, catalogItemMatchesModel,
-  groupModelsForSelector, selectorMainLabel, selectorSubLabel,
+  catalogImageCapableForModel,
+  groupModelsForSelector,
   reasoningEffortTiersForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort,
 } from './model-catalog.js';
-import { invokeTauri } from '../../platform/tauri/client.js';
-import {
-  artifactPreviewExternalUrlFromMessage,
-  buildArtifactPreviewDocument,
-} from '../artifacts/artifact-preview-navigation.js';
 import { ProvidersSection } from './ProvidersSection.jsx';
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
+}
+
+// 目录视觉能力标注 → 表单「图片输入能力」档位:
+// true→enabled(支持图片),false→disabled(不支持图片),未命中/未标注→pinvou(自动处理)。
+function imageCapabilityForCatalogModel(model) {
+  const flag = catalogImageCapableForModel(model);
+  return flag === true ? 'enabled' : flag === false ? 'disabled' : 'pinvou';
 }
 
 function visibleSortedModels(models) {
@@ -469,204 +468,6 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       );
     };
 
-    // 输入框底栏:模型选择器(iOS 化;darkMode:'class' 故用 dark: 变体)。
-    // 可选“显式会话态驱动”props（代码模块原生车道用）：sessionId/sessionModelId/
-    // busy/onSwitchModel 传入时绕开 bridge 聊天 active 绑定；不传走原 bs/bridge 路径。
-    const ComposerModelSelector = ({
-      t,
-      bs,
-      onGotoSettings,
-      compact,
-      sessionId: sessionIdProp,
-      sessionModelId: sessionModelIdProp,
-      busy: busyProp,
-      onSwitchModel,
-      multiAgentEnabled: multiAgentEnabledProp,
-      multiAgentAvailable: multiAgentAvailableProp,
-      onToggleMultiAgent,
-    }) => {
-      const [open, setOpen] = useState(false);
-      const triggerRef = useRef(null);
-      const canManageModels = can('modelManagement');
-      const canSwitchModels = can('sessionModelSwitch');
-      // 多智能体模式 = 模型列表下方的会话级开关（ADR-0006）。状态权威在
-      // 后端 mode_state，这里只读 bs 镜像；翻转后 bridge 回写权威状态。
-      const canMultiAgent = can('multiAgent') && multiAgentAvailableProp !== false;
-      const multiAgentOn = multiAgentEnabledProp !== undefined
-        ? Boolean(multiAgentEnabledProp)
-        : !!(bs && bs.modeState && bs.modeState.multiAgent);
-      const multiAgentCopy = (t && t.uiMultiAgent) || {};
-      // 防重入（复核点名）：后端事务完成前再点会带着旧状态重复提交，
-      // 其中一次名册推送失败的回滚还会覆盖另一次已开启的状态。切换期间
-      // 禁用按钮；bridge 侧另有 in-flight 丢弃兜底（双入口防线）。
-      const [multiAgentBusy, setMultiAgentBusy] = useState(false);
-      // 揭幕动效只在用户点击开启这一刻播放：会话切换/重启同步出现的
-      // 开启态、弹层关了再开，都不重播揭幕（真机点名），但光晕持续漂移
-      // （真机点名"动画不能停"，挂在常态类上）。触发源是点击处理器而
-      // 不是状态上升沿；点击关闭或弹层关闭时清掉标记，避免误续播。
-      const [multiAgentRevealing, setMultiAgentRevealing] = useState(false);
-      useEffect(() => {
-        if (!open) setMultiAgentRevealing(false);
-      }, [open]);
-      async function toggleMultiAgent() {
-        if (multiAgentBusy || busy) return;
-        if (!onToggleMultiAgent
-          && !(bridge.available && bridge.interaction && bridge.interaction.setMultiAgentMode)) return;
-        setMultiAgentRevealing(!multiAgentOn);
-        setMultiAgentBusy(true);
-        try {
-          if (onToggleMultiAgent) await onToggleMultiAgent(!multiAgentOn);
-          else await bridge.interaction.setMultiAgentMode(!multiAgentOn);
-        } finally {
-          setMultiAgentBusy(false);
-        }
-      }
-      const savedModels = visibleUserModels((bs && bs.savedModels) || []);
-      const activeSessionId = sessionIdProp !== undefined ? sessionIdProp : (bs ? bs.activeSessionId : null);
-      const activeModelId = bs && bs.activeModelId;
-      const currentSessionModelId = sessionModelIdProp !== undefined ? sessionModelIdProp : (bs && bs.currentSessionModelId);
-      const busy = busyProp !== undefined ? busyProp : (bs ? bs.busy : false);
-      const effectiveId = currentSessionModelId || activeModelId;
-      const current = savedModels.find(m => m.id === effectiveId);
-      const reasoningEffortTiers = current ? (reasoningEffortTiersForModel(current) || []) : [];
-      // 存量档位（可能保存过底座归一前的旧值，如 deepseek 的 medium）先归一到
-      // 档位表内等价档位再高亮，避免「档位表不含该值 → 下拉无高亮」。
-      const reasoningEffortValue = current ? normalizeStoredReasoningEffort(current, current.reasoning_effort) : null;
-      const [effortSaveError, setEffortSaveError] = useState('');
-      function setReasoningEffortForCurrent(tier) {
-        if (!current) return;
-        if (tier === reasoningEffortValue) return;
-        setEffortSaveError('');
-        const next = { ...current, reasoning_effort: tier };
-        if (!bridge.available) { setOpen(false); return; }
-        // 保存成功才收弹层；失败保留弹层以便展示 effortSaveError（否则错误渲染
-        // 在已关闭的 popover 内不可达）。
-        bridge.models.saveModel(next)
-          .then(() => { setOpen(false); setEffortSaveError(''); })
-          .catch((error) => {
-            const message = (error && error.message)
-              ? error.message
-              : ((t && t.saveModelFailed) || '保存失败');
-            setEffortSaveError(message);
-          });
-      }
-      if (!savedModels.length) return null;
-      function pick(id) {
-        setOpen(false);
-        setEffortSaveError('');
-        if (id === effectiveId) return;
-        if (onSwitchModel) { onSwitchModel(activeSessionId, id); return; }
-        if (bridge.available) bridge.models.switchModel(activeSessionId, id);
-      }
-      return (
-        <div className="relative min-w-0">
-          <button ref={triggerRef} onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
-            title={(current ? selectorMainLabel(current, t) : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
-            className={`relative shrink-0 flex items-center justify-center ${multiAgentOn ? 'text-[#6d28d9] dark:text-[#c4b5fd]' : 'text-gray-700 dark:text-gray-200'} transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold min-w-0 max-w-full bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
-            {compact ? (
-              <>
-                <Cpu size={18} className="opacity-80" />
-                <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#34C759] ring-2 ring-white dark:ring-[#161618]"></span>
-              </>
-            ) : (
-              <>
-                <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-[#34C759]"></span>
-                <span className="max-w-[116px] truncate">{t.composerModelLabel(current ? selectorMainLabel(current, t) : t.modelNonePick)}</span>
-                <ChevronDown size={13} className="opacity-50 shrink-0" />
-              </>
-            )}
-          </button>
-          <ComposerPopover open={open && canSwitchModels} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
-            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                {(() => {
-                  const { preset, custom } = groupModelsForSelector(savedModels);
-                  const renderGroup = (label, items, withDivider) => items.length > 0 && (
-                    <>
-                      {withDivider && <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />}
-                      <div className="px-3 pt-1.5 pb-1 text-[11px] font-semibold text-gray-400 dark:text-gray-500">{label}</div>
-                      {items.map(m => (
-                        <button key={m.id} onClick={() => pick(m.id)}
-                          className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left rounded-xl transition-colors group hover:bg-[#007AFF] hover:text-white">
-                          <span className="flex items-center gap-2.5 min-w-0">
-                            <Cpu size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
-                            <span className="min-w-0">
-                              <span className="block text-[13px] truncate text-gray-700 dark:text-gray-200 group-hover:text-white">{selectorMainLabel(m, t)}</span>
-                              <span className="block text-[11px] truncate text-gray-400 dark:text-gray-500 group-hover:text-white/80">{selectorSubLabel(m, t)}</span>
-                            </span>
-                          </span>
-                          {m.id === effectiveId && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
-                        </button>
-                      ))}
-                    </>
-                  );
-                  return (
-                    <>
-                      {renderGroup(t.modelGroupPreset, preset, false)}
-                      {renderGroup(t.modelGroupCustom, custom, preset.length > 0)}
-                    </>
-                  );
-                })()}
-                {current && reasoningEffortTiers.length > 0 && (
-                  <>
-                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
-                    <div className="px-3 pt-1 pb-1">
-                      <div className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 mb-1.5">{t.thinkingDepth}</div>
-                      <div className="flex flex-wrap gap-1">
-                        {reasoningEffortTiers.map(tier => (
-                          <button key={tier} onClick={() => setReasoningEffortForCurrent(tier)}
-                            className={`h-7 min-w-[48px] px-2.5 rounded-full text-[12px] font-medium transition-colors ${
-                              reasoningEffortValue === tier
-                                ? 'bg-[#007AFF] text-white'
-                                : 'bg-black/[0.05] dark:bg-white/[0.08] text-gray-600 dark:text-gray-300 hover:bg-black/[0.09] dark:hover:bg-white/[0.13]'
-                            }`}>
-                            {t.thinkingDepthTiers[tier] || tier}
-                          </button>
-                        ))}
-                      </div>
-                      {effortSaveError && (
-                        <div className="mt-1.5 text-[11px] leading-4 text-[#FF3B30] dark:text-[#FF6B6B]">{effortSaveError}</div>
-                      )}
-                    </div>
-                  </>
-                )}
-                {canMultiAgent && (
-                  <>
-                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
-                    <button type="button" data-testid="multiagent-toggle" onClick={toggleMultiAgent}
-                      disabled={multiAgentBusy || busy}
-                      title={multiAgentCopy.toggleHint || ''}
-                      onAnimationEnd={(event) => {
-                        if (event.animationName === 'pinvou-ultra-reveal') setMultiAgentRevealing(false);
-                      }}
-                      className={`w-full flex items-center justify-between px-3 py-2.5 text-[13px] rounded-xl ${
-                        multiAgentOn
-                          ? 'pinvou-ultra-row'
-                          : 'text-gray-700 dark:text-gray-200 hover:bg-black/[0.045] dark:hover:bg-white/[0.07]'
-                      } ${multiAgentRevealing ? 'pinvou-ultra-row-reveal' : ''}`}>
-                      <span className="flex items-center gap-2.5 min-w-0">
-                        <Users size={15} className={`shrink-0 ${multiAgentOn ? 'text-current' : 'text-gray-400'}`} />
-                        <span className={`truncate ${multiAgentOn ? 'font-medium' : ''}`}>{multiAgentCopy.toggleLabel || ''}</span>
-                      </span>
-                      <span aria-hidden="true" className={`relative shrink-0 w-8 h-[18px] rounded-full transition-colors ${multiAgentOn ? 'bg-white/30' : 'bg-black/20 dark:bg-white/25'}`}>
-                        <span className={`absolute top-[2px] left-0 w-[14px] h-[14px] rounded-full bg-white shadow transition-transform ${multiAgentOn ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
-                      </span>
-                    </button>
-                  </>
-                )}
-                {canManageModels && (
-                  <>
-                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
-                    <button onClick={() => { setOpen(false); if (onGotoSettings) onGotoSettings(); }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
-                      <Plus size={15} className="text-gray-400 group-hover:text-white/90" />
-                      {t.manageModels}
-                    </button>
-                  </>
-                )}
-          </ComposerPopover>
-        </div>
-      );
-    };
 
     const WebAccessModal = ({ theme, bs, t, onClose }) => {
       const canManageWebAccess = can('webAccessAdmin');
@@ -674,6 +475,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const [actionBusy, setActionBusy] = useState(false);
       const webAccess = (bs && bs.webAccess) || {};
       const webAccessActive = !!webAccess.active;
+      const hostWorkspaceAuthorized = !!webAccess.host_workspace_authorized;
       const statusKey = webAccess.starting ? 'starting' : (webAccess.status || 'idle');
       const remoteCopy = t.uiRemote;
       const statusColors = { idle:'#8A9097', starting:'#F9AB00', connecting_relay:'#F9AB00', waiting_web_client:'#F9AB00', web_client_connected:'#34A853', web_client_disconnected:'#F9AB00', revoked:'#EA4335', stopped:'#8A9097', error:'#EA4335' };
@@ -681,12 +483,6 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const statusMeta = statusCopy
         ? { label: statusCopy[0], detail: statusKey === 'error' ? (webAccess.last_error || statusCopy[1]) : statusCopy[1], color: statusColors[statusKey] }
         : { label: String(statusKey), detail: remoteCopy.updated, color: '#8A9097' };
-
-      useEffect(() => {
-        if (!webAccessActive && bridge.available) {
-          bridge.remoteControl.startRemoteControl(null).catch(() => {});
-        }
-      }, [canManageWebAccess]);
 
       async function handleRotateWebAccess() {
         if (!bridge.available) return;
@@ -714,7 +510,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       async function handleRetryWebAccess() {
         if (!bridge.available) return;
         setActionBusy(true);
-        try { await bridge.remoteControl.startRemoteControl(null); }
+        try { await bridge.remoteControl.startRemoteControl({ allowHostWorkspace: true }); }
         catch (_) {}
         finally { setActionBusy(false); }
       }
@@ -773,6 +569,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
               <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(webAccess.url || '')}
                 disabled={!webAccess.url}
                 className={`px-3.5 py-2 rounded-full text-[13px] bg-black/5 hover:bg-black/10 disabled:opacity-40 dark:bg-white/10 dark:hover:bg-white/15 dark:disabled:opacity-40`}>{remoteCopy.copy}</button>
+              {webAccessActive && !hostWorkspaceAuthorized && <button disabled={actionBusy} onClick={handleRetryWebAccess}
+                className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50">{remoteCopy.allowWorkspace}</button>}
               {webAccessActive ? <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(true)}
                 className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15`}>{remoteCopy.refresh}</button>
                 : <button disabled={actionBusy} onClick={handleRetryWebAccess}
@@ -791,470 +589,6 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
               </div>
             )}
           </div>
-        </div>
-      );
-    };
-
-    // 输入框底栏:工具菜单(只展示已装工具 + 跳工具商店;无会话级开关——后端无此概念)。
-    // 产物 HTML 预览：测内容自然尺寸，比面板宽就整体等比缩小铺满（只缩不放）。
-    // 治"固定尺寸 banner 在窄预览面板里溢出、出滚动条、只露一角"。响应式整页缩放比≈1、不受影响。
-    const clampPreviewScale = value => Math.max(0.1, Math.min(3, Number(value) || 1));
-    const ScaledHtmlPreview = ({ html, onFrameLoad, onOpenExternal, zoomMode = 'auto-width', customScale = 1, onScaleChange, onCustomScaleChange }) => {
-      const wrapRef = useRef(null);
-      const frameRef = useRef(null);
-      const naturalRef = useRef(null); // 当前 html 的内容自然尺寸缓存(在面板参考宽度下测得)
-      const [box, setBox] = useState(null); // { w, h, scale }
-      const [ready, setReady] = useState(false);
-      const managedZoom = zoomMode !== 'auto-width';
-      const canvasW = managedZoom ? 1440 : null;
-      const measure = () => {
-        try {
-          const fr = frameRef.current, wrap = wrapRef.current;
-          if (!fr || !wrap || !fr.contentWindow) return;
-          const doc = fr.contentWindow.document;
-          const de = doc.documentElement, bd = doc.body;
-          const panelW = wrap.clientWidth;
-          const panelH = wrap.clientHeight;
-          // 内容自然尺寸只在面板参考宽度下测量一次并缓存；后续仅依据面板尺寸重算缩放。
-          // 若把「已按自然宽度撑开的 iframe 视口」每次再喂回测量，弹层里的 vw/vh 与
-          // 溢出内容（如 right:-120px 的绝对定位元素）会让 scrollWidth/scrollHeight 随 iframe
-          // 被撑大而继续放大，触发 ResizeObserver 无限反馈 → 预览无限放大。
-          let nat = naturalRef.current;
-          if (!nat) {
-            const cw = Math.max(de ? de.scrollWidth : 0, bd ? bd.scrollWidth : 0);
-            const ch = Math.max(de ? de.scrollHeight : 0, bd ? bd.scrollHeight : 0);
-            nat = { w: cw, h: ch };
-            // iframe 内容可能尚未真正加载(scrollWidth=0 或 scrollHeight=0)：这种空测量不写入缓存，
-            // 等 onLoad 后测到真实尺寸再缓存，避免把首轮空值固化导致正常页面缩放出错。
-            if (cw > 0 && ch > 0) naturalRef.current = nat;
-          }
-          const w = managedZoom ? Math.max(canvasW, nat.w || 0) : nat.w;
-          const h = nat.h;
-          let scale = 1;
-          if (zoomMode === 'fit') {
-            const widthScale = w > 0 && panelW > 0 ? panelW / w : 1;
-            const heightScale = h > 0 && panelH > 0 ? panelH / h : 1;
-            scale = Math.min(widthScale, heightScale);
-          } else if (zoomMode === 'custom') {
-            scale = clampPreviewScale(customScale);
-          } else if (zoomMode === 'fit-width' || zoomMode === 'auto-width') {
-            scale = (w > panelW && w > 0) ? panelW / w : 1;
-          }
-          scale = clampPreviewScale(scale);
-          var nextBox = { w, h, scale, panelW, panelH };
-          setBox(prev => (
-            prev &&
-            Math.abs(prev.w - nextBox.w) < 0.5 &&
-            Math.abs(prev.h - nextBox.h) < 0.5 &&
-            Math.abs(prev.scale - nextBox.scale) < 0.001 &&
-            Math.abs(prev.panelW - nextBox.panelW) < 0.5 &&
-            Math.abs(prev.panelH - nextBox.panelH) < 0.5
-              ? prev
-              : nextBox
-          ));
-          if (onScaleChange) onScaleChange(scale);
-        } catch (e) { /* 未就绪/跨域，忽略 */ }
-      };
-      useEffect(() => { setReady(false); setBox(null); naturalRef.current = null; }, [html]);
-      useEffect(() => { measure(); }, [zoomMode, customScale]);
-      useEffect(() => {
-        if (!wrapRef.current || typeof ResizeObserver === 'undefined') return;
-        const ro = new ResizeObserver(() => measure());
-        ro.observe(wrapRef.current);
-        return () => ro.disconnect();
-      }, [zoomMode, customScale]);
-      const applyWheelZoom = deltaY => {
-        const base = box ? box.scale : customScale;
-        const next = clampPreviewScale(base + (deltaY < 0 ? 0.1 : -0.1));
-        if (onCustomScaleChange) onCustomScaleChange(next);
-      };
-      const handleWheel = event => {
-        if (!managedZoom || !event.ctrlKey) return;
-        event.preventDefault();
-        event.stopPropagation();
-        applyWheelZoom(event.deltaY);
-      };
-      useEffect(() => {
-        const fr = frameRef.current;
-        if (!managedZoom || !fr || !fr.contentWindow) return undefined;
-        let doc = null;
-        try {
-          doc = fr.contentWindow.document;
-        } catch (e) {
-          return undefined;
-        }
-        if (!doc) return undefined;
-        const handleFrameWheel = event => {
-          if (!event.ctrlKey) return;
-          event.preventDefault();
-          event.stopPropagation();
-          applyWheelZoom(event.deltaY);
-        };
-        doc.addEventListener('wheel', handleFrameWheel, { passive: false, capture: true });
-        return () => doc.removeEventListener('wheel', handleFrameWheel, { capture: true });
-      }, [managedZoom, ready, box && box.scale, customScale, onCustomScaleChange]);
-      useEffect(() => {
-        const handlePreviewMessage = event => {
-          const frameWindow = frameRef.current && frameRef.current.contentWindow;
-          if (!frameWindow || event.source !== frameWindow) return;
-          const url = artifactPreviewExternalUrlFromMessage(event.data);
-          if (url && onOpenExternal) onOpenExternal(url);
-        };
-        window.addEventListener('message', handlePreviewMessage);
-        return () => window.removeEventListener('message', handlePreviewMessage);
-      }, [onOpenExternal]);
-      const scaled = box && box.scale !== 1;
-      const scaledW = box ? Math.max(1, Math.ceil(box.w * box.scale)) : 0;
-      const scaledH = box ? Math.max(1, Math.ceil(box.h * box.scale)) : 0;
-      const stageStyle = box
-        ? {
-          minWidth: Math.max(box.panelW || 0, scaledW || box.w) + 'px',
-          minHeight: Math.max(box.panelH || 0, scaledH || box.h) + 'px',
-          display: 'flex',
-          justifyContent: (zoomMode === 'fit' || zoomMode === 'custom') && scaledW <= (box.panelW || 0) ? 'center' : 'flex-start',
-          alignItems: (zoomMode === 'fit' || zoomMode === 'custom') && scaledH <= (box.panelH || 0) ? 'center' : 'flex-start',
-        }
-        : { minWidth: '100%', minHeight: '100%' };
-      const frameStyle = () => {
-        if (box && scaled) {
-          return { position: 'absolute', left: 0, top: 0, width: box.w + 'px', height: box.h + 'px', transform: 'scale(' + box.scale + ')', transformOrigin: 'top left', colorScheme: 'dark' };
-        }
-        if (managedZoom && box) return { width: box.w + 'px', height: box.h + 'px', minHeight: '480px', colorScheme: 'dark' };
-        return { width: '100%', height: '100%', minHeight: '480px', colorScheme: 'dark' };
-      };
-      const wrapStyle = managedZoom
-        ? { minHeight: 0, height: '100%', overflow: zoomMode === 'fit' ? 'hidden' : 'auto' }
-        : (scaled ? { height: scaledH } : { minHeight: 480, height: '100%' });
-      return (
-        <div ref={wrapRef} data-testid="artifact-html-preview-scroll" onWheel={handleWheel} className="relative w-full bg-[#15171a]" style={wrapStyle}>
-          {!ready && <div className="h-[480px] bg-[#15171a]"></div>}
-          <div data-testid="artifact-html-preview-stage" style={managedZoom ? stageStyle : (box && scaled ? { width: scaledW + 'px', height: scaledH + 'px', position: 'relative' } : { width: '100%', height: '100%' })}>
-            <div style={box && scaled ? { width: scaledW + 'px', height: scaledH + 'px', position: 'relative', flex: '0 0 auto' } : (managedZoom && box ? { width: box.w + 'px', height: box.h + 'px', flex: '0 0 auto' } : { width: '100%', height: '100%' })}>
-              <iframe ref={frameRef} sandbox="allow-same-origin allow-scripts" data-testid="artifact-html-preview-frame" onLoad={() => { measure(); if (onFrameLoad) onFrameLoad(frameRef.current); setTimeout(() => setReady(true), 80); }}
-                className={`border-0 block bg-[#15171a] transition-opacity duration-300 ${ready ? 'opacity-100' : 'opacity-0 absolute pointer-events-none'}`}
-                data-zoom-mode={zoomMode}
-                data-zoom-scale={box ? String(box.scale) : ''}
-                style={frameStyle()}
-                srcDoc={buildArtifactPreviewDocument(html)} />
-            </div>
-          </div>
-        </div>
-      );
-    };
-
-    // 输入框「技能」入口：⚡ 药丸 + popover。视觉设计=内置自动技能（只读，模型 load_skill 时显"使用中"
-    // 并高亮药丸）。activeSkill 由 bridge 检测 load_skill 设，纯只读指示。
-    const ComposerModeMenu = ({ t, bs, compact }) => {
-      const [open, setOpen] = useState(false);
-      const SKILLS = [
-        { id: 'visual-design', name: t.uiSettingsView.visualDesignSkillName, desc: t.uiSettingsView.visualDesignSkillDesc, kind: 'auto' },
-      ];
-      const activeId = bs && bs.activeSkill;
-      const cur = SKILLS.find(s => s.id === activeId && s.kind === 'auto');
-      return (
-        <div className="relative">
-          <button onClick={() => setOpen(o => !o)} title={cur ? cur.name : t.composerMode}
-            className={`flex items-center shrink-0 font-semibold transition-colors border ${compact ? 'justify-center w-9 h-9 rounded-full' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] whitespace-nowrap'} ${cur
-              ? 'bg-[#007AFF]/[0.1] dark:bg-[#0A84FF]/20 text-[#007AFF] dark:text-[#5AC8FA] border-[#007AFF]/20 dark:border-[#0A84FF]/30'
-              : 'bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] text-gray-700 dark:text-gray-200 border-black/[0.045] dark:border-white/[0.06]'}`}>
-            <Zap size={compact ? 14 : 13} className={cur ? '' : 'opacity-70'} />
-            {!compact && (cur ? cur.name : t.composerMode)}
-            {!compact && <ChevronDown size={13} className="opacity-50 shrink-0" />}
-          </button>
-          {open && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
-              <div className="absolute bottom-full left-0 mb-2 z-50 w-64 bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                <div className="px-3 py-2 text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t.composerModeTitle}</div>
-                {SKILLS.map(s => {
-                  const soon = s.kind === 'soon';
-                  const inUse = s.kind === 'auto' && activeId === s.id;
-                  return (
-                    <div key={s.id} className={`flex items-start justify-between gap-2 px-3 py-2.5 rounded-xl ${soon ? 'opacity-50' : ''}`}>
-                      <span className="min-w-0">
-                        <span className="block text-[13px] font-medium text-gray-800 dark:text-gray-100 truncate">{s.name}</span>
-                        <span className="block text-[11px] text-gray-400 dark:text-gray-500 truncate">{s.desc}</span>
-                      </span>
-                      {soon
-                        ? <span className="shrink-0 text-[10px] font-semibold text-gray-400 dark:text-gray-500 bg-black/[0.04] dark:bg-white/10 px-2 py-0.5 rounded-full leading-none mt-0.5">{t.composerSkillSoon}</span>
-                        : inUse
-                          ? <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-[#34C759] bg-[#34C759]/10 px-2 py-0.5 rounded-full leading-none mt-0.5"><span className="w-1.5 h-1.5 rounded-full bg-[#34C759]" />{t.composerSkillInUse}</span>
-                          : <span className="shrink-0 text-[10px] font-semibold text-[#007AFF] dark:text-[#5AC8FA] bg-[#007AFF]/10 dark:bg-[#0A84FF]/15 px-2 py-0.5 rounded-full leading-none mt-0.5">{t.composerSkillAuto}</span>}
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </div>
-      );
-    };
-
-    // 可选触发器变体：triggerVariant='pill' 时触发器渲染为代码页配置组同款 pill
-    //（triggerLabel 为可选 10px 前缀文案；triggerTestId 覆盖默认 testid），
-    // 下拉内容不变；不传变体时聊天页外观逐字节不变。
-    const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill, triggerVariant, triggerLabel, triggerTestId, scope }) => {
-      const [open, setOpen] = useState(false);
-      const triggerRef = useRef(null);
-      const canMutateToolStore = can('toolStoreMutations');
-      // scope: 'code' = 原生代码会话(独立开关,默认全关),缺省 = 普通会话(plain)。
-      const toolScope = scope === 'code' ? 'code' : 'plain';
-      const [marketplaceTools, setMarketplaceTools] = useState([]);
-      const [marketplaceSkills, setMarketplaceSkills] = useState([]);
-      const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(按 scope 持久)
-      const [disabledSkills, setDisabledSkills] = useState(() => new Set()); // 被关掉的技能 id(按 scope 持久,独立文件)
-      const [projectSkillsEnabled, setProjectSkillsEnabled] = useState(false); // 项目级 skills(仅 code scope 生效)
-      const [projectSkillsHelp, setProjectSkillsHelp] = useState(false); // 项目技能帮助弹窗(功能说明+扫描目录)
-      const [feishuOn, setFeishuOn] = useState(false); // 飞书是否已连接(CLI 路线)
-      const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
-      const [wecomOn, setWecomOn] = useState(false); // 企微是否已连接(CLI 路线)
-      const [wecomEnabled, setWecomEnabled] = useState(true); // 企微技能是否启用(未手动停用)
-      const [dingtalkOn, setDingtalkOn] = useState(false); // 钉钉是否已连接(CLI 路线)
-      const [dingtalkEnabled, setDingtalkEnabled] = useState(true); // 钉钉技能是否启用(未手动停用)
-      const [tmeetOn, setTmeetOn] = useState(false); // 腾讯会议是否已连接(CLI 路线)
-      const [tmeetEnabled, setTmeetEnabled] = useState(true); // 腾讯会议技能是否启用(未手动停用)
-      // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
-      async function refreshToolsMenu(isAlive) {
-        try {
-          const list = await invokeTauri('list_marketplace_tools');
-          if (isAlive()) setMarketplaceTools(Array.isArray(list) ? list : []);
-        } catch (e) { /* ignore */ }
-        try {
-          const skills = await invokeTauri('list_marketplace_skills');
-          if (isAlive()) setMarketplaceSkills(Array.isArray(skills) ? skills : []);
-        } catch (e) { /* ignore */ }
-        try {
-          const dis = await invokeTauri('get_disabled_connectors', { scope: toolScope });
-          if (isAlive()) setDisabled(new Set(dis || []));
-        } catch (e) { /* ignore */ }
-        try {
-          const disSkills = await invokeTauri('get_disabled_skills', { scope: toolScope });
-          if (isAlive()) setDisabledSkills(new Set(disSkills || []));
-        } catch (e) { /* ignore */ }
-        try {
-          const proj = await invokeTauri('get_project_skills_enabled');
-          if (isAlive()) setProjectSkillsEnabled(!!proj);
-        } catch (e) { /* ignore */ }
-        try {
-          const fs = await invokeTauri('feishu_skills_state');
-          if (isAlive()) { setFeishuOn(!!(fs && fs.connected)); setFeishuEnabled(!fs || fs.enabled !== false); }
-        } catch (e) { /* ignore */ }
-        try {
-          const ws = await invokeTauri('wecom_skills_state');
-          if (isAlive()) { setWecomOn(!!(ws && ws.connected)); setWecomEnabled(!ws || ws.enabled !== false); }
-        } catch (e) { /* ignore */ }
-        try {
-          const ds = await invokeTauri('dingtalk_skills_state');
-          if (isAlive()) { setDingtalkOn(!!(ds && ds.connected)); setDingtalkEnabled(!ds || ds.enabled !== false); }
-        } catch (e) { /* ignore */ }
-        try {
-          const ts = await invokeTauri('tmeet_skills_state');
-          if (isAlive()) { setTmeetOn(!!(ts && ts.connected)); setTmeetEnabled(!ts || ts.enabled !== false); }
-        } catch (e) { /* ignore */ }
-      }
-      useEffect(() => {
-        let alive = true;
-        const isAlive = () => alive;
-        const onChanged = () => refreshToolsMenu(isAlive);
-        refreshToolsMenu(isAlive);
-        window.addEventListener('pinvou:tools-changed', onChanged);
-        return () => { alive = false; window.removeEventListener('pinvou:tools-changed', onChanged); };
-      }, []);
-      // 项目技能帮助弹窗 Esc 关闭（与项目其他 modal 惯例一致，仅弹窗打开时挂监听）
-      useEffect(() => {
-        if (!projectSkillsHelp) return undefined;
-        const onKey = event => { if (event.key === 'Escape') setProjectSkillsHelp(false); };
-        window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
-      }, [projectSkillsHelp]);
-      function toggleTool(id, kind) {
-        if (!canMutateToolStore) return;
-        // 技能行走独立双 scope 开关（disabled_skills.json）；工具/服务行走连接器开关。
-        if (kind === 'skill') {
-          // 技能行 row.id 带 `skill:` 命名空间前缀，后端与组合目录物化按裸 id
-          // 匹配——传前缀会导致开关不落盘、视觉不翻转（strip 对齐契约）。
-          const skillId = id.startsWith('skill:') ? id.slice('skill:'.length) : id;
-          const next = new Set(disabledSkills);
-          next.has(skillId) ? next.delete(skillId) : next.add(skillId);
-          setDisabledSkills(next);
-          if (bridge.available) {
-            invokeTauri('set_disabled_skills',
-              { skillIds: Array.from(next), scope: toolScope }).catch(() => {});
-          }
-          return;
-        }
-        const next = new Set(disabled);
-        next.has(id) ? next.delete(id) : next.add(id);
-        setDisabled(next);
-        // 按 scope 持久:落盘 + 广播给所有在跑引擎,关一次该 scope 所有新对话/新窗口都继承。
-        if (bridge.available) {
-          invokeTauri('set_disabled_connectors',
-            { connectorIds: Array.from(next), scope: toolScope }).catch(() => {});
-        }
-      }
-      function toggleProjectSkills() {
-        if (!canMutateToolStore) return;
-        const next = !projectSkillsEnabled;
-        setProjectSkillsEnabled(next);
-        if (bridge.available) {
-          invokeTauri('set_project_skills_enabled', { enabled: next }).catch(() => {});
-        }
-      }
-      const menuState = buildComposerToolMenuState({
-        marketplaceTools,
-        marketplaceSkills,
-        disabledIds: Array.from(disabled),
-        disabledSkillIds: Array.from(disabledSkills),
-        activeSkill,
-        scope: toolScope,
-        serviceStates: [
-          { id: 'feishu', title: t.uiSettingsView.serviceFeishu, connected: feishuOn, enabled: feishuEnabled },
-          { id: 'wecom', title: t.uiSettingsView.serviceWecom, connected: wecomOn, enabled: wecomEnabled },
-          { id: 'dingtalk', title: t.uiSettingsView.serviceDingtalk, connected: dingtalkOn, enabled: dingtalkEnabled },
-          { id: 'tmeet', title: t.uiSettingsView.serviceTmeet, connected: tmeetOn, enabled: tmeetEnabled },
-        ],
-      });
-      const { connectedServices, toolRows, skillRows, enabledCount } = menuState;
-      // 内置技能名称/描述由 composer-tool-menu-logic.js 数据提供，在 UI 边界按当前语言覆盖
-      const localizedSkillRows = skillRows.map(row => (row.kind === 'builtin-skill' && row.skillId === 'visual-design')
-        ? { ...row, title: t.uiSettingsView.visualDesignSkillName, description: t.uiSettingsView.visualDesignSkillDesc }
-        : row);
-      const statusBadge = (label, tone = 'green') => {
-        const cls = tone === 'blue'
-          ? 'text-[#007AFF] dark:text-[#5AC8FA] bg-[#007AFF]/10 dark:bg-[#0A84FF]/15'
-          : 'text-[#34C759] bg-[#34C759]/10';
-        return <span className={`shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold ${cls} px-2 py-0.5 rounded-full leading-none`}><span className={`w-1.5 h-1.5 rounded-full ${tone === 'blue' ? 'bg-[#007AFF] dark:bg-[#5AC8FA]' : 'bg-[#34C759]'}`} />{label}</span>;
-      };
-      const switchRow = (row) => (
-        <div key={row.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
-          <span className="min-w-0">
-            <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
-          </span>
-          <button onClick={() => toggleTool(row.id, row.kind)} aria-label={row.id} disabled={!canMutateToolStore}
-            className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors disabled:cursor-default ${!canMutateToolStore ? 'opacity-70' : ''} ${row.enabled ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
-            <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${row.enabled ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
-          </button>
-        </div>
-      );
-      const readonlyRow = (row, label, tone = 'green') => (
-        <div key={row.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
-          <span className="min-w-0">
-            <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
-          </span>
-          {statusBadge(label, tone)}
-        </div>
-      );
-      return (
-        <div className="relative shrink-0">
-          {triggerVariant === 'pill' ? (
-            <button
-              ref={triggerRef}
-              type="button"
-              data-testid={triggerTestId || 'composer-tool-menu-trigger'}
-              onClick={() => setOpen(o => !o)}
-              title={t.composerTools}
-              aria-expanded={open}
-              className="inline-flex h-8 min-w-0 max-w-[220px] items-center gap-1.5 overflow-hidden rounded-xl border px-2.5 transition-all cursor-pointer hover:-translate-y-px hover:shadow-sm focus-within:border-[#007AFF]/45 focus-within:ring-2 focus-within:ring-[#007AFF]/10 border-black/[0.07] bg-black/[0.025] text-[#1F1F1F] dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
-            >
-              {triggerLabel && (
-                <span className="pointer-events-none shrink-0 text-[10px] font-medium text-gray-400 dark:text-gray-500">
-                  {triggerLabel}
-                </span>
-              )}
-              <span className="pointer-events-none min-w-0 truncate text-[11px] font-semibold">
-                {t.composerTools}
-              </span>
-              {enabledCount > 0 && (
-                <span className="min-w-4 h-4 rounded-full bg-[#007AFF] px-1 text-center text-[10px] font-bold leading-4 text-white shrink-0">{enabledCount}</span>
-              )}
-              <ChevronDown
-                size={12}
-                aria-hidden="true"
-                className={`pointer-events-none ml-auto shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}
-              />
-            </button>
-          ) : (
-          <button ref={triggerRef} data-testid={triggerTestId || 'composer-tool-menu-trigger'} onClick={() => setOpen(o => !o)} title={t.composerTools}
-            className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold whitespace-nowrap bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
-            <Wrench size={compact ? 18 : 13} className="opacity-80" />
-            {!compact && t.composerTools}
-            {enabledCount > 0 && (compact
-              ? <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 text-[10px] leading-4 text-center font-bold bg-[#007AFF] text-white rounded-full">{enabledCount}</span>
-              : <span className="min-w-4 h-4 rounded-full bg-[#007AFF] px-1 text-center text-[10px] font-bold leading-4 text-white shrink-0">{enabledCount}</span>)}
-            {!compact && <ChevronDown size={13} className="opacity-50 shrink-0" />}
-          </button>
-          )}
-          <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
-            menuProps={{ 'data-testid': 'composer-tool-menu' }}
-            desktopClassName="absolute bottom-full left-0 mb-2 w-72 max-h-[420px] z-50 overflow-y-auto custom-scrollbar bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                {connectedServices.map(row => readonlyRow(row, t.composerConnected, 'green'))}
-                {toolRows.map(switchRow)}
-                {localizedSkillRows.length === 0 ? (
-                  <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerModeNone}</div>
-                ) : (
-                  <>
-                    {localizedSkillRows.map(row => row.switchable
-                      ? switchRow(row)
-                      : readonlyRow(row, row.active ? t.composerSkillInUse : t.composerBuiltinAuto, row.active ? 'green' : 'blue'))}
-                    {/* 该 scope 全部技能被关：空态提示（组合目录为空 → 模型看不到任何技能） */}
-                    {skillRows.filter(row => row.kind === 'skill').length > 0
-                      && skillRows.filter(row => row.kind === 'skill').every(row => !row.enabled) && (
-                      <div className="px-3 pt-1 pb-1 text-[11px] text-gray-400 dark:text-gray-500">{t.composerSkillAllDisabled}</div>
-                    )}
-                  </>
-                )}
-                {toolScope === 'code' && (
-                  <>
-                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
-                    <div className="px-3 py-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="min-w-0">
-                          <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">
-                            {t.composerProjectSkills}
-                            <button onClick={() => setProjectSkillsHelp(true)} aria-label={t.composerProjectSkillsHelpTitle}
-                              className="inline-flex items-center justify-center w-[15px] h-[15px] ml-1 rounded-full text-[10px] font-semibold leading-none text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10 align-middle">?</button>
-                          </span>
-                          <span className="block text-[10px] text-gray-400 dark:text-gray-500">{t.composerProjectSkillsDesc}</span>
-                        </span>
-                        <button onClick={toggleProjectSkills} aria-label="project-skills" disabled={!canMutateToolStore}
-                          className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors disabled:cursor-default ${!canMutateToolStore ? 'opacity-70' : ''} ${projectSkillsEnabled ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
-                          <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${projectSkillsEnabled ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
-                        </button>
-                      </div>
-                      {projectSkillsEnabled && (
-                        <div className="mt-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400">{t.composerProjectSkillsWarning}</div>
-                      )}
-                    </div>
-                  </>
-                )}
-                <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
-                <button onClick={() => { setOpen(false); if (onGotoTools) onGotoTools(); }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
-                  <Store size={15} className="text-gray-400 group-hover:text-white/90" />
-                  {t.composerManageTools}
-                </button>
-          </ComposerPopover>
-          {projectSkillsHelp && createPortal(
-            <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={() => setProjectSkillsHelp(false)}>
-              <div onClick={e => e.stopPropagation()} className="relative w-full max-w-[380px] rounded-[22px] shadow-2xl p-5 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
-                <div className="flex items-start justify-between gap-3 mb-4">
-                  <div className="text-[16px] font-semibold">{t.composerProjectSkillsHelpTitle}</div>
-                  <button onClick={() => setProjectSkillsHelp(false)} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10"><X size={17} /></button>
-                </div>
-                <div className="text-[12px] leading-relaxed text-[#5F6368] dark:text-[#AEB4BC]">{t.composerProjectSkillsHelpBody}</div>
-                <div className="mt-3 text-[12px] font-medium">{t.composerProjectSkillsHelpDirsLabel}</div>
-                <div className="mt-1.5 rounded-[14px] border p-3 border-black/10 bg-[#F8F9FA] dark:border-white/10 dark:bg-white/[0.035]">
-                  {String(t.composerProjectSkillsHelpDirs).split('\n').map((dir, i) => (
-                    <div key={dir} className="flex items-center gap-2 text-[11px] font-mono text-gray-600 dark:text-gray-300 py-0.5">
-                      <span className="text-[10px] text-gray-400 dark:text-gray-500">{i + 1}</span>{dir}
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-3 text-[11px] leading-snug text-amber-600 dark:text-amber-400">{t.composerProjectSkillsWarning}</div>
-              </div>
-            </div>,
-            document.body
-          )}
         </div>
       );
     };
@@ -1304,15 +638,22 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const [detectResult, setDetectResult] = useState(null); // { candidates } | { error } | null
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
-      // 图片输入能力三档(auto/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
-      const [imageCapability, setImageCapability] = useState(initial.image_capability_override || 'auto');
+      // 图片输入能力三档(pinvou/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
+      // 已下线的「保存时检测」(auto)档残留值按「自动处理」(pinvou)回显。
+      // 未人工钉死(非 enabled/disabled)时按目录视觉能力标注预填:命中已验证
+      // 多模态条目预填「支持图片」,显式标注不支持预填「不支持图片」,未命中/
+      // 未标注保持「自动处理」。
+      const pinnedImageCapability = initial.image_capability_override === 'enabled'
+        || initial.image_capability_override === 'disabled';
+      const [imageCapability, setImageCapability] = useState(
+        pinnedImageCapability
+          ? initial.image_capability_override
+          : imageCapabilityForCatalogModel(initial.model));
+      // 用户手动改过档位后不再随模型 ID/目录项自动填写,避免覆盖显式选择。
+      const [imageCapabilityTouched, setImageCapabilityTouched] = useState(pinnedImageCapability);
       const [visionModelId, setVisionModelId] = useState(initial.vision_model_id || '');
       const [imageCapabilityPickerOpen, setImageCapabilityPickerOpen] = useState(false);
-      // 「自动探测」保存时按钮转「正在探测图片能力…」,探测随保存完成、弹窗直接关闭。
       const [savingModel, setSavingModel] = useState(false);
-      // 「保存时检测」检测到明确不支持时的待决策信号(ImageProbeOutcome);
-      // 非空时弹窗保持,给出再次检测/去配置视觉模型/直接保存(自动处理)三选一。
-      const [probeDecision, setProbeDecision] = useState(null);
       // 保存失败(连接/写盘错误)行内提示:非空时弹窗保持,交用户修正后重试,
       // 不静默关闭丢弃表单输入。
       const [saveError, setSaveError] = useState('');
@@ -1390,6 +731,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         setEndpointMode(group.endpointMode || '');
         setBaseUrl(nextBaseUrl);
         setModel(nextModel);
+        // 目录项切换是显式换模型:未手动改过档位时按新条目的视觉能力标注预填。
+        if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(nextModel));
         if (!nameTouched) setName(p === 'local_vllm' ? settingsCopy.localModelName(nextModel) : (item.custom ? group.title : item.title));
         setContextWindow(p === 'local_vllm' ? '262144' : '');
         setMaxOutput(p === 'local_vllm' ? '24576' : '');
@@ -1419,6 +762,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       function handleModelIdChange(value) {
         setModel(value);
         renormalizeReasoningEffort({ preset, model: value, vendor, base_url: baseUrl });
+        // 手输模型 ID 命中目录标注同样预填;手动改过档位后不再跟随。
+        if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(value));
       }
       function handleBaseUrlChange(value) {
         setBaseUrl(value);
@@ -1470,6 +815,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         const modelId = preferred ? preferred.id : (c.model || '');
         if (c.base_url) setBaseUrl(c.base_url);
         if (modelId) { setModel(modelId); if (!name.trim()) setName(modelId); }
+        // 与手输模型 ID 同口径:检测回填是显式换模型,未手动改过档位时按标注预填。
+        if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(modelId || ''));
         setApiKey('');
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
       }
@@ -1558,10 +905,9 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         }
         setShowKey(nextVisible);
       }
-      // 「保存时检测」流程:检测支持 → 回填落盘后直接关闭;检测明确不支持 →
-      // 后端**不落盘**,弹窗保持并给出三选一(再次检测/去配置视觉模型/
-      // 直接保存落自动处理);error/连接不通 → 后端已落「自动处理」,直接关闭。
-      async function doSave(skipProbe) {
+      // 保存只落盘,不做连接/识图探测:图片输入能力默认「自动处理」
+      // (pinvou 档,内置已验证能力表兜底);需要确证时用表单内「测试图片能力」。
+      async function doSave() {
         if (!canSave || savingModel) return;
         const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
         const contextTokens = Number.parseInt(contextWindow, 10);
@@ -1575,7 +921,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         setSavingModel(true);
         setSaveError('');
         try {
-          const outcome = await onSave({
+          await onSave({
             id: id, name: saveName, preset: preset,
             context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
             max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
@@ -1587,20 +933,10 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             vendor: vendor || null,
             endpoint_mode: endpointMode || null,
             // 图片能力/视觉模型(阶段 G):选了自身等同未配置。
-            // 用户「直接保存(自动处理)」时带 pinvou 档且不再检测。
-            image_capability_override: skipProbe ? 'pinvou' : (imageCapability || 'auto'),
+            image_capability_override: imageCapability || 'pinvou',
             vision_model_id: visionModelId && visionModelId !== id ? visionModelId : null,
-            // 「保存时检测」档:后端在保存时检测连接+识图,按结果回填。
-            probe_image_capability: !skipProbe && imageCapability === 'auto',
           });
-          const probe = outcome && outcome.image_probe;
-          if (probe && (probe.status === 'unsupported' || probe.status === 'unverified')) {
-            // 明确不支持:后端未写盘,弹窗保持,交用户决策。
-            setProbeDecision(probe);
-          } else {
-            // supported 已回填落盘 / error/unknown 已落自动处理 / 无检测:直接关闭。
-            onCancel();
-          }
+          onCancel();
         } catch (e) {
           // 保存失败(连接/写盘错误):保持弹窗并给行内提示,不丢弃表单输入。
           setSaveError(String(e && e.message ? e.message : e));
@@ -1710,6 +1046,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         setLocalKeyEnabled(false);
         setCustomModel(true);
         setPickerOpen(false);
+        // 手动添加本地模型是显式切换:未手动改过档位时回到「自动处理」。
+        if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(''));
         // 本地模型 → 手动添加是显式切换 route：丢弃草稿残留的思考深度，回落到 vLLM
         // 默认 off（防 SSE timeout）。否则新建 DeepSeek 草稿初始化的 high 会被当成
         // 合法 vLLM 档位保留，保存时显式写入 reasoning_effort=high，绕过桥接层
@@ -1740,6 +1078,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           // 同一 provider 内换模型时重置思考深度到新模型的默认档位：K2.6 选 off 后切 K3
           // 会残留不在 K3 档位表内的 off，界面无高亮且保存仍写旧值；与 applyCatalogItem 一致。
           setReasoningEffort(reasoningEffortForModelSwitch({ preset, model: nextModel, vendor, base_url: baseUrl }));
+          // 与 applyCatalogItem 一致:未手动改过档位时按新条目的视觉能力标注预填。
+          if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(nextModel));
           setProviderModelPickerOpen(false);
         };
         return (
@@ -1932,12 +1272,11 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       };
       // 图片输入能力 + 兜底视觉模型(阶段 G):与发送时后端复核同一组 SavedModel 字段。
       const imageCapabilityOptions = [
-        // 自动探测(auto):保存时探测连接+识图并回填;能(enabled)/不能(disabled):
-        // 人工钉死;pinvou 决策(pinvou):内置已验证表判断,不探测。
-        { key: 'auto', label: settingsCopy.imageCapabilityAuto },
+        // pinvou 决策(pinvou,默认):内置已验证表判断,不探测;能(enabled)/
+        // 不能(disabled):人工钉死。
+        { key: 'pinvou', label: settingsCopy.imageCapabilityPinvou },
         { key: 'enabled', label: settingsCopy.imageCapabilityEnabled },
         { key: 'disabled', label: settingsCopy.imageCapabilityDisabled },
-        { key: 'pinvou', label: settingsCopy.imageCapabilityPinvou },
       ];
       // 视觉兜底候选:显示除当前模型外的全部模型,不做能力过滤——选择时
       // 一律识图探测,supported 才允许选中(探测是唯一闸门;disabled 可能是
@@ -1994,14 +1333,14 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const renderImageInputSection = () => {
         const capabilityLabel = (imageCapabilityOptions.find(option => option.key === imageCapability) || imageCapabilityOptions[0]).label;
         const visionLabel = (visionOptions.find(option => option.key === visionModelId) || visionOptions[0]).label;
-        // 结果文案:supported 附模型回复摘要;仅当结果为 supported 且档位为 auto 时提示可设「支持图片」。
+        // 结果文案:supported 附模型回复摘要;仅当结果为 supported 且档位为「自动处理」时提示可设「支持图片」。
         // unverified(未识别出测试色 / 400 非图片拒绝)统一「原因未知」,不得宣称支持或不支持。
         const imageTestText = !imageTestResult
           ? settingsCopy.imageCapabilityTestHint
           : imageTestResult.status === 'supported'
             ? settingsCopy.imageCapabilityTestSupported
               + (imageTestResult.summary ? ` · ${settingsCopy.imageCapabilityTestReply(imageTestResult.summary)}` : '')
-              + (imageCapability === 'auto' ? ` · ${settingsCopy.imageCapabilityTestEnableHint}` : '')
+              + (imageCapability === 'pinvou' ? ` · ${settingsCopy.imageCapabilityTestEnableHint}` : '')
             : imageTestResult.status === 'unsupported'
               ? settingsCopy.imageCapabilityTestUnsupported + (imageTestResult.summary ? ` · ${imageTestResult.summary}` : '')
               : imageTestResult.status === 'unverified'
@@ -2028,7 +1367,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                 currentKey: imageCapability,
                 open: imageCapabilityPickerOpen,
                 onToggle: () => { setImageCapabilityPickerOpen(open => !open); setVisionModelPickerOpen(false); },
-                onChoose: key => { setImageCapability(key); setImageCapabilityPickerOpen(false); },
+                onChoose: key => { setImageCapability(key); setImageCapabilityTouched(true); setImageCapabilityPickerOpen(false); },
               })}
               {renderPickerRow({
                 testId: 'vision-model',
@@ -2305,35 +1644,11 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                 </div>
               </div>
             )}
-            {/* 「保存时检测」明确不支持:后端未写盘,弹窗保持,交用户决策。
-                summary 为 provider/模型回复原文,由 i18n 函数 key 决定是否展示。 */}
-            {probeDecision && (
-              <div data-testid="image-probe-decision" className={`px-5 py-3 border-t ${formDivider}`}>
-                <div className={`text-[13px] leading-5 ${isDark ? 'text-[#FFD60A]' : 'text-[#B25E00]'}`}>
-                  {settingsCopy.imageCapabilityDecisionTitle}
-                  {settingsCopy.imageCapabilityDecisionDetail(probeDecision.summary)}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <button data-testid="image-probe-retest" disabled={savingModel} onClick={() => { setProbeDecision(null); doSave(); }}
-                    className={`h-8 px-3 rounded-full text-[13px] font-medium disabled:opacity-35 ${isDark ? 'bg-[#0A84FF]/20 text-[#0A84FF]' : 'bg-[#007AFF]/10 text-[#007AFF]'}`}>
-                    {settingsCopy.imageCapabilityDecisionRetest}
-                  </button>
-                  <button data-testid="image-probe-configure-vision" disabled={savingModel} onClick={() => setProbeDecision(null)}
-                    className={`h-8 px-3 rounded-full text-[13px] font-medium disabled:opacity-35 ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>
-                    {settingsCopy.imageCapabilityDecisionConfigureVision}
-                  </button>
-                  <button data-testid="image-probe-save-auto" disabled={savingModel} onClick={() => { setProbeDecision(null); doSave(true); }}
-                    className={`h-8 px-3 rounded-full text-[13px] font-medium disabled:opacity-35 ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>
-                    {settingsCopy.imageCapabilityDecisionSaveAuto}
-                  </button>
-                </div>
-              </div>
-            )}
             <div className={`flex justify-end gap-2 px-5 py-4 border-t ${formDivider}`}>
               <button data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.cpCancel}</button>
               <button data-testid="model-form-save" onClick={() => doSave()} disabled={!canSave || savingModel}
                 className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">
-                {savingModel ? settingsCopy.imageCapabilitySaving : t.modelSaveBtn}
+                {savingModel ? settingsCopy.saving : t.modelSaveBtn}
               </button>
             </div>
           </div>
@@ -2522,17 +1837,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         </RowTag>
         );
       };
-      const IOSSwitch = ({ checked, onChange }) => (
-        <button
-          type="button"
-          role="switch"
-          aria-checked={checked}
-          onClick={() => onChange(!checked)}
-          className={`relative h-[26px] w-[46px] shrink-0 rounded-full transition-colors ${checked ? 'bg-[#34C759]' : ('bg-[#E5E5EA] dark:bg-[#3A3A3C]')}`}
-        >
-          <span className={`absolute left-0 top-[2px] h-[22px] w-[22px] rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[22px]' : 'translate-x-[2px]'}`} />
-        </button>
-      );
+      const IOSSwitch = ({ checked, onChange }) => <Toggle checked={checked} onChange={onChange} size="md" />;
       const SectionButton = ({ id, icon, label, dot }) => (
         <button
           type="button"
@@ -3207,7 +2512,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           {canManageModels && editingModel && (
             <ModelFormModal isDark={activeTheme === 'dark'} t={t} initial={editingModel} bs={bs} models={userModels}
               onCancel={() => setEditingModel(null)}
-              // 保存/探测结果由弹窗内部控制关闭(自动探测有结论时保持打开展示)。
+              // 保存/错误提示由弹窗内部控制关闭(保存失败保持打开展示行内错误)。
               onSave={async m => onSaveModel(m)} />
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} />}
@@ -3386,4 +2691,4 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
     // ==========================================
     // 安装工具后新建会话弹出的介绍卡片（纯前端，不发 LLM query，点 chip 才发消息）
 
-export { SCard, SRow, SField, SSegmented, SActionBar, MemorySettingsCard, MODEL_PRESET_DEFS, presetOptionsI18n, presetProviderLabel, ComposerModelSelector, WebAccessModal, ScaledHtmlPreview, ComposerModeMenu, notifyComposerToolsChanged, ComposerToolMenu, ModelFormModal, SettingsView };
+export { SCard, SRow, SField, SSegmented, SActionBar, MemorySettingsCard, MODEL_PRESET_DEFS, presetOptionsI18n, presetProviderLabel, WebAccessModal, ModelFormModal, SettingsView };

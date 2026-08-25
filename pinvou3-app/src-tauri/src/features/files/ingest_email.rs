@@ -5,6 +5,8 @@
 //!
 //! .msg 的 HTML 正文与 hex 编码 body 在此做 UTF-16 / HTML-entity 解码。
 
+// architecture-guard: allow-target-cfg -- msg_parser compiles on Windows only (cfg(windows) dependency section in Cargo.toml); the native .msg parsing branch and its decode helpers share that gating
+
 use std::path::Path;
 use std::process::Command;
 
@@ -35,7 +37,12 @@ pub(super) fn ingest_email(
         }
     };
 
-    if kind == "msg" && crate::platform::os::msg_native_supported() {
+    // msg_parser compiles on Windows only (cfg(windows) dependency section in
+    // Cargo.toml), equivalent to the old os::msg_native_supported() predicate
+    // (constant true on Windows; the interface chain was retired with it).
+    // Non-Windows takes the msgconvert → .eml branch below.
+    #[cfg(target_os = "windows")]
+    if kind == "msg" {
         return match parse_msg_via_msg_parser(path) {
             Ok(text) => mk(Some(text), None),
             Err(e) => mk(None, Some(e)),
@@ -102,6 +109,8 @@ struct MsgMarkdownParts {
     attachments: Vec<String>,
 }
 
+/// The msg_parser-typed parsing helpers below compile on Windows only (same gating as the dependency section).
+#[cfg(target_os = "windows")]
 fn parse_msg_via_msg_parser(path: &Path) -> Result<String, String> {
     let outlook =
         msg_parser::Outlook::from_path(path).map_err(|e| format!(".msg 解析失败: {e}"))?;
@@ -171,6 +180,7 @@ fn push_mail_line(out: &mut String, label: &str, value: &str) {
     out.push('\n');
 }
 
+#[cfg(target_os = "windows")]
 fn people_to_text(people: &[msg_parser::Person]) -> Vec<String> {
     people
         .iter()
@@ -179,10 +189,12 @@ fn people_to_text(people: &[msg_parser::Person]) -> Vec<String> {
         .collect()
 }
 
+#[cfg(target_os = "windows")]
 fn person_to_text(person: &msg_parser::Person) -> String {
     clean_msg_text(&person.to_string())
 }
 
+#[cfg(target_os = "windows")]
 fn attachment_to_name(attachment: &msg_parser::Attachment) -> String {
     [
         &attachment.long_file_name,
@@ -203,6 +215,7 @@ fn first_non_empty<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "windows")]
 fn decode_msg_body(outlook: &msg_parser::Outlook) -> String {
     let body = clean_msg_text(&outlook.body);
     if !body.is_empty() {

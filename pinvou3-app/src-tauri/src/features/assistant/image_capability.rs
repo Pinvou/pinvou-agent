@@ -132,9 +132,9 @@ pub fn effective_image_capability(model: &SavedModel) -> EffectiveImageCapabilit
     match model.image_capability_override {
         ImageCapabilityOverride::Enabled => return EffectiveImageCapability::Supported,
         ImageCapabilityOverride::Disabled => return EffectiveImageCapability::Unsupported,
-        // Auto(自动探测,保存后即被回填,残留值按 pinvou 决策兜底)
-        // 与 Pinvou(pinvou 决策)共用同一条内置表判断链。
-        ImageCapabilityOverride::Auto | ImageCapabilityOverride::Pinvou => {}
+        // Pinvou(pinvou 决策,默认;旧 auto 档残留反序列化时已迁移到这里)
+        // 走内置表判断链。
+        ImageCapabilityOverride::Pinvou => {}
     }
     // ②(v0.9.5 起移除)底座 model_catalog 不再公开,目录级 modalities 查询
     // 不可用;模型目录的 image 判定由底座 image_attach::strip_images_when_unsupported
@@ -187,7 +187,7 @@ mod tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
-            image_capability_override: ImageCapabilityOverride::Auto,
+            image_capability_override: ImageCapabilityOverride::Pinvou,
             vision_model_id: None,
             api_key: String::new(),
             credential_ref: None,
@@ -287,9 +287,13 @@ mod tests {
     }
 
     #[test]
-    fn builtin_table_misses_text_models() {
-        // 各 preset 默认文本模型不得误判 Supported(目录级判定已移除,
-        // 仅内置已验证表决定;mimo-v2.5-pro 见 catalog_models_not_in_builtin_table_stay_unknown)。
+    fn builtin_table_misses_stay_unknown() {
+        // Unified matrix for "miss the builtin vetted table → Unknown". Since
+        // v0.9.5 the foundation model_catalog is no longer exposed, catalog-level
+        // modalities detection is gone, and there is no catalog-based upgrade path.
+        // - No preset's default text model may be misreported as Supported;
+        // - mimo-v2.5-pro / muse-spark-1.1 are outside the builtin table and
+        //   must also resolve to Unknown.
         for (preset, name) in [
             (ModelPreset::Deepseek, "deepseek-v4-pro"),
             (ModelPreset::Kimi, "kimi-k3"),
@@ -297,22 +301,6 @@ mod tests {
             (ModelPreset::Doubao, "doubao-seed-evolving"),
             (ModelPreset::Minimax, "MiniMax-M3"),
             (ModelPreset::Glm, "glm-5.2"),
-        ] {
-            let model = saved_model(preset, name);
-            assert_eq!(
-                effective_image_capability(&model),
-                EffectiveImageCapability::Unknown,
-                "{name} 不应被误判为支持图片"
-            );
-        }
-    }
-
-    #[test]
-    fn catalog_models_not_in_builtin_table_stay_unknown() {
-        // v0.9.5 起底座 model_catalog 不再公开,目录级 modalities 判定已移除
-        // (image_capability.rs 第②级为死代码)。mimo-v2.5-pro / muse-spark-1.1
-        // 不在内置已验证表内,能力判定落 Unknown——不再有「目录级升级」路径。
-        for (preset, name) in [
             (ModelPreset::Mimo, "mimo-v2.5-pro"),
             (ModelPreset::OpenaiCompatible, "muse-spark-1.1"),
         ] {
@@ -320,7 +308,7 @@ mod tests {
             assert_eq!(
                 effective_image_capability(&model),
                 EffectiveImageCapability::Unknown,
-                "{name} 不在内置已验证表,目录级判定已移除,应判 Unknown"
+                "{name} is not in the builtin vetted table; must resolve to Unknown"
             );
         }
     }
@@ -373,8 +361,8 @@ mod tests {
     }
 
     #[test]
-    fn pinvou_decision_follows_builtin_table_like_auto() {
-        // Pinvou(pinvou 决策)= 原 Auto 判定链:内置表命中 → Supported,
+    fn pinvou_decision_follows_builtin_table() {
+        // Pinvou(pinvou 决策,默认)= 原 Auto 判定链:内置表命中 → Supported,
         // 未命中 → Unknown;不参与探测回填。
         let mut hit = saved_model(ModelPreset::OpenaiCompatible, "gpt-4o");
         hit.image_capability_override = ImageCapabilityOverride::Pinvou;
@@ -387,17 +375,6 @@ mod tests {
         assert_eq!(
             effective_image_capability(&miss),
             EffectiveImageCapability::Unknown
-        );
-        // Auto 与 Pinvou 对同一模型判定一致。
-        let auto = saved_model(ModelPreset::OpenaiCompatible, "gpt-4o");
-        let pinvou = {
-            let mut m = saved_model(ModelPreset::OpenaiCompatible, "gpt-4o");
-            m.image_capability_override = ImageCapabilityOverride::Pinvou;
-            m
-        };
-        assert_eq!(
-            effective_image_capability(&auto),
-            effective_image_capability(&pinvou)
         );
     }
 

@@ -91,7 +91,7 @@ assert.ok(
   'App should render the scheduled view'
 );
 assert.ok(
-  /currentView === 'scheduled'\s*&&\s*\([\s\S]{0,1200}scheduledRunContext[\s\S]{0,800}<ChatView[\s\S]{0,1600}<ScheduledTasksView/.test(indexHtml),
+  /currentView === 'scheduled'\s*&&\s*\(\s*[\s\S]{0,1200}scheduledRunContext[\s\S]{0,800}<ChatView[\s\S]{0,1600}<LazyScheduledTasksView/.test(indexHtml),
   'a scheduled run should reuse the full ChatView inside the scheduled route'
 );
 assert.ok(
@@ -613,12 +613,18 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   runtimeOptions = runtimeOptions || {};
   var bridgeKind = runtimeOptions.bridgeKind === "web" ? "web" : "tauri";
   var listeners = Object.create(null);
+  var windowListeners = Object.create(null);
   var handlers = Object.create(null);
   var calls = [];
   var dialogCalls = [];
   var dialogResult = null;
   var createdSession = 0;
+  var structuredCloneCalls = 0;
   var storageData = sharedStorage || Object.create(null);
+  var webSupportedCommands = new Set(runtimeOptions.webSupportedCommands || []);
+  var webCapabilitiesReady = runtimeOptions.webCapabilitiesReady !== false;
+  var webConnectionState = Object.assign({ status: "connected", desktop_online: true }, runtimeOptions.webConnectionState || {});
+  var webConnectionStateReader = null;
   var storage = {
     getItem: function (key) { return Object.prototype.hasOwnProperty.call(storageData, key) ? storageData[key] : null; },
     setItem: function (key, value) { storageData[key] = String(value); },
@@ -647,7 +653,9 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
         active_model_id: "model-active",
       };
     }
-    if (cmd === "list_sessions" || cmd === "list_archived_sessions" || cmd === "list_personas" ||
+    if (cmd === "list_sessions" || cmd === "web_access_list_sessions" ||
+        cmd === "list_archived_sessions" || cmd === "web_access_list_archived_sessions" ||
+        cmd === "list_personas" ||
         cmd === "get_session_persona_events" || cmd === "get_session_pinvou_reviews" ||
         cmd === "get_session_timeline" ||
         cmd === "list_workspace_files" || cmd === "list_scheduled_task_runs" ||
@@ -674,7 +682,12 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   function invoke(cmd, args) {
     calls.push({ cmd: cmd, args: args || null });
     try {
-      if (handlers[cmd]) return Promise.resolve(handlers[cmd](args || {}));
+      var handler = handlers[cmd];
+      if (!handler && cmd === "web_access_list_sessions") handler = handlers.list_sessions;
+      if (!handler && cmd === "web_access_list_archived_sessions") {
+        handler = handlers.list_archived_sessions;
+      }
+      if (handler) return Promise.resolve(handler(args || {}));
       if (cmd === "web_access_load_session_chunk") {
         var saved = handlers.load_session
           ? handlers.load_session({ id: args.id })
@@ -682,7 +695,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
         var encoded = Buffer.from(JSON.stringify(saved), "utf8");
         var offset = Number(args.offset || 0);
         return Promise.resolve({
-          download_id: "test-download-" + args.id,
+          download_id: args.downloadId || args.requestedDownloadId || "test-download-" + args.id,
           offset: offset,
           total: encoded.length,
           data_base64: encoded.subarray(offset).toString("base64"),
@@ -712,8 +725,21 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
         },
       },
     },
-    addEventListener: function () {},
+    addEventListener: function (name, listener) {
+      if (!windowListeners[name]) windowListeners[name] = [];
+      windowListeners[name].push(listener);
+    },
+    removeEventListener: function (name, listener) {
+      windowListeners[name] = (windowListeners[name] || []).filter(function (candidate) {
+        return candidate !== listener;
+      });
+    },
+    dispatchEvent: function (event) {
+      (windowListeners[event.type] || []).slice().forEach(function (listener) { listener(event); });
+      return true;
+    },
     localStorage: storage,
+    sessionStorage: storage,
     location: { search: "" },
     atob: function (value) { return Buffer.from(String(value), "base64").toString("binary"); },
     btoa: function (value) { return Buffer.from(String(value), "binary").toString("base64"); },
@@ -724,7 +750,11 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
       isWeb: true,
       capabilities: {},
       can: function () { return false; },
-      canInvoke: function () { return false; },
+      canInvoke: function (command) { return webCapabilitiesReady && webSupportedCommands.has(command); },
+      areInvokeCapabilitiesReady: function () { return webCapabilitiesReady; },
+      getConnectionState: function () {
+        return webConnectionStateReader ? webConnectionStateReader(webConnectionState) : webConnectionState;
+      },
     };
   }
   window.window = window;
@@ -733,12 +763,16 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     window: window,
     document: document,
     localStorage: storage,
+    sessionStorage: storage,
     console: { log: function () {}, warn: function () {}, error: function () {} },
     setTimeout: runtimeOptions.setTimeout || setTimeout,
     clearTimeout: runtimeOptions.clearTimeout || clearTimeout,
     setInterval: function () { return 0; },
     clearInterval: function () {},
-    structuredClone: function (value) { return JSON.parse(JSON.stringify(value)); },
+    structuredClone: function (value) {
+      structuredCloneCalls += 1;
+      return JSON.parse(JSON.stringify(value));
+    },
     TextDecoder: TextDecoder,
     Uint8Array: Uint8Array,
   };
@@ -752,6 +786,7 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
   var bridge = bridgeKind === "web" ? {
     sessions: {
       switchToSession: function (id) { return rawBridge.switchToSession(id); },
+      createNewSession: function () { return rawBridge.createNewSession(); },
     },
     chat: {
       sendMessage: function (text, meta) { return rawBridge.sendMessage(text, meta); },
@@ -759,8 +794,12 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     interaction: {
       editLastTurn: function (text) { return rawBridge.editLastTurn(text); },
     },
+    scheduled: {
+      openScheduledRunChat: function (run, task) { return rawBridge.openScheduledRunChat(run, task); },
+    },
     state: {
       get: function () { return rawBridge.getState(); },
+      getMany: function () { return rawBridge.getState(); },
     },
   } : rawBridge;
 
@@ -771,13 +810,767 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     calls: calls,
     storageData: storageData,
     dialogCalls: dialogCalls,
+    getStructuredCloneCalls: function () { return structuredCloneCalls; },
     setDialogResult: function (value) { dialogResult = value; },
     emit: function (name, payload) {
       assert.ok(listeners[name] && listeners[name].length, "expected listener " + name);
       var event = { payload: payload || {} };
       return Promise.all(listeners[name].map(function (listener) { return listener(event); }));
     },
+    setWebCapabilities: function (commands) {
+      webSupportedCommands = new Set(commands || []);
+      webCapabilitiesReady = true;
+      window.dispatchEvent({
+        type: "pinvou:web-capabilities",
+        detail: { commands: Array.from(webSupportedCommands), events: [] },
+      });
+    },
+    setWebConnection: function (state) {
+      webConnectionState = Object.assign({}, webConnectionState, state || {});
+      window.dispatchEvent({ type: "pinvou:web-connection", detail: webConnectionState });
+    },
+    setWebConnectionStateReader: function (reader) {
+      webConnectionStateReader = typeof reader === "function" ? reader : null;
+    },
   };
+}
+
+async function interruptedWebSessionDownloadReleasesItsLease() {
+  var sharedStorage = Object.create(null);
+  var harness = createBridgeHarness(sharedStorage, {
+    bridgeKind: "web",
+    webSupportedCommands: ["web_access_cancel_session_download"],
+  });
+  var sessionId = "chat-download-cancel";
+  var saved = {
+    metadata: { id: sessionId, title: "Download cancel", message_count: 0 },
+    messages: [],
+    artifacts: [],
+  };
+  var encoded = Buffer.from(JSON.stringify(saved), "utf8");
+  var chunkCalls = 0;
+  var interruptedDownloadId = "";
+  harness.handlers.web_access_load_session_chunk = function (args) {
+    chunkCalls += 1;
+    if (chunkCalls === 1) {
+      interruptedDownloadId = args.requestedDownloadId;
+      assert.ok(interruptedDownloadId && interruptedDownloadId.indexOf("download_web_") === 0);
+      var first = encoded.subarray(0, Math.max(1, Math.floor(encoded.length / 2)));
+      return {
+        download_id: interruptedDownloadId,
+        offset: 0,
+        total: encoded.length,
+        data_base64: first.toString("base64"),
+        eof: false,
+      };
+    }
+    if (chunkCalls === 2) {
+      harness.setWebConnection({ status: "desktop_offline", desktop_online: false });
+      throw new Error("relay connection dropped");
+    }
+    return {
+      download_id: args.requestedDownloadId,
+      offset: 0,
+      total: encoded.length,
+      data_base64: encoded.toString("base64"),
+      eof: true,
+    };
+  };
+  var cancelCalls = 0;
+  harness.handlers.web_access_cancel_session_download = function (args) {
+    cancelCalls += 1;
+    assert.strictEqual(args.id, sessionId);
+    assert.strictEqual(args.downloadId, interruptedDownloadId);
+    if (cancelCalls === 1) throw new Error("relay still disconnected");
+    return true;
+  };
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), false);
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "web_access_cancel_session_download"; }).length,
+    1,
+    "an interrupted chunk transfer must attempt to release its desktop lease immediately"
+  );
+  assert.ok(sharedStorage["pinvou.web_session_download_leases.v1"],
+    "a failed cancellation must remain durable for the reconnect attempt");
+  harness.setWebConnection({ status: "connected", desktop_online: true });
+  await tick();
+  await tick();
+  assert.strictEqual(cancelCalls, 2, "the connection event must retry the abandoned lease cancellation");
+  assert.strictEqual(sharedStorage["pinvou.web_session_download_leases.v1"], undefined);
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+
+  sharedStorage["pinvou.web_session_download_leases.v1"] = JSON.stringify([{
+    download_id: "download_reload_12345678",
+    session_id: "chat-download-reload",
+  }]);
+  var reloaded = createBridgeHarness(sharedStorage, {
+    bridgeKind: "web",
+    webSupportedCommands: ["web_access_cancel_session_download"],
+  });
+  reloaded.handlers.web_access_cancel_session_download = function () { return false; };
+  assert.strictEqual(await reloaded.bridge.sessions.switchToSession("chat-download-reload"), true);
+  var transferCalls = reloaded.calls.filter(function (call) {
+    return call.cmd === "web_access_cancel_session_download" || call.cmd === "web_access_load_session_chunk";
+  });
+  assert.deepStrictEqual(
+    transferCalls.slice(0, 2).map(function (call) { return call.cmd; }),
+    ["web_access_cancel_session_download", "web_access_load_session_chunk"],
+    "a page reload must cancel its persisted abandoned lease before opening a replacement download"
+  );
+  assert.strictEqual(sharedStorage["pinvou.web_session_download_leases.v1"], undefined);
+}
+
+async function mismatchedEchoedDownloadIdCancelsBothLeases() {
+  var sharedStorage = Object.create(null);
+  var harness = createBridgeHarness(sharedStorage, {
+    bridgeKind: "web",
+    webSupportedCommands: ["web_access_cancel_session_download"],
+  });
+  var sessionId = "chat-download-id-mismatch";
+  var requestedId = "";
+  var echoedId = "download_server_ignored_requested";
+  harness.handlers.web_access_load_session_chunk = function (args) {
+    requestedId = args.requestedDownloadId;
+    var encoded = Buffer.from(JSON.stringify({
+      metadata: { id: sessionId, title: "Mismatch", message_count: 0 },
+      messages: [],
+      artifacts: [],
+    }), "utf8");
+    return {
+      download_id: echoedId,
+      offset: 0,
+      total: encoded.length,
+      data_base64: encoded.toString("base64"),
+      eof: true,
+    };
+  };
+  var cancelled = [];
+  harness.handlers.web_access_cancel_session_download = function (args) {
+    cancelled.push(args.downloadId);
+    assert.strictEqual(args.id, sessionId);
+    return true;
+  };
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), false);
+  assert.ok(requestedId && requestedId !== echoedId);
+  assert.deepStrictEqual(cancelled.sort(), [requestedId, echoedId].sort(),
+    "a protocol mismatch must release both the requested and desktop-echoed leases");
+  assert.strictEqual(sharedStorage["pinvou.web_session_download_leases.v1"], undefined);
+}
+
+async function lostFirstWebSessionChunkStillHasCancellableLease() {
+  var sharedStorage = Object.create(null);
+  var harness = createBridgeHarness(sharedStorage, {
+    bridgeKind: "web",
+    webSupportedCommands: ["web_access_cancel_session_download"],
+  });
+  var sessionId = "chat-download-first-response-lost";
+  var requestedId = "";
+  var loadCalls = 0;
+  harness.handlers.web_access_load_session_chunk = function (args) {
+    loadCalls += 1;
+    if (loadCalls === 1) {
+      requestedId = args.requestedDownloadId;
+      throw new Error("first Relay response was lost");
+    }
+    var saved = {
+      metadata: { id: sessionId, title: "Recovered", message_count: 0 },
+      messages: [],
+      artifacts: [],
+    };
+    var encoded = Buffer.from(JSON.stringify(saved), "utf8");
+    return {
+      download_id: args.requestedDownloadId,
+      offset: 0,
+      total: encoded.length,
+      data_base64: encoded.toString("base64"),
+      eof: true,
+    };
+  };
+  var cancelCalls = 0;
+  harness.handlers.web_access_cancel_session_download = function (args) {
+    cancelCalls += 1;
+    assert.strictEqual(args.downloadId, requestedId);
+    if (cancelCalls === 1) throw new Error("connection unavailable for cancellation");
+    return true;
+  };
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), false);
+  assert.ok(requestedId, "the browser must choose and persist the lease id before the first RPC");
+  assert.ok(sharedStorage["pinvou.web_session_download_leases.v1"]);
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+  assert.strictEqual(cancelCalls, 2);
+  assert.strictEqual(sharedStorage["pinvou.web_session_download_leases.v1"], undefined);
+}
+
+async function subscriptionSnapshotsAvoidTranscriptDeepClone() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var chatUpdates = [];
+  var combinedUpdates = [];
+  var unsubscribeChat = bridge.state.subscribe("chat", function (snapshot) {
+    chatUpdates.push(snapshot);
+  });
+  var unsubscribeCombined = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
+    combinedUpdates.push(snapshot);
+  });
+  var cloneCallsBeforeNotify = harness.getStructuredCloneCalls();
+
+  await bridge.sessions.createNewSession();
+
+  assert.strictEqual(chatUpdates.length, 1, "one bridge notification should publish one chat subscription update");
+  assert.strictEqual(combinedUpdates.length, 1, "one bridge notification should publish one combined subscription update");
+  assert.strictEqual(
+    harness.getStructuredCloneCalls(),
+    cloneCallsBeforeNotify,
+    "subscription notifications must not deep-clone the transcript"
+  );
+  assert.ok(Object.isFrozen(chatUpdates[0]) && Object.isFrozen(combinedUpdates[0]),
+    "subscription envelopes should be read-only");
+
+  assert.throws(function () {
+    chatUpdates[0].chatItems.push({ type: "system", text: "subscriber-only" });
+  }, /not extensible|read only|frozen/i, "subscription array containers should be read-only");
+  assert.strictEqual(bridge.state.get("chat").chatItems.length, 0,
+    "subscription array containers must not mutate bridge state");
+  var detached = bridge.state.get("chat");
+  detached.thinking.active = true;
+  assert.strictEqual(bridge.state.get("chat").thinking.active, false,
+    "get/getMany must retain their defensive deep-copy contract");
+
+  unsubscribeChat();
+  unsubscribeCombined();
+}
+
+async function reentrantSubscriptionNotificationsStayOrdered() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var firstOrder = [];
+  var secondOrder = [];
+  var unsubscribeFirst = bridge.state.subscribe("chat", function (snapshot) {
+    var text = snapshot.composerPrefill.text;
+    firstOrder.push(text);
+    if (text === "outer") bridge.chat.prefillComposer("nested");
+  });
+  var unsubscribeSecond = bridge.state.subscribe("chat", function (snapshot) {
+    secondOrder.push(snapshot.composerPrefill.text);
+  });
+
+  bridge.chat.prefillComposer("outer");
+  assert.deepStrictEqual(firstOrder, ["outer", "nested"], "the first subscriber should receive queued revisions in order");
+  assert.deepStrictEqual(secondOrder, ["outer", "nested"], "a later subscriber must not observe nested before outer");
+  assert.strictEqual(bridge.state.get("chat").composerPrefill.text, "nested");
+  unsubscribeFirst();
+  unsubscribeSecond();
+
+  var membershipHarness = createBridgeHarness();
+  var membershipBridge = membershipHarness.bridge;
+  var membershipFirst = [];
+  var membershipSecond = [];
+  var membershipAdded = [];
+  var unsubscribeMembershipSecond;
+  var unsubscribeAdded = function () {};
+  var unsubscribeMembershipFirst = membershipBridge.state.subscribe("chat", function (snapshot) {
+    var text = snapshot.composerPrefill.text;
+    membershipFirst.push(text);
+    if (text === "membership-outer") {
+      unsubscribeMembershipSecond();
+      unsubscribeAdded = membershipBridge.state.subscribe("chat", function (next) {
+        membershipAdded.push(next.composerPrefill.text);
+      });
+      membershipBridge.chat.prefillComposer("membership-nested");
+    }
+  });
+  unsubscribeMembershipSecond = membershipBridge.state.subscribe("chat", function (snapshot) {
+    membershipSecond.push(snapshot.composerPrefill.text);
+  });
+
+  membershipBridge.chat.prefillComposer("membership-outer");
+  assert.deepStrictEqual(membershipFirst, ["membership-outer", "membership-nested"]);
+  assert.deepStrictEqual(membershipSecond, ["membership-outer"],
+    "unsubscribe during a round should apply only to rounds queued afterwards");
+  assert.deepStrictEqual(membershipAdded, ["membership-nested"],
+    "subscribe during a round should apply only to rounds queued afterwards");
+  unsubscribeMembershipFirst();
+  unsubscribeAdded();
+
+  var errorHarness = createBridgeHarness();
+  var errorBridge = errorHarness.bridge;
+  var interruptedSecond = [];
+  var unsubscribeThrowing = errorBridge.state.subscribe("chat", function (snapshot) {
+    if (snapshot.composerPrefill.text === "error-outer") {
+      errorBridge.chat.prefillComposer("discarded-nested");
+      throw new Error("subscriber failed");
+    }
+  });
+  var unsubscribeInterruptedSecond = errorBridge.state.subscribe("chat", function (snapshot) {
+    interruptedSecond.push(snapshot.composerPrefill.text);
+  });
+  assert.throws(function () { errorBridge.chat.prefillComposer("error-outer"); }, /subscriber failed/,
+    "subscriber errors should retain their synchronous propagation behavior");
+  assert.deepStrictEqual(interruptedSecond, [], "a callback error should interrupt the current subscriber round");
+  unsubscribeThrowing();
+  unsubscribeInterruptedSecond();
+
+  var recovered = [];
+  var unsubscribeRecovered = errorBridge.state.subscribe("chat", function (snapshot) {
+    recovered.push(snapshot.composerPrefill.text);
+  });
+  errorBridge.chat.prefillComposer("recovered");
+  assert.deepStrictEqual(recovered, ["recovered"],
+    "queued revisions from an interrupted callback must be discarded before the next notification");
+  unsubscribeRecovered();
+}
+
+async function persistentSubscriptionSnapshotsPreserveJsonEdges() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var snapshots = [];
+  var negativeZero = true;
+  function settingsResult() {
+    var result = JSON.parse('{"language":"en","__proto__":{"marker":"own-value"}}');
+    Object.defineProperty(result, "nan", { enumerable: true, value: NaN, writable: true });
+    result.zero = negativeZero ? -0 : 0;
+    return result;
+  }
+  harness.handlers.update_settings = settingsResult;
+  harness.handlers.get_effective_model_config = function () { return null; };
+  var unsubscribe = bridge.state.subscribe("settings", function (snapshot) { snapshots.push(snapshot); });
+
+  assert.strictEqual(await bridge.settings.saveSettings({ language: "en" }), true);
+  assert.ok(snapshots.length >= 2, "settings save should publish its effective-model and saved revisions");
+  var first = snapshots[0];
+  var repeated = snapshots[1];
+  assert.ok(Object.prototype.hasOwnProperty.call(first.settings, "__proto__"));
+  assert.strictEqual(first.settings["__proto__"].marker, "own-value");
+  assert.strictEqual(Object.getPrototypeOf(first.settings), Object.getPrototypeOf(first),
+    "snapshots with own __proto__ data must retain the default object prototype");
+  assert.strictEqual(Object.getPrototypeOf(first.settings).marker, undefined, "snapshot prototypes must not be polluted");
+  assert.strictEqual(first.settings, repeated.settings, "Object.is should reuse an unchanged subtree containing NaN");
+  assert.ok(Number.isNaN(first.settings.nan));
+  assert.ok(Object.is(first.settings.zero, -0));
+
+  negativeZero = false;
+  assert.strictEqual(await bridge.settings.saveSettings({ language: "en" }), true);
+  var changed = snapshots[snapshots.length - 1];
+  assert.notStrictEqual(changed.settings, repeated.settings, "Object.is should distinguish -0 from +0");
+  assert.ok(Object.is(changed.settings.zero, 0));
+  assert.ok(Object.prototype.hasOwnProperty.call(changed.settings, "__proto__"),
+    "copy-on-write updates must retain an existing own __proto__ value");
+  assert.strictEqual(changed.settings["__proto__"].marker, "own-value");
+  assert.strictEqual(Object.getPrototypeOf(changed.settings).marker, undefined,
+    "copy-on-write updates must not route __proto__ through the prototype setter");
+  unsubscribe();
+}
+
+async function persistentSubscriptionSnapshotsRejectUnsupportedValues() {
+  async function rejects(result, pattern) {
+    var harness = createBridgeHarness();
+    harness.handlers.ingest_file = function () { return result; };
+    var unsubscribe = harness.bridge.state.subscribe("chat", function () {});
+    await assert.rejects(harness.bridge.attachments.addAttachmentByPath("C:\\snapshot-edge.txt"), pattern);
+    unsubscribe();
+  }
+  await rejects(new Date(0), /only supports arrays and plain objects/);
+  var cyclic = { value: "cycle" };
+  cyclic.self = cyclic;
+  await rejects(cyclic, /must not contain cycles/);
+}
+
+async function longSessionStreamingAvoidsPerDeltaDeepClone() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-long-stream";
+  var messages = [
+    {
+      role: "assistant",
+      content: [{
+        type: "tool_use",
+        id: "tool-stable-history",
+        name: "shell",
+        input: { command: "echo stable", options: { cwd: "history", environment: { MODE: "test" } } },
+      }],
+    },
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "tool-stable-history", content: "stable output" }],
+    },
+  ];
+  for (var index = messages.length; index < 469; index++) {
+    messages.push({
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: [{ type: "text", text: "history-" + index + "-" + "x".repeat(1024) }],
+    });
+  }
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: sessionId, title: "Long stream", message_count: messages.length },
+      messages: messages,
+      artifacts: [],
+    };
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
+
+  var updates = 0;
+  var secondSubscriberUpdates = 0;
+  var snapshots = [];
+  var secondSubscriberSnapshots = [];
+  var unsubscribe = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
+    updates += 1;
+    snapshots.push(snapshot);
+  });
+  var unsubscribeSecond = bridge.state.subscribe("chat", function (snapshot) {
+    secondSubscriberUpdates += 1;
+    secondSubscriberSnapshots.push(snapshot);
+  });
+  var cloneCallsBeforeStream = harness.getStructuredCloneCalls();
+  harness.emit("chat:turn_started", { session_id: sessionId });
+  harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
+
+  var firstDeltaSnapshot = snapshots[1];
+  var firstDeltaItem = firstDeltaSnapshot.chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop();
+  assert.strictEqual(firstDeltaItem.text, "abcd", "the first delta snapshot should capture its own text");
+  assert.ok(Object.isFrozen(firstDeltaItem), "nested subscription items should be immutable");
+  assert.strictEqual(Reflect.set(firstDeltaItem, "text", "subscriber-only"), false,
+    "a subscriber must not mutate a nested item");
+  assert.strictEqual(secondSubscriberSnapshots[1].chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop().text, "abcd", "one subscriber must not affect a second subscriber");
+  assert.strictEqual(bridge.state.get("chat").chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop().text, "abcd", "one subscriber must not affect bridge state");
+  assert.strictEqual(harness.getStructuredCloneCalls(), cloneCallsBeforeStream + 1,
+    "the explicit state.get isolation check should retain its defensive deep copy");
+  var cloneCallsAfterDefensiveRead = harness.getStructuredCloneCalls();
+
+  harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
+  assert.strictEqual(firstDeltaItem.text, "abcd", "an older subscription snapshot must remain stable");
+  assert.strictEqual(snapshots[2].chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop().text, "abcdabcd", "the next snapshot should observe the next delta");
+
+  for (var delta = 2; delta < 1000; delta++) {
+    harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
+  }
+  await tick();
+
+  assert.strictEqual(updates, 1001, "stream boundaries and deltas should remain immediately observable");
+  assert.strictEqual(secondSubscriberUpdates, 1001,
+    "all subscribers should receive one immediate update per stream boundary and delta");
+  assert.strictEqual(snapshots.length, 1001, "the regression must retain every persistent snapshot");
+  assert.strictEqual(secondSubscriberSnapshots.length, 1001,
+    "the second subscriber must retain every same-round snapshot for identity checks");
+  assert.strictEqual(
+    harness.getStructuredCloneCalls(),
+    cloneCallsAfterDefensiveRead,
+    "a long transcript must not be deep-cloned for each streamed delta"
+  );
+
+  var representativeFrames = [0, 1, 499, 500, 999, 1000];
+  var stableMessages = snapshots[0].messages;
+  var stableHistoryMessage = stableMessages[0];
+  var stableHistoryContent = stableHistoryMessage.content;
+  var stableHistoryBlock = stableHistoryContent[0];
+  var stableToolItem = snapshots[0].chatItems.find(function (item) {
+    return item.type === "tool" && item.toolId === "tool-stable-history";
+  });
+  assert.ok(stableToolItem, "the fixture should expose a historical tool chat item");
+  assert.strictEqual(stableToolItem.args.options.environment.MODE, "test");
+  representativeFrames.forEach(function (frame) {
+    var snapshot = snapshots[frame];
+    var secondSnapshot = secondSubscriberSnapshots[frame];
+    var toolItem = snapshot.chatItems.find(function (item) {
+      return item.type === "tool" && item.toolId === "tool-stable-history";
+    });
+    assert.strictEqual(snapshot.messages, stableMessages,
+      "unchanged history messages arrays must be shared across first/middle/last and adjacent frames");
+    assert.strictEqual(snapshot.messages[0], stableHistoryMessage,
+      "unchanged history message objects must be structurally shared");
+    assert.strictEqual(snapshot.messages[0].content, stableHistoryContent,
+      "unchanged history content arrays must be structurally shared");
+    assert.strictEqual(snapshot.messages[0].content[0], stableHistoryBlock,
+      "unchanged history content blocks must be structurally shared");
+    assert.strictEqual(toolItem, stableToolItem,
+      "unchanged historical tool chat items must be structurally shared");
+    assert.strictEqual(toolItem.args, stableToolItem.args,
+      "unchanged historical tool args must be structurally shared");
+    assert.strictEqual(toolItem.args.options.environment, stableToolItem.args.options.environment,
+      "unchanged historical tool deep subtrees must be structurally shared");
+    assert.strictEqual(secondSnapshot.messages, snapshot.messages,
+      "two subscribers in the same revision must share the messages domain subtree");
+    assert.strictEqual(secondSnapshot.chatItems, snapshot.chatItems,
+      "two subscribers in the same revision must share the chatItems domain subtree");
+  });
+
+  function streamingItemAt(frame) {
+    return snapshots[frame].chatItems.filter(function (item) {
+      return item.type === "assistant" && item.streaming;
+    }).pop();
+  }
+  for (var frame = 1; frame < snapshots.length; frame++) {
+    assert.notStrictEqual(streamingItemAt(frame - 1), streamingItemAt(frame),
+      "the changed streaming item must receive a new reference in every adjacent revision");
+  }
+  assert.strictEqual(streamingItemAt(1).text, "abcd", "the first retained delta must remain stable");
+  assert.strictEqual(streamingItemAt(500).text.length, 2000, "the middle retained delta must remain stable");
+  assert.strictEqual(streamingItemAt(1000).text.length, 4000, "the final retained delta must be complete");
+  var finalAssistant = bridge.state.get("chat").chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop();
+  assert.strictEqual(finalAssistant.text.length, 4000, "subscription snapshot optimization must not lose text");
+  unsubscribe();
+  unsubscribeSecond();
+}
+
+async function olderDesktopUsesServerGeneratedSessionDownloadId() {
+  var harness = createBridgeHarness(null, { bridgeKind: "web", webSupportedCommands: [] });
+  var sessionId = "chat-legacy-download";
+  var saved = {
+    metadata: { id: sessionId, title: "Legacy download", message_count: 0 },
+    messages: [],
+    artifacts: [],
+  };
+  var encoded = Buffer.from(JSON.stringify(saved), "utf8");
+  var split = Math.max(1, Math.floor(encoded.length / 2));
+  var calls = 0;
+  harness.handlers.web_access_load_session_chunk = function (args) {
+    calls += 1;
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(args, "requestedDownloadId"), false,
+      "legacy first chunk must not send the new requestedDownloadId argument");
+    if (calls === 1) {
+      assert.strictEqual(args.downloadId, null);
+      return {
+        download_id: "download_server_legacy",
+        offset: 0,
+        total: encoded.length,
+        data_base64: encoded.subarray(0, split).toString("base64"),
+        eof: false,
+      };
+    }
+    assert.strictEqual(args.downloadId, "download_server_legacy",
+      "legacy follow-up chunks must use the desktop-generated id");
+    return {
+      download_id: "download_server_legacy",
+      offset: split,
+      total: encoded.length,
+      data_base64: encoded.subarray(split).toString("base64"),
+      eof: true,
+    };
+  };
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+  assert.strictEqual(calls, 2);
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_cancel_session_download"; }),
+    false,
+    "legacy success must not invoke the unsupported cancel command"
+  );
+}
+
+async function sessionDownloadWaitsForCapabilitySnapshot() {
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+  });
+  var sessionId = "chat-capabilities-late";
+  var pending = harness.bridge.sessions.switchToSession(sessionId);
+  await tick();
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false,
+    "connected-before-snapshot must not guess the legacy protocol"
+  );
+  harness.setWebCapabilities(["web_access_cancel_session_download"]);
+  assert.strictEqual(await pending, true);
+  var load = harness.calls.find(function (call) { return call.cmd === "web_access_load_session_chunk"; });
+  assert.ok(load.args.requestedDownloadId,
+    "the post-snapshot request must select the newly advertised cancellable protocol");
+}
+
+async function sessionDownloadCapabilityWaitStopsOnDisconnect() {
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+  });
+  var pending = harness.bridge.sessions.switchToSession("chat-capabilities-disconnected");
+  await tick();
+  harness.setWebConnection({ status: "desktop_offline", desktop_online: false });
+  assert.strictEqual(await pending, false);
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false,
+    "disconnect before the snapshot must reject without issuing a protocol-ambiguous load"
+  );
+}
+
+async function sessionDownloadCapabilityWaitRejectsAlreadyOfflineDesktop() {
+  var capabilityTimeouts = 0;
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+    webConnectionState: { status: "desktop_offline", desktop_online: false },
+    setTimeout: function (callback, delay) {
+      if (delay === 10_000) capabilityTimeouts += 1;
+      return setTimeout(callback, delay);
+    },
+  });
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession("chat-capabilities-already-offline"), false);
+  assert.strictEqual(capabilityTimeouts, 0,
+    "an already-offline desktop must reject before installing the 10 second timeout");
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false
+  );
+}
+
+async function sessionDownloadCapabilityWaitClosesLostDisconnectEventRace() {
+  var capabilityTimeouts = 0;
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+    setTimeout: function (callback, delay) {
+      if (delay === 10_000) capabilityTimeouts += 1;
+      return setTimeout(callback, delay);
+    },
+  });
+  var reads = 0;
+  harness.setWebConnectionStateReader(function () {
+    reads += 1;
+    return reads === 1
+      ? { status: "connected", desktop_online: true }
+      : { status: "desktop_offline", desktop_online: false };
+  });
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession("chat-capabilities-lost-disconnect"), false);
+  assert.ok(reads >= 2, "connection state must be checked before and after listener registration");
+  assert.strictEqual(capabilityTimeouts, 1,
+    "the race-closing check may install the timeout but must cancel it immediately");
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false
+  );
+}
+
+async function sessionDownloadCapabilityWaitHasTimeout() {
+  // 能力超时的切换进入宽限等待（5s 内快照到达即自动重试），期间不报错、
+  // 不落失败。能力超时（10s）压成微任务立即触发；宽限 timer（5s）只登记
+  // 不自动触发，模拟真实时序中快照先于宽限到期到达。
+  var graceTimers = [];
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+    setTimeout: function (callback, delay) {
+      if (delay === 10_000) {
+        queueMicrotask(callback);
+        return 1;
+      }
+      if (delay === 5_000) {
+        graceTimers.push(callback);
+        return 10 + graceTimers.length;
+      }
+      return setTimeout(callback, delay);
+    },
+  });
+  var switchedPromise = harness.bridge.sessions.switchToSession("chat-capabilities-timeout");
+  for (var waitAttempt = 0; waitAttempt < 4; waitAttempt++) await tick();
+  assert.strictEqual(graceTimers.length, 1,
+    "the capability timeout must arm exactly one grace timer");
+  harness.setWebCapabilities(["web_access_cancel_session_download"]);
+  assert.strictEqual(await switchedPromise, true,
+    "the retried switch must resolve through to its final outcome");
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    true,
+    "a late capability snapshot must automatically retry the switch that timed out"
+  );
+  assert.strictEqual(
+    harness.bridge.state.get("sessions").activeSessionId,
+    "chat-capabilities-timeout"
+  );
+}
+
+async function sessionDownloadCapabilityGraceExpiryFailsOnce() {
+  // 宽限期内快照始终未到：切换按失败收口且只报一次错；随后快照到达也不得
+  // 复活已被取代的等待（无新切换请求时不产生多余 RPC）。
+  var graceFired = false;
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+    setTimeout: function (callback, delay) {
+      if (delay === 10_000) {
+        queueMicrotask(callback);
+        return 1;
+      }
+      if (delay === 5_000) {
+        graceFired = true;
+        queueMicrotask(callback);
+        return 2;
+      }
+      return setTimeout(callback, delay);
+    },
+  });
+  assert.strictEqual(await harness.bridge.sessions.switchToSession("chat-capabilities-grace"), false,
+    "the switch must fail once the grace period expires without a snapshot");
+  assert.ok(graceFired, "the grace timer must fire when no snapshot arrives");
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false
+  );
+  harness.setWebCapabilities(["web_access_cancel_session_download"]);
+  for (var settleAttempt = 0; settleAttempt < 4; settleAttempt++) await tick();
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false,
+    "an expired grace wait must not be revived by a later snapshot"
+  );
+}
+
+async function sessionDownloadCapabilityGraceSupersededByDraftFailsSilently() {
+  // 宽限等待期间用户进入草稿（enterDraft 使切换 token 失效但不收口 pending）：
+  // 宽限 timer 到期必须按失败静默收口，原调用方收到 false，且不在草稿页
+  // 误报“加载对话失败”（与快照到达路径对已被取代等待的处理一致）。
+  var graceTimers = [];
+  var harness = createBridgeHarness(null, {
+    bridgeKind: "web",
+    webCapabilitiesReady: false,
+    setTimeout: function (callback, delay) {
+      if (delay === 10_000) {
+        queueMicrotask(callback);
+        return 1;
+      }
+      if (delay === 5_000) {
+        graceTimers.push(callback);
+        return 10 + graceTimers.length;
+      }
+      return setTimeout(callback, delay);
+    },
+  });
+  var switchedPromise = harness.bridge.sessions.switchToSession("chat-capabilities-superseded");
+  for (var waitAttempt = 0; waitAttempt < 4; waitAttempt++) await tick();
+  assert.strictEqual(graceTimers.length, 1,
+    "the capability timeout must arm exactly one grace timer");
+  await harness.bridge.sessions.createNewSession();
+  assert.strictEqual(graceTimers.length, 1,
+    "entering the draft view must not arm another grace timer");
+  graceTimers[0]();
+  assert.strictEqual(await switchedPromise, false,
+    "a grace wait superseded by entering the draft must settle as a failure");
+  assert.strictEqual(
+    JSON.stringify(harness.bridge.state.get("chat").chatItems).includes("capability snapshot timed out"),
+    false,
+    "a superseded grace wait must not report a load failure in the draft view"
+  );
+  harness.setWebCapabilities(["web_access_cancel_session_download"]);
+  for (var settleAttempt = 0; settleAttempt < 4; settleAttempt++) await tick();
+  assert.strictEqual(
+    harness.calls.some(function (call) { return call.cmd === "web_access_load_session_chunk"; }),
+    false,
+    "a superseded grace wait must not be retried by a later snapshot"
+  );
 }
 
 async function deepSeekTurnTimelineLifecycleBehavior() {
@@ -1470,6 +2263,61 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
     "the queued follow-up should flush only after the scheduled terminal event"
   );
   assert.strictEqual(flushed.busy, true, "the flushed follow-up should own the next busy turn");
+}
+
+async function webFollowupQueuedUntilScheduledInitialTurnTerminal() {
+  // Web-bridge mirror of the case above: the scheduled session's terminal
+  // event must release the remote-authority gate (not arm it), so the queued
+  // follow-up drains instead of dead-locking inside reconcileRemoteTurn.
+  var harness = createBridgeHarness(Object.create(null), {
+    bridgeKind: "web",
+    webSupportedCommands: [
+      "web_access_chat", "web_access_load_session_chunk",
+      "web_access_cancel_session_download", "web_access_list_sessions",
+      "web_access_list_archived_sessions",
+      "web_access_create_session_and_chat", "web_access_create_session",
+      "web_access_status",
+    ],
+  });
+  var bridge = harness.bridge;
+  await bridge.sessions.switchToSession("chat-origin");
+  assert.strictEqual(await bridge.scheduled.openScheduledRunChat({
+    id: "run-followup-web",
+    automationId: "automation-followup-web",
+    sessionId: "sched-followup-web",
+    status: "running",
+    unread: false,
+  }, { id: "automation-followup-web", name: "Follow-up task" }), true);
+  harness.emit("chat:delta", { session_id: "sched-followup-web", text: "initial scheduled output" });
+  var initialAssistantCount = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.filter(function (item) {
+    return item.type === "assistant";
+  }).length;
+
+  await bridge.chat.sendMessage("follow up after the scheduled run");
+  var queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(queued.queued.length, 1, "web: follow-up input must queue while the initial scheduled turn is active");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "web_access_chat" || call.cmd === "chat"; }).length,
+    0,
+    "web: a queued follow-up must not overlap the scheduled engine turn"
+  );
+  assert.strictEqual(
+    queued.chatItems.filter(function (item) { return item.type === "assistant"; }).length,
+    initialAssistantCount,
+    "web: queueing a follow-up must not create an overlapping assistant placeholder"
+  );
+
+  harness.emit("chat:done", { session_id: "sched-followup-web" });
+  await tick();
+  await tick();
+  var flushed = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(flushed.queued.length, 0, "web: the queued follow-up must drain after the scheduled terminal event");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "web_access_chat" || call.cmd === "chat"; }).length,
+    1,
+    "web: exactly one follow-up chat call should be issued after the scheduled terminal"
+  );
+  assert.strictEqual(flushed.busy, true, "web: the flushed follow-up should own the next busy turn");
 }
 
 async function terminalEventWinsStaleRunningOpen() {
@@ -4587,6 +5435,11 @@ async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
 }
 
 Promise.resolve()
+  .then(subscriptionSnapshotsAvoidTranscriptDeepClone)
+  .then(reentrantSubscriptionNotificationsStayOrdered)
+  .then(persistentSubscriptionSnapshotsPreserveJsonEdges)
+  .then(persistentSubscriptionSnapshotsRejectUnsupportedValues)
+  .then(longSessionStreamingAvoidsPerDeltaDeepClone)
   .then(multipleKnowledgeMountBehavior)
   .then(queuedKnowledgeMountKeepsOriginalSession)
   .then(staleKnowledgeSnapshotDoesNotCrossSessions)
@@ -4594,6 +5447,17 @@ Promise.resolve()
   .then(remoteKnowledgeDeletionEventRefreshesRemoteMounts)
   .then(draftKnowledgeMountsCreateOneSession)
   .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
+  .then(interruptedWebSessionDownloadReleasesItsLease)
+  .then(lostFirstWebSessionChunkStillHasCancellableLease)
+  .then(mismatchedEchoedDownloadIdCancelsBothLeases)
+  .then(olderDesktopUsesServerGeneratedSessionDownloadId)
+  .then(sessionDownloadWaitsForCapabilitySnapshot)
+  .then(sessionDownloadCapabilityWaitStopsOnDisconnect)
+  .then(sessionDownloadCapabilityWaitRejectsAlreadyOfflineDesktop)
+  .then(sessionDownloadCapabilityWaitClosesLostDisconnectEventRace)
+  .then(sessionDownloadCapabilityWaitHasTimeout)
+  .then(sessionDownloadCapabilityGraceExpiryFailsOnce)
+  .then(sessionDownloadCapabilityGraceSupersededByDraftFailsSilently)
   .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(function () { return internalSubagentHandoffStaysOutOfPresentation("tauri"); })
   .then(function () { return internalSubagentHandoffStaysOutOfPresentation("web"); })
@@ -4611,6 +5475,7 @@ Promise.resolve()
   .then(scheduledRunUnreadBehavior)
   .then(openingRunningMarksBusyBeforeHydration)
   .then(followupQueuedUntilScheduledInitialTurnTerminal)
+  .then(webFollowupQueuedUntilScheduledInitialTurnTerminal)
   .then(terminalEventWinsStaleRunningOpen)
   .then(completedRunReopenPreservesStreamingFollowup)
   .then(scheduledDoneBeforeBufferCreatesTerminalTombstone)

@@ -29,6 +29,8 @@ fn tmeet(args: &[&str]) -> std::process::Command {
 }
 
 fn parse_tmeet_version(s: &str) -> Option<(u64, u64, u64)> {
+    // tmeet 的 --version 程序名侧可能带数字,先定位到 "version" 标记之后
+    // (v 前缀也吃掉),再交给共享的三段解析。
     let lower = s.to_ascii_lowercase();
     let marker = lower
         .find("version")
@@ -40,16 +42,7 @@ fn parse_tmeet_version(s: &str) -> Option<(u64, u64, u64)> {
         .find(|(_, c)| c.is_ascii_digit() || *c == 'v')?
         .0;
     let version = tail[start..].trim_start_matches(['v', 'V']);
-    let mut nums = version
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|p| !p.is_empty())
-        .take(3)
-        .filter_map(|p| p.parse::<u64>().ok());
-    Some((
-        nums.next()?,
-        nums.next().unwrap_or(0),
-        nums.next().unwrap_or(0),
-    ))
+    cc::parse_semver3(version)
 }
 
 fn version_at_least(v: (u64, u64, u64), min: (u64, u64, u64)) -> bool {
@@ -192,6 +185,7 @@ pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))?;
     if already_logged_in {
+        cc::bundle_store_on_connected(ID);
         cc::emit(
             &app,
             "tmeet:connected",
@@ -237,6 +231,9 @@ fn drain_for_auth_url<R: std::io::Read + Send + 'static>(
 
 fn phase_scan(app: &AppHandle) -> Result<(), String> {
     let mut cmd = tmeet(&["auth", "login", "--no-browser"]);
+    // 独立进程组:npm shim(shell→node)派生的孙进程与 shim 同组,退出收割的
+    // kill_pid_tree 按负 pid 组杀整棵树,单杀 shim pid 会把 node 孤儿化。
+    crate::platform::process::std_process_group_leader(&mut cmd);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -283,6 +280,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                     if auth_lines_say_already_logged_in(&auth_lines)
                         && wait_logged_in(Duration::from_secs(5))
                     {
+                        cc::bundle_store_on_connected(ID);
                         cc::emit(
                             app,
                             "tmeet:connected",
@@ -318,12 +316,14 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             Ok(Some(status)) => {
                 conn.set_pid(ID, None);
                 if wait_logged_in(Duration::from_secs(5)) {
+                    cc::bundle_store_on_connected(ID);
                     cc::emit(app, "tmeet:connected", json!({ "ok": true }));
                     return Ok(());
                 }
                 if auth_lines_say_already_logged_in(&auth_lines)
                     && wait_logged_in(Duration::from_secs(5))
                 {
+                    cc::bundle_store_on_connected(ID);
                     cc::emit(
                         app,
                         "tmeet:connected",
@@ -398,12 +398,14 @@ pub async fn tmeet_cancel(app: AppHandle) -> Result<Value, String> {
 pub async fn tmeet_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if tmeet_cli_version().is_none() {
+            cc::bundle_store_on_disconnected(ID);
             return Ok::<Value, String>(json!({ "ok": true, "installed": false }));
         }
         let (ok, _, _) = cc::run(tmeet(&["auth", "logout"]))?;
         if !ok {
             return Err("腾讯会议 CLI 退出登录失败，请重试".to_string());
         }
+        cc::bundle_store_on_disconnected(ID);
         Ok::<Value, String>(json!({ "ok": true, "installed": true }))
     })
     .await
@@ -453,12 +455,18 @@ pub async fn tmeet_apply_skills() -> Result<Value, String> {
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))??;
+    // scope 门禁同步：见 feishu_apply_skills 同名注释（code 默认关语义对齐）。
+    if show {
+        crate::features::marketplace::sync_deny_all_scopes_after_install("tmeet");
+    }
     Ok(json!({ "visible": show }))
 }
 
 pub async fn set_tmeet_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         set_tmeet_disabled_flag(!enabled)?;
+        // 停用标志 ↔ 统一禁用集桥接（见 set_feishu_enabled 同名注释）。
+        crate::features::marketplace::sync_disabled_bundles_for_connector_switch("tmeet", enabled);
         let show = tmeet_skills_should_show();
         GATE.apply_skills(show)?;
         Ok(show)

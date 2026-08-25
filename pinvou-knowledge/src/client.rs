@@ -5,7 +5,7 @@ use std::time::Duration;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures_util::StreamExt;
-use rand::RngCore;
+use rand::Rng;
 use reqwest::{multipart, Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};

@@ -4,53 +4,131 @@
 
 use super::prelude::*;
 use super::{
-    artifacts::*, attachments::*, files::*, interaction::*, knowledge::*, marketplace::*,
-    personas::*, sessions::*, voice::*,
+    artifacts::*, attachments::*, interaction::*, knowledge::*, marketplace::*, personas::*,
+    sessions::*, voice::*,
 };
 use crate::platform::filesystem::tests::{remove_dir_link, try_link_dir, try_link_file};
 use crate::platform::path_policy::validate_user_path;
 use std::path::{Path, PathBuf};
 
 #[test]
-fn marketplace_auth_status_only_oauth_is_connected_for_oauth_tools() {
+fn generic_file_staging_preserves_the_gui_image_wrapper_contract() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("source.png");
+    std::fs::write(&source, b"image bytes").unwrap();
+    let generic = stage_file_in_workspace(
+        source.to_str().unwrap(),
+        "generic.png",
+        workspace.path(),
+        "attachments",
+    )
+    .unwrap();
+    let image = stage_image_in_workspace(
+        source.to_str().unwrap(),
+        "wrapper.png",
+        workspace.path(),
+        "attachments",
+    )
+    .unwrap();
+    assert_eq!(generic, "attachments/generic.png");
+    assert_eq!(image, "attachments/wrapper.png");
+    assert_eq!(
+        std::fs::read(workspace.path().join(generic)).unwrap(),
+        b"image bytes"
+    );
+    assert_eq!(
+        std::fs::read(workspace.path().join(image)).unwrap(),
+        b"image bytes"
+    );
+}
+
+#[test]
+fn failed_generic_file_copy_removes_the_reserved_partial() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("source.txt");
+    std::fs::write(&source, b"private bytes").unwrap();
+
+    let staged = stage_file_in_workspace_with_copier(
+        source.to_str().unwrap(),
+        "partial.txt",
+        workspace.path(),
+        "attachments",
+        |_source, destination| {
+            use std::io::Write;
+
+            destination.write_all(b"partial")?;
+            Err(std::io::Error::other("injected copy failure"))
+        },
+    );
+
+    assert_eq!(staged, None);
+    assert!(!workspace.path().join("attachments/partial.txt").exists());
+}
+
+#[test]
+fn marketplace_auth_status_matrix() {
     use deepseek_tui::mcp::oauth::McpAuthStatus;
 
-    let (status, _, token_present) =
-        marketplace_auth_status_fields(true, true, true, Some(McpAuthStatus::OAuth));
-    assert_eq!(status, "connected");
-    assert!(token_present);
-
-    for auth_status in [
-        McpAuthStatus::NotLoggedIn,
-        McpAuthStatus::Unsupported,
-        McpAuthStatus::BearerToken,
-    ] {
+    // (installed, oauth_required, mcp_configured, auth_status) → (status, token_present)
+    let cases: [(bool, bool, bool, Option<McpAuthStatus>, &str, bool); 7] = [
+        // OAuth tools: a completed OAuth login means connected with a token;
+        // any other login state stays auth-pending
+        (
+            true,
+            true,
+            true,
+            Some(McpAuthStatus::OAuth),
+            "connected",
+            true,
+        ),
+        (
+            true,
+            true,
+            true,
+            Some(McpAuthStatus::NotLoggedIn),
+            "config_installed_auth_pending",
+            false,
+        ),
+        (
+            true,
+            true,
+            true,
+            Some(McpAuthStatus::Unsupported),
+            "config_installed_auth_pending",
+            false,
+        ),
+        (
+            true,
+            true,
+            true,
+            Some(McpAuthStatus::BearerToken),
+            "config_installed_auth_pending",
+            false,
+        ),
+        // OAuth tool without MCP configuration: auth still pending
+        (
+            true,
+            true,
+            false,
+            Some(McpAuthStatus::OAuth),
+            "auth_pending",
+            false,
+        ),
+        // Non-OAuth tools: installed means connected; not installed means not_installed
+        (true, false, false, None, "connected", false),
+        (false, false, false, None, "not_installed", false),
+    ];
+    for (installed, oauth_required, mcp_configured, auth_status, want_status, want_token) in cases {
         let (status, _, token_present) =
-            marketplace_auth_status_fields(true, true, true, Some(auth_status));
-        assert_eq!(status, "config_installed_auth_pending");
-        assert!(!token_present);
+            marketplace_auth_status_fields(installed, oauth_required, mcp_configured, auth_status);
+        assert_eq!(
+            status, want_status,
+            "inputs: installed={installed} oauth={oauth_required} mcp={mcp_configured} auth={auth_status:?}"
+        );
+        assert_eq!(token_present, want_token, "token_present for {want_status}");
     }
-}
-
-#[test]
-fn marketplace_auth_status_preserves_non_oauth_installed_semantics() {
-    let (status, _, token_present) = marketplace_auth_status_fields(true, false, false, None);
-    assert_eq!(status, "connected");
-    assert!(!token_present);
-
-    let (status, _, token_present) = marketplace_auth_status_fields(false, false, false, None);
-    assert_eq!(status, "not_installed");
-    assert!(!token_present);
-}
-
-#[test]
-fn marketplace_auth_status_requires_mcp_config_for_oauth_connected() {
-    use deepseek_tui::mcp::oauth::McpAuthStatus;
-
-    let (status, _, token_present) =
-        marketplace_auth_status_fields(true, true, false, Some(McpAuthStatus::OAuth));
-    assert_eq!(status, "auth_pending");
-    assert!(!token_present);
 }
 
 #[test]
@@ -139,8 +217,7 @@ fn write_test_oauth_marketplace_files(server_name: &str, mcp_server: serde_json:
         }]
     });
     write_json(
-        &crate::platform::paths::bundle_mcp_servers_dir()
-            .join("yuandian-mcp")
+        &crate::features::marketplace::mcp_catalog::package_mcp_dir("yuandian-mcp")
             .join("manifest.json"),
         manifest,
     );
@@ -400,87 +477,6 @@ fn test_pinvou_home(tag: &str) -> TestPinvouHome {
     }
 }
 
-struct TestE2EFlag {
-    previous: Option<String>,
-}
-
-impl TestE2EFlag {
-    fn enable() -> Self {
-        let previous = std::env::var("PINVOU3_E2E").ok();
-        std::env::set_var("PINVOU3_E2E", "1");
-        Self { previous }
-    }
-}
-
-impl Drop for TestE2EFlag {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(value) => std::env::set_var("PINVOU3_E2E", value),
-            None => std::env::remove_var("PINVOU3_E2E"),
-        }
-    }
-}
-
-struct RemoveE2EOnDrop {
-    previous: Option<String>,
-}
-
-impl RemoveE2EOnDrop {
-    fn clear() -> Self {
-        let previous = std::env::var("PINVOU3_E2E").ok();
-        std::env::remove_var("PINVOU3_E2E");
-        Self { previous }
-    }
-}
-
-impl Drop for RemoveE2EOnDrop {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(value) => std::env::set_var("PINVOU3_E2E", value),
-            None => std::env::remove_var("PINVOU3_E2E"),
-        }
-    }
-}
-
-#[tokio::test]
-async fn verify_upload_refuses_in_production_env() {
-    let _guard = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _restore = RemoveE2EOnDrop::clear();
-    let error = verify_upload("up_testprod".to_string()).await.unwrap_err();
-    assert!(!error.contains(".pinvou3") && !error.contains('/') && !error.contains('\\'));
-    assert!(error.contains("e2e") || error.contains("E2E") || error.contains("disabled"));
-}
-
-#[tokio::test]
-async fn verify_upload_returns_sha256_when_e2e_enabled_and_not_leak_path() {
-    let _home = test_pinvou_home("verify-upload-e2e");
-    let _e2e = TestE2EFlag::enable();
-    let upload_dir = crate::platform::paths::pinvou3_home()
-        .join("uploads")
-        .join("up_ok1");
-    std::fs::create_dir_all(&upload_dir).unwrap();
-    let data = b"hello verify_upload";
-    std::fs::write(upload_dir.join("data.bin"), data).unwrap();
-    let output = verify_upload("up_ok1".to_string()).await.unwrap();
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let expected = crate::platform::encoding::hex_lower(&hasher.finalize());
-    assert_eq!(output.sha256, expected);
-    assert_eq!(output.byte_size, data.len() as u64);
-}
-
-#[tokio::test]
-async fn verify_upload_missing_file_does_not_leak_path_or_distinguish_errors() {
-    let _home = test_pinvou_home("verify-upload-missing");
-    let _e2e = TestE2EFlag::enable();
-    let error = verify_upload("up_missing1".to_string()).await.unwrap_err();
-    assert!(!error.contains(".pinvou3") && !error.contains('/') && !error.contains('\\'));
-    assert!(!error.contains("No such file") && !error.to_lowercase().contains("not found"));
-}
-
 fn session_artifact_path(session_id: &str, name: &str) -> std::path::PathBuf {
     let dir = crate::platform::paths::session_artifacts_dir(session_id);
     std::fs::create_dir_all(&dir).unwrap();
@@ -542,6 +538,52 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// companion 联动契约：MCP manifest 的 companion_skills 声明真实存在（预置技能可装），
+/// 命令层「装 MCP → 遍历装 companion 技能」的联动路径在临时 home 下可闭环。
+/// 覆盖 gongwen→government-writing（异名配对）与 pptx→pptx（同名配对）。
+#[test]
+fn mcp_install_links_companion_skills() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let root = std::env::temp_dir().join(format!(
+        "pinvou3-companion-link-test-{}",
+        std::process::id()
+    ));
+    let previous = std::env::var("PINVOU3_HOME").ok();
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::env::set_var("PINVOU3_HOME", &root);
+
+    let mgr = crate::features::marketplace::MarketplaceManager::new();
+    let skill_mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+    for (mcp_id, skill_id) in [("gongwen", "government-writing"), ("pptx", "pptx")] {
+        let companions = mgr.companion_skills(mcp_id);
+        assert!(
+            companions.contains(&skill_id.to_string()),
+            "{mcp_id} 应声明 companion 技能 {skill_id}"
+        );
+        // 复刻命令层联动路径：装 MCP 后遍历装 companion 技能（技能增强，失败只记日志）
+        for sid in &companions {
+            skill_mgr.install(sid).unwrap();
+        }
+        assert!(
+            skill_mgr
+                .list_skills()
+                .iter()
+                .any(|s| s.id == skill_id && s.installed),
+            "{skill_id} 应随 {mcp_id} 安装落盘"
+        );
+        skill_mgr.uninstall(skill_id).unwrap();
+    }
+
+    match previous {
+        Some(value) => std::env::set_var("PINVOU3_HOME", value),
+        None => std::env::remove_var("PINVOU3_HOME"),
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn file_url_from_path_encodes_local_artifact_paths() {
     let tmp = std::env::temp_dir().join(format!("pinvou3 file-url test {}", std::process::id()));
@@ -572,25 +614,21 @@ fn file_url_from_path_encodes_local_artifact_paths() {
 }
 
 #[test]
-fn write_artifact_text_allows_markdown() {
-    let _home = test_pinvou_home("pinvou3-md-write-test");
-    let md = session_artifact_path("s1", "note.md");
-    std::fs::write(&md, "# Old\n").unwrap();
+fn write_artifact_text_allows_markdown_extensions() {
+    // `.markdown` is a parameterized companion to the `.md` allowed path; both
+    // extensions go through the same loop.
+    for (tag, ext) in [
+        ("pinvou3-md-write-test", "md"),
+        ("pinvou3-markdown-write-test", "markdown"),
+    ] {
+        let _home = test_pinvou_home(tag);
+        let md = session_artifact_path("s1", &format!("note.{ext}"));
+        std::fs::write(&md, "# Old\n").unwrap();
 
-    write_artifact_text_impl(md.to_str().unwrap(), "# New\n\nBody").unwrap();
+        write_artifact_text_impl(md.to_str().unwrap(), "# New\n\nBody").unwrap();
 
-    assert_eq!(std::fs::read_to_string(&md).unwrap(), "# New\n\nBody");
-}
-
-#[test]
-fn write_artifact_text_allows_markdown_extension() {
-    let _home = test_pinvou_home("pinvou3-markdown-write-test");
-    let md = session_artifact_path("s1", "note.markdown");
-    std::fs::write(&md, "old").unwrap();
-
-    write_artifact_text_impl(md.to_str().unwrap(), "new").unwrap();
-
-    assert_eq!(std::fs::read_to_string(&md).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "# New\n\nBody");
+    }
 }
 
 #[test]
@@ -1357,6 +1395,9 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(url_in_external_allowlist(
         "https://meeting.tencent.com/qrcode-login.html?code=abc"
     ));
+    assert!(url_in_external_allowlist(
+        "https://docs.qq.com/scenario/open-claw.html?nlc=1"
+    ));
     assert!(url_in_external_allowlist("http://localhost:8080/"));
     assert!(url_in_external_allowlist("https://127.0.0.1:8443/preview"));
     assert!(url_in_external_allowlist("http://[::1]:3000/"));
@@ -1377,6 +1418,13 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(!url_in_external_allowlist(
         "https://meeting.tencent.com.evil.com/qrcode-login.html"
     ));
+    assert!(!url_in_external_allowlist(
+        "https://docs.qq.com.evil.com/scenario/open-claw.html?nlc=1"
+    ));
+    assert!(!url_in_external_allowlist(
+        "https://docs.qq.com.evil.com/openapi/mcp"
+    ));
+    assert!(!url_in_external_allowlist("http://docs.qq.com/"));
     assert!(!url_in_external_allowlist("http://obsidian.md/"));
     assert!(!url_in_external_allowlist("http://meeting.tencent.com/"));
     assert!(!url_in_external_allowlist("http://open.zhihuiya.com/"));

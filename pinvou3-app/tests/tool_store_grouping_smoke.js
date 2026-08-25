@@ -27,7 +27,7 @@ if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome'); process.exit(2)
 
 function injectSource() {
   return `(function(){
-    const TOOLS=[['weather',[]],['iwencai',[]],['qcc',[]],['patsnap-search',[]],['canva-mcp',[]],['yuandian-mcp',[]],['obsidian',[]],['pptx',[]],['gongwen',['government-writing']]];
+    const TOOLS=[['weather',[]],['iwencai',[]],['qcc',[]],['patsnap-search',[]],['tencent-docs',['tencent-docs-skill']],['canva-mcp',[]],['yuandian-mcp',[]],['obsidian',[]],['pptx',['pptx']],['gongwen',['government-writing']],['my-uploaded-mcp',[]]];
     window.__TAURI_EVENT_HANDLERS__={};
     function invoke(cmd){
       switch(cmd){
@@ -42,7 +42,7 @@ function injectSource() {
         case 'detect_local_vllm_setup': return Promise.resolve({eligible:false});
         case 'list_marketplace_tools': return Promise.resolve(TOOLS.map(([id,cs])=>({id,name:id,description:'',version:'1.0.0',icon:'',category:'test',installed:false,companion_skills:cs})));
         case 'get_marketplace_tool_auth_status': return Promise.resolve({status:'not_installed'});
-        case 'list_marketplace_skills': return Promise.resolve([{id:'government-writing',title:'党政机关公文写作',installed:false,user_uploaded:false},{id:'visualizer',title:'数据分析可视化',installed:false,user_uploaded:false}]);
+        case 'list_marketplace_skills': return Promise.resolve([{id:'government-writing',title:'党政机关公文写作',installed:false,user_uploaded:false},{id:'pptx',title:'PPT 生成',installed:false,user_uploaded:false},{id:'visualizer',title:'数据分析可视化',installed:false,user_uploaded:false},{id:'ima-skills',title:'腾讯 ima',installed:false,user_uploaded:false}]);
         default:
           if(/^list_|^get_/.test(cmd)) return Promise.resolve(Array.isArray([])&&cmd.startsWith('list_')?[]:null);
           return Promise.resolve(null);
@@ -63,6 +63,14 @@ async function clickExact(page, text) {
     el.scrollIntoView({ block: 'center' }); el.click(); return true;
   }, text);
 }
+// chips 是 button;卡片徽标是同文案的 span,须只点 button 避免误点徽标
+async function clickChip(page, text) {
+  return page.evaluate((t) => {
+    const el = [...document.querySelectorAll('button')].filter(b => (b.textContent || '').trim() === t).pop();
+    if (!el) return false;
+    el.scrollIntoView({ block: 'center' }); el.click(); return true;
+  }, text);
+}
 
 (async () => {
   const { url } = await startUiTestServer();
@@ -73,13 +81,35 @@ async function clickExact(page, text) {
     await page.goto(url, { waitUntil: 'networkidle0' });
     await page.waitForFunction(() => document.querySelector('[data-nav="toolstore"]'), { timeout: 20000 });
     await page.evaluate(() => { document.querySelector('[data-nav="toolstore"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); });
-    await page.waitForFunction(() => document.body.innerText.includes('工具商店'), { timeout: 10000 });
+    await page.waitForFunction(() => document.body.innerText.includes('插件中心'), { timeout: 10000 });
+    // 懒加载视图:标题来自静态 i18n,首帧即有;类型 chip 里的「插件包」依赖
+    // list_marketplace_tools 返回后 skillToMcp 建立的二次渲染——视图切换包在
+    // startTransition 里时该重渲染会比首帧晚一帧提交。等数据驱动的「插件包」
+    // chip 出现再读全量 chip 列表(其余 chip 与它同批渲染)。
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].some(b => (b.textContent || '').trim() === '插件包'), { timeout: 2000 });
 
     const chipText = await page.evaluate(() => [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()));
-    for (const label of ['按类型', '按业务', '全部', 'MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
+    for (const label of ['按类型', '按业务', '全部', '插件包', 'MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
       rec(`类型维度 chip/segment「${label}」渲染`, chipText.includes(label));
     }
 
+    // 组合包(PPT/公文)归「插件包」组:chip 存在;筛选后只显示组合包
+    rec('点击「插件包」chip', await clickChip(page, '插件包'));
+    await sleep(300);
+    rec('插件包筛选只显示组合包(PPT/公文)', await page.evaluate(() => {
+      const text = document.body.innerText;
+      return text.includes('PPT 生成') && text.includes('党政机关公文写作') && !text.includes('高德天气') && !text.includes('飞书（Lark）');
+    }));
+    rec('组合包无重复连接器卡(gongwen 不单独出现)', await page.evaluate(() =>
+      !document.querySelector('[data-testid="tool-store-action"][data-tool-id="gongwen"]')));
+    rec('ima-skills 不单独成卡(归 ima 连接器包)', await page.evaluate(() =>
+      !document.querySelector('[data-testid="tool-store-action"][data-tool-id="ima-skills"]')));
+    rec('组合包卡业务分区为「文档知识」而非「技能」', await page.evaluate(() => {
+      const h3s = [...document.querySelectorAll('h3')].map(h => (h.textContent || '').trim());
+      return h3s.includes('文档知识') && !h3s.includes('技能');
+    }));
+    rec('点击「全部」chip 复位', await clickExact(page, '全部'));
+    await sleep(300);
     // 主维度=类型 → 下方按业务分区
     const sectionsByType = await page.evaluate(() => [...document.querySelectorAll('h3')].map(h => (h.textContent || '').trim()));
     for (const label of ['沟通协作', '文档知识', '金融数据', '生活实用', '技能']) {
@@ -110,6 +140,14 @@ async function clickExact(page, text) {
     });
     rec('MCP 筛选只显示 MCP 条目', mcpOnly);
     rec('MCP 筛选后仍有业务分区', await page.evaluate(() => [...document.querySelectorAll('h3')].some(h => (h.textContent || '').trim() === '金融数据')));
+    // 自定义上传的 MCP（后端合成卡带 userUploaded + mcpServer）必须归 MCP 组
+    // （二轮评审：旧判定顺序把 userUploaded 先短路进 Skill 组）。
+    rec('自定义上传 MCP 出现在 MCP 筛选', await page.evaluate(() => document.body.innerText.includes('my-uploaded-mcp')));
+    rec('点击「Skill」chip', await clickExact(page, 'Skill'));
+    await sleep(300);
+    rec('Skill 筛选不含自定义上传 MCP', await page.evaluate(() => !document.body.innerText.includes('my-uploaded-mcp')));
+    rec('点击「全部」chip 复位', await clickExact(page, '全部'));
+    await sleep(300);
 
     // 切主维度=业务
     rec('点击「按业务」segment', await clickExact(page, '按业务'));
@@ -120,7 +158,7 @@ async function clickExact(page, text) {
     }
     rec('业务维度 chip 不含「技能」', !bizChips.includes('技能'));
     const sectionsByBiz = await page.evaluate(() => [...document.querySelectorAll('h3')].map(h => (h.textContent || '').trim()));
-    for (const label of ['MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
+    for (const label of ['插件包', 'MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
       rec(`按业务时类型分区「${label}」渲染`, sectionsByBiz.includes(label));
     }
 
@@ -146,14 +184,17 @@ async function clickExact(page, text) {
     });
     rec('搜索时平铺、无分区标题', searching);
 
-    // 「我的工具」:恒为平铺,不按维度分区
-    rec('点击「我的工具」', await clickExact(page, '我的工具'));
+    // 「仅显示已安装」(取代旧「我的工具」页签):保留分区、过滤到已装条目;
+    // 本 mock 全部未安装 → 命中空态。先清空上一步的搜索词。
+    await page.evaluate(() => { const s = document.querySelector('[data-testid="tool-store-search"]'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(s, ''); s.dispatchEvent(new Event('input', { bubbles: true })); });
     await sleep(300);
-    const myToolsFlat = await page.evaluate(() => {
-      const h3s = [...document.querySelectorAll('h3')].map(h => (h.textContent || '').trim());
-      return document.body.innerText.includes('我的工具') && !h3s.includes('MCP') && !h3s.includes('金融数据') && !h3s.includes('CLI 集成');
+    rec('点击「仅显示已安装」', await page.evaluate(() => { const b = document.querySelector('[data-testid="tool-store-installed-only"]'); if (!b) return false; b.scrollIntoView({block:'center'}); b.click(); return true; }));
+    await sleep(300);
+    const installedOnlyEmpty = await page.evaluate(() => {
+      const text = document.body.innerText;
+      return text.includes('还没有已安装的工具') && !text.includes('高德天气') && !text.includes('企查查');
     });
-    rec('我的工具平铺、无分区标题', myToolsFlat);
+    rec('仅显示已安装过滤到空态(本 mock 全未安装)', installedOnlyEmpty);
   } finally {
     await browser.close();
   }

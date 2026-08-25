@@ -48,7 +48,7 @@ const chatCommandSource = read('src-tauri', 'src', 'app', 'commands', 'chat.rs')
 const memoryCommandSource = read('src-tauri', 'src', 'app', 'commands', 'memory.rs');
 const interactionCommandSource = read('src-tauri', 'src', 'app', 'commands', 'interaction.rs');
 const interactionBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'interaction.js');
-const settingsSource = read('src', 'features', 'settings', 'SettingsView.jsx');
+const settingsSource = read('src', 'features', 'settings', 'composer-shared.jsx');
 const i18nSource = read('src', 'shared', 'i18n.js');
 const poolSource = read('src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs');
 // wave3 起多智能体状态注释随 SessionModeState 迁至 sessions 特性域
@@ -106,7 +106,7 @@ test('共享界面不订阅废弃运行态，并阻止 Web 续写多智能体会
 
 test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope 独有断言回迁）', () => {
   const codex = read('src', 'features', 'codex', 'CodexAcpView.jsx');
-  const settings = read('src', 'features', 'settings', 'SettingsView.jsx');
+  const settings = read('src', 'features', 'settings', 'composer-shared.jsx');
   const appRoot = read('src-tauri', 'src', 'lib.rs');
   const policy = read('src-tauri', 'src', 'features', 'assistant', 'session_policy.rs');
   const bridge = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');

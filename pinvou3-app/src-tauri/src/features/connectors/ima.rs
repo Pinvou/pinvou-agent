@@ -262,7 +262,7 @@ impl ToolSpec for ImaOpenApiTool {
             credentials(&SystemCredentialStore::new())
                 .map_err(|e| redact_secret(&e))?
                 .ok_or_else(|| {
-                    "未找到 IMA 凭据。请先在 Pinvou 工具商店连接「腾讯 ima」。".to_string()
+                    "未找到 IMA 凭据。请先在 Pinvou 插件中心连接「腾讯 ima」。".to_string()
                 })
         })
         .await

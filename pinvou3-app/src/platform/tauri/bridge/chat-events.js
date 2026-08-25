@@ -4,6 +4,8 @@
   var registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["chat-events"] = function (context) {
     var state = context.state;
+    var recordAuthoritySyncDiagnostic = context.recordAuthoritySyncDiagnostic || function () {};
+    var authoritySyncBufferSnapshot = context.authoritySyncBufferSnapshot || function () { return {}; };
     var listen = context.listen;
     var notify = context.notify;
     var invoke = context.invoke;
@@ -216,7 +218,6 @@
     var findPresentedArtifact = context.findPresentedArtifact;
     var isDeliverable = context.isDeliverable;
     var noteArtifactChange = context.noteArtifactChange;
-    var publishRemoteLiveSnapshot = context.publishRemoteLiveSnapshot;
     var persistMessagesFor = context.persistMessagesFor;
     var composePlanMarkdown = context.composePlanMarkdown;
     var refreshHistoryList = context.refreshHistoryList;
@@ -280,7 +281,7 @@
       userBuffer.loadedFromDisk && baseRevision && userBuffer.sessionRevision &&
       userBuffer.sessionRevision !== baseRevision && lastUserText === content
     );
-    markRemoteTurn(sid, userBuffer);
+    markRemoteTurn(sid, userBuffer, false, "remote_user_message_event");
     runSyncOnSession(sid, function () {
       if (action === "accept_plan") {
         state.chatItems.forEach(function (item) {
@@ -342,6 +343,10 @@
       committedBuffer.sessionRevision = revision;
       committedBuffer.remoteCommittedRevision = revision;
     }
+    recordAuthoritySyncDiagnostic("transcript_committed_event_received", Object.assign({
+      event_revision: revision,
+      terminal_seen_before_event: !!committedBuffer.remoteTerminalSeen,
+    }, authoritySyncBufferSnapshot(sid, committedBuffer)));
     if (committedBuffer.remoteTerminalSeen && !isBusyFor(sid)) {
       reconcileRemoteTurn(sid).then(function (ready) {
         if (ready) flushQueued(sid);
@@ -518,6 +523,8 @@
       var skArg = ((p.args && (p.args.name || p.args.skill)) || "").toString();
       var skLower = skArg.toLowerCase();
       if (skArg.indexOf("视觉设计") >= 0 || skLower.indexOf("visual-design") >= 0) state.activeSkill = "visual-design";
+      else if (skArg.indexOf("插件包标准化") >= 0 || skLower.indexOf("package-author") >= 0) state.activeSkill = "package-author";
+      else if (skArg.indexOf("技能创建") >= 0 || skLower.indexOf("skill-author") >= 0) state.activeSkill = "skill-author";
       else if (skArg.indexOf("公文写作") >= 0 || skLower.indexOf("government-writing") >= 0) state.activeSkill = "government-writing";
       else if (skArg.indexOf("PPT") >= 0 || skArg.indexOf("幻灯片") >= 0 || skLower.indexOf("pptx") >= 0) state.activeSkill = "pptx";
       else if (skArg.indexOf("数据分析可视化") >= 0 || skArg.indexOf("数据可视化") >= 0 || skLower.indexOf("visualizer") >= 0) state.activeSkill = "visualizer";
@@ -722,11 +729,17 @@
     var completedLocalTurn = !!(
       requiresAuthorityReconcile && doneBuffer && doneBuffer.localTurnOwned
     );
+    recordAuthoritySyncDiagnostic("chat_done_classified", Object.assign({
+      completed_local_turn: completedLocalTurn,
+      requires_authority_reconcile: requiresAuthorityReconcile,
+      terminal_status: String(e.payload && e.payload.status || ""),
+      terminal_error_present: !!(e.payload && e.payload.error),
+    }, authoritySyncBufferSnapshot(sid, doneBuffer)));
     if (requiresAuthorityReconcile && doneBuffer && !doneBuffer.localTurnOwned) {
       // transcript_committed is emitted before chat:done. A client that joins
       // at the terminal tail may not have seen an earlier turn event, so keep
       // the already received revision while initializing remote-turn state.
-      markRemoteTurn(sid, doneBuffer, true);
+      markRemoteTurn(sid, doneBuffer, true, "chat_done_without_local_owner");
     }
     if (!requiresAuthorityReconcile) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
@@ -801,11 +814,16 @@
       doneBuffer.remoteTerminalSeen = true;
       doneBuffer.busy = false;
       if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
-    } else if (completedLocalTurn) {
+    } else if (completedLocalTurn || !requiresAuthorityReconcile) {
       // The desktop owns this turn and Rust has already persisted its terminal
       // transcript before emitting chat:done. Do not convert a completed local
       // turn into a remote authority gate: a best-effort readback failure must
-      // never block the user's next local message.
+      // never block the user's next local message. Scheduled-run sessions skip
+      // transcript reconciliation entirely (Rust owns the durable transcript),
+      // so the same full release applies: markRemoteTurn may have armed the
+      // remote-authority gate during the streamed turn, and a stale gate would
+      // send flushQueued into reconcileRemoteTurn, whose write-ownership
+      // busy check then deadlocks the queued follow-up forever.
       doneBuffer.deferredRemoteUserEvent = null;
       doneBuffer.localTurnOwned = false;
       doneBuffer.remoteTurnActive = false;
@@ -828,12 +846,14 @@
       if (reconciled) await persistMessagesFor(sid);
       await refreshHistoryList();
       if (!reconciled) {
+        recordAuthoritySyncDiagnostic("authority_sync_notice_shown", Object.assign({
+          notice: "desktop_done_sync_pending",
+        }, authoritySyncBufferSnapshot(sid, doneBuffer)));
         runSyncOnSession(sid, function () {
           addAuthoritySyncNotice(bt("desktopDoneSyncPending"));
         });
       }
       notify();
-      publishRemoteLiveSnapshot(sid).catch(function () {});
       // 排队式:本轮跑完,若该 session 不忙且有待发消息 → 自动发下一条
       if (reconciled) flushQueued(sid);
     })();

@@ -186,7 +186,12 @@ impl SessionStore {
         // load them normally, but remain owned by the Scheduled Tasks surface.
         // 多智能体是普通会话的持久开关，不是独立会话类型；这里只隔离定时
         // 会话，其余历史统一进入普通列表。
+        // benchmark 构建中,评测会话(eval_ 前缀,含 GAIA 私有题目)不进用户历史:
+        // 正常路径由评测运行器清理,崩溃残留也不能把私密题目带进会话列表。
+        // 默认桌面构建不保留这项前缀语义,避免 benchmark 未启用时改变普通会话列表。
         out.retain(|metadata| !metadata.id.starts_with("sched-"));
+        #[cfg(feature = "benchmark-hooks")]
+        out.retain(|metadata| !metadata.id.starts_with("eval_"));
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
     }
@@ -524,6 +529,42 @@ impl SessionStore {
             || format!("persist chat engine state for {id}"),
             "committed engine state save",
         )?;
+        Ok(session)
+    }
+
+    /// 以调用方提供的 ID 创建空会话，供需要在启动前确定隔离 ID 的内部运行时使用。
+    ///
+    /// 普通 GUI 会话仍使用 [`Self::create_new`] 的随机 ID；这里不设置 active session。
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn create_empty_with_id(
+        &self,
+        id: String,
+        model: String,
+        model_id: Option<String>,
+        workspace: PathBuf,
+    ) -> Result<SavedSession> {
+        let mut session = create_saved_session_with_id_and_mode(
+            id.clone(),
+            &[],
+            &model,
+            &workspace,
+            0,
+            None,
+            None,
+        );
+        session.metadata.title = "临时评测".to_string();
+        if let Some(model_id) = model_id {
+            self.set_session_model_id(&id, Some(model_id))?;
+        }
+        if let Err(error) = self.save(&session) {
+            let rollback = self.delete(&id);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    anyhow::anyhow!("{error:#}; rollback Session {id}: {rollback_error:#}")
+                }
+            });
+        }
         Ok(session)
     }
 

@@ -11,7 +11,6 @@
     var invoke = context.invoke;
     var refreshHistoryList = context.refreshHistoryList;
     var listen = context.listen;
-    var publishRemoteLiveSnapshot = context.publishRemoteLiveSnapshot;
     var getBuffer = context.getBuffer;
     var bt = context.bt;
   // ── 应用内升级 ───────────────────────────────────────────────────
@@ -25,11 +24,6 @@
   listen("remote_control:status", function (e) {
     state.remoteControl = Object.assign({}, state.remoteControl, e.payload || {});
     notify();
-  });
-  listen("remote_control:snapshot_requested", function (e) {
-    var sid = e && e.payload && e.payload.session_id;
-    if (!sid) return;
-    publishRemoteLiveSnapshot(sid).catch(function () {});
   });
   listen("remote_control:session_created", function (e) {
     var s = e && e.payload && e.payload.session;
@@ -78,13 +72,19 @@
   // 安装器启动成功后 Windows 退出当前进程；Linux/macOS 在安装后由前端重启。
   async function downloadAndInstallUpdate() {
     if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return false;
-    var shouldRestartAfterInstall = state.updateInfo.platform !== "windows";
+    // 入口捕获发起时的更新信息：下载/安装期间静默检查可能替换 updateInfo，
+    // download/install 参数须仍指向发起时的版本（审计）。当前基线的 install_update
+    // 为 unsupported 桩（info 未参与行为），此配对为面向完整平台实现的防御性修复。
+    // invoke 文本保持原样。
+    var info = state.updateInfo;
+    var shouldRestartAfterInstall = info.platform !== "windows";
     var installed = false;
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
     try {
       var downloadResult = await invoke("download_update", { info: state.updateInfo });
       state.updateProgress = 100; notify();
+      state.updateInfo = info; // 复原：install 用发起时的版本元数据，不随静默检查漂移
       if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
         await invoke("install_update", { installerPath: downloadResult.installer_path, info: state.updateInfo });
       } else {

@@ -55,13 +55,15 @@ CodeWhale 改动必须遵循 [AGENTS.md](AGENTS.md) 和 [`docs/fork-policy.md`](
 使用以下格式：
 
 ```text
-<type>: <中文描述>
-<type>(<scope>)!: <中文描述>
+<type>: <English description>
+<type>(<scope>)!: <English description>
 ```
 
-`scope` 和 `!` 可省略。允许的类型为 `feat`、`fix`、`refactor`、`perf`、`docs`、`style`、`test`、`build`、`ci`、`chore` 和 `revert`。描述必须包含中文、内容明确、不超过 50 字且结尾不加标点。
+`scope` 和 `!` 可省略。允许的类型为 `feat`、`fix`、`refactor`、`perf`、`docs`、`style`、`test`、`build`、`ci`、`chore` 和 `revert`。使用不超过 50 个字符且结尾无标点的简洁英文描述。CI 只校验格式，不校验语言。
 
-Issue 和 PR 可使用中文或英文。完整提交规则见 [`docs/Git Commit 信息规范文档.md`](docs/Git%20Commit%20信息规范文档.md)。
+分支、Issue、PR、Commit、代码注释、开发文档和诊断信息使用英文。既有历史和本地化资源除外；UI 文案遵循 [AGENTS.md](AGENTS.md)。
+
+完整提交规则见 [`docs/commit-message-convention.md`](docs/commit-message-convention.md)。
 
 ## 本地检查
 
@@ -105,6 +107,8 @@ PR；依赖锁、CI、发布、权限、Session、CodeWhale gitlink 及其他高
 ## Pull Request
 
 提交前检查目标分支的实际差异，并完成 [AGENTS.md](AGENTS.md) 要求的质量自检。
+
+PR 标题和正文使用英文；标题必须符合 Squash Merge 所需的 Commit 标题规范。
 
 PR 应说明：
 

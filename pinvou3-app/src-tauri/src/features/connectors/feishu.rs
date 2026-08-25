@@ -162,6 +162,9 @@ fn run_connect_flow(app: &AppHandle) {
 /// 返回 Ok(true)=注册成功;Ok(false)=被取消;Err=失败。
 fn phase_register(app: &AppHandle) -> Result<bool, String> {
     let mut cmd = lark(&["config", "init", "--new"]);
+    // 独立进程组:npm shim(shell→node)派生的孙进程与 shim 同组,退出收割的
+    // kill_pid_tree 按负 pid 组杀整棵树,单杀 shim pid 会把 node 孤儿化。
+    crate::platform::process::std_process_group_leader(&mut cmd);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -276,6 +279,7 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
             "--json",
         ]));
         if is_user_ready() {
+            cc::bundle_store_on_connected(ID);
             cc::emit(app, "feishu:connected", json!({ "ok": true }));
             return Ok(());
         }
@@ -295,6 +299,9 @@ pub async fn feishu_cancel(app: AppHandle) -> Result<Value, String> {
 pub async fn feishu_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let (ok, so, se) = cc::run(lark(&["auth", "logout"]))?;
+        if ok {
+            cc::bundle_store_on_disconnected(ID);
+        }
         Ok::<Value, String>(json!({ "ok": ok, "stdout": so, "stderr": se }))
     })
     .await
@@ -350,6 +357,11 @@ pub async fn feishu_apply_skills() -> Result<Value, String> {
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))??;
+    // scope 门禁同步：连接器转为可用等同「新装」——已初始化 code 开关时加入 code
+    // 禁用集，保持「code 会话外部能力默认关」语义（与 MCP 新装连接器一致）。
+    if show {
+        crate::features::marketplace::sync_deny_all_scopes_after_install("feishu");
+    }
     // 技能写盘即可——连接成功弹窗已引导「新建对话」,新会话 spawn 时自然扫到飞书技能;
     // 不再原地广播刷新当前对话(故不依赖子模块 Op::RefreshSystemPrompt)。
     Ok(json!({ "visible": show }))
@@ -362,6 +374,9 @@ pub async fn feishu_apply_skills() -> Result<Value, String> {
 pub async fn set_feishu_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         set_feishu_disabled_flag(!enabled)?;
+        // 停用标志 ↔ 统一禁用集桥接：关掉连接器时同步写入 disabled_bundles.json
+        // （所有 scope），execpolicy CLI 硬拦截与技能物化排除才生效；开回时移除。
+        crate::features::marketplace::sync_disabled_bundles_for_connector_switch("feishu", enabled);
         let show = feishu_skills_should_show();
         GATE.apply_skills(show)?;
         Ok(show)

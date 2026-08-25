@@ -182,9 +182,6 @@ pub fn ocr_tool_exists() -> bool {
 pub fn archive_tool_exists() -> bool {
     command_exists("7zz") || command_exists("7z")
 }
-pub fn msg_native_supported() -> bool {
-    false
-}
 pub fn msg_converter_required() -> bool {
     true
 }

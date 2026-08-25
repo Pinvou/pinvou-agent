@@ -11,7 +11,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 pub const SERVICE_TYPE: &str = "_pinvou-kb._tcp.local.";

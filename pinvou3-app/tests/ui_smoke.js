@@ -1052,7 +1052,9 @@ async function expand(page) {
     };
     await window.TauriBridge.knowledge.downloadKbModel(false).catch(() => {});
     document.querySelector('[data-nav="knowledge"]')?.click();
-    await wait(300);
+    // 知识库视图为懒加载 chunk:等待加载失败文案出现(chunk 就绪 + 渲染完成)而非固定延时。
+    for (let i = 0; i < 100 && !document.body.innerText.includes('Embedding 模型加载失败'); i++) await wait(50);
+    await wait(100);
     const failedVisible = document.body.innerText.includes('Embedding 模型加载失败');
     const repairButton = [...document.querySelectorAll('button')]
       .find(button => (button.textContent || '').includes('重新下载并修复'));
@@ -1809,6 +1811,40 @@ async function expand(page) {
       && !legacyConversationA11y.compactCollapsed.controls
       && !legacyConversationA11y.compactCollapsed.detailsPresent,
     JSON.stringify(legacyConversationA11y));
+
+  // ⑩b legacy 长会话离屏合成不应为 ChatBubble 返回 null 的项（reasoning / 已忽略记忆候选 /
+  // 未知类型）产生空 content-visibility wrapper：空 wrapper 离屏时仍按
+  // contain-intrinsic-size(auto 600px) 占位，会污染 scrollHeight 造成滚动条缩跳与滚底跳变。
+  // 修复 = legacy 列表 map 跳过 reasoning + .cv-bubble:empty{display:none} 兜底其余 null 情况。
+  await clickText(page, '第三季度财报分析');
+  await sleep(1500);
+  const legacyReasoningGuard = await page.evaluate(async () => {
+    const emit = async (name, payload) => {
+      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
+      for (const handler of handlers) await handler({ payload });
+    };
+    // 向普通 s1 会话注入多条 reasoning 历史（每轮一条），模拟长 legacy 会话。
+    for (let i = 0; i < 12; i++) {
+      await emit('chat:reasoning_start', { session_id: 's1', index: `legacy-reasoning-${i}` });
+      await emit('chat:reasoning_delta', { session_id: 's1', index: `legacy-reasoning-${i}`, text: `离屏推理历史 ${i} `.repeat(40) });
+      await emit('chat:reasoning_done', { session_id: 's1', index: `legacy-reasoning-${i}` });
+    }
+    await new Promise(r => setTimeout(r, 400));
+    const wrappers = [...document.querySelectorAll('.cv-bubble')];
+    const emptyWrappers = wrappers.filter(w => w.children.length === 0);
+    const reasoningLeaked = document.body.innerText.includes('离屏推理历史');
+    const totalHeight = wrappers.reduce((sum, w) => sum + w.getBoundingClientRect().height, 0);
+    return {
+      wrapperCount: wrappers.length,
+      emptyCount: emptyWrappers.length,
+      reasoningLeaked,
+      // 12 条空 reasoning 若未被修复，离屏至少占 12 * 600 = 7200px；修复后应为 0。
+      emptyContributionPx: Math.round(totalHeight),
+    };
+  });
+  rec('⑩b legacy 离屏合不为 reasoning/隐藏项留空 wrapper（防 scrollHeight 污染）',
+    legacyReasoningGuard.emptyCount === 0 && !legacyReasoningGuard.reasoningLeaked,
+    JSON.stringify(legacyReasoningGuard));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();

@@ -7,7 +7,11 @@
 //! [`AppEngine::spawn_for_session`])。本池按 `session_id` 管理这些 engine 的生命周期:
 //!  - **lazy spawn**:首次给某 session 发消息时才 spawn(带该 session 专属 workspace +
 //!    instructions);已有磁盘历史的 session 在 spawn 后用一次性 `SyncSession` 注水。
-//!  - **keep-alive**:spawn 后常驻,切 session 不销毁(后台 session 继续跑各自的 turn)。
+//!  - **idle 回收(原 keep-alive 策略的收紧)**:spawn 后仍常驻,后台 session 继续跑
+//!    各自的 turn,但不再无限常驻——每个 engine 是进程内 task + 专属通道/工具集,
+//!    池无上限、内存随会话数线性涨。后台巡检(`start_idle_reaper`)回收「空闲超过
+//!    `IDLE_EVICT_AFTER_SECS` 且无 in-flight turn 且非 active」的 engine;回收只是
+//!    回到 lazy spawn 语义,下次发消息 `get_or_spawn` 重建并 `SyncSession` 注水,无损。
 //!  - **evict**:删 session 时回收(cancel 在跑的 turn + Shutdown engine + abort forwarder)。
 //!
 //! 池本身是 Tauri State;`commands.rs` 里的 chat / cancel / submit_user_input 等都带
@@ -17,9 +21,9 @@
 //! session 先通过独立 runtime lock 串行准备/比较/rebuild,再短暂持有 `entries` 完成
 //! 本地 spawn,从根上避免同 session 双引擎,也不让慢凭据服务阻塞其他 session。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
 use anyhow::{bail, Context, Result};
@@ -39,6 +43,8 @@ use tokio_util::sync::CancellationToken;
 use crate::features::assistant::engine::{
     AppEngine, EngineTurnSignal, TranscriptOperation, TurnLifecycle, TurnReservation,
 };
+#[cfg(any(feature = "benchmark-hooks", test))]
+use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::assistant::runtime_model::{
@@ -48,6 +54,51 @@ use crate::features::assistant::runtime_model::{
 use crate::features::assistant::turn_shell_tasks::{SessionShellManagers, SessionTurnShellTasks};
 use crate::features::sessions::{transcript_revision, ScheduledRunProfile, SessionStore};
 use crate::platform::prefs::{SavedModel, UserPrefs};
+
+/// Engine 空闲回收阈值：engine 是进程内 task（非子进程），但每个都占一份通道、
+/// 工具集与注水后的对话上下文，池无上限、内存随会话数线性涨。空闲超过该时长
+/// 且无 in-flight turn 且非 active 会话时回收（复用 `reclaim_engine_entry` 的
+/// 回收序列）。回收回到 lazy spawn 语义，下次发消息重建 + SyncSession 注水，
+/// 无损；30 分钟取偏保守值，宁可少回收也不误伤刚要使用的会话。
+const IDLE_EVICT_AFTER_SECS: u64 = 30 * 60;
+/// 空闲回收巡检间隔：5 分钟一轮，及时性与巡检开销的折中（与 AcpPool 空闲
+/// 回收、embedder 空闲卸载的巡检节奏保持一致）。
+const REAP_INTERVAL_SECS: u64 = 5 * 60;
+
+/// 空闲回收判定（纯函数，便于单测）：turn 活跃（reserve 占用或终态收口）、
+/// scheduled 轮进行中（run_scheduled_turn 的 spawn→submit 窗口 lifecycle 尚未
+/// active）以及当前 active 会话一律不回收。
+fn should_reap_idle_engine(
+    turn_active: bool,
+    scheduled_running: bool,
+    is_active_session: bool,
+    idle_for_secs: u64,
+) -> bool {
+    !turn_active
+        && !scheduled_running
+        && !is_active_session
+        && idle_for_secs >= IDLE_EVICT_AFTER_SECS
+}
+
+/// `evict_if_idle` 的锁内复核（纯函数，便于单测）：快照后活动时钟必须未前进
+/// （turn 提交与终态收口都会推它前进），且按现值仍满足空闲回收条件；任一不
+/// 满足即跳过本轮回收，留待下一次巡检。
+fn should_still_reap_after_snapshot(
+    turn_active: bool,
+    scheduled_running: bool,
+    is_active_session: bool,
+    idle_for_secs: u64,
+    current_last_active_ms: u64,
+    snapshot_last_active_ms: u64,
+) -> bool {
+    current_last_active_ms <= snapshot_last_active_ms
+        && should_reap_idle_engine(
+            turn_active,
+            scheduled_running,
+            is_active_session,
+            idle_for_secs,
+        )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScheduledTurnCompletion {
@@ -88,6 +139,75 @@ impl SessionTurnLocks {
         let gate = Arc::new(Mutex::new(()));
         locks.insert(session_id.to_string(), Arc::downgrade(&gate));
         gate
+    }
+}
+
+#[cfg(any(feature = "benchmark-hooks", test))]
+#[derive(Clone, Default)]
+struct EvalModelSnapshots {
+    next_token: Arc<AtomicU64>,
+    saved_models: Arc<SyncMutex<HashMap<String, SavedModel>>>,
+    suite_models: Arc<SyncMutex<HashMap<String, SavedModel>>>,
+    session_models: Arc<SyncMutex<HashMap<String, SavedModel>>>,
+}
+
+#[cfg(any(feature = "benchmark-hooks", test))]
+impl EvalModelSnapshots {
+    fn pin(&self, saved_model: SavedModel, identity: ModelIdentity) -> EvalModelSelection {
+        let sequence = self.next_token.fetch_add(1, Ordering::Relaxed);
+        let token = format!("eval-model-{}-{sequence}", std::process::id());
+        let model_id = Some(saved_model.id.clone());
+        self.saved_models.lock().insert(token.clone(), saved_model);
+        EvalModelSelection::new(token, model_id, identity)
+    }
+
+    fn pin_suite(
+        &self,
+        saved_model: SavedModel,
+        identity: ModelIdentity,
+    ) -> EvalSuiteModelSnapshot {
+        let sequence = self.next_token.fetch_add(1, Ordering::Relaxed);
+        let token = format!("eval-suite-model-{}-{sequence}", std::process::id());
+        self.suite_models.lock().insert(token.clone(), saved_model);
+        EvalSuiteModelSnapshot::new(token, identity)
+    }
+
+    fn derive_case_selection(&self, suite: &EvalSuiteModelSnapshot) -> Result<EvalModelSelection> {
+        let saved_model = self
+            .suite_models
+            .lock()
+            .get(suite.token())
+            .cloned()
+            .context("evaluation suite model snapshot is missing")?;
+        Ok(self.pin(saved_model, suite.identity().clone()))
+    }
+
+    fn discard_suite(&self, suite: &EvalSuiteModelSnapshot) {
+        self.suite_models.lock().remove(suite.token());
+    }
+
+    fn bind_to_session(&self, session_id: &str, selection: &EvalModelSelection) -> Result<()> {
+        let saved_model = self
+            .saved_models
+            .lock()
+            .remove(selection.token())
+            .with_context(|| "evaluation model selection is missing or already consumed")?;
+        self.session_models
+            .lock()
+            .insert(session_id.to_string(), saved_model);
+        Ok(())
+    }
+
+    fn for_session(&self, session_id: &str) -> Option<SavedModel> {
+        self.session_models.lock().get(session_id).cloned()
+    }
+
+    fn forget_session(&self, session_id: &str) {
+        self.session_models.lock().remove(session_id);
+    }
+
+    fn discard(&self, selection: &EvalModelSelection) {
+        self.saved_models.lock().remove(selection.token());
     }
 }
 
@@ -173,6 +293,20 @@ where
     Ok(())
 }
 
+#[cfg(test)]
+fn delete_then_forget<D, G>(delete: D, forget: G) -> Result<()>
+where
+    D: FnOnce() -> Result<()>,
+    G: FnOnce(),
+{
+    let delete_result = delete();
+    if delete_result.is_err() {
+        return delete_result;
+    }
+    forget();
+    delete_result
+}
+
 async fn quiesce_engine_before_reclaim<C, S, SFut, F, Fut, T>(
     cancel_current: C,
     stop_forwarder: S,
@@ -188,6 +322,34 @@ where
     cancel_current();
     stop_forwarder().await;
     finish_reclaimed().await
+}
+
+/// `evict_if_idle` 的锁序骨架（与 `cancel_turn_with_gates` 同一抽出思路，供
+/// 裸 Default 组件 + 探针闭包做确定性并发测试）：先拿 turn gate 再拿
+/// runtime lock，双锁保护内执行 `take_entry`（锁内复核 + 原子移除，返回
+/// `None` 表示快照后已有活动、本轮跳过），确有移除才 `reclaim`。
+async fn evict_if_idle_with_gates<T, Take, TakeFut, Reclaim, ReclaimFut>(
+    turn_locks: &SessionTurnLocks,
+    runtime_locks: &SessionTurnLocks,
+    session_id: &str,
+    take_entry: Take,
+    reclaim: Reclaim,
+) -> bool
+where
+    Take: FnOnce() -> TakeFut,
+    TakeFut: Future<Output = Option<T>>,
+    Reclaim: FnOnce(T) -> ReclaimFut,
+    ReclaimFut: Future<Output = ()>,
+{
+    let turn_lock = turn_locks.for_session(session_id).await;
+    let _turn = turn_lock.lock().await;
+    let runtime_lock = runtime_locks.for_session(session_id).await;
+    let _runtime = runtime_lock.lock().await;
+    let Some(entry) = take_entry().await else {
+        return false;
+    };
+    reclaim(entry).await;
+    true
 }
 
 /// 两个 epoch 快照是否仍指向同一轮次，供 cancel 跨 turn_lock 边界守护使用。
@@ -434,6 +596,13 @@ struct EngineEntry {
     /// （subagent/mod.rs 的 load 路径），少了这道甄别，父会话重建引擎后
     /// 上一进程的僵尸 worker 会重新显示"工作中"并被永久轮询。
     spawned_at_ms: u64,
+    /// 最近一次 turn 提交侧活动（UNIX ms）：spawn、turn 提交（send / 编辑重发 /
+    /// scheduled 轮入口）都刷新。turn 终态收口时钟在 TurnLifecycle
+    /// （`last_terminal_epoch_ms`，所有终态路径共用的收口点统一刷新），空闲回收
+    /// 取两者较新者判定真实空闲时长——刚结束的长 turn 不能立刻被判为可回收。
+    /// 空闲回收以它（而非 spawned_at_ms）为准——刚回收重建的引擎若持续不用，
+    /// 也要能被再次回收。
+    last_active_epoch_ms: AtomicU64,
 }
 
 #[derive(Clone, Default)]
@@ -493,6 +662,8 @@ pub struct EnginePool {
     entries: Arc<Mutex<HashMap<String, EngineEntry>>>,
     runtime_model_locks: SessionTurnLocks,
     model_update_revisions: ModelUpdateRevisions,
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    eval_model_snapshots: EvalModelSnapshots,
     turn_locks: SessionTurnLocks,
     turn_lifecycles: SessionTurnLifecycles,
     shell_managers: SessionShellManagers,
@@ -505,6 +676,27 @@ pub struct EnginePool {
     /// 所有 session 共享一份已 boot 的 bridge(boot 会写盘 / 设 env,只能一次)。
     /// commands 读 model / workspace 也走这里。
     pub bridge: Pinvou3Bridge,
+    /// 空闲回收巡检任务句柄。放 Arc 由所有 pool clone 共享：pool 本身是
+    /// Clone（Tauri State 每次命令取的都是 clone），不能直接 impl Drop，否则
+    /// 任一 clone 释放都会误停巡检；最后一个 clone 释放时连带 drop guard。
+    idle_reaper: Arc<SyncMutex<Option<IdleReaperGuard>>>,
+    /// 正在跑 scheduled 轮的会话集合（run_scheduled_turn 的 spawn→submit 窗口
+    /// 里 lifecycle 尚未 active，空闲回收需要它做第二重保护）。
+    scheduled_running_sessions: Arc<SyncMutex<HashSet<String>>>,
+}
+
+/// 后台巡检任务句柄：Drop 时先 cancel 再 abort 双保险停止巡检
+/// （与 scheduled/tasks.rs ScheduledTaskState 的 Drop 清理同模式）。
+struct IdleReaperGuard {
+    cancel: CancellationToken,
+    handle: JoinHandle<()>,
+}
+
+impl Drop for IdleReaperGuard {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.handle.abort();
+    }
 }
 
 impl EnginePool {
@@ -535,6 +727,8 @@ impl EnginePool {
             entries: Arc::new(Mutex::new(HashMap::new())),
             runtime_model_locks: SessionTurnLocks::default(),
             model_update_revisions: ModelUpdateRevisions::default(),
+            #[cfg(any(feature = "benchmark-hooks", test))]
+            eval_model_snapshots: EvalModelSnapshots::default(),
             turn_locks: SessionTurnLocks::default(),
             turn_lifecycles: SessionTurnLifecycles::default(),
             shell_managers: SessionShellManagers::default(),
@@ -545,7 +739,101 @@ impl EnginePool {
             tool_policy,
             runtime_model_provider,
             bridge,
+            idle_reaper: Arc::new(SyncMutex::new(None)),
+            scheduled_running_sessions: Arc::new(SyncMutex::new(HashSet::new())),
         })
+    }
+
+    /// 启动空闲回收巡检（幂等）：每 REAP_INTERVAL_SECS 秒扫描一次，回收
+    /// 「空闲超过 IDLE_EVICT_AFTER_SECS 且无 in-flight turn 且非 active」的
+    /// engine。active 判定取 `SessionStore::active_id`（create/load session
+    /// 命令维护的前端当前会话）；此外 reserve_turn（turn 开始的必要前置）会
+    /// 刷新 last_active，turn 尚未 reserve 的引擎本就空闲，双保险下宁可保守。
+    /// 回收复用 delete 路径的 `reclaim_engine_entry`（先级联取消子智能体、
+    /// 后 Shutdown），回收后回到 lazy spawn 语义。
+    ///
+    /// 巡检任务持有 pool clone（内部全 Arc，廉价）。pool 是 Tauri managed
+    /// state、进程级生命周期，巡检随进程退出自然终止；guard 的 Drop 清理仅
+    /// 作防御（clone 间 Arc 循环意味着它平时不会触发，不构成泄漏——常驻的
+    /// 只是一个每 5 分钟醒一次的轻任务）。
+    pub fn start_idle_reaper(&self) {
+        let mut slot = self.idle_reaper.lock();
+        if slot.is_some() {
+            return;
+        }
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let pool = self.clone();
+        let handle = tauri::async_runtime::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(REAP_INTERVAL_SECS));
+            // tokio::interval 首个 tick 立即到期：跳过，统一走周期节奏。
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = task_cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                // 单轮 panic 隔离：回收逻辑 panic 会连坐整个巡检 async task
+                // （静默停摆，engines 从此常驻）。每轮独立 spawn，panic 只终止
+                // 当轮，外层循环下轮照常继续。
+                let round_pool = pool.clone();
+                let round =
+                    tauri::async_runtime::spawn(
+                        async move { round_pool.reap_idle_engines().await },
+                    );
+                if let Err(error) = round.await {
+                    eprintln!("[engine_pool] 空闲巡检单轮失败（已隔离，下轮继续）: {error}");
+                }
+            }
+        });
+        *slot = Some(IdleReaperGuard { cancel, handle });
+    }
+
+    /// 单轮空闲回收。判定先取只读快照（entries / lifecycle / active id）筛出
+    /// 候选，真正的回收走 `evict_if_idle`：拿齐 turn gate + runtime lock 后
+    /// 复核会话仍然空闲（快照到拿锁之间可能已有新 turn reserve / 提交，
+    /// reserve_turn 不取 gate），复核不过则跳过，留待下一轮巡检。
+    async fn reap_idle_engines(&self) {
+        let active_id = self.store.active_id();
+        let now = Self::now_epoch_ms();
+        let candidates: Vec<(String, u64)> = {
+            let entries = self.entries.lock().await;
+            entries
+                .iter()
+                .filter(|(sid, entry)| {
+                    let last_active = self.last_activity_ms(sid, entry);
+                    let idle_for_secs = now.saturating_sub(last_active) / 1000;
+                    should_reap_idle_engine(
+                        self.is_turn_active(sid),
+                        self.scheduled_running_sessions.lock().contains(*sid),
+                        active_id.as_deref() == Some(sid.as_str()),
+                        idle_for_secs,
+                    )
+                })
+                .map(|(sid, entry)| (sid.clone(), self.last_activity_ms(sid, entry)))
+                .collect()
+        };
+        for (session_id, snapshot_last_active) in candidates {
+            if self.evict_if_idle(&session_id, snapshot_last_active).await {
+                eprintln!(
+                    "[engine_pool] 会话 {session_id} 空闲超过 {IDLE_EVICT_AFTER_SECS} 秒，回收 engine（下次发消息时 lazy 重建）"
+                );
+            }
+        }
+    }
+
+    /// 该会话的最近活动时间（UNIX ms）：引擎条目的 spawn / turn 提交时钟与
+    /// turn 终态收口时钟（TurnLifecycle，所有终态路径共用的收口点统一刷新）
+    /// 取较新者。lifecycle 不存在（从未 spawn 过 turn）时只有条目时钟。
+    fn last_activity_ms(&self, session_id: &str, entry: &EngineEntry) -> u64 {
+        let submitted_side = entry.last_active_epoch_ms.load(Ordering::Acquire);
+        let terminal_side = self
+            .turn_lifecycles
+            .get(session_id)
+            .map(|lifecycle| lifecycle.last_terminal_epoch_ms())
+            .unwrap_or(0);
+        submitted_side.max(terminal_side)
     }
 
     pub(crate) fn credential_mode_for(
@@ -610,8 +898,9 @@ impl EnginePool {
         }
     }
 
-    /// 同步版在线会话组合目录重写（给保持同步签名的 tauri 命令用，如
-    /// `uninstall_marketplace_tool`）。组合目录体量小、diff 重写极快，阻塞可接受。
+    /// 同步版在线会话组合目录重写（**仅供不在 tokio runtime 上的同步调用方**：
+    /// `blocking_lock` 在 runtime 线程上会 panic，async 命令必须改用
+    /// [`Self::refresh_live_sessions_skills`]）。组合目录体量小、diff 重写极快。
     pub fn refresh_live_sessions_skills_blocking(&self) {
         let sids: Vec<String> = {
             let entries = self.entries.blocking_lock();
@@ -638,6 +927,7 @@ impl EnginePool {
         &self,
         session_id: &str,
         scheduled_unattended: bool,
+        explicit_model_override: Option<SavedModel>,
     ) -> Result<(Pinvou3Bridge, PreparedRuntimeModel, bool)> {
         let mut bridge = self.bridge.clone();
         bridge.prefs = UserPrefs::load();
@@ -649,12 +939,14 @@ impl EnginePool {
         let interactive_model_override = self.store.session_model_override(session_id);
         let pins_scheduled_model = scheduled_profile.is_some()
             && (scheduled_unattended || interactive_model_override.is_none());
-        bridge.session_model = resolve_spawn_model(
-            &bridge.prefs.advanced.saved_models,
-            scheduled_profile.as_ref(),
-            interactive_model_override.as_deref(),
-            scheduled_unattended,
-        )?;
+        bridge.session_model = resolve_runtime_model_override(explicit_model_override, || {
+            resolve_spawn_model(
+                &bridge.prefs.advanced.saved_models,
+                scheduled_profile.as_ref(),
+                interactive_model_override.as_deref(),
+                scheduled_unattended,
+            )
+        })?;
         let selected = bridge
             .effective_model_owned()
             .context("No effective model is available for runtime preparation")?;
@@ -709,8 +1001,12 @@ impl EnginePool {
         session_id: &str,
         scheduled_unattended: bool,
     ) -> Result<Pinvou3Bridge> {
+        #[cfg(any(feature = "benchmark-hooks", test))]
+        let eval_model = self.eval_model_snapshots.for_session(session_id);
+        #[cfg(not(any(feature = "benchmark-hooks", test)))]
+        let eval_model = None;
         let (bridge, prepared, pins_scheduled_model) = self
-            .prepare_runtime_model(session_id, scheduled_unattended)
+            .prepare_runtime_model(session_id, scheduled_unattended, eval_model)
             .await?;
         Ok(self
             .finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model)
@@ -721,7 +1017,12 @@ impl EnginePool {
     /// 则一次性 `SyncSession` 把历史 messages 注水进新 engine(冷启动 / app 重启后
     /// 打开旧会话再发消息的场景)。
     pub async fn get_or_spawn(&self, session_id: &str) -> Result<AppEngine> {
-        self.get_or_spawn_with_policy(session_id, false).await
+        #[cfg(any(feature = "benchmark-hooks", test))]
+        let eval_model = self.eval_model_snapshots.for_session(session_id);
+        #[cfg(not(any(feature = "benchmark-hooks", test)))]
+        let eval_model = None;
+        self.get_or_spawn_with_policy(session_id, false, eval_model)
+            .await
     }
 
     /// Spawn policy for an unattended automation turn is deliberately distinct
@@ -731,11 +1032,12 @@ impl EnginePool {
         &self,
         session_id: &str,
         scheduled_unattended: bool,
+        explicit_model_override: Option<SavedModel>,
     ) -> Result<AppEngine> {
         let runtime_lock = self.runtime_model_locks.for_session(session_id).await;
         let _runtime = runtime_lock.lock().await;
         let (bridge, prepared, pins_scheduled_model) = self
-            .prepare_runtime_model(session_id, scheduled_unattended)
+            .prepare_runtime_model(session_id, scheduled_unattended, explicit_model_override)
             .await?;
         let model_update_revision = self.model_update_revisions.current(&prepared.model.id);
         let prepared = PreparedRuntimeState::new(prepared, model_update_revision);
@@ -841,6 +1143,7 @@ impl EnginePool {
                 forwarder,
                 runtime_model: prepared,
                 spawned_at_ms: Self::now_epoch_ms(),
+                last_active_epoch_ms: AtomicU64::new(Self::now_epoch_ms()),
             },
         );
         Ok(engine)
@@ -874,6 +1177,49 @@ impl EnginePool {
         self.evict_locked(session_id).await;
     }
 
+    /// 仅空闲回收使用的回收路径：与 [`evict`](Self::evict) 一样拿齐 turn gate +
+    /// runtime lock（锁序骨架见 [`evict_if_idle_with_gates`]），但在移除引擎前
+    /// 复核会话仍然空闲（TOCTOU 防护）——`reap_idle_engines` 的候选快照到拿到
+    /// 锁之间可能已有新 turn：`reserve_turn` 不取 gate 可先行 reserve
+    /// （lifecycle 转 active），`send_reserved_user_message` 先抢 gate 提交并
+    /// 刷新活动时钟。此处若不复核，在跑 turn 会被 reclaim 收口成 Interrupted，
+    /// 已 reserve 未提交的 reservation 会被失效化、排队发送直接失败。复核要求
+    /// 快照后活动时钟未前进且按现值仍满足回收条件（谓词见
+    /// [`should_still_reap_after_snapshot`]）；不满足则跳过，留待下一轮巡检。
+    /// 返回是否真正回收。删除 / 切模型路径仍走 `evict`，语义不变。
+    ///
+    /// 已知残余窗口：复核之后、reclaim 收口之前的极短区间内新 reserve 的
+    /// 未提交 reservation 仍会被 `claim_reclaimed_transition` 静默失效（与
+    /// 删除路径同语义，不发伪造终态，发送侧收到明确错误），不阻断 turn。
+    async fn evict_if_idle(&self, session_id: &str, snapshot_last_active_ms: u64) -> bool {
+        let active_id = self.store.active_id();
+        evict_if_idle_with_gates(
+            &self.turn_locks,
+            &self.runtime_model_locks,
+            session_id,
+            || async {
+                let now = Self::now_epoch_ms();
+                let mut entries = self.entries.lock().await;
+                let entry = entries.get(session_id)?;
+                let last_active = self.last_activity_ms(session_id, entry);
+                if should_still_reap_after_snapshot(
+                    self.is_turn_active(session_id),
+                    self.scheduled_running_sessions.lock().contains(session_id),
+                    active_id.as_deref() == Some(session_id),
+                    now.saturating_sub(last_active) / 1000,
+                    last_active,
+                    snapshot_last_active_ms,
+                ) {
+                    entries.remove(session_id)
+                } else {
+                    None
+                }
+            },
+            |entry| self.reclaim_engine_entry(session_id, entry),
+        )
+        .await
+    }
+
     /// Delete an ordinary chat under the exact turn gate used by lazy spawn
     /// and send. No queued sender can slip between engine reclaim, disk delete,
     /// and lifecycle cleanup to resurrect the session.
@@ -895,6 +1241,33 @@ impl EnginePool {
             "late sweep of deleted chat",
         );
         Ok(())
+    }
+
+    /// Eval-only deletion keeps ordinary delete semantics, but also schedules the existing
+    /// late sweep when the immediate disk deletion fails. The error remains observable to the
+    /// Judge adapter, while the sweep prevents a transient filesystem failure from silently
+    /// retaining the temporary transcript forever.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) async fn delete_eval_session(&self, session_id: &str) -> Result<()> {
+        let result = self.delete_chat_session(session_id).await;
+        crate::features::assistant::timing::unregister_eval_observation(session_id);
+        if result.is_err() {
+            self.forget_session(session_id);
+            Self::schedule_late_sweep(
+                crate::platform::paths::sessions_root().join(session_id),
+                "late sweep of failed eval cleanup",
+            );
+        }
+        result
+    }
+
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn schedule_eval_cleanup(&self, session_id: &str) {
+        crate::features::assistant::timing::unregister_eval_observation(session_id);
+        Self::schedule_late_sweep(
+            crate::platform::paths::sessions_root().join(session_id),
+            "background takeover of eval cleanup",
+        );
     }
 
     /// 删除后的延迟清扫：底座取消子智能体后在后台线程异步写 worker ledger
@@ -1005,6 +1378,8 @@ impl EnginePool {
     }
 
     pub(crate) fn forget_session(&self, session_id: &str) {
+        #[cfg(any(feature = "benchmark-hooks", test))]
+        self.eval_model_snapshots.forget_session(session_id);
         self.turn_lifecycles.remove(session_id);
         self.turn_shell_tasks.remove(session_id);
         self.shell_managers.remove(session_id);
@@ -1046,10 +1421,112 @@ impl EnginePool {
     /// (GUI 可能刚改过默认),失败回退 boot 快照。
     pub fn default_model_for_new_session(&self) -> (String, Option<String>) {
         let prefs = UserPrefs::load();
-        match prefs.active_model() {
-            Some(m) => (m.model.clone(), Some(m.id.clone())),
-            None => (self.bridge.model(), None),
+        default_model_for_new_session_from(&prefs, &self.bridge)
+    }
+
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn tested_eval_identity(&self) -> ModelIdentity {
+        let prefs = UserPrefs::load();
+        identity_for_active_model(&self.bridge, &prefs)
+    }
+
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn pin_active_eval_suite_model(&self) -> Result<EvalSuiteModelSnapshot> {
+        let prefs = UserPrefs::load();
+        let saved_model = prefs
+            .active_model()
+            .cloned()
+            .context("active evaluation model is not configured")?;
+        let identity = identity_for_saved_model(&self.bridge, &saved_model);
+        Ok(self.eval_model_snapshots.pin_suite(saved_model, identity))
+    }
+
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn derive_eval_suite_case_selection(
+        &self,
+        suite: &EvalSuiteModelSnapshot,
+    ) -> Result<EvalModelSelection> {
+        self.eval_model_snapshots.derive_case_selection(suite)
+    }
+
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn discard_eval_suite_model(&self, suite: &EvalSuiteModelSnapshot) {
+        self.eval_model_snapshots.discard_suite(suite);
+    }
+
+    /// Resolve and privately pin the complete SavedModel while returning only a
+    /// non-sensitive opaque selection to the evaluation layer. Callers that do
+    /// not pass the selection to `prepare_eval_session` must explicitly discard it.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn pin_eval_model_selection(&self, model_id: &str) -> Result<EvalModelSelection> {
+        let prefs = UserPrefs::load();
+        let (saved, identity) = resolve_eval_model_selection_from(
+            &self.bridge,
+            &prefs.advanced.saved_models,
+            model_id,
+        )?;
+        Ok(self.eval_model_snapshots.pin(saved, identity))
+    }
+
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn discard_eval_model_selection(&self, selection: &EvalModelSelection) {
+        self.eval_model_snapshots.discard(selection);
+    }
+
+    /// 创建并加载一次性评测会话。评测 runner 预先决定 session ID，以便报告和
+    /// 清理精确关联；普通 GUI 会话继续使用 SessionStore 自动生成的 ID。
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) async fn prepare_eval_session(
+        &self,
+        session_id: &str,
+        model_selection: Option<&EvalModelSelection>,
+    ) -> Result<()> {
+        match model_selection {
+            None => {
+                let (model, model_id) = self.default_model_for_new_session();
+                self.store.create_empty_with_id(
+                    session_id.to_string(),
+                    model,
+                    model_id,
+                    self.bridge.workspace.clone(),
+                )?;
+                self.get_or_spawn(session_id).await?;
+            }
+            Some(selection) => {
+                self.eval_model_snapshots
+                    .bind_to_session(session_id, selection)?;
+                let prepare_result = self.store.create_empty_with_id(
+                    session_id.to_string(),
+                    selection.wire_model().to_string(),
+                    selection.model_id().map(str::to_string),
+                    self.bridge.workspace.clone(),
+                );
+                if let Err(error) = prepare_result {
+                    self.eval_model_snapshots.forget_session(session_id);
+                    return Err(error);
+                }
+                if let Err(error) = self.get_or_spawn(session_id).await {
+                    self.eval_model_snapshots.forget_session(session_id);
+                    return Err(error);
+                }
+            }
         }
+        crate::features::assistant::timing::register_eval_observation(session_id);
+        Ok(())
+    }
+
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn eval_session_execution_root(
+        &self,
+        session_id: &str,
+    ) -> Result<std::path::PathBuf> {
+        Ok(self.store.session_roots(session_id)?.execution)
+    }
+
+    /// 读取评测临时会话的 transcript 快照，不暴露可变存储句柄。
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn load_eval_transcript(&self, session_id: &str) -> Result<Vec<Message>> {
+        Ok(self.store.load(session_id)?.messages)
     }
 
     /// 切某 session 的模型(聊天 chip 热切):写 per-session 绑定 + evict 该 session
@@ -1097,6 +1574,17 @@ impl EnginePool {
         Ok(reservation)
     }
 
+    /// 刷新会话引擎的空闲时钟（turn 开始时调用，异步上下文安全：瞬时取
+    /// entries 锁，不与发送路径的长临界区重叠）。引擎不在场是 no-op——lazy
+    /// spawn 时 last_active 以 now 初始化，本就新鲜。
+    async fn touch_engine_activity(&self, session_id: &str) {
+        if let Some(entry) = self.entries.lock().await.get(session_id) {
+            entry
+                .last_active_epoch_ms
+                .store(Self::now_epoch_ms(), Ordering::Release);
+        }
+    }
+
     /// 该 session 当前是否有进行中的 turn（供前端 remount 后恢复 busy 展示）。
     pub fn is_turn_active(&self, session_id: &str) -> bool {
         self.turn_lifecycles
@@ -1126,6 +1614,81 @@ impl EnginePool {
             .session_roots(session_id)
             .map(|roots| roots.ledger)
             .map_err(|error| format!("解析会话状态根失败: {error:#}"))
+    }
+
+    /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
+    #[allow(dead_code)]
+    pub async fn send_user_message(
+        &self,
+        session_id: &str,
+        content: String,
+        mode: AppMode,
+        restrict_tools_for_turn: bool,
+    ) -> Result<()> {
+        let reservation = self.reserve_turn(session_id)?;
+        let display_message = user_display_message(content.clone());
+        let expert_snapshot = (self.store.mode_state(session_id).multi_agent
+            && self.multi_agent_mode_available(session_id))
+        .then(ExpertRosterSnapshot::capture);
+        self.send_reserved_user_message(
+            session_id,
+            content,
+            display_message,
+            mode,
+            restrict_tools_for_turn,
+            expert_snapshot,
+            reservation,
+        )
+        .await
+    }
+
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) async fn send_eval_user_message(
+        &self,
+        session_id: &str,
+        content: String,
+        policy: &crate::features::assistant::product_runtime::eval_tool_policy::EvalTurnPolicy,
+    ) -> Result<()> {
+        let reservation = self.reserve_turn(session_id)?;
+        let display_message = user_display_message(content.clone());
+        self.send_reserved_eval_user_message(
+            session_id,
+            content,
+            display_message,
+            policy,
+            reservation,
+        )
+        .await
+    }
+
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    async fn send_reserved_eval_user_message(
+        &self,
+        session_id: &str,
+        content: String,
+        display_message: Message,
+        policy: &crate::features::assistant::product_runtime::eval_tool_policy::EvalTurnPolicy,
+        mut reservation: TurnReservation,
+    ) -> Result<()> {
+        let baseline_revision = reservation
+            .base_transcript_revision()
+            .context("turn reservation has no base transcript revision")?
+            .to_string();
+        reservation.set_transcript_with_baseline(
+            TranscriptOperation::Append,
+            display_message,
+            baseline_revision,
+        )?;
+        let turn_lock = self.turn_locks.for_session(session_id).await;
+        let _turn = turn_lock.lock().await;
+        self.store.load(session_id).with_context(|| {
+            format!("Session '{session_id}' was deleted before the eval turn could start")
+        })?;
+        reservation.ensure_active()?;
+        self.get_or_spawn(session_id)
+            .await?
+            .send_reserved_eval_message(content, policy, reservation)
+            .await
     }
 
     /// Submit a previously admitted append operation. This is the entry point
@@ -1163,6 +1726,9 @@ impl EnginePool {
             })?;
         }
         reservation.ensure_active()?;
+        // turn 正式提交：刷新空闲时钟（reserve 到 send 之间有附件解析等耗时
+        // 步骤，避免空闲巡检在这个窗口把引擎收走）。
+        self.touch_engine_activity(session_id).await;
         // Side B 卡片池: 该 session 加持了专家面具时,每 turn 注入轻锚点(短)维持身份。
         // 完整 body 已在加持首条消息一次性注入(commands::chat take_pending_turn_injections)。
         // 在 pool 层解析,所有上层调用(chat / accept_plan)自动带上锚点。
@@ -1208,7 +1774,14 @@ impl EnginePool {
     {
         let turn_lock = self.turn_locks.for_session(session_id).await;
         let _turn = turn_lock.lock().await;
+        // scheduled 轮登记：spawn→submit 窗口 lifecycle 尚未 active，空闲回收
+        // 需要这层显式保护；无论成败都在收尾注销（panic 由 abort 语义兜底，
+        // 该任务本身就是 spawn 出来的 detached future）。
+        self.scheduled_running_sessions
+            .lock()
+            .insert(session_id.to_string());
         let result = async {
+            self.touch_engine_activity(session_id).await;
             let profile = self
                 .store
                 .scheduled_profile(session_id)
@@ -1217,7 +1790,10 @@ impl EnginePool {
             // Scheduled execution must rebuild from the latest task profile and
             // global model/provider settings instead of reusing that old client.
             self.evict_locked(session_id).await;
-            let engine = match self.get_or_spawn_with_policy(session_id, true).await {
+            let engine = match self
+                .get_or_spawn_with_policy(session_id, true, None)
+                .await
+            {
                 Ok(engine) => engine,
                 Err(engine_error) => {
                     if let Err(seed_error) = persist_scheduled_prompt(
@@ -1262,6 +1838,7 @@ impl EnginePool {
         }
         .await;
 
+        self.scheduled_running_sessions.lock().remove(session_id);
         self.evict_locked(session_id).await;
         result
     }
@@ -1361,6 +1938,31 @@ impl EnginePool {
         }
     }
 
+    /// execpolicy 硬拦截热刷（scope 门禁通道③）：连接器/技能开关落盘后按各会话
+    /// 自己的 scope 重算 deny 规则集（CLI 二进制名 + 禁用技能脚本路径）并广播给
+    /// 所有在跑 engine，下一轮即硬拒。新 spawn / 重建的引擎由
+    /// build_engine_config_for_session_roots 注入初值——两处共用 `bridge.scope_deny_ruleset`。
+    pub async fn refresh_permission_rulesets(&self) {
+        let targets = self
+            .entries
+            .lock()
+            .await
+            .iter()
+            .map(|(sid, entry)| (sid.clone(), entry.engine.clone()))
+            .collect::<Vec<_>>();
+        for (sid, engine) in targets {
+            if let Err(e) = engine
+                .handle
+                .send(Op::SetPermissionRuleset {
+                    ruleset: self.bridge.scope_deny_ruleset(&sid),
+                })
+                .await
+            {
+                eprintln!("[engine_pool] refresh_permission_rulesets {sid} failed: {e:?}");
+            }
+        }
+    }
+
     /// 当前 UNIX 时刻（毫秒）。引擎纪元与 worker ledger 的
     /// created_at_ms/updated_at_ms 同源（都是 SystemTime），可直接比较。
     fn now_epoch_ms() -> u64 {
@@ -1402,6 +2004,8 @@ impl EnginePool {
             })?;
         }
         reservation.ensure_active()?;
+        // 重发也是 turn 提交：刷新空闲时钟（理由同 send_reserved_user_message）。
+        self.touch_engine_activity(session_id).await;
         self.get_or_spawn(session_id)
             .await?
             .edit_last_turn_reserved(new_message, reservation)
@@ -1452,6 +2056,44 @@ impl EnginePool {
              new state takes effect next turn via per-turn system-reminder"
         );
     }
+}
+
+#[cfg(any(feature = "benchmark-hooks", test))]
+fn identity_for_saved_model(bridge: &Pinvou3Bridge, saved: &SavedModel) -> ModelIdentity {
+    let effective = bridge.with_session_model(Some(saved.clone()));
+    ModelIdentity::new(effective.provider(), effective.model())
+}
+
+#[cfg(any(feature = "benchmark-hooks", test))]
+fn identity_for_active_model(bridge: &Pinvou3Bridge, prefs: &UserPrefs) -> ModelIdentity {
+    match prefs.active_model() {
+        Some(saved) => identity_for_saved_model(bridge, saved),
+        None => ModelIdentity::new(bridge.provider(), bridge.model()),
+    }
+}
+
+fn default_model_for_new_session_from(
+    prefs: &UserPrefs,
+    bridge: &Pinvou3Bridge,
+) -> (String, Option<String>) {
+    match prefs.active_model() {
+        Some(model) => (model.model.clone(), Some(model.id.clone())),
+        None => (bridge.model(), None),
+    }
+}
+
+#[cfg(any(feature = "benchmark-hooks", test))]
+fn resolve_eval_model_selection_from(
+    bridge: &Pinvou3Bridge,
+    models: &[SavedModel],
+    model_id: &str,
+) -> Result<(SavedModel, ModelIdentity)> {
+    let saved = models
+        .iter()
+        .find(|model| model.id == model_id)
+        .with_context(|| format!("evaluation model ID '{model_id}' was not found"))?;
+    let identity = identity_for_saved_model(bridge, saved);
+    Ok((saved.clone(), identity))
 }
 
 pub(crate) fn user_display_message(text: impl Into<String>) -> Message {
@@ -1620,15 +2262,32 @@ fn resolve_spawn_model(
         .transpose()
 }
 
+fn resolve_runtime_model_override<F>(
+    explicit_model_override: Option<SavedModel>,
+    resolve_normal: F,
+) -> Result<Option<SavedModel>>
+where
+    F: FnOnce() -> Result<Option<SavedModel>>,
+{
+    match explicit_model_override {
+        Some(model) => Ok(Some(model)),
+        None => resolve_normal(),
+    }
+}
+
 #[cfg(test)]
 // 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
 #[allow(clippy::await_holding_lock)]
 mod scheduled_model_tests {
     use super::{
-        cancel_turn_with_gates, delete_chat_session_with_gate, delete_scheduled_run_with_gate,
-        generation_matches, quiesce_engine_before_reclaim, resolve_scheduled_model,
-        resolve_spawn_model, scheduled_profile_after_turn_gate, should_sync_session,
-        ModelUpdateRevisions, PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
+        cancel_turn_with_gates, default_model_for_new_session_from, delete_chat_session_with_gate,
+        delete_scheduled_run_with_gate, delete_then_forget, evict_if_idle_with_gates,
+        generation_matches, identity_for_active_model, identity_for_saved_model,
+        quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
+        resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
+        scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, should_sync_session,
+        EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Pinvou3Bridge,
+        PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
         SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks,
     };
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
@@ -1636,8 +2295,54 @@ mod scheduled_model_tests {
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
     use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
+
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvRestore {
+        fn capture(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| (*name, std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    fn isolated_eval_bridge() -> (Pinvou3Bridge, std::path::PathBuf, EnvRestore) {
+        let restore = EnvRestore::capture(&[
+            "PINVOU3_HOME",
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_MAX_OUTPUT_TOKENS",
+            "PINVOU3_SESSION_ARTIFACTS",
+        ]);
+        let home = std::env::temp_dir().join(format!(
+            "pinvou-eval-selection-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::env::set_var("PINVOU3_HOME", &home);
+        std::env::remove_var("DEEPSEEK_MODEL");
+        std::env::remove_var("DEEPSEEK_PROVIDER");
+        std::env::remove_var("DEEPSEEK_BASE_URL");
+        let bridge = Pinvou3Bridge::boot().expect("boot isolated test bridge");
+        (bridge, home, restore)
+    }
 
     /// ADR-0006：引擎回收必须**先**取消全部子智能体、**后**发 Shutdown。
     /// 两个 op 同通道 FIFO；颠倒顺序等于没取消（Shutdown 直接跳出事件循环，
@@ -1653,6 +2358,209 @@ mod scheduled_model_tests {
             matches!(ops[1], deepseek_tui::core::ops::Op::Shutdown),
             "Shutdown 必须殿后"
         );
+    }
+
+    #[test]
+    fn idle_reap_keeps_active_turns_scheduled_and_active_sessions() {
+        let idle = super::IDLE_EVICT_AFTER_SECS;
+        // 空闲且非 active → 回收。
+        assert!(super::should_reap_idle_engine(false, false, false, idle));
+        assert!(super::should_reap_idle_engine(
+            false,
+            false,
+            false,
+            idle + 1
+        ));
+        // in-flight turn（reserve 占用或终态收口）绝不回收。
+        assert!(!super::should_reap_idle_engine(true, false, false, idle));
+        // scheduled 轮进行中（spawn→submit 窗口）不回收。
+        assert!(!super::should_reap_idle_engine(false, true, false, idle));
+        // 当前 active 会话不回收。
+        assert!(!super::should_reap_idle_engine(false, false, true, idle));
+        // 未到空闲阈值不回收。
+        assert!(!super::should_reap_idle_engine(
+            false,
+            false,
+            false,
+            idle - 1
+        ));
+    }
+
+    #[test]
+    fn idle_reap_recheck_requires_unchanged_clock_and_still_idle() {
+        let idle = super::IDLE_EVICT_AFTER_SECS;
+        // 快照后无任何活动：时钟未前进 + 仍空闲 → 允许回收。
+        assert!(should_still_reap_after_snapshot(
+            false, false, false, idle, 1000, 1000
+        ));
+        // 快照后活动时钟前进（turn 提交 / 终态收口刷新）→ 跳过，即使按旧时钟
+        // 算空闲时长仍超阈值。
+        assert!(!should_still_reap_after_snapshot(
+            false, false, false, idle, 2000, 1000
+        ));
+        // 快照后新 turn 已 reserve（lifecycle active，reserve_turn 不取 gate）→ 跳过。
+        assert!(!should_still_reap_after_snapshot(
+            true, false, false, idle, 1000, 1000
+        ));
+        // scheduled 轮进入 spawn→submit 窗口 / 会话被打开为 active → 跳过。
+        assert!(!should_still_reap_after_snapshot(
+            false, true, false, idle, 1000, 1000
+        ));
+        assert!(!should_still_reap_after_snapshot(
+            false, false, true, idle, 1000, 1000
+        ));
+        // 时钟未前进但按现值已不足空闲阈值（防御性兜底）→ 跳过。
+        assert!(!should_still_reap_after_snapshot(
+            false,
+            false,
+            false,
+            idle - 1,
+            1000,
+            1000
+        ));
+    }
+
+    #[tokio::test]
+    async fn idle_reap_skips_session_with_activity_after_snapshot() {
+        // PR #318 审阅时序的确定性回归：reap_idle_engines 快照判定候选时会话
+        // 空闲；快照后、回收拿到锁之前用户新发 turn（reserve_turn 不取 gate
+        // 可先行 reserve，send_reserved_user_message 抢 gate 提交并刷新活动
+        // 时钟）。复核必须发现活动并跳过回收，否则在跑 turn 会被 reclaim 收口
+        // 成 Interrupted，未提交 reservation 会被失效化导致发送直接失败。
+        let turn_locks = SessionTurnLocks::default();
+        let runtime_locks = SessionTurnLocks::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let sid = "session-idle-reap-race";
+        let lifecycle = lifecycles.for_session(sid);
+
+        // 快照时刻：空闲，活动时钟 = 1000。
+        let snapshot_last_active = 1000_u64;
+        let fake_last_active = Arc::new(AtomicU64::new(snapshot_last_active));
+        let entry_present = Arc::new(AtomicBool::new(true));
+        let reclaimed = Arc::new(AtomicBool::new(false));
+
+        // 快照后 send 先抢到 turn gate（send_reserved_user_message 持锁提交），
+        // reaper 在锁外排队。
+        let gate = turn_locks.for_session(sid).await;
+        let blocker = gate.lock().await;
+
+        let reaper_locks = turn_locks.clone();
+        let reaper_runtime_locks = runtime_locks.clone();
+        let reaper_lifecycles = lifecycles.clone();
+        let probe_last_active = fake_last_active.clone();
+        let probe_entry = entry_present.clone();
+        let probe_reclaim = reclaimed.clone();
+        let reaper = tokio::spawn(async move {
+            evict_if_idle_with_gates(
+                &reaper_locks,
+                &reaper_runtime_locks,
+                sid,
+                // take_entry：与 EnginePool::evict_if_idle 同一复核序列——按
+                // 现值重算，快照后有活动（时钟前进 / turn active）→ None。
+                move || {
+                    let probe_last_active = probe_last_active.clone();
+                    let probe_entry = probe_entry.clone();
+                    let reaper_lifecycles = reaper_lifecycles.clone();
+                    async move {
+                        let current = probe_last_active.load(Ordering::Acquire);
+                        let turn_active =
+                            reaper_lifecycles.get(sid).is_some_and(|lc| lc.is_active());
+                        if should_still_reap_after_snapshot(
+                            turn_active,
+                            false,
+                            false,
+                            // 快照后 turn 持续运行，空闲时长按旧时钟仍超阈值。
+                            super::IDLE_EVICT_AFTER_SECS + 60,
+                            current,
+                            snapshot_last_active,
+                        ) {
+                            probe_entry.store(false, Ordering::Release);
+                            Some(())
+                        } else {
+                            None
+                        }
+                    }
+                },
+                move |_| {
+                    probe_reclaim.store(true, Ordering::Release);
+                    async {}
+                },
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+
+        // 快照后产生活动：新 turn reserve（不取 gate，lifecycle 转 active）+
+        // 提交刷新活动时钟。
+        let reservation = lifecycle
+            .reserve()
+            .expect("new turn reserve after snapshot");
+        fake_last_active.store(2000, Ordering::Release);
+
+        // 释放 turn gate，reaper 恢复执行复核。
+        drop(blocker);
+        drop(gate);
+        let evicted = reaper.await.expect("reaper task joins");
+
+        assert!(!evicted, "快照后有活动的会话必须跳过回收");
+        assert!(
+            entry_present.load(Ordering::Acquire),
+            "复核不过时引擎条目不得被移除"
+        );
+        assert!(
+            !reclaimed.load(Ordering::Acquire),
+            "复核不过时 reclaim 不得执行"
+        );
+        assert!(
+            reservation.ensure_active().is_ok(),
+            "新轮 reservation 必须保持有效"
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_reap_still_reclaims_when_no_activity_after_snapshot() {
+        // 对照测试，防止复核过度保守：快照后无任何活动时回收照常执行。
+        let turn_locks = SessionTurnLocks::default();
+        let runtime_locks = SessionTurnLocks::default();
+        let sid = "session-idle-reap-normal";
+        let snapshot_last_active = 1000_u64;
+        let entry_present = Arc::new(AtomicBool::new(true));
+        let reclaimed = Arc::new(AtomicBool::new(false));
+        let probe_entry = entry_present.clone();
+        let probe_reclaim = reclaimed.clone();
+
+        let evicted = evict_if_idle_with_gates(
+            &turn_locks,
+            &runtime_locks,
+            sid,
+            move || {
+                let probe_entry = probe_entry.clone();
+                async move {
+                    if should_still_reap_after_snapshot(
+                        false,
+                        false,
+                        false,
+                        super::IDLE_EVICT_AFTER_SECS,
+                        snapshot_last_active,
+                        snapshot_last_active,
+                    ) {
+                        probe_entry.store(false, Ordering::Release);
+                        Some(())
+                    } else {
+                        None
+                    }
+                }
+            },
+            move |_| {
+                probe_reclaim.store(true, Ordering::Release);
+                async {}
+            },
+        )
+        .await;
+
+        assert!(evicted, "快照后无活动的空闲会话必须照常回收");
+        assert!(!entry_present.load(Ordering::Acquire));
+        assert!(reclaimed.load(Ordering::Acquire));
     }
 
     fn model(id: &str, wire_name: &str) -> SavedModel {
@@ -1676,6 +2584,206 @@ mod scheduled_model_tests {
             has_secret: false,
             credential_action: None::<CredentialEditAction>,
         }
+    }
+
+    #[test]
+    fn missing_eval_model_error_names_only_the_requested_id() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (bridge, home, _env) = isolated_eval_bridge();
+        let configured = model("configured", "wire-model");
+        let error = resolve_eval_model_selection_from(&bridge, &[configured], "missing-judge")
+            .expect_err("unknown model ID must fail");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("missing-judge"));
+        assert!(!message.to_ascii_lowercase().contains("api_key"));
+        assert!(!message.to_ascii_lowercase().contains("secret"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn identity_uses_actual_bridge_provider_and_model_overrides() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (bridge, home, _env) = isolated_eval_bridge();
+        std::env::set_var("DEEPSEEK_MODEL", "actual-model");
+        std::env::set_var("DEEPSEEK_PROVIDER", "actual-provider");
+
+        let first = identity_for_saved_model(&bridge, &model("first", "raw-one"));
+        let second = identity_for_saved_model(&bridge, &model("second", "raw-two"));
+
+        assert_eq!(first, second);
+        assert!(
+            crate::features::assistant::eval::validate_judge_identity(&first, &second).is_err()
+        );
+
+        std::env::remove_var("DEEPSEEK_MODEL");
+        let mut models = vec![model("judge", "snapshot-model")];
+        let (saved, identity) = resolve_eval_model_selection_from(&bridge, &models, "judge")
+            .expect("resolve saved model");
+        let snapshots = EvalModelSnapshots::default();
+        let selection = snapshots.pin(saved, identity);
+        models[0].model = "changed-after-resolution".to_string();
+        assert_eq!(selection.wire_model(), "snapshot-model");
+        assert_eq!(selection.model_id(), Some("judge"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn pinned_eval_snapshot_binds_once_and_survives_later_config_changes() {
+        let snapshots = EvalModelSnapshots::default();
+        let saved = model("judge", "judge-wire");
+        let selection = snapshots.pin(
+            saved.clone(),
+            super::ModelIdentity::new("openai", "judge-wire"),
+        );
+
+        snapshots
+            .bind_to_session("judge-session", &selection)
+            .expect("first bind");
+        assert!(snapshots
+            .bind_to_session("other-session", &selection)
+            .is_err());
+        assert!(snapshots.saved_models.lock().is_empty());
+        let mut latest_models = vec![model("judge", "changed-wire")];
+        latest_models.clear();
+        assert!(latest_models.is_empty());
+        let resolved =
+            resolve_runtime_model_override(snapshots.for_session("judge-session"), || {
+                panic!("deleted prefs model must not be consulted for a pinned eval session");
+                #[allow(unreachable_code)]
+                Ok(None)
+            })
+            .expect("resolve lifecycle pin");
+        assert_eq!(resolved, Some(saved));
+        let debug = format!("{selection:?}");
+        assert!(!debug.contains("example.invalid"));
+        assert!(!debug.contains("api_key"));
+    }
+
+    #[test]
+    fn discarded_eval_snapshot_releases_private_saved_model() {
+        let snapshots = EvalModelSnapshots::default();
+        let selection = snapshots.pin(
+            model("judge", "judge-wire"),
+            super::ModelIdentity::new("openai", "judge-wire"),
+        );
+        assert_eq!(snapshots.saved_models.lock().len(), 1);
+
+        snapshots.discard(&selection);
+
+        assert!(snapshots.saved_models.lock().is_empty());
+    }
+
+    #[test]
+    fn suite_snapshot_derives_unique_case_selections_from_one_model() {
+        let snapshots = EvalModelSnapshots::default();
+        let suite = snapshots.pin_suite(
+            model("tested-a", "wire-a"),
+            super::ModelIdentity::new("provider-a", "wire-a"),
+        );
+        // Represents preferences switching to B after suite startup. Derivation must not use it.
+        let _latest_active = model("tested-b", "wire-b");
+
+        let first = snapshots
+            .derive_case_selection(&suite)
+            .expect("derive first case");
+        let second = snapshots
+            .derive_case_selection(&suite)
+            .expect("derive second case");
+
+        assert_ne!(first.token(), second.token());
+        assert_eq!(first.model_id(), Some("tested-a"));
+        assert_eq!(second.model_id(), Some("tested-a"));
+        assert_eq!(first.identity(), suite.identity());
+        assert_eq!(second.identity(), suite.identity());
+    }
+
+    #[test]
+    fn discarded_suite_snapshot_cannot_derive_more_case_models() {
+        let snapshots = EvalModelSnapshots::default();
+        let suite = snapshots.pin_suite(
+            model("tested-a", "wire-a"),
+            super::ModelIdentity::new("provider-a", "wire-a"),
+        );
+
+        snapshots.discard_suite(&suite);
+
+        assert!(snapshots.derive_case_selection(&suite).is_err());
+        assert!(snapshots.suite_models.lock().is_empty());
+    }
+
+    #[test]
+    fn forgetting_eval_session_releases_lifecycle_model_pin() {
+        let snapshots = EvalModelSnapshots::default();
+        let saved = model("judge", "judge-wire");
+        let selection = snapshots.pin(
+            saved.clone(),
+            super::ModelIdentity::new("openai", "judge-wire"),
+        );
+        snapshots
+            .bind_to_session("judge-session", &selection)
+            .expect("bind session");
+
+        snapshots.forget_session("judge-session");
+
+        assert_eq!(snapshots.for_session("judge-session"), None);
+        assert!(snapshots.session_models.lock().is_empty());
+    }
+
+    #[test]
+    fn explicit_eval_override_wins_without_consulting_normal_resolution() {
+        let explicit = model("pinned", "pinned-wire");
+        let selected = resolve_runtime_model_override(Some(explicit.clone()), || {
+            panic!("normal model resolution must not run for an explicit eval snapshot");
+            #[allow(unreachable_code)]
+            Ok(None)
+        })
+        .expect("resolve explicit model");
+
+        assert_eq!(selected, Some(explicit));
+    }
+
+    #[test]
+    fn tested_identity_uses_latest_active_model_instead_of_boot_bridge_model() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (bridge, home, _env) = isolated_eval_bridge();
+        let boot_identity = ModelIdentity::new(bridge.provider(), bridge.model());
+        let mut prefs = crate::platform::prefs::UserPrefs::default();
+        let mut active = model("active-b", "active-model-b");
+        active.vendor = Some("kimi".to_string());
+        prefs.advanced.saved_models = vec![active];
+        prefs.advanced.active_model_id = Some("active-b".to_string());
+
+        let identity = identity_for_active_model(&bridge, &prefs);
+
+        assert_eq!(identity.provider, "moonshot");
+        assert_eq!(identity.model, "active-model-b");
+        assert_ne!(identity, boot_identity);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn default_eval_metadata_keeps_raw_saved_model_despite_env_override() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (bridge, home, _env) = isolated_eval_bridge();
+        std::env::set_var("DEEPSEEK_MODEL", "env-wire-override");
+        let mut prefs = crate::platform::prefs::UserPrefs::default();
+        prefs.advanced.saved_models = vec![model("active", "raw-saved-wire")];
+        prefs.advanced.active_model_id = Some("active".to_string());
+
+        assert_eq!(
+            default_model_for_new_session_from(&prefs, &bridge),
+            ("raw-saved-wire".to_string(), Some("active".to_string()))
+        );
+        let _ = std::fs::remove_dir_all(home);
     }
 
     fn profile(model_id: Option<&str>, wire_name: &str) -> ScheduledRunProfile {
@@ -1945,6 +3053,23 @@ mod scheduled_model_tests {
             *order.lock().unwrap(),
             vec!["cancel", "abort", "joined", "persist"]
         );
+    }
+
+    #[test]
+    fn chat_delete_failure_preserves_runtime_and_error() {
+        let forget_count = Arc::new(AtomicUsize::new(0));
+        let observed_count = forget_count.clone();
+
+        let error = delete_then_forget(
+            || Err(anyhow::anyhow!("sentinel delete failure")),
+            move || {
+                forget_count.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .expect_err("injected deletion must fail");
+
+        assert_eq!(observed_count.load(Ordering::SeqCst), 0);
+        assert_eq!(error.to_string(), "sentinel delete failure");
     }
 
     #[tokio::test]

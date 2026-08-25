@@ -4,19 +4,29 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-17 · v0.9.5 r7 四主题公开基线）
+## 0. 当前状态（2026-08-21 · v0.9.5 r8 四主题公开基线）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `a36e6cd53` |
-| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r7` |
-| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r7` 与父仓 gitlink 均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a` |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `d127aed11` |
+| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13`、`#15` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r8` |
+| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r8` 与父仓 gitlink 均指向 `d127aed113529dc93754d044b9f352e9746f6b83`；`r1` 至 `r8` 保持不可变 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r7 公开基线 `46 files changed, +1852/-269`；净增 1583 行 |
-| 守护 | 26 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试 |
+| drift | r8 公开基线 `48 files changed, +3222/-471`；净增 2751 行 |
+| 守护 | r8 为 34 条 CodeWhale `forkguard_*` 行为测试；本次组合树为 37 条 + 2 条通用工具兼容回归 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
+
+### r8 逐轮评测工具安全扩展（已发布）
+
+> CodeWhale PR #15 的候选链 `1eca6103a` + 安全修复 `169c24cc5` + 只读分发与受限面收口 `21e5f661a` + 续轮/Shell 边界修复 `a647ed866` 已 squash 合并为 `d127aed113529dc93754d044b9f352e9746f6b83`；合并提交与已验证候选 head tree 完全一致，并已发布为不可变标签 `pinvou-v0.9.5-r8`。该扩展为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖、最终执行前精确白名单门禁、只读 `File` action 投影与最终分发复检，并封闭排队控制操作、排队续轮/MCP reload、Hook 与日志旁路。受限轮结束后的子智能体完成、后台 Shell 唤醒和编辑重放会锁存到显式新消息安装替代权限；只读 `Bash` 使用 `ShellPolicy::ReadOnly` 的直接 argv 加固路径；受限审计只保留非私有身份字段。父仓 gitlink 与公开校验现统一严格对齐 r8，不再保留 PR 候选放行。
+
+### PR #302 父仓 gitlink 同步
+
+- PR #302 (`feat/plugin-protocol`) 起步时父仓 CodeWhale gitlink 停在 r6 (`3bbf8421`)，与上方 `发布状态` 不一致，触发 `scripts/verify-public-submodule.sh` 与 `scripts/ci-fork-link-check.sh` 在 PR 跑 fast-gate 时持续失败。
+- PR #302 将父仓 gitlink 对齐到 `a36e6cd533024cfe5724bae21875aea42b2ed87a`（`pinvou-v0.9.5-r7^{}`）；PR #305 随后把公开基线推进到已发布的 r8。
+- r7 同步不改 `.gitmodules` 或底座主题内容；对应验证脚本与指纹保持一致。
 
 ### 本次会话修复（已验证并发布）
 
@@ -37,8 +47,9 @@
 
 ### 软上限评估
 
-净增量高于 1500 行软线，主要保留量来自 Automation 持久化、会话恢复、工具兼容和嵌入上下文密封：
+净增量高于 1500 行软线，主要保留量来自逐轮工具安全、Automation 持久化、会话恢复、工具兼容和嵌入上下文密封：
 
+- T2 r8 扩展 `+1370/-202`：逐轮权限必须同时覆盖 catalog、最终 dispatch、排队续轮、Hook、审计和只读 Shell/File 投影，并用行为回归锁住权限替换后的异步唤醒边界。
 - T4 `+373/-24`：稳定 conversation/thread 关联、Pinvou 历史 schema 兼容、misfire/no-overlap 和终态级联清理必须与 Task/Automation 持久化原子完成。
 - T3 `+253/-71`：嵌入宿主的静态指令、ambient context 和 Skill 单根来源必须在模型上下文生成前密封。
 
@@ -65,7 +76,7 @@
 
 ### T2：工具兼容与命令执行安全
 
-- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`Pinvou/CodeWhale#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）。
+- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`Pinvou/CodeWhale#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`Pinvou/CodeWhale#15`）。
 - **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/ops.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
 - **内容**：
   - `EngineConfig.extra_tools` 让宿主工具在 Plan、Agent、Yolo 等 turn registry 中一致注册。
@@ -76,8 +87,11 @@
   - schema 约束的 JSON 容器兼容、工具续轮 provider 角色顺序和已知内部 runtime suffix 展示清理继续沿用 r6 行为。
   - registry-first 提示只引用 canonical action；Custom SubAgent 的显式旧 action allowlist 通过 alias 映射解析到 canonical family，不扩大实际工具权限。
   - 当前工具面不恢复已退役的独立追加文件工具，也没有改动 `request_user_input`。
+  - r8 在 catalog 与最终 dispatch 共用 exact allowlist；显式受限轮次可清空 trusted roots，并禁止 MCP 初始化、控制面 shell、动态工具和子 Agent。控制面限制保持到下一条消息出队，受限排队续轮（goal self-continuation）、编辑重放与 MCP reload 同样拒绝；轮后子智能体完成和后台 Shell 唤醒延迟到显式新消息安装替代权限。Hook 默认关闭；受限审计保留 event 与 tool_name 等非私有身份字段，输入/输出/路径固定脱敏；`None` 保持现有 GUI 行为。
+  - 父仓 GAIA 集成在同一逐轮策略上显式启用 read-only dispatch：catalog 改用只读 `File` action schema，规划与最终执行前均再次拒绝写动作；`Bash` 同步投影为 `ShellPolicy::ReadOnly`，复用直接 argv 加固路径，不能只依赖 approval。
+- **上游计划**：逐轮权限、可信根覆盖、只读 action 投影和最终 dispatch 门禁是通用嵌入能力。当前 fork 版本已随 r8 发布；后续从最新 `Hmbown/CodeWhale` main 提交独立上游 PR。Pinvou profile 名称与 GAIA 工具名单继续留在 app；上游接收后删除 fork 对应实现和本地指纹。
 - **边界**：不包含 Skill 来源、Automation 或产品角色协议。
-- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、registry prompt 和 Custom allowlist alias 回归。
+- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、registry prompt、Custom allowlist alias、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`、`forkguard_read_only_turn_rejects_write_action_at_final_dispatch`、`forkguard_restricted_agent_uses_read_only_file_schema`、`forkguard_queued_control_op_keeps_restricted_turn_authority`、`forkguard_queued_goal_continuation_and_mcp_reload_keeps_restricted_turn_authority`、`forkguard_restricted_turn_defers_idle_subagent_completion_until_new_message`、`forkguard_restricted_agent_uses_hardened_read_only_shell_context`、`forkguard_restricted_turn_defers_idle_shell_wake_until_new_message`、`forkguard_restricted_turn_hooks_require_explicit_host_opt_in`、`forkguard_restricted_tool_audit_redacts_private_sentinel`。
 
 ### T3：嵌入上下文与技能来源
 
@@ -163,7 +177,7 @@ npm run build:web
 cargo build --locked --no-default-features --features local-embed --bin pinvou3-tauri
 ```
 
-完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。12 个 ignored 测试依赖真实模型、外部工具或专用 fixture；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r7` 与父仓 gitlink 一致。
+完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。12 个 ignored 测试依赖真实模型、外部工具或专用 fixture；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r8` 与父仓 gitlink 一致。
 
 ## 5. 后续修改规则
 

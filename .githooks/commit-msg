@@ -16,5 +16,5 @@ if command -v py >/dev/null 2>&1; then
   exec py -3 "$validator" "$1"
 fi
 
-echo "Python is required to validate commit messages. See docs/Git Commit 信息规范文档.md" >&2
+echo "Python is required to validate commit messages. See docs/commit-message-convention.md" >&2
 exit 1

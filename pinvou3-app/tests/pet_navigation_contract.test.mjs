@@ -44,12 +44,10 @@ assert.match(petCss, /\.pet-root\.pet-align-left\s*\{/);
 assert.match(petCss, /\.pet-root\.pet-align-right\s*\{/);
 assert.match(petWindow, /className="pet-character-slot"/);
 assert.match(petWindow, /invoke\(['"]set_pet_activity_visible['"]/);
-// 右键菜单为窗口内 DOM 浮层(不再 invoke 原生菜单窗口:GB10 malloc 闪退)。
-assert.match(petWindow, /const onCharacterContextMenu = \(event\) => \{/);
-assert.match(petWindow, /setCtxMenu\(\{ x, y \}\)/);
-assert.match(petWindow, /className="pet-context-menu"/);
-assert.match(petWindow, /invoke\(['"]set_pet_enabled['"],\s*\{\s*enabled:\s*false\s*\}\)/);
-assert.doesNotMatch(petWindow, /invoke\(['"]show_pet_context_menu['"]/);
+// The in-window DOM overlay contract for the context menu (GB10 malloc crash
+// regression: no longer invokes the native menu window) is owned by the
+// context-menu assertion block in pet_interaction_logic.test.mjs; not
+// repeated here.
 assert.match(petWindow, /listen\(['"]pet:session_unavailable['"]/);
 
 assert.match(rustPetWindow, /pub async fn open_main_from_pet/);

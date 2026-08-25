@@ -5,14 +5,14 @@
 时代）与 `skill-scope-governance-改动说明.md`（PR 验收记录，内容已沉淀于此）。
 
 > **落地状态**（2026-08-14）：§1、§2 为现状（能力档案已退役，模式能力差量
-> 已收敛为静态表 `MODE_TABLE`）；§3 的存储已泛化为按模式键控的 map
-> （`{scopes, initialized}`，见 §3.2），仍是 `disabled_connectors.json` +
-> `disabled_skills.json` 两份（合并为 `disabled_bundles.json` 未做）；§3.1
-> 的统一包模型与「一个包 = 一个开关」、§3.3 的运行时工具名发现（现为
-> manifest 预测）、内置 CLI 连接器归并、统一失效入口（现为各开关命令分别
-> 触发刷新）与 §6 的泛化命令面（现为 `set_disabled_connectors` /
-> `set_disabled_skills` 等）为**已定方向、未实施**，实施时以本文档为准并
-> 更新本注记。
+> 已收敛为静态表 `MODE_TABLE`）；§3 的存储已收敛为**单一 `disabled_bundles.json`**
+> （`{scopes, initialized, project_skills_enabled}`，键 = 包 id，见 §3.2），取代原
+> `disabled_connectors.json` + `disabled_skills.json` 双文件与 `skill:` 前缀跨文件借道；
+> companion 联动排除改由包模型现算（`bundle::skill_owner_package`）。§3.1 的
+> 统一包模型与「一个包 = 一个开关」已部分落地（`BundleStore` + `bundle_readiness`），
+> §3.3 的运行时工具名发现（现为 manifest 预测）、内置 CLI 连接器归并、统一失效入口
+> （现为各开关命令分别触发刷新）与 §6 的泛化命令面（现为 `set_disabled_connectors` /
+> `set_disabled_skills` 等）为**已定方向、未实施**，实施时以本文档为准并更新本注记。
 
 ---
 
@@ -59,9 +59,10 @@
 
 ### 3.1 数据模型：能力包（已定方向、未实施）
 
-> 现状：连接器与技能仍是两份独立开关文件（§3.2），companion 技能按
-> scope 联动排除；下述统一「包」模型（含 `bundle_kind` 推导与
-> 「一个包 = 一个开关」）为目标设计，实施时以本节为准。
+> 现状：连接器与技能已收敛为单一 `disabled_bundles.json`（包 id × SessionMode，
+> §3.2），companion 技能按包模型归属（`bundle::skill_owner_package`）随所属包整体
+> 上下线；下述统一「包」模型（含 `bundle_kind` 推导与「一个包 = 一个开关」）的其余
+> 部分（运行时工具名发现、内置 CLI 归并、统一失效入口）为目标设计，实施时以本节为准。
 
 一切外部能力统一建模为**包**，三个部分均可空：
 
@@ -84,16 +85,33 @@ Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
 
 ### 3.2 默认姿态与用户数据
 
-存储：`~/.pinvou3/disabled_connectors.json` 与 `~/.pinvou3/disabled_skills.json`
-两份，结构同构为按模式键控的 map：
+存储：`~/.pinvou3/disabled_bundles.json` 单一文件（包 id × 模式键控 map）：
 
 ```json
-{ "scopes": { "<mode>": ["<id>"] }, "initialized": ["<mode>"] }
+{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false }
 ```
 
 scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
-`initialized` 集合取代原 `code_initialized` 布尔（旧格式 `{plain, code,
-code_initialized}` 与裸数组读时自动迁移；`disabled_bundles.json` 合并未做）。
+`initialized` 集合取代原 `code_initialized` 布尔。首个版本读取时把旧的
+`disabled_connectors.json`（连接器 id）与 `disabled_skills.json`（技能 id）迁移合并：
+连接器 id 原样进包 id（连接器 id 即包 id），技能 id 经 `bundle::skill_owner_package`
+映射到所属包（companion → MCP/CLI 包，独立技能 → 自身），`skill:` 前缀跨文件借道
+残留统一剥除。旧文件本版本内保留为惰性历史（只读新文件），下个版本周期随旧布局退役。
+
+`hidden_scopes`（可见性）与 `scopes`（disabled，开关）是两套**正交**门控
+（`marketplace/scope.rs`）：
+
+- 对模型两者都「不可见」：供给/执行排除按并集 `unavailable = disabled ∪ hidden`
+  现算（`unavailable_bundles_for`；物化侧同口径，见 `skill_materialization.rs`）；
+- hidden 只决定包是否出现在 composer 列表，不决定 on/off；disabled 只决定
+  开关态，不影响列表可见性；
+- 卸载走 `remove_bundle_from_disabled_scopes`，同时清 disabled 与 hidden
+  （防残留 hidden 误隐藏未来同名重装；ima 断开随技能卸载走同一入口）；
+  CLI 连接器「断开」（logout，删授权不删记录）不走该入口，两个集合均不动；
+- 能力开关写路径（`save_disabled_bundles_for`）只写 `scopes`，不动 hidden；
+- 连接器开关（`sync_disabled_bundles_for_connector_switch`）：关闭只写
+  disabled、不动 hidden；**开回复用卸载清理入口，会连带清 hidden**——即
+  开关开回后该包在所有 scope 恢复可见。
 
 每个模式的默认策略显式声明为**模式身份**（`core/session_mode.rs` 的
 `SessionMode::pack_default_policy()`），不再是存储层的硬编码分支：
@@ -125,6 +143,15 @@ code_initialized}` 与裸数组读时自动迁移；`disabled_bundles.json` 合�
                   → 底座每轮重扫渲染 ## Skills 块
                   → 组合目录为空 → load_skill 一并隐藏（无"假开关"状态）
 ```
+
+- **会话中关闭的边界（上下文不可撤回）**：`## Skills` 块在系统提示里，底座每轮
+  重拼系统提示（发现走 mtime 缓存，组合目录一变下一轮即失效重扫），所以禁用后
+  **新轮次**不再列出该技能名、后续 `load_skill` 也读不到正文。但**已进入上下文的
+  内容撤不回**——若本会话此前已 `load_skill` 读过该技能，其正文留在消息历史里，
+  模型仍记得并可能继续按其引导作答。因此供给层关闭是「体验层尽力而为」（§5.1），
+  真正的保证在执行层：execpolicy deny 硬拒该技能目录内脚本的 spawn、disallowed_tools
+  过滤 MCP 工具，二者不依赖上下文是否已被污染。纯引导型技能（无脚本）在已被读入
+  后无法从模型记忆里擦除，这是 LLM 上下文的固有边界，记录为已知限制。
 
 - **工具名获取以 manifest 预测为主**（现状）：`marketplace/mod.rs` 的
   `model_tool_names` 按 `mcp_{server}_*` 前缀 + manifest 声明工具名生成
@@ -179,7 +206,27 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
 - UI：设置页「能力管理」区，plain/code scope 切换 + 能力包分组
   （类型徽标）+ 项目级技能独立开关；界面文案三语走 `shared/i18n.js`。
 
-## 7. 相关文件
+## 7. 已知限制
+
+#279 遗留、按 `marketplace-unification.md` Phase 4 承诺登记于此：
+
+- **OAuth 远程包 readiness 恒 Ready**：远程 OAuth MCP 包（manifest `servers`
+  非空）没有必填凭据声明——`tool_credentials` 只收敛
+  `config_fields`/`secret_env`/`secret_headers`，不含 `servers`
+  （`bundle.rs`），而 `readiness_for` 对 Mcp/Bundle 只查 credentials 必填项
+  是否在系统凭据存储，因此远程包恒报 Ready。**无法用 readiness 门控 OAuth
+  授权是否完成**；授权态由 `connect`（flow=oauth）流程自理，UI 只能依赖
+  `oauth` 标记打徽标，不能给「未授权」态。
+- **`tool_credentials` / `tool_config_fields` 不按 (key, target) 去重**：
+  两个收敛函数把 `config_fields`、`secret_env`、`secret_headers` 三路声明
+  简单拼接（`bundle.rs`），同一 `(key, target)` 在多路重复声明时会重复出现在
+  `BundleInfo.credentials` / `config_fields` 与落盘的 `credential_keys` 中，
+  凭据收集弹窗与缺失判定可能重复处理同一凭据。
+
+另有两条限制已随文内联登记：会话中关闭的上下文不可撤回边界（§3.3 末）、
+CLI 包真实执行面经 `Bash` 的开放侧翼（§5 末）。
+
+## 8. 相关文件
 
 | 项 | 位置 |
 |---|---|

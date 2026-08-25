@@ -1,11 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
+import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { OFFICE_HTML_STYLE } from './ArtifactsPanel.jsx';
-import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
+import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
 
 const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
   const [preview, setPreview] = useState({ loading: true });
+  // md 预览一次性 innerHTML:懒语言注册完成后 bump 版本号,重新计算恢复高亮。
+  const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
 
   useEffect(() => {
     let alive = true;
@@ -54,6 +57,11 @@ const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
   const labels = t.artifactPreview;
   const canOpen = !isWeb || can('artifactDownload');
   const open = () => bridge.artifacts.openArtifactExternal?.(path, sessionId);
+  // 懒语言注册完成后重算 md 预览(其余 kind 与语法无关,syntaxVersion 变化只会
+  // 重新生成相同字符串,代价可忽略)。
+  const mdHtml = preview.kind === 'md'
+    ? bridge.rendering.renderMarkdown(preview.text || '')
+    : null;
 
   return (
     <div className="absolute inset-0 z-[60] flex items-center justify-center pointer-events-auto">
@@ -70,7 +78,7 @@ const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
           {preview.loading ? <div className="text-[13px] text-[#757575] dark:text-[#8E8E8E]">{labels.loading}</div>
             : preview.missing ? <div className="text-[13px] text-[#757575] dark:text-[#8E8E8E]">{labels.fileMissing}</div>
             : preview.error ? <div className="text-[13px] text-[#F28B82]">{labels.readFailed(preview.error)}</div>
-            : preview.kind === 'md' ? <div className="msg-md text-[14px] leading-relaxed light-code dark-code text-[#1F1F1F] dark:text-[#E3E3E3]" dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown(preview.text || '') }} />
+            : preview.kind === 'md' ? <div className="msg-md text-[14px] leading-relaxed light-code dark-code text-[#1F1F1F] dark:text-[#E3E3E3]" dangerouslySetInnerHTML={{ __html: mdHtml }} />
             : preview.kind === 'html' ? <ScaledHtmlPreview html={preview.text || ''} onOpenExternal={(url) => bridge.artifacts.openUserExternalUrl(url)} />
             : ['json', 'text'].includes(preview.kind) ? <pre className="text-[12px] whitespace-pre-wrap break-words font-mono leading-relaxed text-[#444746] dark:text-[#C4C7C5]">{preview.text}</pre>
             : preview.kind === 'image' ? (preview.imageError ? <div className="text-[13px] text-[#F28B82]">{labels.imageReadFailed(preview.imageError)}</div> : <img className="max-w-full max-h-[70vh] object-contain mx-auto rounded-lg" src={preview.dataUrl} alt={name} />)

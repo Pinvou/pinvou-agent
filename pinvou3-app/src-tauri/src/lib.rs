@@ -5,9 +5,14 @@ mod core;
 pub mod features;
 pub mod platform;
 
-pub use app::commands::attachments::build_message_with_attachments;
+pub use features::assistant::attachments::{
+    build_message_with_attachments, stage_file_in_workspace,
+};
 
 use tauri::Manager;
+
+#[cfg(feature = "benchmark-hooks")]
+pub use features::assistant::product_runtime::headless_bridge;
 
 use crate::app::commands;
 use crate::features::{
@@ -61,7 +66,12 @@ fn ensure_release_env() {
         if let Some(old) = env::var_os("PATH") {
             let mut dirs = Vec::new();
             if let Some(connector_bin) = crate::platform::paths::managed_connector_bin_dir() {
+                // 旧布局（过渡期保留：未迁移的存量二进制还能按名解析）
                 dirs.push(connector_bin);
+            }
+            // 版本化 CLI 资产目录进 PATH（按 lock 表当前版本逐个登记）
+            for (name, pin) in crate::platform::connector_lock::all_artifact_pins() {
+                dirs.push(crate::platform::paths::assets_cli_dir(&name, &pin.version));
             }
             if let Ok(prefix) = env::var("NPM_CONFIG_PREFIX") {
                 dirs.push(std::path::Path::new(&prefix).join("bin"));
@@ -105,7 +115,31 @@ fn allow_embedded_document_navigation(url: &tauri::Url, main_origin_initialized:
     main_origin_initialized && matches!(url.as_str(), "about:blank" | "about:srcdoc")
 }
 
+/// 子进程收割：退出(RunEvent::Exit)与重启(`app.restart()`,Tauri 2 中跳过 Exit
+/// 事件)前共用的收口。managed state 不保证被 drop(kill_on_drop 只在 Child drop
+/// 时生效),显式关停 ACP/连接器子进程防孤儿。各收口内部幂等,超时风险最大的
+/// shutdown() 也只发 oneshot + kill,不做长等待。
+pub(crate) async fn harvest_child_processes(app: &tauri::AppHandle) {
+    if let Some(acp_pool) = app.try_state::<crate::features::codex_acp::AcpPool>() {
+        acp_pool.shutdown_all().await;
+    }
+    if let Some(connector_conn) =
+        app.try_state::<crate::features::connectors::connector_cli::ConnectorConn>()
+    {
+        connector_conn.kill_all_pids();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 全 crate 唯一的 `generate_context!()` 展开点。
+///
+/// macOS 的 embed_plist 用 `#[no_mangle] static _EMBED_INFO_PLIST` 让重复
+/// 展开成为链接错误;GUI(`run`)与 headless 评测宿主(benchmark-hooks)必须
+/// 共用这里的单一 Context 构造,不得在别处再展开该宏。
+pub fn build_tauri_context() -> tauri::Context {
+    tauri::generate_context!()
+}
+
 pub fn run() {
     // 必须最先执行:进程级选定 rustls CryptoProvider。
     // 见 Cargo.toml 的 rustls/reqwest 注释——reqwest 0.13 自带 aws-lc-rs 但只「借用」
@@ -243,6 +277,11 @@ pub fn run() {
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
             }
+            let _ = std::thread::Builder::new()
+                .name("draft-attachment-sweep".to_string())
+                .spawn(|| {
+                    features::files::attachment_upload::sweep_stale_draft_attachments();
+                });
             #[cfg(target_os = "macos")]
             features::updater::cleanup_stale_backup();
             if cfg!(debug_assertions) {
@@ -293,9 +332,8 @@ pub fn run() {
             startup::mark("session_store:start");
             let session_store = match SessionStore::boot_for_process_startup() {
                 Ok(store) => {
-                    store.load_session_models();
-                    store.load_pinned_sessions();
-                    store.load_hidden_sessions();
+                    // sidecar(per-session 模型 / 置顶 / 隐藏)已由 SessionStore::boot_inner
+                    // 在 boot 时统一加载,setup 不再重复读同一批文件。
                     eprintln!("[pinvou3-app] session store ready");
                     Some(store)
                 }
@@ -310,10 +348,14 @@ pub fn run() {
             }
             let remote_control_manager = RemoteControlManager::new(app.handle().clone());
             let remote_event_transport = remote_control_manager.clone();
+            let remote_event_subscriptions = remote_control_manager.clone();
             app.handle().manage(platform::app_events::AppEventBus::new(
                 move |event, payload| remote_event_transport.forward_local_event(event, payload),
+                move |event| remote_event_subscriptions.has_active_subscription(event),
             ));
             app.handle().manage(remote_control_manager.clone());
+            app.handle()
+                .manage(features::behavior_telemetry::BehaviorTelemetry::new());
             // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
             // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
             let handle = app.handle().clone();
@@ -330,6 +372,9 @@ pub fn run() {
                     Ok(pool) => {
                         let agents = pool.agents().clone();
                         let capability_pool = pool.clone();
+                        // 空闲回收巡检：ACP 会话是活的子进程，空闲超阈值回收
+                        // （回到 lazy spawn 语义，下次使用重新拉起）。
+                        pool.start_idle_reaper();
                         handle.manage(pool);
                         eprintln!("[pinvou3-app] Codex ACP pool ready (lazy spawn per session)");
                         (agents, capability_pool)
@@ -355,14 +400,17 @@ pub fn run() {
             let tool_policy: crate::features::assistant::engine_pool::ToolPolicy =
                 std::sync::Arc::new(|app| {
                     let mut tools = crate::features::marketplace::disabled_tool_names();
-                    let kb_usable = app
-                        .try_state::<knowledge::KnowledgeService>()
-                        .map(|service| service.has_indexed_content() && service.semantic_ready())
-                        .unwrap_or(false)
-                        || app
-                            .try_state::<RemoteKnowledgeService>()
+                    // 语义与单一真相源见 KnowledgeService::kb_tools_usable:
+                    // 只看有没有内容,不看模型在位状态(可见性随模型波动会让
+                    // 自愈重载路径不可达)。
+                    let kb_usable = knowledge::KnowledgeService::kb_tools_usable(
+                        app.try_state::<knowledge::KnowledgeService>()
+                            .map(|service| service.has_indexed_content())
+                            .unwrap_or(false),
+                        app.try_state::<RemoteKnowledgeService>()
                             .map(|service| service.has_connections())
-                            .unwrap_or(false);
+                            .unwrap_or(false),
+                    );
                     if !kb_usable {
                         tools.push("kb_search".to_string());
                         tools.push("kb_open_source".to_string());
@@ -425,7 +473,10 @@ pub fn run() {
                             eprintln!("[pinvou3-app] scheduled tasks runtime init failed: {e:#}");
                         }
                     }
-                    handle.manage(pool);
+                    handle.manage(pool.clone());
+                    // 空闲回收巡检：engine 常驻但不再无限常驻，空闲超阈值回收
+                    // （回到 lazy spawn 语义，下次发消息重建 + 注水历史）。
+                    pool.start_idle_reaper();
                     eprintln!("[pinvou3-app] engine pool ready (lazy spawn per session)");
                     match remote_control_manager.resume() {
                         Ok(true) => eprintln!("[pinvou3-app] persistent Web access resumed"),
@@ -441,9 +492,9 @@ pub fn run() {
             }
             startup::mark("engine_pool:done");
 
-            // 技能双 scope 治理(skill-scope-governance):启动时
-            //   1. 读一次 disabled_skills.json——触发旧数据迁移(裸数组 / 借道
-            //      disabled_connectors.json 的 `skill:` 条目 → plain scope);
+            // 技能/工具开关 scope 治理(已收敛为 disabled_bundles.json):启动时
+            //   1. 读一次 disabled_bundles.json——触发旧双文件迁移(disabled_connectors
+            //      .json / disabled_skills.json → 包 id × SessionMode 单一禁用集);
             //   2. 退役进程级全局 DISABLED_SKILLS(过滤职责移交组合目录,组合目录
             //      空 → 整个 `## Skills` 块不渲染,路径泄露面随之封闭)。
             // 组合目录的物化在 engine spawn 时按会话进行(build_engine_config 注入
@@ -527,9 +578,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
+            commands::behavior_telemetry::track_behavior_event,
             commands::assistant_response::export_assistant_response,
             commands::assistant_response::open_assistant_share_target,
             commands::startup::report_frontend_startup,
+            commands::diagnostics::record_authority_sync_diagnostics,
             commands::startup::reveal_startup_window,
             commands::connectors::refresh_connector_auth_gates,
             commands::connectors::feishu_ensure_cli,
@@ -575,7 +628,6 @@ pub fn run() {
             commands::settings::update_search_settings,
             commands::settings::save_settings_and_restart,
             commands::settings::save_search_settings_and_restart,
-            commands::sessions::clear_session,
             commands::monitor::get_monitor_snapshot,
             commands::monitor::get_backend_status,
             commands::monitor::discover_local_vllm,
@@ -655,7 +707,6 @@ pub fn run() {
             commands::sessions::list_archived_sessions,
             commands::sessions::set_session_archived,
             commands::timeline::get_session_timeline,
-            commands::timeline::get_session_stats,
             commands::scheduled::list_scheduled_tasks,
             commands::scheduled::read_scheduled_task,
             commands::scheduled::list_scheduled_task_runs,
@@ -669,7 +720,6 @@ pub fn run() {
             commands::scheduled::run_scheduled_task_now,
             commands::scheduled::mark_scheduled_run_viewed,
             commands::scheduled::scheduled_task_chat_prompt,
-            commands::sessions::get_active_session,
             commands::sessions::save_session_messages,
             commands::sessions::save_session_artifacts,
             commands::sessions::save_session_pinvou_scene_events,
@@ -690,8 +740,11 @@ pub fn run() {
             commands::remote_control::web_access_rpc_respond,
             commands::remote_control::web_access_publish_event,
             commands::remote_control::web_access_list_host_files,
+            commands::remote_control::web_access_list_sessions,
+            commands::remote_control::web_access_list_archived_sessions,
             commands::remote_control::web_access_create_session,
             commands::remote_control::web_access_create_session_and_chat,
+            commands::remote_control::web_access_cancel_session_download,
             commands::remote_control::web_access_load_session_chunk,
             commands::remote_control::web_access_ingest_file,
             commands::remote_control::web_access_upload_attachment_chunk,
@@ -699,6 +752,26 @@ pub fn run() {
             commands::remote_control::web_access_discard_attachment,
             commands::remote_control::web_access_read_conversation_attachment_chunk,
             commands::remote_control::web_access_chat,
+            commands::remote_control::web_access_create_codex_acp_session,
+            commands::remote_control::web_access_list_codex_workspace,
+            commands::remote_control::web_access_search_codex_workspace,
+            commands::remote_control::web_access_preview_codex_workspace_file,
+            commands::remote_control::web_access_get_codex_workspace_changes,
+            commands::remote_control::web_access_get_codex_workspace_diff,
+            commands::remote_control::web_access_cancel_codex_acp,
+            commands::remote_control::web_access_codex_acp_prompt,
+            commands::remote_control::web_access_get_codex_acp_timeline,
+            commands::remote_control::web_access_get_codex_acp_session_info,
+            commands::remote_control::web_access_set_codex_acp_model,
+            commands::remote_control::web_access_set_codex_acp_mode,
+            commands::remote_control::web_access_set_codex_acp_config_option,
+            commands::remote_control::web_access_get_codex_acp_pending_permissions,
+            commands::remote_control::web_access_respond_codex_acp_permission,
+            commands::remote_control::web_access_get_codex_acp_pending_elicitations,
+            commands::remote_control::web_access_respond_codex_acp_elicitation,
+            commands::remote_control::web_access_list_codex_acp_sessions,
+            commands::remote_control::web_access_list_acp_agents,
+            commands::remote_control::web_access_get_acp_agent_status,
             commands::remote_control::web_access_save_session_messages_chunk,
             commands::remote_control::web_access_transcribe_voice_audio,
             commands::remote_control::web_access_read_artifact_chunk,
@@ -711,21 +784,17 @@ pub fn run() {
             commands::remote_control::web_access_render_artifact_visual,
             commands::connectors::set_disabled_connectors,
             commands::connectors::get_disabled_connectors,
+            commands::connectors::set_bundle_visibility,
+            commands::connectors::get_bundle_visibility,
             commands::connectors::set_disabled_skills,
             commands::connectors::get_disabled_skills,
             commands::connectors::set_project_skills_enabled,
             commands::connectors::get_project_skills_enabled,
-            commands::memory::get_memory_profile,
             commands::memory::update_memory_profile,
-            commands::memory::clear_memory_profile,
             commands::memory::get_memory_overview,
-            commands::memory::list_pending_memory,
-            commands::memory::suggest_memory,
             commands::memory::confirm_pending_memory,
             commands::memory::ignore_pending_memory,
             commands::memory::never_pending_memory,
-            commands::memory::list_recent_work_memory,
-            commands::memory::upsert_recent_work_memory,
             commands::memory::archive_recent_work_memory,
             commands::memory::delete_memory_preference,
             commands::memory::update_memory_preference,
@@ -763,13 +832,15 @@ pub fn run() {
             commands::artifacts::open_external_url,
             commands::artifacts::open_user_external_url,
             commands::files::ingest_file,
+            commands::files::ingest_draft_file_chunk,
+            commands::files::cancel_draft_file_upload,
+            commands::files::adopt_draft_attachment,
             commands::files::ingest_dropped_file_chunk,
             commands::files::cancel_dropped_file_upload,
             commands::files::discard_dropped_attachment,
             commands::files::resolve_conversation_attachment,
             commands::files::open_conversation_attachment,
             commands::files::reveal_conversation_attachment,
-            commands::files::detect_system_tools,
             commands::files::save_paste_image,
             commands::interaction::compact_now,
             commands::interaction::get_mode_state,
@@ -907,16 +978,20 @@ pub fn run() {
             commands::remote_knowledge::session_remove_mounted_remote_collection,
             commands::marketplace::list_marketplace_skills,
             commands::marketplace::install_marketplace_skill,
+            commands::marketplace::update_marketplace_skill,
             commands::marketplace::import_skill_package,
             commands::marketplace::import_skill_package_bytes,
+            commands::marketplace::import_plugin_package_cmd,
+            commands::marketplace::import_plugin_package_bytes_cmd,
+            commands::marketplace::import_skill_md_bytes,
             commands::marketplace::uninstall_marketplace_skill,
             commands::marketplace::bundle_readiness,
-            commands::files::verify_upload,
+            commands::marketplace::export_plugin_spec,
         ]);
 
     startup::mark("tauri:builder_configured");
     startup::mark("tauri:context:start");
-    let context = tauri::generate_context!();
+    let context = build_tauri_context();
     startup::mark("tauri:context:done");
     // Keep the historical marker so old and new startup runs remain comparable.
     startup::mark("tauri:run_enter");
@@ -927,11 +1002,18 @@ pub fn run() {
     startup::mark("tauri:build:done");
     startup::mark("tauri:event_loop:run_enter");
     let mut resumed_reported = false;
-    app.run(move |_app, event| match event {
+    app.run(move |app, event| match event {
         tauri::RunEvent::Ready => startup::mark("tauri:event_loop:ready"),
         tauri::RunEvent::Resumed if !resumed_reported => {
             resumed_reported = true;
             startup::mark("tauri:event_loop:first_resumed");
+        }
+        tauri::RunEvent::Exit => {
+            // 退出收割:同步执行——Exit 后进程即将结束,这是最后的清理窗口。
+            // 重启(app.restart())跳过本事件,调用点在 restart 前主动调同一辅助函数。
+            startup::mark("exit:cleanup:start");
+            tauri::async_runtime::block_on(harvest_child_processes(app));
+            startup::mark("exit:cleanup:done");
         }
         _ => {}
     });

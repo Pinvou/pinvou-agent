@@ -4,8 +4,17 @@ import {
   Link, Plus, RefreshCw, Search, X,
 } from '../../components/icons.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
+import {
+  listAcpWorkspace,
+  loadAcpWorkspaceChanges,
+  loadAcpWorkspaceDiff,
+  previewAcpWorkspaceFile,
+  searchAcpWorkspace,
+} from './acpClient.js';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { CodeViewerModal } from './CodeViewerModal.jsx';
+import { can, isWeb } from '../../shared/platform.js';
+import { acpErrorMessage } from './acpErrors.js';
 
 const invoke = invokeTauri;
 const WORKSPACE_WIDTH_KEY = 'pinvou_codex_workspace_width';
@@ -70,6 +79,7 @@ function WorkspaceTree({
   onAddReference,
   onOpenExternal,
   onOpenReader,
+  systemOpenAvailable,
   referencedPaths,
   copy,
 }) {
@@ -110,7 +120,7 @@ function WorkspaceTree({
             <FileColoredIcon name={entry.name} isDir={isDirectory} isOpen={open} size={14} />
             <span className="truncate text-[12px]">{entry.name}</span>
           </button>
-          {!isDirectory && (
+          {!isDirectory && systemOpenAvailable && (
             <button
               type="button"
               aria-label={copy.openInNewWindow}
@@ -147,15 +157,17 @@ function WorkspaceTree({
               >
                 <Plus size={13} />
               </button>
-              <button
-                type="button"
-                aria-label={copy.open}
-                title={copy.open}
-                onClick={() => onOpenExternal(entry)}
-                className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
-              >
-                <ExternalLink size={13} />
-              </button>
+              {systemOpenAvailable && (
+                <button
+                  type="button"
+                  aria-label={copy.open}
+                  title={copy.open}
+                  onClick={() => onOpenExternal(entry)}
+                  className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
+                >
+                  <ExternalLink size={13} />
+                </button>
+              )}
             </>
           )}
         </div>
@@ -171,6 +183,7 @@ function WorkspaceTree({
             onAddReference={onAddReference}
             onOpenExternal={onOpenExternal}
             onOpenReader={onOpenReader}
+            systemOpenAvailable={systemOpenAvailable}
             referencedPaths={referencedPaths}
             copy={copy}
           />
@@ -209,12 +222,13 @@ export function CodexWorkspacePanel({
   const previewRequestRef = useRef(0);
   const showError = (nextError) => {
     console.error('Codex workspace operation failed:', nextError);
-    setError(copy.showRawErrors ? String(nextError) : copy.operationFailed);
+    setError(acpErrorMessage(nextError, copy, { allowRaw: !isWeb }));
   };
   const [panelWidth, setPanelWidth] = useState(savedWorkspaceWidth);
   const panelRef = useRef(null);
   const resizeCleanupRef = useRef(null);
   const referencedPaths = useMemo(() => new Set(references), [references]);
+  const systemOpenAvailable = can('externalSystemOpen');
 
   useEffect(() => {
     if (!visible) return undefined;
@@ -293,7 +307,7 @@ export function CodexWorkspacePanel({
     if (!browsable || (!force && entriesByDirectory[path])) return;
     setLoadingDirectories(current => new Set([...current, path]));
     try {
-      const listing = await invoke('list_codex_workspace', {
+      const listing = await listAcpWorkspace({
         ...scopePayload(),
         relativePath: path || null,
       });
@@ -313,7 +327,7 @@ export function CodexWorkspacePanel({
   async function loadChanges() {
     if (!sessionId) return;
     try {
-      const result = await invoke('get_codex_workspace_changes', { sessionId });
+      const result = await loadAcpWorkspaceChanges({ sessionId });
       setChanges(result);
       if (onChangeCount) onChangeCount((result.changes || []).length);
       setError('');
@@ -381,7 +395,7 @@ export function CodexWorkspacePanel({
     setSearching(true);
     const timer = window.setTimeout(async () => {
       try {
-        const results = await invoke('search_codex_workspace', {
+        const results = await searchAcpWorkspace({
           ...scopePayload(),
           query: query.trim(),
         });
@@ -413,7 +427,7 @@ export function CodexWorkspacePanel({
     const requestId = ++previewRequestRef.current;
     setViewer({ name: entry.name, relativePath: entry.relativePath, preview: null, loading: true, error: '' });
     try {
-      const preview = await invoke('preview_codex_workspace_file', {
+      const preview = await previewAcpWorkspaceFile({
         ...scopePayload(),
         relativePath: entry.relativePath,
       });
@@ -428,7 +442,7 @@ export function CodexWorkspacePanel({
         relativePath: entry.relativePath,
         preview: null,
         loading: false,
-        error: copy.showRawErrors ? String(nextError) : copy.operationFailed,
+        error: acpErrorMessage(nextError, copy, { allowRaw: !isWeb }),
       });
     }
   }
@@ -440,7 +454,7 @@ export function CodexWorkspacePanel({
     const requestId = ++previewRequestRef.current;
     setViewer({ name, relativePath: change.relativePath, preview: null, diff: null, loading: true, error: '' });
     try {
-      const diff = await invoke('get_codex_workspace_diff', {
+      const diff = await loadAcpWorkspaceDiff({
         sessionId,
         relativePath: change.relativePath,
       });
@@ -456,7 +470,7 @@ export function CodexWorkspacePanel({
         preview: null,
         diff: null,
         loading: false,
-        error: copy.showRawErrors ? String(nextError) : copy.operationFailed,
+        error: acpErrorMessage(nextError, copy, { allowRaw: !isWeb }),
       });
     }
   }
@@ -564,6 +578,7 @@ export function CodexWorkspacePanel({
                     onAddReference={onAddReference}
                     onOpenExternal={(entry) => openWorkspacePath('open_codex_workspace_file', entry.relativePath)}
                     onOpenReader={(entry) => openWorkspacePath('open_code_reader', entry.relativePath)}
+                    systemOpenAvailable={systemOpenAvailable}
                     referencedPaths={referencedPaths}
                     copy={copy}
                   />
@@ -633,14 +648,20 @@ export function CodexWorkspacePanel({
           loading={viewer.loading}
           error={viewer.error}
           onClose={() => setViewer(null)}
-          onOpen={() => openWorkspacePath('open_codex_workspace_file', viewer.relativePath)}
-          onReveal={() => openWorkspacePath('reveal_codex_workspace_file', viewer.relativePath)}
-          onOpenInNewWindow={async () => {
-            const opened = viewer.diff
-              ? await openWorkspacePath('open_code_reader', viewer.relativePath, { kind: 'diff' })
-              : await openWorkspacePath('open_code_reader', viewer.relativePath);
-            if (opened) setViewer(null);
-          }}
+          onOpen={systemOpenAvailable
+            ? () => openWorkspacePath('open_codex_workspace_file', viewer.relativePath)
+            : undefined}
+          onReveal={systemOpenAvailable
+            ? () => openWorkspacePath('reveal_codex_workspace_file', viewer.relativePath)
+            : undefined}
+          onOpenInNewWindow={systemOpenAvailable
+            ? async () => {
+                const opened = viewer.diff
+                  ? await openWorkspacePath('open_code_reader', viewer.relativePath, { kind: 'diff' })
+                  : await openWorkspacePath('open_code_reader', viewer.relativePath);
+                if (opened) setViewer(null);
+              }
+            : undefined}
           copy={copy}
         />
       )}

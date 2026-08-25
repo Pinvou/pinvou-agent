@@ -1,88 +1,89 @@
-# Pinvou Agent 项目公约
+# Pinvou Agent Project Conventions
 
-## 核心约束
+## Core constraints
 
-### 0. 本地私人记忆
+### 0. Local private memory
 
-- 如果仓库根目录存在 `.codex-memory.md`，开始工作前先读取；该文件是本地私人记忆，不提交。
+- If `.codex-memory.md` exists at the repository root, read it before starting work. It is local private memory and must not be committed.
 
-### 1. 开发与 PR 公约
+### 1. Development and pull request conventions
 
-- 新任务首次开发及创建 PR 前安全同步最新 `origin/main`，并将 submodule 对齐父仓 gitlink；同一任务的持续开发和评审期间不因主线日常更新反复同步。合并前由 Merge Queue 在最新 `main` 组合提交上运行适用门禁；仅真实冲突或队列集成失败需要改分支时手工 rebase。
-- 处理冲突时保全双方可共存的功能和用户改动；涉及行为取舍或无法证明等价时不得擅自选择，必须向用户说明选项和影响。
-- 提交信息采用 `<type>(<scope>): <中文描述>`（`scope` 可省略）并带有效 `Signed-off-by`；具体格式和 DCO 要求遵循 `CONTRIBUTING.md` 与提交规范。
-- PR 必须以目标分支的实际差异为依据，正文简洁说明背景、变更、实际验证和已知风险；Agent 创建的 PR 默认使用中文，外部贡献者可按 `CONTRIBUTING.md` 使用中文或英文。
-- 最终提交和创建 PR 前必须自检需求完整性、根因及同类问题、实现边界、既有功能影响、异常状态和验证充分性；测试通过不能代替自检。
-- 自检发现范围内缺口时先修复并验证；存在超范围改动、互斥方案、未验证项或回归风险时必须如实说明并等待决策。
+- Before the first development work for a new task and before creating its pull request, safely sync the latest `origin/main` and align every submodule with the parent repository gitlink. Do not repeatedly sync only because `main` advances during continued development or review of the same task. Before merge, the Merge Queue runs applicable gates against the combined tree on the latest `main`; manually rebase only when a real conflict or queue integration failure requires changing the branch.
+- When resolving conflicts, preserve compatible functionality and user changes from both sides. Do not choose between behaviorally different alternatives without explaining the options and their impact to the user.
+- Use `<type>(<scope>): <English description>` for commit messages (`scope` is optional), and include a valid `Signed-off-by` trailer. Follow `CONTRIBUTING.md` and the commit message convention for the exact format and DCO requirements.
+- Pull request titles and descriptions must use English and reflect the actual target-branch diff, including the background, changes, verification, and known risks.
+- Repository collaboration uses English, including branches, issues, pull requests, commits, code comments, developer documentation, and diagnostics. Existing history and localized resources are exempt; UI copy follows the i18n rule below.
+- Before the final commit and pull request creation, self-review requirement completeness, root cause and related cases, implementation boundaries, impact on existing functionality, exceptional states, and verification sufficiency. Passing tests does not replace this review.
+- Fix and verify any in-scope gap found during self-review. Disclose and await a decision for out-of-scope changes, mutually exclusive approaches, unverified scenarios, or regression risks.
 
-### 2. CodeWhale 与 fork 边界
+### 2. CodeWhale and fork boundaries
 
-CodeWhale 提供模型调用、流式输出、工具循环、Session、Skills、Commands、MCP、Hooks 和 Compaction 等底座能力，Pinvou Agent 不重复实现。
+CodeWhale provides the foundation for model calls, streaming output, tool loops, Sessions, Skills, Commands, MCP, Hooks, and Compaction. Pinvou Agent does not reimplement these capabilities.
 
-扩展按以下边界落位：
+Place extensions according to these boundaries:
 
-| 改动类型 | 位置 |
+| Change type | Location |
 |---|---|
-| 领域 Agent 或工具组合 | `SKILL.md` |
-| 外部 API 或独立能力 | MCP server / connector |
-| 模型行为引导 | bundle `instructions.md` |
-| UI、Tauri 集成或 Engine 配置 | `pinvou3-app/` |
-| 可复用的底座问题 | CodeWhale，上游优先 |
+| Domain Agent or tool composition | `SKILL.md` |
+| External API or standalone capability | MCP server / connector |
+| Model behavior guidance | Bundle `instructions.md` |
+| UI, Tauri integration, or Engine configuration | `pinvou3-app/` |
+| Reusable foundation issue | CodeWhale, upstream first |
 
-- 只有必须进入底座生命周期且无法在 app、Skill 或 MCP 完成的 Pinvou 专用语义才留在 fork；通用修复应优先回馈上游。
-- 新增或修改 fork-distinct 行为时，必须在同一 PR 更新 `docs/fork-modifications.md`、相关指纹和行为测试，并运行 `./scripts/fork-guard.sh --fast`。
-- 仅更新 CodeWhale gitlink 且行为不变时，仍须按 guard 结果更新登记和指纹；能够证明现有测试已覆盖时，不强制新增行为测试。
-- fork 基线、规模、主题和同步流程以 `docs/fork-policy.md` 与 `docs/fork-modifications.md` 为单一真相源。
+- Keep Pinvou-specific semantics in the fork only when they must participate in the foundation lifecycle and cannot be implemented in the app, a Skill, or MCP. Prefer contributing reusable fixes upstream.
+- When adding or modifying fork-distinct behavior, update `docs/fork-modifications.md`, the relevant fingerprints, and behavior tests in the same pull request, then run `./scripts/fork-guard.sh --fast`.
+- When only the CodeWhale gitlink changes without a behavior change, update the register and fingerprints as required by the guard. New behavior tests are not mandatory when existing tests can be shown to cover the behavior.
+- Treat `docs/fork-policy.md` and `docs/fork-modifications.md` as the single sources of truth for the fork baseline, size, topics, and synchronization process.
 
-### 3. 多平台架构边界
+### 3. Cross-platform architecture boundaries
 
-Pinvou Agent 按“业务功能优先、平台适配次之”组织：
+Pinvou Agent is organized by business capability first and platform adaptation second:
 
-| 改动类型 | 应放位置 |
+| Change type | Location |
 |---|---|
-| 前端业务 | `pinvou3-app/src/features/<name>/` |
-| Tauri / Web 宿主适配 | `pinvou3-app/src/platform/{tauri,web}/` |
-| Rust 业务及其平台差异 | `pinvou3-app/src-tauri/src/features/<name>/`，专属适配放功能内 `platform/` |
-| 跨功能 OS 原语 | `pinvou3-app/src-tauri/src/platform/`，接口与各 OS 实现放 `platform/os/` |
-| 共享资源与平台配置 | `pinvou3-app/src-tauri/resources/common/`、`pinvou3-app/src-tauri/resources/platforms/`、`pinvou3-app/src-tauri/config/platforms/` |
+| Frontend business logic | `pinvou3-app/src/features/<name>/` |
+| Tauri / Web host adaptation | `pinvou3-app/src/platform/{tauri,web}/` |
+| Rust business logic and platform differences | `pinvou3-app/src-tauri/src/features/<name>/`; feature-specific adapters under its `platform/` |
+| Cross-feature OS primitives | `pinvou3-app/src-tauri/src/platform/`; interfaces and OS implementations under `platform/os/` |
+| Shared resources and platform configuration | `pinvou3-app/src-tauri/resources/common/`, `pinvou3-app/src-tauri/resources/platforms/`, `pinvou3-app/src-tauri/config/platforms/` |
 
-- 业务逻辑留在 `features/`；只有跨功能复用的低层能力才能进入全局 `platform/`。依赖保持 `app → features → platform/core`，不得反向依赖。
-- React 不判断 user agent 或直接访问 Tauri 全局对象；通过 `get_platform_capabilities` 和 `can(capability)` 消费语义化能力。
-- OS 差异使用 `cfg(target_os)` 和明确接口；不支持的能力显式返回 unsupported，不得静默借用其他平台实现。
-- 平台条件编译或实现细节确需留在适配层外时，必须使用架构守卫支持的显式例外，在文件头写明具体理由并补充覆盖该场景的测试；例外不得仅用于绕过模块迁移。
-- 构建统一走项目 npm 命令，不直接运行 `npx tauri build/bundle`。改动后运行 `python3 scripts/architecture-guard.py` 及影响范围内的测试。
+- Keep business logic in `features/`. Only low-level capabilities reused across features belong in the global `platform/`. Dependencies must flow `app → features → platform/core`, never in reverse.
+- React code must not inspect the user agent or access Tauri globals directly. Consume semantic capabilities through `get_platform_capabilities` and `can(capability)`.
+- Express OS differences with `cfg(target_os)` and explicit interfaces. Return `unsupported` explicitly for unavailable capabilities; do not silently reuse another platform's implementation.
+- If conditional compilation or platform implementation details must remain outside an adapter layer, use an explicit exception supported by the architecture guard, document the concrete reason at the top of the file, and add a test covering the scenario. Exceptions must not be used merely to avoid moving a module.
+- Use project npm commands for builds; do not run `npx tauri build/bundle` directly. After changes, run `python3 scripts/architecture-guard.py` and tests for the affected area.
 
-#### 模块化开发公约
+#### Modular development conventions
 
-- 模块边界按职责、状态所有权、变化原因、依赖方向和独立测试能力划分，不以文件行数或仓库总代码量判定模块化质量。
-- 新增或修改功能时应落入职责明确的 `feature`、`platform` 或 `core` 模块；不得把无关职责继续堆入现有模块，跨模块协作应通过窄而稳定的接口完成。
-- 发现职责混杂、状态耦合、反向依赖或难以独立测试时，应按行为边界渐进拆分，并在每批变更中保持现有行为和公开接口兼容。
-- 不得为了满足度量指标机械拆分文件、压缩代码，或牺牲命名、注释、错误处理和可读性；文件大小只能作为评审线索，不能作为合规门禁。
+- Define module boundaries by responsibility, state ownership, reason for change, dependency direction, and independent testability, not by file length or total repository size.
+- Place new or modified functionality in a clearly scoped `feature`, `platform`, or `core` module. Do not continue adding unrelated responsibilities to an existing module. Coordinate across modules through narrow, stable interfaces.
+- When responsibilities are mixed, state is coupled, dependencies point backward, or independent testing is difficult, split the code incrementally along behavior boundaries while preserving existing behavior and public API compatibility in every batch.
+- Do not mechanically split files, compress code, or sacrifice naming, comments, error handling, or readability to satisfy a metric. File size is a review signal, not a compliance gate.
 
-### 4. 社区版开发公约
+### 4. Community edition development conventions
 
-- 开工前先查现有 Issue、PR 和底座能力，避免重复建设；大型功能或破坏性变更先确认方案和验收标准。
-- 社区版功能必须完整可用，不得依赖私有服务、内部地址或企业专属数据；企业能力通过通用扩展接口接入。
-- 新功能必须形成用户可使用的完整闭环，并处理关键错误、权限不足和平台不支持等状态，不得以占位代码或假数据作为完成状态。
-- 保持现有配置、数据和公开接口兼容；确需破坏性变更时，必须先确认并提供迁移方案和回归测试。
-- 应用自身界面文案必须复用 `pinvou3-app/src/shared/i18n.js`，分别提供简体中文、英文和日文，不得在组件中新增单语文案或依赖其他语言回退。
-- 涉及联网、上传、外部命令或新增依赖时，采用安全默认值并明确告知用户；行为变更必须同步更新测试和文档。
-- 不得将账号、密码、密钥、Token、Cookie、客户或私人数据、内部地址写入代码、提交、PR、示例或日志；疑似泄露按 `SECURITY.md` 私密报告。
+- Before starting, search existing issues, pull requests, and foundation capabilities to avoid duplicate work. Confirm the approach and acceptance criteria before large features or breaking changes.
+- Community features must work completely without private services, internal addresses, or enterprise-only data. Integrate enterprise capabilities through generic extension interfaces.
+- New features must form a complete, usable workflow and handle key errors, insufficient permissions, and unsupported platforms. Placeholder code or fake data is not a completed implementation.
+- Preserve compatibility with existing configuration, data, and public interfaces. Confirm unavoidable breaking changes first and provide a migration path and regression tests.
+- Application UI copy must reuse `pinvou3-app/src/shared/i18n.js` and provide Simplified Chinese, English, and Japanese. Do not introduce single-language copy in components or depend on fallback from another language.
+- Use secure defaults and clearly inform users when changes involve network access, uploads, external commands, or new dependencies. Update tests and documentation with behavior changes.
+- Never put accounts, passwords, keys, tokens, cookies, customer or private data, or internal addresses in code, commits, pull requests, examples, or logs. Report suspected disclosures privately according to `SECURITY.md`.
 
-## 项目事实
+## Project facts
 
-- `pinvou3-app/`：Tauri 2 + React/Vite 桌面应用与 Engine wrapper。
-- `CodeWhale/`：Pinvou/CodeWhale submodule，改动遵循“CodeWhale 与 fork 边界”。
-- 运行时数据在 `~/.pinvou3/`（sessions / settings.json / bundle / knowledge / connectors）。
-- bundle 扩展源码在 `pinvou3-app/src-tauri/resources/common/bundle/`，编译进应用并释放到 `~/.pinvou3/bundle/`。
-- 开发启动使用 `./pinvou3-app/run-dev.sh`。
-- 版本号以根目录 `VERSION` 为单一来源；修改后运行 `node scripts/sync-version.mjs`，CI 使用 `--check` 校验一致性。
+- `pinvou3-app/`: Tauri 2 + React/Vite desktop application and Engine wrapper.
+- `CodeWhale/`: Pinvou/CodeWhale submodule; changes follow the CodeWhale and fork boundaries above.
+- Runtime data is stored under `~/.pinvou3/` (`sessions`, `settings.json`, `bundle`, `knowledge`, and `connectors`).
+- Bundle extension sources live in `pinvou3-app/src-tauri/resources/common/bundle/`; they are compiled into the application and extracted to `~/.pinvou3/bundle/`.
+- Start development with `./pinvou3-app/run-dev.sh`.
+- The root `VERSION` file is the single source of truth for the version. After changing it, run `node scripts/sync-version.mjs`; CI verifies consistency with `--check`.
 
-## 规则入口
+## Policy entry points
 
-- `CONTRIBUTING.md`：贡献、DCO、检查与 PR 流程的单一真相源；`CONTRIBUTING.zh-CN.md` 为中文参考，内容冲突时以前者为准。
-- `SECURITY.md`：安全漏洞与敏感信息的私密报告流程。
-- `docs/fork-policy.md` / `docs/fork-modifications.md`：CodeWhale fork 策略与现状。
-- `pinvou3-app/src/ARCHITECTURE.md`、`pinvou3-app/src-tauri/src/README.md`、`pinvou3-app/src-tauri/config/README.md`：前端、Rust 与平台配置边界。
-- `docs/architecture-guard.md`：架构守卫规则。
-- `docs/Git Commit 信息规范文档.md`：提交信息规范。
+- `CONTRIBUTING.md`: single source of truth for contribution, DCO, checks, and pull request workflow. `CONTRIBUTING.zh-CN.md` is a Chinese reference; when content conflicts, `CONTRIBUTING.md` takes precedence.
+- `SECURITY.md`: private reporting process for vulnerabilities and sensitive information.
+- `docs/fork-policy.md` / `docs/fork-modifications.md`: CodeWhale fork policy and current inventory.
+- `pinvou3-app/src/ARCHITECTURE.md`, `pinvou3-app/src-tauri/src/README.md`, and `pinvou3-app/src-tauri/config/README.md`: frontend, Rust, and platform configuration boundaries.
+- `docs/architecture-guard.md`: architecture guard rules.
+- `docs/commit-message-convention.md`: commit message convention.

@@ -111,9 +111,15 @@ fn connector_cli_program(cli_bin: &str, program: &str) -> OsString {
     }
 
     if !cli_bin.is_empty() && program == cli_bin {
-        // 应用按需下载并校验的连接器 CLI 优先,缺失时回退已有 npm 全局 shim。
+        // 版本化资产库（lock 表钉住版本，单点解析）优先；旧布局（未迁移的存量）
+        // 其次；都没有回退已有 npm 全局 shim。
+        if let Some(path) = crate::platform::connector_lock::locked_cli_path(cli_bin) {
+            if path.is_file() {
+                return path.into_os_string();
+            }
+        }
         if let Some(bin_dir) = crate::platform::paths::managed_connector_bin_dir() {
-            let bundled = bin_dir.join(format!("{cli_bin}.exe"));
+            let bundled = bin_dir.join(crate::platform::connector_lock::executable_name(cli_bin));
             if bundled.is_file() {
                 return bundled.into_os_string();
             }

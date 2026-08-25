@@ -74,6 +74,11 @@ command_protocol!(
     "assistant_response.rs",
     ["export_assistant_response", "open_assistant_share_target"]
 );
+command_protocol!(
+    behavior_telemetry_protocol,
+    "behavior_telemetry.rs",
+    ["track_behavior_event"]
+);
 command_protocol!(chat_protocol, "chat.rs", ["chat"]);
 command_protocol!(
     connectors_protocol,
@@ -81,6 +86,8 @@ command_protocol!(
     [
         "set_disabled_connectors",
         "get_disabled_connectors",
+        "set_bundle_visibility",
+        "get_bundle_visibility",
         "set_disabled_skills",
         "get_disabled_skills",
         "set_project_skills_enabled",
@@ -133,15 +140,16 @@ command_protocol!(
     "files.rs",
     [
         "ingest_file",
+        "ingest_draft_file_chunk",
+        "cancel_draft_file_upload",
+        "adopt_draft_attachment",
         "ingest_dropped_file_chunk",
         "cancel_dropped_file_upload",
         "discard_dropped_attachment",
         "resolve_conversation_attachment",
         "open_conversation_attachment",
         "reveal_conversation_attachment",
-        "detect_system_tools",
         "save_paste_image",
-        "verify_upload"
     ]
 );
 command_protocol!(
@@ -228,27 +236,26 @@ command_protocol!(
         "uninstall_marketplace_tool",
         "list_marketplace_skills",
         "install_marketplace_skill",
+        "update_marketplace_skill",
         "import_skill_package",
+        "import_plugin_package_cmd",
+        "import_plugin_package_bytes_cmd",
+        "import_skill_md_bytes",
         "import_skill_package_bytes",
         "uninstall_marketplace_skill",
-        "bundle_readiness"
+        "bundle_readiness",
+        "export_plugin_spec"
     ]
 );
 command_protocol!(
     memory_protocol,
     "memory.rs",
     [
-        "get_memory_profile",
         "update_memory_profile",
-        "clear_memory_profile",
         "get_memory_overview",
-        "list_pending_memory",
-        "suggest_memory",
         "confirm_pending_memory",
         "ignore_pending_memory",
         "never_pending_memory",
-        "list_recent_work_memory",
-        "upsert_recent_work_memory",
         "archive_recent_work_memory",
         "delete_memory_preference",
         "update_memory_preference",
@@ -332,8 +339,11 @@ command_protocol!(
         "web_access_rpc_respond",
         "web_access_publish_event",
         "web_access_list_host_files",
+        "web_access_list_sessions",
+        "web_access_list_archived_sessions",
         "web_access_create_session",
         "web_access_load_session_chunk",
+        "web_access_cancel_session_download",
         "web_access_ingest_file",
         "web_access_upload_attachment_chunk",
         "web_access_abort_attachment_upload",
@@ -341,6 +351,26 @@ command_protocol!(
         "web_access_read_conversation_attachment_chunk",
         "web_access_create_session_and_chat",
         "web_access_chat",
+        "web_access_create_codex_acp_session",
+        "web_access_list_codex_workspace",
+        "web_access_search_codex_workspace",
+        "web_access_preview_codex_workspace_file",
+        "web_access_get_codex_workspace_changes",
+        "web_access_get_codex_workspace_diff",
+        "web_access_cancel_codex_acp",
+        "web_access_codex_acp_prompt",
+        "web_access_get_codex_acp_timeline",
+        "web_access_get_codex_acp_session_info",
+        "web_access_set_codex_acp_model",
+        "web_access_set_codex_acp_mode",
+        "web_access_set_codex_acp_config_option",
+        "web_access_get_codex_acp_pending_permissions",
+        "web_access_respond_codex_acp_permission",
+        "web_access_get_codex_acp_pending_elicitations",
+        "web_access_respond_codex_acp_elicitation",
+        "web_access_list_codex_acp_sessions",
+        "web_access_list_acp_agents",
+        "web_access_get_acp_agent_status",
         "web_access_save_session_messages_chunk",
         "web_access_transcribe_voice_audio",
         "web_access_read_artifact_chunk",
@@ -376,7 +406,6 @@ command_protocol!(
     sessions_protocol,
     "sessions.rs",
     [
-        "clear_session",
         "list_sessions",
         "list_archived_sessions",
         "create_session",
@@ -385,7 +414,6 @@ command_protocol!(
         "rename_session",
         "set_session_pinned",
         "set_session_archived",
-        "get_active_session",
         "save_session_messages",
         "save_session_artifacts",
         "save_session_pinvou_scene_events",
@@ -417,11 +445,7 @@ command_protocol!(
         "save_search_settings_and_restart"
     ]
 );
-command_protocol!(
-    timeline_protocol,
-    "timeline.rs",
-    ["get_session_timeline", "get_session_stats"]
-);
+command_protocol!(timeline_protocol, "timeline.rs", ["get_session_timeline"]);
 command_protocol!(
     startup_protocol,
     "startup.rs",

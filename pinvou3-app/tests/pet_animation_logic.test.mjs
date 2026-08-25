@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const source = new URL("../src/features/pet/pet-animation.js", import.meta.url);
-const petManifestUrl = new URL("../src/features/pet/pet-manifest.json", import.meta.url);
 
 assert.equal(
   existsSync(source),
@@ -12,12 +11,9 @@ assert.equal(
   "pet-animation.js should define the Codex animation contract",
 );
 
-const petManifest = JSON.parse(readFileSync(petManifestUrl, "utf8"));
-assert.deepEqual(
-  Object.fromEntries(petManifest.map((pet) => [pet.id, pet.spriteVersionNumber])),
-  { lingling: 1, langlang: 2, "ace-taffy": 1 },
-  "the manifest must explicitly distinguish nine-row v1 and eleven-row v2 atlases",
-);
+// The manifest spriteVersionNumber mapping (lingling:1/langlang:2/ace-taffy:1)
+// is asserted by pet_registry_logic.test.mjs as the SSOT owner; not repeated
+// here.
 
 const dir = mkdtempSync(join(tmpdir(), "pinvou3-pet-animation-"));
 const modulePath = join(dir, "pet-animation.mjs");

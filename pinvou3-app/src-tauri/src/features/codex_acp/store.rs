@@ -25,6 +25,10 @@ pub enum AgentBackend {
 // parse/agent_id 是 backend 字符串表示(序列化契约)的公开解析入口,生产链路
 // 在用;as_str 仅测试断言别名契约,已单独 #[cfg(test)] 门控。
 impl AgentBackend {
+    /// ACP Agent 目录的单一注册表。新增后端时只需在这里登记，列表、状态与 UI
+    /// 都从同一顺序派生，避免某一端遗漏后只显示部分 Agent。
+    pub const ACP_BACKENDS: [Self; 3] = [Self::CodexAcp, Self::ClaudeAcp, Self::KimiAcp];
+
     pub fn parse(value: Option<&str>) -> Result<Self> {
         match value.unwrap_or("deepseek") {
             "deepseek" | "pinvou" => Ok(Self::Deepseek),

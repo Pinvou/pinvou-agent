@@ -14,10 +14,6 @@ const toolStoreSource = await readFile(
   new URL('../src/features/tools/ToolStoreView.jsx', import.meta.url),
   'utf8',
 );
-const importLogicSource = await readFile(
-  new URL('../src/features/tools/skill-import-logic.js', import.meta.url),
-  'utf8',
-);
 const tauriConfigSource = await readFile(
   new URL('../src-tauri/tauri.conf.json', import.meta.url),
   'utf8',
@@ -57,7 +53,7 @@ assert.match(toolStoreSource, /ctrl\.install\(/, 'tool store must install the dr
 assert.match(toolStoreSource, /capture: true/, 'tool store must take over in capture phase');
 assert.match(
   toolStoreSource,
-  /import_skill_package_bytes/,
+  /import_plugin_package_bytes_cmd/,
   'dropped zips must go through the base64 byte channel command',
 );
 assert.match(
@@ -81,7 +77,14 @@ assert.equal(
   'dragDropEnabled must stay false (WebView2 drag feedback + no path access)',
 );
 
-// 4. 纯逻辑:大小软限对齐后端 5MiB
-assert.match(importLogicSource, /5 \* 1024 \* 1024/);
+// 4. Pure logic: the drag-drop frontend soft limit aligns with the backend
+// (50 MiB; the backend additionally hard-validates at 200 MiB).
+// Assert the real constant directly; skill_zip_import_logic tests already
+// cover this constant's behavioral boundary — here we only lock the
+// frontend/backend alignment.
+const { MAX_SKILL_ZIP_BYTES } = await import(
+  new URL('../src/features/tools/skill-import-logic.js', import.meta.url)
+);
+assert.equal(MAX_SKILL_ZIP_BYTES, 50 * 1024 * 1024);
 
 console.log('tool store skill drop contract tests passed');

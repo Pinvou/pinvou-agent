@@ -313,6 +313,75 @@ pub(super) fn canonicalize_json(value: &Value) -> Value {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebWorkspaceRpcPolicy {
+    HostFileBrowse,
+    CreateWithOptionalGrant,
+    SessionBoundRead,
+}
+
+const NATIVE_WORKSPACE_COMMANDS: &[&str] = &[
+    "create_codex_acp_session",
+    "list_codex_workspace",
+    "search_codex_workspace",
+    "preview_codex_workspace_file",
+    "get_codex_workspace_changes",
+    "get_codex_workspace_diff",
+    "open_codex_workspace_file",
+    "reveal_codex_workspace_file",
+    "open_code_reader",
+];
+
+fn web_workspace_rpc_policy(command: &str) -> Option<WebWorkspaceRpcPolicy> {
+    match command {
+        "web_access_list_host_files" => Some(WebWorkspaceRpcPolicy::HostFileBrowse),
+        "web_access_create_codex_acp_session" => {
+            Some(WebWorkspaceRpcPolicy::CreateWithOptionalGrant)
+        }
+        "web_access_list_codex_workspace"
+        | "web_access_search_codex_workspace"
+        | "web_access_preview_codex_workspace_file"
+        | "web_access_get_codex_workspace_changes"
+        | "web_access_get_codex_workspace_diff" => Some(WebWorkspaceRpcPolicy::SessionBoundRead),
+        _ => None,
+    }
+}
+
+fn validate_web_workspace_rpc(command: &str, args: &Value) -> Result<(), String> {
+    if NATIVE_WORKSPACE_COMMANDS.contains(&command) {
+        return Err(format!(
+            "{command} is desktop-only; Web must use the scoped workspace wrapper"
+        ));
+    }
+    let Some(policy) = web_workspace_rpc_policy(command) else {
+        return Ok(());
+    };
+    if args.get("workspacePath").is_some() || args.get("workspace_path").is_some() {
+        return Err(format!("{command} does not accept a native workspace path"));
+    }
+    if policy == WebWorkspaceRpcPolicy::HostFileBrowse {
+        for field in ["issueWorkspaceHandle", "issue_workspace_handle"] {
+            if args.get(field).is_some_and(|value| !value.is_boolean()) {
+                return Err(format!("{field} must be a boolean"));
+            }
+        }
+        return Ok(());
+    }
+    if policy == WebWorkspaceRpcPolicy::CreateWithOptionalGrant {
+        let Some(handle) = args.get("workspaceHandle") else {
+            return Ok(());
+        };
+        if handle.is_null() {
+            return Ok(());
+        }
+        let Some(handle) = handle.as_str() else {
+            return Err("workspaceHandle must be a string or null".to_string());
+        };
+        super::workspace_grants::validate_handle(handle)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WebSessionScope {
     Required(&'static str),
     Optional(&'static str),
@@ -343,11 +412,14 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "update_work_context_memory" => Required("sessionId"),
 
         "accept_plan"
+        | "cancel_codex_acp"
         | "cancel_shell_task"
         | "discard_plan"
         | "equip_persona"
         | "exit_plan_to_yolo"
         | "get_active_persona"
+        | "get_codex_workspace_changes"
+        | "get_codex_workspace_diff"
         | "get_mode_state"
         | "get_session_model_id"
         | "get_session_persona_events"
@@ -373,12 +445,28 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "unequip_persona"
         | "web_access_artifact_info"
         | "web_access_chat"
+        | "web_access_codex_acp_prompt"
+        | "web_access_cancel_codex_acp"
+        | "web_access_get_codex_acp_pending_elicitations"
+        | "web_access_get_codex_acp_pending_permissions"
+        | "web_access_respond_codex_acp_permission"
+        | "web_access_get_codex_acp_session_info"
+        | "web_access_get_codex_acp_timeline"
+        | "web_access_respond_codex_acp_elicitation"
+        | "web_access_get_codex_workspace_changes"
+        | "web_access_get_codex_workspace_diff"
+        | "web_access_list_codex_workspace"
+        | "web_access_preview_codex_workspace_file"
         | "web_access_read_artifact_chunk"
         | "web_access_read_artifact_image_b64"
         | "web_access_read_artifact_text"
         | "web_access_read_artifact_thumbnail"
         | "web_access_render_artifact_visual"
         | "web_access_read_conversation_attachment_chunk"
+        | "web_access_search_codex_workspace"
+        | "web_access_set_codex_acp_config_option"
+        | "web_access_set_codex_acp_mode"
+        | "web_access_set_codex_acp_model"
         | "web_access_transcribe_voice_audio"
         | "web_access_write_artifact_text" => Required("sessionId"),
 
@@ -387,6 +475,7 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "save_session_artifacts"
         | "set_session_archived"
         | "set_session_pinned"
+        | "web_access_cancel_session_download"
         | "web_access_load_session_chunk"
         | "web_access_save_session_messages_chunk" => Required("id"),
 
@@ -403,6 +492,7 @@ pub(super) fn validate_web_rpc_scope(
     command: &str,
     args: &Value,
 ) -> Result<(), String> {
+    validate_web_workspace_rpc(command, args)?;
     let Some(scope) = web_session_scope(command) else {
         return Ok(());
     };
@@ -422,14 +512,17 @@ pub(super) fn validate_web_rpc_scope(
             Ok(())
         };
     };
-    crate::features::sessions::validate_session_id(session_id)
-        .map_err(|error| format!("远程控制会话 ID 无效：{error:#}"))?;
+    crate::features::sessions::validate_session_id(session_id).map_err(|error| {
+        log::warn!("[remote_control] rejected invalid Web Session id: {error:#}");
+        "invalid_web_session_id".to_string()
+    })?;
     super::validate_multi_agent_session_web_scope(app, command, session_id)?;
-    if (command == "web_access_load_session_chunk"
-        && args
-            .get("downloadId")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty()))
+    if command == "web_access_cancel_session_download"
+        || (command == "web_access_load_session_chunk"
+            && args
+                .get("downloadId")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty()))
         || (command == "web_access_save_session_messages_chunk"
             && args.get("offset").and_then(Value::as_u64).unwrap_or(0) > 0)
     {
@@ -441,9 +534,10 @@ pub(super) fn validate_web_rpc_scope(
     let store = app
         .try_state::<SessionStore>()
         .ok_or_else(|| "Session store is not ready".to_string())?;
-    store
-        .load(session_id)
-        .map_err(|error| format!("远程控制会话 {session_id} 不存在：{error:#}"))?;
+    store.load(session_id).map_err(|error| {
+        log::warn!("[remote_control] Web Session scope lookup failed: {error:#}");
+        "web_session_unavailable".to_string()
+    })?;
     Ok(())
 }
 
