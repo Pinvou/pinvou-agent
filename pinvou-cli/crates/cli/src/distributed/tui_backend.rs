@@ -379,10 +379,13 @@ fn cancelled_error() -> BackendError {
     .with_exit_code(StableExitCode::Cancelled)
 }
 
-fn is_attachment_scoped(kind: RuntimeEventKind) -> bool {
+fn is_unscoped_event(kind: RuntimeEventKind) -> bool {
     matches!(
         kind,
-        RuntimeEventKind::AttachmentStarted | RuntimeEventKind::AttachmentEnded
+        RuntimeEventKind::AttachmentStarted
+            | RuntimeEventKind::AttachmentEnded
+            | RuntimeEventKind::LogRecord
+            | RuntimeEventKind::Vendor
     )
 }
 
@@ -559,7 +562,7 @@ impl Backend for ControllerTuiBackend {
                 (None, Some(turn_id)) if event.event_kind() == RuntimeEventKind::TurnStarted => {
                     active_turn = Some(turn_id.to_owned());
                 }
-                (None, None) if is_attachment_scoped(event.event_kind()) => {}
+                (None, None) if is_unscoped_event(event.event_kind()) => {}
                 (Some(expected), Some(actual)) if expected == actual => {
                     if event.event_kind() == RuntimeEventKind::TurnStarted {
                         return Err(protocol_error(
@@ -567,7 +570,7 @@ impl Backend for ControllerTuiBackend {
                         ));
                     }
                 }
-                (Some(_), None) if is_attachment_scoped(event.event_kind()) => {}
+                (Some(_), None) if is_unscoped_event(event.event_kind()) => {}
                 (None, _) => {
                     return Err(protocol_error(
                         "controller returned a turn event before turn.started",
@@ -1487,6 +1490,36 @@ mod tests {
         IpcMessage::event("runtime.event", serde_json::to_value(event).unwrap()).unwrap()
     }
 
+    fn unscoped_event(seq: u64, kind: &str, payload: serde_json::Value) -> IpcMessage {
+        let rate_class = match kind {
+            "log.record" => "R2",
+            "vendor" => "R1",
+            _ => panic!("unsupported unscoped fixture kind"),
+        };
+        let mut value = json!({
+            "protocol_version": pinvou_protocol::IPC_VERSION,
+            "schema_version": 1,
+            "node_id": "node-a",
+            "logical_session_id": "session-a",
+            "attachment_id": "attachment-a",
+            "work_id": null,
+            "collaborative_run_id": null,
+            "stream_id": "main",
+            "turn_id": null,
+            "seq": seq,
+            "source_span": null,
+            "timestamp": "2026-08-24T00:00:00Z",
+            "rate_class": rate_class,
+            "kind": kind,
+            "payload": payload
+        });
+        if kind == "vendor" {
+            value["vendor_extension"] = json!({"method":"remoteControl/status/changed"});
+        }
+        let event = RuntimeEventEnvelope::from_value(value).unwrap();
+        IpcMessage::event("runtime.event", serde_json::to_value(event).unwrap()).unwrap()
+    }
+
     fn backend(connector: FakeConnector) -> ControllerTuiBackend {
         ControllerTuiBackend::with_connector(std::env::current_dir().unwrap(), Arc::new(connector))
             .unwrap()
@@ -1549,6 +1582,54 @@ mod tests {
             ]
         );
         assert_eq!(connector.methods(), ["chat.start"]);
+    }
+
+    #[test]
+    fn stream_accepts_codex_initialization_events_before_turn_started() {
+        let connector = FakeConnector::with([FakePlan::Frames(vec![
+            unscoped_event(1, "vendor", json!({})),
+            unscoped_event(
+                2,
+                "log.record",
+                json!({"source":"codex","level":"warning","message":"cache refresh"}),
+            ),
+            event(3, "turn.started", json!({"user_input_ref":"prompt"})),
+            event(
+                4,
+                "text.delta",
+                json!({"role":"assistant","content":"PINVOU_OK","merged_count":1}),
+            ),
+            event(
+                5,
+                "turn.ended",
+                json!({"end_reason":"completed","error":null}),
+            ),
+        ])]);
+        let subject = backend(connector);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::clone(&seen);
+
+        subject
+            .stream_turn(
+                9,
+                "hello".into(),
+                Box::new(move |event| {
+                    output.lock().unwrap().push(event.kind().to_owned());
+                    Ok(())
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                "vendor",
+                "log.record",
+                "turn.started",
+                "text.delta",
+                "turn.ended"
+            ]
+        );
     }
 
     #[test]
