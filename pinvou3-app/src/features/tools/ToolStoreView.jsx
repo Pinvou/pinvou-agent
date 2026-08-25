@@ -1040,15 +1040,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const mcpBs = bundleStates[mcpId];
           const mcpInstalled = mcpBs ? mcpBs.installed : !!toolStates[mcpId];
           // 安装态：MCP 或技能任一已装即显示已装（G3：独立安装的 companion
-          // 技能可见可管）。动作始终跟随所属 MCP 包 readiness——配置字段
-          // （配置/连接按钮）只有包级 readiness 知道，技能级给不出。
+          // 技能可见可管）。动作与安装态同源拆分：MCP 已装、或两者皆未装（安装
+          // 入口始终路由到所属 MCP 包）走包级 readiness——配置字段（配置/连接
+          // 按钮）只有包级 readiness 知道；仅技能独立已装（G3 混合态）改走技能级
+          // readiness 给出卸载入口，与 handleAction 的技能级卸载分流一致。
           const skillBs = s.backendId ? bundleStates[s.backendId] : null;
           const skillInstalled = skillBs ? skillBs.installed : (be ? be.installed : false);
           return {
             ...s,
             installed: mcpInstalled || skillInstalled,
             updateAvailable,
-            actions: actionsOf(mcpBs),
+            actions: (!mcpInstalled && skillInstalled) ? actionsOf(skillBs) : actionsOf(mcpBs),
           };
         }
         const bs = s.backendId ? bundleStates[s.backendId] : null;
@@ -1076,8 +1078,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             ? (tsToolsData.find(t => t.backendId === mcpId) || tsToolWelcomeData.find(t => t.backendId === mcpId))
             : null;
           // 安装态：MCP 或技能任一已装即显示已装（G3：独立安装的 companion
-          // 技能可見、可卸载）。动作始终跟随所属 MCP 包 readiness——配置/连接
-          // 按钮依赖包级配置字段（如腾讯文档 Token），技能级 readiness 给不出。
+          // 技能可見、可卸载）。动作与安装态同源拆分：MCP 已装、或两者皆未装
+          // （安装入口始终路由到所属 MCP 包）走包级 readiness——配置/连接按钮
+          // 依赖包级配置字段（如腾讯文档 Token），技能级 readiness 给不出；仅
+          // 技能独立已装（G3 混合态）改走技能级 readiness 给出卸载入口，
+          // 与 handleAction 的技能级卸载分流一致。
           const mcpBs = mcpId ? bundleStates[mcpId] : null;
           const skillBs = bundleStates[x.id];
           const mcpInstalled = mcpId ? (mcpBs ? mcpBs.installed : !!toolStates[mcpId]) : false;
@@ -1092,7 +1097,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: mcpId ? (mcpInstalled || skillInstalled) : skillInstalled,
             updateAvailable: !!x.update_available,
-            actions: mcpId ? actionsOf(mcpBs) : actionsOf(skillBs),          });
+            actions: mcpId
+              ? ((!mcpInstalled && skillInstalled) ? actionsOf(skillBs) : actionsOf(mcpBs))
+              : actionsOf(skillBs),          });
         });
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,

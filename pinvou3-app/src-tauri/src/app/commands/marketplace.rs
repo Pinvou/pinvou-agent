@@ -460,15 +460,24 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
             }
         }
     }
-    // 联动:删配套技能(best-effort,删不掉不影响 MCP 卸载)。必须先于
-    // `mgr.uninstall` 执行:技能落盘目录按 `skill_owner_package` 条件认领推导
-    // (包本体已装才归 `bundles/<pkg>/skills/`),MCP 先卸则认领翻转、技能卸载
-    // 会按「独立纯技能包」算错目录并报「非市场安装」静默残留(gongwen 先卸 →
-    // government-writing 删不掉的顺序依赖 bug)。
+    // 联动:删配套技能。必须先于 `mgr.uninstall` 执行:技能落盘目录按
+    // `skill_owner_package` 条件认领推导(包本体已装才归 `bundles/<pkg>/skills/`),
+    // MCP 先卸则认领翻转、技能卸载会按「独立纯技能包」算错目录并报「非市场安装」
+    // 静默残留(gongwen 先卸 → government-writing 删不掉的顺序依赖 bug)。
+    // Companion teardown must also *succeed* before the MCP record is removed:
+    // read-time scope normalization maps skill id -> package id one-way, so a
+    // failed companion delete followed by MCP removal flips the claim back to
+    // the skill name and the stored package-level disabled/hidden entries stop
+    // matching — a user-disabled/hidden skill would be re-materialized into
+    // sessions with its scripts outside the execpolicy deny rules. Abort on
+    // failure (same discipline as the install path's abort-on-delete-failure):
+    // the MCP stays installed, the claim stays stable, and the user can retry.
     for sid in companions {
-        let _ = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .uninstall(&sid);
-        // 已卸载技能从两个 scope 禁用集清除残留。
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .uninstall(&sid)
+            .map_err(|e| format!("联动卸载配套技能 '{sid}' 失败（已中止工具卸载，请重试）: {e}"))?;
+        // Scope entries are cleared only after the skill is actually gone —
+        // otherwise a still-installed skill would be silently re-enabled.
         crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(&sid);
     }
     mgr.uninstall(tool_id)?;

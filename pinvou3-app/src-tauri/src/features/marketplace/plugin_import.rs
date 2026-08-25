@@ -796,6 +796,38 @@ pub fn import_plugin_package(
             ));
         }
     }
+    // Preset/companion/cross-package skill name collisions are rejected up
+    // front, consistent with the two skill_marketplace channels (which sweep
+    // duplicate copies after install — this pipeline never sweeps, so without
+    // a guard a collision would escalate from "shadowed" to "swept away").
+    // Self-claim is allowed (owner == this package id, e.g. a combo package
+    // whose mcp manifest declares its own skill as companion on reimport).
+    for skill_name in &skills {
+        if crate::features::marketplace::skill_marketplace::is_preset_skill_name(skill_name) {
+            return Err(format!(
+                "技能 '{skill_name}' 与市场预置技能冲突，请改用其它名称"
+            ));
+        }
+        let owner = crate::features::marketplace::bundle::skill_owner_package(skill_name);
+        if owner != *skill_name && owner != id {
+            return Err(format!(
+                "技能 '{skill_name}' 已被包 '{owner}' 的配套技能占用，请改用其它名称"
+            ));
+        }
+        if let Some(other) =
+            crate::features::marketplace::skill_marketplace::foreign_skill_copies_under(
+                &crate::platform::paths::bundles_root(),
+                skill_name,
+                &id,
+            )
+            .into_iter()
+            .next()
+        {
+            return Err(format!(
+                "技能 '{skill_name}' 已存在于包 '{other}'，请先卸载该包或改用其它名称"
+            ));
+        }
+    }
     // 技能组件一致性（plugin-package-spec §8 承诺的导入校验）：组件 id 必须与
     // SKILL.md frontmatter 的 `name` 一致——不一致会被注册表当两套技能处理。
     // 必读必验（四轮评审 M-3）：SKILL.md 缺失或读取失败一律响亮拒收，不再
@@ -1827,6 +1859,103 @@ mod tests {
         );
         assert!(
             !dir.join("bundles").join("greet").exists(),
+            "拒收不得落盘包目录"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Upload-side collision guard (review MINOR): a skill component named
+    /// like a preset skill is rejected up front — the preset pipeline owns the
+    /// name and its sweep/rehome lifecycle would destroy the uploaded copy.
+    #[test]
+    fn import_rejects_preset_skill_name_collision() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-preset-collision-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let zip_path = dir.join("skill.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("skills/visualizer/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: visualizer\n---\n# hi").unwrap();
+            zw.finish().unwrap();
+        }
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "skill.zip").unwrap_err();
+        assert!(
+            err.contains("预置技能冲突"),
+            "预置技能撞名应拒收，实际: {err}"
+        );
+        assert!(
+            !dir.join("bundles").join("visualizer").exists(),
+            "拒收不得落盘包目录"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Upload-side collision guard (review MINOR): a skill component whose
+    /// name is already on disk under another package is rejected up front —
+    /// this pipeline never sweeps, and the other package's copy must survive.
+    #[test]
+    fn import_rejects_skill_name_owned_by_another_package() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-foreign-skill-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        // Existing plugin package owning skill "foo".
+        let foreign = dir.join("bundles/other-pkg/skills/foo");
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(foreign.join("SKILL.md"), "---\nname: foo\n---\n").unwrap();
+        std::fs::write(dir.join("bundles/other-pkg/plugin.json"), "{}").unwrap();
+
+        let zip_path = dir.join("skill.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("skills/foo/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: foo\n---\n# hi").unwrap();
+            zw.finish().unwrap();
+        }
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "skill.zip").unwrap_err();
+        assert!(
+            err.contains("已存在于包 'other-pkg'"),
+            "跨包撞名应拒收，实际: {err}"
+        );
+        assert!(foreign.join("SKILL.md").is_file(), "外来包副本不得被动");
+        assert!(
+            !dir.join("bundles").join("foo").exists(),
             "拒收不得落盘包目录"
         );
 

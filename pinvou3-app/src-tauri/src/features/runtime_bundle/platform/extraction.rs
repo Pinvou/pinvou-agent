@@ -305,6 +305,9 @@ impl Pinvou3Bundle {
             // 退役 id 保护（二轮评审）：`bundles/` 已是用户上传落盘区，用户可能上传过
             // 同名包——其 Upload 记录存在时跳过整段清理（不删登记、不删 mcp.json），
             // 只清理确定无主的内嵌退役残留。
+            // Fail-closed like the uninstall path's `source_may_be_upload`: an
+            // unreadable store means "may be an upload" → skip the cleanup
+            // entirely (its last step deletes `bundles/<id>` wholesale).
             let user_uploaded = crate::features::marketplace::store::BundleStore::new()
                 .records()
                 .map(|records| {
@@ -316,7 +319,7 @@ impl Pinvou3Bundle {
                             )
                     })
                 })
-                .unwrap_or(false);
+                .unwrap_or(true);
             if !user_uploaded {
                 // 廉价残留探测:所有清理面都干净时直接返回——uninstall 会无条件重写
                 // installed.json / mcp.json 并访问系统 keyring,不值得每次启动都实例化
@@ -402,6 +405,11 @@ impl Pinvou3Bundle {
     /// （`self_heal_skills` 第 4 步）以此为「本构建内嵌什么」的判定基准：
     /// 不在集内且无归属证明的目录判残旧收敛；其它发行版构建内嵌更多技能
     /// 时扩充本常量即可，天然保留。
+    /// Binding tests (same pattern as `wecom_skill_dirs_match_embedded_resources`):
+    /// `builtin_released_skill_dirs_match_embedded_resources` and
+    /// `write_builtin_skills_releases_exactly_the_listed_dirs` — a builtin
+    /// skill added to `write_builtin_skills` without extending this constant
+    /// would be written and self-heal-deleted in the same run.
     pub(crate) const BUILTIN_RELEASED_SKILL_DIRS: &[&str] = &["visual-design"];
 
     /// 解包内嵌的内置 skills 到 pinvou3 单一来源 `bundle/skills`。v0.9 clean re-fork
@@ -804,5 +812,53 @@ mod tests {
         assert!(super::should_ensure_embedded_release(&preset));
         assert!(super::should_ensure_embedded_release(&builtin));
         assert!(!super::should_ensure_embedded_release(&upload));
+    }
+
+    /// G1 loop wiring: `write_mcp_servers` must actually consult
+    /// `should_ensure_embedded_release` — an installed Upload record whose id
+    /// collides with an embedded spec keeps its on-disk package untouched.
+    /// (The predicate-only test above stays green even if the loop's guard
+    /// `continue` is removed; this one fails.)
+    #[test]
+    fn write_mcp_servers_never_releases_over_upload_records() {
+        use crate::features::marketplace::store::{BundleRecord, BundleSource};
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-g1-wiring-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = super::Pinvou3Bundle::paths();
+
+        // Installed Upload record colliding with the embedded spec id "weather".
+        crate::features::marketplace::store::BundleStore::new()
+            .upsert(BundleRecord::installed_now(
+                "weather".to_string(),
+                BundleSource::Upload("weather.zip".to_string()),
+            ))
+            .unwrap();
+        // User content in the package dir — must survive write_mcp_servers.
+        let pkg_mcp = crate::platform::paths::bundles_root()
+            .join("weather")
+            .join("mcp");
+        std::fs::create_dir_all(&pkg_mcp).unwrap();
+        std::fs::write(pkg_mcp.join("server.py"), "USER CODE").unwrap();
+        std::fs::write(pkg_mcp.join("manifest.json"), "{}").unwrap();
+
+        bundle.write_mcp_servers().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(pkg_mcp.join("server.py")).unwrap(),
+            "USER CODE",
+            "上传包目录不得被内嵌重释放覆盖"
+        );
+
+        std::env::remove_var("PINVOU3_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
