@@ -5,11 +5,11 @@
     "type": "git-submodule",
     "path": "private-runtimes/windows",
     "url": "https://github.com/Pinvou/pinvou3-windows-runtime.git",
-    "commit": "5b77961dea402a1580ab9e79edb2a6346e519f4c"
+    "commit": "dcde8f01dc009c4acecfbe3bc64dff39de22d341"
   },
   "manifest": {
     "path": "windows-runtime.manifest.json",
-    "sha256": "0d14c4b67fd6dc1e0e5c3d4dc07c50a0e7a5072722b082edbeaef6a22b6cdc14"
+    "sha256": "9e6221b6b7f20f3f3e8b01e42520dab17e3f0d14c4e890dc828064bd4fb2b792"
   },
   "vcRedist": {
     "minimumVersion": "14.51.36247.0"

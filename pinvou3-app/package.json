@@ -32,6 +32,7 @@
     "runtime:windows:init:onnx": "powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri/packaging/windows/runtime/scripts/init-submodule.ps1 -OnnxOnly",
     "runtime:windows:cache-key": "powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri/packaging/windows/runtime/scripts/init-submodule.ps1 -CacheKeyOnly",
     "test:windows-runtime": "node tests/windows_runtime_packaging_contract.test.js",
+    "test:windows-runtime-manifest": "powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri/packaging/windows/runtime/scripts/test-runtime-manifest-contract.ps1",
     "build:nsis": "node scripts/tauri/build.js build --bundles nsis",
     "test:tauri-layout": "node tests/tauri_platform_layout.test.js",
     "test:tauri-effective-config": "node tests/tauri_effective_config.test.js",
