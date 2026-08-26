@@ -82,6 +82,7 @@ import {
   parseBrowserPages,
   parseHostActivationLease,
   parseHostResponseEnvelope,
+  PERSISTED_BROWSER_LAST_ERROR_CODES,
   remapCancellationNotification,
   routeToolCallToPage,
   runLeasedHostDispatch,
@@ -221,16 +222,7 @@ function readPortFile() {
 // reach the next session's model instructions. Rust maps these codes to static
 // messages. Clear the record after a successful connection.
 const LAST_ERROR_JSON = join(dirname(CDP_PORT_JSON), 'last-error.json');
-const PERSISTED_LAST_ERROR_CODES = new Set([
-  'browser/host-backend-unavailable',
-  'unsupported/host-backend-unavailable',
-  'browser/node-runtime-too-old',
-  'browser/mcp-runtime-start-failed',
-  'browser/core-backend-unavailable',
-  'browser/webkit-webdriver-not-found',
-  'browser/webkit-webdriver-unavailable',
-  'browser/webkit-webdriver-session-timeout',
-]);
+const PERSISTED_LAST_ERROR_CODES = new Set(PERSISTED_BROWSER_LAST_ERROR_CODES);
 const HOST_REQUEST_DIR = join(dirname(CDP_PORT_JSON), 'host-requests');
 const SESSION_ID = process.env.PINVOU3_BROWSER_SESSION_ID || '';
 const SESSION_TOKEN = process.env.PINVOU3_BROWSER_SESSION_TOKEN || '';

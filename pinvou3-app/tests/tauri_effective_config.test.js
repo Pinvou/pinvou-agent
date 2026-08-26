@@ -47,6 +47,25 @@ assert.equal(
   ADAPTED_RESPONSE_SHA256,
   "e08698ba25c72b304152da1de99005d2415b9034c7edd46615d942dac174e0a6",
 );
+const thirdPartyNotices = fs.readFileSync(
+  path.join(__dirname, "..", "..", "THIRD_PARTY_NOTICES.md"),
+  "utf8",
+);
+const chromeDevtoolsMcpNotice = thirdPartyNotices.match(
+  /- chrome-devtools-mcp: Modified by Pinvou Agent during vendoring:[\s\S]*?(?=\n- |\n\n)/,
+)?.[0];
+assert.ok(chromeDevtoolsMcpNotice, "the chrome-devtools-mcp adapter must be disclosed");
+for (const requiredNoticeText of [
+  "build/src/McpResponse.js",
+  "target_id",
+  "conversation and tab ownership",
+  "SHA-256",
+]) {
+  assert.ok(
+    chromeDevtoolsMcpNotice.includes(requiredNoticeText),
+    `the chrome-devtools-mcp notice must include ${requiredNoticeText}`,
+  );
+}
 assert.deepEqual(
   fs.readFileSync(
     path.join(

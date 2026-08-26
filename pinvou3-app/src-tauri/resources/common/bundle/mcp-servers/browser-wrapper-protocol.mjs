@@ -33,6 +33,18 @@ export const BROWSER_PROTOCOL_FRAME_TOO_LARGE_ERROR_CODE =
   'browser/protocol-frame-too-large';
 export const BROWSER_STARTUP_BACKLOG_EXCEEDED_ERROR_CODE =
   'browser/startup-backlog-exceeded';
+// Keep the persistence contract enumerable: the wrapper consumes this array,
+// and a cross-language contract test compares it with Rust's static hint table.
+export const PERSISTED_BROWSER_LAST_ERROR_CODES = Object.freeze([
+  'browser/host-backend-unavailable',
+  'unsupported/host-backend-unavailable',
+  'browser/node-runtime-too-old',
+  'browser/mcp-runtime-start-failed',
+  'browser/core-backend-unavailable',
+  'browser/webkit-webdriver-not-found',
+  'browser/webkit-webdriver-unavailable',
+  'browser/webkit-webdriver-session-timeout',
+]);
 
 const RECOVERABLE_HOST_CORE_WORKSPACE_ERROR_CODES = new Set([
   'browser/workspace-unavailable',

@@ -45,6 +45,7 @@ import {
   parseCreatedTabResult,
   parseHostActivationLease,
   parseHostResponseEnvelope,
+  PERSISTED_BROWSER_LAST_ERROR_CODES,
   remapCancellationNotification,
   routeToolCallToPage,
   runLeasedHostDispatch,
@@ -294,6 +295,41 @@ const WRAPPER_URL = new URL(
   '../src-tauri/resources/common/bundle/mcp-servers/browser-wrapper.mjs',
   import.meta.url,
 );
+const EXTRACTION_URL = new URL(
+  '../src-tauri/src/features/runtime_bundle/platform/extraction.rs',
+  import.meta.url,
+);
+
+test('persisted browser last-error codes stay synchronized across JavaScript and Rust', () => {
+  assert.equal(Object.isFrozen(PERSISTED_BROWSER_LAST_ERROR_CODES), true);
+  assert.equal(PERSISTED_BROWSER_LAST_ERROR_CODES.length, 8);
+  assert.equal(
+    new Set(PERSISTED_BROWSER_LAST_ERROR_CODES).size,
+    PERSISTED_BROWSER_LAST_ERROR_CODES.length,
+  );
+
+  const rustSource = readFileSync(EXTRACTION_URL, 'utf8');
+  const tableStart = rustSource.indexOf('pub(super) const BROWSER_LAST_ERROR_HINTS');
+  const tableEnd = rustSource.indexOf('\n];', tableStart);
+  assert.ok(tableStart >= 0 && tableEnd > tableStart, 'Rust hint table must be enumerable');
+  const rustTable = rustSource.slice(tableStart, tableEnd + 3);
+  const rustCodes = [...rustTable.matchAll(
+    /\(\s*"([^"]+)"\s*,\s*"[^"]+"\s*,?\s*\)/g,
+  )].map((match) => match[1]);
+  assert.deepEqual(rustCodes, PERSISTED_BROWSER_LAST_ERROR_CODES);
+  assert.equal(new Set(rustCodes).size, rustCodes.length);
+
+  const wrapperSource = readFileSync(WRAPPER_URL, 'utf8');
+  assert.match(wrapperSource, /PERSISTED_BROWSER_LAST_ERROR_CODES,/);
+  assert.match(
+    wrapperSource,
+    /const PERSISTED_LAST_ERROR_CODES = new Set\(PERSISTED_BROWSER_LAST_ERROR_CODES\);/,
+  );
+  assert.doesNotMatch(
+    wrapperSource,
+    /const\s+PERSISTED_LAST_ERROR_CODES\s*=\s*new Set\(\s*\[/,
+  );
+});
 
 test('Windows native workspace retains multi-tab tools and hides unusable screenshot tools', () => {
   const catalog = {

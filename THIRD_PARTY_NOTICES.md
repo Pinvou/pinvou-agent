@@ -28,6 +28,10 @@ Vendored script attribution:
   Christopher Jeffrey; its Markdown compatibility code retains the upstream
   John Gruber attribution and BSD-style terms.
 - DOMPurify: Copyright 2025–2026 Dr.-Ing. Mario Heiderich, Cure53.
+- chrome-devtools-mcp: Modified by Pinvou Agent during vendoring:
+  `build/src/McpResponse.js` adds the `target_id` field to structured page
+  entries so the host can enforce conversation and tab ownership. The adapted
+  output is pinned by SHA-256.
 - Tailwind CSS: Copyright (c) Tailwind Labs, Inc.
 - Material Icon Theme: Copyright (c) 2025 Material Extensions. The glyphs
   were exported from the

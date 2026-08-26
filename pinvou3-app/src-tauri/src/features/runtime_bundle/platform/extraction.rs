@@ -38,6 +38,42 @@ pub struct Pinvou3Bundle {
 
 const BROWSER_LAST_ERROR_TTL_SECS: u64 = 24 * 60 * 60;
 const BROWSER_LAST_ERROR_MAX_FUTURE_SKEW_SECS: u64 = 5 * 60;
+// Keep this table enumerable so tests can verify that the JavaScript wrapper
+// persists exactly the codes for which Rust provides model-visible hints.
+pub(super) const BROWSER_LAST_ERROR_HINTS: &[(&str, &str)] = &[
+    (
+        "browser/host-backend-unavailable",
+        "The in-app browser host is not ready.",
+    ),
+    (
+        "unsupported/host-backend-unavailable",
+        "No in-app native browser automation backend is available on this platform.",
+    ),
+    (
+        "browser/node-runtime-too-old",
+        "The Node.js runtime required by Browser MCP is incompatible.",
+    ),
+    (
+        "browser/mcp-runtime-start-failed",
+        "The Browser MCP runtime failed to start.",
+    ),
+    (
+        "browser/core-backend-unavailable",
+        "The in-app BrowserCore automation backend is not ready.",
+    ),
+    (
+        "browser/webkit-webdriver-not-found",
+        "WebKitWebDriver was not found on this system.",
+    ),
+    (
+        "browser/webkit-webdriver-unavailable",
+        "WebKitWebDriver is currently unavailable.",
+    ),
+    (
+        "browser/webkit-webdriver-session-timeout",
+        "The WebKitWebDriver session timed out during startup.",
+    ),
+];
 
 /// Parse the wrapper's deliberately small persistence contract. The returned
 /// text is compiled into the app rather than copied from disk, so legacy
@@ -52,41 +88,10 @@ pub(super) fn browser_last_error_hint(raw: &str, now: u64) -> Option<(&'static s
     {
         return None;
     }
-    match code {
-        "browser/host-backend-unavailable" => Some((
-            "browser/host-backend-unavailable",
-            "The in-app browser host is not ready.",
-        )),
-        "unsupported/host-backend-unavailable" => Some((
-            "unsupported/host-backend-unavailable",
-            "No in-app native browser automation backend is available on this platform.",
-        )),
-        "browser/node-runtime-too-old" => Some((
-            "browser/node-runtime-too-old",
-            "The Node.js runtime required by Browser MCP is incompatible.",
-        )),
-        "browser/mcp-runtime-start-failed" => Some((
-            "browser/mcp-runtime-start-failed",
-            "The Browser MCP runtime failed to start.",
-        )),
-        "browser/core-backend-unavailable" => Some((
-            "browser/core-backend-unavailable",
-            "The in-app BrowserCore automation backend is not ready.",
-        )),
-        "browser/webkit-webdriver-not-found" => Some((
-            "browser/webkit-webdriver-not-found",
-            "WebKitWebDriver was not found on this system.",
-        )),
-        "browser/webkit-webdriver-unavailable" => Some((
-            "browser/webkit-webdriver-unavailable",
-            "WebKitWebDriver is currently unavailable.",
-        )),
-        "browser/webkit-webdriver-session-timeout" => Some((
-            "browser/webkit-webdriver-session-timeout",
-            "The WebKitWebDriver session timed out during startup.",
-        )),
-        _ => None,
-    }
+    BROWSER_LAST_ERROR_HINTS
+        .iter()
+        .copied()
+        .find(|(candidate, _)| *candidate == code)
 }
 
 impl Pinvou3Bundle {

@@ -573,16 +573,25 @@ mod tests {
     #[test]
     fn browser_last_error_accepts_only_fresh_whitelisted_codes() {
         let now = 2_000_000_u64;
-        let known = format!(
-            r#"{{"code":"browser/core-backend-unavailable","at":{},"reason":"C:\\Users\\private\\workspace"}}"#,
-            now - 10
+        let mappings = super::extraction::BROWSER_LAST_ERROR_HINTS;
+        assert_eq!(
+            mappings.len(),
+            8,
+            "the stable persistence contract has eight codes"
         );
-        let (code, hint) = super::extraction::browser_last_error_hint(&known, now)
-            .expect("fresh whitelisted code should be mapped");
-        assert_eq!(code, "browser/core-backend-unavailable");
-        assert!(hint.contains("BrowserCore"));
-        assert!(!hint.contains("Users"));
-        assert!(!hint.contains("workspace"));
+        for &(expected_code, expected_hint) in mappings {
+            let known = serde_json::json!({
+                "code": expected_code,
+                "at": now - 10,
+                "reason": r#"C:\Users\private\workspace"#,
+            })
+            .to_string();
+            let actual = super::extraction::browser_last_error_hint(&known, now)
+                .expect("every whitelisted code should have a static hint");
+            assert_eq!(actual, (expected_code, expected_hint));
+            assert!(!actual.1.contains("Users"));
+            assert!(!actual.1.contains("workspace"));
+        }
 
         let cancelled = format!(r#"{{"code":"browser/request-cancelled","at":{}}}"#, now - 1);
         assert_eq!(
