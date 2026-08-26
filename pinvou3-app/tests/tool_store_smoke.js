@@ -46,7 +46,9 @@ function injectSource() {
     const OAUTH_SERVERS={'yuandian-mcp':'yuandian_mcp','canva-mcp':'canva_mcp',qcc:'qcc-company'};
     const BLOCKING_INSTALL_OAUTH_TOOLS=new Set(['yuandian-mcp','canva-mcp']);
     const state=window.__TOOL_STORE_TEST__={
-      installed:{},skills:{visualizer:false},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false,ima:false},
+      // government-writing 初始为独立已装（MCP gongwen 未装）:覆盖 G3 混合态——
+      // companion 卡动作须来自技能级 readiness(卸载),首个用例卸载后回到未装态。
+      installed:{},skills:{visualizer:false,'government-writing':true},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false,ima:false},
       oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0,failVisibility:false,
       hidden:{plain:[],code:[]}
     };
@@ -54,7 +56,8 @@ function injectSource() {
     window.__TAURI_EVENT_HANDLERS__={};
     const tools=()=>Object.entries(TOOL_META).map(([id,[name,companions]])=>({id,name,description:'test',version:'1.0.0',icon:'',category:'test',installed:!!state.installed[id],companion_skills:companions}));
     const skills=()=>[
-      {id:'government-writing',title:'党政机关公文写作',installed:!!state.installed.gongwen,user_uploaded:false},
+      // companion 技能安装态 = 所属 MCP 已装 或 技能独立已装（G3 混合态）。
+      {id:'government-writing',title:'党政机关公文写作',installed:!!(state.installed.gongwen||state.skills['government-writing']),user_uploaded:false},
       {id:'visualizer',title:'数据分析可视化',installed:!!state.skills.visualizer,user_uploaded:false},
       // pptx:真实预置技能(组合包化),卡片由后端数据合成,安装态跟随同名 MCP
       {id:'pptx',title:'PPT 生成',subtitle:'本地直出可编辑 PowerPoint',description:'本地直出可编辑 .pptx',icon:'Presentation',color:'bg-gradient-to-b from-orange-400 to-rose-500',installed:!!state.installed.pptx,user_uploaded:false},
@@ -153,7 +156,7 @@ function injectSource() {
             return Promise.resolve(mk(c,true,null,c?[act('uninstall')]:[act('install')]));
           }
           if(id==='government-writing'){
-            const c=!!state.installed.gongwen;
+            const c=!!(state.installed.gongwen||state.skills['government-writing']);
             return Promise.resolve(mk(c,true,null,c?[act('uninstall')]:[act('install')]));
           }
           if(TOOL_META[id]){
@@ -302,6 +305,28 @@ async function visibilityBox(page, cardText, modeLabel, click) {
     text: document.body.innerText.slice(0, 240),
   })).then(detail => JSON.stringify({ detail: JSON.parse(detail), errors: errors.slice(0, 5) }));
   rec('工具商店真实页面加载', toolStoreLoaded, navDebug);
+
+  // G3 混合态（评审 MAJOR1）：MCP(gongwen)未装、companion 技能(government-writing)
+  // 独立已装——卡片动作须来自技能级 readiness（卸载入口），而非未装 MCP 的
+  // 安装/配置；旧实现两者并存（卡片「已安装」却只剩「安装」按钮）。
+  await search(page,'党政机关公文写作');
+  rec('混合态 companion 卡展示技能级卸载入口',await page.evaluate(()=>{
+    const btns=[...document.querySelectorAll('button')].filter(b=>b.getAttribute('data-tool-id')==='government-writing');
+    return btns.some(b=>(b.textContent||'').trim()==='卸载')
+      &&!btns.some(b=>['安装','配置'].includes((b.textContent||'').trim()));
+  }));
+  await action(page,'党政机关公文写作','卸载','government-writing'); await dismiss(page);
+  rec('混合态卸载走技能级卸载命令',await page.evaluate(()=>{
+    const state=window.__TOOL_STORE_TEST__;
+    return state.calls.some(x=>x.cmd==='uninstall_marketplace_skill'&&x.args.skillId==='government-writing')
+      &&!state.calls.some(x=>x.cmd==='uninstall_marketplace_tool'&&x.args.toolId==='gongwen')
+      &&state.skills['government-writing']===false;
+  }));
+  await search(page,'党政机关公文写作');
+  rec('混合态卸载后卡片回退包级安装入口',await page.evaluate(()=>{
+    const btns=[...document.querySelectorAll('button')].filter(b=>b.getAttribute('data-tool-id')==='government-writing');
+    return btns.some(b=>(b.textContent||'').trim()==='安装');
+  }));
 
   await action(page,'高德天气','配置','weather');
   rec('高德天气安装前展示必填 Key 配置',await page.evaluate(()=>{

@@ -584,6 +584,112 @@ fn mcp_install_links_companion_skills() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// 卸载回归：MCP 已装时 companion 技能落盘在 `bundles/<pkg>/skills/`（条件认领，
+/// `skill_owner_package` 以包本体安装态判定归属）。本测试锁定的是**物理扫描
+/// 删除路径**（技能卸载按实际物理位置找包目录副本并删除），而非直接证明调用
+/// 顺序——顺序依赖的正确性由该扫描路径在认领仍有效时能找到副本来体现
+/// （gongwen 先卸 → government-writing 删不掉的回归）。
+#[test]
+fn mcp_uninstall_removes_companion_skills_from_package_dir() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("companion-unlink");
+
+    let mgr = crate::features::marketplace::MarketplaceManager::new();
+    let skill_mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+    // 复刻命令层安装路径的**安装态**而不跑真实 install 管线（`mgr.install`
+    // 会真实执行 pip install python-docx，邻测 mcp_install_links_companion_skills
+    // 因此也不调它）：条件认领（bundle_installed）只查 BundleStore 记录。
+    crate::features::marketplace::store::BundleStore::new()
+        .upsert(
+            crate::features::marketplace::store::BundleRecord::installed_now(
+                "gongwen".to_string(),
+                crate::features::marketplace::store::BundleSource::Preset,
+            ),
+        )
+        .unwrap();
+    for sid in mgr.companion_skills("gongwen") {
+        skill_mgr.install(&sid).unwrap();
+    }
+    let skill_dir = crate::platform::paths::bundles_root()
+        .join("gongwen")
+        .join("skills")
+        .join("government-writing");
+    assert!(skill_dir.is_dir(), "companion 技能应随包装入包目录");
+
+    uninstall_marketplace_tool_sync("gongwen").unwrap();
+
+    assert!(
+        !skill_dir.exists(),
+        "卸 MCP 后 companion 技能目录不得残留（顺序依赖回归）"
+    );
+    assert!(
+        !skill_mgr
+            .list_skills()
+            .iter()
+            .any(|s| s.id == "government-writing" && s.installed),
+        "卸 MCP 后 companion 技能不得仍为已装态"
+    );
+}
+
+/// Claim-flip guard (safety-relevant): if the companion skill cannot be
+/// deleted, the MCP uninstall must abort and leave the MCP record in place.
+/// Read-time scope normalization maps skill id -> package id one-way; removing
+/// the MCP record after a failed companion delete would flip the claim back to
+/// the skill name, orphaning the stored package-level disabled/hidden entries
+/// and re-materializing a user-disabled skill into sessions. The scope entries
+/// must also stay untouched while the skill is still installed.
+#[test]
+fn mcp_uninstall_aborts_when_companion_uninstall_fails() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("companion-abort");
+
+    // gongwen installed (store record drives the conditional claim).
+    crate::features::marketplace::store::BundleStore::new()
+        .upsert(
+            crate::features::marketplace::store::BundleRecord::installed_now(
+                "gongwen".to_string(),
+                crate::features::marketplace::store::BundleSource::Preset,
+            ),
+        )
+        .unwrap();
+    // Failure injection without platform-specific permission tricks: the
+    // companion exists only as an *unmarked* legacy flat dir, which skill
+    // uninstall refuses to delete ("非市场安装" protection).
+    let legacy = crate::platform::paths::bundle_skills_dir().join("government-writing");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(
+        legacy.join("SKILL.md"),
+        "---\nname: government-writing\n---\n",
+    )
+    .unwrap();
+    // The package-level disable entry (normalized to the package id while the
+    // claim holds) must survive the abort.
+    crate::features::marketplace::save_disabled_bundles(&["government-writing".to_string()]);
+
+    let err = uninstall_marketplace_tool_sync("gongwen").unwrap_err();
+    assert!(
+        err.contains("government-writing"),
+        "中止错误应点名失败的配套技能，实际: {err}"
+    );
+    assert!(
+        crate::features::marketplace::store::BundleStore::new()
+            .get("gongwen")
+            .unwrap()
+            .is_some(),
+        "companion 卸载失败时 MCP 记录必须保留（认领不得翻转）"
+    );
+    assert!(legacy.join("SKILL.md").is_file(), "保护对象目录不得被动");
+    assert_eq!(
+        crate::features::marketplace::load_disabled_bundles(),
+        vec!["gongwen".to_string()],
+        "companion 卸载失败时禁用集条目不得清除（仍在装的技能不得被重新启用）"
+    );
+}
+
 #[test]
 fn file_url_from_path_encodes_local_artifact_paths() {
     let tmp = std::env::temp_dir().join(format!("pinvou3 file-url test {}", std::process::id()));

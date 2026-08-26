@@ -646,8 +646,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 据此动态合成卡片（安装时显示、卸载后消失），不依赖前端硬编码。
       const [toolBackend, setToolBackend] = useState([]);
       const [toolAuthStates, setToolAuthStates] = useState({});
-      // 配套技能 id → 所属 MCP id(由 list_marketplace_tools 的 companion_skills 反建,manifest 单一真源)。
-      // 有配套 MCP 的技能卡据此把状态/装卸联动到该 MCP,避免命名不一致(government-writing↔gongwen)时状态分叉。
+      // 配套技能 id → 所属 MCP id(由 list_marketplace_tools 的 companion_skills 反建,manifest 单一真源;
+      // 映射与安装态无关)。「安装」始终走组合包(装 MCP 联动装技能);卡片安装态/卸载/可见性
+      // 按 MCP 是否已装分流,与后端条件认领(skill_owner_package)对齐。
       const [skillToMcp, setSkillToMcp] = useState({});
       const [busyId, setBusyId] = useState(null);
       const busyRef = useRef(null); // 拖放 controller 经 ref 读最新 busyId(闭包不刷新)
@@ -710,11 +711,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const toggleModeVisibility = (id, mode, checked) => {
         if (!canMutateToolStore || !visibilityLoaded || !id) return;
         // 可见性按包 id 落库（后端 save_hidden_bundles_for 经 to_package_id 归一为包
-        // id，scope.rs；get_bundle_visibility 原样返回包 id）：companion 技能卡
-        // （government-writing→gongwen 等）先经 skillToMcp 映射为所属 MCP 包 id——
-        // 与安装态联动同一映射源（manifest companion_skills 反建，不随安装态变化），
-        // 否则写技能 id、读回包 id，勾选永不命中（五轮评审）。
-        const pkgId = skillToMcp[id] || id;
+        // id，scope.rs；读回经 normalize_stored_pkg_ids 按当前认领再归一）：companion
+        // 技能卡（government-writing→gongwen 等）在 MCP 已装时映射为所属包 id；
+        // MCP 未装（技能独立态）时按技能 id 直接落库——与后端条件认领同口径。
+        const companionMcpId = skillToMcp[id];
+        const companionBs = companionMcpId ? bundleStates[companionMcpId] : null;
+        const companionInstalled = companionMcpId
+          ? (companionBs ? companionBs.installed : !!toolStates[companionMcpId])
+          : false;
+        const pkgId = companionInstalled ? companionMcpId : id;
         const prev = hiddenByModeRef.current;
         const next = new Set(prev[mode] || []);
         // 恢复可见时同时删包 id 与原始技能 id：兼容历史版本按独立技能 id 落库的
@@ -763,7 +768,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         try {
           const list = await invokeTauri('list_marketplace_tools');
           const states = {};
-          const s2m = {}; // 配套技能 → 所属 MCP(manifest companion_skills 反建,单一真源)
+          const s2m = {}; // 配套技能 → 所属 MCP(manifest companion_skills 反建,单一真源)。
+          // 映射与安装态无关：组合包语义要求 companion 卡的「安装」始终路由到
+          // 所属 MCP（装 MCP 联动装技能）；「卸载」与卡片安装态在下游按 MCP
+          // 是否已装分流（MCP 已装 → 包级卸载；仅技能独立已装 → 技能级卸载，
+          // 后端 uninstall 按实际物理位置删除，G3）。
           list.forEach(t => {
             states[t.id] = t.installed;
             (t.companion_skills || []).forEach(sid => { s2m[sid] = t.id; });
@@ -1029,11 +1038,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         const mcpId = skillToMcp[s.backendId] || null;
         if (mcpId) {
           const mcpBs = bundleStates[mcpId];
+          const mcpInstalled = mcpBs ? mcpBs.installed : !!toolStates[mcpId];
+          // 安装态：MCP 或技能任一已装即显示已装（G3：独立安装的 companion
+          // 技能可见可管）。动作与安装态同源拆分：MCP 已装、或两者皆未装（安装
+          // 入口始终路由到所属 MCP 包）走包级 readiness——配置字段（配置/连接
+          // 按钮）只有包级 readiness 知道；仅技能独立已装（G3 混合态）改走技能级
+          // readiness 给出卸载入口，与 handleAction 的技能级卸载分流一致。
+          const skillBs = s.backendId ? bundleStates[s.backendId] : null;
+          const skillInstalled = skillBs ? skillBs.installed : (be ? be.installed : false);
           return {
             ...s,
-            installed: mcpBs ? mcpBs.installed : !!toolStates[mcpId],
+            installed: mcpInstalled || skillInstalled,
             updateAvailable,
-            actions: actionsOf(mcpBs),
+            actions: (!mcpInstalled && skillInstalled) ? actionsOf(skillBs) : actionsOf(mcpBs),
           };
         }
         const bs = s.backendId ? bundleStates[s.backendId] : null;
@@ -1060,9 +1077,16 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const mcpEntry = mcpId
             ? (tsToolsData.find(t => t.backendId === mcpId) || tsToolWelcomeData.find(t => t.backendId === mcpId))
             : null;
-          // 安装态/动作：companion 卡跟随所属 MCP 包（统一 readiness，store 真相源）；
-          // 独立技能读自身 readiness；缺失回退技能后端状态位。
-          const stateBs = mcpId ? bundleStates[mcpId] : bundleStates[x.id];
+          // 安装态：MCP 或技能任一已装即显示已装（G3：独立安装的 companion
+          // 技能可見、可卸载）。动作与安装态同源拆分：MCP 已装、或两者皆未装
+          // （安装入口始终路由到所属 MCP 包）走包级 readiness——配置/连接按钮
+          // 依赖包级配置字段（如腾讯文档 Token），技能级 readiness 给不出；仅
+          // 技能独立已装（G3 混合态）改走技能级 readiness 给出卸载入口，
+          // 与 handleAction 的技能级卸载分流一致。
+          const mcpBs = mcpId ? bundleStates[mcpId] : null;
+          const skillBs = bundleStates[x.id];
+          const mcpInstalled = mcpId ? (mcpBs ? mcpBs.installed : !!toolStates[mcpId]) : false;
+          const skillInstalled = skillBs ? skillBs.installed : !!x.installed;
           return localizeSkill({
             id: 'mcp-skill-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || '',
             // 有配套 MCP(companion)的卡 = 工具包:徽标与分组归 bundle,安装态跟随 MCP
@@ -1071,9 +1095,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             companionBundle: !!mcpId,
             version: '—', latency: storeCopy.localLatency, desc: x.description || '',
             icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-gradient-to-b from-slate-400 to-slate-600',
-            installed: stateBs ? stateBs.installed : (mcpId ? !!toolStates[mcpId] : !!x.installed),
+            installed: mcpId ? (mcpInstalled || skillInstalled) : skillInstalled,
             updateAvailable: !!x.update_available,
-            actions: actionsOf(stateBs),          });
+            actions: mcpId
+              ? ((!mcpInstalled && skillInstalled) ? actionsOf(skillBs) : actionsOf(mcpBs))
+              : actionsOf(skillBs),          });
         });
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
@@ -1674,13 +1700,20 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
         if (!canMutateToolStore) return;
-        // 有配套 MCP 的技能(公文=gongwen、PPT=pptx,manifest companion_skills 声明)→ 改走该
-        // MCP 装卸,skill 作为 companion 随 MCP 联动(两卡同步);
+        // 有配套 MCP 的技能(公文=gongwen、PPT=pptx,manifest companion_skills 声明)：
+        // - 安装 → 始终改走所属 MCP 安装（组合包语义：装 MCP 联动装 companion 技能）;
+        // - 卸载 → MCP 已装走包级卸载（companion 随包联动删除）;MCP 未装但技能
+        //   独立已装（历史遗留/单独安装）走技能级卸载（后端按实际物理位置删除,G3）;
         // 纯技能(无配套 MCP:如 visualizer、上传技能)才走 handleSkillAction。
         // 用 skillCards(含后端合成卡与 userUploaded 卡)而非静态 tsSkillsData 判定——
         // 静态卡已删除且上传技能不在静态表里,漏判会落到通用工具分支报「未知工具」。
-
-        if (skillToMcp[backendId]) backendId = skillToMcp[backendId];
+        const companionMcpId = skillToMcp[backendId];
+        if (companionMcpId) {
+          const mcpBs = bundleStates[companionMcpId];
+          const mcpInstalled = mcpBs ? mcpBs.installed : !!toolStates[companionMcpId];
+          if (isInstalled && !mcpInstalled) return handleSkillAction(backendId, isInstalled);
+          backendId = companionMcpId;
+        }
         else if (skillCards.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
         const requestedTool = findLocalizedTool(backendId);
         if (!externalAuthAvailable && isRestrictedExternalAuthTool(requestedTool)) return;

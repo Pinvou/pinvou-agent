@@ -127,6 +127,12 @@ pub fn migrate_mcp_json_paths() -> Result<bool, String> {
     for id in ids {
         let old_dir = paths::bundle_mcp_servers_dir().join(&id);
         let new_dir = mcp_catalog::package_mcp_dir(&id);
+        // 新目录不存在（自定义 MCP 搬迁 kept/重释放被跳过）时不重写：否则
+        // mcp.json 指向不存在的新路径，工具静默死掉且读路径无旧布局回退（G4）。
+        // 搬迁/重释放成功后的下一轮启动再重写（本函数幂等）。
+        if !new_dir.is_dir() {
+            continue;
+        }
         // 兼容两种分隔符的历史写法（Windows 原生 `\` 与 `/`）
         let old_spellings = [
             old_dir.to_string_lossy().replace('\\', "/"),
@@ -694,6 +700,45 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// G4 回归：mcp.json 路径重写以新目录存在为前提——自定义 MCP 搬迁 kept
+    /// （新目录不存在）时保留旧路径，不得把条目改指到不存在的目录（否则工具
+    /// 静默死掉且读路径无旧布局回退）；新目录出现后下一轮再重写（幂等）。
+    #[test]
+    fn migrate_mcp_json_paths_skips_missing_target_dir() {
+        with_temp_home(|| {
+            let id = "custom-weather";
+            let old_dir = paths::bundle_mcp_servers_dir().join(id);
+            std::fs::create_dir_all(&old_dir).unwrap();
+            let mcp_path = paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            let old_text = old_dir.to_string_lossy().replace('\\', "/");
+            std::fs::write(
+                &mcp_path,
+                format!(
+                    r#"{{"servers":{{"{id}":{{"command":"{old_text}/run.cmd","args":["{old_text}/server.py"]}}}}}}"#
+                ),
+            )
+            .unwrap();
+
+            // 新目录不存在：不重写、旧路径保留
+            assert!(!migrate_mcp_json_paths().unwrap());
+            let content = std::fs::read_to_string(&mcp_path).unwrap();
+            assert!(content.contains(&old_text), "新目录缺失时旧路径应保留");
+
+            // 新目录出现（搬迁成功）：重写指向新目录
+            let new_dir = mcp_catalog::package_mcp_dir(id);
+            std::fs::create_dir_all(&new_dir).unwrap();
+            assert!(migrate_mcp_json_paths().unwrap());
+            let mcp: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+            let command = mcp["servers"][id]["command"].as_str().unwrap();
+            assert!(
+                command.starts_with(&*new_dir.to_string_lossy()),
+                "重写后应指向新包目录，实际: {command}"
+            );
+        });
     }
 
     async fn with_temp_home_async<F, Fut>(f: F)

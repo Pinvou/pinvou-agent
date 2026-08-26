@@ -86,11 +86,15 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     file
 }
 
-/// 防御：剥除所有 scope 禁用集里的 `skill:` 前缀（旧前端 bug 窗口期误写入的带前缀
-/// id；本文件按裸包 id 匹配，读者在此统一归一）。返回是否剥出过前缀。
+/// 防御：剥除所有 scope 禁用集与不可见集里的 `skill:` 前缀（旧前端 bug 窗口期
+/// 误写入的带前缀 id；本文件按裸包 id 匹配，读者在此统一归一）。返回是否剥出过前缀。
 fn strip_skill_prefixes(file: &mut DisabledBundlesFile) -> bool {
     let mut stripped = false;
-    for ids in file.scopes.values_mut() {
+    for ids in file
+        .scopes
+        .values_mut()
+        .chain(file.hidden_scopes.values_mut())
+    {
         for id in ids.iter_mut() {
             if let Some(s) = id.strip_prefix("skill:") {
                 *id = s.to_string();
@@ -106,6 +110,21 @@ fn strip_skill_prefixes(file: &mut DisabledBundlesFile) -> bool {
 fn to_package_id(raw: &str) -> String {
     let stripped = raw.strip_prefix("skill:").unwrap_or(raw);
     skill_owner_package(stripped)
+}
+
+/// 读时归一：存储条目按**当前**认领状态重映射为包 id 并去重（保序）。
+/// 认领（`skill_owner_package`）随安装态时变：条目可能在 companion MCP 未装时
+/// 按独立技能 id 落库，MCP 后装则认领翻转到包 id——只在写时归一会让用户的
+/// 「关/隐藏」在认领翻转后静默失效（F4）；读时归一让门控跟随技能本体。
+fn normalize_stored_pkg_ids(ids: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(ids.len());
+    for id in ids {
+        let pkg = to_package_id(id);
+        if !out.iter().any(|x| x == &pkg) {
+            out.push(pkg);
+        }
+    }
+    out
 }
 
 /// 首启迁移：读旧 `disabled_connectors.json` + `disabled_skills.json`（各兼容三种
@@ -281,11 +300,14 @@ pub fn load_disabled_bundles_for(scope: ConnectorScope) -> Vec<String> {
 fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -> Vec<String> {
     let key = scope.as_str();
     if file.initialized.contains(key) {
-        return file.scopes.get(key).cloned().unwrap_or_default();
+        return normalize_stored_pkg_ids(&file.scopes.get(key).cloned().unwrap_or_default());
     }
     match scope.pack_default_policy() {
-        PackDefaultPolicy::AllowAll => file.scopes.get(key).cloned().unwrap_or_default(),
+        PackDefaultPolicy::AllowAll => {
+            normalize_stored_pkg_ids(&file.scopes.get(key).cloned().unwrap_or_default())
+        }
         PackDefaultPolicy::DenyAll => {
+            // 现算分支：已按当前认领推导包 id，无需再归一。
             let mut ids: Vec<String> = MarketplaceManager::new().installed_ids();
             ids.extend(builtin_cli_bundle_ids().map(str::to_string));
             for skill_id in SkillMarketplaceManager::new().installed_skill_ids() {
@@ -318,10 +340,13 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
 /// 不决定 on/off。
 pub fn load_hidden_bundles_for(scope: ConnectorScope) -> Vec<String> {
     let file = load_disabled_bundles_file();
-    file.hidden_scopes
-        .get(scope.as_str())
-        .cloned()
-        .unwrap_or_default()
+    normalize_stored_pkg_ids(
+        &file
+            .hidden_scopes
+            .get(scope.as_str())
+            .cloned()
+            .unwrap_or_default(),
+    )
 }
 
 /// 写某 scope 被「不可见」的包 id 列表（不参与 DenyAll 默认，显式写入才隐藏）。
@@ -584,6 +609,45 @@ mod tests {
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["visualizer".to_string(), "gongwen".to_string()]
+            );
+        });
+    }
+
+    /// F4 回归：条目在 companion MCP 未装时按独立技能 id 落库；MCP 后装 →
+    /// 认领翻转到包 id。读时归一（`normalize_stored_pkg_ids`）须让「关/隐藏」
+    /// 跟随技能本体，否则用户的禁用/隐藏态在认领翻转后静默失效。
+    #[test]
+    fn load_normalizes_stale_skill_id_after_claim_flip() {
+        with_temp_home(|| {
+            save_disabled_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()]);
+            save_hidden_bundles_for(ConnectorScope::Plain, &["government-writing".to_string()]);
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["government-writing".to_string()]
+            );
+            assert_eq!(
+                load_hidden_bundles_for(ConnectorScope::Plain),
+                vec!["government-writing".to_string()]
+            );
+
+            // 后装 gongwen → 认领翻转 government-writing → gongwen
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "gongwen".to_string(),
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
+                .unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["gongwen".to_string()],
+                "认领翻转后读时归一应把禁用条目重映射到包 id"
+            );
+            assert_eq!(
+                load_hidden_bundles_for(ConnectorScope::Plain),
+                vec!["gongwen".to_string()],
+                "认领翻转后读时归一应把隐藏条目重映射到包 id"
             );
         });
     }

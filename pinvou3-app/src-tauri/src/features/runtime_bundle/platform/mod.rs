@@ -165,6 +165,13 @@ pub fn instructions_code_md(workspace_hint: &str) -> String {
 const VISUAL_DESIGN_SKILL_MD: &str =
     include_str!("../../../../resources/common/bundle/builtin-skills/visual-design/SKILL.md");
 
+/// Test-only view of the embedded builtin-skill resource tree: binds
+/// `Pinvou3Bundle::BUILTIN_RELEASED_SKILL_DIRS` to the actual resources
+/// (same pattern as `wecom_skill_dirs_match_embedded_resources`).
+#[cfg(test)]
+static BUILTIN_SKILLS_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/builtin-skills");
+
 /// pinvou3 版 base prompt，编译期内嵌。通过底座 `prompts::set_base_prompt_override`
 /// 注入，替换底座的上游 `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,
 /// CodeWhale submodule 的 base.md 回退上游原文（fork drift 归零）。
@@ -810,6 +817,66 @@ mod tests {
         cleanup(&tmp);
     }
 
+    /// `BUILTIN_RELEASED_SKILL_DIRS` must mirror the embedded builtin-skills
+    /// resource tree (same pattern as `wecom_skill_dirs_match_embedded_resources`):
+    /// a builtin skill added without extending the constant would be written by
+    /// every launch and deleted by self-heal step 4 in the same run — silently
+    /// invisible forever.
+    #[test]
+    fn builtin_released_skill_dirs_match_embedded_resources() {
+        let mut embedded: Vec<&str> = BUILTIN_SKILLS_DIR
+            .dirs()
+            .map(|d| d.path().to_str().expect("目录名应为 UTF-8"))
+            .collect();
+        embedded.sort_unstable();
+        let mut listed = Pinvou3Bundle::BUILTIN_RELEASED_SKILL_DIRS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(
+            embedded, listed,
+            "BUILTIN_RELEASED_SKILL_DIRS 与 bundle/builtin-skills 实际目录不一致"
+        );
+        for d in listed {
+            assert!(
+                BUILTIN_SKILLS_DIR
+                    .get_file(format!("{d}/SKILL.md"))
+                    .is_some(),
+                "builtin-skills/{d} 缺 SKILL.md"
+            );
+        }
+    }
+
+    /// The other divergence direction: `write_builtin_skills` must release
+    /// exactly the dirs listed in `BUILTIN_RELEASED_SKILL_DIRS` — a skill added
+    /// to the write path without extending the constant would be converged
+    /// away by self-heal step 4 on the same launch.
+    #[test]
+    fn write_builtin_skills_releases_exactly_the_listed_dirs() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+
+        bundle.write_builtin_skills().unwrap();
+
+        let mut written: Vec<String> = std::fs::read_dir(&bundle.skills_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        written.sort_unstable();
+        let mut listed: Vec<String> = Pinvou3Bundle::BUILTIN_RELEASED_SKILL_DIRS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        listed.sort_unstable();
+        assert_eq!(
+            written, listed,
+            "write_builtin_skills 的释放面与 BUILTIN_RELEASED_SKILL_DIRS 不一致"
+        );
+        cleanup(&tmp);
+    }
+
     /// include_dir! 内嵌树中的 `__pycache__/` 与 `*.pyc` 不得物化到用户 bundle
     /// (在仓库里直接运行技能脚本会产生这些编译缓存,详见 extract_dir 文档注释)。
     /// 覆盖实际走 extract_dir 的两棵树(lark skills 与 dws);构建机存在 pycache 时
@@ -1014,6 +1081,38 @@ mod tests {
                 .join("installed.json")
                 .exists(),
             "无残留时不应触发 uninstall(其必写 installed.json)"
+        );
+        cleanup(&tmp);
+    }
+
+    /// G8a Upload protection must be fail-closed like the uninstall path's
+    /// `source_may_be_upload`: an unreadable BundleStore means "may be an
+    /// upload" → skip the whole retired-tool cleanup (its last step deletes
+    /// `bundles/<id>` wholesale, which is user content for an upload).
+    #[test]
+    fn cleanup_removed_marketplace_tools_fail_closed_on_unreadable_store() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+
+        // Corrupt (unparseable) bundles.json.
+        let store_file = paths::pinvou3_home()
+            .join("marketplace")
+            .join("bundles.json");
+        std::fs::create_dir_all(store_file.parent().unwrap()).unwrap();
+        std::fs::write(&store_file, "{ not valid json !!!").unwrap();
+        // Residue that would otherwise be cleaned (new-layout package dir).
+        let pkg_dir = paths::bundles_root().join("data_analysis");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
+
+        bundle.cleanup_removed_marketplace_tools().unwrap();
+
+        assert!(
+            pkg_dir.join("plugin.json").is_file(),
+            "store 不可读时退役清理必须 fail-closed（跳过），不得删包目录"
         );
         cleanup(&tmp);
     }

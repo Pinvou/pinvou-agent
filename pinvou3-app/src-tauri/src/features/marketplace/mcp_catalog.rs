@@ -147,7 +147,15 @@ pub fn release_package(id: &str) -> Result<Option<String>, String> {
             return Err(e);
         }
     };
-    let _ = std::fs::remove_dir_all(&mcp_dir);
+    // 删旧目录不得吞错误：Windows 文件锁导致删一半时若继续 rename 必然失败，
+    // 且暂存被清理后盘上只剩残缺的旧目录（静默损坏残留）。失败即中止并保留
+    // 原目录现状，下个启动周期重试收敛。
+    if mcp_dir.exists() {
+        std::fs::remove_dir_all(&mcp_dir).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&staged);
+            format!("清理旧包目录失败（已中止，原目录可能部分删除）: {e}")
+        })?;
+    }
     std::fs::rename(&staged, &mcp_dir).map_err(|e| {
         let _ = std::fs::remove_dir_all(&staged);
         format!("释放包资源: {e}")
