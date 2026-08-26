@@ -1876,6 +1876,49 @@ mod tests {
     }
 
     #[test]
+    fn same_url_host_navigation_signals_invalidate_a_captured_binding_epoch() {
+        fn epoch(entry: &SurfaceEntry) -> u128 {
+            entry.user_navigation.lock().navigation_admission_epoch()
+        }
+
+        let url = "https://example.com/same";
+
+        let user = entry("tab-user", "view-user");
+        user.remember_url(url);
+        let captured = epoch(&user);
+        user.begin_user_navigation("request-user", url, true)
+            .expect("begin same-URL address-bar navigation");
+        assert_ne!(
+            epoch(&user),
+            captured,
+            "same-URL begin_user must reject a restore captured beforehand"
+        );
+
+        let external = entry("tab-external", "view-external");
+        external.remember_url(url);
+        let captured = epoch(&external);
+        external.begin_external_navigation(true);
+        assert_ne!(
+            epoch(&external),
+            captured,
+            "same-URL reload/history dispatch must reject a captured restore"
+        );
+
+        let same_document = entry("tab-history", "view-history");
+        same_document.remember_url(url);
+        let captured = epoch(&same_document);
+        assert!(matches!(
+            same_document.finish_same_document_navigation(url),
+            NavigationCommitDecision::Current { request_id: None }
+        ));
+        assert_ne!(
+            epoch(&same_document),
+            captured,
+            "same-document commit must reject a restore captured beforehand"
+        );
+    }
+
+    #[test]
     fn callback_before_exact_user_target_cannot_join_the_new_generation() {
         let entry = entry("tab-a", "view-a");
         entry.begin_external_navigation(true);

@@ -257,21 +257,32 @@ fn register_browser_core_webview_binding(
     tab_token: &str,
     control: &std::sync::Arc<state::WorkspaceControl>,
     navigation: &std::sync::Arc<parking_lot::Mutex<state::UserNavigationState>>,
+    host_bootstrap_pending: bool,
 ) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         return linux_automation::register_webview_binding_with_navigation(
-            label, tab_token, control, navigation,
+            label,
+            tab_token,
+            control,
+            navigation,
+            host_bootstrap_pending,
         );
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = navigation;
+        let _ = (navigation, host_bootstrap_pending);
         return macos::register_webview_binding(label, tab_token, control);
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = (label, tab_token, control, navigation);
+        let _ = (
+            label,
+            tab_token,
+            control,
+            navigation,
+            host_bootstrap_pending,
+        );
         Ok(())
     }
 }
@@ -297,6 +308,19 @@ fn classify_browser_core_binding_navigation(label: &str, url: &str) -> bool {
     {
         let _ = (label, url);
         false
+    }
+}
+
+/// Release Linux's first-bind barrier after the exact host bootstrap Finished
+/// callback has committed and the navigation admission gate is idle.
+fn settle_browser_core_host_bootstrap(label: &str, payload_url: &str, live_url: Option<&str>) {
+    #[cfg(target_os = "linux")]
+    {
+        linux_automation::settle_host_bootstrap_page_load(label, payload_url, live_url);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (label, payload_url, live_url);
     }
 }
 

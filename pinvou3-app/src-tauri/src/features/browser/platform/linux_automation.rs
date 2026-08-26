@@ -33,6 +33,7 @@ const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const DRIVER_START_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const DRIVER_SESSION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
+const HOST_BOOTSTRAP_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
 const BINDING_MARKER_PREFIX: &str = "about:blank#pinvou-webdriver-bind-";
 const ACTION_COMMIT_UNKNOWN_WEBDRIVER: &str = "browser/action-commit-unknown-webdriver";
 const PROCESS_SHUTDOWN_ERROR: &str = "browser/process-shutting-down";
@@ -63,6 +64,15 @@ struct WebviewBinding {
     /// that process-local transition can be hidden from UI and persistence.
     active_binding_nonce: Option<String>,
     binding_marker_seen: bool,
+    /// Immutable construction provenance. Keep this separate from the
+    /// one-shot pending state so idempotent re-registration cannot re-arm a
+    /// bootstrap that has already settled.
+    registered_host_bootstrap: bool,
+    /// The initial host-owned bootstrap document has not yet committed.
+    host_bootstrap_pending: bool,
+    /// One retained notification permit closes the check/wait race when the
+    /// bootstrap commits before the first BrowserCore operation awaits it.
+    host_bootstrap_settled: Arc<tokio::sync::Notify>,
     /// Exact host-owned URL armed immediately before the marker is restored.
     /// The synchronous navigation-policy callback must recognize this as an
     /// internal transition without trying to re-enter the navigation mutex
@@ -230,7 +240,7 @@ pub(super) fn register_webview_binding(
     tab_token: &str,
     control: &Arc<WorkspaceControl>,
 ) -> Result<(), String> {
-    register_webview_binding_inner(label, tab_token, control, None)
+    register_webview_binding_inner(label, tab_token, control, None, false)
 }
 
 pub(super) fn register_webview_binding_with_navigation(
@@ -238,8 +248,15 @@ pub(super) fn register_webview_binding_with_navigation(
     tab_token: &str,
     control: &Arc<WorkspaceControl>,
     navigation: &Arc<Mutex<super::state::UserNavigationState>>,
+    host_bootstrap_pending: bool,
 ) -> Result<(), String> {
-    register_webview_binding_inner(label, tab_token, control, Some(Arc::downgrade(navigation)))
+    register_webview_binding_inner(
+        label,
+        tab_token,
+        control,
+        Some(Arc::downgrade(navigation)),
+        host_bootstrap_pending,
+    )
 }
 
 fn register_webview_binding_inner(
@@ -247,6 +264,7 @@ fn register_webview_binding_inner(
     tab_token: &str,
     control: &Arc<WorkspaceControl>,
     navigation: Option<Weak<Mutex<super::state::UserNavigationState>>>,
+    host_bootstrap_pending: bool,
 ) -> Result<(), String> {
     if label.is_empty() || label.len() > 256 {
         return Err("browser/webkit-binding-label-invalid".to_string());
@@ -265,21 +283,33 @@ fn register_webview_binding_inner(
                 (None, None) => true,
                 _ => false,
             }
+            && binding.registered_host_bootstrap == host_bootstrap_pending
     });
+    let mut replaced_pending_bootstrap = None;
     if !registration_is_identical {
         let nonce = fresh_binding_nonce(&registry);
-        registry.insert(
-            label.to_string(),
-            WebviewBinding {
-                nonce,
-                active_binding_nonce: None,
-                binding_marker_seen: false,
-                active_binding_restore_url: None,
-                tab_token: tab_token.to_string(),
-                control: incoming_control,
-                navigation,
-            },
-        );
+        replaced_pending_bootstrap = registry
+            .insert(
+                label.to_string(),
+                WebviewBinding {
+                    nonce,
+                    active_binding_nonce: None,
+                    binding_marker_seen: false,
+                    registered_host_bootstrap: host_bootstrap_pending,
+                    host_bootstrap_pending,
+                    host_bootstrap_settled: Arc::new(tokio::sync::Notify::new()),
+                    active_binding_restore_url: None,
+                    tab_token: tab_token.to_string(),
+                    control: incoming_control,
+                    navigation,
+                },
+            )
+            .filter(|binding| binding.host_bootstrap_pending)
+            .map(|binding| binding.host_bootstrap_settled);
+    }
+    drop(registry);
+    if let Some(replaced_pending_bootstrap) = replaced_pending_bootstrap {
+        replaced_pending_bootstrap.notify_one();
     }
     if let Some(runtime) = DRIVER_RUNTIME.get() {
         runtime.handles.lock().remove(label);
@@ -288,11 +318,113 @@ fn register_webview_binding_inner(
 }
 
 pub(super) fn unregister_webview_binding(label: &str) {
-    if let Some(registry) = WEBVIEW_BINDINGS.get() {
-        registry.lock().remove(label);
+    let pending_bootstrap = WEBVIEW_BINDINGS
+        .get()
+        .and_then(|registry| registry.lock().remove(label))
+        .filter(|binding| binding.host_bootstrap_pending)
+        .map(|binding| binding.host_bootstrap_settled);
+    if let Some(pending_bootstrap) = pending_bootstrap {
+        pending_bootstrap.notify_one();
     }
     if let Some(runtime) = DRIVER_RUNTIME.get() {
         runtime.handles.lock().remove(label);
+    }
+}
+
+fn is_exact_host_bootstrap_url(url: &str, tab_token: &str) -> bool {
+    const INTERNAL_BLANK_MARKER_PREFIXES: [&str; 4] = [
+        "about:blank#pinvou-session-",
+        "about:blank#pinvou-tab-",
+        "about:blank%23pinvou-session-",
+        "about:blank%23pinvou-tab-",
+    ];
+    INTERNAL_BLANK_MARKER_PREFIXES
+        .iter()
+        .any(|prefix| url.strip_prefix(prefix) == Some(tab_token))
+}
+
+/// Release the first-bind barrier only after the exact host bootstrap has
+/// committed as the current top-level document. The host calls this after
+/// `UserNavigationState::finish` has accepted the Finished callback, so the
+/// navigation admission gate is already idle before a binding baseline can be
+/// captured.
+pub(super) fn settle_host_bootstrap_page_load(
+    label: &str,
+    payload_url: &str,
+    live_url: Option<&str>,
+) {
+    let notification = WEBVIEW_BINDINGS.get().and_then(|registry| {
+        let mut registry = registry.lock();
+        let binding = registry.get_mut(label)?;
+        let payload_exact = is_exact_host_bootstrap_url(payload_url, &binding.tab_token);
+        let live_exact =
+            live_url.is_some_and(|url| is_exact_host_bootstrap_url(url, &binding.tab_token));
+        if !binding.registered_host_bootstrap
+            || !binding.host_bootstrap_pending
+            || (!payload_exact && !live_exact)
+        {
+            return None;
+        }
+        binding.host_bootstrap_pending = false;
+        Some(Arc::clone(&binding.host_bootstrap_settled))
+    });
+    if let Some(notification) = notification {
+        notification.notify_one();
+    }
+}
+
+async fn wait_for_host_bootstrap_and_rotate(
+    label: &str,
+    expected_registration_nonce: &str,
+) -> Result<String, String> {
+    wait_for_host_bootstrap_and_rotate_until(
+        label,
+        expected_registration_nonce,
+        tokio::time::Instant::now() + HOST_BOOTSTRAP_SETTLE_TIMEOUT,
+    )
+    .await
+}
+
+async fn wait_for_host_bootstrap_and_rotate_until(
+    label: &str,
+    expected_registration_nonce: &str,
+    deadline: tokio::time::Instant,
+) -> Result<String, String> {
+    loop {
+        let notification = {
+            let registry = WEBVIEW_BINDINGS
+                .get()
+                .ok_or_else(|| "browser/webkit-binding-not-registered".to_string())?;
+            let mut registry = registry.lock();
+            let pending = {
+                let binding = registry
+                    .get(label)
+                    .ok_or_else(|| "browser/webkit-binding-not-registered".to_string())?;
+                if binding.nonce != expected_registration_nonce {
+                    return Err("browser/webkit-binding-generation-changed".to_string());
+                }
+                binding.host_bootstrap_pending
+            };
+            if !pending {
+                return rotate_binding_nonce_locked(
+                    &mut registry,
+                    label,
+                    expected_registration_nonce,
+                );
+            }
+            Arc::clone(
+                &registry
+                    .get(label)
+                    .expect("binding identity was checked under the same lock")
+                    .host_bootstrap_settled,
+            )
+            .notified_owned()
+        };
+        tokio::time::timeout_at(deadline, notification)
+            .await
+            .map_err(|_| "browser/webkit-host-bootstrap-settle-timeout".to_string())?;
+        // Re-check under the registry lock: unregister wakes the waiter too,
+        // but must surface as stale rather than authorizing a removed binding.
     }
 }
 
@@ -313,17 +445,37 @@ fn fresh_binding_nonce(registry: &HashMap<String, WebviewBinding>) -> String {
 }
 
 fn rotate_binding_nonce(label: &str) -> Result<String, String> {
+    let expected_nonce = expected_binding_nonce(label)
+        .ok_or_else(|| "browser/webkit-binding-not-registered".to_string())?;
+    rotate_binding_nonce_if_current(label, &expected_nonce)
+}
+
+fn rotate_binding_nonce_if_current(
+    label: &str,
+    expected_registration_nonce: &str,
+) -> Result<String, String> {
     let registry = WEBVIEW_BINDINGS
         .get()
         .ok_or_else(|| "browser/webkit-binding-not-registered".to_string())?;
     let mut registry = registry.lock();
+    rotate_binding_nonce_locked(&mut registry, label, expected_registration_nonce)
+}
+
+fn rotate_binding_nonce_locked(
+    registry: &mut HashMap<String, WebviewBinding>,
+    label: &str,
+    expected_registration_nonce: &str,
+) -> Result<String, String> {
     if !registry.contains_key(label) {
         return Err("browser/webkit-binding-not-registered".to_string());
     }
-    let nonce = fresh_binding_nonce(&registry);
+    let nonce = fresh_binding_nonce(registry);
     let binding = registry
         .get_mut(label)
         .expect("binding presence was checked under the same lock");
+    if binding.nonce != expected_registration_nonce {
+        return Err("browser/webkit-binding-generation-changed".to_string());
+    }
     binding.nonce = nonce.clone();
     binding.active_binding_nonce = Some(nonce.clone());
     binding.binding_marker_seen = false;
@@ -360,14 +512,12 @@ pub(super) fn classify_binding_navigation(label: &str, url: &str) -> bool {
         binding.active_binding_restore_url = None;
         return true;
     }
-    // A callback already queued before the host initiated its marker
-    // navigation must not cancel the classification window. Only the real URL
-    // following an observed marker closes it.
-    if binding.binding_marker_seen {
-        binding.active_binding_nonce = None;
-        binding.binding_marker_seen = false;
-        binding.active_binding_restore_url = None;
-    }
+    // The bootstrap lifecycle has settled before rotation. Every other policy
+    // callback is therefore a real navigation and closes the private binding
+    // window, even if it precedes the marker policy callback.
+    binding.active_binding_nonce = None;
+    binding.binding_marker_seen = false;
+    binding.active_binding_restore_url = None;
     false
 }
 
@@ -1298,9 +1448,8 @@ impl WebDriverRuntime {
         authorization: Option<&NativeTabLease>,
     ) -> Result<String, String> {
         let label = webview.label().to_string();
-        if expected_binding_nonce(&label).is_none() {
-            return Err("browser/webkit-binding-not-registered".to_string());
-        }
+        let registration_nonce = expected_binding_nonce(&label)
+            .ok_or_else(|| "browser/webkit-binding-not-registered".to_string())?;
         let handles = self.handles_locked().await?;
         self.handles
             .lock()
@@ -1310,12 +1459,16 @@ impl WebDriverRuntime {
             self.ensure_current_locked(&handle).await?;
             return Ok(handle);
         }
+        // The construction document's Started/Finished callbacks must settle
+        // normally before a binding generation is captured. Otherwise a
+        // queued bootstrap callback can invalidate an otherwise idle restore.
+        let expected_nonce =
+            wait_for_host_bootstrap_and_rotate(&label, &registration_nonce).await?;
         // A remote page is an adversarial principal: a main-world nonce can be read and relayed
         // to another task through same-origin storage. Rebinding therefore navigates only this
         // host-owned WebView to a random internal marker, resolves the exact WebDriver handle,
         // and then reloads the prior URL. This is deliberately a reload after driver recovery;
         // preserving in-page state is less important than maintaining task isolation.
-        let expected_nonce = rotate_binding_nonce(&label)?;
         let marker_url = match binding_marker_url(&expected_nonce) {
             Ok(marker_url) => marker_url,
             Err(error) => {
@@ -2430,6 +2583,18 @@ mod tests {
             &label,
             &format!("{BINDING_MARKER_PREFIX}{nonce}0")
         ));
+        assert_eq!(
+            arm_binding_restore_url(&label, &nonce, "https://example.com/")
+                .expect_err("pre-marker policy must cancel stale restore"),
+            "browser/webkit-binding-generation-changed"
+        );
+        assert!(
+            !classify_binding_navigation(&label, &marker),
+            "an unexpected policy callback closes the active challenge"
+        );
+
+        let nonce = rotate_binding_nonce(&label).expect("rotate clean binding nonce");
+        let marker = format!("{BINDING_MARKER_PREFIX}{nonce}");
         assert!(classify_binding_navigation(&label, &marker));
         assert!(classify_binding_navigation(&label, &marker));
         assert!(!classify_binding_navigation(&label, "about:blank"));
@@ -2522,6 +2687,373 @@ mod tests {
         assert_eq!(restored.admission_epoch, baseline.admission_epoch);
         assert!(Arc::ptr_eq(&restored.navigation, &baseline.navigation));
         assert!(Arc::ptr_eq(&restored.control, &baseline.control));
+    }
+
+    #[tokio::test]
+    async fn host_bootstrap_barrier_waits_for_current_finish_before_binding() {
+        let label = format!(
+            "browser-webview-binding-bootstrap-barrier-{:032x}",
+            rand::random::<u128>()
+        );
+        let tab_token = "cccccccccccccccc";
+        let navigation = Arc::new(Mutex::new(UserNavigationState::default()));
+        let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Unclaimed));
+        register_webview_binding_with_navigation(&label, tab_token, &control, &navigation, true)
+            .expect("register host bootstrap binding");
+        let registration_nonce = expected_binding_nonce(&label).expect("registration nonce");
+        let wait_label = label.clone();
+        let wait_nonce = registration_nonce.clone();
+        let waiter = tokio::spawn(async move {
+            wait_for_host_bootstrap_and_rotate(&wait_label, &wait_nonce).await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "pending bootstrap must block binding"
+        );
+
+        navigation.lock().observe_started("about:blank");
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "Started leaves navigation admission busy and cannot release the barrier"
+        );
+        assert!(matches!(
+            navigation.lock().finish("about:blank"),
+            super::super::state::NavigationCommitDecision::Current { .. }
+        ));
+        let bootstrap = format!("about:blank#pinvou-tab-{tab_token}");
+        settle_host_bootstrap_page_load(&label, &bootstrap, Some(&bootstrap));
+        let nonce = waiter
+            .await
+            .expect("join bootstrap waiter")
+            .expect("settled barrier rotates binding atomically");
+
+        let baseline = {
+            let mut state = navigation.lock();
+            validate_binding_navigation_generation(
+                &mut state,
+                &navigation,
+                &control,
+                tab_token,
+                None,
+            )
+            .expect("capture settled binding generation")
+        };
+        let marker = format!("{BINDING_MARKER_PREFIX}{nonce}");
+        assert!(classify_binding_navigation(&label, &marker));
+        let restored = {
+            let mut state = navigation.lock();
+            validate_binding_navigation_generation(
+                &mut state,
+                &navigation,
+                &control,
+                tab_token,
+                Some(&baseline),
+            )
+            .expect("settled bootstrap cannot invalidate the captured generation")
+        };
+        assert_eq!(restored.admission_epoch, baseline.admission_epoch);
+        unregister_webview_binding(&label);
+    }
+
+    #[test]
+    fn host_bootstrap_settlement_requires_exact_own_marker() {
+        fn pending(label: &str) -> bool {
+            WEBVIEW_BINDINGS
+                .get()
+                .expect("binding registry")
+                .lock()
+                .get(label)
+                .expect("registered binding")
+                .host_bootstrap_pending
+        }
+
+        let tab_token = "cdcdcdcdcdcdcdcd";
+        let label = format!(
+            "browser-webview-binding-bootstrap-provenance-{:032x}",
+            rand::random::<u128>()
+        );
+        let navigation = Arc::new(Mutex::new(UserNavigationState::default()));
+        let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Unclaimed));
+        register_webview_binding_with_navigation(&label, tab_token, &control, &navigation, true)
+            .expect("register host bootstrap binding");
+
+        for (payload, live) in [
+            ("about:blank", Some("about:blank")),
+            ("https://example.com/", Some("https://example.com/")),
+            (
+                "about:blank#pinvou-tab-1212121212121212",
+                Some("about:blank#pinvou-tab-1212121212121212"),
+            ),
+        ] {
+            settle_host_bootstrap_page_load(&label, payload, live);
+            assert!(
+                pending(&label),
+                "plain, remote, and other-tab URLs cannot release the barrier"
+            );
+        }
+
+        let own_marker = format!("about:blank#pinvou-tab-{tab_token}");
+        settle_host_bootstrap_page_load(&label, &own_marker, Some("about:blank"));
+        assert!(
+            !pending(&label),
+            "an exact payload marker releases the barrier"
+        );
+        unregister_webview_binding(&label);
+
+        let live_label = format!(
+            "browser-webview-binding-bootstrap-live-provenance-{:032x}",
+            rand::random::<u128>()
+        );
+        register_webview_binding_with_navigation(
+            &live_label,
+            tab_token,
+            &control,
+            &navigation,
+            true,
+        )
+        .expect("register live-marker bootstrap binding");
+        settle_host_bootstrap_page_load(&live_label, "about:blank", Some(&own_marker));
+        assert!(
+            !pending(&live_label),
+            "an exact live marker releases the barrier"
+        );
+        unregister_webview_binding(&live_label);
+    }
+
+    #[tokio::test]
+    async fn settled_bootstrap_registration_is_idempotent() {
+        let label = format!(
+            "browser-webview-binding-settled-reregister-{:032x}",
+            rand::random::<u128>()
+        );
+        let tab_token = "ffffffffffffffff";
+        let navigation = Arc::new(Mutex::new(UserNavigationState::default()));
+        let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Unclaimed));
+        register_webview_binding_with_navigation(&label, tab_token, &control, &navigation, true)
+            .expect("register host bootstrap binding");
+        let registration_nonce = expected_binding_nonce(&label).expect("registration nonce");
+        let bootstrap = format!("about:blank#pinvou-tab-{tab_token}");
+        settle_host_bootstrap_page_load(&label, &bootstrap, Some(&bootstrap));
+        {
+            let registry = WEBVIEW_BINDINGS.get().expect("binding registry").lock();
+            let binding = registry.get(&label).expect("settled binding");
+            assert!(!binding.host_bootstrap_pending);
+        }
+
+        register_webview_binding_with_navigation(&label, tab_token, &control, &navigation, true)
+            .expect("repeat identical registration");
+        assert_eq!(
+            expected_binding_nonce(&label).as_deref(),
+            Some(registration_nonce.as_str()),
+            "idempotent registration must not re-arm bootstrap provenance"
+        );
+        {
+            let registry = WEBVIEW_BINDINGS.get().expect("binding registry").lock();
+            let binding = registry.get(&label).expect("repeated binding");
+            assert!(!binding.host_bootstrap_pending);
+        }
+        let rotated_nonce = tokio::time::timeout(
+            Duration::from_millis(50),
+            wait_for_host_bootstrap_and_rotate(&label, &registration_nonce),
+        )
+        .await
+        .expect("settled repeated registration is immediately bindable")
+        .expect("identical registration keeps the expected identity");
+        assert_ne!(rotated_nonce, registration_nonce);
+        unregister_webview_binding(&label);
+    }
+
+    #[tokio::test]
+    async fn pending_bootstrap_timeout_fails_before_binding_rotation() {
+        let label = format!(
+            "browser-webview-binding-bootstrap-timeout-{:032x}",
+            rand::random::<u128>()
+        );
+        let tab_token = "edededededededed";
+        let navigation = Arc::new(Mutex::new(UserNavigationState::default()));
+        let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Unclaimed));
+        register_webview_binding_with_navigation(&label, tab_token, &control, &navigation, true)
+            .expect("register pending bootstrap binding");
+        let registration_nonce = expected_binding_nonce(&label).expect("registration nonce");
+
+        let error = wait_for_host_bootstrap_and_rotate_until(
+            &label,
+            &registration_nonce,
+            tokio::time::Instant::now() + Duration::from_millis(20),
+        )
+        .await
+        .expect_err("unsettled bootstrap must time out fail closed");
+        assert_eq!(error, "browser/webkit-host-bootstrap-settle-timeout");
+        let registry = WEBVIEW_BINDINGS.get().expect("binding registry").lock();
+        let binding = registry.get(&label).expect("pending binding remains");
+        assert!(binding.active_binding_nonce.is_none());
+        drop(registry);
+        unregister_webview_binding(&label);
+    }
+
+    #[test]
+    fn different_navigation_during_binding_still_invalidates_generation() {
+        let label = format!(
+            "browser-webview-binding-user-start-{:032x}",
+            rand::random::<u128>()
+        );
+        let tab_token = "dddddddddddddddd";
+        let navigation = Arc::new(Mutex::new(UserNavigationState::default()));
+        let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Unclaimed));
+        register_webview_binding_with_navigation(&label, tab_token, &control, &navigation, false)
+            .expect("register binding");
+        let nonce = rotate_binding_nonce(&label).expect("rotate binding nonce");
+        let baseline = {
+            let mut state = navigation.lock();
+            validate_binding_navigation_generation(
+                &mut state,
+                &navigation,
+                &control,
+                tab_token,
+                None,
+            )
+            .expect("capture binding generation")
+        };
+        let marker = format!("{BINDING_MARKER_PREFIX}{nonce}");
+        assert!(classify_binding_navigation(&label, &marker));
+
+        // A different URL must pass through the ordinary navigation path. Its
+        // policy callback closes the binding window before Started advances
+        // the admission epoch, so the user's navigation remains authoritative.
+        let user_url = "https://example.com/user-navigation";
+        assert!(!classify_binding_navigation(&label, user_url));
+        navigation.lock().observe_started(user_url);
+        let error = {
+            let mut state = navigation.lock();
+            match validate_binding_navigation_generation(
+                &mut state,
+                &navigation,
+                &control,
+                tab_token,
+                Some(&baseline),
+            ) {
+                Ok(_) => panic!("different navigation must invalidate stale restore"),
+                Err(error) => error,
+            }
+        };
+        assert_eq!(
+            error,
+            "browser/webkit-binding-navigation-generation-changed"
+        );
+        unregister_webview_binding(&label);
+    }
+
+    #[test]
+    fn same_url_reload_policy_closes_pre_binding_started_window() {
+        let label = format!(
+            "browser-webview-binding-same-url-reload-{:032x}",
+            rand::random::<u128>()
+        );
+        let tab_token = "eeeeeeeeeeeeeeee";
+        let original_url = "https://example.com/same";
+        let navigation = Arc::new(Mutex::new(UserNavigationState::default()));
+        let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Unclaimed));
+        register_webview_binding_with_navigation(&label, tab_token, &control, &navigation, false)
+            .expect("register binding");
+        let nonce = rotate_binding_nonce(&label).expect("rotate binding nonce");
+        let baseline = {
+            let mut state = navigation.lock();
+            validate_binding_navigation_generation(
+                &mut state,
+                &navigation,
+                &control,
+                tab_token,
+                None,
+            )
+            .expect("capture binding generation")
+        };
+        let marker = format!("{BINDING_MARKER_PREFIX}{nonce}");
+        assert!(classify_binding_navigation(&label, &marker));
+
+        // A genuine same-URL reload still has its own navigation-policy
+        // callback. It must close the marker window even though its URL equals
+        // the sampled page, leaving Started visible to the generation guard.
+        assert!(!classify_binding_navigation(&label, original_url));
+        navigation.lock().observe_started(original_url);
+        let error = {
+            let mut state = navigation.lock();
+            match validate_binding_navigation_generation(
+                &mut state,
+                &navigation,
+                &control,
+                tab_token,
+                Some(&baseline),
+            ) {
+                Ok(_) => panic!("same-URL reload must invalidate stale restore"),
+                Err(error) => error,
+            }
+        };
+        assert_eq!(
+            error,
+            "browser/webkit-binding-navigation-generation-changed"
+        );
+        unregister_webview_binding(&label);
+    }
+
+    #[tokio::test]
+    async fn replaced_or_unregistered_binding_wakes_barrier_as_stale() {
+        async fn assert_stale_after_replacement(replace: bool) {
+            let label = format!(
+                "browser-webview-binding-bootstrap-stale-{:032x}",
+                rand::random::<u128>()
+            );
+            let tab_token = "abababababababab";
+            let navigation = Arc::new(Mutex::new(UserNavigationState::default()));
+            let control = Arc::new(WorkspaceControl::new(0, NativeControlOwner::Unclaimed));
+            register_webview_binding_with_navigation(
+                &label,
+                tab_token,
+                &control,
+                &navigation,
+                true,
+            )
+            .expect("register pending bootstrap binding");
+            let registration_nonce = expected_binding_nonce(&label).expect("registration nonce");
+            let wait_label = label.clone();
+            let wait_nonce = registration_nonce.clone();
+            let waiter = tokio::spawn(async move {
+                wait_for_host_bootstrap_and_rotate(&wait_label, &wait_nonce).await
+            });
+            tokio::task::yield_now().await;
+            assert!(!waiter.is_finished());
+
+            if replace {
+                let replacement_control =
+                    Arc::new(WorkspaceControl::new(0, NativeControlOwner::Unclaimed));
+                register_webview_binding_with_navigation(
+                    &label,
+                    tab_token,
+                    &replacement_control,
+                    &navigation,
+                    true,
+                )
+                .expect("replace binding identity");
+            } else {
+                unregister_webview_binding(&label);
+            }
+
+            let error = tokio::time::timeout(Duration::from_millis(100), waiter)
+                .await
+                .expect("stale waiter wakes promptly")
+                .expect("join stale waiter")
+                .expect_err("stale binding must not pass barrier");
+            assert!(matches!(
+                error.as_str(),
+                "browser/webkit-binding-not-registered"
+                    | "browser/webkit-binding-generation-changed"
+            ));
+            unregister_webview_binding(&label);
+        }
+
+        assert_stale_after_replacement(false).await;
+        assert_stale_after_replacement(true).await;
     }
 
     #[tokio::test]

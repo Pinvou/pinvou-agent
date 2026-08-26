@@ -3126,6 +3126,7 @@ fn build_webview<P: PlatformWebviewConfig>(
     let committed_navigation_app = app.clone();
     let committed_navigation_session_id = session_id.to_string();
     let committed_navigation_tab_token = tab_token.to_string();
+    let committed_navigation_label = label.clone();
     let committed_navigation_control = Arc::clone(&control);
     let committed_navigation_publication = Arc::clone(&publication);
     let last_known_url = Arc::new(parking_lot::RwLock::new(initial_last_known_url));
@@ -3153,8 +3154,14 @@ fn build_webview<P: PlatformWebviewConfig>(
         .capabilities()
         .chrome_devtools_protocol
         .then_some(tab_token);
-    super::register_browser_core_webview_binding(&label, tab_token, &control, &user_navigation)
-        .map_err(WebviewBuildError::new)?;
+    super::register_browser_core_webview_binding(
+        &label,
+        tab_token,
+        &control,
+        &user_navigation,
+        has_internal_marker_for_token(url, tab_token),
+    )
+    .map_err(WebviewBuildError::new)?;
     let location_signal_nonce = format!("{:032x}", rand::random::<u128>());
     let navigation_location_signal_nonce = location_signal_nonce.clone();
     let init_script = browser_initialization_script(cdp_tab_token, &location_signal_nonce);
@@ -3374,9 +3381,10 @@ fn build_webview<P: PlatformWebviewConfig>(
         })
         .on_page_load(move |webview, payload| {
             if payload.event() == PageLoadEvent::Started {
+                let payload_url = payload.url().as_str();
                 let live_url = webview.url().ok().map(|url| url.to_string());
                 if let Some(started_url) = committed_top_level_url(
-                    payload.url().as_str(),
+                    payload_url,
                     live_url.as_deref(),
                     &committed_navigation_tab_token,
                 ) {
@@ -3428,6 +3436,11 @@ fn build_webview<P: PlatformWebviewConfig>(
                     return;
                 }
             };
+            super::settle_browser_core_host_bootstrap(
+                &committed_navigation_label,
+                payload_url,
+                live_url.as_deref(),
+            );
             let Some(changed) = commit_surface_url_before_publication(
                 &committed_navigation_publication,
                 &committed_last_known_url,

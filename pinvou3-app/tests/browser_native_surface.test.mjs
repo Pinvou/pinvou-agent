@@ -644,7 +644,7 @@ test('Linux WebDriver safely rebinds with a host marker without injecting remote
   assert.match(nativePlatform, /register_browser_core_webview_binding/);
   assert.match(
     nativeHost,
-    /register_browser_core_webview_binding\(\s*&label,\s*tab_token,\s*&control,\s*&user_navigation\s*\)/,
+    /register_browser_core_webview_binding\(\s*&label,\s*tab_token,\s*&control,\s*&user_navigation,\s*has_internal_marker_for_token\(url,\s*tab_token\),\s*\)/,
   );
   const registration = linuxAutomation.slice(
     linuxAutomation.indexOf('pub(super) fn register_webview_binding'),
@@ -682,13 +682,70 @@ test('Linux WebDriver safely rebinds with a host marker without injecting remote
   );
   assert.match(linuxAutomation, /active_binding_nonce: Option<String>/);
   assert.match(linuxAutomation, /binding_marker_seen: bool/);
+  assert.match(linuxAutomation, /registered_host_bootstrap: bool/);
+  assert.match(linuxAutomation, /host_bootstrap_pending: bool/);
+  assert.match(linuxAutomation, /host_bootstrap_settled: Arc<tokio::sync::Notify>/);
   assert.match(
     linuxAutomation,
     /fn classify_binding_navigation[\s\S]{0,900}strip_prefix\(BINDING_MARKER_PREFIX\)/,
   );
+  const classifyBinding = linuxAutomation.slice(
+    linuxAutomation.indexOf('pub(super) fn classify_binding_navigation'),
+    linuxAutomation.indexOf('fn arm_binding_restore_url'),
+  );
   assert.match(
+    classifyBinding,
+    /active_binding_restore_url[\s\S]{0,360}return true;[\s\S]{0,420}binding\.active_binding_nonce = None;[\s\S]{0,180}\bfalse\s*}/,
+  );
+  assert.doesNotMatch(
     linuxAutomation,
-    /if binding\.binding_marker_seen \{[\s\S]{0,160}binding\.active_binding_nonce = None;[\s\S]{0,120}binding\.binding_marker_seen = false;/,
+    /is_pre_binding_page_load|active_binding_original_is_host_bootstrap/,
+  );
+
+  const bootstrapSettle = linuxAutomation.slice(
+    linuxAutomation.indexOf('pub(super) fn settle_host_bootstrap_page_load'),
+    linuxAutomation.indexOf('async fn wait_for_host_bootstrap_and_rotate'),
+  );
+  assert.match(
+    bootstrapSettle,
+    /registered_host_bootstrap[\s\S]{0,180}host_bootstrap_pending[\s\S]{0,180}!payload_exact && !live_exact/,
+  );
+
+  const bootstrapWait = linuxAutomation.slice(
+    linuxAutomation.indexOf('async fn wait_for_host_bootstrap_and_rotate'),
+    linuxAutomation.indexOf('fn fresh_binding_nonce'),
+  );
+  assert.match(
+    bootstrapWait,
+    /binding\.nonce != expected_registration_nonce[\s\S]{0,360}binding\.host_bootstrap_pending[\s\S]{0,360}if !pending[\s\S]{0,260}rotate_binding_nonce_locked/,
+  );
+  assert.match(bootstrapWait, /host_bootstrap_settled[\s\S]{0,120}notified_owned\(\)/);
+  assert.match(bootstrapWait, /timeout_at\(deadline, notification\)/);
+  assert.match(bootstrapWait, /browser\/webkit-host-bootstrap-settle-timeout/);
+
+  const selectWebview = linuxAutomation.slice(
+    linuxAutomation.indexOf('async fn select_webview_locked'),
+    linuxAutomation.indexOf('async fn element_for_uid_locked'),
+  );
+  assert.match(
+    selectWebview,
+    /let expected_nonce =[\s\S]{0,120}wait_for_host_bootstrap_and_rotate\(&label, &registration_nonce\)\.await\?/,
+  );
+  assert.doesNotMatch(
+    selectWebview,
+    /wait_for_host_bootstrap_and_rotate[\s\S]{0,240}rotate_binding_nonce_if_current/,
+  );
+
+  const finishIndex = nativeHost.indexOf(
+    'committed_user_navigation.lock().finish(&committed_url)',
+  );
+  const settleIndex = nativeHost.indexOf(
+    'super::settle_browser_core_host_bootstrap(',
+    finishIndex,
+  );
+  assert.ok(
+    finishIndex >= 0 && settleIndex > finishIndex,
+    'only a Finished callback accepted as Current may release the bootstrap barrier',
   );
   assert.match(
     nativeHost,
