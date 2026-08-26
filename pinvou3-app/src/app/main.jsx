@@ -988,6 +988,26 @@ function workspaceDisplayName(path) {
           // Same as above.
         }
       }, []);
+      // Keyboard resizing per the WAI-ARIA Window Splitter pattern: arrows move by a
+      // step (Shift widens it), Home/End jump to the bounds. Each adjustment goes through
+      // the same clamping and persistence as the pointer flow.
+      const SIDEBAR_RESIZE_KEY_STEP = 24;
+      const keyboardSidebarResize = useCallback((event) => {
+        const step = SIDEBAR_RESIZE_KEY_STEP * (event.shiftKey ? 4 : 1);
+        let next;
+        if (event.key === 'ArrowLeft') next = sidebarWidthRef.current - step;
+        else if (event.key === 'ArrowRight') next = sidebarWidthRef.current + step;
+        else if (event.key === 'Home') next = SIDEBAR_WIDTH_MIN;
+        else if (event.key === 'End') next = SIDEBAR_WIDTH_MAX;
+        else return;
+        event.preventDefault();
+        applySidebarWidth(clampSidebarWidth(next));
+        try {
+          localStorage.setItem('pinvou_sidebar_width', String(sidebarWidthRef.current));
+        } catch {
+          // Same as pointer resize: applies to this session only when storage is unavailable.
+        }
+      }, []);
 
       useEffect(() => {
         if (!taskFilterOpen) return;
@@ -1921,6 +1941,7 @@ function workspaceDisplayName(path) {
 
           {/* ================= Sidebar (Gemini Style) ================= */}
           <div
+            id="app-sidebar"
             data-testid="app-sidebar"
             style={{
               // The compact-shell drawer does not inherit the persisted desktop width:
@@ -2348,7 +2369,8 @@ function workspaceDisplayName(path) {
 
             {/* Right-edge drag to resize: only offered on the expanded desktop shell;
                 double-click resets to the default width. Focusable separator semantics
-                (tabIndex + value range) per WAI-ARIA authoring practices. */}
+                (tabIndex + value range + arrow keys) per the WAI-ARIA Window Splitter
+                pattern; the controlled pane is the sidebar itself. */}
             {isSidebarOpen && !isCompactShell && (
               <hr
                 data-testid="sidebar-resize-handle"
@@ -2357,10 +2379,13 @@ function workspaceDisplayName(path) {
                 aria-valuenow={sidebarWidth}
                 aria-valuemin={SIDEBAR_WIDTH_MIN}
                 aria-valuemax={SIDEBAR_WIDTH_MAX}
+                aria-label={t.sidebarResize}
+                aria-controls="app-sidebar"
                 title={t.sidebarResize}
                 onPointerDown={beginSidebarResize}
                 onDoubleClick={resetSidebarWidth}
-                className={`absolute top-0 bottom-0 right-0 w-[6px] border-0 cursor-col-resize z-50 touch-none transition-colors ${
+                onKeyDown={keyboardSidebarResize}
+                className={`absolute top-0 bottom-0 right-0 w-[6px] border-0 cursor-col-resize z-50 touch-none transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#0B57D0] ${
                   sidebarResizing
                     ? 'bg-[#0B57D0]/40'
                     : (activeTheme === 'dark' ? 'hover:bg-[#A8C7FA]/30' : 'hover:bg-[#0B57D0]/25')

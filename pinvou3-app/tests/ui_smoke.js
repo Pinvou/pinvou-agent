@@ -1863,6 +1863,81 @@ async function expand(page) {
     legacyReasoningGuard.emptyCount === 0 && !legacyReasoningGuard.reasoningLeaked,
     JSON.stringify(legacyReasoningGuard));
 
+  // ⑩c 侧栏拖拽手柄的键盘可操作性（WAI-ARIA Window Splitter）：可聚焦、方向键步进、
+  // Home/End 落到边界并钳制、aria-valuenow 跟随宽度、宽度持久化与指针路径同口径。
+  await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
+  await sleep(250);
+  const sidebarWidthOf = () => page.evaluate(() => {
+    const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+    return sidebar ? Math.round(sidebar.getBoundingClientRect().width) : -1;
+  });
+  const pressHandle = (key, shift = false) => page.evaluate((k, withShift) => {
+    const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
+    if (!handle) throw new Error('sidebar-resize-handle not found');
+    handle.dispatchEvent(new KeyboardEvent('keydown', {
+      key: k, bubbles: true, cancelable: true, shiftKey: withShift,
+    }));
+  }, key, shift);
+  const handleState = await page.evaluate(() => {
+    const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
+    if (!handle) return null;
+    return {
+      focusable: handle.tabIndex === 0,
+      role: handle.tagName === 'HR' ? 'separator(hr)' : handle.getAttribute('role'),
+      ariaValueNow: Number(handle.getAttribute('aria-valuenow')),
+      ariaValueMin: Number(handle.getAttribute('aria-valuemin')),
+      ariaValueMax: Number(handle.getAttribute('aria-valuemax')),
+      hasAriaLabel: handle.hasAttribute('aria-label'),
+      ariaControls: handle.getAttribute('aria-controls'),
+      controlsExist: !!document.getElementById(handle.getAttribute('aria-controls') || ''),
+    };
+  });
+  const initialWidth = await sidebarWidthOf();
+  const ariaWidth = () => page.evaluate(() => {
+    const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
+    return handle ? Number(handle.getAttribute('aria-valuenow')) : -1;
+  });
+  await pressHandle('ArrowRight');
+  await sleep(60);
+  const afterGrow = await ariaWidth();
+  await pressHandle('ArrowLeft', true);
+  await sleep(60);
+  const afterShrink = await ariaWidth();
+  await pressHandle('Home');
+  await sleep(60);
+  const atMin = await ariaWidth();
+  await pressHandle('ArrowLeft');
+  await sleep(60);
+  const clampedBelow = await ariaWidth();
+  await pressHandle('End');
+  await sleep(60);
+  const atMax = await ariaWidth();
+  await pressHandle('ArrowRight');
+  await sleep(60);
+  const clampedAbove = await ariaWidth();
+  const persistedAtMax = await page.evaluate(() => window.localStorage.getItem('pinvou_sidebar_width'));
+  const ariaAtMax = await ariaWidth();
+  // CSS 过渡(300ms)结束后,真实布局宽度必须等于 aria 状态值——键盘路径与指针路径同一宽度源。
+  await sleep(450);
+  const settledWidth = await sidebarWidthOf();
+  rec('⑩c 侧栏分隔条键盘缩放（方向键/Home/End + 边界钳制 + 持久化）',
+    !!handleState
+      && handleState.focusable
+      && handleState.role === 'separator(hr)'
+      && handleState.ariaValueMin === 220 && handleState.ariaValueMax === 480
+      && handleState.hasAriaLabel
+      && handleState.ariaControls === 'app-sidebar' && handleState.controlsExist
+      && initialWidth === 280
+      && afterGrow === initialWidth + 24
+      // 304 - 96 = 208 低于下限,Shift+Left 一步触底并钳制到 220(与 Home 等价路径)。
+      && afterShrink === 220
+      && atMin === 220 && clampedBelow === 220
+      && atMax === 480 && clampedAbove === 480
+      && persistedAtMax === '480'
+      && ariaAtMax === 480
+      && settledWidth === 480,
+    JSON.stringify({ handleState, initialWidth, afterGrow, afterShrink, atMin, clampedBelow, atMax, clampedAbove, persistedAtMax, ariaAtMax, settledWidth }));
+
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();
 
