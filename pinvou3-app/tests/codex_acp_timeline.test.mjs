@@ -378,6 +378,80 @@ try {
     assert.equal(liveTimers().length, 1, 'a rescheduled attempt is pending');
     debounced.cancel();
     assert.equal(liveTimers().length, 0, 'cancel() drops the pending attempt');
+
+    // A schedule() that supersedes an in-flight attempt must invalidate it: a
+    // late rejection of the old attempt must neither cancel the superseding
+    // pending repair nor schedule a retry of its own, and the new session's
+    // gap still heals when its attempt runs.
+    {
+      const supersedeAttempts = [];
+      const supersedeRetries = [];
+      const supersedeGiveUps = [];
+      let rejectInFlight = null;
+      const superseded = createAcpGapResyncScheduler(
+        sessionId => {
+          supersedeAttempts.push(sessionId);
+          return new Promise((resolve, reject) => { rejectInFlight = reject; });
+        },
+        {
+          maxAttempts: 5,
+          baseDelayMs: 800,
+          maxDelayMs: 3200,
+          onRetry: (sessionId, attempt, error) => supersedeRetries.push([sessionId, attempt, error.message]),
+          onGiveUp: (sessionId, attempt, error) => supersedeGiveUps.push([sessionId, attempt, error.message]),
+          ...useFakeTimers(),
+        },
+      );
+      superseded.schedule('session-a');
+      fireLatest();
+      await Promise.resolve();
+      assert.deepEqual(supersedeAttempts, ['session-a'], 'the first attempt is in flight');
+      superseded.schedule('session-b');
+      assert.equal(liveTimers().length, 1, 'the superseding schedule installs its own pending attempt');
+      rejectInFlight(new Error('transient network failure'));
+      await Promise.resolve();
+      await Promise.resolve();
+      assert.equal(liveTimers().length, 1,
+        'a stale in-flight rejection must not cancel the superseding attempt');
+      assert.deepEqual(supersedeRetries, [],
+        'a stale in-flight rejection must not schedule a retry for the old session');
+      assert.deepEqual(supersedeGiveUps, [],
+        'a stale in-flight rejection must not report a give-up');
+      fireLatest();
+      await Promise.resolve();
+      assert.deepEqual(supersedeAttempts, ['session-a', 'session-b'],
+        'the superseding attempt still runs and heals its own gap');
+    }
+
+    // cancel() while an attempt is in flight must invalidate it: a late
+    // rejection must not schedule a retry after the unmount cleanup ran.
+    {
+      const cancelRetries = [];
+      const cancelGiveUps = [];
+      let rejectInFlight = null;
+      const cancelled = createAcpGapResyncScheduler(
+        () => new Promise((resolve, reject) => { rejectInFlight = reject; }),
+        {
+          maxAttempts: 5,
+          baseDelayMs: 800,
+          maxDelayMs: 3200,
+          onRetry: (sessionId, attempt, error) => cancelRetries.push([sessionId, attempt, error.message]),
+          onGiveUp: (sessionId, attempt, error) => cancelGiveUps.push([sessionId, attempt, error.message]),
+          ...useFakeTimers(),
+        },
+      );
+      cancelled.schedule('session-c');
+      fireLatest();
+      await Promise.resolve();
+      cancelled.cancel();
+      rejectInFlight(new Error('transient network failure'));
+      await Promise.resolve();
+      await Promise.resolve();
+      assert.equal(liveTimers().length, 0,
+        'a rejection landing after cancel() must not schedule a retry');
+      assert.deepEqual(cancelRetries, [], 'no retry is reported after cancel()');
+      assert.deepEqual(cancelGiveUps, [], 'no give-up is reported after cancel()');
+    }
   }
 
   const liveAfterSnapshot = event(14, 'agent_message_chunk', {

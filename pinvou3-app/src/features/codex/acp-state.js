@@ -416,8 +416,12 @@ export function createAcpEventSeqTracker() {
 // transient failure would permanently disable healing for that gap. schedule()
 // debounces a burst of gap reports into one attempt; each failure reschedules
 // with exponential backoff until an attempt succeeds or the attempt budget is
-// exhausted. A fresh gap report after exhaustion starts a new cycle, and
-// cancel() drops any pending attempt (unmount).
+// exhausted. Retry state is scoped to the cycle: schedule() starts a fresh
+// cycle for its session (a burst of gap reports still debounces into one
+// attempt), and cancel() drops any pending attempt (unmount). Both also start
+// a new generation, invalidating any attempt still in flight: its late
+// completion can no longer reset the failure count, cancel the superseding
+// pending attempt, or schedule a retry after cancel().
 export function createAcpGapResyncScheduler(resync, {
   maxAttempts = 5,
   baseDelayMs = 800,
@@ -435,6 +439,7 @@ export function createAcpGapResyncScheduler(resync, {
   const cancelTimer = clearTimeout || globalThis.clearTimeout.bind(globalThis);
   let timer = null;
   let failures = 0;
+  let generation = 0;
   const delayAfterFailures = count => Math.min(firstDelayMs * 2 ** count, ceilingMs);
   const clearTimer = () => {
     if (timer !== null) {
@@ -442,30 +447,37 @@ export function createAcpGapResyncScheduler(resync, {
       timer = null;
     }
   };
-  const fire = async sessionId => {
+  const fire = async (sessionId, cycle) => {
+    if (cycle !== generation) return;
     timer = null;
     if (onAttempt) onAttempt(sessionId, failures + 1);
     try {
       await resync(sessionId);
+      if (cycle !== generation) return;
       failures = 0;
     } catch (error) {
+      if (cycle !== generation) return;
       failures += 1;
       if (failures >= attemptBudget) {
         if (onGiveUp) onGiveUp(sessionId, failures, error);
         return;
       }
       if (onRetry) onRetry(sessionId, failures, error);
-      clearTimer();
-      timer = scheduleTimer(() => { fire(sessionId); }, delayAfterFailures(failures));
+      timer = scheduleTimer(() => { fire(sessionId, cycle); }, delayAfterFailures(failures));
     }
   };
   return {
     schedule(sessionId) {
-      if (failures >= attemptBudget) failures = 0;
+      generation += 1;
+      failures = 0;
       clearTimer();
-      timer = scheduleTimer(() => { fire(sessionId); }, firstDelayMs);
+      const cycle = generation;
+      timer = scheduleTimer(() => { fire(sessionId, cycle); }, firstDelayMs);
     },
-    cancel: clearTimer,
+    cancel() {
+      generation += 1;
+      clearTimer();
+    },
   };
 }
 
