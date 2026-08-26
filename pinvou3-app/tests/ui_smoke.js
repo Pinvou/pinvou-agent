@@ -1863,8 +1863,9 @@ async function expand(page) {
     legacyReasoningGuard.emptyCount === 0 && !legacyReasoningGuard.reasoningLeaked,
     JSON.stringify(legacyReasoningGuard));
 
-  // ⑩c 侧栏拖拽手柄的键盘可操作性（WAI-ARIA Window Splitter）：可聚焦、方向键步进、
-  // Home/End 落到边界并钳制、aria-valuenow 跟随宽度、宽度持久化与指针路径同口径。
+  // ⑩c Keyboard operability of the sidebar resize handle (WAI-ARIA Window
+  // Splitter): focusable, arrow-key stepping, Home/End land on the clamped
+  // bounds, aria-valuenow tracks the width, persistence matches the pointer path.
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
   await sleep(250);
   const sidebarWidthOf = () => page.evaluate(() => {
@@ -1917,10 +1918,11 @@ async function expand(page) {
   const clampedAbove = await ariaWidth();
   const persistedAtMax = await page.evaluate(() => window.localStorage.getItem('pinvou_sidebar_width'));
   const ariaAtMax = await ariaWidth();
-  // CSS 过渡(300ms)结束后,真实布局宽度必须等于 aria 状态值——键盘路径与指针路径同一宽度源。
+  // After the CSS transition (300ms) settles, the real layout width must equal
+  // the aria state — keyboard and pointer paths share the same width source.
   await sleep(450);
   const settledWidth = await sidebarWidthOf();
-  rec('⑩c 侧栏分隔条键盘缩放（方向键/Home/End + 边界钳制 + 持久化）',
+  rec('⑩c sidebar splitter keyboard resize (arrows/Home/End + boundary clamping + persistence)',
     !!handleState
       && handleState.focusable
       && handleState.role === 'separator(hr)'
@@ -1929,7 +1931,7 @@ async function expand(page) {
       && handleState.ariaControls === 'app-sidebar' && handleState.controlsExist
       && initialWidth === 280
       && afterGrow === initialWidth + 24
-      // 304 - 96 = 208 低于下限,Shift+Left 一步触底并钳制到 220(与 Home 等价路径)。
+      // 304 - 96 = 208 is below the floor; one Shift+Left bottoms out and clamps to 220 (same path as Home).
       && afterShrink === 220
       && atMin === 220 && clampedBelow === 220
       && atMax === 480 && clampedAbove === 480
