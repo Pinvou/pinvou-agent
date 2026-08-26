@@ -4,23 +4,23 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-25 · v0.9.5 r10 公开基线与 r11 候选）
+## 0. 当前状态（2026-08-26 · v0.9.5 r10 公开基线与 r11 候选）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `feb8761ae`（`pinvou-v0.9.5-r10`）；r11 候选 `22ec868291922aa133197dd9736a0da31ae18329` 位于 #24 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `feb8761ae`（`pinvou-v0.9.5-r10`）；r11 候选 `654490026edf2a3105858ff644c7087a23dd5f6c` 位于 #24 |
 | 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19` 已合并；#24 必须先于本父仓 PR 合入 |
 | 发布状态 | `pinvou3-clean` 与 `pinvou-v0.9.5-r10` 指向 `feb8761aeda31749f3d54c6e1f8ef460540567a1`；本 Draft 指向 r11 候选并等待 #24 与固定标签 `pinvou-v0.9.5-r11`；`r1` 至 `r10` 保持不可变 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r11 候选 `66 files changed, +6363/-794`；净增 5569 行 |
+| drift | r11 候选 `66 files changed, +6389/-794`；净增 5595 行 |
 | 守护 | r11 候选为 42 条 CodeWhale `forkguard_*` 行为测试 + 2 条通用工具兼容回归 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账，以及由父仓 PR #322 提供的 r10 压缩用量适配 |
 
 ### r11 Windows Shell 解码（待发布）
 
-- `Pinvou/CodeWhale#24` 在已发布 r10 上携带候选 `22ec868291922aa133197dd9736a0da31ae18329`。严格 UTF-8 优先，跨 pipe read 保存不完整序列，仅在确认 UTF-8 非法后使用 Windows ACP；同步输出、限长快照、后台增量、tail 与 detached reader 共用状态化语义。
+- `Pinvou/CodeWhale#24` 在已发布 r10 上携带候选 `654490026edf2a3105858ff644c7087a23dd5f6c`。严格 UTF-8 优先，跨 pipe read 保存不完整序列；发现非法序列时保留已验证的 UTF-8 前缀，仅把非法后缀交给 Windows ACP 解码器；同步输出、限长快照、后台增量、tail 与 detached reader 共用状态化语义。
 - completion evidence 使用稳定 cutoff 且不丢弃 cutoff 前字节；Windows 专用 ACP 映射保持跨平台测试，同时不会在非 Windows library `-D dead_code` 构建中失败。通用修复由 `Hmbown/CodeWhale#5602` 跟踪，lint follow-up 与上游 `0a85b13ba` 同口径。
 - 父仓 PR #348（父仓 PR #322 的 r10 适配已合入）等待 #24、固定标签 `pinvou-v0.9.5-r11`、gitlink/tag 精确对齐和公开 submodule 校验通过，之后才能离开 Draft。
 
@@ -102,7 +102,7 @@
 
 ### T2：工具兼容与命令执行安全
 
-- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`Pinvou/CodeWhale#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`Pinvou/CodeWhale#15`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`Pinvou/CodeWhale#16` 的 Shell 取消边界）、候选 `22ec868291922aa133197dd9736a0da31ae18329`（`Pinvou/CodeWhale#24`）。
+- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`Pinvou/CodeWhale#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）、`d127aed113529dc93754d044b9f352e9746f6b83`（`Pinvou/CodeWhale#15`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`Pinvou/CodeWhale#16` 的 Shell 取消边界）、候选 `654490026edf2a3105858ff644c7087a23dd5f6c`（`Pinvou/CodeWhale#24`）。
 - **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/ops.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
 - **内容**：
   - `EngineConfig.extra_tools` 让宿主工具在 Plan、Agent、Yolo 等 turn registry 中一致注册。
@@ -199,7 +199,7 @@ python3 scripts/architecture-guard.py
 在 pinvou-v0.9.5-r11 发布前按设计 fail-closed
 ```
 
-完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。候选 `22ec868291922aa133197dd9736a0da31ae18329` 的解码模块 9/9、6 条新增 Shell 生命周期回归和 42 条 `forkguard_*` 均通过；如果 #24 最终合并 SHA 不同，必须重跑并重新对齐 gitlink、指纹和双语登记。`scripts/verify-public-submodule.sh` 锁定尚未发布的不可变标签 `pinvou-v0.9.5-r11`，因此当前应 fail-closed。
+完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。候选 `654490026edf2a3105858ff644c7087a23dd5f6c` 的解码模块在 Windows 上 10/10、6 条新增 Shell 生命周期回归和 42 条 `forkguard_*` 均通过；解码覆盖包含“有效 UTF-8 + CP1252”混合字节及跨平台一致的末尾不完整字节预期。如果 #24 最终合并 SHA 不同，必须重跑并重新对齐 gitlink、指纹和双语登记。`scripts/verify-public-submodule.sh` 锁定尚未发布的不可变标签 `pinvou-v0.9.5-r11`，因此当前应 fail-closed。
 
 ## 5. 后续修改规则
 
