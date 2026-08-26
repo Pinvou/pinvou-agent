@@ -346,8 +346,21 @@ async_command_passthrough!(weibo_domain, weibo_status() -> Result<Value, String>
 async_command_passthrough!(weibo_domain, weibo_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(weibo_domain, weibo_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(weibo_domain, weibo_logout() -> Result<Value, String>);
-async_command_passthrough!(weibo_domain, weibo_apply_skills() -> Result<Value, String>);
-async_command_passthrough!(weibo_domain, set_weibo_enabled(enabled: bool) -> Result<Value, String>);
+#[tauri::command]
+pub async fn weibo_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
+    let result = weibo_domain::weibo_apply_skills().await?;
+    pool.refresh_permission_rulesets().await;
+    Ok(result)
+}
+#[tauri::command]
+pub async fn set_weibo_enabled(
+    enabled: bool,
+    pool: State<'_, EnginePool>,
+) -> Result<Value, String> {
+    let result = weibo_domain::set_weibo_enabled(enabled).await?;
+    pool.refresh_permission_rulesets().await;
+    Ok(result)
+}
 async_command_passthrough!(weibo_domain, weibo_skills_state() -> Result<Value, String>);
 
 async_command_passthrough!(ima_domain, ima_status() -> Result<Value, String>);

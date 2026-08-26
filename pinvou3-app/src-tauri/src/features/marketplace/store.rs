@@ -852,7 +852,7 @@ mod tests {
             // companion 技能目录自身不独立登记
             assert!(!file.records.iter().any(|r| r.id == "lark-shared"));
             // 未连接的连接器不登记
-            for id in ["wecom", "dingtalk", "tmeet"] {
+            for id in ["wecom", "dingtalk", "tmeet", "weibo"] {
                 assert!(
                     !file.records.iter().any(|r| r.id == id),
                     "{id} 未连接不应登记"
