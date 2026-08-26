@@ -1,0 +1,143 @@
+# 诊断专用(临时分支 debug-pr345-rust-test,不入 main,不合 PR):
+# 复现 pr-345 merge queue rust-test 两次 "hosted runner lost communication" 失败。
+# 与 pr-check.yml rust-test 同配置,另加:
+#  - 内存哨兵:used>13.5GB 先杀测试进程组保住 runner(内核 OOM 前截获),
+#    记录现场(free/ps/最后完成的测试);
+#  - timeout 兜底 + tee 流式日志 + artifact 永远上传;
+#  - 每分钟心跳打印内存与测试进度。
+# 结论产出后本分支整个删除。
+name: debug pr345 rust-test
+on:
+  push:
+    branches: [debug-pr345-rust-test]
+  workflow_dispatch:
+
+jobs:
+  rust-test-diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+      CARGO_PROFILE_DEV_LTO: "thin"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1"
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: 初始化公共底座 submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      - name: 装 Tauri + pinvou3 Linux 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config cmake lld
+
+      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 对齐 rust-toolchain.toml 锁定的工具链
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      - name: Node.js (relay e2e)
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: remote-control-relay/package-lock.json
+
+      - name: relay 依赖 (真实 relay e2e)
+        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+
+      - name: 浏览器驱动依赖 (真实 Chrome 下载 e2e)
+        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          shared-key: rust-test
+          save-if: false
+
+      - name: cargo test --lib (带内存哨兵/超时/流式日志)
+        run: |
+          set +e
+          ulimit -c 0
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export CHROME="$chrome"
+          export PINVOU_REQUIRE_REMOTE_E2E=1
+          cd "$GITHUB_WORKSPACE"
+          LOG="$GITHUB_WORKSPACE/test-run.log"
+          : > "$LOG"
+
+          # 测试进程组独立,便于整组截杀而不伤 runner agent
+          setsid cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1 \
+            > >(tee -a "$LOG") 2>&1 &
+          WPID=$!
+          PGID=$(ps -o pgid= -p "$WPID" | tr -d ' ')
+
+          breach() {
+            echo "=== MEMBREACH $(date -u +%H:%M:%S) used=${1}MB ==="
+            free -m
+            ps aux --sort=-%mem | head -15
+            echo "--- last 40 completed test lines ---"
+            grep -E '^test ' "$LOG" | tail -40
+            echo "--- last 15 log lines ---"
+            tail -15 "$LOG"
+            kill -9 -"$PGID" 2>/dev/null
+          }
+
+          start=$(date +%s)
+          while kill -0 "$WPID" 2>/dev/null; do
+            used=$(free -m | awk '/^Mem:/{print $3}')
+            if [ "${used:-0}" -gt 13500 ]; then
+              breach "$used" | tee -a "$LOG"
+              break
+            fi
+            now=$(date +%s)
+            if [ $((now - start)) -gt 60 ]; then
+              start=$now
+              done_n=$(grep -cE '^test .* \.\.\. ' "$LOG" || true)
+              echo "[heartbeat] elapsed=$(( ${SECONDS} ))s mem=${used}MB tests_completed=${done_n} last=$(grep -E '^test ' "$LOG" | tail -1)" | tee -a "$LOG"
+            fi
+            sleep 5
+          done
+
+          # 总兜底:比 job timeout 更早主动失败,保证日志走正常上传路径
+          ELAPSED_LIMIT=4200
+          if kill -0 "$WPID" 2>/dev/null && [ "$SECONDS" -ge "$ELAPSED_LIMIT" ]; then
+            echo "=== HARDTIMEOUT after ${SECONDS}s ===" | tee -a "$LOG"
+            kill -9 -"$PGID" 2>/dev/null
+          fi
+
+          wait "$WPID"
+          rc=$?
+          echo "=== cargo exit rc=$rc elapsed=${SECONDS}s ===" | tee -a "$LOG"
+          sudo dmesg 2>/dev/null | grep -iE 'oom|killed process' | tail -10 | tee -a "$LOG" || true
+          echo "--- last 60 log lines ---" | tee -a "$LOG"
+          tail -60 "$LOG"
+          exit "$rc"
+
+      - name: 上传诊断日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr345-rust-test-diag
+          path: |
+            test-run.log
+          if-no-files-found: warn
